@@ -14,12 +14,14 @@ Role strings carry a feature-kind prefix (`image/`, `proprio/`, `text/`, `action
 
 | Constant           | Wire string            | Domain       | Kind       | Typical width / encoding            |
 | ------------------ | ---------------------- | ------------ | ---------- | ----------------------------------- |
-| `IMAGE_PRIMARY`    | `image/primary`        | core         | `image/`   | H×W×C frame (main/exterior camera)  |
+| `IMAGE_PRIMARY`    | `image/primary`        | core         | `image/`   | H×W×C frame (main camera)           |
 | `IMAGE_SECONDARY`  | `image/secondary`      | core         | `image/`   | H×W×C frame (second fixed camera)   |
 | `IMAGE_WRIST`      | `image/wrist`          | core         | `image/`   | H×W×C frame (wrist/hand camera)     |
 | `INSTRUCTION`      | `text/instruction`     | core         | `text/`    | string (task instruction)           |
 | `JOINT_POS`        | `proprio/joint_pos`    | core         | `proprio/` | N joints (embodiment-dependent)     |
 | `JOINT_VEL`        | `proprio/joint_vel`    | core         | `proprio/` | N joints                            |
+| `ACTION_JOINT_POS` | `action/joint_pos`     | core         | `action/`  | N joints (embodiment-dependent)     |
+| `ACTION_JOINT_VEL` | `action/joint_vel`     | core         | `action/`  | N joints                            |
 | `EEF_POS`          | `proprio/eef_pos`      | manipulation | `proprio/` | 3 (Cartesian xyz)                   |
 | `EEF_ROT`          | `proprio/eef_rot`      | manipulation | `proprio/` | width follows the rotation encoding |
 | `GRIPPER_POS`      | `proprio/gripper`      | manipulation | `proprio/` | 1+ (embodiment-dependent)           |
@@ -31,11 +33,13 @@ Role strings carry a feature-kind prefix (`image/`, `proprio/`, `text/`, `action
 
 You always pin widths explicitly (`dim`/`index` on a part, `dim` on an actuator); a _registered_ role with a fixed canonical width then **validates** that declared `dim` (e.g. `eef_pos` must be 3-D, a mismatch is a resolve error); it never supplies it. Rotation widths follow the declared encoding (see [Vocabularies](#vocabularies)).
 
-**Registered vs. ad-hoc roles.** A registered role (the table above) is a shared contract: independently authored envs and models line up on it without prior agreement, and the fixed-width ones validate their `dim`. An _ad-hoc_ role (any other `<kind>/<name>` string) still resolves on verbatim agreement, but it draws a non-fatal authoring nudge, and at the managed-service publish boundary a curated tier may reject it (`role_policy="forbid"`). When a role is _intentionally_ non-standard (a self-contained env/model pair you own, or a not-yet-blessed domain), mark it with the reserved **`x/` prefix**: an `x/...` role is never nudged and always passes the publish gate, declaring "I know this isn't standard." For an action dim no model reads, prefer a role-less (opaque) actuator over an ad-hoc role.
+**Registered vs. ad-hoc roles.** A registered role (the table above) is a shared contract: independently authored envs and models line up on it without prior agreement, and the fixed-width ones validate their `dim`. An _ad-hoc_ role (any other `<kind>/<name>` string) still resolves on verbatim agreement, but it draws a non-fatal authoring nudge, and at the managed-service publish boundary a curated tier may reject it (`role_policy="strict"`). When a role is _intentionally_ non-standard (a self-contained env/model pair you own, or a not-yet-blessed domain), mark it with the reserved **`x/` prefix**: an `x/...` role is never nudged and always passes the publish gate, declaring "I know this isn't standard." For an action dim no model reads, prefer a role-less (opaque) actuator over an ad-hoc role.
+
+A role is **registered when both sides of it exist**: an environment that produces the data and a model that reads it. One side alone does not earn a slot — a camera nothing looks at, or a command no policy emits, stays ad-hoc (or `x/`) until its counterpart ships, because until then nothing has pinned what the numbers mean.
 
 ### Bimanual roles
 
-Every manipulation role has a `_2` variant for the second arm: `EEF_POS_2`, `EEF_ROT_2`, `GRIPPER_POS_2`, `ACTION_DELTA_POS_2`, `ACTION_DELTA_ROT_2`, `ACTION_GRIPPER_2`, `ACTION_EEF_POS_2`, `ACTION_EEF_ROT_2`. The first (or only) arm uses the unsuffixed role; the second arm uses `_2`. A single-arm environment never declares `_2`, so a model part targeting it zero-fills on the observation side and drops the extra dims on the action side.
+Every manipulation role has a `_2` variant for the second arm: `EEF_POS_2`, `EEF_ROT_2`, `GRIPPER_POS_2`, `ACTION_DELTA_POS_2`, `ACTION_DELTA_ROT_2`, `ACTION_GRIPPER_2`, `ACTION_EEF_POS_2`, `ACTION_EEF_ROT_2`, plus `ACTION_JOINT_POS_2` and the second wrist camera `IMAGE_WRIST_2`. The first (or only) arm uses the unsuffixed role; the second arm uses `_2`. A single-arm environment never declares `_2`, so a model part targeting it zero-fills on the observation side and drops the extra dims on the action side.
 
 ## Vocabularies
 

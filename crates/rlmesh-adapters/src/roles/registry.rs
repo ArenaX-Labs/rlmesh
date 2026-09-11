@@ -94,8 +94,48 @@ mod tests {
             Some(DimLaw::ByEncoding)
         );
         assert!(is_known_role("action/joint_pos")); // newly blessed (clear contract)
+        // A bimanual joint command and the second wrist camera: each has a
+        // producer and a reader, and each is embodiment-widthed.
+        assert_eq!(
+            role_def("action/joint_pos_2").map(|r| r.dim),
+            Some(DimLaw::Variable)
+        );
+        assert_eq!(
+            role_def("image/wrist_2").map(|r| r.dim),
+            Some(DimLaw::Variable)
+        );
+        assert!(!is_known_role("image/front")); // unearned: no consuming model
         assert!(!is_known_role("action/base_motion")); // unearned: no consuming model
         assert!(!is_known_role("action/something_ad_hoc"));
+    }
+
+    #[test]
+    fn every_second_arm_role_mirrors_a_registered_first_arm_role() {
+        // The `_2` mirror is one-directional: a second-arm role is meaningless
+        // without its first-arm original, but a first-arm role stands alone (a
+        // single-arm env never declares `_2`), so the converse must NOT hold.
+        let names: Vec<&str> = super::DOMAINS
+            .iter()
+            .copied()
+            .flatten()
+            .map(|role| role.name)
+            .collect();
+        for name in &names {
+            if let Some(base) = name.strip_suffix("_2") {
+                assert!(
+                    names.contains(&base),
+                    "second-arm role {name:?} has no registered first-arm {base:?}"
+                );
+            }
+        }
+        assert!(is_known_role("proprio/joint_pos") && !is_known_role("proprio/joint_pos_2"));
+    }
+
+    #[test]
+    fn every_role_carries_a_doc() {
+        for role in super::DOMAINS.iter().copied().flatten() {
+            assert!(!role.doc.is_empty(), "role {:?} has no doc", role.name);
+        }
     }
 
     #[test]

@@ -274,6 +274,9 @@
     "rlmesh.adapters.ACTION_JOINT_POS": {
       "description": "Action role for joint position targets (action/joint_pos)."
     },
+    "rlmesh.adapters.ACTION_JOINT_POS_2": {
+      "description": "Second-arm variant of ACTION_JOINT_POS (action/joint_pos_2)."
+    },
     "rlmesh.adapters.ACTION_JOINT_VEL": {
       "description": "Action role for joint velocity targets (action/joint_vel)."
     },
@@ -306,6 +309,9 @@
     },
     "rlmesh.adapters.IMAGE_WRIST": {
       "description": "Observation role for a wrist-mounted camera (image/wrist)."
+    },
+    "rlmesh.adapters.IMAGE_WRIST_2": {
+      "description": "Second-arm variant of IMAGE_WRIST (image/wrist_2)."
     },
     "rlmesh.adapters.INSTRUCTION": {
       "description": "Observation role for the task instruction text (text/instruction)."

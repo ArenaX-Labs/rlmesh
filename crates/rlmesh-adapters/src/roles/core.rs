@@ -15,6 +15,12 @@ pub const JOINT_VEL: &str = "proprio/joint_vel";
 pub const ACTION_JOINT_POS: &str = "action/joint_pos";
 pub const ACTION_JOINT_VEL: &str = "action/joint_vel";
 
+/// Second-arm joint command (RoboTwin's bimanual `joint` action type). Kept
+/// `Variable` like its first-arm mirror: the DoF is the embodiment's, and a
+/// fixed width would break the perturbation path that re-runs `join` against
+/// the live layout.
+pub const ACTION_JOINT_POS_2: &str = "action/joint_pos_2";
+
 /// Core domain role table. Joint widths vary by embodiment (DoF), so joint roles
 /// are `Variable`; images and text carry no numeric dim law.
 pub const ROLES: &[RoleDef] = &[
@@ -52,5 +58,10 @@ pub const ROLES: &[RoleDef] = &[
         name: ACTION_JOINT_VEL,
         dim: DimLaw::Variable,
         doc: "commanded joint velocities (DoF varies by embodiment)",
+    },
+    RoleDef {
+        name: ACTION_JOINT_POS_2,
+        dim: DimLaw::Variable,
+        doc: "second-arm commanded joint positions (DoF varies by embodiment)",
     },
 ];

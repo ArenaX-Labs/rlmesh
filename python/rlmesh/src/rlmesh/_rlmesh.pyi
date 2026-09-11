@@ -20,6 +20,7 @@ __all__ = [
     "ACTION_GRIPPER",
     "ACTION_GRIPPER_2",
     "ACTION_JOINT_POS",
+    "ACTION_JOINT_POS_2",
     "ACTION_JOINT_VEL",
     "AdapterPlan",
     "Advisory",
@@ -37,6 +38,7 @@ __all__ = [
     "IMAGE_PRIMARY",
     "IMAGE_SECONDARY",
     "IMAGE_WRIST",
+    "IMAGE_WRIST_2",
     "INSTRUCTION",
     "JOINT_POS",
     "JOINT_VEL",
@@ -88,6 +90,7 @@ ACTION_EEF_ROT_2: builtins.str
 ACTION_GRIPPER: builtins.str
 ACTION_GRIPPER_2: builtins.str
 ACTION_JOINT_POS: builtins.str
+ACTION_JOINT_POS_2: builtins.str
 ACTION_JOINT_VEL: builtins.str
 DESCRIBE_METADATA_KEY: builtins.str
 DESCRIBE_SCHEMA_VERSION: builtins.int
@@ -102,6 +105,7 @@ IMAGE_LAYOUTS: builtins.list[builtins.str]
 IMAGE_PRIMARY: builtins.str
 IMAGE_SECONDARY: builtins.str
 IMAGE_WRIST: builtins.str
+IMAGE_WRIST_2: builtins.str
 INSTRUCTION: builtins.str
 JOINT_POS: builtins.str
 JOINT_VEL: builtins.str

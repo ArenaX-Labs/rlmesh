@@ -1153,6 +1153,7 @@
       "ACTION_GRIPPER",
       "ACTION_GRIPPER_2",
       "ACTION_JOINT_POS",
+      "ACTION_JOINT_POS_2",
       "ACTION_JOINT_VEL",
       "EEF_POS",
       "EEF_POS_2",
@@ -1164,6 +1165,7 @@
       "IMAGE_PRIMARY",
       "IMAGE_SECONDARY",
       "IMAGE_WRIST",
+      "IMAGE_WRIST_2",
       "INSTRUCTION",
       "JOINT_POS",
       "JOINT_VEL",
@@ -1258,6 +1260,11 @@
       "ACTION_JOINT_POS": {
         "kind": "type alias",
         "signature": "ACTION_JOINT_POS = str",
+        "stability": "Stable"
+      },
+      "ACTION_JOINT_POS_2": {
+        "kind": "type alias",
+        "signature": "ACTION_JOINT_POS_2 = str",
         "stability": "Stable"
       },
       "ACTION_JOINT_VEL": {
@@ -1619,6 +1626,11 @@
       "IMAGE_WRIST": {
         "kind": "type alias",
         "signature": "IMAGE_WRIST = str",
+        "stability": "Stable"
+      },
+      "IMAGE_WRIST_2": {
+        "kind": "type alias",
+        "signature": "IMAGE_WRIST_2 = str",
         "stability": "Stable"
       },
       "INSTRUCTION": {

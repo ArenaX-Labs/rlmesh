@@ -3056,3 +3056,59 @@ def test_absolute_eef_roles_are_registered_with_fixed_position_width():
     )
     with pytest.raises(Exception, match="3-D by convention"):
         resolve(ABS_LIBERO_ENV, bad)
+
+
+JOINT_BIMANUAL_ENV = Env(
+    tags=adapt.EnvTags(
+        observation={
+            "head": adapt.ImageTag(role=adapt.IMAGE_PRIMARY),
+            "left_wrist": adapt.ImageTag(role=adapt.IMAGE_WRIST),
+            "right_wrist": adapt.ImageTag(role=adapt.IMAGE_WRIST_2),
+        },
+        action=adapt.Action(
+            adapt.Actuator(adapt.ACTION_JOINT_POS, dim=6),
+            adapt.Actuator(adapt.ACTION_GRIPPER, dim=1),
+            adapt.Actuator(adapt.ACTION_JOINT_POS_2, dim=6),
+            adapt.Actuator(adapt.ACTION_GRIPPER_2, dim=1),
+        ),
+    ),
+    obs_space=gym.spaces.Dict(
+        {
+            "head": image_space(),
+            "left_wrist": image_space(),
+            "right_wrist": image_space(),
+        }
+    ),
+    action_space=box(14),
+)
+
+# The model emits both arms' joints first and both grippers last; the env
+# interleaves them arm by arm. Only the `_2` roles can express the difference.
+JOINT_BIMANUAL_MODEL = adapt.ModelSpec(
+    input={
+        "image": adapt.Image(role=adapt.IMAGE_PRIMARY, height=64, width=64),
+        "wrist": adapt.Image(role=adapt.IMAGE_WRIST, height=64, width=64),
+        "wrist_2": adapt.Image(role=adapt.IMAGE_WRIST_2, height=64, width=64),
+    },
+    output=adapt.Action(
+        adapt.Actuator(adapt.ACTION_JOINT_POS, dim=6),
+        adapt.Actuator(adapt.ACTION_JOINT_POS_2, dim=6),
+        adapt.Actuator(adapt.ACTION_GRIPPER, dim=1),
+        adapt.Actuator(adapt.ACTION_GRIPPER_2, dim=1),
+    ),
+)
+
+
+def test_bimanual_joint_split_permutes_the_model_vector():
+    adapter = resolve(JOINT_BIMANUAL_ENV, JOINT_BIMANUAL_MODEL)
+    out = adapter.transform_action(np.arange(14, dtype=np.float32))
+    np.testing.assert_allclose(out, [0, 1, 2, 3, 4, 5, 12, 6, 7, 8, 9, 10, 11, 13])
+    payload = adapter.transform_obs(
+        {
+            "head": np.zeros((64, 64, 3), dtype=np.uint8),
+            "left_wrist": np.zeros((64, 64, 3), dtype=np.uint8),
+            "right_wrist": np.full((64, 64, 3), 7, dtype=np.uint8),
+        }
+    )
+    # The second wrist camera lands in its own slot, not aliased onto the first.
+    assert payload["wrist_2"].max() > payload["wrist"].max()

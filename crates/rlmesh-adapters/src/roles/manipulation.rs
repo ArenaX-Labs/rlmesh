@@ -11,6 +11,8 @@
 use super::registry::{DimLaw, RoleDef};
 
 pub const IMAGE_WRIST: &str = "image/wrist";
+/// The second arm's wrist camera (RoboTwin's right-wrist frame).
+pub const IMAGE_WRIST_2: &str = "image/wrist_2";
 
 pub const EEF_POS: &str = "proprio/eef_pos";
 pub const EEF_ROT: &str = "proprio/eef_rot";
@@ -45,6 +47,11 @@ pub const ROLES: &[RoleDef] = &[
         name: IMAGE_WRIST,
         dim: DimLaw::Variable,
         doc: "wrist camera frame",
+    },
+    RoleDef {
+        name: IMAGE_WRIST_2,
+        dim: DimLaw::Variable,
+        doc: "second-arm wrist camera frame",
     },
     RoleDef {
         name: EEF_POS,
