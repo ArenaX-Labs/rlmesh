@@ -181,6 +181,9 @@
     "rlmesh.Tensor": {
       "description": "Native tensor value used by RLMesh value encoding."
     },
+    "rlmesh.predict_seed": {
+      "description": "Per-predict sampling seed mixed from an episode's reset seed and its re-plan ordinal."
+    },
     "rlmesh.DESCRIBE_METADATA_KEY": {
       "description": "Metadata/OCI-label key under which the versioned describe envelope is stored (rlmesh.describe.v1)."
     },

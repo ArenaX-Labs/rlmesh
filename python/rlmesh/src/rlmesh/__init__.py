@@ -57,6 +57,7 @@ from ._rlmesh import (
     DESCRIBE_SCHEMA_VERSION,
     ServeOptions,
     Tensor,
+    predict_seed,
 )
 from ._sandbox import SandboxBuild, SandboxRuntime
 from ._server import EnvServer
@@ -128,6 +129,7 @@ __all__ = [
     "describe",
     "describe_json",
     "params",
+    "predict_seed",
     "run",
     "sanitize_metadata",
     "session",

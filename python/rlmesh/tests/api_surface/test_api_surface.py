@@ -41,6 +41,7 @@ def test_root_namespace_is_small() -> None:
         "describe",
         "describe_json",
         "params",
+        "predict_seed",
         "run",
         "sanitize_metadata",
         "session",
@@ -100,6 +101,7 @@ def test_types_namespace_contains_typing_contracts_only() -> None:
     from rlmesh import types
 
     assert types.__all__ == [
+        "BatchPredictContext",
         "EnvLike",
         "EnvTarget",
         "HasAddress",
@@ -107,6 +109,7 @@ def test_types_namespace_contains_typing_contracts_only() -> None:
         "InfoDict",
         "LocalEnvTarget",
         "Metadata",
+        "PredictContext",
         "PrimitiveValue",
         "SpaceLike",
         "SpecArg",

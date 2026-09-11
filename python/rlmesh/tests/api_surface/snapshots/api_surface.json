@@ -37,6 +37,7 @@
       "describe",
       "describe_json",
       "params",
+      "predict_seed",
       "run",
       "sanitize_metadata",
       "session",
@@ -216,7 +217,7 @@
           },
           "reset": {
             "kind": "function",
-            "signature": "reset() -> None"
+            "signature": "reset(episode_id: str = '') -> None"
           },
           "run": {
             "kind": "function",
@@ -1103,6 +1104,11 @@
       },
       "params": {
         "kind": "module",
+        "stability": "Stable"
+      },
+      "predict_seed": {
+        "kind": "function",
+        "signature": "predict_seed(episode_seed: int, predict_index: int) -> int",
         "stability": "Stable"
       },
       "run": {
@@ -2032,7 +2038,7 @@
           },
           "reset": {
             "kind": "function",
-            "signature": "reset() -> None"
+            "signature": "reset(episode_id: str = '') -> None"
           },
           "run": {
             "kind": "function",
@@ -2590,7 +2596,7 @@
           },
           "reset": {
             "kind": "function",
-            "signature": "reset() -> None"
+            "signature": "reset(episode_id: str = '') -> None"
           },
           "run": {
             "kind": "function",
@@ -3845,7 +3851,7 @@
           },
           "reset": {
             "kind": "function",
-            "signature": "reset() -> None"
+            "signature": "reset(episode_id: str = '') -> None"
           },
           "run": {
             "kind": "function",
@@ -4311,6 +4317,7 @@
   },
   "rlmesh.types": {
     "exports": [
+      "BatchPredictContext",
       "EnvLike",
       "EnvTarget",
       "HasAddress",
@@ -4318,6 +4325,7 @@
       "InfoDict",
       "LocalEnvTarget",
       "Metadata",
+      "PredictContext",
       "PrimitiveValue",
       "SpaceLike",
       "SpecArg",
@@ -4328,6 +4336,11 @@
       "ViewArg"
     ],
     "objects": {
+      "BatchPredictContext": {
+        "kind": "type alias",
+        "signature": "BatchPredictContext = list[PredictContext]",
+        "stability": "Stable"
+      },
       "EnvLike": {
         "kind": "class",
         "members": {
@@ -4392,6 +4405,32 @@
       "Metadata": {
         "kind": "type alias",
         "signature": "Metadata = Mapping[str, object]",
+        "stability": "Stable"
+      },
+      "PredictContext": {
+        "kind": "class",
+        "members": {
+          "episode_id": {
+            "kind": "attribute",
+            "signature": "episode_id: str"
+          },
+          "episode_seed": {
+            "kind": "attribute",
+            "signature": "episode_seed: int | None"
+          },
+          "predict_index": {
+            "kind": "attribute",
+            "signature": "predict_index: int"
+          },
+          "predict_seed": {
+            "kind": "attribute",
+            "signature": "predict_seed: int | None"
+          },
+          "state": {
+            "kind": "attribute",
+            "signature": "state: dict[str, Any]"
+          }
+        },
         "stability": "Stable"
       },
       "PrimitiveValue": {

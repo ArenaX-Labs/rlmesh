@@ -14,6 +14,7 @@ names :class:`Session` resolves as module globals: connection/contract synthesis
 from __future__ import annotations
 
 import time
+import uuid
 import warnings
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -460,7 +461,7 @@ class Session(Generic[ObsT, ActT]):
     _execution_horizon: int
     _spec: object | None
     _env: object
-    _on_episode_end: Callable[[], None] | None
+    _on_episode_end: Callable[..., None] | None
     _on_close: Callable[[], None] | None
     _trust: bool
     _bridge: ValueBridge | None
@@ -485,6 +486,7 @@ class Session(Generic[ObsT, ActT]):
     _steps: int
     _reward: float
     _last_info: Mapping[str, Any]
+    _episode_id: str
     _replay_fn: Callable[..., Any] | None
     _model_ms: float
     _env_ms: float
@@ -514,7 +516,7 @@ class Session(Generic[ObsT, ActT]):
         predict: Callable[[Any], Any] | None = None,
         predict_chunk: Callable[..., Any] | None = None,
         spec: object | None = None,
-        on_episode_end: Callable[[], None] | None = None,
+        on_episode_end: Callable[..., None] | None = None,
         on_close: Callable[[], None] | None = None,
         trust_entrypoints: bool = False,
         bridge: ValueBridge | None = None,
@@ -568,6 +570,11 @@ class Session(Generic[ObsT, ActT]):
         self._steps = 0
         self._reward = 0.0
         self._last_info = {}
+        #: This episode's identity, minted by `reset` (the local drive path has no
+        #: runtime to mint one). Stable for the whole episode, so the model's
+        #: per-episode store keys the same entry every predict and drops it at the
+        #: same id on `_end_episode` -- the local twin of the served ResetAdapter.
+        self._episode_id = ""
         #: Debug-viewer telemetry (smoothed), fed to the HUD each step. ``model_ms``
         #: tracks the forward cost only when the model actually runs (so chunk-replay
         #: steps don't read as 0ms); ``env_ms`` the simulator ``step``; ``sps`` the
@@ -679,13 +686,6 @@ class Session(Generic[ObsT, ActT]):
             return "success"
         return "failure" if self._terminated else "timeout"
 
-    def _episode_id(self) -> str:
-        """This episode's runtime-minted id, when the env's reset info carried one."""
-        episode_ids = self._last_info.get("episode_ids")
-        if episode_ids:
-            return str(episode_ids[0])
-        return ""
-
     def _end_episode(self) -> None:
         """Fire the local model's `on_episode_end` once for the currently-open episode.
 
@@ -701,7 +701,7 @@ class Session(Generic[ObsT, ActT]):
         if self._episode_open:
             self._episode_open = False
             if self._on_episode_end is not None:
-                self._on_episode_end()
+                self._on_episode_end(self._episode_id)
 
     def reset(self, *, seed: int | None = None) -> tuple[ObsT, Mapping[str, Any]]:
         """Begin a new episode: end the previous one, then reset the env and adapter.
@@ -726,6 +726,7 @@ class Session(Generic[ObsT, ActT]):
         self._steps = 0
         self._reward = 0.0
         self._last_info = info
+        self._episode_id = uuid.uuid4().hex
         self._episode_open = True
         # Viewer telemetry: start the episode clock, drop the inter-step timer (so the
         # first step's sps isn't computed off the reset gap), and record the seed.
@@ -789,7 +790,7 @@ class Session(Generic[ObsT, ActT]):
             # model: this episode's identity and explicit reset seed, nothing
             # positional or path-specific.
             predict_context = (
-                {"episode_id": self._episode_id(), "episode_seed": self._seed}
+                {"episode_id": self._episode_id, "episode_seed": self._seed}
                 if takes_context
                 else None
             )

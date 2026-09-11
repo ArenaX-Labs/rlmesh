@@ -221,13 +221,18 @@ def test_session_predict_context_carries_stable_episode_identity() -> None:
     with Model(predict).session(Env()) as sess:
         sess.run(seeds=[7], max_episodes=1)
 
-    # A plain local env is driven directly (no runtime in the loop), so there
-    # is no minted episode_id here -- the id is stable-empty and the seed rides
-    # on every step. The served-env variant with real UUIDv7 ids is
-    # tests/integration/test_run_native.py.
+    # A plain local env is driven directly (no runtime in the loop), so the
+    # session mints the episode identity itself -- one id for the whole episode,
+    # the seed riding on every step, and the re-plan ordinal counting up. The
+    # served-env variant with real UUIDv7 ids is tests/integration/test_run_native.py.
     assert len(seen) == 3
-    assert [context["episode_id"] for context in seen] == ["", "", ""]
+    ids = {context["episode_id"] for context in seen}
+    assert len(ids) == 1 and ids != {""}
     assert [context["episode_seed"] for context in seen] == [7, 7, 7]
+    assert [context["predict_index"] for context in seen] == [0, 1, 2]
+    assert [context["predict_seed"] for context in seen] == [
+        rlmesh.predict_seed(7, index) for index in range(3)
+    ]
 
 
 def test_reject_vector_env_rejects_num_envs_gt_one() -> None:

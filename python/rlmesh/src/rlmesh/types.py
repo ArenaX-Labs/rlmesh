@@ -9,6 +9,7 @@ from typing import (
     Protocol,
     SupportsFloat,
     TypeAlias,
+    TypedDict,
     TypeVar,
     Union,
 )
@@ -49,6 +50,48 @@ Values are typed ``Any`` on purpose: the env author owns what goes in, the SDK
 never validates it, so strict-mode consumers can write ``info["success"] > 0.5``
 without a cast. Contrast :data:`Metadata`, which the SDK validates and therefore
 types as ``object``."""
+
+
+class PredictContext(TypedDict):
+    """What a predict corner is told about the episode it is predicting for.
+
+    Delivered as a trailing ``context`` argument, and only to a corner whose
+    signature declares one -- so it is additive. A model that interleaves
+    episodes keys everything it remembers by ``episode_id``; ``state`` is the
+    slot to keep it in, so it does not need its own bookkeeping.
+
+    Attributes:
+        episode_id: The runtime-minted id of this episode (UUIDv7, never
+            repeats). ``""`` for an anonymous lane with no identity.
+        episode_seed: The seed this episode was reset with, or ``None`` when it
+            was not explicitly seeded.
+        predict_index: How many times this episode has been predicted for
+            already -- 0 on its first predict. The re-plan ordinal, not the env
+            step count (a chunked model re-plans once per chunk).
+        predict_seed: A reproducible per-predict seed mixed from
+            ``episode_seed`` and ``predict_index``; ``None`` when the episode
+            carries no seed. Seed a stochastic head with this rather than once
+            per episode: interleaved episodes advance the same global
+            generators, so seeding once cannot reproduce.
+        state: A dict that lives as long as the episode does, for whatever the
+            model wants to carry across its predicts. Dropped when the episode
+            ends.
+    """
+
+    episode_id: str
+    episode_seed: int | None
+    predict_index: int
+    predict_seed: int | None
+    state: dict[str, Any]
+
+
+BatchPredictContext: TypeAlias = list[PredictContext]
+"""One :class:`PredictContext` per row of a batched corner's batch, in row order.
+
+The batched corners (``predict_batch`` / ``predict_chunk_batch``) run one forward
+over lanes that may belong to independent episodes, so identity is per row --
+never one context for the call.
+"""
 
 ObsT = TypeVar("ObsT")
 ActT = TypeVar("ActT")
@@ -279,6 +322,7 @@ else:
 
 
 __all__ = [
+    "BatchPredictContext",
     "EnvLike",
     "EnvTarget",
     "HasAddress",
@@ -286,6 +330,7 @@ __all__ = [
     "InfoDict",
     "LocalEnvTarget",
     "Metadata",
+    "PredictContext",
     "PrimitiveValue",
     "SpaceLike",
     "SpecArg",

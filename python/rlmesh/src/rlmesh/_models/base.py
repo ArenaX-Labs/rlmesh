@@ -20,6 +20,7 @@ from typing import (
 
 from .._value_conversion import ValueBridge, identity_bridge, tree_map
 from ..types import EnvTarget, LocalEnvTarget, Value, ViewArg
+from ._episodes import EpisodeStore
 
 if TYPE_CHECKING:
     from rlmesh._rlmesh import PyModel, ServeOptions
@@ -29,7 +30,11 @@ if TYPE_CHECKING:
 
 ObsT = TypeVar("ObsT")
 ActT = TypeVar("ActT")
-LifecycleCallback = Callable[[], None]
+#: An episode-end / close hook. ``on_close`` takes nothing; ``on_episode_end``
+#: may take the ended episode's id (see :func:`accepts_episode_id`), so the
+#: alias stays arity-agnostic rather than splitting the public ``Model(...)``
+#: signature in two.
+LifecycleCallback = Callable[..., None]
 PredictFn = Callable[[ObsT], ActT]
 Corner = Callable[..., object]
 
@@ -75,6 +80,82 @@ def accepts_context(fn: Corner, base_arity: int) -> bool:
     return len(positional) > base_arity and positional[base_arity].name == "context"
 
 
+def accepts_episode_id(callback: LifecycleCallback) -> bool:
+    """Whether an episode-end hook wants the ended episode's id.
+
+    ``Model.reset(self, episode_id="")`` is the full form; ``reset(self)`` stays a
+    valid override (and a bare ``on_episode_end=lambda: ...`` stays valid too), so
+    the id is passed only when the callback has somewhere to put it.
+    """
+    try:
+        params = list(inspect.signature(callback).parameters.values())
+    except (TypeError, ValueError):
+        return False
+    if any(p.kind is p.VAR_POSITIONAL for p in params):
+        return True
+    return any(p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD) for p in params)
+
+
+def _episode_end_hook(
+    callback: LifecycleCallback | None,
+) -> Callable[[str], None] | None:
+    """Normalize an episode-end hook to the ``(episode_id)`` form the store calls."""
+    if callback is None:
+        return None
+    if accepts_episode_id(callback):
+        return callback
+
+    def without_id(_episode_id: str) -> None:
+        callback()
+
+    return without_id
+
+
+def _with_episode_state(
+    store: EpisodeStore,
+    fn: Corner | None,
+    *,
+    arity: Literal[1, 2],
+    batched: bool,
+) -> Corner | None:
+    """Enrich a corner's raw episode context from the model's episode store.
+
+    The engine hands each corner the raw ``{"episode_id", "episode_seed"}`` it
+    knows -- one dict for a per-lane corner, one per row for a batched one. This
+    turns each into the full :class:`~rlmesh.types.PredictContext`
+    (``predict_index`` / ``predict_seed`` / ``state``), which is the only place
+    per-episode bookkeeping lives. A corner that never declared a ``context``
+    parameter is returned untouched, so a model that never asked pays nothing --
+    not even a store entry.
+    """
+    if fn is None or not accepts_context(fn, arity):
+        return fn
+    corner = fn
+
+    def enrich(context: Any) -> Any:
+        if batched:
+            return [store.context(row) for row in context]
+        return store.context(context)
+
+    if arity == 1:
+
+        def with_state(observation: object, context: object = None) -> object:
+            if context is None:
+                return corner(observation)
+            return corner(observation, enrich(context))
+
+        return with_state
+
+    def with_state_chunk(
+        observation: object, horizon: object, context: object = None
+    ) -> object:
+        if context is None:
+            return corner(observation, horizon)
+        return corner(observation, horizon, enrich(context))
+
+    return with_state_chunk
+
+
 def _debatch(
     bridge: ValueBridge, batched_fn: Corner, *, arity: Literal[1, 2]
 ) -> Corner:
@@ -84,22 +165,35 @@ def _debatch(
     batched corner, and peels lane 0 back off (``tree_unstack``). ``arity`` is
     the derived corner's own fixed positional arity -- 1 turns ``predict_batch``
     into ``predict(observation)``, 2 turns ``predict_chunk_batch`` into
-    ``predict_chunk(observation, horizon)``. The derived corner declares no
-    ``context`` parameter: batched corners never receive episode context
-    (their lanes may span independent episodes), so deriving a single-lane
-    corner from one cannot make a context appear.
+    ``predict_chunk(observation, horizon)``. A batched corner's context is a
+    LIST (one per row), so the single lane's own context is handed down as a
+    one-element list -- the batch of one it is being run as.
     """
+    takes_context = accepts_context(batched_fn, arity)
+
     if arity == 1:
 
-        def derived_predict(observation: object) -> object:
+        def derived_predict(observation: object, context: object = None) -> object:
             fused = bridge.tree_stack([observation])
-            return bridge.tree_unstack(batched_fn(fused), 1)[0]
+            args = (
+                (fused, [context])
+                if takes_context and context is not None
+                else (fused,)
+            )
+            return bridge.tree_unstack(batched_fn(*args), 1)[0]
 
         return derived_predict
 
-    def derived_predict_chunk(observation: object, horizon: object) -> object:
+    def derived_predict_chunk(
+        observation: object, horizon: object, context: object = None
+    ) -> object:
         fused = bridge.tree_stack([observation])
-        return bridge.tree_unstack(batched_fn(fused, horizon), 1)[0]
+        args = (
+            (fused, horizon, [context])
+            if takes_context and context is not None
+            else (fused, horizon)
+        )
+        return bridge.tree_unstack(batched_fn(*args), 1)[0]
 
     return derived_predict_chunk
 
@@ -176,14 +270,16 @@ def _horizon_mode(fn: Corner) -> Literal["positional", "keyword"] | None:
     positional parameter (``"positional"``) or keyword-only (``"keyword"``);
     detecting that once here keeps the common corner a clean ``predict_chunk(obs)``
     while the rare one is handed how many actions the runtime will execute.
-    ``None`` means the corner takes no horizon.
+    ``None`` means the corner takes no horizon. A trailing ``context`` parameter
+    is never the horizon (see :func:`accepts_context`), so it does not count.
     """
     try:
         params = inspect.signature(fn).parameters.values()
     except (TypeError, ValueError):
         return None
     positional = sum(
-        p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD) for p in params
+        p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD) and p.name != "context"
+        for p in params
     )
     if positional >= 2 or any(p.kind == p.VAR_POSITIONAL for p in params):
         return "positional"
@@ -207,18 +303,29 @@ def _normalize_chunk(fn: Corner | None) -> Corner | None:
     mode = _horizon_mode(fn)
     if mode == "positional":
         return fn
-    if mode == "keyword":
-        chunk_fn = fn
+    chunk_fn = fn
+    by_keyword = mode == "keyword"
 
-        def by_keyword(observation: object, execution_horizon: object) -> object:
+    if accepts_context(chunk_fn, 1):
+        # No horizon but a context: its base arity is 1, so the context sits
+        # where the horizon would have been. Keep it rather than swallow it.
+        def normalized_with_context(
+            observation: object, execution_horizon: object, context: object = None
+        ) -> object:
+            if by_keyword:
+                return chunk_fn(
+                    observation, context, execution_horizon=execution_horizon
+                )
+            return chunk_fn(observation, context)
+
+        return normalized_with_context
+
+    def normalized(observation: object, execution_horizon: object) -> object:
+        if by_keyword:
             return chunk_fn(observation, execution_horizon=execution_horizon)
+        return chunk_fn(observation)
 
-        return by_keyword
-
-    def absorbing(observation: object, _execution_horizon: object) -> object:
-        return fn(observation)
-
-    return absorbing
+    return normalized
 
 
 def _synthesize_corners(
@@ -473,6 +580,29 @@ class ModelBase(Generic[ObsT, ActT]):
         raw_predict_chunk = _normalize_chunk(raw_predict_chunk)
         raw_predict_chunk_batch = _normalize_chunk(raw_predict_chunk_batch)
 
+        # The model's one bounded per-episode store, wrapped around every corner
+        # that asked for a context (before synthesis, so a derived corner inherits
+        # the enrichment instead of needing its own). Its end edge -- the episode's
+        # entry dropped, then the author's own hook -- is what both the served
+        # ResetAdapter and the local session boundary drive.
+        self._episodes = EpisodeStore(
+            _episode_end_hook(
+                on_episode_end if on_episode_end is not None else coerced_on_episode_end
+            )
+        )
+        raw_predict = _with_episode_state(
+            self._episodes, raw_predict, arity=1, batched=False
+        )
+        raw_predict_chunk = _with_episode_state(
+            self._episodes, raw_predict_chunk, arity=2, batched=False
+        )
+        raw_predict_batch = _with_episode_state(
+            self._episodes, raw_predict_batch, arity=1, batched=True
+        )
+        raw_predict_chunk_batch = _with_episode_state(
+            self._episodes, raw_predict_chunk_batch, arity=2, batched=True
+        )
+
         # Climb the corner lattice: derive the corners the model didn't define from
         # the most general one it did, so predict_chunk_batch alone yields all four
         # on a framework bridge. (A chunk-only model on the raw Value bridge can't
@@ -500,9 +630,9 @@ class ModelBase(Generic[ObsT, ActT]):
         self.spec = resolved_spec
         self._policy = policy
         self._on_close = on_close if on_close is not None else coerced_on_close
-        self._on_episode_end = (
-            on_episode_end if on_episode_end is not None else coerced_on_episode_end
-        )
+        #: The episode-end edge both paths drive: drop the store entry, then fire
+        #: the model's own hook with the id that ended.
+        self._on_episode_end: LifecycleCallback = self._episodes.end
         self._trust_entrypoints = trust_entrypoints
         self._worker: PyModel | None = None
 
@@ -605,8 +735,13 @@ class ModelBase(Generic[ObsT, ActT]):
             "predict_chunk() (per lane) or predict_batch()."
         )
 
-    def reset(self) -> None:
-        """Optional: called at each episode boundary (no-op by default)."""
+    def reset(self, episode_id: str = "") -> None:
+        """Optional: called when an episode ends (no-op by default).
+
+        ``episode_id`` is the episode that just ended -- declare it when the model
+        keeps state keyed by id (several episodes interleave through one served
+        model); ``def reset(self)`` remains a valid override when it does not.
+        """
 
     def close(self) -> None:
         """Optional: release resources at the end of a run (no-op by default)."""
@@ -661,8 +796,7 @@ class ModelBase(Generic[ObsT, ActT]):
             # is the final model input; bridge it into the framework, run the user
             # predict, and bridge the action back. A spec-less route hands the raw
             # observation through the identical path (no adapter). ``context``
-            # (this episode's id/seed, on the direct single-episode path only --
-            # never on the batched corners) reaches the author's own predict()
+            # (this lane's episode identity) reaches the author's own predict()
             # only when its signature declares a trailing ``context`` param.
             decoded = cast(ObsT, self._to_device(bridge.decode(observation)))
             if context is not None and raw_predict_takes_context:
@@ -701,17 +835,28 @@ class ModelBase(Generic[ObsT, ActT]):
         # back into N per-lane values the engine replays. The native (Value) bridge
         # can't fuse opaque tensors, so it passes the per-lane list through.
         raw_predict_batch = self._raw_predict_batch
-        predict_batch_neutral: Callable[[list[Value]], list[Value]] | None = None
+        predict_batch_neutral: (
+            Callable[[list[Value], list[Mapping[str, Any]]], list[Value]] | None
+        ) = None
         if raw_predict_batch is not None:
             batch_fn = raw_predict_batch
+            batch_fn_takes_context = accepts_context(batch_fn, 1)
 
-            def _predict_batch_neutral(observations: list[Value]) -> list[Value]:
+            def _predict_batch_neutral(
+                observations: list[Value], context: list[Mapping[str, Any]]
+            ) -> list[Value]:
                 if not observations:
                     return []
                 fused = bridge.tree_stack(
                     [self._to_device(bridge.decode(o)) for o in observations]
                 )
-                actions = batch_fn(fused)
+                # `context` is row-aligned with `observations`: one per lane of the
+                # fused batch, which may span independent episodes.
+                actions = (
+                    batch_fn(fused, context)
+                    if batch_fn_takes_context
+                    else batch_fn(fused)
+                )
                 parts = bridge.tree_unstack(actions, len(observations))
                 return [bridge.encode(a) for a in parts]
 
@@ -719,20 +864,27 @@ class ModelBase(Generic[ObsT, ActT]):
 
         raw_predict_chunk_batch = self._raw_predict_chunk_batch
         predict_chunk_batch_neutral: (
-            Callable[[list[Value], int], list[Value]] | None
+            Callable[[list[Value], int, list[Mapping[str, Any]]], list[Value]] | None
         ) = None
         if raw_predict_chunk_batch is not None:
             chunk_batch_fn = raw_predict_chunk_batch
+            chunk_batch_fn_takes_context = accepts_context(chunk_batch_fn, 2)
 
             def _predict_chunk_batch_neutral(
-                observations: list[Value], horizon: int
+                observations: list[Value],
+                horizon: int,
+                context: list[Mapping[str, Any]],
             ) -> list[Value]:
                 if not observations:
                     return []
                 fused = bridge.tree_stack(
                     [self._to_device(bridge.decode(o)) for o in observations]
                 )
-                chunks = chunk_batch_fn(fused, horizon)
+                chunks = (
+                    chunk_batch_fn(fused, horizon, context)
+                    if chunk_batch_fn_takes_context
+                    else chunk_batch_fn(fused, horizon)
+                )
                 # Split the batch axis only; each lane's chunk (horizon) axis stays.
                 parts = bridge.tree_unstack(chunks, len(observations))
                 return [bridge.encode(c) for c in parts]
