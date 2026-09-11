@@ -58,12 +58,18 @@ def _serve_custom(
 
 @dataclass(frozen=True)
 class ObsEncShim:
-    """Repack one observation payload leaf from its base encoding to custom.
+    """Repack one slice of an observation payload leaf from base to custom.
 
     Keyed by the leaf's structured ``segments`` path in the input tree (each
     step a ``str`` Dict key or ``int`` Tuple index; the empty tuple is the root
     of a bare-leaf input). Mirrors the native ``NodePath`` without any string to
     render and re-parse on the host side.
+
+    ``offset`` is where this field starts inside the ``native_width``-wide
+    assembled leaf: a single-part state is the whole leaf, a part of a
+    multi-part ``Concat`` is the slice ``[offset, offset + width)``. Both come
+    from the resolved plan's ``state_layouts()`` (part widths are env-dependent,
+    so they are known only after resolve).
     """
 
     segments: tuple[str | int, ...]
@@ -72,6 +78,8 @@ class ObsEncShim:
     name: str
     dtype: str
     from_base: RotationTransform
+    offset: int
+    native_width: int
 
 
 @dataclass(frozen=True)
@@ -349,12 +357,14 @@ class Adapter(AdapterBase[NumpyArray]):
         import numpy as np
 
         placement = render_placement(shim.segments)
-        base = cast("NumpyArray", np.asarray(value))
-        if int(base.size) != shim.width:
+        leaf = cast("NumpyArray", np.asarray(value))
+        if leaf.ndim != 1 or int(leaf.size) != shim.native_width:
             raise ValueError(
-                f"custom encoding {shim.name!r} for {placement!r} expected "
-                f"a width-{shim.width} {shim.base} value, got size {int(base.size)}"
+                f"custom encoding {shim.name!r} for {placement!r} expected a flat "
+                f"width-{shim.native_width} state, got shape {leaf.shape}"
             )
+        stop = shim.offset + shim.width
+        base = cast("NumpyArray", leaf[shim.offset : stop])
         out = cast("NumpyArray", np.asarray(shim.from_base(base)))
         # A rotation field is a flat width-N vector; reject a non-1-D return
         # (e.g. a stray reshape) rather than silently flattening it, which could
@@ -365,10 +375,12 @@ class Adapter(AdapterBase[NumpyArray]):
                 f"return a flat width-{shim.width} vector, from_base returned "
                 f"shape {out.shape}"
             )
-        # Restore the model's declared dtype: the native core already cast the
-        # state to it, but from_base may have produced float64 (e.g. a fresh
-        # array or a Python list).
-        return cast("NumpyArray", out.astype(np.dtype(shim.dtype)))
+        # A fresh copy in the model's declared dtype: the native core already
+        # cast the state to it, but from_base may have produced float64, and the
+        # slice write below must not mutate the payload the caller holds.
+        repacked = cast("NumpyArray", leaf.astype(np.dtype(shim.dtype)))
+        repacked[shim.offset : stop] = out
+        return repacked
 
     def reset(self) -> None:
         """Clear the host-side frame-history buffers at an episode boundary.
@@ -506,7 +518,11 @@ class Adapter(AdapterBase[NumpyArray]):
         lines = [native, "host-side encodings:"]
         for shim in self._obs_enc_shims:
             placement = render_placement(shim.segments)
-            lines.append(f"  obs    {placement!r}: {shim.base} -> {shim.name}")
+            stop = shim.offset + shim.width
+            lines.append(
+                f"  obs    {placement!r}[{shim.offset}:{stop}]: "
+                f"{shim.base} -> {shim.name}"
+            )
         for shim in self._action_enc_shims:
             stop = shim.offset + shim.width
             lines.append(f"  action [{shim.offset}:{stop}]: {shim.name} -> {shim.base}")

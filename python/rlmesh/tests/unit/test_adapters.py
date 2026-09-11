@@ -2017,26 +2017,200 @@ def test_custom_encoding_describe_shows_host_layer():
     assert "rot6d -> rot6d_rev" in text
 
 
-def test_custom_obs_encoding_must_be_sole_component():
+# RoboTwin-style bimanual env: each arm's end-effector pose arrives as one flat
+# 7-wide leaf (xyz + a wxyz quaternion), plus a gripper scalar.
+BIMANUAL_EEF_ENV = Env(
+    tags=adapt.EnvTags(
+        observation={
+            "left_endpose": adapt.Split(
+                adapt.Field(adapt.EEF_POS, 3),
+                adapt.Field(adapt.EEF_ROT, 4, encoding="quat_wxyz"),
+            ),
+            "right_endpose": adapt.Split(
+                adapt.Field(adapt.EEF_POS_2, 3),
+                adapt.Field(adapt.EEF_ROT_2, 4, encoding="quat_wxyz"),
+            ),
+            "left_gripper": adapt.StateTag(role=adapt.GRIPPER_POS),
+            "right_gripper": adapt.StateTag(role=adapt.GRIPPER_POS_2),
+        },
+        action=adapt.Action(
+            adapt.Actuator(adapt.ACTION_EEF_POS, dim=3),
+            adapt.Actuator(adapt.ACTION_EEF_ROT, dim=4, encoding="quat_wxyz"),
+            adapt.Actuator(adapt.ACTION_GRIPPER, dim=1),
+            adapt.Actuator(adapt.ACTION_EEF_POS_2, dim=3),
+            adapt.Actuator(adapt.ACTION_EEF_ROT_2, dim=4, encoding="quat_wxyz"),
+            adapt.Actuator(adapt.ACTION_GRIPPER_2, dim=1),
+        ),
+    ),
+    obs_space=gym.spaces.Dict(
+        {
+            "left_endpose": box(7),
+            "right_endpose": box(7),
+            "left_gripper": box(1),
+            "right_gripper": box(1),
+        }
+    ),
+    action_space=box(16),
+)
+
+# A checkpoint whose rot6d convention lists the two columns the other way round:
+# a width-preserving repack of the base encoding, self-inverse. (X-VLA's real
+# RoboTwin2 quirk is a quaternion-order repack; what is under test here is that
+# a part-level repack finds its own slice of a 20-wide state.)
+ROT6D_COLS_SWAPPED = adapt.CustomEncoding(
+    base="rot6d_rowmajor",
+    from_base=lambda v: np.asarray(v)[[1, 0, 3, 2, 5, 4]],
+    to_base=lambda v: np.asarray(v)[[1, 0, 3, 2, 5, 4]],
+    name="rot6d_cols_swapped",
+)
+
+
+def _bimanual_proprio(encoding: Any) -> adapt.ModelSpec:
+    """The xvla/robotwin2 proprio layout: 6 parts, 20 wide, rot at 3 and 13."""
+    return adapt.ModelSpec(
+        input={
+            "proprio": adapt.Concat(
+                adapt.State(adapt.EEF_POS, dim=3),
+                adapt.State(adapt.EEF_ROT, dim=6, encoding=encoding),
+                adapt.State(adapt.GRIPPER_POS, dim=1),
+                adapt.State(adapt.EEF_POS_2, dim=3),
+                adapt.State(adapt.EEF_ROT_2, dim=6, encoding=encoding),
+                adapt.State(adapt.GRIPPER_POS_2, dim=1),
+                container="array",
+            )
+        },
+        output=adapt.Action(
+            adapt.Actuator(adapt.ACTION_EEF_POS, dim=3),
+            adapt.Actuator(adapt.ACTION_EEF_ROT, dim=6, encoding=encoding),
+            adapt.Actuator(adapt.ACTION_GRIPPER, dim=1),
+            adapt.Actuator(adapt.ACTION_EEF_POS_2, dim=3),
+            adapt.Actuator(adapt.ACTION_EEF_ROT_2, dim=6, encoding=encoding),
+            adapt.Actuator(adapt.ACTION_GRIPPER_2, dim=1),
+        ),
+    )
+
+
+def _quat_wxyz_to_rot6d_rowmajor(quat: Any) -> Any:
+    """The first two columns of R(quat), read row-major -- hand-rolled here so
+    the expectation is independent of the core's own conversion."""
+    w, x, y, z = (float(v) for v in np.asarray(quat) / np.linalg.norm(quat))
+    matrix = np.array(
+        [
+            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+        ]
+    )
+    return matrix[:, :2].reshape(6)
+
+
+def _bimanual_obs() -> dict[str, Any]:
+    return {
+        "left_endpose": np.array(
+            [0.21, -0.13, 0.94, 0.8, 0.2, -0.1, 0.55], dtype=np.float32
+        ),
+        "right_endpose": np.array(
+            [-0.31, 0.07, 0.88, 0.1, -0.7, 0.3, 0.64], dtype=np.float32
+        ),
+        "left_gripper": np.array([0.35], dtype=np.float32),
+        "right_gripper": np.array([0.9], dtype=np.float32),
+    }
+
+
+def test_custom_obs_encoding_addresses_its_slice_of_a_multipart_concat():
+    """Two custom-encoded parts of one 20-wide state each repack exactly their
+    own slice; every other part is byte-identical to the base-encoding plan."""
+    obs = _bimanual_obs()
+    base = resolve(BIMANUAL_EEF_ENV, _bimanual_proprio("rot6d_rowmajor"))
+    custom = resolve(BIMANUAL_EEF_ENV, _bimanual_proprio(ROT6D_COLS_SWAPPED))
+    base_state = np.asarray(base.transform_obs(obs)["proprio"])
+    custom_state = np.asarray(custom.transform_obs(obs)["proprio"])
+    assert base_state.shape == (20,)
+    swap = [1, 0, 3, 2, 5, 4]
+    for offset in (3, 13):
+        np.testing.assert_allclose(
+            custom_state[offset : offset + 6],
+            base_state[offset : offset + 6][swap],
+            atol=1e-6,
+        )
+    # Positions and grippers are untouched: the shim wrote only its own slice.
+    kept = [0, 1, 2, 9, 10, 11, 12, 19]
+    np.testing.assert_allclose(custom_state[kept], base_state[kept], atol=1e-6)
+    assert "'proprio'[3:9]" in custom.explain()
+    assert "'proprio'[13:19]" in custom.explain()
+
+
+def test_xvla_robotwin2_style_state_and_action_round_trip():
+    """The pairing the offset addressing exists for: a 20-wide bimanual proprio
+    whose rotation parts carry a host-side repack, checked against a
+    hand-computed vector, with the action converted back to the env's 16."""
+    obs = _bimanual_obs()
+    adapter = resolve(BIMANUAL_EEF_ENV, _bimanual_proprio(ROT6D_COLS_SWAPPED))
+    state = np.asarray(adapter.transform_obs(obs)["proprio"])
+    swap = [1, 0, 3, 2, 5, 4]
+    expected = np.concatenate(
+        [
+            obs["left_endpose"][:3],
+            _quat_wxyz_to_rot6d_rowmajor(obs["left_endpose"][3:])[swap],
+            obs["left_gripper"],
+            obs["right_endpose"][:3],
+            _quat_wxyz_to_rot6d_rowmajor(obs["right_endpose"][3:])[swap],
+            obs["right_gripper"],
+        ]
+    )
+    assert state.shape == (20,)  # in_dim 20
+    np.testing.assert_allclose(state, expected, atol=0.002)
+    # Echoing the proprio back as the action returns the observed pose: the
+    # action shim undoes the repack before the core converts rot6d -> quaternion.
+    action = adapter.transform_action(state)
+    assert action.shape == (16,)
+    for env_slice, obs_key in (
+        (slice(0, 8), "left_endpose"),
+        (slice(8, 16), "right_endpose"),
+    ):
+        pose = np.asarray(obs[obs_key])
+        np.testing.assert_allclose(action[env_slice][:3], pose[:3], atol=0.002)
+        quat = pose[3:] / np.linalg.norm(pose[3:])
+        got = action[env_slice][3:7]
+        # A rotation has two quaternion representations; either is correct.
+        assert min(np.abs(got - quat).max(), np.abs(got + quat).max()) < 0.002
+
+
+def test_custom_obs_encoding_pads_and_addresses_within_the_padded_state():
+    """pad_to is compatible with a repack: the shim addresses its slice of the
+    padded vector (the single-arm catalog variants' `pad_to=20` shape)."""
     env = _rot_obs_env()
     spec = adapt.ModelSpec(
-        input={
-            "state": adapt.Concat(
-                adapt.EEF_POS,
-                adapt.State(adapt.EEF_ROT, encoding=ROT6D_REV),
-            ),
-        },
+        input={"rot": adapt.State(adapt.EEF_ROT, encoding=ROT6D_REV, pad_to=8)},
         output=_gripper_action(),
     )
-    with pytest.raises(adapt.AdapterResolutionError, match="sole part"):
+    quat = np.array([0.1, 0.2, 0.3, 0.9], dtype=np.float32)
+    quat /= np.linalg.norm(quat)
+    out = np.asarray(resolve(env, spec).transform_obs({"q": quat})["rot"])
+    base_spec = adapt.ModelSpec(
+        input={"rot": adapt.State(adapt.EEF_ROT, encoding="rot6d", pad_to=8)},
+        output=_gripper_action(),
+    )
+    base = np.asarray(resolve(env, base_spec).transform_obs({"q": quat})["rot"])
+    assert out.shape == (8,)
+    np.testing.assert_allclose(out[:6], base[:6][::-1], atol=1e-6)
+    np.testing.assert_allclose(out[6:], 0.0, atol=1e-6)
+
+
+def test_custom_obs_encoding_rejects_a_width_changing_dim():
+    env = _rot_obs_env()
+    spec = adapt.ModelSpec(
+        input={"rot": adapt.State(adapt.EEF_ROT, dim=3, encoding=ROT6D_REV)},
+        output=_gripper_action(),
+    )
+    with pytest.raises(adapt.AdapterResolutionError, match="keeps its base width"):
         resolve(env, spec)
 
 
 @pytest.mark.parametrize(
     "kwargs, match",
     [
-        ({"pad_to": 8}, "pad_to/reshape"),
-        ({"reshape": (1, 6)}, "pad_to/reshape"),
+        ({"reshape": (1, 6)}, "reshape"),
         ({"container": "list"}, "container='array'"),
     ],
 )
@@ -2295,10 +2469,44 @@ def test_platform_resolve_rejects_optional_custom_encoding():
         )
 
 
-def test_platform_resolve_rejects_custom_encoding_in_a_multipart_concat():
-    # A custom encoding must be the sole part of its input slot: in a multi-part
-    # concat its offset is env-dependent, so the host-side repack cannot be
-    # placed. The platform door rejects it up front.
+def test_platform_resolve_reports_the_widths_of_a_multipart_concat():
+    # A custom encoding may sit anywhere in a multi-part concat: the platform
+    # resolves it and reports the resolved part widths, which is what a host
+    # binding addresses the repack's slice by.
+    import json
+
+    from rlmesh._rlmesh import adapters_resolve
+
+    env = _rot_obs_env()
+    model_spec_json = json.dumps(
+        {
+            "input": {
+                "proprio": {
+                    "type": "state",
+                    "components": [
+                        {"role": adapt.EEF_ROT, "dim": 6, "encoding": "rot6d"},
+                        {
+                            "role": adapt.EEF_ROT,
+                            "encoding": {"base": "rot6d", "from_base": "m:f"},
+                        },
+                    ],
+                }
+            },
+            "output": {"components": [{"role": adapt.ACTION_GRIPPER, "dim": 1}]},
+        }
+    )
+    plan = adapters_resolve(
+        json.dumps(env.tags.to_dict()),
+        env.obs_space,
+        env.action_space,
+        model_spec_json,
+    )
+    assert plan.state_layouts() == [(["proprio"], [6, 6], 12)]
+
+
+def test_platform_resolve_rejects_a_width_changing_custom_dim():
+    # dim restates the base width or is omitted; anything else would resize a
+    # repack that is defined to preserve it.
     import json
 
     from rlmesh._rlmesh import adapters_resolve
@@ -2312,16 +2520,16 @@ def test_platform_resolve_rejects_custom_encoding_in_a_multipart_concat():
                     "components": [
                         {
                             "role": adapt.EEF_ROT,
+                            "dim": 3,
                             "encoding": {"base": "rot6d", "from_base": "m:f"},
-                        },
-                        {"role": adapt.EEF_POS, "dim": 3},
+                        }
                     ],
                 }
             },
             "output": {"components": [{"role": adapt.ACTION_GRIPPER, "dim": 1}]},
         }
     )
-    with pytest.raises(ValueError, match="sole part"):
+    with pytest.raises(ValueError, match="keeps its base width"):
         adapters_resolve(
             json.dumps(env.tags.to_dict()),
             env.obs_space,
