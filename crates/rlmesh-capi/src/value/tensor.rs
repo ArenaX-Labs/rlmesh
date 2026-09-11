@@ -10,6 +10,7 @@
 use std::ffi::c_void;
 
 use super::dtype::RlmeshDType;
+use crate::abi::status::guard_value;
 
 /// Host CPU device (`kDLCPU`).
 pub const RLMESH_DEVICE_CPU: i32 = 1;
@@ -18,10 +19,14 @@ pub const RLMESH_TENSOR_FLAG_READ_ONLY: u64 = 1;
 
 /// A DLPack-shaped tensor view. `strides` is in element counts (NULL = row-major
 /// contiguous), matching DLPack. `data` points at element 0 (offset folded in).
+///
+/// `data` is `const`: a borrowed view aliases Rust-owned memory behind a shared
+/// reference, so writing through it would be UB. A producer (`rlmesh_value_box`)
+/// only reads it, so the same `const` pointer serves both directions.
 #[repr(C)]
 pub struct RlmeshTensor {
-    /// Element 0 (aligned, but do not assume 256-byte alignment).
-    pub data: *mut c_void,
+    /// Element 0, read-only (aligned, but do not assume 256-byte alignment).
+    pub data: *const c_void,
     pub ndim: i32,
     /// Dimension sizes, length `ndim`.
     pub shape: *const i64,
@@ -44,10 +49,12 @@ pub struct RlmeshTensor {
 /// `tensor` must be a valid pointer to an `RlmeshTensor` this thread owns.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_tensor_release(tensor: *mut RlmeshTensor) {
-    if tensor.is_null() {
-        return;
-    }
-    if let Some(deleter) = unsafe { (*tensor).deleter } {
-        unsafe { deleter(tensor) };
-    }
+    guard_value((), || {
+        if tensor.is_null() {
+            return;
+        }
+        if let Some(deleter) = unsafe { (*tensor).deleter } {
+            unsafe { deleter(tensor) };
+        }
+    });
 }

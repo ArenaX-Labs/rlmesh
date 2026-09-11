@@ -18,8 +18,10 @@ pub struct RlmeshValue(pub(crate) SpaceValue);
 
 /// Value kind, with discriminants pinned to the core `SpaceType`.
 #[repr(i32)]
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RlmeshValueKind {
+    /// No kind: a NULL handle, or a space whose kind is unspecified.
+    Invalid = 0,
     Box = 1,
     Discrete = 2,
     MultiBinary = 3,
@@ -35,10 +37,10 @@ fn value_ref<'a>(value: *const RlmeshValue) -> Result<&'a SpaceValue, CapiError>
         .ok_or_else(|| CapiError::invalid_arg("null value"))
 }
 
-/// The kind of `value`. `value` must be non-NULL.
+/// The kind of `value`, or `Invalid` when `value` is NULL.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_value_kind(value: *const RlmeshValue) -> RlmeshValueKind {
-    guard_value(RlmeshValueKind::Tuple, || {
+    guard_value(RlmeshValueKind::Invalid, || {
         match unsafe { value.cast::<SpaceValue>().as_ref() } {
             Some(SpaceValue::Box(_)) => RlmeshValueKind::Box,
             Some(SpaceValue::Discrete(_)) => RlmeshValueKind::Discrete,
@@ -46,9 +48,8 @@ pub unsafe extern "C" fn rlmesh_value_kind(value: *const RlmeshValue) -> RlmeshV
             Some(SpaceValue::MultiDiscrete(_)) => RlmeshValueKind::MultiDiscrete,
             Some(SpaceValue::Text(_)) => RlmeshValueKind::Text,
             Some(SpaceValue::Dict(_)) => RlmeshValueKind::Dict,
-            // A null pointer cannot signal an error through this return type; the
-            // contract requires `value` to be non-NULL. Fall through to Tuple.
-            Some(SpaceValue::Tuple(_)) | None => RlmeshValueKind::Tuple,
+            Some(SpaceValue::Tuple(_)) => RlmeshValueKind::Tuple,
+            None => RlmeshValueKind::Invalid,
         }
     })
 }
@@ -69,7 +70,9 @@ pub unsafe extern "C" fn rlmesh_value_as_tensor(
         let dtype = RlmeshDType::from_core(tensor.dtype())
             .ok_or_else(|| CapiError::invalid_value("unsupported dtype"))?;
         let storage = tensor.storage().as_slice();
-        let data = unsafe { storage.as_ptr().add(tensor.byte_offset()) } as *mut c_void;
+        // SAFETY: `byte_offset()` is within the tensor's own storage slice, so the
+        // offset pointer stays inside that allocation.
+        let data = unsafe { storage.as_ptr().add(tensor.byte_offset()) } as *const c_void;
         *out = RlmeshTensor {
             data,
             ndim: tensor.shape().len() as i32,
@@ -181,7 +184,8 @@ pub unsafe extern "C" fn rlmesh_value_text(data: *const c_char, len: usize) -> *
     })
 }
 
-/// Borrow a `Text` value's UTF-8 bytes (valid while `value` lives).
+/// Borrow a `Text` value's UTF-8 bytes: `*out_len` bytes, NOT NUL-terminated,
+/// valid while `value` lives.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_value_as_text(
     value: *const RlmeshValue,
@@ -216,13 +220,25 @@ pub unsafe extern "C" fn rlmesh_value_multi_discrete(
     })
 }
 
-/// The element count of a `MultiBinary`/`MultiDiscrete` value, else 0.
+/// Write the element count of a `MultiBinary`/`MultiDiscrete` value to `out`.
+/// Any other kind is `RLMESH_ERR_INVALID_VALUE` (0 is a legal length, so the
+/// count travels with a status rather than as a sentinel).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_value_array_len(value: *const RlmeshValue) -> usize {
-    guard_value(0, || match unsafe { value.cast::<SpaceValue>().as_ref() } {
-        Some(SpaceValue::MultiBinary(v)) => v.len(),
-        Some(SpaceValue::MultiDiscrete(v)) => v.len(),
-        _ => 0,
+pub unsafe extern "C" fn rlmesh_value_array_len(
+    value: *const RlmeshValue,
+    out: *mut usize,
+) -> RlmeshStatus {
+    guard(|| {
+        let len = match value_ref(value)? {
+            SpaceValue::MultiBinary(bits) => bits.len(),
+            SpaceValue::MultiDiscrete(values) => values.len(),
+            _ => {
+                return Err(CapiError::invalid_value(
+                    "value is not MultiBinary or MultiDiscrete",
+                ));
+            }
+        };
+        write_out(out, len)
     })
 }
 
@@ -272,13 +288,20 @@ pub unsafe extern "C" fn rlmesh_value_copy_multi_binary(
     })
 }
 
-/// The child count of a `Dict`/`Tuple` value, else 0.
+/// Write the child count of a `Dict`/`Tuple` value to `out`. Any other kind is
+/// `RLMESH_ERR_INVALID_VALUE`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_value_len(value: *const RlmeshValue) -> usize {
-    guard_value(0, || match unsafe { value.cast::<SpaceValue>().as_ref() } {
-        Some(SpaceValue::Tuple(items)) => items.len(),
-        Some(SpaceValue::Dict(map)) => map.len(),
-        _ => 0,
+pub unsafe extern "C" fn rlmesh_value_len(
+    value: *const RlmeshValue,
+    out: *mut usize,
+) -> RlmeshStatus {
+    guard(|| {
+        let len = match value_ref(value)? {
+            SpaceValue::Tuple(items) => items.len(),
+            SpaceValue::Dict(map) => map.len(),
+            _ => return Err(CapiError::invalid_value("value is not a Dict or Tuple")),
+        };
+        write_out(out, len)
     })
 }
 
@@ -320,7 +343,32 @@ pub unsafe extern "C" fn rlmesh_value_dict_get(
     })
 }
 
+/// Borrow a `Dict`'s `index`-th key in sorted order: `*out_len` UTF-8 bytes, NOT
+/// NUL-terminated, valid while `value` lives. Pair with `rlmesh_value_len` to
+/// iterate a dict (its keys are otherwise undiscoverable from C).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_value_dict_key(
+    value: *const RlmeshValue,
+    index: usize,
+    out_ptr: *mut *const c_char,
+    out_len: *mut usize,
+) -> RlmeshStatus {
+    guard(|| {
+        let SpaceValue::Dict(map) = value_ref(value)? else {
+            return Err(CapiError::invalid_value("value is not a Dict"));
+        };
+        let key = map
+            .keys()
+            .nth(index)
+            .ok_or_else(|| CapiError::invalid_arg("dict key index out of range"))?;
+        write_out(out_ptr, key.as_ptr().cast::<c_char>())?;
+        write_out(out_len, key.len())
+    })
+}
+
 /// Construct a `Tuple` value, taking ownership of (and freeing) each child.
+/// On failure (NULL return) NO child is adopted: every one is still the
+/// caller's to free.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_value_tuple(
     children: *const *mut RlmeshValue,
@@ -333,7 +381,9 @@ pub unsafe extern "C" fn rlmesh_value_tuple(
 }
 
 /// Construct a `Dict` value from parallel `keys`/`values`, taking ownership of
-/// each child value.
+/// each child value. Keys must be unique; a duplicate is
+/// `RLMESH_ERR_INVALID_ARGUMENT`. On failure (NULL return) NO child is adopted:
+/// every one is still the caller's to free.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_value_dict(
     keys: *const *const c_char,
@@ -363,6 +413,11 @@ pub unsafe extern "C" fn rlmesh_value_dict(
                     .map_err(|_| CapiError::invalid_value("dict key must be UTF-8"))
             })
             .collect::<Result<_, _>>()?;
+        // Reject duplicates rather than silently last-wins, still before adopting
+        // any child (a rejected call takes ownership of nothing).
+        if keys.iter().collect::<std::collections::BTreeSet<_>>().len() != keys.len() {
+            return Err(CapiError::invalid_arg("duplicate dict key"));
+        }
         let children = take_children(values, n)?;
         let map: std::collections::BTreeMap<String, SpaceValue> =
             keys.into_iter().zip(children).collect();
@@ -377,9 +432,11 @@ pub unsafe extern "C" fn rlmesh_value_dict(
 /// `value` must be NULL or a pointer this thread owns and has not freed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_value_free(value: *mut RlmeshValue) {
-    if !value.is_null() {
-        drop(unsafe { Box::from_raw(value) });
-    }
+    guard_value((), || {
+        if !value.is_null() {
+            drop(unsafe { Box::from_raw(value) });
+        }
+    });
 }
 
 pub(crate) fn into_handle(value: SpaceValue) -> *mut RlmeshValue {
@@ -396,6 +453,15 @@ fn read_slice<'a>(data: *const i64, n: usize) -> Result<&'a [i64], CapiError> {
     }
 }
 
+/// Write `value` through a C out-pointer, rejecting NULL.
+pub(crate) fn write_out<T>(out: *mut T, value: T) -> Result<(), CapiError> {
+    // SAFETY: `as_mut` rejects NULL; a non-NULL out-pointer being writable for
+    // `T` is the caller's ABI contract.
+    let slot = unsafe { out.as_mut() }.ok_or_else(|| CapiError::invalid_arg("null out"))?;
+    *slot = value;
+    Ok(())
+}
+
 fn copy_out<T, U>(
     src: &[T],
     out: *mut U,
@@ -404,6 +470,10 @@ fn copy_out<T, U>(
 ) -> Result<(), CapiError> {
     if src.len() > cap {
         return Err(CapiError::invalid_arg("output buffer too small"));
+    }
+    // Nothing to write: a NULL out is fine, matching rlmesh_space_copy_shape.
+    if src.is_empty() {
+        return Ok(());
     }
     if out.is_null() {
         return Err(CapiError::invalid_arg("null out"));

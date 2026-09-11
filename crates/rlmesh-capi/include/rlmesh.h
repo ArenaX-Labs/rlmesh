@@ -8,6 +8,21 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* Symbol visibility. A consumer needs nothing on ELF/Mach-O; on Windows it gets
+ * __declspec(dllimport) unless it defines RLMESH_STATIC (static link). The
+ * library's own build defines RLMESH_BUILD_DLL. */
+#if defined(_WIN32) && !defined(RLMESH_STATIC)
+#ifdef RLMESH_BUILD_DLL
+#define RLMESH_API __declspec(dllexport)
+#else
+#define RLMESH_API __declspec(dllimport)
+#endif
+#elif defined(__GNUC__)
+#define RLMESH_API __attribute__((visibility("default")))
+#else
+#define RLMESH_API
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -18,7 +33,7 @@ extern "C" {
  * an ABI break. Appending a struct_size-guarded vtable field is NOT a break. */
 #define RLMESH_ABI_VERSION 1
 
-uint32_t rlmesh_abi_version(void);
+RLMESH_API uint32_t rlmesh_abi_version(void);
 
 /* Nonzero when the linked library's ABI generation matches the one this header
  * was compiled against. SONAME-linked consumers are already gated by the loader
@@ -31,9 +46,9 @@ static inline int rlmesh_abi_check(void) { return RLMESH_ABI_VERSION == rlmesh_a
 #define RLMESH_ABI_VERSION_MINOR 1
 #define RLMESH_ABI_VERSION_PATCH 0
 
-uint32_t rlmesh_abi_version_major(void);
-uint32_t rlmesh_abi_version_minor(void);
-uint32_t rlmesh_abi_version_patch(void);
+RLMESH_API uint32_t rlmesh_abi_version_major(void);
+RLMESH_API uint32_t rlmesh_abi_version_minor(void);
+RLMESH_API uint32_t rlmesh_abi_version_patch(void);
 
 /* ---- status + errors ---------------------------------------------------- */
 
@@ -51,8 +66,8 @@ typedef enum RlmeshStatus {
 
 /* Most recent failing call's message on THIS thread (valid until the next
  * RLMesh call on this thread; NULL if none). Read only after a nonzero status. */
-const char* rlmesh_last_error_message(void);
-int rlmesh_last_error_is_recoverable(void);
+RLMESH_API const char* rlmesh_last_error_message(void);
+RLMESH_API int rlmesh_last_error_is_recoverable(void);
 
 /* ---- dtype + tensor ----------------------------------------------------- */
 
@@ -82,13 +97,17 @@ typedef struct RlmeshDType {
 #define RLMESH_TENSOR_FLAG_READ_ONLY ((uint64_t)1)
 
 /* Element byte size, or 0 if unsupported (or lanes != 1). */
-size_t rlmesh_dtype_size(RlmeshDType dtype);
+RLMESH_API size_t rlmesh_dtype_size(RlmeshDType dtype);
 
 /* A DLPack-shaped tensor view. `strides` is in element counts (NULL = row-major
  * contiguous); `data` points at element 0. A tensor returned by value is a
- * borrowed view (`deleter == NULL`) valid only while its source value lives. */
+ * borrowed view (`deleter == NULL`) valid only while its source value lives.
+ *
+ * `data` is const: a borrowed view aliases library-owned memory, so writing
+ * through it is undefined. A tensor you fill in for rlmesh_value_box is only
+ * read, so the same const pointer serves both directions. */
 typedef struct RlmeshTensor {
-  void* data;
+  const void* data;
   int32_t ndim;
   const int64_t* shape;
   const int64_t* strides;
@@ -102,13 +121,14 @@ typedef struct RlmeshTensor {
 
 /* Release a tensor's backing resource (`manager_ctx` only; never frees `self`).
  * A no-op for a borrowed view. */
-void rlmesh_tensor_release(RlmeshTensor* tensor);
+RLMESH_API void rlmesh_tensor_release(RlmeshTensor* tensor);
 
 /* ---- values (a SpaceValue projection) ----------------------------------- */
 
 typedef struct RlmeshValue RlmeshValue;
 
 typedef enum RlmeshValueKind {
+  RLMESH_VALUE_INVALID = 0, /* NULL handle, or a space of unspecified kind */
   RLMESH_VALUE_BOX = 1,
   RLMESH_VALUE_DISCRETE = 2,
   RLMESH_VALUE_MULTI_BINARY = 3,
@@ -118,54 +138,113 @@ typedef enum RlmeshValueKind {
   RLMESH_VALUE_TUPLE = 11
 } RlmeshValueKind;
 
-RlmeshValueKind rlmesh_value_kind(const RlmeshValue* value);
+/* Accessor convention across the value and space surfaces: a fallible read
+ * returns RlmeshStatus and writes through an out-param (detail in
+ * rlmesh_last_error_message()); a kind accessor returns RLMESH_VALUE_INVALID;
+ * a borrow accessor returns a pointer, NULL when there is no such child. A
+ * length is never a sentinel — 0 is a legal length — so it travels by status. */
+
+/* RLMESH_VALUE_INVALID when `value` is NULL. */
+RLMESH_API RlmeshValueKind rlmesh_value_kind(const RlmeshValue* value);
 
 /* Box: borrowed tensor view (valid while `value` lives) / copy-construct. */
-RlmeshStatus rlmesh_value_as_tensor(const RlmeshValue* value, RlmeshTensor* out);
-RlmeshValue* rlmesh_value_box(const RlmeshTensor* tensor); /* contiguous only */
+RLMESH_API RlmeshStatus rlmesh_value_as_tensor(const RlmeshValue* value, RlmeshTensor* out);
+RLMESH_API RlmeshValue* rlmesh_value_box(const RlmeshTensor* tensor); /* contiguous only */
 
 /* Discrete. */
-RlmeshValue* rlmesh_value_discrete(int64_t value);
-RlmeshStatus rlmesh_value_as_discrete(const RlmeshValue* value, int64_t* out);
+RLMESH_API RlmeshValue* rlmesh_value_discrete(int64_t value);
+RLMESH_API RlmeshStatus rlmesh_value_as_discrete(const RlmeshValue* value, int64_t* out);
 
-/* Text: `len` UTF-8 bytes (not NUL-terminated). */
-RlmeshValue* rlmesh_value_text(const char* data, size_t len);
-RlmeshStatus rlmesh_value_as_text(const RlmeshValue* value, const char** out_ptr, size_t* out_len);
+/* Text: `len` UTF-8 bytes (not NUL-terminated), in either direction. The
+ * accessor borrows `*out_len` bytes that are NOT NUL-terminated and stay valid
+ * only while `value` lives. */
+RLMESH_API RlmeshValue* rlmesh_value_text(const char* data, size_t len);
+RLMESH_API RlmeshStatus rlmesh_value_as_text(const RlmeshValue* value, const char** out_ptr,
+                                             size_t* out_len);
 
-/* MultiBinary / MultiDiscrete: constructed from / copied into a caller buffer. */
-RlmeshValue* rlmesh_value_multi_discrete(const int64_t* data, size_t n);
-RlmeshValue* rlmesh_value_multi_binary(const uint8_t* data, size_t n);
-size_t rlmesh_value_array_len(const RlmeshValue* value);
-RlmeshStatus rlmesh_value_copy_multi_discrete(const RlmeshValue* value, int64_t* out, size_t cap);
-RlmeshStatus rlmesh_value_copy_multi_binary(const RlmeshValue* value, uint8_t* out, size_t cap);
+/* MultiBinary / MultiDiscrete: constructed from / copied into a caller buffer.
+ * A copy into a NULL `out` is OK when the value is empty, an error otherwise. */
+RLMESH_API RlmeshValue* rlmesh_value_multi_discrete(const int64_t* data, size_t n);
+RLMESH_API RlmeshValue* rlmesh_value_multi_binary(const uint8_t* data, size_t n);
+/* Element count into `*out`; RLMESH_ERR_INVALID_VALUE for any other kind. */
+RLMESH_API RlmeshStatus rlmesh_value_array_len(const RlmeshValue* value, size_t* out);
+RLMESH_API RlmeshStatus rlmesh_value_copy_multi_discrete(const RlmeshValue* value, int64_t* out,
+                                                         size_t cap);
+RLMESH_API RlmeshStatus rlmesh_value_copy_multi_binary(const RlmeshValue* value, uint8_t* out,
+                                                       size_t cap);
 
-/* Dict / Tuple: borrowed children (valid while `value` lives); the
- * constructors take ownership of (and free) each child value. */
-size_t rlmesh_value_len(const RlmeshValue* value);
-const RlmeshValue* rlmesh_value_tuple_get(const RlmeshValue* value, size_t index);
-const RlmeshValue* rlmesh_value_dict_get(const RlmeshValue* value, const char* key);
-RlmeshValue* rlmesh_value_tuple(RlmeshValue* const* children, size_t n);
-RlmeshValue* rlmesh_value_dict(const char* const* keys, RlmeshValue* const* values, size_t n);
+/* Dict / Tuple: borrowed children (valid while `value` lives). */
+
+/* Child count into `*out`; RLMESH_ERR_INVALID_VALUE for any other kind. */
+RLMESH_API RlmeshStatus rlmesh_value_len(const RlmeshValue* value, size_t* out);
+/* NULL when `value` is not that kind, or the index/key is absent. */
+RLMESH_API const RlmeshValue* rlmesh_value_tuple_get(const RlmeshValue* value, size_t index);
+RLMESH_API const RlmeshValue* rlmesh_value_dict_get(const RlmeshValue* value, const char* key);
+/* The `index`-th dict key in sorted order: `*out_len` UTF-8 bytes, NOT
+ * NUL-terminated, valid while `value` lives. Pair with rlmesh_value_len to
+ * iterate a dict (its keys are otherwise undiscoverable from C). */
+RLMESH_API RlmeshStatus rlmesh_value_dict_key(const RlmeshValue* value, size_t index,
+                                              const char** out_ptr, size_t* out_len);
+
+/* The composite constructors take ownership of (and free) each child value on
+ * success. On failure (NULL return) they take ownership of NOTHING: every child
+ * is still the caller's to free. rlmesh_value_dict additionally requires unique
+ * keys — a duplicate is RLMESH_ERR_INVALID_ARGUMENT, not a silent last-wins. */
+RLMESH_API RlmeshValue* rlmesh_value_tuple(RlmeshValue* const* children, size_t n);
+RLMESH_API RlmeshValue* rlmesh_value_dict(const char* const* keys, RlmeshValue* const* values,
+                                          size_t n);
 
 /* Free an owned value (from a constructor). Not for a borrowed child (*_get), a
  * predict observation row, or a tensor view. */
-void rlmesh_value_free(RlmeshValue* value);
+RLMESH_API void rlmesh_value_free(RlmeshValue* value);
 
 /* ---- spaces + contract (read-only; builders are env-side, not yet here) -- */
 
 typedef struct RlmeshSpaceSpec RlmeshSpaceSpec;
 typedef struct RlmeshContract RlmeshContract;
 
-const RlmeshSpaceSpec* rlmesh_contract_observation_space(const RlmeshContract* contract);
-const RlmeshSpaceSpec* rlmesh_contract_action_space(const RlmeshContract* contract);
-uint32_t rlmesh_contract_num_envs(const RlmeshContract* contract);
+RLMESH_API const RlmeshSpaceSpec* rlmesh_contract_observation_space(const RlmeshContract* contract);
+RLMESH_API const RlmeshSpaceSpec* rlmesh_contract_action_space(const RlmeshContract* contract);
+RLMESH_API uint32_t rlmesh_contract_num_envs(const RlmeshContract* contract);
 
-/* Space introspection (so a model can size an action to the action space).
- * `rlmesh_space_type` returns a RlmeshValueKind discriminant (0 if unknown). */
-int32_t rlmesh_space_type(const RlmeshSpaceSpec* spec);
-RlmeshDType rlmesh_space_dtype(const RlmeshSpaceSpec* spec);
-size_t rlmesh_space_ndim(const RlmeshSpaceSpec* spec);
-RlmeshStatus rlmesh_space_copy_shape(const RlmeshSpaceSpec* spec, int64_t* out, size_t cap);
+/* Space introspection — enough to build a valid zero (or random) action for any
+ * space: shape + dtype + bounds for Box, n/start for Discrete, the length limits
+ * for Text, the per-element category counts for MultiDiscrete, and a child walk
+ * for Dict/Tuple. RLMESH_VALUE_INVALID when `spec` is NULL or unspecified. */
+RLMESH_API RlmeshValueKind rlmesh_space_type(const RlmeshSpaceSpec* spec);
+RLMESH_API RlmeshDType rlmesh_space_dtype(const RlmeshSpaceSpec* spec);
+/* Rank; 0 for a scalar shape or a NULL spec. */
+RLMESH_API size_t rlmesh_space_ndim(const RlmeshSpaceSpec* spec);
+/* Shape into `out` (capacity `cap`); a NULL `out` is OK for a rank-0 space. */
+RLMESH_API RlmeshStatus rlmesh_space_copy_shape(const RlmeshSpaceSpec* spec, int64_t* out,
+                                                size_t cap);
+
+/* Composite walk: child count into `*out`, then children by index (Tuple) or by
+ * key (Dict). The borrow accessors return NULL for the wrong kind or an absent
+ * index/key; children stay valid while `spec` lives. */
+RLMESH_API RlmeshStatus rlmesh_space_len(const RlmeshSpaceSpec* spec, size_t* out);
+RLMESH_API const RlmeshSpaceSpec* rlmesh_space_tuple_get(const RlmeshSpaceSpec* spec, size_t index);
+RLMESH_API const RlmeshSpaceSpec* rlmesh_space_dict_get(const RlmeshSpaceSpec* spec,
+                                                        const char* key);
+/* The `index`-th dict key (declaration order, parallel to the children):
+ * `*out_len` UTF-8 bytes, NOT NUL-terminated, valid while `spec` lives. */
+RLMESH_API RlmeshStatus rlmesh_space_dict_key(const RlmeshSpaceSpec* spec, size_t index,
+                                              const char** out_ptr, size_t* out_len);
+
+/* Leaf parameters. `rlmesh_space_box_bounds` reports the `index`-th element's
+ * inclusive bounds in row-major order (a uniform bound broadcasts; an undeclared
+ * one reads as -inf/+inf); `index` must be below the element count.
+ * A Discrete space's valid values are `start ..= start + n - 1`. For the paired
+ * out-params, either may be NULL to skip it. */
+RLMESH_API RlmeshStatus rlmesh_space_box_bounds(const RlmeshSpaceSpec* spec, size_t index,
+                                                double* out_low, double* out_high);
+RLMESH_API RlmeshStatus rlmesh_space_discrete_n(const RlmeshSpaceSpec* spec, int64_t* out_n,
+                                                int64_t* out_start);
+RLMESH_API RlmeshStatus rlmesh_space_text_length(const RlmeshSpaceSpec* spec, int64_t* out_min,
+                                                 int64_t* out_max);
+/* One category count per element of the shape, row-major (capacity `cap`). */
+RLMESH_API RlmeshStatus rlmesh_space_copy_nvec(const RlmeshSpaceSpec* spec, int64_t* out,
+                                               size_t cap);
 
 /* ---- bytes -------------------------------------------------------------- */
 
@@ -177,7 +256,7 @@ typedef struct RlmeshBytes {
   size_t cap;
 } RlmeshBytes;
 
-void rlmesh_bytes_free(RlmeshBytes bytes);
+RLMESH_API void rlmesh_bytes_free(RlmeshBytes bytes);
 
 /* ---- adapters (experimental) -------------------------------------------- */
 
@@ -189,21 +268,23 @@ void rlmesh_bytes_free(RlmeshBytes bytes);
  * rlmesh_adapter_plan_free. Per-step apply is not yet exposed. */
 typedef struct RlmeshAdapterPlan RlmeshAdapterPlan;
 
-RlmeshStatus rlmesh_adapter_resolve(const char* env_tags_json,
-                                    const RlmeshSpaceSpec* observation_space,
-                                    const RlmeshSpaceSpec* action_space,
-                                    const char* model_spec_json, bool trust_entrypoints,
-                                    RlmeshAdapterPlan** out_plan);
-void rlmesh_adapter_plan_free(RlmeshAdapterPlan* plan);
+RLMESH_API RlmeshStatus rlmesh_adapter_resolve(const char* env_tags_json,
+                                               const RlmeshSpaceSpec* observation_space,
+                                               const RlmeshSpaceSpec* action_space,
+                                               const char* model_spec_json, bool trust_entrypoints,
+                                               RlmeshAdapterPlan** out_plan);
+RLMESH_API void rlmesh_adapter_plan_free(RlmeshAdapterPlan* plan);
 /* Human-readable summary (UTF-8) into out; free with rlmesh_bytes_free. */
-RlmeshStatus rlmesh_adapter_plan_describe(const RlmeshAdapterPlan* plan, RlmeshBytes* out);
+RLMESH_API RlmeshStatus rlmesh_adapter_plan_describe(const RlmeshAdapterPlan* plan,
+                                                     RlmeshBytes* out);
 /* Top-level observation keys the plan reads, as a JSON array of strings into
  * out; free with rlmesh_bytes_free. */
-RlmeshStatus rlmesh_adapter_plan_referenced_obs_keys(const RlmeshAdapterPlan* plan,
-                                                     RlmeshBytes* out);
+RLMESH_API RlmeshStatus rlmesh_adapter_plan_referenced_obs_keys(const RlmeshAdapterPlan* plan,
+                                                                RlmeshBytes* out);
 /* The env's EnvTags as JSON into out (ready for rlmesh_adapter_resolve); free
  * with rlmesh_bytes_free. Empty buffer (RLMESH_OK) when the env is untagged. */
-RlmeshStatus rlmesh_contract_adapter_tags_json(const RlmeshContract* contract, RlmeshBytes* out);
+RLMESH_API RlmeshStatus rlmesh_contract_adapter_tags_json(const RlmeshContract* contract,
+                                                          RlmeshBytes* out);
 
 /* ---- model -------------------------------------------------------------- */
 
@@ -228,7 +309,7 @@ typedef struct RlmeshObservation {
 } RlmeshObservation;
 
 /* Set this call's error message + recoverability before returning nonzero. */
-void rlmesh_callback_set_error(const char* message, bool recoverable);
+RLMESH_API void rlmesh_callback_set_error(const char* message, bool recoverable);
 
 /* The model callback vtable. Set struct_size = sizeof(RlmeshModelVtable); fields
  * beyond that are ignored (append-only). `predict` is required. Callbacks run on
@@ -250,7 +331,8 @@ typedef struct RlmeshModelVtable {
 
 typedef struct RlmeshModel RlmeshModel;
 
-RlmeshStatus rlmesh_model_new(const RlmeshModelVtable* vtable, void* user_data, RlmeshModel** out);
+RLMESH_API RlmeshStatus rlmesh_model_new(const RlmeshModelVtable* vtable, void* user_data,
+                                         RlmeshModel** out);
 
 /* Run options for rlmesh_model_run_local. NULL == defaults (run until the env
  * ends, unseeded). */
@@ -262,8 +344,8 @@ typedef struct RlmeshRunOptions {
 
 /* Drive the model against the env at `env_address` (tcp://host:port,
  * host:port, or unix:///path). Blocking — returns when the run ends. */
-RlmeshStatus rlmesh_model_run_local(RlmeshModel* model, const char* env_address,
-                                    const RlmeshRunOptions* options);
+RLMESH_API RlmeshStatus rlmesh_model_run_local(RlmeshModel* model, const char* env_address,
+                                               const RlmeshRunOptions* options);
 
 /* Serve options for rlmesh_model_serve. Pass NULL for all defaults (no auth, no
  * remote shutdown, no timeouts — serves until the process is killed). A 0 timeout
@@ -281,10 +363,10 @@ typedef struct RlmeshServeOptions {
  * or unix:///path). Blocking — returns when the server stops (a remote shutdown
  * request or an idle timeout). The same vtable backs every predict, exactly as
  * rlmesh_model_run_local. `options` may be NULL for defaults. */
-RlmeshStatus rlmesh_model_serve(RlmeshModel* model, const char* bind_address,
-                                const RlmeshServeOptions* options);
+RLMESH_API RlmeshStatus rlmesh_model_serve(RlmeshModel* model, const char* bind_address,
+                                           const RlmeshServeOptions* options);
 
-void rlmesh_model_free(RlmeshModel* model);
+RLMESH_API void rlmesh_model_free(RlmeshModel* model);
 
 #ifdef __cplusplus
 } /* extern "C" */

@@ -168,7 +168,7 @@ class Value {
   /// Copy a contiguous buffer into a Box value.
   static Result<Value> box(const void* data, RlmeshDType dtype, std::vector<int64_t> shape) {
     RlmeshTensor tensor{};
-    tensor.data = const_cast<void*>(data);
+    tensor.data = data;
     tensor.ndim = static_cast<int32_t>(shape.size());
     tensor.shape = shape.data();
     tensor.strides = nullptr;
@@ -181,7 +181,7 @@ class Value {
 
   /// A zero-filled Box value shaped like `space` (a Box space spec).
   static Result<Value> zeros(const RlmeshSpaceSpec* space) {
-    if (space == nullptr || rlmesh_space_type(space) != 1) {
+    if (space == nullptr || rlmesh_space_type(space) != RLMESH_VALUE_BOX) {
       return Error(RLMESH_ERR_INVALID_VALUE, "zeros() needs a Box space");
     }
     RlmeshDType dtype = rlmesh_space_dtype(space);
