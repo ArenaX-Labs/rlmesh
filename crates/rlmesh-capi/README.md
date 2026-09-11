@@ -12,6 +12,7 @@ Status: alpha. The ABI (`RLMESH_ABI_VERSION`) will break before 1.0.
 - `include/rlmesh.h` — the C ABI (C11). Hand-authored; the single header authority.
 - `include/rlmesh.hpp` — RAII C++ wrapper over the C ABI (no exceptions, `Result<T>`).
 - `examples/c_model.c`, `examples/cpp_model.cpp` — a zero-action model in each language.
+- `examples/cpp_surface.cpp` — compile-only: names every wrapper type so a broken template fails CI.
 - `examples/consumer/` — a CMake project consuming the packaged library via `find_package(rlmesh)`.
 - `src/` — the Rust side: `extern "C"` projections over the core `rlmesh` crate.
 
@@ -33,15 +34,30 @@ zig c++ -std=c++17 -I crates/rlmesh-capi/include crates/rlmesh-capi/examples/cpp
 The whole model, in C++:
 
 ```cpp
+#include <cstdio>
 #include <rlmesh.hpp>
 
 int main() {
-  auto model = rlmesh::Model::from_predict([](const rlmesh::Observation& obs) {
-    return rlmesh::Value::discrete(0);           // one action per predict
+  // One action per predict: the neutral value of whatever the route's action
+  // space turns out to be (Box, Discrete, Text, Multi*, Dict, Tuple).
+  auto model = rlmesh::Model::from_predict([](const rlmesh::Request& request) {
+    return rlmesh::zeros_for(request.action_space());
   });
+  if (!model) return 1;
+  model->on_episode_end([](std::string_view, std::string_view id) { /* ... */ })
+      .on_close([] { /* ... */ });
+
   rlmesh::RunOptions options;
   options.max_episodes = 3;
-  return model.value().run_local("tcp://127.0.0.1:5555", options) ? 0 : 1;
+  options.seeded = true;
+  options.base_seed = 7;
+  auto report = model->run_local("tcp://127.0.0.1:5555", options);
+  if (!report) {
+    std::fprintf(stderr, "run failed: %s\n", report.error().message().c_str());
+    return 1;
+  }
+  std::printf("%lld episodes, mean reward %.2f\n",
+              static_cast<long long>(report->total_episodes), report->mean_reward);
 }
 ```
 
@@ -82,6 +98,30 @@ use from a thread other than the one that created it, and a callback must not
 re-enter its own model handle. `rlmesh_model_run_local` fills an optional
 `RlmeshRunReport`; `rlmesh_model_cancel` stops a blocking run/serve from another
 thread.
+
+### In C++
+
+`Model::from_predict` takes a single-env policy — `Result<Value>(const Request&)`,
+where `Request` carries `observation()` (a `std::optional<ValueRef>`, absent when
+the route sends none), `episode()`, and `action_space()` / `observation_space()`
+as `SpaceRef`. `Model::from_predict_batch` takes the whole `Batch` and returns one
+action per row. `zeros_for(SpaceRef)` builds the neutral action for *any* space,
+so a policy never has to switch on the kind to get started.
+
+`ValueRef` reads all seven value kinds and `SpaceRef` walks a space spec (bounds,
+`n`/`start`, text limits, `nvec`, dict/tuple children); `Value`'s constructors
+build all seven, honoring the C constructors' all-or-nothing ownership.
+
+Every fallible call returns `Result<T>` (`Status` is `Result<void>`): a capi call
+has already recorded its message on the thread, and `Error::from_last(status)`
+snapshots it. Nothing throws — `value()` / `unwrap()` abort instead, and the
+header compiles under `-fno-exceptions`. `RLMESH_TRY(expr)` propagates an error
+out of a `Result`-returning function.
+
+`run_local` returns a `RunReport`; `serve` takes a `ServeOptions` (owned token,
+`std::chrono` timeouts). `Model::cancel()` is the one member callable while
+`run_local` / `serve` blocks — including from another thread. Never destroy a
+`Model` from inside its own callback.
 
 ## Tasks
 
