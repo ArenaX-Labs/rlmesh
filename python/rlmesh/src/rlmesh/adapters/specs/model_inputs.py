@@ -14,7 +14,15 @@ from typing import Any, Literal, TypeAlias
 
 from ._codec import check_accept_set, one_or_many
 from .custom_encoding import CustomEncoding
-from .vocabularies import FitMode, Frame, ImageLayout, Resample, RotationEncoding
+from .vocabularies import (
+    ChannelOrder,
+    CropMode,
+    FitMode,
+    Frame,
+    ImageLayout,
+    Resample,
+    RotationEncoding,
+)
 
 ObsTransform: TypeAlias = Callable[[Mapping[str, Any]], Any]
 
@@ -87,6 +95,22 @@ class Image:
             the served path. Either way the env still sends one frame per step.
         size: Convenience for square targets -- sets both ``height`` and
             ``width``. Pass ``size`` or ``height``/``width``, not both.
+        crop: Side fraction of the frame a center crop keeps, in ``(0, 1]``
+            (``2/3`` keeps the middle two thirds of each axis). Pass ``crop``
+            or ``crop_area``, not both.
+        crop_area: The same center crop stated as an *area* fraction, in
+            ``(0, 1]`` -- the form training pipelines usually quote ("a 90%
+            center crop"). The side fraction is its square root
+            (``0.9`` -> ``0.949``).
+        crop_mode: How the crop box is taken. ``"zoom"`` (the default)
+            resamples the fractional box straight to the target -- PIL's
+            ``Image.resize(size, box=...)``, one pass, no intermediate
+            rounding. ``"slice"`` cuts an integer center box out first and
+            resizes that, which is what a ``numpy`` slice in a training
+            pipeline does.
+        channel_order: Channel order the model was trained on. ``"bgr"`` swaps
+            red and blue after the spatial ops and before the dtype cast, and
+            needs a 3-channel image.
     """
 
     role: str
@@ -104,6 +128,12 @@ class Image:
     optional: bool = False
     fill: int | None = None
     stack: int = 1
+    # Keyword-only and appended after `stack`: the positional prefix through
+    # `stack` is frozen, so specs written against it keep constructing.
+    crop: float | None = field(default=None, kw_only=True)
+    crop_area: float | None = field(default=None, kw_only=True)
+    crop_mode: CropMode = field(default="zoom", kw_only=True)
+    channel_order: ChannelOrder = field(default="rgb", kw_only=True)
     size: InitVar[int | None] = None
 
     def __post_init__(self, size: int | None) -> None:
@@ -117,6 +147,25 @@ class Image:
                 )
             object.__setattr__(self, "height", size)
             object.__setattr__(self, "width", size)
+        # crop and crop_area are one box said two ways; declaring both leaves
+        # no honest precedence rule, so it is a construction error rather than
+        # a silent winner. The bound matches the Rust codec's wire guard.
+        if self.crop is not None and self.crop_area is not None:
+            raise ValueError(
+                f"Image {self.role!r}: pass crop (a side fraction) or crop_area "
+                "(an area fraction), not both"
+            )
+        for name in ("crop", "crop_area"):
+            fraction = getattr(self, name)
+            if fraction is None:
+                continue
+            fraction = float(fraction)
+            if not 0.0 < fraction <= 1.0:
+                raise ValueError(
+                    f"Image {self.role!r}: {name} must be a fraction in (0, 1], "
+                    f"got {fraction}"
+                )
+            object.__setattr__(self, name, fraction)
         if self.fill is not None and not self.optional:
             raise ValueError(
                 f"Image {self.role!r}: fill only applies to an optional camera; "

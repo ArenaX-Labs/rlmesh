@@ -1719,9 +1719,25 @@
             "kind": "attribute",
             "signature": "allow_upscale: bool"
           },
+          "channel_order": {
+            "kind": "attribute",
+            "signature": "channel_order: ChannelOrder"
+          },
           "channels": {
             "kind": "attribute",
             "signature": "channels: int | None"
+          },
+          "crop": {
+            "kind": "attribute",
+            "signature": "crop: float | None"
+          },
+          "crop_area": {
+            "kind": "attribute",
+            "signature": "crop_area: float | None"
+          },
+          "crop_mode": {
+            "kind": "attribute",
+            "signature": "crop_mode: CropMode"
           },
           "dtype": {
             "kind": "attribute",
@@ -1776,7 +1792,7 @@
             "signature": "width: int | None"
           }
         },
-        "signature": "Image(role: str, height: int | None = None, width: int | None = None, layout: ImageLayout = 'hwc', channels: int | None = None, dtype: str = 'uint8', normalize: bool | tuple[float, float] = False, lead_dims: int = 0, upside_down: bool = False, resample: Resample = 'bilinear', allow_upscale: bool = False, fit: FitMode | Sequence[FitMode] | None = None, optional: bool = False, fill: int | None = None, stack: int = 1, size: InitVar[int | None] = None)",
+        "signature": "Image(role: str, height: int | None = None, width: int | None = None, layout: ImageLayout = 'hwc', channels: int | None = None, dtype: str = 'uint8', normalize: bool | tuple[float, float] = False, lead_dims: int = 0, upside_down: bool = False, resample: Resample = 'bilinear', allow_upscale: bool = False, fit: FitMode | Sequence[FitMode] | None = None, optional: bool = False, fill: int | None = None, stack: int = 1, size: InitVar[int | None] = None, *, crop: float | None = None, crop_area: float | None = None, crop_mode: CropMode = 'zoom', channel_order: ChannelOrder = 'rgb')",
         "stability": "Stable"
       },
       "ImageLayout": {

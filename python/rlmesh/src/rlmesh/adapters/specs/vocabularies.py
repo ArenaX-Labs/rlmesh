@@ -1,16 +1,24 @@
 """Image, resample and rotation-encoding vocabularies (typing views over native sets).
 
-``IMAGE_LAYOUTS``, ``RESAMPLES`` and ``ROTATION_DIMS`` are each defined once, in
-the ``rlmesh-adapters`` crate (``ImageLayout::ALL`` in ``v1/spec/layouts.rs``,
-``RESAMPLES`` in ``v1/apply/image.rs``, and ``RotationEncoding::dims`` in
+``IMAGE_LAYOUTS``, ``RESAMPLES``, ``CROP_MODES``, ``CHANNEL_ORDERS`` and
+``ROTATION_DIMS`` are each defined once, in the ``rlmesh-adapters`` crate
+(``ImageLayout::ALL`` in ``v1/spec/layouts.rs``, ``RESAMPLES`` in
+``v1/apply/image.rs``, ``CROP_MODES``/``CHANNEL_ORDERS`` in
+``v1/spec/model/image.rs``, and ``RotationEncoding::dims`` in
 ``v1/spec/rotations.rs``); this module re-exports them through the native
-bindings. ``ImageLayout``/``Resample``/``RotationEncoding`` are the Python-side
-typing views of the same value sets.
+bindings. ``ImageLayout``/``Resample``/``CropMode``/``ChannelOrder``/
+``RotationEncoding`` are the Python-side typing views of the same value sets.
 """
 
 from typing import Literal, TypeAlias
 
-from ..._rlmesh import IMAGE_LAYOUTS, RESAMPLES, ROTATION_DIMS
+from ..._rlmesh import (
+    CHANNEL_ORDERS,
+    CROP_MODES,
+    IMAGE_LAYOUTS,
+    RESAMPLES,
+    ROTATION_DIMS,
+)
 
 ImageLayout: TypeAlias = Literal["hwc", "chw"]
 RotationEncoding: TypeAlias = Literal[
@@ -35,11 +43,21 @@ Resample: TypeAlias = Literal[
 # `Reference` qualifies a delta -- the pose the controller integrates it against.
 Frame: TypeAlias = Literal["world", "robot_base"]
 Reference: TypeAlias = Literal["current", "target"]
+# How a crop box is taken: ``"zoom"`` resamples the fractional box straight to
+# the target (PIL's ``Image.resize(size, box=...)``), ``"slice"`` cuts an
+# integer center box out first and resizes that.
+CropMode: TypeAlias = Literal["zoom", "slice"]
+# ``"bgr"`` swaps red and blue after the spatial ops (a 3-channel image only).
+ChannelOrder: TypeAlias = Literal["rgb", "bgr"]
 
 __all__ = [
+    "CHANNEL_ORDERS",
+    "CROP_MODES",
     "IMAGE_LAYOUTS",
     "RESAMPLES",
     "ROTATION_DIMS",
+    "ChannelOrder",
+    "CropMode",
     "FitMode",
     "Frame",
     "ImageLayout",

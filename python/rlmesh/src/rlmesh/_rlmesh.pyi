@@ -24,6 +24,8 @@ __all__ = [
     "ACTION_JOINT_VEL",
     "AdapterPlan",
     "Advisory",
+    "CHANNEL_ORDERS",
+    "CROP_MODES",
     "DESCRIBE_METADATA_KEY",
     "DESCRIBE_SCHEMA_VERSION",
     "EEF_POS",
@@ -95,6 +97,8 @@ ACTION_GRIPPER_2: builtins.str
 ACTION_JOINT_POS: builtins.str
 ACTION_JOINT_POS_2: builtins.str
 ACTION_JOINT_VEL: builtins.str
+CHANNEL_ORDERS: builtins.list[builtins.str]
+CROP_MODES: builtins.list[builtins.str]
 DESCRIBE_METADATA_KEY: builtins.str
 DESCRIBE_SCHEMA_VERSION: builtins.int
 EEF_POS: builtins.str

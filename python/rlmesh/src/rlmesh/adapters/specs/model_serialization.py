@@ -135,6 +135,14 @@ def _image_to_dict(item: Image) -> dict[str, Any]:
         image["optional"] = True
     if item.fill is not None:
         image["fill"] = item.fill
+    if item.crop is not None:
+        image["crop"] = item.crop
+    if item.crop_area is not None:
+        image["crop_area"] = item.crop_area
+    if item.crop_mode != "zoom":
+        image["crop_mode"] = item.crop_mode
+    if item.channel_order != "rgb":
+        image["channel_order"] = item.channel_order
     return image
 
 
@@ -324,6 +332,10 @@ def model_leaf_from_dict(data: Mapping[str, Any]) -> ModelLeaf:
             allow_upscale=bool(data.get("allow_upscale", False)),
             fit=one_or_many(data.get("fit")),
             stack=int(data.get("stack", 1)),
+            crop=data.get("crop"),
+            crop_area=data.get("crop_area"),
+            crop_mode=data.get("crop_mode", "zoom"),
+            channel_order=data.get("channel_order", "rgb"),
         )
     if kind == "state":
         reshape = data.get("reshape")
