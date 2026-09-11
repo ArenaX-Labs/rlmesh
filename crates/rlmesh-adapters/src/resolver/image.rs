@@ -511,7 +511,12 @@ fn resolve_fit(
             ),
         ));
     }
-    Ok(mode)
+    // With a known, matching aspect every mode is the same uniform scale, so
+    // the plan records the plain scale: crop drops no pixels and pad adds no
+    // borders, and the describe advisory for either would report a step that
+    // never happens. An unknown camera size keeps the declared mode, since the
+    // aspect (and so the step) is decided per frame.
+    Ok(if known { FitMode::Stretch } else { mode })
 }
 
 #[cfg(test)]
@@ -595,6 +600,27 @@ mod image_resolve_tests {
     fn downscale_needs_no_opt_in() {
         let env = env_image(256, 256);
         assert!(plan(&model_image(128, 128, false), &images(&env)).is_ok());
+    }
+
+    #[test]
+    fn a_matching_aspect_records_a_plain_scale_whatever_fit_says() {
+        // Crop, pad, and stretch are the same uniform scale when the aspect
+        // already matches, so the plan says so and no letterbox/crop advisory
+        // can fire for a step that never happens.
+        let env = env_image(256, 256);
+        let mut model = model_image(256, 256, false);
+        model.fit = Some(AcceptSet::single(FitMode::Pad));
+        assert_eq!(
+            plan(&model, &images(&env)).expect("ok").fit,
+            FitMode::Stretch
+        );
+        // An unknown camera size keeps the declared mode: the aspect is only
+        // known per frame, so the step (and its advisory) still apply.
+        let unknown = env_image(0, 0);
+        assert_eq!(
+            plan(&model, &images(&unknown)).expect("ok").fit,
+            FitMode::Pad
+        );
     }
 
     #[test]
