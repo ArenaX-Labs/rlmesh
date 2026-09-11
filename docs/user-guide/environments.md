@@ -19,7 +19,7 @@ The dividing line is reuse. `EnvServer` serves one object once. `EnvFactory` is 
 
 ## The minimal factory
 
-Subclass {class}`~rlmesh.EnvFactory`, set `tags`, and implement `make()`.
+Subclass {class}`~rlmesh.EnvFactory`, set `tags`, and implement `make()`. One subclass per obs/action contract -- or, when a construction parameter switches the contract, one subclass with `tag_params` and `tags_for()` (see {doc}`environments/reference`).
 
 ```python
 import rlmesh
@@ -53,7 +53,7 @@ class Libero(rlmesh.EnvFactory):
 
 `tags` are the obs/action contract a spec'd model resolves against. The role is the first argument on every tag; everything else is the few facts the gymnasium spaces cannot carry. See {doc}`adapters` for what `EnvTags` declares and {doc}`adapters/reference` for the full registry. The wrapper that gives a raw benchmark its Gymnasium shape is in {doc}`environments/reference`.
 
-The env `make()` returns is auto-stamped with the factory's `tags` (into `env.metadata`), so the tags ride the environment. A locally-made env resolves the same adapter as a served one: `Libero().make()` driven through {func}`rlmesh.session` and the served endpoint behave identically. Setting `tags = None` (the default) means a generic, un-adapted env.
+The env `make()` returns is auto-stamped with the factory's `tags` (into `env.metadata`), so the tags ride the environment. A locally-made env resolves the same adapter as a served one: `Libero().make()` driven through {func}`rlmesh.session` and the served endpoint behave identically. Setting `tags = None` (the default) means a generic, un-adapted env. A factory that declares `tag_params` stamps the branch its call selected instead, along with the binding that selected it.
 
 ```{note}
 The stamp is validated against the env's spaces lazily, at adapter-resolution time (serve or
