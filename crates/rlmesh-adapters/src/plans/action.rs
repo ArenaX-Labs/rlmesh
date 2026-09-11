@@ -1,6 +1,6 @@
 //! Resolved instructions for the action vector.
 
-use crate::spec::RotationEncoding;
+use crate::spec::{FrameRef, RotationEncoding};
 
 /// Resolved mapping for one env action component.
 #[derive(Debug, Clone, PartialEq)]
@@ -28,6 +28,11 @@ pub struct ActionSegment {
     /// Env-side per-actuator clamp bounds (the actuator's `range`), applied last.
     /// `None` means no per-component clamp (the global `ActionPlan.clip` still runs).
     pub clip: Option<(f64, f64)>,
+    /// The agreed coordinate frame of an absolute pose command, and the agreed
+    /// reference pose a delta is integrated against, when either side declared
+    /// one. Rendered by `describe`; a disagreement is already a resolve error.
+    pub frame: Option<FrameRef>,
+    pub reference: Option<FrameRef>,
     /// An opaque segment: `Some((width, value))` emits `width` copies of `value`
     /// and reads nothing from the model (the env requires these dims but no model
     /// produces them). `None` for a normal model-mapped segment.

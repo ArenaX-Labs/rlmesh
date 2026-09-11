@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 use crate::advisory::Advisory;
 use crate::fmt::{number, quoted, quoted_range};
 use crate::plans::{ActionSegment, ImagePlan, ObsPlan, ResolvedAdapter, StatePlan, TextPlan};
-use crate::spec::{FitMode, ImageLayout};
+use crate::spec::{Attr, FitMode, FrameRef, ImageLayout};
 
 /// Summarize how one model input is derived from the observation.
 fn describe_obs_plan(plan: &ObsPlan) -> String {
@@ -97,6 +97,15 @@ pub(crate) fn describe_adapter(adapter: &ResolvedAdapter) -> String {
     lines.join("\n")
 }
 
+/// Append a geometry qualifier: `@robot_base` for a frame, `~target` for a
+/// delta's reference. Renders only when a side declared one, so every
+/// pre-geometry summary is byte-identical.
+fn write_geometry(note: &mut String, attr: Attr, value: Option<&FrameRef>) {
+    if let Some(value) = value {
+        let _ = write!(note, "{}{value}", attr.sigil());
+    }
+}
+
 /// Summarize how one env action component is derived from the model output.
 fn describe_segment(segment: &ActionSegment) -> String {
     if let Some((width, value)) = segment.fill {
@@ -147,6 +156,8 @@ fn describe_segment(segment: &ActionSegment) -> String {
     if segment.binarize {
         note.push_str(" (sign)");
     }
+    write_geometry(&mut note, Attr::Frame, segment.frame.as_ref());
+    write_geometry(&mut note, Attr::Reference, segment.reference.as_ref());
     note
 }
 
@@ -252,6 +263,7 @@ fn describe_state(plan: &StatePlan) -> String {
             }
             let _ = write!(note, " ({})", affine.join(" "));
         }
+        write_geometry(&mut note, Attr::Frame, piece.frame.as_ref());
         parts.push(note);
     }
     let suffix = match plan.pad_to {

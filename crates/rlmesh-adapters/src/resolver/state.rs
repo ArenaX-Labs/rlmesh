@@ -2,12 +2,13 @@
 
 use std::collections::BTreeMap;
 
-use super::{Result, err};
+use super::{Result, check_geometry, err};
+use crate::advisory::Advisory;
 use crate::error::ErrorCode;
 use crate::fmt::{quoted, quoted_accept_set, quoted_encoding, quoted_keys};
 use crate::path::NodePath;
 use crate::plans::{StatePiece, StatePlan};
-use crate::spec::{AcceptSet, ConcatPart, EnvState, RotationEncoding, State};
+use crate::spec::{AcceptSet, Attr, ConcatPart, EnvState, RotationEncoding, State};
 
 /// Width of an optional component's fill when the env lacks it.
 fn fill_width(component: &ConcatPart, role: &str, at: &str) -> Result<u32> {
@@ -57,6 +58,7 @@ fn fill_piece(width: u32, fill: f64, absent_role: bool) -> StatePiece {
         offset: None,
         fill: Some(fill),
         absent_role,
+        frame: None,
         width: Some(width),
     }
 }
@@ -129,6 +131,7 @@ pub(super) fn plan_state(
     placement: NodePath,
     states_by_role: &BTreeMap<String, &EnvState>,
     unknown_roles: &BTreeMap<String, String>,
+    advisories: &mut Vec<Advisory>,
 ) -> Result<StatePlan> {
     let at = quoted(&placement.to_string());
     let mut pieces: Vec<StatePiece> = Vec::with_capacity(model_input.components.len());
@@ -220,6 +223,13 @@ pub(super) fn plan_state(
         };
         let (src_encoding, dst_encoding) =
             select_state_encoding(role, env_state.encoding.as_ref(), model_set.as_ref())?;
+        let frame = check_geometry(
+            Attr::Frame,
+            role,
+            env_state.frame.as_ref(),
+            component.frame.as_ref(),
+            advisories,
+        )?;
         // When converting, the env feature's declared width must match the
         // native (source) encoding the raw value is in.
         if let (Some(src), Some(dst)) = (src_encoding, dst_encoding)
@@ -308,6 +318,7 @@ pub(super) fn plan_state(
             offset: component.offset,
             fill: None,
             absent_role: false,
+            frame,
             width,
         });
     }

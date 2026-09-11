@@ -27,6 +27,30 @@ fn is_float_dtype(dtype: DType) -> bool {
     matches!(dtype, DType::Float16 | DType::Float32 | DType::Float64)
 }
 
+/// Assert every hand-curated `advisories_contain` substring still matches one of
+/// the resolve's advisories, as `"<severity>: <message>"`.
+///
+/// Hand-authored and never machine-written (the `error_contains` idiom): a
+/// vector states only the advisory it is *about*, so adding a case cannot
+/// silently re-pin every other note a resolve happens to raise.
+fn assert_advisories(name: &str, adapter: &rlmesh_adapters::v1::ResolvedAdapter, expect: &Json) {
+    let Some(expected) = expect["advisories_contain"].as_array() else {
+        return;
+    };
+    let actual: Vec<String> = adapter
+        .advisories()
+        .iter()
+        .map(|advisory| format!("{}: {}", advisory.severity.as_str(), advisory.message))
+        .collect();
+    for wanted in expected {
+        let wanted = wanted.as_str().expect("advisory substring");
+        assert!(
+            actual.iter().any(|line| line.contains(wanted)),
+            "{name}: no advisory contains {wanted:?}; got {actual:?}"
+        );
+    }
+}
+
 fn cases_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("conformance/v1/cases")
 }
@@ -277,7 +301,16 @@ fn updated_case(name: &str, case: &Json) -> Json {
                 out["model_spec"] = serde_json::to_value(&model_spec).expect("serializes");
             }
             out["expect"] = match resolve(&tags, &obs_space, &action_space, &model_spec, false) {
-                Ok(adapter) => json!({"ok": true, "describe": adapter.describe()}),
+                Ok(adapter) => {
+                    let mut expect = json!({"ok": true, "describe": adapter.describe()});
+                    // Curated, so carried through verbatim rather than rewritten
+                    // -- and checked here so update mode cannot bless a stale one.
+                    if let Some(curated) = case["expect"].get("advisories_contain") {
+                        assert_advisories(name, &adapter, &case["expect"]);
+                        expect["advisories_contain"] = curated.clone();
+                    }
+                    expect
+                }
                 Err(error) => {
                     // Keep a hand-curated substring when it still matches;
                     // otherwise pin the full current message.
@@ -347,6 +380,7 @@ fn verify_case(name: &str, case: &Json) {
                         .as_str()
                         .unwrap_or_else(|| panic!("{name}: expected an error"));
                     assert_eq!(adapter.describe(), expected, "{name}: describe");
+                    assert_advisories(name, &adapter, expect);
                 }
                 Err(error) => {
                     let expected = expect["error_contains"]

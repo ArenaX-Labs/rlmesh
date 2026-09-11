@@ -1,7 +1,7 @@
 //! Resolved instructions for one model state input.
 
 use crate::path::NodePath;
-use crate::spec::{RotationEncoding, RotationLiteral, StateContainer};
+use crate::spec::{FrameRef, RotationEncoding, RotationLiteral, StateContainer};
 
 /// One source slice feeding a resolved state input.
 ///
@@ -40,6 +40,10 @@ pub struct StatePiece {
     /// Whether a set `fill` stands in for an *absent* optional role (fabricated
     /// data the fit report confesses) rather than a declared constant part.
     pub absent_role: bool,
+    /// The agreed coordinate frame this piece's values are in, when either side
+    /// declared one (`None` when both were silent). Rendered by `describe`; the
+    /// disagreement it would represent is already a resolve error.
+    pub frame: Option<FrameRef>,
     /// Resolved output width of this piece, when statically known (`None` when
     /// the env feature declares no width and nothing else fixes it). A
     /// host-side custom encoding addresses its own slice of a multi-part state

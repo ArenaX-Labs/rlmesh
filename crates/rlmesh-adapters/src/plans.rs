@@ -71,13 +71,13 @@ pub struct ResolvedAdapter {
     /// ignored it). Surfaced through [`advisories`](Self::advisories) alongside
     /// the per-apply data-loss notes. Empty on a fully-understood spec.
     resolve_advisories: Vec<Advisory>,
-    /// Hints the env's own declaration raised at join (e.g. an image layout that
-    /// looks mis-declared given its shape). Carried from [`EnvFeatures`] so the
-    /// serve side surfaces the same note the author saw. Surfaced through
-    /// [`advisories`](Self::advisories) but kept out of [`describe`](Self::describe):
-    /// these are not *dropped* env modalities, so they must not land under that
-    /// header (which conformance vectors pin).
-    join_advisories: Vec<Advisory>,
+    /// Advisories surfaced through [`advisories`](Self::advisories) but kept out
+    /// of [`describe`](Self::describe): the hints the env's own declaration raised
+    /// at join (e.g. an image layout that looks mis-declared given its shape),
+    /// and the geometry cautions from resolve (a model-declared `frame` or
+    /// `reference` the env does not confirm). None of these is a *dropped* env
+    /// modality, so none may land under that header (which vectors pin).
+    quiet_advisories: Vec<Advisory>,
 }
 
 impl ResolvedAdapter {
@@ -90,7 +90,7 @@ impl ResolvedAdapter {
         obs_plans: Vec<ObsPlan>,
         action_plan: ActionPlan,
         resolve_advisories: Vec<Advisory>,
-        join_advisories: Vec<Advisory>,
+        quiet_advisories: Vec<Advisory>,
     ) -> Self {
         let stacked = obs_plans
             .iter()
@@ -108,7 +108,7 @@ impl ResolvedAdapter {
             action_plan,
             stacked,
             resolve_advisories,
-            join_advisories,
+            quiet_advisories,
         }
     }
 
@@ -141,7 +141,7 @@ impl ResolvedAdapter {
         // env-declaration hints raised at join, then the per-apply data-loss
         // notes derived from the plans.
         let mut all = self.resolve_advisories.clone();
-        all.extend(self.join_advisories.iter().cloned());
+        all.extend(self.quiet_advisories.iter().cloned());
         all.extend(describe::adapter_advisories(self));
         all
     }

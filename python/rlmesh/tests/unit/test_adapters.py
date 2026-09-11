@@ -118,6 +118,10 @@ LIBERO_ACTION = adapt.Action(
     clip=(-1.0, 1.0),
 )
 
+# The model-side mirror of LIBERO_ACTION: `clip` is an env-side clamp, so a
+# model output layout must leave it unset.
+LIBERO_MODEL_ACTION = adapt.Action(*LIBERO_ACTION.components)
+
 LIBERO_ENV = Env(
     tags=adapt.EnvTags(
         observation={
@@ -3614,3 +3618,154 @@ def test_constant_part_shifts_a_later_custom_encoding_slice():
     np.testing.assert_allclose(
         state[5:], np.asarray(obs["robot0_eef_quat"])[[3, 0, 1, 2]], atol=1e-6
     )
+
+
+def test_frame_and_reference_are_keyword_only_and_omitted_when_unset() -> None:
+    # Appended last and keyword-only, so every existing positional call site
+    # keeps its meaning, and a spec that declares neither is byte-identical on
+    # the wire to one written before the attributes existed.
+    positional = adapt.Actuator(adapt.ACTION_GRIPPER, 1, None, None, True)
+    assert positional.binary is True
+    assert positional.frame is None and positional.reference is None
+    assert adapt.StateTag(adapt.EEF_POS, "quat_xyzw").frame is None
+    assert adapt.Field(adapt.EEF_POS, 3).frame is None
+    assert adapt.State(adapt.EEF_POS, "quat_xyzw", 3).frame is None
+
+    bare = adapt.EnvTags(
+        observation={"p": adapt.StateTag(adapt.EEF_POS)},
+        action=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1)),
+    ).to_dict()
+    assert "frame" not in bare["observation"]["p"]
+    assert "reference" not in bare["action"]["components"][0]
+
+    # Declared, they round-trip by value through the Rust codec.
+    tags = adapt.EnvTags(
+        observation={"p": adapt.StateTag(adapt.EEF_POS, frame="robot_base")},
+        action=adapt.Action(
+            adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3, reference="current")
+        ),
+    )
+    assert adapt.EnvTags.from_dict(tags.to_dict()) == tags
+    spec = adapt.ModelSpec(
+        input={"s": adapt.State(adapt.EEF_POS, dim=3, frame="world")},
+        output=adapt.Action(
+            adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3, reference="target")
+        ),
+    )
+    assert adapt.ModelSpec.from_dict(spec.to_dict()) == spec
+
+
+def test_a_role_less_leaf_may_not_carry_a_frame() -> None:
+    # A skip advances the offset and a constant emits a fixed block; neither has
+    # a pose to express in a frame.
+    with pytest.raises(ValueError, match="role-less"):
+        adapt.Actuator(dim=2, frame="world")
+    with pytest.raises(ValueError, match="role-less"):
+        adapt.Actuator(dim=2, reference="current")
+    with pytest.raises(ValueError, match="role-less field"):
+        adapt.EnvTags.from_dict(
+            {
+                "observation": {
+                    "s": {
+                        "type": "split",
+                        "fields": [{"dim": 1, "frame": "world"}],
+                    }
+                },
+                "action": {"components": [{"role": adapt.ACTION_GRIPPER, "dim": 1}]},
+            }
+        )
+
+
+def test_frame_and_reference_disagreement_is_a_hard_resolve_error() -> None:
+    # The xvla/widowx class of bug: an absolute base-frame head bound to a
+    # delta controller. Both halves now have a name and fail loudly.
+    env = LIBERO_ENV._replace(
+        tags=adapt.EnvTags(
+            observation={
+                **LIBERO_ENV.tags.observation,
+                "robot0_eef_pos": adapt.StateTag(adapt.EEF_POS, frame="world"),
+            },
+            action=LIBERO_ACTION,
+        )
+    )
+    spec = adapt.ModelSpec(
+        input={"state": adapt.State(adapt.EEF_POS, frame="robot_base")},
+        output=LIBERO_MODEL_ACTION,
+    )
+    with pytest.raises(
+        adapt.AdapterResolutionError,
+        match='the model expects frame "robot_base" but the env declares "world"',
+    ):
+        resolve(env, spec)
+
+    delta_target = adapt.ModelSpec(
+        input={"state": adapt.Concat(adapt.EEF_POS)},
+        output=adapt.Action(
+            adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3, reference="target"),
+            adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
+            adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
+        ),
+    )
+    env_current = LIBERO_ENV._replace(
+        tags=adapt.EnvTags(
+            observation=LIBERO_ENV.tags.observation,
+            action=adapt.Action(
+                adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3, reference="current"),
+                adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
+                adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
+                clip=(-1.0, 1.0),
+            ),
+        )
+    )
+    with pytest.raises(
+        adapt.AdapterResolutionError,
+        match='the model expects reference "target" but the env declares "current"',
+    ):
+        resolve(env_current, delta_target)
+
+
+def test_a_model_only_frame_is_a_caution_and_shows_in_the_summary() -> None:
+    # C14 case 6: the model states a requirement the env cannot confirm. The
+    # run proceeds; the pairing carries a caution and the summary the frame.
+    spec = adapt.ModelSpec(
+        input={"state": adapt.State(adapt.EEF_POS, frame="robot_base")},
+        output=LIBERO_MODEL_ACTION,
+    )
+    adapter = resolve(LIBERO_ENV, spec)
+    cautions = [
+        note
+        for note in adapter.advisories()
+        if note.severity == "caution" and "frame" in note.message
+    ]
+    assert len(cautions) == 1
+    assert "cannot be verified" in cautions[0].message
+    assert "@robot_base" in adapter.explain()
+    # Not a drop: the caution must stay out of the `dropped:` section.
+    assert "dropped:" not in adapter.explain()
+
+
+def test_require_frames_is_an_opt_in_publish_gate() -> None:
+    import json
+
+    from rlmesh._rlmesh import adapters_spec_normalize
+
+    bare = json.dumps(
+        adapt.EnvTags(
+            observation={"p": adapt.StateTag(adapt.EEF_POS)},
+            action=adapt.Action(adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3)),
+        ).to_dict()
+    )
+    # Default tier: an absent frame is legal v1.
+    adapters_spec_normalize("env", bare, True)
+    with pytest.raises(ValueError, match="without a frame"):
+        adapters_spec_normalize("env", bare, True, "passthrough", True)
+
+    declared = json.dumps(
+        adapt.EnvTags(
+            observation={"p": adapt.StateTag(adapt.EEF_POS, frame="robot_base")},
+            action=adapt.Action(
+                adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3, reference="current")
+            ),
+        ).to_dict()
+    )
+    adapters_spec_normalize("env", declared, True, "passthrough", True)

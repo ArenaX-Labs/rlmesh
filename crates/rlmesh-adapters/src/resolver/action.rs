@@ -2,11 +2,12 @@
 
 use std::collections::BTreeMap;
 
-use super::{Result, err};
+use super::{Result, check_geometry, err};
+use crate::advisory::Advisory;
 use crate::error::ErrorCode;
 use crate::fmt::{quoted, quoted_encoding, quoted_keys};
 use crate::plans::{ActionPlan, ActionSegment};
-use crate::spec::{Action, Actuator};
+use crate::spec::{Action, Actuator, Attr};
 
 /// Enforce a registered role's `Fixed` dim law on a model actuator (the env side
 /// is checked at `join`). An ad-hoc/`Variable`/`ByEncoding` role is left alone.
@@ -109,7 +110,11 @@ fn check_action_dims(model: &Actuator, env: &Actuator, role: &str) -> Result<()>
     Ok(())
 }
 
-pub(super) fn plan_action(model: &Action, env: &Action) -> Result<ActionPlan> {
+pub(super) fn plan_action(
+    model: &Action,
+    env: &Action,
+    advisories: &mut Vec<Advisory>,
+) -> Result<ActionPlan> {
     // `clip` is an env-side actuator clamp on the assembled action vector (read
     // as `env.clip` below); a clip declared on the *model* action layout is
     // silently dropped. Reject it, mirroring the per-component scale/invert/
@@ -168,6 +173,8 @@ pub(super) fn plan_action(model: &Action, env: &Action) -> Result<ActionPlan> {
                 threshold: None,
                 binarize: false,
                 clip: None,
+                frame: None,
+                reference: None,
                 fill: Some((env_component.dim, env_component.fill)),
             });
             continue;
@@ -205,6 +212,8 @@ pub(super) fn plan_action(model: &Action, env: &Action) -> Result<ActionPlan> {
                     threshold: None,
                     binarize: false,
                     clip: None,
+                    frame: None,
+                    reference: None,
                     fill: Some((env_component.dim, env_component.fill)),
                 });
                 continue;
@@ -258,6 +267,22 @@ pub(super) fn plan_action(model: &Action, env: &Action) -> Result<ActionPlan> {
         } else {
             None
         };
+        // An absolute pose command carries a frame; a delta carries the
+        // reference pose it is integrated against. Same rule, same errors.
+        let frame = check_geometry(
+            Attr::Frame,
+            role,
+            env_component.frame.as_ref(),
+            model_component.frame.as_ref(),
+            advisories,
+        )?;
+        let reference = check_geometry(
+            Attr::Reference,
+            role,
+            env_component.reference.as_ref(),
+            model_component.reference.as_ref(),
+            advisories,
+        )?;
         let same_range = model_component.range == env_component.range;
         segments.push(ActionSegment {
             role: Some(role.clone()),
@@ -293,6 +318,8 @@ pub(super) fn plan_action(model: &Action, env: &Action) -> Result<ActionPlan> {
             threshold: env_component.threshold,
             binarize,
             clip,
+            frame,
+            reference,
             fill: None,
         });
     }
@@ -322,9 +349,9 @@ mod tests {
             clip: false,
             fill: 0.0,
             optional: false,
+            unknown: Default::default(),
             frame: None,
             reference: None,
-            unknown: Default::default(),
         }
     }
 
@@ -341,9 +368,9 @@ mod tests {
             clip: false,
             fill,
             optional: false,
+            unknown: Default::default(),
             frame: None,
             reference: None,
-            unknown: Default::default(),
         }
     }
 
@@ -360,7 +387,7 @@ mod tests {
         let mut gripper = component("action/gripper");
         gripper.threshold = Some(0.5);
         let env = layout(vec![gripper]);
-        let error = plan_action(&model, &env).unwrap_err();
+        let error = plan_action(&model, &env, &mut Vec::new()).unwrap_err();
         assert_eq!(error.code, ErrorCode::Unsupported);
         assert!(error.message.contains("threshold requires a binary"));
     }
@@ -380,7 +407,12 @@ mod tests {
         let mut env_rot = component("custom/rot");
         env_rot.dim = 6;
         env_rot.encoding = Some(ActionEncoding::Native(RotationEncoding::Rot6d));
-        let error = plan_action(&layout(vec![model_rot]), &layout(vec![env_rot])).unwrap_err();
+        let error = plan_action(
+            &layout(vec![model_rot]),
+            &layout(vec![env_rot]),
+            &mut Vec::new(),
+        )
+        .unwrap_err();
         assert_eq!(error.code, ErrorCode::DimMismatch);
         assert!(
             error.message.contains("preserves its base width"),
@@ -396,7 +428,7 @@ mod tests {
         gripper.threshold = Some(0.5);
         gripper.binary = true;
         let env = layout(vec![gripper]);
-        assert!(plan_action(&model, &env).is_ok());
+        assert!(plan_action(&model, &env, &mut Vec::new()).is_ok());
     }
 
     #[test]
@@ -409,7 +441,7 @@ mod tests {
         model_gripper.invert = true;
         let model = layout(vec![model_gripper]);
         let env = layout(vec![component("action/gripper")]);
-        let plan = plan_action(&model, &env).unwrap();
+        let plan = plan_action(&model, &env, &mut Vec::new()).unwrap();
         assert_eq!(plan.segments[0].model_scale, Some(2.0));
         assert!(plan.segments[0].model_invert);
         // The env declared no corrections, so its side stays unset.
@@ -424,7 +456,7 @@ mod tests {
         env_x.range = Some((-1.5, 1.5));
         env_x.clip = true;
         let env = layout(vec![env_x]);
-        let plan = plan_action(&model, &env).unwrap();
+        let plan = plan_action(&model, &env, &mut Vec::new()).unwrap();
         assert_eq!(plan.segments[0].clip, Some((-1.5, 1.5)));
     }
 
@@ -434,7 +466,7 @@ mod tests {
         let mut env_x = component("action/x");
         env_x.clip = true; // no range declared
         let env = layout(vec![env_x]);
-        let error = plan_action(&model, &env).unwrap_err();
+        let error = plan_action(&model, &env, &mut Vec::new()).unwrap_err();
         assert_eq!(error.code, ErrorCode::Unsupported);
         assert!(
             error.message.contains("clamps to range"),
@@ -450,7 +482,7 @@ mod tests {
         model_x.clip = true;
         let model = layout(vec![model_x]);
         let env = layout(vec![component("action/x")]);
-        let error = plan_action(&model, &env).unwrap_err();
+        let error = plan_action(&model, &env, &mut Vec::new()).unwrap_err();
         assert_eq!(error.code, ErrorCode::Unsupported);
         assert!(
             error.message.contains("env-side clamp"),
@@ -467,7 +499,7 @@ mod tests {
         let mut model = layout(vec![component("action/gripper")]);
         model.clip = Some((-1.0, 1.0));
         let env = layout(vec![component("action/gripper")]);
-        let error = plan_action(&model, &env).unwrap_err();
+        let error = plan_action(&model, &env, &mut Vec::new()).unwrap_err();
         assert_eq!(error.code, ErrorCode::Unsupported);
         assert!(
             error.message.contains("env-side actuator clamp"),
@@ -482,7 +514,7 @@ mod tests {
         // a role-less actuator resolves to an opaque fill, not a MissingRole error.
         let model = layout(vec![component("action/gripper")]);
         let env = layout(vec![component("action/gripper"), opaque(2, 0.25)]);
-        let plan = plan_action(&model, &env).unwrap();
+        let plan = plan_action(&model, &env, &mut Vec::new()).unwrap();
         assert_eq!(plan.in_dim, 1); // the model only outputs the gripper dim
         assert_eq!(plan.segments.len(), 2);
         assert!(plan.segments[0].role.is_some());
@@ -501,7 +533,7 @@ mod tests {
         base.optional = true;
         base.fill = 0.0;
         let env = layout(vec![component("action/gripper"), base]);
-        let plan = plan_action(&model, &env).unwrap();
+        let plan = plan_action(&model, &env, &mut Vec::new()).unwrap();
         assert_eq!(plan.in_dim, 1); // the model still only outputs the gripper dim
         assert_eq!(plan.segments.len(), 2);
         assert_eq!(plan.segments[1].role.as_deref(), Some("x/base_motion"));
@@ -516,7 +548,7 @@ mod tests {
         let mut env_gripper = component("action/gripper");
         env_gripper.optional = true;
         let env = layout(vec![env_gripper]);
-        let plan = plan_action(&model, &env).unwrap();
+        let plan = plan_action(&model, &env, &mut Vec::new()).unwrap();
         assert_eq!(plan.segments.len(), 1);
         assert_eq!(plan.segments[0].fill, None);
         assert_eq!(plan.in_dim, 1);
@@ -529,7 +561,7 @@ mod tests {
             component("action/gripper"),
             component("x/base_motion"),
         ]);
-        let error = plan_action(&model, &env).unwrap_err();
+        let error = plan_action(&model, &env, &mut Vec::new()).unwrap_err();
         assert_eq!(error.code, ErrorCode::MissingRole);
         assert!(error.message.contains("env action needs role"));
     }
