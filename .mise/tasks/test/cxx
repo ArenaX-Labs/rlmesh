@@ -42,6 +42,12 @@ printf '#include <rlmesh.h>\n' |
   $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" -c -x c - -o "$tmp/header_c.o"
 printf '#include <rlmesh.hpp>\n' |
   $CXX -std=c++17 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" -c -x c++ - -o "$tmp/header_cxx.o"
+# The wrapper is header-only templates: including it instantiates almost nothing.
+# cpp_surface.cpp names every public type and member, so a template that stops
+# compiling fails here instead of in a downstream build. Compiled, never linked.
+echo "==> C++ wrapper surface instantiates"
+$CXX -std=c++17 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" \
+  -c crates/rlmesh-capi/examples/cpp_surface.cpp -o "$tmp/cpp_surface.o"
 
 # 3. Compile + link the C and C++ smokes against the cdylib (the build + link gate:
 #    a missing / renamed / wrong-signature export fails right here).
@@ -53,9 +59,9 @@ $CXX -std=c++17 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/cpp_model.cpp "${link[@]}" -o "$target/cpp_model_smoke"
 
 # 4. Run each smoke against a live env over real gRPC (the pytest analogue).
+#    Both print the same run report; assert the real numbers, not just exit 0.
 echo "==> C model end-to-end vs a live env"
-# The C smoke prints its run report; assert the real numbers, not just exit 0.
 "$target/e2e_harness" "$target/c_model_smoke" "run report: episodes=3 steps=3"
 echo "==> C++ model end-to-end vs a live env"
-"$target/e2e_harness" "$target/cpp_model_smoke"
+"$target/e2e_harness" "$target/cpp_model_smoke" "run report: episodes=3 steps=3"
 echo "==> test:cxx OK"

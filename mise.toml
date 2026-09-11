@@ -107,11 +107,11 @@ run = "uv run ruff format --check"
 
 [tasks."fmt:cxx"]
 description = "Format the C/C++ bindings (clang-format)"
-run = "clang-format -i crates/rlmesh-capi/include/*.h* crates/rlmesh-capi/examples/c_model.c crates/rlmesh-capi/examples/cpp_model.cpp"
+run = "clang-format -i crates/rlmesh-capi/include/*.h* crates/rlmesh-capi/examples/*.c crates/rlmesh-capi/examples/*.cpp"
 
 [tasks."fmt:check:cxx"]
 description = "Check the C/C++ binding formatting"
-run = "clang-format --dry-run --Werror crates/rlmesh-capi/include/*.h* crates/rlmesh-capi/examples/c_model.c crates/rlmesh-capi/examples/cpp_model.cpp"
+run = "clang-format --dry-run --Werror crates/rlmesh-capi/include/*.h* crates/rlmesh-capi/examples/*.c crates/rlmesh-capi/examples/*.cpp"
 
 [tasks."fmt:check:proto"]
 description = "Check Protobuf formatting"
