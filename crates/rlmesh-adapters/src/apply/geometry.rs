@@ -1,11 +1,11 @@
 //! Rotation encoding conversions used by resolved adapters.
 
 use crate::error::ApplyError;
-use crate::spec::RotationEncoding;
+use crate::spec::{RotationEncoding, RotationLiteral};
 
 const EPS: f64 = 1e-8;
 
-type Matrix = [[f32; 3]; 3];
+pub(crate) type Matrix = [[f32; 3]; 3];
 
 fn norm(values: &[f32]) -> f64 {
     f64::from(values.iter().map(|&x| x * x).sum::<f32>().sqrt())
@@ -107,7 +107,7 @@ fn rot6d_basis_to_matrix(a1: [f32; 3], a2: [f32; 3]) -> Matrix {
 }
 
 /// Convert a rotation vector in any supported encoding to a matrix.
-fn to_matrix(value: &[f32], encoding: RotationEncoding) -> Matrix {
+pub(crate) fn to_matrix(value: &[f32], encoding: RotationEncoding) -> Matrix {
     match encoding {
         RotationEncoding::QuatXyzw | RotationEncoding::QuatWxyz => {
             let quat = as_quat_xyzw(value, encoding);
@@ -261,12 +261,41 @@ fn matrix_to(matrix: &Matrix, encoding: RotationEncoding) -> Vec<f32> {
     }
 }
 
-/// Convert a flat rotation vector between encodings (float32 output).
-pub fn convert_rotation(
+/// `left @ right` for two 3x3 matrices.
+fn mat_mul(left: &Matrix, right: &Matrix) -> Matrix {
+    let mut out = [[0.0f32; 3]; 3];
+    for (row, entry) in out.iter_mut().enumerate() {
+        for (col, cell) in entry.iter_mut().enumerate() {
+            *cell = (0..3)
+                .map(|inner| left[row][inner] * right[inner][col])
+                .sum();
+        }
+    }
+    out
+}
+
+/// Convert a flat rotation vector between encodings, right-multiplying a fixed
+/// `post` rotation onto it first (`R_out = R_in @ R(post)`).
+///
+/// With a `post` the value always goes through the matrix: the same-encoding
+/// and quat->axis-angle shortcuts in [`convert_rotation`] would drop the factor.
+pub fn convert_rotation_with(
     value: &[f32],
     source: RotationEncoding,
     target: RotationEncoding,
+    post: Option<&RotationLiteral>,
 ) -> Result<Vec<f32>, ApplyError> {
+    let Some(post) = post else {
+        return convert_rotation(value, source, target);
+    };
+    check_width(value, source)?;
+    Ok(matrix_to(
+        &mat_mul(&to_matrix(value, source), &post.matrix()),
+        target,
+    ))
+}
+
+fn check_width(value: &[f32], source: RotationEncoding) -> Result<(), ApplyError> {
     let expected = source.dims() as usize;
     if value.len() != expected {
         return Err(ApplyError::new(format!(
@@ -275,6 +304,16 @@ pub fn convert_rotation(
             value.len()
         )));
     }
+    Ok(())
+}
+
+/// Convert a flat rotation vector between encodings (float32 output).
+pub fn convert_rotation(
+    value: &[f32],
+    source: RotationEncoding,
+    target: RotationEncoding,
+) -> Result<Vec<f32>, ApplyError> {
+    check_width(value, source)?;
     if source == target {
         return Ok(value.to_vec());
     }
@@ -393,6 +432,26 @@ mod tests {
         let back = convert_rotation(&r6d, Rot6d, AxisAngle).expect("from rot6d");
         for (expected, actual) in axis_angle.iter().zip(&back) {
             assert!((expected - actual).abs() < 1e-4, "{expected} vs {actual}");
+        }
+    }
+
+    #[test]
+    fn post_rotation_right_multiplies_and_survives_a_no_op_conversion() {
+        use RotationEncoding::{QuatXyzw, Rot6d};
+        // Rz(-90 deg) as a rot6d literal: columns [0,-1,0] and [1,0,0].
+        let post: RotationLiteral = serde_json::from_str(
+            r#"{"encoding": "rot6d", "value": [0.0, -1.0, 0.0, 1.0, 0.0, 0.0]}"#,
+        )
+        .expect("literal");
+        // Identity input, same encoding on both sides: the shortcut in
+        // `convert_rotation` would return the input untouched.
+        let identity = [0.0_f32, 0.0, 0.0, 1.0];
+        let plain = convert_rotation(&identity, QuatXyzw, QuatXyzw).expect("plain");
+        assert_eq!(plain, identity.to_vec());
+        let rotated = convert_rotation_with(&identity, QuatXyzw, Rot6d, Some(&post)).expect("post");
+        let expected = [0.0_f32, -1.0, 0.0, 1.0, 0.0, 0.0];
+        for (got, want) in rotated.iter().zip(&expected) {
+            assert!((got - want).abs() < 1e-5, "{rotated:?} vs {expected:?}");
         }
     }
 

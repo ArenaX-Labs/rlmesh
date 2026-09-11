@@ -202,36 +202,52 @@ spec = adapt.ModelSpec(
 
 {class}`~rlmesh.adapters.State`: the single-part numeric input. Every field:
 
-| Field                   | Default     | What it does                                                        | When to use                      |
-| ----------------------- | ----------- | ------------------------------------------------------------------- | -------------------------------- |
-| `role` (1st positional) | --          | match an env state feature                                          | always                           |
-| `encoding`              | `None`      | rotation encoding: single, preference sequence, or `CustomEncoding` | the part is a rotation           |
-| `dim`                   | `None`      | keep the leading N elements                                         | truncate the source              |
-| `index`                 | `None`      | select one element after conversion                                 | pick a single scalar             |
-| `optional`              | `False`     | zero-fill when the env lacks the role                               | the role may be absent           |
-| `range`                 | `None`      | `(low, high)` the model wants; affinely maps from the env range     | model and env disagree on scale  |
-| `pad_to`                | `None`      | zero-pad the result to this length                                  | fixed-width input                |
-| `dtype`                 | `"float32"` | NumPy dtype of the result                                           | non-default dtype                |
-| `reshape`               | `None`      | target shape for the result                                         | the model wants a specific shape |
-| `container`             | `"array"`   | emit a NumPy array or a plain `list`                                | the model wants a list           |
+| Field                   | Default     | What it does                                                        | When to use                                    |
+| ----------------------- | ----------- | ------------------------------------------------------------------- | ---------------------------------------------- |
+| `role` (1st positional) | --          | match an env state feature                                          | always                                         |
+| `encoding`              | `None`      | rotation encoding: single, preference sequence, or `CustomEncoding` | the part is a rotation                         |
+| `dim`                   | `None`      | keep the leading N elements                                         | truncate the source                            |
+| `index`                 | `None`      | select one element after conversion                                 | pick a single scalar                           |
+| `optional`              | `False`     | zero-fill when the env lacks the role                               | the role may be absent                         |
+| `range`                 | `None`      | `(low, high)` the model wants; affinely maps from the env range     | model and env disagree on scale                |
+| `fill`                  | `0.0`       | value contributed when `optional` and the env lacks the role        | a non-zero stand-in (needs `optional`)         |
+| `post_rotate`           | `None`      | a fixed `Rotation` right-multiplied onto the env's rotation         | the checkpoint was trained in an offset frame  |
+| `scale`                 | `None`      | multiply by this after the range map                                | the model's own units                          |
+| `offset`                | `None`      | add this after `scale` (`value * scale + offset`)                   | e.g. a `1 - 2g` gripper (`scale=-2, offset=1`) |
+| `pad_to`                | `None`      | zero-pad the result to this length                                  | fixed-width input                              |
+| `dtype`                 | `"float32"` | NumPy dtype of the result                                           | non-default dtype                              |
+| `reshape`               | `None`      | target shape for the result                                         | the model wants a specific shape               |
+| `container`             | `"array"`   | emit a NumPy array or a plain `list`                                | the model wants a list                         |
 
 `dim` and `index` are mutually exclusive (`dim` keeps the leading N, `index` selects one). When `optional` is set the fill width must be known without an env feature, so set one of `index`, `dim`, or `encoding`. `range` is a no-op when the env has no source range to map from; it does not clamp on its own.
 
-A `State` is also a valid `Concat` part: its part fields (`role`, `encoding`, `dim`, `index`, `optional`, `range`) are taken, and its container fields (`pad_to`, `dtype`, `reshape`, `container`) must stay default when used as a part.
+The steps run in a fixed order: slice the env feature, convert the rotation (with `post_rotate` right-multiplied onto it), apply `index`/`dim`, map `range`, then apply `scale`/`offset`. Padding is last of all -- the parts are concatenated in order and only then is the result zero-padded to `pad_to`, so `pad_to` never interacts with a part's own transforms. Setting both `range` and `scale`/`offset` on one part is legal (the affine applies to the range map's result) and raises an `info` advisory, since two rescalings on one value is usually a mistake.
+
+`post_rotate` takes a {class}`~rlmesh.adapters.Rotation`, built from a 3x3 matrix with `Rotation.from_matrix(rows)` (stored as `rot6d`, so the round-trip is exact). It needs a rotation `encoding` and cannot combine with a `CustomEncoding`; the matrix must already be a rotation (orthonormal, `|det - 1| <= 1e-4`).
+
+A `State` is also a valid `Concat` part: its part fields (`role`, `encoding`, `dim`, `index`, `optional`, `range`, `fill`, `post_rotate`, `scale`, `offset`) are taken, and its container fields (`pad_to`, `dtype`, `reshape`, `container`) must stay default when used as a part.
 
 ### Concat
 
-{class}`~rlmesh.adapters.Concat`: the **multi-part** state leaf, several roles packed into one tensor. `Concat(*parts, pad_to=None, dtype="float32", reshape=None, container="array")` needs at least one part. A part is a bare role string (sugar for a role-only `State`) or a `State` carrying part fields:
+{class}`~rlmesh.adapters.Concat`: the **multi-part** state leaf, several roles packed into one tensor. `Concat(*parts, pad_to=None, dtype="float32", reshape=None, container="array")` needs at least one part. A part is a bare role string (sugar for a role-only `State`), a `State` carrying part fields, or a `Constant` block:
 
 ```python
 adapt.Concat(
     adapt.EEF_POS,                              # bare role: no options needed
     adapt.State(adapt.EEF_ROT, encoding="rot6d"),  # State part: needs an encoding
+    adapt.Constant(dim=1),                      # a slot the env does not produce
     adapt.GRIPPER_POS,
 )
 ```
 
-Parts are concatenated in order. The container-level fields (`pad_to`, `dtype`, `reshape`, `container`) apply to the concatenated result and behave as in `State`. A single-role state is `State` directly; `Concat` is the >1-part case (both serialize to the same wire form).
+{class}`~rlmesh.adapters.Constant`: `dim` copies of `fill` (`0.0` by default), read from nothing. Use it for a slot the checkpoint was trained to see but the env has no feature for -- a pad channel, or a proprio entry the training pipeline held fixed. Unlike an absent `optional` part it is authored data, so it never reports as a zero-filled role. At least one part must carry a role: a state of only constants reads nothing from the env and is refused.
+
+| Field  | Default | What it does                    |
+| ------ | ------- | ------------------------------- |
+| `dim`  | `1`     | width of the constant block     |
+| `fill` | `0.0`   | the value every element carries |
+
+Parts are concatenated in order. The container-level fields (`pad_to`, `dtype`, `reshape`, `container`) apply to the concatenated result and behave as in `State` -- `pad_to` is the last step, applied once to the assembled vector. A single-role state is `State` directly; `Concat` is the >1-part case (both serialize to the same wire form).
 
 ### Text
 

@@ -1212,6 +1212,7 @@
       "Advisory",
       "Concat",
       "ConcatPart",
+      "Constant",
       "Custom",
       "CustomEncoding",
       "EnvTags",
@@ -1228,6 +1229,7 @@
       "ObsTransform",
       "ObservationRoles",
       "Resample",
+      "Rotation",
       "RotationEncoding",
       "RotationTransform",
       "Split",
@@ -1491,7 +1493,22 @@
       },
       "ConcatPart": {
         "kind": "type alias",
-        "signature": "ConcatPart = 'str | State'",
+        "signature": "ConcatPart = 'str | State | Constant'",
+        "stability": "Stable"
+      },
+      "Constant": {
+        "kind": "class",
+        "members": {
+          "dim": {
+            "kind": "attribute",
+            "signature": "dim: int"
+          },
+          "fill": {
+            "kind": "attribute",
+            "signature": "fill: float"
+          }
+        },
+        "signature": "Constant(*, dim: int = 1, fill: float = 0.0)",
         "stability": "Stable"
       },
       "Custom": {
@@ -1875,6 +1892,25 @@
         "signature": "Resample = Literal['bilinear', 'bilinear_aa']",
         "stability": "Stable"
       },
+      "Rotation": {
+        "kind": "class",
+        "members": {
+          "encoding": {
+            "kind": "attribute",
+            "signature": "encoding: RotationEncoding"
+          },
+          "from_matrix": {
+            "kind": "function",
+            "signature": "from_matrix(rows: Iterable[Iterable[float]])"
+          },
+          "value": {
+            "kind": "attribute",
+            "signature": "value: tuple[float, ...]"
+          }
+        },
+        "signature": "Rotation(*, encoding: RotationEncoding, value: tuple[float, ...])",
+        "stability": "Stable"
+      },
       "RotationEncoding": {
         "kind": "type alias",
         "signature": "RotationEncoding = Literal['quat_xyzw', 'quat_wxyz', 'axis_angle', 'rot6d', 'rot6d_rowmajor', 'euler_xyz']",
@@ -1915,9 +1951,17 @@
             "kind": "attribute",
             "signature": "encoding: RotationEncoding | Sequence[RotationEncoding] | CustomEncoding | None"
           },
+          "fill": {
+            "kind": "attribute",
+            "signature": "fill: float"
+          },
           "index": {
             "kind": "attribute",
             "signature": "index: int | None"
+          },
+          "offset": {
+            "kind": "attribute",
+            "signature": "offset: float | None"
           },
           "optional": {
             "kind": "attribute",
@@ -1926,6 +1970,10 @@
           "pad_to": {
             "kind": "attribute",
             "signature": "pad_to: int | None"
+          },
+          "post_rotate": {
+            "kind": "attribute",
+            "signature": "post_rotate: Rotation | None"
           },
           "range": {
             "kind": "attribute",
@@ -1938,9 +1986,13 @@
           "role": {
             "kind": "attribute",
             "signature": "role: str"
+          },
+          "scale": {
+            "kind": "attribute",
+            "signature": "scale: float | None"
           }
         },
-        "signature": "State(role: str, encoding: RotationEncoding | Sequence[RotationEncoding] | CustomEncoding | None = None, dim: int | None = None, index: int | None = None, optional: bool = False, range: tuple[float, float] | None = None, pad_to: int | None = None, dtype: str = 'float32', reshape: tuple[int, ...] | None = None, container: Literal['array', 'list'] = 'array')",
+        "signature": "State(role: str, encoding: RotationEncoding | Sequence[RotationEncoding] | CustomEncoding | None = None, dim: int | None = None, index: int | None = None, optional: bool = False, range: tuple[float, float] | None = None, pad_to: int | None = None, dtype: str = 'float32', reshape: tuple[int, ...] | None = None, container: Literal['array', 'list'] = 'array', *, fill: float = 0.0, post_rotate: Rotation | None = None, scale: float | None = None, offset: float | None = None)",
         "stability": "Stable"
       },
       "StateTag": {

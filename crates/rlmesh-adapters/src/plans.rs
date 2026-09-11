@@ -164,7 +164,7 @@ impl ResolvedAdapter {
                 }
                 ObsPlan::State(state) => {
                     for piece in &state.pieces {
-                        if !piece.zero_fill {
+                        if piece.fill.is_none() {
                             keys.insert(envelope_key(&piece.source));
                         }
                     }

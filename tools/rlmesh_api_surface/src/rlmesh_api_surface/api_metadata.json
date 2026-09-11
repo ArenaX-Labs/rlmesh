@@ -338,7 +338,10 @@
       "description": "Mapping from each rotation encoding to its dimension count."
     },
     "rlmesh.adapters.ConcatPart": {
-      "description": "One part of a Concat state input: a State leaf or a bare role string."
+      "description": "One part of a Concat state input: a State leaf, a Constant block, or a bare role string."
+    },
+    "rlmesh.adapters.Constant": {
+      "description": "A constant Concat part: dim copies of fill, read from nothing."
     },
     "rlmesh.adapters.FitMode": {
       "description": "How an image is fit to a declared size: 'stretch', 'letterbox', or 'crop'."
@@ -363,6 +366,9 @@
     },
     "rlmesh.adapters.ObsTransform": {
       "description": "An in-process callable mapping a raw observation to one payload slot (Custom transform)."
+    },
+    "rlmesh.adapters.Rotation": {
+      "description": "A literal rotation authored as a state part's post_rotate."
     },
     "rlmesh.adapters.RotationEncoding": {
       "description": "Rotation encoding vocabulary (quat_xyzw, quat_wxyz, axis_angle, rot6d, rot6d_rowmajor, euler_xyz)."

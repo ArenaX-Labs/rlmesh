@@ -8,7 +8,7 @@
 //! fully declarative.
 
 mod action;
-mod geometry;
+pub(crate) mod geometry;
 mod image;
 pub(crate) mod lookup;
 mod obs;
@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 use rlmesh_spaces::Tensor;
 
 pub use crate::error::ApplyError;
-pub use geometry::convert_rotation;
+pub use geometry::{convert_rotation, convert_rotation_with};
 pub use value::Value;
 
 use crate::plans::ResolvedAdapter;

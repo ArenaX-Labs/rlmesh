@@ -24,10 +24,12 @@ from ._codec import encoding_from_wire, encoding_to_wire, one_or_many, to_pair
 from .model_inputs import (
     Concat,
     ConcatPart,
+    Constant,
     Custom,
     Image,
     InputNode,
     ModelLeaf,
+    Rotation,
     State,
     Text,
 )
@@ -136,23 +138,33 @@ def _image_to_dict(item: Image) -> dict[str, Any]:
     return image
 
 
-def _part_to_dict(part: State) -> Any:
+def _part_to_dict(part: State | Constant) -> Any:
     """Return the wire form of one concat part: a bare role string or object.
 
     A ``CustomEncoding`` part serializes to its ``{base, ...}`` object when its
     arms are ``module:callable`` entrypoints; an in-process callable arm is
-    refused (see :func:`._codec.encoding_to_wire`).
+    refused (see :func:`._codec.encoding_to_wire`). A :class:`Constant` is the
+    role-less form, ``{"dim": N[, "fill": v]}``.
     """
+    if isinstance(part, Constant):
+        out: dict[str, Any] = {"dim": part.dim}
+        if part.fill != 0.0:
+            out["fill"] = part.fill
+        return out
     role_only = (
         part.encoding is None
         and part.dim is None
         and part.index is None
         and part.range is None
         and not part.optional
+        and part.fill == 0.0
+        and part.post_rotate is None
+        and part.scale is None
+        and part.offset is None
     )
     if role_only:
         return part.role
-    out: dict[str, Any] = {"role": part.role}
+    out = {"role": part.role}
     if part.encoding is not None:
         out["encoding"] = encoding_to_wire(part.encoding)
     if part.dim is not None:
@@ -163,11 +175,22 @@ def _part_to_dict(part: State) -> Any:
         out["optional"] = True
     if part.range is not None:
         out["range"] = list(part.range)
+    if part.fill != 0.0:
+        out["fill"] = part.fill
+    if part.post_rotate is not None:
+        out["post_rotate"] = {
+            "encoding": part.post_rotate.encoding,
+            "value": list(part.post_rotate.value),
+        }
+    if part.scale is not None:
+        out["scale"] = part.scale
+    if part.offset is not None:
+        out["offset"] = part.offset
     return out
 
 
-def _state_parts(item: State | Concat) -> tuple[State, ...]:
-    """The concat parts of a State (one) or Concat (several), as ``State``s.
+def _state_parts(item: State | Concat) -> tuple[State | Constant, ...]:
+    """The concat parts of a State (one) or Concat (several).
 
     A bare ``State`` leaf is its own single part; its container fields belong to
     the leaf and are emitted at the leaf level by :func:`_state_to_dict`. A
@@ -242,10 +265,13 @@ def model_input_to_dict(node: InputNode) -> Any:
 
 
 def _part_from_dict(item: object) -> ConcatPart:
-    """Build one concat part from canonical form: a bare role or a State."""
+    """Build one concat part from canonical form: a bare role, State or Constant."""
     if isinstance(item, str):
         return item
     part = cast(Mapping[str, Any], item)
+    if part.get("role") is None:
+        return Constant(dim=int(part["dim"]), fill=float(part.get("fill", 0.0)))
+    post_rotate = part.get("post_rotate")
     return State(
         role=part["role"],
         encoding=encoding_from_wire(part.get("encoding")),
@@ -253,6 +279,15 @@ def _part_from_dict(item: object) -> ConcatPart:
         index=part.get("index"),
         optional=bool(part.get("optional", False)),
         range=to_pair(part.get("range")),
+        fill=float(part.get("fill", 0.0)),
+        post_rotate=None
+        if post_rotate is None
+        else Rotation(
+            encoding=post_rotate["encoding"],
+            value=tuple(float(value) for value in post_rotate["value"]),
+        ),
+        scale=part.get("scale"),
+        offset=part.get("offset"),
     )
 
 
@@ -311,6 +346,10 @@ def model_leaf_from_dict(data: Mapping[str, Any]) -> ModelLeaf:
                 index=base.index,
                 optional=base.optional,
                 range=base.range,
+                fill=base.fill,
+                post_rotate=base.post_rotate,
+                scale=base.scale,
+                offset=base.offset,
                 pad_to=pad_to,
                 dtype=dtype,
                 reshape=reshape_t,

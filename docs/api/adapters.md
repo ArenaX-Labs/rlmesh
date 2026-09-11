@@ -117,6 +117,18 @@ For a flat numeric leaf whose fixed index ranges carry distinct meaning, tag it 
 ```
 
 ```{eval-rst}
+.. autoclass:: rlmesh.adapters.Constant
+   :class-doc-from: class
+   :exclude-members: __init__, __new__
+```
+
+```{eval-rst}
+.. autoclass:: rlmesh.adapters.Rotation
+   :class-doc-from: class
+   :exclude-members: __init__, __new__
+```
+
+```{eval-rst}
 .. autoclass:: rlmesh.adapters.Text
    :class-doc-from: class
    :exclude-members: __init__, __new__

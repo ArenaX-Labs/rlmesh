@@ -96,7 +96,7 @@ Use a `CustomEncoding` for a one-off or proprietary packing you apply where the 
 
 A rotation that comes out wrong is one of two things, and they have different answers:
 
-- **A rigid, data-independent re-orientation** — a wrist camera or gripper mounted turned, an embodiment whose tool frame is the env's rotated by a constant. That is a fixed rotation composed onto every value, so it belongs in the spec as data, not as code: `post_rotate` on the `State` (a rotation literal, right-multiplied onto the resolved rotation). It is part of the geometry contract landing after this one; until it does, a `CustomEncoding` expresses it, at the cost of host code.
+- **A rigid, data-independent re-orientation** — a wrist camera or gripper mounted turned, an embodiment whose tool frame is the env's rotated by a constant. That is a fixed rotation composed onto every value, so it belongs in the spec as data, not as code: `post_rotate` on the `State` (a {class}`~rlmesh.adapters.Rotation` literal, right-multiplied onto the resolved rotation). Build it with `Rotation.from_matrix(rows)`; see {doc}`reference`.
 - **A data-dependent repack** — the model's convention packs the same rotation differently, or a checkpoint was trained against a producer that read its quaternion in another component order. No fixed rotation describes that, so it is a `CustomEncoding`: the field still resolves as its base, and the two arms repack at the field boundary.
 
 ### Not a hatch: latching an action across steps

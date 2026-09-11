@@ -157,10 +157,13 @@ fn model_leaf_roles(leaf: &ModelLeaf, path: &NodePath, policy: RolePolicy) -> Re
     let locus = format!("model input {:?}", path.to_string());
     match leaf {
         ModelLeaf::Image(input) => reject_role(&input.role, &locus, policy),
+        // A role-less part is a declared constant, not a role claim: there is
+        // nothing for the role tier to sanction.
         ModelLeaf::State(input) => input
             .components
             .iter()
-            .try_for_each(|part| reject_role(&part.role, &locus, policy)),
+            .filter_map(|part| part.role.as_deref())
+            .try_for_each(|role| reject_role(role, &locus, policy)),
         ModelLeaf::Text(input) => reject_role(&input.role, &locus, policy),
         ModelLeaf::Custom(_) | ModelLeaf::Unknown { .. } => Ok(()),
     }

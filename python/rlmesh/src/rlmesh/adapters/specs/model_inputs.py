@@ -8,8 +8,8 @@ multi-part state leaf (a single tensor concatenated from several role parts).
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Mapping, Sequence
-from dataclasses import InitVar, dataclass
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import InitVar, dataclass, field
 from typing import Any, Literal, TypeAlias
 
 from ._codec import check_accept_set, one_or_many
@@ -142,6 +142,61 @@ class Image:
             object.__setattr__(self, "normalize", (low, high))
 
 
+@dataclass(frozen=True, kw_only=True)
+class Rotation:
+    """A literal rotation, authored as a model state part's ``post_rotate``.
+
+    ``R_out = R_in @ R(post_rotate)``: the rigid re-frame a checkpoint was
+    trained against (a tool/grip offset), right-multiplied onto the env's
+    rotation after it is decoded and before it is re-encoded into the model's
+    encoding. Build one with :meth:`from_matrix`; the value must already *be* a
+    rotation (orthonormal, ``|det - 1| <= 1e-4``) or the codec rejects it.
+
+    Attributes:
+        encoding: Rotation encoding ``value`` is written in.
+        value: The rotation's components in that encoding.
+    """
+
+    encoding: RotationEncoding
+    value: tuple[float, ...]
+
+    @classmethod
+    def from_matrix(cls, rows: Iterable[Iterable[float]]) -> Rotation:
+        """Build a ``rot6d`` literal from a 3x3 matrix given as three rows.
+
+        ``rot6d`` is the matrix's first two columns concatenated, so the
+        round-trip is exact -- no Euler recovery, no gimbal case.
+        """
+        matrix = [[float(value) for value in row] for row in rows]
+        if len(matrix) != 3 or any(len(row) != 3 for row in matrix):
+            raise ValueError(
+                f"Rotation.from_matrix needs a 3x3 matrix, got "
+                f"{len(matrix)} rows of {[len(row) for row in matrix]}"
+            )
+        return cls(
+            encoding="rot6d",
+            value=tuple(matrix[row][col] for col in (0, 1) for row in (0, 1, 2)),
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class Constant:
+    """A constant part of a :class:`Concat`: ``dim`` copies of ``fill``.
+
+    The declarative form of a slot the checkpoint was trained to see but the env
+    does not produce -- a pad channel, or a proprio slot the training pipeline
+    held at a fixed value. Unlike an absent ``optional`` part this is authored
+    data, not fabricated: it never reads as a zero-filled role.
+
+    Attributes:
+        dim: Width of the constant block.
+        fill: The value every element carries.
+    """
+
+    dim: int = 1
+    fill: float = 0.0
+
+
 @dataclass(frozen=True)
 class State:
     """A single-part numeric state input expected by a model.
@@ -172,7 +227,19 @@ class State:
             mapped from the env range to this one (symmetric to action ranges).
             With no env source range there is nothing to map from, so it is a
             no-op -- it does not clamp or rescale on its own.
-        pad_to: Zero-pad the resulting vector to this length.
+        fill: Value this part contributes when ``optional`` is set and the env
+            lacks the role (zeros by default). A non-zero ``fill`` requires
+            ``optional``, matching ``Actuator.fill``.
+        post_rotate: A fixed :class:`Rotation` right-multiplied onto the env's
+            rotation (``R_out = R_in @ R(post_rotate)``) before it is re-encoded
+            into ``encoding``. Needs a rotation ``encoding``; not combinable
+            with a ``CustomEncoding``.
+        scale: Model-side multiplier applied after the range map.
+        offset: Model-side addend applied after ``scale`` (``value * scale +
+            offset``) -- e.g. a ``1 - 2g`` gripper is ``scale=-2, offset=1``.
+        pad_to: Zero-pad the resulting vector to this length. Padding is the
+            last step: every part is converted, ranged and scaled, the parts are
+            concatenated in order, and only then is the result padded.
         dtype: NumPy dtype name of the resulting value.
         reshape: Optional target shape for the resulting value.
         container: Emit a NumPy array or a plain Python list.
@@ -186,6 +253,10 @@ class State:
     index: int | None = None
     optional: bool = False
     range: tuple[float, float] | None = None
+    fill: float = field(default=0.0, kw_only=True)
+    post_rotate: Rotation | None = field(default=None, kw_only=True)
+    scale: float | None = field(default=None, kw_only=True)
+    offset: float | None = field(default=None, kw_only=True)
     pad_to: int | None = None
     dtype: str = "float32"
     reshape: tuple[int, ...] | None = None
@@ -201,13 +272,30 @@ class State:
                 f"State {self.role!r}: set dim or index, not both "
                 "(index selects one element, dim truncates to the leading N)"
             )
+        # `fill` is what an absent part contributes; a non-optional part always
+        # has an env source, so a non-zero fill there could never fire.
+        if self.fill != 0.0 and not self.optional:
+            raise ValueError(
+                f"State {self.role!r}: fill applies only to an optional part; a "
+                "non-optional part takes its values from the env"
+            )
+        if self.post_rotate is not None:
+            if self.encoding is None:
+                raise ValueError(
+                    f"State {self.role!r}: post_rotate needs a rotation encoding"
+                )
+            if isinstance(self.encoding, CustomEncoding):
+                raise ValueError(
+                    f"State {self.role!r}: post_rotate cannot combine with a custom "
+                    "encoding; fold the rotation into the repack"
+                )
         object.__setattr__(self, "encoding", one_or_many(self.encoding))
         check_accept_set("State", self.role, self.encoding)
 
 
-# A part of a :class:`Concat`: a bare role string, or a :class:`State` whose part
-# fields are taken.
-ConcatPart: TypeAlias = "str | State"
+# A part of a :class:`Concat`: a bare role string, a :class:`State` whose part
+# fields are taken, or a :class:`Constant` block.
+ConcatPart: TypeAlias = "str | State | Constant"
 
 
 @dataclass(frozen=True, init=False)
@@ -215,16 +303,20 @@ class Concat:
     """A multi-part numeric state input: several roles packed into one tensor.
 
     The multi-part state leaf. Parts are concatenated in order; each part is a
-    bare role string (sugar for a role-only :class:`State`) or a :class:`State`
-    carrying part fields. A single-role state is :class:`State` directly; this is
-    the >1-part case. Both serialize to the same ``{"type": "state", ...}`` wire
-    form.
+    bare role string (sugar for a role-only :class:`State`), a :class:`State`
+    carrying part fields, or a :class:`Constant` block. A single-role state is
+    :class:`State` directly; this is the >1-part case. Both serialize to the same
+    ``{"type": "state", ...}`` wire form.
 
     There is no ``key`` -- placement in the input tree *is* the payload position.
 
     Attributes:
-        parts: Roles (or :class:`State` parts) concatenated in order.
-        pad_to: Zero-pad the concatenated vector to this length.
+        parts: Roles (or :class:`State` / :class:`Constant` parts) concatenated
+            in order. At least one part must carry a role -- a state of only
+            constants reads nothing from the env.
+        pad_to: Zero-pad the concatenated vector to this length. Padding is the
+            last step: every part is converted, ranged and scaled, the parts are
+            concatenated in order, and only then is the result padded.
         dtype: NumPy dtype name of the resulting value.
         reshape: Optional target shape for the resulting value.
         container: Emit a NumPy array or a plain Python list.
@@ -247,12 +339,19 @@ class Concat:
         if not parts:
             raise ValueError("Concat needs at least one part")
         for part in parts:
-            if not isinstance(part, (str, State)):  # pyright: ignore[reportUnnecessaryIsInstance]
+            if not isinstance(part, (str, State, Constant)):  # pyright: ignore[reportUnnecessaryIsInstance]
                 raise TypeError(
-                    f"Concat parts must be role strings or State leaves; got "
-                    f"{type(part).__name__!r}. Pass a role constant "
+                    f"Concat parts must be role strings, State leaves or Constant "
+                    f"blocks; got {type(part).__name__!r}. Pass a role constant "
                     "(e.g. Concat(EEF_POS, GRIPPER_POS)) or wrap it in State(...)"
                 )
+        # A state of only constants is a fabricated tensor pretending to be an
+        # observation (the Rust codec refuses it too).
+        if all(isinstance(part, Constant) for part in parts):
+            raise ValueError(
+                "a state input of only constant parts reads nothing from the env; "
+                "give it at least one roled part"
+            )
         # A State used as a part contributes only its part fields; its container
         # fields (pad_to/dtype/reshape/container) belong on the Concat. Catch a
         # non-default one at construction rather than letting it be silently

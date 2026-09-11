@@ -36,6 +36,11 @@ pub(crate) fn quoted_accept_set(value: Option<&AcceptSet<RotationEncoding>>) -> 
     }
 }
 
+/// A single float, e.g. `-2.0` (Debug form, so it always reads as a float).
+pub(crate) fn number(value: f64) -> String {
+    format!("{value:?}")
+}
+
 /// A float pair, e.g. `(-1.0, 1.0)`.
 pub(crate) fn quoted_range(range: (f64, f64)) -> String {
     format!("{range:?}")

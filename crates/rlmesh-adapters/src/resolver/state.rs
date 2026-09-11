@@ -9,8 +9,8 @@ use crate::path::NodePath;
 use crate::plans::{StatePiece, StatePlan};
 use crate::spec::{AcceptSet, ConcatPart, EnvState, RotationEncoding, State};
 
-/// Width of an optional component's zero fill when the env lacks it.
-fn zero_fill_width(component: &ConcatPart, at: &str) -> Result<u32> {
+/// Width of an optional component's fill when the env lacks it.
+fn fill_width(component: &ConcatPart, role: &str, at: &str) -> Result<u32> {
     if component.index.is_some() {
         return Ok(1);
     }
@@ -29,9 +29,36 @@ fn zero_fill_width(component: &ConcatPart, at: &str) -> Result<u32> {
         format!(
             "model input {at}: optional state role {} needs dim, index, or encoding \
          to size its zero fill",
-            quoted(&component.role)
+            quoted(role)
         ),
     ))
+}
+
+/// The constant an absent (or role-less) part contributes, with the model-side
+/// affine folded in — so `apply_state` never needs the spec again.
+fn folded_fill(component: &ConcatPart) -> f64 {
+    component.fill * component.scale.unwrap_or(1.0) + component.offset.unwrap_or(0.0)
+}
+
+/// A piece with no env source: `dim` copies of `fill`.
+fn fill_piece(width: u32, fill: f64, absent_role: bool) -> StatePiece {
+    StatePiece {
+        source: NodePath::root(),
+        src_offset: None,
+        src_dim: None,
+        src_encoding: None,
+        dst_encoding: None,
+        post_rotate: None,
+        dim: Some(width),
+        index: None,
+        src_range: None,
+        dst_range: None,
+        scale: None,
+        offset: None,
+        fill: Some(fill),
+        absent_role,
+        width: Some(width),
+    }
 }
 
 /// Choose the (source, destination) rotation encodings for a state piece.
@@ -106,6 +133,15 @@ pub(super) fn plan_state(
     let at = quoted(&placement.to_string());
     let mut pieces: Vec<StatePiece> = Vec::with_capacity(model_input.components.len());
     for component in &model_input.components {
+        // A constant part reads nothing: it contributes its declared width of
+        // the fill value wherever it sits in the concat.
+        let Some(role) = component.role.as_deref() else {
+            let width = component
+                .dim
+                .expect("a constant part is codec-checked for dim");
+            pieces.push(fill_piece(width, component.fill, false));
+            continue;
+        };
         // A custom encoding resolves structurally to its `base` here and the
         // host-side repack runs on its own slice, addressed by the resolved
         // piece widths this plan records — so it may sit at any offset of a
@@ -121,37 +157,25 @@ pub(super) fn plan_state(
                 format!(
                     "state role {}: a custom encoding cannot be optional (its host-side repack \
                      has no zero form)",
-                    quoted(&component.role)
+                    quoted(role)
                 ),
             ));
         }
-        let Some(env_state) = states_by_role.get(&component.role).copied() else {
+        let Some(env_state) = states_by_role.get(role).copied() else {
             // The role's data is present but under a kind this core can't read:
             // fail loud before the optional zero-fill silently degrades it. A
             // role the env genuinely lacks falls through to the optional branch.
-            super::reject_referenced_unknown(&component.role, &placement, unknown_roles)?;
+            super::reject_referenced_unknown(role, &placement, unknown_roles)?;
             if component.optional {
-                let fill_width = zero_fill_width(component, &at)?;
-                pieces.push(StatePiece {
-                    source: NodePath::root(),
-                    src_offset: None,
-                    src_dim: None,
-                    src_encoding: None,
-                    dst_encoding: None,
-                    dim: Some(fill_width),
-                    index: None,
-                    src_range: None,
-                    dst_range: None,
-                    zero_fill: true,
-                    width: Some(fill_width),
-                });
+                let width = fill_width(component, role, &at)?;
+                pieces.push(fill_piece(width, folded_fill(component), true));
                 continue;
             }
             return Err(err(
                 ErrorCode::MissingRole,
                 format!(
                     "model input {at} needs state role {} but the env offers {}",
-                    quoted(&component.role),
+                    quoted(role),
                     quoted_keys(states_by_role)
                 ),
             ));
@@ -168,7 +192,7 @@ pub(super) fn plan_state(
                             ErrorCode::Unsupported,
                             format!(
                                 "state role {}: an observation custom encoding needs from_base",
-                                quoted(&component.role)
+                                quoted(role)
                             ),
                         ));
                     }
@@ -185,7 +209,7 @@ pub(super) fn plan_state(
                             format!(
                                 "state role {}: a custom encoding keeps its base width; drop \
                                  index and set dim to {base_dims} or omit it",
-                                quoted(&component.role)
+                                quoted(role)
                             ),
                         ));
                     }
@@ -194,11 +218,8 @@ pub(super) fn plan_state(
             }
             None => None,
         };
-        let (src_encoding, dst_encoding) = select_state_encoding(
-            &component.role,
-            env_state.encoding.as_ref(),
-            model_set.as_ref(),
-        )?;
+        let (src_encoding, dst_encoding) =
+            select_state_encoding(role, env_state.encoding.as_ref(), model_set.as_ref())?;
         // When converting, the env feature's declared width must match the
         // native (source) encoding the raw value is in.
         if let (Some(src), Some(dst)) = (src_encoding, dst_encoding)
@@ -211,7 +232,7 @@ pub(super) fn plan_state(
                 format!(
                     "state role {}: env feature {} declares {env_dim} dims but \
                  encoding {} has {}",
-                    quoted(&component.role),
+                    quoted(role),
                     quoted(&env_state.source.to_string()),
                     quoted_encoding(Some(src)),
                     src.dims()
@@ -221,10 +242,12 @@ pub(super) fn plan_state(
         // Bounds-check the requested slice against the source width. The
         // width is the env feature's, unless a rotation conversion reshapes it
         // first (in which case the converted width applies). Without this an
-        // out-of-range index or dim silently yields fewer values.
+        // out-of-range index or dim silently yields fewer values. A
+        // post-rotation always goes through the matrix, so it reshapes to the
+        // destination encoding even when both sides name the same one.
         let converts = matches!(
             (src_encoding, dst_encoding),
-            (Some(src), Some(dst)) if src != dst
+            (Some(src), Some(dst)) if src != dst || component.post_rotate.is_some()
         );
         let source_width = if converts {
             dst_encoding.map(|encoding| encoding.dims())
@@ -239,7 +262,7 @@ pub(super) fn plan_state(
                         format!(
                             "state role {}: index {index} is out of range for the \
                          width-{width} source feature {}",
-                            quoted(&component.role),
+                            quoted(role),
                             quoted(&env_state.source.to_string())
                         ),
                     ));
@@ -252,7 +275,7 @@ pub(super) fn plan_state(
                     format!(
                         "state role {}: requested {dim} dims but the source feature \
                      {} has width {width}",
-                        quoted(&component.role),
+                        quoted(role),
                         quoted(&env_state.source.to_string())
                     ),
                 ));
@@ -276,11 +299,15 @@ pub(super) fn plan_state(
             src_dim: env_state.slice_offset.and(env_state.dim),
             src_encoding,
             dst_encoding,
+            post_rotate: component.post_rotate.clone(),
             dim: component.dim,
             index: component.index,
             src_range: env_state.range,
             dst_range: component.range,
-            zero_fill: false,
+            scale: component.scale,
+            offset: component.offset,
+            fill: None,
+            absent_role: false,
             width,
         });
     }

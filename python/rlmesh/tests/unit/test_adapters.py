@@ -3320,3 +3320,297 @@ def test_bimanual_joint_split_permutes_the_model_vector():
     )
     # The second wrist camera lands in its own slot, not aliased onto the first.
     assert payload["wrist_2"].max() > payload["wrist"].max()
+
+
+# --- Declarative state parts: constant / post_rotate / scale / offset ---------
+#
+# The three model-side rebuilds these fields replace, each pinned against the
+# catalog's own arithmetic (rlmesh-catalog/xvla-chunk, rc.8).
+
+# `models/gr00t-n1.7/gr00t_model.py` WidowXBridgeState._DEFAULT_ROT.
+GR00T_DEFAULT_ROT = np.array([[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]])
+
+# `models/xvla/libero/main.py` XVLALibero.HAND_TO_GRIP.
+XVLA_HAND_TO_GRIP = np.array(
+    [[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64
+)
+
+BRIDGE_ENV = Env(
+    tags=adapt.EnvTags(
+        observation={
+            "image": adapt.ImageTag(adapt.IMAGE_PRIMARY),
+            "eef_pos": adapt.StateTag(adapt.EEF_POS),
+            "eef_quat": adapt.StateTag(adapt.EEF_ROT, encoding="quat_wxyz"),
+            "gripper": adapt.StateTag(adapt.GRIPPER_POS),
+            "instruction": adapt.TextTag(adapt.INSTRUCTION),
+        },
+        action=adapt.Action(
+            adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3, range=(-1.0, 1.0)),
+            adapt.Actuator(
+                adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle", range=(-1.0, 1.0)
+            ),
+            adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
+        ),
+    ),
+    obs_space=gym.spaces.Dict(
+        {
+            "image": image_space(),
+            "eef_pos": box(3),
+            "eef_quat": box(4),
+            "gripper": box(1),
+            "instruction": text_space(),
+        }
+    ),
+    action_space=ACTION7,
+)
+
+# A recorded widowx observation: wxyz quaternion straight off `env.tcp.pose.q`.
+BRIDGE_OBS: dict[str, Any] = {
+    "image": np.zeros((64, 64, 3), dtype=np.uint8),
+    "eef_pos": np.array([0.281_25, -0.041_5, 0.137_75], dtype=np.float32),
+    "eef_quat": np.array([0.137_84, 0.694_21, -0.135_47, 0.693_03], dtype=np.float32),
+    "gripper": np.array([0.812_5], dtype=np.float32),
+    "instruction": "put the eggplant in the basket",
+}
+
+
+def test_gr00t_bridge_state_is_expressible_declaratively():
+    """The gr00t widowx embodiment wants ``[pos, euler, pad, gripper]``.
+
+    ``models/gr00t-n1.7/gr00t_model.py`` builds it by hand in
+    ``WidowXBridgeState._obs``::
+
+        mat = R.from_quat(quat_xyzw).as_matrix()
+        euler = R.from_matrix(mat @ self._DEFAULT_ROT.T).as_euler("xyz")
+        state = np.concatenate([pos, euler, [0.0], grip])
+
+    The env declares ``quat_wxyz``, so the old spec's ``encoding="quat_xyzw"``
+    was doing the wxyz->xyzw permutation the hand-rolled code depended on.
+    Declared instead: ``euler_xyz`` plus a ``post_rotate`` of
+    ``_DEFAULT_ROT.T``, and the pad channel as a ``Constant``.
+    """
+    scipy_rotation = pytest.importorskip("scipy.spatial.transform").Rotation
+
+    spec = adapt.ModelSpec(
+        input={
+            "state": adapt.Concat(
+                adapt.EEF_POS,
+                adapt.State(
+                    adapt.EEF_ROT,
+                    encoding="euler_xyz",
+                    post_rotate=adapt.Rotation.from_matrix(GR00T_DEFAULT_ROT.T),
+                ),
+                adapt.Constant(dim=1),
+                adapt.State(adapt.GRIPPER_POS, dim=1),
+            )
+        },
+        output=adapt.Action(
+            adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
+            adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=3, encoding="euler_xyz"),
+            adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(0.0, 1.0)),
+        ),
+    )
+
+    wxyz = np.asarray(BRIDGE_OBS["eef_quat"], dtype=np.float64)
+    quat_xyzw = np.array([wxyz[1], wxyz[2], wxyz[3], wxyz[0]])
+    matrix = scipy_rotation.from_quat(quat_xyzw).as_matrix()
+    euler = scipy_rotation.from_matrix(matrix @ GR00T_DEFAULT_ROT.T).as_euler("xyz")
+    expected = np.concatenate(
+        [
+            np.asarray(BRIDGE_OBS["eef_pos"], dtype=np.float64),
+            euler,
+            [0.0],
+            np.asarray(BRIDGE_OBS["gripper"], dtype=np.float64),
+        ]
+    )
+
+    state = resolve(BRIDGE_ENV, spec).transform_obs(BRIDGE_OBS)["state"]
+    assert state.shape == (8,)
+    np.testing.assert_allclose(state, expected, atol=1e-5)
+
+
+def test_xvla_libero_hand_to_grip_is_a_post_rotation():
+    """``models/xvla/libero/main.py`` rebuilds the rot6d block model-side::
+
+        grip = _rot6d_to_matrix(state[3:9]) @ self.HAND_TO_GRIP
+        state[3:9] = _matrix_to_rot6d(grip)
+        state[9] = 0.0  # upstream proprio carries a constant 0 gripper slot
+
+    Both halves are declarable: a rigid right-multiplication is ``post_rotate``
+    and the pinned slot is a ``Constant``. (Binding the constant deliberately
+    drops the env's ``proprio/gripper`` -- the checkpoint's slot 9 is not a
+    function of the env gripper.)
+    """
+    scipy_rotation = pytest.importorskip("scipy.spatial.transform").Rotation
+
+    spec = adapt.ModelSpec(
+        input={
+            "state": adapt.Concat(
+                adapt.EEF_POS,
+                adapt.State(
+                    adapt.EEF_ROT,
+                    encoding="rot6d",
+                    post_rotate=adapt.Rotation.from_matrix(XVLA_HAND_TO_GRIP),
+                ),
+                adapt.Constant(dim=1),
+            )
+        },
+        output=XVLA.output,
+    )
+
+    obs = make_obs()
+    matrix = scipy_rotation.from_quat(
+        np.asarray(obs["robot0_eef_quat"], dtype=np.float64)
+    ).as_matrix()
+    # `_matrix_to_rot6d(rot) = rot[:, :2].T.reshape(-1)` -- the two leading
+    # columns concatenated, which is exactly the `rot6d` encoding.
+    grip = matrix @ XVLA_HAND_TO_GRIP
+    expected = np.concatenate(
+        [
+            np.asarray(obs["robot0_eef_pos"], dtype=np.float64),
+            grip[:, :2].T.reshape(-1),
+            [0.0],
+        ]
+    )
+
+    state = resolve(LIBERO_ENV, spec).transform_obs(obs)["state"]
+    assert state.shape == (10,)
+    np.testing.assert_allclose(state, expected, atol=1e-5)
+
+
+def test_state_scale_and_offset_express_the_robotwin_gripper():
+    """``models/xvla/robotwin2/main.py`` maps RoboTwin's gripper into the
+    model's training convention with ``proprio[9] = 1.0 - proprio[9] * 2.0``;
+    declared, that is ``scale=-2, offset=1``."""
+    spec = adapt.ModelSpec(
+        input={
+            "state": adapt.Concat(
+                adapt.EEF_POS,
+                adapt.State(adapt.GRIPPER_POS, dim=1, scale=-2.0, offset=1.0),
+            )
+        },
+        output=XVLA.output,
+    )
+    obs = make_obs()
+    gripper = float(np.asarray(obs["robot0_gripper_qpos"])[0])
+
+    state = resolve(LIBERO_ENV, spec).transform_obs(obs)["state"]
+    assert state.shape == (4,)
+    np.testing.assert_allclose(state[3], 1.0 - 2.0 * gripper, atol=1e-6)
+
+
+def test_constant_part_is_not_reported_as_a_zero_filled_role():
+    """C14: a declared constant is authored data, so it must not read as
+    fabricated the way an absent optional role does."""
+    constant = adapt.ModelSpec(
+        input={"state": adapt.Concat(adapt.EEF_POS, adapt.Constant(dim=2))},
+        output=XVLA.output,
+    )
+    absent = adapt.ModelSpec(
+        input={
+            "state": adapt.Concat(
+                adapt.EEF_POS,
+                adapt.State(adapt.EEF_POS_2, dim=2, optional=True),
+            )
+        },
+        output=XVLA.output,
+    )
+    constant_text = resolve(LIBERO_ENV, constant).explain()
+    assert "const(2)=0.0" in constant_text
+    assert "zeros(2)" not in constant_text
+    assert not [
+        note
+        for note in resolve(LIBERO_ENV, constant).advisories()
+        if "zero-filled" in note.message
+    ]
+    assert "zeros(2)" in resolve(LIBERO_ENV, absent).explain()
+    assert [
+        note
+        for note in resolve(LIBERO_ENV, absent).advisories()
+        if "zero-filled" in note.message
+    ]
+
+
+def test_state_of_only_constants_is_refused():
+    with pytest.raises(ValueError, match="reads nothing from the env"):
+        adapt.Concat(adapt.Constant(dim=3))
+
+
+def test_non_zero_fill_needs_optional_and_folds_scale_and_offset():
+    with pytest.raises(ValueError, match="only to an optional part"):
+        adapt.State(adapt.EEF_POS_2, dim=1, fill=1.0)
+    spec = adapt.ModelSpec(
+        input={
+            "state": adapt.Concat(
+                adapt.EEF_POS,
+                adapt.State(
+                    adapt.EEF_POS_2,
+                    dim=2,
+                    optional=True,
+                    fill=0.5,
+                    scale=2.0,
+                    offset=1.0,
+                ),
+            )
+        },
+        output=XVLA.output,
+    )
+    state = resolve(LIBERO_ENV, spec).transform_obs(make_obs())["state"]
+    # fill * scale + offset, folded once at resolve.
+    np.testing.assert_allclose(state[3:], [2.0, 2.0], atol=1e-6)
+
+
+def test_post_rotate_needs_a_rotation_encoding():
+    identity = adapt.Rotation.from_matrix(np.eye(3))
+    with pytest.raises(ValueError, match="post_rotate needs a rotation encoding"):
+        adapt.State(adapt.EEF_ROT, post_rotate=identity)
+    assert identity.encoding == "rot6d"
+    assert identity.value == (1.0, 0.0, 0.0, 0.0, 1.0, 0.0)
+
+
+def test_rotation_literal_must_be_a_rotation():
+    sheared = adapt.ModelSpec(
+        input={
+            "state": adapt.Concat(
+                adapt.EEF_POS,
+                adapt.State(
+                    adapt.EEF_ROT,
+                    encoding="rot6d",
+                    post_rotate=adapt.Rotation(
+                        encoding="rot6d", value=(1.0, 0.0, 0.0, 0.5, 1.0, 0.0)
+                    ),
+                ),
+            )
+        },
+        output=XVLA.output,
+    )
+    with pytest.raises(ValueError, match="orthonormal"):
+        sheared.to_dict()
+
+
+def test_constant_part_shifts_a_later_custom_encoding_slice():
+    """A constant contributes width like any other part, so the host-side
+    repack that follows it must be addressed past it."""
+    swap = adapt.CustomEncoding(
+        base="quat_xyzw",
+        from_base=lambda v: np.asarray(v)[[3, 0, 1, 2]],
+        to_base=lambda v: np.asarray(v)[[1, 2, 3, 0]],
+    )
+    spec = adapt.ModelSpec(
+        input={
+            "state": adapt.Concat(
+                adapt.EEF_POS,
+                adapt.Constant(dim=2, fill=1.0),
+                adapt.State(adapt.EEF_ROT, encoding=swap),
+            )
+        },
+        output=XVLA.output,
+    )
+    adapter = resolve(LIBERO_ENV, spec)
+    assert "'state'[5:9]" in adapter.explain()
+    obs = make_obs()
+    state = adapter.transform_obs(obs)["state"]
+    np.testing.assert_allclose(state[3:5], [1.0, 1.0], atol=1e-6)
+    np.testing.assert_allclose(
+        state[5:], np.asarray(obs["robot0_eef_quat"])[[3, 0, 1, 2]], atol=1e-6
+    )

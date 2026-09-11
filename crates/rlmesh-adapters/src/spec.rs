@@ -35,6 +35,7 @@ mod layouts;
 mod leaf_codec;
 mod model;
 mod num;
+mod rotation_literal;
 mod rotations;
 mod strict;
 
@@ -48,6 +49,7 @@ pub use model::{
     ConcatPart, Custom, Image, InputNode, ModelLeaf, ModelSpec, Normalize, State, StateContainer,
     Text, TextContainer,
 };
+pub use rotation_literal::RotationLiteral;
 pub use rotations::RotationEncoding;
 pub use strict::{
     RolePolicy, reject_bare_fields_env, reject_bare_fields_model, reject_unknowns_env,

@@ -460,3 +460,26 @@ fn conformance_vectors() {
     }
     assert!(ran >= 13, "expected at least 13 vectors, ran {ran}");
 }
+
+/// The `zeros(n)` / `, pad to N` wording predates constant parts and fills, and
+/// PR-12's new describe tokens (`const(n)=v`, `fill(n)=v`, `(post_rotate)`,
+/// `(*s +o)`) must render only when the new fields are used. Pinning the text
+/// here as a literal catches a rewrite that `UPDATE_VECTORS=1` would happily
+/// bless into the vector itself.
+#[test]
+fn existing_pad_and_zero_fill_text_is_unchanged() {
+    let path = cases_dir().join("resolve_rot6d_with_optional_zero_fill.json");
+    let case: Json = serde_json::from_str(&fs::read_to_string(&path).expect("readable case"))
+        .expect("case parses as JSON");
+    assert_eq!(
+        case["expect"]["describe"].as_str().expect("describe text"),
+        "observation:\n  \"instruction\" <- text \"instruction\"\n  \"state\" <- \
+         concat(eef_pos[:3], eef_quat (quat_xyzw->rot6d), gripper[:1], zeros(3)), pad to 16\
+         \naction:\n  \"action/delta_eef_pos\" <- model[0:3]\n  \"action/delta_eef_rot\" <- \
+         model[3:9] (rot6d->axis_angle)\n  \"action/gripper\" <- model[9:10]\n  clip to \
+         (-1.0, 1.0)",
+    );
+    let (tags, obs_space, action_space, model_spec) = parse_inputs(&case);
+    let adapter = resolve(&tags, &obs_space, &action_space, &model_spec, false).expect("resolve");
+    assert_eq!(adapter.describe(), case["expect"]["describe"]);
+}

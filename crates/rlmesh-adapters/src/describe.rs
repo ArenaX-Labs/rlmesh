@@ -3,7 +3,7 @@
 use std::fmt::Write as _;
 
 use crate::advisory::Advisory;
-use crate::fmt::{quoted, quoted_range};
+use crate::fmt::{number, quoted, quoted_range};
 use crate::plans::{ActionSegment, ImagePlan, ObsPlan, ResolvedAdapter, StatePlan, TextPlan};
 use crate::spec::{FitMode, ImageLayout};
 
@@ -49,7 +49,13 @@ pub(crate) fn adapter_advisories(adapter: &ResolvedAdapter) -> Vec<Advisory> {
                 FitMode::Stretch => {}
             },
             ObsPlan::State(state) => {
-                let zeros = state.pieces.iter().filter(|piece| piece.zero_fill).count();
+                // A declared constant part is authored data, not fabricated:
+                // only an absent role counts.
+                let zeros = state
+                    .pieces
+                    .iter()
+                    .filter(|piece| piece.absent_role)
+                    .count();
                 if zeros > 0 {
                     notes.push(Advisory::caution(format!(
                         "state {}: {zeros} component(s) zero-filled for an absent env role",
@@ -186,11 +192,16 @@ fn describe_image(plan: &ImagePlan) -> String {
 fn describe_state(plan: &StatePlan) -> String {
     let mut parts: Vec<String> = Vec::new();
     for piece in &plan.pieces {
-        if piece.zero_fill {
-            parts.push(format!(
-                "zeros({})",
-                piece.dim.expect("zero-fill pieces always carry a width")
-            ));
+        if let Some(fill) = piece.fill {
+            let width = piece.dim.expect("fill pieces always carry a width");
+            // An absent optional role filled with zeros keeps the original
+            // `zeros(n)` wording; the new tokens render only when the new
+            // features are used.
+            parts.push(match (piece.absent_role, fill == 0.0) {
+                (true, true) => format!("zeros({width})"),
+                (true, false) => format!("fill({width})={}", number(fill)),
+                (false, _) => format!("const({width})={}", number(fill)),
+            });
             continue;
         }
         let mut note = piece.source.to_string();
@@ -226,6 +237,20 @@ fn describe_state(plan: &StatePlan) -> String {
                 quoted_range(src),
                 quoted_range(dst)
             );
+        }
+        if piece.post_rotate.is_some() {
+            note.push_str(" (post_rotate)");
+        }
+        if piece.scale.is_some() || piece.offset.is_some() {
+            let mut affine: Vec<String> = Vec::new();
+            if let Some(scale) = piece.scale {
+                affine.push(format!("*{}", number(scale)));
+            }
+            if let Some(offset) = piece.offset {
+                let sign = if offset.is_sign_negative() { "" } else { "+" };
+                affine.push(format!("{sign}{}", number(offset)));
+            }
+            let _ = write!(note, " ({})", affine.join(" "));
         }
         parts.push(note);
     }

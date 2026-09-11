@@ -243,7 +243,7 @@ pub fn resolve(
                 input
                     .components
                     .iter()
-                    .map(|part| part.role.as_str())
+                    .filter_map(|part| part.role.as_deref())
                     .filter(|role| !states_by_role.contains_key(*role)),
             ),
             ModelLeaf::Text(input) if !texts_by_role.contains_key(&input.role) => {
@@ -300,13 +300,26 @@ pub fn resolve(
         }
         if let ObsPlan::State(state) = obs_plan
             && state.pieces.iter().any(|piece| {
-                !piece.zero_fill && piece.dst_range.is_some() && piece.src_range.is_none()
+                piece.fill.is_none() && piece.dst_range.is_some() && piece.src_range.is_none()
             })
         {
             advisories.push(Advisory::info(format!(
                 "model input {}: a state range is set but the env feature is \
                      unbounded, so the range is a no-op (it remaps an env range, it \
                      does not clamp)",
+                quoted(&state.placement.to_string()),
+            )));
+        }
+        // Two rescalings on one part compose silently: `range` bridges the two
+        // declared scales, then `scale`/`offset` applies on top of the result.
+        if let ObsPlan::State(state) = obs_plan
+            && state.pieces.iter().any(|piece| {
+                piece.dst_range.is_some() && (piece.scale.is_some() || piece.offset.is_some())
+            })
+        {
+            advisories.push(Advisory::info(format!(
+                "model input {}: a state part sets both range and scale/offset; the \
+                     range map runs first and the affine applies to its result",
                 quoted(&state.placement.to_string()),
             )));
         }
