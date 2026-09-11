@@ -17,6 +17,38 @@ pub struct EpisodeInfo {
     pub seed: Option<i64>,
 }
 
+/// The per-predict sampling seed: a reproducible mix of the episode's reset seed
+/// and the re-plan ordinal within that episode.
+///
+/// A stochastic policy seeded once per episode cannot be reproduced under
+/// interleaving — another episode's forward advances the same global generators
+/// between two of ours. Deriving a fresh seed per predict from `(episode_seed,
+/// predict_index)` makes each forward reproducible on its own, independent of
+/// what ran between. The SDK stamps the result on the predict context as
+/// `predict_seed`; the same function is exported to Python as
+/// `rlmesh.predict_seed`, so a model can derive it itself.
+///
+/// FNV-1a over the seed and the ordinal, masked to 32 bits — the narrow range
+/// every framework's seeding API accepts.
+pub fn predict_seed(episode_seed: i64, predict_index: u64) -> i64 {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+    fn update(mut hash: u64, bytes: &[u8]) -> u64 {
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+        hash
+    }
+
+    let mut hash = FNV_OFFSET;
+    hash = update(hash, &episode_seed.to_le_bytes());
+    hash = update(hash, &[0xfe]);
+    hash = update(hash, &predict_index.to_le_bytes());
+    (hash & u64::from(u32::MAX)) as i64
+}
+
 /// Routing metadata attached to a [`ModelObservation`].
 ///
 /// Identifies the env (adapter) the request belongs to and the ordered per-row
@@ -176,6 +208,21 @@ mod tests {
             route: ModelRouteContext::default(),
             num_envs: values.len(),
             env_contract: Some(Arc::new(contract)),
+        }
+    }
+
+    #[test]
+    fn predict_seed_law() {
+        // Pure function of (episode_seed, predict_index): same inputs, same seed.
+        assert_eq!(predict_seed(7, 3), predict_seed(7, 3));
+        // Both ingredients move the result -- a per-episode seed alone would give
+        // every re-plan of an episode the same noise.
+        assert_ne!(predict_seed(7, 0), predict_seed(7, 1));
+        assert_ne!(predict_seed(7, 0), predict_seed(8, 0));
+        // Always a non-negative u32: the range every framework's seeding API takes.
+        for (seed, index) in [(0, 0), (-1, 0), (i64::MIN, u64::MAX), (i64::MAX, 1)] {
+            let derived = predict_seed(seed, index);
+            assert!((0..=i64::from(u32::MAX)).contains(&derived), "{derived}");
         }
     }
 

@@ -274,11 +274,11 @@ fn assemble_route_inputs_inner(
 /// [`bucket_fuses`] proved identical, so grouping can never change which model
 /// function runs.
 ///
-/// `episodes` is row-aligned with `inputs` for the per-lane corners
-/// (`predict`/`predict_chunk`) — pass `&[]` when the caller has no real
-/// single-episode identity to give (the grouped-fused path, whose lanes may
-/// span independent episodes/routes fused for throughput). The batched
-/// corners never see it at all (see `PredictFn::predict_batch`).
+/// `episodes` is row-aligned with `inputs` on EVERY corner: the per-lane ones
+/// take row `i`'s identity, the batched ones take the whole row-aligned slice
+/// (a fused bucket concatenates lanes from independent episodes, so identity is
+/// per row, never per call). A length disagreement is a malformed request, so
+/// it fails here rather than silently mis-attributing a lane.
 fn dispatch_corners(
     predict: &Arc<dyn PredictFn>,
     inputs: Vec<Value>,
@@ -286,8 +286,15 @@ fn dispatch_corners(
     horizon: u32,
     num_envs: usize,
 ) -> Result<Vec<Vec<Value>>> {
+    if episodes.len() != num_envs {
+        return Err(Error::model(format!(
+            "predict carries {} episode rows for {num_envs} lanes; episode identity \
+             is row-aligned with the observation",
+            episodes.len()
+        )));
+    }
     if horizon > 1 && predict.has_chunk_batch() {
-        let chunks = predict.predict_chunk_batch(inputs, horizon)?;
+        let chunks = predict.predict_chunk_batch(inputs, horizon, episodes)?;
         if chunks.len() != num_envs {
             return Err(Error::model(format!(
                 "predict_chunk_batch returned {} chunks for {num_envs} lanes",
@@ -323,7 +330,7 @@ fn dispatch_corners(
             })
             .collect::<Result<Vec<_>>>()
     } else if predict.has_batch() {
-        let actions = predict.predict_batch(inputs)?;
+        let actions = predict.predict_batch(inputs, episodes)?;
         if actions.len() != num_envs {
             return Err(Error::model(format!(
                 "predict_batch returned {} actions for {num_envs} lanes",
@@ -554,6 +561,7 @@ fn predict_grouped_fused(
                 num_envs: usize,
             }
             let mut flat: Vec<Value> = Vec::new();
+            let mut flat_episodes: Vec<EpisodeInfo> = Vec::new();
             let mut fused: Vec<FusedGroup> = Vec::with_capacity(groups.len());
             for group in groups {
                 fused.push(FusedGroup {
@@ -564,9 +572,20 @@ fn predict_grouped_fused(
                     num_envs: group.num_envs,
                 });
                 flat.extend(group.inputs);
+                flat_episodes.extend(group.episodes);
             }
             let total = flat.len();
-            match dispatch_corners(predict, flat, &[], horizon, total) {
+            // Each group's episodes were assembled alongside its own inputs, so a
+            // disagreement here is an engine bug, not a bad request.
+            let fused_result = if flat_episodes.len() == total {
+                dispatch_corners(predict, flat, &flat_episodes, horizon, total)
+            } else {
+                Err(Error::Internal(format!(
+                    "fused predict concatenated {} episode rows for {total} lanes",
+                    flat_episodes.len()
+                )))
+            };
+            match fused_result {
                 Ok(all_frames) => {
                     let mut frames = all_frames.into_iter();
                     for group in fused {
@@ -799,14 +818,13 @@ impl ModelHandler for AdaptedModelHandler {
         // ended episode), e.g. to reset a single-env model's recurrent state. An
         // empty `episode_ids` is an evict-ALL/teardown, not an episode end, so it
         // fires nothing here — model shutdown is `on_close`'s job.
-        let count = episode_ids.len();
-        if count == 0 {
+        if episode_ids.is_empty() {
             return Ok(());
         }
         let predict = Arc::clone(&self.predict);
         tokio::task::spawn_blocking(move || {
-            for _ in 0..count {
-                predict.on_episode_end()?;
+            for episode_id in &episode_ids {
+                predict.on_episode_end(episode_id)?;
             }
             Ok(())
         })
@@ -1028,6 +1046,8 @@ mod fused_predict_tests {
         chunk_calls: AtomicUsize,
         batch_calls: AtomicUsize,
         chunk_batch_calls: AtomicUsize,
+        /// The row-aligned episode ids each batched-corner call was handed.
+        batched_ids: Mutex<Vec<Vec<String>>>,
     }
 
     impl CountingPredict {
@@ -1048,6 +1068,7 @@ mod fused_predict_tests {
                 chunk_calls: AtomicUsize::new(0),
                 batch_calls: AtomicUsize::new(0),
                 chunk_batch_calls: AtomicUsize::new(0),
+                batched_ids: Mutex::new(Vec::new()),
             })
         }
 
@@ -1090,8 +1111,16 @@ mod fused_predict_tests {
             self.batch
         }
 
-        fn predict_batch(&self, inputs: Vec<Value>) -> Result<Vec<Value>> {
+        fn predict_batch(
+            &self,
+            inputs: Vec<Value>,
+            episodes: &[EpisodeInfo],
+        ) -> Result<Vec<Value>> {
             self.batch_calls.fetch_add(1, Ordering::SeqCst);
+            self.batched_ids
+                .lock()
+                .expect("batched ids poisoned")
+                .push(episodes.iter().map(|e| e.episode_id.clone()).collect());
             let keep = inputs.len() - usize::from(self.short);
             Ok((0..keep).map(|_| Value::Number(1.0)).collect())
         }
@@ -1104,8 +1133,13 @@ mod fused_predict_tests {
             &self,
             inputs: Vec<Value>,
             _execution_horizon: u32,
+            episodes: &[EpisodeInfo],
         ) -> Result<Vec<Value>> {
             self.chunk_batch_calls.fetch_add(1, Ordering::SeqCst);
+            self.batched_ids
+                .lock()
+                .expect("batched ids poisoned")
+                .push(episodes.iter().map(|e| e.episode_id.clone()).collect());
             let keep = inputs.len() - usize::from(self.short);
             Ok((0..keep).map(|_| self.native_chunk_value()).collect())
         }
@@ -1119,12 +1153,23 @@ mod fused_predict_tests {
         (0..count).map(|lane| Value::Number(lane as f64)).collect()
     }
 
+    /// Row-aligned episode identity for `count` lanes: `ep0..ep{count-1}`.
+    fn episodes(count: usize) -> Vec<EpisodeInfo> {
+        (0..count)
+            .map(|lane| EpisodeInfo {
+                episode_id: format!("ep{lane}"),
+                seed: Some(lane as i64),
+            })
+            .collect()
+    }
+
     #[test]
     fn dispatch_prefers_chunk_batch_and_caps_to_horizon() {
         let counting = CountingPredict::new(true, false, true, 10, false);
         let predict: Arc<dyn PredictFn> = Arc::clone(&counting) as Arc<dyn PredictFn>;
 
-        let frames = dispatch_route_corners(&predict, lanes(5), &[], 4, 5).expect("frames");
+        let frames =
+            dispatch_route_corners(&predict, lanes(5), &episodes(5), 4, 5).expect("frames");
 
         assert_eq!(counting.chunk_batch_calls.load(Ordering::SeqCst), 1);
         assert_eq!(counting.batch_calls.load(Ordering::SeqCst), 0);
@@ -1140,7 +1185,8 @@ mod fused_predict_tests {
         let counting = CountingPredict::new(true, false, true, 10, false);
         let predict: Arc<dyn PredictFn> = Arc::clone(&counting) as Arc<dyn PredictFn>;
 
-        let frames = dispatch_route_corners(&predict, lanes(3), &[], 1, 3).expect("frames");
+        let frames =
+            dispatch_route_corners(&predict, lanes(3), &episodes(3), 1, 3).expect("frames");
 
         assert_eq!(counting.batch_calls.load(Ordering::SeqCst), 1);
         assert_eq!(counting.chunk_batch_calls.load(Ordering::SeqCst), 0);
@@ -1155,7 +1201,8 @@ mod fused_predict_tests {
         let counting = CountingPredict::new(true, true, false, 10, false);
         let predict: Arc<dyn PredictFn> = Arc::clone(&counting) as Arc<dyn PredictFn>;
 
-        let frames = dispatch_route_corners(&predict, lanes(3), &[], 4, 3).expect("frames");
+        let frames =
+            dispatch_route_corners(&predict, lanes(3), &episodes(3), 4, 3).expect("frames");
 
         assert_eq!(counting.chunk_calls.load(Ordering::SeqCst), 3);
         assert_eq!(counting.batch_calls.load(Ordering::SeqCst), 0);
@@ -1170,12 +1217,49 @@ mod fused_predict_tests {
         let counting = CountingPredict::new(true, false, true, 10, true);
         let predict: Arc<dyn PredictFn> = Arc::clone(&counting) as Arc<dyn PredictFn>;
 
-        let error = dispatch_route_corners(&predict, lanes(4), &[], 4, 4).expect_err("short fails");
+        let error = dispatch_route_corners(&predict, lanes(4), &episodes(4), 4, 4)
+            .expect_err("short fails");
 
         assert!(
             error.to_string().contains("lanes"),
             "unexpected error: {error}"
         );
+    }
+
+    /// The batched corners see the SAME row-aligned episode identity the per-lane
+    /// ones do: a fused batch is N independent episodes, so identity is per row.
+    #[test]
+    fn batched_corners_receive_row_aligned_episodes() {
+        let counting = CountingPredict::new(true, false, true, 10, false);
+        let predict: Arc<dyn PredictFn> = Arc::clone(&counting) as Arc<dyn PredictFn>;
+
+        dispatch_route_corners(&predict, lanes(3), &episodes(3), 4, 3).expect("chunk batch");
+        dispatch_route_corners(&predict, lanes(2), &episodes(2), 1, 2).expect("batch");
+
+        assert_eq!(
+            *counting.batched_ids.lock().expect("batched ids poisoned"),
+            vec![
+                vec!["ep0".to_string(), "ep1".to_string(), "ep2".to_string()],
+                vec!["ep0".to_string(), "ep1".to_string()],
+            ]
+        );
+    }
+
+    /// A request whose episode rows do not match its lanes is malformed: fail
+    /// rather than mis-attribute a lane's state to another episode.
+    #[test]
+    fn dispatch_rejects_episode_rows_that_do_not_match_the_lanes() {
+        let counting = CountingPredict::new(true, false, false, 10, false);
+        let predict: Arc<dyn PredictFn> = Arc::clone(&counting) as Arc<dyn PredictFn>;
+
+        let error = dispatch_route_corners(&predict, lanes(3), &episodes(2), 1, 3)
+            .expect_err("row-count mismatch fails");
+
+        assert!(
+            error.to_string().contains("episode rows"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(counting.batch_calls.load(Ordering::SeqCst), 0);
     }
 
     /// The behavior-parity fusion gate: a bucket fuses ONLY when the batched
@@ -1429,8 +1513,19 @@ mod fused_route_tests {
             self.has_batch
         }
 
-        fn predict_batch(&self, inputs: Vec<Value>) -> Result<Vec<Value>> {
+        fn predict_batch(
+            &self,
+            inputs: Vec<Value>,
+            episodes: &[EpisodeInfo],
+        ) -> Result<Vec<Value>> {
             self.batch_calls.fetch_add(1, Ordering::SeqCst);
+            let mut seen = self.episodes_seen.lock().expect("episodes_seen poisoned");
+            seen.extend(
+                episodes
+                    .iter()
+                    .map(|episode| (episode.episode_id.clone(), episode.seed)),
+            );
+            drop(seen);
             if self.fail_recoverable {
                 return Err(Error::model_recoverable("transient forward failure"));
             }
@@ -1589,13 +1684,12 @@ mod fused_route_tests {
     }
 
     #[tokio::test]
-    async fn grouped_predict_never_carries_real_episode_identity() {
-        // Grouped predict serves multiple routes' episodes in one request --
-        // the opposite of "one env connected to one model, linearly" -- so even
-        // though this fuses into ONE batched forward, the per-lane predict()
-        // corner (had it run) would see no real id/seed. Assert this via a
-        // batch-only model reporting zero predict() calls and, separately, that
-        // fusion actually ran (so this isn't vacuously true).
+    async fn grouped_predict_concatenates_row_aligned_episode_identity() {
+        // Grouped predict serves multiple routes' episodes in ONE batched
+        // forward. There is no single episode identity for the call, but every
+        // ROW has one: the fused batch concatenates each group's inputs and its
+        // episodes in the same order, so the batched corner can key per-episode
+        // state by row.
         let echo = EchoModel::new(false, false);
         let (mut handler, contracts) = spec_handler(
             Arc::clone(&echo) as Arc<dyn PredictFn>,
@@ -1618,7 +1712,14 @@ mod fused_route_tests {
             0,
             "the per-lane predict() corner never runs when fused"
         );
-        assert!(echo.episodes_seen.lock().expect("poisoned").is_empty());
+        assert_eq!(
+            echo.episodes_seen.lock().expect("poisoned").as_slice(),
+            [
+                ("env-a-ep-1".to_string(), None),
+                ("env-b-ep-2".to_string(), None),
+            ],
+            "rows arrive in group order, aligned with the concatenated inputs"
+        );
     }
 
     #[tokio::test]
