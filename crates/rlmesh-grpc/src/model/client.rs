@@ -23,6 +23,14 @@ use super::stream::{PendingResponses, spawn_response_pump};
 use super::validation::{decode_error, route_request_id, validate_predict_route, validate_route};
 use super::wire::{join_request_kind_name, model_error_to_grpc_error};
 
+/// A grouped predict reply with the server-side timing of that batch.
+#[derive(Debug)]
+pub struct GroupedPredictOutcome {
+    pub response: GroupedPredictResponse,
+    pub endpoint_total_ns: Option<u64>,
+    pub phases: EndpointPhases,
+}
+
 /// Client for a ModelService server's Join bidi stream.
 ///
 /// # Concurrency: demux by `request_id`
@@ -41,14 +49,6 @@ use super::wire::{join_request_kind_name, model_error_to_grpc_error};
 /// [`predict_concurrent`](Self::predict_concurrent), which takes `&self` and may
 /// be called from multiple tasks concurrently. The matching server advertises
 /// the `rlmesh.model.concurrent_predict.v1` capability when it pipelines.
-/// A grouped predict reply with the server-side timing of that batch.
-#[derive(Debug)]
-pub struct GroupedPredictOutcome {
-    pub response: GroupedPredictResponse,
-    pub endpoint_total_ns: Option<u64>,
-    pub phases: EndpointPhases,
-}
-
 pub struct ModelClient {
     address: String,
     client: ModelServiceClient<tonic::transport::Channel>,
