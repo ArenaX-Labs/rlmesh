@@ -120,7 +120,7 @@ flowchart LR
     step -->|done| reset
 ```
 
-- `sess.reset(seed=None)` → `(obs, info)`. Begins an episode; ends the previous one (firing `on_episode_end`) and clears adapter state such as the frame-stack buffer.
+- `sess.reset(seed=None, trial_index=None)` → `(obs, info)`. Begins an episode; ends the previous one (firing `on_episode_end`) and clears adapter state such as the frame-stack buffer. `trial_index` is the 0-based ordinal of this episode in a benchmark's trial sweep; it reaches the env as `reset(options={"trial_index": ...})`, but only if the env declared the key in [`EnvFactory.reset_options`](environments/reference.md#reserved-reset-options) -- passing one to an env that did not warns and resets without it. `sess.run()` walks the ordinals for you (episode `i` is trial `i`) for a declaring env, and reports each on {attr}`EpisodeResult.trial <rlmesh.EpisodeResult.trial>`.
 - `sess.predict(obs)` → `action`. Applies the model's adapter around the model's own predict: the declarative obs transform, host-side frame stacking, any {class}`~rlmesh.adapters.Custom` code, instruction injection into declared text leaves, and chunk replay (one action per call). Returns an env-ready action.
 - `sess.step(action)` → `(obs, reward, terminated, truncated, info)`. Applies the action and records reward and termination.
 - `sess.done` is `True` once the current episode terminated or truncated.

@@ -57,6 +57,29 @@ The binding whose values are `make()`'s own signature defaults is the **default 
 
 Contract branches are contract axes, not free dials. A shape-changing scalar with a wide domain (`cam_width`) stays a plain `Param`.
 
+### Reserved reset options
+
+`reset(seed=None, options=None)` carries a small set of *reserved* option keys the runtime knows how to fill. An env opts into one by naming it in `reset_options`; nothing is delivered otherwise, so an env that forwards `options` straight into a third-party `reset` never receives a key it cannot interpret.
+
+```python
+class Libero(rlmesh.EnvFactory):
+    reset_options = ("trial_index",)
+
+    def make(self, suite="libero_10", **kwargs):
+        ...
+
+
+def reset(self, *, seed=None, options=None):
+    trial = rlmesh.trial_index(options)
+    state = self.init_states[(trial if trial is not None else seed or 0) % len(self.init_states)]
+```
+
+| Key | Type | What it is |
+| --- | ---- | ---------- |
+| `trial_index` | `int` (a per-lane `list[int]` on a vector reset) | 0-based ordinal of the episode being started, walked in order by the runtime. Lets an env sweep a fixed list of initial states or goals exactly as its upstream benchmark does, instead of re-deriving an index from a hashed seed. |
+
+`make()` publishes the declaration in `env.metadata` under {data}`rlmesh.ENV_RESET_OPTIONS_KEY`; a plain (non-factory) env can set the same key itself. {func}`rlmesh.trial_index` reads the value back out of an `options` mapping and returns `None` when it is absent, so the same `reset` body works driven or undriven. The ordinal is recorded on every episode's result whether or not the env asked for it.
+
 ## Lifecycle
 
 ```{mermaid}
