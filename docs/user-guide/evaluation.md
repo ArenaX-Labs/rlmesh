@@ -197,9 +197,11 @@ flowchart LR
     prefix -->|chunk exhausted| predict
 ```
 
-One action is applied per step regardless. The model returns its native chunk and the runtime uses a prefix of it; an autoregressive head that declares `execution_horizon` can instead decode exactly that many.
+One action is applied per step regardless. The model returns its whole native chunk and the runtime executes `min(len(chunk), execution_horizon)` of it; an autoregressive head that declares `execution_horizon` can instead decode exactly that many. A chunk corner that slices itself down to the horizon is discarding actions the runtime was about to use, not saving work.
 
-`execution_horizon` only matters when the model defines a chunk corner. Requesting `execution_horizon > 1` on a model with no `predict_chunk` warns and runs un-chunked (one fresh prediction per step), so the default of `1` is always safe.
+A model whose chunk length K is fixed declares it (`native_chunk = K`, see {doc}`models`). The runtime then refuses an `execution_horizon` above K when the adapter resolves, instead of quietly re-planning every K steps of an H-step plan, and fails a predict whose chunk is not exactly K long. Undeclared, the contract is elastic: a short chunk is replayed as far as it goes and warns once.
+
+`execution_horizon` only matters when the model defines a chunk corner. Requesting `execution_horizon > 1` on a model with no `predict_chunk` warns and runs un-chunked (one fresh prediction per step), so the default of `1` is always safe. The horizon is bounded at 1024, and it cannot be combined with a vectorized env: chunk replay is whole-batch, so one lane's episode end would discard every lane's buffered frames.
 
 ## Where next
 

@@ -128,7 +128,7 @@ Going _up_ either axis is impossible: chunking is a model capability, not glue, 
 | Simple per-step policy           | `predict`             | One action per observation; nothing to chunk or batch.                 |
 | ACT / diffusion / flow chunker   | `predict_chunk`       | Emits a native chunk per forward; the runtime replays it.              |
 
-A batched VLA is the common case. The SmolVLA-style pattern is a `rlmesh.torch.Model` with a two-camera, state, and instruction spec, `from_pretrained` in `load()`, and `predict_chunk_batch` returning the native chunk truncated to the horizon and moved to host:
+A batched VLA is the common case. The SmolVLA-style pattern is a `rlmesh.torch.Model` with a two-camera, state, and instruction spec, `from_pretrained` in `load()`, and `predict_chunk_batch` returning its whole native chunk, moved to host:
 
 ```python
 import rlmesh
@@ -136,6 +136,7 @@ import rlmesh.adapters as adapt
 
 
 class SmolVLA(rlmesh.torch.Model):
+    native_chunk = 50
     spec = adapt.ModelSpec(
         input={
             "observation.images.image": adapt.Image(adapt.IMAGE_PRIMARY, size=224),
@@ -163,24 +164,28 @@ class SmolVLA(rlmesh.torch.Model):
     def reset(self):
         self.policy.reset()
 
-    def predict_chunk_batch(self, observations, execution_horizon=1):
-        chunk = self.policy.predict_action_chunk(self._obs(observations))  # [N, H, A]
-        return chunk[:, :execution_horizon].cpu()
+    def predict_chunk_batch(self, observations):
+        return self.policy.predict_action_chunk(self._obs(observations)).cpu()  # [N, 50, A]
 ```
 
 The `_obs()` remap helper is the recipe for a checkpoint whose keys differ from the spec; see [the model-quirk recipes](models/reference.md#model-quirks). More worked VLA models live in {source}`examples/python/vla_adapters`.
 
 ### The execution horizon
 
-`execution_horizon` is **optional** on the chunk corners. Most policies write `predict_chunk(obs)` and ignore it: a trained chunk length is fixed, and the runtime executes a prefix of the native chunk. A decoder that can stop early writes `predict_chunk(obs, execution_horizon=1)` to receive how many actions the runtime will execute before re-planning, and decodes exactly that many. Keep the `=1` default so it stays a compatible override.
+There are two numbers, and they belong to different owners. **K**, the native chunk, is a property of your weights: how many actions one forward produces. **H**, the `execution_horizon`, is the runtime's re-plan interval, chosen at the call site (`run(..., execution_horizon=H)`). Return all K actions; the runtime executes the first H of them and calls you again.
+
+So `execution_horizon` is **optional** on the chunk corners. Most policies write `predict_chunk(obs)` and ignore it: a trained chunk length is fixed, and the runtime takes the prefix. A decoder that can stop early writes `predict_chunk(obs, execution_horizon=1)` to receive H and decode exactly that many. Keep the `=1` default so it stays a compatible override.
 
 ```python
 def predict_chunk(self, observation, execution_horizon=1):
-    chunk = self.policy.decode(observation)        # native [H_native, A]
-    return chunk[:execution_horizon]               # truncate to what runs
+    return self.policy.decode(observation, steps=execution_horizon)
 ```
 
-The runtime chooses the horizon at the call site (`run(..., execution_horizon=N)`); the spec output declares the layout of one action, not the chunk length. The full replay story is in {doc}`evaluation`.
+Do not slice a fixed-length chunk down to the horizon yourself -- `return chunk[:execution_horizon]` from a head that always emits K actions just discards work the runtime was going to use.
+
+Declare K with `native_chunk = 50` (a class attribute, or set in `load()` from the checkpoint) when it is fixed. The runtime then refuses an `execution_horizon` above K at resolve rather than silently re-planning early, and fails a predict whose chunk is not exactly K long -- which is what catches a corner that is still slicing itself. Leave it unset for a variable-length head and the contract stays elastic (`min(len(chunk), H)`, with one warning when a chunk comes up short).
+
+The spec output declares the layout of one action, not the chunk length. The full replay story is in {doc}`evaluation`.
 
 ### Per-episode context
 

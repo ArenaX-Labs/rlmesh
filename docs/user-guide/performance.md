@@ -39,6 +39,8 @@ result = model.run(env, seeds=range(50), execution_horizon=8)
 
 This cuts the number of model forwards per episode by the horizon, at the cost of acting open-loop between re-plans. It engages only when the model defines {meth}`predict_chunk <rlmesh._models.base.ModelBase.predict_chunk>`; requested on a model without one, it warns and runs un-chunked, so the default of `1` is always safe. The replay lives in the runtime, so one action still reaches the env per step. See {doc}`evaluation` for the end-to-end horizon behavior.
 
+The saving is real only up to the model's own chunk length K: forwards drop by `min(K, execution_horizon)`, not by the horizon you asked for. A model that slices its chunk down to the horizon in its own corner gets no saving at all beyond K, silently -- so declare {attr}`native_chunk <rlmesh._models.base.ModelBase.native_chunk>` and return the whole chunk, and a horizon K cannot serve is refused when the adapter resolves rather than quietly costing a forward per K steps.
+
 ## Frame-stack overhead
 
 A model that conditions on a short history declares `stack=N` on an image input. The env still sends one frame per step; RLMesh buffers the last `N` processed frames and emits them on a new leading axis.

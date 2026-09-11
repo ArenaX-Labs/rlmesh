@@ -90,18 +90,51 @@ generators between two of yours; a once-per-episode seed cannot reproduce.
 
 | Form                                      | Behavior                                                                                                                                                                                                                                               |
 | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `predict_chunk(obs)`                      | The horizon is swallowed before the call. Return the native chunk; the runtime executes a prefix of it. Most policies use this; a trained chunk length is fixed by the weights.                                                                        |
+| `predict_chunk(obs)`                      | The horizon is swallowed before the call. Return your whole native chunk; the runtime executes a prefix of it. Most policies use this; a trained chunk length is fixed by the weights.                                                                 |
 | `predict_chunk(obs, execution_horizon=1)` | The runtime fills `execution_horizon` with how many actions it will execute before re-planning. An autoregressive decoder that can stop early decodes exactly that many. Keep the `=1` default so the override stays compatible with the one-arg base. |
 
 ```python
 def predict_chunk(self, observation, execution_horizon=1):
-    chunk = self.policy.decode(observation)        # native [H_native, A]
-    return chunk[:execution_horizon]               # truncate to what runs
+    return self.policy.decode(observation, steps=execution_horizon)   # [execution_horizon, A]
 ```
+
+Do not slice a fixed-size chunk down to the horizon yourself. Returning
+`chunk[:execution_horizon]` from a head that always produces the same length
+throws away actions the runtime was about to execute, and the runtime cannot
+tell that from a genuinely shorter chunk. Return the whole thing; the runtime
+takes the prefix.
+
+### Declaring your native chunk
+
+Set {attr}`native_chunk <rlmesh._models.base.ModelBase.native_chunk>` when your
+chunk length K is fixed -- as a class attribute, or in `load()` when the
+checkpoint decides it:
+
+```python
+class Chunker(rlmesh.torch.Model):
+    native_chunk = 50
+
+    def predict_chunk(self, observation):
+        return self.policy.decode(observation)     # exactly 50 actions
+
+class FromCheckpoint(rlmesh.torch.Model):
+    def load(self):
+        self.policy = load_policy()
+        self.native_chunk = int(self.policy.horizon)
+```
+
+It is read once, after `load()`, and answered to the runtime when the adapter
+resolves. Declaring it turns two silent failures into loud ones: an
+`execution_horizon` above K is refused at resolve instead of short-replaying
+every step, and a chunk corner that returns anything but exactly K actions fails
+the predict instead of quietly running at a shorter effective horizon. Leave it
+unset (the default) for a genuinely variable-length head: the contract is then
+elastic, the runtime executes `min(len(chunk), execution_horizon)`, and a chunk
+shorter than the horizon warns once.
 
 ### Replay semantics
 
-The runtime owns the replay. It calls the model once, splits the returned chunk along its leading axis, executes one action per environment `step`, and re-plans only when the queue drains. A horizon of 1 is a passthrough that never queues. A horizon above 1 caps the replay at that many actions, so a receding-horizon model may emit a longer chunk than it re-plans. The episode boundary (`reset`) drops any un-replayed tail, so a chunk never bleeds across episodes.
+The runtime owns the replay. It calls the model once, splits the returned chunk along its leading axis, executes one action per environment `step`, and re-plans only when the queue drains. A horizon of 1 is a passthrough that never queues. A horizon above 1 caps the replay at `min(len(chunk), execution_horizon)` actions, so a receding-horizon model may emit a longer chunk than it re-plans. The horizon is bounded at 1024. The episode boundary (`reset`) drops any un-replayed tail, so a chunk never bleeds across episodes.
 
 The chunk split treats a string, a bytes value, a mapping (a Dict-space action with the chunk axis inside each leaf), or a non-iterable scalar as a single-step chunk, matching the native `split_chunk`. An array's leading axis is the chunk axis. A returned empty chunk raises rather than running an empty step.
 
@@ -153,14 +186,14 @@ The backend itself only changes value conversion at the predict seam. The four c
 
 Real checkpoints rarely speak the spec's keys and shapes directly. The seams above absorb the difference so model code stays clean.
 
-| Quirk                                | Handling                                                                                                       |
-| ------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
-| Compute device                       | Set `self.device` in `load()`; requires a torch/jax `Model`. RLMesh moves obs leaves onto it before `predict`. |
-| Stateful policy (RNN, chunk replay)  | Implement `reset()`; it fires at each episode boundary, local and served.                                      |
-| Policy expects different keys        | Write an `_obs()` helper mapping spec keys to the policy's dict (the SmolVLA pattern, below).                  |
-| Normalization stats                  | Load them in `load()` alongside the weights.                                                                   |
-| Native chunk longer than the horizon | Return your native chunk; truncate to `execution_horizon` if you accept it, else the runtime uses a prefix.    |
-| Instruction text                     | Arrives as a plain `str` (a per-lane list in batch corners). Tokenize inside `predict`, not in the spec.       |
+| Quirk                                | Handling                                                                                                                           |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| Compute device                       | Set `self.device` in `load()`; requires a torch/jax `Model`. RLMesh moves obs leaves onto it before `predict`.                     |
+| Stateful policy (RNN, chunk replay)  | Implement `reset()`; it fires at each episode boundary, local and served.                                                          |
+| Policy expects different keys        | Write an `_obs()` helper mapping spec keys to the policy's dict (the SmolVLA pattern, below).                                      |
+| Normalization stats                  | Load them in `load()` alongside the weights.                                                                                       |
+| Native chunk longer than the horizon | Return the whole native chunk -- the runtime executes its prefix. Declare `native_chunk = K` so a bad horizon is refused up front. |
+| Instruction text                     | Arrives as a plain `str` (a per-lane list in batch corners). Tokenize inside `predict`, not in the spec.                           |
 
 The `_obs()` remap helper is the SmolVLA pattern: the adapter delivers the payload under the spec's keys, and a private method renames them to whatever dict the underlying policy expects.
 
@@ -256,6 +289,7 @@ Find the row that matches your policy, then build it.
 | --------------------------------------------- | ------------------------------------------ | ------------------------------------------------------ |
 | `TypeError` on construction for a chunk model | chunk-only on the native `rlmesh.Model`    | define `predict()`, or use a numpy/torch/jax backend   |
 | `execution_horizon` seems ignored             | the model has no chunk corner              | implement `predict_chunk` or `predict_chunk_batch`     |
+| `native_chunk=K but ... returned N frames`    | the chunk corner slices its own output     | return the whole native chunk, or drop the declaration |
 | Batch corner gets a list, not a fused obs     | the model is the native `rlmesh.Model`     | use a numpy/torch/jax backend for true fusion          |
 | `ValueError` on `device=`                     | `device` set on a numpy/native model       | use a torch/jax `Model`, or drop `device`              |
 | Obs not on the GPU                            | `device` set somewhere other than `load()` | set `self.device` in `load()`, the one source of truth |
