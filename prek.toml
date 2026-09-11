@@ -35,6 +35,15 @@ entry = "mise run lint:python"
 pass_filenames = false
 types = ["python"]
 
+# C / C++ (rlmesh-capi bindings)
+[[repos.hooks]]
+id = "clang-format"
+name = "clang-format"
+language = "system"
+entry = "mise run fmt:check:cxx"
+pass_filenames = false
+types_or = ["c", "c++"]
+
 # Protobuf
 [[repos.hooks]]
 id = "buf-lint"

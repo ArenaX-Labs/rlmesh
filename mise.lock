@@ -42,6 +42,10 @@ backend = "cargo:maturin"
 version = "1.40.0"
 backend = "cargo:typos-cli"
 
+[[tools.cmake]]
+version = "4.3.3"
+backend = "aqua:Kitware/CMake"
+
 [[tools.fnox]]
 version = "1.25.1"
 backend = "github:jdx/fnox"
@@ -83,6 +87,10 @@ url = "https://nodejs.org/dist/v24.16.0/node-v24.16.0-win-x64.zip"
 [[tools.oxfmt]]
 version = "0.53.0"
 backend = "npm:oxfmt"
+
+[[tools."pipx:clang-format"]]
+version = "20.1.0"
+backend = "pipx:clang-format"
 
 [[tools.prek]]
 version = "0.4.4"
