@@ -93,6 +93,7 @@ where
         base_seed: options.base_seed,
         episode_seeds: options.episode_seeds,
         max_episodes: options.max_episodes,
+        trial_index_base: options.trial_index_base,
         max_episode_steps: options.max_episode_steps,
         max_episode_seconds: options.max_episode_seconds,
         close_env_on_end: options.close_env,

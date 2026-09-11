@@ -12,6 +12,13 @@ use serde::{Deserialize, Serialize};
 /// `debug_assert!`s). Lets those accessors stay panic-free and lint-clean.
 static EMPTY_SPACE_SPEC: LazyLock<SpaceSpec> = LazyLock::new(SpaceSpec::default);
 
+/// Key under which an env declares, in its contract metadata, which reserved
+/// reset-option keys it wants delivered (a list of strings). The runtime sends a
+/// reserved `ResetRequest.options` key only to an env that named it here, so an
+/// env that forwards `options` blindly into a third-party `reset` never receives
+/// one it cannot interpret. Mirrored in Python as `rlmesh.ENV_RESET_OPTIONS_KEY`.
+pub const ENV_RESET_OPTIONS_KEY: &str = "rlmesh.env.v1.reset_options";
+
 /// Everything one route needs to run: its identity, the negotiated env
 /// contract, and the per-op limits. [`validate`](Self::validate) gates a spec
 /// before the driver runs it.
@@ -41,6 +48,16 @@ pub struct RuntimeSessionSpec {
     /// seeds its own rolls, so the list would silently not apply.
     pub episode_seeds: Vec<i64>,
     pub max_episodes: Option<u64>,
+    /// First trial ordinal this route's episodes walk. When set the driver mints
+    /// one ordinal per episode start (`base`, `base + 1`, ...), reports it on the
+    /// episode events and summaries, and delivers it as
+    /// `ResetRequest.options["trial_index"]` to an env that declared the key (see
+    /// [`ENV_RESET_OPTIONS_KEY`]). A sharded run gives each shard its own base so
+    /// the shards together walk a benchmark's trials once each, instead of every
+    /// shard re-deriving an index from a hashed seed. Requires driver-owned resets
+    /// (autoreset `DISABLED`): under `NEXT_STEP` the env restarts its own lanes, so
+    /// the runtime has no reset to carry the ordinal on.
+    pub trial_index_base: Option<u64>,
     /// Truncate any episode after this many steps (runtime-enforced; the lane
     /// is reset and the episode reported `truncated`). Requires driver-owned
     /// resets (autoreset `DISABLED`).
@@ -109,6 +126,14 @@ impl RuntimeSessionSpec {
                     "episode_seeds requires an env with autoreset disabled: under NEXT_STEP \
                      autoreset the env seeds its own episode rolls, so explicit per-episode \
                      seeds cannot apply"
+                        .to_string(),
+                );
+            }
+            if self.trial_index_base.is_some() {
+                return Err(
+                    "trial_index_base requires an env with autoreset disabled: under \
+                     NEXT_STEP autoreset the env restarts its own lanes, so the runtime \
+                     has no reset on which to deliver a trial ordinal"
                         .to_string(),
                 );
             }
@@ -243,6 +268,10 @@ pub struct EpisodeSummary {
     /// The explicit seed this episode was reset with (`episode_seeds` /
     /// `base_seed` derivation), `None` for an unseeded or autoreset-rolled one.
     pub seed: Option<i64>,
+    /// The trial ordinal this episode walked, `None` unless the session set
+    /// `trial_index_base`. Minted whether or not the env declared the reset
+    /// option, so a coverage audit can read the sweep off the report either way.
+    pub trial_index: Option<u64>,
     pub step_count: i64,
     pub cumulative_reward: f64,
     pub terminated: bool,
@@ -451,6 +480,7 @@ mod tests {
             episode_seeds: Vec::new(),
             base_seed: None,
             max_episodes: Some(1),
+            trial_index_base: None,
             max_episode_steps: None,
             max_episode_seconds: None,
             close_env_on_end: true,
@@ -476,6 +506,29 @@ mod tests {
             error.contains("autoreset disabled"),
             "a covering list still needs driver-owned resets, got: {error}"
         );
+    }
+
+    #[test]
+    fn validate_rejects_a_trial_base_the_env_owns_the_resets_for() {
+        let mut spec = valid_spec();
+        spec.trial_index_base = Some(0);
+        // Driver-owned resets (the default DISABLED/UNSPECIFIED) carry the ordinal.
+        assert!(spec.validate().is_ok());
+
+        spec.env_contract.autoreset_mode = AutoresetMode::NextStep as i32;
+        let error = spec.validate().unwrap_err();
+        assert!(
+            error.contains("trial_index_base requires an env with autoreset disabled"),
+            "expected the driver-owned-reset rule, got: {error}"
+        );
+    }
+
+    #[test]
+    fn reset_options_key_is_the_published_string() {
+        // Pinned against the Python mirror (`rlmesh.ENV_RESET_OPTIONS_KEY`, itself
+        // re-exported from this constant) by
+        // `python/rlmesh/tests/unit/test_reset_options.py`.
+        assert_eq!(super::ENV_RESET_OPTIONS_KEY, "rlmesh.env.v1.reset_options");
     }
 
     #[test]

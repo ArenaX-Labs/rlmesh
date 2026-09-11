@@ -78,6 +78,9 @@ pub struct EpisodeStartedEvent {
     pub env_index: i32,
     pub started_from_auto_reset: bool,
     pub seed: Option<i64>,
+    /// The trial ordinal this episode walks, `None` unless the session set
+    /// `trial_index_base`.
+    pub trial_index: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -95,6 +98,9 @@ pub struct EpisodeCompletedEvent {
     pub duration_ms: i64,
     pub final_info: Option<MetaMap>,
     pub seed: Option<i64>,
+    /// The trial ordinal this episode walked, `None` unless the session set
+    /// `trial_index_base`.
+    pub trial_index: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

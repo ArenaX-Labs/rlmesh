@@ -86,6 +86,37 @@ fn episode_seed_survives_completion_until_the_lane_rolls() {
     assert_eq!(state.seed_for_episode("ep-a"), None);
 }
 
+#[test]
+fn trial_cursor_walks_forward_across_whole_and_partial_resets() {
+    let mut spec = test_session_spec();
+    spec.num_envs = 2;
+    let mut state = RouteState::new(&spec);
+
+    // A whole-vector reset opens the first window of num_envs ordinals, aligned
+    // to the lanes it restarts.
+    assert_eq!(state.claim_trial_indices(100, 2), vec![100, 101]);
+    // A partial reset claims one ordinal per restarted lane from the same
+    // cursor, so no two episodes on the route share an ordinal.
+    assert_eq!(state.claim_trial_indices(100, 1), vec![102]);
+    // The cursor only ever walks forward, so the ordinals a route hands out are
+    // distinct and contiguous from its base (the window rule's other half -- a
+    // window is the max_episodes budget -- is pinned in tests/driver.rs).
+    assert_eq!(state.claim_trial_indices(100, 2), vec![103, 104]);
+}
+
+#[test]
+fn episode_trial_survives_completion_until_the_lane_rolls() {
+    let mut state = RouteState::new(&test_session_spec());
+    state.start_episodes(vec!["ep-a".to_string()], false);
+    state.note_episode_trials(&["ep-a".to_string()], &[4]);
+
+    state.complete_episode("ep-a");
+    assert_eq!(state.trial_for_episode("ep-a"), Some(4));
+
+    state.observe_episode_ids(vec!["ep-b".to_string()]);
+    assert_eq!(state.trial_for_episode("ep-a"), None);
+}
+
 fn test_session_spec() -> RuntimeSessionSpec {
     RuntimeSessionSpec {
         session_id: "session".to_string(),
@@ -98,6 +129,7 @@ fn test_session_spec() -> RuntimeSessionSpec {
         episode_seeds: Vec::new(),
         base_seed: None,
         max_episodes: Some(1),
+        trial_index_base: None,
         max_episode_steps: None,
         max_episode_seconds: None,
         close_env_on_end: true,

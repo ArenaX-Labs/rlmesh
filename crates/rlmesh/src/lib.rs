@@ -135,9 +135,9 @@ pub use model::{
     RouteResolver, RunLocalOptions, ServeModelOptions, predict_seed,
 };
 #[doc(no_inline)]
-pub use rlmesh_runtime::RuntimeReport;
-#[doc(no_inline)]
 pub use rlmesh_runtime::telemetry;
+#[doc(no_inline)]
+pub use rlmesh_runtime::{ENV_RESET_OPTIONS_KEY, RuntimeReport};
 pub use serve_options::ServeOptions;
 pub use spaces::{EnvContract, EnvRuntimeError, RenderFrame, SpaceSpec, SpaceValue};
 pub use tokio_util::sync::CancellationToken;

@@ -23,7 +23,7 @@ pub use hooks::{
     StepCompletedEvent, TelemetrySnapshotEvent,
 };
 pub use rlmesh_proto::EndpointPhases;
-pub use spec::{RuntimeLimits, RuntimeReport, RuntimeSessionSpec};
+pub use spec::{ENV_RESET_OPTIONS_KEY, RuntimeLimits, RuntimeReport, RuntimeSessionSpec};
 
 /// Protocol types used by the runtime public API.
 ///

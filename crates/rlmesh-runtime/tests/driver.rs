@@ -769,6 +769,7 @@ struct TestEnv {
     closed: Arc<AtomicBool>,
     step_count: Arc<AtomicUsize>,
     reset_seeds: Arc<Mutex<Vec<Vec<i64>>>>,
+    reset_options: Arc<Mutex<Vec<Option<MetaMap>>>>,
     // The runtime is the id authority: the env adopts the id pushed down on
     // reset and echoes it back in completed_episodes (never mints its own).
     current_episode: Arc<Mutex<String>>,
@@ -784,6 +785,7 @@ impl Default for TestEnv {
             closed: Arc::new(AtomicBool::new(false)),
             step_count: Arc::new(AtomicUsize::new(0)),
             reset_seeds: Arc::new(Mutex::new(Vec::new())),
+            reset_options: Arc::new(Mutex::new(Vec::new())),
             current_episode: Arc::new(Mutex::new(String::new())),
             terminal_after: 1,
             endpoint_total_ns: None,
@@ -799,6 +801,10 @@ impl RuntimeEnv for TestEnv {
             .lock()
             .expect("reset seed recorder lock poisoned")
             .push(request.seeds);
+        self.reset_options
+            .lock()
+            .expect("reset option recorder lock poisoned")
+            .push(request.options);
         // Adopt the runtime-pushed id (the env never mints).
         *self
             .current_episode
@@ -966,6 +972,8 @@ struct RecordingHooks {
     step_infos: Mutex<Vec<Option<MetaMap>>>,
     started_seeds: Mutex<Vec<Option<i64>>>,
     completed_seeds: Mutex<Vec<Option<i64>>>,
+    started_trials: Mutex<Vec<Option<u64>>>,
+    completed_trials: Mutex<Vec<Option<u64>>>,
     // Counts of live telemetry snapshots streamed via on_telemetry, by horizon.
     telemetry_windows: AtomicUsize,
     telemetry_sessions: AtomicUsize,
@@ -1052,6 +1060,10 @@ impl RuntimeHooks for RecordingHooks {
             .lock()
             .expect("started seed recorder lock poisoned")
             .push(event.seed);
+        self.started_trials
+            .lock()
+            .expect("started trial recorder lock poisoned")
+            .push(event.trial_index);
         Ok(())
     }
 
@@ -1063,6 +1075,10 @@ impl RuntimeHooks for RecordingHooks {
             .lock()
             .expect("completed seed recorder lock poisoned")
             .push(event.seed);
+        self.completed_trials
+            .lock()
+            .expect("completed trial recorder lock poisoned")
+            .push(event.trial_index);
         Ok(())
     }
 
@@ -1118,6 +1134,7 @@ fn one_episode_spec() -> RuntimeSessionSpec {
         episode_seeds: Vec::new(),
         base_seed: None,
         max_episodes: Some(1),
+        trial_index_base: None,
         max_episode_steps: None,
         max_episode_seconds: None,
         close_env_on_end: true,
@@ -1264,6 +1281,7 @@ fn vector_spec(num_envs: usize, max_episodes: u64) -> RuntimeSessionSpec {
         episode_seeds: Vec::new(),
         base_seed: None,
         max_episodes: Some(max_episodes),
+        trial_index_base: None,
         max_episode_steps: None,
         max_episode_seconds: None,
         close_env_on_end: true,
@@ -1556,5 +1574,145 @@ async fn prefetch_discards_the_stale_chunk_across_episode_boundaries() {
         seen.len() >= 2,
         "at least one fresh plan per episode, got {}",
         seen.len()
+    );
+}
+
+/// A spec for `episodes` back-to-back single-lane episodes whose env declares
+/// `reset_options = declared`.
+fn trial_spec(episodes: u64, declared: &[&str]) -> RuntimeSessionSpec {
+    let mut spec = one_episode_spec();
+    spec.max_episodes = Some(episodes);
+    if !declared.is_empty() {
+        let options = MetaValue {
+            kind: Some(meta_value::Kind::List(rlmesh_proto::spaces::v1::MetaList {
+                items: declared
+                    .iter()
+                    .map(|key| MetaValue {
+                        kind: Some(meta_value::Kind::Text((*key).to_string())),
+                    })
+                    .collect(),
+            })),
+        };
+        spec.env_contract.spec.as_mut().expect("env spec").metadata = Some(MetaMap {
+            entries: [(rlmesh_runtime::ENV_RESET_OPTIONS_KEY.to_string(), options)].into(),
+        });
+    }
+    spec
+}
+
+/// The `trial_index` carried by one recorded `ResetRequest.options`, as the
+/// integer a single-lane reset sends.
+fn recorded_trial(options: &Option<MetaMap>) -> Option<i64> {
+    match options
+        .as_ref()?
+        .entries
+        .get("trial_index")?
+        .kind
+        .as_ref()?
+    {
+        meta_value::Kind::Integer(value) => Some(*value),
+        _ => None,
+    }
+}
+
+#[tokio::test]
+async fn declared_env_receives_the_trial_ordinal_on_every_reset() {
+    let env = TestEnv::default();
+    let hooks = Arc::new(RecordingHooks::default());
+    let mut spec = trial_spec(3, &["trial_index"]);
+    spec.trial_index_base = Some(100);
+
+    let report = RuntimeDriver::new(spec, env.clone(), TestModel::default(), hooks.clone())
+        .run()
+        .await
+        .unwrap();
+
+    // One reset per episode (driver-owned resets), each carrying the next ordinal.
+    let options = env.reset_options.lock().unwrap().clone();
+    assert_eq!(
+        options.iter().map(recorded_trial).collect::<Vec<_>>(),
+        vec![Some(100), Some(101), Some(102)],
+    );
+    // The window rule: a shard walks exactly its `max_episodes` ordinals, so the
+    // next shard's base is base + M.
+    assert_eq!(report.total_episodes, 3);
+    assert_eq!(
+        report
+            .episodes
+            .iter()
+            .map(|episode| episode.trial_index)
+            .collect::<Vec<_>>(),
+        vec![Some(100), Some(101), Some(102)],
+    );
+    assert_eq!(
+        *hooks.started_trials.lock().unwrap(),
+        vec![Some(100), Some(101), Some(102)],
+    );
+    assert_eq!(
+        *hooks.completed_trials.lock().unwrap(),
+        vec![Some(100), Some(101), Some(102)],
+    );
+}
+
+#[tokio::test]
+async fn undeclared_env_is_not_sent_the_ordinal_but_the_report_still_carries_it() {
+    let env = TestEnv::default();
+    let mut spec = trial_spec(2, &["something_else"]);
+    spec.trial_index_base = Some(7);
+
+    let report = RuntimeDriver::new(
+        spec,
+        env.clone(),
+        TestModel::default(),
+        Arc::new(RecordingHooks::default()),
+    )
+    .run()
+    .await
+    .unwrap();
+
+    assert!(
+        env.reset_options
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|options| options.is_none()),
+        "an env that declared no trial_index must not receive one",
+    );
+    assert_eq!(
+        report
+            .episodes
+            .iter()
+            .map(|episode| episode.trial_index)
+            .collect::<Vec<_>>(),
+        vec![Some(7), Some(8)],
+        "the ordinal is minted either way, so a coverage audit can read the sweep",
+    );
+}
+
+#[tokio::test]
+async fn no_trial_base_sends_no_options_and_reports_no_ordinal() {
+    let env = TestEnv::default();
+    let report = RuntimeDriver::new(
+        trial_spec(2, &["trial_index"]),
+        env.clone(),
+        TestModel::default(),
+        Arc::new(RecordingHooks::default()),
+    )
+    .run()
+    .await
+    .unwrap();
+
+    assert!(
+        env.reset_options
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|options| options.is_none()),
+    );
+    assert!(
+        report
+            .episodes
+            .iter()
+            .all(|episode| episode.trial_index.is_none())
     );
 }
