@@ -62,6 +62,40 @@ Other vocabularies:
 | Fit mode     | `stretch`, `crop`, `pad` | (none)                              | how to reconcile an aspect mismatch |
 | dtype        | any NumPy dtype name     | `uint8` (image) / `float32` (state) | string, e.g. `"float32"`            |
 
+### Frames and references
+
+Cartesian numbers mean nothing on their own: `[0.31, -0.02, 0.18]` is a point in _some_ frame, and `[0.01, 0.0, -0.005]` is a step away from _some_ pose. Two keyword-only attributes say which, and they are how the contract catches a pairing whose numbers type-check and whose geometry does not.
+
+| Attribute   | Values                | Applies to                                                | Declared on                                            |
+| ----------- | --------------------- | --------------------------------------------------------- | ------------------------------------------------------ |
+| `frame`     | `world`, `robot_base` | absolute poses: `proprio/eef_*`, `action/eef_*` (8 roles) | `StateTag`, `Field`, `State`/`Concat` part, `Actuator` |
+| `reference` | `current`, `target`   | deltas: `action/delta_eef_*` (4 roles)                    | `Actuator`                                             |
+
+**A delta never carries a `frame`** -- it is expressed in the controller's own frame by definition, and there is nothing to agree about. What a delta _does_ need is the pose it is added to: an env declares what its Cartesian controller integrates against -- the measured pose (`current`) or the last commanded target (`target`) -- and a model declares what it was trained against. That is `reference`, and it is the attribute delta roles get instead of `frame`.
+
+Both attributes follow the same rules, and both are **optional**: a spec that declares neither is valid v1 and serializes exactly as it did before they existed.
+
+| Env says | Model says      | Outcome                                                               |
+| -------- | --------------- | --------------------------------------------------------------------- |
+| nothing  | nothing         | silence -- there is nothing to check                                  |
+| a value  | nothing         | silence -- the env stated a fact the model has no requirement against |
+| nothing  | a value         | `caution` -- the model states a requirement nothing can confirm       |
+| a value  | the same        | silence -- agreement                                                  |
+| a value  | a different one | **resolve error** -- and so is any value outside the vocabulary above |
+
+An unrecognized value still parses and round-trips (a newer peer's vocabulary survives relay), but it fails at resolve: a geometry this core cannot name is a geometry it cannot verify.
+
+`explain()` shows the agreed value as a suffix -- `@robot_base` on a pose, `~target` on a delta -- and only when a side declared one, so a pre-geometry summary is unchanged:
+
+```text
+observation:
+  "state" <- concat(eef_pos[:3]@robot_base)
+action:
+  "action/delta_eef_pos" <- model[0:3]~target
+```
+
+At the managed publish boundary the `--require-frames` tier turns the optionality off: every role the registry says owes an attribute must declare one. Locally, and by default, declaring nothing stays legal.
+
 Normalization is one overloaded field, `normalize`: `False` (off, the default), `True` (the conventional `[0, 1]`), or a `(low, high)` pair (e.g. `(-1.0, 1.0)`) to map into a specific range. One field, so an on/off flag can never disagree with a range, and `False` is an authoritative off-switch.
 
 ## The environment side
@@ -116,6 +150,7 @@ Nesting is real `dict` nesting that mirrors a nested `Dict` space (`{"agent": {"
 | `role` (1st positional) | --      | the state role to match                                           | always                               |
 | `encoding`              | `None`  | rotation encoding (single, or a native-first preference sequence) | the role is a rotation               |
 | `range`                 | `None`  | `(low, high)` bounds where the space is unbounded                 | the space leaves this leaf unbounded |
+| `frame` (keyword-only)  | `None`  | the coordinate frame these values are expressed in                | the role is an absolute pose         |
 
 `range` only supplies bounds the space lacks. If the space declares finite bounds that disagree with it, resolution errors rather than silently overriding them.
 
@@ -147,8 +182,9 @@ adapt.EnvTags(
 | `dim`                   | -- (required, ≥ 1) | element count of the slice                        | always                              |
 | `encoding`              | `None`             | rotation encoding (single or preference sequence) | the slice is a rotation             |
 | `range`                 | `None`             | `(low, high)` where the space is unbounded        | the slice is unbounded in the space |
+| `frame` (keyword-only)  | `None`             | the coordinate frame this slice is expressed in   | the role is an absolute pose        |
 
-A `role=None` field advances the offset without producing a feature; use it to step over indices the model never reads. A skip carries no encoding or range.
+A `role=None` field advances the offset without producing a feature; use it to step over indices the model never reads. A skip carries no encoding, range or frame.
 
 ## The model side
 
@@ -214,6 +250,7 @@ spec = adapt.ModelSpec(
 | `post_rotate`           | `None`      | a fixed `Rotation` right-multiplied onto the env's rotation         | the checkpoint was trained in an offset frame  |
 | `scale`                 | `None`      | multiply by this after the range map                                | the model's own units                          |
 | `offset`                | `None`      | add this after `scale` (`value * scale + offset`)                   | e.g. a `1 - 2g` gripper (`scale=-2, offset=1`) |
+| `frame` (keyword-only)  | `None`      | the coordinate frame the checkpoint was trained to read             | the part is an absolute pose                   |
 | `pad_to`                | `None`      | zero-pad the result to this length                                  | fixed-width input                              |
 | `dtype`                 | `"float32"` | NumPy dtype of the result                                           | non-default dtype                              |
 | `reshape`               | `None`      | target shape for the result                                         | the model wants a specific shape               |
@@ -225,7 +262,7 @@ The steps run in a fixed order: slice the env feature, convert the rotation (wit
 
 `post_rotate` takes a {class}`~rlmesh.adapters.Rotation`, built from a 3x3 matrix with `Rotation.from_matrix(rows)` (stored as `rot6d`, so the round-trip is exact). It needs a rotation `encoding` and cannot combine with a `CustomEncoding`; the matrix must already be a rotation (orthonormal, `|det - 1| <= 1e-4`).
 
-A `State` is also a valid `Concat` part: its part fields (`role`, `encoding`, `dim`, `index`, `optional`, `range`, `fill`, `post_rotate`, `scale`, `offset`) are taken, and its container fields (`pad_to`, `dtype`, `reshape`, `container`) must stay default when used as a part.
+A `State` is also a valid `Concat` part: its part fields (`role`, `encoding`, `dim`, `index`, `optional`, `range`, `fill`, `post_rotate`, `scale`, `offset`, `frame`) are taken, and its container fields (`pad_to`, `dtype`, `reshape`, `container`) must stay default when used as a part.
 
 ### Concat
 
@@ -283,6 +320,8 @@ Tokenization stays in the model; `Text` delivers the raw string.
 | `threshold`             | `None`        | subtract to recenter the decision boundary                | shift a `binary` split off zero        |
 | `clip`                  | `False`       | clamp the mapped value to `range` (requires `range`)      | per-dim safety on a mixed-range action |
 | `fill`                  | `0.0`         | constant per dim of an opaque (role-less) actuator        | env-required dims no model reads       |
+| `frame` (keyword-only)  | `None`        | coordinate frame of an **absolute** pose command          | `action/eef_*`                         |
+| `reference` (kw-only)   | `None`        | pose a **delta** is integrated against                    | `action/delta_eef_*`                   |
 
 `scale`, `invert`, and `threshold` declare a side's actuator convention. They can be set on **either side** and compose as literal transforms applied **after** the declared formats (rotation, range) are bridged, **model-side first** (the model's own output convention), then **env-side** (the env's):
 
