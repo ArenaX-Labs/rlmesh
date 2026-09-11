@@ -71,6 +71,11 @@ pub struct ImagePlan {
     /// Swap the red and blue channels after the spatial ops and before the
     /// dtype cast (`channel_order = "bgr"`); needs a 3-channel image.
     pub swap_rb: bool,
+    /// The `[height, width]` the model asserted the bound camera renders at,
+    /// when it asserted one and the camera's resolution was derivable (so the
+    /// assertion was actually checked). Describe text only — the assertion
+    /// itself is settled at resolve.
+    pub render: Option<(u32, u32)>,
     /// `Some((requested, bound))` when the lone-camera fallback bound this input
     /// to the env's single camera under a different role than the model asked
     /// for. Surfaced as a resolve advisory; `None` for an exact role match.

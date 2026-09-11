@@ -1122,6 +1122,7 @@ mod tests {
             fill: 0,
             crop: None,
             swap_rb: false,
+            render: None,
             role_rebound: None,
         };
         let Value::Tensor(tensor) =
@@ -1159,6 +1160,7 @@ mod tests {
             fill: 128,
             crop: None,
             swap_rb: false,
+            render: None,
             role_rebound: None,
         };
         let Value::Tensor(tensor) =

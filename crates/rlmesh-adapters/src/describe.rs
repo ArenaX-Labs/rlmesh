@@ -169,6 +169,11 @@ fn describe_image(plan: &ImagePlan) -> String {
         );
     }
     let mut steps: Vec<String> = Vec::new();
+    // The asserted camera size leads: it describes the frame arriving, not a
+    // step taken on it.
+    if let Some((height, width)) = plan.render {
+        steps.push(format!("render {height}x{width}"));
+    }
     if plan.src_layout != ImageLayout::Hwc {
         steps.push(format!("{}->hwc", plan.src_layout.as_str()));
     }

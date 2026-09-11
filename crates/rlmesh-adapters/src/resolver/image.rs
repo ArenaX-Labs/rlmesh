@@ -124,6 +124,27 @@ pub(super) fn plan_image(
             ),
         ));
     }
+    // `render` is an assertion about the camera, not a request the core can
+    // satisfy: the platform binds the env's camera dial from it before the run,
+    // and this is the check that the dial actually moved. Checked against the
+    // camera that was *bound* (a lone-camera rebind included), and only when the
+    // env's resolution was derivable -- an undeclared camera size is not
+    // evidence of a mismatch.
+    let render = model_input.render.filter(|_| known_size(env_image));
+    if let Some((height, width)) = render
+        && (env_image.height, env_image.width) != (height, width)
+    {
+        return Err(err(
+            ErrorCode::RenderMismatch,
+            format!(
+                "model input {at}: declares render {height}x{width} but the bound camera {} \
+                 renders {}x{}",
+                quoted(&env_image.role),
+                env_image.height,
+                env_image.width
+            ),
+        ));
+    }
     // When the model declares only one target axis, fill the other from the
     // env's native resolution (derived into the env image by `join`) rather
     // than silently skipping the resize.
@@ -171,8 +192,15 @@ pub(super) fn plan_image(
         fill: model_input.fill.unwrap_or(0),
         crop,
         swap_rb,
+        render,
         role_rebound,
     })
+}
+
+/// Whether `join` could derive this camera's pixel resolution from the
+/// observation space (`0` on an axis means it could not).
+fn known_size(env_image: &EnvImage) -> bool {
+    env_image.height != 0 && env_image.width != 0
 }
 
 /// Resolve `crop` / `crop_area` / `crop_mode` into the center box to keep.
@@ -252,6 +280,9 @@ fn zero_fill_image_plan(model_input: &Image, placement: NodePath) -> Result<Imag
         // channels cannot change a pixel, so neither step is planned.
         crop: None,
         swap_rb: false,
+        // There is no camera here to assert anything about: a zero-filled frame
+        // is synthesized by the adapter, not rendered by the env.
+        render: None,
         role_rebound: None,
     })
 }
@@ -427,6 +458,7 @@ mod image_resolve_tests {
             crop_area: None,
             crop_mode: "zoom".to_owned(),
             channel_order: "rgb".to_owned(),
+            render: None,
             unknown: Default::default(),
         }
     }
@@ -677,6 +709,83 @@ mod image_resolve_tests {
         model.role = "image/overhead".to_owned();
         let error = plan(&model, &images).expect_err("err");
         assert_eq!(error.code, ErrorCode::MissingRole);
+    }
+
+    #[test]
+    fn render_matching_the_bound_camera_resolves() {
+        // The dial moved: the camera renders exactly what the model asserts.
+        let env = env_image(448, 448);
+        let mut model = model_image(224, 224, false);
+        model.render = Some((448, 448));
+        let plan = plan(&model, &images(&env)).expect("ok");
+        assert_eq!(plan.render, Some((448, 448)));
+    }
+
+    #[test]
+    fn render_disagreeing_with_the_bound_camera_is_a_render_mismatch() {
+        // The dial did not move (or moved somewhere else). Loud, and its own
+        // code so the platform can map it to a binding failure rather than a
+        // generic unsupported-option error.
+        let env = env_image(256, 256);
+        let mut model = model_image(224, 224, false);
+        model.render = Some((448, 448));
+        let error = plan(&model, &images(&env)).expect_err("err");
+        assert_eq!(error.code, ErrorCode::RenderMismatch);
+        assert!(
+            error.message.contains("declares render 448x448")
+                && error.message.contains("renders 256x256"),
+            "got: {}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn render_asserts_nothing_when_the_camera_size_is_underivable() {
+        // `join` writes 0 when the observation space does not pin the camera's
+        // resolution; an unknown size is not evidence of a mismatch, and the
+        // plan records that nothing was checked.
+        let env = env_image(0, 0);
+        let mut model = model_image(224, 224, false);
+        model.render = Some((448, 448));
+        let plan = plan(&model, &images(&env)).expect("ok");
+        assert_eq!(plan.render, None);
+    }
+
+    #[test]
+    fn render_is_checked_against_the_rebound_camera() {
+        // The lone-camera fallback binds a different role than the model asked
+        // for; the assertion follows the camera that was actually bound, not the
+        // role that was requested.
+        let env = env_image(256, 256); // role "image/primary"
+        let mut model = model_image(224, 224, false);
+        model.role = "image/wrist".to_owned();
+        model.render = Some((448, 448));
+        let error = plan(&model, &images(&env)).expect_err("err");
+        assert_eq!(error.code, ErrorCode::RenderMismatch);
+        assert!(
+            error.message.contains("\"image/primary\""),
+            "got: {}",
+            error.message
+        );
+        // ... and passes when the lone camera does render at the asserted size.
+        let env = env_image(448, 448);
+        let plan = plan(&model, &images(&env)).expect("ok");
+        assert_eq!(plan.render, Some((448, 448)));
+        assert!(plan.role_rebound.is_some());
+    }
+
+    #[test]
+    fn render_on_an_absent_optional_camera_asserts_nothing() {
+        // A zero-filled frame is synthesized by the adapter, not rendered by the
+        // env: there is no camera to disagree with.
+        let mut model = model_image(224, 224, false);
+        model.optional = true;
+        model.channels = Some(3);
+        model.render = Some((448, 448));
+        let empty: BTreeMap<String, &EnvImage> = BTreeMap::new();
+        let plan = plan(&model, &empty).expect("ok");
+        assert_eq!(plan.zero_fill, Some((224, 224, 3)));
+        assert_eq!(plan.render, None);
     }
 
     #[test]

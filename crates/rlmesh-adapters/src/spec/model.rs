@@ -240,9 +240,48 @@ pub struct ModelSpec {
     pub output: Action,
 }
 
+/// The camera resolutions this model's image inputs assert, in document order.
+///
+/// One entry per [`Image`] leaf that declares a `render`, as
+/// `(role, (height, width))`; leaves without one contribute nothing, and a role
+/// reused across leaves appears once per leaf. Order is the spec's own document
+/// order — dict keys by their sorted names, tuple entries by position — so two
+/// walks of the same spec always agree entry for entry.
+///
+/// This is the platform's side of the `render` contract: it feeds the requests
+/// into the environment package's `renderParams` camera dial (surfaced as
+/// `observed.renderRequests`) before the run. [`resolve`](crate::v1::resolve)
+/// then asserts each one against the camera it actually bound.
+pub fn render_requests(spec: &ModelSpec) -> Vec<(String, (u32, u32))> {
+    fn walk(node: &InputNode, out: &mut Vec<(String, (u32, u32))>) {
+        match node {
+            InputNode::Leaf(ModelLeaf::Image(image)) => {
+                if let Some(size) = image.render {
+                    out.push((image.role.clone(), size));
+                }
+            }
+            InputNode::Leaf(_) => {}
+            InputNode::Dict(children) => {
+                for child in children.values() {
+                    walk(child, out);
+                }
+            }
+            InputNode::Tuple(items) => {
+                for item in items {
+                    walk(item, out);
+                }
+            }
+        }
+    }
+
+    let mut requests = Vec::new();
+    walk(&spec.input, &mut requests);
+    requests
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{InputNode, ModelLeaf, ModelSpec};
+    use super::{InputNode, ModelLeaf, ModelSpec, render_requests};
 
     /// Parse, serialize, re-parse, and assert structural stability (the
     /// serializer fills leaf defaults, so we compare the parsed structs rather
@@ -330,6 +369,62 @@ mod tests {
             json.contains(r#""type":"audio""#) && json.contains("sample_rate"),
             "got: {json}"
         );
+    }
+
+    /// A `ModelSpec` whose input tree is the given JSON, with a throwaway action.
+    fn spec(input: &str) -> ModelSpec {
+        let json = format!(
+            r#"{{"input": {input}, "output": {{"components": [{{"role": "action/gripper", "dim": 1}}]}}}}"#
+        );
+        serde_json::from_str(&json).expect("parse spec")
+    }
+
+    #[test]
+    fn render_requests_walks_the_tree_in_document_order() {
+        // Dict keys walk sorted, tuple entries walk by position, and the two
+        // nest: the order is the spec's own document order, and is what the
+        // platform's camera-dial binding sees. `wrist` declares no render, so it
+        // contributes nothing; `zzz` sorts after `obs` despite being written
+        // first.
+        let requests = render_requests(&spec(
+            r#"{
+                "zzz": {"type": "image", "role": "image/wrist_2", "render": [240, 320]},
+                "obs": [
+                    {"type": "image", "role": "image/primary", "render": 448},
+                    {"type": "image", "role": "image/wrist"},
+                    {"type": "text", "role": "instruction"},
+                    {"type": "image", "role": "image/wrist", "render": [480, 480]}
+                ]
+            }"#,
+        ));
+        assert_eq!(
+            requests,
+            vec![
+                ("image/primary".to_owned(), (448, 448)),
+                ("image/wrist".to_owned(), (480, 480)),
+                ("image/wrist_2".to_owned(), (240, 320)),
+            ]
+        );
+        // Stable: the same spec always walks the same way.
+        assert_eq!(
+            requests,
+            render_requests(&spec(
+                r#"{
+                "zzz": {"type": "image", "role": "image/wrist_2", "render": [240, 320]},
+                "obs": [
+                    {"type": "image", "role": "image/primary", "render": 448},
+                    {"type": "image", "role": "image/wrist"},
+                    {"type": "text", "role": "instruction"},
+                    {"type": "image", "role": "image/wrist", "render": [480, 480]}
+                ]
+            }"#,
+            ))
+        );
+    }
+
+    #[test]
+    fn render_requests_is_empty_when_no_input_asserts_one() {
+        assert!(render_requests(&spec(r#"{"type": "image", "role": "image/primary"}"#)).is_empty());
     }
 
     #[test]

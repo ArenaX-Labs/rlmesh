@@ -34,6 +34,10 @@ pub enum ErrorCode {
     /// declared geometry disagrees" should not have to match two names; the
     /// message says which attribute and which role.
     FrameMismatch,
+    /// A model image asserts a `render` size the camera it bound does not
+    /// render at — the env's camera dial was never moved to the resolution the
+    /// model was trained on.
+    RenderMismatch,
     /// A leaf declares a *kind* this core does not define: a model input of an
     /// unrecognized kind, or a model input whose role the env offers only as an
     /// unrecognized observation kind. The fix is to upgrade the runtime, not to

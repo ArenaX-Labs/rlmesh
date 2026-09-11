@@ -49,7 +49,7 @@ pub use frames::{Attr, FRAMES, FrameLaw, FrameRef, REFERENCES, ReferenceLaw};
 pub use layouts::{FitMode, ImageLayout};
 pub use model::{
     CHANNEL_ORDERS, CROP_MODES, ConcatPart, Custom, Image, InputNode, ModelLeaf, ModelSpec,
-    Normalize, State, StateContainer, Text, TextContainer,
+    Normalize, State, StateContainer, Text, TextContainer, render_requests,
 };
 pub use rotation_literal::RotationLiteral;
 pub use rotations::RotationEncoding;

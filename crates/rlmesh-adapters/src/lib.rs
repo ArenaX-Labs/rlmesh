@@ -67,7 +67,7 @@ pub mod v1 {
         RotationEncoding, RotationLiteral, SplitLayout, State, StateContainer, StateEncoding,
         StateTag, Text, TextContainer, TextTag, UnknownFeature, reject_unframed_roles_env,
         reject_unframed_roles_model, reject_unknowns_env, reject_unknowns_model,
-        reject_unsanctioned_roles_env, reject_unsanctioned_roles_model,
+        reject_unsanctioned_roles_env, reject_unsanctioned_roles_model, render_requests,
     };
     pub use crate::stateful::{
         EncodingTransform, FrameBuffers, MAX_EXECUTION_HORIZON, NoEncodings, apply_actions,

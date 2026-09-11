@@ -184,6 +184,85 @@ pub(crate) fn de_opt_number<'de, D: Deserializer<'de>>(
         .map(|number| number.map(|Number(value)| value))
 }
 
+/// Upper bound on each axis of a declared render size (the image `render`
+/// assertion). A camera dial the platform binds from an untrusted spec, so the
+/// ceiling is a sane display resolution rather than the shared [`MAX_DIM`].
+pub(crate) const MAX_RENDER: u32 = 4096;
+
+/// Deserialize an optional `[height, width]` size pair, with a bare integer as
+/// the square shorthand (`448` == `[448, 448]`). Each axis is constrained to
+/// `1..=`[`MAX_RENDER`]: a zero axis names no camera and an unbounded one would
+/// have the env allocate an arbitrarily large frame. Backs the image `render`
+/// assertion; emitted on the wire as the `[height, width]` pair.
+pub(crate) fn de_opt_count_pair<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<(u32, u32)>, D::Error> {
+    struct Pair((u32, u32));
+
+    impl<'de> Deserialize<'de> for Pair {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            struct PairVisitor;
+
+            impl<'de> Visitor<'de> for PairVisitor {
+                type Value = (u32, u32);
+
+                fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                    formatter.write_str("a size, an integer or a pair [height, width]")
+                }
+
+                // A bare integer is the square shorthand; the count visitor keeps
+                // the negative/float cases in domain language.
+                fn visit_u64<E: de::Error>(self, value: u64) -> Result<(u32, u32), E> {
+                    CountVisitor.visit_u64(value).map(|side| (side, side))
+                }
+
+                fn visit_i64<E: de::Error>(self, value: i64) -> Result<(u32, u32), E> {
+                    CountVisitor.visit_i64(value).map(|side| (side, side))
+                }
+
+                fn visit_f64<E: de::Error>(self, value: f64) -> Result<(u32, u32), E> {
+                    CountVisitor.visit_f64(value).map(|side| (side, side))
+                }
+
+                fn visit_seq<A: de::SeqAccess<'de>>(
+                    self,
+                    mut seq: A,
+                ) -> Result<(u32, u32), A::Error> {
+                    let mut axes: Vec<u32> = Vec::new();
+                    while let Some(Count(axis)) = seq.next_element::<Count>()? {
+                        axes.push(axis);
+                    }
+                    match axes[..] {
+                        [height, width] => Ok((height, width)),
+                        _ => Err(de::Error::custom(format!(
+                            "a size is an integer or a pair [height, width], got {} element(s)",
+                            axes.len()
+                        ))),
+                    }
+                }
+            }
+
+            deserializer.deserialize_any(PairVisitor).map(Pair)
+        }
+    }
+
+    let pair = de_opt::<Pair, D>(
+        deserializer,
+        "a size, an integer or a pair [height, width], or null",
+    )
+    .map(|pair| pair.map(|Pair(value)| value))?;
+    if let Some((height, width)) = pair {
+        for (axis, value) in [("height", height), ("width", width)] {
+            if !(1..=MAX_RENDER).contains(&value) {
+                return Err(de::Error::custom(format!(
+                    "{axis} must be between 1 and {MAX_RENDER}, got {value}"
+                )));
+            }
+        }
+    }
+    Ok(pair)
+}
+
 /// Deserialize an optional fraction in `(0, 1]` (the image `crop` /
 /// `crop_area` box), routed through [`Number`] so a wrong-typed value still
 /// reads `a number`. `0` (keep nothing) and anything past the whole frame are

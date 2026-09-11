@@ -260,6 +260,24 @@ pub struct Image {
     /// `crop_mode`. Omitted at the default.
     #[serde(default = "default_rgb", skip_serializing_if = "is_rgb")]
     pub channel_order: String,
+    /// The camera resolution the model was trained against, as
+    /// `[height, width]` (a bare integer on the wire is the square shorthand).
+    ///
+    /// An **assertion**, not a request: the core never resizes a camera to
+    /// reach it. The platform binds the env's camera dial from it (via the
+    /// package's `renderParams` label, fed by
+    /// [`render_requests`](crate::v1::render_requests)); resolution then checks
+    /// that the camera it actually bound really does render at this size and
+    /// fails with [`RenderMismatch`](crate::v1::ErrorCode::RenderMismatch) if
+    /// not — so a dial that silently did not move is loud instead of a quiet
+    /// accuracy loss. Additive over the pinned wire format (omitted when unset);
+    /// each axis is bounded to `1..=4096`.
+    #[serde(
+        default,
+        deserialize_with = "crate::spec::num::de_opt_count_pair",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub render: Option<(u32, u32)>,
     /// Unrecognized additive fields, retained for round-trip and surfaced to the
     /// publish-door `reject_unknowns` guard. See the strict-v1 publish gate.
     #[serde(flatten)]
@@ -458,6 +476,64 @@ mod tests {
         assert!(
             serde_json::from_str::<ModelLeaf>(
                 r#"{"type": "image", "role": "image/primary", "crop_area": 1}"#
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn render_defaults_to_none_and_stays_off_the_wire() {
+        let input = image("");
+        let ModelLeaf::Image(img) = &input else {
+            panic!("expected image")
+        };
+        assert_eq!(img.render, None);
+        // Byte parity with every spec written before the field existed.
+        assert!(!serde_json::to_string(&input).unwrap().contains("render"));
+    }
+
+    #[test]
+    fn render_accepts_a_square_int_and_a_pair_and_emits_a_pair() {
+        // A bare integer is the square shorthand; both forms serialize as the
+        // `[height, width]` pair, so the wire has one shape.
+        for (declared, expected) in [("448", (448, 448)), ("[480, 640]", (480, 640))] {
+            let input = image(&format!(r#", "render": {declared}"#));
+            let ModelLeaf::Image(img) = &input else {
+                panic!("expected image")
+            };
+            assert_eq!(img.render, Some(expected));
+            let wire = serde_json::to_string(&input).unwrap();
+            assert!(
+                wire.contains(&format!("\"render\":[{},{}]", expected.0, expected.1)),
+                "got: {wire}"
+            );
+        }
+    }
+
+    #[test]
+    fn render_axis_bounds_are_enforced_at_the_wire() {
+        // A zero axis names no camera and an unbounded one would have the env
+        // allocate an arbitrarily large frame; both are rejected at the codec
+        // door rather than surfacing as a bound camera dial nobody can render.
+        for bad in ["0", "4097", "[0, 448]", "[448, 4097]"] {
+            let json = format!(r#"{{"type": "image", "role": "image/primary", "render": {bad}}}"#);
+            let err = serde_json::from_str::<ModelLeaf>(&json).expect_err("bounds");
+            assert!(err.to_string().contains("between 1 and 4096"), "got: {err}");
+        }
+        // A wrong-length pair reads in domain language, not serde's tuple wording.
+        let err = serde_json::from_str::<ModelLeaf>(
+            r#"{"type": "image", "role": "image/primary", "render": [448]}"#,
+        )
+        .expect_err("length");
+        assert!(
+            err.to_string()
+                .contains("an integer or a pair [height, width], got 1"),
+            "got: {err}"
+        );
+        // The bounds themselves parse.
+        assert!(
+            serde_json::from_str::<ModelLeaf>(
+                r#"{"type": "image", "role": "image/primary", "render": [1, 4096]}"#
             )
             .is_ok()
         );
