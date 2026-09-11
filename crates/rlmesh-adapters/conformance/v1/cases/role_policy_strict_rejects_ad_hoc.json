@@ -1,0 +1,15 @@
+{
+  "doc": {
+    "input": {
+      "state": {
+        "components": ["proprio/eef_pos", "proprio/made_up"],
+        "type": "state"
+      }
+    },
+    "output": { "components": [{ "dim": 1, "role": "action/gripper" }] }
+  },
+  "expect": { "error_contains": "declares unregistered role \"proprio/made_up\"" },
+  "kind": "role_policy",
+  "policy": "strict",
+  "side": "model"
+}

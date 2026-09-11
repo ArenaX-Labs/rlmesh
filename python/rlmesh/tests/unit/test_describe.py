@@ -354,3 +354,37 @@ def test_check_labels_surfaces_badges_and_soft_claims_as_warnings() -> None:
     assert any("env_spec" in message for message in warnings)
     assert any("catalog['a']" in message for message in warnings)
     assert any("default checkpoints" in message for message in warnings)
+
+
+def test_check_labels_warns_about_ad_hoc_roles_but_not_blessed_or_escape() -> None:
+    import json
+
+    from rlmesh._describe import DESCRIBE_LABEL, check_labels
+
+    def label(tags: dict[str, object]) -> dict[str, str]:
+        return {
+            DESCRIBE_LABEL: json.dumps(
+                {"schema_version": 1, "kind": "env", "env_tags": tags}
+            )
+        }
+
+    blessed = {
+        "observation": {"cam": {"type": "image", "role": "image/wrist_2"}},
+        "action": {"components": [{"role": "action/joint_pos_2", "dim": 6}]},
+    }
+    assert check_labels(label(blessed)) == ([], [])
+
+    # The `x/` escape is a deliberate opt-out; it is never nudged.
+    escape = {
+        "observation": {"cam": {"type": "state", "role": "x/battery"}},
+        "action": {"components": []},
+    }
+    assert check_labels(label(escape)) == ([], [])
+
+    ad_hoc = {
+        "observation": {"cam": {"type": "image", "role": "image/front"}},
+        "action": {"components": []},
+    }
+    failures, warnings = check_labels(label(ad_hoc))
+    assert failures == []
+    assert any("image/front" in message for message in warnings), warnings

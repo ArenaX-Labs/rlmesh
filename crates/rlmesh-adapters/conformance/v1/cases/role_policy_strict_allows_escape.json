@@ -1,0 +1,16 @@
+{
+  "doc": {
+    "action": {
+      "components": [{ "dim": 1, "role": "action/gripper" }, { "dim": 2 }]
+    },
+    "observation": {
+      "cam": { "role": "image/primary", "type": "image" },
+      "right_wrist": { "role": "image/wrist_2", "type": "image" },
+      "telemetry": { "role": "x/battery", "type": "state" }
+    }
+  },
+  "expect": {},
+  "kind": "role_policy",
+  "policy": "strict",
+  "side": "env"
+}

@@ -12,6 +12,7 @@ One JSON file per case, dispatched on `kind`:
 
 - `resolve` — `env_spec` + `model_spec`, expecting either `{"ok": true, "describe": <exact text>}` or `{"error_contains": <substring>}`. Error cases pin _resolve-time_ failure: an implementation that defers the failure to apply time fails the case.
 - `serialization` — `side` (`env`|`model`) + `doc`: `from_dict(doc)` followed by `to_dict()` must reproduce `doc` exactly.
+- `role_policy` — `side` (`env`|`model`) + `policy` (`passthrough`|`strict`|`forbid`) + `doc`: the publish-gate role tier, expecting acceptance (`{}`) or `{"error_contains": <substring>}`. Frozen like `serialization` — the policy table _is_ the contract, so update mode never rewrites these.
 - `apply` — specs + `observation` + `model_output`, expecting the exact model payload and env action. Values are encoded as `{"kind": "array", dtype, shape, data}`, `{"kind": "list", data}`, `{"kind": "text", data}`, or `{"kind": "map", data}` (nested observations). Numeric comparison: exact dtype match, values within `atol` (default 1e-6).
 
 ## Updating (snapshot-style)

@@ -14,7 +14,10 @@
 use std::fs;
 use std::path::PathBuf;
 
-use rlmesh_adapters::v1::{EnvTags, ModelSpec, NoCustoms, SpaceView, Value, resolve};
+use rlmesh_adapters::v1::{
+    EnvTags, ModelSpec, NoCustoms, RolePolicy, SpaceView, Value, reject_unsanctioned_roles_env,
+    reject_unsanctioned_roles_model, resolve,
+};
 use rlmesh_spaces::scalar::{Scalar, decode_scalars, encode_scalars};
 use rlmesh_spaces::{DType, Tensor};
 use serde_json::{Value as Json, json};
@@ -262,10 +265,8 @@ fn updated_case(name: &str, case: &Json) -> Json {
     let preserve_inputs = case["preserve_inputs"] == Json::Bool(true);
     let mut out = case.clone();
     match case["kind"].as_str().expect("case kind") {
-        "serialization" => {
-            unreachable!(
-                "{name}: serialization vectors are frozen and not rewritten in update mode"
-            )
+        "serialization" | "role_policy" => {
+            unreachable!("{name}: frozen vectors are not rewritten in update mode")
         }
         "resolve" => {
             let (tags, obs_space, action_space, model_spec) = parse_inputs(case);
@@ -387,6 +388,39 @@ fn verify_case(name: &str, case: &Json) {
                 atol,
             );
         }
+        // The publish-gate role policy: `doc` is a spec, `policy` names the
+        // tier, and the expectation is acceptance or a pinned rejection
+        // substring. Frozen like `serialization` — the policy table IS the
+        // contract, so update mode never rewrites it.
+        "role_policy" => {
+            let policy = match case["policy"].as_str().expect("case policy") {
+                "passthrough" => RolePolicy::Passthrough,
+                "strict" => RolePolicy::Strict,
+                "forbid" => RolePolicy::Forbid,
+                other => panic!("{name}: unknown role policy {other:?}"),
+            };
+            let doc = case["doc"].clone();
+            let outcome = if case["side"] == "env" {
+                let tags: EnvTags = serde_json::from_value(doc)
+                    .unwrap_or_else(|e| panic!("{name}: parse failed: {e}"));
+                reject_unsanctioned_roles_env(&tags, policy)
+            } else {
+                let spec: ModelSpec = serde_json::from_value(doc)
+                    .unwrap_or_else(|e| panic!("{name}: parse failed: {e}"));
+                reject_unsanctioned_roles_model(&spec, policy)
+            };
+            match (outcome, case["expect"]["error_contains"].as_str()) {
+                (Ok(()), None) => {}
+                (Ok(()), Some(expected)) => {
+                    panic!("{name}: expected rejection containing {expected:?}")
+                }
+                (Err(message), None) => panic!("{name}: unexpected rejection: {message}"),
+                (Err(message), Some(expected)) => assert!(
+                    message.contains(expected),
+                    "{name}: rejection {message:?} does not contain {expected:?}"
+                ),
+            }
+        }
         other => panic!("{name}: unknown case kind {other:?}"),
     }
 }
@@ -409,16 +443,17 @@ fn conformance_vectors() {
         let case: Json = serde_json::from_str(&fs::read_to_string(&path).expect("readable case"))
             .expect("case parses as JSON");
 
-        if update && case["kind"].as_str() != Some("serialization") {
+        if update && !matches!(case["kind"].as_str(), Some("serialization" | "role_policy")) {
             let rewritten = updated_case(&name, &case);
             let mut text = serde_json::to_string_pretty(&rewritten).expect("serializes");
             text.push('\n');
             fs::write(&path, text).expect("writable case");
         } else {
-            // Serialization vectors are the FROZEN v1 contract: never
-            // rewritten, even under UPDATE_VECTORS (auto-normalizing let a
-            // renamed serde field self-heal green). verify_case is their sole
-            // authority and runs in both modes.
+            // Serialization and role_policy vectors are the FROZEN v1
+            // contract: never rewritten, even under UPDATE_VECTORS
+            // (auto-normalizing let a renamed serde field, or a role quietly
+            // added to the registry, self-heal green). verify_case is their
+            // sole authority and runs in both modes.
             verify_case(&name, &case);
         }
         ran += 1;

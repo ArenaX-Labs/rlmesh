@@ -164,6 +164,20 @@ def test_vector(path: Path) -> None:
             assert resolve_case(case).explain() == expect["describe"]
         return
 
+    if case["kind"] == "role_policy":
+        # The publish-gate role tier, driven through the same binding the SDK's
+        # codec uses, so Python and the core cannot disagree on what a curated
+        # boundary accepts.
+        expected = case["expect"].get("error_contains")
+        doc = json.dumps(case["doc"])
+        if expected is None:
+            adapters_spec_normalize(case["side"], doc, True, case["policy"])
+        else:
+            with pytest.raises(ValueError) as excinfo:
+                adapters_spec_normalize(case["side"], doc, True, case["policy"])
+            assert expected in str(excinfo.value)
+        return
+
     assert case["kind"] == "apply"
     adapter = resolve_case(case)
     atol = case["expect"]["atol"]

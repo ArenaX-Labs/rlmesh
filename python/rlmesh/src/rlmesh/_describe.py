@@ -50,7 +50,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any, cast
 
 from ._entrypoint import resolve_entrypoint
-from ._rlmesh import describe_envelope_normalize
+from ._rlmesh import adapters_spec_normalize, describe_envelope_normalize
 from ._variants import Variant
 from .params._resolve import describe as _describe_params
 from .params._resolve import resolve
@@ -554,6 +554,25 @@ def _check_describe(raw: str, failures: list[str], warnings: list[str]) -> None:
         )
     for path, badge in _describe_badges(envelope):
         warnings.append(f"{DESCRIBE_LABEL} {path}: {badge}")
+    _check_roles(envelope, warnings)
+
+
+def _check_roles(envelope: Mapping[str, Any], warnings: list[str]) -> None:
+    """Warn about ad-hoc roles a curated publish gate would reject.
+
+    ``strict`` is the managed tier: registered roles pass, so does the ``x/``
+    escape namespace, and anything else is an accident waiting to resolve
+    against nothing. A warning here, not a failure -- the open vocabulary still
+    runs everywhere; it is the curated boundary that refuses it.
+    """
+    for side, key in (("env", "env_tags"), ("model", "model_spec")):
+        spec = envelope.get(key)
+        if not isinstance(spec, Mapping) or "error" in spec:
+            continue
+        try:
+            adapters_spec_normalize(side, json.dumps(spec), True, "strict")
+        except ValueError as exc:
+            warnings.append(f"{DESCRIBE_LABEL} {key}: {exc}")
 
 
 def _describe_badges(envelope: Mapping[str, Any]) -> list[tuple[str, str]]:
