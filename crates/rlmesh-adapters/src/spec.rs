@@ -47,9 +47,10 @@ pub use env::{EnvFeature, EnvFeatures, EnvImage, EnvState, EnvText, UnknownFeatu
 pub use env_tags::{EnvTags, Field, ImageTag, ObsLeaf, ObsNode, SplitLayout, StateTag, TextTag};
 pub use frames::{Attr, FRAMES, FrameLaw, FrameRef, REFERENCES, ReferenceLaw};
 pub use layouts::{FitMode, ImageLayout};
+pub(crate) use model::MAX_STACK_SPAN;
 pub use model::{
     CHANNEL_ORDERS, CROP_MODES, ConcatPart, Custom, Image, InputNode, ModelLeaf, ModelSpec,
-    Normalize, State, StateContainer, Text, TextContainer, render_requests,
+    Normalize, StackPad, State, StateContainer, Text, TextContainer, render_requests,
 };
 pub use rotation_literal::RotationLiteral;
 pub use rotations::RotationEncoding;

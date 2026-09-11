@@ -54,8 +54,8 @@ pub mod v1 {
     };
     pub use crate::path::{NodePath, PathSeg};
     pub use crate::plans::{
-        ActionPlan, ActionSegment, CropPlan, CustomPlan, ImagePlan, ObsPlan, ResolvedAdapter,
-        StatePiece, StatePlan, TextPlan,
+        ActionPlan, ActionSegment, CropPlan, CustomPlan, HistoryWindow, ImagePlan, ObsPlan,
+        ResolvedAdapter, StatePiece, StatePlan, TextPlan,
     };
     pub use crate::resolver::resolve;
     pub use crate::space_view::{SpaceView, SpaceViewKind};
@@ -64,14 +64,15 @@ pub mod v1 {
         CustomEncoding, EnvFeature, EnvFeatures, EnvImage, EnvState, EnvTags, EnvText, FRAMES,
         Field, FrameLaw, FramePolicy, FrameRef, Image, ImageLayout, ImageTag, InputNode, ModelLeaf,
         ModelSpec, Normalize, ObsLeaf, ObsNode, REFERENCES, ReferenceLaw, RolePolicy,
-        RotationEncoding, RotationLiteral, SplitLayout, State, StateContainer, StateEncoding,
-        StateTag, Text, TextContainer, TextTag, UnknownFeature, reject_unframed_roles_env,
-        reject_unframed_roles_model, reject_unknowns_env, reject_unknowns_model,
-        reject_unsanctioned_roles_env, reject_unsanctioned_roles_model, render_requests,
+        RotationEncoding, RotationLiteral, SplitLayout, StackPad, State, StateContainer,
+        StateEncoding, StateTag, Text, TextContainer, TextTag, UnknownFeature,
+        reject_unframed_roles_env, reject_unframed_roles_model, reject_unknowns_env,
+        reject_unknowns_model, reject_unsanctioned_roles_env, reject_unsanctioned_roles_model,
+        render_requests,
     };
     pub use crate::stateful::{
         EncodingTransform, FrameBuffers, MAX_EXECUTION_HORIZON, NoEncodings, apply_actions,
-        assemble_obs, space_value_to_obs_map, space_value_to_value, split_chunk,
+        assemble_obs, observe_obs, space_value_to_obs_map, space_value_to_value, split_chunk,
         value_max_abs_diff,
     };
 }

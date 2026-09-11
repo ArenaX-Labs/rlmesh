@@ -7,7 +7,9 @@ use crate::error::ErrorCode;
 use crate::fmt::{quoted, quoted_keys};
 use crate::path::NodePath;
 use crate::plans::{CropPlan, ImagePlan};
-use crate::spec::{CHANNEL_ORDERS, CROP_MODES, EnvImage, FitMode, Image, ImageLayout};
+use crate::spec::{
+    CHANNEL_ORDERS, CROP_MODES, EnvImage, FitMode, Image, ImageLayout, MAX_STACK_SPAN, StackPad,
+};
 
 pub(super) fn plan_image(
     model_input: &Image,
@@ -182,6 +184,21 @@ pub(super) fn plan_image(
     }
     let crop = crop_plan(model_input, &at, env_image)?;
     let fit = resolve_fit(model_input, &at, env_image, size, crop.as_ref())?;
+    let offsets = stack_window(model_input, &at)?;
+    // The frame the model actually gets: its declared target, else the integer
+    // box a `slice` crop cuts, else the camera's own resolution.
+    let processed = match size {
+        Some(size) => Some(size),
+        None => match crop.as_ref().and_then(|crop| crop.cut) {
+            Some(cut) => Some(cut),
+            None if known_size(env_image) => Some((env_image.height, env_image.width)),
+            None => None,
+        },
+    };
+    let channels = model_input
+        .channels
+        .or(Some(env_image.channels))
+        .filter(|&channels| channels != 0);
     Ok(ImagePlan {
         placement,
         source: env_image.source.clone(),
@@ -202,6 +219,9 @@ pub(super) fn plan_image(
         jpeg_quality: model_input.jpeg_quality,
         swap_rb,
         render,
+        offsets,
+        stack_pad: model_input.stack_pad,
+        frame_bytes: frame_bytes(&model_input.dtype, processed, channels),
         role_rebound,
     })
 }
@@ -257,6 +277,7 @@ fn crop_plan(model_input: &Image, at: &str, env_image: &EnvImage) -> Result<Opti
 /// (there is no env image to derive them from), then run through the normal
 /// normalize/dtype/layout/lead steps so it matches a real black frame.
 fn zero_fill_image_plan(model_input: &Image, placement: NodePath) -> Result<ImagePlan> {
+    let offsets = stack_window(model_input, &quoted(&placement.to_string()))?;
     let (Some(height), Some(width), Some(channels)) =
         (model_input.height, model_input.width, model_input.channels)
     else {
@@ -294,8 +315,83 @@ fn zero_fill_image_plan(model_input: &Image, placement: NodePath) -> Result<Imag
         // There is no camera here to assert anything about: a zero-filled frame
         // is synthesized by the adapter, not rendered by the env.
         render: None,
+        offsets,
+        stack_pad: model_input.stack_pad,
+        frame_bytes: frame_bytes(&model_input.dtype, Some((height, width)), Some(channels)),
         role_rebound: None,
     })
+}
+
+/// Bytes of one *processed* frame: `height x width x channels x dtype`.
+///
+/// `0` when either the frame's shape or its dtype was not derivable — a caller
+/// budgeting a frame window reads that as "unknown", never as "free".
+fn frame_bytes(dtype: &str, size: Option<(u32, u32)>, channels: Option<u32>) -> u64 {
+    let (Some((height, width)), Some(channels), Some(dtype)) =
+        (size, channels, rlmesh_spaces::DType::from_name(dtype))
+    else {
+        return 0;
+    };
+    u64::from(height)
+        * u64::from(width)
+        * u64::from(channels)
+        * rlmesh_spaces::dtype_size(dtype) as u64
+}
+
+/// Validate the declared frame window and return its offsets.
+///
+/// The offsets are a *law*, not a vocabulary: non-positive (a window reaches
+/// backwards), strictly increasing (oldest first), ending at `0` (the current
+/// frame is always in the stack), exactly `stack` long (the two are never
+/// inferred from each other), and spanning no more than [`MAX_STACK_SPAN`]
+/// consecutive frames (the window is held per live episode). Checked here, at
+/// resolve, rather than at the codec door, so a spec a newer core understands
+/// still parses and relays.
+fn stack_window(model_input: &Image, at: &str) -> Result<Option<Vec<i32>>> {
+    // `stack_pad` only fills a window, so without one it can never take effect;
+    // a set-but-inert pad is a spec error, not a silent no-op (the same rule
+    // `fill` follows for a non-optional camera).
+    if model_input.stack_pad != StackPad::First && model_input.stack <= 1 {
+        return Err(err(
+            ErrorCode::Unsupported,
+            format!(
+                "model input {at}: stack_pad only applies to a stacked image;                  set stack > 1 or drop stack_pad"
+            ),
+        ));
+    }
+    let Some(offsets) = &model_input.offsets else {
+        return Ok(None);
+    };
+    let ordered = offsets.windows(2).all(|pair| pair[0] < pair[1]);
+    if offsets.is_empty() || !ordered || offsets.last() != Some(&0) || offsets[0] > 0 {
+        return Err(err(
+            ErrorCode::Unsupported,
+            format!(
+                "model input {at}: offsets must be non-positive and strictly increasing,                  ending at 0 (the current frame), got {offsets:?}"
+            ),
+        ));
+    }
+    if offsets.len() != model_input.stack as usize {
+        return Err(err(
+            ErrorCode::Unsupported,
+            format!(
+                "model input {at}: stack={} disagrees with {} offset(s) {offsets:?};                  a frame window declares both and they are never inferred from each other",
+                model_input.stack,
+                offsets.len()
+            ),
+        ));
+    }
+    let span = 1 - offsets[0];
+    if span > MAX_STACK_SPAN {
+        return Err(err(
+            ErrorCode::Unsupported,
+            format!(
+                "model input {at}: stack={} over offsets {offsets:?} spans {span} consecutive                  frames, more than the {MAX_STACK_SPAN} a window may hold",
+                model_input.stack
+            ),
+        ));
+    }
+    Ok(Some(offsets.clone()))
 }
 
 /// Choose the fit mode for this env from the model's permitted modes.
@@ -425,7 +521,7 @@ mod image_resolve_tests {
     use super::plan_image;
     use crate::error::ErrorCode;
     use crate::path::NodePath;
-    use crate::spec::{AcceptSet, EnvImage, FitMode, Image, ImageLayout, Normalize};
+    use crate::spec::{AcceptSet, EnvImage, FitMode, Image, ImageLayout, Normalize, StackPad};
 
     /// Resolve at the root placement (the common single-leaf-payload case).
     fn plan(
@@ -450,6 +546,8 @@ mod image_resolve_tests {
 
     fn model_image(height: u32, width: u32, allow_upscale: bool) -> Image {
         Image {
+            offsets: None,
+            stack_pad: StackPad::First,
             role: "image/primary".to_owned(),
             height: Some(height),
             width: Some(width),

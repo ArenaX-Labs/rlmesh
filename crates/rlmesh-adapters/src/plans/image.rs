@@ -1,7 +1,7 @@
 //! Resolved instructions for one model image input.
 
 use crate::path::NodePath;
-use crate::spec::{FitMode, ImageLayout};
+use crate::spec::{FitMode, ImageLayout, StackPad};
 
 /// The center box a `crop` / `crop_area` keeps, and how it is taken.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -80,6 +80,18 @@ pub struct ImagePlan {
     /// assertion was actually checked). Describe text only — the assertion
     /// itself is settled at resolve.
     pub render: Option<(u32, u32)>,
+    /// The frame window a `stack > 1` gathers, as non-positive offsets from the
+    /// current step (oldest first, ending at `0`). `None` is the contiguous
+    /// window `stack` describes; validated against `stack` at resolve.
+    pub offsets: Option<Vec<i32>>,
+    /// What fills the window before the episode has produced enough frames.
+    pub stack_pad: StackPad,
+    /// Bytes of one *processed* frame (`height x width x channels x dtype`), or
+    /// `0` when the env's resolution was not derivable. Computed at resolve —
+    /// the only place the env's camera and the model's target are both in hand —
+    /// so a caller can size a frame window (or refuse one) without re-deriving
+    /// the pipeline.
+    pub frame_bytes: u64,
     /// `Some((requested, bound))` when the lone-camera fallback bound this input
     /// to the env's single camera under a different role than the model asked
     /// for. Surfaced as a resolve advisory; `None` for an exact role match.

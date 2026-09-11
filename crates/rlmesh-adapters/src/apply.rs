@@ -11,7 +11,7 @@ mod action;
 pub(crate) mod geometry;
 mod image;
 pub(crate) mod lookup;
-mod obs;
+pub(crate) mod obs;
 mod state;
 mod text;
 pub(crate) mod value;

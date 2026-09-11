@@ -401,6 +401,30 @@ impl<'de> Deserialize<'de> for Dim {
     }
 }
 
+/// Deserialize the optional frame-history `offsets` list.
+///
+/// Elements go through [`Dim`] so a wrong-typed entry reads `a whole number`
+/// instead of leaking `i32`. The window *law* — non-positive, strictly
+/// increasing, ending at `0`, `len == stack`, and a span within the ceiling —
+/// is a resolve check, not a codec one: like `resample`'s vocabulary, a list a
+/// newer core understands parses here and fails with a typed resolve error
+/// there rather than at the wire door.
+pub(crate) fn de_offsets<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Vec<i32>>, D::Error> {
+    let raw = Option::<Vec<Dim>>::deserialize(deserializer)?;
+    let Some(offsets) = raw else { return Ok(None) };
+    offsets
+        .into_iter()
+        .map(|Dim(value)| {
+            i32::try_from(value).map_err(|_| {
+                de::Error::custom(format!("a frame offset must fit in 32 bits, got {value}"))
+            })
+        })
+        .collect::<Result<Vec<i32>, D::Error>>()
+        .map(Some)
+}
+
 /// Deserialize an optional reshape spec (a list of dimensions, `-1` = infer)
 /// with a domain-friendly element error instead of serde's `expected i64`.
 pub(crate) fn de_opt_dims<'de, D: Deserializer<'de>>(

@@ -126,7 +126,40 @@ impl<'de> Deserialize<'de> for Normalize {
 /// Upper bound on frame-stacking depth (mirrors the Python `_MAX_STACK`). A
 /// spec can arrive from an untrusted contract; without a ceiling a huge `stack`
 /// would make the host adapter buffer that many frames and exhaust memory.
-const MAX_STACK: u32 = 64;
+pub(crate) const MAX_STACK: u32 = 64;
+
+/// Upper bound on a frame window's *span* — the number of consecutive frames a
+/// strided stack has to hold to reach its oldest offset (`1 - offsets[0]`). A
+/// `stack` of 64 is cheap; a stride that spreads those 64 frames over thousands
+/// of steps is not, and the window is held per live episode. Enforced at
+/// resolve, where the window is sized.
+pub(crate) const MAX_STACK_SPAN: i32 = 128;
+
+/// How the start of an episode fills a frame window that has not seen enough
+/// steps to be full.
+///
+/// `First` replicates the first observed frame (the default, and what every
+/// spec written before strided history got). `Black` writes a raw-8-bit `0`
+/// frame *through the plan* — so under `normalize = [-1, 1]` a black pad frame
+/// is `-1.0`, not `0.0`, exactly as [`Image::fill`] behaves for an absent
+/// camera. The name says what the pixels are, never what the tensor holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StackPad {
+    /// Replicate the first observed frame of the episode.
+    #[default]
+    First,
+    /// A black (raw 8-bit `0`) frame pushed through the plan.
+    Black,
+}
+
+impl StackPad {
+    /// True at the default — the `skip_serializing_if` that keeps a spec
+    /// written before this field byte-identical.
+    fn is_first(&self) -> bool {
+        matches!(self, StackPad::First)
+    }
+}
 
 /// Deserialize `stack`, enforcing the `1..=MAX_STACK` bound at the wire boundary
 /// (via the shared bounded-count helper; see
@@ -293,6 +326,25 @@ pub struct Image {
         skip_serializing_if = "Option::is_none"
     )]
     pub render: Option<(u32, u32)>,
+    /// The frame window this stack gathers, as non-positive offsets from the
+    /// current step, oldest first and ending at `0` (`[-6, -4, -2, 0]` is "every
+    /// second frame of the last seven"). `None` — the default — is the
+    /// contiguous window `stack` already describes. Never inferred from `stack`
+    /// and never written back to it: the two must agree (`len == stack`), and
+    /// the law (non-positive, strictly increasing, last `0`, span within
+    /// `MAX_STACK_SPAN`) is checked at resolve. Additive over the pinned wire
+    /// format (omitted when unset).
+    #[serde(
+        default,
+        deserialize_with = "crate::spec::num::de_offsets",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub offsets: Option<Vec<i32>>,
+    /// What fills the window before an episode has produced enough frames:
+    /// `"first"` (replicate the first frame, the default) or `"black"` (a raw
+    /// 8-bit `0` frame through the plan). Omitted at the default.
+    #[serde(default, skip_serializing_if = "StackPad::is_first")]
+    pub stack_pad: StackPad,
     /// Unrecognized additive fields, retained for round-trip and surfaced to the
     /// publish-door `reject_unknowns` guard. See the strict-v1 publish gate.
     #[serde(flatten)]
@@ -578,6 +630,58 @@ mod tests {
         assert!(
             serde_json::from_str::<ModelLeaf>(
                 r#"{"type": "image", "role": "image/primary", "render": [1, 4096]}"#
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn offsets_and_stack_pad_default_off_and_stay_off_the_wire() {
+        let input = image("");
+        let ModelLeaf::Image(img) = &input else {
+            panic!("expected image")
+        };
+        assert_eq!(img.offsets, None);
+        assert_eq!(img.stack_pad, super::StackPad::First);
+        // Byte parity with every spec written before these fields existed.
+        let wire = serde_json::to_string(&input).unwrap();
+        for field in ["offsets", "stack_pad"] {
+            assert!(!wire.contains(field), "{field} leaked into {wire}");
+        }
+    }
+
+    #[test]
+    fn offsets_and_stack_pad_round_trip_when_set() {
+        let input = image(r#", "stack": 4, "offsets": [-6, -4, -2, 0], "stack_pad": "black""#);
+        let ModelLeaf::Image(img) = &input else {
+            panic!("expected image")
+        };
+        assert_eq!(img.offsets.as_deref(), Some(&[-6, -4, -2, 0][..]));
+        assert_eq!(img.stack_pad, super::StackPad::Black);
+        let wire = serde_json::to_string(&input).unwrap();
+        assert!(wire.contains("\"offsets\":[-6,-4,-2,0]"), "got: {wire}");
+        assert!(wire.contains("\"stack_pad\":\"black\""), "got: {wire}");
+    }
+
+    #[test]
+    fn a_wrong_typed_offset_reads_in_domain_language() {
+        // The window LAW (non-positive, increasing, ending at 0, agreeing with
+        // `stack`, within the span ceiling) is a resolve check, so a spec a newer
+        // core understands still parses here. Only the element type is a wire
+        // error, and it never leaks `i32`.
+        let err = serde_json::from_str::<ModelLeaf>(
+            r#"{"type": "image", "role": "image/primary", "offsets": [-2.5, 0]}"#,
+        )
+        .expect_err("element type");
+        assert!(err.to_string().contains("a whole number"), "got: {err}");
+        assert!(
+            !err.to_string().contains("i32"),
+            "leaks the wire type: {err}"
+        );
+        // A list that breaks the law still parses; resolution is what rejects it.
+        assert!(
+            serde_json::from_str::<ModelLeaf>(
+                r#"{"type": "image", "role": "image/primary", "offsets": [3, 1]}"#
             )
             .is_ok()
         );

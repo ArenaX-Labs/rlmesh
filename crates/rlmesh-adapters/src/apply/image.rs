@@ -1295,6 +1295,9 @@ mod tests {
             jpeg_quality: None,
             swap_rb: false,
             render: None,
+            offsets: None,
+            stack_pad: crate::spec::StackPad::First,
+            frame_bytes: 0,
             role_rebound: None,
         };
         let Value::Tensor(tensor) =
@@ -1334,6 +1337,9 @@ mod tests {
             jpeg_quality: None,
             swap_rb: false,
             render: None,
+            offsets: None,
+            stack_pad: crate::spec::StackPad::First,
+            frame_bytes: 0,
             role_rebound: None,
         };
         let Value::Tensor(tensor) =

@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 use crate::advisory::Advisory;
 use crate::fmt::{number, quoted, quoted_range};
 use crate::plans::{ActionSegment, ImagePlan, ObsPlan, ResolvedAdapter, StatePlan, TextPlan};
-use crate::spec::{Attr, FitMode, FrameRef, ImageLayout};
+use crate::spec::{Attr, FitMode, FrameRef, ImageLayout, StackPad};
 
 /// Summarize how one model input is derived from the observation.
 fn describe_obs_plan(plan: &ObsPlan) -> String {
@@ -216,6 +216,17 @@ fn describe_image(plan: &ImagePlan) -> String {
     }
     if plan.lead_dims > 0 {
         steps.push(format!("+{} lead dims", plan.lead_dims));
+    }
+    // Stacking is the last step: it assembles frames the rest of the pipeline
+    // already produced. A contiguous window says nothing here (the `stack` field
+    // is the whole story, and every spec written before offsets existed prints
+    // exactly as it always did); a declared window shows what it gathers.
+    if let Some(offsets) = &plan.offsets {
+        let listed: Vec<String> = offsets.iter().map(i32::to_string).collect();
+        steps.push(format!("stack {} @[{}]", plan.stack, listed.join(",")));
+    }
+    if plan.stack_pad != StackPad::First {
+        steps.push("pad black".to_owned());
     }
     format!(
         "{} <- image {} ({})",
