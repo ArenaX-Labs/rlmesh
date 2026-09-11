@@ -13,6 +13,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::AcceptSet;
 use super::action::Action;
+use super::frames::FrameRef;
 use super::layouts::ImageLayout;
 use super::leaf_codec::leaf_codec;
 use super::model::{NodeShape, TreeNode, deserialize_node};
@@ -51,6 +52,11 @@ pub struct StateTag {
     pub encoding: Option<AcceptSet<RotationEncoding>>,
     #[serde(default, deserialize_with = "crate::spec::num::de_opt_range")]
     pub range: Option<(f64, f64)>,
+    /// The coordinate frame this feature's values are expressed in, when the
+    /// role is an absolute pose. Omitted when unset, so every pre-`frame` spec
+    /// is byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame: Option<FrameRef>,
     /// Unrecognized additive fields, retained for round-trip (see [`ImageTag`]).
     #[serde(flatten)]
     pub unknown: BTreeMap<String, serde_json::Value>,
@@ -77,6 +83,8 @@ struct FieldWire {
     encoding: Option<AcceptSet<RotationEncoding>>,
     #[serde(default, deserialize_with = "crate::spec::num::de_opt_range")]
     range: Option<(f64, f64)>,
+    #[serde(default)]
+    frame: Option<FrameRef>,
     /// Unrecognized additive fields, captured instead of hard-erroring so a
     /// newer writer's field survives an older reader; the publish gate rejects
     /// a bare one. See [`ImageTag`].
@@ -91,14 +99,19 @@ impl TryFrom<FieldWire> for Field {
         if wire.dim < 1 {
             return Err(format!("state field dim must be >= 1, got {}", wire.dim));
         }
-        if wire.role.is_none() && (wire.encoding.is_some() || wire.range.is_some()) {
-            return Err("a role-less field (a skip) cannot carry an encoding or range".to_owned());
+        if wire.role.is_none()
+            && (wire.encoding.is_some() || wire.range.is_some() || wire.frame.is_some())
+        {
+            return Err(
+                "a role-less field (a skip) cannot carry an encoding, range or frame".to_owned(),
+            );
         }
         Ok(Field {
             role: wire.role,
             dim: wire.dim,
             encoding: wire.encoding,
             range: wire.range,
+            frame: wire.frame,
             unknown: wire.unknown,
         })
     }
@@ -122,6 +135,10 @@ pub struct Field {
     pub encoding: Option<AcceptSet<RotationEncoding>>,
     #[serde(default)]
     pub range: Option<(f64, f64)>,
+    /// The coordinate frame this field's values are expressed in; see
+    /// [`StateTag::frame`]. A role-less skip may not carry one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame: Option<FrameRef>,
     /// Unrecognized additive fields, retained for round-trip (see [`ImageTag`]).
     #[serde(flatten)]
     pub unknown: BTreeMap<String, serde_json::Value>,
@@ -347,6 +364,8 @@ mod state_field_wire_tests {
         let err = serde_json::from_str::<Field>(r#"{"dim": 3, "encoding": "rot6d"}"#).unwrap_err();
         assert!(err.to_string().contains("role-less"), "got: {err}");
         let err = serde_json::from_str::<Field>(r#"{"dim": 3, "range": [0.0, 1.0]}"#).unwrap_err();
+        assert!(err.to_string().contains("role-less"), "got: {err}");
+        let err = serde_json::from_str::<Field>(r#"{"dim": 3, "frame": "world"}"#).unwrap_err();
         assert!(err.to_string().contains("role-less"), "got: {err}");
     }
 

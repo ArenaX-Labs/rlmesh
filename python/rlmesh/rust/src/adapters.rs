@@ -23,9 +23,10 @@ use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString, PyT
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 use rlmesh_adapters::v1::{
-    Advisory, ApplyError, CustomTransform, EncodingTransform, EnvTags, InputNode, ModelLeaf,
-    ModelSpec, NodePath, ObsPlan, PathSeg, ResolvedAdapter, RolePolicy, SkipCustoms, SpaceView,
-    Value, build_describe_envelope, join, reject_unknowns_env, reject_unknowns_model,
+    Advisory, ApplyError, CustomTransform, EncodingTransform, EnvTags, FramePolicy, InputNode,
+    ModelLeaf, ModelSpec, NodePath, ObsPlan, PathSeg, ResolvedAdapter, RolePolicy, SkipCustoms,
+    SpaceView, Value, build_describe_envelope, join, reject_unframed_roles_env,
+    reject_unframed_roles_model, reject_unknowns_env, reject_unknowns_model,
     reject_unsanctioned_roles_env, reject_unsanctioned_roles_model, resolve, roles,
 };
 use serde::de::DeserializeOwned;
@@ -722,17 +723,18 @@ pub fn adapters_join_check(
     gen_stub_pyfunction(
         module = "rlmesh._rlmesh",
         python = r#"
-def adapters_spec_normalize(side: str, spec_json: str, allow_custom: bool, role_policy: str = "passthrough") -> str: ...
+def adapters_spec_normalize(side: str, spec_json: str, allow_custom: bool, role_policy: str = "passthrough", require_frames: bool = False) -> str: ...
 "#
     )
 )]
 #[pyfunction]
-#[pyo3(signature = (side, spec_json, allow_custom, role_policy = "passthrough"))]
+#[pyo3(signature = (side, spec_json, allow_custom, role_policy = "passthrough", require_frames = false))]
 pub fn adapters_spec_normalize(
     side: &str,
     spec_json: &str,
     allow_custom: bool,
     role_policy: &str,
+    require_frames: bool,
 ) -> PyResult<String> {
     let role_gate = match role_policy {
         "passthrough" => None,
@@ -743,6 +745,14 @@ pub fn adapters_spec_normalize(
                 "unknown role_policy {other:?}; expected \"passthrough\", \"strict\", or \"forbid\""
             )));
         }
+    };
+    // The `spec-normalize --require-frames` tier: every role the registry says
+    // owes a `frame`/`reference` must declare one. Opt-in -- an absent frame is
+    // legal v1, so the default tier only checks agreement at resolve.
+    let frame_gate = if require_frames {
+        FramePolicy::Require
+    } else {
+        FramePolicy::Allow
     };
     match side {
         "env" => {
@@ -757,6 +767,8 @@ pub fn adapters_spec_normalize(
                     PyValueError::new_err(format!("invalid env tags: {message}"))
                 })?;
             }
+            reject_unframed_roles_env(&tags, frame_gate)
+                .map_err(|message| PyValueError::new_err(format!("invalid env tags: {message}")))?;
             serde_json::to_string(&tags).map_err(|err| {
                 PyValueError::new_err(format!("could not serialize env tags: {err}"))
             })
@@ -772,6 +784,9 @@ pub fn adapters_spec_normalize(
                     PyValueError::new_err(format!("invalid model spec: {message}"))
                 })?;
             }
+            reject_unframed_roles_model(&spec, frame_gate).map_err(|message| {
+                PyValueError::new_err(format!("invalid model spec: {message}"))
+            })?;
             // Defense-in-depth at the publish boundary. Today the live gate is
             // Python's model_input_to_dict, which raises on any custom before a
             // spec ever reaches here, so every Python caller passes

@@ -14,7 +14,7 @@ from typing import Any, Literal, TypeAlias
 
 from ._codec import check_accept_set, one_or_many
 from .custom_encoding import CustomEncoding
-from .vocabularies import FitMode, ImageLayout, Resample, RotationEncoding
+from .vocabularies import FitMode, Frame, ImageLayout, Resample, RotationEncoding
 
 ObsTransform: TypeAlias = Callable[[Mapping[str, Any]], Any]
 
@@ -237,6 +237,11 @@ class State:
         scale: Model-side multiplier applied after the range map.
         offset: Model-side addend applied after ``scale`` (``value * scale +
             offset``) -- e.g. a ``1 - 2g`` gripper is ``scale=-2, offset=1``.
+        frame: Coordinate frame the checkpoint was trained to read this part in,
+            when the role is an absolute pose (``proprio/eef_*``). Keyword-only
+            and omitted from the wire when unset. A frame the env contradicts
+            fails resolution; a frame the env does not declare draws a caution
+            (the model states a requirement nothing can confirm).
         pad_to: Zero-pad the resulting vector to this length. Padding is the
             last step: every part is converted, ranged and scaled, the parts are
             concatenated in order, and only then is the result padded.
@@ -257,6 +262,7 @@ class State:
     post_rotate: Rotation | None = field(default=None, kw_only=True)
     scale: float | None = field(default=None, kw_only=True)
     offset: float | None = field(default=None, kw_only=True)
+    frame: Frame | None = field(default=None, kw_only=True)
     pad_to: int | None = None
     dtype: str = "float32"
     reshape: tuple[int, ...] | None = None

@@ -31,6 +31,7 @@ mod action;
 mod custom_encoding;
 mod env;
 mod env_tags;
+mod frames;
 mod layouts;
 mod leaf_codec;
 mod model;
@@ -44,6 +45,7 @@ pub use action::{Action, Actuator};
 pub use custom_encoding::{ActionEncoding, CustomEncoding, StateEncoding};
 pub use env::{EnvFeature, EnvFeatures, EnvImage, EnvState, EnvText, UnknownFeature};
 pub use env_tags::{EnvTags, Field, ImageTag, ObsLeaf, ObsNode, SplitLayout, StateTag, TextTag};
+pub use frames::{Attr, FRAMES, FrameLaw, FrameRef, REFERENCES, ReferenceLaw};
 pub use layouts::{FitMode, ImageLayout};
 pub use model::{
     ConcatPart, Custom, Image, InputNode, ModelLeaf, ModelSpec, Normalize, State, StateContainer,
@@ -52,6 +54,7 @@ pub use model::{
 pub use rotation_literal::RotationLiteral;
 pub use rotations::RotationEncoding;
 pub use strict::{
-    RolePolicy, reject_bare_fields_env, reject_bare_fields_model, reject_unknowns_env,
+    FramePolicy, RolePolicy, reject_bare_fields_env, reject_bare_fields_model,
+    reject_unframed_roles_env, reject_unframed_roles_model, reject_unknowns_env,
     reject_unknowns_model, reject_unsanctioned_roles_env, reject_unsanctioned_roles_model,
 };

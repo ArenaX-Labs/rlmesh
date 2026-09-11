@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, TypeAlias, cast
 
 from ..constants import ENV_METADATA_KEY
@@ -34,7 +34,7 @@ from ._codec import (
 from .action import Action
 from .action_serialization import action_from_dict, action_to_dict
 from .model_serialization import COMMON_LEAF_TYPES, decode_node, encode_node
-from .vocabularies import ImageLayout, RotationEncoding
+from .vocabularies import Frame, ImageLayout, RotationEncoding
 
 
 @dataclass(frozen=True)
@@ -70,11 +70,17 @@ class StateTag:
             the space leaves this leaf unbounded. If the space declares finite
             bounds that disagree with it, resolution errors rather than
             silently overriding them.
+        frame: Coordinate frame this entry's values are expressed in, when the
+            role is an absolute pose (``proprio/eef_*``). Keyword-only and
+            omitted from the wire when unset. A model that declares a different
+            one fails resolution; a model that declares one the env does not
+            draws a caution.
     """
 
     role: str
     encoding: RotationEncoding | Sequence[RotationEncoding] | None = None
     range: tuple[float, float] | None = None
+    frame: Frame | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "encoding", one_or_many(self.encoding))
@@ -112,12 +118,15 @@ class Field:
             supplying the bounds where the space leaves it unbounded. If the
             space declares finite bounds for the slice that disagree with it,
             resolution errors rather than silently overriding them.
+        frame: Coordinate frame this field's values are expressed in; see
+            :attr:`StateTag.frame`. A role-less skip may not carry one.
     """
 
     role: str | None = None
     dim: int = 0
     encoding: RotationEncoding | Sequence[RotationEncoding] | None = None
     range: tuple[float, float] | None = None
+    frame: Frame | None = field(default=None, kw_only=True)
     # The `dim = 0` default only satisfies dataclass field ordering (the optional
     # `role` precedes it); 0 is never a valid width, so it is rejected at
     # construction below (matching the Rust Field codec's `dim >= 1` guard).
@@ -174,12 +183,16 @@ ObsNode: TypeAlias = "ObsLeaf | Mapping[str, ObsNode] | tuple[ObsNode, ...]"
 
 
 def _field_to_dict(field: Field) -> dict[str, Any]:
-    return {
+    out: dict[str, Any] = {
         "role": field.role,
         "dim": field.dim,
         "encoding": field.encoding,
         "range": list(field.range) if field.range else None,
     }
+    # Additive: emitted only when set, so pre-`frame` tags stay byte-identical.
+    if field.frame is not None:
+        out["frame"] = field.frame
+    return out
 
 
 def _field_from_dict(item: Mapping[str, Any]) -> Field:
@@ -189,6 +202,7 @@ def _field_from_dict(item: Mapping[str, Any]) -> Field:
         dim=int(item["dim"]),
         encoding=one_or_many(item.get("encoding")),
         range=to_pair(item.get("range")),
+        frame=item.get("frame"),
     )
 
 
@@ -202,12 +216,15 @@ def _leaf_to_dict(tag: ObsLeaf) -> dict[str, Any]:
             "upside_down": tag.upside_down,
         }
     if isinstance(tag, StateTag):
-        return {
+        state: dict[str, Any] = {
             "type": "state",
             "role": tag.role,
             "encoding": tag.encoding,
             "range": list(tag.range) if tag.range else None,
         }
+        if tag.frame is not None:
+            state["frame"] = tag.frame
+        return state
     if isinstance(tag, Split):
         return {
             "type": "split",
@@ -250,6 +267,7 @@ def _leaf_from_dict(item: Mapping[str, Any]) -> ObsLeaf:
             role=item["role"],
             encoding=one_or_many(item.get("encoding")),
             range=to_pair(item.get("range")),
+            frame=item.get("frame"),
         )
     if kind == "split":
         return Split(*(_field_from_dict(field) for field in item["fields"]))

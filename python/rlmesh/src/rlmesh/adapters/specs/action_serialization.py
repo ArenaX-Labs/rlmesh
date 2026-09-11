@@ -52,6 +52,10 @@ def _actuator_to_dict(component: Actuator) -> dict[str, Any]:
         out["fill"] = component.fill
     if component.optional:
         out["optional"] = True
+    if component.frame is not None:
+        out["frame"] = component.frame
+    if component.reference is not None:
+        out["reference"] = component.reference
     return out
 
 
@@ -70,6 +74,8 @@ def action_from_dict(data: Mapping[str, Any]) -> Action:
             clip=bool(item.get("clip", False)),
             fill=float(item.get("fill", 0.0)),
             optional=bool(item.get("optional", False)),
+            frame=item.get("frame"),
+            reference=item.get("reference"),
         )
         for item in data["components"]
     ]

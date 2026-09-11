@@ -346,6 +346,12 @@
     "rlmesh.adapters.FitMode": {
       "description": "How an image is fit to a declared size: 'stretch', 'letterbox', or 'crop'."
     },
+    "rlmesh.adapters.Frame": {
+      "description": "Coordinate frame an absolute pose is expressed in: 'world' or 'robot_base'."
+    },
+    "rlmesh.adapters.Reference": {
+      "description": "Pose a delta command is integrated against: 'current' (measured) or 'target' (last commanded)."
+    },
     "rlmesh.adapters.Resample": {
       "description": "Image resampling filter vocabulary for declared resizes."
     },

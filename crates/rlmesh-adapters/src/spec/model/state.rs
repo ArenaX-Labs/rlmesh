@@ -6,7 +6,7 @@ use std::fmt;
 use serde::de::{self, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::spec::{RotationLiteral, StateEncoding};
+use crate::spec::{FrameRef, RotationLiteral, StateEncoding};
 
 fn default_float32() -> String {
     "float32".to_owned()
@@ -69,6 +69,11 @@ pub struct ConcatPart {
     pub scale: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offset: Option<f64>,
+    /// The coordinate frame the checkpoint was trained to read this part in,
+    /// when the role is an absolute pose. Omitted when unset, so every
+    /// pre-`frame` spec is byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame: Option<FrameRef>,
     /// Unrecognized additive fields, retained for round-trip and surfaced to the
     /// publish-door `reject_unknowns` guard. See the strict-v1 publish gate.
     #[serde(flatten)]
@@ -99,6 +104,8 @@ struct ConcatPartWire {
     scale: Option<f64>,
     #[serde(default, deserialize_with = "crate::spec::num::de_opt_number")]
     offset: Option<f64>,
+    #[serde(default)]
+    frame: Option<FrameRef>,
     // Captured instead of hard-erroring so a newer writer's field survives an
     // older reader; the publish gate rejects a bare one.
     #[serde(flatten)]
@@ -170,9 +177,10 @@ impl TryFrom<ConcatPartWire> for ConcatPart {
                     || wire.post_rotate.is_some()
                     || wire.scale.is_some()
                     || wire.offset.is_some()
+                    || wire.frame.is_some()
                 {
                     return Err("a constant (role-less) state part carries only dim and \
-                         fill; drop encoding/index/range/optional/post_rotate/scale/offset"
+                         fill; drop encoding/index/range/optional/post_rotate/scale/offset/frame"
                         .to_owned());
                 }
             }
@@ -188,6 +196,7 @@ impl TryFrom<ConcatPartWire> for ConcatPart {
             post_rotate: wire.post_rotate,
             scale: wire.scale,
             offset: wire.offset,
+            frame: wire.frame,
             unknown: wire.unknown,
         })
     }
@@ -216,6 +225,7 @@ impl<'de> Deserialize<'de> for ConcatPart {
                     post_rotate: None,
                     scale: None,
                     offset: None,
+                    frame: None,
                     unknown: BTreeMap::new(),
                 })
             }
@@ -246,6 +256,7 @@ fn serialize_concat_part<S: Serializer>(
         && part.post_rotate.is_none()
         && part.scale.is_none()
         && part.offset.is_none()
+        && part.frame.is_none()
         && part.unknown.is_empty();
     if let (true, Some(role)) = (role_only, &part.role) {
         serializer.serialize_str(role)
@@ -457,6 +468,10 @@ mod tests {
         assert!(err.to_string().contains("needs dim"), "got: {err}");
         let err =
             serde_json::from_str::<State>(r#"{"components": ["r", {"dim": 1, "scale": 2.0}]}"#)
+                .unwrap_err();
+        assert!(err.to_string().contains("only dim and"), "got: {err}");
+        let err =
+            serde_json::from_str::<State>(r#"{"components": ["r", {"dim": 1, "frame": "world"}]}"#)
                 .unwrap_err();
         assert!(err.to_string().contains("only dim and"), "got: {err}");
     }

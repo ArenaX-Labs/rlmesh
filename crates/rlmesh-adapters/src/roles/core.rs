@@ -1,6 +1,7 @@
 //! Domain-agnostic roles shared across environment/model domains.
 
 use super::registry::{DimLaw, RoleDef};
+use crate::spec::{FrameLaw, ReferenceLaw};
 
 pub const IMAGE_PRIMARY: &str = "image/primary";
 pub const IMAGE_SECONDARY: &str = "image/secondary";
@@ -28,40 +29,56 @@ pub const ROLES: &[RoleDef] = &[
         name: IMAGE_PRIMARY,
         dim: DimLaw::Variable,
         doc: "primary camera frame",
+        frame: FrameLaw::Frameless,
+        reference: ReferenceLaw::Unreferenced,
     },
     RoleDef {
         name: IMAGE_SECONDARY,
         dim: DimLaw::Variable,
         doc: "secondary camera frame",
+        frame: FrameLaw::Frameless,
+        reference: ReferenceLaw::Unreferenced,
     },
     RoleDef {
         name: INSTRUCTION,
         dim: DimLaw::Variable,
         doc: "natural-language task instruction",
+        frame: FrameLaw::Frameless,
+        reference: ReferenceLaw::Unreferenced,
     },
     RoleDef {
         name: JOINT_POS,
         dim: DimLaw::Variable,
         doc: "joint positions (DoF varies by embodiment)",
+        frame: FrameLaw::Frameless,
+        reference: ReferenceLaw::Unreferenced,
     },
     RoleDef {
         name: JOINT_VEL,
         dim: DimLaw::Variable,
         doc: "joint velocities (DoF varies by embodiment)",
+        frame: FrameLaw::Frameless,
+        reference: ReferenceLaw::Unreferenced,
     },
     RoleDef {
         name: ACTION_JOINT_POS,
         dim: DimLaw::Variable,
         doc: "commanded joint positions (DoF varies by embodiment)",
+        frame: FrameLaw::Frameless,
+        reference: ReferenceLaw::Unreferenced,
     },
     RoleDef {
         name: ACTION_JOINT_VEL,
         dim: DimLaw::Variable,
         doc: "commanded joint velocities (DoF varies by embodiment)",
+        frame: FrameLaw::Frameless,
+        reference: ReferenceLaw::Unreferenced,
     },
     RoleDef {
         name: ACTION_JOINT_POS_2,
         dim: DimLaw::Variable,
         doc: "second-arm commanded joint positions (DoF varies by embodiment)",
+        frame: FrameLaw::Frameless,
+        reference: ReferenceLaw::Unreferenced,
     },
 ];

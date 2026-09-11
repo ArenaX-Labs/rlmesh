@@ -35,7 +35,9 @@ from .model_inputs import (
 from .vocabularies import (
     ROTATION_DIMS,
     FitMode,
+    Frame,
     ImageLayout,
+    Reference,
     Resample,
     RotationEncoding,
 )
@@ -52,6 +54,7 @@ __all__ = [
     "EnvTags",
     "Field",
     "FitMode",
+    "Frame",
     "Image",
     "ImageLayout",
     "ImageTag",
@@ -62,6 +65,7 @@ __all__ = [
     "ObsNode",
     "ObsTransform",
     "ObservationRoles",
+    "Reference",
     "Resample",
     "Rotation",
     "RotationEncoding",

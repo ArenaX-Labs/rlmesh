@@ -1218,6 +1218,7 @@
       "EnvTags",
       "Field",
       "FitMode",
+      "Frame",
       "Image",
       "ImageLayout",
       "ImageTag",
@@ -1228,6 +1229,7 @@
       "ObsNode",
       "ObsTransform",
       "ObservationRoles",
+      "Reference",
       "Resample",
       "Rotation",
       "RotationEncoding",
@@ -1349,6 +1351,10 @@
             "kind": "attribute",
             "signature": "fill: float"
           },
+          "frame": {
+            "kind": "attribute",
+            "signature": "frame: Frame | None"
+          },
           "invert": {
             "kind": "attribute",
             "signature": "invert: bool"
@@ -1360,6 +1366,10 @@
           "range": {
             "kind": "attribute",
             "signature": "range: tuple[float, float] | None"
+          },
+          "reference": {
+            "kind": "attribute",
+            "signature": "reference: Reference | None"
           },
           "role": {
             "kind": "attribute",
@@ -1374,7 +1384,7 @@
             "signature": "threshold: float | None"
           }
         },
-        "signature": "Actuator(role: str | None = None, dim: int = 0, encoding: RotationEncoding | CustomEncoding | None = None, range: tuple[float, float] | None = None, binary: bool = False, scale: float | None = None, invert: bool = False, threshold: float | None = None, clip: bool = False, fill: float = 0.0, optional: bool = False)",
+        "signature": "Actuator(role: str | None = None, dim: int = 0, encoding: RotationEncoding | CustomEncoding | None = None, range: tuple[float, float] | None = None, binary: bool = False, scale: float | None = None, invert: bool = False, threshold: float | None = None, clip: bool = False, fill: float = 0.0, optional: bool = False, *, frame: Frame | None = None, reference: Reference | None = None)",
         "stability": "Stable"
       },
       "Adapter": {
@@ -1641,6 +1651,10 @@
             "kind": "attribute",
             "signature": "encoding: RotationEncoding | Sequence[RotationEncoding] | None"
           },
+          "frame": {
+            "kind": "attribute",
+            "signature": "frame: Frame | None"
+          },
           "range": {
             "kind": "attribute",
             "signature": "range: tuple[float, float] | None"
@@ -1650,12 +1664,17 @@
             "signature": "role: str | None"
           }
         },
-        "signature": "Field(role: str | None = None, dim: int = 0, encoding: RotationEncoding | Sequence[RotationEncoding] | None = None, range: tuple[float, float] | None = None)",
+        "signature": "Field(role: str | None = None, dim: int = 0, encoding: RotationEncoding | Sequence[RotationEncoding] | None = None, range: tuple[float, float] | None = None, *, frame: Frame | None = None)",
         "stability": "Stable"
       },
       "FitMode": {
         "kind": "type alias",
         "signature": "FitMode = Literal['stretch', 'crop', 'pad']",
+        "stability": "Stable"
+      },
+      "Frame": {
+        "kind": "type alias",
+        "signature": "Frame = Literal['world', 'robot_base']",
         "stability": "Stable"
       },
       "GRIPPER_POS": {
@@ -1887,6 +1906,11 @@
         "signature": "ROTATION_DIMS = dict[str, int]",
         "stability": "Stable"
       },
+      "Reference": {
+        "kind": "type alias",
+        "signature": "Reference = Literal['current', 'target']",
+        "stability": "Stable"
+      },
       "Resample": {
         "kind": "type alias",
         "signature": "Resample = Literal['bilinear', 'bilinear_aa']",
@@ -1955,6 +1979,10 @@
             "kind": "attribute",
             "signature": "fill: float"
           },
+          "frame": {
+            "kind": "attribute",
+            "signature": "frame: Frame | None"
+          },
           "index": {
             "kind": "attribute",
             "signature": "index: int | None"
@@ -1992,7 +2020,7 @@
             "signature": "scale: float | None"
           }
         },
-        "signature": "State(role: str, encoding: RotationEncoding | Sequence[RotationEncoding] | CustomEncoding | None = None, dim: int | None = None, index: int | None = None, optional: bool = False, range: tuple[float, float] | None = None, pad_to: int | None = None, dtype: str = 'float32', reshape: tuple[int, ...] | None = None, container: Literal['array', 'list'] = 'array', *, fill: float = 0.0, post_rotate: Rotation | None = None, scale: float | None = None, offset: float | None = None)",
+        "signature": "State(role: str, encoding: RotationEncoding | Sequence[RotationEncoding] | CustomEncoding | None = None, dim: int | None = None, index: int | None = None, optional: bool = False, range: tuple[float, float] | None = None, pad_to: int | None = None, dtype: str = 'float32', reshape: tuple[int, ...] | None = None, container: Literal['array', 'list'] = 'array', *, fill: float = 0.0, post_rotate: Rotation | None = None, scale: float | None = None, offset: float | None = None, frame: Frame | None = None)",
         "stability": "Stable"
       },
       "StateTag": {
@@ -2001,6 +2029,10 @@
           "encoding": {
             "kind": "attribute",
             "signature": "encoding: RotationEncoding | Sequence[RotationEncoding] | None"
+          },
+          "frame": {
+            "kind": "attribute",
+            "signature": "frame: Frame | None"
           },
           "range": {
             "kind": "attribute",
@@ -2011,7 +2043,7 @@
             "signature": "role: str"
           }
         },
-        "signature": "StateTag(role: str, encoding: RotationEncoding | Sequence[RotationEncoding] | None = None, range: tuple[float, float] | None = None)",
+        "signature": "StateTag(role: str, encoding: RotationEncoding | Sequence[RotationEncoding] | None = None, range: tuple[float, float] | None = None, *, frame: Frame | None = None)",
         "stability": "Stable"
       },
       "Text": {

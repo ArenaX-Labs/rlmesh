@@ -22,11 +22,20 @@ FitMode: TypeAlias = Literal["stretch", "crop", "pad"]
 
 Resample: TypeAlias = Literal["bilinear", "bilinear_aa"]
 
+# The geometry vocabularies (FRAMES / REFERENCES in v1/spec/frames.rs), typed
+# here for static checking and validated by the Rust codec at normalize. `Frame`
+# qualifies an absolute pose -- the coordinate frame its numbers are in;
+# `Reference` qualifies a delta -- the pose the controller integrates it against.
+Frame: TypeAlias = Literal["world", "robot_base"]
+Reference: TypeAlias = Literal["current", "target"]
+
 __all__ = [
     "IMAGE_LAYOUTS",
     "ROTATION_DIMS",
     "FitMode",
+    "Frame",
     "ImageLayout",
+    "Reference",
     "Resample",
     "RotationEncoding",
 ]

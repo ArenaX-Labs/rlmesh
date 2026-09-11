@@ -322,6 +322,8 @@ mod tests {
             clip: false,
             fill: 0.0,
             optional: false,
+            frame: None,
+            reference: None,
             unknown: Default::default(),
         }
     }
@@ -339,6 +341,8 @@ mod tests {
             clip: false,
             fill,
             optional: false,
+            frame: None,
+            reference: None,
             unknown: Default::default(),
         }
     }

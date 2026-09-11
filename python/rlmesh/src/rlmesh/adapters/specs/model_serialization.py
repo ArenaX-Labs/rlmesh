@@ -161,6 +161,7 @@ def _part_to_dict(part: State | Constant) -> Any:
         and part.post_rotate is None
         and part.scale is None
         and part.offset is None
+        and part.frame is None
     )
     if role_only:
         return part.role
@@ -186,6 +187,8 @@ def _part_to_dict(part: State | Constant) -> Any:
         out["scale"] = part.scale
     if part.offset is not None:
         out["offset"] = part.offset
+    if part.frame is not None:
+        out["frame"] = part.frame
     return out
 
 
@@ -288,6 +291,7 @@ def _part_from_dict(item: object) -> ConcatPart:
         ),
         scale=part.get("scale"),
         offset=part.get("offset"),
+        frame=part.get("frame"),
     )
 
 
@@ -350,6 +354,7 @@ def model_leaf_from_dict(data: Mapping[str, Any]) -> ModelLeaf:
                 post_rotate=base.post_rotate,
                 scale=base.scale,
                 offset=base.offset,
+                frame=base.frame,
                 pad_to=pad_to,
                 dtype=dtype,
                 reshape=reshape_t,
