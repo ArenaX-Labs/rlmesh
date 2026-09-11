@@ -10,6 +10,7 @@ again only when it drains.
 
 from __future__ import annotations
 
+import warnings
 from collections import deque
 from collections.abc import Callable, Mapping
 from typing import Any, cast
@@ -63,10 +64,18 @@ class ChunkReplay:
     ``horizon`` -- a receding-horizon model may emit a longer chunk than it
     re-plans) one per subsequent step before predicting again. :meth:`reset` (an
     episode boundary) drops any un-replayed tail.
+
+    ``native_chunk`` is the model's declared chunk length K
+    (:attr:`rlmesh.Model.native_chunk`). Declared, it is enforced exactly -- a
+    chunk of any other length means the model is slicing its own output down to
+    the horizon, which short-replays silently, so it raises. Undeclared, the
+    contract is elastic and a chunk shorter than the horizon only warns (once).
     """
 
-    def __init__(self, horizon: int) -> None:
+    def __init__(self, horizon: int, native_chunk: int | None = None) -> None:
         self.horizon = max(1, int(horizon))
+        self.native_chunk = native_chunk
+        self._warned = False
         self._queue: deque[Any] = deque()
         self.last_chunk_len = 0
         """Length of the chunk the model last returned (post-cap), 0 before any.
@@ -102,7 +111,28 @@ class ChunkReplay:
         predicted = predict()
         if self.horizon == 1:
             return predicted
-        chunk = split_chunk(predicted)[: self.horizon]
+        frames = split_chunk(predicted)
+        if self.native_chunk is not None and len(frames) != self.native_chunk:
+            raise ValueError(
+                f"model declares native_chunk={self.native_chunk} but its chunk corner "
+                f"returned {len(frames)} frames at execution_horizon={self.horizon}: "
+                "return the WHOLE native chunk and let the runtime execute its prefix "
+                "(do not slice to the horizon), or drop the declaration"
+            )
+        if (
+            self.native_chunk is None
+            and len(frames) < self.horizon
+            and not self._warned
+        ):
+            self._warned = True
+            warnings.warn(
+                f"the model returned {len(frames)} actions for execution_horizon="
+                f"{self.horizon}; replaying what there is and re-planning early. "
+                "Declare Model.native_chunk so the horizon can be validated up front.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        chunk = frames[: self.horizon]
         if not chunk:
             raise ValueError(
                 "a chunked model (execute_horizon>1) returned an empty action chunk"

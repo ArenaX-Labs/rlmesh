@@ -195,6 +195,10 @@
             "kind": "function",
             "signature": "load(**kwargs: Any) -> None"
           },
+          "native_chunk": {
+            "kind": "attribute",
+            "signature": "native_chunk: int | None"
+          },
           "params": {
             "kind": "attribute",
             "signature": "params: ParamSpec | None"
@@ -2052,6 +2056,10 @@
             "kind": "function",
             "signature": "load(**kwargs: Any) -> None"
           },
+          "native_chunk": {
+            "kind": "attribute",
+            "signature": "native_chunk: int | None"
+          },
           "params": {
             "kind": "attribute",
             "signature": "params: ParamSpec | None"
@@ -2609,6 +2617,10 @@
           "load": {
             "kind": "function",
             "signature": "load(**kwargs: Any) -> None"
+          },
+          "native_chunk": {
+            "kind": "attribute",
+            "signature": "native_chunk: int | None"
           },
           "params": {
             "kind": "attribute",
@@ -3864,6 +3876,10 @@
           "load": {
             "kind": "function",
             "signature": "load(**kwargs: Any) -> None"
+          },
+          "native_chunk": {
+            "kind": "attribute",
+            "signature": "native_chunk: int | None"
           },
           "params": {
             "kind": "attribute",

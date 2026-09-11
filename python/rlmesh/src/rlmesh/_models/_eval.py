@@ -57,6 +57,11 @@ __all__ = [
 # bound the loop so a non-terminating env cannot hang it forever.
 _MAX_STEPS_PER_EPISODE = 100_000
 
+# The execution-horizon ceiling, the twin of the native `MAX_EXECUTION_HORIZON`
+# (`rlmesh-adapters` `stateful.rs`) the served engine enforces at resolve. Above
+# this a horizon is always a mis-set knob, not a real open-loop plan.
+MAX_EXECUTION_HORIZON = 1024
+
 ObsT = TypeVar("ObsT")
 ActT = TypeVar("ActT")
 
@@ -480,6 +485,7 @@ class Session(Generic[ObsT, ActT]):
     _env_bridge: ValueBridge | None
     _text_placements: tuple[TextPlacement, ...]
     _horizon: int
+    _native_chunk: int | None
     _replay: ChunkReplay
     _terminated: bool
     _truncated: bool
@@ -524,6 +530,7 @@ class Session(Generic[ObsT, ActT]):
         instruction: str | None = None,
         close_env: bool = False,
         execution_horizon: int = 1,
+        native_chunk: int | None = None,
         model_client: PyModelClient | None = None,
         owner: Any = None,
         device: object | None = None,
@@ -537,7 +544,19 @@ class Session(Generic[ObsT, ActT]):
         """
         if execution_horizon < 1:
             raise ValueError(f"execution_horizon must be >= 1, got {execution_horizon}")
+        if execution_horizon > MAX_EXECUTION_HORIZON:
+            raise ValueError(
+                f"execution_horizon must be <= {MAX_EXECUTION_HORIZON}, got "
+                f"{execution_horizon}"
+            )
+        if native_chunk is not None and execution_horizon > native_chunk:
+            raise ValueError(
+                f"execution_horizon={execution_horizon} exceeds the model's declared "
+                f"native_chunk={native_chunk}: it cannot produce that many actions per "
+                f"predict. Lower the horizon to at most {native_chunk}."
+            )
         self = object.__new__(cls)
+        self._native_chunk = native_chunk
         self._predict = predict
         self._predict_chunk = predict_chunk
         self._execution_horizon = execution_horizon
@@ -562,7 +581,7 @@ class Session(Generic[ObsT, ActT]):
         self._env_bridge = None
         self._text_placements = ()
         self._horizon = 1
-        self._replay = ChunkReplay(1)
+        self._replay = self._new_replay()
         self._replay_fn = None
         self._takes_context = False
         self._terminated = False
@@ -603,6 +622,15 @@ class Session(Generic[ObsT, ActT]):
         self._view_driver = ViewerDriver(_view) if _view is not None else None
         return self
 
+    def _new_replay(self) -> ChunkReplay:
+        """A fresh replay queue at this session's horizon and declared chunk length.
+
+        The one place the two numbers meet, so the resolved horizon and the model's
+        ``native_chunk`` can never drift apart between construction, connect, and
+        each episode boundary.
+        """
+        return ChunkReplay(self._horizon, self._native_chunk)
+
     def _require_open(self) -> None:
         """Reject any use of an explicitly closed session (no silent reconnect)."""
         if self._closed:
@@ -634,7 +662,7 @@ class Session(Generic[ObsT, ActT]):
             )
             # Seed the replay with the resolved horizon so a hand-driven predict()
             # before the first reset() already replays the right chunk length.
-            self._replay = ChunkReplay(self._horizon)
+            self._replay = self._new_replay()
         self._connected = True
 
     @property
@@ -721,7 +749,7 @@ class Session(Generic[ObsT, ActT]):
         else:
             if self._adapter is not None:
                 self._adapter.reset()
-            self._replay = ChunkReplay(self._horizon)
+            self._replay = self._new_replay()
         self._terminated = self._truncated = False
         self._steps = 0
         self._reward = 0.0

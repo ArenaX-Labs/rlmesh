@@ -67,6 +67,9 @@ struct PyPredict {
     /// author's own — one written against same-route, fixed-size batches (a
     /// shape-pinned jit trace, per-batch statistics) opts out here.
     allow_fusion: bool,
+    /// The author's declared native chunk K (`Model.native_chunk`), read off the
+    /// loaded policy when the worker was built. `None` = undeclared (elastic).
+    native_chunk: Option<u32>,
     on_episode_end: Option<Py<PyAny>>,
     on_close: Option<Py<PyAny>>,
 }
@@ -161,6 +164,10 @@ impl PredictFn for PyPredict {
     fn allow_fusion(&self) -> bool {
         self.allow_fusion
             && (self.predict_batch_fn.is_some() || self.predict_chunk_batch_fn.is_some())
+    }
+
+    fn native_chunk(&self) -> Option<u32> {
+        self.native_chunk
     }
 
     fn predict_spec_less(&self, observation: ModelObservation) -> rlmesh::Result<Vec<SpaceValue>> {
@@ -626,6 +633,7 @@ pub struct PyModel {
     predict_batch_fn: Option<Py<PyAny>>,
     predict_chunk_batch_fn: Option<Py<PyAny>>,
     allow_fusion: bool,
+    native_chunk: Option<u32>,
     configure_fn: Option<Py<PyAny>>,
     on_episode_end: Option<Py<PyAny>>,
     on_close: Option<Py<PyAny>>,
@@ -646,6 +654,7 @@ impl PyModel {
                 .as_ref()
                 .map(|cb| cb.clone_ref(py)),
             allow_fusion: self.allow_fusion,
+            native_chunk: self.native_chunk,
             on_episode_end: self.on_episode_end.as_ref().map(|cb| cb.clone_ref(py)),
             on_close: self.on_close.as_ref().map(|cb| cb.clone_ref(py)),
         });
@@ -661,7 +670,7 @@ impl PyModel {
 #[pymethods]
 impl PyModel {
     #[new]
-    #[pyo3(signature = (predict_fn, configure_fn=None, on_episode_end=None, on_close=None, predict_chunk_fn=None, predict_batch_fn=None, predict_chunk_batch_fn=None, allow_fusion=true))]
+    #[pyo3(signature = (predict_fn, configure_fn=None, on_episode_end=None, on_close=None, predict_chunk_fn=None, predict_batch_fn=None, predict_chunk_batch_fn=None, allow_fusion=true, native_chunk=None))]
     #[allow(clippy::too_many_arguments)] // a PyO3 #[new] ctor maps each arg to a Python kwarg
     fn new(
         predict_fn: Py<PyAny>,
@@ -672,6 +681,7 @@ impl PyModel {
         predict_batch_fn: Option<Py<PyAny>>,
         predict_chunk_batch_fn: Option<Py<PyAny>>,
         allow_fusion: bool,
+        native_chunk: Option<u32>,
     ) -> PyResult<Self> {
         init_tracing("model_worker");
         let profiler = ProfileCollector::new("model_worker");
@@ -682,6 +692,7 @@ impl PyModel {
             predict_batch_fn,
             predict_chunk_batch_fn,
             allow_fusion,
+            native_chunk,
             configure_fn,
             on_episode_end,
             on_close,
@@ -791,7 +802,7 @@ import collections.abc
 import typing
 
 class PyModel:
-    def __init__(self, predict_fn: collections.abc.Callable[[Value], Value], configure_fn: collections.abc.Callable[[EnvContract], object] | None = None, on_episode_end: collections.abc.Callable[[str], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None, predict_chunk_fn: collections.abc.Callable[[Value, int], Value] | None = None, predict_batch_fn: collections.abc.Callable[[list[Value], list[dict[str, typing.Any]]], list[Value]] | None = None, predict_chunk_batch_fn: collections.abc.Callable[[list[Value], int, list[dict[str, typing.Any]]], list[Value]] | None = None, allow_fusion: bool = True) -> None: ...
+    def __init__(self, predict_fn: collections.abc.Callable[[Value], Value], configure_fn: collections.abc.Callable[[EnvContract], object] | None = None, on_episode_end: collections.abc.Callable[[str], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None, predict_chunk_fn: collections.abc.Callable[[Value, int], Value] | None = None, predict_batch_fn: collections.abc.Callable[[list[Value], list[dict[str, typing.Any]]], list[Value]] | None = None, predict_chunk_batch_fn: collections.abc.Callable[[list[Value], int, list[dict[str, typing.Any]]], list[Value]] | None = None, allow_fusion: bool = True, native_chunk: int | None = None) -> None: ...
     def run_local(self, env_address: str, execution_horizon: int = 1) -> dict[str, typing.Any]: ...
     def run_local_for_episodes(self, env_address: str, max_episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False) -> dict[str, typing.Any]: ...
     def serve(self, address: str, options: ServeOptions | None = None) -> None: ...

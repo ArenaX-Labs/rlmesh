@@ -458,6 +458,17 @@ class ModelBase(Generic[ObsT, ActT]):
     #: shape-pinned jit/compile trace, per-batch statistics, batch-position
     #: logic -- and grouped predicts will run per route instead.
     allow_fusion: bool = True
+    #: This model's NATIVE chunk length K -- how many per-step actions ONE
+    #: :meth:`predict_chunk` / :meth:`predict_chunk_batch` call returns. Set it as a
+    #: class attribute, or in :meth:`load` when the checkpoint decides it
+    #: (``self.native_chunk = int(self.policy.horizon)``); it is read once, after
+    #: ``load()``, when the worker is built. ``None`` (the default) leaves the chunk
+    #: length undeclared: the runtime executes ``min(len(chunk), execution_horizon)``
+    #: and cannot check anything. Declaring it is a promise -- the runtime then
+    #: refuses an ``execution_horizon`` above K and fails a predict whose chunk is
+    #: not exactly K long, which is what catches a model still slicing its own chunk
+    #: down to the horizon.
+    native_chunk: int | None = None
 
     @classmethod
     def describe(cls) -> dict[str, Any]:
@@ -635,6 +646,30 @@ class ModelBase(Generic[ObsT, ActT]):
         self._on_episode_end: LifecycleCallback = self._episodes.end
         self._trust_entrypoints = trust_entrypoints
         self._worker: PyModel | None = None
+        # A class-level K with no chunk corner can never be honored (and nothing
+        # would ever check it), so reject it where the corners are known. A K set
+        # in load() is caught by the same door at resolve instead -- load() may run
+        # after construction on the served path.
+        if (
+            getattr(type(policy), "native_chunk", None) is not None
+            and raw_predict_chunk is None
+            and raw_predict_chunk_batch is None
+        ):
+            raise TypeError(
+                "native_chunk declares how long ONE action chunk is, but this model "
+                "defines no predict_chunk() / predict_chunk_batch(). Add a chunk "
+                "corner, or drop native_chunk."
+            )
+
+    def _native_chunk(self) -> int | None:
+        """The declared native chunk K, read off the loaded policy.
+
+        Read here rather than captured at construction so a ``load()`` that sets
+        it from the checkpoint (the usual case) is honored. Reads the *policy*, so
+        a duck-typed object wrapped as ``Model(policy)`` declares the same way a
+        subclass does.
+        """
+        return getattr(self._policy, "native_chunk", None)
 
     def _to_device(self, value: object) -> object:
         """Move every framework tensor leaf of an input onto :attr:`device`.
@@ -891,6 +926,11 @@ class ModelBase(Generic[ObsT, ActT]):
 
             predict_chunk_batch_neutral = _predict_chunk_batch_neutral
 
+        native_chunk = self._native_chunk()
+        if native_chunk is not None and int(native_chunk) < 1:
+            raise ValueError(
+                f"native_chunk must be >= 1 (or None when undeclared), got {native_chunk!r}"
+            )
         worker: PyModel = load_native("PyModel")(
             predict_fn=predict_neutral,
             configure_fn=configure,
@@ -900,6 +940,7 @@ class ModelBase(Generic[ObsT, ActT]):
             predict_batch_fn=predict_batch_neutral,
             predict_chunk_batch_fn=predict_chunk_batch_neutral,
             allow_fusion=self.allow_fusion,
+            native_chunk=native_chunk,
         )
         self._worker = worker
         return worker
@@ -1169,6 +1210,7 @@ class ModelBase(Generic[ObsT, ActT]):
             instruction=instruction,
             close_env=close_env,
             execution_horizon=execution_horizon,
+            native_chunk=self._native_chunk(),
             view=view,
         )
 

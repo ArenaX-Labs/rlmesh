@@ -120,6 +120,12 @@ def _gather(
         corners = _corners(obj)
         if corners:
             pieces["corners"] = corners
+        # The model's declared native chunk length K, when it declares one at the
+        # class level. A K set in load() is invisible here on purpose: describe
+        # runs on the class, without weights.
+        native_chunk = getattr(obj, "native_chunk", None)
+        if isinstance(native_chunk, int) and not isinstance(native_chunk, bool):
+            pieces["native_chunk"] = native_chunk
     return pieces
 
 

@@ -236,6 +236,25 @@ def test_model_envelope_lists_defined_corners() -> None:
     assert "corners" not in rlmesh.describe(_CamArmFactory)
 
 
+class _DeclaringModel(rlmesh.Model):
+    native_chunk = 30
+
+    def predict(self, observation: object) -> object:
+        return 0
+
+    def predict_chunk(self, observation: object) -> object:
+        return [0]
+
+
+def test_model_envelope_carries_a_declared_native_chunk() -> None:
+    # K is a model property, declared at the class level and readable without
+    # weights -- that is what makes it checkable before anything runs.
+    assert rlmesh.describe(_DeclaringModel)["native_chunk"] == 30
+    # Undeclared stays absent (no key), and it never appears on an env.
+    assert "native_chunk" not in rlmesh.describe(_TinyModel)
+    assert "native_chunk" not in rlmesh.describe(_CamArmFactory)
+
+
 def test_classmethod_matches_function() -> None:
     assert _CamArmFactory.describe() == rlmesh.describe(_CamArmFactory)
     assert _TinyModel.describe() == rlmesh.describe(_TinyModel)

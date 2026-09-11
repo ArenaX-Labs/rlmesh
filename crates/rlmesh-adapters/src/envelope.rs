@@ -65,6 +65,8 @@ struct Pieces {
     #[serde(default)]
     corners: Option<Value>,
     #[serde(default)]
+    native_chunk: Option<Value>,
+    #[serde(default)]
     params: Option<Value>,
     #[serde(default)]
     variants: Option<Value>,
@@ -80,6 +82,7 @@ impl Pieces {
         let offender = match kind {
             Kind::Env if self.model_spec.is_some() => Some("model_spec"),
             Kind::Env if self.corners.is_some() => Some("corners"),
+            Kind::Env if self.native_chunk.is_some() => Some("native_chunk"),
             Kind::Model if self.env_spec.is_some() => Some("env_spec"),
             Kind::Model if self.env_tags.is_some() => Some("env_tags"),
             _ => None,
@@ -116,7 +119,8 @@ struct EnvEnvelope {
 /// The serialized model form. `model_spec` is always present (may be `null`); env
 /// spaces/tags never appear on a model envelope. `corners` lists the predict
 /// corners the model actually defines (e.g. `["predict_chunk",
-/// "predict_chunk_batch"]`) so batching support is introspected, never declared.
+/// "predict_chunk_batch"]`) so batching support is introspected, never declared;
+/// `native_chunk` is the model's own declaration of how long one chunk is.
 #[derive(Debug, Serialize)]
 struct ModelEnvelope {
     schema_version: u32,
@@ -128,6 +132,10 @@ struct ModelEnvelope {
     model_spec: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     corners: Option<Value>,
+    /// The model's declared native chunk length K, when it declares one; absent
+    /// for the elastic (undeclared) contract. Model-only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    native_chunk: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     params: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -199,6 +207,7 @@ pub fn build_describe_envelope(
             target: pieces.target,
             model_spec: pieces.model_spec.unwrap_or(Value::Null),
             corners: pieces.corners,
+            native_chunk: pieces.native_chunk,
             params: pieces.params,
             variants: pieces.variants,
             runtime: pieces.runtime,
@@ -374,6 +383,24 @@ mod tests {
         let env = build_describe_envelope("env", r#"{"env_spec":{"a":1}}"#, None).unwrap();
         assert!(env.contains(r#""env_tags":null"#));
         assert!(!env.contains("model_spec"));
+    }
+
+    #[test]
+    fn native_chunk_is_a_model_only_piece() {
+        // A model's declared chunk length rides the envelope verbatim...
+        let out = build_describe_envelope("model", r#"{"native_chunk":30}"#, None).expect("builds");
+        assert!(out.contains(r#""native_chunk":30"#));
+        // ...is absent when undeclared (no key, not a null)...
+        let bare = build_describe_envelope("model", "{}", None).expect("builds");
+        assert!(!bare.contains("native_chunk"));
+        // ...and is refused on an env envelope: chunk length is a model property.
+        assert!(matches!(
+            build_describe_envelope("env", r#"{"native_chunk":30}"#, None).unwrap_err(),
+            EnvelopeError::KindMismatch {
+                kind: Kind::Env,
+                field: "native_chunk"
+            }
+        ));
     }
 
     #[test]

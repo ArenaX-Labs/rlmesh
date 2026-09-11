@@ -574,6 +574,58 @@ def test_invalid_execution_horizon_raises_value_error_at_entry() -> None:
         rlmesh.run(rlmesh.Model(lambda obs: 0), _TinyEnv(), execution_horizon=-2)
 
 
+def test_execution_horizon_over_the_bound_is_rejected() -> None:
+    # The ceiling is the SDK twin of the engine's MAX_EXECUTION_HORIZON: above it
+    # a horizon is always a mis-set knob, not a real open-loop plan.
+    with pytest.raises(ValueError, match="execution_horizon must be <= 1024"):
+        rlmesh.session(rlmesh.Model(lambda obs: 0), _TinyEnv(), execution_horizon=1025)
+
+
+def test_execution_horizon_over_the_declared_chunk_is_rejected() -> None:
+    # Declaring K is a promise the session holds the caller to: the model cannot
+    # produce more than K actions per predict, so a larger horizon is refused up
+    # front rather than silently short-replaying every step.
+    class _Chunky(rlmesh.Model):
+        native_chunk = 4
+
+        def predict(self, observation: object) -> int:
+            return 0
+
+        def predict_chunk(self, observation: object) -> list[int]:
+            return [0, 1, 2, 3]
+
+    with pytest.raises(ValueError, match="native_chunk=4"):
+        _Chunky().session(_ForeverEnv(), execution_horizon=8)
+
+
+def test_a_declared_model_that_slices_its_own_chunk_fails_the_replay() -> None:
+    # The glue this contract removes: returning chunk[:horizon] from a model that
+    # declares K short-replays silently. Declared, it raises instead.
+    from rlmesh._models._chunk import ChunkReplay
+
+    replay = ChunkReplay(4, native_chunk=10)
+    with pytest.raises(ValueError, match="native_chunk=10"):
+        replay.next_action(lambda: [0, 1, 2, 3])
+    # The whole native chunk is accepted and the horizon prefix replayed.
+    assert ChunkReplay(4, native_chunk=10).next_action(lambda: list(range(10))) == 0
+
+
+def test_an_undeclared_short_chunk_warns_once() -> None:
+    import warnings as warnings_mod
+
+    from rlmesh._models._chunk import ChunkReplay
+
+    replay = ChunkReplay(6)
+    with warnings_mod.catch_warnings(record=True) as caught:
+        warnings_mod.simplefilter("always")
+        assert replay.next_action(lambda: [0, 1]) == 0
+        assert replay.next_action(lambda: [0, 1]) == 1  # replayed, no predict
+        assert replay.next_action(lambda: [0, 1]) == 0  # re-plans, still short
+    shorts = [w for w in caught if "execution_horizon=6" in str(w.message)]
+    assert len(shorts) == 1
+    assert issubclass(shorts[0].category, RuntimeWarning)
+
+
 def test_unchunked_warning_points_at_the_caller() -> None:
     import warnings as warnings_mod
 
