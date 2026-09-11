@@ -13,6 +13,7 @@ One JSON file per case, dispatched on `kind`:
 - `resolve` — `env_spec` + `model_spec`, expecting either `{"ok": true, "describe": <exact text>}` or `{"error_contains": <substring>}`. Error cases pin _resolve-time_ failure: an implementation that defers the failure to apply time fails the case. An optional `advisories_contain` lists substrings each of which must appear in some `"<severity>: <message>"` advisory line — hand-curated like `error_contains` (update mode carries it through rather than rewriting it), so a case pins only the advisory it is about.
 - `serialization` — `side` (`env`|`model`) + `doc`: `from_dict(doc)` followed by `to_dict()` must reproduce `doc` exactly.
 - `role_policy` — `side` (`env`|`model`) + `policy` (`passthrough`|`strict`|`forbid`) + `doc`: the publish-gate role tier, expecting acceptance (`{}`) or `{"error_contains": <substring>}`. Frozen like `serialization` — the policy table _is_ the contract, so update mode never rewrites these.
+- `apply_sequence` — specs + `observations` (a list), expecting `payloads`: the model payload each step produced, driven through the _stateful_ assemble seam as one episode. The kind for anything that only exists across steps — today, frame history. Values use the same encoding and tolerance as `apply`; the action side is not exercised (it is stateless, and `apply` pins it).
 - `apply` — specs + `observation` + `model_output`, expecting the exact model payload and env action. Values are encoded as `{"kind": "array", dtype, shape, data}`, `{"kind": "list", data}`, `{"kind": "text", data}`, or `{"kind": "map", data}` (nested observations). Numeric comparison: exact dtype match, values within `atol` (default 1e-6).
 
 ## Updating (snapshot-style)
@@ -44,6 +45,19 @@ The names follow one rule: **un-suffixed is cv2/torch semantics, `_aa` is PIL se
 The `_aa` filters share one weight builder: per output pixel, `center = (i + 0.5) * scale`, filter stretched by `max(scale, 1)`, taps snapped to the nearest pixel centers, weights normalized to sum to 1. `"area"` uses the same builder with the box integrated over each source pixel (so a partly covered edge pixel gets exactly its coverage) and a filter stretch of `scale` in both directions.
 
 All of them are specified as: weights computed in float64, both passes in float64, the horizontal pass's output clipped to [0, 255] before the vertical pass — PIL's intermediate is an 8-bit image, so the negative lobes of the cubic and Lanczos kernels are clipped there, and a pipeline that clips only at the end drifts from Pillow by tens of levels on a hard edge — then one final round-half-to-even, clip to [0, 255], uint8. Resize apply cases use `atol: 1.0` (one uint8 step) to absorb cross-language rounding at ties; all other apply cases use `atol: 1e-6`.
+
+## Frame history
+
+`ImageInput.stack` is how many frames the model is fed on a new leading axis; `offsets` is _which_ frames, as non-positive deltas from the current step, oldest first and ending at `0`. `stride` (an SDK-side convenience, never on the wire) writes an evenly spaced one: `stack=4, stride=2` is `offsets=[-6, -4, -2, 0]`.
+
+The two are declared, never inferred from each other: `len(offsets) == stack` or resolution fails. The rest of the law is also resolve-time — non-positive, strictly increasing, ending at `0`, and spanning at most **128** consecutive frames — so a list a newer core understands still parses and relays instead of failing at the codec door. The _span_ (`1 - offsets[0]`) is what the adapter holds per live episode; the stack is what it gathers out of it.
+
+`stack_pad` fills the window before an episode has produced enough steps:
+
+- `"first"` (default) replicates the first observed frame, so the stack is full from step zero — what every spec written before `offsets` existed already got.
+- `"black"` writes a raw 8-bit `0` frame _through the plan_, so under `normalize = [-1, 1]` a black pad frame is `-1.0`, matching `fill`'s doctrine for an absent camera. The name says what the pixels are, never what the tensor holds.
+
+The window advances once per env step — including a step whose action came from a replayed chunk, which assembles no payload but still observes. A frame window therefore holds consecutive steps at any execution horizon, never decision points.
 
 ## Cropping
 

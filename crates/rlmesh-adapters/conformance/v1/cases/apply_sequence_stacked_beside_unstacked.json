@@ -1,0 +1,502 @@
+{
+  "action_space": {
+    "dtype": "float32",
+    "kind": "box",
+    "shape": [
+      7
+    ]
+  },
+  "env_tags": {
+    "action": {
+      "clip": [
+        -1.0,
+        1.0
+      ],
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "role": "action/delta_eef_pos"
+        },
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": "axis_angle",
+          "range": null,
+          "role": "action/delta_eef_rot"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": [
+            -1.0,
+            1.0
+          ],
+          "role": "action/gripper"
+        }
+      ]
+    },
+    "observation": {
+      "cam": {
+        "layout": "hwc",
+        "role": "image/primary",
+        "type": "image",
+        "upside_down": false
+      },
+      "wrist": {
+        "layout": "hwc",
+        "role": "image/wrist",
+        "type": "image",
+        "upside_down": false
+      }
+    }
+  },
+  "expect": {
+    "atol": 1e-6,
+    "payloads": [
+      {
+        "data": {
+          "history": {
+            "data": [
+              1,
+              1,
+              1,
+              1,
+              1,
+              1
+            ],
+            "dtype": "uint8",
+            "kind": "array",
+            "shape": [
+              2,
+              1,
+              1,
+              3
+            ]
+          },
+          "live": {
+            "data": [
+              101,
+              101,
+              101
+            ],
+            "dtype": "uint8",
+            "kind": "array",
+            "shape": [
+              1,
+              1,
+              3
+            ]
+          }
+        },
+        "kind": "map"
+      },
+      {
+        "data": {
+          "history": {
+            "data": [
+              1,
+              1,
+              1,
+              2,
+              2,
+              2
+            ],
+            "dtype": "uint8",
+            "kind": "array",
+            "shape": [
+              2,
+              1,
+              1,
+              3
+            ]
+          },
+          "live": {
+            "data": [
+              102,
+              102,
+              102
+            ],
+            "dtype": "uint8",
+            "kind": "array",
+            "shape": [
+              1,
+              1,
+              3
+            ]
+          }
+        },
+        "kind": "map"
+      },
+      {
+        "data": {
+          "history": {
+            "data": [
+              1,
+              1,
+              1,
+              3,
+              3,
+              3
+            ],
+            "dtype": "uint8",
+            "kind": "array",
+            "shape": [
+              2,
+              1,
+              1,
+              3
+            ]
+          },
+          "live": {
+            "data": [
+              103,
+              103,
+              103
+            ],
+            "dtype": "uint8",
+            "kind": "array",
+            "shape": [
+              1,
+              1,
+              3
+            ]
+          }
+        },
+        "kind": "map"
+      },
+      {
+        "data": {
+          "history": {
+            "data": [
+              1,
+              1,
+              1,
+              4,
+              4,
+              4
+            ],
+            "dtype": "uint8",
+            "kind": "array",
+            "shape": [
+              2,
+              1,
+              1,
+              3
+            ]
+          },
+          "live": {
+            "data": [
+              104,
+              104,
+              104
+            ],
+            "dtype": "uint8",
+            "kind": "array",
+            "shape": [
+              1,
+              1,
+              3
+            ]
+          }
+        },
+        "kind": "map"
+      },
+      {
+        "data": {
+          "history": {
+            "data": [
+              2,
+              2,
+              2,
+              5,
+              5,
+              5
+            ],
+            "dtype": "uint8",
+            "kind": "array",
+            "shape": [
+              2,
+              1,
+              1,
+              3
+            ]
+          },
+          "live": {
+            "data": [
+              105,
+              105,
+              105
+            ],
+            "dtype": "uint8",
+            "kind": "array",
+            "shape": [
+              1,
+              1,
+              3
+            ]
+          }
+        },
+        "kind": "map"
+      }
+    ]
+  },
+  "kind": "apply_sequence",
+  "model_spec": {
+    "input": {
+      "history": {
+        "dtype": "uint8",
+        "height": null,
+        "layout": "hwc",
+        "lead_dims": 0,
+        "normalize": false,
+        "offsets": [
+          -3,
+          0
+        ],
+        "resample": "bilinear",
+        "role": "image/primary",
+        "stack": 2,
+        "type": "image",
+        "upside_down": false,
+        "width": null
+      },
+      "live": {
+        "dtype": "uint8",
+        "height": null,
+        "layout": "hwc",
+        "lead_dims": 0,
+        "normalize": false,
+        "resample": "bilinear",
+        "role": "image/wrist",
+        "type": "image",
+        "upside_down": false,
+        "width": null
+      }
+    },
+    "output": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "role": "action/delta_eef_pos"
+        },
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": "axis_angle",
+          "range": null,
+          "role": "action/delta_eef_rot"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": null,
+          "role": "action/gripper"
+        }
+      ]
+    }
+  },
+  "observation_space": {
+    "children": [
+      {
+        "dtype": "uint8",
+        "kind": "box",
+        "shape": [
+          1,
+          1,
+          3
+        ]
+      },
+      {
+        "dtype": "uint8",
+        "kind": "box",
+        "shape": [
+          1,
+          1,
+          3
+        ]
+      }
+    ],
+    "dtype": "unspecified",
+    "keys": [
+      "cam",
+      "wrist"
+    ],
+    "kind": "dict"
+  },
+  "observations": [
+    {
+      "data": {
+        "cam": {
+          "data": [
+            1,
+            1,
+            1
+          ],
+          "dtype": "uint8",
+          "kind": "array",
+          "shape": [
+            1,
+            1,
+            3
+          ]
+        },
+        "wrist": {
+          "data": [
+            101,
+            101,
+            101
+          ],
+          "dtype": "uint8",
+          "kind": "array",
+          "shape": [
+            1,
+            1,
+            3
+          ]
+        }
+      },
+      "kind": "map"
+    },
+    {
+      "data": {
+        "cam": {
+          "data": [
+            2,
+            2,
+            2
+          ],
+          "dtype": "uint8",
+          "kind": "array",
+          "shape": [
+            1,
+            1,
+            3
+          ]
+        },
+        "wrist": {
+          "data": [
+            102,
+            102,
+            102
+          ],
+          "dtype": "uint8",
+          "kind": "array",
+          "shape": [
+            1,
+            1,
+            3
+          ]
+        }
+      },
+      "kind": "map"
+    },
+    {
+      "data": {
+        "cam": {
+          "data": [
+            3,
+            3,
+            3
+          ],
+          "dtype": "uint8",
+          "kind": "array",
+          "shape": [
+            1,
+            1,
+            3
+          ]
+        },
+        "wrist": {
+          "data": [
+            103,
+            103,
+            103
+          ],
+          "dtype": "uint8",
+          "kind": "array",
+          "shape": [
+            1,
+            1,
+            3
+          ]
+        }
+      },
+      "kind": "map"
+    },
+    {
+      "data": {
+        "cam": {
+          "data": [
+            4,
+            4,
+            4
+          ],
+          "dtype": "uint8",
+          "kind": "array",
+          "shape": [
+            1,
+            1,
+            3
+          ]
+        },
+        "wrist": {
+          "data": [
+            104,
+            104,
+            104
+          ],
+          "dtype": "uint8",
+          "kind": "array",
+          "shape": [
+            1,
+            1,
+            3
+          ]
+        }
+      },
+      "kind": "map"
+    },
+    {
+      "data": {
+        "cam": {
+          "data": [
+            5,
+            5,
+            5
+          ],
+          "dtype": "uint8",
+          "kind": "array",
+          "shape": [
+            1,
+            1,
+            3
+          ]
+        },
+        "wrist": {
+          "data": [
+            105,
+            105,
+            105
+          ],
+          "dtype": "uint8",
+          "kind": "array",
+          "shape": [
+            1,
+            1,
+            3
+          ]
+        }
+      },
+      "kind": "map"
+    }
+  ]
+}

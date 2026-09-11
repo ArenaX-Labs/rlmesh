@@ -12,6 +12,7 @@ cannot express (image layout, rotation encoding, explicit ranges).
 
 from __future__ import annotations
 
+import contextlib
 import io
 import warnings
 from types import SimpleNamespace
@@ -4159,3 +4160,135 @@ def test_require_frames_is_an_opt_in_publish_gate() -> None:
         ).to_dict()
     )
     adapters_spec_normalize("env", declared, True, "passthrough", True)
+
+
+class _StackedFrameEnv:
+    """A local env whose camera returns a fresh, step-numbered frame each step."""
+
+    def __init__(self, tags: adapt.EnvTags, obs_space: Any, action_space: Any) -> None:
+        self.metadata = tags.to_metadata()
+        self.observation_space = obs_space
+        self.action_space = action_space
+        self._step = 0
+
+    def _obs(self) -> dict[str, Any]:
+        frame = np.full((4, 4, 3), self._step, dtype=np.uint8)
+        self._step += 1
+        return {"rgb": frame, "instruction": "go"}
+
+    def reset(self, *, seed: object = None, options: object = None) -> Any:
+        self._step = 0
+        return self._obs(), {}
+
+    def step(self, action: object) -> Any:
+        return self._obs(), 0.0, False, False, {}
+
+    def close(self) -> None:
+        pass
+
+
+def _drive_stacked_session(horizon: int, steps: int) -> list[Any]:
+    """Drive a stacked model for `steps` env steps; return the payloads it saw."""
+    from rlmesh.numpy import Model
+
+    env = image_env(4, 4)
+    spec = adapt.ModelSpec(
+        input={"img": adapt.Image(role=adapt.IMAGE_PRIMARY, stack=3, stride=2)},
+        output=SMOLVLA.output,
+    )
+    seen: list[Any] = []
+
+    class _Chunky(Model):
+        def predict(self, observation: Any) -> Any:
+            seen.append(np.asarray(observation["img"]).copy())
+            return np.zeros(7, dtype=np.float32)
+
+        def predict_chunk(self, observation: Any, chunk: int) -> Any:
+            seen.append(np.asarray(observation["img"]).copy())
+            return np.zeros((chunk, 7), dtype=np.float32)
+
+    model = _Chunky(spec=spec)
+    sess = model.session(
+        _StackedFrameEnv(env.tags, env.obs_space, env.action_space),
+        execution_horizon=horizon,
+    )
+    obs, _info = sess.reset()
+    for _ in range(steps):
+        obs, *_rest = sess.step(sess.predict(obs))
+    sess.close()
+    return seen
+
+
+def test_a_stacked_window_is_the_same_at_every_execution_horizon() -> None:
+    # The horizon invariant: chunk replay changes WHEN the model runs, never WHAT
+    # it sees. Every fourth payload of a single-step session must equal the
+    # payloads a horizon-4 session assembled at the same env steps -- which only
+    # holds because a replayed step still ticks the frame window.
+    every_step = _drive_stacked_session(1, 12)
+    chunked = _drive_stacked_session(4, 12)
+    assert len(every_step) == 12
+    assert len(chunked) == 3
+    for index, payload in enumerate(chunked):
+        np.testing.assert_array_equal(payload, every_step[index * 4])
+    # ...and the window really is strided: at step 8 it stacks frames 4, 6, 8.
+    np.testing.assert_array_equal(
+        chunked[2][:, 0, 0, 0], np.asarray([4, 6, 8], dtype=np.uint8)
+    )
+
+
+def test_image_stride_sugar_builds_the_declared_offsets() -> None:
+    # stride= is sugar for an evenly spaced window; the two catalog models this
+    # was built for are the table.
+    assert adapt.Image(adapt.IMAGE_PRIMARY, stack=4, stride=2).offsets == (
+        -6,
+        -4,
+        -2,
+        0,
+    )
+    assert adapt.Image(adapt.IMAGE_PRIMARY, stack=6, stride=5).offsets == (
+        -25,
+        -20,
+        -15,
+        -10,
+        -5,
+        0,
+    )
+    # A plain stack materializes nothing onto the frozen dataclass.
+    assert adapt.Image(adapt.IMAGE_PRIMARY, stack=4).offsets is None
+    with pytest.raises(ValueError, match="stride=, or offsets=, not both"):
+        adapt.Image(adapt.IMAGE_PRIMARY, stack=2, stride=2, offsets=(-1, 0))
+
+
+def test_frame_history_budget_is_gated_at_connect() -> None:
+    # A window is live memory for the whole episode: a mis-set stride turns a
+    # modest stack into gigabytes, so the session refuses it where the number is
+    # already known rather than at the allocation that OOMs.
+    from rlmesh.numpy import Model
+
+    env = image_env(4, 4)
+    spec = adapt.ModelSpec(
+        input={"img": adapt.Image(role=adapt.IMAGE_PRIMARY, stack=4, stride=32)},
+        output=SMOLVLA.output,
+    )
+    sess = Model(lambda obs: np.zeros(7, dtype=np.float32), spec=spec).session(
+        _StackedFrameEnv(env.tags, env.obs_space, env.action_space)
+    )
+    with pytest.raises(ValueError, match="over the 64-byte ceiling"):
+        with _frame_history_limit(64):
+            sess.reset()
+    sess.close()
+
+
+@contextlib.contextmanager
+def _frame_history_limit(limit: int) -> Any:
+    import os
+
+    previous = os.environ.get("RLMESH_FRAME_HISTORY_LIMIT_BYTES")
+    os.environ["RLMESH_FRAME_HISTORY_LIMIT_BYTES"] = str(limit)
+    try:
+        yield
+    finally:
+        if previous is None:
+            del os.environ["RLMESH_FRAME_HISTORY_LIMIT_BYTES"]
+        else:
+            os.environ["RLMESH_FRAME_HISTORY_LIMIT_BYTES"] = previous

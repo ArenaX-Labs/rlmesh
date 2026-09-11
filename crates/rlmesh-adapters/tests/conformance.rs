@@ -15,8 +15,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use rlmesh_adapters::v1::{
-    EnvTags, ModelSpec, NoCustoms, RolePolicy, SpaceView, Value, reject_unsanctioned_roles_env,
-    reject_unsanctioned_roles_model, resolve,
+    EnvTags, FrameBuffers, ModelSpec, NoCustoms, NoEncodings, RolePolicy, SpaceView, Value,
+    assemble_obs, reject_unsanctioned_roles_env, reject_unsanctioned_roles_model, resolve,
 };
 use rlmesh_spaces::scalar::{Scalar, decode_scalars, encode_scalars};
 use rlmesh_spaces::{DType, Tensor};
@@ -351,9 +351,62 @@ fn updated_case(name: &str, case: &Json) -> Json {
                 "atol": if atol.is_null() { json!(1e-6) } else { atol },
             });
         }
+        "apply_sequence" => {
+            let (tags, obs_space, action_space, model_spec) = parse_inputs(case);
+            if !preserve_inputs {
+                out["env_tags"] = serde_json::to_value(&tags).expect("serializes");
+                out["observation_space"] = serde_json::to_value(&obs_space).expect("serializes");
+                out["action_space"] = serde_json::to_value(&action_space).expect("serializes");
+                out["model_spec"] = serde_json::to_value(&model_spec).expect("serializes");
+            }
+            let adapter = resolve(&tags, &obs_space, &action_space, &model_spec, false)
+                .unwrap_or_else(|e| panic!("{name}: resolve failed: {e}"));
+            let atol = case["expect"]["atol"].clone();
+            let payloads: Vec<Json> = sequence_payloads(name, &adapter, &case["observations"])
+                .iter()
+                .map(enc)
+                .collect();
+            out["expect"] = json!({
+                "payloads": payloads,
+                "atol": if atol.is_null() { json!(1e-6) } else { atol },
+            });
+        }
         other => panic!("{name}: unknown case kind {other:?}"),
     }
     out
+}
+
+/// Drive a case's `observations` through the stateful assemble seam, one
+/// episode, and collect the payload each step produced.
+///
+/// The stateful entry point ([`assemble_obs`]) rather than the stateless one:
+/// what these vectors pin is the frame window across steps, which does not exist
+/// in a single `transform_obs`.
+fn sequence_payloads(
+    name: &str,
+    adapter: &rlmesh_adapters::v1::ResolvedAdapter,
+    observations: &Json,
+) -> Vec<Value> {
+    let mut buffers = FrameBuffers::new();
+    observations
+        .as_array()
+        .unwrap_or_else(|| panic!("{name}: observations must be a list"))
+        .iter()
+        .map(|observation| {
+            let Value::Map(raw_obs) = dec(observation) else {
+                panic!("{name}: each observation must decode to a map");
+            };
+            assemble_obs(
+                adapter,
+                &raw_obs,
+                "ep",
+                &mut buffers,
+                &NoCustoms,
+                &NoEncodings,
+            )
+            .unwrap_or_else(|e| panic!("{name}: assemble_obs failed: {e}"))
+        })
+        .collect()
 }
 
 fn verify_case(name: &str, case: &Json) {
@@ -453,6 +506,29 @@ fn verify_case(name: &str, case: &Json) {
                     message.contains(expected),
                     "{name}: rejection {message:?} does not contain {expected:?}"
                 ),
+            }
+        }
+        // A frame window only exists ACROSS steps, so this kind drives a sequence
+        // of observations through the stateful assemble seam and pins the payload
+        // each step produced. The `apply` kind stays single-shot.
+        "apply_sequence" => {
+            let (tags, obs_space, action_space, model_spec) = parse_inputs(case);
+            let adapter = resolve(&tags, &obs_space, &action_space, &model_spec, false)
+                .unwrap_or_else(|e| panic!("{name}: resolve failed: {e}"));
+            let atol = case["expect"]["atol"].as_f64().expect("atol");
+            let payloads = sequence_payloads(name, &adapter, &case["observations"]);
+            let expected = case["expect"]["payloads"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{name}: expect.payloads must be a list"));
+            assert_eq!(payloads.len(), expected.len(), "{name}: step count");
+            for (step, (payload, expected_payload)) in payloads.iter().zip(expected).enumerate() {
+                assert_value(
+                    name,
+                    &format!("payloads[{step}]"),
+                    payload,
+                    expected_payload,
+                    atol,
+                );
             }
         }
         other => panic!("{name}: unknown case kind {other:?}"),

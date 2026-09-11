@@ -183,6 +183,22 @@ def test_vector(path: Path) -> None:
             assert expected in str(excinfo.value)
         return
 
+    if case["kind"] == "apply_sequence":
+        # A frame window only exists ACROSS steps: drive the whole sequence
+        # through one adapter (its windows are episode state) and compare the
+        # payload each step produced.
+        adapter = resolve_case(case)
+        atol = case["expect"]["atol"]
+        for step, (observation, expected) in enumerate(
+            zip(case["observations"], case["expect"]["payloads"], strict=True)
+        ):
+            payload = adapter.transform_obs(dec(observation))
+            try:
+                assert_value(payload, expected, atol)
+            except AssertionError as exc:  # pragma: no cover - failure path
+                raise AssertionError(f"step {step}: {exc}") from None
+        return
+
     assert case["kind"] == "apply"
     adapter = resolve_case(case)
     atol = case["expect"]["atol"]
