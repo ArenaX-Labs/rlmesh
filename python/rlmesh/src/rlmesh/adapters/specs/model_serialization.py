@@ -143,6 +143,10 @@ def _image_to_dict(item: Image) -> dict[str, Any]:
         image["crop_mode"] = item.crop_mode
     if item.channel_order != "rgb":
         image["channel_order"] = item.channel_order
+    # Always the [height, width] pair on the wire; __post_init__ has already
+    # widened the square-int shorthand.
+    if item.render is not None:
+        image["render"] = list(cast("tuple[int, int]", item.render))
     return image
 
 
@@ -336,6 +340,9 @@ def model_leaf_from_dict(data: Mapping[str, Any]) -> ModelLeaf:
             crop_area=data.get("crop_area"),
             crop_mode=data.get("crop_mode", "zoom"),
             channel_order=data.get("channel_order", "rgb"),
+            render=None
+            if (render := data.get("render")) is None
+            else (int(render[0]), int(render[1])),
         )
     if kind == "state":
         reshape = data.get("reshape")

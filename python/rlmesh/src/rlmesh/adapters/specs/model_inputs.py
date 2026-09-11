@@ -111,6 +111,13 @@ class Image:
         channel_order: Channel order the model was trained on. ``"bgr"`` swaps
             red and blue after the spatial ops and before the dtype cast, and
             needs a 3-channel image.
+        render: The camera resolution this model was trained against, as a
+            square ``int`` or an ``(height, width)`` pair (each axis 1-4096).
+            An *assertion*, not a request: the adapter never resizes a camera
+            to reach it. The platform binds the environment's camera dial from
+            it before the run; resolution then fails with ``RenderMismatch`` if
+            the camera it bound does not actually render at this size. Declare
+            it instead of pinning the env's camera width/height by hand.
     """
 
     role: str
@@ -134,6 +141,7 @@ class Image:
     crop_area: float | None = field(default=None, kw_only=True)
     crop_mode: CropMode = field(default="zoom", kw_only=True)
     channel_order: ChannelOrder = field(default="rgb", kw_only=True)
+    render: int | tuple[int, int] | None = field(default=None, kw_only=True)
     size: InitVar[int | None] = None
 
     def __post_init__(self, size: int | None) -> None:
@@ -166,6 +174,30 @@ class Image:
                     f"got {fraction}"
                 )
             object.__setattr__(self, name, fraction)
+        # A square int is shorthand for the (height, width) pair the wire
+        # carries; normalizing here means the field has one shape everywhere
+        # (mirrors `normalize`'s pair coercion). The bound matches the Rust
+        # codec's wire guard.
+        if self.render is not None:
+            render = self.render
+            if isinstance(render, int):
+                render = (render, render)
+            else:
+                try:
+                    height, width = render
+                except (TypeError, ValueError):
+                    raise ValueError(
+                        f"Image {self.role!r}: render must be an int or a "
+                        f"(height, width) pair, got {self.render!r}"
+                    ) from None
+                render = (int(height), int(width))
+            for axis, value in zip(("height", "width"), render, strict=True):
+                if not 1 <= value <= 4096:
+                    raise ValueError(
+                        f"Image {self.role!r}: render {axis} must be between 1 "
+                        f"and 4096, got {value}"
+                    )
+            object.__setattr__(self, "render", render)
         if self.fill is not None and not self.optional:
             raise ValueError(
                 f"Image {self.role!r}: fill only applies to an optional camera; "

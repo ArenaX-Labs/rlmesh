@@ -992,6 +992,59 @@ def test_crop_and_channel_order_serialize_omit_when_default():
         assert json.loads(canonical) == spec.to_dict()
 
 
+def test_render_asserts_the_bound_cameras_size():
+    """`render` is an assertion about the camera, not a resize request.
+
+    The platform binds the env's camera dial from it before the run; this is
+    the check that the dial actually moved. A camera that renders at the
+    asserted size resolves, one that does not fails loudly rather than feeding
+    the model frames at the wrong scale.
+    """
+    spec = adapt.ModelSpec(
+        input={"image": adapt.Image(role=adapt.IMAGE_PRIMARY, render=448)},
+        output=SMOLVLA.output,
+    )
+    assert resolve(image_env(448, 448), spec) is not None
+    with pytest.raises(adapt.AdapterResolutionError, match="declares render 448x448"):
+        resolve(image_env(256, 256), spec)
+
+
+def test_render_guards_reject_an_impossible_size_at_construction():
+    """A square int widens to the pair the wire carries; each axis is 1-4096."""
+    assert adapt.Image(role=adapt.IMAGE_PRIMARY, render=448).render == (448, 448)
+    assert adapt.Image(role=adapt.IMAGE_PRIMARY, render=(480, 640)).render == (480, 640)
+    for bad in (0, 4097, (0, 448), (448, 4097)):
+        with pytest.raises(ValueError, match="must be between 1 and 4096"):
+            adapt.Image(role=adapt.IMAGE_PRIMARY, render=bad)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match=r"an int or a \(height, width\) pair"):
+        adapt.Image(role=adapt.IMAGE_PRIMARY, render=(448, 448, 448))  # type: ignore[arg-type]
+
+
+def test_render_serializes_as_a_pair_and_is_omitted_when_unset():
+    """Omitted at its default, `[height, width]` when set, and core-identical."""
+    import json
+
+    from rlmesh._rlmesh import adapters_spec_normalize
+
+    output = adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1))
+    plain = adapt.ModelSpec(
+        input={"image": adapt.Image(adapt.IMAGE_PRIMARY, size=224)}, output=output
+    )
+    assert "render" not in plain.to_dict()["input"]["image"]
+
+    asserted = adapt.ModelSpec(
+        input={"image": adapt.Image(adapt.IMAGE_PRIMARY, size=224, render=448)},
+        output=output,
+    )
+    doc = asserted.to_dict()
+    assert doc["input"]["image"]["render"] == [448, 448]
+    assert adapt.ModelSpec.from_dict(doc) == asserted
+    # Cross-engine: the core's canonical form of each spec is the spec itself.
+    for spec in (plain, asserted):
+        canonical = adapters_spec_normalize("model", json.dumps(spec.to_dict()), True)
+        assert json.loads(canonical) == spec.to_dict()
+
+
 def test_bare_bicubic_and_lanczos3_are_not_resample_names():
     """The suffix rule is enforced, not just documented: an un-suffixed cubic
     or Lanczos name would silently pick one library's kernel over the other's,
