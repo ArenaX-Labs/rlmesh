@@ -13,7 +13,7 @@
 /* A zero action shaped like the route's action space (Box or Discrete). */
 static RlmeshValue* zero_action(const RlmeshSpaceSpec* action) {
   switch (rlmesh_space_type(action)) {
-    case 1: {
+    case RLMESH_VALUE_BOX: {
       RlmeshDType dtype = rlmesh_space_dtype(action);
       size_t ndim = rlmesh_space_ndim(action);
       int64_t shape[16];
@@ -40,7 +40,7 @@ static RlmeshValue* zero_action(const RlmeshSpaceSpec* action) {
       free(zeros);
       return value;
     }
-    case 2:
+    case RLMESH_VALUE_DISCRETE:
       return rlmesh_value_discrete(0);
     default:
       rlmesh_callback_set_error("c_model handles Box/Discrete only", false);
@@ -71,9 +71,22 @@ static int predict(void* user_data, const RlmeshObservation* obs, RlmeshValue** 
   return RLMESH_OK;
 }
 
+static void on_episode_end(void* user_data, const char* env_id, const char* episode_id) {
+  (void)user_data;
+  (void)env_id;
+  printf("episode end: %s\n", episode_id ? episode_id : "(all)");
+}
+
+static void on_close(void* user_data) {
+  (void)user_data;
+  printf("model closed\n");
+}
+
 int main(int argc, char** argv) {
   const char* address = argc > 1 ? argv[1] : "tcp://127.0.0.1:5555";
   RlmeshRunOptions options = {0};
+  options.seeded = true; /* deterministic env resets */
+  options.base_seed = 7;
   if (argc > 2) {
     options.max_episodes = strtoull(argv[2], NULL, 10);
   }
@@ -81,6 +94,8 @@ int main(int argc, char** argv) {
   RlmeshModelVtable vtable = {0};
   vtable.struct_size = sizeof(vtable);
   vtable.predict = predict;
+  vtable.on_episode_end = on_episode_end;
+  vtable.on_close = on_close;
 
   RlmeshModel* model = NULL;
   if (rlmesh_model_new(&vtable, NULL, &model) != RLMESH_OK) {
@@ -89,12 +104,16 @@ int main(int argc, char** argv) {
   }
 
   printf("connecting to %s ...\n", address);
-  RlmeshStatus status = rlmesh_model_run_local(model, address, &options);
+  RlmeshRunReport report = {0};
+  RlmeshStatus status = rlmesh_model_run_local(model, address, &options, &report);
   rlmesh_model_free(model);
 
   if (status != RLMESH_OK) {
     fprintf(stderr, "run failed: %s\n", rlmesh_last_error_message());
     return 1;
   }
+  printf("run report: episodes=%lld steps=%lld reward=%.1f mean=%.1f\n",
+         (long long)report.total_episodes, (long long)report.total_steps, report.total_reward,
+         report.mean_reward);
   return 0;
 }

@@ -59,7 +59,7 @@ int main(void) {
   RlmeshModelVtable vt = {.struct_size = sizeof vt, .predict = predict};
   RlmeshModel* model;
   rlmesh_model_new(&vt, NULL, &model);
-  RlmeshStatus rc = rlmesh_model_run_local(model, "tcp://127.0.0.1:5555", NULL);
+  RlmeshStatus rc = rlmesh_model_run_local(model, "tcp://127.0.0.1:5555", NULL, NULL);
   rlmesh_model_free(model);
   return rc == RLMESH_OK ? 0 : 1;
 }
@@ -70,13 +70,18 @@ int main(void) {
 `predict` receives `num_envs` decoded observation values (one per sub-env) plus
 routing metadata (session, env, request ids; per-row episode id and seed). It
 writes one owned action value per row into `out_actions` and returns `RLMESH_OK`,
-or returns nonzero after `rlmesh_callback_set_error(...)` to decline. The capi
-validates each action against the route's action space before it reaches the wire.
+or returns nonzero after `rlmesh_callback_set_error(...)` to decline. The runtime
+validates each action against the route's action space before it reaches the
+wire: a structural mismatch fails the step, a Box-bounds overshoot is left to the
+environment's own policy.
 
 Optional hooks: `on_episode_end(env_id, episode_id)` when the runtime drops an
 episode (`episode_id == NULL` means every episode of that env), and `on_close`
 once at shutdown. Callbacks run on a worker thread; `user_data` must be safe to
-use from a thread other than the one that created it.
+use from a thread other than the one that created it, and a callback must not
+re-enter its own model handle. `rlmesh_model_run_local` fills an optional
+`RlmeshRunReport`; `rlmesh_model_cancel` stops a blocking run/serve from another
+thread.
 
 ## Tasks
 

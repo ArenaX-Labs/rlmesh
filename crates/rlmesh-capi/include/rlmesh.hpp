@@ -304,7 +304,7 @@ class Model {
     raw.max_episodes = options.max_episodes;
     raw.seeded = options.seeded;
     raw.base_seed = options.base_seed;
-    RlmeshStatus status = rlmesh_model_run_local(model_, address.c_str(), &raw);
+    RlmeshStatus status = rlmesh_model_run_local(model_, address.c_str(), &raw, nullptr);
     if (status != RLMESH_OK) return Error::from_last(status);
     return ok();
   }

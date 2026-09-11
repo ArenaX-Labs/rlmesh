@@ -1,6 +1,10 @@
 //! End-to-end loopback harness: serve a trivial environment, then run a compiled
-//! C/C++ model binary (`<bin> <tcp-address> 1`) against it. A binary, not a
+//! C/C++ model binary (`<bin> <tcp-address> 3`) against it. A binary, not a
 //! `cargo test`, so the C/C++ toolchain stays out of `cargo test --workspace`.
+//!
+//! Usage: `e2e_harness <model-binary> [expected-stdout-substring]`. The optional
+//! second argument is asserted against the child's stdout, so a smoke that
+//! prints its run report is checked for the real numbers, not just its exit code.
 #![allow(clippy::print_stderr)]
 
 use std::process::{Command, ExitCode};
@@ -98,11 +102,16 @@ impl rlmesh::Env for SmokeEnv {
     }
 }
 
+/// Episodes the model binary is asked to run (more than one, so episode
+/// teardown and the run report carry real numbers).
+const EPISODES: &str = "3";
+
 fn main() -> ExitCode {
     let Some(binary) = std::env::args().nth(1) else {
-        eprintln!("usage: e2e_harness <model-binary>");
+        eprintln!("usage: e2e_harness <model-binary> [expected-stdout-substring]");
         return ExitCode::FAILURE;
     };
+    let expect = std::env::args().nth(2);
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -113,10 +122,10 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    runtime.block_on(run(binary))
+    runtime.block_on(run(binary, expect))
 }
 
-async fn run(binary: String) -> ExitCode {
+async fn run(binary: String, expect: Option<String>) -> ExitCode {
     // Bind first: the listener is accepting before the model connects (port 0 →
     // OS-assigned), so no readiness sleep is needed.
     let bound = match rlmesh::EnvServer::new(SmokeEnv::new())
@@ -137,24 +146,35 @@ async fn run(binary: String) -> ExitCode {
         let _ = bound.serve().await;
     });
 
-    let status =
-        tokio::task::spawn_blocking(move || Command::new(&binary).arg(&address).arg("1").status())
-            .await;
+    let output = tokio::task::spawn_blocking(move || {
+        Command::new(&binary).arg(&address).arg(EPISODES).output()
+    })
+    .await;
     server.abort();
 
-    match status {
-        Ok(Ok(status)) if status.success() => ExitCode::SUCCESS,
-        Ok(Ok(status)) => {
-            eprintln!("model binary exited with {status}");
-            ExitCode::FAILURE
-        }
+    let output = match output {
+        Ok(Ok(output)) => output,
         Ok(Err(err)) => {
             eprintln!("failed to spawn model binary: {err}");
-            ExitCode::FAILURE
+            return ExitCode::FAILURE;
         }
         Err(err) => {
             eprintln!("harness join error: {err}");
-            ExitCode::FAILURE
+            return ExitCode::FAILURE;
         }
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    eprint!("{stdout}");
+    eprint!("{}", String::from_utf8_lossy(&output.stderr));
+    if !output.status.success() {
+        eprintln!("model binary exited with {}", output.status);
+        return ExitCode::FAILURE;
     }
+    if let Some(expect) = expect
+        && !stdout.contains(&expect)
+    {
+        eprintln!("model stdout did not contain {expect:?}");
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
 }

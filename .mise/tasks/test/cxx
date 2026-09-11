@@ -54,7 +54,8 @@ $CXX -std=c++17 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" \
 
 # 4. Run each smoke against a live env over real gRPC (the pytest analogue).
 echo "==> C model end-to-end vs a live env"
-"$target/e2e_harness" "$target/c_model_smoke"
+# The C smoke prints its run report; assert the real numbers, not just exit 0.
+"$target/e2e_harness" "$target/c_model_smoke" "run report: episodes=3 steps=3"
 echo "==> C++ model end-to-end vs a live env"
 "$target/e2e_harness" "$target/cpp_model_smoke"
 echo "==> test:cxx OK"
