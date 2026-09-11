@@ -12,7 +12,9 @@ mod wire;
 mod worker;
 
 pub use engine::AdaptedModelHandler;
-pub use handler::{HeldState, ModelHandler, ModelRouteSetup, PredictFrames};
+pub use handler::{
+    HeldState, ModelHandler, ModelRouteSetup, PredictFrames, ResolveOptions, RouteNeeds,
+};
 pub use local::{EnvClientRuntimeEnv, ModelHandlerRuntimeModel};
 pub use predict_fn::{PredictFn, RouteConfig, RouteResolver};
 pub use remote::RemoteModel;

@@ -28,7 +28,7 @@ use tokio::sync::{Mutex, mpsc};
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status, Streaming};
 
-use super::handler::{ModelHandler, ModelRouteSetup, PredictFrames};
+use super::handler::{ModelHandler, ModelRouteSetup, PredictFrames, ResolveOptions, RouteNeeds};
 use super::types::{ModelObservation, ModelRouteContext};
 use super::wire::{
     ModelAction, check_actions_conform, encode_replay_frames, model_action_to_endpoint_response,
@@ -642,12 +642,24 @@ async fn handle_resolve_adapter(
     // resolving one env's adapter never blocks on an in-flight predict on another.
     // Runtime-chosen execution horizon pinned on this env (1 = no chunking).
     let execution_horizon = request.execution_horizon;
-    if let Some(route_setup) = route_setup
-        && let Err(error) = route_setup
-            .resolve_adapter(&route_key, &env_contract, execution_horizon)
+    let mut needs = RouteNeeds::default();
+    if let Some(route_setup) = route_setup {
+        match route_setup
+            .resolve_adapter(
+                &route_key,
+                &env_contract,
+                ResolveOptions {
+                    execution_horizon,
+                    // The runtime does not deliver observation history yet; the
+                    // wire field is not even populated.
+                    delivers_history: false,
+                },
+            )
             .await
-    {
-        return Some(model_error_from_error(&error));
+        {
+            Ok(resolved) => needs = resolved,
+            Err(error) => return Some(model_error_from_error(&error)),
+        }
     }
     route_configs.lock().await.insert(
         route_key,
@@ -657,7 +669,9 @@ async fn handle_resolve_adapter(
         },
     );
     Some(join_response::Kind::ResolveAdapter(
-        ResolveAdapterResponse {},
+        ResolveAdapterResponse {
+            native_chunk: needs.native_chunk,
+        },
     ))
 }
 

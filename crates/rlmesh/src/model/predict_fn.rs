@@ -142,6 +142,19 @@ pub trait PredictFn: Send + Sync {
         false
     }
 
+    /// The model's NATIVE chunk length K: how many per-step actions ONE chunk
+    /// corner call returns, when the model declares it. `None` (the default) is
+    /// the elastic contract — the model returns whatever it returns and the
+    /// engine takes the `min(len, execution_horizon)` prefix.
+    ///
+    /// Declaring K is a promise the engine holds the model to: the resolve
+    /// doors reject `execution_horizon > K` (the runtime would replay frames the
+    /// model never produced) and a chunk corner that returns anything other than
+    /// exactly K frames fails the predict rather than silently short-replaying.
+    fn native_chunk(&self) -> Option<u32> {
+        None
+    }
+
     /// Fires when an episode ends (structurally-discovered model hook), driven by
     /// the explicit `ResetAdapter` op — once per id it lists, so a model keyed by
     /// `episode_id` drops exactly the episode that ended. The engine separately

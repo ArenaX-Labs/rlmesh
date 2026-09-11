@@ -709,9 +709,9 @@ impl ModelRouteSetup for ReleaseRecordingSetup {
         &self,
         _env_id: &str,
         _env_contract: &spaces::EnvContract,
-        _execution_horizon: u32,
-    ) -> Result<()> {
-        Ok(())
+        _options: crate::model::ResolveOptions,
+    ) -> Result<crate::model::RouteNeeds> {
+        Ok(Default::default())
     }
 
     async fn release_adapter(&self, env_id: &str) -> Result<()> {
@@ -1071,6 +1071,40 @@ impl ModelHandler for IdRecordingHandler {
         self.evicted_ids.lock().await.extend(episode_ids);
         Ok(())
     }
+}
+
+#[tokio::test]
+async fn run_local_refuses_chunking_on_a_vector_env() {
+    // Chunk replay is whole-batch: one lane ending mid-chunk discards every
+    // lane's buffered frames. The served engine cannot see this (ResolveAdapter
+    // carries no lane count), so `run_local` — where the handshake's num_envs and
+    // the pinned horizon are both in scope — refuses the pairing before resolving.
+    let bound = crate::VectorEnvServer::new(AutoresetVectorEnv::new(vec![2, 3]))
+        .bind(BindAddress::Tcp {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+        })
+        .await
+        .unwrap();
+    let address = bound.local_addr().to_string();
+    let server = tokio::spawn(async move { bound.serve().await });
+
+    let error = ModelWorker::new(IdRecordingHandler::default())
+        .run_local_async(
+            RunLocalOptions::parse(&address)
+                .unwrap()
+                .for_episodes(2)
+                .execution_horizon(2),
+        )
+        .await
+        .expect_err("a chunked vector route is refused");
+    server.abort();
+
+    let message = error.to_string();
+    assert!(
+        message.contains("num_envs=2") && message.contains("execution_horizon=2"),
+        "the refusal should name both numbers: {message}"
+    );
 }
 
 #[tokio::test]

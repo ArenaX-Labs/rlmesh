@@ -124,6 +124,14 @@ impl FrameBuffers {
     }
 }
 
+/// Upper bound on the runtime's execution horizon `h` (how many actions of one
+/// predicted chunk are executed before re-planning). A pin above this is a
+/// configuration error, not a capability question: the replay buffer is held in
+/// memory per lane, and a four-digit horizon is always a mis-set knob rather than
+/// a real open-loop plan. Enforced at engine resolve, at the SDK session seam,
+/// and as the `maximum` on the platform's own horizon knobs.
+pub const MAX_EXECUTION_HORIZON: u32 = 1024;
+
 /// Split a chunked model action into its per-step actions (the leading axis is
 /// the chunk axis). A `Value::Tensor` of shape `[chunk, ..]` unstacks along axis
 /// 0 into per-step tensors; a scalar (0-d) tensor has no chunk axis and is a

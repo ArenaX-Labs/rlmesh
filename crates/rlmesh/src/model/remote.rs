@@ -409,6 +409,10 @@ impl RemoteModel {
                 execution_horizon: self.execution_horizon,
             })
             .await
+            // The served model answers its declared native chunk here; this
+            // client drives one lane and replays exactly the frames the engine
+            // emitted, so it needs nothing from the answer.
+            .map(|_| ())
             .map_err(Error::from)
     }
 

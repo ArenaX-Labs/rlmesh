@@ -8,16 +8,19 @@
 //! and serves it; a pure-Rust model does the same with no host runtime.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use async_trait::async_trait;
 use rlmesh_adapters::v1::{
-    FrameBuffers, ObsPlan, Value, apply_actions, assemble_obs, space_value_to_obs_map, split_chunk,
+    FrameBuffers, MAX_EXECUTION_HORIZON, ObsPlan, Value, apply_actions, assemble_obs,
+    space_value_to_obs_map, split_chunk,
 };
 
-use super::handler::{HeldState, ModelHandler, ModelRouteSetup, PredictFrames};
+use super::handler::{
+    HeldState, ModelHandler, ModelRouteSetup, PredictFrames, ResolveOptions, RouteNeeds,
+};
 use super::predict_fn::{PredictFn, RouteConfig, RouteResolver};
 use super::types::{EpisodeInfo, ModelObservation};
 use crate::spaces::{EnvContract, SpaceKind, SpaceValue};
@@ -85,6 +88,11 @@ pub struct AdaptedModelHandler {
     /// predict-family call, drained per request via `take_adapter_ns`. Shared
     /// (`Arc`) because the work runs on `spawn_blocking` threads.
     adapter_ns: Arc<AtomicU64>,
+    /// Whether the short-chunk warning has already fired at this endpoint (see
+    /// [`take_prefix`]). Endpoint-wide, not per route: the fused grouped path
+    /// dispatches lanes concatenated ACROSS routes, so a per-route flag could
+    /// not name the offender anyway — and one line per process is the point.
+    short_chunk_warned: Arc<AtomicBool>,
 }
 
 impl AdaptedModelHandler {
@@ -98,6 +106,7 @@ impl AdaptedModelHandler {
             routes: Arc::new(Mutex::new(HashMap::new())),
             spec_less_horizons: Arc::new(Mutex::new(HashMap::new())),
             adapter_ns: Arc::new(AtomicU64::new(0)),
+            short_chunk_warned: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -285,7 +294,9 @@ fn dispatch_corners(
     episodes: &[EpisodeInfo],
     horizon: u32,
     num_envs: usize,
+    short_chunk_warned: &AtomicBool,
 ) -> Result<Vec<Vec<Value>>> {
+    let native_chunk = predict.native_chunk();
     if episodes.len() != num_envs {
         return Err(Error::model(format!(
             "predict carries {} episode rows for {num_envs} lanes; episode identity \
@@ -303,11 +314,13 @@ fn dispatch_corners(
         }
         chunks
             .into_iter()
-            .map(|chunk| -> Result<Vec<Value>> {
-                Ok(split_chunk(chunk)?
-                    .into_iter()
-                    .take(horizon as usize)
-                    .collect())
+            .map(|chunk| {
+                take_prefix(
+                    split_chunk(chunk)?,
+                    horizon,
+                    native_chunk,
+                    short_chunk_warned,
+                )
             })
             .collect::<Result<Vec<_>>>()
     } else if horizon > 1 && predict.has_chunk() {
@@ -323,10 +336,12 @@ fn dispatch_corners(
                              returned None",
                         )
                     })?;
-                Ok(split_chunk(chunk)?
-                    .into_iter()
-                    .take(horizon as usize)
-                    .collect())
+                take_prefix(
+                    split_chunk(chunk)?,
+                    horizon,
+                    native_chunk,
+                    short_chunk_warned,
+                )
             })
             .collect::<Result<Vec<_>>>()
     } else if predict.has_batch() {
@@ -357,10 +372,63 @@ fn dispatch_route_corners(
     episodes: &[EpisodeInfo],
     horizon: u32,
     num_envs: usize,
+    short_chunk_warned: &AtomicBool,
 ) -> Result<Vec<Vec<Value>>> {
     let input_summary = inputs_summary(&inputs);
-    dispatch_corners(predict, inputs, episodes, horizon, num_envs)
-        .map_err(|err| annotate_predict_error(err, &input_summary))
+    dispatch_corners(
+        predict,
+        inputs,
+        episodes,
+        horizon,
+        num_envs,
+        short_chunk_warned,
+    )
+    .map_err(|err| annotate_predict_error(err, &input_summary))
+}
+
+/// Cap one lane's split chunk to the runtime's execution prefix — the ONE place
+/// the engine turns a native chunk into executed frames.
+///
+/// A model that DECLARED its native chunk K is held to it exactly: anything but
+/// K frames means the model is slicing its own chunk to the horizon (the glue
+/// this contract removes), which silently short-replays instead of failing, so
+/// it is a model error. An UNDECLARED model is elastic — the prefix is
+/// `min(len, horizon)` — but a chunk shorter than the pinned horizon still means
+/// the runtime re-plans sooner than the run was configured for, so warn once per
+/// endpoint (the flag is endpoint-wide because the fused grouped path spans
+/// routes).
+fn take_prefix(
+    mut frames: Vec<Value>,
+    horizon: u32,
+    native_chunk: Option<u32>,
+    short_chunk_warned: &AtomicBool,
+) -> Result<Vec<Value>> {
+    match native_chunk {
+        Some(native) if frames.len() != native as usize => {
+            return Err(Error::model(format!(
+                "model declares native_chunk={native} but its chunk corner returned {} \
+                 frames at execution_horizon={horizon}: return the WHOLE native chunk and \
+                 let the runtime execute its prefix (do not slice to the horizon), or drop \
+                 the declaration",
+                frames.len(),
+            )));
+        }
+        Some(_) => {}
+        None => {
+            if frames.len() < horizon as usize && !short_chunk_warned.swap(true, Ordering::Relaxed)
+            {
+                tracing::warn!(
+                    execution_horizon = horizon,
+                    chunk_len = frames.len(),
+                    "model returned a chunk shorter than the pinned execution horizon; the \
+                     runtime replays what there is and re-plans early. Declare native_chunk \
+                     (Model.native_chunk) so the horizon can be validated at resolve",
+                );
+            }
+        }
+    }
+    frames.truncate(horizon as usize);
+    Ok(frames)
 }
 
 /// Whether a bucket of grouped lanes at `horizon` may fuse into one batched
@@ -451,6 +519,7 @@ fn predict_route(
     predict: &Arc<dyn PredictFn>,
     observation: ModelObservation,
     adapter_ns: &AtomicU64,
+    short_chunk_warned: &AtomicBool,
 ) -> Result<PredictFrames> {
     let num_envs = observation.num_envs;
     let (inputs, config) = {
@@ -464,6 +533,7 @@ fn predict_route(
         &observation.route.episodes,
         config.execution_horizon,
         num_envs,
+        short_chunk_warned,
     )?;
     finish_route_frames(&config, lane_raw_steps, num_envs, adapter_ns)
 }
@@ -503,6 +573,7 @@ fn predict_grouped_fused(
     observations: Vec<ModelObservation>,
     predict: &Arc<dyn PredictFn>,
     adapter_ns: &AtomicU64,
+    short_chunk_warned: &AtomicBool,
 ) -> Vec<Result<PredictFrames>> {
     struct Prepared {
         index: usize,
@@ -578,7 +649,14 @@ fn predict_grouped_fused(
             // Each group's episodes were assembled alongside its own inputs, so a
             // disagreement here is an engine bug, not a bad request.
             let fused_result = if flat_episodes.len() == total {
-                dispatch_corners(predict, flat, &flat_episodes, horizon, total)
+                dispatch_corners(
+                    predict,
+                    flat,
+                    &flat_episodes,
+                    horizon,
+                    total,
+                    short_chunk_warned,
+                )
             } else {
                 Err(Error::Internal(format!(
                     "fused predict concatenated {} episode rows for {total} lanes",
@@ -618,6 +696,7 @@ fn predict_grouped_fused(
                         &group.episodes,
                         horizon,
                         group.num_envs,
+                        short_chunk_warned,
                     )
                     .and_then(|raw| {
                         finish_route_frames(&group.config, raw, group.num_envs, adapter_ns)
@@ -726,8 +805,15 @@ impl ModelHandler for AdaptedModelHandler {
         // are not stalled. A spec'd route runs the per-lane engine loop (emitting
         // chunk frames); a spec-less route takes the preserved batched raw path
         // (chunked through the model's chunk corner when a horizon was pinned).
+        let short_chunk_warned = Arc::clone(&self.short_chunk_warned);
         tokio::task::spawn_blocking(move || match entry {
-            Some(entry) => predict_route(&entry, &predict, observation, &adapter_ns),
+            Some(entry) => predict_route(
+                &entry,
+                &predict,
+                observation,
+                &adapter_ns,
+                &short_chunk_warned,
+            ),
             None => predict.predict_spec_less_chunked(observation, spec_less_horizon),
         })
         .await
@@ -762,8 +848,15 @@ impl ModelHandler for AdaptedModelHandler {
         let predict = Arc::clone(&self.predict);
         let adapter_ns = Arc::clone(&self.adapter_ns);
         let group_count = observations.len();
+        let short_chunk_warned = Arc::clone(&self.short_chunk_warned);
         tokio::task::spawn_blocking(move || {
-            predict_grouped_fused(lanes, observations, &predict, &adapter_ns)
+            predict_grouped_fused(
+                lanes,
+                observations,
+                &predict,
+                &adapter_ns,
+                &short_chunk_warned,
+            )
         })
         .await
         .unwrap_or_else(|err| {
@@ -846,6 +939,51 @@ impl ModelHandler for AdaptedModelHandler {
     }
 }
 
+/// The resolve-time horizon doors, shared by the spec'd and spec-less branches.
+///
+/// Three configuration errors, each of which would otherwise only show up as a
+/// wrong-length action chunk on every predict of the run:
+///
+/// 1. a horizon past [`MAX_EXECUTION_HORIZON`] — always a mis-set knob;
+/// 2. a declared native chunk on a model with no chunk corner — the declaration
+///    could never be honored, and nothing would ever check it;
+/// 3. `execution_horizon > native_chunk` — the runtime would replay frames the
+///    model does not produce.
+///
+/// There is deliberately NO lane check here: `ResolveAdapterRequest` carries no
+/// `num_envs` (the served path decodes it as 0), so the engine cannot see lanes.
+/// The lane guards live where the count is real — `run_local`, `RemoteModel`,
+/// and the managed runner's route connect.
+fn check_horizon_doors(
+    execution_horizon: u32,
+    native_chunk: Option<u32>,
+    predict: &dyn PredictFn,
+) -> Result<()> {
+    if execution_horizon > MAX_EXECUTION_HORIZON {
+        return Err(Error::model(format!(
+            "runtime pinned execution_horizon={execution_horizon}, over the \
+             {MAX_EXECUTION_HORIZON} bound"
+        )));
+    }
+    let Some(native) = native_chunk else {
+        return Ok(());
+    };
+    if !predict.has_chunk() && !predict.has_chunk_batch() {
+        return Err(Error::model(format!(
+            "model declares native_chunk={native} but defines no chunk corner \
+             (predict_chunk / predict_chunk_batch); drop the declaration or add the corner"
+        )));
+    }
+    if execution_horizon > native {
+        return Err(Error::model(format!(
+            "runtime pinned execution_horizon={execution_horizon} but the model declares \
+             native_chunk={native}: it cannot produce that many actions per predict. Lower \
+             the horizon to at most {native}"
+        )));
+    }
+    Ok(())
+}
+
 /// The [`ModelRouteSetup`] the engine returns: resolves a route's config off the
 /// predict lock and caches it for predict to read. A `None` resolution is a
 /// spec-less route, left absent so predict takes the spec-less branch.
@@ -862,8 +1000,16 @@ impl ModelRouteSetup for AdaptedRouteSetup {
         &self,
         env_id: &str,
         env_contract: &EnvContract,
-        execution_horizon: u32,
-    ) -> Result<()> {
+        options: ResolveOptions,
+    ) -> Result<RouteNeeds> {
+        let execution_horizon = options.execution_horizon;
+        let native_chunk = self.predict.native_chunk();
+        let needs = RouteNeeds { native_chunk };
+        // The horizon doors, before any resolution work: a pin this side of the
+        // bound, a declaration the model can actually honor, and a horizon the
+        // declared chunk covers. All three are configuration errors that would
+        // otherwise surface as a mis-shaped action on every predict.
+        check_horizon_doors(execution_horizon, native_chunk, self.predict.as_ref())?;
         let Some(mut config) = self.resolver.resolve(env_id, env_contract).await? else {
             let horizon = execution_horizon.max(1);
             if horizon > 1 && !self.predict.has_chunk() {
@@ -884,7 +1030,7 @@ impl ModelRouteSetup for AdaptedRouteSetup {
             } else {
                 horizons.remove(env_id);
             }
-            return Ok(());
+            return Ok(needs);
         };
         // Surface the adapter's advisories once at configure. These are the
         // tolerant reader's only operator signal that something degraded: a
@@ -954,7 +1100,7 @@ impl ModelRouteSetup for AdaptedRouteSetup {
             .lock()
             .expect("routes map poisoned")
             .insert(env_id.to_string(), RouteSlot { entry, held });
-        Ok(())
+        Ok(needs)
     }
 
     async fn release_adapter(&self, env_id: &str) -> Result<()> {
@@ -1026,7 +1172,7 @@ mod input_context_tests {
 
 #[cfg(test)]
 mod fused_predict_tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use super::*;
     use crate::model::types::ModelRouteContext;
@@ -1168,8 +1314,15 @@ mod fused_predict_tests {
         let counting = CountingPredict::new(true, false, true, 10, false);
         let predict: Arc<dyn PredictFn> = Arc::clone(&counting) as Arc<dyn PredictFn>;
 
-        let frames =
-            dispatch_route_corners(&predict, lanes(5), &episodes(5), 4, 5).expect("frames");
+        let frames = dispatch_route_corners(
+            &predict,
+            lanes(5),
+            &episodes(5),
+            4,
+            5,
+            &AtomicBool::new(false),
+        )
+        .expect("frames");
 
         assert_eq!(counting.chunk_batch_calls.load(Ordering::SeqCst), 1);
         assert_eq!(counting.batch_calls.load(Ordering::SeqCst), 0);
@@ -1185,8 +1338,15 @@ mod fused_predict_tests {
         let counting = CountingPredict::new(true, false, true, 10, false);
         let predict: Arc<dyn PredictFn> = Arc::clone(&counting) as Arc<dyn PredictFn>;
 
-        let frames =
-            dispatch_route_corners(&predict, lanes(3), &episodes(3), 1, 3).expect("frames");
+        let frames = dispatch_route_corners(
+            &predict,
+            lanes(3),
+            &episodes(3),
+            1,
+            3,
+            &AtomicBool::new(false),
+        )
+        .expect("frames");
 
         assert_eq!(counting.batch_calls.load(Ordering::SeqCst), 1);
         assert_eq!(counting.chunk_batch_calls.load(Ordering::SeqCst), 0);
@@ -1201,8 +1361,15 @@ mod fused_predict_tests {
         let counting = CountingPredict::new(true, true, false, 10, false);
         let predict: Arc<dyn PredictFn> = Arc::clone(&counting) as Arc<dyn PredictFn>;
 
-        let frames =
-            dispatch_route_corners(&predict, lanes(3), &episodes(3), 4, 3).expect("frames");
+        let frames = dispatch_route_corners(
+            &predict,
+            lanes(3),
+            &episodes(3),
+            4,
+            3,
+            &AtomicBool::new(false),
+        )
+        .expect("frames");
 
         assert_eq!(counting.chunk_calls.load(Ordering::SeqCst), 3);
         assert_eq!(counting.batch_calls.load(Ordering::SeqCst), 0);
@@ -1217,8 +1384,15 @@ mod fused_predict_tests {
         let counting = CountingPredict::new(true, false, true, 10, true);
         let predict: Arc<dyn PredictFn> = Arc::clone(&counting) as Arc<dyn PredictFn>;
 
-        let error = dispatch_route_corners(&predict, lanes(4), &episodes(4), 4, 4)
-            .expect_err("short fails");
+        let error = dispatch_route_corners(
+            &predict,
+            lanes(4),
+            &episodes(4),
+            4,
+            4,
+            &AtomicBool::new(false),
+        )
+        .expect_err("short fails");
 
         assert!(
             error.to_string().contains("lanes"),
@@ -1233,8 +1407,24 @@ mod fused_predict_tests {
         let counting = CountingPredict::new(true, false, true, 10, false);
         let predict: Arc<dyn PredictFn> = Arc::clone(&counting) as Arc<dyn PredictFn>;
 
-        dispatch_route_corners(&predict, lanes(3), &episodes(3), 4, 3).expect("chunk batch");
-        dispatch_route_corners(&predict, lanes(2), &episodes(2), 1, 2).expect("batch");
+        dispatch_route_corners(
+            &predict,
+            lanes(3),
+            &episodes(3),
+            4,
+            3,
+            &AtomicBool::new(false),
+        )
+        .expect("chunk batch");
+        dispatch_route_corners(
+            &predict,
+            lanes(2),
+            &episodes(2),
+            1,
+            2,
+            &AtomicBool::new(false),
+        )
+        .expect("batch");
 
         assert_eq!(
             *counting.batched_ids.lock().expect("batched ids poisoned"),
@@ -1252,8 +1442,15 @@ mod fused_predict_tests {
         let counting = CountingPredict::new(true, false, false, 10, false);
         let predict: Arc<dyn PredictFn> = Arc::clone(&counting) as Arc<dyn PredictFn>;
 
-        let error = dispatch_route_corners(&predict, lanes(3), &episodes(2), 1, 3)
-            .expect_err("row-count mismatch fails");
+        let error = dispatch_route_corners(
+            &predict,
+            lanes(3),
+            &episodes(2),
+            1,
+            3,
+            &AtomicBool::new(false),
+        )
+        .expect_err("row-count mismatch fails");
 
         assert!(
             error.to_string().contains("episode rows"),
@@ -1652,7 +1849,14 @@ mod fused_route_tests {
         for (env_id, lanes) in envs {
             let env_contract = contract(env_id, *lanes);
             setup
-                .resolve_adapter(env_id, &env_contract, horizon)
+                .resolve_adapter(
+                    env_id,
+                    &env_contract,
+                    ResolveOptions {
+                        execution_horizon: horizon,
+                        delivers_history: false,
+                    },
+                )
                 .await
                 .expect("route resolves");
             contracts.push(Arc::new(env_contract));
@@ -1888,5 +2092,307 @@ mod fused_route_tests {
                 "each group is annotated with its OWN input signature, got: {error}"
             );
         }
+    }
+
+    /// A chunk model that emits `emit` frames per chunk call and optionally
+    /// DECLARES a native chunk length, so the resolve doors and `take_prefix`
+    /// can be driven against every combination of (declared, emitted, horizon).
+    struct DeclaredChunkModel {
+        emit: usize,
+        declared: Option<u32>,
+        has_chunk: bool,
+    }
+
+    impl DeclaredChunkModel {
+        fn new(emit: usize, declared: Option<u32>) -> Arc<Self> {
+            Arc::new(Self {
+                emit,
+                declared,
+                has_chunk: true,
+            })
+        }
+
+        /// Declares a chunk length but defines no chunk corner at all.
+        fn cornerless(declared: u32) -> Arc<Self> {
+            Arc::new(Self {
+                emit: 0,
+                declared: Some(declared),
+                has_chunk: false,
+            })
+        }
+    }
+
+    impl PredictFn for DeclaredChunkModel {
+        fn predict(&self, model_input: Value, _episode: Option<&EpisodeInfo>) -> Result<Value> {
+            Ok(action_value(state_number(&model_input)))
+        }
+
+        fn predict_spec_less(&self, _observation: ModelObservation) -> Result<Vec<SpaceValue>> {
+            Err(Error::model("DeclaredChunkModel serves spec'd routes only"))
+        }
+
+        fn has_chunk(&self) -> bool {
+            self.has_chunk
+        }
+
+        fn predict_chunk(
+            &self,
+            model_input: Value,
+            _horizon: u32,
+            _episode: Option<&EpisodeInfo>,
+        ) -> Result<Option<Value>> {
+            let state = state_number(&model_input);
+            Ok(Some(Value::List(
+                (0..self.emit)
+                    .map(|frame| action_value(state + 0.125 * frame as f64))
+                    .collect(),
+            )))
+        }
+
+        fn native_chunk(&self) -> Option<u32> {
+            self.declared
+        }
+    }
+
+    /// A resolver that declares every route spec-LESS, so the doors can be driven
+    /// down the branch that never builds a `RouteConfig`.
+    struct SpecLessResolver;
+
+    #[async_trait]
+    impl RouteResolver for SpecLessResolver {
+        async fn resolve(
+            &self,
+            _route_key: &str,
+            _env_contract: &EnvContract,
+        ) -> Result<Option<RouteConfig>> {
+            Ok(None)
+        }
+    }
+
+    /// Resolve one route at `horizon` and hand back the setup's answer.
+    async fn resolve_once(
+        predict: Arc<dyn PredictFn>,
+        resolver: Arc<dyn RouteResolver>,
+        lanes: u32,
+        horizon: u32,
+    ) -> Result<RouteNeeds> {
+        let handler = AdaptedModelHandler::new(predict, Some(resolver));
+        let setup = handler.route_setup().expect("resolver-backed route setup");
+        let env_contract = contract("env-h", lanes);
+        setup
+            .resolve_adapter(
+                "env-h",
+                &env_contract,
+                ResolveOptions {
+                    execution_horizon: horizon,
+                    delivers_history: false,
+                },
+            )
+            .await
+    }
+
+    /// Total per-step frames one predict emitted (frame 0 plus the replay tail).
+    async fn frame_count(handler: &mut AdaptedModelHandler, obs: ModelObservation) -> usize {
+        let frames = handler
+            .predict_chunked(obs)
+            .await
+            .expect("predict succeeds");
+        1 + frames.replay.len()
+    }
+
+    // 1. A horizon past the bound is a mis-set knob, refused before any work.
+    #[tokio::test]
+    async fn resolve_refuses_a_horizon_over_the_bound() {
+        let error = resolve_once(
+            DeclaredChunkModel::new(4, None),
+            Arc::new(TagResolver),
+            1,
+            MAX_EXECUTION_HORIZON + 1,
+        )
+        .await
+        .expect_err("over the bound");
+        assert!(
+            error
+                .to_string()
+                .contains(&MAX_EXECUTION_HORIZON.to_string()),
+            "the bound should name itself: {error}"
+        );
+    }
+
+    // 2. The bound itself is legal (it is a ceiling, not an exclusive limit).
+    #[tokio::test]
+    async fn resolve_accepts_the_horizon_bound_exactly() {
+        resolve_once(
+            DeclaredChunkModel::new(4, None),
+            Arc::new(TagResolver),
+            1,
+            MAX_EXECUTION_HORIZON,
+        )
+        .await
+        .expect("the bound itself resolves");
+    }
+
+    // 3. The same door guards the spec-LESS branch, which never builds a config.
+    #[tokio::test]
+    async fn the_horizon_doors_guard_the_spec_less_branch_too() {
+        resolve_once(
+            DeclaredChunkModel::new(4, Some(6)),
+            Arc::new(SpecLessResolver),
+            1,
+            8,
+        )
+        .await
+        .expect_err("a spec-less route is bound by the same doors");
+    }
+
+    // 4. Declaring K without a chunk corner could never be honored or checked.
+    #[tokio::test]
+    async fn resolve_refuses_a_declared_chunk_with_no_chunk_corner() {
+        let error = resolve_once(
+            DeclaredChunkModel::cornerless(6),
+            Arc::new(TagResolver),
+            1,
+            1,
+        )
+        .await
+        .expect_err("declared K, no corner");
+        assert!(
+            error.to_string().contains("no chunk corner"),
+            "unexpected error: {error}"
+        );
+    }
+
+    // 5. h > K asks for actions the model cannot produce.
+    #[tokio::test]
+    async fn resolve_refuses_a_horizon_over_the_declared_chunk() {
+        let error = resolve_once(
+            DeclaredChunkModel::new(6, Some(6)),
+            Arc::new(TagResolver),
+            1,
+            8,
+        )
+        .await
+        .expect_err("h > K");
+        assert!(
+            error.to_string().contains("native_chunk=6"),
+            "unexpected error: {error}"
+        );
+    }
+
+    // 6. A resolved route answers the declaration back to the runtime.
+    #[tokio::test]
+    async fn resolve_answers_the_declared_native_chunk() {
+        let needs = resolve_once(
+            DeclaredChunkModel::new(6, Some(6)),
+            Arc::new(TagResolver),
+            1,
+            6,
+        )
+        .await
+        .expect("h == K resolves");
+        assert_eq!(needs.native_chunk, Some(6));
+    }
+
+    // 7. An undeclared model answers nothing: the elastic contract.
+    #[tokio::test]
+    async fn resolve_answers_none_when_undeclared() {
+        let needs = resolve_once(
+            DeclaredChunkModel::new(6, None),
+            Arc::new(TagResolver),
+            1,
+            4,
+        )
+        .await
+        .expect("undeclared resolves");
+        assert_eq!(needs.native_chunk, None);
+    }
+
+    // 8. The served path sees no lanes: `ResolveAdapterRequest` carries no
+    //    num_envs, so the engine must NOT try to guard lanes here. A vector
+    //    contract with a chunking horizon resolves; the refusal lives in the
+    //    layers that actually know the lane count.
+    #[tokio::test]
+    async fn served_resolve_sees_no_lanes() {
+        resolve_once(
+            DeclaredChunkModel::new(6, Some(6)),
+            Arc::new(TagResolver),
+            4,
+            4,
+        )
+        .await
+        .expect("the engine carries no lane check");
+    }
+
+    // 9. Declared K, whole chunk returned, h < K: the runtime takes the prefix.
+    #[tokio::test]
+    async fn a_declared_model_replays_the_horizon_prefix_of_its_whole_chunk() {
+        let model = DeclaredChunkModel::new(6, Some(6));
+        let (mut handler, contracts) =
+            spec_handler(model as Arc<dyn PredictFn>, &[("env-a", 1)], 4).await;
+        let obs = single_obs_with_episode("env-a", 1.0, "ep", None, &contracts[0]);
+        assert_eq!(frame_count(&mut handler, obs).await, 4);
+    }
+
+    // 10. Declared K at h == K: the whole chunk is executed.
+    #[tokio::test]
+    async fn a_declared_model_at_the_full_horizon_replays_every_frame() {
+        let model = DeclaredChunkModel::new(6, Some(6));
+        let (mut handler, contracts) =
+            spec_handler(model as Arc<dyn PredictFn>, &[("env-a", 1)], 6).await;
+        let obs = single_obs_with_episode("env-a", 1.0, "ep", None, &contracts[0]);
+        assert_eq!(frame_count(&mut handler, obs).await, 6);
+    }
+
+    // 11. Declared K but the model still slices to the horizon (the glue this
+    //     contract removes): the predict fails instead of short-replaying.
+    #[tokio::test]
+    async fn a_declared_model_that_slices_its_own_chunk_fails_the_predict() {
+        let model = DeclaredChunkModel::new(4, Some(6));
+        let (mut handler, contracts) =
+            spec_handler(model as Arc<dyn PredictFn>, &[("env-a", 1)], 4).await;
+        let obs = single_obs_with_episode("env-a", 1.0, "ep", None, &contracts[0]);
+        let error = handler
+            .predict_chunked(obs)
+            .await
+            .expect_err("a declared K is exact");
+        let message = error.to_string();
+        assert!(
+            message.contains("native_chunk=6") && message.contains("4"),
+            "the error should name both lengths: {message}"
+        );
+    }
+
+    // 12. Undeclared and short: elastic, so the run continues on what there is.
+    #[tokio::test]
+    async fn an_undeclared_short_chunk_replays_what_there_is() {
+        let model = DeclaredChunkModel::new(3, None);
+        let (mut handler, contracts) =
+            spec_handler(model as Arc<dyn PredictFn>, &[("env-a", 1)], 6).await;
+        let obs = single_obs_with_episode("env-a", 1.0, "ep", None, &contracts[0]);
+        assert_eq!(frame_count(&mut handler, obs).await, 3);
+    }
+
+    // 13. That short-chunk warning is latched once per endpoint, not per predict.
+    #[test]
+    fn the_short_chunk_warning_latches_once_per_endpoint() {
+        let warned = AtomicBool::new(false);
+        let frames = || vec![Value::Number(0.0), Value::Number(1.0)];
+        assert_eq!(
+            take_prefix(frames(), 6, None, &warned)
+                .expect("elastic")
+                .len(),
+            2
+        );
+        assert!(
+            warned.load(Ordering::Relaxed),
+            "the first short chunk warns"
+        );
+        assert_eq!(
+            take_prefix(frames(), 6, None, &warned)
+                .expect("elastic")
+                .len(),
+            2,
+            "a latched flag must not change what is replayed"
+        );
     }
 }

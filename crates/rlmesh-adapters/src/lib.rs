@@ -66,7 +66,8 @@ pub mod v1 {
         reject_unsanctioned_roles_model,
     };
     pub use crate::stateful::{
-        EncodingTransform, FrameBuffers, NoEncodings, apply_actions, assemble_obs,
-        space_value_to_obs_map, space_value_to_value, split_chunk, value_max_abs_diff,
+        EncodingTransform, FrameBuffers, MAX_EXECUTION_HORIZON, NoEncodings, apply_actions,
+        assemble_obs, space_value_to_obs_map, space_value_to_value, split_chunk,
+        value_max_abs_diff,
     };
 }
