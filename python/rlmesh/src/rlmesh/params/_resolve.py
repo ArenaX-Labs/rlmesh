@@ -74,7 +74,13 @@ def resolve(
     annotation; then applies the boundary table:
 
     * ``spec is None`` -> kwargs unchanged (blind passthrough; full back-compat).
-    * rest empty -> ``{**declared, **derived}`` (with declared defaults filled).
+    * rest empty -> ``{**declared, **derived}``.
+
+    Only *supplied* keys come back: a declared parameter left out is absent from
+    the result, so ``make``'s own signature applies its default. The returned dict
+    is therefore never a complete binding -- read a resolved discriminant off the
+    env's published ``rlmesh.adapters.v1.env_branch``, which is bound from the
+    signature with defaults applied.
     * rest non-empty, ``extra="forbid"`` -> :class:`UnknownParamError`.
     * rest non-empty, ``extra="passthrough"`` and ``target`` has ``**kwargs`` ->
       forward rest verbatim.

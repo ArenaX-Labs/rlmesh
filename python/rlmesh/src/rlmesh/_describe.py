@@ -27,6 +27,7 @@ Emitted shape (env)::
         "generated_at": "...",          # only if the caller supplies one
         "env_spec": {"observation_space", "action_space"[, "num_envs"]} | {"error"},
         "env_tags": {...} | null,
+        "env_contracts": {"discriminants", "branches"},   # only if tag_params
         "params": {"param_spec", "signature_tier"},
         "variants": {"catalog", "variations"[, "*_error"]},
         "runtime": {...},               # PeerInfo: python/framework versions, os, arch
@@ -115,6 +116,9 @@ def _gather(
     if kind == "env":
         pieces["env_tags"] = _env_tags(obj)
         pieces["env_spec"] = _env_spec(obj, spec, target, catalog_fn)
+        contracts = _env_contracts(obj, spec, target, catalog_fn, pieces)
+        if contracts is not None:
+            pieces["env_contracts"] = contracts
     else:
         pieces["model_spec"] = _model_spec(obj)
         corners = _corners(obj)
@@ -224,12 +228,71 @@ def _env_tags(obj: object) -> Any:
     """Serialize the factory's ``tags`` (the obs/action contract); null/badged."""
     cls = obj if isinstance(obj, type) else type(obj)
     tags = getattr(cls, "tags", None)
-    if tags is None:
-        return None
+    return None if tags is None else _env_tags_dict(tags)
+
+
+def _env_tags_dict(tags: Any) -> Any:
     try:
         return tags.to_dict()
     except Exception as exc:
         return {"error": str(exc)}
+
+
+def _env_contracts(
+    obj: object,
+    spec: Any,
+    target: Callable[..., object],
+    catalog_fn: Callable[..., Any] | None,
+    pieces: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """The factory's contract-branch table, or ``None`` for a single-contract env.
+
+    Self-describing on purpose: ``discriminants`` names the axes and every branch
+    carries its *full* binding plus the ``env_tags``/``env_spec`` that binding
+    produces, so a reader that never runs the author's code can say which branch a
+    contract belongs to (and a static check can name the one it validated).
+
+    The default branch (``default: true``) is not a copy: its ``env_tags`` and
+    ``env_spec`` are the very objects the envelope's top-level ``env_tags`` and
+    ``env_spec`` carry, so the branch-blind view and the table can never drift.
+    A factory with no ``tag_params`` emits no table at all, which is what keeps
+    every already-published envelope byte-identical.
+    """
+    cls = cast("Any", obj if isinstance(obj, type) else type(obj))
+    discriminants: tuple[str, ...] = getattr(cls, "tag_params", ())
+    if not discriminants:
+        return None
+    from ._authoring import _tag_branches  # pyright: ignore[reportPrivateUsage]
+
+    try:
+        branches = _tag_branches(cls)
+    except Exception as exc:
+        return {"error": str(exc)}
+    out: list[dict[str, Any]] = []
+    for index, binding in enumerate(branches):
+        default = index == 0
+        out.append(
+            {
+                "params": dict(binding),
+                "default": default,
+                "env_tags": pieces["env_tags"]
+                if default
+                else _branch_tags(cls, binding),
+                "env_spec": pieces["env_spec"]
+                if default
+                else _env_spec(obj, spec, target, catalog_fn, binding),
+            }
+        )
+    return {"discriminants": list(discriminants), "branches": out}
+
+
+def _branch_tags(cls: Any, binding: Mapping[str, Any]) -> Any:
+    """Serialize one branch's ``tags_for`` result; badged, never fatal."""
+    try:
+        tags = cls.tags_for(**binding)
+    except Exception as exc:
+        return {"error": str(exc)}
+    return None if tags is None else _env_tags_dict(tags)
 
 
 def _model_spec(obj: object) -> Any:
@@ -258,16 +321,20 @@ def _env_spec(
     spec: Any,
     target: Callable[..., object],
     catalog_fn: Callable[..., Any] | None,
+    branch: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Construct one representative env and serialize its obs/action spaces.
 
-    Single-shape by contract: an EnvFactory has one ``env_tags``, so all variants
-    share spaces. The whole capture is best-effort -- a constructor/``make`` that
-    needs unavailable args, a missing GPU, or any failure becomes ``{"error":...}``
-    so the rest of the envelope still ships (e.g. a no-GPU OCI build).
+    One shape per *contract branch*: a factory's variants share spaces, but a
+    declared ``tag_params`` discriminant may move them, so ``branch`` binds one
+    discriminant combination and each branch is captured separately (see
+    :func:`_env_contracts`). The whole capture is best-effort -- a
+    constructor/``make`` that needs unavailable args, a missing GPU, or any
+    failure becomes ``{"error":...}`` so the rest of the envelope still ships
+    (e.g. a no-GPU OCI build).
     """
     try:
-        env, close = _build_env(obj, spec, target, catalog_fn)
+        env, close = _build_env(obj, spec, target, catalog_fn, branch)
     except Exception as exc:
         return {"error": str(exc)}
     try:
@@ -306,6 +373,7 @@ def _build_env(
     spec: Any,
     target: Callable[..., object],
     catalog_fn: Callable[..., Any] | None,
+    branch: Mapping[str, Any] | None = None,
 ) -> tuple[Any, Callable[[], object]]:
     """Build a representative env from a class, instance, or bare make-callable."""
     factory = obj() if isinstance(obj, type) else obj
@@ -314,7 +382,9 @@ def _build_env(
         prepare()
     make = getattr(factory, "make", None)
     builder = make if callable(make) else factory  # bare make-callable
-    env = cast("Callable[..., Any]", builder)(**_make_kwargs(spec, target, catalog_fn))
+    env = cast("Callable[..., Any]", builder)(
+        **_make_kwargs(spec, target, catalog_fn, branch)
+    )
     close = getattr(env, "close", None)
     return env, (
         cast("Callable[[], object]", close) if callable(close) else (lambda: None)
@@ -322,11 +392,20 @@ def _build_env(
 
 
 def _make_kwargs(
-    spec: Any, target: Callable[..., object], catalog_fn: Callable[..., Any] | None
+    spec: Any,
+    target: Callable[..., object],
+    catalog_fn: Callable[..., Any] | None,
+    branch: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Pick ``make`` kwargs: declared defaults, else the first variant's params."""
+    """Pick ``make`` kwargs: declared defaults, else the first variant's params.
+
+    ``branch`` pins the contract discriminants and always wins: a branch's spaces
+    must be read off an env built for that branch, never off a variant that
+    happens to name the same key.
+    """
+    branch = branch or {}
     try:
-        return dict(resolve(spec, target, {}))
+        return dict(resolve(spec, target, branch))
     except Exception:
         pass
     if catalog_fn is not None:
@@ -339,10 +418,10 @@ def _make_kwargs(
                     params = cast("Mapping[str, object]", entry.get("params") or {})
                 else:
                     continue
-                return dict(resolve(spec, target, params))
+                return dict(resolve(spec, target, {**params, **branch}))
         except Exception:
             pass
-    return {}
+    return dict(branch)
 
 
 def _space_dict(space: object) -> dict[str, object]:
@@ -589,6 +668,35 @@ def _describe_badges(envelope: Mapping[str, Any]) -> list[tuple[str, str]]:
         if isinstance(value, Mapping) and "error" in value:
             badge = cast("Mapping[str, object]", value)["error"]
             out.append((key, str(badge)))
+    contracts = envelope.get("env_contracts")
+    if isinstance(contracts, Mapping):
+        contract_map = cast("Mapping[str, object]", contracts)
+        if "error" in contract_map:
+            out.append(("env_contracts", str(contract_map["error"])))
+        branches = contract_map.get("branches")
+        if isinstance(branches, list):
+            # The default branch's badges are already reported against the
+            # top-level env_spec/env_tags (same objects), so only the non-default
+            # branches -- the ones a branch-blind reader never sees -- are added,
+            # each named by its own binding.
+            for branch in cast("list[object]", branches):
+                if not isinstance(branch, Mapping):
+                    continue
+                branch_map = cast("Mapping[str, object]", branch)
+                if branch_map.get("default"):
+                    continue
+                for key in ("env_spec", "env_tags"):
+                    value = branch_map.get(key)
+                    if isinstance(value, Mapping) and "error" in value:
+                        badge = cast("Mapping[str, object]", value)["error"]
+                        out.append(
+                            (
+                                f"env_contracts.branches[{branch_map.get('params')!r}]"
+                                f".{key}",
+                                str(badge),
+                            )
+                        )
+
     variants_raw = envelope.get("variants")
     if isinstance(variants_raw, Mapping):
         variants = cast("Mapping[str, object]", variants_raw)

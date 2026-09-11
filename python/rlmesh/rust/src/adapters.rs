@@ -97,6 +97,10 @@ fn de_spec<T: DeserializeOwned>(label: &str, json: &str) -> PyResult<T> {
 const WIRE_CONSTANTS: &[(&str, &str)] = &[
     ("ENV_METADATA_KEY", rlmesh_adapters::v1::ENV_METADATA_KEY),
     (
+        "ENV_BRANCH_METADATA_KEY",
+        rlmesh_adapters::v1::ENV_BRANCH_METADATA_KEY,
+    ),
+    (
         "MODEL_METADATA_KEY",
         rlmesh_adapters::v1::MODEL_METADATA_KEY,
     ),
@@ -146,6 +150,7 @@ const WIRE_CONSTANTS: &[(&str, &str)] = &[
 #[cfg(feature = "stub-gen")]
 mod stub_constants {
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ENV_METADATA_KEY", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ENV_BRANCH_METADATA_KEY", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "MODEL_METADATA_KEY", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "DESCRIBE_METADATA_KEY", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "DESCRIBE_SCHEMA_VERSION", u32);

@@ -292,6 +292,9 @@
     "rlmesh.adapters.EEF_ROT_2": {
       "description": "Second-arm variant of EEF_ROT (proprio/eef_rot_2)."
     },
+    "rlmesh.adapters.ENV_BRANCH_METADATA_KEY": {
+      "description": "Contract metadata key under which a branched environment publishes the discriminant binding its make() selected (rlmesh.adapters.v1.env_branch)."
+    },
     "rlmesh.adapters.ENV_METADATA_KEY": {
       "description": "Contract metadata key under which an environment publishes its EnvTags (rlmesh.adapters.v1.env_tags)."
     },

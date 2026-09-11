@@ -87,6 +87,7 @@ def _install_native_docs_stub() -> None:
     # during documentation builds (which use this stub, not the extension).
     adapter_constants: dict[str, str] = {
         "ENV_METADATA_KEY": "rlmesh.adapters.v1.env_tags",
+        "ENV_BRANCH_METADATA_KEY": "rlmesh.adapters.v1.env_branch",
         "MODEL_METADATA_KEY": "rlmesh.adapters.v1.model_spec",
         "DESCRIBE_METADATA_KEY": "rlmesh.describe.v1",
         "IMAGE_PRIMARY": "image/primary",

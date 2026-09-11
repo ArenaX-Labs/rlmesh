@@ -9,7 +9,11 @@ vocabulary are defined once in the ``rlmesh-adapters`` crate and re-exported her
 through the native bindings.
 """
 
-from ..._rlmesh import ENV_METADATA_KEY, MODEL_METADATA_KEY
+from ..._rlmesh import (
+    ENV_BRANCH_METADATA_KEY,
+    ENV_METADATA_KEY,
+    MODEL_METADATA_KEY,
+)
 from .roles import (
     ACTION_DELTA_POS,
     ACTION_DELTA_POS_2,
@@ -57,6 +61,7 @@ __all__ = [
     "EEF_POS_2",
     "EEF_ROT",
     "EEF_ROT_2",
+    "ENV_BRANCH_METADATA_KEY",
     "ENV_METADATA_KEY",
     "GRIPPER_POS",
     "GRIPPER_POS_2",

@@ -61,6 +61,8 @@ struct Pieces {
     #[serde(default)]
     env_tags: Option<Value>,
     #[serde(default)]
+    env_contracts: Option<Value>,
+    #[serde(default)]
     model_spec: Option<Value>,
     #[serde(default)]
     corners: Option<Value>,
@@ -85,6 +87,7 @@ impl Pieces {
             Kind::Env if self.native_chunk.is_some() => Some("native_chunk"),
             Kind::Model if self.env_spec.is_some() => Some("env_spec"),
             Kind::Model if self.env_tags.is_some() => Some("env_tags"),
+            Kind::Model if self.env_contracts.is_some() => Some("env_contracts"),
             _ => None,
         };
         match offender {
@@ -96,8 +99,11 @@ impl Pieces {
 
 /// The serialized env form. The kind's own fields (`env_spec`, `env_tags`) are
 /// always present -- `env_tags` may be `null`, but a `model_spec` never appears on
-/// an env envelope. Field order here is the top-level byte order (wrapper first);
-/// nested object keys sort via `BTreeMap`.
+/// an env envelope. `env_contracts` is the branch table a factory with declared
+/// contract discriminants emits, and is omitted entirely otherwise -- so an
+/// un-branched env's envelope is byte-identical to one built before the field
+/// existed. Field order here is the top-level byte order (wrapper first); nested
+/// object keys sort via `BTreeMap`.
 #[derive(Debug, Serialize)]
 struct EnvEnvelope {
     schema_version: u32,
@@ -108,6 +114,8 @@ struct EnvEnvelope {
     target: Option<Value>,
     env_spec: Value,
     env_tags: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    env_contracts: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     params: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -196,6 +204,7 @@ pub fn build_describe_envelope(
             target: pieces.target,
             env_spec: pieces.env_spec.unwrap_or(Value::Null),
             env_tags: pieces.env_tags.unwrap_or(Value::Null),
+            env_contracts: pieces.env_contracts,
             params: pieces.params,
             variants: pieces.variants,
             runtime: pieces.runtime,
@@ -399,6 +408,33 @@ mod tests {
             EnvelopeError::KindMismatch {
                 kind: Kind::Env,
                 field: "native_chunk"
+            }
+        ));
+    }
+
+    #[test]
+    fn env_contracts_is_env_only_and_omitted_when_absent() {
+        // Omitted entirely for an un-branched env: the byte-identity guarantee
+        // that keeps every already-published image off a re-probe.
+        let plain = build_describe_envelope("env", r#"{"env_spec":{"a":1}}"#, None).unwrap();
+        assert!(!plain.contains("env_contracts"));
+        // Present (after env_tags) for a branched one...
+        let branched = build_describe_envelope(
+            "env",
+            r#"{"env_spec":{"a":1},"env_contracts":{"discriminants":["action_type"]}}"#,
+            None,
+        )
+        .unwrap();
+        assert!(
+            branched
+                .contains(r#""env_tags":null,"env_contracts":{"discriminants":["action_type"]}"#)
+        );
+        // ...and never on a model envelope.
+        assert!(matches!(
+            build_describe_envelope("model", r#"{"env_contracts":{}}"#, None).unwrap_err(),
+            EnvelopeError::KindMismatch {
+                kind: Kind::Model,
+                field: "env_contracts"
             }
         ));
     }

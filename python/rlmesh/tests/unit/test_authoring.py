@@ -8,6 +8,8 @@ run the lifecycle hooks.
 
 from __future__ import annotations
 
+from typing import Any, ClassVar, cast
+
 import pytest
 import rlmesh
 from rlmesh._authoring import EnvFactory
@@ -346,3 +348,253 @@ def test_construct_authored_model_applies_binding_via_load() -> None:
 
     construct_authored_model(_Loads, checkpoint="x")
     assert seen["checkpoint"] == "x"
+
+
+# --- contract branches: tag_params / tags_for ---------------------------------
+
+
+def _tags(role: str) -> Any:
+    import rlmesh.adapters as adapt
+
+    return adapt.EnvTags(
+        observation={"eef": adapt.StateTag(adapt.EEF_POS)},
+        action=adapt.Action(adapt.Actuator(role, dim=3)),
+    )
+
+
+_DELTA = _tags("action/delta_eef_pos")
+_ABSOLUTE = _tags("action/eef_pos")
+
+
+class _BranchEnv:
+    """A make() return with a *class-level* metadata dict (the gymnasium shape)."""
+
+    metadata: ClassVar[dict[str, object]] = {}
+
+    def __init__(self, seed: int = 0) -> None:
+        self.seed = seed
+
+
+class _Branched(EnvFactory):
+    tags = _DELTA
+    params = rlmesh.ParamSpec(
+        rlmesh.Param("action_type", type="enum", choices=("delta", "abs")),
+        rlmesh.Param("seed", type="int"),
+    )
+    tag_params = ("action_type",)
+
+    @classmethod
+    def tags_for(cls, **params: object) -> object:
+        return _DELTA if params["action_type"] == "delta" else _ABSOLUTE
+
+    def make(self, action_type: str = "delta", seed: int = 0) -> _BranchEnv:
+        return _BranchEnv(seed)
+
+
+def _published(env: object) -> tuple[object, object]:
+    from rlmesh.adapters import ENV_BRANCH_METADATA_KEY, EnvTags
+
+    metadata = cast("dict[str, Any]", env.metadata)  # type: ignore[attr-defined]
+    return metadata.get(ENV_BRANCH_METADATA_KEY), EnvTags.from_metadata(metadata)
+
+
+def test_default_branch_stamps_the_signature_defaults() -> None:
+    # Nothing supplied: the binding is still complete (make's defaults applied),
+    # and the tags are the default branch's -- i.e. the factory's own ``tags``.
+    branch, tags = _published(_Branched().make())
+    assert branch == {"action_type": "delta"}
+    assert tags == _DELTA
+    # The stamp is an instance attribute: the class-level dict is untouched, so
+    # one branched env never leaks its branch onto the next.
+    assert _BranchEnv.metadata == {}
+
+
+def test_branch_binds_a_positional_discriminant() -> None:
+    # bind() reads make's own signature, so a positional value selects the branch
+    # exactly as the keyword form does.
+    assert _published(_Branched().make("abs"))[0] == {"action_type": "abs"}
+    assert _published(_Branched().make(action_type="abs"))[1] == _ABSOLUTE
+
+
+def test_branch_rejects_a_value_outside_the_declared_choices() -> None:
+    from rlmesh.params import ParamError
+
+    # Pre-construction: the bind runs before make()'s body.
+    with pytest.raises(ParamError, match="action_type='ee'"):
+        _Branched().make(action_type="ee")
+
+
+def test_unbranched_factory_stamps_no_branch_key() -> None:
+    from rlmesh.adapters import ENV_BRANCH_METADATA_KEY
+
+    class _Plain(EnvFactory):
+        tags = _DELTA
+
+        def make(self, seed: int = 0) -> _BranchEnv:
+            return _BranchEnv(seed)
+
+    env = _Plain().make()
+    assert ENV_BRANCH_METADATA_KEY not in cast("dict[str, Any]", env.metadata)
+
+
+# The eight class-creation TypeErrors. Each builds a factory that is wrong in
+# exactly one way; the class statement itself is what must fail.
+
+
+def test_tag_params_rejects_an_undeclared_discriminant() -> None:
+    with pytest.raises(TypeError, match="not declared in params"):
+
+        class _Undeclared(EnvFactory):
+            tags = _DELTA
+            tag_params = ("action_type",)
+
+            def make(self, action_type: str = "delta") -> _BranchEnv:
+                return _BranchEnv()
+
+
+def test_tag_params_rejects_a_non_enumerable_discriminant() -> None:
+    with pytest.raises(TypeError, match="no choices"):
+
+        class _Open(EnvFactory):
+            tags = _DELTA
+            params = rlmesh.ParamSpec(rlmesh.Param("action_type", type="str"))
+            tag_params = ("action_type",)
+
+            def make(self, action_type: str = "delta") -> _BranchEnv:
+                return _BranchEnv()
+
+
+def test_tag_params_rejects_a_discriminant_without_a_signature_default() -> None:
+    spec = rlmesh.ParamSpec(
+        rlmesh.Param("action_type", type="enum", choices=("delta", "abs"))
+    )
+    with pytest.raises(TypeError, match="signature default"):
+
+        class _NoDefault(EnvFactory):
+            tags = _DELTA
+            params = spec
+            tag_params = ("action_type",)
+
+            def make(self, action_type: str) -> _BranchEnv:
+                return _BranchEnv()
+
+    # A default that is not one of the choices is the same defect: the default
+    # branch would not be in the table the label publishes.
+    with pytest.raises(TypeError, match="signature default"):
+
+        class _OffChoices(EnvFactory):
+            tags = _DELTA
+            params = spec
+            tag_params = ("action_type",)
+
+            def make(self, action_type: str = "ee") -> _BranchEnv:
+                return _BranchEnv()
+
+
+def test_tag_params_rejects_a_product_over_the_branch_cap() -> None:
+    with pytest.raises(TypeError, match="over the limit of 8"):
+
+        class _TooMany(EnvFactory):
+            tags = _DELTA
+            params = rlmesh.ParamSpec(
+                rlmesh.Param("a", type="enum", choices=("x", "y", "z")),
+                rlmesh.Param("b", type="enum", choices=(1, 2, 3)),
+            )
+            tag_params = ("a", "b")
+
+            def make(self, a: str = "x", b: int = 1) -> _BranchEnv:
+                return _BranchEnv()
+
+
+def test_tags_for_override_without_tag_params_is_rejected() -> None:
+    with pytest.raises(TypeError, match="declares no tag_params"):
+
+        class _Orphan(EnvFactory):
+            tags = _DELTA
+
+            @classmethod
+            def tags_for(cls, **params: object) -> object:
+                return _ABSOLUTE
+
+            def make(self) -> _BranchEnv:
+                return _BranchEnv()
+
+
+def test_tags_for_returning_a_non_envtags_is_rejected() -> None:
+    with pytest.raises(TypeError, match="not EnvTags or None"):
+
+        class _WrongType(EnvFactory):
+            tags = _DELTA
+            params = rlmesh.ParamSpec(
+                rlmesh.Param("action_type", type="enum", choices=("delta", "abs"))
+            )
+            tag_params = ("action_type",)
+
+            @classmethod
+            def tags_for(cls, **params: object) -> object:
+                return _DELTA if params["action_type"] == "delta" else "absolute"
+
+            def make(self, action_type: str = "delta") -> _BranchEnv:
+                return _BranchEnv()
+
+
+def test_mixed_adapted_and_generic_branches_are_rejected() -> None:
+    with pytest.raises(TypeError, match="adapted or generic, not both"):
+
+        class _Mixed(EnvFactory):
+            tags = _DELTA
+            params = rlmesh.ParamSpec(
+                rlmesh.Param("action_type", type="enum", choices=("delta", "abs"))
+            )
+            tag_params = ("action_type",)
+
+            @classmethod
+            def tags_for(cls, **params: object) -> object:
+                return _DELTA if params["action_type"] == "delta" else None
+
+            def make(self, action_type: str = "delta") -> _BranchEnv:
+                return _BranchEnv()
+
+
+def test_tags_disagreeing_with_the_default_branch_is_rejected() -> None:
+    with pytest.raises(TypeError, match="its default branch"):
+
+        class _Disagrees(EnvFactory):
+            tags = _DELTA  # ...but the default branch answers with _ABSOLUTE
+            params = rlmesh.ParamSpec(
+                rlmesh.Param("action_type", type="enum", choices=("delta", "abs"))
+            )
+            tag_params = ("action_type",)
+
+            @classmethod
+            def tags_for(cls, **params: object) -> object:
+                return _ABSOLUTE if params["action_type"] == "delta" else _DELTA
+
+            def make(self, action_type: str = "delta") -> _BranchEnv:
+                return _BranchEnv()
+
+
+def test_tag_params_without_a_tags_for_override_is_a_spaces_only_branch() -> None:
+    # Legal: the discriminant moves the spaces, not the contract.
+    class _SpacesOnly(EnvFactory):
+        tags = _DELTA
+        params = rlmesh.ParamSpec(
+            rlmesh.Param("width", type="enum", choices=(128, 256))
+        )
+        tag_params = ("width",)
+
+        def make(self, width: int = 256) -> _BranchEnv:
+            return _BranchEnv()
+
+    branch, tags = _published(_SpacesOnly().make(width=128))
+    assert branch == {"width": 128}
+    assert tags == _DELTA
+
+
+def test_tag_branches_orders_the_default_first() -> None:
+    from rlmesh._authoring import _tag_branches
+
+    assert _tag_branches(_Branched) == [
+        {"action_type": "delta"},
+        {"action_type": "abs"},
+    ]

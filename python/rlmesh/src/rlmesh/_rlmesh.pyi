@@ -30,6 +30,7 @@ __all__ = [
     "EEF_POS_2",
     "EEF_ROT",
     "EEF_ROT_2",
+    "ENV_BRANCH_METADATA_KEY",
     "ENV_METADATA_KEY",
     "EnvContract",
     "GRIPPER_POS",
@@ -98,6 +99,7 @@ EEF_POS: builtins.str
 EEF_POS_2: builtins.str
 EEF_ROT: builtins.str
 EEF_ROT_2: builtins.str
+ENV_BRANCH_METADATA_KEY: builtins.str
 ENV_METADATA_KEY: builtins.str
 GRIPPER_POS: builtins.str
 GRIPPER_POS_2: builtins.str

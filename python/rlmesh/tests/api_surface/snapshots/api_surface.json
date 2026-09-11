@@ -83,9 +83,17 @@
             "kind": "function",
             "signature": "serve(address: str, *, num_envs: int = 1, vectorization_mode: str | None = None, framework: str | None = None, device: object | None = None, **make_kwargs: Any) -> None"
           },
+          "tag_params": {
+            "kind": "attribute",
+            "signature": "tag_params: tuple[str, ...]"
+          },
           "tags": {
             "kind": "attribute",
             "signature": "tags: EnvTags | None"
+          },
+          "tags_for": {
+            "kind": "function",
+            "signature": "tags_for(**params: Any) -> EnvTags | None"
           }
         },
         "stability": "Stable"
@@ -1163,6 +1171,7 @@
       "EEF_POS_2",
       "EEF_ROT",
       "EEF_ROT_2",
+      "ENV_BRANCH_METADATA_KEY",
       "ENV_METADATA_KEY",
       "GRIPPER_POS",
       "GRIPPER_POS_2",
@@ -1529,6 +1538,11 @@
       "EEF_ROT_2": {
         "kind": "type alias",
         "signature": "EEF_ROT_2 = str",
+        "stability": "Stable"
+      },
+      "ENV_BRANCH_METADATA_KEY": {
+        "kind": "type alias",
+        "signature": "ENV_BRANCH_METADATA_KEY = str",
         "stability": "Stable"
       },
       "ENV_METADATA_KEY": {
@@ -2021,9 +2035,17 @@
             "kind": "function",
             "signature": "serve(address: str, *, num_envs: int = 1, vectorization_mode: str | None = None, framework: str | None = None, device: object | None = None, **make_kwargs: Any) -> None"
           },
+          "tag_params": {
+            "kind": "attribute",
+            "signature": "tag_params: tuple[str, ...]"
+          },
           "tags": {
             "kind": "attribute",
             "signature": "tags: EnvTags | None"
+          },
+          "tags_for": {
+            "kind": "function",
+            "signature": "tags_for(**params: Any) -> EnvTags | None"
           }
         },
         "stability": "Experimental"
@@ -2588,9 +2610,17 @@
             "kind": "function",
             "signature": "serve(address: str, *, num_envs: int = 1, vectorization_mode: str | None = None, framework: str | None = None, device: object | None = None, **make_kwargs: Any) -> None"
           },
+          "tag_params": {
+            "kind": "attribute",
+            "signature": "tag_params: tuple[str, ...]"
+          },
           "tags": {
             "kind": "attribute",
             "signature": "tags: EnvTags | None"
+          },
+          "tags_for": {
+            "kind": "function",
+            "signature": "tags_for(**params: Any) -> EnvTags | None"
           }
         },
         "stability": "Stable"
@@ -3847,9 +3877,17 @@
             "kind": "function",
             "signature": "serve(address: str, *, num_envs: int = 1, vectorization_mode: str | None = None, framework: str | None = None, device: object | None = None, **make_kwargs: Any) -> None"
           },
+          "tag_params": {
+            "kind": "attribute",
+            "signature": "tag_params: tuple[str, ...]"
+          },
           "tags": {
             "kind": "attribute",
             "signature": "tags: EnvTags | None"
+          },
+          "tags_for": {
+            "kind": "function",
+            "signature": "tags_for(**params: Any) -> EnvTags | None"
           }
         },
         "stability": "Experimental"

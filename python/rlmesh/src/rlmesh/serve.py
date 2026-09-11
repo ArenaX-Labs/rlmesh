@@ -305,8 +305,16 @@ def serve_env(
         )
         # Adapters resolve per single-env lane and are rejected at num_envs>1, so
         # publish tags only on the scalar path -- mirroring the gym build path,
-        # which serves vector envs untagged.
-        tags = None if vectorized else getattr(env_source, "tags", None)
+        # which serves vector envs untagged. A branched factory already stamped the
+        # branch's own tags inside make(); re-publishing the ClassVar here would
+        # overwrite them with the default branch's contract, so leave them alone and
+        # let EnvServer validate what is published. The ClassVar read stays for the
+        # unstamped duck-typed source (a make-haver that is not an EnvFactory).
+        tags = (
+            None
+            if vectorized or getattr(env_source, "tag_params", ())
+            else getattr(env_source, "tags", None)
+        )
     else:
         # A bare callable has no class to pin a framework, so honor only the
         # explicit framework= (from --framework / RLMESH_FRAMEWORK).

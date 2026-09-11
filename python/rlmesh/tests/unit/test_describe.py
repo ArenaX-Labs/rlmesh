@@ -7,7 +7,7 @@ the full envelope produced through the Rust builder (``describe`` /
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 import pytest
 import rlmesh
@@ -407,3 +407,132 @@ def test_check_labels_warns_about_ad_hoc_roles_but_not_blessed_or_escape() -> No
     failures, warnings = check_labels(label(ad_hoc))
     assert failures == []
     assert any("image/front" in message for message in warnings), warnings
+
+
+# --- env_contracts: the contract-branch table ---------------------------------
+
+
+class _BranchArmEnv:
+    """Spaces that move with the branch: the 128 branch halves the camera."""
+
+    metadata: ClassVar[dict[str, object]] = {}
+
+    def __init__(self, width: int) -> None:
+        import gymnasium as gym
+        import numpy as np
+
+        self.observation_space = gym.spaces.Dict(
+            {
+                "cam": gym.spaces.Box(0, 255, (width, width, 3), np.uint8),
+                "eef_pos": gym.spaces.Box(-np.inf, np.inf, (3,), np.float32),
+            }
+        )
+        self.action_space = gym.spaces.Box(-1.0, 1.0, (3,), np.float32)
+
+
+def _branch_tags(role: str) -> Any:
+    import rlmesh.adapters as adapt
+
+    return adapt.EnvTags(
+        observation={"eef_pos": adapt.StateTag(adapt.EEF_POS)},
+        action=adapt.Action(adapt.Actuator(role, dim=3)),
+    )
+
+
+_BRANCH_DELTA = _branch_tags("action/delta_eef_pos")
+_BRANCH_ABS = _branch_tags("action/eef_pos")
+
+
+class _BranchedFactory(rlmesh.EnvFactory):
+    tags = _BRANCH_DELTA
+    params = rlmesh.ParamSpec(
+        rlmesh.Param("action_type", type="enum", choices=("delta", "abs")),
+        rlmesh.Param("width", type="enum", choices=(256, 128)),
+    )
+    tag_params = ("action_type", "width")
+
+    @classmethod
+    def tags_for(cls, **params: Any) -> Any:
+        return _BRANCH_DELTA if params["action_type"] == "delta" else _BRANCH_ABS
+
+    def make(self, action_type: str = "delta", width: int = 256) -> Any:
+        return _BranchArmEnv(width)
+
+
+def test_unbranched_envelope_carries_no_env_contracts() -> None:
+    # The no-re-probe guard: a factory with no tag_params emits exactly the
+    # envelope it emitted before the field existed, byte for byte.
+    assert "env_contracts" not in rlmesh.describe(_CamArmFactory)
+    assert "env_contracts" not in rlmesh.describe_json(_CamArmFactory)
+
+
+def test_env_contracts_lists_every_branch_default_first() -> None:
+    env = rlmesh.describe(_BranchedFactory)
+    contracts = env["env_contracts"]
+    assert contracts["discriminants"] == ["action_type", "width"]
+    branches = contracts["branches"]
+    assert [b["params"] for b in branches] == [
+        {"action_type": "delta", "width": 256},
+        {"action_type": "delta", "width": 128},
+        {"action_type": "abs", "width": 256},
+        {"action_type": "abs", "width": 128},
+    ]
+    assert [b["default"] for b in branches] == [True, False, False, False]
+
+
+def test_default_branch_is_the_top_level_contract() -> None:
+    env = rlmesh.describe(_BranchedFactory)
+    default = env["env_contracts"]["branches"][0]
+    # Not a copy that could drift: the same objects the branch-blind view carries.
+    assert default["env_tags"] == env["env_tags"]
+    assert default["env_spec"] == env["env_spec"]
+
+
+def test_each_branch_captures_its_own_spaces_and_tags() -> None:
+    branches = rlmesh.describe(_BranchedFactory)["env_contracts"]["branches"]
+    by_binding = {
+        (b["params"]["action_type"], b["params"]["width"]): b for b in branches
+    }
+    # The discriminant binds through to make(), so the branch's spaces are real.
+    spaces = by_binding[("delta", 128)]["env_spec"]["observation_space"]["details"][
+        "spaces"
+    ]
+    assert spaces["cam"]["shape"] == [128, 128, 3]
+    # ...and the contract switches with action_type.
+    assert by_binding[("abs", 256)]["env_tags"]["action"]["components"][0]["role"] == (
+        "action/eef_pos"
+    )
+    assert by_binding[("delta", 256)]["env_tags"]["action"]["components"][0][
+        "role"
+    ] == ("action/delta_eef_pos")
+
+
+def test_check_labels_surfaces_a_non_default_branch_badge() -> None:
+    import json
+
+    from rlmesh._describe import DESCRIBE_LABEL, check_labels
+
+    describe = json.dumps(
+        {
+            "schema_version": 1,
+            "kind": "env",
+            "env_contracts": {
+                "discriminants": ["action_type"],
+                "branches": [
+                    {"params": {"action_type": "delta"}, "default": True},
+                    {
+                        "params": {"action_type": "abs"},
+                        "default": False,
+                        "env_spec": {"error": "sapien needs a GPU"},
+                    },
+                ],
+            },
+        }
+    )
+    failures, warnings = check_labels({DESCRIBE_LABEL: describe})
+    assert failures == []
+    # Named by its own binding, so the operator knows which branch is blind.
+    assert any(
+        "env_contracts.branches[{'action_type': 'abs'}].env_spec" in w and "sapien" in w
+        for w in warnings
+    )

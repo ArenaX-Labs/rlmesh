@@ -48,7 +48,8 @@ pub mod v1 {
     pub use crate::error::{AdapterResolutionError, ErrorCode};
     pub use crate::join::{JoinError, join};
     pub use crate::keys::{
-        DESCRIBE_METADATA_KEY, DESCRIBE_SCHEMA_VERSION, ENV_METADATA_KEY, MODEL_METADATA_KEY,
+        DESCRIBE_METADATA_KEY, DESCRIBE_SCHEMA_VERSION, ENV_BRANCH_METADATA_KEY, ENV_METADATA_KEY,
+        MODEL_METADATA_KEY,
     };
     pub use crate::path::{NodePath, PathSeg};
     pub use crate::plans::{
