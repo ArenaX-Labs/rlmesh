@@ -28,6 +28,7 @@ from ._connect import (
     adapter_env_bridge,
     close_client,
     connect_env,
+    declares_reset_option,
     reset_env,
     shutdown_env,
 )
@@ -118,6 +119,9 @@ class EpisodeResult:
         predict_ms: Mean per-step wall time of ``predict``, in milliseconds.
         step_ms: Mean per-step wall time of the env ``step`` round trip, in
             milliseconds.
+        trial: The trial ordinal the episode walked
+            (``reset(options={"trial_index": ...})``), or ``None`` when the env
+            declared no such reset option.
     """
 
     index: int
@@ -130,6 +134,7 @@ class EpisodeResult:
     duration_s: float = 0.0
     predict_ms: float = 0.0
     step_ms: float = 0.0
+    trial: int | None = None
 
     @property
     def succeeded(self) -> bool:
@@ -502,6 +507,7 @@ class Session(Generic[ObsT, ActT]):
     _ep_index: int
     _ep_total: int
     _seed: int | None
+    _trial: int | None
     _chunk_pos: int
     _chunk_len: int
     _episode_open: bool
@@ -607,6 +613,9 @@ class Session(Generic[ObsT, ActT]):
         self._ep_index = 0
         self._ep_total = 0
         self._seed = None
+        #: The trial ordinal delivered on this episode's reset, or ``None`` when
+        #: none was asked for or the env declared no such reset option.
+        self._trial = None
         self._chunk_pos = 0
         self._chunk_len = 0
         #: Whether an episode has been reset and not yet ended. The local episode
@@ -731,16 +740,35 @@ class Session(Generic[ObsT, ActT]):
             if self._on_episode_end is not None:
                 self._on_episode_end(self._episode_id)
 
-    def reset(self, *, seed: int | None = None) -> tuple[ObsT, Mapping[str, Any]]:
+    def reset(
+        self, *, seed: int | None = None, trial_index: int | None = None
+    ) -> tuple[ObsT, Mapping[str, Any]]:
         """Begin a new episode: end the previous one, then reset the env and adapter.
 
         Ending the previous episode fires the model's `on_episode_end` (the local
         per-episode boundary), so a stateful model clears its state between episodes
         on the hand-driven path too, not only via `run()`.
+
+        ``trial_index`` is the 0-based ordinal of this episode in a benchmark's
+        trial sweep, delivered as ``reset(options={"trial_index": ...})`` -- but
+        only to an env that declared the key in
+        :attr:`EnvFactory.reset_options <rlmesh.EnvFactory.reset_options>`.
+        Passing one to an env that did not warns and resets without it.
         """
         self._ensure_connected()
         self._end_episode()
-        obs, info = reset_env(self._client, seed)
+        options = None
+        if trial_index is not None:
+            if declares_reset_option(self._contract, "trial_index"):
+                options = {"trial_index": int(trial_index)}
+            else:
+                trial_index = None
+                warnings.warn(
+                    'trial_index was given but this env declares no "trial_index" '
+                    "reset option (EnvFactory.reset_options); resetting without it.",
+                    stacklevel=2,
+                )
+        obs, info = reset_env(self._client, seed, options)
         if self._model_client is not None:
             # Mark a reset boundary on the served route; the seed rides too, as
             # the served model's context["episode_seed"] on every predict of
@@ -761,6 +789,7 @@ class Session(Generic[ObsT, ActT]):
         self._ep_start = time.perf_counter()
         self._last_step_t = None
         self._seed = seed
+        self._trial = trial_index
         self._feed_view(obs)
         return cast("ObsT", obs), info
 
@@ -1013,13 +1042,19 @@ class Session(Generic[ObsT, ActT]):
         episodes: list[EpisodeResult] = []
         run_end_error: BaseException | None = None
         self._ep_total = n_episodes
+        # Walk the benchmark's trials in order (episode i is trial i), but only for
+        # an env that declared the option -- everyone else keeps today's seed-only
+        # reset and no warning.
+        walks_trials = declares_reset_option(self._contract, "trial_index")
         try:
             if hooks is not None:
                 hooks.on_run_start(self)
             for i in range(n_episodes):
                 self._ep_index = i + 1
                 seed = seeds[i] if seeds is not None and i < len(seeds) else None
-                obs, last_info = self.reset(seed=seed)
+                obs, last_info = self.reset(
+                    seed=seed, trial_index=i if walks_trials else None
+                )
                 ep_start = time.perf_counter()
                 if hooks is not None:
                     hooks.on_episode_start(episode=i, seed=seed)
@@ -1065,6 +1100,7 @@ class Session(Generic[ObsT, ActT]):
                 episode = EpisodeResult(
                     index=i,
                     seed=seed,
+                    trial=self._trial,
                     steps=steps,
                     reward=self._reward,
                     terminated=self._terminated,

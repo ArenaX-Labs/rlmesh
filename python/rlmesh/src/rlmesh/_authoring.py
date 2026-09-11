@@ -62,6 +62,14 @@ class EnvFactory(ABC):
     #: product of those choices is capped at 8 branches. ``()`` (the default) is
     #: one fixed contract: ``tags``.
     tag_params: ClassVar[tuple[str, ...]] = ()
+    #: The reserved reset-option keys this env wants delivered on
+    #: ``reset(seed=, options=)``. ``make`` publishes them in the env's metadata,
+    #: and the runtime sends a reserved key only to an env that named it -- an env
+    #: that forwards ``options`` into a third-party ``reset`` is never handed a key
+    #: it cannot interpret. The one key this edition defines is ``"trial_index"``,
+    #: the 0-based ordinal of the episode being started (see
+    #: :func:`rlmesh.trial_index`); ``()`` (the default) receives none.
+    reset_options: ClassVar[tuple[str, ...]] = ()
     #: Framework bridge pinned by a framework-specific subclass
     #: (``rlmesh.torch.EnvFactory`` / ``rlmesh.jax.EnvFactory``); ``serve_env``
     #: reads it to type the served env's obs/action seam. ``None`` serves numpy.
@@ -99,10 +107,17 @@ class EnvFactory(ABC):
                 # tags at adapter-resolution time (serve or session), so a make()
                 # of a vectorized batch (whose spaces differ) is not rejected here.
                 env = tag(env, tags, validate=False)
+            fragment: dict[str, object] = {}
             if branch is not None:
                 from .adapters.constants import ENV_BRANCH_METADATA_KEY
 
-                _stamp_metadata(env, {ENV_BRANCH_METADATA_KEY: branch})
+                fragment[ENV_BRANCH_METADATA_KEY] = branch
+            if cls.reset_options:
+                from ._rlmesh import ENV_RESET_OPTIONS_KEY
+
+                fragment[ENV_RESET_OPTIONS_KEY] = list(cls.reset_options)
+            if fragment:
+                _stamp_metadata(env, fragment)
             return env
 
         make._rlmesh_tag_stamped = True  # type: ignore[attr-defined]
@@ -180,6 +195,32 @@ class EnvFactory(ABC):
             device=device,
             **make_kwargs,
         )
+
+
+def trial_index(options: Mapping[str, Any] | None) -> int | None:
+    """The reserved ``trial_index`` reset option, or ``None`` when absent.
+
+    The ordinal of the episode a ``reset`` starts, 0-based and walked in order by
+    the runtime, so an env can sweep a fixed list of initial states / goals
+    exactly as its upstream benchmark does instead of re-deriving one from a
+    hashed seed. Delivered only to an env that declared ``"trial_index"`` in
+    :attr:`EnvFactory.reset_options`::
+
+        class MyEnv(rlmesh.EnvFactory):
+            reset_options = ("trial_index",)
+
+
+        def reset(self, *, seed=None, options=None):
+            trial = rlmesh.trial_index(options)
+            n = len(self.init_states)
+            state = self.init_states[(trial if trial is not None else seed or 0) % n]
+    """
+    value = options.get("trial_index") if options is not None else None
+    return (
+        int(value)
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+        else None
+    )
 
 
 def _stamp_metadata(env: object, fragment: Mapping[str, object]) -> None:

@@ -90,6 +90,7 @@ def _install_native_docs_stub() -> None:
         "ENV_BRANCH_METADATA_KEY": "rlmesh.adapters.v1.env_branch",
         "MODEL_METADATA_KEY": "rlmesh.adapters.v1.model_spec",
         "DESCRIBE_METADATA_KEY": "rlmesh.describe.v1",
+        "ENV_RESET_OPTIONS_KEY": "rlmesh.env.v1.reset_options",
         "IMAGE_PRIMARY": "image/primary",
         "IMAGE_SECONDARY": "image/secondary",
         "INSTRUCTION": "text/instruction",

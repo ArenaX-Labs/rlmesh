@@ -26,7 +26,7 @@ from . import platform as platform
 from . import spaces as spaces
 from . import specs as specs
 from . import types as types
-from ._authoring import EnvFactory
+from ._authoring import EnvFactory, trial_index
 from ._metadata import sanitize_metadata
 from ._models import (
     NO_ADAPTER,
@@ -55,6 +55,7 @@ from ._peer_info import register_python_peer_info as _register_python_peer_info
 from ._rlmesh import (
     DESCRIBE_METADATA_KEY,
     DESCRIBE_SCHEMA_VERSION,
+    ENV_RESET_OPTIONS_KEY,
     ServeOptions,
     Tensor,
     predict_seed,
@@ -95,6 +96,7 @@ def __getattr__(name: str) -> object:
 __all__ = [
     "DESCRIBE_METADATA_KEY",
     "DESCRIBE_SCHEMA_VERSION",
+    "ENV_RESET_OPTIONS_KEY",
     "NO_ADAPTER",
     "RANDOM_SAMPLE",
     "EnvFactory",
@@ -135,5 +137,6 @@ __all__ = [
     "session",
     "spaces",
     "specs",
+    "trial_index",
     "types",
 ]

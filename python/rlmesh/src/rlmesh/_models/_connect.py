@@ -188,13 +188,41 @@ def adapter_env_bridge(client: Any) -> ValueBridge:
     return _numpy_bridge
 
 
-def reset_env(client: Any, seed: int | None) -> tuple[Any, Mapping[str, Any]]:
+def declares_reset_option(contract: Any, key: str) -> bool:
+    """Whether the connected env declared this reserved reset-option key.
+
+    An env opts in by listing the key under ``ENV_RESET_OPTIONS_KEY`` in its
+    metadata (:attr:`rlmesh.EnvFactory.reset_options` stamps it). A reserved
+    option goes only to an env that asked for it, so an env forwarding ``options``
+    blindly into a third-party ``reset`` never sees a key it cannot interpret.
+    """
+    from .._rlmesh import ENV_RESET_OPTIONS_KEY
+
+    metadata = cast("Mapping[str, Any] | None", getattr(contract, "metadata", None))
+    declared = (
+        metadata.get(ENV_RESET_OPTIONS_KEY) if isinstance(metadata, Mapping) else None
+    )
+    if isinstance(declared, str):
+        return declared == key
+    return isinstance(declared, (list, tuple)) and key in declared
+
+
+def reset_env(
+    client: Any, seed: int | None, options: Mapping[str, Any] | None = None
+) -> tuple[Any, Mapping[str, Any]]:
     """Reset an env and normalize its return to ``(obs, info)``.
 
     Accepts a gymnasium ``(obs, info)`` pair (the second element a Mapping) or a bare
-    observation; the latter pairs with an empty info dict.
+    observation; the latter pairs with an empty info dict. ``options`` is forwarded
+    only when non-empty, so an env whose ``reset`` takes no ``options`` keeps
+    working (see :func:`declares_reset_option` for who gets a reserved key).
     """
-    result: Any = client.reset(seed=seed) if seed is not None else client.reset()
+    kwargs: dict[str, Any] = {}
+    if seed is not None:
+        kwargs["seed"] = seed
+    if options:
+        kwargs["options"] = dict(options)
+    result: Any = client.reset(**kwargs)
     if isinstance(result, tuple):
         pair = cast("tuple[Any, ...]", result)
         # Only a (obs, info) pair where the second element is a Mapping is a

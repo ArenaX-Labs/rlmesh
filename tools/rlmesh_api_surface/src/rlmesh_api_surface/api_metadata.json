@@ -184,6 +184,12 @@
     "rlmesh.predict_seed": {
       "description": "Per-predict sampling seed mixed from an episode's reset seed and its re-plan ordinal."
     },
+    "rlmesh.trial_index": {
+      "description": "Read the reserved trial_index reset option an env declared, from a reset's options mapping."
+    },
+    "rlmesh.ENV_RESET_OPTIONS_KEY": {
+      "description": "Metadata key under which an env declares the reserved reset-option keys it wants delivered (rlmesh.env.v1.reset_options)."
+    },
     "rlmesh.DESCRIBE_METADATA_KEY": {
       "description": "Metadata/OCI-label key under which the versioned describe envelope is stored (rlmesh.describe.v1)."
     },

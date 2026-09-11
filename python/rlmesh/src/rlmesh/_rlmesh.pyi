@@ -32,6 +32,7 @@ __all__ = [
     "EEF_ROT_2",
     "ENV_BRANCH_METADATA_KEY",
     "ENV_METADATA_KEY",
+    "ENV_RESET_OPTIONS_KEY",
     "EnvContract",
     "GRIPPER_POS",
     "GRIPPER_POS_2",
@@ -101,6 +102,7 @@ EEF_ROT: builtins.str
 EEF_ROT_2: builtins.str
 ENV_BRANCH_METADATA_KEY: builtins.str
 ENV_METADATA_KEY: builtins.str
+ENV_RESET_OPTIONS_KEY: builtins.str
 GRIPPER_POS: builtins.str
 GRIPPER_POS_2: builtins.str
 IMAGE_LAYOUTS: builtins.list[builtins.str]
@@ -293,7 +295,7 @@ class PyEnvServer:
 class PyModel:
     def __init__(self, predict_fn: collections.abc.Callable[[Value], Value], configure_fn: collections.abc.Callable[[EnvContract], object] | None = None, on_episode_end: collections.abc.Callable[[str], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None, predict_chunk_fn: collections.abc.Callable[[Value, int], Value] | None = None, predict_batch_fn: collections.abc.Callable[[list[Value], list[dict[str, typing.Any]]], list[Value]] | None = None, predict_chunk_batch_fn: collections.abc.Callable[[list[Value], int, list[dict[str, typing.Any]]], list[Value]] | None = None, allow_fusion: bool = True, native_chunk: int | None = None) -> None: ...
     def run_local(self, env_address: str, execution_horizon: int = 1) -> dict[str, typing.Any]: ...
-    def run_local_for_episodes(self, env_address: str, max_episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False) -> dict[str, typing.Any]: ...
+    def run_local_for_episodes(self, env_address: str, max_episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trial_index_base: int | None = None) -> dict[str, typing.Any]: ...
     def serve(self, address: str, options: ServeOptions | None = None) -> None: ...
 
 @typing.final

@@ -1054,6 +1054,7 @@ class ModelBase(Generic[ObsT, ActT]):
                 EpisodeResult(
                     index=episode["index"],
                     seed=episode["seed"],
+                    trial=episode["trial"],
                     steps=episode["steps"],
                     reward=episode["reward"],
                     terminated=episode["terminated"],

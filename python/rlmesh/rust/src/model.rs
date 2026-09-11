@@ -476,6 +476,7 @@ fn report_episodes_to_py(py: Python<'_>, report: &rlmesh::RuntimeReport) -> PyRe
         entry.set_item("index", episode.episode_index)?;
         entry.set_item("env_index", episode.env_index)?;
         entry.set_item("seed", episode.seed)?;
+        entry.set_item("trial", episode.trial_index)?;
         entry.set_item("steps", episode.step_count)?;
         entry.set_item("reward", episode.cumulative_reward)?;
         entry.set_item("terminated", episode.terminated)?;
@@ -722,7 +723,7 @@ impl PyModel {
         report_to_py(py, &report)
     }
 
-    #[pyo3(signature = (env_address, max_episodes, execution_horizon=1, seeds=None, max_episode_steps=None, max_episode_seconds=None, close_env=false))]
+    #[pyo3(signature = (env_address, max_episodes, execution_horizon=1, seeds=None, max_episode_steps=None, max_episode_seconds=None, close_env=false, trial_index_base=None))]
     #[allow(clippy::too_many_arguments)]
     fn run_local_for_episodes(
         &self,
@@ -734,6 +735,7 @@ impl PyModel {
         max_episode_steps: Option<i64>,
         max_episode_seconds: Option<f64>,
         close_env: bool,
+        trial_index_base: Option<u64>,
     ) -> PyResult<Py<PyAny>> {
         let run_span = tracing::info_span!(
             "rlmesh.model.run_local_for_episodes",
@@ -755,6 +757,9 @@ impl PyModel {
         }
         if let Some(cap) = max_episode_seconds {
             options = options.max_episode_seconds(cap);
+        }
+        if let Some(base) = trial_index_base {
+            options = options.trial_index_base(base);
         }
 
         let report = run_local_blocking(py, handler, options)?;
@@ -804,7 +809,7 @@ import typing
 class PyModel:
     def __init__(self, predict_fn: collections.abc.Callable[[Value], Value], configure_fn: collections.abc.Callable[[EnvContract], object] | None = None, on_episode_end: collections.abc.Callable[[str], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None, predict_chunk_fn: collections.abc.Callable[[Value, int], Value] | None = None, predict_batch_fn: collections.abc.Callable[[list[Value], list[dict[str, typing.Any]]], list[Value]] | None = None, predict_chunk_batch_fn: collections.abc.Callable[[list[Value], int, list[dict[str, typing.Any]]], list[Value]] | None = None, allow_fusion: bool = True, native_chunk: int | None = None) -> None: ...
     def run_local(self, env_address: str, execution_horizon: int = 1) -> dict[str, typing.Any]: ...
-    def run_local_for_episodes(self, env_address: str, max_episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False) -> dict[str, typing.Any]: ...
+    def run_local_for_episodes(self, env_address: str, max_episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trial_index_base: int | None = None) -> dict[str, typing.Any]: ...
     def serve(self, address: str, options: ServeOptions | None = None) -> None: ...
 "#
     }

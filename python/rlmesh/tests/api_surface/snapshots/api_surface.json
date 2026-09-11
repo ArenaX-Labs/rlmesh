@@ -3,6 +3,7 @@
     "exports": [
       "DESCRIBE_METADATA_KEY",
       "DESCRIBE_SCHEMA_VERSION",
+      "ENV_RESET_OPTIONS_KEY",
       "NO_ADAPTER",
       "RANDOM_SAMPLE",
       "EnvFactory",
@@ -43,6 +44,7 @@
       "session",
       "spaces",
       "specs",
+      "trial_index",
       "types"
     ],
     "objects": {
@@ -54,6 +56,11 @@
       "DESCRIBE_SCHEMA_VERSION": {
         "kind": "type alias",
         "signature": "DESCRIBE_SCHEMA_VERSION = int",
+        "stability": "Stable"
+      },
+      "ENV_RESET_OPTIONS_KEY": {
+        "kind": "type alias",
+        "signature": "ENV_RESET_OPTIONS_KEY = str",
         "stability": "Stable"
       },
       "EnvFactory": {
@@ -78,6 +85,10 @@
           "prepare": {
             "kind": "function",
             "signature": "prepare() -> None"
+          },
+          "reset_options": {
+            "kind": "attribute",
+            "signature": "reset_options: tuple[str, ...]"
           },
           "serve": {
             "kind": "function",
@@ -172,12 +183,16 @@
             "kind": "attribute",
             "signature": "terminated: bool"
           },
+          "trial": {
+            "kind": "attribute",
+            "signature": "trial: int | None"
+          },
           "truncated": {
             "kind": "attribute",
             "signature": "truncated: bool"
           }
         },
-        "signature": "EpisodeResult(index: int, seed: int | None, steps: int, reward: float, terminated: bool, truncated: bool, success: bool | None = None, duration_s: float = 0.0, predict_ms: float = 0.0, step_ms: float = 0.0)",
+        "signature": "EpisodeResult(index: int, seed: int | None, steps: int, reward: float, terminated: bool, truncated: bool, success: bool | None = None, duration_s: float = 0.0, predict_ms: float = 0.0, step_ms: float = 0.0, trial: int | None = None)",
         "stability": "Stable"
       },
       "Model": {
@@ -854,7 +869,7 @@
           },
           "reset": {
             "kind": "function",
-            "signature": "reset(*, seed: int | None = None)"
+            "signature": "reset(*, seed: int | None = None, trial_index: int | None = None)"
           },
           "run": {
             "kind": "function",
@@ -1144,6 +1159,11 @@
       },
       "specs": {
         "kind": "module",
+        "stability": "Stable"
+      },
+      "trial_index": {
+        "kind": "function",
+        "signature": "trial_index(options: Mapping[str, Any] | None) -> int | None",
         "stability": "Stable"
       },
       "types": {
@@ -2031,6 +2051,10 @@
             "kind": "function",
             "signature": "prepare() -> None"
           },
+          "reset_options": {
+            "kind": "attribute",
+            "signature": "reset_options: tuple[str, ...]"
+          },
           "serve": {
             "kind": "function",
             "signature": "serve(address: str, *, num_envs: int = 1, vectorization_mode: str | None = None, framework: str | None = None, device: object | None = None, **make_kwargs: Any) -> None"
@@ -2605,6 +2629,10 @@
           "prepare": {
             "kind": "function",
             "signature": "prepare() -> None"
+          },
+          "reset_options": {
+            "kind": "attribute",
+            "signature": "reset_options: tuple[str, ...]"
           },
           "serve": {
             "kind": "function",
@@ -3872,6 +3900,10 @@
           "prepare": {
             "kind": "function",
             "signature": "prepare() -> None"
+          },
+          "reset_options": {
+            "kind": "attribute",
+            "signature": "reset_options: tuple[str, ...]"
           },
           "serve": {
             "kind": "function",

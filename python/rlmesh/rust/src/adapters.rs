@@ -104,6 +104,7 @@ const WIRE_CONSTANTS: &[(&str, &str)] = &[
         "MODEL_METADATA_KEY",
         rlmesh_adapters::v1::MODEL_METADATA_KEY,
     ),
+    ("ENV_RESET_OPTIONS_KEY", rlmesh::ENV_RESET_OPTIONS_KEY),
     (
         "DESCRIBE_METADATA_KEY",
         rlmesh_adapters::v1::DESCRIBE_METADATA_KEY,
@@ -152,6 +153,7 @@ mod stub_constants {
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ENV_METADATA_KEY", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ENV_BRANCH_METADATA_KEY", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "MODEL_METADATA_KEY", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ENV_RESET_OPTIONS_KEY", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "DESCRIBE_METADATA_KEY", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "DESCRIBE_SCHEMA_VERSION", u32);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "IMAGE_PRIMARY", String);

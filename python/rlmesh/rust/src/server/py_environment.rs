@@ -346,6 +346,59 @@ where
         .map_err(|e: PyErr| into_err(format!("{phase} failed: {e}")))
 }
 
+/// Reset `options` reached an env whose `reset` takes no such parameter; latched
+/// so the backstop warns once per process rather than once per episode.
+static RESET_OPTIONS_WARNED: std::sync::Once = std::sync::Once::new();
+
+/// Whether `env.reset` can take an `options=` keyword -- a declared parameter or
+/// a `**kwargs` catch-all.
+///
+/// The runtime only sends a reserved option to an env that declared it, but a
+/// hand-driven client forwards whatever `options` it is given
+/// (`rlmesh/_client/_remote_env.py`), so a plain `reset(self, seed=None)` must
+/// degrade to an unoptioned reset instead of raising `TypeError` mid-run. An env
+/// whose signature cannot be read (a C-implemented `reset`) keeps today's
+/// behavior: the options are passed through.
+fn reset_accepts_options(py: Python<'_>, env_ref: &Bound<'_, PyAny>) -> bool {
+    let probe = || -> PyResult<bool> {
+        let inspect = py.import("inspect")?;
+        let var_keyword = inspect.getattr("Parameter")?.getattr("VAR_KEYWORD")?;
+        let parameters = inspect
+            .call_method1("signature", (env_ref.getattr("reset")?,))?
+            .getattr("parameters")?;
+        if parameters.contains("options")? {
+            return Ok(true);
+        }
+        for parameter in parameters.call_method0("values")?.try_iter()? {
+            if parameter?.getattr("kind")?.eq(&var_keyword)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    };
+    probe().unwrap_or(true)
+}
+
+/// Add `options=` to a reset call, or drop it (warning once) for an env whose
+/// `reset` cannot take it.
+fn set_reset_options(
+    py: Python<'_>,
+    env_ref: &Bound<'_, PyAny>,
+    kwargs: &Bound<'_, PyDict>,
+    options: &MetaMap,
+) -> PyResult<()> {
+    if reset_accepts_options(py, env_ref) {
+        return kwargs.set_item("options", meta_map_to_pydict(py, options)?);
+    }
+    RESET_OPTIONS_WARNED.call_once(|| {
+        tracing::warn!(
+            "reset options were requested but this environment's reset() takes no \
+             options parameter; resetting without them",
+        );
+    });
+    Ok(())
+}
+
 fn internal_env_err(message: String) -> EnvError {
     EnvError::new(EnvErrorCode::Internal, message)
 }
@@ -375,7 +428,7 @@ impl PyEnvironment {
                     kwargs.set_item("seed", seed)?;
                 }
                 if let Some(options) = options.as_ref() {
-                    kwargs.set_item("options", meta_map_to_pydict(py, options)?)?;
+                    set_reset_options(py, env_ref, &kwargs, options)?;
                 }
 
                 let call_guard = profiler.start("server.reset.python_call");
@@ -637,7 +690,7 @@ impl PyEnvironment {
                     }
                 }
                 if let Some(options) = options.as_ref() {
-                    kwargs.set_item("options", meta_map_to_pydict(py, options)?)?;
+                    set_reset_options(py, env_ref, &kwargs, options)?;
                 }
 
                 let call_guard = profiler.start("server.reset.python_call");
