@@ -2,9 +2,10 @@
 //! per-lane assemble/apply seam.
 //!
 //! Frame-stacking is per-episode state that used to live host-side in the
-//! Python binding (`adapter.py` `_buffers`/`_stack_frames`). It relocates here,
-//! keyed by `episode_id`, so a vectorized serve route frame-stacks each lane
-//! correctly without the state ever crossing the network or living in Python.
+//! Python binding. It lives here, keyed by `episode_id`, so a vectorized serve
+//! route frame-stacks each lane correctly without the state ever crossing the
+//! network or living in Python — and so the in-process path stacks through the
+//! same ring rather than a host-side copy of it.
 //!
 //! [`assemble_obs`] and [`apply_actions`] are the frozen per-lane seam the core
 //! handler drives once per lane. They are deliberately single-sample: a future

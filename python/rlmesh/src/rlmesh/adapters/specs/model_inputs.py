@@ -89,12 +89,13 @@ class Image:
             (black). Requires ``optional=True`` (without it the fill could
             never take effect, so setting it alone is a construction error);
             named to match ``Actuator.fill``.
-        stack: Number of consecutive observations to stack on a new leading
-            axis (frame history). ``1`` (default) means no stacking. Stacking
-            is applied by the adapter from an episode-keyed rolling buffer
-            (padding with the first frame at the start of an episode, cleared on
-            ``reset``) -- host-side on the local path, natively in the core on
-            the served path. Either way the env still sends one frame per step.
+        stack: Number of frames to stack on a new leading axis (frame
+            history). ``1`` (default) means no stacking. Stacking is applied by
+            the adapter core from an episode-keyed rolling window, padded at the
+            start of an episode (see ``stack_pad``) and cleared on ``reset``.
+            Which frames it gathers is ``offsets`` (or ``stride``); by default
+            they are the last ``stack`` consecutive ones. The env still sends
+            one frame per step either way.
         size: Convenience for square targets -- sets both ``height`` and
             ``width``. Pass ``size`` or ``height``/``width``, not both.
         crop: Side fraction of the frame a center crop keeps, in ``(0, 1]``
