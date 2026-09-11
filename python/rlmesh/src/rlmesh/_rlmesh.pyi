@@ -202,6 +202,32 @@ class AdapterPlan:
         custom inputs are omitted (the caller fills them from the raw host
         observation).
         """
+    def history_keys(self) -> builtins.list[builtins.str]:
+        r"""
+        Canonical placement strings of the inputs that hold a frame window.
+        
+        Empty means an env step that predicts nothing has no state to advance, so
+        the caller can skip [`transform_history`](Self::transform_history)
+        entirely.
+        """
+    def history_windows(self) -> builtins.list[tuple[builtins.str, builtins.int, builtins.int]]:
+        r"""
+        `(key, span, frame_bytes)` per frame window this plan holds per live
+        episode — what a caller budgets `num_envs x sum(span x frame_bytes)`
+        from before a route runs. `frame_bytes` is `0` when the env's camera
+        resolution was not derivable.
+        """
+    def transform_history(self, raw_obs: typing.Any) -> None:
+        r"""
+        Advance the frame windows from a raw observation, assembling nothing.
+        
+        The tick a step that replays a queued action owes its history: the frame
+        still happened, so it still goes in the window.
+        """
+    def reset_history(self) -> None:
+        r"""
+        Drop the in-process frame windows at an episode boundary.
+        """
     def transform_action(self, raw_action: typing.Any) -> typing.Any:
         r"""
         Apply the action plan to a canonical value-tree model action.

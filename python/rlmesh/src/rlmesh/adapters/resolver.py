@@ -481,15 +481,6 @@ def _model_wire(
     return wire, customs
 
 
-def _image_stacks(model_spec: ModelSpec) -> dict[tuple[str | int, ...], int]:
-    """Frame-stack depths the model wants, keyed by structured placement (>1)."""
-    stacks: dict[tuple[str | int, ...], int] = {}
-    for segments, leaf in _iter_leaves(model_spec.input):
-        if isinstance(leaf, Image) and leaf.stack > 1:
-            stacks[segments] = leaf.stack
-    return stacks
-
-
 def resolve(
     env_tags: EnvTags,
     observation_space: object,
@@ -572,11 +563,9 @@ def _resolve_with_env_json(
         )
     except ValueError as exc:
         raise AdapterResolutionError(str(exc)) from None
-    stacks = _image_stacks(shadow)
     return Adapter(
         plan,
         customs,
-        stacks,
         _address_obs_shims(plan, obs_shims, shim_parts),
         act_shims,
     )

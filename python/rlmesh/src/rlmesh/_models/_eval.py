@@ -13,6 +13,7 @@ names :class:`Session` resolves as module globals: connection/contract synthesis
 
 from __future__ import annotations
 
+import os
 import time
 import uuid
 import warnings
@@ -391,6 +392,47 @@ def _summarize_payload(payload: Any) -> str:
     return type(payload).__name__
 
 
+#: Ceiling on the frame history a session may hold, in bytes
+#: (``num_envs * sum(span * frame_bytes)``). A window is live memory for the
+#: whole episode, and a mis-set stride turns a modest ``stack`` into gigabytes;
+#: refuse it at connect, where the number is already known, rather than at the
+#: allocation that OOMs. Overridable with ``RLMESH_FRAME_HISTORY_LIMIT_BYTES``
+#: (the same knob the served engine's gate reads).
+FRAME_HISTORY_LIMIT_BYTES = 2 << 30
+
+
+def _check_frame_history_budget(adapter: Any, num_envs: int) -> None:
+    """Refuse a resolved adapter whose frame windows exceed the byte ceiling.
+
+    ``frame_bytes == 0`` means the env never declared its camera resolution, so
+    that window contributes nothing to the projection -- the gate is a ceiling on
+    what is known, never a guess. A custom adapter declares no window (it owns
+    whatever state it keeps), so there is nothing to bound.
+    """
+    declared = getattr(adapter, "history_windows", None)
+    windows = declared() if declared is not None else ()
+    if not windows:
+        return
+    limit = int(
+        os.environ.get("RLMESH_FRAME_HISTORY_LIMIT_BYTES", 0)
+        or FRAME_HISTORY_LIMIT_BYTES
+    )
+    projected = max(1, num_envs) * sum(
+        span * frame_bytes for _key, span, frame_bytes in windows
+    )
+    if projected > limit:
+        held = ", ".join(
+            f"{key!r} {span} frames x {frame_bytes} B"
+            for key, span, frame_bytes in windows
+        )
+        raise ValueError(
+            f"frame history would hold {projected} bytes ({held}) across "
+            f"{max(1, num_envs)} env(s), over the {limit}-byte ceiling; shorten the "
+            "window (stack/stride), resize the image, or raise "
+            "RLMESH_FRAME_HISTORY_LIMIT_BYTES"
+        )
+
+
 def _predict_step(
     predict: Callable[..., Any],
     obs: Any,
@@ -658,6 +700,10 @@ class Session(Generic[ObsT, ActT]):
         # bind); only a local model resolves it here, client-side.
         if self._model_client is None:
             self._adapter = resolve_adapter(self._spec, contract, self._trust)
+            if self._adapter is not None:
+                _check_frame_history_budget(
+                    self._adapter, getattr(contract, "num_envs", 1) or 1
+                )
             self._env_bridge = (
                 adapter_env_bridge(client) if self._adapter is not None else None
             )
@@ -865,7 +911,15 @@ class Session(Generic[ObsT, ActT]):
             self._model_ms = _ema(self._model_ms, (time.perf_counter() - t0) * 1000.0)
             return out
 
-        raw_action = self._replay.next_action(_forward)
+        # The replayed-step tick: a queued action still consumed an env step, so
+        # every frame window sees this observation. Without it a stacked model's
+        # payloads would depend on the execution horizon.
+        def _observe() -> None:
+            self._adapter.observe(observation, input_bridge=self._env_bridge)
+
+        raw_action = self._replay.next_action(
+            _forward, _observe if self._adapter is not None else None
+        )
         # Mirror the local chunk-replay position for the HUD (1-based; 0/0 = not
         # chunking). The length is the chunk the model actually returned (post-cap),
         # not the requested horizon, so a short native chunk displays truthfully.

@@ -16,6 +16,7 @@
 //! raw Python observation afterwards.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::Mutex;
 
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -23,11 +24,12 @@ use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString, PyT
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 use rlmesh_adapters::v1::{
-    Advisory, ApplyError, CustomTransform, EncodingTransform, EnvTags, FramePolicy, InputNode,
-    ModelLeaf, ModelSpec, NodePath, ObsPlan, PathSeg, ResolvedAdapter, RolePolicy, SkipCustoms,
-    SpaceView, Value, build_describe_envelope, join, reject_unframed_roles_env,
-    reject_unframed_roles_model, reject_unknowns_env, reject_unknowns_model,
-    reject_unsanctioned_roles_env, reject_unsanctioned_roles_model, resolve, roles,
+    Advisory, ApplyError, CustomTransform, EncodingTransform, EnvTags, FrameBuffers, FramePolicy,
+    InputNode, ModelLeaf, ModelSpec, NoEncodings, NodePath, ObsPlan, PathSeg, ResolvedAdapter,
+    RolePolicy, SkipCustoms, SpaceView, Value, assemble_obs, build_describe_envelope, join,
+    observe_obs, reject_unframed_roles_env, reject_unframed_roles_model, reject_unknowns_env,
+    reject_unknowns_model, reject_unsanctioned_roles_env, reject_unsanctioned_roles_model, resolve,
+    roles,
 };
 use serde::de::DeserializeOwned;
 
@@ -503,11 +505,23 @@ impl From<Advisory> for PyAdvisory {
 /// declared part contributes, and the assembled leaf's width.
 type StateLayout = (Py<PyList>, Vec<u32>, u32);
 
+/// The episode key the in-process path's frame windows live under. A local
+/// drive loop runs one episode at a time and clears the windows at its boundary
+/// (`reset_history`), so there is nothing to key them apart by — unlike the
+/// served engine, which holds one [`FrameBuffers`] per route across live lanes.
+const LOCAL_EPISODE: &str = "";
+
 /// A resolved adapter plan handle backed by the `rlmesh-adapters` core.
 #[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(module = "rlmesh._rlmesh", name = "AdapterPlan", frozen)]
 pub struct PyAdapterPlan {
     adapter: ResolvedAdapter,
+    /// The in-process frame windows for inputs that declare a history. Held
+    /// here, behind the same core the served engine drives, so the local and
+    /// served paths stack from ONE ring implementation rather than a host-side
+    /// copy of it. Empty (and never locked in anger) for a plan with no stacked
+    /// input.
+    windows: Mutex<FrameBuffers>,
 }
 
 #[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
@@ -625,11 +639,60 @@ impl PyAdapterPlan {
         raw_obs: &Bound<'py, PyAny>,
     ) -> PyResult<Py<PyAny>> {
         let raw_obs = decode_referenced_obs(raw_obs, &self.adapter.referenced_obs_keys())?;
-        let payload = self
-            .adapter
-            .transform_obs(&raw_obs, &SkipCustoms)
-            .map_err(|err| PyValueError::new_err(err.message))?;
+        // The stateful seam, so an input that declares a frame history is
+        // stacked by the same window the served engine uses. Encoding shims stay
+        // host-side (they only ever touch state leaves, never a stacked image).
+        let payload = assemble_obs(
+            &self.adapter,
+            &raw_obs,
+            LOCAL_EPISODE,
+            &mut self.windows.lock().expect("frame windows"),
+            &SkipCustoms,
+            &NoEncodings,
+        )
+        .map_err(|err| PyValueError::new_err(err.message))?;
         Ok(encode_value(py, &payload)?.unbind())
+    }
+
+    /// Canonical placement strings of the inputs that hold a frame window.
+    ///
+    /// Empty means an env step that predicts nothing has no state to advance, so
+    /// the caller can skip [`transform_history`](Self::transform_history)
+    /// entirely.
+    fn history_keys(&self) -> Vec<String> {
+        self.adapter.history_keys()
+    }
+
+    /// `(key, span, frame_bytes)` per frame window this plan holds per live
+    /// episode — what a caller budgets `num_envs x sum(span x frame_bytes)`
+    /// from before a route runs. `frame_bytes` is `0` when the env's camera
+    /// resolution was not derivable.
+    fn history_windows(&self) -> Vec<(String, u32, u64)> {
+        self.adapter
+            .history_windows()
+            .into_iter()
+            .map(|window| (window.key, window.span, window.frame_bytes))
+            .collect()
+    }
+
+    /// Advance the frame windows from a raw observation, assembling nothing.
+    ///
+    /// The tick a step that replays a queued action owes its history: the frame
+    /// still happened, so it still goes in the window.
+    fn transform_history<'py>(&self, raw_obs: &Bound<'py, PyAny>) -> PyResult<()> {
+        let raw_obs = decode_referenced_obs(raw_obs, &self.adapter.referenced_obs_keys())?;
+        observe_obs(
+            &self.adapter,
+            &raw_obs,
+            LOCAL_EPISODE,
+            &mut self.windows.lock().expect("frame windows"),
+        )
+        .map_err(|err| PyValueError::new_err(err.message))
+    }
+
+    /// Drop the in-process frame windows at an episode boundary.
+    fn reset_history(&self) {
+        self.windows.lock().expect("frame windows").clear();
     }
 
     /// Apply the action plan to a canonical value-tree model action.
@@ -676,7 +739,10 @@ pub fn adapters_resolve(
     let action_view = SpaceView::from(&crate::spaces::parse_space(action_space)?);
     let adapter = resolve(&tags, &obs_view, &action_view, &model_spec, true)
         .map_err(|err| PyValueError::new_err(err.message))?;
-    Ok(PyAdapterPlan { adapter })
+    Ok(PyAdapterPlan {
+        adapter,
+        windows: Mutex::new(FrameBuffers::new()),
+    })
 }
 
 /// Validate env tags against the env's observation/action spaces.

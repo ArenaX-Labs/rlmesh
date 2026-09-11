@@ -99,14 +99,22 @@ class ChunkReplay:
         """
         return len(self._queue)
 
-    def next_action(self, predict: Callable[[], Any]) -> Any:
+    def next_action(
+        self, predict: Callable[[], Any], observe: Callable[[], None] | None = None
+    ) -> Any:
         """Return the next raw model action.
 
         Calls ``predict`` (a thunk doing obs assembly + the model forward) only
         when the queue drains; while a chunk is replaying it pops the next queued
-        action and ``predict`` is never invoked.
+        action and ``predict`` is never invoked. ``observe`` is the replayed
+        step's tick: the env step still happened, so an adapter holding a frame
+        history has to see this observation, or its window would hold decision
+        points instead of consecutive steps and the payloads would depend on the
+        execution horizon.
         """
         if self.horizon > 1 and self._queue:
+            if observe is not None:
+                observe()
             return self._queue.popleft()
         predicted = predict()
         if self.horizon == 1:

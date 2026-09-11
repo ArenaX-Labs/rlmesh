@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast, final
@@ -193,6 +192,16 @@ class AdapterBase(ABC, Generic[ActionT]):
         served path stacks natively with episode-keyed buffers in the core).
         """
 
+    def observe(self, raw_obs: RawObs) -> None:
+        """Advance episode-scoped state for a step that predicted nothing.
+
+        Driven once per env step whose action came from a replayed chunk: the
+        step happened, so an adapter holding a frame history still has to see
+        its observation or the window would hold decision points instead of
+        consecutive steps. A no-op by default -- override it alongside
+        :meth:`reset` if your adapter caches anything across steps.
+        """
+
     def explain(self) -> str:
         """Return a human-readable summary of the adapter."""
         return f"{type(self).__name__} (custom adapter)"
@@ -237,7 +246,6 @@ class Adapter(AdapterBase[NumpyArray]):
         self,
         plan: AdapterPlan,
         customs: Mapping[Placement, ObsTransform],
-        stacks: Mapping[Placement, int] | None = None,
         obs_enc_shims: tuple[ObsEncShim, ...] = (),
         action_enc_shims: tuple[ActEncShim, ...] = (),
     ) -> None:
@@ -246,11 +254,10 @@ class Adapter(AdapterBase[NumpyArray]):
         # ``str``/``int`` segment tuple), so the in-process path never re-parses
         # a rendered placement string.
         self._customs = dict(customs)
-        # Per-placement frame-history depth (>1 only, filtered by the resolver's
-        # _image_stacks) and the rolling buffers that back it. Stacking happens
-        # host-side, after the native transform.
-        self._stacks = dict(stacks or {})
-        self._buffers: dict[Placement, deque[Any]] = {}
+        # Which inputs hold a frame window, straight from the native plan (the
+        # windows themselves live in the core, so the local and served paths
+        # stack through one ring). Empty means `observe` has nothing to do.
+        self._history_keys = tuple(plan.history_keys())
         # Host-side custom-encoding shims: the native plan resolves each to a
         # base encoding; these repack the field at the boundary (obs after the
         # native transform, action before it).
@@ -302,17 +309,6 @@ class Adapter(AdapterBase[NumpyArray]):
                     numpy_bridge,
                 )
                 payload = _tree_set(payload, shim.segments, repacked)
-        for segments, depth in self._stacks.items():
-            if _tree_contains(payload, segments):
-                stacked = to_value(
-                    self._stack_frames(
-                        segments,
-                        from_value(_tree_get(payload, segments), numpy_bridge),
-                        depth,
-                    ),
-                    numpy_bridge,
-                )
-                payload = _tree_set(payload, segments, stacked)
         for segments, transform in self._customs.items():
             # Custom inputs see the full observation (not just the plan's
             # referenced keys), normalized to a mapping -- identical to raw_obs
@@ -334,23 +330,6 @@ class Adapter(AdapterBase[NumpyArray]):
                 raw_obs, input_bridge=bridge, custom_bridge=bridge
             ),
             bridge,
-        )
-
-    def _stack_frames(self, key: Placement, frame: Any, depth: int) -> NumpyArray:
-        import numpy as np
-
-        frames = self._buffers.get(key)
-        if frames is None:
-            frames = deque[Any](maxlen=depth)
-            self._buffers[key] = frames
-        if not frames:
-            # Pad the start of an episode with copies of the first frame so
-            # the stack is full from step zero.
-            for _ in range(depth - 1):
-                frames.append(frame)
-        frames.append(frame)
-        return cast(
-            "NumpyArray", np.stack(cast("list[NumpyArray]", list(frames)), axis=0)
         )
 
     def _apply_obs_enc(self, shim: ObsEncShim, value: Any) -> NumpyArray:
@@ -382,14 +361,56 @@ class Adapter(AdapterBase[NumpyArray]):
         repacked[shim.offset : stop] = out
         return repacked
 
-    def reset(self) -> None:
-        """Clear the host-side frame-history buffers at an episode boundary.
+    def observe(
+        self, raw_obs: RawObs, *, input_bridge: ValueBridge | None = None
+    ) -> None:
+        """Advance the frame windows for a step that predicted nothing.
 
-        Used on the local per-episode loop (a single env); the served path stacks
-        natively with episode-keyed buffers in the core, so this is the
-        local-path counterpart.
+        The tick a replayed chunk owes its history: the env step happened, so
+        every input that declares a ``stack`` still sees its frame, and the next
+        assembled payload stacks consecutive steps rather than decision points.
+        Only the observation keys the plan reads are encoded -- exactly as
+        :meth:`transform_obs_value` does -- and nothing else in the spec is
+        applied, so a custom input's transform never runs on a replayed step.
+        A no-op for a plan with no frame history.
         """
-        self._buffers.clear()
+        if not self._history_keys:
+            return
+        obs: Mapping[str, Any] = (
+            raw_obs if isinstance(raw_obs, Mapping) else {_OBS_ROOT_KEY: raw_obs}
+        )
+        selected = {
+            key: obs[key] for key in self._plan.referenced_obs_keys() if key in obs
+        }
+        self._plan.transform_history(to_value(selected, input_bridge))
+
+    def history_windows(self) -> tuple[tuple[str, int, int], ...]:
+        """``(placement, span, frame_bytes)`` per frame window, per live episode.
+
+        ``span`` is how many *consecutive* frames the window holds to reach its
+        oldest offset (4 for ``stack=4``, 7 for ``stack=4, stride=2``);
+        ``frame_bytes`` is one processed frame, or ``0`` when the env's camera
+        resolution was not derivable. A caller sizes an admission budget from
+        ``num_envs * sum(span * frame_bytes)``.
+        """
+        return tuple(self._plan.history_windows())
+
+    def history_keys(self) -> tuple[str, ...]:
+        """Canonical placements of the inputs that hold a frame window.
+
+        Empty when the model declares no ``stack``; :meth:`observe` is then a
+        no-op and a caller may skip it.
+        """
+        return self._history_keys
+
+    def reset(self) -> None:
+        """Clear the frame-history windows at an episode boundary.
+
+        Used on the local per-episode loop (a single env); the served path keeps
+        its own episode-keyed buffers in the engine, so this is the local-path
+        counterpart.
+        """
+        self._plan.reset_history()
 
     def _apply_action_enc(self, raw_action: object) -> object:
         if not self._action_enc_shims:
