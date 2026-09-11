@@ -12,6 +12,7 @@ cannot express (image layout, rotation encoding, explicit ranges).
 
 from __future__ import annotations
 
+import io
 import warnings
 from types import SimpleNamespace
 from typing import Any, NamedTuple, cast
@@ -908,6 +909,97 @@ def test_slice_crop_cuts_integer_pixels_before_the_resize():
     assert np.array_equal(ours, _cropped(cut_env, cut, 4, 4, "area"))
 
 
+def _photo_frame(height: int, width: int) -> np.ndarray:
+    """A natural-looking frame: a luma-dominant gradient plus two hard blocks.
+
+    Deliberately not noise. JPEG is tuned for photographic content, so a noise
+    frame would measure the codec somewhere no camera ever puts it -- and the
+    chroma planes of a luma-dominant image are smooth, which is what 4:2:0
+    subsampling assumes.
+    """
+    rows = np.arange(height)[:, None] / height
+    cols = np.arange(width)[None, :] / width
+    luma = 30.0 + 190.0 * (0.6 * cols + 0.4 * rows)
+    frame = np.stack([luma * 1.02, luma * 0.96, luma * 0.88], axis=-1)
+    frame[height // 3 : height * 2 // 3, width // 4 : width // 2] = (236, 231, 214)
+    frame[:, width * 3 // 4 : width * 3 // 4 + max(1, width // 16)] = (26, 25, 22)
+    return np.clip(np.round(frame), 0, 255).astype(np.uint8)
+
+
+def _jpeg_roundtripped(env: Env, image: np.ndarray, quality: int):
+    """Our JPEG round-trip of `image`, as int16 so a comparison can go negative."""
+    spec = adapt.ModelSpec(
+        input={"image": adapt.Image(role=adapt.IMAGE_PRIMARY, jpeg_quality=quality)},
+        output=SMOLVLA.output,
+    )
+    return resolve(env, spec).transform_obs({"rgb": image})["image"].astype(np.int16)
+
+
+def test_jpeg_roundtrip_is_near_pillows_q95_jpeg():
+    """`jpeg_quality` reproduces what Pillow (libjpeg) writes, near-exactly.
+
+    Near, not byte-identical: the encoders agree on the profile (baseline,
+    4:2:0, standard IJG tables) but libjpeg's IDCT and the decoder behind the
+    `image` crate round differently in the last place. Pinned at the tolerance
+    the openvla-oft A/B needs -- within 2 levels on at least 99% of pixels and
+    4 anywhere. On the natural frame it is tighter than that: every pixel
+    within 2, and 98.7% within 1.
+    """
+    pil = pytest.importorskip("PIL.Image")
+    for src in (32, 64):
+        env = image_env(src, src)
+        images = dict(_anchor_images(src, src), photo=_photo_frame(src, src))
+        for image in images.values():
+            ours = _jpeg_roundtripped(env, image, 95)
+            buffer = io.BytesIO()
+            # Pillow's default subsampling for an RGB save IS 4:2:0, which is
+            # the profile we pin; naming it here would hide a change of theirs.
+            pil.fromarray(image).save(buffer, "JPEG", quality=95)
+            buffer.seek(0)
+            theirs = np.asarray(pil.open(buffer).convert("RGB"), dtype=np.int16)
+            delta = np.abs(ours - theirs)
+            assert float((delta <= 2).mean()) >= 0.99
+            assert int(delta.max()) <= 4
+
+
+def test_jpeg_roundtrip_loses_more_at_a_lower_quality():
+    """The quality really is the IJG dial, not a decorative field."""
+    env = image_env(64, 64)
+    image = _photo_frame(64, 64)
+    original = image.astype(np.int16)
+    fine = float(np.abs(_jpeg_roundtripped(env, image, 95) - original).mean())
+    coarse = float(np.abs(_jpeg_roundtripped(env, image, 10) - original).mean())
+    assert coarse > fine
+
+
+def test_jpeg_quality_needs_a_three_channel_camera():
+    """JPEG subsampling is defined on YCbCr; a grayscale camera has none."""
+    env = Env(
+        tags=adapt.EnvTags(
+            observation={"rgb": adapt.ImageTag(role=adapt.IMAGE_PRIMARY)},
+            action=LIBERO_ACTION,
+        ),
+        obs_space=gym.spaces.Dict(
+            {"rgb": gym.spaces.Box(low=0, high=255, shape=(8, 8, 1), dtype=np.uint8)}
+        ),
+        action_space=ACTION7,
+    )
+    spec = adapt.ModelSpec(
+        input={"image": adapt.Image(role=adapt.IMAGE_PRIMARY, jpeg_quality=95)},
+        output=SMOLVLA.output,
+    )
+    with pytest.raises(adapt.AdapterResolutionError, match="3-channel"):
+        resolve(env, spec)
+
+
+def test_jpeg_quality_is_bounded_to_the_ijg_scale_at_construction():
+    for bad in (0, 101):
+        with pytest.raises(ValueError, match="between 1 and 100"):
+            adapt.Image(role=adapt.IMAGE_PRIMARY, jpeg_quality=bad)
+    assert adapt.Image(role=adapt.IMAGE_PRIMARY, jpeg_quality=1).jpeg_quality == 1
+    assert adapt.Image(role=adapt.IMAGE_PRIMARY, jpeg_quality=100).jpeg_quality == 100
+
+
 def test_bgr_swaps_red_and_blue_after_the_resize():
     """The swap is the last spatial-adjacent step: resize in RGB, then swap.
 
@@ -965,7 +1057,7 @@ def test_crop_and_channel_order_serialize_omit_when_default():
         input={"image": adapt.Image(adapt.IMAGE_PRIMARY, size=224)}, output=output
     )
     leaf = plain.to_dict()["input"]["image"]
-    for field in ("crop", "crop_area", "crop_mode", "channel_order"):
+    for field in ("crop", "crop_area", "crop_mode", "jpeg_quality", "channel_order"):
         assert field not in leaf, f"{field} leaked into a spec that never set it"
 
     every = adapt.ModelSpec(
@@ -975,6 +1067,7 @@ def test_crop_and_channel_order_serialize_omit_when_default():
                 size=224,
                 crop_area=0.9,
                 crop_mode="slice",
+                jpeg_quality=95,
                 channel_order="bgr",
             )
         },
@@ -983,6 +1076,7 @@ def test_crop_and_channel_order_serialize_omit_when_default():
     doc = every.to_dict()
     assert doc["input"]["image"]["crop_area"] == 0.9
     assert doc["input"]["image"]["crop_mode"] == "slice"
+    assert doc["input"]["image"]["jpeg_quality"] == 95
     assert doc["input"]["image"]["channel_order"] == "bgr"
     assert adapt.ModelSpec.from_dict(doc) == every
     # Cross-engine: the core's canonical form of each spec is the spec itself,
