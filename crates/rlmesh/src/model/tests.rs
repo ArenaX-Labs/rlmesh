@@ -1229,6 +1229,95 @@ async fn remote_model_connects_resets_and_predicts() {
     shutdown_and_join(server).await;
 }
 
+/// `RemoteModel::reset` is the only episode boundary this client can observe, so
+/// it must reach the served model: the previous episode's id is stashed and
+/// flushed as an explicit `ResetAdapter` on the next predict (and at close), which
+/// is what fires the served model's per-id `on_episode_end`.
+#[tokio::test]
+async fn remote_reset_emits_reset_adapter() {
+    /// Records the episode ids it predicts for and the ids it is asked to evict,
+    /// answering with SmokeEnv's Uint8 Box action.
+    #[derive(Clone, Default)]
+    struct ResetRecorder {
+        predict_ids: Arc<Mutex<Vec<String>>>,
+        evicted_ids: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl ModelHandler for ResetRecorder {
+        async fn predict(
+            &mut self,
+            observation: ModelObservation,
+        ) -> Result<Vec<spaces::SpaceValue>> {
+            self.predict_ids
+                .lock()
+                .await
+                .extend(observation.episode_ids());
+            Ok((0..observation.num_envs)
+                .map(|_| {
+                    spaces::SpaceValue::Box(
+                        spaces::Tensor::from_vec(vec![0u8], vec![1], spaces::DType::Uint8).unwrap(),
+                    )
+                })
+                .collect())
+        }
+
+        async fn reset_adapter(&mut self, _env_id: &str, episode_ids: Vec<String>) -> Result<()> {
+            self.evicted_ids.lock().await.extend(episode_ids);
+            Ok(())
+        }
+    }
+
+    let handler = ResetRecorder::default();
+    let bound = ModelWorker::new(handler.clone())
+        .bind_async(
+            ServeModelOptions::new(BindAddress::Tcp {
+                host: "127.0.0.1".to_string(),
+                port: 0,
+            })
+            .serve_options(ServeOptions {
+                allow_remote_shutdown: true,
+                ..ServeOptions::default()
+            }),
+        )
+        .await
+        .unwrap();
+    let (port, server) = spawn_bound_server(bound);
+
+    let address = format!("tcp://127.0.0.1:{port}");
+    let mut model = crate::RemoteModel::connect(&address, SmokeEnv::new().env_contract)
+        .await
+        .expect("model server did not start");
+    let observe = || {
+        spaces::SpaceValue::Box(
+            spaces::Tensor::from_vec(vec![5u8], vec![1], spaces::DType::Uint8).unwrap(),
+        )
+    };
+
+    model.reset(None);
+    model.predict(observe()).await.unwrap();
+    // The second reset ends episode 1; the predict after it flushes the edge.
+    model.reset(None);
+    model.predict(observe()).await.unwrap();
+    // close() ends episode 2 the same way.
+    model.close().await.unwrap();
+
+    let predicted = handler.predict_ids.lock().await.clone();
+    let evicted = handler.evicted_ids.lock().await.clone();
+    let episode_one = predicted[0].clone();
+    let episode_two = predicted[1].clone();
+    assert_ne!(episode_one, episode_two, "reset mints a fresh episode id");
+    assert_eq!(evicted, vec![episode_one, episode_two]);
+
+    drop(model);
+    let mut shutdown_client = rlmesh_grpc::ModelClient::connect(&address, "")
+        .await
+        .unwrap();
+    shutdown_client.handshake().await.unwrap();
+    assert!(shutdown_client.shutdown("done").await.unwrap().accepted);
+    shutdown_and_join(server).await;
+}
+
 #[tokio::test]
 async fn remote_model_reconciles_three_way_floor_and_pins_route() {
     // The runtime is client to both peers. connect_with_env_offer handshakes the

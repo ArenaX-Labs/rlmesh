@@ -4,7 +4,8 @@ use rlmesh_grpc::wire::{
     decode_batched_partial_values, encode_batched_partial_values, env_spec_to_proto,
 };
 use rlmesh_proto::model::v1::{
-    AdapterContext, EpisodeInfo, PredictRequest, ReleaseAdapterRequest, ResolveAdapterRequest,
+    AdapterContext, EpisodeInfo, PredictRequest, ReleaseAdapterRequest, ResetAdapterRequest,
+    ResolveAdapterRequest,
 };
 use rlmesh_proto::{SessionOffer, supported_workflow_editions};
 use uuid::Uuid;
@@ -63,6 +64,11 @@ pub struct RemoteModel {
     /// [`reset`](Self::reset), rides on every `predict` of this episode, and is
     /// advisory context for the served model (not consumed by this client).
     seed: Option<i64>,
+    /// Ids of episodes this client has already left behind, waiting for a
+    /// `ResetAdapter` to be flushed. `reset` cannot send one (it is not async), so
+    /// the next `predict`/`close` does — the served engine then fires the model's
+    /// `on_episode_end` for exactly those ids and evicts their frame buffers.
+    pending_end: Vec<String>,
     /// The env edition this session runs at: the floor — the highest edition env,
     /// model, AND this runtime all support. Sent to the model in `ResolveAdapter`
     /// as AUTHORITATIVE over its own (pairwise) handshake result.
@@ -192,6 +198,7 @@ impl RemoteModel {
             execution_horizon: 1,
             replay_buffer: std::collections::VecDeque::new(),
             seed: None,
+            pending_end: Vec::new(),
             selected_workflow_edition,
         })
     }
@@ -240,7 +247,13 @@ impl RemoteModel {
         // The client is the local id authority for the direct path: mint a fresh
         // UUIDv7 per episode (never repeats, time-ordered). The new id is itself
         // the reset boundary on the wire.
-        self.episode_id = Some(crate::mint_id());
+        //
+        // The episode this replaces has ended: stash its id so the next RPC flushes
+        // a `ResetAdapter` for it. Without that the served model never sees an
+        // episode-end edge on this path (the server cannot observe the client's
+        // boundary) and a stateful policy carries state across episodes.
+        self.pending_end
+            .extend(self.episode_id.replace(crate::mint_id()));
         self.seed = seed;
         // Drop any un-replayed chunk tail: a new episode re-plans from its first
         // observation. This is the only flush point — the client cannot observe the
@@ -267,6 +280,7 @@ impl RemoteModel {
             self.resolve_adapter().await?;
             self.configured = true;
         }
+        self.flush_pending_end().await?;
 
         // Re-call predict only when the replay buffer is empty; otherwise replay a
         // buffered chunk frame without an RPC (and without consuming the
@@ -338,6 +352,10 @@ impl RemoteModel {
         if !self.configured {
             return Ok(());
         }
+        // The last episode ends here too: flush its end edge before the route goes
+        // away, so the served model's `on_episode_end` fires for every episode.
+        self.pending_end.extend(self.episode_id.take());
+        self.flush_pending_end().await?;
         self.inner
             .release_adapter(ReleaseAdapterRequest {
                 context: Some(AdapterContext {
@@ -346,6 +364,29 @@ impl RemoteModel {
                     request_id: format!("{}:release_adapter", self.env_id),
                 }),
                 reason: "remote model session complete".to_string(),
+            })
+            .await
+            .map_err(Error::from)
+    }
+
+    /// Send the stashed `ResetAdapter` for the episode `reset` left behind, if
+    /// any. Fires before the next predict and at close; a failure surfaces to the
+    /// caller rather than silently dropping the edge.
+    async fn flush_pending_end(&mut self) -> Result<()> {
+        if self.pending_end.is_empty() {
+            return Ok(());
+        }
+        // Distinct per flush: the client demuxes stream responses by request_id.
+        self.request_counter += 1;
+        let request_id = format!("{}:reset_adapter:{}", self.env_id, self.request_counter);
+        self.inner
+            .reset_adapter(ResetAdapterRequest {
+                context: Some(AdapterContext {
+                    session_id: self.session_id.clone(),
+                    env_id: self.env_id.clone(),
+                    request_id,
+                }),
+                episode_ids: std::mem::take(&mut self.pending_end),
             })
             .await
             .map_err(Error::from)
