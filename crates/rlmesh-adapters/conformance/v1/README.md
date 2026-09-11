@@ -54,6 +54,21 @@ All of them are specified as: weights computed in float64, both passes in float6
 
 `allow_upscale` is measured against the box, not the camera: a crop is what the resize actually reads, so cropping past the target is an upscale.
 
-`channel_order = "bgr"` swaps red and blue after the spatial ops and before the dtype cast, and requires a 3-channel image. The full order is **upright → crop → resize → channel swap → normalize/dtype → layout → lead dims**.
+`channel_order = "bgr"` swaps red and blue after the spatial ops and before the dtype cast, and requires a 3-channel image. The full order is **upright → jpeg → crop → resize → channel swap → normalize/dtype → layout → lead dims**.
 
-Crop and channel-order steps are reported by `describe` (`zoom 0.949 (crop 90.0% area)`, `crop 0.667 (slice) -> 320x320`, `bgr`) and carry **no advisory**: they are declared behavior, not a conversion the resolver chose.
+Crop, JPEG and channel-order steps are reported by `describe` (`jpeg q95`, `zoom 0.949 (crop 90.0% area)`, `crop 0.667 (slice) -> 320x320`, `bgr`) and carry **no advisory**: they are declared behavior, not a conversion the resolver chose.
+
+## JPEG round-trip
+
+`ImageInput.jpeg_quality` (1-100, the IJG scale) encodes the frame as JPEG and decodes it again, reproducing the codec artifacts a model trained on stored JPEGs saw. It runs on the **upright frame, before the crop and resize** — encoding after a crop would put the 8×8 block grid and the chroma subsampling at the wrong scale. It requires a 3-channel image (JPEG subsampling is defined on YCbCr), which resolution enforces.
+
+**The profile is the contract**, because another engine reproducing `apply_jpeg_q95` has to write the same stream:
+
+- **Baseline sequential** (`SOF0`), 8-bit samples, no restart intervals, no progressive scans.
+- **4:2:0 chroma subsampling**: luma sampling factors 2×2, both chroma planes 1×1 — half resolution on each axis. Chroma is reduced by a **box average** over each 2×2 block (libjpeg's `h2v2_downsample`), not by picking a corner sample.
+- **The standard IJG quantization tables** (the Annex K luma and chroma tables) scaled by the quality, and **the standard IJG Huffman tables** — not per-image optimized tables.
+- **RGB → YCbCr** by the JFIF (BT.601) matrix, the JFIF density defaults, and no embedded ICC or Exif segments.
+
+That is what `tf.io.encode_jpeg(..., quality=q)` and Pillow's `Image.save(..., "JPEG", quality=q)` write by default; the vectors are pinned against the encoder, and the Python suite's `test_jpeg_roundtrip_is_near_pillows_q95_jpeg` anchors it to Pillow (libjpeg) continuously. That anchor is **near**, not exact: the profile agrees, but libjpeg's IDCT and the decoder behind the vectors round differently in the last place, so it is pinned at _within 2 levels on at least 99% of pixels and 4 anywhere_ — on a natural frame it lands inside 2 everywhere. A conforming implementation reproduces `apply_jpeg_q95` exactly (the vectors are encoder-to-decoder within one engine); an engine using a different decoder should expect the same near-anchor tolerance rather than byte identity.
+
+**Composition.** The round-trip composes with every other image step by position, not by special case: it sees the frame after any 180° rotation and before any crop, so `jpeg + crop + resize` (pinned by `resolve_describe_jpeg_steps`) encodes the full camera frame, then the crop and resize read the decoded result — identical to a pipeline that saved a JPEG, reopened it, and cropped. The codec is pinned by version (`jpeg-encoder = "=0.7.1"`), because a retuned encoder is a vector change, not a dependency update.

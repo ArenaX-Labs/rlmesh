@@ -236,6 +236,7 @@ spec = adapt.ModelSpec(
 | `crop`                  | `None`       | side fraction of the frame a center crop keeps, in `(0, 1]`                   | the training pipeline center-cropped                                |
 | `crop_area`             | `None`       | the same crop as an **area** fraction (side = its square root)                | "a 90% center crop" (`crop_area=0.9` → side `0.949`)                |
 | `crop_mode`             | `"zoom"`     | how the box is taken: `zoom` (resample the box) or `slice` (integer cut)      | match how the training pipeline cropped                             |
+| `jpeg_quality`          | `None`       | round-trip the frame through JPEG at this quality (1-100) before the crop     | the training pipeline stored its frames as JPEG                     |
 | `channel_order`         | `"rgb"`      | channel order the model wants; `bgr` swaps red and blue                       | a model trained on OpenCV-ordered frames                            |
 | `render`                | `None`       | assert the camera renders at this size (square `int` or `(h, w)`)             | the model needs the env's camera dial moved (see [Render](#render)) |
 
@@ -245,7 +246,7 @@ spec = adapt.ModelSpec(
 
 #### Pixel pipeline
 
-The image steps run in one fixed order, whatever order you write the fields in: **upright → crop → resize → channel swap → dtype** (then layout transpose and lead dims). Concretely: the frame is rotated 180° if the env and model disagree on `upside_down`, the `crop`/`crop_area` box is taken, the result is resized to `height`/`width` under `fit`/`resample`, `channel_order="bgr"` swaps red and blue, and `normalize`/`dtype` map the 8-bit pixels into the model's range.
+The image steps run in one fixed order, whatever order you write the fields in: **upright → jpeg → crop → resize → channel swap → dtype** (then layout transpose and lead dims). Concretely: the frame is rotated 180° if the env and model disagree on `upside_down`, `jpeg_quality` re-encodes it, the `crop`/`crop_area` box is taken, the result is resized to `height`/`width` under `fit`/`resample`, `channel_order="bgr"` swaps red and blue, and `normalize`/`dtype` map the 8-bit pixels into the model's range.
 
 The two crop modes differ in where the box meets the resize. `crop_mode="zoom"` (the default) hands the _fractional_ box straight to the resampler, which samples it directly onto the target — one pass, no intermediate rounding, and the filter still reaches past the box edge into the neighbouring pixels. That is exactly Pillow's `Image.resize(size, box=...)`, which is what the conformance vectors pin it against. `crop_mode="slice"` instead cuts an _integer_ center box out first (`round(side × fraction)` pixels, the NumPy slice a training pipeline would write) and resizes that. Pick the one your preprocessing did:
 
@@ -257,6 +258,16 @@ adapt.Image(adapt.IMAGE_PRIMARY, size=448, crop=2 / 3, crop_mode="slice", allow_
 ```
 
 `crop` and `crop_area` are the same box said two ways, so setting both is an error rather than a silent precedence rule. Because the crop is what the resize actually reads, `allow_upscale` measures the target against the _box_, not the camera: cropping a 480×480 camera to 320×320 and asking for 448×448 is an upscale and needs the opt-in.
+
+#### JPEG round-trip
+
+`jpeg_quality` declares that the model was trained on frames that had been through JPEG, and asks the adapter to put the same artifacts back. Several pipelines encode at quality 95 and decode again before cropping, and a model trained that way is measurably worse on the cleaner frame a simulator hands it. Declare the quality and the adapter reproduces the codec instead of the pipeline carrying a TensorFlow or Pillow dependency to do it:
+
+```python
+adapt.Image(adapt.IMAGE_PRIMARY, size=224, jpeg_quality=95, crop_area=0.9, resample="lanczos3_aa")
+```
+
+It runs on the **upright frame, before the crop and resize** — the order the pipelines encode in, and the only order where the artifacts land at the scale the model saw them. The profile is part of the contract, because a different one is a different picture: baseline sequential, 4:2:0 chroma subsampling with box-averaged chroma, and the standard IJG quantization and Huffman tables scaled by the quality — what `tf.io.encode_jpeg` and Pillow's `save(..., "JPEG", quality=q)` write by default. It needs a 3-channel camera (JPEG subsampling is defined on YCbCr; a grayscale or RGBA frame has none) and is reported by `describe` as `jpeg q95`.
 
 #### Render
 
@@ -394,6 +405,7 @@ Each conversion the resolver can perform falls into one of four policies. **Sile
 | `optional` / `fill`                    | OPT-IN        | env lacks the camera/role; **absent → resolve error**                               |
 | `crop` / `crop_area`                   | SILENT        | declared; the box is a stated part of the model's preprocessing                     |
 | `channel_order="bgr"`                  | SILENT        | declared; **a non-3-channel camera → resolve error**                                |
+| `jpeg_quality`                         | SILENT        | declared; **a non-3-channel camera → resolve error**                                |
 | Crop                                   | ADVISORY-WARN | `fit="crop"` chosen (pixels discarded)                                              |
 | Pad                                    | ADVISORY-WARN | `fit="pad"` chosen (border added)                                                   |
 | Zero-filled camera / state             | ADVISORY-WARN | an `optional` part filled because the env lacks the role                            |
@@ -445,6 +457,7 @@ Find the row that matches your model, then spec it:
 | stacked frames                       | `Image(IMAGE_PRIMARY, size=256, stack=4)`                        |
 | a 90% center crop before the resize  | `Image(IMAGE_PRIMARY, size=224, crop_area=0.9)`                  |
 | a BGR-trained model                  | `Image(IMAGE_PRIMARY, size=224, channel_order="bgr")`            |
+| a model trained on stored JPEGs      | `Image(IMAGE_PRIMARY, size=224, jpeg_quality=95)`                |
 | concatenated proprio with a rotation | `Concat(EEF_POS, State(EEF_ROT, encoding="rot6d"), GRIPPER_POS)` |
 | a binary gripper command             | `Actuator(ACTION_GRIPPER, dim=1, binary=True)`                   |
 | an optional second camera            | `Image(IMAGE_WRIST, size=256, channels=3, optional=True)`        |
