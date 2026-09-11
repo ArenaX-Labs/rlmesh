@@ -82,7 +82,57 @@ where
     RuntimeDriver::new(spec, env, model, Arc::new(NoopRuntimeHooks))
         .run_with_cancellation_reason(cancellation, "interrupted by the host (signal)")
         .await
-        .map_err(|err| Error::Internal(err.to_string()))
+        .map_err(run_error)
+}
+
+/// Wrap a facade [`Error`] as a driver model-RPC failure, keeping its
+/// recoverable flag (the default `model_rpc` constructor drops it, so a
+/// recoverable handler decline used to reach the caller as permanent).
+fn model_rpc(error: Error) -> RuntimeError {
+    RuntimeError::model_rpc_with_recoverability("local-model", error.is_recoverable(), error)
+}
+
+/// Map the driver's error back onto the facade taxonomy. Flattening every
+/// failure to [`Error::Internal`] made a model decline, an env fault, a dropped
+/// connection and a timeout indistinguishable to the caller (and always
+/// non-recoverable); the structured `#[source]` each RPC variant carries is the
+/// original error, so unwrap it when it is one of ours.
+fn run_error(error: RuntimeError) -> Error {
+    let recoverable = error.is_recoverable();
+    let message = error.to_string();
+    match error {
+        RuntimeError::ModelRpc { source, .. } => source
+            .and_then(|source| source.downcast::<Error>().ok())
+            .map_or_else(
+                || {
+                    if recoverable {
+                        Error::model_recoverable(message)
+                    } else {
+                        Error::model(message)
+                    }
+                },
+                |error| *error,
+            ),
+        // Keep the driver's message (it names the op and the step) and take only
+        // the classification from the structured source.
+        RuntimeError::EnvRpc { source, .. } => match source
+            .and_then(|source| source.downcast::<rlmesh_grpc::error::Error>().ok())
+            .map(|error| Error::from(*error))
+        {
+            Some(Error::Connection(_)) => Error::Connection(message),
+            Some(Error::Timeout(timeout)) => Error::Timeout(timeout),
+            Some(Error::Environment(env)) => {
+                Error::Environment(crate::EnvironmentError { message, ..env })
+            }
+            _ => Error::Environment(crate::EnvironmentError {
+                code: crate::ErrorCode::Internal,
+                message,
+                is_recoverable: recoverable,
+            }),
+        },
+        RuntimeError::OperationTimeout { timeout, .. } => Error::Timeout(timeout),
+        _ => Error::Internal(message),
+    }
 }
 
 /// Adapts a connected [`rlmesh_grpc::EnvClient`] to the [`RuntimeEnv`] trait
@@ -204,18 +254,16 @@ where
         // The same decode / handler / encode split the served endpoint stamps,
         // so a local run's telemetry supports the same attribution.
         let started = Instant::now();
-        let mut observation = model_observation_from_endpoint_request(request)
-            .map_err(|err| rlmesh_runtime::RuntimeError::model_rpc("local-model", err))?;
+        let mut observation =
+            model_observation_from_endpoint_request(request).map_err(model_rpc)?;
         let route = observation.route.clone();
         observation.env_contract = Some(Arc::clone(&self.env_contract));
         observation.num_envs = self.num_envs;
         let num_envs = self.num_envs;
-        let action_space = self.env_contract.action_space.clone().ok_or_else(|| {
-            rlmesh_runtime::RuntimeError::model_rpc(
-                "local-model",
-                Error::model("model route contract missing action space"),
-            )
-        })?;
+        let action_space =
+            self.env_contract.action_space.clone().ok_or_else(|| {
+                model_rpc(Error::model("model route contract missing action space"))
+            })?;
         let decode_ns = elapsed_ns(started);
         let call_started = Instant::now();
         let frames = self.handler.predict_chunked(observation).await;
@@ -224,25 +272,19 @@ where
         // into the next predict's `adapter_ns`.
         let adapter_ns = self.handler.take_adapter_ns();
         let held = self.handler.held_state();
-        let PredictFrames { actions, replay } =
-            frames.map_err(|err| rlmesh_runtime::RuntimeError::model_rpc("local-model", err))?;
+        let PredictFrames { actions, replay } = frames.map_err(model_rpc)?;
         let encode_started = Instant::now();
         if actions.len() != num_envs {
-            return Err(rlmesh_runtime::RuntimeError::model_rpc(
-                "local-model",
-                Error::model(format!(
-                    "predict returned {} actions for {num_envs} lanes",
-                    actions.len()
-                )),
-            ));
+            return Err(model_rpc(Error::model(format!(
+                "predict returned {} actions for {num_envs} lanes",
+                actions.len()
+            ))));
         }
-        check_actions_conform(&action_space, &actions)
-            .map_err(|err| rlmesh_runtime::RuntimeError::model_rpc("local-model", err))?;
-        let frame0 = encode_batched_partial_values(&actions, &action_space).map_err(|err| {
-            rlmesh_runtime::RuntimeError::model_rpc("local-model", Error::model(err.to_string()))
-        })?;
-        let replay_frames = encode_replay_frames(&replay, num_envs, &action_space)
-            .map_err(|err| rlmesh_runtime::RuntimeError::model_rpc("local-model", err))?;
+        check_actions_conform(&action_space, &actions).map_err(model_rpc)?;
+        let frame0 = encode_batched_partial_values(&actions, &action_space)
+            .map_err(|err| model_rpc(Error::model(err.to_string())))?;
+        let replay_frames =
+            encode_replay_frames(&replay, num_envs, &action_space).map_err(model_rpc)?;
         let mut wire_actions = Vec::with_capacity(1 + replay_frames.len());
         wire_actions.push(frame0);
         wire_actions.extend(replay_frames);
@@ -278,6 +320,6 @@ where
         self.handler
             .reset_adapter(&env_id, request.episode_ids)
             .await
-            .map_err(|err| RuntimeError::model_rpc("local-model", err))
+            .map_err(model_rpc)
     }
 }
