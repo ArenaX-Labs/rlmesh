@@ -108,6 +108,14 @@ class Image:
             rounding. ``"slice"`` cuts an integer center box out first and
             resizes that, which is what a ``numpy`` slice in a training
             pipeline does.
+        jpeg_quality: Quality of a JPEG round-trip applied to the upright
+            frame *before* the crop and resize, on the IJG 1-100 scale (``95``
+            is the usual training value). A *declaration*, not a request: a
+            pipeline that stored its frames as JPEG fed the model the codec's
+            artifacts, so the adapter reproduces them rather than handing the
+            model a cleaner frame than it was trained on. Baseline sequential,
+            4:2:0 box-averaged chroma, standard IJG tables; needs a 3-channel
+            image.
         channel_order: Channel order the model was trained on. ``"bgr"`` swaps
             red and blue after the spatial ops and before the dtype cast, and
             needs a 3-channel image.
@@ -140,6 +148,7 @@ class Image:
     crop: float | None = field(default=None, kw_only=True)
     crop_area: float | None = field(default=None, kw_only=True)
     crop_mode: CropMode = field(default="zoom", kw_only=True)
+    jpeg_quality: int | None = field(default=None, kw_only=True)
     channel_order: ChannelOrder = field(default="rgb", kw_only=True)
     render: int | tuple[int, int] | None = field(default=None, kw_only=True)
     size: InitVar[int | None] = None
@@ -174,6 +183,13 @@ class Image:
                     f"got {fraction}"
                 )
             object.__setattr__(self, name, fraction)
+        # The IJG scale the encoder is written on; matches the Rust codec's
+        # wire guard, so a spec rejected here is rejected there too.
+        if self.jpeg_quality is not None and not 1 <= self.jpeg_quality <= 100:
+            raise ValueError(
+                f"Image {self.role!r}: jpeg_quality must be between 1 and 100, "
+                f"got {self.jpeg_quality}"
+            )
         # A square int is shorthand for the (height, width) pair the wire
         # carries; normalizing here means the field has one shape everywhere
         # (mirrors `normalize`'s pair coercion). The bound matches the Rust

@@ -141,6 +141,8 @@ def _image_to_dict(item: Image) -> dict[str, Any]:
         image["crop_area"] = item.crop_area
     if item.crop_mode != "zoom":
         image["crop_mode"] = item.crop_mode
+    if item.jpeg_quality is not None:
+        image["jpeg_quality"] = item.jpeg_quality
     if item.channel_order != "rgb":
         image["channel_order"] = item.channel_order
     # Always the [height, width] pair on the wire; __post_init__ has already
@@ -339,6 +341,7 @@ def model_leaf_from_dict(data: Mapping[str, Any]) -> ModelLeaf:
             crop=data.get("crop"),
             crop_area=data.get("crop_area"),
             crop_mode=data.get("crop_mode", "zoom"),
+            jpeg_quality=data.get("jpeg_quality"),
             channel_order=data.get("channel_order", "rgb"),
             render=None
             if (render := data.get("render")) is None
