@@ -38,11 +38,15 @@ pub(super) fn plan_image(
     // The lone-camera fallback binds a role-mismatched input to the env's
     // single camera -- but only for a sanctioned (registered or `x/`) role, so
     // a typo'd role name fails loudly instead of silently feeding the camera.
-    // An `optional` input has opted into zero-filling instead; that wins.
+    // An `optional` input has opted into zero-filling instead; that wins. A
+    // `_2` role names the *second* of a pair, and an env with one camera has no
+    // second of anything: rebinding it would quietly feed the first arm's view
+    // to an input asking for the other arm's.
     let mut role_rebound = None;
     if env_image.is_none()
         && !model_input.optional
         && images_by_role.len() == 1
+        && !model_input.role.ends_with("_2")
         && crate::roles::registry::is_sanctioned_role(&model_input.role)
     {
         env_image = images_by_role.values().next().copied();

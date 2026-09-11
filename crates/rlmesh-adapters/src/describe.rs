@@ -60,6 +60,19 @@ pub(crate) fn adapter_advisories(adapter: &ResolvedAdapter) -> Vec<Advisory> {
             _ => {}
         }
     }
+    // An optional roled actuator the model does not output: the env receives a
+    // fabricated constant where a real command belongs -- the action-side twin
+    // of a zero-filled camera. A role-less fill is the opaque control dim the
+    // env always meant to set itself, so it stays silent.
+    for segment in &adapter.action_plan.segments {
+        if let (Some(role), Some((width, value))) = (&segment.role, segment.fill) {
+            notes.push(Advisory::caution(format!(
+                "action {}: the model does not output this optional role; \
+                 fabricating {width} dim(s) of {value}",
+                quoted(role)
+            )));
+        }
+    }
     notes
 }
 

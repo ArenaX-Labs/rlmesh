@@ -6,7 +6,7 @@ mod image;
 mod state;
 mod text;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::advisory::Advisory;
 use super::error::{AdapterResolutionError, ErrorCode};
@@ -225,6 +225,62 @@ pub fn resolve(
         .collect();
 
     let action_plan = action::plan_action(&model_spec.output, &env_spec.action)?;
+
+    // Model-side ad-hoc roles the env does not answer. An ad-hoc role matches
+    // only on the exact string, so a typo or a private name silently degrades
+    // to a zero fill (an optional input) or to dropped output dims (an unmatched
+    // model actuator) -- the required cases already hard-errored above. One
+    // advisory per role, not per placement.
+    let mut leaves: Vec<PlacedLeaf> = Vec::new();
+    collect_leaves(&model_spec.input, NodePath::root(), &mut leaves);
+    let mut ad_hoc: BTreeSet<&str> = BTreeSet::new();
+    for PlacedLeaf { leaf, .. } in &leaves {
+        match leaf {
+            ModelLeaf::Image(input) if !images_by_role.contains_key(&input.role) => {
+                ad_hoc.insert(&input.role);
+            }
+            ModelLeaf::State(input) => ad_hoc.extend(
+                input
+                    .components
+                    .iter()
+                    .map(|part| part.role.as_str())
+                    .filter(|role| !states_by_role.contains_key(*role)),
+            ),
+            ModelLeaf::Text(input) if !texts_by_role.contains_key(&input.role) => {
+                ad_hoc.insert(&input.role);
+            }
+            _ => {}
+        }
+    }
+    let env_action_roles: BTreeSet<&str> = env_spec
+        .action
+        .components
+        .iter()
+        .filter_map(|actuator| actuator.role.as_deref())
+        .collect();
+    ad_hoc.extend(
+        model_spec
+            .output
+            .components
+            .iter()
+            .filter_map(|actuator| actuator.role.as_deref())
+            .filter(|role| !env_action_roles.contains(role)),
+    );
+    advisories.extend(
+        ad_hoc
+            .into_iter()
+            .filter(|role| !crate::roles::registry::is_sanctioned_role(role))
+            .map(|role| {
+                Advisory::info(format!(
+                    "model declares ad-hoc role {} that this env does not: an ad-hoc role \
+                     matches only on the exact string, so it resolves to a fill here -- use \
+                     a registered role, or the {} namespace to mark it intentionally \
+                     non-standard",
+                    quoted(role),
+                    quoted("x/"),
+                ))
+            }),
+    );
 
     // A model-declared range only fires as an affine map when the *env* side also
     // declares a range to bridge between; against an unbounded env feature the map
@@ -512,5 +568,70 @@ mod unknown_kind_tests {
             r#"{{"input":{{"pixels":{{"type":"image","role":"image/primary"}}}},"output":{ACTION_OUT}}}"#
         );
         do_resolve(&env_tags, obs_space, ACTION_SPACE, &model).expect("x- field tolerated");
+    }
+
+    #[test]
+    fn ad_hoc_role_the_env_lacks_draws_one_info_advisory() {
+        // The optional part zero-fills instead of hard-erroring, so without the
+        // advisory the author never learns their private role matched nothing.
+        let env_tags = format!(
+            r#"{{"observation":{{"cam":{{"type":"image","role":"image/primary"}}}},"action":{ACTION_TAGS}}}"#
+        );
+        let obs_space = r#"{"kind":"dict","dtype":"unspecified","keys":["cam"],"children":[
+            {"kind":"box","shape":[4,4,3],"dtype":"uint8"}]}"#;
+        let model = format!(
+            r#"{{"input":{{"s":{{"type":"state","components":[
+                {{"role":"proprio/made_up","dim":3,"optional":true}}]}}}},"output":{ACTION_OUT}}}"#
+        );
+        let adapter = do_resolve(&env_tags, obs_space, ACTION_SPACE, &model).expect("resolves");
+        let advisories = adapter.advisories();
+        let hits: Vec<&crate::advisory::Advisory> = advisories
+            .iter()
+            .filter(|a| a.message.contains("ad-hoc role"))
+            .collect();
+        assert_eq!(hits.len(), 1, "one advisory per role, got: {hits:?}");
+        assert!(hits[0].message.contains("proprio/made_up"), "{hits:?}");
+        // A registered role the env also lacks is a contract, not a typo: silent.
+        let model = format!(
+            r#"{{"input":{{"s":{{"type":"state","components":[
+                {{"role":"proprio/eef_pos_2","dim":3,"optional":true}}]}}}},"output":{ACTION_OUT}}}"#
+        );
+        let adapter = do_resolve(&env_tags, obs_space, ACTION_SPACE, &model).expect("resolves");
+        assert!(
+            !adapter
+                .advisories()
+                .iter()
+                .any(|a| a.message.contains("ad-hoc role")),
+            "{:?}",
+            adapter.advisories()
+        );
+    }
+
+    #[test]
+    fn a_second_arm_camera_role_never_rebinds_to_the_only_camera() {
+        let env_tags = format!(
+            r#"{{"observation":{{"cam":{{"type":"image","role":"image/primary"}}}},"action":{ACTION_TAGS}}}"#
+        );
+        let obs_space = r#"{"kind":"dict","dtype":"unspecified","keys":["cam"],"children":[
+            {"kind":"box","shape":[4,4,3],"dtype":"uint8"}]}"#;
+        let model = format!(
+            r#"{{"input":{{"pixels":{{"type":"image","role":"image/wrist_2"}}}},"output":{ACTION_OUT}}}"#
+        );
+        let err = do_resolve(&env_tags, obs_space, ACTION_SPACE, &model).expect_err("no rebind");
+        assert_eq!(err.code, ErrorCode::MissingRole);
+        // The first-arm wrist still rebinds (with the caution) -- only `_2` is
+        // barred, because a lone camera cannot be the second of a pair.
+        let model = format!(
+            r#"{{"input":{{"pixels":{{"type":"image","role":"image/wrist"}}}},"output":{ACTION_OUT}}}"#
+        );
+        let adapter = do_resolve(&env_tags, obs_space, ACTION_SPACE, &model).expect("rebinds");
+        assert!(
+            adapter
+                .advisories()
+                .iter()
+                .any(|a| a.message.contains("only camera")),
+            "{:?}",
+            adapter.advisories()
+        );
     }
 }
