@@ -154,6 +154,26 @@ fn model_resolve_adapter_request_bytes_are_frozen() {
 }
 
 #[test]
+fn model_resolve_adapter_response_bytes_are_frozen() {
+    // The declared native chunk is the only field on the resolve answer, and it is
+    // `optional`: an undeclared model still serializes to zero bytes, so every
+    // pre-existing peer reads the same empty message it always did.
+    assert_frozen(
+        "model.v1.ResolveAdapterResponse",
+        model::v1::ResolveAdapterResponse {
+            native_chunk: Some(30),
+        }
+        .encode_to_vec(),
+        &[8, 30],
+    );
+    assert_frozen(
+        "model.v1.ResolveAdapterResponse (undeclared)",
+        model::v1::ResolveAdapterResponse { native_chunk: None }.encode_to_vec(),
+        &[],
+    );
+}
+
+#[test]
 fn model_join_request_bytes_are_frozen() {
     let message = model::v1::JoinRequest {
         kind: Some(model::v1::join_request::Kind::Predict(predict_request())),

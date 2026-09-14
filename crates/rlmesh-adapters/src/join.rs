@@ -334,6 +334,7 @@ fn join_feature(
                 dim: Some(width),
                 encoding: state.encoding.clone(),
                 range,
+                frame: state.frame.clone(),
             })])
         }
         ObsLeaf::Split(layout) => join_split(source, layout, leaf),
@@ -417,6 +418,7 @@ fn join_split(
                 dim: Some(field.dim),
                 encoding: field.encoding.clone(),
                 range,
+                frame: field.frame.clone(),
             }));
         }
         offset += field.dim;
@@ -673,6 +675,8 @@ mod tests {
             fill: 0.0,
             optional: false,
             unknown: Default::default(),
+            frame: None,
+            reference: None,
         }
     }
 
@@ -730,6 +734,7 @@ mod tests {
                 encoding: None,
                 range: None,
                 unknown: Default::default(),
+                frame: None,
             })),
         );
         observation.insert(
@@ -833,6 +838,7 @@ mod tests {
                 encoding: None,
                 range: None,
                 unknown: Default::default(),
+                frame: None,
             })),
         );
         let mut root = BTreeMap::new();
@@ -870,6 +876,7 @@ mod tests {
                     encoding: None,
                     range: None,
                     unknown: Default::default(),
+                    frame: None,
                 })),
                 ObsNode::Leaf(ObsLeaf::Text(TextTag {
                     role: "instruction".to_owned(),
@@ -905,12 +912,14 @@ mod tests {
                     encoding: None,
                     range: None,
                     unknown: Default::default(),
+                    frame: None,
                 })),
                 ObsNode::Leaf(ObsLeaf::State(StateTag {
                     role: "b".to_owned(),
                     encoding: None,
                     range: None,
                     unknown: Default::default(),
+                    frame: None,
                 })),
             ]),
             action: action_layout(vec![]),
@@ -937,6 +946,7 @@ mod tests {
                     encoding: None,
                     range: None,
                     unknown: Default::default(),
+                    frame: None,
                 }),
             ),
             action: action_layout(vec![]),
@@ -960,6 +970,7 @@ mod tests {
                 encoding: None,
                 range: None,
                 unknown: Default::default(),
+                frame: None,
             })),
             action: action_layout(vec![]),
         };
@@ -1022,12 +1033,16 @@ mod tests {
                         dim: u32::MAX,
                         encoding: None,
                         range: None,
+                        unknown: Default::default(),
+                        frame: None,
                     },
                     Field {
                         role: Some("b".to_owned()),
                         dim: 2,
                         encoding: None,
                         range: None,
+                        unknown: Default::default(),
+                        frame: None,
                     },
                 ],
             }),
@@ -1125,6 +1140,7 @@ mod tests {
                 encoding: Some(AcceptSet::single(RotationEncoding::QuatXyzw)),
                 range: None,
                 unknown: Default::default(),
+                frame: None,
             }),
         );
         assert!(matches!(
@@ -1145,6 +1161,7 @@ mod tests {
                 encoding: None,
                 range: Some((0.0, 2.0)),
                 unknown: Default::default(),
+                frame: None,
             })
         };
         assert!(matches!(
@@ -1179,6 +1196,7 @@ mod tests {
                 encoding: None,
                 range: Some((0.0, 0.08)),
                 unknown: Default::default(),
+                frame: None,
             }),
         )
         .expect("join");
@@ -1194,6 +1212,8 @@ mod tests {
             dim,
             encoding: encoding.map(AcceptSet::single),
             range: None,
+            unknown: Default::default(),
+            frame: None,
         }
     }
 

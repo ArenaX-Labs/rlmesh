@@ -1,0 +1,92 @@
+{
+  "action_space": {
+    "dtype": "float32",
+    "kind": "box",
+    "shape": [4]
+  },
+  "env_tags": {
+    "action": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "role": "action/delta_eef_pos"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": null,
+          "role": "action/gripper"
+        }
+      ]
+    },
+    "observation": {
+      "eef_pos": {
+        "encoding": null,
+        "range": null,
+        "role": "proprio/eef_pos",
+        "type": "state"
+      }
+    }
+  },
+  "expect": {
+    "advisories_contain": [
+      "caution: role \"proprio/eef_pos\": the model declares frame \"robot_base\"",
+      "caution: role \"action/delta_eef_pos\": the model declares reference \"target\""
+    ],
+    "describe": "observation:\n  \"state\" <- concat(eef_pos[:3]@robot_base)\naction:\n  \"action/delta_eef_pos\" <- model[0:3]~target\n  \"action/gripper\" <- model[3:4]",
+    "ok": true
+  },
+  "kind": "resolve",
+  "model_spec": {
+    "input": {
+      "state": {
+        "components": [
+          {
+            "dim": 3,
+            "frame": "robot_base",
+            "role": "proprio/eef_pos"
+          }
+        ],
+        "dtype": "float32",
+        "type": "state"
+      }
+    },
+    "output": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "reference": "target",
+          "role": "action/delta_eef_pos"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": null,
+          "role": "action/gripper"
+        }
+      ]
+    }
+  },
+  "observation_space": {
+    "children": [
+      {
+        "dtype": "float32",
+        "kind": "box",
+        "shape": [3]
+      }
+    ],
+    "dtype": "unspecified",
+    "keys": ["eef_pos"],
+    "kind": "dict"
+  }
+}

@@ -6,7 +6,7 @@ mod image;
 mod state;
 mod text;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::advisory::Advisory;
 use super::error::{AdapterResolutionError, ErrorCode};
@@ -16,7 +16,8 @@ use super::path::NodePath;
 use super::plans::{ObsPlan, ResolvedAdapter};
 use super::space_view::SpaceView;
 use super::spec::{
-    EnvFeature, EnvImage, EnvState, EnvTags, EnvText, InputNode, ModelLeaf, ModelSpec,
+    Attr, EnvFeature, EnvImage, EnvState, EnvTags, EnvText, FrameRef, InputNode, ModelLeaf,
+    ModelSpec,
 };
 
 type Result<T> = std::result::Result<T, AdapterResolutionError>;
@@ -51,6 +52,71 @@ pub(super) fn reject_referenced_unknown(
         ));
     }
     Ok(())
+}
+
+/// The C14 geometry rules, shared verbatim by `frame` (state parts and action
+/// components) and `reference` (delta action components) -- they differ only in
+/// their vocabulary and wording, carried by [`Attr`].
+///
+/// Returns the *agreed* value to record on the plan, and pushes at most one
+/// advisory. The five cases:
+///
+/// 1. both silent -- nothing to check, nothing said.
+/// 2. env declares, model silent -- the env stated a fact the model has no
+///    requirement against; the value carries through, silently.
+/// 3. model declares, env silent -- the model states a requirement the env
+///    cannot confirm: `caution` (it fires only when a model opts in).
+/// 4. both declare, equal -- agreement, silently.
+/// 5. both declare, differing -- a hard [`ErrorCode::FrameMismatch`]. So is an
+///    unrecognized value on either side: a geometry this core cannot name is a
+///    geometry it cannot verify (the tolerant codec still relays it).
+pub(super) fn check_geometry(
+    attr: Attr,
+    role: &str,
+    env: Option<&FrameRef>,
+    model: Option<&FrameRef>,
+    advisories: &mut Vec<Advisory>,
+) -> Result<Option<FrameRef>> {
+    let name = attr.name();
+    for (side, declared) in [("env", env), ("model", model)] {
+        if let Some(value) = declared
+            && !attr.recognizes(value)
+        {
+            return Err(err(
+                ErrorCode::FrameMismatch,
+                format!(
+                    "role {}: the {side} declares unrecognized {name} {}; this core knows {:?}",
+                    quoted(role),
+                    quoted(value.as_str()),
+                    attr.vocabulary()
+                ),
+            ));
+        }
+    }
+    match (env, model) {
+        (None, None) => Ok(None),
+        (Some(env), None) => Ok(Some(env.clone())),
+        (None, Some(model)) => {
+            advisories.push(Advisory::caution(format!(
+                "role {}: the model declares {name} {} but the env declares none, so the \
+                 {name} it was trained against cannot be verified -- declare it on the env \
+                 to silence this",
+                quoted(role),
+                quoted(model.as_str()),
+            )));
+            Ok(Some(model.clone()))
+        }
+        (Some(env), Some(model)) if env == model => Ok(Some(env.clone())),
+        (Some(env), Some(model)) => Err(err(
+            ErrorCode::FrameMismatch,
+            format!(
+                "role {}: the model expects {name} {} but the env declares {}",
+                quoted(role),
+                quoted(model.as_str()),
+                quoted(env.as_str()),
+            ),
+        )),
+    }
 }
 
 fn index_by_role<'spec, T>(
@@ -168,6 +234,11 @@ pub fn resolve(
     let mut leaves: Vec<PlacedLeaf> = Vec::new();
     collect_leaves(&model_spec.input, NodePath::root(), &mut leaves);
 
+    // The quiet channel: surfaced through `advisories()` but kept out of
+    // `describe()`. The geometry cautions belong here -- nothing was dropped or
+    // fabricated, so they have no business in the `dropped:` section describe()
+    // builds from the other channel.
+    let mut quiet: Vec<Advisory> = env_spec.advisories.clone();
     let mut obs_plans: Vec<ObsPlan> = Vec::with_capacity(leaves.len());
     for PlacedLeaf { leaf, placement } in leaves {
         obs_plans.push(match leaf {
@@ -182,6 +253,7 @@ pub fn resolve(
                 placement,
                 &states_by_role,
                 &unknown_roles,
+                &mut quiet,
             )?),
             ModelLeaf::Text(input) => ObsPlan::Text(text::plan_text(
                 input,
@@ -224,7 +296,63 @@ pub fn resolve(
         })
         .collect();
 
-    let action_plan = action::plan_action(&model_spec.output, &env_spec.action)?;
+    let action_plan = action::plan_action(&model_spec.output, &env_spec.action, &mut quiet)?;
+
+    // Model-side ad-hoc roles the env does not answer. An ad-hoc role matches
+    // only on the exact string, so a typo or a private name silently degrades
+    // to a zero fill (an optional input) or to dropped output dims (an unmatched
+    // model actuator) -- the required cases already hard-errored above. One
+    // advisory per role, not per placement.
+    let mut leaves: Vec<PlacedLeaf> = Vec::new();
+    collect_leaves(&model_spec.input, NodePath::root(), &mut leaves);
+    let mut ad_hoc: BTreeSet<&str> = BTreeSet::new();
+    for PlacedLeaf { leaf, .. } in &leaves {
+        match leaf {
+            ModelLeaf::Image(input) if !images_by_role.contains_key(&input.role) => {
+                ad_hoc.insert(&input.role);
+            }
+            ModelLeaf::State(input) => ad_hoc.extend(
+                input
+                    .components
+                    .iter()
+                    .filter_map(|part| part.role.as_deref())
+                    .filter(|role| !states_by_role.contains_key(*role)),
+            ),
+            ModelLeaf::Text(input) if !texts_by_role.contains_key(&input.role) => {
+                ad_hoc.insert(&input.role);
+            }
+            _ => {}
+        }
+    }
+    let env_action_roles: BTreeSet<&str> = env_spec
+        .action
+        .components
+        .iter()
+        .filter_map(|actuator| actuator.role.as_deref())
+        .collect();
+    ad_hoc.extend(
+        model_spec
+            .output
+            .components
+            .iter()
+            .filter_map(|actuator| actuator.role.as_deref())
+            .filter(|role| !env_action_roles.contains(role)),
+    );
+    advisories.extend(
+        ad_hoc
+            .into_iter()
+            .filter(|role| !crate::roles::registry::is_sanctioned_role(role))
+            .map(|role| {
+                Advisory::info(format!(
+                    "model declares ad-hoc role {} that this env does not: an ad-hoc role \
+                     matches only on the exact string, so it resolves to a fill here -- use \
+                     a registered role, or the {} namespace to mark it intentionally \
+                     non-standard",
+                    quoted(role),
+                    quoted("x/"),
+                ))
+            }),
+    );
 
     // A model-declared range only fires as an affine map when the *env* side also
     // declares a range to bridge between; against an unbounded env feature the map
@@ -244,13 +372,26 @@ pub fn resolve(
         }
         if let ObsPlan::State(state) = obs_plan
             && state.pieces.iter().any(|piece| {
-                !piece.zero_fill && piece.dst_range.is_some() && piece.src_range.is_none()
+                piece.fill.is_none() && piece.dst_range.is_some() && piece.src_range.is_none()
             })
         {
             advisories.push(Advisory::info(format!(
                 "model input {}: a state range is set but the env feature is \
                      unbounded, so the range is a no-op (it remaps an env range, it \
                      does not clamp)",
+                quoted(&state.placement.to_string()),
+            )));
+        }
+        // Two rescalings on one part compose silently: `range` bridges the two
+        // declared scales, then `scale`/`offset` applies on top of the result.
+        if let ObsPlan::State(state) = obs_plan
+            && state.pieces.iter().any(|piece| {
+                piece.dst_range.is_some() && (piece.scale.is_some() || piece.offset.is_some())
+            })
+        {
+            advisories.push(Advisory::info(format!(
+                "model input {}: a state part sets both range and scale/offset; the \
+                     range map runs first and the affine applies to its result",
                 quoted(&state.placement.to_string()),
             )));
         }
@@ -266,13 +407,9 @@ pub fn resolve(
         }
     }
     advisories.sort_by(|a, b| a.message.cmp(&b.message));
+    quiet.sort_by(|a, b| a.message.cmp(&b.message));
 
-    let resolved = ResolvedAdapter::new(
-        obs_plans,
-        action_plan,
-        advisories,
-        env_spec.advisories.clone(),
-    );
+    let resolved = ResolvedAdapter::new(obs_plans, action_plan, advisories, quiet);
     // The frame-stacking × action-chunk-replay guard used to live here, but the
     // execution horizon is no longer part of the spec — it is a runtime decision
     // (`execution_horizon` on ResolveAdapter). The guard moved to the engine's
@@ -512,5 +649,183 @@ mod unknown_kind_tests {
             r#"{{"input":{{"pixels":{{"type":"image","role":"image/primary"}}}},"output":{ACTION_OUT}}}"#
         );
         do_resolve(&env_tags, obs_space, ACTION_SPACE, &model).expect("x- field tolerated");
+    }
+
+    #[test]
+    fn ad_hoc_role_the_env_lacks_draws_one_info_advisory() {
+        // The optional part zero-fills instead of hard-erroring, so without the
+        // advisory the author never learns their private role matched nothing.
+        let env_tags = format!(
+            r#"{{"observation":{{"cam":{{"type":"image","role":"image/primary"}}}},"action":{ACTION_TAGS}}}"#
+        );
+        let obs_space = r#"{"kind":"dict","dtype":"unspecified","keys":["cam"],"children":[
+            {"kind":"box","shape":[4,4,3],"dtype":"uint8"}]}"#;
+        let model = format!(
+            r#"{{"input":{{"s":{{"type":"state","components":[
+                {{"role":"proprio/made_up","dim":3,"optional":true}}]}}}},"output":{ACTION_OUT}}}"#
+        );
+        let adapter = do_resolve(&env_tags, obs_space, ACTION_SPACE, &model).expect("resolves");
+        let advisories = adapter.advisories();
+        let hits: Vec<&crate::advisory::Advisory> = advisories
+            .iter()
+            .filter(|a| a.message.contains("ad-hoc role"))
+            .collect();
+        assert_eq!(hits.len(), 1, "one advisory per role, got: {hits:?}");
+        assert!(hits[0].message.contains("proprio/made_up"), "{hits:?}");
+        // A registered role the env also lacks is a contract, not a typo: silent.
+        let model = format!(
+            r#"{{"input":{{"s":{{"type":"state","components":[
+                {{"role":"proprio/eef_pos_2","dim":3,"optional":true}}]}}}},"output":{ACTION_OUT}}}"#
+        );
+        let adapter = do_resolve(&env_tags, obs_space, ACTION_SPACE, &model).expect("resolves");
+        assert!(
+            !adapter
+                .advisories()
+                .iter()
+                .any(|a| a.message.contains("ad-hoc role")),
+            "{:?}",
+            adapter.advisories()
+        );
+    }
+
+    #[test]
+    fn a_second_arm_camera_role_never_rebinds_to_the_only_camera() {
+        let env_tags = format!(
+            r#"{{"observation":{{"cam":{{"type":"image","role":"image/primary"}}}},"action":{ACTION_TAGS}}}"#
+        );
+        let obs_space = r#"{"kind":"dict","dtype":"unspecified","keys":["cam"],"children":[
+            {"kind":"box","shape":[4,4,3],"dtype":"uint8"}]}"#;
+        let model = format!(
+            r#"{{"input":{{"pixels":{{"type":"image","role":"image/wrist_2"}}}},"output":{ACTION_OUT}}}"#
+        );
+        let err = do_resolve(&env_tags, obs_space, ACTION_SPACE, &model).expect_err("no rebind");
+        assert_eq!(err.code, ErrorCode::MissingRole);
+        // The first-arm wrist still rebinds (with the caution) -- only `_2` is
+        // barred, because a lone camera cannot be the second of a pair.
+        let model = format!(
+            r#"{{"input":{{"pixels":{{"type":"image","role":"image/wrist"}}}},"output":{ACTION_OUT}}}"#
+        );
+        let adapter = do_resolve(&env_tags, obs_space, ACTION_SPACE, &model).expect("rebinds");
+        assert!(
+            adapter
+                .advisories()
+                .iter()
+                .any(|a| a.message.contains("only camera")),
+            "{:?}",
+            adapter.advisories()
+        );
+    }
+}
+
+/// The C14 geometry rules, exercised directly on [`check_geometry`] so each of
+/// the five cases is pinned once rather than through a full resolve.
+#[cfg(test)]
+mod geometry_rule_tests {
+    use super::check_geometry;
+    use crate::error::ErrorCode;
+    use crate::spec::{Attr, FrameRef};
+
+    fn check(
+        attr: Attr,
+        env: Option<&str>,
+        model: Option<&str>,
+    ) -> (
+        Result<Option<FrameRef>, crate::error::AdapterResolutionError>,
+        Vec<crate::advisory::Advisory>,
+    ) {
+        let mut notes = Vec::new();
+        let result = check_geometry(
+            attr,
+            "proprio/eef_pos",
+            env.map(FrameRef::from).as_ref(),
+            model.map(FrameRef::from).as_ref(),
+            &mut notes,
+        );
+        (result, notes)
+    }
+
+    #[test]
+    fn agreement_and_env_only_are_silent() {
+        // Cases 1, 2 and 4: nothing declared, only the env declared, both
+        // declaring the same thing. Every one resolves without a word.
+        for (env, model, expected) in [
+            (None, None, None),
+            (Some("robot_base"), None, Some("robot_base")),
+            (Some("world"), Some("world"), Some("world")),
+        ] {
+            let (result, notes) = check(Attr::Frame, env, model);
+            assert_eq!(
+                result.expect("resolves").as_ref().map(FrameRef::as_str),
+                expected
+            );
+            assert!(notes.is_empty(), "expected silence, got {notes:?}");
+        }
+    }
+
+    #[test]
+    fn a_model_only_declaration_is_a_caution() {
+        // Case 6: the model states a requirement the env cannot confirm. It
+        // resolves (the value carries to the plan) with one caution.
+        let (result, notes) = check(Attr::Frame, None, Some("robot_base"));
+        assert_eq!(
+            result.expect("resolves").as_ref().map(FrameRef::as_str),
+            Some("robot_base")
+        );
+        assert_eq!(notes.len(), 1);
+        assert_eq!(
+            notes[0].severity,
+            crate::advisory::AdvisorySeverity::Caution
+        );
+        assert!(
+            notes[0].message.contains("declares frame \"robot_base\"")
+                && notes[0].message.contains("cannot be verified"),
+            "got: {}",
+            notes[0].message
+        );
+    }
+
+    #[test]
+    fn a_disagreement_is_a_hard_frame_mismatch() {
+        // Case 4: the pairing the whole PR exists to catch.
+        let (result, _) = check(Attr::Frame, Some("world"), Some("robot_base"));
+        let error = result.expect_err("mismatch");
+        assert_eq!(error.code, ErrorCode::FrameMismatch);
+        assert_eq!(
+            error.message,
+            "role \"proprio/eef_pos\": the model expects frame \"robot_base\" \
+             but the env declares \"world\""
+        );
+
+        // `reference` runs the same rule against its own vocabulary -- an
+        // absolute-pose head bound to a delta controller, named.
+        let (result, _) = check(Attr::Reference, Some("current"), Some("target"));
+        let error = result.expect_err("mismatch");
+        assert_eq!(error.code, ErrorCode::FrameMismatch);
+        assert_eq!(
+            error.message,
+            "role \"proprio/eef_pos\": the model expects reference \"target\" \
+             but the env declares \"current\""
+        );
+    }
+
+    #[test]
+    fn an_unrecognized_value_is_a_hard_frame_mismatch_on_either_side() {
+        // Case 7. The codec relays an unknown value (a newer peer's vocabulary
+        // survives round-trip); resolve refuses it, because a geometry this core
+        // cannot name is a geometry it cannot verify. Both sides, both attrs.
+        for (attr, env, model) in [
+            (Attr::Frame, Some("gripper"), None),
+            (Attr::Frame, None, Some("base")),
+            (Attr::Reference, None, Some("previous")),
+        ] {
+            let (result, _) = check(attr, env, model);
+            let error = result.expect_err("unrecognized");
+            assert_eq!(error.code, ErrorCode::FrameMismatch);
+            assert!(
+                error.message.contains("unrecognized"),
+                "got: {}",
+                error.message
+            );
+        }
     }
 }

@@ -4,6 +4,7 @@
 
 use crate::path::NodePath;
 use crate::spec::AcceptSet;
+use crate::spec::frames::FrameRef;
 use crate::spec::rotations::RotationEncoding;
 
 /// A numeric proprioception entry in an environment observation.
@@ -27,4 +28,7 @@ pub struct EnvState {
     /// emit. A bare string on the wire for the common single-encoding case.
     pub encoding: Option<AcceptSet<RotationEncoding>>,
     pub range: Option<(f64, f64)>,
+    /// The coordinate frame the env declares this feature's values in, lifted
+    /// verbatim from the `StateTag`/`Field` that tagged it.
+    pub frame: Option<FrameRef>,
 }

@@ -10,8 +10,10 @@ The format follows protobuf-style package versioning. Specs travel under the met
 
 One JSON file per case, dispatched on `kind`:
 
-- `resolve` — `env_spec` + `model_spec`, expecting either `{"ok": true, "describe": <exact text>}` or `{"error_contains": <substring>}`. Error cases pin _resolve-time_ failure: an implementation that defers the failure to apply time fails the case.
+- `resolve` — `env_spec` + `model_spec`, expecting either `{"ok": true, "describe": <exact text>}` or `{"error_contains": <substring>}`. Error cases pin _resolve-time_ failure: an implementation that defers the failure to apply time fails the case. An optional `advisories_contain` lists substrings each of which must appear in some `"<severity>: <message>"` advisory line — hand-curated like `error_contains` (update mode carries it through rather than rewriting it), so a case pins only the advisory it is about.
 - `serialization` — `side` (`env`|`model`) + `doc`: `from_dict(doc)` followed by `to_dict()` must reproduce `doc` exactly.
+- `role_policy` — `side` (`env`|`model`) + `policy` (`passthrough`|`strict`|`forbid`) + `doc`: the publish-gate role tier, expecting acceptance (`{}`) or `{"error_contains": <substring>}`. Frozen like `serialization` — the policy table _is_ the contract, so update mode never rewrites these.
+- `apply_sequence` — specs + `observations` (a list), expecting `payloads`: the model payload each step produced, driven through the _stateful_ assemble seam as one episode. The kind for anything that only exists across steps — today, frame history. Values use the same encoding and tolerance as `apply`; the action side is not exercised (it is stateless, and `apply` pins it).
 - `apply` — specs + `observation` + `model_output`, expecting the exact model payload and env action. Values are encoded as `{"kind": "array", dtype, shape, data}`, `{"kind": "list", data}`, `{"kind": "text", data}`, or `{"kind": "map", data}` (nested observations). Numeric comparison: exact dtype match, values within `atol` (default 1e-6).
 
 ## Updating (snapshot-style)
@@ -26,13 +28,61 @@ To add a case: write the inputs by hand (specs, observation, model_output) with 
 
 Cases with `"preserve_inputs": true` keep their spec documents verbatim across update runs. This is for defaults-pinning cases (e.g. `apply_minimal_spec_defaults`): their specs deliberately omit every optional field, so the expectations pin the missing-field defaults of every implementation — Python's `from_dict` and the core's serde must agree or the case fails on one side.
 
-The PIL parity anchor for `bilinear_aa` lives in the Python suite (`test_bilinear_aa_resize_matches_pillow_within_one_step`, skipped when Pillow is absent), so it is checked continuously rather than only at authoring time.
+The library parity anchors live in the Python suite (`test_aa_resize_matches_pillow_within_one_step` and `test_zoom_crop_matches_pillow_box_resize_within_one_step`, skipped when Pillow is absent; `test_area_resize_matches_opencv_within_one_step`, skipped when OpenCV is absent), so they are checked continuously rather than only at authoring time.
 
 ## Resize algorithms
 
-`ImageInput.resample` declares which of the two pinned resize algorithms the model's training pipeline used; resolution rejects anything else with a typed error (`resample` is a constrained string, not an enum, so future additive values degrade to a resolution error on older cores rather than a parse failure):
+`ImageInput.resample` declares which pinned resize algorithm the model's training pipeline used; resolution rejects anything else with a typed error (`resample` is a constrained string, not an enum, so future additive values degrade to a resolution error on older cores rather than a parse failure).
 
-- `"bilinear"` — 4-tap bilinear with half-pixel centers (OpenCV/torch-compatible).
-- `"bilinear_aa"` (default) — antialiased separable triangle filter: on downscale the filter support widens by the scale factor. PIL-compatible; the generator asserts parity within one uint8 step of real Pillow.
+The names follow one rule: **un-suffixed is cv2/torch semantics, `_aa` is PIL semantics** — an antialiased filter whose support widens with the downscale factor. Bare `"bicubic"` and `"lanczos3"` are deliberately _not_ names, because the two libraries' kernels differ (cv2/torch cubic uses a = -0.75, PIL a = -0.5) and a spec that names one without saying which library must fail rather than silently get the other.
 
-Both are specified as: weights computed in float64, both passes in float64, one final round-half-to-even, clip to [0, 255], uint8. Resize apply cases use `atol: 1.0` (one uint8 step) to absorb cross-language rounding at ties; all other apply cases use `atol: 1e-6`.
+- `"bilinear"` (default) — 4-tap bilinear with half-pixel centers, no antialiasing (OpenCV `INTER_LINEAR` / torch `interpolate(antialias=False)`).
+- `"bilinear_aa"` — PIL `BILINEAR`: separable triangle filter, support 1.
+- `"bicubic_aa"` — PIL `BICUBIC`: separable Keys cubic with a = -0.5, support 2.
+- `"lanczos3_aa"` — PIL `LANCZOS`: separable sinc windowed by a 3-lobe sinc, support 3.
+- `"area"` — OpenCV `INTER_AREA`: the exact average of each output pixel's source footprint. Unlike the `_aa` filters it does not widen a fixed kernel; the footprint _is_ the kernel, so upscaling splits a sub-pixel span across the one or two source pixels it covers rather than interpolating.
+
+The `_aa` filters share one weight builder: per output pixel, `center = (i + 0.5) * scale`, filter stretched by `max(scale, 1)`, taps snapped to the nearest pixel centers, weights normalized to sum to 1. `"area"` uses the same builder with the box integrated over each source pixel (so a partly covered edge pixel gets exactly its coverage) and a filter stretch of `scale` in both directions.
+
+All of them are specified as: weights computed in float64, both passes in float64, the horizontal pass's output clipped to [0, 255] before the vertical pass — PIL's intermediate is an 8-bit image, so the negative lobes of the cubic and Lanczos kernels are clipped there, and a pipeline that clips only at the end drifts from Pillow by tens of levels on a hard edge — then one final round-half-to-even, clip to [0, 255], uint8. Resize apply cases use `atol: 1.0` (one uint8 step) to absorb cross-language rounding at ties; all other apply cases use `atol: 1e-6`.
+
+## Frame history
+
+`ImageInput.stack` is how many frames the model is fed on a new leading axis; `offsets` is _which_ frames, as non-positive deltas from the current step, oldest first and ending at `0`. `stride` (an SDK-side convenience, never on the wire) writes an evenly spaced one: `stack=4, stride=2` is `offsets=[-6, -4, -2, 0]`.
+
+The two are declared, never inferred from each other: `len(offsets) == stack` or resolution fails. The rest of the law is also resolve-time — non-positive, strictly increasing, ending at `0`, and spanning at most **128** consecutive frames — so a list a newer core understands still parses and relays instead of failing at the codec door. The _span_ (`1 - offsets[0]`) is what the adapter holds per live episode; the stack is what it gathers out of it.
+
+`stack_pad` fills the window before an episode has produced enough steps:
+
+- `"first"` (default) replicates the first observed frame, so the stack is full from step zero — what every spec written before `offsets` existed already got.
+- `"black"` writes a raw 8-bit `0` frame _through the plan_, so under `normalize = [-1, 1]` a black pad frame is `-1.0`, matching `fill`'s doctrine for an absent camera. The name says what the pixels are, never what the tensor holds.
+
+The window advances once per env step — including a step whose action came from a replayed chunk, which assembles no payload but still observes. A frame window therefore holds consecutive steps at any execution horizon, never decision points.
+
+## Cropping
+
+`ImageInput.crop` (a side fraction) or `crop_area` (the same box as an area fraction, side = its square root) keeps a center box of the frame; declaring both is a resolve error, and each is bounded to `(0, 1]` at the wire. `crop_mode` says where the box meets the resize:
+
+- `"zoom"` (default) — the _fractional_ box is handed straight to the resampler above, which samples it onto the target in one pass. Anchored on PIL's `Image.resize(size, box=...)`: `center = box_start + (i + 0.5) * (box_end - box_start) / dst`, taps clamped to the **whole frame**, so the filter still reaches past the box edge exactly as Pillow's does.
+- `"slice"` — an _integer_ center box, `round(side * fraction)` pixels (clamped to at least 1), cut before the resize, which then sees only the cut.
+
+`allow_upscale` is measured against the box, not the camera: a crop is what the resize actually reads, so cropping past the target is an upscale.
+
+`channel_order = "bgr"` swaps red and blue after the spatial ops and before the dtype cast, and requires a 3-channel image. The full order is **upright → jpeg → crop → resize → channel swap → normalize/dtype → layout → lead dims**.
+
+Crop, JPEG and channel-order steps are reported by `describe` (`jpeg q95`, `zoom 0.949 (crop 90.0% area)`, `crop 0.667 (slice) -> 320x320`, `bgr`) and carry **no advisory**: they are declared behavior, not a conversion the resolver chose.
+
+## JPEG round-trip
+
+`ImageInput.jpeg_quality` (1-100, the IJG scale) encodes the frame as JPEG and decodes it again, reproducing the codec artifacts a model trained on stored JPEGs saw. It runs on the **upright frame, before the crop and resize** — encoding after a crop would put the 8×8 block grid and the chroma subsampling at the wrong scale. It requires a 3-channel image (JPEG subsampling is defined on YCbCr), which resolution enforces.
+
+**The profile is the contract**, because another engine reproducing `apply_jpeg_q95` has to write the same stream:
+
+- **Baseline sequential** (`SOF0`), 8-bit samples, no restart intervals, no progressive scans.
+- **4:2:0 chroma subsampling**: luma sampling factors 2×2, both chroma planes 1×1 — half resolution on each axis. Chroma is reduced by a **box average** over each 2×2 block (libjpeg's `h2v2_downsample`), not by picking a corner sample.
+- **The standard IJG quantization tables** (the Annex K luma and chroma tables) scaled by the quality, and **the standard IJG Huffman tables** — not per-image optimized tables.
+- **RGB → YCbCr** by the JFIF (BT.601) matrix, the JFIF density defaults, and no embedded ICC or Exif segments.
+
+That is what `tf.io.encode_jpeg(..., quality=q)` and Pillow's `Image.save(..., "JPEG", quality=q)` write by default; the vectors are pinned against the encoder, and the Python suite's `test_jpeg_roundtrip_is_near_pillows_q95_jpeg` anchors it to Pillow (libjpeg) continuously. That anchor is **near**, not exact: the profile agrees, but libjpeg's IDCT and the decoder behind the vectors round differently in the last place, so it is pinned at _within 2 levels on at least 99% of pixels and 4 anywhere_ — on a natural frame it lands inside 2 everywhere. A conforming implementation reproduces `apply_jpeg_q95` exactly (the vectors are encoder-to-decoder within one engine); an engine using a different decoder should expect the same near-anchor tolerance rather than byte identity.
+
+**Composition.** The round-trip composes with every other image step by position, not by special case: it sees the frame after any 180° rotation and before any crop, so `jpeg + crop + resize` (pinned by `resolve_describe_jpeg_steps`) encodes the full camera frame, then the crop and resize read the decoded result — identical to a pipeline that saved a JPEG, reopened it, and cropped. The codec is pinned by version (`jpeg-encoder = "=0.7.1"`), because a retuned encoder is a vector change, not a dependency update.

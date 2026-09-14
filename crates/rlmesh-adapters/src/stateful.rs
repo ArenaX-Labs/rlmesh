@@ -2,9 +2,10 @@
 //! per-lane assemble/apply seam.
 //!
 //! Frame-stacking is per-episode state that used to live host-side in the
-//! Python binding (`adapter.py` `_buffers`/`_stack_frames`). It relocates here,
-//! keyed by `episode_id`, so a vectorized serve route frame-stacks each lane
-//! correctly without the state ever crossing the network or living in Python.
+//! Python binding. It lives here, keyed by `episode_id`, so a vectorized serve
+//! route frame-stacks each lane correctly without the state ever crossing the
+//! network or living in Python — and so the in-process path stacks through the
+//! same ring rather than a host-side copy of it.
 //!
 //! [`assemble_obs`] and [`apply_actions`] are the frozen per-lane seam the core
 //! handler drives once per lane. They are deliberately single-sample: a future
@@ -25,7 +26,8 @@ use rlmesh_spaces::{SpaceKind, SpaceSpec, SpaceValue, Tensor};
 use crate::apply::value::{cast, to_f64_vec};
 use crate::apply::{CustomTransform, Value};
 use crate::error::ApplyError;
-use crate::plans::ResolvedAdapter;
+use crate::plans::{ImagePlan, ObsPlan, ResolvedAdapter, StackedPlacement};
+use crate::spec::StackPad;
 
 /// Upper bound on frame-stack depth (mirrors the spec's `MAX_STACK`). A raw
 /// native caller must not buffer an unbounded window and exhaust memory; the
@@ -82,7 +84,7 @@ impl EncodingTransform for NoEncodings {
 ///   `episode_id` is stable, so the entry follows the episode, not the index.
 #[derive(Default)]
 pub struct FrameBuffers {
-    inner: HashMap<String, BTreeMap<String, VecDeque<Tensor>>>,
+    inner: HashMap<String, BTreeMap<String, Window>>,
 }
 
 impl FrameBuffers {
@@ -113,16 +115,129 @@ impl FrameBuffers {
         self.inner
             .values()
             .flat_map(|windows| windows.values())
-            .flatten()
+            .flat_map(|window| window.frames.iter())
             .map(|tensor| tensor.nbytes() as u64)
             .sum()
     }
 
     /// The per-key window map for an episode, created lazily if absent.
-    fn episode(&mut self, episode_id: &str) -> &mut BTreeMap<String, VecDeque<Tensor>> {
+    fn episode(&mut self, episode_id: &str) -> &mut BTreeMap<String, Window> {
         self.inner.entry(episode_id.to_owned()).or_default()
     }
 }
+
+/// One input's rolling frame window: the `span` most recent processed frames,
+/// oldest first.
+///
+/// `span` is what the window *holds*; the stacked tensor is what the plan's
+/// offsets *gather* out of it. For a contiguous stack the two coincide (hold 4,
+/// stack all 4); a strided stack holds every frame in its reach and gathers a
+/// few (hold 7, stack frames `-6, -4, -2, 0`). One ring, both cases.
+#[derive(Debug, Default)]
+struct Window {
+    frames: VecDeque<Tensor>,
+}
+
+impl Window {
+    /// Push one processed frame, padding the start of an episode so the window
+    /// is full from step zero.
+    ///
+    /// The pad is the first observed frame ([`StackPad::First`], the default) or
+    /// a black frame ([`StackPad::Black`]) — raw 8-bit `0` as the plan would
+    /// have produced it, so under `normalize = [-1, 1]` a black pad really is
+    /// `-1.0`.
+    fn push(
+        &mut self,
+        frame: Tensor,
+        entry: &StackedPlacement,
+        plan: &ImagePlan,
+    ) -> Result<(), ApplyError> {
+        let span = entry.span as usize;
+        debug_assert!(
+            entry.depth as usize <= MAX_STACK,
+            "stack depth {} exceeds {MAX_STACK}",
+            entry.depth
+        );
+        if self.frames.is_empty() {
+            let pad = match entry.stack_pad {
+                StackPad::First => frame.clone(),
+                StackPad::Black => black_frame(&frame, plan)?,
+            };
+            for _ in 0..span.saturating_sub(1) {
+                self.frames.push_back(pad.clone());
+            }
+        }
+        if self.frames.len() == span {
+            self.frames.pop_front();
+        }
+        self.frames.push_back(frame);
+        Ok(())
+    }
+
+    /// Stack the window's frames onto a new leading axis, oldest first.
+    ///
+    /// A contiguous stack takes the whole window; a strided one gathers the
+    /// declared offsets back from the newest frame.
+    fn gather(&mut self, entry: &StackedPlacement) -> Result<Tensor, ApplyError> {
+        let stacked = match &entry.offsets {
+            None => Tensor::stack(self.frames.make_contiguous()),
+            Some(offsets) => {
+                let newest = self.frames.len().saturating_sub(1);
+                let picked = offsets
+                    .iter()
+                    .map(|&offset| {
+                        newest
+                            .checked_sub(offset.unsigned_abs() as usize)
+                            .and_then(|index| self.frames.get(index))
+                            .cloned()
+                            .ok_or_else(|| {
+                                ApplyError::new(format!(
+                                    "frame window for '{}' holds {} frame(s), too few to reach                                      offset {offset}",
+                                    entry.key,
+                                    self.frames.len()
+                                ))
+                            })
+                    })
+                    .collect::<Result<Vec<Tensor>, ApplyError>>()?;
+                Tensor::stack(&picked)
+            }
+        };
+        stacked.map_err(|err| ApplyError::new(format!("frame-stack failed: {err}")))
+    }
+}
+
+#[cfg(test)]
+impl<const N: usize> From<[Tensor; N]> for Window {
+    fn from(frames: [Tensor; N]) -> Self {
+        Self {
+            frames: VecDeque::from(frames),
+        }
+    }
+}
+
+/// A black frame the shape and dtype of a processed one.
+///
+/// Raw 8-bit `0` pushed through the plan is a constant frame, and every step
+/// after the normalize map (channel swap, layout transpose, lead dims) either
+/// permutes or reshapes it — so the level alone reconstructs it exactly:
+/// `normalize`'s low end when the plan normalizes, `0` when it does not. The
+/// `as f32` round trip matches `finalize_dtype`'s own arithmetic bit for bit.
+fn black_frame(frame: &Tensor, plan: &ImagePlan) -> Result<Tensor, ApplyError> {
+    let level = plan.normalize.map_or(0.0, |(low, _)| f64::from(low as f32));
+    crate::apply::value::encode_f64_to(
+        vec![level; frame.numel()],
+        frame.shape().to_vec(),
+        frame.dtype(),
+    )
+}
+
+/// Upper bound on the runtime's execution horizon `h` (how many actions of one
+/// predicted chunk are executed before re-planning). A pin above this is a
+/// configuration error, not a capability question: the replay buffer is held in
+/// memory per lane, and a four-digit horizon is always a mis-set knob rather than
+/// a real open-loop plan. Enforced at engine resolve, at the SDK session seam,
+/// and as the `maximum` on the platform's own horizon knobs.
+pub const MAX_EXECUTION_HORIZON: u32 = 1024;
 
 /// Split a chunked model action into its per-step actions (the leading axis is
 /// the chunk axis). A `Value::Tensor` of shape `[chunk, ..]` unstacks along axis
@@ -183,37 +298,6 @@ pub fn split_chunk(raw_action: Value) -> Result<Vec<Value>, ApplyError> {
     }
 }
 
-/// Push one frame into a rolling window and return the stacked tensor.
-///
-/// Reproduces the Python `_stack_frames` algorithm byte-for-byte: oldest-first
-/// order on a new leading axis, first-frame replication padding at the start of
-/// an episode (so the window is full from step zero), and a `maxlen = depth`
-/// sliding window.
-fn stack_frame(
-    window: &mut VecDeque<Tensor>,
-    frame: Tensor,
-    depth: u32,
-) -> Result<Tensor, ApplyError> {
-    let depth = depth as usize;
-    debug_assert!(
-        depth <= MAX_STACK,
-        "stack depth {depth} exceeds {MAX_STACK}"
-    );
-    // Start-of-episode pad: replicate the first observed frame so step 0 stacks
-    // `[f0, f0, ..., f0]` rather than a short window.
-    if window.is_empty() {
-        for _ in 0..depth.saturating_sub(1) {
-            window.push_back(frame.clone());
-        }
-    }
-    if window.len() == depth {
-        window.pop_front();
-    }
-    window.push_back(frame);
-    Tensor::stack(window.make_contiguous())
-        .map_err(|err| ApplyError::new(format!("frame-stack failed: {err}")))
-}
-
 /// Assemble one lane's model-input payload from its raw observation.
 ///
 /// Pipeline order (matching the Python truth, `adapter.py:179-205`):
@@ -263,11 +347,45 @@ pub fn assemble_obs(
             } else {
                 windows.entry(entry.key.clone()).or_default()
             };
-            let stacked_tensor = stack_frame(window, frame, entry.depth)?;
-            *slot = Value::Tensor(stacked_tensor);
+            let ObsPlan::Image(image_plan) = &adapter.obs_plans[entry.plan_index] else {
+                unreachable!("only image plans are ever stacked")
+            };
+            window.push(frame, entry, image_plan)?;
+            *slot = Value::Tensor(window.gather(entry)?);
         }
     }
     Ok(payload)
+}
+
+/// Advance one lane's frame windows from a raw observation, assembling nothing.
+///
+/// The observe tick: an env step that replays a queued action still happened, so
+/// every frame window has to see its frame or the history the next predict
+/// stacks would be the decision points rather than the steps. Pushes exactly the
+/// frames [`ResolvedAdapter::history_frames`] produces and returns; a route with
+/// no stacked input does nothing at all.
+pub fn observe_obs(
+    adapter: &ResolvedAdapter,
+    raw_obs: &BTreeMap<String, Value>,
+    episode_id: &str,
+    buffers: &mut FrameBuffers,
+) -> Result<(), ApplyError> {
+    let stacked = adapter.stacked_placements();
+    if stacked.is_empty() {
+        return Ok(());
+    }
+    let frames = adapter.history_frames(raw_obs)?;
+    let windows = buffers.episode(episode_id);
+    for (entry, frame) in stacked.iter().zip(frames) {
+        let ObsPlan::Image(image_plan) = &adapter.obs_plans[entry.plan_index] else {
+            unreachable!("only image plans are ever stacked")
+        };
+        windows
+            .entry(entry.key.clone())
+            .or_default()
+            .push(frame, entry, image_plan)?;
+    }
+    Ok(())
 }
 
 /// Convert one lane's model action into the env action [`SpaceValue`].
@@ -515,10 +633,10 @@ mod tests {
 
         buffers
             .episode("ep-1")
-            .insert("image".to_owned(), VecDeque::from([frame(1), frame(2)]));
+            .insert("image".to_owned(), Window::from([frame(1), frame(2)]));
         buffers
             .episode("ep-2")
-            .insert("image".to_owned(), VecDeque::from([frame(3)]));
+            .insert("image".to_owned(), Window::from([frame(3)]));
         assert_eq!(buffers.episodes(), 2);
         // Three 2-byte uint8 frames held across the two episodes.
         assert_eq!(buffers.state_bytes(), 6);
@@ -527,42 +645,6 @@ mod tests {
         assert_eq!((buffers.episodes(), buffers.state_bytes()), (1, 2));
         buffers.clear();
         assert_eq!((buffers.episodes(), buffers.state_bytes()), (0, 0));
-    }
-
-    #[test]
-    fn stack_frame_first_frame_pads_then_slides() {
-        // Reproduces Python `_stack_frames`: depth-1 copies of the first frame,
-        // oldest-first, maxlen=depth sliding window.
-        let mut window = VecDeque::new();
-
-        let step0 = stack_frame(&mut window, frame(10), 3).expect("step0");
-        assert_eq!(step0.shape(), &[3, 2]);
-        // [f0, f0, f0]
-        assert_eq!(
-            step0.to_contiguous_bytes().as_ref(),
-            &[10, 11, 10, 11, 10, 11]
-        );
-
-        // [f0, f0, f1]
-        let step1 = stack_frame(&mut window, frame(20), 3).expect("step1");
-        assert_eq!(
-            step1.to_contiguous_bytes().as_ref(),
-            &[10, 11, 10, 11, 20, 21]
-        );
-
-        // [f0, f1, f2]
-        let step2 = stack_frame(&mut window, frame(30), 3).expect("step2");
-        assert_eq!(
-            step2.to_contiguous_bytes().as_ref(),
-            &[10, 11, 20, 21, 30, 31]
-        );
-
-        // [f1, f2, f3] — oldest evicted (maxlen=3)
-        let step3 = stack_frame(&mut window, frame(40), 3).expect("step3");
-        assert_eq!(
-            step3.to_contiguous_bytes().as_ref(),
-            &[20, 21, 30, 31, 40, 41]
-        );
     }
 
     #[test]
@@ -727,16 +809,26 @@ mod tests {
         assert!(value_max_abs_diff(&Value::Number(1.0), &tensor(&[1.0])).is_none());
     }
 
-    #[test]
-    fn assemble_obs_stacks_each_episode_independently_across_autoreset() {
-        use crate::apply::NoCustoms;
+    /// A pass-through (no resize/normalize) single-image adapter that stacks
+    /// `stack` consecutive frames. One literal, shared by the stacking tests, so
+    /// a new [`ImagePlan`] field lands in one place.
+    fn stacked_adapter(stack: u32) -> crate::plans::ResolvedAdapter {
+        strided_adapter(stack, None, StackPad::First, None)
+    }
+
+    /// The same adapter with a declared window: `offsets` gathers, `stack_pad`
+    /// fills the start of an episode, `normalize` (a `(low, high)` pair) is what
+    /// a black pad frame has to land on.
+    fn strided_adapter(
+        stack: u32,
+        offsets: Option<Vec<i32>>,
+        stack_pad: StackPad,
+        normalize: Option<(f64, f64)>,
+    ) -> crate::plans::ResolvedAdapter {
         use crate::plans::{ActionPlan, ImagePlan, ObsPlan, ResolvedAdapter};
         use crate::spec::ImageLayout;
 
-        // A frame-stacking (depth-2) single-image adapter that passes the image
-        // through unchanged (no resize/flip/normalize), so the stacked bytes are
-        // exactly the input frames.
-        let adapter = ResolvedAdapter::new(
+        ResolvedAdapter::new(
             vec![ObsPlan::Image(ImagePlan {
                 placement: crate::path::NodePath::root().push_key("cam"),
                 source: crate::path::NodePath::root().push_key("cam"),
@@ -746,13 +838,24 @@ mod tests {
                 size: None,
                 fit: crate::spec::FitMode::Stretch,
                 resample: "bilinear_aa".to_owned(),
-                dtype: "uint8".to_owned(),
-                normalize: None,
+                dtype: if normalize.is_some() {
+                    "float32".to_owned()
+                } else {
+                    "uint8".to_owned()
+                },
+                normalize,
                 lead_dims: 0,
                 src_range: Some((0.0, 255.0)),
-                stack: 2,
+                stack,
                 zero_fill: None,
                 fill: 0,
+                crop: None,
+                jpeg_quality: None,
+                swap_rb: false,
+                render: None,
+                offsets,
+                stack_pad,
+                frame_bytes: 3,
                 role_rebound: None,
             })],
             ActionPlan {
@@ -762,37 +865,232 @@ mod tests {
             },
             Vec::new(),
             Vec::new(),
+        )
+    }
+
+    /// A 1x1x3 uint8 frame whose every byte is `tag` — a per-step fingerprint.
+    fn tagged_obs(tag: u8) -> BTreeMap<String, Value> {
+        let image = Tensor::from_vec(vec![tag, tag, tag], vec![1, 1, 3], DType::Uint8)
+            .expect("tagged frame");
+        [("cam".to_owned(), Value::Tensor(image))]
+            .into_iter()
+            .collect()
+    }
+
+    /// The stacked `cam` tensor's shape and bytes out of an assembled payload.
+    fn cam_stack(payload: &Value) -> (Vec<i64>, Vec<u8>) {
+        let Value::Map(map) = payload else {
+            panic!("payload not a map: {payload:?}");
+        };
+        match map.get("cam").expect("cam present") {
+            Value::Tensor(tensor) => (
+                tensor.shape().to_vec(),
+                tensor.to_contiguous_bytes().into_owned(),
+            ),
+            other => panic!("cam not a tensor: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn contiguous_stack_bytes_are_frozen() {
+        use crate::apply::NoCustoms;
+
+        // GOLDEN LOCK. A contiguous stack (no declared offsets, first-frame pad)
+        // is the behaviour every spec written before strided history depends on:
+        // oldest-first on a new leading axis, the start of an episode padded with
+        // copies of the first frame, a `maxlen = depth` sliding window. These
+        // bytes are the contract — the window internals may be rebuilt around
+        // them, but they may not move.
+        let adapter = stacked_adapter(3);
+        let mut buffers = FrameBuffers::new();
+        let step = |adapter: &ResolvedAdapter, tag: u8, buffers: &mut FrameBuffers| {
+            cam_stack(
+                &assemble_obs(
+                    adapter,
+                    &tagged_obs(tag),
+                    "ep",
+                    buffers,
+                    &NoCustoms,
+                    &NoEncodings,
+                )
+                .expect("assemble"),
+            )
+        };
+
+        // (depth, *frame) on a new leading axis.
+        assert_eq!(
+            step(&adapter, 10, &mut buffers),
+            (vec![3, 1, 1, 3], vec![10; 9])
         );
-        // A 1x1x3 image whose every byte is `tag` — a per-frame fingerprint.
-        let obs = |tag: u8| -> BTreeMap<String, Value> {
-            let image = Tensor::from_vec(vec![tag, tag, tag], vec![1, 1, 3], DType::Uint8).unwrap();
-            [("cam".to_owned(), Value::Tensor(image))]
-                .into_iter()
-                .collect()
+        // [f0, f0, f1]
+        assert_eq!(
+            step(&adapter, 11, &mut buffers).1,
+            vec![10, 10, 10, 10, 10, 10, 11, 11, 11]
+        );
+        // [f0, f1, f2]
+        assert_eq!(
+            step(&adapter, 12, &mut buffers).1,
+            vec![10, 10, 10, 11, 11, 11, 12, 12, 12]
+        );
+        // [f1, f2, f3] — the oldest frame is evicted at depth.
+        assert_eq!(
+            step(&adapter, 13, &mut buffers).1,
+            vec![11, 11, 11, 12, 12, 12, 13, 13, 13]
+        );
+        // [f2, f3, f4]
+        assert_eq!(
+            step(&adapter, 14, &mut buffers).1,
+            vec![12, 12, 12, 13, 13, 13, 14, 14, 14]
+        );
+    }
+
+    #[test]
+    fn a_strided_window_gathers_the_rldx_frame_table() {
+        use crate::apply::NoCustoms;
+
+        // rldx's hand-rolled history: a 7-deep buffer sampled at
+        // `FRAME_INDICES = [0, 2, 4, 6]`, i.e. offsets [-6, -4, -2, 0] off the
+        // current step. The table below is that arithmetic, clamped at the start
+        // of an episode exactly as its `max(end, 0)` does.
+        let adapter = strided_adapter(4, Some(vec![-6, -4, -2, 0]), StackPad::First, None);
+        let mut buffers = FrameBuffers::new();
+        let step = |tag: u8, buffers: &mut FrameBuffers| {
+            cam_stack(
+                &assemble_obs(
+                    &adapter,
+                    &tagged_obs(tag),
+                    "ep",
+                    buffers,
+                    &NoCustoms,
+                    &NoEncodings,
+                )
+                .expect("assemble"),
+            )
         };
-        let cam_bytes = |payload: &Value| -> Vec<u8> {
-            let Value::Map(map) = payload else {
-                panic!("payload not a map: {payload:?}");
-            };
-            match map.get("cam").unwrap() {
-                Value::Tensor(tensor) => {
-                    assert_eq!(tensor.shape(), &[2, 1, 1, 3]); // (depth, *frame)
-                    tensor.to_contiguous_bytes().into_owned()
-                }
-                other => panic!("cam not a tensor: {other:?}"),
+        // Frames are tagged by their step number, so the expected table reads as
+        // the frame indices upstream would have taken.
+        let table: [(u8, [u8; 4]); 9] = [
+            (0, [0, 0, 0, 0]),
+            (1, [0, 0, 0, 1]),
+            (2, [0, 0, 0, 2]),
+            (3, [0, 0, 1, 3]),
+            (4, [0, 0, 2, 4]),
+            (5, [0, 1, 3, 5]),
+            (6, [0, 2, 4, 6]),
+            (7, [1, 3, 5, 7]),
+            (8, [2, 4, 6, 8]),
+        ];
+        for (tag, expected) in table {
+            let (shape, bytes) = step(tag, &mut buffers);
+            assert_eq!(shape, vec![4, 1, 1, 3], "step {tag}: shape");
+            let picked: Vec<u8> = bytes.chunks(3).map(|frame| frame[0]).collect();
+            assert_eq!(picked, expected, "step {tag}");
+        }
+    }
+
+    #[test]
+    fn a_black_pad_lands_on_the_plan_s_normalized_floor() {
+        use crate::apply::NoCustoms;
+
+        // hy-vla's window: 6 frames at stride 5, and the slots whose un-clipped
+        // index is negative are BLACK, not a replayed first frame. Under
+        // `normalize = [-1, 1]` "black" is raw 8-bit 0 pushed through the plan,
+        // so the pad frames read -1.0 — the name says what the pixels are, never
+        // what the tensor holds.
+        let adapter = strided_adapter(
+            6,
+            Some(vec![-25, -20, -15, -10, -5, 0]),
+            StackPad::Black,
+            Some((-1.0, 1.0)),
+        );
+        let mut buffers = FrameBuffers::new();
+        let first = assemble_obs(
+            &adapter,
+            &tagged_obs(255),
+            "ep",
+            &mut buffers,
+            &NoCustoms,
+            &NoEncodings,
+        )
+        .expect("assemble");
+        let Value::Map(map) = &first else {
+            panic!("payload not a map");
+        };
+        let Value::Tensor(stacked) = map.get("cam").expect("cam") else {
+            panic!("cam not a tensor");
+        };
+        assert_eq!(stacked.shape(), &[6, 1, 1, 3]);
+        let values = crate::apply::value::to_f64_vec(stacked);
+        // Five black pad slots at the normalize floor, then the real frame at 1.0.
+        assert_eq!(&values[..15], &[-1.0f64; 15]);
+        assert_eq!(&values[15..], &[1.0f64; 3]);
+        // The window holds the whole 26-frame span even though it stacks 6.
+        assert_eq!(buffers.state_bytes(), 26 * 3 * 4);
+    }
+
+    #[test]
+    fn observing_a_step_advances_the_window_exactly_like_assembling_one() {
+        use crate::apply::NoCustoms;
+
+        // The horizon invariant, at the seam: a step whose action was replayed
+        // still pushes its frame. A window ticked by `observe_obs` on the steps
+        // between predicts must therefore stack the same frames as one that
+        // assembled every step.
+        let adapter = strided_adapter(3, Some(vec![-4, -2, 0]), StackPad::First, None);
+        let assembled = |buffers: &mut FrameBuffers, tag: u8| {
+            cam_stack(
+                &assemble_obs(
+                    &adapter,
+                    &tagged_obs(tag),
+                    "ep",
+                    buffers,
+                    &NoCustoms,
+                    &NoEncodings,
+                )
+                .expect("assemble"),
+            )
+            .1
+        };
+
+        // Every step assembles (execution_horizon = 1).
+        let mut every_step = FrameBuffers::new();
+        let mut expected = Vec::new();
+        for tag in 0..8u8 {
+            expected.push(assembled(&mut every_step, tag));
+        }
+
+        // Every third step assembles; the two in between only observe.
+        let mut chunked = FrameBuffers::new();
+        for tag in 0..8u8 {
+            if tag % 3 == 0 {
+                assert_eq!(assembled(&mut chunked, tag), expected[tag as usize]);
+            } else {
+                observe_obs(&adapter, &tagged_obs(tag), "ep", &mut chunked).expect("observe");
             }
-        };
+        }
+    }
+
+    #[test]
+    fn assemble_obs_stacks_each_episode_independently_across_autoreset() {
+        use crate::apply::NoCustoms;
+
+        // A frame-stacking (depth-2) single-image adapter that passes the image
+        // through unchanged, so the stacked bytes are exactly the input frames.
+        let adapter = stacked_adapter(2);
         let stack =
             |adapter: &ResolvedAdapter, tag: u8, episode: &str, buffers: &mut FrameBuffers| {
-                assemble_obs(
+                let payload = assemble_obs(
                     adapter,
-                    &obs(tag),
+                    &tagged_obs(tag),
                     episode,
                     buffers,
                     &NoCustoms,
                     &NoEncodings,
                 )
-                .unwrap()
+                .unwrap();
+                let (shape, bytes) = cam_stack(&payload);
+                assert_eq!(shape, vec![2, 1, 1, 3]); // (depth, *frame)
+                bytes
             };
 
         // Two lanes (episodes ep-a, ep-b) share ONE FrameBuffers, keyed by
@@ -800,21 +1098,15 @@ mod tests {
         let mut buffers = FrameBuffers::new();
 
         // Step 0: each episode first-frame-pads independently.
-        assert_eq!(
-            cam_bytes(&stack(&adapter, 10, "ep-a", &mut buffers)),
-            vec![10; 6]
-        );
-        assert_eq!(
-            cam_bytes(&stack(&adapter, 20, "ep-b", &mut buffers)),
-            vec![20; 6]
-        );
+        assert_eq!(stack(&adapter, 10, "ep-a", &mut buffers), vec![10; 6]);
+        assert_eq!(stack(&adapter, 20, "ep-b", &mut buffers), vec![20; 6]);
         // Step 1: each episode slides independently (no cross-contamination).
         assert_eq!(
-            cam_bytes(&stack(&adapter, 11, "ep-a", &mut buffers)),
+            stack(&adapter, 11, "ep-a", &mut buffers),
             vec![10, 10, 10, 11, 11, 11]
         );
         assert_eq!(
-            cam_bytes(&stack(&adapter, 21, "ep-b", &mut buffers)),
+            stack(&adapter, 21, "ep-b", &mut buffers),
             vec![20, 20, 20, 21, 21, 21]
         );
 
@@ -822,13 +1114,10 @@ mod tests {
         // begins — the engine's per-lane reset edge.
         buffers.evict("ep-a");
         // The rolled lane first-frame-pads fresh: no leak from ep-a's history.
-        assert_eq!(
-            cam_bytes(&stack(&adapter, 30, "ep-c", &mut buffers)),
-            vec![30; 6]
-        );
+        assert_eq!(stack(&adapter, 30, "ep-c", &mut buffers), vec![30; 6]);
         // ...and the still-running lane B continues uncontaminated by either roll.
         assert_eq!(
-            cam_bytes(&stack(&adapter, 22, "ep-b", &mut buffers)),
+            stack(&adapter, 22, "ep-b", &mut buffers),
             vec![21, 21, 21, 22, 22, 22]
         );
     }

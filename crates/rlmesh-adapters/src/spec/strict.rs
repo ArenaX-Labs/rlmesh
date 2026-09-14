@@ -28,6 +28,7 @@ use crate::path::NodePath;
 
 use super::action::Action;
 use super::env_tags::{EnvTags, ObsLeaf, ObsNode};
+use super::frames::{Attr, FrameLaw, FrameRef, ReferenceLaw};
 use super::model::{InputNode, ModelLeaf, ModelSpec};
 
 /// Reject any bare unknown field **or** unknown leaf kind in an env spec (the
@@ -157,10 +158,13 @@ fn model_leaf_roles(leaf: &ModelLeaf, path: &NodePath, policy: RolePolicy) -> Re
     let locus = format!("model input {:?}", path.to_string());
     match leaf {
         ModelLeaf::Image(input) => reject_role(&input.role, &locus, policy),
+        // A role-less part is a declared constant, not a role claim: there is
+        // nothing for the role tier to sanction.
         ModelLeaf::State(input) => input
             .components
             .iter()
-            .try_for_each(|part| reject_role(&part.role, &locus, policy)),
+            .filter_map(|part| part.role.as_deref())
+            .try_for_each(|role| reject_role(role, &locus, policy)),
         ModelLeaf::Text(input) => reject_role(&input.role, &locus, policy),
         ModelLeaf::Custom(_) | ModelLeaf::Unknown { .. } => Ok(()),
     }
@@ -171,6 +175,127 @@ fn reject_action_roles(action: &Action, policy: RolePolicy) -> Result<(), String
         if let Some(role) = &actuator.role {
             reject_role(role, &format!("action component[{index}]"), policy)?;
         }
+    }
+    Ok(())
+}
+
+/// The publish-gate policy for the geometry attributes (`frame`, `reference`).
+///
+/// The registry says which roles they apply to ([`FrameLaw::Framed`],
+/// [`ReferenceLaw::Referenced`]); this says whether a spec must actually
+/// declare them. Opt-in, because an absent frame is legal v1 and every
+/// pre-geometry spec would fail the strict tier.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FramePolicy {
+    /// A declared frame is checked for agreement at resolve, but an absent one
+    /// is fine -- the v1 default.
+    Allow,
+    /// Every role whose registry entry says a geometry attribute applies must
+    /// declare it. The managed opt-in (`spec-normalize --require-frames`).
+    Require,
+}
+
+/// Reject any role in an env spec that owes a geometry attribute and omits one.
+pub fn reject_unframed_roles_env(tags: &EnvTags, policy: FramePolicy) -> Result<(), String> {
+    if policy == FramePolicy::Allow {
+        return Ok(());
+    }
+    walk_obs_frames(&tags.observation, &NodePath::root())?;
+    reject_unframed_action(&tags.action)
+}
+
+/// Reject any role in a model spec that owes a geometry attribute and omits one.
+pub fn reject_unframed_roles_model(spec: &ModelSpec, policy: FramePolicy) -> Result<(), String> {
+    if policy == FramePolicy::Allow {
+        return Ok(());
+    }
+    walk_input_frames(&spec.input, &NodePath::root())?;
+    reject_unframed_action(&spec.output)
+}
+
+/// Reject one role that owes `attr` and declares nothing.
+fn require_attr(
+    role: &str,
+    attr: Attr,
+    declared: Option<&FrameRef>,
+    locus: &str,
+) -> Result<(), String> {
+    let owed = match (attr, crate::roles::registry::role_def(role)) {
+        (Attr::Frame, Some(def)) => def.frame == FrameLaw::Framed,
+        (Attr::Reference, Some(def)) => def.reference == ReferenceLaw::Referenced,
+        (_, None) => false,
+    };
+    if !owed || declared.is_some() {
+        return Ok(());
+    }
+    Err(format!(
+        "{locus} declares role {role:?} without a {}; this gate requires one of {:?}",
+        attr.name(),
+        attr.vocabulary()
+    ))
+}
+
+fn walk_obs_frames(node: &ObsNode, path: &NodePath) -> Result<(), String> {
+    match node {
+        ObsNode::Leaf(leaf) => {
+            let locus = format!("observation {:?}", path.to_string());
+            match leaf {
+                ObsLeaf::State(tag) => {
+                    require_attr(&tag.role, Attr::Frame, tag.frame.as_ref(), &locus)
+                }
+                ObsLeaf::Split(layout) => {
+                    layout
+                        .fields
+                        .iter()
+                        .try_for_each(|field| match &field.role {
+                            Some(role) => {
+                                require_attr(role, Attr::Frame, field.frame.as_ref(), &locus)
+                            }
+                            None => Ok(()),
+                        })
+                }
+                _ => Ok(()),
+            }
+        }
+        ObsNode::Dict(map) => map
+            .iter()
+            .try_for_each(|(key, child)| walk_obs_frames(child, &path.push_key(key.clone()))),
+        ObsNode::Tuple(items) => items
+            .iter()
+            .enumerate()
+            .try_for_each(|(index, child)| walk_obs_frames(child, &path.push_index(index))),
+    }
+}
+
+fn walk_input_frames(node: &InputNode, path: &NodePath) -> Result<(), String> {
+    match node {
+        InputNode::Leaf(ModelLeaf::State(input)) => {
+            let locus = format!("model input {:?}", path.to_string());
+            input
+                .components
+                .iter()
+                .try_for_each(|part| match &part.role {
+                    Some(role) => require_attr(role, Attr::Frame, part.frame.as_ref(), &locus),
+                    None => Ok(()),
+                })
+        }
+        InputNode::Leaf(_) => Ok(()),
+        InputNode::Dict(map) => map
+            .iter()
+            .try_for_each(|(key, child)| walk_input_frames(child, &path.push_key(key.clone()))),
+        InputNode::Tuple(items) => items
+            .iter()
+            .enumerate()
+            .try_for_each(|(index, child)| walk_input_frames(child, &path.push_index(index))),
+    }
+}
+
+fn reject_unframed_action(action: &Action) -> Result<(), String> {
+    for (index, actuator) in action.components.iter().enumerate() {
+        let Some(role) = &actuator.role else { continue };
+        let locus = format!("action component[{index}]");
+        require_attr(role, Attr::Frame, actuator.frame.as_ref(), &locus)?;
+        require_attr(role, Attr::Reference, actuator.reference.as_ref(), &locus)?;
     }
     Ok(())
 }
@@ -205,8 +330,20 @@ fn obs_leaf(leaf: &ObsLeaf, path: &NodePath, reject_kinds: bool) -> Result<(), S
         ObsLeaf::Image(tag) => bare_field(&tag.unknown, path),
         ObsLeaf::State(tag) => bare_field(&tag.unknown, path),
         ObsLeaf::Text(tag) => bare_field(&tag.unknown, path),
-        // SplitLayout / Field stay strict (their wire structs keep deny).
-        ObsLeaf::Split(_) => Ok(()),
+        // The SplitLayout envelope stays strict (its wire struct keeps deny);
+        // its `Field` leaves are growable and carry a capture map.
+        ObsLeaf::Split(layout) => {
+            layout
+                .fields
+                .iter()
+                .enumerate()
+                .try_for_each(|(index, field)| {
+                    bare_field_at(
+                        &field.unknown,
+                        &format!("feature {:?} field[{index}]", path.to_string()),
+                    )
+                })
+        }
         ObsLeaf::Unknown { kind, .. } if reject_kinds => {
             Err(unknown_kind_msg("observation", kind, path))
         }
@@ -229,7 +366,19 @@ fn walk_input(node: &InputNode, path: &NodePath, reject_kinds: bool) -> Result<(
 fn model_leaf(leaf: &ModelLeaf, path: &NodePath, reject_kinds: bool) -> Result<(), String> {
     match leaf {
         ModelLeaf::Image(input) => bare_field(&input.unknown, path),
-        ModelLeaf::State(input) => bare_field(&input.unknown, path),
+        ModelLeaf::State(input) => {
+            bare_field(&input.unknown, path)?;
+            input
+                .components
+                .iter()
+                .enumerate()
+                .try_for_each(|(index, part)| {
+                    bare_field_at(
+                        &part.unknown,
+                        &format!("feature {:?} part[{index}]", path.to_string()),
+                    )
+                })
+        }
         ModelLeaf::Text(input) => bare_field(&input.unknown, path),
         ModelLeaf::Custom(input) => bare_field(&input.unknown, path),
         ModelLeaf::Unknown { kind, .. } if reject_kinds => {
@@ -252,24 +401,27 @@ fn unknown_kind_msg(domain: &str, kind: &str, path: &NodePath) -> String {
 /// `Action`/`ActionWire` envelope itself stays strict (`deny_unknown_fields`).
 fn reject_action(action: &Action) -> Result<(), String> {
     for (index, actuator) in action.components.iter().enumerate() {
-        if let Some(field) = first_bare_field(&actuator.unknown) {
-            return Err(format!(
-                "action component[{index}] (role {:?}) declares unrecognized field {field:?}; \
-                 upgrade the runtime or drop the field (or prefix it `x-` to mark it ignorable)",
+        bare_field_at(
+            &actuator.unknown,
+            &format!(
+                "action component[{index}] (role {:?})",
                 actuator.role.as_deref().unwrap_or("opaque")
-            ));
-        }
+            ),
+        )?;
     }
     Ok(())
 }
 
 fn bare_field(unknown: &BTreeMap<String, Value>, path: &NodePath) -> Result<(), String> {
+    bare_field_at(unknown, &format!("feature {:?}", path.to_string()))
+}
+
+fn bare_field_at(unknown: &BTreeMap<String, Value>, locus: &str) -> Result<(), String> {
     match first_bare_field(unknown) {
         None => Ok(()),
         Some(field) => Err(format!(
-            "feature {:?} declares unrecognized field {field:?}; upgrade the runtime \
-             or drop the field (or prefix it `x-` to mark it ignorable)",
-            path.to_string()
+            "{locus} declares unrecognized field {field:?}; upgrade the runtime \
+             or drop the field (or prefix it `x-` to mark it ignorable)"
         )),
     }
 }
@@ -356,6 +508,101 @@ mod tests {
         .unwrap();
         let err = reject_unknowns_model(&dirty).unwrap_err();
         assert!(err.contains("wobble"), "got: {err}");
+    }
+
+    #[test]
+    fn inner_leaf_unknown_field_fails_the_gate() {
+        // The growable *inner* leaves: a split layout's `Field` and a state
+        // input's `ConcatPart`. Both parse leniently (this is where `frame`
+        // landed before PR-11 typed it) and both are named by the publish gate.
+        let dirty: EnvTags = serde_json::from_str(
+            r#"{"observation": {"s": {"type": "split",
+                    "fields": [{"role": "r", "dim": 1, "wobble": 1}]}},
+                "action": {"components": []}}"#,
+        )
+        .unwrap();
+        let err = reject_unknowns_env(&dirty).unwrap_err();
+        assert!(
+            err.contains("field[0]")
+                && err.contains("\"wobble\"")
+                && err.contains("prefix it `x-`"),
+            "got: {err}"
+        );
+        assert!(reject_bare_fields_env(&dirty).is_err(), "read taint");
+
+        let escaped: EnvTags = serde_json::from_str(
+            r#"{"observation": {"s": {"type": "split",
+                    "fields": [{"role": "r", "dim": 1, "x-note": 1}]}},
+                "action": {"components": []}}"#,
+        )
+        .unwrap();
+        assert!(reject_unknowns_env(&escaped).is_ok(), "`x-` is ignorable");
+
+        let dirty: ModelSpec = serde_json::from_str(
+            r#"{"input": {"type": "state", "components": [{"role": "r", "wobble": 1}]},
+                "output": {"components": []}}"#,
+        )
+        .unwrap();
+        let err = reject_unknowns_model(&dirty).unwrap_err();
+        assert!(
+            err.contains("part[0]") && err.contains("\"wobble\"") && err.contains("prefix it `x-`"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn require_frames_rejects_only_the_roles_that_owe_one() {
+        use super::{FramePolicy, reject_unframed_roles_env, reject_unframed_roles_model};
+
+        // The env declares a framed pose, a delta, and a gripper, all bare.
+        // `Allow` (the v1 default) is silent; `Require` names the first owed one.
+        let bare: EnvTags = serde_json::from_str(
+            r#"{"observation": {"p": {"type": "state", "role": "proprio/eef_pos"}},
+                "action": {"components": [
+                    {"role": "action/delta_eef_pos", "dim": 3},
+                    {"role": "action/gripper", "dim": 1}]}}"#,
+        )
+        .unwrap();
+        assert!(reject_unframed_roles_env(&bare, FramePolicy::Allow).is_ok());
+        let err = reject_unframed_roles_env(&bare, FramePolicy::Require).unwrap_err();
+        assert!(
+            err.contains("proprio/eef_pos") && err.contains("without a frame"),
+            "got: {err}"
+        );
+
+        // Declared on every owed role, `Require` passes -- and the gripper, which
+        // owes neither attribute, never had to say anything.
+        let declared: EnvTags = serde_json::from_str(
+            r#"{"observation": {"p": {"type": "state", "role": "proprio/eef_pos",
+                    "frame": "robot_base"}},
+                "action": {"components": [
+                    {"role": "action/delta_eef_pos", "dim": 3, "reference": "current"},
+                    {"role": "action/gripper", "dim": 1}]}}"#,
+        )
+        .unwrap();
+        assert!(reject_unframed_roles_env(&declared, FramePolicy::Require).is_ok());
+
+        // A delta owes a `reference`, not a `frame`.
+        let no_reference: EnvTags = serde_json::from_str(
+            r#"{"observation": {"c": {"type": "image", "role": "image/primary"}},
+                "action": {"components": [{"role": "action/delta_eef_pos", "dim": 3}]}}"#,
+        )
+        .unwrap();
+        let err = reject_unframed_roles_env(&no_reference, FramePolicy::Require).unwrap_err();
+        assert!(
+            err.contains("without a reference") && err.contains("current"),
+            "got: {err}"
+        );
+
+        // The model side walks state parts and its own action layout.
+        let model: ModelSpec = serde_json::from_str(
+            r#"{"input": {"type": "state", "components": [{"role": "proprio/eef_pos", "dim": 3}]},
+                "output": {"components": [{"role": "action/gripper", "dim": 1}]}}"#,
+        )
+        .unwrap();
+        assert!(reject_unframed_roles_model(&model, FramePolicy::Allow).is_ok());
+        let err = reject_unframed_roles_model(&model, FramePolicy::Require).unwrap_err();
+        assert!(err.contains("proprio/eef_pos"), "got: {err}");
     }
 
     #[test]

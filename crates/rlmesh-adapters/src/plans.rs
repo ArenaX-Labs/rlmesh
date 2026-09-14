@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::advisory::Advisory;
 use super::describe;
 use super::path::{NodePath, PathSeg};
+use super::spec::StackPad;
 
 pub use action::{ActionPlan, ActionSegment};
 
@@ -28,12 +29,18 @@ pub(crate) fn envelope_key(source: &NodePath) -> String {
     }
 }
 pub use custom::CustomPlan;
-pub use image::ImagePlan;
+pub use image::{CropPlan, ImagePlan};
 pub use state::{StatePiece, StatePlan};
 pub use text::TextPlan;
 
 /// Resolved instructions for one model input.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "one plan per model input, built once at resolve and read per step; \
+              boxing the image arm would add an indirection to the hot path to save \
+              a few hundred bytes that are allocated a handful of times per route"
+)]
 pub enum ObsPlan {
     Image(ImagePlan),
     State(StatePlan),
@@ -45,13 +52,41 @@ pub enum ObsPlan {
 ///
 /// The single source of truth for stacking: the assemble path walks these to
 /// stack in place (using `placement` for the payload-tree slot and `key` for
-/// the per-episode window). `key` is `placement.to_string()`, precomputed so
-/// the per-step path never re-renders the canonical name.
+/// the per-episode window), and the observe path walks the same list to tick a
+/// window on a step that predicts nothing. `key` is `placement.to_string()`,
+/// precomputed so the per-step path never re-renders the canonical name.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct StackedPlacement {
     pub placement: NodePath,
     pub key: String,
+    /// How many frames the stacked tensor carries (`offsets.len()`, else
+    /// `stack`).
     pub depth: u32,
+    /// Index of this input's plan in `obs_plans`, so the observe path can apply
+    /// exactly the stacked images without re-walking (or scattering) the rest.
+    pub plan_index: usize,
+    /// The window's gather offsets, or `None` for a contiguous stack.
+    pub offsets: Option<Vec<i32>>,
+    /// Consecutive frames the window holds to reach its oldest offset:
+    /// `1 - offsets[0]`, and `depth` for a contiguous stack.
+    pub span: u32,
+    /// What fills the window at the start of an episode.
+    pub stack_pad: StackPad,
+    /// Bytes of one processed frame, from the plan (`0` when unknown).
+    pub frame_bytes: u64,
+}
+
+/// One frame window this adapter needs held per live episode: what a caller
+/// sizes an admission-control budget from before a route ever runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryWindow {
+    /// The canonical placement string the window is keyed by.
+    pub key: String,
+    /// Consecutive frames held (`1 - offsets[0]`, or the stack depth).
+    pub span: u32,
+    /// Bytes of one processed frame (`0` when the env's resolution was not
+    /// derivable, so a budget cannot be computed from it).
+    pub frame_bytes: u64,
 }
 
 /// A resolved env-to-model adapter: build instances with [`resolve`](crate::resolver::resolve).
@@ -71,13 +106,13 @@ pub struct ResolvedAdapter {
     /// ignored it). Surfaced through [`advisories`](Self::advisories) alongside
     /// the per-apply data-loss notes. Empty on a fully-understood spec.
     resolve_advisories: Vec<Advisory>,
-    /// Hints the env's own declaration raised at join (e.g. an image layout that
-    /// looks mis-declared given its shape). Carried from [`EnvFeatures`] so the
-    /// serve side surfaces the same note the author saw. Surfaced through
-    /// [`advisories`](Self::advisories) but kept out of [`describe`](Self::describe):
-    /// these are not *dropped* env modalities, so they must not land under that
-    /// header (which conformance vectors pin).
-    join_advisories: Vec<Advisory>,
+    /// Advisories surfaced through [`advisories`](Self::advisories) but kept out
+    /// of [`describe`](Self::describe): the hints the env's own declaration raised
+    /// at join (e.g. an image layout that looks mis-declared given its shape),
+    /// and the geometry cautions from resolve (a model-declared `frame` or
+    /// `reference` the env does not confirm). None of these is a *dropped* env
+    /// modality, so none may land under that header (which vectors pin).
+    quiet_advisories: Vec<Advisory>,
 }
 
 impl ResolvedAdapter {
@@ -90,15 +125,28 @@ impl ResolvedAdapter {
         obs_plans: Vec<ObsPlan>,
         action_plan: ActionPlan,
         resolve_advisories: Vec<Advisory>,
-        join_advisories: Vec<Advisory>,
+        quiet_advisories: Vec<Advisory>,
     ) -> Self {
         let stacked = obs_plans
             .iter()
-            .filter_map(|plan| match plan {
+            .enumerate()
+            .filter_map(|(plan_index, plan)| match plan {
                 ObsPlan::Image(image) if image.stack > 1 => Some(StackedPlacement {
                     placement: image.placement.clone(),
                     key: image.placement.to_string(),
                     depth: image.stack,
+                    plan_index,
+                    offsets: image.offsets.clone(),
+                    // A contiguous window spans exactly its depth; a strided one
+                    // reaches back to its oldest offset. Resolve already proved
+                    // the offsets law, so the arithmetic cannot go negative.
+                    span: image
+                        .offsets
+                        .as_ref()
+                        .and_then(|offsets| offsets.first())
+                        .map_or(image.stack, |&oldest| (1 - oldest) as u32),
+                    stack_pad: image.stack_pad,
+                    frame_bytes: image.frame_bytes,
                 }),
                 _ => None,
             })
@@ -108,7 +156,7 @@ impl ResolvedAdapter {
             action_plan,
             stacked,
             resolve_advisories,
-            join_advisories,
+            quiet_advisories,
         }
     }
 
@@ -141,7 +189,7 @@ impl ResolvedAdapter {
         // env-declaration hints raised at join, then the per-apply data-loss
         // notes derived from the plans.
         let mut all = self.resolve_advisories.clone();
-        all.extend(self.join_advisories.iter().cloned());
+        all.extend(self.quiet_advisories.iter().cloned());
         all.extend(describe::adapter_advisories(self));
         all
     }
@@ -164,7 +212,7 @@ impl ResolvedAdapter {
                 }
                 ObsPlan::State(state) => {
                     for piece in &state.pieces {
-                        if !piece.zero_fill {
+                        if piece.fill.is_none() {
                             keys.insert(envelope_key(&piece.source));
                         }
                     }
@@ -198,6 +246,41 @@ impl ResolvedAdapter {
             .iter()
             .map(|entry| (entry.key.clone(), entry.depth))
             .collect()
+    }
+
+    /// Canonical placement strings of the inputs that hold a frame window.
+    ///
+    /// The set a host binding drives [`observe`](crate::v1::observe_obs) for:
+    /// empty means an env step that predicts nothing has no state to advance,
+    /// so the tick can be skipped entirely.
+    pub fn history_keys(&self) -> Vec<String> {
+        self.stacked.iter().map(|entry| entry.key.clone()).collect()
+    }
+
+    /// The frame windows this adapter holds per live episode, for an
+    /// admission-control budget: `num_envs x sum(span x frame_bytes)`.
+    pub fn history_windows(&self) -> Vec<HistoryWindow> {
+        self.stacked
+            .iter()
+            .map(|entry| HistoryWindow {
+                key: entry.key.clone(),
+                span: entry.span,
+                frame_bytes: entry.frame_bytes,
+            })
+            .collect()
+    }
+
+    /// Apply only the frame-stacked image plans, in `history_keys` order.
+    ///
+    /// The observe half of [`transform_obs`](Self::transform_obs): one processed
+    /// frame per stacked input, with nothing scattered into a payload tree — what
+    /// a step that replays a queued action pushes into its windows so the history
+    /// stays the same whatever the execution horizon is.
+    pub fn history_frames(
+        &self,
+        raw_obs: &BTreeMap<String, crate::apply::Value>,
+    ) -> Result<Vec<rlmesh_spaces::Tensor>, crate::error::ApplyError> {
+        crate::apply::obs::observe_obs(&self.obs_plans, &self.stacked, raw_obs)
     }
 
     /// The precomputed frame-stacked placements: the single iterator the assemble

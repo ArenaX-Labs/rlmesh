@@ -11,9 +11,14 @@
 //! the READ door does not, surfacing an unsupported feature only at resolve and
 //! only when a model input references it.
 //!
-//! Still strict at the serde layer (cross-field `TryFrom` validators):
-//! the wire structs (FieldWire, SplitLayoutWire, ConcatPartWire, ActionWire) and
-//! the fixed containers (EnvTags, ModelSpec, Action) keep `deny_unknown_fields`.
+//! The growable *inner* leaves (`Field` inside a split layout, `ConcatPart`
+//! inside a state input) follow the same rule: a reader tolerates an
+//! unrecognized field and carries it through, and the publish gate rejects it.
+//!
+//! Still strict at the serde layer (cross-field `TryFrom` validators): the
+//! envelope wire structs (SplitLayoutWire, ActionWire) and the fixed containers
+//! (EnvTags, ModelSpec, Action) keep `deny_unknown_fields`, and every value
+//! guard (`dim >= 1`, a non-reversed `range`) stays a hard parse error.
 //!
 //! The two specs are **recursive trees** (`ObsNode`, `InputNode`) whose
 //! container type = the runtime container type; the tree node discriminant is
@@ -26,10 +31,12 @@ mod action;
 mod custom_encoding;
 mod env;
 mod env_tags;
+mod frames;
 mod layouts;
 mod leaf_codec;
 mod model;
 mod num;
+mod rotation_literal;
 mod rotations;
 mod strict;
 
@@ -38,13 +45,17 @@ pub use action::{Action, Actuator};
 pub use custom_encoding::{ActionEncoding, CustomEncoding, StateEncoding};
 pub use env::{EnvFeature, EnvFeatures, EnvImage, EnvState, EnvText, UnknownFeature};
 pub use env_tags::{EnvTags, Field, ImageTag, ObsLeaf, ObsNode, SplitLayout, StateTag, TextTag};
+pub use frames::{Attr, FRAMES, FrameLaw, FrameRef, REFERENCES, ReferenceLaw};
 pub use layouts::{FitMode, ImageLayout};
+pub(crate) use model::MAX_STACK_SPAN;
 pub use model::{
-    ConcatPart, Custom, Image, InputNode, ModelLeaf, ModelSpec, Normalize, State, StateContainer,
-    Text, TextContainer,
+    CHANNEL_ORDERS, CROP_MODES, ConcatPart, Custom, Image, InputNode, ModelLeaf, ModelSpec,
+    Normalize, StackPad, State, StateContainer, Text, TextContainer, render_requests,
 };
+pub use rotation_literal::RotationLiteral;
 pub use rotations::RotationEncoding;
 pub use strict::{
-    RolePolicy, reject_bare_fields_env, reject_bare_fields_model, reject_unknowns_env,
+    FramePolicy, RolePolicy, reject_bare_fields_env, reject_bare_fields_model,
+    reject_unframed_roles_env, reject_unframed_roles_model, reject_unknowns_env,
     reject_unknowns_model, reject_unsanctioned_roles_env, reject_unsanctioned_roles_model,
 };

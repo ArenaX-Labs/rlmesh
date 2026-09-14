@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .custom_encoding import CustomEncoding
-from .vocabularies import RotationEncoding
+from .vocabularies import Frame, Reference, RotationEncoding
 
 
 @dataclass(frozen=True)
@@ -47,6 +47,17 @@ class Actuator:
             it is wrong when dims have different ranges (e.g. delta-pos in
             ``[-1, 1]`` but rotation in ``[-pi/2, pi/2]``). ``clip=True`` requires
             ``range``.
+        frame: Coordinate frame an *absolute* pose command is expressed in
+            (``action/eef_*``). Keyword-only, omitted from the wire when unset.
+        reference: What a *delta* command is integrated against
+            (``action/delta_eef_*``): an env declares what its Cartesian
+            controller adds the delta to -- the measured pose (``"current"``) or
+            the last commanded target (``"target"``) -- and a model declares what
+            it was trained against. A disagreement is a hard resolve error, which
+            is what stops an absolute-pose head from binding cleanly to a
+            delta controller. A delta never carries a ``frame`` (it lives in the
+            controller's own frame); ``reference`` is the attribute it gets
+            instead.
 
     ``scale``, ``invert``, and ``threshold`` declare a side's actuator convention.
     They can be set on either side and compose as literal transforms applied after
@@ -70,6 +81,8 @@ class Actuator:
     clip: bool = False
     fill: float = 0.0
     optional: bool = False
+    frame: Frame | None = field(default=None, kw_only=True)
+    reference: Reference | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         if self.dim < 1:
@@ -86,10 +99,13 @@ class Actuator:
                 or self.threshold is not None
                 or self.clip
                 or self.optional
+                or self.frame is not None
+                or self.reference is not None
             ):
                 raise ValueError(
                     "a role-less (opaque) Actuator carries only dim and fill; drop "
-                    "encoding/range/scale/invert/threshold/binary/clip/optional"
+                    "encoding/range/scale/invert/threshold/binary/clip/optional/"
+                    "frame/reference"
                 )
             return
         if self.fill != 0.0 and not self.optional:

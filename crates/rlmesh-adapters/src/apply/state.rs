@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use rlmesh_spaces::{DType, Tensor};
 
-use super::geometry::convert_rotation;
+use super::geometry::convert_rotation_with;
 use super::lookup::{map_range, numeric_vector, resolve_in_obs};
 use super::value::{self, Value};
 use crate::error::ApplyError;
@@ -67,8 +67,11 @@ pub(super) fn apply_state(
 ) -> Result<Value, ApplyError> {
     let mut state: Vec<f32> = Vec::new();
     for piece in &plan.pieces {
-        if piece.zero_fill {
-            state.extend(std::iter::repeat_n(0.0f32, piece.dim.unwrap_or(0) as usize));
+        if let Some(fill) = piece.fill {
+            state.extend(std::iter::repeat_n(
+                fill as f32,
+                piece.dim.unwrap_or(0) as usize,
+            ));
             continue;
         }
         let mut value = numeric_vector(resolve_in_obs(raw_obs, &piece.source)?)?;
@@ -94,9 +97,9 @@ pub(super) fn apply_state(
             value = value[start..end].to_vec();
         }
         if let (Some(src), Some(dst)) = (piece.src_encoding, piece.dst_encoding)
-            && src != dst
+            && (src != dst || piece.post_rotate.is_some())
         {
-            value = convert_rotation(&value, src, dst)?;
+            value = convert_rotation_with(&value, src, dst, piece.post_rotate.as_ref())?;
         }
         if let Some(index) = piece.index {
             let index = index as usize;
@@ -111,6 +114,30 @@ pub(super) fn apply_state(
             && src != dst
         {
             map_range(&mut value, src, dst)?;
+        }
+        // The model-side affine sits after the range map: `range` bridges two
+        // declared scales, `scale`/`offset` is the model's own convention
+        // (e.g. RoboTwin's `1 - 2g` gripper).
+        if piece.scale.is_some() || piece.offset.is_some() {
+            let scale = piece.scale.unwrap_or(1.0) as f32;
+            let offset = piece.offset.unwrap_or(0.0) as f32;
+            for entry in &mut value {
+                *entry = *entry * scale + offset;
+            }
+        }
+        // The resolved widths are the state's layout: a host-side custom
+        // encoding slices itself out of the assembled vector by them. A runtime
+        // value of another width would shift every later piece, so say so here
+        // instead of handing the model a quietly re-laid-out state.
+        if let Some(width) = piece.width
+            && value.len() != width as usize
+        {
+            return Err(ApplyError::new(format!(
+                "state piece '{}' resolved to {width} dims but the runtime \
+                 observation yields {}",
+                piece.source,
+                value.len()
+            )));
         }
         state.extend(value);
     }
@@ -157,13 +184,20 @@ mod tests {
                 src_dim: None,
                 src_encoding: None,
                 dst_encoding: None,
+                post_rotate: None,
                 dim: None,
                 index: None,
                 src_range: Some((0.0, 255.0)),
                 dst_range: Some((-1.0, 1.0)),
-                zero_fill: false,
+                scale: None,
+                offset: None,
+                fill: None,
+                absent_role: false,
+                width: Some(3),
+                frame: None,
             }],
             pad_to: None,
+            native_width: Some(3),
             dtype: "float32".to_owned(),
             reshape: None,
             container: StateContainer::Array,
@@ -204,13 +238,20 @@ mod tests {
                 src_dim: Some(1),
                 src_encoding: None,
                 dst_encoding: None,
+                post_rotate: None,
                 dim: None,
                 index: Some(0),
                 src_range: None,
                 dst_range: None,
-                zero_fill: false,
+                scale: None,
+                offset: None,
+                fill: None,
+                absent_role: false,
+                width: Some(1),
+                frame: None,
             }],
             pad_to: None,
+            native_width: Some(1),
             dtype: "float32".to_owned(),
             reshape: None,
             container: StateContainer::Array,

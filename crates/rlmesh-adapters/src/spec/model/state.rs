@@ -6,23 +6,33 @@ use std::fmt;
 use serde::de::{self, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::spec::StateEncoding;
+use crate::spec::{FrameRef, RotationLiteral, StateEncoding};
 
 fn default_float32() -> String {
     "float32".to_owned()
+}
+
+/// A fill of 0.0 is the default (a zero-filled absent role, a zero constant),
+/// omitted on the wire so every pre-`fill` spec stays byte-identical.
+fn is_default_fill(fill: &f64) -> bool {
+    *fill == 0.0
 }
 
 /// One part of a [`State`] concat, sourced from an env state feature.
 ///
 /// A part deserializes from **either** a bare JSON string (a role, sugar for a
 /// part carrying only that role) **or** a JSON object with the full field set
-/// (`role`, `encoding`, `dim`, `index`, `optional`, `range`). On the wire a
-/// role-only part round-trips back to a bare string; any other part to an
-/// object. The field set is identical to the pre-redesign `StateComponent` so
-/// `plan_state`/`StatePiece`/`apply_state` consume it unchanged.
+/// (`role`, `encoding`, `dim`, `index`, `optional`, `range`, `fill`,
+/// `post_rotate`, `scale`, `offset`). On the wire a role-only part round-trips
+/// back to a bare string; any other part to an object.
+///
+/// A part with **no** `role` is a constant: it reads nothing from the env and
+/// contributes `dim` copies of `fill` (serialized `{"dim": N[, "fill": v]}`).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ConcatPart {
-    pub role: String,
+    /// The env state feature this part reads, or `None` for a constant part.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
     /// Rotation encoding(s) the model accepts for this part. A bare string (the
     /// common single-encoding case) or a list, in preference order -- the
     /// resolver picks the env's native encoding when it appears here (no
@@ -45,14 +55,37 @@ pub struct ConcatPart {
     pub range: Option<(f64, f64)>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub optional: bool,
+    /// The value this part contributes when it has no env source: the constant
+    /// of a role-less part, or the fill of an `optional` role the env lacks.
+    #[serde(default, skip_serializing_if = "is_default_fill")]
+    pub fill: f64,
+    /// A fixed rotation right-multiplied onto the env's rotation
+    /// (`R_out = R_in @ R(post_rotate)`) before it is re-encoded -- the rigid
+    /// re-frame a checkpoint was trained against.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub post_rotate: Option<RotationLiteral>,
+    /// Model-side affine, applied after the range map: `value * scale + offset`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<f64>,
+    /// The coordinate frame the checkpoint was trained to read this part in,
+    /// when the role is an absolute pose. Omitted when unset, so every
+    /// pre-`frame` spec is byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame: Option<FrameRef>,
+    /// Unrecognized additive fields, retained for round-trip and surfaced to the
+    /// publish-door `reject_unknowns` guard. See the strict-v1 publish gate.
+    #[serde(flatten)]
+    pub unknown: BTreeMap<String, serde_json::Value>,
 }
 
 /// Wire form of a [`ConcatPart`]'s object branch, validated via [`TryFrom`] (the
 /// `dim`/`index`/`range` deserializers and the `dim`+`index` conflict guard).
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ConcatPartWire {
-    role: String,
+    #[serde(default)]
+    role: Option<String>,
     #[serde(default)]
     encoding: Option<StateEncoding>,
     #[serde(default, deserialize_with = "crate::spec::num::de_opt_count")]
@@ -63,6 +96,20 @@ struct ConcatPartWire {
     range: Option<(f64, f64)>,
     #[serde(default)]
     optional: bool,
+    #[serde(default)]
+    fill: f64,
+    #[serde(default)]
+    post_rotate: Option<RotationLiteral>,
+    #[serde(default, deserialize_with = "crate::spec::num::de_opt_number")]
+    scale: Option<f64>,
+    #[serde(default, deserialize_with = "crate::spec::num::de_opt_number")]
+    offset: Option<f64>,
+    #[serde(default)]
+    frame: Option<FrameRef>,
+    // Captured instead of hard-erroring so a newer writer's field survives an
+    // older reader; the publish gate rejects a bare one.
+    #[serde(flatten)]
+    unknown: BTreeMap<String, serde_json::Value>,
 }
 
 impl TryFrom<ConcatPartWire> for ConcatPart {
@@ -79,6 +126,65 @@ impl TryFrom<ConcatPartWire> for ConcatPart {
                 wire.role
             ));
         }
+        if !wire.fill.is_finite() {
+            return Err(format!("state part {:?} fill must be finite", wire.role));
+        }
+        match &wire.role {
+            Some(role) => {
+                // `fill` is what an absent part contributes; a roled part that
+                // is not `optional` always has an env source, so a non-zero
+                // fill there could never fire (the `Actuator` rule's twin).
+                if wire.fill != 0.0 && !wire.optional {
+                    return Err(format!(
+                        "state part {role:?}: fill applies only to a constant (role-less) \
+                         or optional part; a roled, non-optional part takes its values \
+                         from the env"
+                    ));
+                }
+                // A post-rotation is a rotation: it needs an encoding to decode
+                // into a matrix and re-encode out of, and the host-side repack
+                // of a custom encoding owns its own geometry.
+                if wire.post_rotate.is_some() {
+                    match &wire.encoding {
+                        None => {
+                            return Err(format!(
+                                "state part {role:?}: post_rotate needs a rotation encoding"
+                            ));
+                        }
+                        Some(encoding) if encoding.custom().is_some() => {
+                            return Err(format!(
+                                "state part {role:?}: post_rotate cannot combine with a \
+                                 custom encoding; fold the rotation into the repack"
+                            ));
+                        }
+                        Some(_) => {}
+                    }
+                }
+            }
+            // A constant part emits `dim` copies of `fill` and reads nothing, so
+            // every source-mapping field is meaningless on it (the state-side
+            // mirror of a role-less actuator's rule).
+            None => {
+                if wire.dim.is_none() {
+                    return Err(
+                        "a constant (role-less) state part needs dim to size itself".to_owned()
+                    );
+                }
+                if wire.encoding.is_some()
+                    || wire.index.is_some()
+                    || wire.range.is_some()
+                    || wire.optional
+                    || wire.post_rotate.is_some()
+                    || wire.scale.is_some()
+                    || wire.offset.is_some()
+                    || wire.frame.is_some()
+                {
+                    return Err("a constant (role-less) state part carries only dim and \
+                         fill; drop encoding/index/range/optional/post_rotate/scale/offset/frame"
+                        .to_owned());
+                }
+            }
+        }
         Ok(ConcatPart {
             role: wire.role,
             encoding: wire.encoding,
@@ -86,6 +192,12 @@ impl TryFrom<ConcatPartWire> for ConcatPart {
             index: wire.index,
             range: wire.range,
             optional: wire.optional,
+            fill: wire.fill,
+            post_rotate: wire.post_rotate,
+            scale: wire.scale,
+            offset: wire.offset,
+            frame: wire.frame,
+            unknown: wire.unknown,
         })
     }
 }
@@ -103,12 +215,18 @@ impl<'de> Deserialize<'de> for ConcatPart {
 
             fn visit_str<E: de::Error>(self, value: &str) -> Result<ConcatPart, E> {
                 Ok(ConcatPart {
-                    role: value.to_owned(),
+                    role: Some(value.to_owned()),
                     encoding: None,
                     dim: None,
                     index: None,
                     range: None,
                     optional: false,
+                    fill: 0.0,
+                    post_rotate: None,
+                    scale: None,
+                    offset: None,
+                    frame: None,
+                    unknown: BTreeMap::new(),
                 })
             }
 
@@ -128,13 +246,20 @@ fn serialize_concat_part<S: Serializer>(
     part: &ConcatPart,
     serializer: S,
 ) -> Result<S::Ok, S::Error> {
-    let role_only = part.encoding.is_none()
+    let role_only = part.role.is_some()
+        && part.encoding.is_none()
         && part.dim.is_none()
         && part.index.is_none()
         && part.range.is_none()
-        && !part.optional;
-    if role_only {
-        serializer.serialize_str(&part.role)
+        && !part.optional
+        && is_default_fill(&part.fill)
+        && part.post_rotate.is_none()
+        && part.scale.is_none()
+        && part.offset.is_none()
+        && part.frame.is_none()
+        && part.unknown.is_empty();
+    if let (true, Some(role)) = (role_only, &part.role) {
+        serializer.serialize_str(role)
     } else {
         // Reuse the derived Serialize on the struct (the `#[derive(Serialize)]`
         // above), which skips the unset optionals.
@@ -227,6 +352,15 @@ impl TryFrom<StateWire> for State {
         if wire.components.is_empty() {
             return Err("a state input needs at least one component".to_owned());
         }
+        // Every part a constant means the input reads nothing from the env: a
+        // fabricated tensor pretending to be an observation.
+        if wire.components.iter().all(|part| part.role.is_none()) {
+            return Err(
+                "a state input of only constant parts reads nothing from the env; give it \
+                 at least one roled part"
+                    .to_owned(),
+            );
+        }
         Ok(State {
             components: wire.components,
             pad_to: wire.pad_to,
@@ -264,7 +398,7 @@ mod tests {
         )
         .expect("parse");
         assert_eq!(state.components.len(), 2);
-        assert_eq!(state.components[0].role, "proprio/eef_pos");
+        assert_eq!(state.components[0].role.as_deref(), Some("proprio/eef_pos"));
         assert_eq!(state.components[0].dim, None);
         assert_eq!(state.components[1].dim, Some(1));
     }
@@ -306,9 +440,68 @@ mod tests {
     }
 
     #[test]
+    fn constant_part_round_trips_to_a_dim_and_fill_object() {
+        let state: State = serde_json::from_str(
+            r#"{"components": ["proprio/eef_pos", {"dim": 1}, {"dim": 2, "fill": 0.5}]}"#,
+        )
+        .expect("parse");
+        assert_eq!(state.components[1].role, None);
+        assert_eq!(state.components[1].fill, 0.0);
+        assert_eq!(state.components[2].fill, 0.5);
+        let json = serde_json::to_string(&state).unwrap();
+        assert!(
+            json.contains(r#"["proprio/eef_pos",{"dim":1},{"dim":2,"fill":0.5}]"#),
+            "got: {json}"
+        );
+    }
+
+    #[test]
+    fn rejects_a_state_of_only_constants() {
+        let err = serde_json::from_str::<State>(r#"{"components": [{"dim": 3}]}"#).unwrap_err();
+        assert!(err.to_string().contains("reads nothing"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_a_constant_part_without_dim_or_with_source_fields() {
+        let err =
+            serde_json::from_str::<State>(r#"{"components": ["r", {"fill": 1.0}]}"#).unwrap_err();
+        assert!(err.to_string().contains("needs dim"), "got: {err}");
+        let err =
+            serde_json::from_str::<State>(r#"{"components": ["r", {"dim": 1, "scale": 2.0}]}"#)
+                .unwrap_err();
+        assert!(err.to_string().contains("only dim and"), "got: {err}");
+        let err =
+            serde_json::from_str::<State>(r#"{"components": ["r", {"dim": 1, "frame": "world"}]}"#)
+                .unwrap_err();
+        assert!(err.to_string().contains("only dim and"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_a_non_zero_fill_on_a_required_roled_part() {
+        let err = serde_json::from_str::<State>(r#"{"components": [{"role": "r", "fill": 1.0}]}"#)
+            .unwrap_err();
+        assert!(err.to_string().contains("or optional part"), "got: {err}");
+        let ok: State = serde_json::from_str(
+            r#"{"components": [{"role": "r", "dim": 1, "optional": true, "fill": 1.0}]}"#,
+        )
+        .expect("optional parses");
+        assert_eq!(ok.components[0].fill, 1.0);
+    }
+
+    #[test]
+    fn rejects_post_rotate_without_an_encoding() {
+        let err = serde_json::from_str::<State>(
+            r#"{"components": [{"role": "r", "post_rotate": {"encoding": "rot6d",
+               "value": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0]}}]}"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("needs a rotation"), "got: {err}");
+    }
+
+    #[test]
     fn bare_role_part_constructs() {
         let part: ConcatPart = serde_json::from_str(r#""only/role""#).unwrap();
-        assert_eq!(part.role, "only/role");
+        assert_eq!(part.role.as_deref(), Some("only/role"));
         assert!(part.dim.is_none() && !part.optional);
     }
 }

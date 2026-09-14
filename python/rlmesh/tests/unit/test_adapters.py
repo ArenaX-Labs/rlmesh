@@ -12,6 +12,8 @@ cannot express (image layout, rotation encoding, explicit ranges).
 
 from __future__ import annotations
 
+import contextlib
+import io
 import warnings
 from types import SimpleNamespace
 from typing import Any, NamedTuple, cast
@@ -117,6 +119,10 @@ LIBERO_ACTION = adapt.Action(
     adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
     clip=(-1.0, 1.0),
 )
+
+# The model-side mirror of LIBERO_ACTION: `clip` is an env-side clamp, so a
+# model output layout must leave it unset.
+LIBERO_MODEL_ACTION = adapt.Action(*LIBERO_ACTION.components)
 
 LIBERO_ENV = Env(
     tags=adapt.EnvTags(
@@ -741,38 +747,427 @@ def test_image_resize_layout_and_normalize():
     assert float(pixels.min()) >= 0.0
 
 
-def test_bilinear_aa_resize_matches_pillow_within_one_step():
-    pil = pytest.importorskip("PIL.Image")
-    env = image_env(6, 8)
-    image = (
-        (np.arange(6 * 8 * 3, dtype=np.int64) * 7 % 251)
-        .astype(np.uint8)
-        .reshape(6, 8, 3)
+def _resized(
+    env: Env, image: np.ndarray, height: int, width: int, resample: adapt.Resample
+):
+    """Our resize of `image`, as int16 so a comparison can go negative."""
+    spec = adapt.ModelSpec(
+        input={
+            "image": adapt.Image(
+                role=adapt.IMAGE_PRIMARY,
+                height=height,
+                width=width,
+                # The upscale cases interpolate detail the env image does not
+                # have, which the resolver gates behind allow_upscale; these
+                # anchors deliberately exercise both directions.
+                allow_upscale=True,
+                fit="stretch",
+                resample=resample,
+            )
+        },
+        output=SMOLVLA.output,
     )
-    for height, width in ((3, 4), (12, 16)):
+    return resolve(env, spec).transform_obs({"rgb": image})["image"].astype(np.int16)
+
+
+def _anchor_images(height: int, width: int) -> dict[str, np.ndarray]:
+    """A smooth ramp, white noise, and a hard edge (the ringing case)."""
+    edge = np.zeros((height, width, 3), np.uint8)
+    edge[:, : width // 2] = 255
+    return {
+        "ramp": (np.arange(height * width * 3, dtype=np.int64) * 7 % 251)
+        .astype(np.uint8)
+        .reshape(height, width, 3),
+        "noise": np.random.default_rng(7).integers(
+            0, 256, (height, width, 3), dtype=np.uint8
+        ),
+        "edge": edge,
+    }
+
+
+@pytest.mark.parametrize(
+    ("resample", "pil_filter"),
+    [
+        ("bilinear_aa", "BILINEAR"),
+        ("bicubic_aa", "BICUBIC"),
+        ("lanczos3_aa", "LANCZOS"),
+    ],
+)
+def test_aa_resize_matches_pillow_within_one_step(
+    resample: adapt.Resample, pil_filter: str
+):
+    """The `_aa` kernels are PIL's, to one uint8 step, in both directions.
+
+    The hard-edge image is the load-bearing case: cubic and Lanczos ring, and
+    PIL clips that overshoot in its 8-bit intermediate between the two passes,
+    so a float64 pipeline that clips only at the end drifts by tens of levels.
+    """
+    pil = pytest.importorskip("PIL.Image")
+    theirs_filter = getattr(pil.Resampling, pil_filter)
+    for src_height, src_width in ((6, 8), (32, 32)):
+        env = image_env(src_height, src_width)
+        for image in _anchor_images(src_height, src_width).values():
+            for height, width in ((3, 4), (12, 16), (src_height * 2, src_width * 2)):
+                ours = _resized(env, image, height, width, resample)
+                theirs = np.asarray(
+                    pil.fromarray(image).resize((width, height), theirs_filter),
+                    dtype=np.int16,
+                )
+                assert int(np.abs(ours - theirs).max()) <= 1
+
+
+def test_area_resize_matches_opencv_within_one_step():
+    """`area` is cv2's INTER_AREA, to one uint8 step, in both directions.
+
+    Upscaling is the load-bearing half: INTER_AREA does not widen a filter the
+    way the `_aa` kernels do, it splits each output pixel's sub-pixel footprint
+    across the one or two source pixels it covers.
+    """
+    cv2 = pytest.importorskip("cv2")
+    for src_height, src_width in ((6, 8), (32, 32)):
+        env = image_env(src_height, src_width)
+        for image in _anchor_images(src_height, src_width).values():
+            for height, width in ((3, 4), (12, 16), (src_height * 2, src_width * 2)):
+                ours = _resized(env, image, height, width, "area")
+                theirs = cv2.resize(
+                    image, (width, height), interpolation=cv2.INTER_AREA
+                ).astype(np.int16)
+                assert int(np.abs(ours - theirs).max()) <= 1
+
+
+def _cropped(
+    env: Env,
+    image: np.ndarray,
+    height: int,
+    width: int,
+    resample: adapt.Resample,
+    **crop: object,
+):
+    """Our crop+resize of `image`, as int16 so a comparison can go negative."""
+    spec = adapt.ModelSpec(
+        input={
+            "image": adapt.Image(
+                role=adapt.IMAGE_PRIMARY,
+                height=height,
+                width=width,
+                allow_upscale=True,
+                fit="stretch",
+                resample=resample,
+                **crop,  # type: ignore[arg-type]
+            )
+        },
+        output=SMOLVLA.output,
+    )
+    return resolve(env, spec).transform_obs({"rgb": image})["image"].astype(np.int16)
+
+
+@pytest.mark.parametrize(
+    ("resample", "pil_filter"),
+    [
+        ("bilinear_aa", "BILINEAR"),
+        ("bicubic_aa", "BICUBIC"),
+        ("lanczos3_aa", "LANCZOS"),
+    ],
+)
+def test_zoom_crop_matches_pillow_box_resize_within_one_step(
+    resample: adapt.Resample, pil_filter: str
+):
+    """A zoom crop is PIL's `Image.resize(size, box=...)`, to one uint8 step.
+
+    That is the whole point of the mode: the fractional box is resampled
+    straight to the target in one pass, so it must agree with the library the
+    training pipelines used -- including at the box edge, where the filter
+    still reaches into the neighbouring pixels rather than stopping at the cut.
+    """
+    pil = pytest.importorskip("PIL.Image")
+    theirs_filter = getattr(pil.Resampling, pil_filter)
+    for src in (16, 32):
+        env = image_env(src, src)
+        for image in _anchor_images(src, src).values():
+            for fraction in (0.5, 0.9**0.5, 1.0):
+                span = src * fraction
+                start = (src - span) / 2.0
+                box = (start, start, start + span, start + span)
+                for size in (8, src, src * 2):
+                    ours = _cropped(env, image, size, size, resample, crop=fraction)
+                    theirs = np.asarray(
+                        pil.fromarray(image).resize(
+                            (size, size), theirs_filter, box=box
+                        ),
+                        dtype=np.int16,
+                    )
+                    assert int(np.abs(ours - theirs).max()) <= 1
+
+
+def test_crop_area_is_the_square_of_the_side_fraction():
+    """`crop_area=0.9` and `crop=sqrt(0.9)` name the same box, pixel for pixel."""
+    env = image_env(32, 32)
+    image = _anchor_images(32, 32)["noise"]
+    by_area = _cropped(env, image, 16, 16, "bilinear_aa", crop_area=0.9)
+    by_side = _cropped(env, image, 16, 16, "bilinear_aa", crop=0.9**0.5)
+    assert np.array_equal(by_area, by_side)
+
+
+def test_slice_crop_cuts_integer_pixels_before_the_resize():
+    """`crop_mode="slice"` is a numpy center cut, then a plain resize of it."""
+    env = image_env(12, 12)
+    image = _anchor_images(12, 12)["ramp"]
+    ours = _cropped(env, image, 4, 4, "area", crop=2 / 3, crop_mode="slice")
+    # The cut keeps the middle 8x8 (12 * 2/3), and the resize sees only that.
+    cut_env = image_env(8, 8)
+    cut = image[2:10, 2:10]
+    assert np.array_equal(ours, _cropped(cut_env, cut, 4, 4, "area"))
+
+
+def _photo_frame(height: int, width: int) -> np.ndarray:
+    """A natural-looking frame: a luma-dominant gradient plus two hard blocks.
+
+    Deliberately not noise. JPEG is tuned for photographic content, so a noise
+    frame would measure the codec somewhere no camera ever puts it -- and the
+    chroma planes of a luma-dominant image are smooth, which is what 4:2:0
+    subsampling assumes.
+    """
+    rows = np.arange(height)[:, None] / height
+    cols = np.arange(width)[None, :] / width
+    luma = 30.0 + 190.0 * (0.6 * cols + 0.4 * rows)
+    frame = np.stack([luma * 1.02, luma * 0.96, luma * 0.88], axis=-1)
+    frame[height // 3 : height * 2 // 3, width // 4 : width // 2] = (236, 231, 214)
+    frame[:, width * 3 // 4 : width * 3 // 4 + max(1, width // 16)] = (26, 25, 22)
+    return np.clip(np.round(frame), 0, 255).astype(np.uint8)
+
+
+def _jpeg_roundtripped(env: Env, image: np.ndarray, quality: int):
+    """Our JPEG round-trip of `image`, as int16 so a comparison can go negative."""
+    spec = adapt.ModelSpec(
+        input={"image": adapt.Image(role=adapt.IMAGE_PRIMARY, jpeg_quality=quality)},
+        output=SMOLVLA.output,
+    )
+    return resolve(env, spec).transform_obs({"rgb": image})["image"].astype(np.int16)
+
+
+def test_jpeg_roundtrip_is_near_pillows_q95_jpeg():
+    """`jpeg_quality` reproduces what Pillow (libjpeg) writes, near-exactly.
+
+    Near, not byte-identical: the encoders agree on the profile (baseline,
+    4:2:0, standard IJG tables) but libjpeg's IDCT and the decoder behind the
+    `image` crate round differently in the last place. Pinned at the tolerance
+    the openvla-oft A/B needs -- within 2 levels on at least 99% of pixels and
+    4 anywhere. On the natural frame it is tighter than that: every pixel
+    within 2, and 98.7% within 1.
+    """
+    pil = pytest.importorskip("PIL.Image")
+    for src in (32, 64):
+        env = image_env(src, src)
+        images = dict(_anchor_images(src, src), photo=_photo_frame(src, src))
+        for image in images.values():
+            ours = _jpeg_roundtripped(env, image, 95)
+            buffer = io.BytesIO()
+            # Pillow's default subsampling for an RGB save IS 4:2:0, which is
+            # the profile we pin; naming it here would hide a change of theirs.
+            pil.fromarray(image).save(buffer, "JPEG", quality=95)
+            buffer.seek(0)
+            theirs = np.asarray(pil.open(buffer).convert("RGB"), dtype=np.int16)
+            delta = np.abs(ours - theirs)
+            assert float((delta <= 2).mean()) >= 0.99
+            assert int(delta.max()) <= 4
+
+
+def test_jpeg_roundtrip_loses_more_at_a_lower_quality():
+    """The quality really is the IJG dial, not a decorative field."""
+    env = image_env(64, 64)
+    image = _photo_frame(64, 64)
+    original = image.astype(np.int16)
+    fine = float(np.abs(_jpeg_roundtripped(env, image, 95) - original).mean())
+    coarse = float(np.abs(_jpeg_roundtripped(env, image, 10) - original).mean())
+    assert coarse > fine
+
+
+def test_jpeg_quality_needs_a_three_channel_camera():
+    """JPEG subsampling is defined on YCbCr; a grayscale camera has none."""
+    env = Env(
+        tags=adapt.EnvTags(
+            observation={"rgb": adapt.ImageTag(role=adapt.IMAGE_PRIMARY)},
+            action=LIBERO_ACTION,
+        ),
+        obs_space=gym.spaces.Dict(
+            {"rgb": gym.spaces.Box(low=0, high=255, shape=(8, 8, 1), dtype=np.uint8)}
+        ),
+        action_space=ACTION7,
+    )
+    spec = adapt.ModelSpec(
+        input={"image": adapt.Image(role=adapt.IMAGE_PRIMARY, jpeg_quality=95)},
+        output=SMOLVLA.output,
+    )
+    with pytest.raises(adapt.AdapterResolutionError, match="3-channel"):
+        resolve(env, spec)
+
+
+def test_jpeg_quality_is_bounded_to_the_ijg_scale_at_construction():
+    for bad in (0, 101):
+        with pytest.raises(ValueError, match="between 1 and 100"):
+            adapt.Image(role=adapt.IMAGE_PRIMARY, jpeg_quality=bad)
+    assert adapt.Image(role=adapt.IMAGE_PRIMARY, jpeg_quality=1).jpeg_quality == 1
+    assert adapt.Image(role=adapt.IMAGE_PRIMARY, jpeg_quality=100).jpeg_quality == 100
+
+
+def test_bgr_swaps_red_and_blue_after_the_resize():
+    """The swap is the last spatial-adjacent step: resize in RGB, then swap.
+
+    Order matters because the resize is per-channel -- swapping first and
+    resizing after would give the same pixels, but swapping before a *crop*
+    would not, and one order has to be the contract.
+    """
+    env = image_env(8, 8)
+    image = _anchor_images(8, 8)["noise"]
+    rgb = _cropped(env, image, 4, 4, "bilinear_aa")
+    bgr = _cropped(env, image, 4, 4, "bilinear_aa", channel_order="bgr")
+    assert np.array_equal(bgr, rgb[:, :, ::-1])
+
+
+def test_bgr_needs_a_three_channel_camera():
+    env = Env(
+        tags=adapt.EnvTags(
+            observation={"rgb": adapt.ImageTag(role=adapt.IMAGE_PRIMARY)},
+            action=LIBERO_ACTION,
+        ),
+        obs_space=gym.spaces.Dict(
+            {"rgb": gym.spaces.Box(low=0, high=255, shape=(8, 8, 1), dtype=np.uint8)}
+        ),
+        action_space=ACTION7,
+    )
+    spec = adapt.ModelSpec(
+        input={"image": adapt.Image(role=adapt.IMAGE_PRIMARY, channel_order="bgr")},
+        output=SMOLVLA.output,
+    )
+    with pytest.raises(adapt.AdapterResolutionError, match="3-channel"):
+        resolve(env, spec)
+
+
+def test_crop_guards_reject_an_impossible_box_at_construction():
+    """The two fractions are one box said two ways, and the range is (0, 1]."""
+    with pytest.raises(ValueError, match="not both"):
+        adapt.Image(role=adapt.IMAGE_PRIMARY, crop=0.5, crop_area=0.25)
+    for bad in (0.0, -0.5, 1.5):
+        with pytest.raises(ValueError, match=r"fraction in \(0, 1\]"):
+            adapt.Image(role=adapt.IMAGE_PRIMARY, crop=bad)
+        with pytest.raises(ValueError, match=r"fraction in \(0, 1\]"):
+            adapt.Image(role=adapt.IMAGE_PRIMARY, crop_area=bad)
+    # The inclusive end (the whole frame) is a legal, if inert, box.
+    assert adapt.Image(role=adapt.IMAGE_PRIMARY, crop_area=1).crop_area == 1.0
+
+
+def test_crop_and_channel_order_serialize_omit_when_default():
+    """Every new field is omitted at its default and agrees with the core."""
+    import json
+
+    from rlmesh._rlmesh import adapters_spec_normalize
+
+    output = adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1))
+    plain = adapt.ModelSpec(
+        input={"image": adapt.Image(adapt.IMAGE_PRIMARY, size=224)}, output=output
+    )
+    leaf = plain.to_dict()["input"]["image"]
+    for field in ("crop", "crop_area", "crop_mode", "jpeg_quality", "channel_order"):
+        assert field not in leaf, f"{field} leaked into a spec that never set it"
+
+    every = adapt.ModelSpec(
+        input={
+            "image": adapt.Image(
+                adapt.IMAGE_PRIMARY,
+                size=224,
+                crop_area=0.9,
+                crop_mode="slice",
+                jpeg_quality=95,
+                channel_order="bgr",
+            )
+        },
+        output=output,
+    )
+    doc = every.to_dict()
+    assert doc["input"]["image"]["crop_area"] == 0.9
+    assert doc["input"]["image"]["crop_mode"] == "slice"
+    assert doc["input"]["image"]["jpeg_quality"] == 95
+    assert doc["input"]["image"]["channel_order"] == "bgr"
+    assert adapt.ModelSpec.from_dict(doc) == every
+    # Cross-engine: the core's canonical form of each spec is the spec itself,
+    # so Python and Rust cannot disagree on what these fields serialize to.
+    for spec in (plain, every):
+        canonical = adapters_spec_normalize("model", json.dumps(spec.to_dict()), True)
+        assert json.loads(canonical) == spec.to_dict()
+
+
+def test_render_asserts_the_bound_cameras_size():
+    """`render` is an assertion about the camera, not a resize request.
+
+    The platform binds the env's camera dial from it before the run; this is
+    the check that the dial actually moved. A camera that renders at the
+    asserted size resolves, one that does not fails loudly rather than feeding
+    the model frames at the wrong scale.
+    """
+    spec = adapt.ModelSpec(
+        input={"image": adapt.Image(role=adapt.IMAGE_PRIMARY, render=448)},
+        output=SMOLVLA.output,
+    )
+    assert resolve(image_env(448, 448), spec) is not None
+    with pytest.raises(adapt.AdapterResolutionError, match="declares render 448x448"):
+        resolve(image_env(256, 256), spec)
+
+
+def test_render_guards_reject_an_impossible_size_at_construction():
+    """A square int widens to the pair the wire carries; each axis is 1-4096."""
+    assert adapt.Image(role=adapt.IMAGE_PRIMARY, render=448).render == (448, 448)
+    assert adapt.Image(role=adapt.IMAGE_PRIMARY, render=(480, 640)).render == (480, 640)
+    for bad in (0, 4097, (0, 448), (448, 4097)):
+        with pytest.raises(ValueError, match="must be between 1 and 4096"):
+            adapt.Image(role=adapt.IMAGE_PRIMARY, render=bad)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match=r"an int or a \(height, width\) pair"):
+        adapt.Image(role=adapt.IMAGE_PRIMARY, render=(448, 448, 448))  # type: ignore[arg-type]
+
+
+def test_render_serializes_as_a_pair_and_is_omitted_when_unset():
+    """Omitted at its default, `[height, width]` when set, and core-identical."""
+    import json
+
+    from rlmesh._rlmesh import adapters_spec_normalize
+
+    output = adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1))
+    plain = adapt.ModelSpec(
+        input={"image": adapt.Image(adapt.IMAGE_PRIMARY, size=224)}, output=output
+    )
+    assert "render" not in plain.to_dict()["input"]["image"]
+
+    asserted = adapt.ModelSpec(
+        input={"image": adapt.Image(adapt.IMAGE_PRIMARY, size=224, render=448)},
+        output=output,
+    )
+    doc = asserted.to_dict()
+    assert doc["input"]["image"]["render"] == [448, 448]
+    assert adapt.ModelSpec.from_dict(doc) == asserted
+    # Cross-engine: the core's canonical form of each spec is the spec itself.
+    for spec in (plain, asserted):
+        canonical = adapters_spec_normalize("model", json.dumps(spec.to_dict()), True)
+        assert json.loads(canonical) == spec.to_dict()
+
+
+def test_bare_bicubic_and_lanczos3_are_not_resample_names():
+    """The suffix rule is enforced, not just documented: an un-suffixed cubic
+    or Lanczos name would silently pick one library's kernel over the other's,
+    so resolution rejects both."""
+    env = image_env(6, 8)
+    for name in ("bicubic", "lanczos3"):
         spec = adapt.ModelSpec(
-            # (12, 16) upscales the 6x8 env image, which the resolver gates
-            # behind allow_upscale; this test deliberately exercises both
-            # directions of the bilinear-AA resize.
             input={
                 "image": adapt.Image(
                     role=adapt.IMAGE_PRIMARY,
-                    height=height,
-                    width=width,
-                    allow_upscale=True,
-                    resample="bilinear_aa",  # this test pins the AA (PIL) filter
+                    height=3,
+                    width=4,
+                    resample=cast("adapt.Resample", name),
                 )
             },
             output=SMOLVLA.output,
         )
-        ours = (
-            resolve(env, spec).transform_obs({"rgb": image})["image"].astype(np.int16)
-        )
-        theirs = np.asarray(
-            pil.fromarray(image).resize((width, height), pil.Resampling.BILINEAR),
-            dtype=np.int16,
-        )
-        assert int(np.abs(ours - theirs).max()) <= 1
+        with pytest.raises(adapt.AdapterResolutionError, match="unsupported resample"):
+            resolve(env, spec)
 
 
 def make_png(pixels: np.ndarray) -> bytes:
@@ -2017,26 +2412,200 @@ def test_custom_encoding_describe_shows_host_layer():
     assert "rot6d -> rot6d_rev" in text
 
 
-def test_custom_obs_encoding_must_be_sole_component():
+# RoboTwin-style bimanual env: each arm's end-effector pose arrives as one flat
+# 7-wide leaf (xyz + a wxyz quaternion), plus a gripper scalar.
+BIMANUAL_EEF_ENV = Env(
+    tags=adapt.EnvTags(
+        observation={
+            "left_endpose": adapt.Split(
+                adapt.Field(adapt.EEF_POS, 3),
+                adapt.Field(adapt.EEF_ROT, 4, encoding="quat_wxyz"),
+            ),
+            "right_endpose": adapt.Split(
+                adapt.Field(adapt.EEF_POS_2, 3),
+                adapt.Field(adapt.EEF_ROT_2, 4, encoding="quat_wxyz"),
+            ),
+            "left_gripper": adapt.StateTag(role=adapt.GRIPPER_POS),
+            "right_gripper": adapt.StateTag(role=adapt.GRIPPER_POS_2),
+        },
+        action=adapt.Action(
+            adapt.Actuator(adapt.ACTION_EEF_POS, dim=3),
+            adapt.Actuator(adapt.ACTION_EEF_ROT, dim=4, encoding="quat_wxyz"),
+            adapt.Actuator(adapt.ACTION_GRIPPER, dim=1),
+            adapt.Actuator(adapt.ACTION_EEF_POS_2, dim=3),
+            adapt.Actuator(adapt.ACTION_EEF_ROT_2, dim=4, encoding="quat_wxyz"),
+            adapt.Actuator(adapt.ACTION_GRIPPER_2, dim=1),
+        ),
+    ),
+    obs_space=gym.spaces.Dict(
+        {
+            "left_endpose": box(7),
+            "right_endpose": box(7),
+            "left_gripper": box(1),
+            "right_gripper": box(1),
+        }
+    ),
+    action_space=box(16),
+)
+
+# A checkpoint whose rot6d convention lists the two columns the other way round:
+# a width-preserving repack of the base encoding, self-inverse. (X-VLA's real
+# RoboTwin2 quirk is a quaternion-order repack; what is under test here is that
+# a part-level repack finds its own slice of a 20-wide state.)
+ROT6D_COLS_SWAPPED = adapt.CustomEncoding(
+    base="rot6d_rowmajor",
+    from_base=lambda v: np.asarray(v)[[1, 0, 3, 2, 5, 4]],
+    to_base=lambda v: np.asarray(v)[[1, 0, 3, 2, 5, 4]],
+    name="rot6d_cols_swapped",
+)
+
+
+def _bimanual_proprio(encoding: Any) -> adapt.ModelSpec:
+    """The xvla/robotwin2 proprio layout: 6 parts, 20 wide, rot at 3 and 13."""
+    return adapt.ModelSpec(
+        input={
+            "proprio": adapt.Concat(
+                adapt.State(adapt.EEF_POS, dim=3),
+                adapt.State(adapt.EEF_ROT, dim=6, encoding=encoding),
+                adapt.State(adapt.GRIPPER_POS, dim=1),
+                adapt.State(adapt.EEF_POS_2, dim=3),
+                adapt.State(adapt.EEF_ROT_2, dim=6, encoding=encoding),
+                adapt.State(adapt.GRIPPER_POS_2, dim=1),
+                container="array",
+            )
+        },
+        output=adapt.Action(
+            adapt.Actuator(adapt.ACTION_EEF_POS, dim=3),
+            adapt.Actuator(adapt.ACTION_EEF_ROT, dim=6, encoding=encoding),
+            adapt.Actuator(adapt.ACTION_GRIPPER, dim=1),
+            adapt.Actuator(adapt.ACTION_EEF_POS_2, dim=3),
+            adapt.Actuator(adapt.ACTION_EEF_ROT_2, dim=6, encoding=encoding),
+            adapt.Actuator(adapt.ACTION_GRIPPER_2, dim=1),
+        ),
+    )
+
+
+def _quat_wxyz_to_rot6d_rowmajor(quat: Any) -> Any:
+    """The first two columns of R(quat), read row-major -- hand-rolled here so
+    the expectation is independent of the core's own conversion."""
+    w, x, y, z = (float(v) for v in np.asarray(quat) / np.linalg.norm(quat))
+    matrix = np.array(
+        [
+            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+        ]
+    )
+    return matrix[:, :2].reshape(6)
+
+
+def _bimanual_obs() -> dict[str, Any]:
+    return {
+        "left_endpose": np.array(
+            [0.21, -0.13, 0.94, 0.8, 0.2, -0.1, 0.55], dtype=np.float32
+        ),
+        "right_endpose": np.array(
+            [-0.31, 0.07, 0.88, 0.1, -0.7, 0.3, 0.64], dtype=np.float32
+        ),
+        "left_gripper": np.array([0.35], dtype=np.float32),
+        "right_gripper": np.array([0.9], dtype=np.float32),
+    }
+
+
+def test_custom_obs_encoding_addresses_its_slice_of_a_multipart_concat():
+    """Two custom-encoded parts of one 20-wide state each repack exactly their
+    own slice; every other part is byte-identical to the base-encoding plan."""
+    obs = _bimanual_obs()
+    base = resolve(BIMANUAL_EEF_ENV, _bimanual_proprio("rot6d_rowmajor"))
+    custom = resolve(BIMANUAL_EEF_ENV, _bimanual_proprio(ROT6D_COLS_SWAPPED))
+    base_state = np.asarray(base.transform_obs(obs)["proprio"])
+    custom_state = np.asarray(custom.transform_obs(obs)["proprio"])
+    assert base_state.shape == (20,)
+    swap = [1, 0, 3, 2, 5, 4]
+    for offset in (3, 13):
+        np.testing.assert_allclose(
+            custom_state[offset : offset + 6],
+            base_state[offset : offset + 6][swap],
+            atol=1e-6,
+        )
+    # Positions and grippers are untouched: the shim wrote only its own slice.
+    kept = [0, 1, 2, 9, 10, 11, 12, 19]
+    np.testing.assert_allclose(custom_state[kept], base_state[kept], atol=1e-6)
+    assert "'proprio'[3:9]" in custom.explain()
+    assert "'proprio'[13:19]" in custom.explain()
+
+
+def test_xvla_robotwin2_style_state_and_action_round_trip():
+    """The pairing the offset addressing exists for: a 20-wide bimanual proprio
+    whose rotation parts carry a host-side repack, checked against a
+    hand-computed vector, with the action converted back to the env's 16."""
+    obs = _bimanual_obs()
+    adapter = resolve(BIMANUAL_EEF_ENV, _bimanual_proprio(ROT6D_COLS_SWAPPED))
+    state = np.asarray(adapter.transform_obs(obs)["proprio"])
+    swap = [1, 0, 3, 2, 5, 4]
+    expected = np.concatenate(
+        [
+            obs["left_endpose"][:3],
+            _quat_wxyz_to_rot6d_rowmajor(obs["left_endpose"][3:])[swap],
+            obs["left_gripper"],
+            obs["right_endpose"][:3],
+            _quat_wxyz_to_rot6d_rowmajor(obs["right_endpose"][3:])[swap],
+            obs["right_gripper"],
+        ]
+    )
+    assert state.shape == (20,)  # in_dim 20
+    np.testing.assert_allclose(state, expected, atol=0.002)
+    # Echoing the proprio back as the action returns the observed pose: the
+    # action shim undoes the repack before the core converts rot6d -> quaternion.
+    action = adapter.transform_action(state)
+    assert action.shape == (16,)
+    for env_slice, obs_key in (
+        (slice(0, 8), "left_endpose"),
+        (slice(8, 16), "right_endpose"),
+    ):
+        pose = np.asarray(obs[obs_key])
+        np.testing.assert_allclose(action[env_slice][:3], pose[:3], atol=0.002)
+        quat = pose[3:] / np.linalg.norm(pose[3:])
+        got = action[env_slice][3:7]
+        # A rotation has two quaternion representations; either is correct.
+        assert min(np.abs(got - quat).max(), np.abs(got + quat).max()) < 0.002
+
+
+def test_custom_obs_encoding_pads_and_addresses_within_the_padded_state():
+    """pad_to is compatible with a repack: the shim addresses its slice of the
+    padded vector (the single-arm catalog variants' `pad_to=20` shape)."""
     env = _rot_obs_env()
     spec = adapt.ModelSpec(
-        input={
-            "state": adapt.Concat(
-                adapt.EEF_POS,
-                adapt.State(adapt.EEF_ROT, encoding=ROT6D_REV),
-            ),
-        },
+        input={"rot": adapt.State(adapt.EEF_ROT, encoding=ROT6D_REV, pad_to=8)},
         output=_gripper_action(),
     )
-    with pytest.raises(adapt.AdapterResolutionError, match="sole part"):
+    quat = np.array([0.1, 0.2, 0.3, 0.9], dtype=np.float32)
+    quat /= np.linalg.norm(quat)
+    out = np.asarray(resolve(env, spec).transform_obs({"q": quat})["rot"])
+    base_spec = adapt.ModelSpec(
+        input={"rot": adapt.State(adapt.EEF_ROT, encoding="rot6d", pad_to=8)},
+        output=_gripper_action(),
+    )
+    base = np.asarray(resolve(env, base_spec).transform_obs({"q": quat})["rot"])
+    assert out.shape == (8,)
+    np.testing.assert_allclose(out[:6], base[:6][::-1], atol=1e-6)
+    np.testing.assert_allclose(out[6:], 0.0, atol=1e-6)
+
+
+def test_custom_obs_encoding_rejects_a_width_changing_dim():
+    env = _rot_obs_env()
+    spec = adapt.ModelSpec(
+        input={"rot": adapt.State(adapt.EEF_ROT, dim=3, encoding=ROT6D_REV)},
+        output=_gripper_action(),
+    )
+    with pytest.raises(adapt.AdapterResolutionError, match="keeps its base width"):
         resolve(env, spec)
 
 
 @pytest.mark.parametrize(
     "kwargs, match",
     [
-        ({"pad_to": 8}, "pad_to/reshape"),
-        ({"reshape": (1, 6)}, "pad_to/reshape"),
+        ({"reshape": (1, 6)}, "reshape"),
         ({"container": "list"}, "container='array'"),
     ],
 )
@@ -2295,10 +2864,44 @@ def test_platform_resolve_rejects_optional_custom_encoding():
         )
 
 
-def test_platform_resolve_rejects_custom_encoding_in_a_multipart_concat():
-    # A custom encoding must be the sole part of its input slot: in a multi-part
-    # concat its offset is env-dependent, so the host-side repack cannot be
-    # placed. The platform door rejects it up front.
+def test_platform_resolve_reports_the_widths_of_a_multipart_concat():
+    # A custom encoding may sit anywhere in a multi-part concat: the platform
+    # resolves it and reports the resolved part widths, which is what a host
+    # binding addresses the repack's slice by.
+    import json
+
+    from rlmesh._rlmesh import adapters_resolve
+
+    env = _rot_obs_env()
+    model_spec_json = json.dumps(
+        {
+            "input": {
+                "proprio": {
+                    "type": "state",
+                    "components": [
+                        {"role": adapt.EEF_ROT, "dim": 6, "encoding": "rot6d"},
+                        {
+                            "role": adapt.EEF_ROT,
+                            "encoding": {"base": "rot6d", "from_base": "m:f"},
+                        },
+                    ],
+                }
+            },
+            "output": {"components": [{"role": adapt.ACTION_GRIPPER, "dim": 1}]},
+        }
+    )
+    plan = adapters_resolve(
+        json.dumps(env.tags.to_dict()),
+        env.obs_space,
+        env.action_space,
+        model_spec_json,
+    )
+    assert plan.state_layouts() == [(["proprio"], [6, 6], 12)]
+
+
+def test_platform_resolve_rejects_a_width_changing_custom_dim():
+    # dim restates the base width or is omitted; anything else would resize a
+    # repack that is defined to preserve it.
     import json
 
     from rlmesh._rlmesh import adapters_resolve
@@ -2312,16 +2915,16 @@ def test_platform_resolve_rejects_custom_encoding_in_a_multipart_concat():
                     "components": [
                         {
                             "role": adapt.EEF_ROT,
+                            "dim": 3,
                             "encoding": {"base": "rot6d", "from_base": "m:f"},
-                        },
-                        {"role": adapt.EEF_POS, "dim": 3},
+                        }
                     ],
                 }
             },
             "output": {"components": [{"role": adapt.ACTION_GRIPPER, "dim": 1}]},
         }
     )
-    with pytest.raises(ValueError, match="sole part"):
+    with pytest.raises(ValueError, match="keeps its base width"):
         adapters_resolve(
             json.dumps(env.tags.to_dict()),
             env.obs_space,
@@ -3009,3 +3612,683 @@ def test_serve_route_rejects_colliding_custom_placements():
     adapter = resolve(env, spec)
     with pytest.raises(ValueError, match="colliding route keys"):
         adapter.serve_route(_numpy_bridge)
+
+
+ABS_LIBERO_ENV = Env(
+    tags=adapt.EnvTags(
+        observation=LIBERO_ENV.tags.observation,
+        action=adapt.Action(
+            adapt.Actuator(adapt.ACTION_EEF_POS, dim=3),
+            adapt.Actuator(adapt.ACTION_EEF_ROT, dim=3, encoding="axis_angle"),
+            adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
+        ),
+    ),
+    obs_space=LIBERO_ENV.obs_space,
+    action_space=box(7),
+)
+
+ABS_TARGET_MODEL = adapt.ModelSpec(
+    input={"image": adapt.Image(role=adapt.IMAGE_PRIMARY, height=64, width=64)},
+    output=adapt.Action(
+        adapt.Actuator(adapt.ACTION_EEF_POS, dim=3),
+        adapt.Actuator(adapt.ACTION_EEF_ROT, dim=6, encoding="rot6d"),
+        adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, binary=True, threshold=0.5),
+    ),
+)
+
+
+def test_absolute_eef_target_passes_through_with_rotation_conversion():
+    adapter = resolve(ABS_LIBERO_ENV, ABS_TARGET_MODEL)
+    # Column-concat rot6d of R = [[1,0,0],[0,0,-1],[0,1,0]], a +90deg turn about x.
+    r6d = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+    out = adapter.transform_action(
+        np.array([0.3, -0.1, 1.2, *r6d, 0.9], dtype=np.float32)
+    )
+    assert out.shape == (7,)
+    np.testing.assert_allclose(
+        out[:3], [0.3, -0.1, 1.2], atol=1e-6
+    )  # no clip, no scale
+    np.testing.assert_allclose(out[3:6], [np.pi / 2, 0.0, 0.0], atol=1e-5)
+    assert out[6] == 1.0
+
+
+def test_absolute_eef_roles_are_registered_with_fixed_position_width():
+    bad = adapt.ModelSpec(
+        input={"image": adapt.Image(role=adapt.IMAGE_PRIMARY, height=64, width=64)},
+        output=adapt.Action(adapt.Actuator(adapt.ACTION_EEF_POS, dim=2)),
+    )
+    with pytest.raises(Exception, match="3-D by convention"):
+        resolve(ABS_LIBERO_ENV, bad)
+
+
+JOINT_BIMANUAL_ENV = Env(
+    tags=adapt.EnvTags(
+        observation={
+            "head": adapt.ImageTag(role=adapt.IMAGE_PRIMARY),
+            "left_wrist": adapt.ImageTag(role=adapt.IMAGE_WRIST),
+            "right_wrist": adapt.ImageTag(role=adapt.IMAGE_WRIST_2),
+        },
+        action=adapt.Action(
+            adapt.Actuator(adapt.ACTION_JOINT_POS, dim=6),
+            adapt.Actuator(adapt.ACTION_GRIPPER, dim=1),
+            adapt.Actuator(adapt.ACTION_JOINT_POS_2, dim=6),
+            adapt.Actuator(adapt.ACTION_GRIPPER_2, dim=1),
+        ),
+    ),
+    obs_space=gym.spaces.Dict(
+        {
+            "head": image_space(),
+            "left_wrist": image_space(),
+            "right_wrist": image_space(),
+        }
+    ),
+    action_space=box(14),
+)
+
+# The model emits both arms' joints first and both grippers last; the env
+# interleaves them arm by arm. Only the `_2` roles can express the difference.
+JOINT_BIMANUAL_MODEL = adapt.ModelSpec(
+    input={
+        "image": adapt.Image(role=adapt.IMAGE_PRIMARY, height=64, width=64),
+        "wrist": adapt.Image(role=adapt.IMAGE_WRIST, height=64, width=64),
+        "wrist_2": adapt.Image(role=adapt.IMAGE_WRIST_2, height=64, width=64),
+    },
+    output=adapt.Action(
+        adapt.Actuator(adapt.ACTION_JOINT_POS, dim=6),
+        adapt.Actuator(adapt.ACTION_JOINT_POS_2, dim=6),
+        adapt.Actuator(adapt.ACTION_GRIPPER, dim=1),
+        adapt.Actuator(adapt.ACTION_GRIPPER_2, dim=1),
+    ),
+)
+
+
+def test_bimanual_joint_split_permutes_the_model_vector():
+    adapter = resolve(JOINT_BIMANUAL_ENV, JOINT_BIMANUAL_MODEL)
+    out = adapter.transform_action(np.arange(14, dtype=np.float32))
+    np.testing.assert_allclose(out, [0, 1, 2, 3, 4, 5, 12, 6, 7, 8, 9, 10, 11, 13])
+    payload = adapter.transform_obs(
+        {
+            "head": np.zeros((64, 64, 3), dtype=np.uint8),
+            "left_wrist": np.zeros((64, 64, 3), dtype=np.uint8),
+            "right_wrist": np.full((64, 64, 3), 7, dtype=np.uint8),
+        }
+    )
+    # The second wrist camera lands in its own slot, not aliased onto the first.
+    assert payload["wrist_2"].max() > payload["wrist"].max()
+
+
+# --- Declarative state parts: constant / post_rotate / scale / offset ---------
+#
+# The three model-side rebuilds these fields replace, each pinned against the
+# catalog's own arithmetic (rlmesh-catalog/xvla-chunk, rc.8).
+
+# `models/gr00t-n1.7/gr00t_model.py` WidowXBridgeState._DEFAULT_ROT.
+GR00T_DEFAULT_ROT = np.array([[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]])
+
+# `models/xvla/libero/main.py` XVLALibero.HAND_TO_GRIP.
+XVLA_HAND_TO_GRIP = np.array(
+    [[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64
+)
+
+BRIDGE_ENV = Env(
+    tags=adapt.EnvTags(
+        observation={
+            "image": adapt.ImageTag(adapt.IMAGE_PRIMARY),
+            "eef_pos": adapt.StateTag(adapt.EEF_POS),
+            "eef_quat": adapt.StateTag(adapt.EEF_ROT, encoding="quat_wxyz"),
+            "gripper": adapt.StateTag(adapt.GRIPPER_POS),
+            "instruction": adapt.TextTag(adapt.INSTRUCTION),
+        },
+        action=adapt.Action(
+            adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3, range=(-1.0, 1.0)),
+            adapt.Actuator(
+                adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle", range=(-1.0, 1.0)
+            ),
+            adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
+        ),
+    ),
+    obs_space=gym.spaces.Dict(
+        {
+            "image": image_space(),
+            "eef_pos": box(3),
+            "eef_quat": box(4),
+            "gripper": box(1),
+            "instruction": text_space(),
+        }
+    ),
+    action_space=ACTION7,
+)
+
+# A recorded widowx observation: wxyz quaternion straight off `env.tcp.pose.q`.
+BRIDGE_OBS: dict[str, Any] = {
+    "image": np.zeros((64, 64, 3), dtype=np.uint8),
+    "eef_pos": np.array([0.281_25, -0.041_5, 0.137_75], dtype=np.float32),
+    "eef_quat": np.array([0.137_84, 0.694_21, -0.135_47, 0.693_03], dtype=np.float32),
+    "gripper": np.array([0.812_5], dtype=np.float32),
+    "instruction": "put the eggplant in the basket",
+}
+
+
+def test_gr00t_bridge_state_is_expressible_declaratively():
+    """The gr00t widowx embodiment wants ``[pos, euler, pad, gripper]``.
+
+    ``models/gr00t-n1.7/gr00t_model.py`` builds it by hand in
+    ``WidowXBridgeState._obs``::
+
+        mat = R.from_quat(quat_xyzw).as_matrix()
+        euler = R.from_matrix(mat @ self._DEFAULT_ROT.T).as_euler("xyz")
+        state = np.concatenate([pos, euler, [0.0], grip])
+
+    The env declares ``quat_wxyz``, so the old spec's ``encoding="quat_xyzw"``
+    was doing the wxyz->xyzw permutation the hand-rolled code depended on.
+    Declared instead: ``euler_xyz`` plus a ``post_rotate`` of
+    ``_DEFAULT_ROT.T``, and the pad channel as a ``Constant``.
+    """
+    scipy_rotation = pytest.importorskip("scipy.spatial.transform").Rotation
+
+    spec = adapt.ModelSpec(
+        input={
+            "state": adapt.Concat(
+                adapt.EEF_POS,
+                adapt.State(
+                    adapt.EEF_ROT,
+                    encoding="euler_xyz",
+                    post_rotate=adapt.Rotation.from_matrix(GR00T_DEFAULT_ROT.T),
+                ),
+                adapt.Constant(dim=1),
+                adapt.State(adapt.GRIPPER_POS, dim=1),
+            )
+        },
+        output=adapt.Action(
+            adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
+            adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=3, encoding="euler_xyz"),
+            adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(0.0, 1.0)),
+        ),
+    )
+
+    wxyz = np.asarray(BRIDGE_OBS["eef_quat"], dtype=np.float64)
+    quat_xyzw = np.array([wxyz[1], wxyz[2], wxyz[3], wxyz[0]])
+    matrix = scipy_rotation.from_quat(quat_xyzw).as_matrix()
+    euler = scipy_rotation.from_matrix(matrix @ GR00T_DEFAULT_ROT.T).as_euler("xyz")
+    expected = np.concatenate(
+        [
+            np.asarray(BRIDGE_OBS["eef_pos"], dtype=np.float64),
+            euler,
+            [0.0],
+            np.asarray(BRIDGE_OBS["gripper"], dtype=np.float64),
+        ]
+    )
+
+    state = resolve(BRIDGE_ENV, spec).transform_obs(BRIDGE_OBS)["state"]
+    assert state.shape == (8,)
+    np.testing.assert_allclose(state, expected, atol=1e-5)
+
+
+def test_xvla_libero_hand_to_grip_is_a_post_rotation():
+    """``models/xvla/libero/main.py`` rebuilds the rot6d block model-side::
+
+        grip = _rot6d_to_matrix(state[3:9]) @ self.HAND_TO_GRIP
+        state[3:9] = _matrix_to_rot6d(grip)
+        state[9] = 0.0  # upstream proprio carries a constant 0 gripper slot
+
+    Both halves are declarable: a rigid right-multiplication is ``post_rotate``
+    and the pinned slot is a ``Constant``. (Binding the constant deliberately
+    drops the env's ``proprio/gripper`` -- the checkpoint's slot 9 is not a
+    function of the env gripper.)
+    """
+    scipy_rotation = pytest.importorskip("scipy.spatial.transform").Rotation
+
+    spec = adapt.ModelSpec(
+        input={
+            "state": adapt.Concat(
+                adapt.EEF_POS,
+                adapt.State(
+                    adapt.EEF_ROT,
+                    encoding="rot6d",
+                    post_rotate=adapt.Rotation.from_matrix(XVLA_HAND_TO_GRIP),
+                ),
+                adapt.Constant(dim=1),
+            )
+        },
+        output=XVLA.output,
+    )
+
+    obs = make_obs()
+    matrix = scipy_rotation.from_quat(
+        np.asarray(obs["robot0_eef_quat"], dtype=np.float64)
+    ).as_matrix()
+    # `_matrix_to_rot6d(rot) = rot[:, :2].T.reshape(-1)` -- the two leading
+    # columns concatenated, which is exactly the `rot6d` encoding.
+    grip = matrix @ XVLA_HAND_TO_GRIP
+    expected = np.concatenate(
+        [
+            np.asarray(obs["robot0_eef_pos"], dtype=np.float64),
+            grip[:, :2].T.reshape(-1),
+            [0.0],
+        ]
+    )
+
+    state = resolve(LIBERO_ENV, spec).transform_obs(obs)["state"]
+    assert state.shape == (10,)
+    np.testing.assert_allclose(state, expected, atol=1e-5)
+
+
+def test_state_scale_and_offset_express_the_robotwin_gripper():
+    """``models/xvla/robotwin2/main.py`` maps RoboTwin's gripper into the
+    model's training convention with ``proprio[9] = 1.0 - proprio[9] * 2.0``;
+    declared, that is ``scale=-2, offset=1``."""
+    spec = adapt.ModelSpec(
+        input={
+            "state": adapt.Concat(
+                adapt.EEF_POS,
+                adapt.State(adapt.GRIPPER_POS, dim=1, scale=-2.0, offset=1.0),
+            )
+        },
+        output=XVLA.output,
+    )
+    obs = make_obs()
+    gripper = float(np.asarray(obs["robot0_gripper_qpos"])[0])
+
+    state = resolve(LIBERO_ENV, spec).transform_obs(obs)["state"]
+    assert state.shape == (4,)
+    np.testing.assert_allclose(state[3], 1.0 - 2.0 * gripper, atol=1e-6)
+
+
+def test_constant_part_is_not_reported_as_a_zero_filled_role():
+    """C14: a declared constant is authored data, so it must not read as
+    fabricated the way an absent optional role does."""
+    constant = adapt.ModelSpec(
+        input={"state": adapt.Concat(adapt.EEF_POS, adapt.Constant(dim=2))},
+        output=XVLA.output,
+    )
+    absent = adapt.ModelSpec(
+        input={
+            "state": adapt.Concat(
+                adapt.EEF_POS,
+                adapt.State(adapt.EEF_POS_2, dim=2, optional=True),
+            )
+        },
+        output=XVLA.output,
+    )
+    constant_text = resolve(LIBERO_ENV, constant).explain()
+    assert "const(2)=0.0" in constant_text
+    assert "zeros(2)" not in constant_text
+    assert not [
+        note
+        for note in resolve(LIBERO_ENV, constant).advisories()
+        if "zero-filled" in note.message
+    ]
+    assert "zeros(2)" in resolve(LIBERO_ENV, absent).explain()
+    assert [
+        note
+        for note in resolve(LIBERO_ENV, absent).advisories()
+        if "zero-filled" in note.message
+    ]
+
+
+def test_state_of_only_constants_is_refused():
+    with pytest.raises(ValueError, match="reads nothing from the env"):
+        adapt.Concat(adapt.Constant(dim=3))
+
+
+def test_non_zero_fill_needs_optional_and_folds_scale_and_offset():
+    with pytest.raises(ValueError, match="only to an optional part"):
+        adapt.State(adapt.EEF_POS_2, dim=1, fill=1.0)
+    spec = adapt.ModelSpec(
+        input={
+            "state": adapt.Concat(
+                adapt.EEF_POS,
+                adapt.State(
+                    adapt.EEF_POS_2,
+                    dim=2,
+                    optional=True,
+                    fill=0.5,
+                    scale=2.0,
+                    offset=1.0,
+                ),
+            )
+        },
+        output=XVLA.output,
+    )
+    state = resolve(LIBERO_ENV, spec).transform_obs(make_obs())["state"]
+    # fill * scale + offset, folded once at resolve.
+    np.testing.assert_allclose(state[3:], [2.0, 2.0], atol=1e-6)
+
+
+def test_post_rotate_needs_a_rotation_encoding():
+    identity = adapt.Rotation.from_matrix(np.eye(3))
+    with pytest.raises(ValueError, match="post_rotate needs a rotation encoding"):
+        adapt.State(adapt.EEF_ROT, post_rotate=identity)
+    assert identity.encoding == "rot6d"
+    assert identity.value == (1.0, 0.0, 0.0, 0.0, 1.0, 0.0)
+
+
+def test_rotation_literal_must_be_a_rotation():
+    sheared = adapt.ModelSpec(
+        input={
+            "state": adapt.Concat(
+                adapt.EEF_POS,
+                adapt.State(
+                    adapt.EEF_ROT,
+                    encoding="rot6d",
+                    post_rotate=adapt.Rotation(
+                        encoding="rot6d", value=(1.0, 0.0, 0.0, 0.5, 1.0, 0.0)
+                    ),
+                ),
+            )
+        },
+        output=XVLA.output,
+    )
+    with pytest.raises(ValueError, match="orthonormal"):
+        sheared.to_dict()
+
+
+def test_constant_part_shifts_a_later_custom_encoding_slice():
+    """A constant contributes width like any other part, so the host-side
+    repack that follows it must be addressed past it."""
+    swap = adapt.CustomEncoding(
+        base="quat_xyzw",
+        from_base=lambda v: np.asarray(v)[[3, 0, 1, 2]],
+        to_base=lambda v: np.asarray(v)[[1, 2, 3, 0]],
+    )
+    spec = adapt.ModelSpec(
+        input={
+            "state": adapt.Concat(
+                adapt.EEF_POS,
+                adapt.Constant(dim=2, fill=1.0),
+                adapt.State(adapt.EEF_ROT, encoding=swap),
+            )
+        },
+        output=XVLA.output,
+    )
+    adapter = resolve(LIBERO_ENV, spec)
+    assert "'state'[5:9]" in adapter.explain()
+    obs = make_obs()
+    state = adapter.transform_obs(obs)["state"]
+    np.testing.assert_allclose(state[3:5], [1.0, 1.0], atol=1e-6)
+    np.testing.assert_allclose(
+        state[5:], np.asarray(obs["robot0_eef_quat"])[[3, 0, 1, 2]], atol=1e-6
+    )
+
+
+def test_frame_and_reference_are_keyword_only_and_omitted_when_unset() -> None:
+    # Appended last and keyword-only, so every existing positional call site
+    # keeps its meaning, and a spec that declares neither is byte-identical on
+    # the wire to one written before the attributes existed.
+    positional = adapt.Actuator(adapt.ACTION_GRIPPER, 1, None, None, True)
+    assert positional.binary is True
+    assert positional.frame is None and positional.reference is None
+    assert adapt.StateTag(adapt.EEF_POS, "quat_xyzw").frame is None
+    assert adapt.Field(adapt.EEF_POS, 3).frame is None
+    assert adapt.State(adapt.EEF_POS, "quat_xyzw", 3).frame is None
+
+    bare = adapt.EnvTags(
+        observation={"p": adapt.StateTag(adapt.EEF_POS)},
+        action=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1)),
+    ).to_dict()
+    assert "frame" not in bare["observation"]["p"]
+    assert "reference" not in bare["action"]["components"][0]
+
+    # Declared, they round-trip by value through the Rust codec.
+    tags = adapt.EnvTags(
+        observation={"p": adapt.StateTag(adapt.EEF_POS, frame="robot_base")},
+        action=adapt.Action(
+            adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3, reference="current")
+        ),
+    )
+    assert adapt.EnvTags.from_dict(tags.to_dict()) == tags
+    spec = adapt.ModelSpec(
+        input={"s": adapt.State(adapt.EEF_POS, dim=3, frame="world")},
+        output=adapt.Action(
+            adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3, reference="target")
+        ),
+    )
+    assert adapt.ModelSpec.from_dict(spec.to_dict()) == spec
+
+
+def test_a_role_less_leaf_may_not_carry_a_frame() -> None:
+    # A skip advances the offset and a constant emits a fixed block; neither has
+    # a pose to express in a frame.
+    with pytest.raises(ValueError, match="role-less"):
+        adapt.Actuator(dim=2, frame="world")
+    with pytest.raises(ValueError, match="role-less"):
+        adapt.Actuator(dim=2, reference="current")
+    with pytest.raises(ValueError, match="role-less field"):
+        adapt.EnvTags.from_dict(
+            {
+                "observation": {
+                    "s": {
+                        "type": "split",
+                        "fields": [{"dim": 1, "frame": "world"}],
+                    }
+                },
+                "action": {"components": [{"role": adapt.ACTION_GRIPPER, "dim": 1}]},
+            }
+        )
+
+
+def test_frame_and_reference_disagreement_is_a_hard_resolve_error() -> None:
+    # The xvla/widowx class of bug: an absolute base-frame head bound to a
+    # delta controller. Both halves now have a name and fail loudly.
+    env = LIBERO_ENV._replace(
+        tags=adapt.EnvTags(
+            observation={
+                **cast("dict[str, Any]", LIBERO_ENV.tags.observation),
+                "robot0_eef_pos": adapt.StateTag(adapt.EEF_POS, frame="world"),
+            },
+            action=LIBERO_ACTION,
+        )
+    )
+    spec = adapt.ModelSpec(
+        input={"state": adapt.State(adapt.EEF_POS, frame="robot_base")},
+        output=LIBERO_MODEL_ACTION,
+    )
+    with pytest.raises(
+        adapt.AdapterResolutionError,
+        match='the model expects frame "robot_base" but the env declares "world"',
+    ):
+        resolve(env, spec)
+
+    delta_target = adapt.ModelSpec(
+        input={"state": adapt.Concat(adapt.EEF_POS)},
+        output=adapt.Action(
+            adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3, reference="target"),
+            adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
+            adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
+        ),
+    )
+    env_current = LIBERO_ENV._replace(
+        tags=adapt.EnvTags(
+            observation=LIBERO_ENV.tags.observation,
+            action=adapt.Action(
+                adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3, reference="current"),
+                adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
+                adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
+                clip=(-1.0, 1.0),
+            ),
+        )
+    )
+    with pytest.raises(
+        adapt.AdapterResolutionError,
+        match='the model expects reference "target" but the env declares "current"',
+    ):
+        resolve(env_current, delta_target)
+
+
+def test_a_model_only_frame_is_a_caution_and_shows_in_the_summary() -> None:
+    # C14 case 6: the model states a requirement the env cannot confirm. The
+    # run proceeds; the pairing carries a caution and the summary the frame.
+    spec = adapt.ModelSpec(
+        input={"state": adapt.State(adapt.EEF_POS, frame="robot_base")},
+        output=LIBERO_MODEL_ACTION,
+    )
+    adapter = resolve(LIBERO_ENV, spec)
+    cautions = [
+        note
+        for note in adapter.advisories()
+        if note.severity == "caution" and "frame" in note.message
+    ]
+    assert len(cautions) == 1
+    assert "cannot be verified" in cautions[0].message
+    assert "@robot_base" in adapter.explain()
+    # Not a drop: the caution must stay out of the `dropped:` section.
+    assert "dropped:" not in adapter.explain()
+
+
+def test_require_frames_is_an_opt_in_publish_gate() -> None:
+    import json
+
+    from rlmesh._rlmesh import adapters_spec_normalize
+
+    bare = json.dumps(
+        adapt.EnvTags(
+            observation={"p": adapt.StateTag(adapt.EEF_POS)},
+            action=adapt.Action(adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3)),
+        ).to_dict()
+    )
+    # Default tier: an absent frame is legal v1.
+    adapters_spec_normalize("env", bare, True)
+    with pytest.raises(ValueError, match="without a frame"):
+        adapters_spec_normalize("env", bare, True, "passthrough", True)
+
+    declared = json.dumps(
+        adapt.EnvTags(
+            observation={"p": adapt.StateTag(adapt.EEF_POS, frame="robot_base")},
+            action=adapt.Action(
+                adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3, reference="current")
+            ),
+        ).to_dict()
+    )
+    adapters_spec_normalize("env", declared, True, "passthrough", True)
+
+
+class _StackedFrameEnv:
+    """A local env whose camera returns a fresh, step-numbered frame each step."""
+
+    def __init__(self, tags: adapt.EnvTags, obs_space: Any, action_space: Any) -> None:
+        self.metadata = tags.to_metadata()
+        self.observation_space = obs_space
+        self.action_space = action_space
+        self._step = 0
+
+    def _obs(self) -> dict[str, Any]:
+        frame = np.full((4, 4, 3), self._step, dtype=np.uint8)
+        self._step += 1
+        return {"rgb": frame, "instruction": "go"}
+
+    def reset(self, *, seed: object = None, options: object = None) -> Any:
+        self._step = 0
+        return self._obs(), {}
+
+    def step(self, action: object) -> Any:
+        return self._obs(), 0.0, False, False, {}
+
+    def close(self) -> None:
+        pass
+
+
+def _drive_stacked_session(horizon: int, steps: int) -> list[Any]:
+    """Drive a stacked model for `steps` env steps; return the payloads it saw."""
+    from rlmesh.numpy import Model
+
+    env = image_env(4, 4)
+    spec = adapt.ModelSpec(
+        input={"img": adapt.Image(role=adapt.IMAGE_PRIMARY, stack=3, stride=2)},
+        output=SMOLVLA.output,
+    )
+    seen: list[Any] = []
+
+    class _Chunky(Model):
+        def predict(self, observation: Any) -> Any:
+            seen.append(np.asarray(observation["img"]).copy())
+            return np.zeros(7, dtype=np.float32)
+
+        def predict_chunk(self, observation: Any, chunk: int) -> Any:
+            seen.append(np.asarray(observation["img"]).copy())
+            return np.zeros((chunk, 7), dtype=np.float32)
+
+    model = _Chunky(spec=spec)
+    sess = model.session(
+        _StackedFrameEnv(env.tags, env.obs_space, env.action_space),
+        execution_horizon=horizon,
+    )
+    obs, _info = sess.reset()
+    for _ in range(steps):
+        obs, *_rest = sess.step(sess.predict(obs))
+    sess.close()
+    return seen
+
+
+def test_a_stacked_window_is_the_same_at_every_execution_horizon() -> None:
+    # The horizon invariant: chunk replay changes WHEN the model runs, never WHAT
+    # it sees. Every fourth payload of a single-step session must equal the
+    # payloads a horizon-4 session assembled at the same env steps -- which only
+    # holds because a replayed step still ticks the frame window.
+    every_step = _drive_stacked_session(1, 12)
+    chunked = _drive_stacked_session(4, 12)
+    assert len(every_step) == 12
+    assert len(chunked) == 3
+    for index, payload in enumerate(chunked):
+        np.testing.assert_array_equal(payload, every_step[index * 4])
+    # ...and the window really is strided: at step 8 it stacks frames 4, 6, 8.
+    np.testing.assert_array_equal(
+        chunked[2][:, 0, 0, 0], np.asarray([4, 6, 8], dtype=np.uint8)
+    )
+
+
+def test_image_stride_sugar_builds_the_declared_offsets() -> None:
+    # stride= is sugar for an evenly spaced window; the two catalog models this
+    # was built for are the table.
+    assert adapt.Image(adapt.IMAGE_PRIMARY, stack=4, stride=2).offsets == (
+        -6,
+        -4,
+        -2,
+        0,
+    )
+    assert adapt.Image(adapt.IMAGE_PRIMARY, stack=6, stride=5).offsets == (
+        -25,
+        -20,
+        -15,
+        -10,
+        -5,
+        0,
+    )
+    # A plain stack materializes nothing onto the frozen dataclass.
+    assert adapt.Image(adapt.IMAGE_PRIMARY, stack=4).offsets is None
+    with pytest.raises(ValueError, match="stride=, or offsets=, not both"):
+        adapt.Image(adapt.IMAGE_PRIMARY, stack=2, stride=2, offsets=(-1, 0))
+
+
+def test_frame_history_budget_is_gated_at_connect() -> None:
+    # A window is live memory for the whole episode: a mis-set stride turns a
+    # modest stack into gigabytes, so the session refuses it where the number is
+    # already known rather than at the allocation that OOMs.
+    from rlmesh.numpy import Model
+
+    env = image_env(4, 4)
+    spec = adapt.ModelSpec(
+        input={"img": adapt.Image(role=adapt.IMAGE_PRIMARY, stack=4, stride=32)},
+        output=SMOLVLA.output,
+    )
+    sess = Model(lambda obs: np.zeros(7, dtype=np.float32), spec=spec).session(
+        _StackedFrameEnv(env.tags, env.obs_space, env.action_space)
+    )
+    with pytest.raises(ValueError, match="over the 64-byte ceiling"):
+        with _frame_history_limit(64):
+            sess.reset()
+    sess.close()
+
+
+@contextlib.contextmanager
+def _frame_history_limit(limit: int) -> Any:
+    import os
+
+    previous = os.environ.get("RLMESH_FRAME_HISTORY_LIMIT_BYTES")
+    os.environ["RLMESH_FRAME_HISTORY_LIMIT_BYTES"] = str(limit)
+    try:
+        yield
+    finally:
+        if previous is None:
+            del os.environ["RLMESH_FRAME_HISTORY_LIMIT_BYTES"]
+        else:
+            os.environ["RLMESH_FRAME_HISTORY_LIMIT_BYTES"] = previous

@@ -16,6 +16,7 @@
 //! raw Python observation afterwards.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::Mutex;
 
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -23,10 +24,12 @@ use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString, PyT
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 use rlmesh_adapters::v1::{
-    Advisory, ApplyError, CustomTransform, EncodingTransform, EnvTags, InputNode, ModelLeaf,
-    ModelSpec, NodePath, ObsPlan, PathSeg, ResolvedAdapter, RolePolicy, SkipCustoms, SpaceView,
-    Value, build_describe_envelope, join, reject_unknowns_env, reject_unknowns_model,
-    reject_unsanctioned_roles_env, reject_unsanctioned_roles_model, resolve, roles,
+    Advisory, ApplyError, CustomTransform, EncodingTransform, EnvTags, FrameBuffers, FramePolicy,
+    InputNode, ModelLeaf, ModelSpec, NoEncodings, NodePath, ObsPlan, PathSeg, ResolvedAdapter,
+    RolePolicy, SkipCustoms, SpaceView, Value, assemble_obs, build_describe_envelope, join,
+    observe_obs, reject_unframed_roles_env, reject_unframed_roles_model, reject_unknowns_env,
+    reject_unknowns_model, reject_unsanctioned_roles_env, reject_unsanctioned_roles_model, resolve,
+    roles,
 };
 use serde::de::DeserializeOwned;
 
@@ -97,9 +100,14 @@ fn de_spec<T: DeserializeOwned>(label: &str, json: &str) -> PyResult<T> {
 const WIRE_CONSTANTS: &[(&str, &str)] = &[
     ("ENV_METADATA_KEY", rlmesh_adapters::v1::ENV_METADATA_KEY),
     (
+        "ENV_BRANCH_METADATA_KEY",
+        rlmesh_adapters::v1::ENV_BRANCH_METADATA_KEY,
+    ),
+    (
         "MODEL_METADATA_KEY",
         rlmesh_adapters::v1::MODEL_METADATA_KEY,
     ),
+    ("ENV_RESET_OPTIONS_KEY", rlmesh::ENV_RESET_OPTIONS_KEY),
     (
         "DESCRIBE_METADATA_KEY",
         rlmesh_adapters::v1::DESCRIBE_METADATA_KEY,
@@ -111,7 +119,9 @@ const WIRE_CONSTANTS: &[(&str, &str)] = &[
     ("JOINT_VEL", roles::core::JOINT_VEL),
     ("ACTION_JOINT_POS", roles::core::ACTION_JOINT_POS),
     ("ACTION_JOINT_VEL", roles::core::ACTION_JOINT_VEL),
+    ("ACTION_JOINT_POS_2", roles::core::ACTION_JOINT_POS_2),
     ("IMAGE_WRIST", roles::manipulation::IMAGE_WRIST),
+    ("IMAGE_WRIST_2", roles::manipulation::IMAGE_WRIST_2),
     ("EEF_POS", roles::manipulation::EEF_POS),
     ("EEF_ROT", roles::manipulation::EEF_ROT),
     ("GRIPPER_POS", roles::manipulation::GRIPPER_POS),
@@ -130,6 +140,10 @@ const WIRE_CONSTANTS: &[(&str, &str)] = &[
         roles::manipulation::ACTION_DELTA_ROT_2,
     ),
     ("ACTION_GRIPPER_2", roles::manipulation::ACTION_GRIPPER_2),
+    ("ACTION_EEF_POS", roles::manipulation::ACTION_EEF_POS),
+    ("ACTION_EEF_ROT", roles::manipulation::ACTION_EEF_ROT),
+    ("ACTION_EEF_POS_2", roles::manipulation::ACTION_EEF_POS_2),
+    ("ACTION_EEF_ROT_2", roles::manipulation::ACTION_EEF_ROT_2),
 ];
 
 /// Stub-only declarations for the wire constants that [`register_constants`]
@@ -140,7 +154,9 @@ const WIRE_CONSTANTS: &[(&str, &str)] = &[
 #[cfg(feature = "stub-gen")]
 mod stub_constants {
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ENV_METADATA_KEY", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ENV_BRANCH_METADATA_KEY", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "MODEL_METADATA_KEY", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ENV_RESET_OPTIONS_KEY", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "DESCRIBE_METADATA_KEY", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "DESCRIBE_SCHEMA_VERSION", u32);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "IMAGE_PRIMARY", String);
@@ -150,7 +166,9 @@ mod stub_constants {
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "JOINT_VEL", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_JOINT_POS", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_JOINT_VEL", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_JOINT_POS_2", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "IMAGE_WRIST", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "IMAGE_WRIST_2", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "EEF_POS", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "EEF_ROT", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "GRIPPER_POS", String);
@@ -163,12 +181,19 @@ mod stub_constants {
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_DELTA_POS_2", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_DELTA_ROT_2", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_GRIPPER_2", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_EEF_POS", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_EEF_ROT", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_EEF_POS_2", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_EEF_ROT_2", String);
     pyo3_stub_gen::module_variable!(
         "rlmesh._rlmesh",
         "ROTATION_DIMS",
         std::collections::HashMap<String, u32>
     );
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "IMAGE_LAYOUTS", Vec<String>);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "RESAMPLES", Vec<String>);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "CROP_MODES", Vec<String>);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "CHANNEL_ORDERS", Vec<String>);
 }
 
 /// Register the wire-vocabulary constants on the `_rlmesh` module.
@@ -186,6 +211,12 @@ pub fn register_constants(m: &Bound<'_, PyModule>) -> PyResult<()> {
         .map(|layout| layout.as_str())
         .collect();
     m.add("IMAGE_LAYOUTS", layouts)?;
+    m.add("RESAMPLES", rlmesh_adapters::v1::RESAMPLES.to_vec())?;
+    m.add("CROP_MODES", rlmesh_adapters::v1::CROP_MODES.to_vec())?;
+    m.add(
+        "CHANNEL_ORDERS",
+        rlmesh_adapters::v1::CHANNEL_ORDERS.to_vec(),
+    )?;
     // The describe-envelope schema version is a u32, not a string, so it can't
     // ride WIRE_CONSTANTS; add it directly. Rust is the sole writer of this.
     m.add(
@@ -470,11 +501,27 @@ impl From<Advisory> for PyAdvisory {
     }
 }
 
+/// One state input's resolved layout: its placement path, the width each
+/// declared part contributes, and the assembled leaf's width.
+type StateLayout = (Py<PyList>, Vec<u32>, u32);
+
+/// The episode key the in-process path's frame windows live under. A local
+/// drive loop runs one episode at a time and clears the windows at its boundary
+/// (`reset_history`), so there is nothing to key them apart by — unlike the
+/// served engine, which holds one [`FrameBuffers`] per route across live lanes.
+const LOCAL_EPISODE: &str = "";
+
 /// A resolved adapter plan handle backed by the `rlmesh-adapters` core.
 #[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(module = "rlmesh._rlmesh", name = "AdapterPlan", frozen)]
 pub struct PyAdapterPlan {
     adapter: ResolvedAdapter,
+    /// The in-process frame windows for inputs that declare a history. Held
+    /// here, behind the same core the served engine drives, so the local and
+    /// served paths stack from ONE ring implementation rather than a host-side
+    /// copy of it. Empty (and never locked in anger) for a plan with no stacked
+    /// input.
+    windows: Mutex<FrameBuffers>,
 }
 
 #[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
@@ -537,6 +584,48 @@ impl PyAdapterPlan {
             .collect()
     }
 
+    /// `(segments, part_widths, width)` per resolved state input, plan order.
+    ///
+    /// `segments` is the state leaf's structured placement path (as in
+    /// [`custom_inputs`](Self::custom_inputs)), `part_widths` the resolved width
+    /// each declared part contributes in order, and `width` the assembled
+    /// leaf's width (its `pad_to` when it pads). A host-side custom encoding
+    /// reads and writes exactly its own slice of the leaf, whose offset is the
+    /// sum of the widths before it — env-dependent, so it is knowable only
+    /// here, after resolve. A state whose widths are not all statically known
+    /// is omitted (nothing can be addressed inside it).
+    #[gen_stub(override_return_type(
+        type_repr = "builtins.list[tuple[builtins.list[builtins.str | builtins.int], \
+                     builtins.list[builtins.int], builtins.int]]",
+        imports = ("builtins")
+    ))]
+    fn state_layouts<'py>(&self, py: Python<'py>) -> PyResult<Vec<StateLayout>> {
+        self.adapter
+            .obs_plans
+            .iter()
+            .filter_map(|plan| match plan {
+                ObsPlan::State(state) => Some(state),
+                _ => None,
+            })
+            .filter_map(|state| {
+                let native_width = state.native_width?;
+                let widths: Vec<u32> = state
+                    .pieces
+                    .iter()
+                    .map(|piece| piece.width)
+                    .collect::<Option<_>>()?;
+                Some((
+                    &state.placement,
+                    widths,
+                    state.pad_to.unwrap_or(native_width),
+                ))
+            })
+            .map(|(placement, widths, width)| {
+                Ok((path_segments_to_py(py, placement)?, widths, width))
+            })
+            .collect()
+    }
+
     /// Apply the observation plans to a canonical value-tree observation map.
     ///
     /// Returns the assembled payload as a neutral Python object (a nested
@@ -550,11 +639,60 @@ impl PyAdapterPlan {
         raw_obs: &Bound<'py, PyAny>,
     ) -> PyResult<Py<PyAny>> {
         let raw_obs = decode_referenced_obs(raw_obs, &self.adapter.referenced_obs_keys())?;
-        let payload = self
-            .adapter
-            .transform_obs(&raw_obs, &SkipCustoms)
-            .map_err(|err| PyValueError::new_err(err.message))?;
+        // The stateful seam, so an input that declares a frame history is
+        // stacked by the same window the served engine uses. Encoding shims stay
+        // host-side (they only ever touch state leaves, never a stacked image).
+        let payload = assemble_obs(
+            &self.adapter,
+            &raw_obs,
+            LOCAL_EPISODE,
+            &mut self.windows.lock().expect("frame windows"),
+            &SkipCustoms,
+            &NoEncodings,
+        )
+        .map_err(|err| PyValueError::new_err(err.message))?;
         Ok(encode_value(py, &payload)?.unbind())
+    }
+
+    /// Canonical placement strings of the inputs that hold a frame window.
+    ///
+    /// Empty means an env step that predicts nothing has no state to advance, so
+    /// the caller can skip [`transform_history`](Self::transform_history)
+    /// entirely.
+    fn history_keys(&self) -> Vec<String> {
+        self.adapter.history_keys()
+    }
+
+    /// `(key, span, frame_bytes)` per frame window this plan holds per live
+    /// episode — what a caller budgets `num_envs x sum(span x frame_bytes)`
+    /// from before a route runs. `frame_bytes` is `0` when the env's camera
+    /// resolution was not derivable.
+    fn history_windows(&self) -> Vec<(String, u32, u64)> {
+        self.adapter
+            .history_windows()
+            .into_iter()
+            .map(|window| (window.key, window.span, window.frame_bytes))
+            .collect()
+    }
+
+    /// Advance the frame windows from a raw observation, assembling nothing.
+    ///
+    /// The tick a step that replays a queued action owes its history: the frame
+    /// still happened, so it still goes in the window.
+    fn transform_history<'py>(&self, raw_obs: &Bound<'py, PyAny>) -> PyResult<()> {
+        let raw_obs = decode_referenced_obs(raw_obs, &self.adapter.referenced_obs_keys())?;
+        observe_obs(
+            &self.adapter,
+            &raw_obs,
+            LOCAL_EPISODE,
+            &mut self.windows.lock().expect("frame windows"),
+        )
+        .map_err(|err| PyValueError::new_err(err.message))
+    }
+
+    /// Drop the in-process frame windows at an episode boundary.
+    fn reset_history(&self) {
+        self.windows.lock().expect("frame windows").clear();
     }
 
     /// Apply the action plan to a canonical value-tree model action.
@@ -601,7 +739,10 @@ pub fn adapters_resolve(
     let action_view = SpaceView::from(&crate::spaces::parse_space(action_space)?);
     let adapter = resolve(&tags, &obs_view, &action_view, &model_spec, true)
         .map_err(|err| PyValueError::new_err(err.message))?;
-    Ok(PyAdapterPlan { adapter })
+    Ok(PyAdapterPlan {
+        adapter,
+        windows: Mutex::new(FrameBuffers::new()),
+    })
 }
 
 /// Validate env tags against the env's observation/action spaces.
@@ -657,17 +798,18 @@ pub fn adapters_join_check(
     gen_stub_pyfunction(
         module = "rlmesh._rlmesh",
         python = r#"
-def adapters_spec_normalize(side: str, spec_json: str, allow_custom: bool, role_policy: str = "passthrough") -> str: ...
+def adapters_spec_normalize(side: str, spec_json: str, allow_custom: bool, role_policy: str = "passthrough", require_frames: bool = False) -> str: ...
 "#
     )
 )]
 #[pyfunction]
-#[pyo3(signature = (side, spec_json, allow_custom, role_policy = "passthrough"))]
+#[pyo3(signature = (side, spec_json, allow_custom, role_policy = "passthrough", require_frames = false))]
 pub fn adapters_spec_normalize(
     side: &str,
     spec_json: &str,
     allow_custom: bool,
     role_policy: &str,
+    require_frames: bool,
 ) -> PyResult<String> {
     let role_gate = match role_policy {
         "passthrough" => None,
@@ -678,6 +820,14 @@ pub fn adapters_spec_normalize(
                 "unknown role_policy {other:?}; expected \"passthrough\", \"strict\", or \"forbid\""
             )));
         }
+    };
+    // The `spec-normalize --require-frames` tier: every role the registry says
+    // owes a `frame`/`reference` must declare one. Opt-in -- an absent frame is
+    // legal v1, so the default tier only checks agreement at resolve.
+    let frame_gate = if require_frames {
+        FramePolicy::Require
+    } else {
+        FramePolicy::Allow
     };
     match side {
         "env" => {
@@ -692,6 +842,8 @@ pub fn adapters_spec_normalize(
                     PyValueError::new_err(format!("invalid env tags: {message}"))
                 })?;
             }
+            reject_unframed_roles_env(&tags, frame_gate)
+                .map_err(|message| PyValueError::new_err(format!("invalid env tags: {message}")))?;
             serde_json::to_string(&tags).map_err(|err| {
                 PyValueError::new_err(format!("could not serialize env tags: {err}"))
             })
@@ -707,6 +859,9 @@ pub fn adapters_spec_normalize(
                     PyValueError::new_err(format!("invalid model spec: {message}"))
                 })?;
             }
+            reject_unframed_roles_model(&spec, frame_gate).map_err(|message| {
+                PyValueError::new_err(format!("invalid model spec: {message}"))
+            })?;
             // Defense-in-depth at the publish boundary. Today the live gate is
             // Python's model_input_to_dict, which raises on any custom before a
             // spec ever reaches here, so every Python caller passes

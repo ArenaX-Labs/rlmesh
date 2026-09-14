@@ -3,9 +3,9 @@
 use std::fmt::Write as _;
 
 use crate::advisory::Advisory;
-use crate::fmt::{quoted, quoted_range};
+use crate::fmt::{number, quoted, quoted_range};
 use crate::plans::{ActionSegment, ImagePlan, ObsPlan, ResolvedAdapter, StatePlan, TextPlan};
-use crate::spec::{FitMode, ImageLayout};
+use crate::spec::{Attr, FitMode, FrameRef, ImageLayout, StackPad};
 
 /// Summarize how one model input is derived from the observation.
 fn describe_obs_plan(plan: &ObsPlan) -> String {
@@ -49,7 +49,13 @@ pub(crate) fn adapter_advisories(adapter: &ResolvedAdapter) -> Vec<Advisory> {
                 FitMode::Stretch => {}
             },
             ObsPlan::State(state) => {
-                let zeros = state.pieces.iter().filter(|piece| piece.zero_fill).count();
+                // A declared constant part is authored data, not fabricated:
+                // only an absent role counts.
+                let zeros = state
+                    .pieces
+                    .iter()
+                    .filter(|piece| piece.absent_role)
+                    .count();
                 if zeros > 0 {
                     notes.push(Advisory::caution(format!(
                         "state {}: {zeros} component(s) zero-filled for an absent env role",
@@ -58,6 +64,19 @@ pub(crate) fn adapter_advisories(adapter: &ResolvedAdapter) -> Vec<Advisory> {
                 }
             }
             _ => {}
+        }
+    }
+    // An optional roled actuator the model does not output: the env receives a
+    // fabricated constant where a real command belongs -- the action-side twin
+    // of a zero-filled camera. A role-less fill is the opaque control dim the
+    // env always meant to set itself, so it stays silent.
+    for segment in &adapter.action_plan.segments {
+        if let (Some(role), Some((width, value))) = (&segment.role, segment.fill) {
+            notes.push(Advisory::caution(format!(
+                "action {}: the model does not output this optional role; \
+                 fabricating {width} dim(s) of {value}",
+                quoted(role)
+            )));
         }
     }
     notes
@@ -76,6 +95,15 @@ pub(crate) fn describe_adapter(adapter: &ResolvedAdapter) -> String {
         lines.push(format!("  clip to {}", quoted_range(clip)));
     }
     lines.join("\n")
+}
+
+/// Append a geometry qualifier: `@robot_base` for a frame, `~target` for a
+/// delta's reference. Renders only when a side declared one, so every
+/// pre-geometry summary is byte-identical.
+fn write_geometry(note: &mut String, attr: Attr, value: Option<&FrameRef>) {
+    if let Some(value) = value {
+        let _ = write!(note, "{}{value}", attr.sigil());
+    }
 }
 
 /// Summarize how one env action component is derived from the model output.
@@ -128,6 +156,8 @@ fn describe_segment(segment: &ActionSegment) -> String {
     if segment.binarize {
         note.push_str(" (sign)");
     }
+    write_geometry(&mut note, Attr::Frame, segment.frame.as_ref());
+    write_geometry(&mut note, Attr::Reference, segment.reference.as_ref());
     note
 }
 
@@ -139,14 +169,39 @@ fn describe_image(plan: &ImagePlan) -> String {
         );
     }
     let mut steps: Vec<String> = Vec::new();
+    // The asserted camera size leads: it describes the frame arriving, not a
+    // step taken on it.
+    if let Some((height, width)) = plan.render {
+        steps.push(format!("render {height}x{width}"));
+    }
     if plan.src_layout != ImageLayout::Hwc {
         steps.push(format!("{}->hwc", plan.src_layout.as_str()));
     }
     if plan.flip {
         steps.push("flip 180".to_owned());
     }
+    if let Some(quality) = plan.jpeg_quality {
+        steps.push(format!("jpeg q{quality}"));
+    }
+    if let Some(crop) = &plan.crop {
+        let mut step = if crop.slice {
+            format!("crop {:.3} (slice)", crop.fraction)
+        } else {
+            format!("zoom {:.3}", crop.fraction)
+        };
+        if let Some(area) = crop.area {
+            let _ = write!(step, " (crop {:.1}% area)", area * 100.0);
+        }
+        if let Some((height, width)) = crop.cut {
+            let _ = write!(step, " -> {height}x{width}");
+        }
+        steps.push(step);
+    }
     if let Some((height, width)) = plan.size {
         steps.push(format!("resize {height}x{width} ({})", plan.resample));
+    }
+    if plan.swap_rb {
+        steps.push("bgr".to_owned());
     }
     if let Some((low, high)) = plan.normalize {
         if (low, high) == (0.0, 1.0) {
@@ -162,6 +217,17 @@ fn describe_image(plan: &ImagePlan) -> String {
     if plan.lead_dims > 0 {
         steps.push(format!("+{} lead dims", plan.lead_dims));
     }
+    // Stacking is the last step: it assembles frames the rest of the pipeline
+    // already produced. A contiguous window says nothing here (the `stack` field
+    // is the whole story, and every spec written before offsets existed prints
+    // exactly as it always did); a declared window shows what it gathers.
+    if let Some(offsets) = &plan.offsets {
+        let listed: Vec<String> = offsets.iter().map(i32::to_string).collect();
+        steps.push(format!("stack {} @[{}]", plan.stack, listed.join(",")));
+    }
+    if plan.stack_pad != StackPad::First {
+        steps.push("pad black".to_owned());
+    }
     format!(
         "{} <- image {} ({})",
         quoted(&plan.placement.to_string()),
@@ -173,11 +239,16 @@ fn describe_image(plan: &ImagePlan) -> String {
 fn describe_state(plan: &StatePlan) -> String {
     let mut parts: Vec<String> = Vec::new();
     for piece in &plan.pieces {
-        if piece.zero_fill {
-            parts.push(format!(
-                "zeros({})",
-                piece.dim.expect("zero-fill pieces always carry a width")
-            ));
+        if let Some(fill) = piece.fill {
+            let width = piece.dim.expect("fill pieces always carry a width");
+            // An absent optional role filled with zeros keeps the original
+            // `zeros(n)` wording; the new tokens render only when the new
+            // features are used.
+            parts.push(match (piece.absent_role, fill == 0.0) {
+                (true, true) => format!("zeros({width})"),
+                (true, false) => format!("fill({width})={}", number(fill)),
+                (false, _) => format!("const({width})={}", number(fill)),
+            });
             continue;
         }
         let mut note = piece.source.to_string();
@@ -214,6 +285,21 @@ fn describe_state(plan: &StatePlan) -> String {
                 quoted_range(dst)
             );
         }
+        if piece.post_rotate.is_some() {
+            note.push_str(" (post_rotate)");
+        }
+        if piece.scale.is_some() || piece.offset.is_some() {
+            let mut affine: Vec<String> = Vec::new();
+            if let Some(scale) = piece.scale {
+                affine.push(format!("*{}", number(scale)));
+            }
+            if let Some(offset) = piece.offset {
+                let sign = if offset.is_sign_negative() { "" } else { "+" };
+                affine.push(format!("{sign}{}", number(offset)));
+            }
+            let _ = write!(note, " ({})", affine.join(" "));
+        }
+        write_geometry(&mut note, Attr::Frame, piece.frame.as_ref());
         parts.push(note);
     }
     let suffix = match plan.pad_to {

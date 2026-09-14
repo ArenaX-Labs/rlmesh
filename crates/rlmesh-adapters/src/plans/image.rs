@@ -1,10 +1,33 @@
 //! Resolved instructions for one model image input.
 
 use crate::path::NodePath;
-use crate::spec::{FitMode, ImageLayout};
+use crate::spec::{FitMode, ImageLayout, StackPad};
+
+/// The center box a `crop` / `crop_area` keeps, and how it is taken.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CropPlan {
+    /// Side fraction of the source kept on each axis (the square root of a
+    /// declared `crop_area`).
+    pub fraction: f64,
+    /// The *area* fraction the spec declared, when it declared one; carried so
+    /// describe can print it next to the side fraction it works out to.
+    pub area: Option<f64>,
+    /// `true`: an integer center cut taken *before* the resize (`crop_mode =
+    /// "slice"`). `false`: the fractional box the resize itself samples
+    /// through, straight to the target (`crop_mode = "zoom"`).
+    pub slice: bool,
+    /// The integer box a `slice` takes at the env camera's declared resolution
+    /// — describe text only (apply cuts from the frame it is actually handed).
+    /// `None` when zooming, or when the env's resolution is unknown.
+    pub cut: Option<(u32, u32)>,
+}
 
 /// Resolved instructions for one model image input.
+///
+/// `#[non_exhaustive]`: the image pipeline keeps gaining declared steps, and a
+/// downstream literal would break on each one.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct ImagePlan {
     /// Where this image lands in the assembled payload tree.
     pub placement: NodePath,
@@ -42,6 +65,33 @@ pub struct ImagePlan {
     /// Raw 8-bit level the zero-filled frame is filled with (`0` = black, the
     /// default). Only meaningful when `zero_fill` is `Some`.
     pub fill: u8,
+    /// JPEG quality to round-trip the upright frame through before the crop
+    /// and resize, reproducing the codec artifacts the model was trained on;
+    /// `None` for an untouched frame.
+    pub jpeg_quality: Option<u8>,
+    /// The center box to keep before (or as part of) the resize; `None` for
+    /// the whole frame.
+    pub crop: Option<CropPlan>,
+    /// Swap the red and blue channels after the spatial ops and before the
+    /// dtype cast (`channel_order = "bgr"`); needs a 3-channel image.
+    pub swap_rb: bool,
+    /// The `[height, width]` the model asserted the bound camera renders at,
+    /// when it asserted one and the camera's resolution was derivable (so the
+    /// assertion was actually checked). Describe text only — the assertion
+    /// itself is settled at resolve.
+    pub render: Option<(u32, u32)>,
+    /// The frame window a `stack > 1` gathers, as non-positive offsets from the
+    /// current step (oldest first, ending at `0`). `None` is the contiguous
+    /// window `stack` describes; validated against `stack` at resolve.
+    pub offsets: Option<Vec<i32>>,
+    /// What fills the window before the episode has produced enough frames.
+    pub stack_pad: StackPad,
+    /// Bytes of one *processed* frame (`height x width x channels x dtype`), or
+    /// `0` when the env's resolution was not derivable. Computed at resolve —
+    /// the only place the env's camera and the model's target are both in hand —
+    /// so a caller can size a frame window (or refuse one) without re-deriving
+    /// the pipeline.
+    pub frame_bytes: u64,
     /// `Some((requested, bound))` when the lone-camera fallback bound this input
     /// to the env's single camera under a different role than the model asked
     /// for. Surfaced as a resolve advisory; `None` for an exact role match.

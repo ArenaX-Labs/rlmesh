@@ -8,10 +8,10 @@
 //! fully declarative.
 
 mod action;
-mod geometry;
+pub(crate) mod geometry;
 mod image;
 pub(crate) mod lookup;
-mod obs;
+pub(crate) mod obs;
 mod state;
 mod text;
 pub(crate) mod value;
@@ -21,7 +21,9 @@ use std::collections::BTreeMap;
 use rlmesh_spaces::Tensor;
 
 pub use crate::error::ApplyError;
-pub use geometry::convert_rotation;
+pub use geometry::{convert_rotation, convert_rotation_with};
+pub(crate) use image::crop_cut;
+pub use image::{RESAMPLES, jpeg_roundtrip};
 pub use value::Value;
 
 use crate::plans::ResolvedAdapter;

@@ -1,0 +1,69 @@
+{
+  "doc": {
+    "input": {
+      "image": {
+        "channels": 3,
+        "dtype": "uint8",
+        "height": null,
+        "layout": "hwc",
+        "lead_dims": 0,
+        "normalize": false,
+        "resample": "bilinear",
+        "role": "image/primary",
+        "type": "image",
+        "upside_down": false,
+        "width": null
+      },
+      "instruction": {
+        "container": "str",
+        "fill": null,
+        "role": "text/instruction",
+        "type": "text"
+      },
+      "state": {
+        "components": [
+          "proprio/eef_pos",
+          {
+            "encoding": "quat_xyzw",
+            "role": "proprio/eef_rot"
+          },
+          {
+            "dim": 1,
+            "role": "proprio/gripper"
+          }
+        ],
+        "dtype": "float32",
+        "type": "state"
+      }
+    },
+    "output": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "role": "action/delta_eef_pos"
+        },
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": "euler_xyz",
+          "range": null,
+          "role": "action/delta_eef_rot"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": [0.0, 1.0],
+          "role": "action/gripper"
+        }
+      ]
+    }
+  },
+  "kind": "serialization",
+  "side": "model",
+  "source": "models/gr00t-n1.7/bridge/main.py"
+}

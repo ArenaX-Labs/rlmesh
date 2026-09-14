@@ -1,0 +1,61 @@
+{
+  "doc": {
+    "action": {
+      "clip": [-1.0, 1.0],
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "role": "action/delta_eef_pos"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": [-1.0, 1.0],
+          "role": "action/gripper"
+        }
+      ]
+    },
+    "observation": {
+      "image": {
+        "layout": "hwc",
+        "role": "image/primary",
+        "type": "image",
+        "upside_down": false
+      },
+      "state": {
+        "fields": [
+          {
+            "dim": 3,
+            "encoding": null,
+            "range": null,
+            "role": "proprio/eef_pos"
+          },
+          {
+            "dim": 1,
+            "encoding": null,
+            "range": null,
+            "role": "proprio/gripper"
+          },
+          {
+            "dim": 35,
+            "encoding": null,
+            "range": null,
+            "role": null
+          }
+        ],
+        "type": "split"
+      },
+      "task": {
+        "role": "text/instruction",
+        "type": "text"
+      }
+    }
+  },
+  "kind": "serialization",
+  "side": "env",
+  "source": "environments/metaworld/main.py"
+}

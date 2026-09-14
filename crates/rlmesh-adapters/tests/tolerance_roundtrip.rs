@@ -110,3 +110,54 @@ fn malformed_of_known_kind_still_hard_errors_in_every_mode() {
         "non-string type must hard-error"
     );
 }
+
+#[test]
+fn inner_leaves_carry_an_unknown_field_through_a_hop() {
+    // A split `Field` and a state `ConcatPart` are growable too: an older reader
+    // must parse a newer writer's key and relay it, and a part carrying a
+    // captured key can no longer collapse to the bare-role-string sugar.
+    let env = normalize_env(
+        r#"{"observation": {"s": {"type": "split",
+                "fields": [{"role": "r", "dim": 7, "frame": "world"}]}},
+            "action": {"components": []}}"#,
+    );
+    assert!(env.contains(r#""frame":"world""#), "got: {env}");
+    assert_eq!(normalize_env(&env), env, "normalize is not idempotent");
+
+    let model = normalize_model(
+        r#"{"input": {"type": "state", "components": [{"role": "r", "frame": "world"}]},
+            "output": {"components": []}}"#,
+    );
+    assert!(model.contains(r#""frame":"world""#), "got: {model}");
+    assert_eq!(
+        normalize_model(&model),
+        model,
+        "normalize is not idempotent"
+    );
+}
+
+#[test]
+fn reversed_range_still_hard_errors() {
+    // Leniency is field-*name* only: a recognized field's value guard stays a
+    // hard error at the wire boundary, on the inner leaves and alongside a
+    // captured unknown key.
+    for json in [
+        r#"{"observation": {"s": {"type": "split",
+                "fields": [{"role": "r", "dim": 1, "range": [1.0, 0.0]}]}},
+            "action": {"components": []}}"#,
+        r#"{"observation": {"s": {"type": "split",
+                "fields": [{"role": "r", "dim": 1, "range": [1.0, 0.0], "frame": "world"}]}},
+            "action": {"components": []}}"#,
+    ] {
+        let err = serde_json::from_str::<EnvTags>(json).unwrap_err();
+        assert!(err.to_string().contains("min <= max"), "got: {err}");
+    }
+
+    let err = serde_json::from_str::<ModelSpec>(
+        r#"{"input": {"type": "state",
+                "components": [{"role": "r", "range": [1.0, 0.0], "frame": "world"}]},
+            "output": {"components": []}}"#,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("min <= max"), "got: {err}");
+}

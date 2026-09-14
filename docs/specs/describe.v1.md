@@ -28,12 +28,12 @@ implementing this contract exactly.
 
 ## Layers: who produces what
 
-| Concern                                                 | Owner                             | Notes                                                                                                                                                                        |
-| ------------------------------------------------------- | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `schema_version`, `kind`, ordering, final serialization | **Rust builder**                  | Stamped/validated/serialized once; no producer can disagree.                                                                                                                 |
-| `generated_at`                                          | producer-supplied, Rust-validated | RFC-3339; omit for a content-addressable artifact (do **not** use wall-clock in a reproducible build).                                                                       |
-| `target`, `params`, `variants`, `env_spec`, `runtime`   | **per-language gatherer**         | Requires introspecting/executing the producer's own language (signature reflection, running the author's variant enumeration, constructing the env, reading local versions). |
-| `env_tags`, `model_spec`, `env_spec.*` space dicts      | shared codecs                     | Already canonical from their own serializers (`EnvTags`/`ModelSpec`/`SpaceSpec`); embedded as-is.                                                                            |
+| Concern                                                                | Owner                             | Notes                                                                                                                                                                        |
+| ---------------------------------------------------------------------- | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `schema_version`, `kind`, ordering, final serialization                | **Rust builder**                  | Stamped/validated/serialized once; no producer can disagree.                                                                                                                 |
+| `generated_at`                                                         | producer-supplied, Rust-validated | RFC-3339; omit for a content-addressable artifact (do **not** use wall-clock in a reproducible build).                                                                       |
+| `target`, `params`, `variants`, `env_spec`, `env_contracts`, `runtime` | **per-language gatherer**         | Requires introspecting/executing the producer's own language (signature reflection, running the author's variant enumeration, constructing the env, reading local versions). |
+| `env_tags`, `model_spec`, `env_spec.*` space dicts                     | shared codecs                     | Already canonical from their own serializers (`EnvTags`/`ModelSpec`/`SpaceSpec`); embedded as-is.                                                                            |
 
 A producer's _only_ language-specific job is the gathering. Everything about the
 _format_ is shared.
@@ -54,6 +54,13 @@ _format_ is shared.
     "num_envs": 8
   },
   "env_tags": { ... } | null,
+  "env_contracts": {
+    "discriminants": ["action_type"],
+    "branches": [
+      { "params": { "action_type": "delta" }, "default": true, "env_tags": { ... }, "env_spec": { ... } },
+      { "params": { "action_type": "abs" },   "default": false, "env_tags": { ... }, "env_spec": { ... } }
+    ]
+  },
   "params": {
     "param_spec": { "params": [ ... ], "extra": "forbid" } | null,
     "signature_tier": [ { "name": "...", "type": "...", "default": ..., "required": false } ]
@@ -73,10 +80,21 @@ _format_ is shared.
 }
 ```
 
-- `env_spec` is captured from **one representative** constructed env (an
-  `EnvFactory` is single-shape by its one `env_tags` contract; variants share
-  spaces). For a vectorized env it carries `single_*` spaces plus `num_envs`.
+- `env_spec` is captured from **one representative** constructed env: one per
+  _contract branch_. A factory's variants share spaces, so a factory with no
+  declared contract discriminants has exactly one shape; a factory that declares
+  them (`tag_params`) has one per branch, and the top-level `env_spec`/`env_tags`
+  are the **default branch's**. For a vectorized env it carries `single_*` spaces
+  plus `num_envs`.
 - `env_spec.observation_space` / `action_space` are the `SpaceSpec` JSON form.
+- `env_contracts` appears **only** for a factory that declares contract
+  discriminants, so an envelope emitted for a single-contract env is byte-identical
+  to one emitted before the field existed. It is self-describing: `discriminants`
+  names the axes, and every branch carries its full binding (never a subset) plus
+  the `env_tags`/`env_spec` that binding produces -- so a reader that cannot run
+  the producer's code can still say which branch a contract belongs to, and a
+  static check can name the branch it validated. Exactly one branch has
+  `default: true`, and its `env_tags`/`env_spec` are the top-level ones.
 
 ### Model (`kind: "model"`)
 
@@ -106,7 +124,7 @@ produces a useful artifact with `env_spec: {"error": ...}`.
 ## Invariants enforced by the builder
 
 - `kind` is a closed enum (`"env"` | `"model"`); anything else is rejected.
-- Env-only fields (`env_spec`, `env_tags`) never appear on a `model` envelope,
-  and `model_spec` never appears on an `env` envelope.
+- Env-only fields (`env_spec`, `env_tags`, `env_contracts`) never appear on a
+  `model` envelope, and `model_spec` never appears on an `env` envelope.
 - Unknown top-level fields are rejected (the key set is part of the contract).
 - `generated_at`, if present, must be RFC-3339.

@@ -29,14 +29,16 @@ class CoercedModel(NamedTuple):
     ``on_episode_end`` carries a duck-typed policy's ``reset()``, wired to the
     episode-END edge: the only per-episode boundary both the local loop and the
     served wire path signal, so a stateful policy clears its state identically
-    either way. The three optional corners (``predict_chunk`` / ``predict_batch``
-    / ``predict_chunk_batch``) are picked up from a duck-typed policy when it
+    either way. It is called with the ended episode's id when its signature takes
+    one (``reset(self, episode_id)``), and with nothing when it does not. The
+    three optional corners (``predict_chunk`` / ``predict_batch`` /
+    ``predict_chunk_batch``) are picked up from a duck-typed policy when it
     defines them, so they feed the same corner synthesis a ``Model`` subclass's do.
     """
 
     predict: Callable[[Any], Any]
     spec: object | None
-    on_episode_end: Callable[[], None] | None
+    on_episode_end: Callable[..., None] | None
     on_close: Callable[[], None] | None
     policy: Any
     predict_chunk: Callable[..., Any] | None = None

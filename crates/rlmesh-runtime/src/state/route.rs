@@ -52,6 +52,12 @@ pub(crate) struct RouteState {
     /// How many of the spec's `episode_seeds` have been claimed (episode-start
     /// order).
     seed_cursor: usize,
+    /// The trial ordinal each live episode was reset with, keyed by episode id;
+    /// drained into that episode's summary at completion.
+    trial_by_episode: HashMap<String, u64>,
+    /// How many trial ordinals have been minted off `trial_index_base`
+    /// (episode-start order). Monotone for the life of the route.
+    trial_cursor: u64,
 }
 
 impl RouteState {
@@ -80,6 +86,8 @@ impl RouteState {
             episode_summaries: Vec::new(),
             seed_by_episode: HashMap::new(),
             seed_cursor: 0,
+            trial_by_episode: HashMap::new(),
+            trial_cursor: 0,
         }
     }
 
@@ -104,6 +112,32 @@ impl RouteState {
         let claimed = episode_seeds[self.seed_cursor..self.seed_cursor + lanes].to_vec();
         self.seed_cursor += lanes;
         claimed
+    }
+
+    /// Claim the next `lanes` trial ordinals off `trial_index_base`, in
+    /// episode-start order and positionally aligned to the lanes being reset.
+    ///
+    /// The window rule: a route's trial window is its `max_episodes` budget M --
+    /// the run ends once `trials_completed_in_window >= M`, so a shard walks
+    /// exactly the ordinals `[base, base + M)` and the next shard's base is
+    /// `base + M`. The cursor only walks forward, and a partial reset claims one
+    /// ordinal per restarted lane, so no two episodes on a route ever share one.
+    pub(crate) fn claim_trial_indices(&mut self, base: u64, lanes: usize) -> Vec<u64> {
+        let start = base.saturating_add(self.trial_cursor);
+        self.trial_cursor += lanes as u64;
+        (0..lanes as u64).map(|offset| start + offset).collect()
+    }
+
+    /// Remember which trial ordinal each episode in a reset batch received, so
+    /// its completion summary can report it. No-op for an unsequenced batch.
+    pub(crate) fn note_episode_trials(&mut self, episode_ids: &[String], trials: &[u64]) {
+        for (episode_id, trial) in episode_ids.iter().zip(trials) {
+            self.trial_by_episode.insert(episode_id.clone(), *trial);
+        }
+    }
+
+    pub(crate) fn trial_for_episode(&self, episode_id: &str) -> Option<u64> {
+        self.trial_by_episode.get(episode_id).copied()
     }
 
     /// Remember which explicit seed each episode in a reset batch received, so
@@ -332,6 +366,7 @@ impl RouteState {
                 // rolls (never at completion emit), so the completion
                 // iteration's final predict still reports it.
                 self.seed_by_episode.remove(&previous_id);
+                self.trial_by_episode.remove(&previous_id);
             }
             slot.episode = if episode_id.is_empty() {
                 None

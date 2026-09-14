@@ -4,6 +4,8 @@
 
 use std::collections::BTreeMap;
 
+use rlmesh_spaces::Tensor;
+
 use super::CustomTransform;
 use super::image::apply_image;
 use super::state::apply_state;
@@ -11,7 +13,7 @@ use super::text::apply_text;
 use super::value::Value;
 use crate::error::ApplyError;
 use crate::path::{NodePath, PathSeg};
-use crate::plans::ObsPlan;
+use crate::plans::{ObsPlan, StackedPlacement};
 
 /// Convert a raw env observation into the model input payload `Value` tree.
 ///
@@ -50,6 +52,39 @@ pub fn transform_obs(
         }
     }
     Ok(builder.finish())
+}
+
+/// Apply only the frame-stacked image plans and return their processed frames,
+/// in `stacked` order.
+///
+/// The observe half of [`transform_obs`]: an env step that replays a queued
+/// action still has to advance every frame window, but it assembles no payload
+/// and calls no model. `plan_index` addresses each stacked input's plan
+/// directly, so nothing else in the spec is applied — a custom input's host
+/// transform in particular never runs on a step that predicts nothing.
+pub(crate) fn observe_obs(
+    plans: &[ObsPlan],
+    stacked: &[StackedPlacement],
+    raw_obs: &BTreeMap<String, Value>,
+) -> Result<Vec<Tensor>, ApplyError> {
+    stacked
+        .iter()
+        .map(|entry| {
+            let ObsPlan::Image(image_plan) = &plans[entry.plan_index] else {
+                return Err(ApplyError::new(format!(
+                    "frame-stacked input '{}' is not an image",
+                    entry.key
+                )));
+            };
+            match apply_image(image_plan, raw_obs)? {
+                Value::Tensor(frame) => Ok(frame),
+                _ => Err(ApplyError::new(format!(
+                    "frame-stacked input '{}' must be a tensor",
+                    entry.key
+                ))),
+            }
+        })
+        .collect()
 }
 
 /// Scatters produced leaves into a payload `Value` tree by placement path.

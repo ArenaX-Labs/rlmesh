@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, cast
 
@@ -41,6 +43,41 @@ def _is_vector_env(env: object) -> bool:
         or hasattr(env, "single_observation_space")
         or hasattr(env, "single_action_space")
     )
+
+
+#: Env var the platform sets to the contract branch it expects this env to serve,
+#: as a JSON object of discriminant bindings. Unset asserts nothing.
+EXPECTED_ENV_BRANCH_VAR = "RLMESH_EXPECTED_ENV_BRANCH"
+
+
+def _check_expected_branch(env: object) -> None:
+    """Refuse to serve a contract branch the caller did not ask for.
+
+    The tag validation above runs ``join``, which reconciles widths, dim laws and
+    ranges but never role *names* against bounds -- so a same-width contract swap
+    (end-effector deltas for absolute targets) passes it silently. When the
+    platform pins the branch it resolved the pairing against, compare it with the
+    one ``make()`` actually stamped, here, before a model can connect.
+    """
+    expected = os.environ.get(EXPECTED_ENV_BRANCH_VAR)
+    if not expected:
+        return
+    from collections.abc import Mapping
+
+    from .adapters.constants import ENV_BRANCH_METADATA_KEY
+
+    metadata = getattr(env, "metadata", None)
+    stamped = (
+        cast("Mapping[str, Any]", metadata).get(ENV_BRANCH_METADATA_KEY)
+        if isinstance(metadata, Mapping)
+        else None
+    )
+    if stamped != json.loads(expected):
+        raise ValueError(
+            f"{EXPECTED_ENV_BRANCH_VAR} expects the env to serve contract branch "
+            f"{expected}, but it published {json.dumps(stamped)}; the image and "
+            "the pairing that launched it declare different contracts"
+        )
 
 
 class EnvServer:
@@ -138,6 +175,7 @@ class EnvServer:
                 published = EnvTags.from_metadata(cast("Mapping[str, Any]", metadata))
                 if published is not None:
                     env = tag(env, published)  # idempotent re-stamp + validate
+        _check_expected_branch(env)
 
         # The framework is a value the author sets on the env side -- here, the
         # framework= kwarg (an EnvFactory passes its declared framework through it).

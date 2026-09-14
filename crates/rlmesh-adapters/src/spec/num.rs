@@ -184,6 +184,125 @@ pub(crate) fn de_opt_number<'de, D: Deserializer<'de>>(
         .map(|number| number.map(|Number(value)| value))
 }
 
+/// Upper bound on each axis of a declared render size (the image `render`
+/// assertion). A camera dial the platform binds from an untrusted spec, so the
+/// ceiling is a sane display resolution rather than the shared [`MAX_DIM`].
+pub(crate) const MAX_RENDER: u32 = 4096;
+
+/// Deserialize an optional `[height, width]` size pair, with a bare integer as
+/// the square shorthand (`448` == `[448, 448]`). Each axis is constrained to
+/// `1..=`[`MAX_RENDER`]: a zero axis names no camera and an unbounded one would
+/// have the env allocate an arbitrarily large frame. Backs the image `render`
+/// assertion; emitted on the wire as the `[height, width]` pair.
+pub(crate) fn de_opt_count_pair<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<(u32, u32)>, D::Error> {
+    struct Pair((u32, u32));
+
+    impl<'de> Deserialize<'de> for Pair {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            struct PairVisitor;
+
+            impl<'de> Visitor<'de> for PairVisitor {
+                type Value = (u32, u32);
+
+                fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                    formatter.write_str("a size, an integer or a pair [height, width]")
+                }
+
+                // A bare integer is the square shorthand; the count visitor keeps
+                // the negative/float cases in domain language.
+                fn visit_u64<E: de::Error>(self, value: u64) -> Result<(u32, u32), E> {
+                    CountVisitor.visit_u64(value).map(|side| (side, side))
+                }
+
+                fn visit_i64<E: de::Error>(self, value: i64) -> Result<(u32, u32), E> {
+                    CountVisitor.visit_i64(value).map(|side| (side, side))
+                }
+
+                fn visit_f64<E: de::Error>(self, value: f64) -> Result<(u32, u32), E> {
+                    CountVisitor.visit_f64(value).map(|side| (side, side))
+                }
+
+                fn visit_seq<A: de::SeqAccess<'de>>(
+                    self,
+                    mut seq: A,
+                ) -> Result<(u32, u32), A::Error> {
+                    let mut axes: Vec<u32> = Vec::new();
+                    while let Some(Count(axis)) = seq.next_element::<Count>()? {
+                        axes.push(axis);
+                    }
+                    match axes[..] {
+                        [height, width] => Ok((height, width)),
+                        _ => Err(de::Error::custom(format!(
+                            "a size is an integer or a pair [height, width], got {} element(s)",
+                            axes.len()
+                        ))),
+                    }
+                }
+            }
+
+            deserializer.deserialize_any(PairVisitor).map(Pair)
+        }
+    }
+
+    let pair = de_opt::<Pair, D>(
+        deserializer,
+        "a size, an integer or a pair [height, width], or null",
+    )
+    .map(|pair| pair.map(|Pair(value)| value))?;
+    if let Some((height, width)) = pair {
+        for (axis, value) in [("height", height), ("width", width)] {
+            if !(1..=MAX_RENDER).contains(&value) {
+                return Err(de::Error::custom(format!(
+                    "{axis} must be between 1 and {MAX_RENDER}, got {value}"
+                )));
+            }
+        }
+    }
+    Ok(pair)
+}
+
+/// Deserialize an optional JPEG quality (`Option<u8>`) on the IJG `1..=100`
+/// scale, routed through [`de_count`] so a negative or float literal still
+/// reads in domain language. `0` is not a quality and anything past `100` is
+/// off the scale the encoder is written on, so both are rejected at the wire
+/// boundary rather than surfacing as a clamp nobody declared.
+pub(crate) fn de_opt_jpeg_quality<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<u8>, D::Error> {
+    let quality = de_opt::<Count, D>(deserializer, "a jpeg quality in 1..=100 or null")
+        .map(|count| count.map(|Count(value)| value))?;
+    if let Some(value) = quality
+        && !(1..=100).contains(&value)
+    {
+        return Err(de::Error::custom(format!(
+            "jpeg_quality must be between 1 and 100, got {value}"
+        )));
+    }
+    Ok(quality.map(|value| value as u8))
+}
+
+/// Deserialize an optional fraction in `(0, 1]` (the image `crop` /
+/// `crop_area` box), routed through [`Number`] so a wrong-typed value still
+/// reads `a number`. `0` (keep nothing) and anything past the whole frame are
+/// rejected at the wire boundary rather than silently producing an empty or
+/// out-of-bounds crop.
+pub(crate) fn de_opt_unit_fraction<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<f64>, D::Error> {
+    let fraction = de_opt::<Number, D>(deserializer, "a fraction in (0, 1] or null")
+        .map(|number| number.map(|Number(value)| value))?;
+    if let Some(value) = fraction
+        && !(value > 0.0 && value <= 1.0)
+    {
+        return Err(de::Error::custom(format!(
+            "must be a fraction in (0, 1], got {value}"
+        )));
+    }
+    Ok(fraction)
+}
+
 pub(crate) struct RangeVisitor;
 
 impl<'de> Visitor<'de> for RangeVisitor {
@@ -280,6 +399,30 @@ impl<'de> Deserialize<'de> for Dim {
         }
         deserializer.deserialize_any(DimVisitor).map(Dim)
     }
+}
+
+/// Deserialize the optional frame-history `offsets` list.
+///
+/// Elements go through [`Dim`] so a wrong-typed entry reads `a whole number`
+/// instead of leaking `i32`. The window *law* — non-positive, strictly
+/// increasing, ending at `0`, `len == stack`, and a span within the ceiling —
+/// is a resolve check, not a codec one: like `resample`'s vocabulary, a list a
+/// newer core understands parses here and fails with a typed resolve error
+/// there rather than at the wire door.
+pub(crate) fn de_offsets<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Vec<i32>>, D::Error> {
+    let raw = Option::<Vec<Dim>>::deserialize(deserializer)?;
+    let Some(offsets) = raw else { return Ok(None) };
+    offsets
+        .into_iter()
+        .map(|Dim(value)| {
+            i32::try_from(value).map_err(|_| {
+                de::Error::custom(format!("a frame offset must fit in 32 bits, got {value}"))
+            })
+        })
+        .collect::<Result<Vec<i32>, D::Error>>()
+        .map(Some)
 }
 
 /// Deserialize an optional reshape spec (a list of dimensions, `-1` = infer)

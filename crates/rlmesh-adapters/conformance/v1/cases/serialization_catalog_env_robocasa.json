@@ -1,0 +1,102 @@
+{
+  "doc": {
+    "action": {
+      "clip": [-1.0, 1.0],
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "role": "action/delta_eef_pos"
+        },
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": "axis_angle",
+          "range": null,
+          "role": "action/delta_eef_rot"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": [-1.0, 1.0],
+          "role": "action/gripper"
+        },
+        {
+          "binary": false,
+          "dim": 4,
+          "encoding": null,
+          "optional": true,
+          "range": null,
+          "role": "x/action_base_motion"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "fill": -1.0,
+          "range": null
+        }
+      ]
+    },
+    "observation": {
+      "annotation.human.task_description": {
+        "role": "text/instruction",
+        "type": "text"
+      },
+      "state.base_position": {
+        "encoding": null,
+        "range": null,
+        "role": "x/base_pos",
+        "type": "state"
+      },
+      "state.base_rotation": {
+        "encoding": null,
+        "range": null,
+        "role": "x/base_rot",
+        "type": "state"
+      },
+      "state.end_effector_position_relative": {
+        "encoding": null,
+        "range": null,
+        "role": "proprio/eef_pos",
+        "type": "state"
+      },
+      "state.end_effector_rotation_relative": {
+        "encoding": "quat_xyzw",
+        "range": null,
+        "role": "proprio/eef_rot",
+        "type": "state"
+      },
+      "state.gripper_qpos": {
+        "encoding": null,
+        "range": null,
+        "role": "proprio/gripper",
+        "type": "state"
+      },
+      "video.robot0_agentview_left": {
+        "layout": "hwc",
+        "role": "image/primary",
+        "type": "image",
+        "upside_down": false
+      },
+      "video.robot0_agentview_right": {
+        "layout": "hwc",
+        "role": "image/secondary",
+        "type": "image",
+        "upside_down": false
+      },
+      "video.robot0_eye_in_hand": {
+        "layout": "hwc",
+        "role": "image/wrist",
+        "type": "image",
+        "upside_down": false
+      }
+    }
+  },
+  "kind": "serialization",
+  "side": "env",
+  "source": "environments/robocasa/main.py"
+}

@@ -73,7 +73,13 @@ pub trait PredictFn: Send + Sync {
     /// engine prefers this over the per-lane `predict` loop when
     /// [`has_batch`](Self::has_batch) is true. Default unimplemented (only ever
     /// called when the flag is set).
-    fn predict_batch(&self, _inputs: Vec<Value>) -> Result<Vec<Value>> {
+    ///
+    /// `episodes` is row-aligned with `inputs`: row `i`'s identity and reset seed.
+    /// A fused grouped batch concatenates lanes from independent episodes, so the
+    /// list is per-row rather than per-call — there is no single episode identity
+    /// here. Defaulted so an out-of-tree impl that only overrides `predict` keeps
+    /// compiling.
+    fn predict_batch(&self, _inputs: Vec<Value>, _episodes: &[EpisodeInfo]) -> Result<Vec<Value>> {
         Err(crate::Error::model("predict_batch is not implemented"))
     }
 
@@ -86,12 +92,14 @@ pub trait PredictFn: Send + Sync {
     /// (leading axis = chunk) in a single call. Preferred for a vectorized chunked
     /// route when [`has_chunk_batch`](Self::has_chunk_batch) is true.
     /// `execution_horizon` is the runtime's execution prefix (see
-    /// [`predict_chunk`](Self::predict_chunk)). Default unimplemented (gated by the
-    /// flag).
+    /// [`predict_chunk`](Self::predict_chunk)); `episodes` is row-aligned with
+    /// `inputs` (see [`predict_batch`](Self::predict_batch)). Default unimplemented
+    /// (gated by the flag).
     fn predict_chunk_batch(
         &self,
         _inputs: Vec<Value>,
         _execution_horizon: u32,
+        _episodes: &[EpisodeInfo],
     ) -> Result<Vec<Value>> {
         Err(crate::Error::model(
             "predict_chunk_batch is not implemented",
@@ -134,12 +142,27 @@ pub trait PredictFn: Send + Sync {
         false
     }
 
+    /// The model's NATIVE chunk length K: how many per-step actions ONE chunk
+    /// corner call returns, when the model declares it. `None` (the default) is
+    /// the elastic contract — the model returns whatever it returns and the
+    /// engine takes the `min(len, execution_horizon)` prefix.
+    ///
+    /// Declaring K is a promise the engine holds the model to: the resolve
+    /// doors reject `execution_horizon > K` (the runtime would replay frames the
+    /// model never produced) and a chunk corner that returns anything other than
+    /// exactly K frames fails the predict rather than silently short-replaying.
+    fn native_chunk(&self) -> Option<u32> {
+        None
+    }
+
     /// Fires when an episode ends (structurally-discovered model hook), driven by
-    /// the explicit `ResetAdapter` op. The engine separately evicts that
-    /// episode's frame buffers. There is no episode-*begin* hook: per-episode
-    /// state is lazy-seeded on first predict, so a stateful model resets its
-    /// state here at episode end rather than at a (no-longer-signalled) begin.
-    fn on_episode_end(&self) -> Result<()> {
+    /// the explicit `ResetAdapter` op — once per id it lists, so a model keyed by
+    /// `episode_id` drops exactly the episode that ended. The engine separately
+    /// evicts that episode's frame buffers. There is no episode-*begin* hook:
+    /// per-episode state is lazy-seeded on first predict, so a stateful model
+    /// resets its state here at episode end rather than at a (no-longer-signalled)
+    /// begin.
+    fn on_episode_end(&self, _episode_id: &str) -> Result<()> {
         Ok(())
     }
 

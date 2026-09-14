@@ -1,0 +1,162 @@
+{
+  "action_space": {
+    "dtype": "float32",
+    "kind": "box",
+    "shape": [14]
+  },
+  "env_tags": {
+    "action": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 6,
+          "encoding": null,
+          "range": null,
+          "role": "action/joint_pos"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": null,
+          "role": "action/gripper"
+        },
+        {
+          "binary": false,
+          "dim": 6,
+          "encoding": null,
+          "range": null,
+          "role": "action/joint_pos_2"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": null,
+          "role": "action/gripper_2"
+        }
+      ]
+    },
+    "observation": {
+      "head": {
+        "layout": "hwc",
+        "role": "image/primary",
+        "type": "image",
+        "upside_down": false
+      },
+      "wrist_left": {
+        "layout": "hwc",
+        "role": "image/wrist",
+        "type": "image",
+        "upside_down": false
+      },
+      "wrist_right": {
+        "layout": "hwc",
+        "role": "image/wrist_2",
+        "type": "image",
+        "upside_down": false
+      }
+    }
+  },
+  "expect": {
+    "describe": "observation:\n  \"image\" <- image \"head\" (uint8)\n  \"wrist\" <- image \"wrist_left\" (uint8)\n  \"wrist_2\" <- image \"wrist_right\" (uint8)\naction:\n  \"action/joint_pos\" <- model[0:6]\n  \"action/gripper\" <- model[12:13]\n  \"action/joint_pos_2\" <- model[6:12]\n  \"action/gripper_2\" <- model[13:14]",
+    "ok": true
+  },
+  "kind": "resolve",
+  "model_spec": {
+    "input": {
+      "image": {
+        "dtype": "uint8",
+        "height": null,
+        "layout": "hwc",
+        "lead_dims": 0,
+        "normalize": false,
+        "resample": "bilinear",
+        "role": "image/primary",
+        "type": "image",
+        "upside_down": false,
+        "width": null
+      },
+      "wrist": {
+        "dtype": "uint8",
+        "height": null,
+        "layout": "hwc",
+        "lead_dims": 0,
+        "normalize": false,
+        "resample": "bilinear",
+        "role": "image/wrist",
+        "type": "image",
+        "upside_down": false,
+        "width": null
+      },
+      "wrist_2": {
+        "dtype": "uint8",
+        "height": null,
+        "layout": "hwc",
+        "lead_dims": 0,
+        "normalize": false,
+        "resample": "bilinear",
+        "role": "image/wrist_2",
+        "type": "image",
+        "upside_down": false,
+        "width": null
+      }
+    },
+    "output": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 6,
+          "encoding": null,
+          "range": null,
+          "role": "action/joint_pos"
+        },
+        {
+          "binary": false,
+          "dim": 6,
+          "encoding": null,
+          "range": null,
+          "role": "action/joint_pos_2"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": null,
+          "role": "action/gripper"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": null,
+          "role": "action/gripper_2"
+        }
+      ]
+    }
+  },
+  "observation_space": {
+    "children": [
+      {
+        "dtype": "uint8",
+        "kind": "box",
+        "shape": [8, 8, 3]
+      },
+      {
+        "dtype": "uint8",
+        "kind": "box",
+        "shape": [8, 8, 3]
+      },
+      {
+        "dtype": "uint8",
+        "kind": "box",
+        "shape": [8, 8, 3]
+      }
+    ],
+    "dtype": "unspecified",
+    "keys": ["head", "wrist_left", "wrist_right"],
+    "kind": "dict"
+  }
+}

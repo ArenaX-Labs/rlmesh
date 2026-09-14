@@ -6,12 +6,14 @@ For the concepts (the two sides of an eval and how they meet), start with {doc}`
 
 ## EnvFactory
 
-{class}`~rlmesh.EnvFactory` is an abstract base. A subclass describes one obs/action contract: set `tags` to that contract, implement `make()` to build the env, and optionally declare `params` and `enumerate_variants()`.
+{class}`~rlmesh.EnvFactory` is an abstract base. A subclass describes its obs/action contract: set `tags` to that contract, implement `make()` to build the env, and optionally declare `params` and `enumerate_variants()`. When a construction parameter _switches_ the contract -- an `action_type` that takes end-effector deltas or absolute targets -- declare it in `tag_params` and answer it in `tags_for()` instead of writing a subclass (and an image, and a catalog entry) per variant.
 
 | Class member           | Kind             | Default | What it is                                                                                      |
 | ---------------------- | ---------------- | ------- | ----------------------------------------------------------------------------------------------- |
 | `tags`                 | class attribute  | `None`  | The {class}`~rlmesh.adapters.EnvTags` obs/action contract; `None` is a generic, un-adapted env. |
 | `params`               | class attribute  | `None`  | A {class}`~rlmesh.ParamSpec` over `make()`'s keywords; `None` is a blind passthrough.           |
+| `tag_params`           | class attribute  | `()`    | The declared `params` names whose value selects the contract; `()` is one fixed contract.       |
+| `tags_for(**params)`   | classmethod      | `tags`  | The {class}`~rlmesh.adapters.EnvTags` for one discriminant binding.                             |
 | `prepare()`            | method           | no-op   | One-time setup before the first `make()`.                                                       |
 | `make(**kwargs)`       | method, required | --      | Build and return one env (or a vectorized batch).                                               |
 | `close()`              | method           | no-op   | Release resources on teardown.                                                                  |
@@ -26,6 +28,57 @@ For the concepts (the two sides of an eval and how they meet), start with {doc}`
 The stamp is validated against the env's spaces **lazily**, at adapter-resolution time (serve or session), not inside `make()`. This is deliberate: a `make()` that returns a vectorized batch, whose per-lane spaces differ from the served shape, is not rejected at construction. Serving a scalar env validates the published tags at startup instead, so a bad tag surfaces before a model first connects; a vector env keeps the deferred, resolve-time check.
 
 Stamping is idempotent. Serving an already-stamped env re-stamps the same tags rather than duplicating them, so the local path and the served path agree.
+
+### Contract branches
+
+One factory can serve more than one contract. Name the declared `params` that switch it in `tag_params`, and return the right `EnvTags` from `tags_for(**params)`:
+
+```python
+class Libero(rlmesh.EnvFactory):
+    tags = _DELTA_TAGS
+    params = rlmesh.ParamSpec(
+        rlmesh.Param("action_type", type="enum", choices=("delta", "abs")),
+    )
+    tag_params = ("action_type",)
+
+    @classmethod
+    def tags_for(cls, **params):
+        return _DELTA_TAGS if params["action_type"] == "delta" else _ABSOLUTE_TAGS
+
+    def make(self, *, action_type: str = "delta"):
+        ...
+```
+
+Each discriminant must be a declared {class}`~rlmesh.Param` with `choices` and a `make()` signature default drawn from them, and the product of those choices is capped at **8** branches. Everything else fails at class creation, not at push or run time: an undeclared or unenumerable discriminant, a missing or off-choices default, a `tags_for()` override with no `tag_params`, a `tags_for()` that answers with something other than `EnvTags` or `None`, a table that is adapted on some branches and generic on others, and a `tags` that disagrees with the default branch.
+
+The binding whose values are `make()`'s own signature defaults is the **default branch**: `tags_for(**defaults)` must be `tags`, because that is the contract a reader with no branch information sees. Leaving `tags_for()` alone is fine when the discriminant moves only the _spaces_ -- a camera size, say -- and not the contract.
+
+`make()` resolves the branch from its own signature (defaults applied, so the binding is always complete) _before_ the body runs, publishes that branch's tags, and stamps the binding into `env.metadata` under `rlmesh.adapters.ENV_BRANCH_METADATA_KEY`. A value outside the declared choices fails there, pre-construction. When the platform pins the branch it expects (`RLMESH_EXPECTED_ENV_BRANCH`, a JSON object), {class}`~rlmesh.EnvServer` compares it with the stamped one at startup and refuses to serve a mismatch -- the width-preserving contract swaps that adapter resolution cannot see on its own.
+
+Contract branches are contract axes, not free dials. A shape-changing scalar with a wide domain (`cam_width`) stays a plain `Param`.
+
+### Reserved reset options
+
+`reset(seed=None, options=None)` carries a small set of _reserved_ option keys the runtime knows how to fill. An env opts into one by naming it in `reset_options`; nothing is delivered otherwise, so an env that forwards `options` straight into a third-party `reset` never receives a key it cannot interpret.
+
+```python
+class Libero(rlmesh.EnvFactory):
+    reset_options = ("trial_index",)
+
+    def make(self, suite="libero_10", **kwargs):
+        ...
+
+
+def reset(self, *, seed=None, options=None):
+    trial = rlmesh.trial_index(options)
+    state = self.init_states[(trial if trial is not None else seed or 0) % len(self.init_states)]
+```
+
+| Key           | Type                                             | What it is                                                                                                                                                                                                                          |
+| ------------- | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `trial_index` | `int` (a per-lane `list[int]` on a vector reset) | 0-based ordinal of the episode being started, walked in order by the runtime. Lets an env sweep a fixed list of initial states or goals exactly as its upstream benchmark does, instead of re-deriving an index from a hashed seed. |
+
+`make()` publishes the declaration in `env.metadata` under {data}`rlmesh.ENV_RESET_OPTIONS_KEY`; a plain (non-factory) env can set the same key itself. {func}`rlmesh.trial_index` reads the value back out of an `options` mapping and returns `None` when it is absent, so the same `reset` body works driven or undriven. The ordinal is recorded on every episode's result whether or not the env asked for it.
 
 ## Lifecycle
 
@@ -231,11 +284,14 @@ The envelope (env kind) carries:
 | `target`         | The entrypoint and qualname, so the artifact maps back to its source.                                          |
 | `env_spec`       | The constructed env's `observation_space` / `action_space` (+ `num_envs` for a vector env), or an error badge. |
 | `env_tags`       | The factory's `tags` serialized, or `null`.                                                                    |
+| `env_contracts`  | The contract-branch table (`discriminants` + `branches`), only when `tag_params` is declared.                  |
 | `params`         | The declared `param_spec` plus the free `signature_tier`.                                                      |
 | `variants`       | The `catalog` from `enumerate_variants()` and the `variations` axes from `enumerate_params()`.                 |
 | `runtime`        | The peer info it was generated under: Python and framework versions, OS, arch.                                 |
 
 Every gathered piece is best-effort: a failure to build the env, read a spec, or run an enumeration becomes an `"error"` badge rather than a crash, so the artifact is always emitted (for example, a no-GPU OCI build still ships a valid envelope minus its `env_spec`). A model envelope drops `env_spec`/`env_tags` and carries `model_spec` instead.
+
+`env_contracts` carries one entry per contract branch, each with its full discriminant binding, its `env_tags` and its own captured `env_spec`. Exactly one is `"default": true`, and its two objects _are_ the top-level `env_tags`/`env_spec`, so a branch-blind reader and the table cannot drift. A factory with no `tag_params` emits no `env_contracts` at all, which keeps its envelope byte-identical to one built before the field existed.
 
 The format (version, shape, serialization) is owned by the Rust layer, so the bytes are identical across Python versions and any future native producer. See [the contract](../../specs/describe.v1.md). The artifact is self-contained JSON, ready to bake into an image at build time:
 

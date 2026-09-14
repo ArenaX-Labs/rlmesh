@@ -4,8 +4,8 @@ use rlmesh_proto::{
     model::v1::{
         CloseParticipantRequest, GroupedPredictRequest, GroupedPredictResponse, JoinRequest,
         JoinResponse, PredictRequest, PredictResponse, ReleaseAdapterRequest, ResetAdapterRequest,
-        ResolveAdapterRequest, ShutdownRequest, join_request, join_response,
-        model_service_client::ModelServiceClient,
+        ResolveAdapterRequest, ResolveAdapterResponse, ShutdownRequest, join_request,
+        join_response, model_service_client::ModelServiceClient,
     },
 };
 use std::collections::HashMap;
@@ -22,6 +22,14 @@ use crate::states::ClientState;
 use super::stream::{PendingResponses, spawn_response_pump};
 use super::validation::{decode_error, route_request_id, validate_predict_route, validate_route};
 use super::wire::{join_request_kind_name, model_error_to_grpc_error};
+
+/// A grouped predict reply with the server-side timing of that batch.
+#[derive(Debug)]
+pub struct GroupedPredictOutcome {
+    pub response: GroupedPredictResponse,
+    pub endpoint_total_ns: Option<u64>,
+    pub phases: EndpointPhases,
+}
 
 /// Client for a ModelService server's Join bidi stream.
 ///
@@ -41,14 +49,6 @@ use super::wire::{join_request_kind_name, model_error_to_grpc_error};
 /// [`predict_concurrent`](Self::predict_concurrent), which takes `&self` and may
 /// be called from multiple tasks concurrently. The matching server advertises
 /// the `rlmesh.model.concurrent_predict.v1` capability when it pipelines.
-/// A grouped predict reply with the server-side timing of that batch.
-#[derive(Debug)]
-pub struct GroupedPredictOutcome {
-    pub response: GroupedPredictResponse,
-    pub endpoint_total_ns: Option<u64>,
-    pub phases: EndpointPhases,
-}
-
 pub struct ModelClient {
     address: String,
     client: ModelServiceClient<tonic::transport::Channel>,
@@ -196,10 +196,13 @@ impl ModelClient {
 
     /// Resolve (configure) the route's adapter from its env spec, pinning the
     /// session edition and execution horizon carried in `request`.
+    ///
+    /// Returns the model's answer: what the resolved route needs back (today,
+    /// its declared `native_chunk`).
     pub async fn resolve_adapter(
         &mut self,
         request: ResolveAdapterRequest,
-    ) -> Result<(), GrpcError> {
+    ) -> Result<ResolveAdapterResponse, GrpcError> {
         self.ensure_ready()?;
         validate_route(
             request
@@ -217,7 +220,7 @@ impl ModelClient {
         self.last_endpoint_total_ns = response.endpoint_total_ns;
         self.last_phases = EndpointPhases::from_model_response(&response);
         match response.kind {
-            Some(join_response::Kind::ResolveAdapter(_)) => Ok(()),
+            Some(join_response::Kind::ResolveAdapter(response)) => Ok(response),
             Some(join_response::Kind::Error(error)) => Err(model_error_to_grpc_error(error)),
             _ => Err(ProtocolError::UnexpectedMessage {
                 expected: "ResolveAdapterResponse".to_string(),

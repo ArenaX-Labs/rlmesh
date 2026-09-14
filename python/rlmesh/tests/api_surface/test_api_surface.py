@@ -7,6 +7,7 @@ def test_root_namespace_is_small() -> None:
     assert rlmesh.__all__ == [
         "DESCRIBE_METADATA_KEY",
         "DESCRIBE_SCHEMA_VERSION",
+        "ENV_RESET_OPTIONS_KEY",
         "NO_ADAPTER",
         "RANDOM_SAMPLE",
         "EnvFactory",
@@ -41,11 +42,13 @@ def test_root_namespace_is_small() -> None:
         "describe",
         "describe_json",
         "params",
+        "predict_seed",
         "run",
         "sanitize_metadata",
         "session",
         "spaces",
         "specs",
+        "trial_index",
         "types",
     ]
 
@@ -100,6 +103,7 @@ def test_types_namespace_contains_typing_contracts_only() -> None:
     from rlmesh import types
 
     assert types.__all__ == [
+        "BatchPredictContext",
         "EnvLike",
         "EnvTarget",
         "HasAddress",
@@ -107,6 +111,7 @@ def test_types_namespace_contains_typing_contracts_only() -> None:
         "InfoDict",
         "LocalEnvTarget",
         "Metadata",
+        "PredictContext",
         "PrimitiveValue",
         "SpaceLike",
         "SpecArg",

@@ -8,6 +8,13 @@
 /// Key carrying serialized [`EnvTags`](crate::spec::EnvTags) in env contract metadata.
 pub const ENV_METADATA_KEY: &str = "rlmesh.adapters.v1.env_tags";
 
+/// Key carrying the contract-discriminant binding a branched `EnvFactory` chose
+/// at `make()` time, in env contract metadata. The producer resolves the binding
+/// from `make`'s signature (defaults applied), so the published value always
+/// names every declared discriminant -- the same code that picks the branch
+/// publishes it, and a reader never has to re-derive it from construction params.
+pub const ENV_BRANCH_METADATA_KEY: &str = "rlmesh.adapters.v1.env_branch";
+
 /// Key carrying a serialized [`ModelSpec`](crate::spec::ModelSpec) in model metadata.
 pub const MODEL_METADATA_KEY: &str = "rlmesh.adapters.v1.model_spec";
 

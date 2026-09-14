@@ -221,13 +221,18 @@ def test_session_predict_context_carries_stable_episode_identity() -> None:
     with Model(predict).session(Env()) as sess:
         sess.run(seeds=[7], max_episodes=1)
 
-    # A plain local env is driven directly (no runtime in the loop), so there
-    # is no minted episode_id here -- the id is stable-empty and the seed rides
-    # on every step. The served-env variant with real UUIDv7 ids is
-    # tests/integration/test_run_native.py.
+    # A plain local env is driven directly (no runtime in the loop), so the
+    # session mints the episode identity itself -- one id for the whole episode,
+    # the seed riding on every step, and the re-plan ordinal counting up. The
+    # served-env variant with real UUIDv7 ids is tests/integration/test_run_native.py.
     assert len(seen) == 3
-    assert [context["episode_id"] for context in seen] == ["", "", ""]
+    ids = {context["episode_id"] for context in seen}
+    assert len(ids) == 1 and ids != {""}
     assert [context["episode_seed"] for context in seen] == [7, 7, 7]
+    assert [context["predict_index"] for context in seen] == [0, 1, 2]
+    assert [context["predict_seed"] for context in seen] == [
+        rlmesh.predict_seed(7, index) for index in range(3)
+    ]
 
 
 def test_reject_vector_env_rejects_num_envs_gt_one() -> None:
@@ -780,3 +785,112 @@ def test_allow_fusion_reaches_the_native_worker(
     captured.clear()
     OptedOut()._install_worker()
     assert captured["allow_fusion"] is False
+
+
+def test_native_chunk_is_read_after_load_not_at_class_definition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """K usually comes off the loaded checkpoint, so the worker must read
+    ``native_chunk`` AFTER ``load()`` ran -- two instances whose ``load()`` picked
+    different K build two workers declaring different K."""
+    import rlmesh
+    import rlmesh._load_native as load_native_mod
+
+    captured: list[Any] = []
+
+    def fake_worker(**kwargs: Any) -> Any:
+        captured.append(kwargs.get("native_chunk"))
+        return object()
+
+    monkeypatch.setattr(load_native_mod, "load_native", lambda name: fake_worker)
+
+    class FromCheckpoint(rlmesh.Model):
+        def __init__(self, k: int) -> None:
+            self._k = k
+            super().__init__()
+
+        def load(self) -> None:
+            self.native_chunk = self._k
+
+        def predict(self, observation: object) -> object:
+            return 0
+
+        def predict_chunk(self, observation: object) -> object:
+            return [0]
+
+    FromCheckpoint(30)._install_worker()
+    FromCheckpoint(50)._install_worker()
+    assert captured == [30, 50]
+
+    # Undeclared stays undeclared: the elastic contract reaches the worker as None.
+    captured.clear()
+    rlmesh.Model(lambda obs: 0)._install_worker()
+    assert captured == [None]
+
+
+def test_native_chunk_without_a_chunk_corner_is_rejected_at_construction() -> None:
+    """A class-level K on a model with no chunk corner could never be honored --
+    and nothing downstream would ever check it -- so it fails where the corners
+    are known."""
+    import rlmesh
+
+    class NoCorner(rlmesh.Model):
+        native_chunk = 8
+
+        def predict(self, observation: object) -> object:
+            return 0
+
+    with pytest.raises(TypeError, match="no predict_chunk"):
+        NoCorner()
+
+
+def test_native_chunk_below_one_is_rejected_at_worker_build(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import rlmesh
+    import rlmesh._load_native as load_native_mod
+
+    monkeypatch.setattr(
+        load_native_mod, "load_native", lambda name: lambda **kw: object()
+    )
+
+    class Zero(rlmesh.Model):
+        native_chunk = 0
+
+        def predict(self, observation: object) -> object:
+            return 0
+
+        def predict_chunk(self, observation: object) -> object:
+            return [0]
+
+    with pytest.raises(ValueError, match="native_chunk must be >= 1"):
+        Zero()._install_worker()
+
+
+def test_a_duck_typed_policy_declares_its_own_native_chunk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``Model(policy)`` reads K off the coerced policy, so a wrapped object
+    declares exactly the way a subclass does."""
+    import rlmesh
+    import rlmesh._load_native as load_native_mod
+
+    captured: list[Any] = []
+
+    def fake_worker(**kwargs: Any) -> Any:
+        captured.append(kwargs.get("native_chunk"))
+        return object()
+
+    monkeypatch.setattr(load_native_mod, "load_native", lambda name: fake_worker)
+
+    class Policy:
+        native_chunk = 12
+
+        def predict(self, observation: object) -> object:
+            return 0
+
+        def predict_chunk(self, observation: object) -> object:
+            return [0]
+
+    rlmesh.Model(Policy())._install_worker()
+    assert captured == [12]

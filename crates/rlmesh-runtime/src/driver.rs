@@ -6,6 +6,7 @@
 //! [`RuntimeHooks`](crate::hooks::RuntimeHooks).
 
 use std::future::Future;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -19,7 +20,8 @@ use rlmesh_proto::env::v1::{
 use rlmesh_proto::model::v1::{
     AdapterContext, PredictRequest, PredictResponse, ReleaseAdapterRequest, ResetAdapterRequest,
 };
-use rlmesh_proto::spaces::v1::SpaceValue;
+use rlmesh_proto::spaces::v1::meta_value::Kind as MetaKind;
+use rlmesh_proto::spaces::v1::{MetaList, MetaMap, MetaValue, SpaceValue};
 use tokio_util::sync::CancellationToken;
 
 use crate::hooks::{
@@ -27,7 +29,7 @@ use crate::hooks::{
     ObservationEmittedEvent, RuntimeEnvContext, RuntimeHooks, SessionEndedEvent,
     SessionFailedEvent, SessionStartedEvent, StepCompletedEvent, TelemetrySnapshotEvent,
 };
-use crate::spec::{RuntimeReport, RuntimeSessionSpec};
+use crate::spec::{ENV_RESET_OPTIONS_KEY, RuntimeReport, RuntimeSessionSpec};
 use crate::state::{RequestPhase, RouteSnapshot, RouteState, StartedEpisode};
 use crate::telemetry::{Aggregator, Horizon, Sample, Source, metrics};
 
@@ -147,6 +149,11 @@ const DEFAULT_CANCELLATION_REASON: &str = "cancelled by caller";
 /// Inactive under `NEXT_STEP` autoreset (the env owns lane resets there).
 const DEFAULT_MAX_EPISODE_STEPS: i64 = 100_000;
 
+/// The one reserved `ResetRequest.options` key this edition defines: the 0-based
+/// trial ordinal of the episode a reset starts. An env opts into receiving it by
+/// naming it under [`ENV_RESET_OPTIONS_KEY`] in its contract metadata.
+const TRIAL_INDEX_OPTION: &str = "trial_index";
+
 /// The env-reported task outcome from an episode's final-step info: Gymnasium's
 /// `is_success` (preferred) or `success` key, `None` when absent. Numeric
 /// values coerce by truthiness (`1`/`1.0` → true), matching the Python
@@ -216,6 +223,10 @@ pub struct RuntimeDriver<E, M> {
     prefetch_lead: u32,
     hooks: Arc<dyn RuntimeHooks>,
     cancellation_reason: String,
+    /// One `trial_index` was minted for an env whose contract does not declare
+    /// the reset option, so the ordinal was withheld from `ResetRequest.options`.
+    /// Latched so the warning fires once per session, not once per reset.
+    trial_options_warned: AtomicBool,
     /// Action/observation space specs shared into every per-step hook event.
     /// Populated once after [`validate`](RuntimeSessionSpec::validate) so the
     /// hot path clones an `Arc` instead of deep-copying the spec each step.
@@ -237,6 +248,7 @@ where
             prefetch_lead: 0,
             hooks,
             cancellation_reason: DEFAULT_CANCELLATION_REASON.to_string(),
+            trial_options_warned: AtomicBool::new(false),
             // Filled from the validated spec at run time; default until then.
             action_space: Arc::default(),
             observation_space: Arc::default(),
@@ -273,6 +285,89 @@ where
         match env_indices {
             None => self.reset_seeds(reset_generation),
             Some(indices) => self.reset_subset_seeds(reset_generation, indices),
+        }
+    }
+
+    /// Mint the trial ordinals for the lanes a reset restarts, positionally
+    /// aligned to them. Empty unless the session set `trial_index_base` — minting
+    /// is unconditional there, so the events and summaries carry the sweep even
+    /// when the env never asked for the option.
+    fn planned_trial_indices(&self, state: &mut RouteState, lanes: usize) -> Vec<u64> {
+        match self.spec.trial_index_base {
+            Some(base) => state.claim_trial_indices(base, lanes),
+            None => Vec::new(),
+        }
+    }
+
+    /// The `ResetRequest.options` map carrying `trial_index`, or `None`.
+    ///
+    /// Delivered only to an env whose contract metadata declares the key under
+    /// [`ENV_RESET_OPTIONS_KEY`]: an env that forwards `options` blindly into a
+    /// third-party `reset` must never receive a reserved key it cannot interpret.
+    /// A single lane sends the bare integer; a multi-lane reset sends the list, in
+    /// the same lane order as `seeds` and `episode_ids`. Only the integer form is
+    /// reachable today -- a vector route requires NEXT_STEP autoreset and
+    /// [`RuntimeSessionSpec::validate`] refuses a trial base under it -- but the
+    /// list keeps the option positional with the other per-lane reset fields.
+    fn trial_options(&self, trials: &[u64]) -> Option<MetaMap> {
+        if trials.is_empty() {
+            return None;
+        }
+        if !self.env_declares_trial_index() {
+            if !self.trial_options_warned.swap(true, Ordering::Relaxed) {
+                tracing::warn!(
+                    env_id = %self.spec.env_id,
+                    key = ENV_RESET_OPTIONS_KEY,
+                    option = TRIAL_INDEX_OPTION,
+                    "trial_index_base is set but the env contract declares no such reset \
+                     option; the ordinal is recorded on the episode events and summaries \
+                     but not delivered to the env",
+                );
+            }
+            return None;
+        }
+        let value = if trials.len() == 1 {
+            MetaValue {
+                kind: Some(MetaKind::Integer(trials[0] as i64)),
+            }
+        } else {
+            MetaValue {
+                kind: Some(MetaKind::List(MetaList {
+                    items: trials
+                        .iter()
+                        .map(|trial| MetaValue {
+                            kind: Some(MetaKind::Integer(*trial as i64)),
+                        })
+                        .collect(),
+                })),
+            }
+        };
+        Some(MetaMap {
+            entries: [(TRIAL_INDEX_OPTION.to_string(), value)]
+                .into_iter()
+                .collect(),
+        })
+    }
+
+    /// Whether the connected env named `trial_index` in its contract metadata.
+    fn env_declares_trial_index(&self) -> bool {
+        let Some(declared) = self
+            .spec
+            .env_contract
+            .spec
+            .as_ref()
+            .and_then(|spec| spec.metadata.as_ref())
+            .and_then(|metadata| metadata.entries.get(ENV_RESET_OPTIONS_KEY))
+            .and_then(|declared| declared.kind.as_ref())
+        else {
+            return false;
+        };
+        match declared {
+            MetaKind::List(list) => list.items.iter().any(|item| {
+                matches!(item.kind.as_ref(), Some(MetaKind::Text(key)) if key == TRIAL_INDEX_OPTION)
+            }),
+            MetaKind::Text(key) => key == TRIAL_INDEX_OPTION,
+            _ => false,
         }
     }
 
@@ -429,9 +524,11 @@ where
         // read ids back from the env.
         let initial_episode_ids = mint_episode_ids(self.spec.num_envs);
         state.note_episode_seeds(&initial_episode_ids, &reset_seeds);
+        let reset_trials = self.planned_trial_indices(state, self.spec.num_envs);
+        state.note_episode_trials(&initial_episode_ids, &reset_trials);
         let reset_request = ResetRequest {
             seeds: reset_seeds,
-            options: None,
+            options: self.trial_options(&reset_trials),
             timeout_ms: reset_timeout_ms,
             env_indices: Vec::new(),
             episode_ids: initial_episode_ids.clone(),
@@ -522,6 +619,13 @@ where
         // path is unchanged.
         let mut replay_buffer: std::collections::VecDeque<Vec<Bytes>> =
             std::collections::VecDeque::new();
+        // Tripwire for chunk replay on a vector route, once per session. The
+        // layers that front a run (`run_local`, the managed runner's route
+        // connect) refuse the combination outright, but a host driving this
+        // driver directly can still reach it — and the symptom is silent: the
+        // buffer is whole-batch, so ONE lane's episode end throws away every
+        // lane's remaining frames.
+        let mut vector_replay_warned = false;
 
         // In-flight background predict (async-inference mode): the join handle
         // returns the prefetch model handle so it can be reused, plus the
@@ -812,6 +916,16 @@ where
             // and cannot be partially invalidated, so flush it and re-plan on the
             // next step (receding horizon on reset). No-op when not chunking.
             if !completed_episodes.is_empty() {
+                if !replay_buffer.is_empty() && self.spec.num_envs > 1 && !vector_replay_warned {
+                    vector_replay_warned = true;
+                    tracing::warn!(
+                        num_envs = self.spec.num_envs,
+                        discarded_frames = replay_buffer.len(),
+                        "a lane's episode ended mid-chunk on a vector route: chunk replay is \
+                         whole-batch, so every lane's buffered frames were discarded and the \
+                         run re-plans. Use num_envs=1 with an execution horizon > 1.",
+                    );
+                }
                 replay_buffer.clear();
                 // A background predict in flight was conditioned on an
                 // observation from the ended episode; its chunk must not leak
@@ -958,9 +1072,12 @@ where
                             )
                         };
                         state.note_episode_seeds(&reset_episode_ids, &reset_seeds);
+                        let reset_trials =
+                            self.planned_trial_indices(state, reset_episode_ids.len());
+                        state.note_episode_trials(&reset_episode_ids, &reset_trials);
                         let reset_request = ResetRequest {
                             seeds: reset_seeds,
-                            options: None,
+                            options: self.trial_options(&reset_trials),
                             timeout_ms: reset_timeout_ms,
                             env_indices,
                             episode_ids: reset_episode_ids.clone(),
@@ -1146,6 +1263,7 @@ where
                     env_index: record.env_index,
                     started_from_auto_reset: record.started_from_auto_reset,
                     seed: state.seed_for_episode(&episode.episode_id),
+                    trial_index: state.trial_for_episode(&episode.episode_id),
                 }
             );
         }
@@ -1222,11 +1340,13 @@ where
             // Proto env_index is uint32; events are i32/i64.
             let env_index = i32::try_from(completed.env_index).unwrap_or(i32::MAX);
             let seed = state.seed_for_episode(&completed.episode_id);
+            let trial_index = state.trial_for_episode(&completed.episode_id);
             if self.spec.max_episodes.is_some() {
                 state.record_episode_summary(crate::spec::EpisodeSummary {
                     episode_index: record.as_ref().map_or(0, |record| record.index),
                     env_index,
                     seed,
+                    trial_index,
                     step_count: completed.step_count,
                     cumulative_reward: completed.cumulative_reward,
                     terminated: completed.terminated,
@@ -1254,6 +1374,7 @@ where
                         / 1_000_000,
                     final_info: completed.final_info.clone(),
                     seed,
+                    trial_index,
                 }
             );
         }

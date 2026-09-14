@@ -716,6 +716,37 @@ def test_env_server_rejects_one_env_vector_shape() -> None:
         rlmesh.EnvServer(env, host="127.0.0.1", port=0)
 
 
+def test_env_server_asserts_the_expected_contract_branch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The platform pins the branch it resolved the pairing against; join()
+    # reconciles widths and dim laws but never role names, so this is the check
+    # that catches an image serving the wrong contract.
+    import rlmesh
+    from rlmesh.adapters import ENV_BRANCH_METADATA_KEY
+
+    env = TinyEnv()
+    env.metadata = {ENV_BRANCH_METADATA_KEY: {"action_type": "abs"}}  # type: ignore[attr-defined]
+
+    monkeypatch.setenv("RLMESH_EXPECTED_ENV_BRANCH", '{"action_type": "abs"}')
+    server = rlmesh.EnvServer(env, host="127.0.0.1", port=0)
+    server.shutdown()
+
+    monkeypatch.setenv("RLMESH_EXPECTED_ENV_BRANCH", '{"action_type": "delta"}')
+    with pytest.raises(ValueError, match="different contracts"):
+        rlmesh.EnvServer(env, host="127.0.0.1", port=0)
+
+    # An env that publishes no branch at all fails the same way (the two-phase
+    # push order: a model image pinning a branch the env image cannot answer).
+    plain = TinyEnv()
+    with pytest.raises(ValueError, match="published null"):
+        rlmesh.EnvServer(plain, host="127.0.0.1", port=0)
+
+    # Unset asserts nothing: the local and unmanaged paths are unchanged.
+    monkeypatch.delenv("RLMESH_EXPECTED_ENV_BRANCH")
+    rlmesh.EnvServer(plain, host="127.0.0.1", port=0).shutdown()
+
+
 def test_remote_vector_space_properties_load_from_contract() -> None:
     import rlmesh
     from rlmesh import spaces

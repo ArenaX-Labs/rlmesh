@@ -54,9 +54,31 @@ where
     let num_envs = handshake.num_envs;
     let session_id = format!("local-{}", std::process::id());
 
+    // Action chunking across a vector env would replay one whole-batch chunk for
+    // every lane, and a lane that ends mid-chunk invalidates the buffer for all of
+    // them. The engine cannot catch this (the served resolve sees no lane count);
+    // here both numbers are in scope, so refuse before resolving.
+    if num_envs > 1 && options.execution_horizon > 1 {
+        return Err(Error::Internal(format!(
+            "execution_horizon={} cannot be combined with a vector env (num_envs={num_envs}): \
+             chunk replay is whole-batch, so one lane's episode end discards every lane's \
+             buffered frames. Use num_envs=1 or execution_horizon=1.",
+            options.execution_horizon,
+        )));
+    }
+
     if let Some(route_setup) = handler.route_setup() {
         route_setup
-            .resolve_adapter(&env_id, &env_contract, options.execution_horizon)
+            .resolve_adapter(
+                &env_id,
+                &env_contract,
+                crate::model::ResolveOptions {
+                    execution_horizon: options.execution_horizon,
+                    // Observation history is not delivered on this path (or any,
+                    // yet); a history-needing model keeps its own window.
+                    delivers_history: false,
+                },
+            )
             .await?;
     }
 
@@ -71,6 +93,7 @@ where
         base_seed: options.base_seed,
         episode_seeds: options.episode_seeds,
         max_episodes: options.max_episodes,
+        trial_index_base: options.trial_index_base,
         max_episode_steps: options.max_episode_steps,
         max_episode_seconds: options.max_episode_seconds,
         close_env_on_end: options.close_env,

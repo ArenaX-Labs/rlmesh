@@ -13,19 +13,28 @@ __all__ = [
     "ACTION_DELTA_POS_2",
     "ACTION_DELTA_ROT",
     "ACTION_DELTA_ROT_2",
+    "ACTION_EEF_POS",
+    "ACTION_EEF_POS_2",
+    "ACTION_EEF_ROT",
+    "ACTION_EEF_ROT_2",
     "ACTION_GRIPPER",
     "ACTION_GRIPPER_2",
     "ACTION_JOINT_POS",
+    "ACTION_JOINT_POS_2",
     "ACTION_JOINT_VEL",
     "AdapterPlan",
     "Advisory",
+    "CHANNEL_ORDERS",
+    "CROP_MODES",
     "DESCRIBE_METADATA_KEY",
     "DESCRIBE_SCHEMA_VERSION",
     "EEF_POS",
     "EEF_POS_2",
     "EEF_ROT",
     "EEF_ROT_2",
+    "ENV_BRANCH_METADATA_KEY",
     "ENV_METADATA_KEY",
+    "ENV_RESET_OPTIONS_KEY",
     "EnvContract",
     "GRIPPER_POS",
     "GRIPPER_POS_2",
@@ -33,6 +42,7 @@ __all__ = [
     "IMAGE_PRIMARY",
     "IMAGE_SECONDARY",
     "IMAGE_WRIST",
+    "IMAGE_WRIST_2",
     "INSTRUCTION",
     "JOINT_POS",
     "JOINT_VEL",
@@ -46,6 +56,7 @@ __all__ = [
     "PyVectorEnvServer",
     "PyVideoWriter",
     "PyViewer",
+    "RESAMPLES",
     "ROTATION_DIMS",
     "ServeOptions",
     "Space",
@@ -61,6 +72,7 @@ __all__ = [
     "discrete_space_spec",
     "multi_binary_space_spec",
     "multi_discrete_space_spec",
+    "predict_seed",
     "run_cli",
     "sandbox_reap_orphans",
     "sandbox_start_env",
@@ -76,27 +88,38 @@ ACTION_DELTA_POS: builtins.str
 ACTION_DELTA_POS_2: builtins.str
 ACTION_DELTA_ROT: builtins.str
 ACTION_DELTA_ROT_2: builtins.str
+ACTION_EEF_POS: builtins.str
+ACTION_EEF_POS_2: builtins.str
+ACTION_EEF_ROT: builtins.str
+ACTION_EEF_ROT_2: builtins.str
 ACTION_GRIPPER: builtins.str
 ACTION_GRIPPER_2: builtins.str
 ACTION_JOINT_POS: builtins.str
+ACTION_JOINT_POS_2: builtins.str
 ACTION_JOINT_VEL: builtins.str
+CHANNEL_ORDERS: builtins.list[builtins.str]
+CROP_MODES: builtins.list[builtins.str]
 DESCRIBE_METADATA_KEY: builtins.str
 DESCRIBE_SCHEMA_VERSION: builtins.int
 EEF_POS: builtins.str
 EEF_POS_2: builtins.str
 EEF_ROT: builtins.str
 EEF_ROT_2: builtins.str
+ENV_BRANCH_METADATA_KEY: builtins.str
 ENV_METADATA_KEY: builtins.str
+ENV_RESET_OPTIONS_KEY: builtins.str
 GRIPPER_POS: builtins.str
 GRIPPER_POS_2: builtins.str
 IMAGE_LAYOUTS: builtins.list[builtins.str]
 IMAGE_PRIMARY: builtins.str
 IMAGE_SECONDARY: builtins.str
 IMAGE_WRIST: builtins.str
+IMAGE_WRIST_2: builtins.str
 INSTRUCTION: builtins.str
 JOINT_POS: builtins.str
 JOINT_VEL: builtins.str
 MODEL_METADATA_KEY: builtins.str
+RESAMPLES: builtins.list[builtins.str]
 ROTATION_DIMS: builtins.dict[builtins.str, builtins.int]
 __version__: builtins.str
 
@@ -157,6 +180,19 @@ class AdapterPlan:
         native `NodePath` — no placement string for the caller to re-parse. An
         empty segment list is the root (a bare-leaf payload).
         """
+    def state_layouts(self) -> builtins.list[tuple[builtins.list[builtins.str | builtins.int], builtins.list[builtins.int], builtins.int]]:
+        r"""
+        `(segments, part_widths, width)` per resolved state input, plan order.
+        
+        `segments` is the state leaf's structured placement path (as in
+        [`custom_inputs`](Self::custom_inputs)), `part_widths` the resolved width
+        each declared part contributes in order, and `width` the assembled
+        leaf's width (its `pad_to` when it pads). A host-side custom encoding
+        reads and writes exactly its own slice of the leaf, whose offset is the
+        sum of the widths before it — env-dependent, so it is knowable only
+        here, after resolve. A state whose widths are not all statically known
+        is omitted (nothing can be addressed inside it).
+        """
     def transform_obs(self, raw_obs: typing.Any) -> typing.Any:
         r"""
         Apply the observation plans to a canonical value-tree observation map.
@@ -165,6 +201,32 @@ class AdapterPlan:
         dict/list/leaf — the model spec's `InputNode` shape, a Value tree);
         custom inputs are omitted (the caller fills them from the raw host
         observation).
+        """
+    def history_keys(self) -> builtins.list[builtins.str]:
+        r"""
+        Canonical placement strings of the inputs that hold a frame window.
+        
+        Empty means an env step that predicts nothing has no state to advance, so
+        the caller can skip [`transform_history`](Self::transform_history)
+        entirely.
+        """
+    def history_windows(self) -> builtins.list[tuple[builtins.str, builtins.int, builtins.int]]:
+        r"""
+        `(key, span, frame_bytes)` per frame window this plan holds per live
+        episode — what a caller budgets `num_envs x sum(span x frame_bytes)`
+        from before a route runs. `frame_bytes` is `0` when the env's camera
+        resolution was not derivable.
+        """
+    def transform_history(self, raw_obs: typing.Any) -> None:
+        r"""
+        Advance the frame windows from a raw observation, assembling nothing.
+        
+        The tick a step that replays a queued action owes its history: the frame
+        still happened, so it still goes in the window.
+        """
+    def reset_history(self) -> None:
+        r"""
+        Drop the in-process frame windows at an episode boundary.
         """
     def transform_action(self, raw_action: typing.Any) -> typing.Any:
         r"""
@@ -276,9 +338,9 @@ class PyEnvServer:
 
 @typing.final
 class PyModel:
-    def __init__(self, predict_fn: collections.abc.Callable[[Value], Value], configure_fn: collections.abc.Callable[[EnvContract], object] | None = None, on_episode_end: collections.abc.Callable[[], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None, predict_chunk_fn: collections.abc.Callable[[Value, int], Value] | None = None, predict_batch_fn: collections.abc.Callable[[list[Value]], list[Value]] | None = None, predict_chunk_batch_fn: collections.abc.Callable[[list[Value], int], list[Value]] | None = None, allow_fusion: bool = True) -> None: ...
+    def __init__(self, predict_fn: collections.abc.Callable[[Value], Value], configure_fn: collections.abc.Callable[[EnvContract], object] | None = None, on_episode_end: collections.abc.Callable[[str], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None, predict_chunk_fn: collections.abc.Callable[[Value, int], Value] | None = None, predict_batch_fn: collections.abc.Callable[[list[Value], list[dict[str, typing.Any]]], list[Value]] | None = None, predict_chunk_batch_fn: collections.abc.Callable[[list[Value], int, list[dict[str, typing.Any]]], list[Value]] | None = None, allow_fusion: bool = True, native_chunk: int | None = None) -> None: ...
     def run_local(self, env_address: str, execution_horizon: int = 1) -> dict[str, typing.Any]: ...
-    def run_local_for_episodes(self, env_address: str, max_episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False) -> dict[str, typing.Any]: ...
+    def run_local_for_episodes(self, env_address: str, max_episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trial_index_base: int | None = None) -> dict[str, typing.Any]: ...
     def serve(self, address: str, options: ServeOptions | None = None) -> None: ...
 
 @typing.final
@@ -516,7 +578,7 @@ def adapters_join_check(env_tags_json: str, observation_space: object, action_sp
 
 def adapters_resolve(env_tags_json: str, observation_space: object, action_space: object, model_spec_json: str) -> AdapterPlan: ...
 
-def adapters_spec_normalize(side: str, spec_json: str, allow_custom: bool, role_policy: str = 'passthrough') -> str: ...
+def adapters_spec_normalize(side: str, spec_json: str, allow_custom: bool, role_policy: str = 'passthrough', require_frames: bool = False) -> str: ...
 
 def box_space_spec(low: float, high: float, shape: list[int], dtype: str | None = None) -> SpaceSpec: ...
 
@@ -529,6 +591,8 @@ def discrete_space_spec(n: int, start: int = 0, dtype: str | None = None) -> Spa
 def multi_binary_space_spec(shape: list[int], dtype: str | None = None) -> SpaceSpec: ...
 
 def multi_discrete_space_spec(nvec: list[int], dtype: str | None = None) -> SpaceSpec: ...
+
+def predict_seed(episode_seed: int, predict_index: int) -> int: ...
 
 def run_cli(args: list[str]) -> int: ...
 

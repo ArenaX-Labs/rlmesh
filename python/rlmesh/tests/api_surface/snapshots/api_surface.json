@@ -3,6 +3,7 @@
     "exports": [
       "DESCRIBE_METADATA_KEY",
       "DESCRIBE_SCHEMA_VERSION",
+      "ENV_RESET_OPTIONS_KEY",
       "NO_ADAPTER",
       "RANDOM_SAMPLE",
       "EnvFactory",
@@ -37,11 +38,13 @@
       "describe",
       "describe_json",
       "params",
+      "predict_seed",
       "run",
       "sanitize_metadata",
       "session",
       "spaces",
       "specs",
+      "trial_index",
       "types"
     ],
     "objects": {
@@ -53,6 +56,11 @@
       "DESCRIBE_SCHEMA_VERSION": {
         "kind": "type alias",
         "signature": "DESCRIBE_SCHEMA_VERSION = int",
+        "stability": "Stable"
+      },
+      "ENV_RESET_OPTIONS_KEY": {
+        "kind": "type alias",
+        "signature": "ENV_RESET_OPTIONS_KEY = str",
         "stability": "Stable"
       },
       "EnvFactory": {
@@ -78,13 +86,25 @@
             "kind": "function",
             "signature": "prepare() -> None"
           },
+          "reset_options": {
+            "kind": "attribute",
+            "signature": "reset_options: tuple[str, ...]"
+          },
           "serve": {
             "kind": "function",
             "signature": "serve(address: str, *, num_envs: int = 1, vectorization_mode: str | None = None, framework: str | None = None, device: object | None = None, **make_kwargs: Any) -> None"
           },
+          "tag_params": {
+            "kind": "attribute",
+            "signature": "tag_params: tuple[str, ...]"
+          },
           "tags": {
             "kind": "attribute",
             "signature": "tags: EnvTags | None"
+          },
+          "tags_for": {
+            "kind": "function",
+            "signature": "tags_for(**params: Any) -> EnvTags | None"
           }
         },
         "stability": "Stable"
@@ -163,12 +183,16 @@
             "kind": "attribute",
             "signature": "terminated: bool"
           },
+          "trial": {
+            "kind": "attribute",
+            "signature": "trial: int | None"
+          },
           "truncated": {
             "kind": "attribute",
             "signature": "truncated: bool"
           }
         },
-        "signature": "EpisodeResult(index: int, seed: int | None, steps: int, reward: float, terminated: bool, truncated: bool, success: bool | None = None, duration_s: float = 0.0, predict_ms: float = 0.0, step_ms: float = 0.0)",
+        "signature": "EpisodeResult(index: int, seed: int | None, steps: int, reward: float, terminated: bool, truncated: bool, success: bool | None = None, duration_s: float = 0.0, predict_ms: float = 0.0, step_ms: float = 0.0, trial: int | None = None)",
         "stability": "Stable"
       },
       "Model": {
@@ -194,6 +218,10 @@
             "kind": "function",
             "signature": "load(**kwargs: Any) -> None"
           },
+          "native_chunk": {
+            "kind": "attribute",
+            "signature": "native_chunk: int | None"
+          },
           "params": {
             "kind": "attribute",
             "signature": "params: ParamSpec | None"
@@ -216,7 +244,7 @@
           },
           "reset": {
             "kind": "function",
-            "signature": "reset() -> None"
+            "signature": "reset(episode_id: str = '') -> None"
           },
           "run": {
             "kind": "function",
@@ -841,7 +869,7 @@
           },
           "reset": {
             "kind": "function",
-            "signature": "reset(*, seed: int | None = None)"
+            "signature": "reset(*, seed: int | None = None, trial_index: int | None = None)"
           },
           "run": {
             "kind": "function",
@@ -1105,6 +1133,11 @@
         "kind": "module",
         "stability": "Stable"
       },
+      "predict_seed": {
+        "kind": "function",
+        "signature": "predict_seed(episode_seed: int, predict_index: int) -> int",
+        "stability": "Stable"
+      },
       "run": {
         "kind": "function",
         "signature": "run(model: object, env: EnvTarget, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: RunHooks | None = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, view: ViewArg = None)",
@@ -1128,6 +1161,11 @@
         "kind": "module",
         "stability": "Stable"
       },
+      "trial_index": {
+        "kind": "function",
+        "signature": "trial_index(options: Mapping[str, Any] | None) -> int | None",
+        "stability": "Stable"
+      },
       "types": {
         "kind": "module",
         "stability": "Stable"
@@ -1140,20 +1178,27 @@
       "ACTION_DELTA_POS_2",
       "ACTION_DELTA_ROT",
       "ACTION_DELTA_ROT_2",
+      "ACTION_EEF_POS",
+      "ACTION_EEF_POS_2",
+      "ACTION_EEF_ROT",
+      "ACTION_EEF_ROT_2",
       "ACTION_GRIPPER",
       "ACTION_GRIPPER_2",
       "ACTION_JOINT_POS",
+      "ACTION_JOINT_POS_2",
       "ACTION_JOINT_VEL",
       "EEF_POS",
       "EEF_POS_2",
       "EEF_ROT",
       "EEF_ROT_2",
+      "ENV_BRANCH_METADATA_KEY",
       "ENV_METADATA_KEY",
       "GRIPPER_POS",
       "GRIPPER_POS_2",
       "IMAGE_PRIMARY",
       "IMAGE_SECONDARY",
       "IMAGE_WRIST",
+      "IMAGE_WRIST_2",
       "INSTRUCTION",
       "JOINT_POS",
       "JOINT_VEL",
@@ -1167,11 +1212,13 @@
       "Advisory",
       "Concat",
       "ConcatPart",
+      "Constant",
       "Custom",
       "CustomEncoding",
       "EnvTags",
       "Field",
       "FitMode",
+      "Frame",
       "Image",
       "ImageLayout",
       "ImageTag",
@@ -1182,10 +1229,14 @@
       "ObsNode",
       "ObsTransform",
       "ObservationRoles",
+      "Reference",
       "Resample",
+      "Rotation",
       "RotationEncoding",
       "RotationTransform",
       "Split",
+      "StackPad",
+      "StackSpec",
       "State",
       "StateTag",
       "Text",
@@ -1215,6 +1266,26 @@
         "signature": "ACTION_DELTA_ROT_2 = str",
         "stability": "Stable"
       },
+      "ACTION_EEF_POS": {
+        "kind": "type alias",
+        "signature": "ACTION_EEF_POS = str",
+        "stability": "Stable"
+      },
+      "ACTION_EEF_POS_2": {
+        "kind": "type alias",
+        "signature": "ACTION_EEF_POS_2 = str",
+        "stability": "Stable"
+      },
+      "ACTION_EEF_ROT": {
+        "kind": "type alias",
+        "signature": "ACTION_EEF_ROT = str",
+        "stability": "Stable"
+      },
+      "ACTION_EEF_ROT_2": {
+        "kind": "type alias",
+        "signature": "ACTION_EEF_ROT_2 = str",
+        "stability": "Stable"
+      },
       "ACTION_GRIPPER": {
         "kind": "type alias",
         "signature": "ACTION_GRIPPER = str",
@@ -1228,6 +1299,11 @@
       "ACTION_JOINT_POS": {
         "kind": "type alias",
         "signature": "ACTION_JOINT_POS = str",
+        "stability": "Stable"
+      },
+      "ACTION_JOINT_POS_2": {
+        "kind": "type alias",
+        "signature": "ACTION_JOINT_POS_2 = str",
         "stability": "Stable"
       },
       "ACTION_JOINT_VEL": {
@@ -1277,6 +1353,10 @@
             "kind": "attribute",
             "signature": "fill: float"
           },
+          "frame": {
+            "kind": "attribute",
+            "signature": "frame: Frame | None"
+          },
           "invert": {
             "kind": "attribute",
             "signature": "invert: bool"
@@ -1288,6 +1368,10 @@
           "range": {
             "kind": "attribute",
             "signature": "range: tuple[float, float] | None"
+          },
+          "reference": {
+            "kind": "attribute",
+            "signature": "reference: Reference | None"
           },
           "role": {
             "kind": "attribute",
@@ -1302,7 +1386,7 @@
             "signature": "threshold: float | None"
           }
         },
-        "signature": "Actuator(role: str | None = None, dim: int = 0, encoding: RotationEncoding | CustomEncoding | None = None, range: tuple[float, float] | None = None, binary: bool = False, scale: float | None = None, invert: bool = False, threshold: float | None = None, clip: bool = False, fill: float = 0.0, optional: bool = False)",
+        "signature": "Actuator(role: str | None = None, dim: int = 0, encoding: RotationEncoding | CustomEncoding | None = None, range: tuple[float, float] | None = None, binary: bool = False, scale: float | None = None, invert: bool = False, threshold: float | None = None, clip: bool = False, fill: float = 0.0, optional: bool = False, *, frame: Frame | None = None, reference: Reference | None = None)",
         "stability": "Stable"
       },
       "Adapter": {
@@ -1315,6 +1399,18 @@
           "explain": {
             "kind": "function",
             "signature": "explain() -> str"
+          },
+          "history_keys": {
+            "kind": "function",
+            "signature": "history_keys() -> tuple[str, ...]"
+          },
+          "history_windows": {
+            "kind": "function",
+            "signature": "history_windows() -> tuple[tuple[str, int, int], ...]"
+          },
+          "observe": {
+            "kind": "function",
+            "signature": "observe(raw_obs: RawObs, *, input_bridge: ValueBridge | None = None) -> None"
           },
           "reset": {
             "kind": "function",
@@ -1345,7 +1441,7 @@
             "signature": "wrap_predict(predict_fn: Callable[[Any], object]) -> Callable[[Any], ActionT]"
           }
         },
-        "signature": "Adapter(plan: AdapterPlan, customs: Mapping[Placement, ObsTransform], stacks: Mapping[Placement, int] | None = None, obs_enc_shims: tuple[ObsEncShim, ...] = (), action_enc_shims: tuple[ActEncShim, ...] = ())",
+        "signature": "Adapter(plan: AdapterPlan, customs: Mapping[Placement, ObsTransform], obs_enc_shims: tuple[ObsEncShim, ...] = (), action_enc_shims: tuple[ActEncShim, ...] = ())",
         "stability": "Stable"
       },
       "AdapterBase": {
@@ -1354,6 +1450,10 @@
           "explain": {
             "kind": "function",
             "signature": "explain() -> str"
+          },
+          "observe": {
+            "kind": "function",
+            "signature": "observe(raw_obs: RawObs) -> None"
           },
           "reset": {
             "kind": "function",
@@ -1421,7 +1521,22 @@
       },
       "ConcatPart": {
         "kind": "type alias",
-        "signature": "ConcatPart = 'str | State'",
+        "signature": "ConcatPart = 'str | State | Constant'",
+        "stability": "Stable"
+      },
+      "Constant": {
+        "kind": "class",
+        "members": {
+          "dim": {
+            "kind": "attribute",
+            "signature": "dim: int"
+          },
+          "fill": {
+            "kind": "attribute",
+            "signature": "fill: float"
+          }
+        },
+        "signature": "Constant(*, dim: int = 1, fill: float = 0.0)",
         "stability": "Stable"
       },
       "Custom": {
@@ -1490,6 +1605,11 @@
         "signature": "EEF_ROT_2 = str",
         "stability": "Stable"
       },
+      "ENV_BRANCH_METADATA_KEY": {
+        "kind": "type alias",
+        "signature": "ENV_BRANCH_METADATA_KEY = str",
+        "stability": "Stable"
+      },
       "ENV_METADATA_KEY": {
         "kind": "type alias",
         "signature": "ENV_METADATA_KEY = str",
@@ -1549,6 +1669,10 @@
             "kind": "attribute",
             "signature": "encoding: RotationEncoding | Sequence[RotationEncoding] | None"
           },
+          "frame": {
+            "kind": "attribute",
+            "signature": "frame: Frame | None"
+          },
           "range": {
             "kind": "attribute",
             "signature": "range: tuple[float, float] | None"
@@ -1558,12 +1682,17 @@
             "signature": "role: str | None"
           }
         },
-        "signature": "Field(role: str | None = None, dim: int = 0, encoding: RotationEncoding | Sequence[RotationEncoding] | None = None, range: tuple[float, float] | None = None)",
+        "signature": "Field(role: str | None = None, dim: int = 0, encoding: RotationEncoding | Sequence[RotationEncoding] | None = None, range: tuple[float, float] | None = None, *, frame: Frame | None = None)",
         "stability": "Stable"
       },
       "FitMode": {
         "kind": "type alias",
         "signature": "FitMode = Literal['stretch', 'crop', 'pad']",
+        "stability": "Stable"
+      },
+      "Frame": {
+        "kind": "type alias",
+        "signature": "Frame = Literal['world', 'robot_base']",
         "stability": "Stable"
       },
       "GRIPPER_POS": {
@@ -1591,6 +1720,11 @@
         "signature": "IMAGE_WRIST = str",
         "stability": "Stable"
       },
+      "IMAGE_WRIST_2": {
+        "kind": "type alias",
+        "signature": "IMAGE_WRIST_2 = str",
+        "stability": "Stable"
+      },
       "INSTRUCTION": {
         "kind": "type alias",
         "signature": "INSTRUCTION = str",
@@ -1603,9 +1737,25 @@
             "kind": "attribute",
             "signature": "allow_upscale: bool"
           },
+          "channel_order": {
+            "kind": "attribute",
+            "signature": "channel_order: ChannelOrder"
+          },
           "channels": {
             "kind": "attribute",
             "signature": "channels: int | None"
+          },
+          "crop": {
+            "kind": "attribute",
+            "signature": "crop: float | None"
+          },
+          "crop_area": {
+            "kind": "attribute",
+            "signature": "crop_area: float | None"
+          },
+          "crop_mode": {
+            "kind": "attribute",
+            "signature": "crop_mode: CropMode"
           },
           "dtype": {
             "kind": "attribute",
@@ -1623,6 +1773,10 @@
             "kind": "attribute",
             "signature": "height: int | None"
           },
+          "jpeg_quality": {
+            "kind": "attribute",
+            "signature": "jpeg_quality: int | None"
+          },
           "layout": {
             "kind": "attribute",
             "signature": "layout: ImageLayout"
@@ -1635,9 +1789,17 @@
             "kind": "attribute",
             "signature": "normalize: bool | tuple[float, float]"
           },
+          "offsets": {
+            "kind": "attribute",
+            "signature": "offsets: StackSpec | None"
+          },
           "optional": {
             "kind": "attribute",
             "signature": "optional: bool"
+          },
+          "render": {
+            "kind": "attribute",
+            "signature": "render: int | tuple[int, int] | None"
           },
           "resample": {
             "kind": "attribute",
@@ -1651,6 +1813,10 @@
             "kind": "attribute",
             "signature": "stack: int"
           },
+          "stack_pad": {
+            "kind": "attribute",
+            "signature": "stack_pad: StackPad"
+          },
           "upside_down": {
             "kind": "attribute",
             "signature": "upside_down: bool"
@@ -1660,7 +1826,7 @@
             "signature": "width: int | None"
           }
         },
-        "signature": "Image(role: str, height: int | None = None, width: int | None = None, layout: ImageLayout = 'hwc', channels: int | None = None, dtype: str = 'uint8', normalize: bool | tuple[float, float] = False, lead_dims: int = 0, upside_down: bool = False, resample: Resample = 'bilinear', allow_upscale: bool = False, fit: FitMode | Sequence[FitMode] | None = None, optional: bool = False, fill: int | None = None, stack: int = 1, size: InitVar[int | None] = None)",
+        "signature": "Image(role: str, height: int | None = None, width: int | None = None, layout: ImageLayout = 'hwc', channels: int | None = None, dtype: str = 'uint8', normalize: bool | tuple[float, float] = False, lead_dims: int = 0, upside_down: bool = False, resample: Resample = 'bilinear', allow_upscale: bool = False, fit: FitMode | Sequence[FitMode] | None = None, optional: bool = False, fill: int | None = None, stack: int = 1, size: InitVar[int | None] = None, *, crop: float | None = None, crop_area: float | None = None, crop_mode: CropMode = 'zoom', jpeg_quality: int | None = None, channel_order: ChannelOrder = 'rgb', render: int | tuple[int, int] | None = None, offsets: StackSpec | None = None, stack_pad: StackPad = 'first', stride: InitVar[int | None] = None)",
         "stability": "Stable"
       },
       "ImageLayout": {
@@ -1790,9 +1956,33 @@
         "signature": "ROTATION_DIMS = dict[str, int]",
         "stability": "Stable"
       },
+      "Reference": {
+        "kind": "type alias",
+        "signature": "Reference = Literal['current', 'target']",
+        "stability": "Stable"
+      },
       "Resample": {
         "kind": "type alias",
-        "signature": "Resample = Literal['bilinear', 'bilinear_aa']",
+        "signature": "Resample = Literal['bilinear', 'bilinear_aa', 'bicubic_aa', 'lanczos3_aa', 'area']",
+        "stability": "Stable"
+      },
+      "Rotation": {
+        "kind": "class",
+        "members": {
+          "encoding": {
+            "kind": "attribute",
+            "signature": "encoding: RotationEncoding"
+          },
+          "from_matrix": {
+            "kind": "function",
+            "signature": "from_matrix(rows: Iterable[Iterable[float]])"
+          },
+          "value": {
+            "kind": "attribute",
+            "signature": "value: tuple[float, ...]"
+          }
+        },
+        "signature": "Rotation(*, encoding: RotationEncoding, value: tuple[float, ...])",
         "stability": "Stable"
       },
       "RotationEncoding": {
@@ -1816,6 +2006,16 @@
         "signature": "Split(*fields: Field)",
         "stability": "Stable"
       },
+      "StackPad": {
+        "kind": "type alias",
+        "signature": "StackPad = Literal['first', 'black']",
+        "stability": "Stable"
+      },
+      "StackSpec": {
+        "kind": "type alias",
+        "signature": "StackSpec = tuple[int, ...]",
+        "stability": "Stable"
+      },
       "State": {
         "kind": "class",
         "members": {
@@ -1835,9 +2035,21 @@
             "kind": "attribute",
             "signature": "encoding: RotationEncoding | Sequence[RotationEncoding] | CustomEncoding | None"
           },
+          "fill": {
+            "kind": "attribute",
+            "signature": "fill: float"
+          },
+          "frame": {
+            "kind": "attribute",
+            "signature": "frame: Frame | None"
+          },
           "index": {
             "kind": "attribute",
             "signature": "index: int | None"
+          },
+          "offset": {
+            "kind": "attribute",
+            "signature": "offset: float | None"
           },
           "optional": {
             "kind": "attribute",
@@ -1846,6 +2058,10 @@
           "pad_to": {
             "kind": "attribute",
             "signature": "pad_to: int | None"
+          },
+          "post_rotate": {
+            "kind": "attribute",
+            "signature": "post_rotate: Rotation | None"
           },
           "range": {
             "kind": "attribute",
@@ -1858,9 +2074,13 @@
           "role": {
             "kind": "attribute",
             "signature": "role: str"
+          },
+          "scale": {
+            "kind": "attribute",
+            "signature": "scale: float | None"
           }
         },
-        "signature": "State(role: str, encoding: RotationEncoding | Sequence[RotationEncoding] | CustomEncoding | None = None, dim: int | None = None, index: int | None = None, optional: bool = False, range: tuple[float, float] | None = None, pad_to: int | None = None, dtype: str = 'float32', reshape: tuple[int, ...] | None = None, container: Literal['array', 'list'] = 'array')",
+        "signature": "State(role: str, encoding: RotationEncoding | Sequence[RotationEncoding] | CustomEncoding | None = None, dim: int | None = None, index: int | None = None, optional: bool = False, range: tuple[float, float] | None = None, pad_to: int | None = None, dtype: str = 'float32', reshape: tuple[int, ...] | None = None, container: Literal['array', 'list'] = 'array', *, fill: float = 0.0, post_rotate: Rotation | None = None, scale: float | None = None, offset: float | None = None, frame: Frame | None = None)",
         "stability": "Stable"
       },
       "StateTag": {
@@ -1869,6 +2089,10 @@
           "encoding": {
             "kind": "attribute",
             "signature": "encoding: RotationEncoding | Sequence[RotationEncoding] | None"
+          },
+          "frame": {
+            "kind": "attribute",
+            "signature": "frame: Frame | None"
           },
           "range": {
             "kind": "attribute",
@@ -1879,7 +2103,7 @@
             "signature": "role: str"
           }
         },
-        "signature": "StateTag(role: str, encoding: RotationEncoding | Sequence[RotationEncoding] | None = None, range: tuple[float, float] | None = None)",
+        "signature": "StateTag(role: str, encoding: RotationEncoding | Sequence[RotationEncoding] | None = None, range: tuple[float, float] | None = None, *, frame: Frame | None = None)",
         "stability": "Stable"
       },
       "Text": {
@@ -1971,13 +2195,25 @@
             "kind": "function",
             "signature": "prepare() -> None"
           },
+          "reset_options": {
+            "kind": "attribute",
+            "signature": "reset_options: tuple[str, ...]"
+          },
           "serve": {
             "kind": "function",
             "signature": "serve(address: str, *, num_envs: int = 1, vectorization_mode: str | None = None, framework: str | None = None, device: object | None = None, **make_kwargs: Any) -> None"
           },
+          "tag_params": {
+            "kind": "attribute",
+            "signature": "tag_params: tuple[str, ...]"
+          },
           "tags": {
             "kind": "attribute",
             "signature": "tags: EnvTags | None"
+          },
+          "tags_for": {
+            "kind": "function",
+            "signature": "tags_for(**params: Any) -> EnvTags | None"
           }
         },
         "stability": "Experimental"
@@ -2010,6 +2246,10 @@
             "kind": "function",
             "signature": "load(**kwargs: Any) -> None"
           },
+          "native_chunk": {
+            "kind": "attribute",
+            "signature": "native_chunk: int | None"
+          },
           "params": {
             "kind": "attribute",
             "signature": "params: ParamSpec | None"
@@ -2032,7 +2272,7 @@
           },
           "reset": {
             "kind": "function",
-            "signature": "reset() -> None"
+            "signature": "reset(episode_id: str = '') -> None"
           },
           "run": {
             "kind": "function",
@@ -2534,13 +2774,25 @@
             "kind": "function",
             "signature": "prepare() -> None"
           },
+          "reset_options": {
+            "kind": "attribute",
+            "signature": "reset_options: tuple[str, ...]"
+          },
           "serve": {
             "kind": "function",
             "signature": "serve(address: str, *, num_envs: int = 1, vectorization_mode: str | None = None, framework: str | None = None, device: object | None = None, **make_kwargs: Any) -> None"
           },
+          "tag_params": {
+            "kind": "attribute",
+            "signature": "tag_params: tuple[str, ...]"
+          },
           "tags": {
             "kind": "attribute",
             "signature": "tags: EnvTags | None"
+          },
+          "tags_for": {
+            "kind": "function",
+            "signature": "tags_for(**params: Any) -> EnvTags | None"
           }
         },
         "stability": "Stable"
@@ -2568,6 +2820,10 @@
             "kind": "function",
             "signature": "load(**kwargs: Any) -> None"
           },
+          "native_chunk": {
+            "kind": "attribute",
+            "signature": "native_chunk: int | None"
+          },
           "params": {
             "kind": "attribute",
             "signature": "params: ParamSpec | None"
@@ -2590,7 +2846,7 @@
           },
           "reset": {
             "kind": "function",
-            "signature": "reset() -> None"
+            "signature": "reset(episode_id: str = '') -> None"
           },
           "run": {
             "kind": "function",
@@ -3789,13 +4045,25 @@
             "kind": "function",
             "signature": "prepare() -> None"
           },
+          "reset_options": {
+            "kind": "attribute",
+            "signature": "reset_options: tuple[str, ...]"
+          },
           "serve": {
             "kind": "function",
             "signature": "serve(address: str, *, num_envs: int = 1, vectorization_mode: str | None = None, framework: str | None = None, device: object | None = None, **make_kwargs: Any) -> None"
           },
+          "tag_params": {
+            "kind": "attribute",
+            "signature": "tag_params: tuple[str, ...]"
+          },
           "tags": {
             "kind": "attribute",
             "signature": "tags: EnvTags | None"
+          },
+          "tags_for": {
+            "kind": "function",
+            "signature": "tags_for(**params: Any) -> EnvTags | None"
           }
         },
         "stability": "Experimental"
@@ -3823,6 +4091,10 @@
             "kind": "function",
             "signature": "load(**kwargs: Any) -> None"
           },
+          "native_chunk": {
+            "kind": "attribute",
+            "signature": "native_chunk: int | None"
+          },
           "params": {
             "kind": "attribute",
             "signature": "params: ParamSpec | None"
@@ -3845,7 +4117,7 @@
           },
           "reset": {
             "kind": "function",
-            "signature": "reset() -> None"
+            "signature": "reset(episode_id: str = '') -> None"
           },
           "run": {
             "kind": "function",
@@ -4311,6 +4583,7 @@
   },
   "rlmesh.types": {
     "exports": [
+      "BatchPredictContext",
       "EnvLike",
       "EnvTarget",
       "HasAddress",
@@ -4318,6 +4591,7 @@
       "InfoDict",
       "LocalEnvTarget",
       "Metadata",
+      "PredictContext",
       "PrimitiveValue",
       "SpaceLike",
       "SpecArg",
@@ -4328,6 +4602,11 @@
       "ViewArg"
     ],
     "objects": {
+      "BatchPredictContext": {
+        "kind": "type alias",
+        "signature": "BatchPredictContext = list[PredictContext]",
+        "stability": "Stable"
+      },
       "EnvLike": {
         "kind": "class",
         "members": {
@@ -4392,6 +4671,32 @@
       "Metadata": {
         "kind": "type alias",
         "signature": "Metadata = Mapping[str, object]",
+        "stability": "Stable"
+      },
+      "PredictContext": {
+        "kind": "class",
+        "members": {
+          "episode_id": {
+            "kind": "attribute",
+            "signature": "episode_id: str"
+          },
+          "episode_seed": {
+            "kind": "attribute",
+            "signature": "episode_seed: int | None"
+          },
+          "predict_index": {
+            "kind": "attribute",
+            "signature": "predict_index: int"
+          },
+          "predict_seed": {
+            "kind": "attribute",
+            "signature": "predict_seed: int | None"
+          },
+          "state": {
+            "kind": "attribute",
+            "signature": "state: dict[str, Any]"
+          }
+        },
         "stability": "Stable"
       },
       "PrimitiveValue": {

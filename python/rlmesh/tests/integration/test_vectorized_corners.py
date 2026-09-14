@@ -150,7 +150,7 @@ def test_vectorized_route_dispatches_predict_batch() -> None:
 
 def test_run_public_api_drives_vectorized_env_end_to_end() -> None:
     """The public ``Model.run`` on a tagged local vector env: served on loopback,
-    driven by the native loop, batched chunk corner dispatched, and the
+    driven by the native loop, batched corner dispatched once per step, and the
     RunResult carries the runtime's per-episode report."""
     import rlmesh.adapters as adapt
 
@@ -160,15 +160,30 @@ def test_run_public_api_drives_vectorized_env_end_to_end() -> None:
     }
     batch_shapes: list[Any] = []
     env = adapt.tag(VecEnv(), _tags(), validate=False)
-    result = _policy_cls(calls, batch_shapes)().run(
-        env, max_episodes=2, execution_horizon=2
-    )
+    result = _policy_cls(calls, batch_shapes)().run(env, max_episodes=2)
 
-    assert calls["predict_chunk_batch"] == EPISODE_STEPS // 2
+    assert calls["predict_batch"] == EPISODE_STEPS
     assert result.num_episodes == NUM_ENVS
     assert result.mean_reward == float(EPISODE_STEPS)
     assert all(e.steps == EPISODE_STEPS for e in result.episodes)
     assert all(e.terminated and not e.truncated for e in result.episodes)
+
+
+def test_run_refuses_a_chunk_horizon_on_a_vector_env() -> None:
+    """Chunk replay is whole-batch: one lane's episode end would discard every
+    lane's buffered frames, so a vector env only runs at ``execution_horizon=1``
+    and the public ``Model.run`` refuses the combination before resolving."""
+    import pytest
+    import rlmesh.adapters as adapt
+
+    calls = {
+        k: 0
+        for k in ("predict", "predict_batch", "predict_chunk", "predict_chunk_batch")
+    }
+    env = adapt.tag(VecEnv(), _tags(), validate=False)
+    with pytest.raises(RuntimeError, match="execution_horizon=2 cannot be combined"):
+        _policy_cls(calls, [])().run(env, max_episodes=2, execution_horizon=2)
+    assert calls["predict_chunk_batch"] == 0
 
 
 def test_chunk_only_model_collapses_to_batched_corner_at_horizon_1() -> None:
@@ -211,30 +226,24 @@ def test_chunk_only_model_collapses_to_batched_corner_at_horizon_1() -> None:
         np.testing.assert_allclose(action, 0.25)
 
 
-def test_vectorized_chunked_route_dispatches_predict_chunk_batch() -> None:
-    """One batched forward per 2-step chunk (open-loop replay in between), the
-    un-chunked corners idle, and the runtime replaying each chunk in model
-    order: frame 0 then frame 1."""
+def test_vectorized_chunked_route_is_refused_before_resolve() -> None:
+    """Chunk replay is whole-batch, so a vector route never runs at a chunk
+    horizon: the local runner refuses ``execution_horizon=2`` on a 2-lane env
+    before any corner is dispatched and before the env sees a step."""
     calls = {
         k: 0
         for k in ("predict", "predict_batch", "predict_chunk", "predict_chunk_batch")
     }
-    batch_shapes: list[Any] = []
     env = VecEnv()
     server = _serve_env(env)
     try:
-        _policy_cls(calls, batch_shapes)()._run_local_for_episodes(
-            server.address, max_episodes=1, execution_horizon=2
-        )
+        with pytest.raises(RuntimeError, match="num_envs=2"):
+            _policy_cls(calls, [])()._run_local_for_episodes(
+                server.address, max_episodes=1, execution_horizon=2
+            )
     finally:
         server.shutdown()
 
-    assert calls["predict_chunk_batch"] == EPISODE_STEPS // 2
+    assert calls["predict_chunk_batch"] == 0
     assert calls["predict_batch"] == 0
-    assert calls["predict_chunk"] == 0
-    assert all(shape == (NUM_ENVS, 3) for shape in batch_shapes)
-    assert len(env.seen_actions) == EPISODE_STEPS
-    np.testing.assert_allclose(env.seen_actions[0], 0.25)
-    np.testing.assert_allclose(env.seen_actions[1], 0.75)
-    np.testing.assert_allclose(env.seen_actions[2], 0.25)
-    np.testing.assert_allclose(env.seen_actions[3], 0.75)
+    assert env.seen_actions == []

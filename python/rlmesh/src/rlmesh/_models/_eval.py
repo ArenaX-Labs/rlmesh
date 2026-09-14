@@ -13,7 +13,9 @@ names :class:`Session` resolves as module globals: connection/contract synthesis
 
 from __future__ import annotations
 
+import os
 import time
+import uuid
 import warnings
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -27,6 +29,7 @@ from ._connect import (
     adapter_env_bridge,
     close_client,
     connect_env,
+    declares_reset_option,
     reset_env,
     shutdown_env,
 )
@@ -55,6 +58,11 @@ __all__ = [
 
 # bound the loop so a non-terminating env cannot hang it forever.
 _MAX_STEPS_PER_EPISODE = 100_000
+
+# The execution-horizon ceiling, the twin of the native `MAX_EXECUTION_HORIZON`
+# (`rlmesh-adapters` `stateful.rs`) the served engine enforces at resolve. Above
+# this a horizon is always a mis-set knob, not a real open-loop plan.
+MAX_EXECUTION_HORIZON = 1024
 
 ObsT = TypeVar("ObsT")
 ActT = TypeVar("ActT")
@@ -112,6 +120,9 @@ class EpisodeResult:
         predict_ms: Mean per-step wall time of ``predict``, in milliseconds.
         step_ms: Mean per-step wall time of the env ``step`` round trip, in
             milliseconds.
+        trial: The trial ordinal the episode walked
+            (``reset(options={"trial_index": ...})``), or ``None`` when the env
+            declared no such reset option.
     """
 
     index: int
@@ -124,6 +135,7 @@ class EpisodeResult:
     duration_s: float = 0.0
     predict_ms: float = 0.0
     step_ms: float = 0.0
+    trial: int | None = None
 
     @property
     def succeeded(self) -> bool:
@@ -380,6 +392,47 @@ def _summarize_payload(payload: Any) -> str:
     return type(payload).__name__
 
 
+#: Ceiling on the frame history a session may hold, in bytes
+#: (``num_envs * sum(span * frame_bytes)``). A window is live memory for the
+#: whole episode, and a mis-set stride turns a modest ``stack`` into gigabytes;
+#: refuse it at connect, where the number is already known, rather than at the
+#: allocation that OOMs. Overridable with ``RLMESH_FRAME_HISTORY_LIMIT_BYTES``
+#: (the same knob the served engine's gate reads).
+FRAME_HISTORY_LIMIT_BYTES = 2 << 30
+
+
+def _check_frame_history_budget(adapter: Any, num_envs: int) -> None:
+    """Refuse a resolved adapter whose frame windows exceed the byte ceiling.
+
+    ``frame_bytes == 0`` means the env never declared its camera resolution, so
+    that window contributes nothing to the projection -- the gate is a ceiling on
+    what is known, never a guess. A custom adapter declares no window (it owns
+    whatever state it keeps), so there is nothing to bound.
+    """
+    declared = getattr(adapter, "history_windows", None)
+    windows = declared() if declared is not None else ()
+    if not windows:
+        return
+    limit = int(
+        os.environ.get("RLMESH_FRAME_HISTORY_LIMIT_BYTES", 0)
+        or FRAME_HISTORY_LIMIT_BYTES
+    )
+    projected = max(1, num_envs) * sum(
+        span * frame_bytes for _key, span, frame_bytes in windows
+    )
+    if projected > limit:
+        held = ", ".join(
+            f"{key!r} {span} frames x {frame_bytes} B"
+            for key, span, frame_bytes in windows
+        )
+        raise ValueError(
+            f"frame history would hold {projected} bytes ({held}) across "
+            f"{max(1, num_envs)} env(s), over the {limit}-byte ceiling; shorten the "
+            "window (stack/stride), resize the image, or raise "
+            "RLMESH_FRAME_HISTORY_LIMIT_BYTES"
+        )
+
+
 def _predict_step(
     predict: Callable[..., Any],
     obs: Any,
@@ -460,7 +513,7 @@ class Session(Generic[ObsT, ActT]):
     _execution_horizon: int
     _spec: object | None
     _env: object
-    _on_episode_end: Callable[[], None] | None
+    _on_episode_end: Callable[..., None] | None
     _on_close: Callable[[], None] | None
     _trust: bool
     _bridge: ValueBridge | None
@@ -479,12 +532,14 @@ class Session(Generic[ObsT, ActT]):
     _env_bridge: ValueBridge | None
     _text_placements: tuple[TextPlacement, ...]
     _horizon: int
+    _native_chunk: int | None
     _replay: ChunkReplay
     _terminated: bool
     _truncated: bool
     _steps: int
     _reward: float
     _last_info: Mapping[str, Any]
+    _episode_id: str
     _replay_fn: Callable[..., Any] | None
     _model_ms: float
     _env_ms: float
@@ -494,6 +549,7 @@ class Session(Generic[ObsT, ActT]):
     _ep_index: int
     _ep_total: int
     _seed: int | None
+    _trial: int | None
     _chunk_pos: int
     _chunk_len: int
     _episode_open: bool
@@ -514,7 +570,7 @@ class Session(Generic[ObsT, ActT]):
         predict: Callable[[Any], Any] | None = None,
         predict_chunk: Callable[..., Any] | None = None,
         spec: object | None = None,
-        on_episode_end: Callable[[], None] | None = None,
+        on_episode_end: Callable[..., None] | None = None,
         on_close: Callable[[], None] | None = None,
         trust_entrypoints: bool = False,
         bridge: ValueBridge | None = None,
@@ -522,6 +578,7 @@ class Session(Generic[ObsT, ActT]):
         instruction: str | None = None,
         close_env: bool = False,
         execution_horizon: int = 1,
+        native_chunk: int | None = None,
         model_client: PyModelClient | None = None,
         owner: Any = None,
         device: object | None = None,
@@ -535,7 +592,19 @@ class Session(Generic[ObsT, ActT]):
         """
         if execution_horizon < 1:
             raise ValueError(f"execution_horizon must be >= 1, got {execution_horizon}")
+        if execution_horizon > MAX_EXECUTION_HORIZON:
+            raise ValueError(
+                f"execution_horizon must be <= {MAX_EXECUTION_HORIZON}, got "
+                f"{execution_horizon}"
+            )
+        if native_chunk is not None and execution_horizon > native_chunk:
+            raise ValueError(
+                f"execution_horizon={execution_horizon} exceeds the model's declared "
+                f"native_chunk={native_chunk}: it cannot produce that many actions per "
+                f"predict. Lower the horizon to at most {native_chunk}."
+            )
         self = object.__new__(cls)
+        self._native_chunk = native_chunk
         self._predict = predict
         self._predict_chunk = predict_chunk
         self._execution_horizon = execution_horizon
@@ -560,7 +629,7 @@ class Session(Generic[ObsT, ActT]):
         self._env_bridge = None
         self._text_placements = ()
         self._horizon = 1
-        self._replay = ChunkReplay(1)
+        self._replay = self._new_replay()
         self._replay_fn = None
         self._takes_context = False
         self._terminated = False
@@ -568,6 +637,11 @@ class Session(Generic[ObsT, ActT]):
         self._steps = 0
         self._reward = 0.0
         self._last_info = {}
+        #: This episode's identity, minted by `reset` (the local drive path has no
+        #: runtime to mint one). Stable for the whole episode, so the model's
+        #: per-episode store keys the same entry every predict and drops it at the
+        #: same id on `_end_episode` -- the local twin of the served ResetAdapter.
+        self._episode_id = ""
         #: Debug-viewer telemetry (smoothed), fed to the HUD each step. ``model_ms``
         #: tracks the forward cost only when the model actually runs (so chunk-replay
         #: steps don't read as 0ms); ``env_ms`` the simulator ``step``; ``sps`` the
@@ -581,6 +655,9 @@ class Session(Generic[ObsT, ActT]):
         self._ep_index = 0
         self._ep_total = 0
         self._seed = None
+        #: The trial ordinal delivered on this episode's reset, or ``None`` when
+        #: none was asked for or the env declared no such reset option.
+        self._trial = None
         self._chunk_pos = 0
         self._chunk_len = 0
         #: Whether an episode has been reset and not yet ended. The local episode
@@ -595,6 +672,15 @@ class Session(Generic[ObsT, ActT]):
         _view = resolve_view(view)
         self._view_driver = ViewerDriver(_view) if _view is not None else None
         return self
+
+    def _new_replay(self) -> ChunkReplay:
+        """A fresh replay queue at this session's horizon and declared chunk length.
+
+        The one place the two numbers meet, so the resolved horizon and the model's
+        ``native_chunk`` can never drift apart between construction, connect, and
+        each episode boundary.
+        """
+        return ChunkReplay(self._horizon, self._native_chunk)
 
     def _require_open(self) -> None:
         """Reject any use of an explicitly closed session (no silent reconnect)."""
@@ -614,6 +700,10 @@ class Session(Generic[ObsT, ActT]):
         # bind); only a local model resolves it here, client-side.
         if self._model_client is None:
             self._adapter = resolve_adapter(self._spec, contract, self._trust)
+            if self._adapter is not None:
+                _check_frame_history_budget(
+                    self._adapter, getattr(contract, "num_envs", 1) or 1
+                )
             self._env_bridge = (
                 adapter_env_bridge(client) if self._adapter is not None else None
             )
@@ -627,7 +717,7 @@ class Session(Generic[ObsT, ActT]):
             )
             # Seed the replay with the resolved horizon so a hand-driven predict()
             # before the first reset() already replays the right chunk length.
-            self._replay = ChunkReplay(self._horizon)
+            self._replay = self._new_replay()
         self._connected = True
 
     @property
@@ -679,13 +769,6 @@ class Session(Generic[ObsT, ActT]):
             return "success"
         return "failure" if self._terminated else "timeout"
 
-    def _episode_id(self) -> str:
-        """This episode's runtime-minted id, when the env's reset info carried one."""
-        episode_ids = self._last_info.get("episode_ids")
-        if episode_ids:
-            return str(episode_ids[0])
-        return ""
-
     def _end_episode(self) -> None:
         """Fire the local model's `on_episode_end` once for the currently-open episode.
 
@@ -701,18 +784,37 @@ class Session(Generic[ObsT, ActT]):
         if self._episode_open:
             self._episode_open = False
             if self._on_episode_end is not None:
-                self._on_episode_end()
+                self._on_episode_end(self._episode_id)
 
-    def reset(self, *, seed: int | None = None) -> tuple[ObsT, Mapping[str, Any]]:
+    def reset(
+        self, *, seed: int | None = None, trial_index: int | None = None
+    ) -> tuple[ObsT, Mapping[str, Any]]:
         """Begin a new episode: end the previous one, then reset the env and adapter.
 
         Ending the previous episode fires the model's `on_episode_end` (the local
         per-episode boundary), so a stateful model clears its state between episodes
         on the hand-driven path too, not only via `run()`.
+
+        ``trial_index`` is the 0-based ordinal of this episode in a benchmark's
+        trial sweep, delivered as ``reset(options={"trial_index": ...})`` -- but
+        only to an env that declared the key in
+        :attr:`EnvFactory.reset_options <rlmesh.EnvFactory.reset_options>`.
+        Passing one to an env that did not warns and resets without it.
         """
         self._ensure_connected()
         self._end_episode()
-        obs, info = reset_env(self._client, seed)
+        options = None
+        if trial_index is not None:
+            if declares_reset_option(self._contract, "trial_index"):
+                options = {"trial_index": int(trial_index)}
+            else:
+                trial_index = None
+                warnings.warn(
+                    'trial_index was given but this env declares no "trial_index" '
+                    "reset option (EnvFactory.reset_options); resetting without it.",
+                    stacklevel=2,
+                )
+        obs, info = reset_env(self._client, seed, options)
         if self._model_client is not None:
             # Mark a reset boundary on the served route; the seed rides too, as
             # the served model's context["episode_seed"] on every predict of
@@ -721,17 +823,19 @@ class Session(Generic[ObsT, ActT]):
         else:
             if self._adapter is not None:
                 self._adapter.reset()
-            self._replay = ChunkReplay(self._horizon)
+            self._replay = self._new_replay()
         self._terminated = self._truncated = False
         self._steps = 0
         self._reward = 0.0
         self._last_info = info
+        self._episode_id = uuid.uuid4().hex
         self._episode_open = True
         # Viewer telemetry: start the episode clock, drop the inter-step timer (so the
         # first step's sps isn't computed off the reset gap), and record the seed.
         self._ep_start = time.perf_counter()
         self._last_step_t = None
         self._seed = seed
+        self._trial = trial_index
         self._feed_view(obs)
         return cast("ObsT", obs), info
 
@@ -789,7 +893,7 @@ class Session(Generic[ObsT, ActT]):
             # model: this episode's identity and explicit reset seed, nothing
             # positional or path-specific.
             predict_context = (
-                {"episode_id": self._episode_id(), "episode_seed": self._seed}
+                {"episode_id": self._episode_id, "episode_seed": self._seed}
                 if takes_context
                 else None
             )
@@ -807,7 +911,15 @@ class Session(Generic[ObsT, ActT]):
             self._model_ms = _ema(self._model_ms, (time.perf_counter() - t0) * 1000.0)
             return out
 
-        raw_action = self._replay.next_action(_forward)
+        # The replayed-step tick: a queued action still consumed an env step, so
+        # every frame window sees this observation. Without it a stacked model's
+        # payloads would depend on the execution horizon.
+        def _observe() -> None:
+            self._adapter.observe(observation, input_bridge=self._env_bridge)
+
+        raw_action = self._replay.next_action(
+            _forward, _observe if self._adapter is not None else None
+        )
         # Mirror the local chunk-replay position for the HUD (1-based; 0/0 = not
         # chunking). The length is the chunk the model actually returned (post-cap),
         # not the requested horizon, so a short native chunk displays truthfully.
@@ -984,13 +1096,19 @@ class Session(Generic[ObsT, ActT]):
         episodes: list[EpisodeResult] = []
         run_end_error: BaseException | None = None
         self._ep_total = n_episodes
+        # Walk the benchmark's trials in order (episode i is trial i), but only for
+        # an env that declared the option -- everyone else keeps today's seed-only
+        # reset and no warning.
+        walks_trials = declares_reset_option(self._contract, "trial_index")
         try:
             if hooks is not None:
                 hooks.on_run_start(self)
             for i in range(n_episodes):
                 self._ep_index = i + 1
                 seed = seeds[i] if seeds is not None and i < len(seeds) else None
-                obs, last_info = self.reset(seed=seed)
+                obs, last_info = self.reset(
+                    seed=seed, trial_index=i if walks_trials else None
+                )
                 ep_start = time.perf_counter()
                 if hooks is not None:
                     hooks.on_episode_start(episode=i, seed=seed)
@@ -1036,6 +1154,7 @@ class Session(Generic[ObsT, ActT]):
                 episode = EpisodeResult(
                     index=i,
                     seed=seed,
+                    trial=self._trial,
                     steps=steps,
                     reward=self._reward,
                     terminated=self._terminated,

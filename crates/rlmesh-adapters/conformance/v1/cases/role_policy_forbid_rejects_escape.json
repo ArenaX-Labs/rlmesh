@@ -1,0 +1,17 @@
+{
+  "doc": {
+    "action": {
+      "components": [{ "dim": 1, "role": "action/gripper" }]
+    },
+    "observation": {
+      "cam": { "role": "image/primary", "type": "image" },
+      "telemetry": { "role": "x/battery", "type": "state" }
+    }
+  },
+  "expect": {
+    "error_contains": "declares unregistered role \"x/battery\"; use a blessed role (this gate forbids every unregistered role, including the `x/` escape)"
+  },
+  "kind": "role_policy",
+  "policy": "forbid",
+  "side": "env"
+}

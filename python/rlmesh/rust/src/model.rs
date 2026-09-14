@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use pyo3::prelude::*;
 #[cfg(feature = "stub-gen")]
-use pyo3_stub_gen::derive::{gen_methods_from_python, gen_stub_pyclass};
+use pyo3_stub_gen::derive::{gen_methods_from_python, gen_stub_pyclass, gen_stub_pyfunction};
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::inventory::submit;
 use rlmesh::{
@@ -67,6 +67,9 @@ struct PyPredict {
     /// author's own — one written against same-route, fixed-size batches (a
     /// shape-pinned jit trace, per-batch statistics) opts out here.
     allow_fusion: bool,
+    /// The author's declared native chunk K (`Model.native_chunk`), read off the
+    /// loaded policy when the worker was built. `None` = undeclared (elastic).
+    native_chunk: Option<u32>,
     on_episode_end: Option<Py<PyAny>>,
     on_close: Option<Py<PyAny>>,
 }
@@ -123,9 +126,13 @@ impl PredictFn for PyPredict {
         self.predict_chunk_fn.is_some()
     }
 
-    fn predict_batch(&self, inputs: Vec<Value>) -> rlmesh::Result<Vec<Value>> {
+    fn predict_batch(
+        &self,
+        inputs: Vec<Value>,
+        episodes: &[EpisodeInfo],
+    ) -> rlmesh::Result<Vec<Value>> {
         match self.predict_batch_fn.as_ref() {
-            Some(f) => call_batched(f, inputs, None),
+            Some(f) => call_batched(f, inputs, None, episodes),
             None => Err(RLMeshError::Internal(
                 "predict_batch not implemented".to_string(),
             )),
@@ -136,9 +143,14 @@ impl PredictFn for PyPredict {
         self.predict_batch_fn.is_some()
     }
 
-    fn predict_chunk_batch(&self, inputs: Vec<Value>, horizon: u32) -> rlmesh::Result<Vec<Value>> {
+    fn predict_chunk_batch(
+        &self,
+        inputs: Vec<Value>,
+        horizon: u32,
+        episodes: &[EpisodeInfo],
+    ) -> rlmesh::Result<Vec<Value>> {
         match self.predict_chunk_batch_fn.as_ref() {
-            Some(f) => call_batched(f, inputs, Some(horizon)),
+            Some(f) => call_batched(f, inputs, Some(horizon), episodes),
             None => Err(RLMeshError::Internal(
                 "predict_chunk_batch not implemented".to_string(),
             )),
@@ -152,6 +164,10 @@ impl PredictFn for PyPredict {
     fn allow_fusion(&self) -> bool {
         self.allow_fusion
             && (self.predict_batch_fn.is_some() || self.predict_chunk_batch_fn.is_some())
+    }
+
+    fn native_chunk(&self) -> Option<u32> {
+        self.native_chunk
     }
 
     fn predict_spec_less(&self, observation: ModelObservation) -> rlmesh::Result<Vec<SpaceValue>> {
@@ -285,13 +301,38 @@ impl PredictFn for PyPredict {
         .map_err(|err| RLMeshError::Internal(err.to_string()))
     }
 
-    fn on_episode_end(&self) -> rlmesh::Result<()> {
-        Self::fire(&self.on_episode_end)
+    fn on_episode_end(&self, episode_id: &str) -> rlmesh::Result<()> {
+        let Some(callback) = self.on_episode_end.as_ref() else {
+            return Ok(());
+        };
+        Python::attach(|py| callback.call1(py, (episode_id,)))
+            .map(|_| ())
+            .map_err(|err| RLMeshError::Internal(err.to_string()))
     }
 
     fn on_close(&self) -> rlmesh::Result<()> {
         Self::fire(&self.on_close)
     }
+}
+
+/// The per-predict sampling seed for an episode's `predict_index`-th re-plan.
+///
+/// Exported so a model can derive the same seed the SDK stamps on
+/// `context["predict_seed"]` (e.g. for a sampler that takes a generator rather
+/// than a global seed). The mixing law lives in the runtime crate, so local and
+/// served paths cannot drift.
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
+def predict_seed(episode_seed: int, predict_index: int) -> int: ...
+"#
+    )
+)]
+#[pyfunction]
+pub fn predict_seed(episode_seed: i64, predict_index: u64) -> i64 {
+    rlmesh::predict_seed(episode_seed, predict_index)
 }
 
 /// The leading-axis length of a neutral chunk value: a tensor-like exposes
@@ -318,15 +359,15 @@ fn leading_axis_len(value: &Bound<'_, PyAny>) -> Option<usize> {
     None
 }
 
-/// The predict context handed to the single-episode corners (`predict`,
-/// `predict_chunk`, and the spec-less corners at `num_envs == 1`) as their
-/// trailing positional argument: `{"episode_id": str, "episode_seed": int |
-/// None}`. `predict_neutral` and friends (the Python SDK's native-worker glue)
-/// only forward it to the author's own callback when that callback's
-/// signature accepts a trailing context argument, so this is additive — an
-/// author who never asked for it never sees it. Never built for the batched
-/// corners (`predict_batch`/`predict_chunk_batch`, see [`call_batched`]) or a
-/// multi-lane spec-less call.
+/// The raw predict context handed to a corner as its trailing positional
+/// argument: `{"episode_id": str, "episode_seed": int | None}` — one dict for the
+/// single-episode corners (`predict`, `predict_chunk`, and the spec-less corners
+/// at `num_envs == 1`), one dict PER ROW in the list the batched corners get (see
+/// [`call_batched`]). The SDK enriches it into the full `PredictContext`
+/// (`predict_index` / `predict_seed` / `state`) from its own episode store, and
+/// only forwards it to the author's callback when that callback's signature
+/// accepts a trailing context argument, so this is additive — an author who never
+/// asked for it never sees it.
 fn episode_context_dict<'py>(
     py: Python<'py>,
     episode: Option<&EpisodeInfo>,
@@ -347,14 +388,17 @@ fn episode_context_dict<'py>(
 /// receives a list of N neutral input dicts and returns a sequence of N actions
 /// (one per lane, in order); the model owns how it batches the forward pass. When
 /// `horizon` is `Some(h)` (the chunk-batch corner) it is passed as a second
-/// argument, so the model can size each chunk to the execution horizon. No
-/// episode context: N lanes fused into one forward pass (possibly from
-/// independent episodes) is the opposite of the single-episode case episode
-/// context is for.
+/// argument, so the model can size each chunk to the execution horizon.
+///
+/// `episodes` is row-aligned with `inputs` and rides as the trailing argument: a
+/// LIST of the same per-lane context dicts the single-episode corners get. N lanes
+/// fused into one forward may come from independent episodes, so identity is per
+/// row — never one dict for the call.
 fn call_batched(
     fn_obj: &Py<PyAny>,
     inputs: Vec<Value>,
     horizon: Option<u32>,
+    episodes: &[EpisodeInfo],
 ) -> rlmesh::Result<Vec<Value>> {
     Python::attach(|py| -> PyResult<Vec<Value>> {
         let list = pyo3::types::PyList::empty(py);
@@ -362,9 +406,13 @@ fn call_batched(
             // Each lane's assembled input is a Value tree, encoded as one element.
             list.append(encode_value(py, model_input)?)?;
         }
+        let contexts = pyo3::types::PyList::empty(py);
+        for episode in episodes {
+            contexts.append(episode_context_dict(py, Some(episode))?)?;
+        }
         let result = match horizon {
-            Some(h) => fn_obj.call1(py, (list, h))?,
-            None => fn_obj.call1(py, (list,))?,
+            Some(h) => fn_obj.call1(py, (list, h, contexts))?,
+            None => fn_obj.call1(py, (list, contexts))?,
         };
         let mut out = Vec::with_capacity(inputs.len());
         for item in result.bind(py).try_iter()? {
@@ -428,6 +476,7 @@ fn report_episodes_to_py(py: Python<'_>, report: &rlmesh::RuntimeReport) -> PyRe
         entry.set_item("index", episode.episode_index)?;
         entry.set_item("env_index", episode.env_index)?;
         entry.set_item("seed", episode.seed)?;
+        entry.set_item("trial", episode.trial_index)?;
         entry.set_item("steps", episode.step_count)?;
         entry.set_item("reward", episode.cumulative_reward)?;
         entry.set_item("terminated", episode.terminated)?;
@@ -585,6 +634,7 @@ pub struct PyModel {
     predict_batch_fn: Option<Py<PyAny>>,
     predict_chunk_batch_fn: Option<Py<PyAny>>,
     allow_fusion: bool,
+    native_chunk: Option<u32>,
     configure_fn: Option<Py<PyAny>>,
     on_episode_end: Option<Py<PyAny>>,
     on_close: Option<Py<PyAny>>,
@@ -605,6 +655,7 @@ impl PyModel {
                 .as_ref()
                 .map(|cb| cb.clone_ref(py)),
             allow_fusion: self.allow_fusion,
+            native_chunk: self.native_chunk,
             on_episode_end: self.on_episode_end.as_ref().map(|cb| cb.clone_ref(py)),
             on_close: self.on_close.as_ref().map(|cb| cb.clone_ref(py)),
         });
@@ -620,7 +671,7 @@ impl PyModel {
 #[pymethods]
 impl PyModel {
     #[new]
-    #[pyo3(signature = (predict_fn, configure_fn=None, on_episode_end=None, on_close=None, predict_chunk_fn=None, predict_batch_fn=None, predict_chunk_batch_fn=None, allow_fusion=true))]
+    #[pyo3(signature = (predict_fn, configure_fn=None, on_episode_end=None, on_close=None, predict_chunk_fn=None, predict_batch_fn=None, predict_chunk_batch_fn=None, allow_fusion=true, native_chunk=None))]
     #[allow(clippy::too_many_arguments)] // a PyO3 #[new] ctor maps each arg to a Python kwarg
     fn new(
         predict_fn: Py<PyAny>,
@@ -631,6 +682,7 @@ impl PyModel {
         predict_batch_fn: Option<Py<PyAny>>,
         predict_chunk_batch_fn: Option<Py<PyAny>>,
         allow_fusion: bool,
+        native_chunk: Option<u32>,
     ) -> PyResult<Self> {
         init_tracing("model_worker");
         let profiler = ProfileCollector::new("model_worker");
@@ -641,6 +693,7 @@ impl PyModel {
             predict_batch_fn,
             predict_chunk_batch_fn,
             allow_fusion,
+            native_chunk,
             configure_fn,
             on_episode_end,
             on_close,
@@ -670,7 +723,7 @@ impl PyModel {
         report_to_py(py, &report)
     }
 
-    #[pyo3(signature = (env_address, max_episodes, execution_horizon=1, seeds=None, max_episode_steps=None, max_episode_seconds=None, close_env=false))]
+    #[pyo3(signature = (env_address, max_episodes, execution_horizon=1, seeds=None, max_episode_steps=None, max_episode_seconds=None, close_env=false, trial_index_base=None))]
     #[allow(clippy::too_many_arguments)]
     fn run_local_for_episodes(
         &self,
@@ -682,6 +735,7 @@ impl PyModel {
         max_episode_steps: Option<i64>,
         max_episode_seconds: Option<f64>,
         close_env: bool,
+        trial_index_base: Option<u64>,
     ) -> PyResult<Py<PyAny>> {
         let run_span = tracing::info_span!(
             "rlmesh.model.run_local_for_episodes",
@@ -703,6 +757,9 @@ impl PyModel {
         }
         if let Some(cap) = max_episode_seconds {
             options = options.max_episode_seconds(cap);
+        }
+        if let Some(base) = trial_index_base {
+            options = options.trial_index_base(base);
         }
 
         let report = run_local_blocking(py, handler, options)?;
@@ -750,9 +807,9 @@ import collections.abc
 import typing
 
 class PyModel:
-    def __init__(self, predict_fn: collections.abc.Callable[[Value], Value], configure_fn: collections.abc.Callable[[EnvContract], object] | None = None, on_episode_end: collections.abc.Callable[[], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None, predict_chunk_fn: collections.abc.Callable[[Value, int], Value] | None = None, predict_batch_fn: collections.abc.Callable[[list[Value]], list[Value]] | None = None, predict_chunk_batch_fn: collections.abc.Callable[[list[Value], int], list[Value]] | None = None, allow_fusion: bool = True) -> None: ...
+    def __init__(self, predict_fn: collections.abc.Callable[[Value], Value], configure_fn: collections.abc.Callable[[EnvContract], object] | None = None, on_episode_end: collections.abc.Callable[[str], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None, predict_chunk_fn: collections.abc.Callable[[Value, int], Value] | None = None, predict_batch_fn: collections.abc.Callable[[list[Value], list[dict[str, typing.Any]]], list[Value]] | None = None, predict_chunk_batch_fn: collections.abc.Callable[[list[Value], int, list[dict[str, typing.Any]]], list[Value]] | None = None, allow_fusion: bool = True, native_chunk: int | None = None) -> None: ...
     def run_local(self, env_address: str, execution_horizon: int = 1) -> dict[str, typing.Any]: ...
-    def run_local_for_episodes(self, env_address: str, max_episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False) -> dict[str, typing.Any]: ...
+    def run_local_for_episodes(self, env_address: str, max_episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trial_index_base: int | None = None) -> dict[str, typing.Any]: ...
     def serve(self, address: str, options: ServeOptions | None = None) -> None: ...
 "#
     }

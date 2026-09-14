@@ -7,6 +7,7 @@
 //! supplies one. The author always writes `dim=`; the dim law just checks it.
 
 use super::{core, manipulation};
+use crate::spec::{FrameLaw, ReferenceLaw};
 
 /// How a registered role constrains the dim of the leaf that declares it.
 ///
@@ -35,6 +36,12 @@ pub struct RoleDef {
     pub dim: DimLaw,
     /// One-line human description (for docs / `describe`).
     pub doc: &'static str,
+    /// Whether the role's values are expressed in a reference frame. Mutually
+    /// exclusive with [`reference`](Self::reference) -- a pose has a frame, a
+    /// delta has a reference (pinned by `no_role_is_both_framed_and_referenced`).
+    pub frame: FrameLaw,
+    /// Whether the role is a delta integrated against a reference pose.
+    pub reference: ReferenceLaw,
 }
 
 /// Every domain's role table. A new domain is a new module plus one entry here --
@@ -94,8 +101,107 @@ mod tests {
             Some(DimLaw::ByEncoding)
         );
         assert!(is_known_role("action/joint_pos")); // newly blessed (clear contract)
+        // A bimanual joint command and the second wrist camera: each has a
+        // producer and a reader, and each is embodiment-widthed.
+        assert_eq!(
+            role_def("action/joint_pos_2").map(|r| r.dim),
+            Some(DimLaw::Variable)
+        );
+        assert_eq!(
+            role_def("image/wrist_2").map(|r| r.dim),
+            Some(DimLaw::Variable)
+        );
+        assert!(!is_known_role("image/front")); // unearned: no consuming model
         assert!(!is_known_role("action/base_motion")); // unearned: no consuming model
         assert!(!is_known_role("action/something_ad_hoc"));
+    }
+
+    #[test]
+    fn every_second_arm_role_mirrors_a_registered_first_arm_role() {
+        // The `_2` mirror is one-directional: a second-arm role is meaningless
+        // without its first-arm original, but a first-arm role stands alone (a
+        // single-arm env never declares `_2`), so the converse must NOT hold.
+        let names: Vec<&str> = super::DOMAINS
+            .iter()
+            .copied()
+            .flatten()
+            .map(|role| role.name)
+            .collect();
+        for name in &names {
+            if let Some(base) = name.strip_suffix("_2") {
+                assert!(
+                    names.contains(&base),
+                    "second-arm role {name:?} has no registered first-arm {base:?}"
+                );
+            }
+        }
+        assert!(is_known_role("proprio/joint_pos") && !is_known_role("proprio/joint_pos_2"));
+    }
+
+    #[test]
+    fn no_role_is_both_framed_and_referenced() {
+        // A pose is qualified by the frame it is expressed in; a delta by the
+        // pose it is integrated against. Nothing is both, so a role that claimed
+        // both laws would be asking for two answers to the same question.
+        use super::{FrameLaw, ReferenceLaw};
+        for role in super::DOMAINS.iter().copied().flatten() {
+            assert!(
+                !(role.frame == FrameLaw::Framed && role.reference == ReferenceLaw::Referenced),
+                "role {:?} claims both a frame and a reference",
+                role.name
+            );
+        }
+    }
+
+    #[test]
+    fn the_eight_end_effector_roles_are_framed_and_the_deltas_referenced() {
+        use super::{FrameLaw, ReferenceLaw, role_def};
+        for name in [
+            "proprio/eef_pos",
+            "proprio/eef_rot",
+            "proprio/eef_pos_2",
+            "proprio/eef_rot_2",
+            "action/eef_pos",
+            "action/eef_rot",
+            "action/eef_pos_2",
+            "action/eef_rot_2",
+        ] {
+            assert_eq!(
+                role_def(name).map(|role| role.frame),
+                Some(FrameLaw::Framed),
+                "{name} should be framed"
+            );
+        }
+        for name in [
+            "action/delta_eef_pos",
+            "action/delta_eef_rot",
+            "action/delta_eef_pos_2",
+            "action/delta_eef_rot_2",
+        ] {
+            let role = role_def(name).expect("registered");
+            // A delta carries no frame -- it lives in the controller's own.
+            assert_eq!(
+                role.frame,
+                FrameLaw::Frameless,
+                "{name} should be frameless"
+            );
+            assert_eq!(
+                role.reference,
+                ReferenceLaw::Referenced,
+                "{name} should be referenced"
+            );
+        }
+        // A gripper is a scalar: neither law applies.
+        let gripper = role_def("proprio/gripper").expect("registered");
+        assert_eq!(gripper.frame, FrameLaw::Frameless);
+        assert_eq!(gripper.reference, ReferenceLaw::Unreferenced);
+    }
+
+    #[test]
+    fn every_role_carries_a_doc() {
+        for role in super::DOMAINS.iter().copied().flatten() {
+            assert!(!role.doc.is_empty(), "role {:?} has no doc", role.name);
+        }
     }
 
     #[test]

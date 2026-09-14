@@ -181,6 +181,15 @@
     "rlmesh.Tensor": {
       "description": "Native tensor value used by RLMesh value encoding."
     },
+    "rlmesh.predict_seed": {
+      "description": "Per-predict sampling seed mixed from an episode's reset seed and its re-plan ordinal."
+    },
+    "rlmesh.trial_index": {
+      "description": "Read the reserved trial_index reset option an env declared, from a reset's options mapping."
+    },
+    "rlmesh.ENV_RESET_OPTIONS_KEY": {
+      "description": "Metadata key under which an env declares the reserved reset-option keys it wants delivered (rlmesh.env.v1.reset_options)."
+    },
     "rlmesh.DESCRIBE_METADATA_KEY": {
       "description": "Metadata/OCI-label key under which the versioned describe envelope is stored (rlmesh.describe.v1)."
     },
@@ -250,6 +259,18 @@
     "rlmesh.adapters.ACTION_DELTA_ROT_2": {
       "description": "Second-arm variant of ACTION_DELTA_ROT (action/delta_eef_rot_2)."
     },
+    "rlmesh.adapters.ACTION_EEF_POS": {
+      "description": "Action role for an absolute end-effector position target (action/eef_pos)."
+    },
+    "rlmesh.adapters.ACTION_EEF_POS_2": {
+      "description": "Second-arm variant of ACTION_EEF_POS (action/eef_pos_2)."
+    },
+    "rlmesh.adapters.ACTION_EEF_ROT": {
+      "description": "Action role for an absolute end-effector rotation target (action/eef_rot)."
+    },
+    "rlmesh.adapters.ACTION_EEF_ROT_2": {
+      "description": "Second-arm variant of ACTION_EEF_ROT (action/eef_rot_2)."
+    },
     "rlmesh.adapters.ACTION_GRIPPER": {
       "description": "Action role for a gripper command (action/gripper)."
     },
@@ -258,6 +279,9 @@
     },
     "rlmesh.adapters.ACTION_JOINT_POS": {
       "description": "Action role for joint position targets (action/joint_pos)."
+    },
+    "rlmesh.adapters.ACTION_JOINT_POS_2": {
+      "description": "Second-arm variant of ACTION_JOINT_POS (action/joint_pos_2)."
     },
     "rlmesh.adapters.ACTION_JOINT_VEL": {
       "description": "Action role for joint velocity targets (action/joint_vel)."
@@ -273,6 +297,9 @@
     },
     "rlmesh.adapters.EEF_ROT_2": {
       "description": "Second-arm variant of EEF_ROT (proprio/eef_rot_2)."
+    },
+    "rlmesh.adapters.ENV_BRANCH_METADATA_KEY": {
+      "description": "Contract metadata key under which a branched environment publishes the discriminant binding its make() selected (rlmesh.adapters.v1.env_branch)."
     },
     "rlmesh.adapters.ENV_METADATA_KEY": {
       "description": "Contract metadata key under which an environment publishes its EnvTags (rlmesh.adapters.v1.env_tags)."
@@ -292,6 +319,9 @@
     "rlmesh.adapters.IMAGE_WRIST": {
       "description": "Observation role for a wrist-mounted camera (image/wrist)."
     },
+    "rlmesh.adapters.IMAGE_WRIST_2": {
+      "description": "Second-arm variant of IMAGE_WRIST (image/wrist_2)."
+    },
     "rlmesh.adapters.INSTRUCTION": {
       "description": "Observation role for the task instruction text (text/instruction)."
     },
@@ -308,10 +338,19 @@
       "description": "Mapping from each rotation encoding to its dimension count."
     },
     "rlmesh.adapters.ConcatPart": {
-      "description": "One part of a Concat state input: a State leaf or a bare role string."
+      "description": "One part of a Concat state input: a State leaf, a Constant block, or a bare role string."
+    },
+    "rlmesh.adapters.Constant": {
+      "description": "A constant Concat part: dim copies of fill, read from nothing."
     },
     "rlmesh.adapters.FitMode": {
       "description": "How an image is fit to a declared size: 'stretch', 'letterbox', or 'crop'."
+    },
+    "rlmesh.adapters.Frame": {
+      "description": "Coordinate frame an absolute pose is expressed in: 'world' or 'robot_base'."
+    },
+    "rlmesh.adapters.Reference": {
+      "description": "Pose a delta command is integrated against: 'current' (measured) or 'target' (last commanded)."
     },
     "rlmesh.adapters.Resample": {
       "description": "Image resampling filter vocabulary for declared resizes."
@@ -334,11 +373,20 @@
     "rlmesh.adapters.ObsTransform": {
       "description": "An in-process callable mapping a raw observation to one payload slot (Custom transform)."
     },
+    "rlmesh.adapters.Rotation": {
+      "description": "A literal rotation authored as a state part's post_rotate."
+    },
     "rlmesh.adapters.RotationEncoding": {
       "description": "Rotation encoding vocabulary (quat_xyzw, quat_wxyz, axis_angle, rot6d, rot6d_rowmajor, euler_xyz)."
     },
     "rlmesh.adapters.RotationTransform": {
       "description": "An in-process callable repacking a rotation block for a CustomEncoding."
+    },
+    "rlmesh.adapters.StackPad": {
+      "description": "Frame-window padding vocabulary: replicate the first frame, or pad black."
+    },
+    "rlmesh.adapters.StackSpec": {
+      "description": "A declared frame window: non-positive frame offsets from the current step."
     },
     "rlmesh.spaces.MultiBinary": {
       "stability": "Experimental"

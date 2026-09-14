@@ -157,11 +157,46 @@ def test_vector(path: Path) -> None:
     if case["kind"] == "resolve":
         expect = case["expect"]
         if "error_contains" in expect:
-            with pytest.raises(adapt.AdapterResolutionError) as excinfo:
+            # `AdapterResolutionError` is a `ValueError`; the wider catch lets a
+            # binding reject a spec at *construction* instead, which is strictly
+            # earlier than the resolve-time failure the vector pins (the
+            # direction the vectors forbid is deferring it to apply). The
+            # message still has to match, so the two engines cannot drift.
+            with pytest.raises(ValueError) as excinfo:
                 resolve_case(case)
             assert expect["error_contains"] in str(excinfo.value)
         else:
             assert resolve_case(case).explain() == expect["describe"]
+        return
+
+    if case["kind"] == "role_policy":
+        # The publish-gate role tier, driven through the same binding the SDK's
+        # codec uses, so Python and the core cannot disagree on what a curated
+        # boundary accepts.
+        expected = case["expect"].get("error_contains")
+        doc = json.dumps(case["doc"])
+        if expected is None:
+            adapters_spec_normalize(case["side"], doc, True, case["policy"])
+        else:
+            with pytest.raises(ValueError) as excinfo:
+                adapters_spec_normalize(case["side"], doc, True, case["policy"])
+            assert expected in str(excinfo.value)
+        return
+
+    if case["kind"] == "apply_sequence":
+        # A frame window only exists ACROSS steps: drive the whole sequence
+        # through one adapter (its windows are episode state) and compare the
+        # payload each step produced.
+        adapter = resolve_case(case)
+        atol = case["expect"]["atol"]
+        for step, (observation, expected) in enumerate(
+            zip(case["observations"], case["expect"]["payloads"], strict=True)
+        ):
+            payload = adapter.transform_obs(dec(observation))
+            try:
+                assert_value(payload, expected, atol)
+            except AssertionError as exc:  # pragma: no cover - failure path
+                raise AssertionError(f"step {step}: {exc}") from None
         return
 
     assert case["kind"] == "apply"

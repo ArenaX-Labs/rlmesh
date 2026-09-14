@@ -75,14 +75,16 @@ class MyPolicy(rlmesh.torch.Model):
 
 A model has four lifecycle seams. They fire identically on the local `run` / `session` loop and the served wire path, so a model behaves the same whether you drive it in-process or dial it over a socket.
 
-| Seam                          | When it fires            | What to do in it                                                      |
-| ----------------------------- | ------------------------ | --------------------------------------------------------------------- |
-| `load(**binding)`             | once, at construction    | Load weights into `self`; keep heavy imports here, not at module top. |
-| `reset()`                     | at each episode boundary | Clear per-episode state (RNN hidden state, chunk replay).             |
-| `close()`                     | at the end of a run      | Release resources.                                                    |
-| `on_episode_end` / `on_close` | constructor callbacks    | The same edges for a wrapped callable that cannot override methods.   |
+| Seam                          | When it fires         | What to do in it                                                      |
+| ----------------------------- | --------------------- | --------------------------------------------------------------------- |
+| `load(**binding)`             | once, at construction | Load weights into `self`; keep heavy imports here, not at module top. |
+| `reset([episode_id])`         | when an episode ends  | Clear per-episode state (RNN hidden state, chunk replay).             |
+| `close()`                     | at the end of a run   | Release resources.                                                    |
+| `on_episode_end` / `on_close` | constructor callbacks | The same edges for a wrapped callable that cannot override methods.   |
 
 There is no episode-_begin_ hook. Per-episode state is lazy-seeded on the first `predict`, so a stateful model clears its state at episode _end_ via `reset()` (a subclass's `reset()` is wired to the `on_episode_end` edge).
+
+One served model fans several environments in, so episodes interleave and `reset` fires once per episode that ends, naming it: declare `def reset(self, episode_id="")` when you keep state keyed by id. `def reset(self)` stays valid when you do not.
 
 For torch and jax models, set `self.device` inside `load()` when you move your weights onto it. That is the one source of truth: RLMesh moves every observation tensor leaf onto `self.device` before `predict`, so you never call `.to(device)` yourself.
 
@@ -99,12 +101,12 @@ The device and framework mechanics, and what happens when you set `device` on a 
 
 `predict` is one of four corners. They form a 2×2 over a **batch** axis (one lane vs. all vectorized lanes at once) and a **chunk** axis (one action vs. a chunk of future actions per forward pass). You implement the corners your policy supports; the runtime derives the rest.
 
-| Corner                | Signature                                                | Returns                                               |
-| --------------------- | -------------------------------------------------------- | ----------------------------------------------------- |
-| `predict`             | `predict(observation)`                                   | one action                                            |
-| `predict_chunk`       | `predict_chunk(observation[, execution_horizon])`        | action chunk, shape `[H, ...]` (leading axis = chunk) |
-| `predict_batch`       | `predict_batch(observations)`                            | batched action `[N, ...]`                             |
-| `predict_chunk_batch` | `predict_chunk_batch(observations[, execution_horizon])` | batched chunk `[N, H, ...]`                           |
+| Corner                | Signature                                                           | Returns                                               |
+| --------------------- | ------------------------------------------------------------------- | ----------------------------------------------------- |
+| `predict`             | `predict(observation[, context])`                                   | one action                                            |
+| `predict_chunk`       | `predict_chunk(observation[, execution_horizon][, context])`        | action chunk, shape `[H, ...]` (leading axis = chunk) |
+| `predict_batch`       | `predict_batch(observations[, context])`                            | batched action `[N, ...]`                             |
+| `predict_chunk_batch` | `predict_chunk_batch(observations[, execution_horizon][, context])` | batched chunk `[N, H, ...]`                           |
 
 Implement the most general corner you can and the runtime derives the others by deriving _downward_: it drops the batch axis by running a batch of one, and drops the chunk axis by running at horizon 1 and taking the first action. So a model that defines `predict_chunk_batch` alone gets all four for free.
 
@@ -126,7 +128,7 @@ Going _up_ either axis is impossible: chunking is a model capability, not glue, 
 | Simple per-step policy           | `predict`             | One action per observation; nothing to chunk or batch.                 |
 | ACT / diffusion / flow chunker   | `predict_chunk`       | Emits a native chunk per forward; the runtime replays it.              |
 
-A batched VLA is the common case. The SmolVLA-style pattern is a `rlmesh.torch.Model` with a two-camera, state, and instruction spec, `from_pretrained` in `load()`, and `predict_chunk_batch` returning the native chunk truncated to the horizon and moved to host:
+A batched VLA is the common case. The SmolVLA-style pattern is a `rlmesh.torch.Model` with a two-camera, state, and instruction spec, `from_pretrained` in `load()`, and `predict_chunk_batch` returning its whole native chunk, moved to host:
 
 ```python
 import rlmesh
@@ -134,6 +136,7 @@ import rlmesh.adapters as adapt
 
 
 class SmolVLA(rlmesh.torch.Model):
+    native_chunk = 50
     spec = adapt.ModelSpec(
         input={
             "observation.images.image": adapt.Image(adapt.IMAGE_PRIMARY, size=224),
@@ -161,24 +164,63 @@ class SmolVLA(rlmesh.torch.Model):
     def reset(self):
         self.policy.reset()
 
-    def predict_chunk_batch(self, observations, execution_horizon=1):
-        chunk = self.policy.predict_action_chunk(self._obs(observations))  # [N, H, A]
-        return chunk[:, :execution_horizon].cpu()
+    def predict_chunk_batch(self, observations):
+        return self.policy.predict_action_chunk(self._obs(observations)).cpu()  # [N, 50, A]
 ```
 
 The `_obs()` remap helper is the recipe for a checkpoint whose keys differ from the spec; see [the model-quirk recipes](models/reference.md#model-quirks). More worked VLA models live in {source}`examples/python/vla_adapters`.
 
 ### The execution horizon
 
-`execution_horizon` is **optional** on the chunk corners. Most policies write `predict_chunk(obs)` and ignore it: a trained chunk length is fixed, and the runtime executes a prefix of the native chunk. A decoder that can stop early writes `predict_chunk(obs, execution_horizon=1)` to receive how many actions the runtime will execute before re-planning, and decodes exactly that many. Keep the `=1` default so it stays a compatible override.
+There are two numbers, and they belong to different owners. **K**, the native chunk, is a property of your weights: how many actions one forward produces. **H**, the `execution_horizon`, is the runtime's re-plan interval, chosen at the call site (`run(..., execution_horizon=H)`). Return all K actions; the runtime executes the first H of them and calls you again.
+
+So `execution_horizon` is **optional** on the chunk corners. Most policies write `predict_chunk(obs)` and ignore it: a trained chunk length is fixed, and the runtime takes the prefix. A decoder that can stop early writes `predict_chunk(obs, execution_horizon=1)` to receive H and decode exactly that many. Keep the `=1` default so it stays a compatible override.
 
 ```python
 def predict_chunk(self, observation, execution_horizon=1):
-    chunk = self.policy.decode(observation)        # native [H_native, A]
-    return chunk[:execution_horizon]               # truncate to what runs
+    return self.policy.decode(observation, steps=execution_horizon)
 ```
 
-The runtime chooses the horizon at the call site (`run(..., execution_horizon=N)`); the spec output declares the layout of one action, not the chunk length. The full replay story is in {doc}`evaluation`.
+Do not slice a fixed-length chunk down to the horizon yourself -- `return chunk[:execution_horizon]` from a head that always emits K actions just discards work the runtime was going to use.
+
+Declare K with `native_chunk = 50` (a class attribute, or set in `load()` from the checkpoint) when it is fixed. The runtime then refuses an `execution_horizon` above K at resolve rather than silently re-planning early, and fails a predict whose chunk is not exactly K long -- which is what catches a corner that is still slicing itself. Leave it unset for a variable-length head and the contract stays elastic (`min(len(chunk), H)`, with one warning when a chunk comes up short).
+
+The spec output declares the layout of one action, not the chunk length. The full replay story is in {doc}`evaluation`.
+
+### Per-episode context
+
+Every corner may declare a trailing `context` parameter. Declare it and you are
+told which episode you are predicting for; leave it out and nothing changes.
+
+| Key             | What it is                                                                                   |
+| --------------- | -------------------------------------------------------------------------------------------- |
+| `episode_id`    | The episode's id, stable for its whole run. Key anything you remember by this.               |
+| `episode_seed`  | The seed the episode was reset with, or `None`.                                              |
+| `predict_index` | How many times this episode has been predicted for already — 0 on its first predict.         |
+| `predict_seed`  | A reproducible seed for **this** predict, mixed from the two above (`None` with no seed).    |
+| `state`         | A dict that lives as long as the episode does. Yours to fill; dropped when the episode ends. |
+
+A served model interleaves episodes, so seeding a global generator once per
+episode cannot reproduce — another episode's forward advances the same
+generators in between. Seed per predict from `predict_seed` instead:
+
+```python
+def predict_chunk(self, observation, execution_horizon, context):
+    torch.manual_seed(context["predict_seed"])
+    plan = context["state"].get("plan")          # survives the whole episode
+    ...
+```
+
+The batched corners run one forward over lanes that may belong to _different_
+episodes, so their `context` is a **list** — one entry per row, in row order:
+
+```python
+def predict_chunk_batch(self, observations, execution_horizon, context):
+    ids = [row["episode_id"] for row in context]   # aligned with the batch axis
+```
+
+`rlmesh.predict_seed(episode_seed, predict_index)` derives the same value, for a
+sampler that wants to build its own generator.
 
 ## Batched observations
 

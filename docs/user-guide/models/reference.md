@@ -8,12 +8,12 @@ For the concepts (the two construction styles, the spec, the lifecycle), start w
 
 A model implements one or more of four predict corners. They sit on a 2×2 lattice over a **batch** axis (one lane vs. all vectorized lanes fused into one forward) and a **chunk** axis (one action vs. a chunk of future actions per forward).
 
-| Corner                | Signature                                                | Receives                                 | Returns                     | Reach for it when                                             |
-| --------------------- | -------------------------------------------------------- | ---------------------------------------- | --------------------------- | ------------------------------------------------------------- |
-| `predict`             | `predict(observation)`                                   | one observation                          | one action                  | a simple per-step policy with nothing to chunk or batch       |
-| `predict_chunk`       | `predict_chunk(observation[, execution_horizon])`        | one observation                          | action chunk `[H, ...]`     | an ACT / diffusion / flow head that emits a chunk per forward |
-| `predict_batch`       | `predict_batch(observations)`                            | one fused observation, leaves `[N, ...]` | batched action `[N, ...]`   | a batched policy with one forward over all lanes              |
-| `predict_chunk_batch` | `predict_chunk_batch(observations[, execution_horizon])` | one fused observation, leaves `[N, ...]` | batched chunk `[N, H, ...]` | a batched VLA / action-head policy (all four derive from it)  |
+| Corner                | Signature                                                           | Receives                                 | Returns                     | Reach for it when                                             |
+| --------------------- | ------------------------------------------------------------------- | ---------------------------------------- | --------------------------- | ------------------------------------------------------------- |
+| `predict`             | `predict(observation[, context])`                                   | one observation                          | one action                  | a simple per-step policy with nothing to chunk or batch       |
+| `predict_chunk`       | `predict_chunk(observation[, execution_horizon][, context])`        | one observation                          | action chunk `[H, ...]`     | an ACT / diffusion / flow head that emits a chunk per forward |
+| `predict_batch`       | `predict_batch(observations[, context])`                            | one fused observation, leaves `[N, ...]` | batched action `[N, ...]`   | a batched policy with one forward over all lanes              |
+| `predict_chunk_batch` | `predict_chunk_batch(observations[, execution_horizon][, context])` | one fused observation, leaves `[N, ...]` | batched chunk `[N, H, ...]` | a batched VLA / action-head policy (all four derive from it)  |
 
 On the chunk corners the leading axis of the return is the chunk axis. On the batch corners the leading axis is the batch axis; a chunk corner that is also batched returns the batch axis first, then the per-lane chunk axis (`[N, H, ...]`). A `predict` that subclasses `Model` and does not override one of these inherits a method that raises, so the runtime knows it is undefined.
 
@@ -46,24 +46,95 @@ the engine's `split_chunk`, so a model derived down to `predict` behaves the sam
 in-process or over the wire.
 ```
 
+## The predict context
+
+Every corner may declare a trailing parameter **named `context`** — the name is
+what the runtime matches on, so an unrelated extra optional parameter is never
+mistaken for it. A corner that does not declare one is never handed one and pays
+nothing: no store entry, no allocation.
+
+The per-lane corners receive one {class}`~rlmesh.types.PredictContext`; the
+batched corners receive a {data}`~rlmesh.types.BatchPredictContext` — a list with
+one entry per row, in batch order, because a fused batch may span independent
+episodes.
+
+| Key             | Type        | Meaning                                                                                      |
+| --------------- | ----------- | -------------------------------------------------------------------------------------------- |
+| `episode_id`    | `str`       | The episode's id, stable for its whole run. `""` for an anonymous lane with no identity.     |
+| `episode_seed`  | `int\|None` | The seed the episode was reset with, or `None` when it was not explicitly seeded.            |
+| `predict_index` | `int`       | Re-plan ordinal: how many predicts this episode has already had. Not the env step count.     |
+| `predict_seed`  | `int\|None` | Reproducible per-predict seed mixed from the two above; `None` when the episode has no seed. |
+| `state`         | `dict`      | Free per-episode slot, alive until the episode ends.                                         |
+
+`predict_index`, `predict_seed`, and `state` come from the model's own bounded
+episode store. Entries are dropped at the episode-end edge (the same edge that
+fires `reset`). If ends never arrive, the store still cannot grow without bound:
+past 4096 live episodes the least-recently-used entry is evicted **through the
+same end hook** — so a model that mirrors the store elsewhere is told either
+way — and a `RuntimeWarning` is raised.
+
+`rlmesh.predict_seed(episode_seed, predict_index)` is the mixing law itself
+(FNV-1a, masked to 32 bits), exported so a sampler can build its own generator.
+Local and served drives compute it from the same function, so a seeded policy
+reproduces across both.
+
+```{note}
+Seed **per predict**, not per episode. One served model fans several environments
+in, so episodes interleave and another episode's forward advances the same global
+generators between two of yours; a once-per-episode seed cannot reproduce.
+```
+
 ## The execution horizon
 
-`execution_horizon` is optional on the chunk corners and detected by arity. A corner with a single positional parameter (`predict_chunk(obs)`) is called without the horizon; a corner that declares a second positional parameter (`predict_chunk(obs, execution_horizon=1)`) receives it.
+`execution_horizon` is optional on the chunk corners and detected by arity, counting every positional parameter except a trailing `context`. A corner with a single positional parameter (`predict_chunk(obs)`, or `predict_chunk(obs, context)`) is called without the horizon; a corner that declares a second one (`predict_chunk(obs, execution_horizon=1)`) receives it.
 
 | Form                                      | Behavior                                                                                                                                                                                                                                               |
 | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `predict_chunk(obs)`                      | The horizon is swallowed before the call. Return the native chunk; the runtime executes a prefix of it. Most policies use this; a trained chunk length is fixed by the weights.                                                                        |
+| `predict_chunk(obs)`                      | The horizon is swallowed before the call. Return your whole native chunk; the runtime executes a prefix of it. Most policies use this; a trained chunk length is fixed by the weights.                                                                 |
 | `predict_chunk(obs, execution_horizon=1)` | The runtime fills `execution_horizon` with how many actions it will execute before re-planning. An autoregressive decoder that can stop early decodes exactly that many. Keep the `=1` default so the override stays compatible with the one-arg base. |
 
 ```python
 def predict_chunk(self, observation, execution_horizon=1):
-    chunk = self.policy.decode(observation)        # native [H_native, A]
-    return chunk[:execution_horizon]               # truncate to what runs
+    return self.policy.decode(observation, steps=execution_horizon)   # [execution_horizon, A]
 ```
+
+Do not slice a fixed-size chunk down to the horizon yourself. Returning
+`chunk[:execution_horizon]` from a head that always produces the same length
+throws away actions the runtime was about to execute, and the runtime cannot
+tell that from a genuinely shorter chunk. Return the whole thing; the runtime
+takes the prefix.
+
+### Declaring your native chunk
+
+Set {attr}`native_chunk <rlmesh._models.base.ModelBase.native_chunk>` when your
+chunk length K is fixed -- as a class attribute, or in `load()` when the
+checkpoint decides it:
+
+```python
+class Chunker(rlmesh.torch.Model):
+    native_chunk = 50
+
+    def predict_chunk(self, observation):
+        return self.policy.decode(observation)     # exactly 50 actions
+
+class FromCheckpoint(rlmesh.torch.Model):
+    def load(self):
+        self.policy = load_policy()
+        self.native_chunk = int(self.policy.horizon)
+```
+
+It is read once, after `load()`, and answered to the runtime when the adapter
+resolves. Declaring it turns two silent failures into loud ones: an
+`execution_horizon` above K is refused at resolve instead of short-replaying
+every step, and a chunk corner that returns anything but exactly K actions fails
+the predict instead of quietly running at a shorter effective horizon. Leave it
+unset (the default) for a genuinely variable-length head: the contract is then
+elastic, the runtime executes `min(len(chunk), execution_horizon)`, and a chunk
+shorter than the horizon warns once.
 
 ### Replay semantics
 
-The runtime owns the replay. It calls the model once, splits the returned chunk along its leading axis, executes one action per environment `step`, and re-plans only when the queue drains. A horizon of 1 is a passthrough that never queues. A horizon above 1 caps the replay at that many actions, so a receding-horizon model may emit a longer chunk than it re-plans. The episode boundary (`reset`) drops any un-replayed tail, so a chunk never bleeds across episodes.
+The runtime owns the replay. It calls the model once, splits the returned chunk along its leading axis, executes one action per environment `step`, and re-plans only when the queue drains. A horizon of 1 is a passthrough that never queues. A horizon above 1 caps the replay at `min(len(chunk), execution_horizon)` actions, so a receding-horizon model may emit a longer chunk than it re-plans. The horizon is bounded at 1024. The episode boundary (`reset`) drops any un-replayed tail, so a chunk never bleeds across episodes.
 
 The chunk split treats a string, a bytes value, a mapping (a Dict-space action with the chunk axis inside each leaf), or a non-iterable scalar as a single-step chunk, matching the native `split_chunk`. An array's leading axis is the chunk axis. A returned empty chunk raises rather than running an empty step.
 
@@ -115,14 +186,14 @@ The backend itself only changes value conversion at the predict seam. The four c
 
 Real checkpoints rarely speak the spec's keys and shapes directly. The seams above absorb the difference so model code stays clean.
 
-| Quirk                                | Handling                                                                                                       |
-| ------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
-| Compute device                       | Set `self.device` in `load()`; requires a torch/jax `Model`. RLMesh moves obs leaves onto it before `predict`. |
-| Stateful policy (RNN, chunk replay)  | Implement `reset()`; it fires at each episode boundary, local and served.                                      |
-| Policy expects different keys        | Write an `_obs()` helper mapping spec keys to the policy's dict (the SmolVLA pattern, below).                  |
-| Normalization stats                  | Load them in `load()` alongside the weights.                                                                   |
-| Native chunk longer than the horizon | Return your native chunk; truncate to `execution_horizon` if you accept it, else the runtime uses a prefix.    |
-| Instruction text                     | Arrives as a plain `str` (a per-lane list in batch corners). Tokenize inside `predict`, not in the spec.       |
+| Quirk                                | Handling                                                                                                                           |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| Compute device                       | Set `self.device` in `load()`; requires a torch/jax `Model`. RLMesh moves obs leaves onto it before `predict`.                     |
+| Stateful policy (RNN, chunk replay)  | Implement `reset()`; it fires at each episode boundary, local and served.                                                          |
+| Policy expects different keys        | Write an `_obs()` helper mapping spec keys to the policy's dict (the SmolVLA pattern, below).                                      |
+| Normalization stats                  | Load them in `load()` alongside the weights.                                                                                       |
+| Native chunk longer than the horizon | Return the whole native chunk -- the runtime executes its prefix. Declare `native_chunk = K` so a bad horizon is refused up front. |
+| Instruction text                     | Arrives as a plain `str` (a per-lane list in batch corners). Tokenize inside `predict`, not in the spec.                           |
 
 The `_obs()` remap helper is the SmolVLA pattern: the adapter delivers the payload under the spec's keys, and a private method renames them to whatever dict the underlying policy expects.
 
@@ -145,11 +216,13 @@ The four lifecycle seams fire identically on the local loop and the served path.
 | Seam                          | Default | When it fires                                                                | Notes                                                                                                                                   |
 | ----------------------------- | ------- | ---------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
 | `load(**binding)`             | no-op   | once, during construction (subclass mode), before the native worker is built | Keep heavy imports here. On the served path the eager auto-load is suppressed and `load(**binding)` runs once with the resolved params. |
-| `reset()`                     | no-op   | at each episode boundary                                                     | Wired to the `on_episode_end` edge. Clear per-episode state here.                                                                       |
+| `reset([episode_id])`         | no-op   | when an episode ends                                                         | Wired to the `on_episode_end` edge, once per ended episode, naming it. Declare `episode_id` only if you key state by it.                |
 | `close()`                     | no-op   | at the end of a run                                                          | Wired to the `on_close` edge.                                                                                                           |
 | `on_episode_end` / `on_close` | none    | constructor callbacks                                                        | Override a subclass's `reset` / `close` (and a wrapped callable's), the only edges for a callable that cannot define methods.           |
 
 There is no episode-_begin_ hook. Per-episode state is lazy-seeded on the first `predict`, so a stateful model clears its state at episode _end_.
+
+The served path drives the edge from the explicit `ResetAdapter` op, which names every id that ended, so `reset` fires once per id. Locally the session mints an id per `reset()` and fires the same hook at the next reset (and at close). Either way the model's episode store drops that episode's entry first.
 
 Other construction inputs:
 
@@ -216,6 +289,7 @@ Find the row that matches your policy, then build it.
 | --------------------------------------------- | ------------------------------------------ | ------------------------------------------------------ |
 | `TypeError` on construction for a chunk model | chunk-only on the native `rlmesh.Model`    | define `predict()`, or use a numpy/torch/jax backend   |
 | `execution_horizon` seems ignored             | the model has no chunk corner              | implement `predict_chunk` or `predict_chunk_batch`     |
+| `native_chunk=K but ... returned N frames`    | the chunk corner slices its own output     | return the whole native chunk, or drop the declaration |
 | Batch corner gets a list, not a fused obs     | the model is the native `rlmesh.Model`     | use a numpy/torch/jax backend for true fusion          |
 | `ValueError` on `device=`                     | `device` set on a numpy/native model       | use a torch/jax `Model`, or drop `device`              |
 | Obs not on the GPU                            | `device` set somewhere other than `load()` | set `self.device` in `load()`, the one source of truth |

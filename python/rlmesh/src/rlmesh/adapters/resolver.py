@@ -30,6 +30,7 @@ from .specs import (
     Action,
     Actuator,
     Concat,
+    ConcatPart,
     Custom,
     CustomEncoding,
     EnvTags,
@@ -48,6 +49,7 @@ from .specs.model_serialization import model_input_to_dict
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from .._rlmesh import AdapterPlan
     from ..specs import EnvContract
 
 
@@ -186,70 +188,121 @@ def _resolve_encoding_arm(
 
 
 def _shadow_state(
-    segments: tuple[str | int, ...], state: State, obs_shims: list[ObsEncShim]
-) -> State:
-    """Replace a custom-encoded single-part state with its base-encoding shadow.
+    segments: tuple[str | int, ...],
+    leaf: State | Concat,
+    obs_shims: list[ObsEncShim],
+    shim_parts: list[int],
+) -> State | Concat:
+    """Replace a state leaf's custom-encoded parts with base-encoding shadows.
 
-    Records an observation shim keyed by the structured placement path. A custom
-    encoding must be the sole content of a single-part :class:`State`, with no
-    width-altering or assembly options.
+    Records one observation shim per custom part, keyed by the leaf's structured
+    placement path, plus that part's index in ``shim_parts`` --
+    :func:`_address_obs_shims` turns the index into the part's offset once the
+    resolved widths are known. A custom encoding keeps its base width, so it may
+    sit at any offset of a multi-part :class:`Concat`.
     """
     placement = render_placement(segments)
-    _check_native_encoding(state.encoding, f"state input {placement!r}")
-    if not isinstance(state.encoding, CustomEncoding):
-        return state
-    encoding = state.encoding
-    if state.dim is not None or state.index is not None:
-        raise AdapterResolutionError(
-            f"state input {placement!r}: a CustomEncoding part cannot also set "
-            "dim or index (they would change its width)"
+    parts: tuple[ConcatPart, ...] = leaf.parts if isinstance(leaf, Concat) else (leaf,)
+    shadows: list[ConcatPart] = []
+    custom = False
+    for index, part in enumerate(parts):
+        encoding = part.encoding if isinstance(part, State) else None
+        _check_native_encoding(encoding, f"state input {placement!r}")
+        if not isinstance(encoding, CustomEncoding):
+            shadows.append(part)
+            continue
+        custom = True
+        part = cast(State, part)
+        # The repack preserves the base width, so an index (one element) never
+        # fits and a dim is legal only when it restates that width -- which is
+        # how a concat part declares its own slice.
+        if part.index is not None or part.dim not in (None, encoding.width):
+            raise AdapterResolutionError(
+                f"state input {placement!r}: a CustomEncoding part keeps its base "
+                f"width; drop index and set dim={encoding.width} or omit it"
+            )
+        if part.optional:
+            raise AdapterResolutionError(
+                f"state input {placement!r}: a CustomEncoding part cannot be optional"
+            )
+        if encoding.from_base is None:
+            raise AdapterResolutionError(
+                f"state input {placement!r}: an observation CustomEncoding needs from_base"
+            )
+        obs_shims.append(
+            ObsEncShim(
+                segments=segments,
+                base=encoding.base,
+                width=encoding.width,
+                name=encoding.name,
+                dtype=leaf.dtype,
+                from_base=_resolve_encoding_arm(
+                    encoding.from_base, label=f"state input {placement!r}"
+                ),
+                offset=0,
+                native_width=encoding.width,
+            )
         )
-    if state.optional:
+        shim_parts.append(index)
+        shadows.append(replace(part, encoding=encoding.base))
+    if not custom:
+        return leaf
+    # pad_to is fine (the shim addresses its slice of the padded vector), but
+    # reshape and a list container change the leaf the shim writes into.
+    if leaf.reshape is not None:
         raise AdapterResolutionError(
-            f"state input {placement!r}: a CustomEncoding part cannot be optional"
+            f"state input {placement!r}: reshape runs before the host-side "
+            "encoding shim and would break it; drop it"
         )
-    if state.pad_to is not None or state.reshape is not None:
-        raise AdapterResolutionError(
-            f"state input {placement!r}: pad_to/reshape run before the host-side "
-            "encoding shim and would break it; drop them"
-        )
-    if state.container != "array":
+    if leaf.container != "array":
         raise AdapterResolutionError(
             f"state input {placement!r}: a CustomEncoding requires container='array'"
         )
-    if encoding.from_base is None:
-        raise AdapterResolutionError(
-            f"state input {placement!r}: an observation CustomEncoding needs from_base"
+    if isinstance(leaf, Concat):
+        return Concat(
+            *shadows,
+            pad_to=leaf.pad_to,
+            dtype=leaf.dtype,
+            reshape=leaf.reshape,
+            container=leaf.container,
         )
-    obs_shims.append(
-        ObsEncShim(
-            segments=segments,
-            base=encoding.base,
-            width=encoding.width,
-            name=encoding.name,
-            dtype=state.dtype,
-            from_base=_resolve_encoding_arm(
-                encoding.from_base, label=f"state input {placement!r}"
-            ),
-        )
-    )
-    return replace(state, encoding=encoding.base)
+    return cast(State, shadows[0])
 
 
-def _reject_concat_custom_encoding(
-    segments: tuple[str | int, ...], concat: Concat
-) -> None:
-    """A CustomEncoding inside a multi-part Concat is unsupported (env offsets)."""
-    placement = render_placement(segments)
-    for part in concat.parts:
-        encoding = part.encoding if isinstance(part, State) else None
-        _check_native_encoding(encoding, f"state input {placement!r}")
-        if isinstance(encoding, CustomEncoding):
+def _address_obs_shims(
+    plan: AdapterPlan, obs_shims: list[ObsEncShim], shim_parts: list[int]
+) -> tuple[ObsEncShim, ...]:
+    """Give each observation shim its offset inside the resolved state leaf.
+
+    A custom-encoded part reads and writes exactly its own slice, and the widths
+    of the parts before it are env-dependent -- so the offsets come from the
+    resolved plan's ``state_layouts()``, not from the spec.
+    """
+    layouts = {
+        tuple(segments): (widths, width)
+        for segments, widths, width in plan.state_layouts()
+    }
+    addressed: list[ObsEncShim] = []
+    for shim, part in zip(obs_shims, shim_parts, strict=True):
+        placement = render_placement(shim.segments)
+        layout = layouts.get(shim.segments)
+        if layout is None:
             raise AdapterResolutionError(
-                f"state input {placement!r} uses a CustomEncoding, which must be "
-                "the sole part of a single-part State (observation offsets are "
-                "env-dependent); give the rotation its own input slot"
+                f"state input {placement!r}: the resolved part widths are not all "
+                f"known, so custom encoding {shim.name!r} cannot address its "
+                "slice; declare dim on each part"
             )
+        widths, native_width = layout
+        if widths[part] != shim.width:
+            raise AdapterResolutionError(
+                f"state input {placement!r}: custom encoding {shim.name!r} needs a "
+                f"width-{shim.width} {shim.base} slice but the part resolved to "
+                f"{widths[part]} dims"
+            )
+        addressed.append(
+            replace(shim, offset=sum(widths[:part]), native_width=native_width)
+        )
+    return tuple(addressed)
 
 
 def _shadow_action(action: Action, act_shims: list[ActEncShim]) -> Action:
@@ -354,7 +407,7 @@ def _check_inverses(model_spec: ModelSpec) -> None:
 
 def _substitute_encodings(
     model_spec: ModelSpec,
-) -> tuple[ModelSpec, tuple[ObsEncShim, ...], tuple[ActEncShim, ...]]:
+) -> tuple[ModelSpec, list[ObsEncShim], list[int], tuple[ActEncShim, ...]]:
     """Return a base-substituted shadow spec plus host-side encoding shims.
 
     The shadow spec lets the native core see only known encodings; the shims
@@ -365,20 +418,18 @@ def _substitute_encodings(
     (see :func:`_resolve_encoding_arm`).
     """
     obs_shims: list[ObsEncShim] = []
+    shim_parts: list[int] = []
     act_shims: list[ActEncShim] = []
 
     def shadow_leaf(segments: tuple[str | int, ...], leaf: object) -> object:
-        if isinstance(leaf, State):
-            return _shadow_state(segments, leaf, obs_shims)
-        if isinstance(leaf, Concat):
-            _reject_concat_custom_encoding(segments, leaf)
-            return leaf
+        if isinstance(leaf, (State, Concat)):
+            return _shadow_state(segments, leaf, obs_shims, shim_parts)
         return leaf
 
     shadow_input = _map_leaves(model_spec.input, shadow_leaf)
     shadow_action = _shadow_action(model_spec.output, act_shims)
     shadow = ModelSpec(input=shadow_input, output=shadow_action)
-    return shadow, tuple(obs_shims), tuple(act_shims)
+    return shadow, obs_shims, shim_parts, tuple(act_shims)
 
 
 def _model_wire(
@@ -428,15 +479,6 @@ def _model_wire(
     )
     wire = {"input": wire_input, "output": action_to_dict(model_spec.output)}
     return wire, customs
-
-
-def _image_stacks(model_spec: ModelSpec) -> dict[tuple[str | int, ...], int]:
-    """Frame-stack depths the model wants, keyed by structured placement (>1)."""
-    stacks: dict[tuple[str | int, ...], int] = {}
-    for segments, leaf in _iter_leaves(model_spec.input):
-        if isinstance(leaf, Image) and leaf.stack > 1:
-            stacks[segments] = leaf.stack
-    return stacks
 
 
 def resolve(
@@ -510,7 +552,7 @@ def _resolve_with_env_json(
     """
     if check_inverse:
         _check_inverses(model_spec)
-    shadow, obs_shims, act_shims = _substitute_encodings(model_spec)
+    shadow, obs_shims, shim_parts, act_shims = _substitute_encodings(model_spec)
     wire, customs = _model_wire(shadow, trust_entrypoints=trust_entrypoints)
     try:
         plan = adapters_resolve(
@@ -521,8 +563,12 @@ def _resolve_with_env_json(
         )
     except ValueError as exc:
         raise AdapterResolutionError(str(exc)) from None
-    stacks = _image_stacks(shadow)
-    return Adapter(plan, customs, stacks, obs_shims, act_shims)
+    return Adapter(
+        plan,
+        customs,
+        _address_obs_shims(plan, obs_shims, shim_parts),
+        act_shims,
+    )
 
 
 def resolve_from_contract(

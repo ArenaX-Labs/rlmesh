@@ -11,8 +11,9 @@ boundary (base->custom on the way in, custom->base on the way out).
 
 The same ``ROT6D_COLSWAP`` constant is referenced from both the proprio input
 and the action actuator: define the encoding once, use it on both sides. The
-rotation gets its own single-part ``State`` input because the offset of a
-custom field interior to a multi-part ``Concat`` is env-dependent.
+rotation gets its own ``State`` input because this checkpoint takes it as a
+separate tensor; a repack is equally at home inside a multi-part ``Concat``,
+where it reads and writes just its own slice.
 """
 
 from __future__ import annotations

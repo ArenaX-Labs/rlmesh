@@ -11,6 +11,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, cast
 
+from rlmesh._authoring import _stamp_metadata  # pyright: ignore[reportPrivateUsage]
 from rlmesh._entrypoint import resolve_entrypoint
 
 from .gym_support import (
@@ -435,17 +436,5 @@ def construct_authored_env(
     else:
         env = inst.make(**resolved)
     if spec is not None:
-        _merge_metadata(env, to_metadata(spec, inst.make, resolved))
+        _stamp_metadata(env, to_metadata(spec, inst.make, resolved))
     return env
-
-
-def _merge_metadata(env: object, fragment: Mapping[str, object]) -> None:
-    """Merge a metadata fragment into ``env.metadata`` (mirrors ``adapters.tag``)."""
-    existing = getattr(env, "metadata", None)
-    merged: dict[str, object] = (
-        dict(cast("Mapping[str, object]", existing))
-        if isinstance(existing, Mapping)
-        else {}
-    )
-    merged.update(fragment)
-    env.metadata = merged  # type: ignore[attr-defined]

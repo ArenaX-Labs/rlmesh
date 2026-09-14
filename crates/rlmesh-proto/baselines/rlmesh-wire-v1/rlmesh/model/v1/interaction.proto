@@ -56,11 +56,25 @@ message ResolveAdapterRequest {
   // model. The engine caps the chunk to h (a fixed-size head over-produces and is
   // truncated; an autoregressive head may read h to decode exactly that many). 0 or
   // 1 (the default) = no chunking (predict every step), byte/behaviour-identical to
-  // a model with no chunk corner. The runtime bounds it to MAX_HORIZON.
+  // a model with no chunk corner. The runtime bounds it to MAX_EXECUTION_HORIZON
+  // (1024); the model rejects a larger pin at resolve.
   uint32 execution_horizon = 4;
+
+  // Tag 5 is spoken for by `delivers_history` (bool) — the runtime's declaration
+  // that it will deliver observation-history frames on Predict. Not emitted yet;
+  // the frame-history wave (rc.10) populates it together with PredictRequest 4-5.
 }
 
-message ResolveAdapterResponse {}
+message ResolveAdapterResponse {
+  // The model's NATIVE chunk length K: how many per-step actions one chunk
+  // corner call returns, when the model declares it. Answered per resolve so
+  // the runtime can size replay and reject an execution horizon it cannot
+  // serve (h > K). Unset = undeclared, the elastic contract: the model returns
+  // whatever it returns and the runtime takes the min(len, h) prefix.
+  optional uint32 native_chunk = 1;
+
+  // Tag 2 is spoken for by `history` (ObservationHistoryNeeds) in rc.10.
+}
 
 // Per-row episode identity and seed metadata: the self-describing batch. Row
 // `i` of the batched observation belongs to `episode_info[i]`, decided per
@@ -86,6 +100,11 @@ message PredictRequest {
   // Ordered per-row episode identity and seed metadata. Length == the batch
   // row count (num_envs). One entry for a single env.
   repeated EpisodeInfo episode_info = 3;
+
+  // Tags 4 and 5 are spoken for by the frame-history wave (rc.10): `history`
+  // (repeated ObservationHistoryFrame, the older observations a history-needing
+  // model's window wants) and `step` (the route's env-step counter stamped on
+  // each frame). Neither is emitted yet.
 }
 
 message PredictResponse {

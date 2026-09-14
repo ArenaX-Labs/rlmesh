@@ -18,21 +18,16 @@ use crate::{Result, spaces};
 /// own predict is in flight.
 #[async_trait]
 pub trait ModelRouteSetup: Send + Sync {
-    /// Resolve and cache the adapter for `env_id` from its `env_contract`.
+    /// Resolve and cache the adapter for `env_id` from its `env_contract`, and
+    /// answer what the resolved route needs back.
     /// Returning an error fails adapter resolution, so the client never predicts
     /// against an unresolved adapter. Idempotent upsert: a later call updates it.
-    ///
-    /// `execution_horizon` is how many actions of each predicted chunk the runtime
-    /// executes before re-planning, pinned on `ResolveAdapter` (1 = no chunking). The
-    /// setup caches it: the model returns its native chunk and the runtime executes a
-    /// prefix of it, so an autoregressive head can read the value to decode exactly
-    /// that many.
     async fn resolve_adapter(
         &self,
         env_id: &str,
         env_contract: &spaces::EnvContract,
-        execution_horizon: u32,
-    ) -> Result<()>;
+        options: ResolveOptions,
+    ) -> Result<RouteNeeds>;
 
     /// Tear down the adapter cached for `env_id` at `ReleaseAdapter`, so a
     /// long-lived server does not retain per-env state for every session it ever
@@ -40,6 +35,38 @@ pub trait ModelRouteSetup: Send + Sync {
     async fn release_adapter(&self, _env_id: &str) -> Result<()> {
         Ok(())
     }
+}
+
+/// The runtime-pinned knobs a route resolves against, carried on
+/// `ResolveAdapter`.
+///
+/// Runtime-local scheduling decisions, not part of the model spec: the model
+/// reads them, it does not choose them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ResolveOptions {
+    /// How many actions of each predicted chunk the runtime executes before
+    /// re-planning (1 = no chunking). The model returns its NATIVE chunk and the
+    /// runtime executes a prefix of it, so an autoregressive head can read this
+    /// to decode exactly that many. Bounded by
+    /// [`MAX_EXECUTION_HORIZON`](rlmesh_adapters::v1::MAX_EXECUTION_HORIZON).
+    pub execution_horizon: u32,
+    /// Whether the runtime will deliver observation-history frames on `Predict`.
+    /// Always `false` today: the frame-history wave populates it, and until then
+    /// a history-needing model must keep its own window.
+    pub delivers_history: bool,
+}
+
+/// What a resolved route needs from the runtime, answered on
+/// `ResolveAdapterResponse`.
+///
+/// Grows a `history` field with the frame-history wave; today the only thing a
+/// route declares back is its native chunk length.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RouteNeeds {
+    /// The model's native chunk length K: how many per-step actions one chunk
+    /// corner call returns. `None` = undeclared (the elastic contract — the
+    /// runtime takes the `min(len, horizon)` prefix of whatever comes back).
+    pub native_chunk: Option<u32>,
 }
 
 /// One predict's per-lane action plus any open-loop chunk replay frames.

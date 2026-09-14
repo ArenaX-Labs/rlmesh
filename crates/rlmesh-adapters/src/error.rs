@@ -26,6 +26,18 @@ pub enum ErrorCode {
     Unsupported,
     /// A custom-input entrypoint was referenced without trust.
     UntrustedEntrypoint,
+    /// The two sides disagree about a geometry attribute, or one of them
+    /// declares a value outside its vocabulary: an absolute pose in a frame the
+    /// model was not trained on (`frame`), or a delta integrated against the
+    /// other reference pose (`reference`). One code covers both attributes --
+    /// they are one rule with two vocabularies, and a caller matching "the
+    /// declared geometry disagrees" should not have to match two names; the
+    /// message says which attribute and which role.
+    FrameMismatch,
+    /// A model image asserts a `render` size the camera it bound does not
+    /// render at — the env's camera dial was never moved to the resolution the
+    /// model was trained on.
+    RenderMismatch,
     /// A leaf declares a *kind* this core does not define: a model input of an
     /// unrecognized kind, or a model input whose role the env offers only as an
     /// unrecognized observation kind. The fix is to upgrade the runtime, not to

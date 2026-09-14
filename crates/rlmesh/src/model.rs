@@ -12,12 +12,14 @@ mod wire;
 mod worker;
 
 pub use engine::AdaptedModelHandler;
-pub use handler::{HeldState, ModelHandler, ModelRouteSetup, PredictFrames};
+pub use handler::{
+    HeldState, ModelHandler, ModelRouteSetup, PredictFrames, ResolveOptions, RouteNeeds,
+};
 pub use local::{EnvClientRuntimeEnv, ModelHandlerRuntimeModel};
 pub use predict_fn::{PredictFn, RouteConfig, RouteResolver};
 pub use remote::RemoteModel;
 pub use server::BoundModelServer;
-pub use types::{EpisodeInfo, ModelObservation, ModelRouteContext};
+pub use types::{EpisodeInfo, ModelObservation, ModelRouteContext, predict_seed};
 pub use worker::{ModelWorker, RunLocalOptions, ServeModelOptions};
 
 #[cfg(test)]

@@ -1,0 +1,124 @@
+{
+  "doc": {
+    "action": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 6,
+          "encoding": null,
+          "range": null,
+          "role": "action/joint_pos"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": null,
+          "role": "action/gripper"
+        },
+        {
+          "binary": false,
+          "dim": 6,
+          "encoding": null,
+          "range": null,
+          "role": "action/joint_pos_2"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": null,
+          "role": "action/gripper_2"
+        }
+      ]
+    },
+    "observation": {
+      "image_front_camera": {
+        "layout": "hwc",
+        "role": "image/front",
+        "type": "image",
+        "upside_down": false
+      },
+      "image_head_camera": {
+        "layout": "hwc",
+        "role": "image/primary",
+        "type": "image",
+        "upside_down": false
+      },
+      "image_left_camera": {
+        "layout": "hwc",
+        "role": "image/wrist",
+        "type": "image",
+        "upside_down": false
+      },
+      "image_right_camera": {
+        "layout": "hwc",
+        "role": "image/secondary",
+        "type": "image",
+        "upside_down": false
+      },
+      "instruction": {
+        "role": "text/instruction",
+        "type": "text"
+      },
+      "joint_action": {
+        "vector": {
+          "encoding": null,
+          "range": null,
+          "role": "proprio/joint_pos",
+          "type": "state"
+        }
+      },
+      "left_endpose": {
+        "fields": [
+          {
+            "dim": 3,
+            "encoding": null,
+            "range": null,
+            "role": "proprio/eef_pos"
+          },
+          {
+            "dim": 4,
+            "encoding": "quat_wxyz",
+            "range": null,
+            "role": "proprio/eef_rot"
+          }
+        ],
+        "type": "split"
+      },
+      "left_gripper": {
+        "encoding": null,
+        "range": null,
+        "role": "proprio/gripper",
+        "type": "state"
+      },
+      "right_endpose": {
+        "fields": [
+          {
+            "dim": 3,
+            "encoding": null,
+            "range": null,
+            "role": "proprio/eef_pos_2"
+          },
+          {
+            "dim": 4,
+            "encoding": "quat_wxyz",
+            "range": null,
+            "role": "proprio/eef_rot_2"
+          }
+        ],
+        "type": "split"
+      },
+      "right_gripper": {
+        "encoding": null,
+        "range": null,
+        "role": "proprio/gripper_2",
+        "type": "state"
+      }
+    }
+  },
+  "kind": "serialization",
+  "side": "env",
+  "source": "environments/robotwin/main.py"
+}

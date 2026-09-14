@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use super::custom_encoding::ActionEncoding;
+use super::frames::FrameRef;
 
 /// One contiguous slice of an action vector.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -71,6 +72,17 @@ pub struct Actuator {
     /// enforces that. Omitted when false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub optional: bool,
+    /// The coordinate frame an *absolute* pose command is expressed in
+    /// (`action/eef_*`). A delta carries no frame -- it lives in the
+    /// controller's own frame -- and declares `reference` instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame: Option<FrameRef>,
+    /// What a *delta* command is integrated against (`action/delta_eef_*`): the
+    /// env declares what its controller adds the delta to, a model declares what
+    /// it was trained against, and a disagreement is a hard resolve error. Both
+    /// are omitted when unset, so every pre-geometry layout is byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<FrameRef>,
     /// Unrecognized additive fields, retained for round-trip and surfaced to the
     /// publish-door `reject_unknowns` guard. See the strict-v1 publish gate.
     #[serde(flatten)]
@@ -147,10 +159,13 @@ impl TryFrom<ActionWire> for Action {
                         || component.binary
                         || component.clip
                         || component.optional
+                        || component.frame.is_some()
+                        || component.reference.is_some()
                     {
                         return Err("a role-less (opaque) actuator carries only dim and \
                              fill; drop encoding/range/scale/invert/threshold/binary/clip/\
-                             optional (an opaque actuator is already always filled)"
+                             optional/frame/reference (an opaque actuator is already always \
+                             filled)"
                             .to_owned());
                     }
                 }
@@ -255,6 +270,15 @@ mod opaque_actuator_contract {
             serde_json::from_str::<Action>(r#"{"components": [{"dim": 2, "range": [-1.0, 1.0]}]}"#)
                 .unwrap_err();
         assert!(err.to_string().contains("role-less"), "{err}");
+
+        // The geometry attributes join the same ban.
+        for doc in [
+            r#"{"components": [{"dim": 2, "frame": "world"}]}"#,
+            r#"{"components": [{"dim": 2, "reference": "current"}]}"#,
+        ] {
+            let err = serde_json::from_str::<Action>(doc).unwrap_err();
+            assert!(err.to_string().contains("role-less"), "{err}");
+        }
     }
 
     #[test]

@@ -1,0 +1,134 @@
+{
+  "doc": {
+    "input": {
+      "front_image": {
+        "dtype": "uint8",
+        "height": 224,
+        "layout": "hwc",
+        "lead_dims": 0,
+        "normalize": false,
+        "resample": "bilinear",
+        "role": "image/front",
+        "type": "image",
+        "upside_down": false,
+        "width": 224
+      },
+      "head_image": {
+        "dtype": "uint8",
+        "height": 224,
+        "layout": "hwc",
+        "lead_dims": 0,
+        "normalize": false,
+        "resample": "bilinear",
+        "role": "image/primary",
+        "type": "image",
+        "upside_down": false,
+        "width": 224
+      },
+      "left_image": {
+        "dtype": "uint8",
+        "height": 224,
+        "layout": "hwc",
+        "lead_dims": 0,
+        "normalize": false,
+        "resample": "bilinear",
+        "role": "image/wrist",
+        "type": "image",
+        "upside_down": false,
+        "width": 224
+      },
+      "prompt": {
+        "container": "str",
+        "fill": null,
+        "role": "text/instruction",
+        "type": "text"
+      },
+      "right_image": {
+        "dtype": "uint8",
+        "height": 224,
+        "layout": "hwc",
+        "lead_dims": 0,
+        "normalize": false,
+        "resample": "bilinear",
+        "role": "image/secondary",
+        "type": "image",
+        "upside_down": false,
+        "width": 224
+      },
+      "state": {
+        "components": [
+          "proprio/eef_pos",
+          {
+            "encoding": "quat_wxyz",
+            "role": "proprio/eef_rot"
+          },
+          {
+            "dim": 1,
+            "role": "proprio/gripper"
+          },
+          "proprio/eef_pos_2",
+          {
+            "encoding": "quat_wxyz",
+            "role": "proprio/eef_rot_2"
+          },
+          {
+            "dim": 1,
+            "role": "proprio/gripper_2"
+          }
+        ],
+        "dtype": "float32",
+        "type": "state"
+      }
+    },
+    "output": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "role": "action/eef_pos"
+        },
+        {
+          "binary": false,
+          "dim": 4,
+          "encoding": "quat_wxyz",
+          "range": null,
+          "role": "action/eef_rot"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": null,
+          "role": "action/gripper"
+        },
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "role": "action/eef_pos_2"
+        },
+        {
+          "binary": false,
+          "dim": 4,
+          "encoding": "quat_wxyz",
+          "range": null,
+          "role": "action/eef_rot_2"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": null,
+          "role": "action/gripper_2"
+        }
+      ]
+    }
+  },
+  "kind": "serialization",
+  "side": "model",
+  "source": "models/hy-vla/robotwin2/main.py"
+}

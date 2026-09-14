@@ -87,9 +87,26 @@ The field resolves **natively as its base**: role matching, range mapping, and t
 | Arm per side        | `from_base` is needed only when the encoding tags an observation state; `to_base` only when it tags an action; supply at least one                                                                                                                                                                                                                      |
 | Arms agree          | both in-process callables, or both `"module:callable"` entrypoint strings; never a mix                                                                                                                                                                                                                                                                  |
 | Schema, not runtime | a `CustomEncoding` **serializes as a describe/validate schema** (`{base, from_base, to_base}`): the control plane and dashboard show it and resolve its base against an env, but never run the arm. Entrypoint arms travel as their `module:callable` string; an in-process callable has no wire form, so it travels as a non-portable `<local>` marker |
+| Any offset          | the part it tags may sit anywhere in a multi-part `Concat`: the repack reads and writes exactly its own slice, whose offset comes from the resolved plan (part widths are env-dependent, so they are known only after `resolve`). A 20-wide bimanual proprio can carry one per arm                                                                      |
 | Executes once       | the transform runs in exactly one place — the process that defined the **in-process callable**. Running it from a serialized spec, or from an entrypoint reference, is a hard failure: the arm is language-tied and is not relocated or injected. Want it to run? Keep the callable local                                                               |
 
 Use a `CustomEncoding` for a one-off or proprietary packing you apply where the model lives. Its schema travels so the platform can show the `ModelSpec` and verify base-vs-env, while the transform stays pinned to its defining process. When the convention is instead general, stable, and published (a checkpoint's documented rotation format), upstream the packing to the first-party `RotationEncoding` enum: it then resolves by role with no host code at all, is conformance-tested, and — being fully native — the whole adapter can relocate off the model layer (e.g. into middleman).
+
+### Wrong-looking rotations: which hatch
+
+A rotation that comes out wrong is one of two things, and they have different answers:
+
+- **A rigid, data-independent re-orientation** — a wrist camera or gripper mounted turned, an embodiment whose tool frame is the env's rotated by a constant. That is a fixed rotation composed onto every value, so it belongs in the spec as data, not as code: `post_rotate` on the `State` (a {class}`~rlmesh.adapters.Rotation` literal, right-multiplied onto the resolved rotation). Build it with `Rotation.from_matrix(rows)`; see {doc}`reference`.
+- **A data-dependent repack** — the model's convention packs the same rotation differently, or a checkpoint was trained against a producer that read its quaternion in another component order. No fixed rotation describes that, so it is a `CustomEncoding`: the field still resolves as its base, and the two arms repack at the field boundary.
+
+### Not a hatch: latching an action across steps
+
+A sticky gripper (hold the last commanded value for N steps, ignore what the model emits meanwhile) is _not_ expressible model-side, and no `Latch` actuator is planned. The action pipeline has no per-env-step seam to latch on:
+
+- the engine applies the action transform to **every frame of a chunk at predict time** (`crates/rlmesh/src/model/engine.rs`, the `apply_actions` map over a chunk's frames), so all of a chunk's steps are converted before any of them is executed;
+- the driver replays those frames as **pre-encoded bytes** from a runtime-owned buffer (`crates/rlmesh-runtime/src/driver.rs`, the replay buffer: predict only when it drains), and it flushes the buffer **whole-batch** on any lane's episode end — it never re-enters adapter code per step.
+
+So an adapter- or model-side latch counts predicts, not env steps, and desyncs the moment a chunk is longer than one step. The per-env-step seam is the environment: wrap it there (the env holds the state, one step at a time), which is what upstream implementations do.
 
 ## AdapterBase subclass: stateful behavior
 
