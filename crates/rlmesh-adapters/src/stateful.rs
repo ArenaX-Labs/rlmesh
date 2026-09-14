@@ -84,7 +84,15 @@ impl EncodingTransform for NoEncodings {
 ///   `episode_id` is stable, so the entry follows the episode, not the index.
 #[derive(Default)]
 pub struct FrameBuffers {
-    inner: HashMap<String, BTreeMap<String, Window>>,
+    inner: HashMap<String, EpisodeWindows>,
+}
+
+/// One episode's frame windows plus the step counter its last frame carried,
+/// for the continuity check a history-delivering runtime is held to.
+#[derive(Default)]
+struct EpisodeWindows {
+    windows: BTreeMap<String, Window>,
+    last_step: Option<i64>,
 }
 
 impl FrameBuffers {
@@ -114,15 +122,40 @@ impl FrameBuffers {
     pub fn state_bytes(&self) -> u64 {
         self.inner
             .values()
-            .flat_map(|windows| windows.values())
+            .flat_map(|episode| episode.windows.values())
             .flat_map(|window| window.frames.iter())
             .map(|tensor| tensor.nbytes() as u64)
             .sum()
     }
 
+    /// Record that the episode's next frame carries `step`, holding a runtime
+    /// that delivers history to consecutive steps.
+    ///
+    /// An episode the buffers already hold must advance by exactly one: a gap
+    /// means a replayed step's frame was never delivered, a repeat means one was
+    /// delivered twice, and either would stack a wrong window silently. An
+    /// episode not yet held accepts any step (its window starts here), so a
+    /// cold start or a re-attach mid-episode is fine. Call before pushing the
+    /// frame, once per (episode, step).
+    pub fn advance_step(&mut self, episode_id: &str, step: i64) -> Result<(), ApplyError> {
+        let episode = self.inner.entry(episode_id.to_owned()).or_default();
+        if let Some(last) = episode.last_step
+            && step != last + 1
+        {
+            return Err(ApplyError::new(format!(
+                "observation history for episode {episode_id} is not consecutive: step {step} \
+                 arrived after step {last} (expected {}); every env step of the episode must \
+                 reach the model exactly once, in order",
+                last + 1
+            )));
+        }
+        episode.last_step = Some(step);
+        Ok(())
+    }
+
     /// The per-key window map for an episode, created lazily if absent.
     fn episode(&mut self, episode_id: &str) -> &mut BTreeMap<String, Window> {
-        self.inner.entry(episode_id.to_owned()).or_default()
+        &mut self.inner.entry(episode_id.to_owned()).or_default().windows
     }
 }
 
@@ -624,6 +657,25 @@ mod tests {
             dtype,
             spec: None,
         }
+    }
+
+    #[test]
+    fn advance_step_holds_an_episode_to_consecutive_steps() {
+        let mut buffers = FrameBuffers::new();
+        // A cold episode accepts any step (re-attach mid-episode is fine).
+        buffers.advance_step("ep", 7).expect("first step");
+        buffers.advance_step("ep", 8).expect("next step");
+        // A repeat or a gap is a delivery bug, not something to stack over.
+        let repeat = buffers.advance_step("ep", 8).unwrap_err().to_string();
+        assert!(repeat.contains("step 8 arrived after step 8"), "{repeat}");
+        let gap = buffers.advance_step("ep", 11).unwrap_err().to_string();
+        assert!(gap.contains("expected 9"), "{gap}");
+        // Another episode is its own sequence; eviction forgets the counter.
+        buffers
+            .advance_step("other", 0)
+            .expect("independent episode");
+        buffers.evict("ep");
+        buffers.advance_step("ep", 0).expect("fresh after eviction");
     }
 
     #[test]

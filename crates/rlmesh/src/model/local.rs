@@ -69,19 +69,22 @@ where
         )));
     }
 
+    // The driver delivers every replayed step as a history row, so a stacked
+    // adapter's window advances on every step at any horizon; the route answers
+    // whether it needs that, and the driver only buffers rows when it does.
+    let mut wants_history = false;
     if let Some(route_setup) = handler.route_setup() {
-        route_setup
+        let needs = route_setup
             .resolve_adapter(
                 &env_id,
                 &env_contract,
                 crate::model::ResolveOptions {
                     execution_horizon: options.execution_horizon,
-                    // Observation history is not delivered on this path (or any,
-                    // yet); a history-needing model keeps its own window.
-                    delivers_history: false,
+                    delivers_history: true,
                 },
             )
             .await?;
+        wants_history = needs.history.is_some();
     }
 
     let spec = RuntimeSessionSpec {
@@ -106,7 +109,7 @@ where
         limits: Default::default(),
     };
     let env = EnvClientRuntimeEnv::new(env);
-    let model = ModelHandlerRuntimeModel::new(handler, env_contract);
+    let model = ModelHandlerRuntimeModel::new(handler, env_contract).with_history(wants_history);
     RuntimeDriver::new(spec, env, model, Arc::new(NoopRuntimeHooks))
         .run_with_cancellation_reason(cancellation, "interrupted by the host (signal)")
         .await
@@ -260,6 +263,9 @@ pub struct ModelHandlerRuntimeModel<'a, H> {
     /// same way.
     handler: Arc<tokio::sync::Mutex<&'a mut H>>,
     env_contract: Arc<spaces::EnvContract>,
+    /// The route asked for observation history at resolve (see
+    /// [`with_history`](Self::with_history)).
+    wants_history: bool,
 }
 
 impl<'a, H> ModelHandlerRuntimeModel<'a, H> {
@@ -268,7 +274,16 @@ impl<'a, H> ModelHandlerRuntimeModel<'a, H> {
         Self {
             handler: Arc::new(tokio::sync::Mutex::new(handler)),
             env_contract: Arc::new(env_contract),
+            wants_history: false,
         }
+    }
+
+    /// Tell the driver whether the route negotiated observation history
+    /// (`RouteNeeds::history` was answered at resolve), so it buffers every
+    /// replayed step as a history row on the next predict.
+    pub fn with_history(mut self, wants_history: bool) -> Self {
+        self.wants_history = wants_history;
+        self
     }
 }
 
@@ -284,6 +299,10 @@ impl<H> RuntimeModel for ModelHandlerRuntimeModel<'_, H>
 where
     H: ModelHandler + 'static,
 {
+    fn wants_history(&self) -> bool {
+        self.wants_history
+    }
+
     async fn predict(
         &self,
         request: PredictRequest,

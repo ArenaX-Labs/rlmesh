@@ -302,6 +302,8 @@ async fn served_model_predict_mirrors_route_context() {
     let response = handle_model_request(
         JoinRequest {
             kind: Some(join_request::Kind::Predict(PredictRequest {
+                history: Vec::new(),
+                step: None,
                 context: Some(context.clone()),
                 observation: None,
                 episode_info: vec![EpisodeInfo {
@@ -345,6 +347,8 @@ async fn served_model_predict_uses_episode_id_count_as_lane_count() {
     let response = handle_model_request(
         JoinRequest {
             kind: Some(join_request::Kind::Predict(PredictRequest {
+                history: Vec::new(),
+                step: None,
                 context: Some(AdapterContext {
                     session_id: "session-1".to_string(),
                     env_id: "env-1".to_string(),
@@ -440,6 +444,8 @@ fn discrete_action_contract() -> spaces::EnvContract {
 /// One group of a grouped predict: a routed, single-row `PredictRequest`.
 fn grouped_member(env_id: &str, request_id: &str, episode_id: &str) -> PredictRequest {
     PredictRequest {
+        history: Vec::new(),
+        step: None,
         context: Some(AdapterContext {
             session_id: "session-1".to_string(),
             env_id: env_id.to_string(),
@@ -1736,6 +1742,8 @@ fn predict_join_request(env_id: &str, request_id: &str, slow: bool) -> JoinReque
     let suffix = if slow { "-slow" } else { "" };
     JoinRequest {
         kind: Some(join_request::Kind::Predict(PredictRequest {
+            history: Vec::new(),
+            step: None,
             context: Some(AdapterContext {
                 session_id: "session".to_string(),
                 env_id: env_id.to_string(),
@@ -1991,6 +1999,8 @@ async fn public_client_predict_concurrent_demuxes_overlapping_predicts() {
 
     let client = Arc::new(client);
     let make_predict = |request_id: &str, slow: bool| PredictRequest {
+        history: Vec::new(),
+        step: None,
         context: Some(AdapterContext {
             session_id: "s".to_string(),
             env_id: "r".to_string(),

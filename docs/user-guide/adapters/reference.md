@@ -460,11 +460,11 @@ adapt.Image(adapt.IMAGE_PRIMARY, size=224, stack=6, stride=5, stack_pad="black")
 Frame stacking is episode state held outside the model, in the adapter core (an episode-keyed window
 per vector lane). The spec's `stack`/`offsets`/`stack_pad` round-trip through `to_json`, the window
 clears on `reset`, and the env still sends one frame per step -- so no frames leak across episodes or
-lanes and nothing extra crosses the wire. The window advances on **every** env step, including one
-whose action came from a replayed chunk, so a stacked model sees the same frames at any
-`execution_horizon`. That holds for a Python session today; the native engine (`Model.run`, a served
-route) only assembles observations at decision points, so it refuses `stack > 1` together with
-`execution_horizon > 1` until replay observations reach the model side (planned for rc.10).
+lanes. The window advances on **every** env step, including one whose action came from a replayed
+chunk, so a stacked model sees the same frames at any `execution_horizon`. A Python session ticks the
+window itself; the native runtime and a served model negotiate it at resolve, and the runtime then
+carries each replayed step's observation to the model as history rows on the next predict (so above
+`execution_horizon=1`, stacking does cost wire bytes: see {doc}`../performance`).
 ```
 
 ## Match your shape

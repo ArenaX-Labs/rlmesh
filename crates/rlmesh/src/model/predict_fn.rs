@@ -189,6 +189,10 @@ pub struct RouteConfig {
     /// builds the spec-derived config and the engine stamps the horizon on top, since
     /// it is a runtime decision, not part of the model spec.
     pub(crate) execution_horizon: u32,
+    /// The runtime delivers every replayed step as a history row (negotiated at
+    /// resolve): the engine ingests rows before the request's own observation
+    /// and holds every frame to consecutive steps.
+    pub(crate) delivers_history: bool,
 }
 
 impl RouteConfig {
@@ -213,6 +217,7 @@ impl RouteConfig {
             // Spec-derived default; the engine overwrites it with the route's
             // runtime-pinned execution_horizon at ResolveAdapter.
             execution_horizon: 1,
+            delivers_history: false,
         }
     }
 }

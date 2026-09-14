@@ -375,6 +375,8 @@ impl RouteState {
             }),
             observation: observation.map(leaves_value),
             episode_info,
+            history: Vec::new(),
+            step: None,
         }
     }
 

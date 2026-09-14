@@ -4,8 +4,8 @@ use rlmesh_grpc::wire::{
     decode_batched_partial_values, encode_batched_partial_values, env_spec_to_proto,
 };
 use rlmesh_proto::model::v1::{
-    AdapterContext, EpisodeInfo, PredictRequest, ReleaseAdapterRequest, ResetAdapterRequest,
-    ResolveAdapterRequest,
+    AdapterContext, EpisodeInfo, ObservationHistoryFrame, PredictRequest, ReleaseAdapterRequest,
+    ResetAdapterRequest, ResolveAdapterRequest,
 };
 use rlmesh_proto::{SessionOffer, supported_workflow_editions};
 use uuid::Uuid;
@@ -73,6 +73,15 @@ pub struct RemoteModel {
     /// model, AND this runtime all support. Sent to the model in `ResolveAdapter`
     /// as AUTHORITATIVE over its own (pairwise) handshake result.
     selected_workflow_edition: String,
+    /// The served route asked for observation history at resolve: every replayed
+    /// step's observation is then carried as a history row on the next real
+    /// predict, so the model-side frame windows see every step.
+    history_on: bool,
+    /// Replayed steps' observations awaiting the next real predict.
+    history: Vec<ObservationHistoryFrame>,
+    /// This client's env-step counter: one per `predict` call (each call is one
+    /// env step from the caller's side), stamped on rows and requests.
+    step: i64,
 }
 
 /// Per-instance session id, kept for correlation only.
@@ -197,6 +206,9 @@ impl RemoteModel {
             episode_id: None,
             execution_horizon: 1,
             replay_buffer: std::collections::VecDeque::new(),
+            history_on: false,
+            history: Vec::new(),
+            step: 0,
             seed: None,
             pending_end: Vec::new(),
             selected_workflow_edition,
@@ -260,6 +272,9 @@ impl RemoteModel {
         // server's episode end, so a stale tail would otherwise bleed across the
         // boundary.
         self.replay_buffer.clear();
+        // The rows belonged to the ended episode's windows, which the flushed
+        // `ResetAdapter` evicts; the new episode starts with none.
+        self.history.clear();
     }
 
     /// Ask the policy for an action given `observation`.
@@ -287,16 +302,38 @@ impl RemoteModel {
         // observation). The buffer is filled by a real predict below and flushed on
         // reset, so a replay step is never the reset edge (pending_reset is already
         // cleared by the predict that filled the buffer).
-        if self.replay_buffer.is_empty() {
-            // Encode the observation the same way the env wire path does (a
-            // one-lane batched-partial payload): the served model decodes it with
-            // decode_batched_partial_values, so a plain single-value encoding would
-            // be misread as carrying a batch dimension.
-            let observation_value = encode_batched_partial_values(
-                std::slice::from_ref(&observation),
+        // This call is one env step from the caller's side, whether it re-plans
+        // or replays; the counter stamps rows and requests so the served engine
+        // can hold this client to consecutive steps.
+        let step = self.step;
+        self.step += 1;
+        // Encode the observation the same way the env wire path does (a
+        // one-lane batched-partial payload): the served model decodes it with
+        // decode_batched_partial_values, so a plain single-value encoding would
+        // be misread as carrying a batch dimension.
+        let encode = |observation: &spaces::SpaceValue| {
+            encode_batched_partial_values(
+                std::slice::from_ref(observation),
                 &self.observation_space,
             )
-            .map_err(|error| Error::Internal(error.to_string()))?;
+            .map_err(|error| Error::Internal(error.to_string()))
+        };
+        if !self.replay_buffer.is_empty() && self.history_on {
+            // A replayed step: the served windows still have to see its frame,
+            // so it rides the next real predict as a history row.
+            let frame = ObservationHistoryFrame {
+                observation: Some(encode(&observation)?),
+                episode_info: vec![EpisodeInfo {
+                    episode_id: episode_id.clone(),
+                    seed: self.seed,
+                }],
+                step,
+            };
+            self.history.push(frame);
+        }
+
+        if self.replay_buffer.is_empty() {
+            let observation_value = encode(&observation)?;
             // The wire carries no per-row reset flag; the reset boundary is the
             // fresh episode id minted in reset(), which rides episode_info below,
             // alongside the seed that same reset() call was given (if any).
@@ -311,6 +348,8 @@ impl RemoteModel {
                     episode_id,
                     seed: self.seed,
                 }],
+                history: std::mem::take(&mut self.history),
+                step: self.history_on.then_some(step),
             };
 
             let response = self.inner.predict(request).await.map_err(Error::from)?;
@@ -393,7 +432,8 @@ impl RemoteModel {
     }
 
     async fn resolve_adapter(&mut self) -> Result<()> {
-        self.inner
+        let response = self
+            .inner
             .resolve_adapter(ResolveAdapterRequest {
                 context: Some(AdapterContext {
                     session_id: self.session_id.clone(),
@@ -407,13 +447,17 @@ impl RemoteModel {
                 // Runtime-chosen execution horizon, pinned on the env (see
                 // [`set_execution_horizon`](Self::set_execution_horizon)). 1 = no chunking.
                 execution_horizon: self.execution_horizon,
+                // This client replays chunk frames itself, so it can carry every
+                // replayed step's observation as a history row.
+                delivers_history: true,
             })
             .await
-            // The served model answers its declared native chunk here; this
-            // client drives one lane and replays exactly the frames the engine
-            // emitted, so it needs nothing from the answer.
-            .map(|_| ())
-            .map_err(Error::from)
+            .map_err(Error::from)?;
+        // The declared native chunk needs nothing here (this client replays
+        // exactly the frames the engine emitted); whether the route wants
+        // history decides what the replay branch buffers.
+        self.history_on = response.history.is_some();
+        Ok(())
     }
 
     fn next_request_id(&mut self) -> String {

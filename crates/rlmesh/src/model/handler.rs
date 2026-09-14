@@ -50,23 +50,37 @@ pub struct ResolveOptions {
     /// to decode exactly that many. Bounded by
     /// [`MAX_EXECUTION_HORIZON`](rlmesh_adapters::v1::MAX_EXECUTION_HORIZON).
     pub execution_horizon: u32,
-    /// Whether the runtime will deliver observation-history frames on `Predict`.
-    /// Always `false` today: the frame-history wave populates it, and until then
-    /// a history-needing model must keep its own window.
+    /// Whether the runtime will deliver observation-history frames on `Predict`
+    /// (every env step it executed from a replayed chunk without predicting).
+    /// A runtime that does not is refused a stacked adapter at a horizon above
+    /// 1, since the window would hold only decision-point frames.
     pub delivers_history: bool,
 }
 
 /// What a resolved route needs from the runtime, answered on
 /// `ResolveAdapterResponse`.
-///
-/// Grows a `history` field with the frame-history wave; today the only thing a
-/// route declares back is its native chunk length.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RouteNeeds {
     /// The model's native chunk length K: how many per-step actions one chunk
     /// corner call returns. `None` = undeclared (the elastic contract — the
     /// runtime takes the `min(len, horizon)` prefix of whatever comes back).
     pub native_chunk: Option<u32>,
+    /// Set when the runtime offered observation history
+    /// ([`ResolveOptions::delivers_history`]) and this route's adapter keeps a
+    /// frame window: the runtime must then deliver every replayed step as a
+    /// history row on the next predict, stamped with steps.
+    pub history: Option<HistoryNeeds>,
+}
+
+/// The frame windows a route keeps, answered on `ResolveAdapterResponse.history`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HistoryNeeds {
+    /// Canonical placement keys of the stacked inputs (informational: the
+    /// runtime sends whole observations per history row).
+    pub keys: Vec<String>,
+    /// Whether the runtime may send pruned rows (only the keys' leaves). Always
+    /// `false` today.
+    pub prunable: bool,
 }
 
 /// One predict's per-lane action plus any open-loop chunk replay frames.

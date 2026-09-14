@@ -1135,6 +1135,8 @@ mod tests {
         let owned: Vec<SpaceValue> = values.iter().map(|&n| SpaceValue::Discrete(n)).collect();
         let wire = rlmesh_grpc::wire::encode_batched_partial_values(&owned, &space).expect("wire");
         ModelObservation {
+            history: Vec::new(),
+            step: None,
             observation: Some(wire.leaves),
             route: ModelRouteContext {
                 episodes: values.iter().map(|_| EpisodeInfo::default()).collect(),

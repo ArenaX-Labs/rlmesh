@@ -862,6 +862,9 @@ impl RuntimeEnv for TestEnv {
 
 /// Model calls in arrival order: `("predict" | "evict", episode ids)`.
 type Lifecycle = Arc<Mutex<Vec<(&'static str, Vec<String>)>>>;
+/// One entry per predict request: its history rows and its own observation,
+/// each as `(step, first observation byte)`.
+type Ledger = Arc<Mutex<Vec<(Vec<(i64, u8)>, (i64, u8))>>>;
 
 #[derive(Clone, Default)]
 struct TestModel {
@@ -879,6 +882,12 @@ struct TestModel {
     // ordered `actions` list; frame 0 is always present). 0 = not chunking (a
     // single-frame `actions`, the unchanged path).
     replay_frames: usize,
+    // The route negotiated observation history: the driver then carries every
+    // replayed step as a row on the next predict.
+    wants_history: bool,
+    // Per predict request: the history rows' `(step, first observation byte)`
+    // and the request's own, in arrival order.
+    ledger: Ledger,
     // Simulates a release_adapter impl that blocks (e.g. an RPC on a hung
     // connection) without honoring the supplied timeout.
     release_adapter_hangs: bool,
@@ -909,6 +918,23 @@ impl RuntimeModel for TestModel {
                     .map(|e| e.episode_id.clone())
                     .collect(),
             ));
+        let first_byte = |value: Option<&SpaceValue>| {
+            value
+                .and_then(|value| value.leaves.first())
+                .and_then(|leaf| leaf.first().copied())
+                .unwrap_or(0)
+        };
+        self.ledger.lock().expect("ledger poisoned").push((
+            request
+                .history
+                .iter()
+                .map(|row| (row.step, first_byte(row.observation.as_ref())))
+                .collect(),
+            (
+                request.step.unwrap_or(-1),
+                first_byte(request.observation.as_ref()),
+            ),
+        ));
         let observation_bytes = request
             .observation
             .as_ref()
@@ -932,6 +958,10 @@ impl RuntimeModel for TestModel {
             phases: self.phases,
             group_size: None,
         })
+    }
+
+    fn wants_history(&self) -> bool {
+        self.wants_history
     }
 
     async fn reset_adapter(&self, request: ResetAdapterRequest) -> Result<(), RuntimeError> {
@@ -1483,6 +1513,82 @@ async fn next_step_autoreset_never_predicts_on_an_evicted_episode() {
     }
     // Every ended episode was evicted, so nothing is left behind in the model.
     assert_eq!(evicted.len() as i64, report.total_episodes);
+}
+
+#[tokio::test]
+async fn a_history_route_sees_every_env_step_exactly_once_in_order() {
+    // The exactly-once invariant behind observation history: across an
+    // episode, the union of every predict's history rows and its own
+    // observation is the env-step sequence, in order, each step once. A
+    // prefetch lead would deliver a step twice and skip another, so it is
+    // forced off for a history route and the ledger is the same either way.
+    for lead in [0u32, 1] {
+        let env = TestEnv {
+            terminal_after: 9,
+            ..Default::default()
+        };
+        let model = TestModel {
+            replay_frames: 3, // chunks of 4: predict at 0, 4, 8
+            wants_history: true,
+            ..Default::default()
+        };
+        let report = RuntimeDriver::new(
+            one_episode_spec(),
+            env.clone(),
+            model.clone(),
+            Arc::new(RecordingHooks::default()),
+        )
+        .with_prefetch(lead)
+        .run()
+        .await
+        .unwrap();
+        assert_eq!(report.total_episodes, 1);
+        assert_eq!(report.total_steps, 9);
+
+        // Reset observation carries byte 1 at step 0; step n carries byte n.
+        let ledger = model.ledger.lock().unwrap().clone();
+        assert_eq!(
+            ledger,
+            vec![
+                (vec![], (0, 1)),
+                (vec![(1, 1), (2, 2), (3, 3)], (4, 4)),
+                (vec![(5, 5), (6, 6), (7, 7)], (8, 8)),
+            ],
+            "lead {lead}"
+        );
+        let union: Vec<i64> = ledger
+            .iter()
+            .flat_map(|(rows, own)| rows.iter().map(|row| row.0).chain([own.0]))
+            .collect();
+        assert_eq!(union, (0..9).collect::<Vec<_>>(), "lead {lead}");
+        assert_eq!(model.predicts.load(Ordering::SeqCst), 3, "lead {lead}");
+    }
+}
+
+#[tokio::test]
+async fn a_route_without_history_carries_no_rows_and_no_step() {
+    let model = TestModel {
+        replay_frames: 3,
+        ..Default::default()
+    };
+    RuntimeDriver::new(
+        one_episode_spec(),
+        TestEnv {
+            terminal_after: 9,
+            ..Default::default()
+        },
+        model.clone(),
+        Arc::new(RecordingHooks::default()),
+    )
+    .run()
+    .await
+    .unwrap();
+    let ledger = model.ledger.lock().unwrap().clone();
+    assert!(!ledger.is_empty());
+    for (rows, own) in ledger {
+        assert!(rows.is_empty());
+        assert_eq!(own.0, -1, "no step stamped without history");
+    }
 }
 
 /// A `tracing` writer that appends everything into a shared buffer, so a test can

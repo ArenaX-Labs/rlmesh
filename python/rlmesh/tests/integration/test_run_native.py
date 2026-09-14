@@ -195,6 +195,73 @@ def test_run_holds_a_declared_native_chunk_to_its_length() -> None:
         raise
 
 
+def test_run_delivers_every_step_to_a_stacked_model_at_any_horizon() -> None:
+    """The native path carries replayed steps to the model as observation
+    history, so a frame-stacked model sees the same windows under ``run`` as
+    under a Session, at execution_horizon 1 and above."""
+    import rlmesh.adapters as adapt
+    from rlmesh.numpy import Model
+
+    class CameraEnv:
+        observation_space = rlmesh.spaces.Box(0, 255, shape=(2, 2, 3), dtype="uint8")
+        action_space = rlmesh.spaces.Box(-1.0, 1.0, shape=(2,), dtype="float32")
+
+        def __init__(self) -> None:
+            self.n = 0
+
+        def _frame(self) -> Any:
+            return np.full((2, 2, 3), self.n, np.uint8)
+
+        def reset(self, *, seed: Any = None, options: Any = None) -> tuple[Any, Any]:
+            self.n = 0
+            return self._frame(), {}
+
+        def step(self, action: Any) -> tuple[Any, Any, Any, Any, Any]:
+            self.n += 1
+            return self._frame(), 1.0, self.n >= 7, False, {}
+
+        def close(self) -> None:
+            return None
+
+    out = adapt.Action(adapt.Actuator("x/action", dim=2))
+    tags = adapt.EnvTags(observation=adapt.ImageTag(adapt.IMAGE_PRIMARY), action=out)
+
+    class Stacked(Model):
+        native_chunk = 3
+        spec = adapt.ModelSpec(
+            input=adapt.Image(adapt.IMAGE_PRIMARY, stack=3), output=out
+        )
+
+        def load(self) -> None:
+            self.windows: list[tuple[int, ...]] = []
+
+        def predict_chunk(self, observation: Any) -> Any:
+            # The stacked axis leads: (3, H, W, C). Record which frames it holds.
+            self.windows.append(tuple(int(frame[0, 0, 0]) for frame in observation))
+            return np.zeros((3, 2), np.float32)
+
+    def windows(path: str, horizon: int) -> list[tuple[int, ...]]:
+        model = Stacked()
+        env = adapt.tag(CameraEnv(), tags)
+        try:
+            if path == "session":
+                model.session(env, execution_horizon=horizon).run(max_episodes=1)
+            else:
+                model.run(env, max_episodes=1, execution_horizon=horizon)
+        except ConnectionError as exc:
+            if "Operation not permitted" in str(exc):
+                pytest.skip("local tcp bind is not permitted in this environment")
+            raise
+        return model.windows
+
+    every_step = windows("native", 1)
+    assert every_step[:3] == [(0, 0, 0), (0, 0, 1), (0, 1, 2)]
+    # Re-plans at steps 0, 3 and 6: the window at each holds the consecutive
+    # frames, not the decision points, on both paths.
+    assert windows("native", 3) == [every_step[0], every_step[3], every_step[6]]
+    assert windows("session", 3) == windows("native", 3)
+
+
 def test_run_max_episode_steps_truncates_via_the_runtime() -> None:
     env = CountEnv(episode_len=0)
     try:

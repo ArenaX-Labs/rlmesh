@@ -105,6 +105,26 @@ pub struct ModelObservation {
     /// The env contract (spaces/metadata) for decoding the observation. Shared
     /// (`Arc`) so the per-predict hot path clones a refcount, not the contract.
     pub env_contract: Option<Arc<spaces::EnvContract>>,
+    /// The env steps executed since the previous predict without one (replayed
+    /// chunk frames), oldest first. Non-empty only on a route that negotiated
+    /// history; the engine advances its frame windows through them before
+    /// this request's own observation.
+    pub history: Vec<HistoryFrame>,
+    /// The producer's per-group env-step counter at `observation`; required
+    /// once history is negotiated (a gap or repeat is a rejected request).
+    pub step: Option<i64>,
+}
+
+/// One replayed env step delivered as history: the batched observation and
+/// the row-aligned episode identity AT THAT STEP, plus its step counter.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct HistoryFrame {
+    /// Raw per-leaf observation wire bytes (see [`ModelObservation::observation`]).
+    pub observation: Option<Vec<Bytes>>,
+    /// Row `i` of `observation` belongs to `episodes[i]`.
+    pub episodes: Vec<EpisodeInfo>,
+    /// The step counter this frame was observed at.
+    pub step: i64,
 }
 
 impl ModelObservation {
@@ -148,6 +168,20 @@ impl ModelObservation {
         let leaves = self.observation.as_ref().ok_or_else(|| {
             Error::model("observation absent; cannot decode lanes (check is_some() first)")
         })?;
+        self.decode_rows(leaves, self.num_envs)
+    }
+
+    /// Decode one history frame into one typed value per row (length `==
+    /// frame.episodes.len()`), with the same observation space as the request.
+    pub fn decoded_history_lanes(&self, frame: &HistoryFrame) -> Result<Vec<spaces::SpaceValue>> {
+        let leaves = frame
+            .observation
+            .as_ref()
+            .ok_or_else(|| Error::model("history frame carries no observation"))?;
+        self.decode_rows(leaves, frame.episodes.len())
+    }
+
+    fn decode_rows(&self, leaves: &[Bytes], rows: usize) -> Result<Vec<spaces::SpaceValue>> {
         let contract = self
             .env_contract
             .as_ref()
@@ -156,8 +190,8 @@ impl ModelObservation {
             .observation_space
             .as_ref()
             .ok_or_else(|| Error::model("env contract missing observation space"))?;
-        let value = rlmesh_grpc::wire::leaves_value(leaves.clone());
-        rlmesh_grpc::wire::decode_batched_partial_values(Some(&value), space, self.num_envs)
+        let value = rlmesh_grpc::wire::leaves_value(leaves.to_vec());
+        rlmesh_grpc::wire::decode_batched_partial_values(Some(&value), space, rows)
             .map_err(|err| Error::model(err.to_string()))
     }
 
@@ -204,6 +238,8 @@ mod tests {
             autoreset_mode: Default::default(),
         };
         ModelObservation {
+            history: Vec::new(),
+            step: None,
             observation: Some(wire.leaves),
             route: ModelRouteContext::default(),
             num_envs: values.len(),

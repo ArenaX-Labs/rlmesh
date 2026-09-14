@@ -77,6 +77,8 @@ mod tests {
                 request_id: "request-1".to_string(),
             }),
             observation: None,
+            history: Vec::new(),
+            step: None,
             episode_info: vec![EpisodeInfo {
                 episode_id: "episode-1".to_string(),
                 seed: None,

@@ -717,6 +717,8 @@ mod tests {
                 request_id: request_id.to_string(),
             }),
             observation: None,
+            history: Vec::new(),
+            step: None,
             episode_info: vec![rlmesh_proto::model::v1::EpisodeInfo {
                 episode_id: episode.to_string(),
                 seed: None,

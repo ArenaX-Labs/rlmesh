@@ -15,9 +15,9 @@ use rlmesh_grpc::wire::env_spec_from_proto;
 use rlmesh_proto::model::v1::{
     CloseParticipantResponse, GroupedPredictRequest, GroupedPredictResponse, GroupedPredictResult,
     HandshakeRequest, HandshakeResponse, JoinRequest, JoinResponse, ModelError, ModelErrorCode,
-    PredictRequest, PredictResponse, ReleaseAdapterResponse, ResetAdapterResponse,
-    ResolveAdapterRequest, ResolveAdapterResponse, ShutdownRequest, ShutdownResponse,
-    grouped_predict_result, join_request, join_response,
+    ObservationHistoryNeeds, PredictRequest, PredictResponse, ReleaseAdapterResponse,
+    ResetAdapterResponse, ResolveAdapterRequest, ResolveAdapterResponse, ShutdownRequest,
+    ShutdownResponse, grouped_predict_result, join_request, join_response,
     model_service_server::{ModelService as ModelServiceTrait, ModelServiceServer},
 };
 use rlmesh_proto::{
@@ -210,6 +210,8 @@ where
                     // Advisory: lets clients detect that overlapping predicts will
                     // actually pipeline rather than serialize behind the handler.
                     capabilities::MODEL_CONCURRENT_PREDICT_V1,
+                    // It negotiates and ingests observation history on Predict.
+                    capabilities::MODEL_OBSERVATION_HISTORY_V1,
                 ]),
                 supported_workflow_editions: supported_workflow_editions(),
             }),
@@ -650,9 +652,7 @@ async fn handle_resolve_adapter(
                 &env_contract,
                 ResolveOptions {
                     execution_horizon,
-                    // The runtime does not deliver observation history yet; the
-                    // wire field is not even populated.
-                    delivers_history: false,
+                    delivers_history: request.delivers_history,
                 },
             )
             .await
@@ -671,6 +671,10 @@ async fn handle_resolve_adapter(
     Some(join_response::Kind::ResolveAdapter(
         ResolveAdapterResponse {
             native_chunk: needs.native_chunk,
+            history: needs.history.map(|history| ObservationHistoryNeeds {
+                keys: history.keys,
+                prunable: history.prunable,
+            }),
         },
     ))
 }

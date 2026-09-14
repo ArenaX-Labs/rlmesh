@@ -96,6 +96,11 @@ pub mod metrics {
     /// lane; recorded only for an env that times its own lanes, including its
     /// zeros, so the percentiles say how often a straggler appears.
     pub const LANE_SKEW: Metric = Metric::duration("lane.skew");
+    /// Replayed env steps delivered as observation-history rows on a predict
+    /// (a route that negotiated history at resolve): one sample per predict
+    /// that carried any, so the series says how much history each re-plan
+    /// hauls across the wire.
+    pub const HISTORY_ROWS: Metric = Metric::count("history.rows");
 
     /// The cardinality allowlist — derived from the catalog, not a second table.
     pub const ALL: &[Metric] = &[
@@ -113,6 +118,7 @@ pub mod metrics {
         RESPONSE_BYTES,
         GROUP_SIZE,
         LANE_SKEW,
+        HISTORY_ROWS,
     ];
 }
 

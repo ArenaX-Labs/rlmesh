@@ -130,9 +130,10 @@ pub use env::{
 pub use error::{EnvironmentError, Error, ErrorCode, ModelError, Result};
 pub use model::{
     AdaptedModelHandler, BoundModelServer, EnvClientRuntimeEnv, EpisodeInfo, HeldState,
-    ModelHandler, ModelHandlerRuntimeModel, ModelObservation, ModelRouteContext, ModelRouteSetup,
-    ModelWorker, PredictFn, PredictFrames, RemoteModel, ResolveOptions, RouteConfig, RouteNeeds,
-    RouteResolver, RunLocalOptions, ServeModelOptions, predict_seed,
+    HistoryFrame, HistoryNeeds, ModelHandler, ModelHandlerRuntimeModel, ModelObservation,
+    ModelRouteContext, ModelRouteSetup, ModelWorker, PredictFn, PredictFrames, RemoteModel,
+    ResolveOptions, RouteConfig, RouteNeeds, RouteResolver, RunLocalOptions, ServeModelOptions,
+    predict_seed,
 };
 #[doc(no_inline)]
 pub use rlmesh_runtime::telemetry;

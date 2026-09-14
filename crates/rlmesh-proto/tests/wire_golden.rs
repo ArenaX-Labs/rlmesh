@@ -63,6 +63,8 @@ fn meta_map() -> spaces::v1::MetaMap {
 fn predict_request() -> model::v1::PredictRequest {
     model::v1::PredictRequest {
         context: Some(adapter_context()),
+        history: Vec::new(),
+        step: None,
         observation: Some(space_value()),
         episode_info: vec![
             model::v1::EpisodeInfo {
@@ -131,6 +133,7 @@ fn model_predict_request_bytes_are_frozen() {
 fn model_resolve_adapter_request_bytes_are_frozen() {
     let message = model::v1::ResolveAdapterRequest {
         context: Some(adapter_context()),
+        delivers_history: false,
         env_spec: Some(core::v1::EnvSpec {
             id: "env-spec-1".to_string(),
             action_space: Some(box_space_spec()),
@@ -162,13 +165,18 @@ fn model_resolve_adapter_response_bytes_are_frozen() {
         "model.v1.ResolveAdapterResponse",
         model::v1::ResolveAdapterResponse {
             native_chunk: Some(30),
+            history: None,
         }
         .encode_to_vec(),
         &[8, 30],
     );
     assert_frozen(
         "model.v1.ResolveAdapterResponse (undeclared)",
-        model::v1::ResolveAdapterResponse { native_chunk: None }.encode_to_vec(),
+        model::v1::ResolveAdapterResponse {
+            native_chunk: None,
+            history: None,
+        }
+        .encode_to_vec(),
         &[],
     );
 }

@@ -14,12 +14,13 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use rlmesh_adapters::v1::{
-    FrameBuffers, MAX_EXECUTION_HORIZON, ObsPlan, Value, apply_actions, assemble_obs,
-    space_value_to_obs_map, split_chunk,
+    FrameBuffers, HistoryWindow, MAX_EXECUTION_HORIZON, ObsPlan, Value, apply_actions,
+    assemble_obs, observe_obs, space_value_to_obs_map, split_chunk,
 };
 
 use super::handler::{
-    HeldState, ModelHandler, ModelRouteSetup, PredictFrames, ResolveOptions, RouteNeeds,
+    HeldState, HistoryNeeds, ModelHandler, ModelRouteSetup, PredictFrames, ResolveOptions,
+    RouteNeeds,
 };
 use super::predict_fn::{PredictFn, RouteConfig, RouteResolver};
 use super::types::{EpisodeInfo, ModelObservation};
@@ -241,6 +242,28 @@ fn assemble_route_inputs_inner(
     let customs: &dyn rlmesh_adapters::v1::CustomTransform = config.customs.as_ref();
     let encodings: &dyn rlmesh_adapters::v1::EncodingTransform = config.encodings.as_ref();
 
+    // A route that negotiated history advances its windows through the
+    // replayed steps first, then holds this request's own row to the next
+    // step. A route that did not must not be handed rows: the producer thinks
+    // it is feeding a window this route does not keep.
+    let step = if config.delivers_history {
+        ingest_history(config, buffers, observation, &referenced)?;
+        Some(observation.step.ok_or_else(|| {
+            Error::model(
+                "predict request carries no step but this route negotiated observation history; \
+                 stamp every request and history row with the producer's env-step counter",
+            )
+        })?)
+    } else if observation.history.is_empty() {
+        None
+    } else {
+        return Err(Error::model(
+            "predict request carries observation history rows but this route did not negotiate \
+             history (ResolveAdapterResponse.history was unset): send rows only to a route that \
+             asked for them",
+        ));
+    };
+
     let decoded = observation.decoded_lanes()?;
 
     let mut inputs: Vec<Value> = Vec::with_capacity(num_envs);
@@ -256,6 +279,9 @@ fn assemble_route_inputs_inner(
                     episodes.len()
                 ))
             })?;
+        if let Some(step) = step {
+            buffers.advance_step(episode_id, step)?;
+        }
         let raw = space_value_to_obs_map(lane, &config.observation_space, &referenced)?;
         inputs.push(assemble_obs(
             &config.adapter,
@@ -267,6 +293,68 @@ fn assemble_route_inputs_inner(
         )?);
     }
     Ok(inputs)
+}
+
+/// Advance the route's frame windows through the replayed steps the runtime
+/// delivered as history rows, oldest first, holding each row to the step after
+/// the one its episode last saw. Nothing is assembled: a row only ticks the
+/// windows, exactly as [`observe_obs`] does on the local path.
+fn ingest_history(
+    config: &RouteConfig,
+    buffers: &mut FrameBuffers,
+    observation: &ModelObservation,
+    referenced: &BTreeSet<String>,
+) -> Result<()> {
+    for frame in &observation.history {
+        let lanes = observation.decoded_history_lanes(frame)?;
+        if lanes.len() != frame.episodes.len() {
+            return Err(Error::model(format!(
+                "history row at step {} decoded to {} lanes for {} episode rows",
+                frame.step,
+                lanes.len(),
+                frame.episodes.len()
+            )));
+        }
+        for (lane, episode) in lanes.iter().zip(&frame.episodes) {
+            if episode.episode_id.is_empty() {
+                return Err(Error::model(format!(
+                    "history row at step {} has a lane with no episode_id",
+                    frame.step
+                )));
+            }
+            buffers.advance_step(&episode.episode_id, frame.step)?;
+            let raw = space_value_to_obs_map(lane, &config.observation_space, referenced)?;
+            observe_obs(&config.adapter, &raw, &episode.episode_id, buffers)?;
+        }
+    }
+    Ok(())
+}
+
+/// Env var naming the most bytes one route's frame windows may project to hold
+/// across its lanes (`num_envs × Σ span × frame_bytes`); default 2 GiB.
+const FRAME_HISTORY_LIMIT_ENV: &str = "RLMESH_FRAME_HISTORY_LIMIT_BYTES";
+const FRAME_HISTORY_LIMIT_DEFAULT: u64 = 2 << 30;
+
+/// Refuse at configure a stacked route whose windows would outgrow the budget,
+/// instead of finding out from `held.bytes` once the lanes are live.
+fn check_history_budget(num_envs: u32, windows: &[HistoryWindow]) -> Result<()> {
+    let limit = std::env::var(FRAME_HISTORY_LIMIT_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(FRAME_HISTORY_LIMIT_DEFAULT);
+    let per_lane: u64 = windows
+        .iter()
+        .map(|window| u64::from(window.span).saturating_mul(window.frame_bytes))
+        .sum();
+    let projected = per_lane.saturating_mul(u64::from(num_envs));
+    if projected > limit {
+        return Err(Error::model(format!(
+            "frame windows would hold {projected} bytes across {num_envs} lane(s) ({per_lane} per \
+             lane), above the {limit}-byte budget: shrink stack/size, or raise \
+             {FRAME_HISTORY_LIMIT_ENV}"
+        )));
+    }
+    Ok(())
 }
 
 /// Dispatch to the most-specific available corner, yielding each lane's raw
@@ -937,7 +1025,10 @@ impl ModelRouteSetup for AdaptedRouteSetup {
     ) -> Result<RouteNeeds> {
         let execution_horizon = options.execution_horizon;
         let native_chunk = self.predict.native_chunk();
-        let needs = RouteNeeds { native_chunk };
+        let mut needs = RouteNeeds {
+            native_chunk,
+            history: None,
+        };
         // The horizon doors, before any resolution work: a pin this side of the
         // bound, a declaration the model can actually honor, and a horizon the
         // declared chunk covers. All three are configuration errors that would
@@ -991,21 +1082,39 @@ impl ModelRouteSetup for AdaptedRouteSetup {
                  (predict_chunk); chunking is inactive — the model re-plans every step",
             );
         }
-        // Frame-stacking + chunking would stack only decision-point frames (the
-        // engine assembles observations once per chunk, not every step), not the
-        // consecutive history a stacked policy expects. Reject the combination
-        // rather than feed temporally-aliased frames. This was a resolve-time check,
-        // relocated here now that the horizon is a runtime decision.
-        if config.execution_horizon > 1
-            && let Some((key, depth)) = config.adapter.stacks().into_iter().next()
-        {
-            return Err(Error::model(format!(
-                "frame-stacking (input '{key}' stack={depth}) cannot be combined with action \
-                 chunking (execution_horizon={}): the engine assembles observations once per chunk, \
-                 so the frame window would hold only decision-point frames. Use stack=1 or \
-                 execution_horizon=1.",
-                config.execution_horizon,
-            )));
+        // A stacked adapter keeps a frame window that has to see EVERY env step.
+        // At execution_horizon 1 every step is a predict, so the window is fed by
+        // construction. Above 1 the runtime must deliver the replayed steps as
+        // history rows: a runtime that offered to gets the route's needs back
+        // (and the engine then holds it to consecutive steps); one that did not
+        // would leave the window holding decision points only, so refuse.
+        let history_keys = config.adapter.history_keys();
+        if !history_keys.is_empty() {
+            check_history_budget(
+                env_contract.num_envs.max(1),
+                &config.adapter.history_windows(),
+            )?;
+            if options.delivers_history {
+                config.delivers_history = true;
+                needs.history = Some(HistoryNeeds {
+                    keys: history_keys,
+                    prunable: false,
+                });
+            } else if config.execution_horizon > 1 {
+                let (key, depth) = config
+                    .adapter
+                    .stacks()
+                    .into_iter()
+                    .next()
+                    .expect("history_keys non-empty implies a stacked input");
+                return Err(Error::model(format!(
+                    "frame-stacking (input '{key}' stack={depth}) needs every env step, but the \
+                     runtime did not offer observation history (delivers_history) at \
+                     execution_horizon={}: the window would hold only decision-point frames. \
+                     Use a runtime that delivers history, stack=1, or execution_horizon=1.",
+                    config.execution_horizon,
+                )));
+            }
         }
         let held = Arc::new(HeldCells::default());
         let entry = Arc::new(Mutex::new(RouteEntry {
@@ -1438,6 +1547,8 @@ mod fused_predict_tests {
             AdaptedModelHandler::new(Arc::clone(&counting) as Arc<dyn PredictFn>, None);
         let observations = (0..3)
             .map(|index| ModelObservation {
+                history: Vec::new(),
+                step: None,
                 observation: None,
                 route: ModelRouteContext {
                     env_id: format!("env-{index}"),
@@ -1710,6 +1821,8 @@ mod fused_route_tests {
             .collect();
         let wire = rlmesh_grpc::wire::encode_batched_partial_values(&lanes, &obs_space()).unwrap();
         ModelObservation {
+            history: Vec::new(),
+            step: None,
             observation: Some(wire.leaves),
             route: ModelRouteContext {
                 env_id: env_id.to_string(),
@@ -1739,6 +1852,8 @@ mod fused_route_tests {
         let lane = SpaceValue::Dict(BTreeMap::from([("state".to_string(), box_f32(value))]));
         let wire = rlmesh_grpc::wire::encode_batched_partial_values(&[lane], &obs_space()).unwrap();
         ModelObservation {
+            history: Vec::new(),
+            step: None,
             observation: Some(wire.leaves),
             route: ModelRouteContext {
                 env_id: env_id.to_string(),
@@ -2311,5 +2426,337 @@ mod fused_route_tests {
             2,
             "a latched flag must not change what is replayed"
         );
+    }
+
+    // ---- observation history (a stacked route fed replayed steps as rows) ----
+
+    const STACK_ENV_TAGS: &str = r#"{
+        "observation": {"cam": {"type": "image", "role": "image/primary", "layout": "hwc"}},
+        "action": {"components": [{"role": "action/gripper", "dim": 1, "range": [0.0, 10.0]}]}
+    }"#;
+    const STACK_MODEL_SPEC: &str = r#"{
+        "input": {"type": "image", "role": "image/primary", "layout": "hwc", "dtype": "uint8",
+                  "stack": 3},
+        "output": {"components": [{"role": "action/gripper", "dim": 1, "range": [0.0, 10.0]}]}
+    }"#;
+
+    /// Resolves every route as one 1x1 RGB camera stacked 3 deep, so the
+    /// engine's frame windows are real and every predict's input is the stack.
+    struct StackResolver;
+
+    #[async_trait]
+    impl RouteResolver for StackResolver {
+        async fn resolve(
+            &self,
+            _route_key: &str,
+            env_contract: &EnvContract,
+        ) -> Result<Option<RouteConfig>> {
+            let tags: EnvTags = serde_json::from_str(STACK_ENV_TAGS).expect("env tags parse");
+            let spec: ModelSpec = serde_json::from_str(STACK_MODEL_SPEC).expect("spec parse");
+            let obs = env_contract
+                .observation_space
+                .clone()
+                .expect("contract obs space");
+            let action = env_contract
+                .action_space
+                .clone()
+                .expect("contract action space");
+            let adapter = resolve(
+                &tags,
+                &SpaceView::from(&obs),
+                &SpaceView::from(&action),
+                &spec,
+                true,
+            )
+            .map_err(|err| Error::model(err.message))?;
+            Ok(Some(RouteConfig::new(
+                adapter,
+                obs,
+                action,
+                Box::new(NoCustoms),
+                Box::new(NoEncodings),
+            )))
+        }
+    }
+
+    fn cam_obs_space() -> spaces::SpaceSpec {
+        spaces::spaces::DictSpaceBuilder::new()
+            .insert(
+                "cam",
+                spaces::spaces::BoxSpaceBuilder::scalar(0.0, 255.0, vec![1, 1, 3])
+                    .dtype(DType::Uint8)
+                    .build()
+                    .unwrap(),
+            )
+            .build()
+            .unwrap()
+    }
+
+    fn cam_contract(env_id: &str) -> Arc<spaces::EnvContract> {
+        Arc::new(spaces::EnvContract {
+            id: env_id.to_string(),
+            observation_space: Some(cam_obs_space()),
+            action_space: Some(action_space()),
+            metadata: None,
+            render_mode: String::new(),
+            num_envs: 1,
+            autoreset_mode: Default::default(),
+        })
+    }
+
+    /// The wire leaves of a one-lane camera frame whose every byte is `tag`.
+    fn cam_leaves(tag: u8) -> Vec<rlmesh_grpc::wire::Bytes> {
+        let lane = SpaceValue::Dict(BTreeMap::from([(
+            "cam".to_string(),
+            SpaceValue::Box(Tensor::from_vec(vec![tag; 3], vec![1, 1, 3], DType::Uint8).unwrap()),
+        )]));
+        rlmesh_grpc::wire::encode_batched_partial_values(&[lane], &cam_obs_space())
+            .unwrap()
+            .leaves
+    }
+
+    fn episode(id: &str) -> Vec<EpisodeInfo> {
+        vec![EpisodeInfo {
+            episode_id: id.to_string(),
+            seed: None,
+        }]
+    }
+
+    /// A predict at `step` carrying the frame `tag`, preceded by `rows` of
+    /// `(step, tag)` replayed steps.
+    fn cam_predict(
+        env_id: &str,
+        episode_id: &str,
+        step: Option<i64>,
+        tag: u8,
+        rows: &[(i64, u8)],
+    ) -> ModelObservation {
+        ModelObservation {
+            observation: Some(cam_leaves(tag)),
+            route: ModelRouteContext {
+                env_id: env_id.to_string(),
+                episodes: episode(episode_id),
+                ..Default::default()
+            },
+            num_envs: 1,
+            env_contract: Some(cam_contract(env_id)),
+            history: rows
+                .iter()
+                .map(|&(step, tag)| crate::model::types::HistoryFrame {
+                    observation: Some(cam_leaves(tag)),
+                    episodes: episode(episode_id),
+                    step,
+                })
+                .collect(),
+            step,
+        }
+    }
+
+    /// Records the stacked frame bytes each predict was handed.
+    struct WindowRecorder {
+        stacks: Mutex<Vec<Vec<u8>>>,
+    }
+
+    impl PredictFn for WindowRecorder {
+        fn predict(&self, model_input: Value, _episode: Option<&EpisodeInfo>) -> Result<Value> {
+            fn first_tensor(value: &Value) -> Option<Vec<u8>> {
+                match value {
+                    Value::Tensor(tensor) => Some(tensor.to_contiguous_bytes().into_owned()),
+                    Value::Map(map) => map.values().find_map(first_tensor),
+                    Value::List(items) => items.iter().find_map(first_tensor),
+                    _ => None,
+                }
+            }
+            self.stacks
+                .lock()
+                .expect("stacks poisoned")
+                .push(first_tensor(&model_input).expect("a stacked tensor input"));
+            Ok(Value::Number(1.0))
+        }
+
+        fn predict_spec_less(&self, observation: ModelObservation) -> Result<Vec<SpaceValue>> {
+            Ok((0..observation.num_envs)
+                .map(|_| SpaceValue::Discrete(0))
+                .collect())
+        }
+    }
+
+    /// A stacked handler resolved for `env_id`, with or without the runtime
+    /// offering history, at `horizon`.
+    async fn stacked_handler(
+        env_id: &str,
+        delivers_history: bool,
+        horizon: u32,
+    ) -> Result<(AdaptedModelHandler, Arc<WindowRecorder>, RouteNeeds)> {
+        let recorder = Arc::new(WindowRecorder {
+            stacks: Mutex::new(Vec::new()),
+        });
+        let handler = AdaptedModelHandler::new(
+            Arc::clone(&recorder) as Arc<dyn PredictFn>,
+            Some(Arc::new(StackResolver) as Arc<dyn RouteResolver>),
+        );
+        let needs = handler
+            .route_setup()
+            .expect("resolver-backed route setup")
+            .resolve_adapter(
+                env_id,
+                &cam_contract(env_id),
+                ResolveOptions {
+                    execution_horizon: horizon,
+                    delivers_history,
+                },
+            )
+            .await?;
+        Ok((handler, recorder, needs))
+    }
+
+    #[tokio::test]
+    async fn a_stacked_route_needs_history_only_when_the_runtime_offers_it() {
+        // Offered: the route answers its window keys and the horizon is fine.
+        let (_, _, needs) = stacked_handler("env-offer", true, 4).await.unwrap();
+        let history = needs.history.expect("a stacked route asks for history");
+        assert_eq!(history.keys.len(), 1, "one stacked input: {history:?}");
+        assert!(!history.prunable);
+
+        // Not offered: above horizon 1 the window would hold decision points
+        // only, so the route is refused; at horizon 1 every step predicts.
+        let refused = stacked_handler("env-refuse", false, 4)
+            .await
+            .err()
+            .expect("stack + chunk without history is refused")
+            .to_string();
+        assert!(
+            refused.contains("did not offer observation history"),
+            "{refused}"
+        );
+        let (_, _, needs) = stacked_handler("env-h1", false, 1).await.unwrap();
+        assert!(needs.history.is_none());
+
+        // An unstacked route never asks, offered or not.
+        let handler = AdaptedModelHandler::new(
+            EchoModel::new(false, false) as Arc<dyn PredictFn>,
+            Some(Arc::new(TagResolver) as Arc<dyn RouteResolver>),
+        );
+        let needs = handler
+            .route_setup()
+            .unwrap()
+            .resolve_adapter(
+                "env-flat",
+                &contract("env-flat", 1),
+                ResolveOptions {
+                    execution_horizon: 4,
+                    delivers_history: true,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(needs.history.is_none());
+    }
+
+    #[tokio::test]
+    async fn history_rows_advance_the_window_exactly_like_sequential_predicts() {
+        // The invariant the wire exists for: a predict carrying the replayed
+        // steps as rows hands the model the same stack a predict-every-step
+        // route would have at that step.
+        let (mut every_step, sequential, _) = stacked_handler("env-seq", true, 1).await.unwrap();
+        for step in 0..8u8 {
+            every_step
+                .predict(cam_predict(
+                    "env-seq",
+                    "ep",
+                    Some(i64::from(step)),
+                    step,
+                    &[],
+                ))
+                .await
+                .expect("sequential predict");
+        }
+        let expected = sequential.stacks.lock().unwrap().clone();
+        assert_eq!(expected.len(), 8);
+
+        let (mut chunked, recorder, _) = stacked_handler("env-hist", true, 4).await.unwrap();
+        // Predict at 0; steps 1..3 replay; predict at 4 with rows 1..3; steps
+        // 5 and 6 replay; predict at 7 with rows 5 and 6.
+        for (step, rows) in [
+            (0i64, vec![]),
+            (4, vec![(1, 1u8), (2, 2), (3, 3)]),
+            (7, vec![(5, 5), (6, 6)]),
+        ] {
+            chunked
+                .predict(cam_predict("env-hist", "ep", Some(step), step as u8, &rows))
+                .await
+                .expect("chunked predict");
+        }
+        let got = recorder.stacks.lock().unwrap().clone();
+        assert_eq!(
+            got,
+            vec![
+                expected[0].clone(),
+                expected[4].clone(),
+                expected[7].clone()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_negotiated_route_rejects_a_step_gap_repeat_or_omission() {
+        let (mut handler, _, _) = stacked_handler("env-steps", true, 4).await.unwrap();
+        handler
+            .predict(cam_predict("env-steps", "ep", Some(0), 0, &[]))
+            .await
+            .expect("first predict");
+
+        let gap = handler
+            .predict(cam_predict("env-steps", "ep", Some(2), 2, &[]))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(gap.contains("not consecutive"), "{gap}");
+
+        let repeat = handler
+            .predict(cam_predict("env-steps", "ep", Some(1), 1, &[(0, 0)]))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(repeat.contains("step 0 arrived after step 0"), "{repeat}");
+
+        let omitted = handler
+            .predict(cam_predict("env-steps", "ep", None, 1, &[]))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(omitted.contains("carries no step"), "{omitted}");
+
+        // A fresh episode starts its own sequence at any step.
+        handler
+            .predict(cam_predict("env-steps", "ep-2", Some(40), 0, &[]))
+            .await
+            .expect("new episode, any step");
+    }
+
+    #[tokio::test]
+    async fn rows_sent_to_a_route_that_did_not_negotiate_history_are_refused() {
+        let (mut handler, _, needs) = stacked_handler("env-none", false, 1).await.unwrap();
+        assert!(needs.history.is_none());
+        let refused = handler
+            .predict(cam_predict("env-none", "ep", Some(1), 1, &[(0, 0)]))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("did not negotiate history"), "{refused}");
+    }
+
+    #[test]
+    fn the_frame_history_budget_refuses_a_window_that_outgrows_it() {
+        let window = |frame_bytes: u64| HistoryWindow {
+            key: "cam".to_string(),
+            span: 4,
+            frame_bytes,
+        };
+        check_history_budget(8, &[window(224 * 224 * 3)]).expect("a few MiB per lane");
+        let refused = check_history_budget(8, &[window(1 << 30)])
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains(FRAME_HISTORY_LIMIT_ENV), "{refused}");
     }
 }

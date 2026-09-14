@@ -25,7 +25,8 @@ use rlmesh_proto::env::v1::{
     EpisodeMetadata, ResetRequest, ResetResponse, StepRequest, StepResponse,
 };
 use rlmesh_proto::model::v1::{
-    AdapterContext, PredictRequest, PredictResponse, ReleaseAdapterRequest, ResetAdapterRequest,
+    AdapterContext, ObservationHistoryFrame, PredictRequest, PredictResponse,
+    ReleaseAdapterRequest, ResetAdapterRequest,
 };
 use rlmesh_proto::spaces::v1::meta_value::Kind as MetaKind;
 use rlmesh_proto::spaces::v1::{MetaList, MetaMap, MetaValue, SpaceValue};
@@ -139,6 +140,17 @@ pub trait RuntimeModel: Send + Sync {
         requests: Vec<PredictRequest>,
     ) -> Vec<Result<RuntimeModelPrediction, RuntimeError>> {
         futures::future::join_all(requests.into_iter().map(|request| self.predict(request))).await
+    }
+
+    /// Whether the model's route negotiated observation history at resolve
+    /// (`RouteNeeds::history`). The driver then carries every env step it
+    /// executed from a replayed chunk, without predicting, as a
+    /// `PredictRequest.history` row on the next predict, stamps requests and
+    /// rows with the group's step counter, and runs synchronously (a prefetch
+    /// lead is reset to 0 with a warning: its refill would deliver a step twice).
+    /// Default `false`: no rows are buffered.
+    fn wants_history(&self) -> bool {
+        false
     }
 
     /// Evict the model's per-episode adapter state (frame-stack buffers) for the
@@ -259,6 +271,9 @@ pub struct RuntimeDriver<E, M> {
     /// stale — deployment-realistic async semantics, not the benchmark loop.
     /// 0 = predict only when a group has no frame to play.
     prefetch_lead: u32,
+    /// The model negotiated observation history (see
+    /// [`RuntimeModel::wants_history`]); read once at run start.
+    deliver_history: bool,
     scheduler: Box<dyn PredictScheduler>,
     hooks: Arc<dyn RuntimeHooks>,
     cancellation_reason: String,
@@ -292,6 +307,13 @@ enum EnvPhase {
     /// Out of episode budget; never touched again.
     Idle,
 }
+
+/// Most observation-history rows a group buffers between predicts: one per
+/// replayed frame, and a chunk never legitimately exceeds the runtime's
+/// execution-horizon bound (`MAX_EXECUTION_HORIZON`, 1024, in the adapters
+/// crate). Beyond it the endpoint is over-producing and the next request would
+/// only fail at the message-size cap anyway; fail here with the cause named.
+const HISTORY_BACKLOG_CAP: usize = 1023;
 
 /// Where a group is with respect to the model.
 enum PredictState {
@@ -328,6 +350,14 @@ struct Group<E> {
     /// The latest observation request built for this group (the one a
     /// prefetch would predict from).
     obs_msg: Option<PredictRequest>,
+    /// History routes: the observations of the steps this group executed from
+    /// its replay buffer since its last predict, oldest first, carried on the
+    /// next predict so the model-side windows see every step exactly once.
+    history: Vec<ObservationHistoryFrame>,
+    /// This group's env-step counter (one per `env.step`), stamped on predict
+    /// requests and history rows so the model can hold them to consecutive
+    /// steps. Consecutive observations of one episode carry consecutive values.
+    steps: i64,
     /// NEXT_STEP autoreset: lanes that completed this step, mapped to the
     /// fresh id minted for their next episode. Set on completion (step t),
     /// consumed on the autoreset roll (step t+1).
@@ -392,6 +422,7 @@ where
             env,
             model: Some(model),
             prefetch_lead: 0,
+            deliver_history: false,
             scheduler: Box::new(EagerScheduler),
             hooks,
             cancellation_reason: DEFAULT_CANCELLATION_REASON.to_string(),
@@ -549,6 +580,8 @@ where
                 env: Some(self.env.clone()),
                 replay: VecDeque::new(),
                 obs_msg: None,
+                history: Vec::new(),
+                steps: 0,
                 pending_roll: HashMap::new(),
                 pending_start: None,
                 reset_generation: 0,
@@ -637,6 +670,19 @@ where
     ) -> Result<RuntimeReport, RuntimeError> {
         self.cancellation_reason = reason.into();
         self.spec.validate().map_err(RuntimeError::InvalidSpec)?;
+        self.deliver_history = self.model.as_ref().is_some_and(RuntimeModel::wants_history);
+        if self.deliver_history && self.prefetch_lead > 0 {
+            // A prefetch predicts from an observation that is not the latest and
+            // then refills without observing, so its rows would deliver a step
+            // twice and skip another. Lifting this needs the refill to drain the
+            // backlog (see the ignored driver test); until then, synchronous.
+            tracing::warn!(
+                prefetch_lead = self.prefetch_lead,
+                "the model negotiated observation history; async prefetch is disabled for this \
+                 route (prefetch_lead reset to 0)"
+            );
+            self.prefetch_lead = 0;
+        }
         // validate() confirmed both spaces are present; cache them as shared
         // Arcs so per-step hook events clone a pointer, not the whole spec.
         self.action_space = Arc::new(self.spec.action_space_validated().clone());
@@ -856,6 +902,9 @@ where
         let group = &mut groups[gid];
         group.pending_start = Some((episode_ids.clone(), slots));
         group.replay.clear();
+        // The rows belonged to the episodes this reset ends; their windows are
+        // evicted, and the new episodes start from their reset observation.
+        group.history.clear();
         group.pending_roll.clear();
         let request = ResetRequest {
             seeds,
@@ -1292,6 +1341,7 @@ where
         ));
         groups[gid].round_started = Instant::now();
         groups[gid].phase = EnvPhase::Ready;
+        groups[gid].steps += 1;
 
         let step_observation = value_leaves(response.observation.as_ref())?;
         state.record_step_at(&positions, &response.rewards);
@@ -1473,6 +1523,38 @@ where
         fan_out_event!(self, observation_emitted, event);
 
         let group = &mut groups[gid];
+        if self.deliver_history {
+            // Exactly-once: an observation is either the predict's own (the
+            // replay is spent, so this step re-plans) or a history row carried
+            // on the next predict (a buffered frame will act on it). Never both,
+            // never neither.
+            msg.step = Some(group.steps);
+            if group.replay.is_empty() {
+                msg.history = std::mem::take(&mut group.history);
+                if !msg.history.is_empty() {
+                    lock_agg(telemetry).record(Sample::count(
+                        SRC_PREDICT,
+                        metrics::HISTORY_ROWS,
+                        msg.history.len() as u64,
+                    ));
+                }
+            } else {
+                if group.history.len() >= HISTORY_BACKLOG_CAP {
+                    return Err(RuntimeError::Protocol(format!(
+                        "route {} buffered {} observation-history rows without a predict: the \
+                         model endpoint returned a chunk longer than any execution horizon \
+                         the runtime supports",
+                        state.env_id(),
+                        group.history.len()
+                    )));
+                }
+                group.history.push(ObservationHistoryFrame {
+                    observation: msg.observation.clone(),
+                    episode_info: msg.episode_info.clone(),
+                    step: group.steps,
+                });
+            }
+        }
         group.obs_msg = Some(msg.clone());
         group.phase = EnvPhase::Ready;
         if group.replay.is_empty() && matches!(group.predict, PredictState::None) {

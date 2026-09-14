@@ -63,6 +63,13 @@ pub mod capabilities {
     /// actually pipeline (capability present) or serialize behind the handler
     /// (capability absent). See `docs/editions/2026.06.md`.
     pub const MODEL_CONCURRENT_PREDICT_V1: &str = "rlmesh.model.concurrent_predict.v1";
+
+    /// A served model endpoint understands observation history: it answers
+    /// `ResolveAdapterResponse.history` when the runtime offers
+    /// `delivers_history`, ingests `PredictRequest.history` rows, and holds the
+    /// producer to consecutive `step`s. Advisory: a runtime that never offers
+    /// history sees no wire difference.
+    pub const MODEL_OBSERVATION_HISTORY_V1: &str = "rlmesh.model.observation_history.v1";
 }
 
 /// Whether the given protocol generation is the one this build speaks. Plain

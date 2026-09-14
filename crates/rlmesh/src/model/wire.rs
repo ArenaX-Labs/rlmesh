@@ -86,12 +86,30 @@ pub(super) fn model_observation_from_endpoint_request(
     };
     validate_predict_route(&route)?;
     let num_envs = route.episodes.len();
+    let history = request
+        .history
+        .into_iter()
+        .map(|frame| crate::model::types::HistoryFrame {
+            observation: value_leaves(frame.observation.as_ref()).map(<[_]>::to_vec),
+            episodes: frame
+                .episode_info
+                .into_iter()
+                .map(|info| crate::model::types::EpisodeInfo {
+                    episode_id: info.episode_id,
+                    seed: info.seed,
+                })
+                .collect(),
+            step: frame.step,
+        })
+        .collect();
 
     Ok(ModelObservation {
         observation: value_leaves(request.observation.as_ref()).map(<[_]>::to_vec),
         num_envs,
         env_contract: None,
         route,
+        history,
+        step: request.step,
     })
 }
 
@@ -249,6 +267,8 @@ mod tests {
     #[test]
     fn model_observation_carries_episode_seed_from_episode_info() {
         let request = PredictRequest {
+            history: Vec::new(),
+            step: None,
             context: Some(AdapterContext {
                 session_id: "s".to_string(),
                 env_id: "e".to_string(),
@@ -282,6 +302,8 @@ mod tests {
     #[test]
     fn model_observation_rejects_blank_episode_id_in_episode_info() {
         let request = PredictRequest {
+            history: Vec::new(),
+            step: None,
             context: Some(AdapterContext {
                 session_id: "s".to_string(),
                 env_id: "e".to_string(),

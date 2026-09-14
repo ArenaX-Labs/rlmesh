@@ -60,9 +60,26 @@ message ResolveAdapterRequest {
   // (1024); the model rejects a larger pin at resolve.
   uint32 execution_horizon = 4;
 
-  // Tag 5 is spoken for by `delivers_history` (bool) — the runtime's declaration
-  // that it will deliver observation-history frames on Predict. Not emitted yet;
-  // the frame-history wave (rc.10) populates it together with PredictRequest 4-5.
+  // The runtime's declaration that it will deliver observation history on
+  // Predict: every env step it executed from a replayed chunk WITHOUT
+  // predicting arrives as `PredictRequest.history` on the next predict, so a
+  // model whose adapter keeps a frame window sees every step, not only the
+  // decision points. A runtime that does not set it gets a resolve error for a
+  // stacked adapter at h > 1 (the model cannot keep a correct window without
+  // the frames). Answered by `ResolveAdapterResponse.history`.
+  bool delivers_history = 5;
+}
+
+// What a resolved route's adapter keeps a frame window for, answered when the
+// runtime offered history (`delivers_history`) and the adapter stacks frames.
+// Absent = the route needs no history; the runtime then sends none.
+message ObservationHistoryNeeds {
+  // The stacked inputs' canonical placement keys (informational today: the
+  // runtime sends the whole observation per history row).
+  repeated string keys = 1;
+  // Reserved for pruned history rows (only the keys' leaves): a runtime may
+  // prune only when the model set this. Always false today.
+  bool prunable = 2;
 }
 
 message ResolveAdapterResponse {
@@ -73,7 +90,21 @@ message ResolveAdapterResponse {
   // whatever it returns and the runtime takes the min(len, h) prefix.
   optional uint32 native_chunk = 1;
 
-  // Tag 2 is spoken for by `history` (ObservationHistoryNeeds) in rc.10.
+  // Set when the runtime offered history and this route's adapter needs it.
+  ObservationHistoryNeeds history = 2;
+}
+
+// One env step the runtime executed without predicting (a replayed chunk
+// frame), delivered on the next Predict so the model-side frame windows advance
+// on every step. The same batched shape as `PredictRequest.observation` /
+// `episode_info`: row `i` belongs to `episode_info[i]` AT THAT STEP (a lane may
+// have rolled to a new episode since).
+message ObservationHistoryFrame {
+  rlmesh.spaces.v1.SpaceValue observation = 1;
+  repeated EpisodeInfo episode_info = 2;
+  // The producer's per-group env-step counter at this frame (see
+  // `PredictRequest.step`).
+  int64 step = 3;
 }
 
 // Per-row episode identity and seed metadata: the self-describing batch. Row
@@ -101,10 +132,20 @@ message PredictRequest {
   // row count (num_envs). One entry for a single env.
   repeated EpisodeInfo episode_info = 3;
 
-  // Tags 4 and 5 are spoken for by the frame-history wave (rc.10): `history`
-  // (repeated ObservationHistoryFrame, the older observations a history-needing
-  // model's window wants) and `step` (the route's env-step counter stamped on
-  // each frame). Neither is emitted yet.
+  // The env steps executed since the previous predict on this route WITHOUT a
+  // predict (replayed chunk frames), oldest first. Sent only on a route whose
+  // ResolveAdapter answered `history`; empty at execution_horizon 1 and on the
+  // first predict after a reset. Together with `observation` these are every
+  // step of the episode exactly once, in order.
+  repeated ObservationHistoryFrame history = 4;
+
+  // The producer's per-group env-step counter at `observation`: one step per
+  // env.step of the group, so consecutive observations of one episode carry
+  // consecutive values (a history row's `step` is one less than the next
+  // row's, and the last row's is one less than this). Required once a route
+  // negotiated `history`; the model rejects a gap or a repeat instead of
+  // stacking a wrong window.
+  optional int64 step = 5;
 }
 
 message PredictResponse {
