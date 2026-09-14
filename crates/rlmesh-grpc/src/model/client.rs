@@ -49,7 +49,6 @@ pub struct GroupedPredictOutcome {
 /// [`predict_concurrent`](Self::predict_concurrent), which takes `&self` and may
 /// be called from multiple tasks concurrently. The matching server advertises
 /// the `rlmesh.model.concurrent_predict.v1` capability when it pipelines.
-
 pub struct ModelClient {
     address: String,
     client: ModelServiceClient<tonic::transport::Channel>,
