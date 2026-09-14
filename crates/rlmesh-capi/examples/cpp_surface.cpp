@@ -182,6 +182,8 @@ rlmesh::Result<rlmesh::Model> batched_model() {
           rlmesh::Episode episode = batch.episode(i);
           (void)episode.id;
           (void)episode.seed;
+          (void)episode.predict_index;
+          (void)episode.predict_seed;
           if (std::optional<rlmesh::ValueRef> row = batch.at(i)) (void)row->kind();
           auto action = rlmesh::zeros_for(batch.action_space());
           if (!action) return action.error();
@@ -199,6 +201,8 @@ rlmesh::Status drive(const std::string& address) {
     (void)request.request_id();
     (void)request.episode().id;
     (void)request.episode().seed;
+    (void)request.episode().predict_index;
+    (void)request.episode().predict_seed;
     (void)request.observation();
     (void)request.observation_space();
     (void)request.batch().size();
@@ -216,6 +220,8 @@ rlmesh::Status drive(const std::string& address) {
   options.execution_horizon = 1;
   options.close_env = true;
   options.episode_seeds = {1, 2};
+  options.trial_indexed = true;
+  options.trial_index_base = 100;
   auto report = model->run_local(address, options);
   if (!report) return report.error();
   rlmesh::RunReport copied = *report;

@@ -6,14 +6,16 @@
 //! its own thread and folded into an `Error` value that travels back to the caller.
 #![allow(unsafe_code)] // FFI: raw callback pointers + repr(C) structs.
 
+use std::collections::{BTreeMap, HashMap};
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use rlmesh::spaces::SpaceValue;
 use rlmesh::{
-    BindAddress, CancellationToken, ConnectAddress, Error, ModelHandler, ModelObservation,
-    ModelWorker, RunLocalOptions, RuntimeReport, ServeModelOptions, ServeOptions,
+    BindAddress, CancellationToken, ConnectAddress, EpisodeInfo, Error, ModelHandler,
+    ModelObservation, ModelWorker, RunLocalOptions, RuntimeReport, ServeModelOptions, ServeOptions,
+    predict_seed,
 };
 
 use crate::abi::status::{
@@ -52,6 +54,123 @@ pub struct RlmeshEpisode {
     pub seeded: bool,
     /// The explicit reset seed; only meaningful when `seeded`.
     pub seed: i64,
+    /// This episode's re-plan ordinal: 0 for the first predict under `id`,
+    /// then counting up by one per predict until the episode ends.
+    pub predict_index: u64,
+    /// `rlmesh::predict_seed(seed, predict_index)` — a reproducible per-predict
+    /// sampling seed. Only meaningful when `seeded` (0 otherwise), mirroring the
+    /// SDK's `None` for an unseeded episode.
+    pub predict_seed: i64,
+}
+
+/// Live episodes a model tracks before the least-recently-used one is evicted
+/// (the SDK's `EPISODE_STATE_CAPACITY`). Comfortably above the env workers any
+/// one model server admits at once, so a real eviction means episode ends are
+/// being missed, not that the fleet is large.
+const EPISODE_STORE_CAPACITY: usize = 4096;
+
+/// One held episode's bookkeeping: the env it belongs to (so an env-wide
+/// `on_episode_end` can drop it), the seed it was first seen with, how many
+/// predicts it has had, and its recency stamp in [`EpisodeStore::order`].
+struct HeldEpisode {
+    env_id: String,
+    seed: Option<i64>,
+    index: u64,
+    stamp: u64,
+}
+
+/// The capi's bounded per-episode store, keyed by episode id — the same keying
+/// the Python SDK does once in `EpisodeStore` so a C model reads
+/// `predict_index` / `predict_seed` off the row instead of counting itself.
+///
+/// Entries are dropped at the episode-end edge (`reset_adapter`, on both the
+/// local and the served path). A run that never signals an end still cannot
+/// grow without bound: past `capacity` the least-recently-used entry is evicted
+/// through the *same* `on_episode_end` callback, so a model that mirrors the
+/// store gets the drop edge either way.
+struct EpisodeStore {
+    episodes: HashMap<String, HeldEpisode>,
+    /// Recency stamp -> episode id; the smallest stamp is the LRU entry.
+    order: BTreeMap<u64, String>,
+    clock: u64,
+    capacity: usize,
+}
+
+impl EpisodeStore {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            episodes: HashMap::new(),
+            order: BTreeMap::new(),
+            clock: 0,
+            capacity: capacity.max(1),
+        }
+    }
+
+    /// Hand out `episode`'s next `(predict_index, predict_seed)` and advance it,
+    /// appending any `(env_id, episode_id)` this insertion evicted to `evicted`.
+    ///
+    /// A row with no identity (an anonymous spec-less lane) gets a throwaway
+    /// `(0, None)` that is never stored: there is nothing to key it by.
+    fn next(
+        &mut self,
+        env_id: &str,
+        episode: &EpisodeInfo,
+        evicted: &mut Vec<(String, String)>,
+    ) -> (u64, Option<i64>) {
+        if episode.episode_id.is_empty() {
+            return (0, None);
+        }
+        self.clock += 1;
+        let stamp = self.clock;
+        let held = self
+            .episodes
+            .entry(episode.episode_id.clone())
+            .or_insert_with(|| HeldEpisode {
+                env_id: env_id.to_string(),
+                seed: episode.seed,
+                index: 0,
+                stamp,
+            });
+        // A re-seen episode moves to the recent end; a new one lands there.
+        self.order.remove(&held.stamp);
+        held.stamp = stamp;
+        self.order.insert(stamp, episode.episode_id.clone());
+        let index = held.index;
+        held.index += 1;
+        let seed = held.seed.map(|seed| predict_seed(seed, index));
+        while self.episodes.len() > self.capacity {
+            let Some((_, oldest)) = self.order.pop_first() else {
+                break;
+            };
+            if let Some(held) = self.episodes.remove(&oldest) {
+                evicted.push((held.env_id, oldest));
+            }
+        }
+        (index, seed)
+    }
+
+    /// Drop the given episodes of `env_id`; an empty list means every episode
+    /// of that env (the `episode_id == NULL` form of `on_episode_end`).
+    fn end(&mut self, env_id: &str, episode_ids: &[String]) {
+        if episode_ids.is_empty() {
+            let mut ended = Vec::new();
+            self.episodes.retain(|id, held| {
+                if held.env_id == env_id {
+                    ended.push((held.stamp, id.clone()));
+                }
+                held.env_id != env_id
+            });
+            for (stamp, _) in ended {
+                self.order.remove(&stamp);
+            }
+            return;
+        }
+        for id in episode_ids {
+            if let Some(held) = self.episodes.remove(id) {
+                self.order.remove(&held.stamp);
+            }
+        }
+    }
 }
 
 /// What a predict callback receives. Pointers are valid only for the duration of
@@ -130,6 +249,8 @@ pub struct RlmeshModel {
 struct CModelHandler {
     vtable: RlmeshModelVtable,
     user_data: UserData,
+    /// Per-episode predict ordinals, keyed by episode id (see [`EpisodeStore`]).
+    episodes: EpisodeStore,
 }
 
 impl CModelHandler {
@@ -139,6 +260,7 @@ impl CModelHandler {
         Self {
             vtable: model.vtable,
             user_data: model.user_data,
+            episodes: EpisodeStore::with_capacity(EPISODE_STORE_CAPACITY),
         }
     }
 }
@@ -198,10 +320,28 @@ impl ModelHandler for CModelHandler {
         };
         let contract = observation.env_contract;
         let route = observation.route;
+        // Stamp each row's re-plan ordinal + derived seed here, on the handler's
+        // own thread: the store is plain `&mut self` state, no lock needed. An
+        // overflow eviction is handed to the C side as an `on_episode_end` before
+        // the predict, so a model mirroring the store drops that episode first.
+        let mut evicted: Vec<(String, String)> = Vec::new();
+        let contexts: Vec<(u64, Option<i64>)> = route
+            .episodes
+            .iter()
+            .map(|episode| self.episodes.next(&route.env_id, episode, &mut evicted))
+            .collect();
+        let on_episode_end = self.vtable.on_episode_end;
 
         tokio::task::spawn_blocking(move || -> Result<Vec<SpaceValue>, Error> {
             // Capture the whole (`Send`) `UserData`, not just the bare pointer field.
             let user_data = user_data;
+            if let Some(on_episode_end) = on_episode_end {
+                for (env_id, episode_id) in &evicted {
+                    let env = cstring(env_id);
+                    let id = cstring(episode_id);
+                    unsafe { on_episode_end(user_data.0, env.as_ptr(), id.as_ptr()) };
+                }
+            }
             let session = cstring(&route.session_id);
             let env = cstring(&route.env_id);
             let request = cstring(&route.request_id);
@@ -214,11 +354,16 @@ impl ModelHandler for CModelHandler {
                 .episodes
                 .iter()
                 .zip(&episode_ids)
-                .map(|(episode, id)| RlmeshEpisode {
-                    id: id.as_ptr(),
-                    seeded: episode.seed.is_some(),
-                    seed: episode.seed.unwrap_or_default(),
-                })
+                .zip(&contexts)
+                .map(
+                    |((episode, id), &(predict_index, predict_seed))| RlmeshEpisode {
+                        id: id.as_ptr(),
+                        seeded: episode.seed.is_some(),
+                        seed: episode.seed.unwrap_or_default(),
+                        predict_index,
+                        predict_seed: predict_seed.unwrap_or_default(),
+                    },
+                )
                 .collect();
             let lane_ptrs: Option<Vec<*const RlmeshValue>> = lanes.as_ref().map(|lanes| {
                 lanes
@@ -282,6 +427,9 @@ impl ModelHandler for CModelHandler {
         env_id: &str,
         episode_ids: Vec<String>,
     ) -> rlmesh::Result<()> {
+        // The store's drop edge is unconditional: a model without an
+        // `on_episode_end` still gets its ordinals restarted per episode.
+        self.episodes.end(env_id, &episode_ids);
         let Some(callback) = self.vtable.on_episode_end else {
             return Ok(());
         };
@@ -434,6 +582,12 @@ pub struct RlmeshRunOptions {
     pub episode_seeds: *const i64,
     /// Length of `episode_seeds`; 0 = unset.
     pub num_episode_seeds: usize,
+    /// Whether `trial_index_base` is set.
+    pub trial_indexed: bool,
+    /// First trial ordinal this run's episodes walk (`base`, `base + 1`, ...);
+    /// delivered as `reset(options={"trial_index": k})` to an env that declares
+    /// that reset option. Only meaningful when `trial_indexed`.
+    pub trial_index_base: u64,
 }
 
 /// What a finished `rlmesh_model_run_local` reports: plain scalars, no handle.
@@ -503,6 +657,9 @@ fn run_local_options(address: ConnectAddress, options: *const RlmeshRunOptions) 
         let seeds =
             unsafe { std::slice::from_raw_parts(options.episode_seeds, options.num_episode_seeds) };
         run = run.episode_seeds(seeds.to_vec());
+    }
+    if options.trial_indexed {
+        run = run.trial_index_base(options.trial_index_base);
     }
     run
 }
@@ -701,8 +858,9 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use rlmesh::ModelRouteContext;
     use rlmesh::spaces::{DType, EnvContract, Tensor, spaces::DiscreteBuilder};
-    use rlmesh::{EpisodeInfo, ModelRouteContext};
+    use rlmesh_spaces::MetaValue;
 
     use super::*;
     use crate::abi::status::rlmesh_last_error_is_recoverable;
@@ -741,6 +899,16 @@ mod tests {
     #[global_allocator]
     static ALLOC: ProbeAlloc = ProbeAlloc;
 
+    /// One `RlmeshEpisode` row as the C side read it, copied out of the call.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct SeenEpisode {
+        id: String,
+        seeded: bool,
+        seed: i64,
+        predict_index: u64,
+        predict_seed: i64,
+    }
+
     /// What the C callbacks record, reached through `user_data`.
     #[derive(Default)]
     struct Counters {
@@ -749,6 +917,10 @@ mod tests {
         episode_ends: AtomicUsize,
         null_episode_ids: AtomicUsize,
         null_observations: AtomicUsize,
+        /// Every episode row handed to `counting_predict`, in call order.
+        rows: std::sync::Mutex<Vec<SeenEpisode>>,
+        /// Every non-NULL id handed to `counting_episode_end`, in call order.
+        ended_ids: std::sync::Mutex<Vec<String>>,
     }
 
     impl Counters {
@@ -793,7 +965,18 @@ mod tests {
         if obs.observations.is_null() {
             counters.null_observations.fetch_add(1, Ordering::SeqCst);
         }
+        let mut rows = counters.rows.lock().expect("rows");
         for row in 0..obs.num_envs {
+            let episode = unsafe { &*obs.episodes.add(row) };
+            rows.push(SeenEpisode {
+                id: unsafe { CStr::from_ptr(episode.id) }
+                    .to_string_lossy()
+                    .into_owned(),
+                seeded: episode.seeded,
+                seed: episode.seed,
+                predict_index: episode.predict_index,
+                predict_seed: episode.predict_seed,
+            });
             unsafe { *out.add(row) = owned(u8_box(7)) };
         }
         0
@@ -808,6 +991,12 @@ mod tests {
         counters.episode_ends.fetch_add(1, Ordering::SeqCst);
         if episode_id.is_null() {
             counters.null_episode_ids.fetch_add(1, Ordering::SeqCst);
+        } else {
+            counters.ended_ids.lock().expect("ended ids").push(
+                unsafe { CStr::from_ptr(episode_id) }
+                    .to_string_lossy()
+                    .into_owned(),
+            );
         }
     }
 
@@ -890,6 +1079,7 @@ mod tests {
                 ..full_vtable()
             },
             user_data: UserData(std::ptr::null_mut()),
+            episodes: EpisodeStore::with_capacity(EPISODE_STORE_CAPACITY),
         }
     }
 
@@ -897,6 +1087,46 @@ mod tests {
         CModelHandler {
             vtable: counting_vtable(),
             user_data: UserData(counters.user_data()),
+            episodes: EpisodeStore::with_capacity(EPISODE_STORE_CAPACITY),
+        }
+    }
+
+    fn episode(id: &str, seed: Option<i64>) -> EpisodeInfo {
+        EpisodeInfo {
+            episode_id: id.to_string(),
+            seed,
+        }
+    }
+
+    /// A one-row observation for `env-1` whose row belongs to `episode`.
+    fn episode_observation(episode: EpisodeInfo) -> ModelObservation {
+        let mut observation = discrete_observation(&[1]);
+        observation.route.env_id = "env-1".to_string();
+        observation.route.episodes = vec![episode];
+        observation
+    }
+
+    /// The `(predict_index, predict_seed)` the C side read on the last row.
+    fn last_context(counters: &Counters) -> (u64, i64) {
+        let rows = counters.rows.lock().expect("rows");
+        let row = rows.last().expect("a predict row was recorded");
+        (row.predict_index, row.predict_seed)
+    }
+
+    /// Every field of `RlmeshRunOptions` unset, the way a C caller's `{0}` is.
+    fn unset_run_options() -> RlmeshRunOptions {
+        RlmeshRunOptions {
+            max_episodes: 0,
+            seeded: false,
+            base_seed: 0,
+            max_episode_steps: 0,
+            max_episode_seconds: 0.0,
+            execution_horizon: 0,
+            close_env: false,
+            episode_seeds: std::ptr::null(),
+            num_episode_seeds: 0,
+            trial_indexed: false,
+            trial_index_base: 0,
         }
     }
 
@@ -1011,6 +1241,146 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn predict_index_counts_per_episode_and_restarts_after_its_end() {
+        let counters = Counters::default();
+        let mut handler = counting_handler(&counters);
+        let two_rows = || {
+            let mut observation = discrete_observation(&[1, 2]);
+            observation.route.env_id = "env-1".to_string();
+            observation.route.episodes = vec![episode("ep-a", Some(7)), episode("ep-b", None)];
+            observation
+        };
+        for _ in 0..3 {
+            handler.predict(two_rows()).await.expect("predict");
+        }
+        let rows = counters.rows.lock().expect("rows").clone();
+        // The seeded episode counts 0, 1, 2 and carries the core helper's seed
+        // for each ordinal; the unseeded one counts too, with no seed to mix.
+        let seen = |id: &str| -> Vec<SeenEpisode> {
+            rows.iter().filter(|row| row.id == id).cloned().collect()
+        };
+        assert_eq!(
+            seen("ep-a"),
+            (0..3)
+                .map(|index| SeenEpisode {
+                    id: "ep-a".to_string(),
+                    seeded: true,
+                    seed: 7,
+                    predict_index: index,
+                    predict_seed: predict_seed(7, index),
+                })
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            seen("ep-b"),
+            (0..3)
+                .map(|index| SeenEpisode {
+                    id: "ep-b".to_string(),
+                    seeded: false,
+                    seed: 0,
+                    predict_index: index,
+                    predict_seed: 0,
+                })
+                .collect::<Vec<_>>()
+        );
+
+        // Ending one episode restarts it at 0 while the other keeps counting.
+        handler
+            .reset_adapter("env-1", vec!["ep-a".to_string()])
+            .await
+            .expect("reset_adapter");
+        handler.predict(two_rows()).await.expect("predict");
+        let rows = counters.rows.lock().expect("rows").clone();
+        let tail: Vec<(u64, i64)> = rows[rows.len() - 2..]
+            .iter()
+            .map(|row| (row.predict_index, row.predict_seed))
+            .collect();
+        assert_eq!(tail, vec![(0, predict_seed(7, 0)), (3, 0)]);
+
+        // An env-wide end (no ids) drops every episode of that env.
+        handler
+            .reset_adapter("env-1", Vec::new())
+            .await
+            .expect("reset_adapter");
+        handler.predict(two_rows()).await.expect("predict");
+        let rows = counters.rows.lock().expect("rows").clone();
+        let tail: Vec<u64> = rows[rows.len() - 2..]
+            .iter()
+            .map(|row| row.predict_index)
+            .collect();
+        assert_eq!(tail, vec![0, 0]);
+    }
+
+    #[tokio::test]
+    async fn an_anonymous_row_always_reads_predict_index_zero() {
+        // A spec-less lane carries no episode id: nothing to key a counter by,
+        // so it reads as a fresh first predict every time and is never stored.
+        let counters = Counters::default();
+        let mut handler = counting_handler(&counters);
+        for _ in 0..2 {
+            handler
+                .predict(episode_observation(EpisodeInfo::default()))
+                .await
+                .expect("predict");
+            assert_eq!(last_context(&counters), (0, 0));
+        }
+        assert!(handler.episodes.episodes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn episode_store_evicts_the_least_recent_past_capacity_through_on_episode_end() {
+        let counters = Counters::default();
+        let mut handler = counting_handler(&counters);
+        handler.episodes = EpisodeStore::with_capacity(2);
+        let single = |id: &str| episode_observation(episode(id, Some(1)));
+
+        handler.predict(single("ep-a")).await.expect("predict");
+        handler.predict(single("ep-b")).await.expect("predict");
+        // Re-seeing ep-a makes ep-b the least recently used ...
+        handler.predict(single("ep-a")).await.expect("predict");
+        // ... so the third episode evicts ep-b, and says so through the hook.
+        handler.predict(single("ep-c")).await.expect("predict");
+        assert_eq!(
+            *counters.ended_ids.lock().expect("ended ids"),
+            vec!["ep-b".to_string()]
+        );
+        assert_eq!(counters.episode_ends.load(Ordering::SeqCst), 1);
+
+        // ep-a survived with its count intact; the evicted ep-b restarts at 0
+        // (and its return pushes out ep-c, now the least recent).
+        handler.predict(single("ep-a")).await.expect("predict");
+        assert_eq!(last_context(&counters), (2, predict_seed(1, 2)));
+        handler.predict(single("ep-b")).await.expect("predict");
+        assert_eq!(last_context(&counters), (0, predict_seed(1, 0)));
+        assert_eq!(
+            *counters.ended_ids.lock().expect("ended ids"),
+            vec!["ep-b".to_string(), "ep-c".to_string()]
+        );
+        assert_eq!(handler.episodes.episodes.len(), 2);
+    }
+
+    #[test]
+    fn run_local_options_map_the_trial_index_base_only_when_flagged() {
+        let address = ConnectAddress::parse("tcp://127.0.0.1:1").expect("address");
+        let mut options = unset_run_options();
+        options.trial_index_base = 100;
+        assert_eq!(
+            run_local_options(address.clone(), &options).trial_index_base,
+            None,
+            "an unflagged base is unset, like an unflagged base_seed"
+        );
+        options.trial_indexed = true;
+        assert_eq!(
+            run_local_options(address.clone(), &options).trial_index_base,
+            Some(100)
+        );
+        assert_eq!(
+            run_local_options(address, std::ptr::null()).trial_index_base,
+            None
+        );
+    }
+
+    #[tokio::test]
     async fn reset_adapter_maps_ids_onto_callbacks() {
         let counters = Counters::default();
         // No ids means "every episode of this env": exactly one call, NULL id.
@@ -1064,18 +1434,27 @@ mod tests {
         assert!(read.on_close.is_some());
     }
 
+    /// What `SmokeEnv` records off each reset: the seed and, when the runtime
+    /// delivered one, the `trial_index` reset option.
+    #[derive(Default)]
+    struct ResetLog {
+        seeds: Vec<Option<i64>>,
+        trials: Vec<Option<i64>>,
+    }
+
     /// A minimal single environment: a Uint8 `Box[1]` obs/action, one step per
-    /// episode (reset → 0, step → 1 then terminated, reward 1.0). Records the
-    /// reset seeds it was given so a seeded run is checkable.
+    /// episode (reset → 0, step → 1 then terminated, reward 1.0). Declares the
+    /// `trial_index` reset option and records the reset seeds + trial ordinals
+    /// it was given so a seeded, trial-indexed run is checkable.
     struct SmokeEnv {
         obs_space: rlmesh::SpaceSpec,
         action_space: rlmesh::SpaceSpec,
         env_contract: EnvContract,
-        reset_seeds: Arc<std::sync::Mutex<Vec<Option<i64>>>>,
+        resets: Arc<std::sync::Mutex<ResetLog>>,
     }
 
     impl SmokeEnv {
-        fn new(reset_seeds: Arc<std::sync::Mutex<Vec<Option<i64>>>>) -> Self {
+        fn new(resets: Arc<std::sync::Mutex<ResetLog>>) -> Self {
             let space = |high: f64| {
                 rlmesh::spaces::spaces::BoxSpaceBuilder::scalar(0.0, high, vec![1])
                     .dtype(DType::Uint8)
@@ -1083,17 +1462,21 @@ mod tests {
                     .expect("space")
             };
             let (obs_space, action_space) = (space(255.0), space(1.0));
+            let reset_options = MetaValue::List(vec![MetaValue::String("trial_index".to_string())]);
             Self {
                 env_contract: EnvContract {
                     id: "SmokeEnv-capi".to_string(),
                     observation_space: Some(obs_space.clone()),
                     action_space: Some(action_space.clone()),
+                    metadata: Some(
+                        [(rlmesh::ENV_RESET_OPTIONS_KEY.to_string(), reset_options)].into(),
+                    ),
                     num_envs: 1,
                     ..Default::default()
                 },
                 obs_space,
                 action_space,
-                reset_seeds,
+                resets,
             }
         }
     }
@@ -1114,7 +1497,13 @@ mod tests {
             &mut self,
             req: rlmesh::ResetRequest,
         ) -> Result<rlmesh::ResetResult, rlmesh::EnvRuntimeError> {
-            self.reset_seeds.lock().expect("seed log").push(req.seed);
+            let trial = match req.options.as_ref().and_then(|o| o.get("trial_index")) {
+                Some(MetaValue::Int(trial)) => Some(*trial),
+                _ => None,
+            };
+            let mut resets = self.resets.lock().expect("reset log");
+            resets.seeds.push(req.seed);
+            resets.trials.push(trial);
             Ok(rlmesh::ResetResult {
                 observation: Some(u8_box(0)),
                 info: None,
@@ -1154,17 +1543,17 @@ mod tests {
     /// blocking capi export can be driven against it from the test thread.
     struct EnvHarness {
         address: String,
-        seeds: Arc<std::sync::Mutex<Vec<Option<i64>>>>,
+        resets: Arc<std::sync::Mutex<ResetLog>>,
         stop: CancellationToken,
         thread: Option<std::thread::JoinHandle<()>>,
     }
 
     impl EnvHarness {
         fn start() -> Self {
-            let seeds = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let resets = Arc::new(std::sync::Mutex::new(ResetLog::default()));
             let stop = CancellationToken::new();
             let (tx, rx) = std::sync::mpsc::channel();
-            let (env_seeds, serve_stop) = (Arc::clone(&seeds), stop.clone());
+            let (env_resets, serve_stop) = (Arc::clone(&resets), stop.clone());
             let thread = std::thread::spawn(move || {
                 let runtime = tokio::runtime::Builder::new_multi_thread()
                     .worker_threads(1)
@@ -1172,7 +1561,7 @@ mod tests {
                     .build()
                     .expect("env runtime");
                 runtime.block_on(async move {
-                    let bound = rlmesh::EnvServer::new(SmokeEnv::new(env_seeds))
+                    let bound = rlmesh::EnvServer::new(SmokeEnv::new(env_resets))
                         .bind(BindAddress::Tcp {
                             host: "127.0.0.1".to_string(),
                             port: 0,
@@ -1188,7 +1577,7 @@ mod tests {
             });
             Self {
                 address: rx.recv().expect("env address"),
-                seeds,
+                resets,
                 stop,
                 thread: Some(thread),
             }
@@ -1222,14 +1611,11 @@ mod tests {
         let seeds = [11_i64, 22, 33];
         let options = RlmeshRunOptions {
             max_episodes: 3,
-            seeded: false,
-            base_seed: 0,
-            max_episode_steps: 0,
-            max_episode_seconds: 0.0,
-            execution_horizon: 0,
-            close_env: false,
             episode_seeds: seeds.as_ptr(),
             num_episode_seeds: seeds.len(),
+            trial_indexed: true,
+            trial_index_base: 100,
+            ..unset_run_options()
         };
         let mut report = RlmeshRunReport::default();
         let status =
@@ -1245,10 +1631,23 @@ mod tests {
         assert_eq!(counters.predicts.load(Ordering::SeqCst), 3);
         // The close hook fires exactly once at the end of the run.
         assert_eq!(counters.closes.load(Ordering::SeqCst), 1);
-        // The explicit per-episode seeds reached the env's resets in order.
+        // The explicit per-episode seeds reached the env's resets in order, and
+        // the trial ordinals walked from the base — the env declared the option.
+        let resets = env.resets.lock().expect("reset log");
+        assert_eq!(resets.seeds, vec![Some(11), Some(22), Some(33)]);
+        assert_eq!(resets.trials, vec![Some(100), Some(101), Some(102)]);
+        drop(resets);
+        // One-step episodes: every predict is that episode's first, seeded with
+        // the core helper's mix of its reset seed and ordinal 0.
+        let rows = counters.rows.lock().expect("rows").clone();
         assert_eq!(
-            *env.seeds.lock().expect("seed log"),
-            vec![Some(11), Some(22), Some(33)]
+            rows.iter()
+                .map(|row| (row.seeded, row.seed, row.predict_index, row.predict_seed))
+                .collect::<Vec<_>>(),
+            seeds
+                .iter()
+                .map(|&seed| (true, seed, 0, predict_seed(seed, 0)))
+                .collect::<Vec<_>>()
         );
 
         // Cancellation is terminal, and says so with its own status: the next run
@@ -1365,7 +1764,7 @@ mod tests {
                     .expect("client connects to the C-served model");
             client.handshake().await.expect("handshake");
 
-            let env_contract = SmokeEnv::new(Arc::new(std::sync::Mutex::new(Vec::new())))
+            let env_contract = SmokeEnv::new(Arc::new(std::sync::Mutex::new(ResetLog::default())))
                 .env_contract
                 .clone();
             let mut remote = rlmesh::RemoteModel::connect(&address, env_contract)

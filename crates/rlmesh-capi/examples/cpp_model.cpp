@@ -11,18 +11,24 @@
 
 namespace {
 
-// Log what arrived, whatever kind the observation space happens to be.
+// Log what arrived: which predict of the episode this is (plus its per-predict
+// seed when the episode was seeded), then the observation, whatever kind the
+// observation space happens to be.
 void log_observation(const rlmesh::Request& request) {
-  std::optional<rlmesh::ValueRef> observation = request.observation();
-  if (!observation) return;
-  std::string_view id = request.episode().id;
-  if (auto n = observation->as_discrete()) {
-    std::printf("episode %.*s: obs %lld\n", static_cast<int>(id.size()), id.data(),
-                static_cast<long long>(*n));
-  } else if (auto tensor = observation->as_tensor()) {
-    std::printf("episode %.*s: obs %d-D tensor, %zu elements\n", static_cast<int>(id.size()),
-                id.data(), tensor->ndim(), tensor->numel());
+  const rlmesh::Episode& episode = request.episode();
+  std::printf("episode %.*s: predict %llu", static_cast<int>(episode.id.size()), episode.id.data(),
+              static_cast<unsigned long long>(episode.predict_index));
+  if (episode.predict_seed) {
+    std::printf(" seed %lld", static_cast<long long>(*episode.predict_seed));
   }
+  if (std::optional<rlmesh::ValueRef> observation = request.observation()) {
+    if (auto n = observation->as_discrete()) {
+      std::printf(" obs %lld", static_cast<long long>(*n));
+    } else if (auto tensor = observation->as_tensor()) {
+      std::printf(" obs %d-D tensor, %zu elements", tensor->ndim(), tensor->numel());
+    }
+  }
+  std::printf("\n");
 }
 
 }  // namespace

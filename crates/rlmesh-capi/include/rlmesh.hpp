@@ -783,10 +783,15 @@ inline Result<Value> zeros_for(SpaceRef space) {
 }
 
 /// One row's episode identity. `id` is runtime-minted and never repeats, so a
-/// stateful model keys per-episode state by it.
+/// stateful model keys per-episode state by it. `predict_index` is the
+/// episode's re-plan ordinal (0 on its first predict, +1 per predict until the
+/// episode ends) and `predict_seed` the reproducible per-predict seed derived
+/// from the episode seed and that ordinal — nullopt for an unseeded episode.
 struct Episode {
   std::string_view id;
   std::optional<int64_t> seed;
+  uint64_t predict_index = 0;
+  std::optional<int64_t> predict_seed;
 };
 
 /// What a batched predict receives: routing metadata plus one decoded
@@ -814,8 +819,9 @@ class Batch {
   Episode episode(size_t i) const {
     if (raw_->episodes == nullptr || i >= raw_->num_envs) return Episode{};
     const RlmeshEpisode& row = raw_->episodes[i];
-    return Episode{detail::sv(row.id),
-                   row.seeded ? std::optional<int64_t>(row.seed) : std::nullopt};
+    return Episode{detail::sv(row.id), row.seeded ? std::optional<int64_t>(row.seed) : std::nullopt,
+                   row.predict_index,
+                   row.seeded ? std::optional<int64_t>(row.predict_seed) : std::nullopt};
   }
 
   std::string_view env_id() const { return detail::sv(raw_->env_id); }
@@ -875,6 +881,10 @@ struct RunOptions {
   /// Explicit per-episode seeds (overriding `base_seed`), borrowed for the
   /// duration of the run_local call only.
   std::vector<int64_t> episode_seeds;
+  /// Walk trial ordinals from `trial_index_base` (one per episode), delivered
+  /// as `reset(options={"trial_index": k})` to an env that declares the option.
+  bool trial_indexed = false;
+  uint64_t trial_index_base = 0;
 };
 
 /// What a finished run reports (the C RlmeshRunReport).
@@ -982,6 +992,8 @@ class Model {
     raw.close_env = options.close_env;
     raw.episode_seeds = options.episode_seeds.empty() ? nullptr : options.episode_seeds.data();
     raw.num_episode_seeds = options.episode_seeds.size();
+    raw.trial_indexed = options.trial_indexed;
+    raw.trial_index_base = options.trial_index_base;
     RlmeshRunReport report{};
     RlmeshStatus status = rlmesh_model_run_local(model_, address.c_str(), &raw, &report);
     if (status != RLMESH_OK) return Error::from_last(status);

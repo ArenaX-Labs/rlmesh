@@ -57,12 +57,20 @@ static int predict(void* user_data, const RlmeshObservation* obs, RlmeshValue** 
     return RLMESH_ERR_INVALID_VALUE;
   }
   for (size_t i = 0; i < obs->num_envs; ++i) {
+    /* Each row names its episode and how many times this episode has been
+     * predicted; a seeded episode also carries a per-predict sampling seed. */
+    const RlmeshEpisode* episode = &obs->episodes[i];
+    printf("episode %s: predict %llu", episode->id, (unsigned long long)episode->predict_index);
+    if (episode->seeded) {
+      printf(" seed %lld", (long long)episode->predict_seed);
+    }
     if (obs->observations != NULL) {
       int64_t n = 0;
       if (rlmesh_value_as_discrete(obs->observations[i], &n) == RLMESH_OK) {
-        printf("episode %s: obs %lld\n", obs->episodes[i].id, (long long)n);
+        printf(" obs %lld", (long long)n);
       }
     }
+    printf("\n");
     out_actions[i] = zero_action(action);
     if (out_actions[i] == NULL) {
       return RLMESH_ERR_INVALID_VALUE; /* the capi frees rows already written */

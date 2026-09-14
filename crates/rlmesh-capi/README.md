@@ -84,12 +84,21 @@ int main(void) {
 ## Model contract
 
 `predict` receives `num_envs` decoded observation values (one per sub-env) plus
-routing metadata (session, env, request ids; per-row episode id and seed). It
+routing metadata (session, env, request ids; one `RlmeshEpisode` per row). It
 writes one owned action value per row into `out_actions` and returns `RLMESH_OK`,
 or returns nonzero after `rlmesh_callback_set_error(...)` to decline. The runtime
 validates each action against the route's action space before it reaches the
 wire: a structural mismatch fails the step, a Box-bounds overshoot is left to the
 environment's own policy.
+
+Each `RlmeshEpisode` row carries the episode's `id` and reset `seed` (when
+`seeded`), plus the same per-predict context the Python SDK stamps on a predict:
+`predict_index`, the re-plan ordinal within the episode (0 on the first predict
+under that id, then +1 per predict), and `predict_seed`, a reproducible mix of
+the episode seed and that ordinal (`rlmesh.predict_seed` in the SDK; meaningful
+only when `seeded`). The capi counts these per episode id and drops the counter
+when the episode ends, holding at most 4096 live episodes — past that the least
+recently predicted one is evicted through `on_episode_end`.
 
 Optional hooks: `on_episode_end(env_id, episode_id)` when the runtime drops an
 episode (`episode_id == NULL` means every episode of that env), and `on_close`
@@ -99,12 +108,19 @@ re-enter its own model handle. `rlmesh_model_run_local` fills an optional
 `RlmeshRunReport`; `rlmesh_model_cancel` stops a blocking run/serve from another
 thread.
 
+`RlmeshRunOptions` bounds and seeds a run: `max_episodes`, `base_seed` (when
+`seeded`) or explicit `episode_seeds`, the per-episode step/time caps,
+`execution_horizon`, and `trial_index_base` (when `trial_indexed`) — the first
+trial ordinal the episodes walk, delivered as `reset(options={"trial_index": k})`
+to an environment that declares that reset option.
+
 ### In C++
 
 `Model::from_predict` takes a single-env policy — `Result<Value>(const Request&)`,
 where `Request` carries `observation()` (a `std::optional<ValueRef>`, absent when
-the route sends none), `episode()`, and `action_space()` / `observation_space()`
-as `SpaceRef`. `Model::from_predict_batch` takes the whole `Batch` and returns one
+the route sends none), `episode()` (an `Episode`: `id`, optional `seed`,
+`predict_index`, optional `predict_seed`), and `action_space()` /
+`observation_space()` as `SpaceRef`. `Model::from_predict_batch` takes the whole `Batch` and returns one
 action per row. `zeros_for(SpaceRef)` builds the neutral action for _any_ space,
 so a policy never has to switch on the kind to get started.
 
@@ -119,8 +135,9 @@ snapshots it. Nothing throws — `value()` / `unwrap()` abort instead, and the
 header compiles under `-fno-exceptions`. `RLMESH_TRY(expr)` propagates an error
 out of a `Result`-returning function.
 
-`run_local` returns a `RunReport`; `serve` takes a `ServeOptions` (owned token,
-`std::chrono` timeouts). `Model::cancel()` is the one member callable while
+`run_local` takes a `RunOptions` (the C `RlmeshRunOptions` field for field, with
+`episode_seeds` as a `std::vector`) and returns a `RunReport`; `serve` takes a
+`ServeOptions` (owned token, `std::chrono` timeouts). `Model::cancel()` is the one member callable while
 `run_local` / `serve` blocks — including from another thread; a cancelled
 `serve` returns cleanly, a cancelled `run_local` fails with
 `Error::is_cancelled()`. Never destroy a `Model` from inside its own callback.

@@ -31,7 +31,7 @@ extern "C" {
  * repr(C) layout/enum-discriminant change, an extern "C" signature retype, or a
  * symbol removal). Decoupled from the package semver below, which can't express
  * an ABI break. Appending a struct_size-guarded vtable field is NOT a break. */
-#define RLMESH_ABI_VERSION 2
+#define RLMESH_ABI_VERSION 3
 
 RLMESH_API uint32_t rlmesh_abi_version(void);
 
@@ -319,11 +319,22 @@ RLMESH_API RlmeshStatus rlmesh_contract_adapter_tags_json(const RlmeshContract* 
  * message for a capi call that already failed. */
 
 /* One row's episode identity. `id` is runtime-minted and never repeats, so a
- * stateful model keys per-episode state by it (no positional lane concept). */
+ * stateful model keys per-episode state by it (no positional lane concept).
+ *
+ * `predict_index` is the episode's re-plan ordinal: 0 on the first predict
+ * under `id`, then +1 per predict until on_episode_end drops the episode (the
+ * capi counts it per episode id, the way the Python SDK does; the runtime does
+ * not send it). `predict_seed` mixes the episode's reset seed with that ordinal
+ * (rlmesh.predict_seed in the SDK) so a stochastic policy can seed each forward
+ * reproducibly under interleaving; it is meaningful only when `seeded`, 0
+ * otherwise. The capi holds at most 4096 live episodes: past that the least
+ * recently predicted one is evicted through on_episode_end. */
 typedef struct RlmeshEpisode {
   const char* id;
   bool seeded; /* whether `seed` carries an explicit reset seed */
   int64_t seed;
+  uint64_t predict_index; /* re-plan ordinal within the episode, from 0 */
+  int64_t predict_seed;   /* predict_seed(seed, predict_index); only when `seeded` */
 } RlmeshEpisode;
 
 /* What a predict callback receives. Every pointer is valid only for the
@@ -395,6 +406,10 @@ typedef struct RlmeshRunOptions {
   bool close_env;               /* ask the env to close when the run ends */
   const int64_t* episode_seeds; /* explicit per-episode seeds (overrides base_seed); NULL = unset */
   size_t num_episode_seeds;     /* length of episode_seeds; 0 = unset */
+  bool trial_indexed;           /* whether trial_index_base is set */
+  uint64_t trial_index_base;    /* first trial ordinal the episodes walk (base, base+1, ...);
+                                   delivered as reset(options={"trial_index": k}) to an env
+                                   that declares that reset option */
 } RlmeshRunOptions;
 
 /* What a finished run reports. Plain scalars: copy what you need. */

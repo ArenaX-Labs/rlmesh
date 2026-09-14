@@ -60,8 +60,11 @@ $CXX -std=c++17 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" \
 
 # 4. Run each smoke against a live env over real gRPC (the pytest analogue).
 #    Both print the same run report; assert the real numbers, not just exit 0.
+#    The harness env takes two steps per episode, and the harness also checks
+#    each smoke printed the second predict's derived seed per episode (the
+#    RlmeshEpisode layout gate: predict_index / predict_seed crossed the ABI).
 echo "==> C model end-to-end vs a live env"
-"$target/e2e_harness" "$target/c_model_smoke" "run report: episodes=3 steps=3"
+"$target/e2e_harness" "$target/c_model_smoke" "run report: episodes=3 steps=6"
 echo "==> C++ model end-to-end vs a live env"
-"$target/e2e_harness" "$target/cpp_model_smoke" "run report: episodes=3 steps=3"
+"$target/e2e_harness" "$target/cpp_model_smoke" "run report: episodes=3 steps=6"
 echo "==> test:cxx OK"

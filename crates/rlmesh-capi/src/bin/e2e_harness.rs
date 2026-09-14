@@ -5,23 +5,37 @@
 //! Usage: `e2e_harness <model-binary> [expected-stdout-substring]`. The optional
 //! second argument is asserted against the child's stdout, so a smoke that
 //! prints its run report is checked for the real numbers, not just its exit code.
+//!
+//! Every episode takes two steps, so the model's second predict under one
+//! episode id carries `predict_index == 1`; for each seed the env was reset
+//! with, the harness also asserts the smoke printed that predict's derived seed
+//! (`predict 1 seed <rlmesh::predict_seed(seed, 1)>`) — the `RlmeshEpisode`
+//! fields really crossed the ABI at the offsets the header declares.
 #![allow(clippy::print_stderr)]
 
 use std::process::{Command, ExitCode};
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use rlmesh::spaces;
 
-/// A minimal single environment: a uint8 `Box[1]` obs/action, one step per
-/// episode (reset → 0, step → 1 then terminated).
+/// Steps per episode: reset → obs 0, then one step per further predict, the
+/// last of which terminates.
+const STEPS_PER_EPISODE: u8 = 2;
+
+/// A minimal single environment: a uint8 `Box[1]` obs/action,
+/// [`STEPS_PER_EPISODE`] steps per episode (reset → 0, step k → k, terminated
+/// on the last). Records the seed of every reset it was given.
 struct SmokeEnv {
     obs_space: spaces::SpaceSpec,
     action_space: spaces::SpaceSpec,
     env_contract: spaces::EnvContract,
+    steps: u8,
+    reset_seeds: Arc<Mutex<Vec<Option<i64>>>>,
 }
 
 impl SmokeEnv {
-    fn new() -> Self {
+    fn new(reset_seeds: Arc<Mutex<Vec<Option<i64>>>>) -> Self {
         let obs_space = spaces::spaces::BoxSpaceBuilder::scalar(0.0, 255.0, vec![1])
             .dtype(spaces::DType::Uint8)
             .build()
@@ -41,6 +55,8 @@ impl SmokeEnv {
             obs_space,
             action_space,
             env_contract,
+            steps: 0,
+            reset_seeds,
         }
     }
 }
@@ -65,8 +81,13 @@ impl rlmesh::Env for SmokeEnv {
 
     async fn reset(
         &mut self,
-        _req: rlmesh::ResetRequest,
+        req: rlmesh::ResetRequest,
     ) -> Result<rlmesh::ResetResult, spaces::EnvRuntimeError> {
+        self.steps = 0;
+        self.reset_seeds
+            .lock()
+            .expect("reset seed log")
+            .push(req.seed);
         Ok(rlmesh::ResetResult {
             observation: Some(u8_box(0)),
             info: None,
@@ -78,10 +99,11 @@ impl rlmesh::Env for SmokeEnv {
         &mut self,
         _req: rlmesh::StepRequest,
     ) -> Result<rlmesh::StepResult, spaces::EnvRuntimeError> {
+        self.steps += 1;
         Ok(rlmesh::StepResult {
-            observation: Some(u8_box(1)),
+            observation: Some(u8_box(self.steps)),
             reward: 1.0,
-            terminated: true,
+            terminated: self.steps >= STEPS_PER_EPISODE,
             truncated: false,
             info: None,
         })
@@ -126,9 +148,10 @@ fn main() -> ExitCode {
 }
 
 async fn run(binary: String, expect: Option<String>) -> ExitCode {
+    let reset_seeds = Arc::new(Mutex::new(Vec::new()));
     // Bind first: the listener is accepting before the model connects (port 0 →
     // OS-assigned), so no readiness sleep is needed.
-    let bound = match rlmesh::EnvServer::new(SmokeEnv::new())
+    let bound = match rlmesh::EnvServer::new(SmokeEnv::new(Arc::clone(&reset_seeds)))
         .bind(rlmesh::BindAddress::Tcp {
             host: "127.0.0.1".to_string(),
             port: 0,
@@ -175,6 +198,23 @@ async fn run(binary: String, expect: Option<String>) -> ExitCode {
     {
         eprintln!("model stdout did not contain {expect:?}");
         return ExitCode::FAILURE;
+    }
+    // Every seeded episode had a second predict; the smoke must have logged it
+    // with the seed core derives for ordinal 1 (both smokes print
+    // `predict <index> seed <predict_seed>` per row).
+    let seeds: Vec<i64> = reset_seeds
+        .lock()
+        .expect("reset seed log")
+        .iter()
+        .flatten()
+        .copied()
+        .collect();
+    for seed in seeds {
+        let expect = format!("predict 1 seed {}", rlmesh::predict_seed(seed, 1));
+        if !stdout.contains(&expect) {
+            eprintln!("model stdout did not contain {expect:?} for episode seed {seed}");
+            return ExitCode::FAILURE;
+        }
     }
     ExitCode::SUCCESS
 }
