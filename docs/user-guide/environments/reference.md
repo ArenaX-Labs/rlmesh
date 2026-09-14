@@ -311,8 +311,8 @@ Use `rlmesh.describe_json(...)` when you need the exact byte-stable string (for 
 | `--framework`   | `RLMESH_FRAMEWORK`          | `torch` / `jax` / `numpy`. An `EnvFactory` pins it on the class; needed only for a classless `--env` (a make-callable or gym id).                  |
 | `--device`      | `RLMESH_DEVICE`             | Device for the incoming action (torch/jax only), e.g. `cuda:0`. Ignored for numpy and the default backend.                                         |
 | `--kwargs-json` | `RLMESH_MAKE_KWARGS`        | JSON object bound to `make(**binding)`: the variation to serve. Absent serves `make()`'s defaults. Validated against `params` before construction. |
-| --              | `RLMESH_NUM_ENVS`           | Fan the factory out into a vector env (numpy only); the vector server is auto-detected.                                                            |
-| --              | `RLMESH_VECTORIZATION_MODE` | Vectorization mode for the fan-out.                                                                                                                |
+| --              | `RLMESH_NUM_ENVS`           | Serve that many lanes: `make()` runs once per lane and the endpoint steps them independently. Tags and framework carry through.                    |
+| --              | `RLMESH_VECTORIZATION_MODE` | `sync`/`async`: fan the factory out into a gym vector env instead of lanes (numpy only, stepped in lockstep, served untagged).                     |
 
 ```sh
 python -m rlmesh.serve --env environments.libero:Libero \
@@ -320,7 +320,7 @@ python -m rlmesh.serve --env environments.libero:Libero \
   --kwargs-json '{"suite": "libero_10", "task_id": 3}'
 ```
 
-`num_envs` and `vectorization_mode` control vectorization, not env construction. Passing either inside `--kwargs-json` / `RLMESH_MAKE_KWARGS` is an error; set `RLMESH_NUM_ENVS` / `RLMESH_VECTORIZATION_MODE` instead. A torch/jax env cannot be fanned out this way: gym vectorization concatenates observations with numpy, which discards the framework tensors. Serve it scalar, or use `framework="numpy"`. Adapters resolve per single-env lane, so a vector serve publishes no tags; serve scalar to publish the contract.
+`num_envs` and `vectorization_mode` control serving, not env construction. Passing either inside `--kwargs-json` / `RLMESH_MAKE_KWARGS` is an error; set `RLMESH_NUM_ENVS` / `RLMESH_VECTORIZATION_MODE` instead. Lanes (the default for `RLMESH_NUM_ENVS > 1`) are plain scalar envs, so tags and a torch/jax framework carry through unchanged. The gym fan-out (`RLMESH_VECTORIZATION_MODE`) cannot host a torch/jax env, because gym vectorization concatenates observations with numpy and discards the framework tensors, and it publishes no tags, because adapters resolve per single-env lane.
 
 Addresses accept `"tcp://host:port"`, `"host:port"`, `"port"`, or `"unix:///path"`, or the `host=`/`port=`/`path=` helpers on {class}`~rlmesh.EnvServer`. For readiness signals and health checks, see {doc}`/user-guide/serving-environments`.
 

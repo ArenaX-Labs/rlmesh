@@ -2,9 +2,8 @@ use std::sync::Arc;
 
 use rlmesh_grpc::env::Environment;
 use rlmesh_grpc::lifecycle::{await_close_with_timeout, start_idle_shutdown};
-use tokio::sync::Mutex;
 
-use super::wire::{ScalarEnvAdapter, WireEnvAdapter};
+use super::wire::{WireEnvAdapter, WireLaneAdapter};
 use super::{Env, VectorEnv};
 use crate::bound::BoundListener;
 use crate::{BindAddress, EnvironmentError, Error, Result, ServeOptions};
@@ -50,9 +49,9 @@ impl<E: Env + 'static> EnvServer<E> {
         let listener = BoundListener::bind(addr).await?;
         let local_addr = listener.local_addr()?;
 
-        let env = Arc::new(Mutex::new(WireEnvAdapter::new(ScalarEnvAdapter::new(
-            self.env,
-        ))));
+        // A scalar env is the one-lane case of the lane server: same wire,
+        // same code path as `num_envs > 1`.
+        let env = Arc::new(WireLaneAdapter::new(vec![self.env]));
         let service = rlmesh_grpc::env::env_service_from_shared(
             Arc::clone(&env),
             shutdown.clone(),
@@ -64,7 +63,7 @@ impl<E: Env + 'static> EnvServer<E> {
         let router = tonic::transport::Server::builder()
             .add_service(health_service)
             .add_service(service);
-        let env: Arc<Mutex<dyn Environment + Send + Sync>> = env;
+        let env: Arc<dyn Environment + Send + Sync> = env;
 
         Ok(BoundEnvServer {
             listener,
@@ -128,7 +127,7 @@ impl<E: VectorEnv + 'static> VectorEnvServer<E> {
         let listener = BoundListener::bind(addr).await?;
         let local_addr = listener.local_addr()?;
 
-        let env = Arc::new(Mutex::new(WireEnvAdapter::new(self.env)));
+        let env = Arc::new(WireEnvAdapter::new(self.env));
         let service = rlmesh_grpc::env::env_service_from_shared(
             Arc::clone(&env),
             shutdown.clone(),
@@ -140,7 +139,7 @@ impl<E: VectorEnv + 'static> VectorEnvServer<E> {
         let router = tonic::transport::Server::builder()
             .add_service(health_service)
             .add_service(service);
-        let env: Arc<Mutex<dyn Environment + Send + Sync>> = env;
+        let env: Arc<dyn Environment + Send + Sync> = env;
 
         Ok(BoundEnvServer {
             listener,
@@ -173,7 +172,7 @@ pub struct BoundEnvServer {
     listener: BoundListener,
     router: tonic::transport::server::Router,
     shutdown: rlmesh_grpc::lifecycle::ShutdownTrigger,
-    env: Arc<Mutex<dyn Environment + Send + Sync>>,
+    env: Arc<dyn Environment + Send + Sync>,
     local_addr: BindAddress,
     drain_timeout: Option<std::time::Duration>,
     close_timeout: Option<std::time::Duration>,
@@ -198,13 +197,11 @@ impl BoundEnvServer {
 }
 
 async fn close_env(
-    env: Arc<Mutex<dyn Environment + Send + Sync>>,
+    env: Arc<dyn Environment + Send + Sync>,
     close_timeout: Option<std::time::Duration>,
 ) -> Result<()> {
     let close = async {
-        env.lock()
-            .await
-            .close()
+        env.close()
             .await
             .map(|_| ())
             .map_err(|err| Error::Environment(EnvironmentError::from(err)))

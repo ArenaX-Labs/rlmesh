@@ -2,9 +2,12 @@
 
 #[cfg(unix)]
 use hyper_util::rt::TokioIo;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 #[cfg(unix)]
 use tokio::net::UnixStream;
-use tokio::sync::mpsc;
+
+use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 #[cfg(unix)]
 use tower::service_fn;
@@ -23,7 +26,9 @@ use crate::error::{ClientError, Error as GrpcError, ProtocolError, TransportErro
 use crate::helpers::address::parse_env_connect_target;
 use crate::states::ClientState;
 
-use super::stream::spawn_response_pump;
+#[cfg(test)]
+use super::stream::dispatch_response;
+use super::stream::{Pending, new_pending, spawn_response_pump};
 use super::wire::{join_request_kind_name, proto_error_to_env_error};
 
 /// The result of an env handshake: the env contract plus the negotiated edition
@@ -58,6 +63,13 @@ impl EnvHandshake {
 }
 
 /// Environment client that connects to an EnvService server.
+///
+/// Cloning yields another handle on the **same session**: one Join stream,
+/// one request-id space, one lifecycle. Each clone can have its own request in
+/// flight (the stream multiplexes by `request_id`), which is how a lane-capable
+/// env is driven: one handle per lane, all stepping concurrently. Closing any
+/// handle closes the session for all of them.
+#[derive(Clone)]
 pub struct EnvClient {
     /// Inner tonic client for unary RPCs (Handshake, Check).
     client: EnvServiceClient<tonic::transport::Channel>,
@@ -65,20 +77,71 @@ pub struct EnvClient {
     address: String,
     /// Bearer token sent on the `authorization` metadata header (empty = none).
     token: String,
-    /// Client state.
-    state: ClientState,
-    /// Sender half of the Join bidi stream request channel.
-    request_tx: Option<mpsc::Sender<JoinRequest>>,
-    /// Receiver half of the Join bidi stream response channel.
-    response_rx: Option<mpsc::Receiver<Result<JoinResponse, tonic::Status>>>,
-    /// Counter for generating unique request IDs.
-    request_counter: u64,
+    /// Session state shared by every clone: lifecycle, the Join stream, ids.
+    shared: Arc<Shared>,
     /// Endpoint-local op duration (ns) attached to the last Join response. The
     /// nested per-step telemetry message was replaced by this hot scalar
-    /// (`JoinResponse.endpoint_total_ns`).
+    /// (`JoinResponse.endpoint_total_ns`). Per handle: each lane reads its own.
     last_endpoint_total_ns: Option<u64>,
     /// The peer's split of that duration, cleared by the read.
     last_phases: EndpointPhases,
+}
+
+/// The per-session state behind every clone of an [`EnvClient`].
+struct Shared {
+    /// Client state (a `ClientState` discriminant).
+    state: AtomicU8,
+    /// The open Join stream, if any: the env's exclusive session slot.
+    stream: std::sync::Mutex<Option<JoinStream>>,
+    /// Serializes stream opening so racing clones cannot each open a Join
+    /// (the server admits one).
+    open_lock: tokio::sync::Mutex<()>,
+    /// Counter for generating unique request IDs across all clones.
+    request_counter: AtomicU64,
+}
+
+/// The Join bidi stream: where requests go, and who is waiting for a reply.
+#[derive(Clone)]
+struct JoinStream {
+    tx: mpsc::Sender<JoinRequest>,
+    pending: Pending,
+}
+
+impl Shared {
+    fn new(state: ClientState, stream: Option<JoinStream>) -> Self {
+        Self {
+            state: AtomicU8::new(state as u8),
+            stream: std::sync::Mutex::new(stream),
+            open_lock: tokio::sync::Mutex::new(()),
+            request_counter: AtomicU64::new(0),
+        }
+    }
+
+    fn state(&self) -> ClientState {
+        match self.state.load(Ordering::Acquire) {
+            0 => ClientState::Connected,
+            1 => ClientState::Ready,
+            _ => ClientState::Closed,
+        }
+    }
+
+    fn set_state(&self, state: ClientState) {
+        self.state.store(state as u8, Ordering::Release);
+    }
+
+    fn stream(&self) -> Option<JoinStream> {
+        self.stream
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    fn set_stream(&self, stream: Option<JoinStream>) {
+        *self
+            .stream
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = stream;
+    }
 }
 
 impl EnvClient {
@@ -139,10 +202,7 @@ impl EnvClient {
                 .max_encoding_message_size(crate::MAX_MESSAGE_SIZE),
             address: target.display_address().to_string(),
             token: token.to_string(),
-            state: ClientState::Connected,
-            request_tx: None,
-            response_rx: None,
-            request_counter: 0,
+            shared: Arc::new(Shared::new(ClientState::Connected, None)),
             last_endpoint_total_ns: None,
             last_phases: EndpointPhases::default(),
         })
@@ -166,9 +226,9 @@ impl EnvClient {
         &self.address
     }
 
-    /// Current client state.
+    /// Current client state (shared by every clone of this session).
     pub fn state(&self) -> ClientState {
-        self.state
+        self.shared.state()
     }
 
     /// Take the endpoint-local op duration (ns) attached to the most recent
@@ -190,7 +250,7 @@ impl EnvClient {
         fields(address = %self.address)
     )]
     pub async fn handshake(&mut self) -> Result<EnvHandshake, GrpcError> {
-        if self.state != ClientState::Connected {
+        if self.state() != ClientState::Connected {
             return Err(ClientError::NotConnected.into());
         }
 
@@ -245,7 +305,7 @@ impl EnvClient {
             supported_workflow_editions: base.supported_workflow_editions,
             capabilities: base.capabilities,
         };
-        self.state = ClientState::Ready;
+        self.shared.set_state(ClientState::Ready);
 
         Ok(handshake)
     }
@@ -369,7 +429,7 @@ impl EnvClient {
         // active session and earn a FailedPrecondition from the server's
         // join_active CAS, exactly the lockout the lazy Join stream exists to
         // avoid (see `ensure_join_stream`). Short-circuit to a local-only close.
-        if self.request_tx.is_none() || self.response_rx.is_none() {
+        if self.shared.stream().is_none() {
             self.close_local();
             return Ok(CloseEnvsResponse::default());
         }
@@ -404,7 +464,7 @@ impl EnvClient {
         &mut self,
         reason: impl Into<String>,
     ) -> Result<CoreShutdownResponse, GrpcError> {
-        if self.state == ClientState::Closed {
+        if self.state() == ClientState::Closed {
             return Err(ClientError::NotConnected.into());
         }
 
@@ -446,9 +506,10 @@ impl EnvClient {
     }
 
     fn close_local(&mut self) {
-        self.request_tx.take();
-        self.response_rx.take();
-        self.state = ClientState::Closed;
+        // Dropping the request sender ends the Join stream; the pump then
+        // closes the pending map, waking any in-flight waiter on other clones.
+        self.shared.set_stream(None);
+        self.shared.set_state(ClientState::Closed);
     }
 
     /// Open the Join stream on first use. The stream is the env's exclusive
@@ -456,13 +517,13 @@ impl EnvClient {
     /// lazily on the first streaming operation rather than at handshake;
     /// an idle connected client must not lock other clients out of the env.
     async fn ensure_join_stream(&mut self) -> Result<(), GrpcError> {
-        if self.request_tx.is_none() || self.response_rx.is_none() {
-            self.setup_join_stream().await?;
+        if self.shared.stream().is_some() {
+            return Ok(());
         }
-        Ok(())
-    }
-
-    async fn setup_join_stream(&mut self) -> Result<(), GrpcError> {
+        let _opening = self.shared.open_lock.lock().await;
+        if self.shared.stream().is_some() {
+            return Ok(());
+        }
         let (tx, rx) = mpsc::channel::<JoinRequest>(32);
         let request_stream = ReceiverStream::new(rx);
 
@@ -472,8 +533,9 @@ impl EnvClient {
             .await
             .map_err(crate::error::status_to_grpc_error)?;
 
-        self.request_tx = Some(tx);
-        self.response_rx = Some(spawn_response_pump(response.into_inner()));
+        let pending = new_pending();
+        spawn_response_pump(response.into_inner(), pending.clone());
+        self.shared.set_stream(Some(JoinStream { tx, pending }));
         Ok(())
     }
 
@@ -492,6 +554,9 @@ impl EnvClient {
         Ok(request)
     }
 
+    /// Send one request on the Join stream and await its reply. Other requests
+    /// (from this or any clone) may be in flight at the same time; replies are
+    /// routed by `request_id`, so they can arrive in any order.
     #[tracing::instrument(
         name = "rlmesh.grpc.client.join_roundtrip",
         skip_all,
@@ -504,59 +569,67 @@ impl EnvClient {
     async fn send_on_stream(&mut self, req: JoinRequest) -> Result<JoinResponse, GrpcError> {
         let request_id = req.request_id.clone();
         let request_kind = join_request_kind_name(&req);
-        let tx = self.request_tx.as_ref().ok_or(ClientError::NotHandshaked)?;
+        let stream = self.shared.stream().ok_or(ClientError::NotHandshaked)?;
 
-        tx.send(req).await.map_err(|_| {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        {
+            let mut pending = stream
+                .pending
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let map = pending.as_mut().ok_or_else(|| {
+                tracing::error!(
+                    request_id = %request_id,
+                    request_kind,
+                    "env join stream already ended; cannot send request"
+                );
+                GrpcError::from(TransportError::ConnectionClosed)
+            })?;
+            map.insert(request_id.clone(), reply_tx);
+        }
+
+        if stream.tx.send(req).await.is_err() {
             tracing::error!(
                 request_id = %request_id,
                 request_kind,
                 "failed to send request because the env join stream is closed"
             );
-            TransportError::ConnectionClosed
-        })?;
+            if let Some(map) = stream
+                .pending
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .as_mut()
+            {
+                map.remove(&request_id);
+            }
+            return Err(TransportError::ConnectionClosed.into());
+        }
 
-        let rx = self
-            .response_rx
-            .as_mut()
-            .ok_or(ClientError::NotHandshaked)?;
-
-        loop {
-            let response = rx.recv().await.ok_or_else(|| {
+        match reply_rx.await {
+            Ok(Ok(response)) => Ok(response),
+            Ok(Err(status)) => {
+                tracing::error!(
+                    request_id = %request_id,
+                    request_kind,
+                    code = ?status.code(),
+                    message = %status.message(),
+                    "env join stream returned an error status"
+                );
+                Err(super::wire::status_to_grpc_error(status))
+            }
+            Err(_) => {
                 tracing::error!(
                     request_id = %request_id,
                     request_kind,
                     "env join stream closed while waiting for response"
                 );
-                GrpcError::from(TransportError::ConnectionClosed)
-            })?;
-            let response = match response {
-                Ok(response) => response,
-                Err(status) => {
-                    tracing::error!(
-                        request_id = %request_id,
-                        request_kind,
-                        code = ?status.code(),
-                        message = %status.message(),
-                        "env join stream returned an error status"
-                    );
-                    return Err(super::wire::status_to_grpc_error(status));
-                }
-            };
-            if response.request_id == request_id {
-                return Ok(response);
+                Err(TransportError::ConnectionClosed.into())
             }
-            tracing::warn!(
-                request_id = %request_id,
-                stale_request_id = %response.request_id,
-                request_kind,
-                response_kind = ?response.kind,
-                "discarding stale env response from abandoned request"
-            );
         }
     }
 
     fn ensure_ready(&self) -> Result<(), GrpcError> {
-        match self.state {
+        match self.state() {
             ClientState::Ready => Ok(()),
             ClientState::Connected => Err(ClientError::NotHandshaked.into()),
             ClientState::Closed => Err(ClientError::NotConnected.into()),
@@ -564,8 +637,8 @@ impl EnvClient {
     }
 
     fn next_request_id(&mut self) -> String {
-        self.request_counter += 1;
-        format!("grpc-req-{}", self.request_counter)
+        let n = self.shared.request_counter.fetch_add(1, Ordering::AcqRel) + 1;
+        format!("grpc-req-{n}")
     }
 }
 
@@ -598,10 +671,7 @@ mod tests {
         ShutdownResponse as CoreShutdownResponse,
     };
     use rlmesh_proto::env::v1::env_service_server::{EnvService, EnvServiceServer};
-    use rlmesh_proto::env::v1::{
-        CloseEnvsRequest, CloseEnvsResponse, HandshakeRequest, HandshakeResponse, ShutdownResponse,
-        StepResponse,
-    };
+    use rlmesh_proto::env::v1::{ShutdownResponse, StepResponse};
     use rlmesh_proto::spaces::v1::SpaceSpec;
     use rlmesh_proto::supported_workflow_editions;
     use tokio::sync::oneshot;
@@ -648,26 +718,24 @@ mod tests {
             &self.contract
         }
         async fn reset(
-            &mut self,
+            &self,
             _req: ResetRequest,
-        ) -> std::result::Result<ResetResponse, crate::error::EnvError> {
-            Ok(ResetResponse::default())
+        ) -> std::result::Result<(ResetResponse, EndpointPhases), crate::error::EnvError> {
+            Ok((ResetResponse::default(), EndpointPhases::default()))
         }
         async fn step(
-            &mut self,
+            &self,
             _req: StepRequest,
-        ) -> std::result::Result<StepResponse, crate::error::EnvError> {
-            Ok(StepResponse::default())
+        ) -> std::result::Result<(StepResponse, EndpointPhases), crate::error::EnvError> {
+            Ok((StepResponse::default(), EndpointPhases::default()))
         }
         async fn render(
-            &mut self,
+            &self,
             _req: RenderRequest,
-        ) -> std::result::Result<RenderResponse, crate::error::EnvError> {
-            Ok(RenderResponse::default())
+        ) -> std::result::Result<(RenderResponse, EndpointPhases), crate::error::EnvError> {
+            Ok((RenderResponse::default(), EndpointPhases::default()))
         }
-        async fn close(
-            &mut self,
-        ) -> std::result::Result<CloseEnvsResponse, crate::error::EnvError> {
+        async fn close(&self) -> std::result::Result<CloseEnvsResponse, crate::error::EnvError> {
             Ok(CloseEnvsResponse::default())
         }
     }
@@ -705,85 +773,89 @@ mod tests {
         assert!(err.to_string().contains("missing action_space"));
     }
 
-    #[tokio::test]
-    async fn send_on_stream_discards_stale_responses_until_request_id_matches() {
-        let (request_tx, mut request_rx) = mpsc::channel(4);
-        let (response_tx, response_rx) = mpsc::channel(4);
+    /// A Ready client over a fake Join stream: requests land on `request_rx`,
+    /// replies are injected with `dispatch_response` on the returned pending map.
+    fn ready_client_with_stream() -> (EnvClient, mpsc::Receiver<JoinRequest>, Pending) {
+        let (request_tx, request_rx) = mpsc::channel(4);
+        let pending = new_pending();
         let channel = Endpoint::from_static("http://127.0.0.1:1").connect_lazy();
-        let mut client = EnvClient {
+        let client = EnvClient {
             client: EnvServiceClient::new(channel),
             token: String::new(),
-            address: "http://127.0.0.1:1".to_string(),
-            state: ClientState::Ready,
-            request_tx: Some(request_tx),
-            response_rx: Some(response_rx),
-            request_counter: 0,
+            address: "tcp://127.0.0.1:1".to_string(),
+            shared: Arc::new(Shared::new(
+                ClientState::Ready,
+                Some(JoinStream {
+                    tx: request_tx,
+                    pending: pending.clone(),
+                }),
+            )),
             last_endpoint_total_ns: None,
             last_phases: EndpointPhases::default(),
         };
+        (client, request_rx, pending)
+    }
 
-        response_tx
-            .send(Ok(JoinResponse {
+    #[tokio::test]
+    async fn send_on_stream_routes_replies_by_request_id_in_any_order() {
+        let (client, mut request_rx, pending) = ready_client_with_stream();
+
+        // Two clones (lanes) with requests in flight at once; the replies come
+        // back in the opposite order and each lands on its own waiter.
+        let mut lane_a = client.clone();
+        let mut lane_b = client;
+        let a = tokio::spawn(async move { lane_a.step(StepRequest::default()).await });
+        let b = tokio::spawn(async move { lane_b.step(StepRequest::default()).await });
+        let first = request_rx.recv().await.unwrap();
+        let second = request_rx.recv().await.unwrap();
+        assert_ne!(first.request_id, second.request_id);
+
+        // A reply nobody asked for is dropped, not misdelivered.
+        dispatch_response(
+            &pending,
+            Some(Ok(JoinResponse {
                 request_id: "abandoned".to_string(),
                 kind: Some(join_response::Kind::Step(StepResponse::default())),
-                endpoint_total_ns: None,
                 ..Default::default()
-            }))
-            .await
-            .unwrap();
-        response_tx
-            .send(Ok(JoinResponse {
-                request_id: "target".to_string(),
-                kind: Some(join_response::Kind::Close(CloseEnvsResponse::default())),
-                endpoint_total_ns: None,
-                ..Default::default()
-            }))
-            .await
-            .unwrap();
-
-        let response = client
-            .send_on_stream(JoinRequest {
-                request_id: "target".to_string(),
-                kind: Some(join_request::Kind::Close(CloseEnvsRequest::default())),
-            })
-            .await
-            .unwrap();
-
-        assert!(matches!(response.kind, Some(join_response::Kind::Close(_))));
-        assert_eq!(request_rx.recv().await.unwrap().request_id, "target");
+            })),
+        );
+        for id in [second.request_id, first.request_id] {
+            dispatch_response(
+                &pending,
+                Some(Ok(JoinResponse {
+                    request_id: id,
+                    kind: Some(join_response::Kind::Step(StepResponse {
+                        rewards: vec![1.0],
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                })),
+            );
+        }
+        assert_eq!(a.await.unwrap().unwrap().rewards, vec![1.0]);
+        assert_eq!(b.await.unwrap().unwrap().rewards, vec![1.0]);
     }
 
     #[tokio::test]
     async fn send_on_stream_surfaces_pump_status_error_to_caller() {
-        let (request_tx, _request_rx) = mpsc::channel(1);
-        let (response_tx, response_rx) = mpsc::channel(1);
-        let channel = Endpoint::from_static("http://127.0.0.1:1").connect_lazy();
-        let mut client = EnvClient {
-            client: EnvServiceClient::new(channel),
-            token: String::new(),
-            address: "tcp://127.0.0.1:1".to_string(),
-            state: ClientState::Ready,
-            request_tx: Some(request_tx),
-            response_rx: Some(response_rx),
-            request_counter: 0,
-            last_endpoint_total_ns: None,
-            last_phases: EndpointPhases::default(),
-        };
+        let (mut client, mut request_rx, pending) = ready_client_with_stream();
 
+        let step = tokio::spawn(async move { client.step(StepRequest::default()).await });
+        let _ = request_rx.recv().await.unwrap();
         // The response pump propagates a transport Status (e.g. a response that
         // exceeded the decode limit) instead of just dropping it. The pending
         // caller must observe that status, not an opaque "connection closed".
-        response_tx
-            .send(Err(tonic::Status::new(
+        dispatch_response(
+            &pending,
+            Some(Err(tonic::Status::new(
                 tonic::Code::ResourceExhausted,
                 "message length too large",
-            )))
-            .await
-            .unwrap();
+            ))),
+        );
 
-        let error = client
-            .step(StepRequest::default())
+        let error = step
             .await
+            .unwrap()
             .expect_err("a stream status error must surface to the caller");
 
         let message = error.to_string();
@@ -801,39 +873,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stream_end_wakes_waiters_with_connection_closed() {
+        let (mut client, mut request_rx, pending) = ready_client_with_stream();
+        let step = tokio::spawn(async move { client.step(StepRequest::default()).await });
+        let _ = request_rx.recv().await.unwrap();
+        dispatch_response(&pending, None);
+        assert!(matches!(
+            step.await.unwrap().unwrap_err(),
+            GrpcError::Transport(TransportError::ConnectionClosed)
+        ));
+    }
+
+    #[tokio::test]
     async fn close_sends_remote_close_then_closes_locally() {
-        let (request_tx, mut request_rx) = mpsc::channel(1);
-        let (response_tx, response_rx) = mpsc::channel(1);
-        let channel = Endpoint::from_static("http://127.0.0.1:1").connect_lazy();
-        let mut client = EnvClient {
-            client: EnvServiceClient::new(channel),
-            token: String::new(),
-            address: "tcp://127.0.0.1:1".to_string(),
-            state: ClientState::Ready,
-            request_tx: Some(request_tx),
-            response_rx: Some(response_rx),
-            request_counter: 0,
-            last_endpoint_total_ns: None,
-            last_phases: EndpointPhases::default(),
-        };
+        let (mut client, mut request_rx, pending) = ready_client_with_stream();
+        let other = client.clone();
 
-        response_tx
-            .send(Ok(JoinResponse {
-                request_id: "grpc-req-1".to_string(),
-                kind: Some(join_response::Kind::Close(CloseEnvsResponse::default())),
-                endpoint_total_ns: None,
-                ..Default::default()
-            }))
-            .await
-            .unwrap();
-
-        let response = client.close().await.unwrap();
-
-        assert!(response.final_episodes.is_empty());
-        assert_eq!(client.state(), ClientState::Closed);
+        let close = tokio::spawn(async move { client.close().await });
         let request = request_rx.recv().await.unwrap();
         assert!(matches!(request.kind, Some(join_request::Kind::Close(_))));
         assert_eq!(request.request_id, "grpc-req-1");
+        dispatch_response(
+            &pending,
+            Some(Ok(JoinResponse {
+                request_id: "grpc-req-1".to_string(),
+                kind: Some(join_response::Kind::Close(CloseEnvsResponse::default())),
+                ..Default::default()
+            })),
+        );
+
+        let response = close.await.unwrap().unwrap();
+        assert!(response.final_episodes.is_empty());
+        // Closing one handle closes the session for every clone.
+        assert_eq!(other.state(), ClientState::Closed);
+        assert!(other.shared.stream().is_none());
     }
 
     #[tokio::test]
@@ -847,10 +920,7 @@ mod tests {
             client: EnvServiceClient::new(channel),
             token: String::new(),
             address: "tcp://127.0.0.1:1".to_string(),
-            state: ClientState::Ready,
-            request_tx: None,
-            response_rx: None,
-            request_counter: 0,
+            shared: Arc::new(Shared::new(ClientState::Ready, None)),
             last_endpoint_total_ns: None,
             last_phases: EndpointPhases::default(),
         };
@@ -861,9 +931,8 @@ mod tests {
         assert_eq!(client.state(), ClientState::Closed);
         // No Join stream was ever opened, and the request counter was not bumped
         // (no JoinRequest was minted).
-        assert!(client.request_tx.is_none());
-        assert!(client.response_rx.is_none());
-        assert_eq!(client.request_counter, 0);
+        assert!(client.shared.stream().is_none());
+        assert_eq!(client.shared.request_counter.load(Ordering::Acquire), 0);
     }
 
     #[tokio::test]
@@ -907,20 +976,20 @@ mod tests {
             .reset(ResetRequest::default())
             .await
             .expect("A reset");
-        assert!(client_a.request_tx.is_some());
+        assert!(client_a.shared.stream().is_some());
 
         let mut client_b = EnvClient::connect_with_retry(&address, "", &connect_options)
             .await
             .expect("test server did not start");
         client_b.handshake().await.expect("handshake B");
-        assert!(client_b.request_tx.is_none());
+        assert!(client_b.shared.stream().is_none());
 
         client_b
             .close()
             .await
             .expect("idle client close must not contend for the active Join slot");
         assert_eq!(client_b.state(), ClientState::Closed);
-        assert!(client_b.request_tx.is_none());
+        assert!(client_b.shared.stream().is_none());
 
         // Client A's session is undisturbed and remains usable.
         client_a
@@ -1066,8 +1135,7 @@ mod tests {
         // session slot) is only acquired lazily by the first streaming op.
         client.handshake().await.expect("handshake is join-free");
         assert_eq!(client.state(), ClientState::Ready);
-        assert!(client.request_tx.is_none());
-        assert!(client.response_rx.is_none());
+        assert!(client.shared.stream().is_none());
 
         // The join failure surfaces on the first operation and leaves the
         // client un-wedged (no half-open stream state).
@@ -1077,8 +1145,7 @@ mod tests {
             .expect_err("join is unavailable");
         assert!(error.to_string().contains("join unavailable"));
         assert_eq!(client.state(), ClientState::Ready);
-        assert!(client.request_tx.is_none());
-        assert!(client.response_rx.is_none());
+        assert!(client.shared.stream().is_none());
 
         let _ = shutdown_tx.send(());
         tokio::time::timeout(std::time::Duration::from_secs(2), server)

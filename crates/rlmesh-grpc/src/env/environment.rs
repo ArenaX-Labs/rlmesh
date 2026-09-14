@@ -8,9 +8,14 @@ pub use rlmesh_proto::env::v1::{
 pub use rlmesh_proto::{EndpointPhases, lane_skew_ns};
 use rlmesh_spaces::{EnvContract, spaces::SpaceSpec};
 
-use crate::error::{EnvError, EnvErrorCode};
+use crate::error::EnvError;
 
 /// Transport-facing environment contract.
+///
+/// Every op takes `&self`: the implementation owns its own synchronization (a
+/// serial env behind a lock, or one actor per lane), so the server never
+/// locks and can keep several lane-scoped requests in flight at once. Each op
+/// returns its own phase split beside the reply.
 ///
 /// Most users adapt environments through the higher-level `rlmesh` facade
 /// instead of implementing this trait directly.
@@ -28,51 +33,30 @@ pub trait Environment: Send + Sync {
     /// Full environment contract.
     fn env_contract(&self) -> &EnvContract;
 
-    /// Reset the environment or vector.
-    async fn reset(&mut self, req: ResetRequest) -> Result<ResetResponse, EnvError>;
-
-    /// Reset only the lanes named in `req.env_indices` (a partial / per-lane
-    /// reset — e.g. controlled-seed eval). An empty `env_indices` is a
-    /// whole-vector reset and delegates to [`reset`](Self::reset).
-    ///
-    /// The default **rejects** a non-empty request. Per-lane reset requires an
-    /// env that can reset individual sub-environments; stock gymnasium vector
-    /// envs cannot, so they fall through to this default and fail loud rather
-    /// than silently resetting the whole vector. An env that supports it (a
-    /// future in-house vector engine) overrides this. The server routes a
-    /// non-empty `env_indices` here, which the runtime only sends for a strict
-    /// subset of done lanes under `DISABLED` autoreset.
-    async fn reset_subset(&mut self, req: ResetRequest) -> Result<ResetResponse, EnvError> {
-        if req.env_indices.is_empty() {
-            self.reset(req).await
-        } else {
-            Err(EnvError::new(
-                EnvErrorCode::Internal,
-                format!(
-                    "partial reset of sub-envs {:?} is not supported by this environment. \
-                     Per-lane reset is only available for an env that implements reset_subset. \
-                     Use NEXT_STEP autoreset (the env resets done lanes itself), run with \
-                     num_envs == 1, or ensure all lanes terminate on the same step so the whole \
-                     vector resets together.",
-                    req.env_indices
-                ),
-            ))
-        }
+    /// Whether lanes can be reset and stepped individually and concurrently.
+    /// Advertised at handshake as the `subset_step` capability: a runtime that
+    /// sees it drives every lane as its own episode loop with one request per
+    /// lane in flight. A lockstep env (a gym vector env) leaves this `false`
+    /// and rejects a step that names lanes.
+    fn supports_lanes(&self) -> bool {
+        false
     }
 
-    /// Step the environment or vector.
-    async fn step(&mut self, req: StepRequest) -> Result<StepResponse, EnvError>;
+    /// Reset the whole vector (empty `env_indices`) or just the named lanes.
+    /// A reset naming lanes replies only those lanes, positionally.
+    async fn reset(&self, req: ResetRequest) -> Result<(ResetResponse, EndpointPhases), EnvError>;
 
-    /// Render the environment or vector.
-    async fn render(&mut self, req: RenderRequest) -> Result<RenderResponse, EnvError>;
+    /// Step the whole vector (empty `env_indices`) or just the named lanes; a
+    /// step naming lanes replies only those lanes, positionally. An env that
+    /// does not [`supports_lanes`](Self::supports_lanes) rejects the latter.
+    async fn step(&self, req: StepRequest) -> Result<(StepResponse, EndpointPhases), EnvError>;
+
+    /// Render one lane (`env_indices` names it; empty is lane 0).
+    async fn render(
+        &self,
+        req: RenderRequest,
+    ) -> Result<(RenderResponse, EndpointPhases), EnvError>;
 
     /// Close the environment or vector.
-    async fn close(&mut self) -> Result<CloseEnvsResponse, EnvError>;
-
-    /// The phase split of the op just completed, cleared by the read. The server
-    /// stamps it beside `endpoint_total_ns` so a consumer can tell wire cost from
-    /// env work without a profiler. The default measures nothing.
-    fn take_last_phases(&mut self) -> EndpointPhases {
-        EndpointPhases::default()
-    }
+    async fn close(&self) -> Result<CloseEnvsResponse, EnvError>;
 }

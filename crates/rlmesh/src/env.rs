@@ -1,6 +1,7 @@
 //! Environment traits, requests, the [`EnvServer`], and remote clients.
 
 mod client;
+mod lanes;
 mod server;
 mod types;
 mod wire;
@@ -11,6 +12,7 @@ use crate::spaces;
 pub use rlmesh_proto::{EndpointPhases, lane_skew_ns};
 
 pub use client::{RemoteEnv, RemoteVectorEnv};
+pub use lanes::LaneEnv;
 pub use server::{BoundEnvServer, EnvServer, VectorEnvServer};
 pub use spaces::request::{CloseResult, ResetRequest, ResetResult, StepRequest, StepResult};
 pub use spaces::{CloseRequest, RenderRequest, RenderResult};
@@ -20,7 +22,7 @@ pub use types::{
     StepResult as VectorStepResult,
 };
 #[doc(hidden)]
-pub use wire::{ScalarEnvAdapter, WireEnvAdapter};
+pub use wire::{WireEnvAdapter, WireLaneAdapter};
 
 /// A single environment.
 ///

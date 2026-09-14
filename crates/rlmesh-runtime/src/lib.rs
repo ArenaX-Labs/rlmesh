@@ -13,8 +13,8 @@ mod episodes;
 mod state;
 
 pub use driver::{
-    RuntimeDriver, RuntimeEnv, RuntimeEnvReset, RuntimeEnvStep, RuntimeError, RuntimeModel,
-    RuntimeModelPrediction,
+    EagerScheduler, PredictScheduler, RuntimeDriver, RuntimeEnv, RuntimeEnvReset, RuntimeEnvStep,
+    RuntimeError, RuntimeModel, RuntimeModelPrediction,
 };
 pub use hooks::{
     ActionReceivedEvent, EnvConnectedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, HookError,

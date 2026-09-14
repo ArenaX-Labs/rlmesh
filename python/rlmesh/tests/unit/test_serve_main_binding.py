@@ -145,7 +145,7 @@ def test_main_rejects_non_integer_num_envs(monkeypatch: pytest.MonkeyPatch) -> N
         serve.main(["--env", "pkg:Env"])
 
 
-def test_serve_env_vectorizes_factory_and_skips_tags(
+def test_serve_env_serves_factory_lanes_and_keeps_tags(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     g = pytest.importorskip("gymnasium")
@@ -186,15 +186,24 @@ def test_serve_env_vectorizes_factory_and_skips_tags(
             return {"rlmesh.adapters.v1.env_tags": "x"}
 
     class _Factory(rlmesh.EnvFactory):
-        tags = cast("Any", _FakeTags())  # published only on the scalar path
+        tags = cast("Any", _FakeTags())
         params = None
 
         def make(self) -> object:
             return _GymEnv()
 
+    # num_envs > 1 serves lanes: one make() per lane, tags published per lane.
     serve.serve_env(_Factory, "0.0.0.0:1", num_envs=2)
+    assert isinstance(captured["env"], list)
+    assert len(captured["env"]) == 2
+    assert all(isinstance(lane, _GymEnv) for lane in captured["env"])
+    assert captured["tags"] is _Factory.tags
+
+    # An explicit vectorization_mode keeps the gym fan-out, served untagged
+    # (adapters resolve per lane and a gym vector env's spaces are batched).
+    serve.serve_env(_Factory, "0.0.0.0:1", num_envs=2, vectorization_mode="sync")
     assert getattr(captured["env"], "num_envs", None) == 2
-    assert captured["tags"] is None  # vector env serves untagged (adapters per-lane)
+    assert captured["tags"] is None
 
 
 def test_cli_rejects_framework_and_device_for_model_target(

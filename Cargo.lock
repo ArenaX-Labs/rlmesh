@@ -2765,6 +2765,7 @@ name = "rlmesh"
 version = "0.1.0-rc.8"
 dependencies = [
  "async-trait",
+ "futures",
  "rlmesh-adapters",
  "rlmesh-grpc",
  "rlmesh-proto",
@@ -2892,6 +2893,7 @@ name = "rlmesh-runtime"
 version = "0.1.0-rc.8"
 dependencies = [
  "async-trait",
+ "futures",
  "prost",
  "rlmesh-proto",
  "serde",

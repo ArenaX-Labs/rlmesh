@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Sequence
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, cast
 
@@ -84,7 +85,12 @@ class EnvServer:
     """Serves an RLMesh-compatible environment.
 
     Args:
-        env: Environment satisfying the RLMesh protocols.
+        env: Environment satisfying the RLMesh protocols, or a list of scalar
+            environments to serve as the lanes of one endpoint. Lanes are
+            stepped independently (a runtime keeps one request per lane in
+            flight), so a slow lane never holds the others; a single env is the
+            one-lane case of the same server. A natively vectorized env (the
+            ``VectorEnvLike`` shape) is served by the vector server instead.
         address: Optional bind address. Supports ``"tcp://host:port"``,
             ``"host:port"``, ``"port"``, and ``"unix:///path/to/socket.sock"``.
             Defaults to ``"tcp://127.0.0.1:0"`` when omitted.
@@ -134,7 +140,7 @@ class EnvServer:
 
     def __init__(
         self,
-        env: EnvLike[Any, Any] | VectorServerEnvLike,
+        env: EnvLike[Any, Any] | VectorServerEnvLike | Sequence[EnvLike[Any, Any]],
         address: str | None = None,
         *,
         host: str | None = None,
@@ -146,36 +152,25 @@ class EnvServer:
         framework: str | ValueBridge | None = None,
         device: object | None = None,
     ) -> None:
-        # The env is self-describing: a vectorized env (the VectorEnvLike shape) is
-        # served by the native vector server, a single env by the scalar server.
-        # Detect on the RAW env, before any wrapping.
-        is_vector = _is_vector_env(env)
-        if tags is not None:
-            # Imported lazily so the common (un-tagged) serve path does not
-            # pull in the adapters/numpy stack. A vector env's served spaces are
-            # batched while tags describe one lane, so per-lane space validation
-            # is deferred to resolve time there (mirroring the factory stamp).
-            from .adapters import tag
-
-            env = tag(env, tags, validate=not is_vector)
-        elif not is_vector:
-            # A prebuilt or EnvFactory-stamped env can carry tags in its metadata
-            # that were never validated against its spaces (the factory stamp uses
-            # validate=False, because a vectorized make()'s per-lane spaces differ
-            # from the served shape). For a scalar env the spaces are real, so
-            # validate the published tags now -- surfacing a bad tag at startup
-            # instead of when a model first connects. (Vector envs keep the
-            # deferred, resolve-time check.)
-            from collections.abc import Mapping
-
-            metadata = getattr(env, "metadata", None)
-            if isinstance(metadata, Mapping):
-                from .adapters import EnvTags, tag
-
-                published = EnvTags.from_metadata(cast("Mapping[str, Any]", metadata))
-                if published is not None:
-                    env = tag(env, published)  # idempotent re-stamp + validate
-        _check_expected_branch(env)
+        # A list is the lanes of one endpoint (each a scalar env); anything else
+        # is one env. The env is self-describing: a vectorized env (the
+        # VectorEnvLike shape) is served by the native vector server, a scalar
+        # env by the lane server as its single lane. Detect on the RAW env,
+        # before any wrapping.
+        lanes: list[Any] | None = (
+            list(cast("Sequence[Any]", env)) if isinstance(env, (list, tuple)) else None
+        )
+        if lanes is not None:
+            if not lanes:
+                raise ValueError("EnvServer needs at least one environment")
+            if any(_is_vector_env(lane) for lane in lanes):
+                raise TypeError(
+                    "lanes must be scalar environments; serve a vectorized env "
+                    "on its own instead of inside a list"
+                )
+            is_vector = False
+        else:
+            is_vector = _is_vector_env(env)
 
         # The framework is a value the author sets on the env side -- here, the
         # framework= kwarg (an EnvFactory passes its declared framework through it).
@@ -192,17 +187,52 @@ class EnvServer:
                 "device=... requires a framework with a device (framework='torch' "
                 "or 'jax'); numpy envs and the default backend have no device."
             )
-        if native_values:
-            # Lazy import keeps the un-bridged serve path light (mirrors tag()).
-            from ._server_bridge import BridgedEnv
 
-            assert bridge is not None
-            # BridgedEnv duck-types as the env (delegates every other attribute);
-            # cast so the static env type is preserved for the server constructors.
-            env = cast(
-                "EnvLike[Any, Any] | VectorServerEnvLike",
-                BridgedEnv(env, bridge, device),
-            )
+        def prepare(one: Any) -> Any:
+            """Stamp tags and the framework bridge onto one served env."""
+            if tags is not None:
+                # Imported lazily so the common (un-tagged) serve path does not
+                # pull in the adapters/numpy stack. A vector env's served spaces
+                # are batched while tags describe one lane, so per-lane space
+                # validation is deferred to resolve time there (mirroring the
+                # factory stamp).
+                from .adapters import tag
+
+                one = tag(one, tags, validate=not is_vector)
+            elif not is_vector:
+                # A prebuilt or EnvFactory-stamped env can carry tags in its
+                # metadata that were never validated against its spaces (the
+                # factory stamp uses validate=False, because a vectorized
+                # make()'s per-lane spaces differ from the served shape). For a
+                # scalar env the spaces are real, so validate the published tags
+                # now -- surfacing a bad tag at startup instead of when a model
+                # first connects. (Vector envs keep the deferred check.)
+                from collections.abc import Mapping
+
+                metadata = getattr(one, "metadata", None)
+                if isinstance(metadata, Mapping):
+                    from .adapters import EnvTags, tag
+
+                    published = EnvTags.from_metadata(
+                        cast("Mapping[str, Any]", metadata)
+                    )
+                    if published is not None:
+                        one = tag(one, published)  # idempotent re-stamp + validate
+            _check_expected_branch(one)
+            if native_values:
+                # Lazy import keeps the un-bridged serve path light.
+                from ._server_bridge import BridgedEnv
+
+                assert bridge is not None
+                # BridgedEnv duck-types as the env (delegates every other
+                # attribute).
+                one = BridgedEnv(one, bridge, device)
+            return one
+
+        if lanes is not None:
+            env = cast("Any", [prepare(lane) for lane in lanes])
+        else:
+            env = prepare(env)
 
         normalized_address = normalize_bind_address(
             address,

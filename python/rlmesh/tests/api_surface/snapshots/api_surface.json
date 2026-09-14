@@ -137,7 +137,7 @@
             "signature": "wait(timeout: float | None = None) -> bool"
           }
         },
-        "signature": "EnvServer(env: EnvLike[Any, Any] | VectorServerEnvLike, address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, options: ServeOptions | None = None, tags: EnvTags | None = None, framework: str | ValueBridge | None = None, device: object | None = None)",
+        "signature": "EnvServer(env: EnvLike[Any, Any] | VectorServerEnvLike | Sequence[EnvLike[Any, Any]], address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, options: ServeOptions | None = None, tags: EnvTags | None = None, framework: str | ValueBridge | None = None, device: object | None = None)",
         "stability": "Stable"
       },
       "EpisodeResult": {

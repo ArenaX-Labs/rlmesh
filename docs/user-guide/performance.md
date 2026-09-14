@@ -85,6 +85,8 @@ rlmesh.EnvServer(envs, "127.0.0.1:5555").serve()
 
 A vector endpoint plus a batched model corner is the fast combination: N lanes step together and one model forward covers them. The client side is in {doc}`remote-clients`.
 
+A list of scalar envs (`EnvServer([make() for _ in range(N)])`, or `RLMESH_NUM_ENVS=N` on a prebuilt image) serves N **lanes** instead: the endpoint advertises the `subset_step` capability, and a runtime drives each lane as its own episode loop over the one Join stream, keeping a step or reset per lane in flight. Lanes finish and restart episodes independently, and each episode's seed and index are fixed by a route-global slot counter, so the scored set is identical however the lanes' timing interleaves. Batched model corners still apply: concurrent lane predicts are grouped at the model. Prefer lanes over a gym vector env whenever episodes have uneven lengths or resets are slow (scene rebuilds, GPU renderers).
+
 ```{caution}
 A torch/jax env cannot be fanned out with gym vectorization (`num_envs > 1`):
 that path concatenates observations with NumPy and discards the framework tensors,

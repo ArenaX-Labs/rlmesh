@@ -414,10 +414,11 @@ def construct_authored_env(
     :data:`rlmesh.params.PARAM_METADATA_KEY`) via the same merge rail as tags, so
     the operator can read back exactly what was sent.
 
-    ``num_envs > 1`` builds a self-describing vector env: the binding is validated
-    once, then ``make`` is fanned out into a gym Sync/Async vector wrapper (see
-    :func:`rlmesh._bootstrap.gym_support.vectorize`) so a prebuilt EnvFactory image
-    honors a ``SandboxVectorEnv`` request instead of serving a lone env.
+    ``num_envs > 1`` runs ``make`` once per lane and returns the list; the server
+    hosts the instances as the independently stepped lanes of one endpoint (tags
+    and framework carry through unchanged). An explicit ``vectorization_mode``
+    (``"sync"``/``"async"``) instead fans ``make`` out into a gym vector wrapper
+    (see :func:`rlmesh._bootstrap.gym_support.vectorize`), stepped in lockstep.
     """
     from rlmesh.params._resolve import resolve, to_metadata
 
@@ -428,13 +429,16 @@ def construct_authored_env(
 
     spec = cast("ParamSpec | None", getattr(inst, "params", None))
     resolved = resolve(spec, inst.make, kwargs)
-    if num_envs > 1:
+    if num_envs > 1 and vectorization_mode is not None:
         from .gym_support import vectorize
 
         make = inst.make
         env = vectorize(lambda: make(**resolved), num_envs, vectorization_mode)
-    else:
-        env = inst.make(**resolved)
+        if spec is not None:
+            _stamp_metadata(env, to_metadata(spec, inst.make, resolved))
+        return env
+    envs = [inst.make(**resolved) for _ in range(max(num_envs, 1))]
     if spec is not None:
-        _stamp_metadata(env, to_metadata(spec, inst.make, resolved))
-    return env
+        for env in envs:
+            _stamp_metadata(env, to_metadata(spec, inst.make, resolved))
+    return envs[0] if num_envs <= 1 else envs

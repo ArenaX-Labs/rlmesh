@@ -279,8 +279,16 @@ def test_serve_env_normalizes_framework_for_guards(
 
     monkeypatch.setattr(rlmesh, "EnvServer", FakeServer)
 
+    # Only the gym fan-out (an explicit vectorization_mode) rejects a framework
+    # env; lanes (the num_envs>1 default) bridge each lane and are fine.
     with pytest.raises(NotImplementedError, match="num_envs>1"):
-        serve.serve_env(lambda: object(), "0.0.0.0:1", num_envs=2, framework=" JAX ")
+        serve.serve_env(
+            lambda: object(),
+            "0.0.0.0:1",
+            num_envs=2,
+            vectorization_mode="sync",
+            framework=" JAX ",
+        )
 
     serve.serve_env(lambda: object(), "0.0.0.0:1", framework="NumPy", device="cuda:0")
     assert captured["framework"] == "numpy"

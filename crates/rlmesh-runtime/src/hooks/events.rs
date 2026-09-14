@@ -13,6 +13,10 @@ pub struct RuntimeEnvContext {
     pub env_id: String,
     pub env_component_id: String,
     pub model_component_id: String,
+    /// The lane this session drives when the env is lane-driven (one session
+    /// per lane over a shared endpoint); `None` for a whole-env session. Lets
+    /// telemetry and lifecycle events be sliced per lane after the fact.
+    pub lane: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

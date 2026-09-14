@@ -90,7 +90,7 @@ where
 
 /// A transport server that implements the `EnvService` tonic trait.
 pub struct GrpcEnvServer<E: Environment> {
-    env: Arc<Mutex<E>>,
+    env: Arc<E>,
     episode_tracker: Arc<Mutex<EpisodeTracker>>,
     shutdown: ShutdownTrigger,
     serve_options: ServeOptions,
@@ -129,17 +129,12 @@ impl<E: Environment> GrpcEnvServer<E> {
         serve_options: ServeOptions,
         activity_tx: Option<mpsc::UnboundedSender<IdleActivity>>,
     ) -> Self {
-        Self::from_shared(
-            Arc::new(Mutex::new(env)),
-            shutdown,
-            serve_options,
-            activity_tx,
-        )
+        Self::from_shared(Arc::new(env), shutdown, serve_options, activity_tx)
     }
 
     #[doc(hidden)]
     pub fn from_shared(
-        env: Arc<Mutex<E>>,
+        env: Arc<E>,
         shutdown: ShutdownTrigger,
         serve_options: ServeOptions,
         activity_tx: Option<mpsc::UnboundedSender<IdleActivity>>,
@@ -192,7 +187,7 @@ pub fn env_service<E: Environment + 'static>(
 
 #[doc(hidden)]
 pub fn env_service_from_shared<E: Environment + 'static>(
-    env: Arc<Mutex<E>>,
+    env: Arc<E>,
     shutdown: ShutdownTrigger,
     serve_options: ServeOptions,
     activity_tx: Option<mpsc::UnboundedSender<IdleActivity>>,
@@ -244,13 +239,18 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
         // fails at the floor with an all-tiers diagnostic.
         let compatible = evaluate_handshake(&req.protocol_generation);
 
-        let env_contract = if compatible {
-            let env = self.env.lock().await;
+        let env = &self.env;
+        let env_contract = compatible.then(|| {
             let mut contract = env_contract_to_proto(env.env_contract());
             contract.num_envs = env.num_envs() as u32;
-            Some(contract)
+            contract
+        });
+        // `subset_step`: the runtime may keep one step/reset per lane in
+        // flight on the Join stream (see Environment::supports_lanes).
+        let capabilities: &[&str] = if env.supports_lanes() {
+            &["subset_step"]
         } else {
-            None
+            &[]
         };
 
         let base = rlmesh_proto::core::v1::HandshakeResponse {
@@ -258,7 +258,7 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
             peer_info: Some(peer_info("rlmesh-env")),
             error_message: (!compatible)
                 .then(|| generation_mismatch_message(&req.protocol_generation)),
-            capabilities: capability_map(&[]),
+            capabilities: capability_map(capabilities),
             supported_workflow_editions: supported_workflow_editions(),
         };
 
@@ -300,6 +300,9 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
         let env = self.env.clone();
         let episode_tracker = self.episode_tracker.clone();
         let activity_tx = self.activity_tx.clone();
+        // A static property of the served env, read once per session so the
+        // per-request dispatch below never takes the env lock to decide.
+        let supports_lanes = self.env.supports_lanes();
 
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<JoinResponse, Status>>(64);
 
@@ -307,6 +310,13 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
             // Hold the slot guard for the lifetime of this stream; dropping it
             // (on normal completion, error, or task cancellation) frees the slot.
             let _join_slot = join_slot;
+            // Lane-scoped ops (a step/reset naming `env_indices` on a lane-capable
+            // env) run concurrently: each is its own task and replies as it
+            // completes, correlated by request_id. Everything else (whole-vector
+            // ops, render, configure, close) runs inline after the in-flight
+            // lane ops drain, so a serial op always observes quiescent lanes and
+            // a Close reports final tracker state.
+            let mut inflight: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
             while let Some(req_result) = req_stream.next().await {
                 let req = match req_result {
                     Ok(req) => req,
@@ -315,6 +325,30 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
                         break;
                     }
                 };
+
+                if supports_lanes && is_lane_scoped(&req) {
+                    let env = env.clone();
+                    let tracker = episode_tracker.clone();
+                    let tx = tx.clone();
+                    let activity_tx = activity_tx.clone();
+                    inflight.spawn(async move {
+                        if let Some(activity_tx) = &activity_tx {
+                            let _ = activity_tx.send(IdleActivity::Started);
+                        }
+                        let res = {
+                            let _activity_guard = ActivityFinishedGuard::new(activity_tx);
+                            handle_env_request(req, env, tracker, true).await
+                        };
+                        if tx.send(Ok(res)).await.is_err() {
+                            tracing::warn!(
+                                "env join response receiver closed before a lane response could \
+                                 be delivered"
+                            );
+                        }
+                    });
+                    continue;
+                }
+                while inflight.join_next().await.is_some() {}
 
                 let close_after = matches!(req.kind, Some(join_request::Kind::Close(_)));
                 if let Some(activity_tx) = &activity_tx {
@@ -327,7 +361,8 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
                 // scope ends at the bottom of this loop iteration (request done).
                 let res = {
                     let _activity_guard = ActivityFinishedGuard::new(activity_tx.clone());
-                    handle_env_request(req, env.clone(), episode_tracker.clone()).await
+                    handle_env_request(req, env.clone(), episode_tracker.clone(), supports_lanes)
+                        .await
                 };
 
                 let send_result = tx.send(Ok(res)).await;
@@ -349,6 +384,9 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
                     break;
                 }
             }
+            // Lane ops still running when the stream ended must land their
+            // tracker updates before the session's leftovers are swept.
+            while inflight.join_next().await.is_some() {}
 
             // The session is over, however it ended. A graceful Close already
             // drained the tracker; an abrupt end (client drop/detach/network)
@@ -416,21 +454,20 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
 )]
 async fn handle_env_request<E: Environment>(
     req: JoinRequest,
-    env: Arc<Mutex<E>>,
+    env: Arc<E>,
     episode_tracker: Arc<Mutex<EpisodeTracker>>,
+    supports_lanes: bool,
 ) -> JoinResponse {
     let request_id = req.request_id.clone();
     let endpoint_started = Instant::now();
     let mut phases = EndpointPhases::default();
-    // One env serves its ops one at a time: the lock wait is this op's queue.
-    let lock_wait = |started: Instant| rlmesh_proto::elapsed_ns(started);
 
     let kind = match req.kind {
         Some(join_request::Kind::Reset(reset_req)) => {
-            let mut env = env.lock().await;
-            let queue_ns = lock_wait(endpoint_started);
-
-            let num_envs = env.num_envs();
+            // Non-empty env_indices is an explicit partial / subenv reset: only
+            // those lanes restart, with `seeds` positionally aligned to them.
+            let env_indices = reset_req.env_indices.clone();
+            let partial = !env_indices.is_empty();
             // Record the seed honestly: an empty seeds vector means the
             // environment seeds itself from entropy, so the episode has no seed
             // rather than a fabricated 0.
@@ -439,17 +476,14 @@ async fn handle_env_request<E: Environment>(
             // (R1): the env adopts these and never mints. Positional — aligned to
             // `env_indices` for a partial reset, to lanes 0..num_envs for a full one.
             let pushed_ids = reset_req.episode_ids.clone();
-            // Non-empty env_indices is an explicit partial / subenv reset: only
-            // those lanes restart, with `seeds` positionally aligned to them.
-            let env_indices = reset_req.env_indices.clone();
-            let partial = !env_indices.is_empty();
+            let timeout_ms = reset_req.timeout_ms;
+            let num_envs = env.num_envs();
 
             // env_indices/seeds arrive straight off the wire, so a foreign or
             // buggy client can send out-of-range, negative, duplicate, or
             // length-mismatched lanes. Validate before touching the env or the
             // tracker: silently deduping/truncating would start phantom or
             // misaligned episodes (seeds are positionally aligned to lanes).
-            let timeout_ms = reset_req.timeout_ms;
             let result = match validate_partial_reset(
                 partial,
                 &env_indices,
@@ -461,24 +495,14 @@ async fn handle_env_request<E: Environment>(
                     crate::error::EnvErrorCode::InvalidAction,
                     message,
                 )),
-                Ok(()) if partial => {
-                    run_env_op_with_deadline(
-                        env.reset_subset(reset_req),
-                        timeout_ms,
-                        "env.reset_subset",
-                    )
-                    .await
-                }
                 Ok(()) => {
                     run_env_op_with_deadline(env.reset(reset_req), timeout_ms, "env.reset").await
                 }
             };
 
-            phases = env.take_last_phases();
-            phases.queue_ns = queue_ns;
-
             match result {
-                Ok(ok) => {
+                Ok((ok, op_phases)) => {
+                    phases = op_phases;
                     let mut tracker = episode_tracker.lock().await;
                     let episode_count = if partial {
                         // Start a fresh episode only for the reset lanes, adopting
@@ -511,35 +535,58 @@ async fn handle_env_request<E: Environment>(
             }
         }
         Some(join_request::Kind::Step(step_req)) => {
-            let mut env = env.lock().await;
-            let queue_ns = lock_wait(endpoint_started);
+            let env_indices = step_req.env_indices.clone();
+            let subset = !env_indices.is_empty();
+            let timeout_ms = step_req.timeout_ms;
+            // Authoritative per-lane ids pushed down by the runtime (R1).
+            // Under NEXT_STEP the env adopts this lane's id when it rolls the
+            // fresh autoreset episode; it never mints its own.
+            let pushed_ids = step_req.episode_ids.clone();
             let num_envs = env.num_envs();
             let autoreset_mode = env.env_contract().autoreset_mode;
 
-            // Subset-stepping is reserved on the wire (StepRequest.env_indices)
-            // but not yet honored: fail loud rather than silently treat it as a
-            // full-width step.
-            if !step_req.env_indices.is_empty() {
-                tracing::error!("StepRequest.env_indices set but subset stepping is unsupported");
+            if subset && !supports_lanes {
+                // Subset stepping needs a lane endpoint: fail loud rather than
+                // silently treat it as a full-width step.
+                tracing::error!("StepRequest.env_indices set but this env does not step lanes");
                 Some(join_response::Kind::Error(env_error_to_proto(
                     EnvError::new(
                         crate::error::EnvErrorCode::Unsupported,
-                        "subset stepping (StepRequest.env_indices) is not supported",
+                        "subset stepping (StepRequest.env_indices) is not supported by this \
+                         environment",
                     ),
                 )))
             } else {
-                let timeout_ms = step_req.timeout_ms;
-                // Authoritative per-lane ids pushed down by the runtime (R1).
-                // Under NEXT_STEP the env adopts this lane's id when it rolls the
-                // fresh autoreset episode; it never mints its own.
-                let pushed_ids = step_req.episode_ids.clone();
-                let result =
-                    run_env_op_with_deadline(env.step(step_req), timeout_ms, "env.step").await;
-                phases = env.take_last_phases();
-                phases.queue_ns = queue_ns;
+                let validation = if subset {
+                    validate_partial_reset(true, &env_indices, &[], &[], num_envs)
+                        .map_err(|message| message.replace("partial reset", "subset step"))
+                } else {
+                    Ok(())
+                };
+                let result = match validation {
+                    Err(message) => Err(EnvError::new(
+                        crate::error::EnvErrorCode::InvalidAction,
+                        message,
+                    )),
+                    Ok(()) => {
+                        run_env_op_with_deadline(env.step(step_req), timeout_ms, "env.step").await
+                    }
+                };
+                // The lanes this response covers, in response position order:
+                // the requested subset, or the whole vector.
+                let lanes: Vec<u32> = if subset {
+                    env_indices.clone()
+                } else {
+                    (0..num_envs).map(|lane| lane as u32).collect()
+                };
 
                 match result {
-                    Ok(mut ok) => {
+                    Ok((mut ok, op_phases)) => {
+                        phases = op_phases;
+                        if subset {
+                            // Partial-width reply: stamp the lanes it covers.
+                            ok.env_indices = env_indices;
+                        }
                         let mut tracker = episode_tracker.lock().await;
                         // TODO(#6): SameStep falls through to the DISABLED/Idle
                         // path here (next_step is only true for NextStep) and is
@@ -556,80 +603,24 @@ async fn handle_env_request<E: Environment>(
                         // rather than half-applied, and re-stepping reports the
                         // same violation against consistent state. (A `Kind::Error`
                         // payload does not by itself tear down the stream.)
-                        if let Some(e) = validate_step_lanes(&ok, num_envs, next_step, &tracker) {
+                        if let Some(e) = validate_step_lanes(&ok, &lanes, next_step, &tracker) {
                             tracing::error!(error = %e, "env step contract violation");
                             Some(join_response::Kind::Error(env_error_to_proto(e)))
                         } else {
-                            // Validated: every lane takes a legal transition.
-                            // Episodes interrupted by a replacing reset surface
-                            // here so their accounting is not lost.
-                            let mut completed_episodes = tracker.drain_interrupted();
-                            let shared_info = ok.infos.clone();
-
-                            // The env no longer emits per-lane episode ids (R1):
-                            // the runtime is authoritative and keys lifecycle by
-                            // env_index. We still advance tracker state, surface
-                            // completed metadata (tagged with the runtime-pushed
-                            // id), and adopt the pushed id when a lane rolls.
-                            for env_idx in 0..num_envs {
-                                let terminated = lane_bit(&ok.terminated_mask, env_idx);
-                                let truncated = lane_bit(&ok.truncated_mask, env_idx);
-                                let done = terminated || truncated;
-                                let reward = ok.rewards.get(env_idx).copied().unwrap_or(0.0);
-                                let lane = env_idx as i32;
-
-                                match tracker.lane_state(lane) {
-                                    LaneState::Active => {
-                                        // A real action-step on a running lane: reward counts.
-                                        tracker.record_step(lane, reward);
-                                        if done {
-                                            // Done step t: complete the episode (its metadata
-                                            // carries the runtime id we adopted at start).
-                                            if let Some(metadata) = tracker.complete_episode(
-                                                lane,
-                                                terminated,
-                                                truncated,
-                                                extract_env_final_info(
-                                                    shared_info.as_ref(),
-                                                    env_idx,
-                                                    num_envs,
-                                                ),
-                                            ) {
-                                                completed_episodes.push(metadata);
-                                            }
-                                            // Under NEXT_STEP the env owes this lane a fresh
-                                            // autoreset observation next step; mark it so that
-                                            // step is recognised as the roll.
-                                            if next_step {
-                                                tracker.expect_autoreset(lane);
-                                            }
-                                        }
-                                    }
-                                    LaneState::PendingAutoreset => {
-                                        // Validated as the fresh autoreset observation
-                                        // (non-terminal, reward 0). Roll the new episode
-                                        // (step 0) adopting the runtime-pushed id; not a
-                                        // reward-bearing step, so no record_step; gym reseeds
-                                        // autoreset from entropy (seed None).
-                                        let id =
-                                            pushed_ids.get(env_idx).cloned().unwrap_or_default();
-                                        tracker.start_episode(lane, None, id);
-                                    }
-                                    LaneState::Idle => {
-                                        // DISABLED only (validation rejects an Idle NEXT_STEP
-                                        // lane): an inactive lane awaits an explicit reset; no
-                                        // phantom episode.
-                                    }
-                                }
-                            }
-
-                            ok.completed_episodes = completed_episodes;
+                            apply_step_to_tracker(
+                                &mut ok,
+                                &lanes,
+                                next_step,
+                                &pushed_ids,
+                                &mut tracker,
+                            );
                             let obs_bytes = space_value_len(ok.observation.as_ref());
                             let info_bytes =
                                 ok.infos.as_ref().map(MetaMap::encoded_len).unwrap_or(0);
                             tracing::trace!(
                                 obs_bytes,
                                 info_bytes,
+                                lanes = lanes.len(),
                                 completed_episodes = ok.completed_episodes.len(),
                                 "env step completed"
                             );
@@ -644,17 +635,12 @@ async fn handle_env_request<E: Environment>(
             }
         }
         Some(join_request::Kind::Render(render_req)) => {
-            let mut env = env.lock().await;
-            let queue_ns = lock_wait(endpoint_started);
-
             let timeout_ms = render_req.timeout_ms;
             let result =
                 run_env_op_with_deadline(env.render(render_req), timeout_ms, "env.render").await;
-            phases = env.take_last_phases();
-            phases.queue_ns = queue_ns;
-
             match result {
-                Ok(ok) => {
+                Ok((ok, op_phases)) => {
+                    phases = op_phases;
                     let frame_bytes = ok.frame.as_ref().map(Vec::len).unwrap_or(0);
                     tracing::debug!(frame_bytes, "env render completed");
                     Some(join_response::Kind::Render(ok))
@@ -733,6 +719,85 @@ async fn handle_env_request<E: Environment>(
     response
 }
 
+/// Whether a Join request is scoped to named lanes (a subset step or partial
+/// reset), and so may run concurrently with other lane ops on a lane-capable
+/// env. Everything else is a serial, whole-env op.
+fn is_lane_scoped(req: &JoinRequest) -> bool {
+    match &req.kind {
+        Some(join_request::Kind::Step(step)) => !step.env_indices.is_empty(),
+        Some(join_request::Kind::Reset(reset)) => !reset.env_indices.is_empty(),
+        _ => false,
+    }
+}
+
+/// Advance the tracker for every lane a validated step response covers.
+/// `lanes[pos]` is the lane behind response position `pos`, so per-lane fields
+/// (`rewards`, masks, batched `infos`) are read by position and the tracker is
+/// keyed by lane. Episodes interrupted by a replacing reset surface here so
+/// their accounting is not lost.
+fn apply_step_to_tracker(
+    ok: &mut rlmesh_proto::env::v1::StepResponse,
+    lanes: &[u32],
+    next_step: bool,
+    pushed_ids: &[String],
+    tracker: &mut EpisodeTracker,
+) {
+    let mut completed_episodes = tracker.drain_interrupted();
+    let shared_info = ok.infos.clone();
+    let width = lanes.len();
+
+    // The env no longer emits per-lane episode ids (R1): the runtime is
+    // authoritative and keys lifecycle by env_index. We still advance tracker
+    // state, surface completed metadata (tagged with the runtime-pushed id),
+    // and adopt the pushed id when a lane rolls.
+    for (pos, &lane_idx) in lanes.iter().enumerate() {
+        let terminated = lane_bit(&ok.terminated_mask, pos);
+        let truncated = lane_bit(&ok.truncated_mask, pos);
+        let done = terminated || truncated;
+        let reward = ok.rewards.get(pos).copied().unwrap_or(0.0);
+        let lane = lane_idx as i32;
+
+        match tracker.lane_state(lane) {
+            LaneState::Active => {
+                // A real action-step on a running lane: reward counts.
+                tracker.record_step(lane, reward);
+                if done {
+                    // Done step t: complete the episode (its metadata carries
+                    // the runtime id we adopted at start).
+                    if let Some(metadata) = tracker.complete_episode(
+                        lane,
+                        terminated,
+                        truncated,
+                        extract_env_final_info(shared_info.as_ref(), pos, width),
+                    ) {
+                        completed_episodes.push(metadata);
+                    }
+                    // Under NEXT_STEP the env owes this lane a fresh autoreset
+                    // observation next step; mark it so that step is recognised
+                    // as the roll.
+                    if next_step {
+                        tracker.expect_autoreset(lane);
+                    }
+                }
+            }
+            LaneState::PendingAutoreset => {
+                // Validated as the fresh autoreset observation (non-terminal,
+                // reward 0). Roll the new episode (step 0) adopting the
+                // runtime-pushed id; not a reward-bearing step, so no
+                // record_step; gym reseeds autoreset from entropy (seed None).
+                let id = pushed_ids.get(pos).cloned().unwrap_or_default();
+                tracker.start_episode(lane, None, id);
+            }
+            LaneState::Idle => {
+                // DISABLED only (validation rejects an Idle NEXT_STEP lane): an
+                // inactive lane awaits an explicit reset; no phantom episode.
+            }
+        }
+    }
+
+    ok.completed_episodes = completed_episodes;
+}
+
 /// Validate an explicit partial reset (`ResetRequest.env_indices`) before it
 /// reaches the env or the episode tracker. A full reset (empty `env_indices`)
 /// is always allowed. For a partial reset every lane must be in `0..num_envs`
@@ -807,12 +872,13 @@ fn lane_bit(mask: &[u8], idx: usize) -> bool {
 ///   dropping the reward/completion.
 fn validate_step_lanes(
     ok: &rlmesh_proto::env::v1::StepResponse,
-    num_envs: usize,
+    lanes: &[u32],
     next_step: bool,
     tracker: &EpisodeTracker,
 ) -> Option<EnvError> {
     let internal =
         |message: String| Some(EnvError::new(crate::error::EnvErrorCode::Internal, message));
+    let num_envs = lanes.len();
 
     for (label, len) in [
         ("rewards", ok.rewards.len()),
@@ -831,9 +897,9 @@ fn validate_step_lanes(
         return None;
     }
 
-    for env_idx in 0..num_envs {
-        let done = lane_bit(&ok.terminated_mask, env_idx) || lane_bit(&ok.truncated_mask, env_idx);
-        let reward = ok.rewards.get(env_idx).copied().unwrap_or(0.0);
+    for (pos, &env_idx) in lanes.iter().enumerate() {
+        let done = lane_bit(&ok.terminated_mask, pos) || lane_bit(&ok.truncated_mask, pos);
+        let reward = ok.rewards.get(pos).copied().unwrap_or(0.0);
         match tracker.lane_state(env_idx as i32) {
             LaneState::PendingAutoreset => {
                 if done {
@@ -976,6 +1042,7 @@ pub async fn serve<E: Environment + 'static>(
 #[cfg(test)]
 mod tests {
     use async_trait::async_trait;
+    use rlmesh_proto::EndpointPhases;
     use rlmesh_proto::env::v1::env_service_server::EnvService;
     use rlmesh_proto::env::v1::{
         CloseEnvsResponse, HandshakeRequest, RenderRequest, RenderResponse, ResetRequest,
@@ -1089,8 +1156,11 @@ mod tests {
     /// script is exhausted), or runs a [`ConcurrencyProbe`] step when one is set.
     struct ScriptedVectorEnv {
         contract: SpaceEnvContract,
-        steps: std::collections::VecDeque<StepResponse>,
+        steps: std::sync::Mutex<std::collections::VecDeque<StepResponse>>,
         probe: Option<ConcurrencyProbe>,
+        /// A lockstep env serializes its own ops (as the wire adapter does for
+        /// a real one); the server itself holds no lock.
+        op_lock: tokio::sync::Mutex<()>,
     }
 
     impl ScriptedVectorEnv {
@@ -1101,8 +1171,9 @@ mod tests {
         ) -> Self {
             Self {
                 contract: contract("scripted", num_envs as u32, mode),
-                steps: steps.into(),
+                steps: std::sync::Mutex::new(steps.into()),
                 probe: None,
+                op_lock: tokio::sync::Mutex::new(()),
             }
         }
 
@@ -1137,10 +1208,17 @@ mod tests {
         fn env_contract(&self) -> &SpaceEnvContract {
             &self.contract
         }
-        async fn reset(&mut self, _req: ResetRequest) -> Result<ResetResponse, EnvError> {
-            Ok(ResetResponse::default())
+        async fn reset(
+            &self,
+            _req: ResetRequest,
+        ) -> Result<(ResetResponse, EndpointPhases), EnvError> {
+            Ok((ResetResponse::default(), EndpointPhases::default()))
         }
-        async fn step(&mut self, _req: StepRequest) -> Result<StepResponse, EnvError> {
+        async fn step(
+            &self,
+            _req: StepRequest,
+        ) -> Result<(StepResponse, EndpointPhases), EnvError> {
+            let _serial = self.op_lock.lock().await;
             if let Some(probe) = &self.probe {
                 use std::sync::atomic::Ordering;
                 let probe = probe.clone();
@@ -1153,14 +1231,18 @@ mod tests {
                     probe.completed_steps.fetch_add(1, Ordering::SeqCst);
                 });
                 let _ = handle.await;
-                return Ok(StepResponse::default());
+                return Ok((StepResponse::default(), EndpointPhases::default()));
             }
-            Ok(self.steps.pop_front().unwrap_or_default())
+            let next = self.steps.lock().unwrap().pop_front().unwrap_or_default();
+            Ok((next, EndpointPhases::default()))
         }
-        async fn render(&mut self, _req: RenderRequest) -> Result<RenderResponse, EnvError> {
-            Ok(RenderResponse::default())
+        async fn render(
+            &self,
+            _req: RenderRequest,
+        ) -> Result<(RenderResponse, EndpointPhases), EnvError> {
+            Ok((RenderResponse::default(), EndpointPhases::default()))
         }
-        async fn close(&mut self) -> Result<CloseEnvsResponse, EnvError> {
+        async fn close(&self) -> Result<CloseEnvsResponse, EnvError> {
             Ok(CloseEnvsResponse::default())
         }
     }
@@ -1200,7 +1282,7 @@ mod tests {
         let probe = env.probe.clone().unwrap();
         let overlap = probe.overlap_detected;
         let completed = probe.completed_steps;
-        let env = Arc::new(Mutex::new(env));
+        let env = Arc::new(env);
         let tracker = Arc::new(Mutex::new(super::super::episode::EpisodeTracker::new()));
 
         let step_req = |timeout_ms: u64, id: &str| JoinRequest {
@@ -1216,7 +1298,7 @@ mod tests {
             let env = env.clone();
             let tracker = tracker.clone();
             tokio::spawn(async move {
-                super::handle_env_request(step_req(50, "first"), env, tracker).await
+                super::handle_env_request(step_req(50, "first"), env, tracker, false).await
             })
         };
         tokio::time::sleep(std::time::Duration::from_millis(75)).await;
@@ -1224,7 +1306,7 @@ mod tests {
             let env = env.clone();
             let tracker = tracker.clone();
             tokio::spawn(async move {
-                super::handle_env_request(step_req(0, "second"), env, tracker).await
+                super::handle_env_request(step_req(0, "second"), env, tracker, false).await
             })
         };
 
@@ -1484,9 +1566,7 @@ mod tests {
         };
         use tokio::sync::Mutex;
 
-        let env = Arc::new(Mutex::new(terminating_env(
-            rlmesh_spaces::AutoresetMode::Disabled,
-        )));
+        let env = Arc::new(terminating_env(rlmesh_spaces::AutoresetMode::Disabled));
         let tracker = Arc::new(Mutex::new(super::super::episode::EpisodeTracker::new()));
         let configure = |edition: &str| JoinRequest {
             kind: Some(join_request::Kind::Configure(ConfigureEnvRequest {
@@ -1498,7 +1578,8 @@ mod tests {
         // The current edition (the only one in the window) is accepted; an empty
         // pin (legacy/unset runtime) is accepted as a no-op.
         for pin in [rlmesh_proto::CURRENT_WORKFLOW_EDITION, ""] {
-            let ok = super::handle_env_request(configure(pin), env.clone(), tracker.clone()).await;
+            let ok = super::handle_env_request(configure(pin), env.clone(), tracker.clone(), false)
+                .await;
             assert!(
                 matches!(ok.kind, Some(join_response::Kind::Configure(_))),
                 "pin {pin:?} should be accepted"
@@ -1507,7 +1588,8 @@ mod tests {
 
         // An edition this build cannot drive is rejected.
         let bad =
-            super::handle_env_request(configure("2099.01"), env.clone(), tracker.clone()).await;
+            super::handle_env_request(configure("2099.01"), env.clone(), tracker.clone(), false)
+                .await;
         assert!(matches!(bad.kind, Some(join_response::Kind::Error(_))));
     }
 
@@ -1536,9 +1618,7 @@ mod tests {
             JoinRequest, ResetRequest as ProtoResetRequest, join_request, join_response,
         };
 
-        let env = Arc::new(Mutex::new(terminating_env(
-            rlmesh_spaces::AutoresetMode::Disabled,
-        )));
+        let env = Arc::new(terminating_env(rlmesh_spaces::AutoresetMode::Disabled));
         let tracker = Arc::new(Mutex::new(super::super::episode::EpisodeTracker::new()));
 
         // Reset both lanes, pushing the runtime-minted ids the env adopts (R1).
@@ -1549,7 +1629,7 @@ mod tests {
             })),
             request_id: "reset".to_string(),
         };
-        let _ = super::handle_env_request(reset, env.clone(), tracker.clone()).await;
+        let _ = super::handle_env_request(reset, env.clone(), tracker.clone(), false).await;
 
         let step_req = |id: &str| JoinRequest {
             kind: Some(join_request::Kind::Step(StepRequest::default())),
@@ -1559,7 +1639,8 @@ mod tests {
         // Step 1: lane 0 terminates. Its episode completes exactly once, carrying
         // the adopted id (the env no longer emits per-lane response ids). This env
         // is DISABLED, so no replacement episode is started.
-        let first = super::handle_env_request(step_req("s1"), env.clone(), tracker.clone()).await;
+        let first =
+            super::handle_env_request(step_req("s1"), env.clone(), tracker.clone(), false).await;
         let first = match first.kind {
             Some(join_response::Kind::Step(ok)) => ok,
             other => panic!("expected step response, got {other:?}"),
@@ -1584,7 +1665,8 @@ mod tests {
 
         // Step 2: no phantom episode is delivered for lane 0 (no spurious
         // truncated 0-step completion), and lane 0 still has no active episode.
-        let second = super::handle_env_request(step_req("s2"), env.clone(), tracker.clone()).await;
+        let second =
+            super::handle_env_request(step_req("s2"), env.clone(), tracker.clone(), false).await;
         let second = match second.kind {
             Some(join_response::Kind::Step(ok)) => ok,
             other => panic!("expected step response, got {other:?}"),
@@ -1610,6 +1692,7 @@ mod tests {
             },
             env.clone(),
             tracker.clone(),
+            false,
         )
         .await;
         let tracker = tracker.lock().await;
@@ -1635,9 +1718,7 @@ mod tests {
         };
 
         // num_envs == 2.
-        let env = Arc::new(Mutex::new(terminating_env(
-            rlmesh_spaces::AutoresetMode::Disabled,
-        )));
+        let env = Arc::new(terminating_env(rlmesh_spaces::AutoresetMode::Disabled));
         let tracker = Arc::new(Mutex::new(super::super::episode::EpisodeTracker::new()));
 
         let reset = |env_indices: Vec<u32>, seeds: Vec<i64>| JoinRequest {
@@ -1670,19 +1751,30 @@ mod tests {
 
         // Out of range: lane 2 does not exist for num_envs == 2.
         expect_invalid(
-            super::handle_env_request(reset(vec![2], vec![]), env.clone(), tracker.clone()).await,
+            super::handle_env_request(reset(vec![2], vec![]), env.clone(), tracker.clone(), false)
+                .await,
             "out of range",
         );
         // Negative lanes are unrepresentable now that env_indices is uint32.
         expect_invalid(
-            super::handle_env_request(reset(vec![0, 0], vec![]), env.clone(), tracker.clone())
-                .await,
+            super::handle_env_request(
+                reset(vec![0, 0], vec![]),
+                env.clone(),
+                tracker.clone(),
+                false,
+            )
+            .await,
             "duplicate",
         );
         // Seeds present but misaligned with env_indices (2 lanes, 1 seed).
         expect_invalid(
-            super::handle_env_request(reset(vec![0, 1], vec![7]), env.clone(), tracker.clone())
-                .await,
+            super::handle_env_request(
+                reset(vec![0, 1], vec![7]),
+                env.clone(),
+                tracker.clone(),
+                false,
+            )
+            .await,
             "seeds length",
         );
 
@@ -1706,9 +1798,7 @@ mod tests {
             JoinRequest, ResetRequest as ProtoResetRequest, join_request, join_response,
         };
 
-        let env = Arc::new(Mutex::new(terminating_env(
-            rlmesh_spaces::AutoresetMode::NextStep,
-        )));
+        let env = Arc::new(terminating_env(rlmesh_spaces::AutoresetMode::NextStep));
         let tracker = Arc::new(Mutex::new(super::super::episode::EpisodeTracker::new()));
 
         let _ = super::handle_env_request(
@@ -1721,6 +1811,7 @@ mod tests {
             },
             env.clone(),
             tracker.clone(),
+            false,
         )
         .await;
 
@@ -1744,6 +1835,7 @@ mod tests {
                 step("s1", vec!["A".to_string()]),
                 env.clone(),
                 tracker.clone(),
+                false,
             )
             .await,
         );
@@ -1764,6 +1856,7 @@ mod tests {
                 step("s2", vec!["B".to_string()]),
                 env.clone(),
                 tracker.clone(),
+                false,
             )
             .await,
         );
@@ -1791,30 +1884,30 @@ mod tests {
         // Terminal at s1, then a fresh-obs step carrying reward 3.0. The
         // autoreset observation must be reward 0, so this is a hard error rather
         // than a silently dropped reward.
-        let env = Arc::new(Mutex::new(ScriptedVectorEnv::new(
+        let env = Arc::new(ScriptedVectorEnv::new(
             1,
             rlmesh_spaces::AutoresetMode::NextStep,
             vec![
                 step_resp(vec![1.0], vec![1], vec![0]),
                 step_resp(vec![3.0], vec![0], vec![0]),
             ],
-        )));
+        ));
         let tracker = Arc::new(Mutex::new(super::super::episode::EpisodeTracker::new()));
 
         let reset = JoinRequest {
             kind: Some(join_request::Kind::Reset(ProtoResetRequest::default())),
             request_id: "r".to_string(),
         };
-        let _ = super::handle_env_request(reset, env.clone(), tracker.clone()).await;
+        let _ = super::handle_env_request(reset, env.clone(), tracker.clone(), false).await;
 
         let step = |id: &str| JoinRequest {
             kind: Some(join_request::Kind::Step(StepRequest::default())),
             request_id: id.to_string(),
         };
         // Done step: completes lane 0 and marks it pending-autoreset.
-        let _ = super::handle_env_request(step("s1"), env.clone(), tracker.clone()).await;
+        let _ = super::handle_env_request(step("s1"), env.clone(), tracker.clone(), false).await;
         // Fresh-obs step with a non-zero reward: hard error.
-        let resp = super::handle_env_request(step("s2"), env.clone(), tracker.clone()).await;
+        let resp = super::handle_env_request(step("s2"), env.clone(), tracker.clone(), false).await;
         match resp.kind {
             Some(join_response::Kind::Error(e)) => assert!(
                 e.message.contains("non-zero reward"),
@@ -1837,27 +1930,27 @@ mod tests {
         // Terminal at s1, then terminal again at s2. The env never delivered the
         // fresh autoreset observation. A sticky-terminal env must fail loud, not
         // silently drop the second completion.
-        let env = Arc::new(Mutex::new(ScriptedVectorEnv::new(
+        let env = Arc::new(ScriptedVectorEnv::new(
             1,
             rlmesh_spaces::AutoresetMode::NextStep,
             vec![
                 step_resp(vec![1.0], vec![1], vec![0]),
                 step_resp(vec![0.0], vec![1], vec![0]),
             ],
-        )));
+        ));
         let tracker = Arc::new(Mutex::new(super::super::episode::EpisodeTracker::new()));
 
         let reset = JoinRequest {
             kind: Some(join_request::Kind::Reset(ProtoResetRequest::default())),
             request_id: "r".to_string(),
         };
-        let _ = super::handle_env_request(reset, env.clone(), tracker.clone()).await;
+        let _ = super::handle_env_request(reset, env.clone(), tracker.clone(), false).await;
         let step = |id: &str| JoinRequest {
             kind: Some(join_request::Kind::Step(StepRequest::default())),
             request_id: id.to_string(),
         };
-        let _ = super::handle_env_request(step("s1"), env.clone(), tracker.clone()).await;
-        let resp = super::handle_env_request(step("s2"), env.clone(), tracker.clone()).await;
+        let _ = super::handle_env_request(step("s1"), env.clone(), tracker.clone(), false).await;
+        let resp = super::handle_env_request(step("s2"), env.clone(), tracker.clone(), false).await;
         match resp.kind {
             Some(join_response::Kind::Error(e)) => assert!(
                 e.message
@@ -1879,18 +1972,18 @@ mod tests {
         // No reset: lane 0 is Idle. Stepping a NEXT_STEP lane with no active
         // episode and no pending autoreset is a hard error. The old behavior
         // fabricated a phantom episode here.
-        let env = Arc::new(Mutex::new(ScriptedVectorEnv::new(
+        let env = Arc::new(ScriptedVectorEnv::new(
             1,
             rlmesh_spaces::AutoresetMode::NextStep,
             vec![step_resp(vec![1.0], vec![0], vec![0])],
-        )));
+        ));
         let tracker = Arc::new(Mutex::new(super::super::episode::EpisodeTracker::new()));
 
         let step = JoinRequest {
             kind: Some(join_request::Kind::Step(StepRequest::default())),
             request_id: "s1".to_string(),
         };
-        let resp = super::handle_env_request(step, env.clone(), tracker.clone()).await;
+        let resp = super::handle_env_request(step, env.clone(), tracker.clone(), false).await;
         match resp.kind {
             Some(join_response::Kind::Error(e)) => assert!(
                 e.message
@@ -1914,7 +2007,7 @@ mod tests {
         // s1 normal, s2 terminal (completes A), s3 fresh obs (rolls B),
         // s4 terminal (completes B), s5 fresh obs (rolls C). Two completions
         // total, three distinct episode ids, no phantom episodes.
-        let env = Arc::new(Mutex::new(ScriptedVectorEnv::new(
+        let env = Arc::new(ScriptedVectorEnv::new(
             1,
             rlmesh_spaces::AutoresetMode::NextStep,
             vec![
@@ -1924,7 +2017,7 @@ mod tests {
                 step_resp(vec![1.0], vec![1], vec![0]),
                 step_resp(vec![0.0], vec![0], vec![0]),
             ],
-        )));
+        ));
         let tracker = Arc::new(Mutex::new(super::super::episode::EpisodeTracker::new()));
 
         let reset = JoinRequest {
@@ -1934,7 +2027,7 @@ mod tests {
             })),
             request_id: "r".to_string(),
         };
-        let _ = super::handle_env_request(reset, env.clone(), tracker.clone()).await;
+        let _ = super::handle_env_request(reset, env.clone(), tracker.clone(), false).await;
         // Steps push the runtime-minted ids the env adopts on each roll.
         let step = |id: &str, episode_ids: Vec<String>| JoinRequest {
             kind: Some(join_request::Kind::Step(StepRequest {
@@ -1953,6 +2046,7 @@ mod tests {
                 step("s1", vec!["A".to_string()]),
                 env.clone(),
                 tracker.clone(),
+                false,
             )
             .await,
         );
@@ -1961,6 +2055,7 @@ mod tests {
                 step("s2", vec!["A".to_string()]),
                 env.clone(),
                 tracker.clone(),
+                false,
             )
             .await,
         );
@@ -1973,6 +2068,7 @@ mod tests {
                 step("s3", vec!["B".to_string()]),
                 env.clone(),
                 tracker.clone(),
+                false,
             )
             .await,
         );
@@ -1994,6 +2090,7 @@ mod tests {
                 step("s4", vec!["B".to_string()]),
                 env.clone(),
                 tracker.clone(),
+                false,
             )
             .await,
         );
@@ -2005,6 +2102,7 @@ mod tests {
                 step("s5", vec!["C".to_string()]),
                 env.clone(),
                 tracker.clone(),
+                false,
             )
             .await,
         );
@@ -2031,7 +2129,7 @@ mod tests {
         // is driven into PendingAutoreset, then a step reports lane 0 terminal
         // (which would complete it) and lane 1 terminal-when-autoreset-expected
         // (a violation). The step must error with lane 0 left untouched.
-        let env = Arc::new(Mutex::new(ScriptedVectorEnv::new(
+        let env = Arc::new(ScriptedVectorEnv::new(
             2,
             rlmesh_spaces::AutoresetMode::NextStep,
             vec![
@@ -2041,20 +2139,20 @@ mod tests {
                 //     (pending-autoreset violation) -> the whole step must error.
                 step_resp(vec![1.0, 0.0], vec![1, 1], vec![0, 0]),
             ],
-        )));
+        ));
         let tracker = Arc::new(Mutex::new(super::super::episode::EpisodeTracker::new()));
 
         let reset = JoinRequest {
             kind: Some(join_request::Kind::Reset(ProtoResetRequest::default())),
             request_id: "r".to_string(),
         };
-        let _ = super::handle_env_request(reset, env.clone(), tracker.clone()).await;
+        let _ = super::handle_env_request(reset, env.clone(), tracker.clone(), false).await;
         let step = |id: &str| JoinRequest {
             kind: Some(join_request::Kind::Step(StepRequest::default())),
             request_id: id.to_string(),
         };
         // s1 puts lane 1 into pending-autoreset.
-        let _ = super::handle_env_request(step("s1"), env.clone(), tracker.clone()).await;
+        let _ = super::handle_env_request(step("s1"), env.clone(), tracker.clone(), false).await;
 
         let lane0_before = {
             let t = tracker.lock().await;
@@ -2065,7 +2163,7 @@ mod tests {
             "lane 0 is active before the violating step"
         );
 
-        let resp = super::handle_env_request(step("s2"), env.clone(), tracker.clone()).await;
+        let resp = super::handle_env_request(step("s2"), env.clone(), tracker.clone(), false).await;
         assert!(
             matches!(resp.kind, Some(join_response::Kind::Error(_))),
             "a violating step must return an error"
@@ -2095,23 +2193,23 @@ mod tests {
 
         // A per-lane vector that is neither empty nor full-width is rejected so a
         // missing lane cannot be silently read as not-done / reward-0.
-        let env = Arc::new(Mutex::new(ScriptedVectorEnv::new(
+        let env = Arc::new(ScriptedVectorEnv::new(
             2,
             rlmesh_spaces::AutoresetMode::NextStep,
             vec![step_resp(vec![1.0, 1.0], vec![0], vec![0, 0])],
-        )));
+        ));
         let tracker = Arc::new(Mutex::new(super::super::episode::EpisodeTracker::new()));
 
         let reset = JoinRequest {
             kind: Some(join_request::Kind::Reset(ProtoResetRequest::default())),
             request_id: "r".to_string(),
         };
-        let _ = super::handle_env_request(reset, env.clone(), tracker.clone()).await;
+        let _ = super::handle_env_request(reset, env.clone(), tracker.clone(), false).await;
         let step = JoinRequest {
             kind: Some(join_request::Kind::Step(StepRequest::default())),
             request_id: "s1".to_string(),
         };
-        let resp = super::handle_env_request(step, env.clone(), tracker.clone()).await;
+        let resp = super::handle_env_request(step, env.clone(), tracker.clone(), false).await;
         match resp.kind {
             Some(join_response::Kind::Error(e)) => assert!(
                 e.message.contains("neither empty nor"),

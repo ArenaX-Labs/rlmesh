@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use pyo3::prelude::*;
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pymethods};
-use rlmesh::env::{ScalarEnvAdapter, WireEnvAdapter};
+use rlmesh::env::{WireEnvAdapter, WireLaneAdapter};
 use rlmesh::{BindAddress, ServeOptions};
 use rlmesh_grpc::env::{Environment, env_service_from_shared};
 use rlmesh_grpc::lifecycle::{
@@ -19,12 +19,11 @@ use rlmesh_spaces::EnvContract;
 use tokio::net::TcpListener;
 #[cfg(unix)]
 use tokio::net::UnixListener;
-use tokio::sync::Mutex;
 use tokio_stream::wrappers::TcpListenerStream;
 #[cfg(unix)]
 use tokio_stream::wrappers::UnixListenerStream;
 
-use super::py_environment::{PyServerEnv, build_scalar_server_env, build_vector_server_env};
+use super::py_environment::{PyServerEnv, build_lane_server_env, build_vector_server_env};
 use crate::lifecycle::PyServeOptions;
 use crate::spaces::env_contract_to_py;
 use crate::types::to_py_err;
@@ -86,11 +85,9 @@ impl PyVectorEnvServer {
     ) -> PyResult<Self> {
         Ok(Self {
             inner: construct_server(
-                env,
+                build_vector_server_env(env, native_values)?,
                 address,
                 options,
-                native_values,
-                build_vector_server_env,
             )?,
         })
     }
@@ -136,17 +133,17 @@ pub struct PyVectorEnvServer {
 }
 
 fn construct_server(
-    env: Py<PyAny>,
+    py_env: PyServerEnv,
     address: Option<&str>,
     options: Option<PyServeOptions>,
-    native_values: bool,
-    build_env: fn(Py<PyAny>, bool) -> PyResult<PyServerEnv>,
 ) -> PyResult<PyEnvServer> {
     crate::telemetry::init_tracing("env_server");
     let shutdown = ShutdownTrigger::new();
 
-    let py_env = build_env(env, native_values)?;
-    let env_contract = py_env.env_contract().clone();
+    // The served contract is one lane's contract at the served width (lane 0's
+    // spaces; the wire handshake stamps the same num_envs).
+    let mut env_contract = py_env.env_contract().clone();
+    env_contract.num_envs = u32::try_from(py_env.num_envs()).unwrap_or(u32::MAX);
 
     let runtime = tokio::runtime::Runtime::new().map_err(|e| {
         PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
@@ -249,22 +246,26 @@ fn construct_server(
 impl PyEnvServer {
     /// Create a new RLMesh environment server.
     /// # Arguments
-    /// * `env` - Python gymnasium.Env object
+    /// * `env` - Python gymnasium.Env object, or a list of them to serve as the
+    ///   lanes of one endpoint (`num_envs = len(list)`)
     /// * `address` - Optional bind address shortcut
     #[new]
     #[pyo3(signature = (env, address=None, *, options=None, native_values=false))]
     fn new(
+        py: Python<'_>,
         env: Py<PyAny>,
         address: Option<&str>,
         options: Option<PyServeOptions>,
         native_values: bool,
     ) -> PyResult<Self> {
+        let lanes: Vec<Py<PyAny>> = match env.bind(py).cast::<pyo3::types::PyList>() {
+            Ok(list) => list.iter().map(|lane| lane.unbind()).collect(),
+            Err(_) => vec![env],
+        };
         construct_server(
-            env,
+            build_lane_server_env(lanes, native_values)?,
             address,
             options,
-            native_values,
-            build_scalar_server_env,
         )
     }
 
@@ -555,30 +556,24 @@ fn run_server(
         }
 
         match env {
-            PyServerEnv::Single(env) => {
-                run_env_server(
-                    WireEnvAdapter::new(ScalarEnvAdapter::new(env)),
-                    listener,
-                    options,
-                    shutdown,
-                )
-                .await
+            PyServerEnv::Lanes(lanes) => {
+                run_env_server(WireLaneAdapter::new(lanes), listener, options, shutdown).await
             }
             PyServerEnv::Vector(env) => {
-                run_env_server(WireEnvAdapter::new(env), listener, options, shutdown).await
+                run_env_server(WireEnvAdapter::new(*env), listener, options, shutdown).await
             }
         }
     })
 }
 
 async fn run_env_server<E>(
-    env: WireEnvAdapter<E>,
+    env: E,
     listener: BoundListener,
     options: ServeOptions,
     shutdown: ShutdownTrigger,
 ) -> ServeResult
 where
-    WireEnvAdapter<E>: Environment + 'static,
+    E: Environment + 'static,
 {
     let activity_tx = start_idle_shutdown(options.idle_timeout, shutdown.clone());
     // Bound both teardown phases so the background serve thread always terminates
@@ -586,7 +581,7 @@ where
     // lingering client connection or a blocking close hook.
     let drain_timeout = Some(options.drain_timeout.unwrap_or(DEFAULT_SHUTDOWN_GRACE));
     let close_timeout = Some(options.close_timeout.unwrap_or(DEFAULT_SHUTDOWN_GRACE));
-    let env = Arc::new(Mutex::new(env));
+    let env = Arc::new(env);
     let grpc_options = rlmesh_grpc::ServeOptions::from(options);
     let service = env_service_from_shared(
         Arc::clone(&env),
@@ -636,11 +631,11 @@ where
     }
 }
 
-async fn close_env<E>(env: Arc<Mutex<E>>, close_timeout: Option<std::time::Duration>) -> ServeResult
+async fn close_env<E>(env: Arc<E>, close_timeout: Option<std::time::Duration>) -> ServeResult
 where
     E: Environment,
 {
-    let close = async { env.lock().await.close().await.map(|_| ()) };
+    let close = async { env.close().await.map(|_| ()) };
     await_close_with_timeout(close, close_timeout)
         .await
         .map_err(|timeout| format!("close timed out after {}ms", timeout.as_millis()))?

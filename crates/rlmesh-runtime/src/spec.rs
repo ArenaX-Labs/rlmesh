@@ -67,6 +67,12 @@ pub struct RuntimeSessionSpec {
     pub max_episode_seconds: Option<f64>,
     pub close_env_on_end: bool,
     pub limits: RuntimeLimits,
+    /// The env advertised the `subset_step` handshake capability: every lane
+    /// can be reset and stepped on its own. The driver then runs one episode
+    /// loop per lane (a lane is its own group) instead of stepping the vector
+    /// in lockstep, and episode seeds/indices come from a route-global slot
+    /// counter so the scored set is fixed by the budget alone.
+    pub subset_step: bool,
 }
 
 impl RuntimeSessionSpec {
@@ -108,18 +114,6 @@ impl RuntimeSessionSpec {
             Ok(rlmesh_proto::core::v1::AutoresetMode::Disabled)
                 | Ok(rlmesh_proto::core::v1::AutoresetMode::Unspecified)
         );
-        if !self.episode_seeds.is_empty()
-            && self.num_envs > 1
-            && !self.episode_seeds.len().is_multiple_of(self.num_envs)
-        {
-            return Err(format!(
-                "episode_seeds ({} seeds) must be a multiple of num_envs ({}) for a \
-                 vectorized env: driver-owned vector resets claim one seed per lane \
-                 per batch, so a partial batch would silently drop the tail seeds",
-                self.episode_seeds.len(),
-                self.num_envs
-            ));
-        }
         if !driver_owns_resets {
             if !self.episode_seeds.is_empty() {
                 return Err(
@@ -179,20 +173,23 @@ impl RuntimeSessionSpec {
                     .to_string(),
             );
         }
-        // Vectorized sessions require NEXT_STEP autoreset: the env resets each
-        // done lane itself, so the driver never needs per-lane reset. DISABLED
-        // (and the UNSPECIFIED default) would require resetting just the done
-        // lanes, which stock gymnasium vector envs cannot do. There is no
-        // partial-reset API, and a full reset clobbers the still-running lanes.
-        // Reject the combination up front instead of failing mid-run the first
-        // time lanes terminate at different steps. A future in-house vector
-        // engine with per-lane reset will lift this gate. (SAME_STEP is already
-        // rejected above, so the only mode that passes here is NEXT_STEP.)
-        if self.num_envs > 1 && self.env_contract.autoreset_mode != AutoresetMode::NextStep as i32 {
+        // A lockstep vectorized session (one group of N lanes) requires
+        // NEXT_STEP autoreset: the env resets each done lane itself. Under
+        // DISABLED the driver would have to reset just the done lanes, which a
+        // stock gymnasium vector env cannot do (a full reset clobbers the
+        // still-running lanes). A lane endpoint (`subset_step`) is driven one
+        // group per lane instead, where DISABLED is the norm. Reject the
+        // combination up front instead of failing mid-run the first time lanes
+        // terminate at different steps. (SAME_STEP is already rejected above.)
+        if self.num_envs > 1
+            && !self.subset_step
+            && self.env_contract.autoreset_mode != AutoresetMode::NextStep as i32
+        {
             return Err(
-                "vectorized runtime sessions (num_envs > 1) require NEXT_STEP autoreset; \
-                 DISABLED autoreset needs per-lane reset, which is unavailable for stock \
-                 gymnasium vector envs. Use NEXT_STEP autoreset, or run with num_envs == 1."
+                "vectorized runtime sessions (num_envs > 1) require NEXT_STEP autoreset unless \
+                 the env steps lanes individually (the `subset_step` capability); DISABLED \
+                 autoreset needs per-lane reset, which a stock gymnasium vector env cannot do. \
+                 Use NEXT_STEP autoreset, serve lanes, or run with num_envs == 1."
                     .to_string(),
             );
         }
@@ -204,6 +201,7 @@ impl RuntimeSessionSpec {
             env_id: self.env_id.clone(),
             env_component_id: self.env_component_id.clone(),
             model_component_id: self.model_component_id.clone(),
+            lane: None,
         }
     }
 
@@ -484,28 +482,9 @@ mod tests {
             max_episode_steps: None,
             max_episode_seconds: None,
             close_env_on_end: true,
+            subset_step: false,
             limits: RuntimeLimits::default(),
         }
-    }
-
-    #[test]
-    fn validate_rejects_vector_episode_seeds_that_do_not_cover_whole_batches() {
-        let mut spec = valid_spec();
-        spec.num_envs = 2;
-        spec.env_contract.autoreset_mode = AutoresetMode::NextStep as i32;
-        spec.episode_seeds = vec![7, 8, 9];
-        let error = spec.validate().unwrap_err();
-        assert!(
-            error.contains("multiple of num_envs"),
-            "expected the whole-batch seed rule, got: {error}"
-        );
-
-        spec.episode_seeds = vec![7, 8, 9, 10];
-        let error = spec.validate().unwrap_err();
-        assert!(
-            error.contains("autoreset disabled"),
-            "a covering list still needs driver-owned resets, got: {error}"
-        );
     }
 
     #[test]

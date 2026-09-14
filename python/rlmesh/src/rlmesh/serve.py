@@ -268,8 +268,10 @@ def serve_env(
 
     An :class:`EnvFactory` class/instance is constructed via ``prepare()`` +
     ``make(**make_kwargs)`` and its ``tags`` published; a bare make-env callable is
-    invoked to produce the env. ``num_envs > 1`` fans the factory/callable out into
-    a vector env (``EnvServer`` auto-detects and serves it via the vector server).
+    invoked to produce the env. ``num_envs > 1`` makes that many instances and
+    serves them as the lanes of one endpoint, each stepped independently (tags and
+    framework carry through). An explicit ``vectorization_mode`` instead fans out
+    into a gym vector env stepped in lockstep, served untagged.
 
     ``framework`` (``"torch"``/``"jax"``/``"numpy"``) types the env's obs/action
     seam; for an :class:`EnvFactory` it defaults to the factory's pinned framework
@@ -284,7 +286,8 @@ def serve_env(
     from ._bootstrap.loaders import construct_authored_env
 
     framework = _normalize_framework(framework)
-    vectorized = num_envs > 1
+    # Lanes are the default for num_envs > 1; the gym fan-out only on request.
+    gym_vectorized = num_envs > 1 and vectorization_mode is not None
     tags: object | None = None
     if hasattr(env_source, "make"):
         # The framework rides the factory class (_bridge ClassVar); an explicit
@@ -296,32 +299,33 @@ def serve_env(
             if framework is not None
             else cast("ValueBridge | None", getattr(env_source, "_bridge", None))
         )
-        _reject_vectorized_framework(vectorized, env_framework)
+        _reject_vectorized_framework(gym_vectorized, env_framework)
         env = construct_authored_env(
             env_source,
             num_envs=num_envs,
             vectorization_mode=vectorization_mode,
             **make_kwargs,
         )
-        # Adapters resolve per single-env lane and are rejected at num_envs>1, so
-        # publish tags only on the scalar path -- mirroring the gym build path,
-        # which serves vector envs untagged. A branched factory already stamped the
+        # Lanes are scalar envs, so tags publish per lane as on the scalar path.
+        # A gym vector env's batched spaces don't match the per-lane tags, so
+        # that path serves untagged. A branched factory already stamped the
         # branch's own tags inside make(); re-publishing the ClassVar here would
-        # overwrite them with the default branch's contract, so leave them alone and
-        # let EnvServer validate what is published. The ClassVar read stays for the
-        # unstamped duck-typed source (a make-haver that is not an EnvFactory).
+        # overwrite them with the default branch's contract, so leave them alone
+        # and let EnvServer validate what is published. The ClassVar read stays
+        # for the unstamped duck-typed source (a make-haver that is not an
+        # EnvFactory).
         tags = (
             None
-            if vectorized or getattr(env_source, "tag_params", ())
+            if gym_vectorized or getattr(env_source, "tag_params", ())
             else getattr(env_source, "tags", None)
         )
     else:
         # A bare callable has no class to pin a framework, so honor only the
         # explicit framework= (from --framework / RLMESH_FRAMEWORK).
         env_framework = framework
-        _reject_vectorized_framework(vectorized, env_framework)
+        _reject_vectorized_framework(gym_vectorized, env_framework)
         make_env = cast("Callable[..., EnvLike[Any, Any]]", env_source)
-        if vectorized:
+        if gym_vectorized:
             from ._bootstrap.gym_support import vectorize
 
             # vectorize returns a gym Sync/Async vector env (VectorServerEnvLike);
@@ -331,6 +335,11 @@ def serve_env(
                 vectorize(
                     lambda: make_env(**make_kwargs), num_envs, vectorization_mode
                 ),
+            )
+        elif num_envs > 1:
+            env = cast(
+                "EnvLike[Any, Any]",
+                [make_env(**make_kwargs) for _ in range(num_envs)],
             )
         else:
             env = make_env(**make_kwargs)
