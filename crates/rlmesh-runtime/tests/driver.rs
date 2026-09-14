@@ -885,7 +885,7 @@ struct TestModel {
 #[async_trait]
 impl RuntimeModel for TestModel {
     async fn predict(
-        &mut self,
+        &self,
         request: PredictRequest,
     ) -> Result<RuntimeModelPrediction, RuntimeError> {
         if let Some(delay) = self.predict_delay {
@@ -917,7 +917,7 @@ impl RuntimeModel for TestModel {
         })
     }
 
-    async fn reset_adapter(&mut self, request: ResetAdapterRequest) -> Result<(), RuntimeError> {
+    async fn reset_adapter(&self, request: ResetAdapterRequest) -> Result<(), RuntimeError> {
         self.reset_adapters
             .lock()
             .expect("reset_adapter recorder lock poisoned")
@@ -926,7 +926,7 @@ impl RuntimeModel for TestModel {
     }
 
     async fn release_adapter(
-        &mut self,
+        &self,
         _request: ReleaseAdapterRequest,
         _timeout: Duration,
     ) -> Result<(), String> {
@@ -1138,6 +1138,7 @@ fn one_episode_spec() -> RuntimeSessionSpec {
         max_episode_steps: None,
         max_episode_seconds: None,
         close_env_on_end: true,
+        subset_step: false,
         limits: Default::default(),
     }
 }
@@ -1285,6 +1286,7 @@ fn vector_spec(num_envs: usize, max_episodes: u64) -> RuntimeSessionSpec {
         max_episode_steps: None,
         max_episode_seconds: None,
         close_env_on_end: true,
+        subset_step: false,
         limits: Default::default(),
     }
 }
@@ -1511,7 +1513,7 @@ async fn prefetch_overlaps_predict_with_replay_and_keeps_the_ledger() {
     let spec = one_episode_spec();
 
     let report = RuntimeDriver::new(spec, env.clone(), model.clone(), hooks.clone())
-        .with_prefetch(Box::new(model.clone()), 1)
+        .with_prefetch(1)
         .run()
         .await
         .unwrap();
@@ -1558,7 +1560,7 @@ async fn prefetch_discards_the_stale_chunk_across_episode_boundaries() {
     spec.max_episodes = Some(2);
 
     let report = RuntimeDriver::new(spec, env.clone(), model.clone(), hooks.clone())
-        .with_prefetch(Box::new(model.clone()), 1)
+        .with_prefetch(1)
         .run()
         .await
         .unwrap();
@@ -1714,5 +1716,212 @@ async fn no_trial_base_sends_no_options_and_reports_no_ordinal() {
             .episodes
             .iter()
             .all(|episode| episode.trial_index.is_none())
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Lane sessions: one driver per lane over a shared, lane-capable env.
+// ---------------------------------------------------------------------------
+
+/// A lane-capable env handle: clones share one endpoint, every op names one
+/// lane, and each lane has its own episode length and step latency so lanes
+/// finish episodes in a timing-dependent order.
+#[derive(Clone)]
+struct LaneTestEnv {
+    inner: Arc<Mutex<LaneTestState>>,
+    lanes: Vec<(usize, Duration)>,
+    closed: Arc<AtomicUsize>,
+}
+
+#[derive(Default)]
+struct LaneTestState {
+    /// `(lane, seed)` per reset, in the order the env saw them.
+    resets: Vec<(u32, Option<i64>)>,
+    step: Vec<usize>,
+    ids: Vec<String>,
+}
+
+impl LaneTestEnv {
+    fn new(lanes: Vec<(usize, Duration)>) -> Self {
+        let n = lanes.len();
+        Self {
+            inner: Arc::new(Mutex::new(LaneTestState {
+                resets: Vec::new(),
+                step: vec![0; n],
+                ids: vec![String::new(); n],
+            })),
+            lanes,
+            closed: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+}
+
+#[async_trait]
+impl RuntimeEnv for LaneTestEnv {
+    async fn reset(&mut self, request: ResetRequest) -> Result<RuntimeEnvReset, RuntimeError> {
+        assert_eq!(
+            request.env_indices.len(),
+            1,
+            "lane resets name exactly one lane"
+        );
+        let lane = request.env_indices[0] as usize;
+        let mut state = self.inner.lock().expect("lane env state lock poisoned");
+        state
+            .resets
+            .push((lane as u32, request.seeds.first().copied()));
+        state.step[lane] = 0;
+        state.ids[lane] = request.episode_ids.first().cloned().unwrap_or_default();
+        Ok(RuntimeEnvReset {
+            response: ResetResponse {
+                observation: Some(leaves_value(payload([0]))),
+                infos: None,
+            },
+            endpoint_total_ns: None,
+            phases: EndpointPhases::default(),
+        })
+    }
+
+    async fn step(&mut self, request: StepRequest) -> Result<RuntimeEnvStep, RuntimeError> {
+        assert_eq!(
+            request.env_indices.len(),
+            1,
+            "lane steps name exactly one lane"
+        );
+        let lane = request.env_indices[0] as usize;
+        let (length, latency) = self.lanes[lane];
+        tokio::time::sleep(latency).await;
+        let mut state = self.inner.lock().expect("lane env state lock poisoned");
+        state.step[lane] += 1;
+        let done = state.step[lane] >= length;
+        let completed_episodes = done
+            .then(|| EpisodeMetadata {
+                episode_id: state.ids[lane].clone(),
+                env_index: lane as u32,
+                step_count: state.step[lane] as i64,
+                cumulative_reward: state.step[lane] as f64,
+                terminated: true,
+                ..Default::default()
+            })
+            .into_iter()
+            .collect();
+        Ok(RuntimeEnvStep {
+            response: StepResponse {
+                observation: Some(leaves_value(payload([0]))),
+                rewards: vec![1.0],
+                terminated_mask: vec![u8::from(done)],
+                truncated_mask: vec![0],
+                infos: None,
+                completed_episodes,
+                env_indices: vec![lane as u32],
+            },
+            endpoint_total_ns: None,
+            phases: EndpointPhases::default(),
+        })
+    }
+
+    async fn close(&mut self, _timeout: Duration) -> Result<(), String> {
+        self.closed.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+fn lane_spec(num_envs: usize, max_episodes: u64, seeds: Vec<i64>) -> RuntimeSessionSpec {
+    RuntimeSessionSpec {
+        env_contract: EnvContract {
+            autoreset_mode: rlmesh_proto::core::v1::AutoresetMode::Disabled as i32,
+            ..vector_spec(num_envs, max_episodes).env_contract
+        },
+        episode_seeds: seeds,
+        subset_step: true,
+        ..vector_spec(num_envs, max_episodes)
+    }
+}
+
+#[tokio::test]
+async fn lane_sessions_score_exactly_the_budgeted_slots_whatever_the_lane_timing() {
+    // Three lanes: a 2-step lane, a slow 5-step lane, and a 1-step sprinter.
+    // Budget 7 episodes with 10 explicit seeds. The sprinter takes most slots
+    // and lane order is timing-dependent, but the scored set is slots 0..7 with
+    // seeds 100..107, every slot exactly once, indexed by slot.
+    // The sprinter's whole episode is one in-memory round trip; the other
+    // lanes' steps take tens of milliseconds, so the slot assignment is not a
+    // coin flip under a loaded runner.
+    let env = LaneTestEnv::new(vec![
+        (2, Duration::from_millis(20)),
+        (5, Duration::from_millis(40)),
+        (1, Duration::ZERO),
+    ]);
+    let model = TestModel::default();
+    let report = RuntimeDriver::new(
+        lane_spec(3, 7, (100..110).collect()),
+        env.clone(),
+        model.clone(),
+        Arc::new(RecordingHooks::default()),
+    )
+    .run()
+    .await
+    .unwrap();
+
+    assert_eq!(report.total_episodes, 7);
+    // The report lists episodes in completion order; by slot they are exactly
+    // 1..=7 with seeds 100..107.
+    let mut by_slot = report.episodes.clone();
+    by_slot.sort_by_key(|e| e.episode_index);
+    let indices: Vec<i64> = by_slot.iter().map(|e| e.episode_index).collect();
+    assert_eq!(indices, (1..=7).collect::<Vec<_>>(), "one record per slot");
+    let seeds: Vec<i64> = by_slot.iter().map(|e| e.seed.unwrap()).collect();
+    assert_eq!(
+        seeds,
+        (100..107).collect::<Vec<_>>(),
+        "seed is fixed by slot"
+    );
+    let lanes_used: std::collections::BTreeSet<i32> =
+        report.episodes.iter().map(|e| e.env_index).collect();
+    assert_eq!(
+        lanes_used,
+        [0, 1, 2].into_iter().collect(),
+        "every lane ran"
+    );
+    // Lanes 0 and 1 hold slots 0 and 1 for at least 40ms; the sprinter takes
+    // every other slot: 2..7, five episodes.
+    let sprinter = report.episodes.iter().filter(|e| e.env_index == 2).count();
+    assert_eq!(sprinter, 5, "the fastest lane takes the remaining slots");
+    assert!(
+        sprinter >= 3,
+        "the fastest lane takes the most slots, got {sprinter}"
+    );
+
+    // The env saw exactly the seven seeded lane resets and one close; the
+    // release handle released once after every lane finished.
+    let state = env.inner.lock().expect("lane env state lock poisoned");
+    let mut seen: Vec<i64> = state.resets.iter().filter_map(|(_, s)| *s).collect();
+    seen.sort_unstable();
+    assert_eq!(seen, (100..107).collect::<Vec<_>>());
+    assert_eq!(env.closed.load(Ordering::SeqCst), 1);
+    assert!(model.closed.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn lane_sessions_idle_surplus_lanes_when_the_budget_is_smaller() {
+    // Four lanes, two episodes: two lanes run one episode each and the other
+    // two never reset (their first slot claim is already past the budget).
+    let env = LaneTestEnv::new(vec![(1, Duration::ZERO); 4]);
+    let report = RuntimeDriver::new(
+        lane_spec(4, 2, Vec::new()),
+        env.clone(),
+        TestModel::default(),
+        Arc::new(RecordingHooks::default()),
+    )
+    .run()
+    .await
+    .unwrap();
+    assert_eq!(report.total_episodes, 2);
+    assert_eq!(
+        env.inner
+            .lock()
+            .expect("lane env state lock poisoned")
+            .resets
+            .len(),
+        2
     );
 }

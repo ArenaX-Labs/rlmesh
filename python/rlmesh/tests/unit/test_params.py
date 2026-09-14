@@ -270,9 +270,10 @@ def test_to_metadata_preserves_structured_binding() -> None:
     assert meta["binding"]["cfg"] == {"reward_scale": 2.0}
 
 
-def test_construct_authored_env_vectorizes_a_factory() -> None:
-    # num_envs>1 fans make() out into a self-describing vector env so a prebuilt
-    # EnvFactory image honors a SandboxVectorEnv request.
+def test_construct_authored_env_makes_lanes_or_a_gym_vector_env() -> None:
+    # num_envs>1 runs make() once per lane (a list the server hosts as lanes);
+    # an explicit vectorization_mode fans make() out into a self-describing gym
+    # vector env instead.
     g = pytest.importorskip("gymnasium")
 
     class _GymEnv(g.Env):
@@ -292,7 +293,12 @@ def test_construct_authored_env_vectorizes_a_factory() -> None:
         def make(self) -> object:
             return _GymEnv()
 
-    vec = construct_authored_env(_GymFactory, num_envs=3)
+    lanes = construct_authored_env(_GymFactory, num_envs=3)
+    assert isinstance(lanes, list)
+    assert len(lanes) == 3
+    assert all(isinstance(lane, _GymEnv) for lane in lanes)
+
+    vec = construct_authored_env(_GymFactory, num_envs=3, vectorization_mode="sync")
     assert getattr(vec, "num_envs", None) == 3
     assert hasattr(vec, "single_observation_space")
 

@@ -38,6 +38,9 @@ where
         .await
         .map_err(Error::from)?;
     let handshake = env.handshake().await.map_err(Error::from)?;
+    // A lane endpoint steps/resets lanes individually, so a num_envs > 1
+    // session can run driver-owned (DISABLED) resets lane by lane.
+    let subset_step = rlmesh_proto::has_capability(&handshake.capabilities, "subset_step");
     let env_contract = env_contract_from_proto(handshake.env_contract)
         .map_err(|err| Error::Internal(format!("invalid spaces spec from env: {err}")))?;
     // The handler returns typed actions the runtime encodes against this space;
@@ -54,15 +57,14 @@ where
     let num_envs = handshake.num_envs;
     let session_id = format!("local-{}", std::process::id());
 
-    // Action chunking across a vector env would replay one whole-batch chunk for
-    // every lane, and a lane that ends mid-chunk invalidates the buffer for all of
-    // them. The engine cannot catch this (the served resolve sees no lane count);
-    // here both numbers are in scope, so refuse before resolving.
-    if num_envs > 1 && options.execution_horizon > 1 {
+    // Action chunking across a lockstep vector env would replay one whole-batch
+    // chunk for every lane, and a lane that ends mid-chunk invalidates the buffer
+    // for all of them. A lane endpoint replays per lane, so it is fine there.
+    if num_envs > 1 && !subset_step && options.execution_horizon > 1 {
         return Err(Error::Internal(format!(
-            "execution_horizon={} cannot be combined with a vector env (num_envs={num_envs}): \
+            "execution_horizon={} cannot be combined with a lockstep vector env (num_envs={num_envs}): \
              chunk replay is whole-batch, so one lane's episode end discards every lane's \
-             buffered frames. Use num_envs=1 or execution_horizon=1.",
+             buffered frames. Use num_envs=1, a lane endpoint, or execution_horizon=1.",
             options.execution_horizon,
         )));
     }
@@ -97,11 +99,14 @@ where
         max_episode_steps: options.max_episode_steps,
         max_episode_seconds: options.max_episode_seconds,
         close_env_on_end: options.close_env,
+        // A lane endpoint is driven one group per lane; the grouped predicts
+        // reach the handler's `predict_grouped` (one fused forward for a model
+        // with a batched corner).
+        subset_step,
         limits: Default::default(),
     };
     let env = EnvClientRuntimeEnv::new(env);
-    let model = ModelHandlerRuntimeModel::new(handler, env_contract, num_envs);
-
+    let model = ModelHandlerRuntimeModel::new(handler, env_contract);
     RuntimeDriver::new(spec, env, model, Arc::new(NoopRuntimeHooks))
         .run_with_cancellation_reason(cancellation, "interrupted by the host (signal)")
         .await
@@ -166,6 +171,7 @@ fn run_error(error: RuntimeError) -> Error {
 /// adapter takes the client's last-operation telemetry after each `reset`/`step`
 /// and attaches it to the runtime result for you, and it maps transport errors
 /// onto recoverable/non-recoverable [`rlmesh_runtime::RuntimeError`]s.
+#[derive(Clone)]
 pub struct EnvClientRuntimeEnv {
     inner: rlmesh_grpc::EnvClient,
 }
@@ -249,20 +255,28 @@ impl RuntimeEnv for EnvClientRuntimeEnv {
 /// driver emits `ResetAdapter` on episode end, routed here to the handler's
 /// `reset_adapter`; there is no position-diff / active-episodes state.
 pub struct ModelHandlerRuntimeModel<'a, H> {
-    handler: &'a mut H,
+    /// The handler, behind a lock: the driver may evict adapter state while a
+    /// grouped predict is being prepared, and a served handler is shared the
+    /// same way.
+    handler: Arc<tokio::sync::Mutex<&'a mut H>>,
     env_contract: Arc<spaces::EnvContract>,
-    num_envs: usize,
 }
 
 impl<'a, H> ModelHandlerRuntimeModel<'a, H> {
     /// Build an adapter for `handler` against the given env contract.
-    pub fn new(handler: &'a mut H, env_contract: spaces::EnvContract, num_envs: usize) -> Self {
+    pub fn new(handler: &'a mut H, env_contract: spaces::EnvContract) -> Self {
         Self {
-            handler,
+            handler: Arc::new(tokio::sync::Mutex::new(handler)),
             env_contract: Arc::new(env_contract),
-            num_envs,
         }
     }
+}
+
+/// One group of a grouped predict, prepared for the handler: what encoding
+/// its reply needs.
+struct PreparedGroup {
+    route: crate::model::types::ModelRouteContext,
+    num_envs: usize,
 }
 
 #[async_trait]
@@ -271,68 +285,125 @@ where
     H: ModelHandler + 'static,
 {
     async fn predict(
-        &mut self,
+        &self,
         request: PredictRequest,
     ) -> std::result::Result<RuntimeModelPrediction, rlmesh_runtime::RuntimeError> {
-        // The same decode / handler / encode split the served endpoint stamps,
-        // so a local run's telemetry supports the same attribution.
+        self.predict_group(vec![request])
+            .await
+            .pop()
+            .unwrap_or_else(|| {
+                Err(rlmesh_runtime::RuntimeError::model_rpc(
+                    "local-model",
+                    Error::model("predict_grouped returned no result"),
+                ))
+            })
+    }
+
+    /// Every request decodes into one `ModelObservation` and the batch goes to
+    /// the handler's `predict_grouped` — the same seam the served endpoint
+    /// uses, so a model with a batched corner runs one fused forward for all
+    /// the lanes waiting on it. Results align 1:1 and in order.
+    async fn predict_group(
+        &self,
+        requests: Vec<PredictRequest>,
+    ) -> Vec<std::result::Result<RuntimeModelPrediction, rlmesh_runtime::RuntimeError>> {
         let started = Instant::now();
-        let mut observation =
-            model_observation_from_endpoint_request(request).map_err(model_rpc)?;
-        let route = observation.route.clone();
-        observation.env_contract = Some(Arc::clone(&self.env_contract));
-        observation.num_envs = self.num_envs;
-        let num_envs = self.num_envs;
-        let action_space =
-            self.env_contract.action_space.clone().ok_or_else(|| {
-                model_rpc(Error::model("model route contract missing action space"))
-            })?;
+        let model_err = model_rpc;
+        let Some(action_space) = self.env_contract.action_space.clone() else {
+            return requests
+                .iter()
+                .map(|_| {
+                    Err(model_err(Error::model(
+                        "model route contract missing action space",
+                    )))
+                })
+                .collect();
+        };
+        // Prepare every group; one that fails to decode reports its own error
+        // and is left out of the batch.
+        let mut batch = Vec::with_capacity(requests.len());
+        let mut prepared: Vec<std::result::Result<PreparedGroup, rlmesh_runtime::RuntimeError>> =
+            Vec::with_capacity(requests.len());
+        for request in requests {
+            match model_observation_from_endpoint_request(request) {
+                Ok(mut observation) => {
+                    // The request's row count is its own width (a lane group
+                    // sends one row), never the route's.
+                    let num_envs = observation.route.episodes.len().max(1);
+                    observation.env_contract = Some(Arc::clone(&self.env_contract));
+                    observation.num_envs = num_envs;
+                    prepared.push(Ok(PreparedGroup {
+                        route: observation.route.clone(),
+                        num_envs,
+                    }));
+                    batch.push(observation);
+                }
+                Err(err) => prepared.push(Err(model_err(err))),
+            }
+        }
         let decode_ns = elapsed_ns(started);
+
+        let mut handler = self.handler.lock().await;
         let call_started = Instant::now();
-        let frames = self.handler.predict_chunked(observation).await;
+        let mut frames = handler.predict_grouped(batch).await.into_iter();
         let user_ns = elapsed_ns(call_started);
         // Drain the adapter share even for a failed forward, or its time leaks
         // into the next predict's `adapter_ns`.
-        let adapter_ns = self.handler.take_adapter_ns();
-        let held = self.handler.held_state();
-        let PredictFrames { actions, replay } = frames.map_err(model_rpc)?;
+        let adapter_ns = handler.take_adapter_ns();
+        let held = handler.held_state();
+        drop(handler);
+
         let encode_started = Instant::now();
-        if actions.len() != num_envs {
-            return Err(model_rpc(Error::model(format!(
-                "predict returned {} actions for {num_envs} lanes",
-                actions.len()
-            ))));
-        }
-        check_actions_conform(&action_space, &actions).map_err(model_rpc)?;
-        let frame0 = encode_batched_partial_values(&actions, &action_space)
-            .map_err(|err| model_rpc(Error::model(err.to_string())))?;
-        let replay_frames =
-            encode_replay_frames(&replay, num_envs, &action_space).map_err(model_rpc)?;
-        let mut wire_actions = Vec::with_capacity(1 + replay_frames.len());
-        wire_actions.push(frame0);
-        wire_actions.extend(replay_frames);
-        let encode_ns = elapsed_ns(encode_started);
-        Ok(RuntimeModelPrediction {
-            response: model_action_to_endpoint_response(ModelAction {
-                actions: wire_actions,
-                route,
-            }),
-            endpoint_total_ns: Some(elapsed_ns(started)),
-            phases: EndpointPhases {
-                decode_ns,
-                user_ns,
-                encode_ns,
-                adapter_ns,
-                held_episodes: held.map(|held| held.episodes.min(u64::from(u32::MAX)) as u32),
-                held_state_bytes: held.map(|held| held.bytes),
-                ..EndpointPhases::default()
-            },
-            group_size: None,
-        })
+        prepared
+            .into_iter()
+            .map(|group| {
+                let PreparedGroup { route, num_envs } = group?;
+                let PredictFrames { actions, replay } = frames
+                    .next()
+                    .ok_or_else(|| {
+                        model_err(Error::model(
+                            "predict_grouped returned fewer results than prepared groups",
+                        ))
+                    })?
+                    .map_err(model_err)?;
+                if actions.len() != num_envs {
+                    return Err(model_err(Error::model(format!(
+                        "predict returned {} actions for {num_envs} lanes",
+                        actions.len()
+                    ))));
+                }
+                check_actions_conform(&action_space, &actions).map_err(model_err)?;
+                let frame0 = encode_batched_partial_values(&actions, &action_space)
+                    .map_err(|err| model_err(Error::model(err.to_string())))?;
+                let replay_frames =
+                    encode_replay_frames(&replay, num_envs, &action_space).map_err(model_err)?;
+                let mut wire_actions = Vec::with_capacity(1 + replay_frames.len());
+                wire_actions.push(frame0);
+                wire_actions.extend(replay_frames);
+                Ok(RuntimeModelPrediction {
+                    response: model_action_to_endpoint_response(ModelAction {
+                        actions: wire_actions,
+                        route,
+                    }),
+                    endpoint_total_ns: Some(elapsed_ns(started)),
+                    phases: EndpointPhases {
+                        decode_ns,
+                        user_ns,
+                        encode_ns: elapsed_ns(encode_started),
+                        adapter_ns,
+                        held_episodes: held
+                            .map(|held| held.episodes.min(u64::from(u32::MAX)) as u32),
+                        held_state_bytes: held.map(|held| held.bytes),
+                        ..EndpointPhases::default()
+                    },
+                    group_size: None,
+                })
+            })
+            .collect()
     }
 
     async fn reset_adapter(
-        &mut self,
+        &self,
         request: ResetAdapterRequest,
     ) -> std::result::Result<(), RuntimeError> {
         // Route the driver's explicit episode-end GC to the handler's evict hook.
@@ -341,6 +412,8 @@ where
             .map(|context| context.env_id)
             .unwrap_or_default();
         self.handler
+            .lock()
+            .await
             .reset_adapter(&env_id, request.episode_ids)
             .await
             .map_err(model_rpc)

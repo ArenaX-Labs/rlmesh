@@ -8,15 +8,23 @@ fn route_state_tracks_slot_episode_records() {
     spec.num_envs = 2;
     let mut state = RouteState::new(&spec);
 
-    let started = state.start_episodes(vec!["env-ep-a".to_string(), "env-ep-b".to_string()], false);
+    let started = state.start_episodes_at(
+        &[0, 1],
+        vec!["env-ep-a".to_string(), "env-ep-b".to_string()],
+        false,
+        &[0, 1],
+    );
 
     assert_eq!(started.len(), 2);
-    assert_eq!(state.snapshot().episode_ids, ["env-ep-a", "env-ep-b"]);
     assert_eq!(
-        state.snapshot().episode_record_ids,
+        state.snapshot_at(&[0, 1]).episode_ids,
+        ["env-ep-a", "env-ep-b"]
+    );
+    assert_eq!(
+        state.snapshot_at(&[0, 1]).episode_record_ids,
         ["ep-000001", "ep-000002"]
     );
-    assert_eq!(state.episode_ids(), ["env-ep-a", "env-ep-b"]);
+    assert_eq!(state.episode_ids_at(&[0, 1]), ["env-ep-a", "env-ep-b"]);
 }
 
 #[test]
@@ -57,10 +65,10 @@ fn predict_request_includes_seed_metadata_aligned_to_episode_ids() {
     let mut state = RouteState::new(&spec);
     let episode_ids = vec!["env-ep-a".to_string(), "env-ep-b".to_string()];
 
-    state.start_episodes(episode_ids.clone(), false);
+    state.start_episodes_at(&[0, 1], episode_ids.clone(), false, &[0, 1]);
     state.note_episode_seeds(&episode_ids, &[7]);
 
-    let request = state.predict_request(None, RequestPhase::ResetObservation);
+    let request = state.predict_request_at(&[0, 1], None, RequestPhase::ResetObservation);
 
     assert_eq!(request.episode_info.len(), 2);
     assert_eq!(request.episode_info[0].episode_id, "env-ep-a");
@@ -72,17 +80,17 @@ fn predict_request_includes_seed_metadata_aligned_to_episode_ids() {
 #[test]
 fn episode_seed_survives_completion_until_the_lane_rolls() {
     let mut state = RouteState::new(&test_session_spec());
-    state.start_episodes(vec!["ep-a".to_string()], false);
+    state.start_episodes_at(&[0], vec!["ep-a".to_string()], false, &[0]);
     state.note_episode_seeds(&["ep-a".to_string()], &[7]);
 
     // Completion emit reads the seed non-destructively: the same iteration
     // still builds the terminal predict for this episode id.
     state.complete_episode("ep-a");
-    let request = state.predict_request(None, RequestPhase::StepObservation);
+    let request = state.predict_request_at(&[0], None, RequestPhase::StepObservation);
     assert_eq!(request.episode_info[0].seed, Some(7));
 
     // The lane rolling to a fresh id is what retires the seed.
-    state.observe_episode_ids(vec!["ep-b".to_string()]);
+    state.observe_episode_ids_at(&[0], vec!["ep-b".to_string()], &[Some(1)]);
     assert_eq!(state.seed_for_episode("ep-a"), None);
 }
 
@@ -107,13 +115,13 @@ fn trial_cursor_walks_forward_across_whole_and_partial_resets() {
 #[test]
 fn episode_trial_survives_completion_until_the_lane_rolls() {
     let mut state = RouteState::new(&test_session_spec());
-    state.start_episodes(vec!["ep-a".to_string()], false);
+    state.start_episodes_at(&[0], vec!["ep-a".to_string()], false, &[0]);
     state.note_episode_trials(&["ep-a".to_string()], &[4]);
 
     state.complete_episode("ep-a");
     assert_eq!(state.trial_for_episode("ep-a"), Some(4));
 
-    state.observe_episode_ids(vec!["ep-b".to_string()]);
+    state.observe_episode_ids_at(&[0], vec!["ep-b".to_string()], &[Some(1)]);
     assert_eq!(state.trial_for_episode("ep-a"), None);
 }
 
@@ -133,6 +141,7 @@ fn test_session_spec() -> RuntimeSessionSpec {
         max_episode_steps: None,
         max_episode_seconds: None,
         close_env_on_end: true,
+        subset_step: false,
         limits: RuntimeLimits::default(),
     }
 }

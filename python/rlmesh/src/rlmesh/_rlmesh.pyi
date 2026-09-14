@@ -311,7 +311,8 @@ class PyEnvServer:
         r"""
         Create a new RLMesh environment server.
         # Arguments
-        * `env` - Python gymnasium.Env object
+        * `env` - Python gymnasium.Env object, or a list of them to serve as the
+          lanes of one endpoint (`num_envs = len(list)`)
         * `address` - Optional bind address shortcut
         """
     def address(self) -> builtins.str:

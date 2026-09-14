@@ -114,6 +114,10 @@ pub struct PyEnvironment {
     /// framework bridge owns the conversion (see `rlmesh._server._BridgedEnv`),
     /// so Rust hands/keeps native Tensor leaves and never touches numpy/torch.
     value_backend: ValueBackend,
+    /// Run Python calls inline on the calling thread instead of a pooled
+    /// blocking thread. A lane actor sets this so a lane's env always executes
+    /// on its own OS thread (what OSMesa/Vulkan contexts expect).
+    pinned: bool,
 }
 
 pub struct PySingleEnv(PyEnvironment);
@@ -121,21 +125,37 @@ pub struct PySingleEnv(PyEnvironment);
 pub struct PyVectorEnv(PyEnvironment);
 
 pub enum PyServerEnv {
-    Single(PySingleEnv),
-    Vector(PyVectorEnv),
+    /// One or more scalar envs served as the lanes of one endpoint (a single
+    /// env is the one-lane case). Never empty.
+    Lanes(Vec<PySingleEnv>),
+    /// A natively batched env (gymnasium.vector shape) stepped as one.
+    Vector(Box<PyVectorEnv>),
 }
 
 impl PyServerEnv {
     pub fn env_contract(&self) -> &EnvContract {
         match self {
-            PyServerEnv::Single(env) => &env.0.env_contract,
+            PyServerEnv::Lanes(lanes) => &lanes[0].0.env_contract,
             PyServerEnv::Vector(env) => &env.0.env_contract,
+        }
+    }
+
+    /// The served vector width: the lane count, or the vector env's own.
+    pub fn num_envs(&self) -> usize {
+        match self {
+            PyServerEnv::Lanes(lanes) => lanes.len(),
+            PyServerEnv::Vector(env) => env.0.num_envs,
         }
     }
 
     pub async fn close(&mut self) -> Result<(), EnvRuntimeError> {
         match self {
-            PyServerEnv::Single(env) => env.close(CloseRequest::default()).await.map(|_| ()),
+            PyServerEnv::Lanes(lanes) => {
+                for lane in lanes {
+                    lane.close(CloseRequest::default()).await?;
+                }
+                Ok(())
+            }
             PyServerEnv::Vector(env) => env.close(CloseRequest::default()).await.map(|_| ()),
         }
     }
@@ -233,6 +253,7 @@ impl PyEnvironment {
                 env_contract,
                 num_envs,
                 uses_vector_api,
+                pinned: false,
                 profiler,
                 last_phases: EndpointPhases::default(),
                 policy: validation_policy_from_env(),
@@ -298,15 +319,26 @@ impl PyEnvironment {
     }
 }
 
-pub fn build_scalar_server_env(env: Py<PyAny>, native_values: bool) -> PyResult<PyServerEnv> {
-    let env = PyEnvironment::new(env, native_values)?;
-    if env.uses_single_env_api() {
-        Ok(PyServerEnv::Single(PySingleEnv(env)))
-    } else {
-        Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-            "EnvServer serves one environment. Use VectorEnvServer for vectorized environments.",
-        ))
+/// Wrap scalar env objects as the lanes of one endpoint (one env = one lane).
+pub fn build_lane_server_env(envs: Vec<Py<PyAny>>, native_values: bool) -> PyResult<PyServerEnv> {
+    if envs.is_empty() {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "EnvServer needs at least one environment",
+        ));
     }
+    let mut lanes = Vec::with_capacity(envs.len());
+    for env in envs {
+        let mut env = PyEnvironment::new(env, native_values)?;
+        env.pinned = true;
+        if !env.uses_single_env_api() {
+            return Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+                "EnvServer serves scalar environments (one per lane). Use VectorEnvServer for \
+                 a natively vectorized environment.",
+            ));
+        }
+        lanes.push(PySingleEnv(env));
+    }
+    Ok(PyServerEnv::Lanes(lanes))
 }
 
 pub fn build_vector_server_env(env: Py<PyAny>, native_values: bool) -> PyResult<PyServerEnv> {
@@ -320,7 +352,7 @@ pub fn build_vector_server_env(env: Py<PyAny>, native_values: bool) -> PyResult<
             "VectorEnvServer requires num_envs >= 2",
         ))
     } else {
-        Ok(PyServerEnv::Vector(PyVectorEnv(env)))
+        Ok(PyServerEnv::Vector(Box::new(PyVectorEnv(env))))
     }
 }
 
@@ -334,12 +366,17 @@ fn env_error_to_runtime_error(error: EnvError) -> EnvRuntimeError {
 /// Run `work` on a blocking thread under the GIL, mapping a join panic or a
 /// `PyErr` through `into_err`. Wraps the `spawn_blocking` + `Python::attach` +
 /// double `map_err` boilerplate every reset/step/render/close body shares.
-async fn spawn_py<T, E, W, M>(phase: &str, work: W, into_err: M) -> Result<T, E>
+async fn spawn_py<T, E, W, M>(pinned: bool, phase: &str, work: W, into_err: M) -> Result<T, E>
 where
     T: Send + 'static,
     W: FnOnce(Python<'_>) -> PyResult<T> + Send + 'static,
     M: Fn(String) -> E,
 {
+    if pinned {
+        // The caller is a lane actor on its own thread: run the Python call
+        // right here so the env never hops threads.
+        return Python::attach(work).map_err(|e: PyErr| into_err(format!("{phase} failed: {e}")));
+    }
     tokio::task::spawn_blocking(move || Python::attach(work))
         .await
         .map_err(|e| into_err(format!("{phase} task panicked: {e}")))?
@@ -420,6 +457,7 @@ impl PyEnvironment {
         let value_backend = self.value_backend;
 
         let (observation, mut info, phases) = spawn_py(
+            self.pinned,
             "reset",
             move |py| {
                 let env_ref = env.bind(py);
@@ -509,6 +547,7 @@ impl PyEnvironment {
         let value_backend = self.value_backend;
 
         let (observation, reward, terminated, truncated, mut info, phases) = spawn_py(
+            self.pinned,
             "step",
             move |py| {
                 let env_ref = env.bind(py);
@@ -601,6 +640,7 @@ impl PyEnvironment {
         let profiler = Arc::clone(&self.profiler);
 
         let (result, phases) = spawn_py(
+            self.pinned,
             "render",
             move |py| {
                 let env_ref = env.bind(py);
@@ -646,6 +686,7 @@ impl PyEnvironment {
         let profiler = Arc::clone(&self.profiler);
 
         spawn_py(
+            self.pinned,
             "close",
             move |py| {
                 let env_ref = env.bind(py);
@@ -678,6 +719,7 @@ impl PyEnvironment {
         let value_backend = self.value_backend;
 
         let (observations, mut info, obs_bytes, phases) = spawn_py(
+            self.pinned,
             "reset",
             move |py| {
                 let env_ref = env.bind(py);
@@ -792,6 +834,7 @@ impl PyEnvironment {
             obs_bytes,
             phases,
         ) = spawn_py(
+            self.pinned,
             "step",
             move |py| {
                 let env_ref = env.bind(py);
@@ -891,6 +934,7 @@ impl PyEnvironment {
         let profiler = Arc::clone(&self.profiler);
 
         let (result, phases) = spawn_py(
+            self.pinned,
             "render",
             move |py| {
                 let env_ref = env.bind(py);
@@ -935,6 +979,7 @@ impl PyEnvironment {
         let profiler = Arc::clone(&self.profiler);
 
         spawn_py(
+            self.pinned,
             "close",
             move |py| {
                 let env_ref = env.bind(py);

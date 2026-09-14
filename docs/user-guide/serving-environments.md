@@ -40,6 +40,15 @@ server = rlmesh.EnvServer(envs, "127.0.0.1:5555")
 server.serve()
 ```
 
+To host several independent copies of a scalar env on one endpoint, pass a list. Each entry becomes a **lane** with its own thread: the endpoint advertises `num_envs = len(list)`, and a runtime keeps one request per lane in flight, so lanes reset and step at their own pace and a slow episode on one never stalls the others. A single env is the one-lane case of the same server, same wire.
+
+```python
+server = rlmesh.EnvServer([gym.make("CartPole-v1") for _ in range(4)], "127.0.0.1:5555")
+server.serve()
+```
+
+`python -m rlmesh.serve` does this for a prebuilt image when `RLMESH_NUM_ENVS` is set: `make()` runs once per lane, and tags publish per lane exactly as on the scalar path. This is the shape to use for a GPU-rendered sim: one process, one GPU, N scenes.
+
 Common Gymnasium wrappers can stay in place. `EnvServer` reads the spaces and calls the wrapped `reset`/`step` through the normal Gymnasium API.
 
 To publish adapter tags so a model resolves its IO with no glue, pass `tags=`. The tags are validated against the env's spaces and merged into the contract metadata. See {doc}`adapters` for the full path.

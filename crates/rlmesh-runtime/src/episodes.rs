@@ -21,10 +21,15 @@ pub(crate) struct EpisodeRecordRegistry {
 }
 
 impl EpisodeRecordRegistry {
+    /// `indices` aligns to `episode_ids`: a `Some` pins that episode's index
+    /// (and record id) to its route-global slot, so ids stay unique and in
+    /// start order across every lane; `None` falls back to the registry's
+    /// running count.
     pub(crate) fn ensure_for_slots(
         &mut self,
         episode_ids: &[String],
         started_from_auto_reset: bool,
+        indices: &[Option<i64>],
     ) -> (Vec<String>, Vec<(String, EpisodeRecord)>) {
         let mut record_ids = Vec::with_capacity(episode_ids.len());
         let mut started = Vec::new();
@@ -39,9 +44,14 @@ impl EpisodeRecordRegistry {
             }
 
             self.next_index += 1;
+            let index = indices
+                .get(env_index)
+                .copied()
+                .flatten()
+                .unwrap_or(self.next_index);
             let record = EpisodeRecord {
-                record_id: format!("ep-{:06}", self.next_index),
-                index: self.next_index,
+                record_id: format!("ep-{index:06}"),
+                index,
                 env_index: env_index as i32,
                 started_from_auto_reset,
             };
@@ -65,14 +75,20 @@ mod tests {
     #[test]
     fn episode_record_ids_are_global_across_vector_slots() {
         let mut registry = EpisodeRecordRegistry::default();
-        let (initial_ids, started) =
-            registry.ensure_for_slots(&["runtime-a".to_string(), "runtime-b".to_string()], false);
+        let (initial_ids, started) = registry.ensure_for_slots(
+            &["runtime-a".to_string(), "runtime-b".to_string()],
+            false,
+            &[],
+        );
         assert_eq!(initial_ids, ["ep-000001", "ep-000002"]);
         assert_eq!(started.len(), 2);
         assert!(!started[0].1.started_from_auto_reset);
 
-        let (next_ids, started) =
-            registry.ensure_for_slots(&["runtime-a".to_string(), "runtime-c".to_string()], true);
+        let (next_ids, started) = registry.ensure_for_slots(
+            &["runtime-a".to_string(), "runtime-c".to_string()],
+            true,
+            &[],
+        );
         assert_eq!(next_ids, ["ep-000001", "ep-000003"]);
         assert_eq!(started.len(), 1);
         assert_eq!(started[0].0, "runtime-c");

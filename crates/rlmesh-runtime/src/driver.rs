@@ -1,11 +1,18 @@
 //! The single-route run loop.
 //!
-//! Drives one ready model/env session: reset, then predict/step until a step or
-//! episode limit, cancellation, or failure. Records per-op telemetry and fans
-//! every state change out to the session's
+//! One driver drives one route. The route's lanes form *groups*: one group per
+//! lane for a lane endpoint (the env advertised `subset_step`), one group for
+//! the whole vector otherwise. Every group is its own `reset -> predict ->
+//! step` episode loop, advanced as its own ops complete, so a slow step or
+//! reset in one group never stalls another. Groups waiting for a prediction
+//! are batched into one grouped predict by the [`PredictScheduler`].
+//!
+//! Records per-op telemetry and fans every state change out to the session's
 //! [`RuntimeHooks`](crate::hooks::RuntimeHooks).
 
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -22,6 +29,7 @@ use rlmesh_proto::model::v1::{
 };
 use rlmesh_proto::spaces::v1::meta_value::Kind as MetaKind;
 use rlmesh_proto::spaces::v1::{MetaList, MetaMap, MetaValue, SpaceValue};
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use crate::hooks::{
@@ -92,6 +100,10 @@ pub(crate) struct PeerReport {
 }
 
 /// The environment side of a route: reset and step over the wire, plus close.
+///
+/// The driver holds one clone per group (a lane endpoint is driven with one
+/// request per lane in flight), so an implementation is a handle onto the
+/// env session: clones share the session and multiplex their requests.
 #[async_trait]
 pub trait RuntimeEnv: Send {
     /// Reset the requested lanes and return their initial observation.
@@ -110,30 +122,61 @@ pub trait RuntimeEnv: Send {
 /// The model side of a route: predict, plus the per-episode adapter-state
 /// lifecycle (evict on episode end, release at session end).
 #[async_trait]
-pub trait RuntimeModel: Send {
+pub trait RuntimeModel: Send + Sync {
     /// Predict the ordered action frames for the batched observation (frame 0 is
     /// this step; any further frames replay open-loop before the next call).
     async fn predict(
-        &mut self,
+        &self,
         request: PredictRequest,
     ) -> Result<RuntimeModelPrediction, RuntimeError>;
+
+    /// Predict for several groups at once, one result per request in order.
+    /// The default runs the predicts concurrently, which is enough for a
+    /// transport that coalesces concurrent predicts itself; an implementation
+    /// that can fuse them into one forward pass overrides this.
+    async fn predict_group(
+        &self,
+        requests: Vec<PredictRequest>,
+    ) -> Vec<Result<RuntimeModelPrediction, RuntimeError>> {
+        futures::future::join_all(requests.into_iter().map(|request| self.predict(request))).await
+    }
 
     /// Evict the model's per-episode adapter state (frame-stack buffers) for the
     /// ended episodes. Best-effort GC, not a correctness gate: because episode
     /// ids never repeat (UUIDv7), a dropped ResetAdapter only leaks memory and
     /// can never alias a new episode. Default no-op for impls that hold no
     /// per-episode state.
-    async fn reset_adapter(&mut self, _request: ResetAdapterRequest) -> Result<(), RuntimeError> {
+    async fn reset_adapter(&self, _request: ResetAdapterRequest) -> Result<(), RuntimeError> {
         Ok(())
     }
 
     /// Release the model endpoint within `timeout`. Default no-op.
     async fn release_adapter(
-        &mut self,
+        &self,
         _request: ReleaseAdapterRequest,
         _timeout: Duration,
     ) -> Result<(), String> {
         Ok(())
+    }
+}
+
+/// Decides which groups waiting for a prediction go into the next grouped
+/// predict. Consulted whenever the model is free and at least one group is
+/// waiting; `busy` is how many groups are still stepping or resetting. An
+/// empty plan waits for the next event (a step or reset completing) — the
+/// driver forces a full plan when nothing else is in flight, so a scheduler
+/// cannot stall the route.
+pub trait PredictScheduler: Send {
+    fn plan(&mut self, waiting: &[usize], busy: usize) -> Vec<usize>;
+}
+
+/// The default policy: predict for every waiting group right away. Groups
+/// that become ready while the model is busy form the next batch.
+pub struct EagerScheduler;
+
+impl PredictScheduler for EagerScheduler {
+    fn plan(&mut self, waiting: &[usize], _busy: usize) -> Vec<usize> {
+        waiting.to_vec()
     }
 }
 
@@ -171,9 +214,8 @@ fn success_from_final_info(final_info: Option<&rlmesh_proto::spaces::v1::MetaMap
         })
 }
 
-// Telemetry sources for the three driver ops. `component` is a coarse class
-// label — the serial single-route driver has one model + one env, and `op`
-// already distinguishes them (see telemetry::Source).
+// Telemetry sources for the driver ops. `component` is a coarse class label —
+// the driver has one model + one env, and `op` already distinguishes them.
 const SRC_PREDICT: Source = Source {
     op: "model.predict",
     component: "model",
@@ -194,9 +236,9 @@ const SRC_TRANSFORM_ACTION: Source = Source {
     op: "runner.transform_action",
     component: "runner",
 };
-// Wall clock of one full predict -> step -> transform loop iteration.
-// Consumers subtract the per-op rows to get the driver's own residual, so it
-// must bracket the whole loop body, not just the RPCs.
+// Wall clock of one group's full predict -> step -> transform cycle: from one
+// step completing (or the reset) to the next step completing. Consumers
+// subtract the per-op rows to get the driver's own residual.
 const SRC_ROUND: Source = Source {
     op: "runner.round",
     component: "runner",
@@ -207,84 +249,157 @@ const SRC_ROUND: Source = Source {
 #[must_use = "a RuntimeDriver does nothing until one of its run methods is awaited"]
 pub struct RuntimeDriver<E, M> {
     spec: RuntimeSessionSpec,
+    /// The env session handle; cloned once per group.
     env: E,
-    model: M,
-    /// Async-inference mode: a second model handle predicts the next chunk in
-    /// the background while the current chunk's replay frames execute. Opt-in
-    /// via [`with_prefetch`](RuntimeDriver::with_prefetch); `None` keeps the
-    /// benchmark-faithful predict-then-step loop. Boxed so the background task
-    /// owns a `'static` handle without constraining `M` (borrowed drivers stay
-    /// legal).
-    prefetch_model: Option<Box<dyn RuntimeModel + Send>>,
-    /// Fire the background predict when this many replay frames remain (0 =
-    /// prefetch off). The prefetched chunk is conditioned on the observation
-    /// current at fire time, so it is up to `prefetch_lead` steps stale —
-    /// deployment-realistic async semantics, not the benchmark loop.
+    /// The model handle; `None` while a grouped predict task owns it.
+    model: Option<M>,
+    /// Async-inference mode: with this many replay frames (or fewer) left, a
+    /// group asks for its next chunk while the current one still executes.
+    /// The chunk is conditioned on an observation up to `prefetch_lead` steps
+    /// stale — deployment-realistic async semantics, not the benchmark loop.
+    /// 0 = predict only when a group has no frame to play.
     prefetch_lead: u32,
+    scheduler: Box<dyn PredictScheduler>,
     hooks: Arc<dyn RuntimeHooks>,
     cancellation_reason: String,
-    /// One `trial_index` was minted for an env whose contract does not declare
-    /// the reset option, so the ordinal was withheld from `ResetRequest.options`.
-    /// Latched so the warning fires once per session, not once per reset.
-    trial_options_warned: AtomicBool,
     /// Action/observation space specs shared into every per-step hook event.
     /// Populated once after [`validate`](RuntimeSessionSpec::validate) so the
     /// hot path clones an `Arc` instead of deep-copying the spec each step.
     action_space: Arc<rlmesh_proto::spaces::v1::SpaceSpec>,
     observation_space: Arc<rlmesh_proto::spaces::v1::SpaceSpec>,
+    /// Episode ids whose adapter state must be evicted once the model handle
+    /// is back from a grouped predict (evictions never wait on a predict).
+    pending_evictions: Vec<String>,
+    /// One `trial_index` was minted for an env whose contract does not declare
+    /// the reset option, so the ordinal was withheld from `ResetRequest.options`.
+    /// Latched so the warning fires once per session, not once per reset.
+    trial_options_warned: AtomicBool,
+    /// A lane's episode ended mid-chunk on the whole-vector group, discarding
+    /// every lane's buffered frames; warned once per session.
+    vector_replay_warned: bool,
+}
+
+/// Where a group is in its env lifecycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EnvPhase {
+    /// Holds an observation; may step as soon as it has an action frame.
+    Ready,
+    /// An env.step is in flight.
+    Stepping,
+    /// An env.reset is in flight.
+    Resetting,
+    /// Out of episode budget; never touched again.
+    Idle,
+}
+
+/// Where a group is with respect to the model.
+enum PredictState {
+    /// Nothing outstanding.
+    None,
+    /// Wants a prediction for this observation; the scheduler picks it up.
+    Wanted(PredictRequest),
+    /// Part of the grouped predict in flight. `stale` marks a prediction
+    /// conditioned on an observation from before an episode boundary; its
+    /// result is discarded (one wasted forward per boundary).
+    InFlight { stale: bool },
+    /// Frames that arrived while the current replay was still playing.
+    Ready(VecDeque<Vec<Bytes>>),
+}
+
+/// One independently driven set of lanes.
+struct Group<E> {
+    /// Env lane indices (wire `env_index`).
+    lanes: Vec<u32>,
+    /// The lanes' slot positions in the route state.
+    positions: Vec<usize>,
+    /// One lane of a lane endpoint (as opposed to the whole vector).
+    lane_group: bool,
+    /// Requests name no lanes (the whole vector) rather than `lanes`.
+    whole: bool,
+    phase: EnvPhase,
+    predict: PredictState,
+    /// The group's env handle; taken while an op is in flight.
+    env: Option<E>,
+    /// Runtime-owned action-chunk replay buffer: frame 0 of a predict applies
+    /// now, frames 1.. replay open-loop on the following steps without
+    /// re-calling the model. A non-chunking predict yields one frame.
+    replay: VecDeque<Vec<Bytes>>,
+    /// The latest observation request built for this group (the one a
+    /// prefetch would predict from).
+    obs_msg: Option<PredictRequest>,
+    /// NEXT_STEP autoreset: lanes that completed this step, mapped to the
+    /// fresh id minted for their next episode. Set on completion (step t),
+    /// consumed on the autoreset roll (step t+1).
+    pending_roll: HashMap<u32, String>,
+    /// The ids and slots of the episodes a pending reset starts.
+    pending_start: Option<(Vec<String>, Vec<u64>)>,
+    reset_generation: u64,
+    round_started: Instant,
+}
+
+impl<E> Group<E> {
+    fn width(&self) -> usize {
+        self.lanes.len()
+    }
+
+    fn busy(&self) -> bool {
+        matches!(self.phase, EnvPhase::Stepping | EnvPhase::Resetting)
+    }
+}
+
+/// A finished env op, handed back with the group's env handle.
+enum EnvOutcome<E> {
+    Reset {
+        group: usize,
+        env: E,
+        initial: bool,
+        request_bytes: u64,
+        rpc: Duration,
+        result: Result<RuntimeEnvReset, RuntimeError>,
+    },
+    Step {
+        group: usize,
+        env: E,
+        request_bytes: u64,
+        rpc: Duration,
+        result: Result<RuntimeEnvStep, RuntimeError>,
+    },
+}
+
+/// The grouped predict in flight. Not spawned: it owns the model handle for
+/// its duration and is polled by the route loop, so a borrowed model handle
+/// (the local runner's) needs no `'static` lifetime.
+type PredictFuture<'m, M> = Pin<Box<dyn Future<Output = PredictOutcome<M>> + Send + 'm>>;
+
+/// A finished grouped predict, handed back with the model handle.
+struct PredictOutcome<M> {
+    model: M,
+    /// `(group, expected context, request bytes)` per request, in order.
+    requests: Vec<(usize, Option<AdapterContext>, u64)>,
+    rpc: Duration,
+    result: Result<Vec<Result<RuntimeModelPrediction, RuntimeError>>, RuntimeError>,
 }
 
 impl<E, M> RuntimeDriver<E, M>
 where
-    E: RuntimeEnv,
+    E: RuntimeEnv + Clone + 'static,
     M: RuntimeModel,
 {
     pub fn new(spec: RuntimeSessionSpec, env: E, model: M, hooks: Arc<dyn RuntimeHooks>) -> Self {
         Self {
             spec,
             env,
-            model,
-            prefetch_model: None,
+            model: Some(model),
             prefetch_lead: 0,
+            scheduler: Box::new(EagerScheduler),
             hooks,
             cancellation_reason: DEFAULT_CANCELLATION_REASON.to_string(),
-            trial_options_warned: AtomicBool::new(false),
             // Filled from the validated spec at run time; default until then.
             action_space: Arc::default(),
             observation_space: Arc::default(),
-        }
-    }
-
-    /// Enable async inference: predict the next action chunk on `model` while
-    /// the current chunk's replay frames execute, firing when `lead` frames
-    /// remain. The prefetched chunk sees an observation up to `lead` steps
-    /// stale, so results are NOT comparable to the synchronous loop — callers
-    /// must label runs accordingly. `lead == 0` leaves prefetch off.
-    pub fn with_prefetch(mut self, model: Box<dyn RuntimeModel + Send>, lead: u32) -> Self {
-        if lead > 0 {
-            self.prefetch_model = Some(model);
-            self.prefetch_lead = lead;
-        }
-        self
-    }
-
-    /// Reset seeds for the lanes a reset restarts: explicit `episode_seeds`
-    /// (claimed in episode-start order) when configured, else the `base_seed`
-    /// derivation, else unseeded. `env_indices` is `None` for a whole-vector
-    /// reset.
-    fn planned_reset_seeds(
-        &self,
-        state: &mut RouteState,
-        reset_generation: u64,
-        env_indices: Option<&[u32]>,
-    ) -> Vec<i64> {
-        if !self.spec.episode_seeds.is_empty() {
-            let lanes = env_indices.map_or(self.spec.num_envs, <[u32]>::len);
-            return state.claim_episode_seeds(&self.spec.episode_seeds, lanes);
-        }
-        match env_indices {
-            None => self.reset_seeds(reset_generation),
-            Some(indices) => self.reset_subset_seeds(reset_generation, indices),
+            pending_evictions: Vec::new(),
+            trial_options_warned: AtomicBool::new(false),
+            vector_replay_warned: false,
         }
     }
 
@@ -305,10 +420,7 @@ where
     /// [`ENV_RESET_OPTIONS_KEY`]: an env that forwards `options` blindly into a
     /// third-party `reset` must never receive a reserved key it cannot interpret.
     /// A single lane sends the bare integer; a multi-lane reset sends the list, in
-    /// the same lane order as `seeds` and `episode_ids`. Only the integer form is
-    /// reachable today -- a vector route requires NEXT_STEP autoreset and
-    /// [`RuntimeSessionSpec::validate`] refuses a trial base under it -- but the
-    /// list keeps the option positional with the other per-lane reset fields.
+    /// the same lane order as `seeds` and `episode_ids`.
     fn trial_options(&self, trials: &[u64]) -> Option<MetaMap> {
         if trials.is_empty() {
             return None;
@@ -371,39 +483,20 @@ where
         }
     }
 
-    fn reset_seeds(&self, reset_generation: u64) -> Vec<i64> {
-        self.seeds_for(reset_generation, 0..self.spec.num_envs)
+    /// Enable async inference: a group asks for its next action chunk while
+    /// `lead` (or fewer) replay frames of the current one remain, so the
+    /// forward overlaps the env steps. The chunk sees an observation up to
+    /// `lead` steps stale, so results are NOT comparable to the synchronous
+    /// loop — callers must label runs accordingly. `lead == 0` leaves it off.
+    pub fn with_prefetch(mut self, lead: u32) -> Self {
+        self.prefetch_lead = lead;
+        self
     }
 
-    /// Deterministic seeds for a partial (`reset_subset`) reset, positionally
-    /// aligned to `env_indices`. Empty when no base seed is configured.
-    fn reset_subset_seeds(&self, reset_generation: u64, env_indices: &[u32]) -> Vec<i64> {
-        self.seeds_for(
-            reset_generation,
-            env_indices.iter().map(|&index| index as usize),
-        )
-    }
-
-    /// Deterministic per-lane reset seeds for `env_indices`, positionally
-    /// aligned. Empty when no base seed is configured.
-    fn seeds_for(
-        &self,
-        reset_generation: u64,
-        env_indices: impl Iterator<Item = usize>,
-    ) -> Vec<i64> {
-        let Some(base_seed) = self.spec.base_seed else {
-            return Vec::new();
-        };
-        env_indices
-            .map(|env_index| {
-                deterministic_reset_seed(
-                    base_seed,
-                    &self.spec.session_id,
-                    reset_generation,
-                    env_index,
-                )
-            })
-            .collect()
+    /// Replace the predict scheduling policy (default: [`EagerScheduler`]).
+    pub fn with_scheduler(mut self, scheduler: Box<dyn PredictScheduler>) -> Self {
+        self.scheduler = scheduler;
+        self
     }
 
     /// Per-lane autoreset convention declared by the served env's contract.
@@ -414,6 +507,97 @@ where
         // explicit-reset DISABLED rather than silently aliasing a newer mode.
         AutoresetMode::try_from(self.spec.env_contract.autoreset_mode)
             .unwrap_or(AutoresetMode::Disabled)
+    }
+
+    fn driver_owns_resets(&self) -> bool {
+        matches!(
+            self.autoreset_mode(),
+            AutoresetMode::Disabled | AutoresetMode::Unspecified
+        )
+    }
+
+    /// The route's groups: one per lane for a lane endpoint, else the whole
+    /// vector as one group.
+    fn groups(&self) -> Vec<Group<E>> {
+        let num_envs = self.spec.num_envs.max(1);
+        let partitions: Vec<Vec<u32>> = if self.spec.subset_step && num_envs > 1 {
+            (0..num_envs as u32).map(|lane| vec![lane]).collect()
+        } else {
+            vec![(0..num_envs as u32).collect()]
+        };
+        let lane_group = self.spec.subset_step && num_envs > 1;
+        partitions
+            .into_iter()
+            .map(|lanes| Group {
+                positions: lanes.iter().map(|&lane| lane as usize).collect(),
+                whole: !lane_group,
+                lane_group,
+                lanes,
+                phase: EnvPhase::Ready,
+                predict: PredictState::None,
+                env: Some(self.env.clone()),
+                replay: VecDeque::new(),
+                obs_msg: None,
+                pending_roll: HashMap::new(),
+                pending_start: None,
+                reset_generation: 0,
+                round_started: Instant::now(),
+            })
+            .collect()
+    }
+
+    /// Reset seeds for the episodes a group starts at `slots` (aligned to the
+    /// group's lanes): explicit `episode_seeds` indexed by slot when
+    /// configured, else the `base_seed` derivation, else unseeded (empty).
+    fn seeds_for(&self, group: &Group<E>, slots: &[u64]) -> Vec<i64> {
+        if !self.spec.episode_seeds.is_empty() {
+            let seeds: Vec<Option<i64>> = slots
+                .iter()
+                .map(|&slot| {
+                    self.spec
+                        .episode_seeds
+                        .get(usize::try_from(slot).unwrap_or(usize::MAX))
+                        .copied()
+                })
+                .collect();
+            // ResetRequest.seeds is positional and all-or-nothing: a batch the
+            // list cannot fully cover runs unseeded.
+            return if seeds.iter().all(Option::is_some) {
+                seeds.into_iter().flatten().collect()
+            } else {
+                if seeds.iter().any(Option::is_some) {
+                    tracing::warn!(
+                        lanes = group.width(),
+                        "episode_seeds cannot cover this reset batch; it runs unseeded"
+                    );
+                }
+                Vec::new()
+            };
+        }
+        let Some(base_seed) = self.spec.base_seed else {
+            return Vec::new();
+        };
+        if group.lane_group {
+            // The route-global slot fixes the seed, so an episode's seed depends
+            // on its slot alone, never on which lane ran it or when.
+            slots
+                .iter()
+                .map(|&slot| deterministic_reset_seed(base_seed, &self.spec.session_id, slot, 0))
+                .collect()
+        } else {
+            group
+                .lanes
+                .iter()
+                .map(|&lane| {
+                    deterministic_reset_seed(
+                        base_seed,
+                        &self.spec.session_id,
+                        group.reset_generation,
+                        lane as usize,
+                    )
+                })
+                .collect()
+        }
     }
 
     pub async fn run(self) -> Result<RuntimeReport, RuntimeError> {
@@ -464,7 +648,31 @@ where
                 state.env_context(),
             )
         });
-        let result = self.run_loop(&mut state, &cancellation, &telemetry).await;
+        let mut env_ops: JoinSet<EnvOutcome<E>> = JoinSet::new();
+        let mut predict: Option<PredictFuture<'_, M>> = None;
+        let result = self
+            .run_loop(
+                &mut state,
+                &cancellation,
+                &telemetry,
+                &mut env_ops,
+                &mut predict,
+            )
+            .await;
+        // Whatever ended the loop, get the model handle back from a grouped
+        // predict still in flight so the route can release it; a hung predict
+        // is abandoned after the close timeout.
+        env_ops.abort_all();
+        if let Some(inflight) = predict.take() {
+            match tokio::time::timeout(self.spec.limits.service_close_timeout, inflight).await {
+                Ok(outcome) => self.model = Some(outcome.model),
+                Err(_) => tracing::warn!(
+                    "grouped predict still in flight at route end; model release skipped"
+                ),
+            }
+        }
+        // Evictions queued while the model was busy go out before release.
+        self.flush_evictions(&mut state).await;
         // Stop the ticker (it only emits Window snapshots, so it cannot contend
         // this Session push), then deliver the durable session total exactly once
         // on every exit path.
@@ -476,13 +684,39 @@ where
             TelemetrySnapshotEvent {
                 session_id: state.session_id().to_string(),
                 route: state.env_context(),
-                snapshot: final_snapshot,
+                snapshot: final_snapshot.clone(),
             }
         );
-        if let Err(error) = &result {
-            self.shutdown_after_failure(&mut state, error).await;
+        match result {
+            Ok(reason) => {
+                let release_request = state.release_adapter_request(reason);
+                self.shutdown_terminal_route(&state, reason, release_request)
+                    .await;
+                fan_out_event!(
+                    self,
+                    session_ended,
+                    SessionEndedEvent {
+                        session_id: state.session_id().to_string(),
+                        route: state.env_context(),
+                        reason: reason.to_string(),
+                        total_steps: state.total_steps(),
+                        total_episodes: state.total_episodes(),
+                    }
+                );
+                Ok(RuntimeReport {
+                    session_id: state.session_id().to_string(),
+                    env_id: self.spec.env_id.clone(),
+                    total_steps: state.total_steps(),
+                    total_episodes: state.total_episodes(),
+                    episodes: state.take_episode_summaries(),
+                    telemetry: final_snapshot,
+                })
+            }
+            Err(error) => {
+                self.shutdown_after_failure(&mut state, &error).await;
+                Err(error)
+            }
         }
-        result
     }
 
     /// Session/route-level span (enabling-only): lets a closed-side OTel
@@ -497,14 +731,20 @@ where
             session_id = %state.session_id(),
             env_id = %self.spec.env_id,
             num_envs = self.spec.num_envs,
+            lanes = self.spec.subset_step,
         ),
     )]
-    async fn run_loop(
+    async fn run_loop<'m>(
         &mut self,
         state: &mut RouteState,
         cancellation: &CancellationToken,
         telemetry: &Arc<Mutex<Aggregator>>,
-    ) -> Result<RuntimeReport, RuntimeError> {
+        env_ops: &mut JoinSet<EnvOutcome<E>>,
+        predict: &mut Option<PredictFuture<'m, M>>,
+    ) -> Result<&'static str, RuntimeError>
+    where
+        M: 'm,
+    {
         fan_out_event!(
             self,
             session_started,
@@ -515,292 +755,189 @@ where
             }
         );
 
-        let mut reset_generation = 0_u64;
-        let reset_timeout = self.spec.limits.env_reset_timeout;
-        let reset_timeout_ms = self.spec.limits.env_reset_timeout_ms().max(0) as u64;
-        let reset_seeds = self.planned_reset_seeds(state, reset_generation, None);
-        // The runtime is the sole id authority (R1): mint a fresh UUIDv7 per lane
-        // and push them DOWN so the env tags its episodes with our ids; we never
-        // read ids back from the env.
-        let initial_episode_ids = mint_episode_ids(self.spec.num_envs);
-        state.note_episode_seeds(&initial_episode_ids, &reset_seeds);
-        let reset_trials = self.planned_trial_indices(state, self.spec.num_envs);
-        state.note_episode_trials(&initial_episode_ids, &reset_trials);
-        let reset_request = ResetRequest {
-            seeds: reset_seeds,
-            options: self.trial_options(&reset_trials),
-            timeout_ms: reset_timeout_ms,
-            env_indices: Vec::new(),
-            episode_ids: initial_episode_ids.clone(),
-        };
-        let reset_request_bytes = reset_request.encoded_len() as u64;
-        // Time only the RPC (after building the request), matching the predict /
-        // step / in-loop-reset sites so rpc.total is consistent across ops.
-        let reset_started = Instant::now();
-        let reset_ok = await_runtime_operation(
-            cancellation,
-            reset_timeout,
-            RuntimeError::operation_timeout(
-                state.env_id(),
-                state.env_component_id(),
-                "env.reset",
-                0,
-                reset_timeout,
-            ),
-            self.cancelled_error(state, 0),
-            self.env.reset(reset_request),
-        )
-        .await?;
-        let reset_latency = reset_started.elapsed();
-        record_op(
-            telemetry,
-            SRC_RESET,
-            reset_latency,
-            PeerReport {
-                endpoint_total_ns: reset_ok.endpoint_total_ns,
-                phases: reset_ok.phases,
-                group_size: None,
-            },
-            reset_request_bytes,
-            reset_ok.response.encoded_len() as u64,
-        );
-        fan_out_event!(
-            self,
-            log,
-            LogEvent {
-                session_id: state.session_id().to_string(),
-                route: state.env_context(),
-                level: LogLevel::Info,
-                message: format!(
-                    "env reset complete in {:.0}ms ({} episode(s) ready)",
-                    reset_latency.as_secs_f64() * 1000.0,
-                    initial_episode_ids.len()
-                ),
-                source: Some("runtime".to_string()),
-            }
-        );
-
-        let reset_observation = value_leaves(reset_ok.response.observation.as_ref())?;
-        let started_episodes = state.start_episodes(initial_episode_ids, false);
-        self.invoke_started_episodes(state, started_episodes).await;
-
-        // Runtime-side mirror of the env's NEXT_STEP autoreset expectation: maps a
-        // lane that completed this step to the fresh UUIDv7 we minted for its next
-        // episode. Set on completion (step t), consumed on the autoreset roll
-        // (step t+1) — both the down-push to the env and our own slot roll read
-        // from here, so the env tags the rolled episode with exactly our id.
-        let mut pending_roll: std::collections::HashMap<u32, String> =
-            std::collections::HashMap::new();
-
-        let mut reset_msg =
-            state.predict_request(reset_observation.clone(), RequestPhase::ResetObservation);
-        let mut reset_event = self.observation_event(
-            state,
-            state.snapshot(),
-            true,
-            reset_observation.clone(),
-            reset_ok.response.infos.clone(),
-        );
-        let transformed_reset_observation = self
-            .invoke_transform_observation(telemetry, reset_event.clone())
-            .await?;
-        reset_event.observation = transformed_reset_observation.clone();
-        reset_msg.observation = transformed_reset_observation.map(leaves_value);
-        fan_out_event!(self, observation_emitted, reset_event);
-
-        let mut pending_observation_msg = reset_msg;
-
-        // Runtime-owned action-chunk replay buffer. A predict returns its ordered
-        // action frames in `PredictResponse.actions` (frame 0 = this step, frames
-        // 1.. = open-loop replay); the driver pushes every frame here (whole-batch
-        // frames, one `SpaceValue`'s leaves per step, covering every lane), pops one
-        // per step, and re-calls the model only when the buffer drains. A
-        // non-chunking predict returns exactly one frame, so the predict-every-step
-        // path is unchanged.
-        let mut replay_buffer: std::collections::VecDeque<Vec<Bytes>> =
-            std::collections::VecDeque::new();
-        // Tripwire for chunk replay on a vector route, once per session. The
-        // layers that front a run (`run_local`, the managed runner's route
-        // connect) refuse the combination outright, but a host driving this
-        // driver directly can still reach it — and the symptom is silent: the
-        // buffer is whole-batch, so ONE lane's episode end throws away every
-        // lane's remaining frames.
-        let mut vector_replay_warned = false;
-
-        // In-flight background predict (async-inference mode): the join handle
-        // returns the prefetch model handle so it can be reused, plus the
-        // predict result. `stale` marks a prefetch conditioned on an
-        // observation from before an episode boundary; its result is discarded
-        // (one wasted forward per boundary) and the loop re-plans fresh.
-        let mut prefetch_inflight: Option<PrefetchInflight> = None;
-        let mut prefetch_stale = false;
+        let mut groups = self.groups();
+        let group_count = groups.len();
+        for gid in 0..group_count {
+            self.begin_reset(gid, &mut groups, state, env_ops, true);
+        }
 
         loop {
-            let round_started = Instant::now();
             if cancellation.is_cancelled() {
-                return Err(self.cancelled_error(state, state.snapshot().step));
+                return Err(self.cancelled_error(state, &groups));
+            }
+            if groups.iter().all(|group| group.phase == EnvPhase::Idle)
+                && env_ops.is_empty()
+                && predict.is_none()
+            {
+                return Ok("completed requested episodes");
+            }
+            self.flush_evictions(state).await;
+            self.dispatch_steps(&mut groups, state, env_ops, telemetry)
+                .await?;
+            // With nothing else in flight, a waiting group must be predicted now
+            // or the route would sit forever; the scheduler's plan is advisory
+            // only while something else can wake the loop.
+            let force = env_ops.is_empty() && predict.is_none();
+            self.dispatch_predict(&mut groups, state, predict, force);
+            if env_ops.is_empty() && predict.is_none() {
+                // Nothing in flight and no group could be advanced: a live group
+                // with neither a frame nor an observation, which the transitions
+                // above never produce.
+                return Err(RuntimeError::Protocol(format!(
+                    "route {} stalled with no operation in flight",
+                    state.env_id()
+                )));
             }
 
-            let predict_snapshot = state.snapshot();
-            // Re-call model.predict only when the replay buffer is empty; otherwise
-            // replay a buffered chunk frame (no RPC, no obs re-encode). A predict
-            // returns its ordered frames in `actions` (frame 0 = this step, frames
-            // 1.. = open-loop replay): push every frame, then pop one. env.step +
-            // the observation transform/emit below run every iteration regardless,
-            // so a replay step still feeds the observation ledger.
-            if replay_buffer.is_empty() {
-                let predict_timeout = self.spec.limits.model_predict_timeout;
-                // Consume the in-flight background predict first: fresh, it IS
-                // this refill (near-zero experienced wait); stale (an episode
-                // boundary passed since it fired), recover the handle, discard
-                // the result, and re-plan synchronously from the current
-                // observation.
-                let mut prefetched: Option<(
-                    RuntimeModelPrediction,
-                    Option<AdapterContext>,
-                    u64,
-                    Duration,
-                )> = None;
-                if let Some(inflight) = prefetch_inflight.take() {
-                    let step = predict_snapshot.step;
-                    let join_started = Instant::now();
-                    let (model, result) = await_runtime_operation(
-                        cancellation,
-                        predict_timeout,
-                        RuntimeError::operation_timeout(
-                            state.env_id(),
-                            state.model_component_id(),
-                            "model.predict",
-                            step,
-                            predict_timeout,
-                        ),
-                        self.cancelled_error(state, step),
-                        join_prefetch(inflight.join, state.model_component_id()),
-                    )
-                    .await?;
-                    let join_wait = join_started.elapsed();
-                    self.prefetch_model = Some(model);
-                    if prefetch_stale {
-                        // The chunk is discarded, but the loop still stalled
-                        // joining it and the endpoint still ran a forward:
-                        // record both rather than let the cost vanish into
-                        // the round residual.
-                        match result {
-                            Ok(discarded) => record_op(
-                                telemetry,
-                                SRC_PREDICT,
-                                join_wait,
-                                PeerReport {
-                                    endpoint_total_ns: discarded.endpoint_total_ns,
-                                    phases: discarded.phases,
-                                    group_size: discarded.group_size,
-                                },
-                                inflight.request_bytes,
-                                discarded.response.encoded_len() as u64,
-                            ),
-                            Err(error) => tracing::warn!(
-                                error = %error,
-                                "stale prefetch predict failed; re-planning from the current observation"
-                            ),
-                        }
-                    } else {
-                        prefetched = Some((
-                            result?,
-                            inflight.expected_context,
-                            inflight.request_bytes,
-                            join_wait,
-                        ));
+            tokio::select! {
+                _ = cancellation.cancelled() => {
+                    return Err(self.cancelled_error(state, &groups));
+                }
+                Some(joined) = env_ops.join_next() => {
+                    let outcome = joined.map_err(|error| RuntimeError::Protocol(format!(
+                        "env operation task failed: {error}"
+                    )))?;
+                    self.on_env_outcome(outcome, &mut groups, state, env_ops, telemetry)
+                        .await?;
+                }
+                outcome = async {
+                    match predict.as_mut() {
+                        Some(inflight) => inflight.as_mut().await,
+                        None => std::future::pending().await,
                     }
+                }, if predict.is_some() => {
+                    *predict = None;
+                    self.on_predict_outcome(outcome, &mut groups, state, telemetry)?;
                 }
-                prefetch_stale = false;
-                let (action_msg, expected_context, predict_request_bytes, predict_rpc) =
-                    match prefetched {
-                        Some((chunk, context, bytes, join_wait)) => {
-                            // Experienced wait only: the inference ran behind
-                            // the replay frames, so rpc.total records just the
-                            // stall joining it — near zero when the lead was
-                            // enough, the uncovered remainder when it wasn't —
-                            // while endpoint totals keep the true inference cost.
-                            (chunk, context, bytes, join_wait)
-                        }
-                        None => {
-                            let expected_context = pending_observation_msg.context.clone();
-                            let predict_request_bytes =
-                                pending_observation_msg.encoded_len() as u64;
-                            let predict_started = Instant::now();
-                            let action_msg = await_runtime_operation(
-                                cancellation,
-                                predict_timeout,
-                                RuntimeError::operation_timeout(
-                                    state.env_id(),
-                                    state.model_component_id(),
-                                    "model.predict",
-                                    predict_snapshot.step,
-                                    predict_timeout,
-                                ),
-                                self.cancelled_error(state, predict_snapshot.step),
-                                self.model.predict(pending_observation_msg),
-                            )
-                            .await?;
-                            (
-                                action_msg,
-                                expected_context,
-                                predict_request_bytes,
-                                predict_started.elapsed(),
-                            )
-                        }
-                    };
-                if action_msg.response.context != expected_context {
-                    let request_id = expected_context
-                        .as_ref()
-                        .map(|context| context.request_id.clone())
-                        .unwrap_or_default();
-                    return Err(RuntimeError::ModelRouteMismatch {
-                        component_id: state.model_component_id().to_string(),
-                        request_id,
-                    });
-                }
-                record_op(
-                    telemetry,
-                    SRC_PREDICT,
-                    predict_rpc,
-                    PeerReport {
-                        endpoint_total_ns: action_msg.endpoint_total_ns,
-                        phases: action_msg.phases,
-                        group_size: action_msg.group_size,
-                    },
-                    predict_request_bytes,
-                    action_msg.response.encoded_len() as u64,
-                );
-                if action_msg.response.actions.is_empty() {
-                    return Err(RuntimeError::Protocol(format!(
-                        "model endpoint {} returned a predict response with no actions",
-                        state.model_component_id()
-                    )));
-                }
-                // Push every ordered frame (frame 0 = this step, frames 1.. =
-                // open-loop replay); the pop below applies frame 0 now and the rest
-                // on the following steps without re-calling the model.
-                for frame in &action_msg.response.actions {
-                    if let Some(leaves) = value_leaves(Some(frame))? {
-                        replay_buffer.push_back(leaves);
+            }
+        }
+    }
+
+    /// Start (or restart) every lane of a group: claim the episodes' slots,
+    /// pick their seeds, mint their ids, and put the reset in flight. A lane
+    /// group with no slot left goes idle instead.
+    fn begin_reset(
+        &mut self,
+        gid: usize,
+        groups: &mut [Group<E>],
+        state: &mut RouteState,
+        env_ops: &mut JoinSet<EnvOutcome<E>>,
+        initial: bool,
+    ) {
+        let width = groups[gid].width();
+        let bounded = groups[gid].lane_group;
+        let Some(slots) = state.claim_slots(width, bounded) else {
+            groups[gid].phase = EnvPhase::Idle;
+            groups[gid].predict = PredictState::None;
+            return;
+        };
+        if !initial {
+            groups[gid].reset_generation += 1;
+        }
+        let seeds = self.seeds_for(&groups[gid], &slots);
+        // The runtime is the sole id authority (R1): mint a fresh UUIDv7 per
+        // lane and push them DOWN so the env tags its episodes with our ids; we
+        // never read ids back from the env.
+        let episode_ids = mint_episode_ids(width);
+        state.note_episode_seeds(&episode_ids, &seeds);
+        let trials = self.planned_trial_indices(state, width);
+        state.note_episode_trials(&episode_ids, &trials);
+        let group = &mut groups[gid];
+        group.pending_start = Some((episode_ids.clone(), slots));
+        group.replay.clear();
+        group.pending_roll.clear();
+        let request = ResetRequest {
+            seeds,
+            options: self.trial_options(&trials),
+            timeout_ms: self.spec.limits.env_reset_timeout_ms().max(0) as u64,
+            env_indices: if group.whole {
+                Vec::new()
+            } else {
+                group.lanes.clone()
+            },
+            episode_ids,
+        };
+        let request_bytes = request.encoded_len() as u64;
+        let timeout = self.spec.limits.env_reset_timeout;
+        let timeout_error = RuntimeError::operation_timeout(
+            state.env_id(),
+            state.env_component_id(),
+            "env.reset",
+            0,
+            timeout,
+        );
+        let mut env = group
+            .env
+            .take()
+            .expect("group env handle present while ready");
+        group.phase = EnvPhase::Resetting;
+        env_ops.spawn(async move {
+            let started = Instant::now();
+            let result = match tokio::time::timeout(timeout, env.reset(request)).await {
+                Ok(result) => result,
+                Err(_) => Err(timeout_error),
+            };
+            EnvOutcome::Reset {
+                group: gid,
+                env,
+                initial,
+                request_bytes,
+                rpc: started.elapsed(),
+                result,
+            }
+        });
+    }
+
+    /// Put a step in flight for every ready group that has an action frame:
+    /// the next replay frame, or a chunk that arrived while the last one
+    /// played.
+    #[allow(clippy::needless_range_loop)]
+    async fn dispatch_steps(
+        &mut self,
+        groups: &mut [Group<E>],
+        state: &mut RouteState,
+        env_ops: &mut JoinSet<EnvOutcome<E>>,
+        telemetry: &Arc<Mutex<Aggregator>>,
+    ) -> Result<(), RuntimeError> {
+        for gid in 0..groups.len() {
+            if groups[gid].phase != EnvPhase::Ready {
+                continue;
+            }
+            if groups[gid].replay.is_empty() {
+                match std::mem::replace(&mut groups[gid].predict, PredictState::None) {
+                    PredictState::Ready(frames) => groups[gid].replay = frames,
+                    other => {
+                        groups[gid].predict = other;
+                        continue;
                     }
                 }
             }
-            let model_action = replay_buffer
-                .pop_front()
-                .expect("replay buffer is non-empty after a refill");
+            let Some(model_action) = groups[gid].replay.pop_front() else {
+                continue;
+            };
+            // Async-inference mode: with `prefetch_lead` (or fewer) replay frames
+            // left, ask for the next chunk from the latest observation now.
+            if self.prefetch_lead > 0
+                && groups[gid].replay.len() <= self.prefetch_lead as usize
+                && matches!(groups[gid].predict, PredictState::None)
+                && let Some(msg) = groups[gid].obs_msg.clone()
+            {
+                groups[gid].predict = PredictState::Wanted(msg);
+            }
 
-            let action_step = predict_snapshot.step + 1;
+            let group = &mut groups[gid];
+            let snapshot = state.snapshot_at(&group.positions);
+            let context = state.group_context(&group.positions, group.lane_group);
+            let action_step = snapshot.step + 1;
             let mut action_event = ActionReceivedEvent {
                 session_id: state.session_id().to_string(),
-                route: state.env_context(),
-                episode_id: predict_snapshot.episode_id.clone(),
-                episode_record_id: predict_snapshot.episode_record_id.clone(),
-                episode_ids: predict_snapshot.episode_ids.clone(),
-                episode_record_ids: predict_snapshot.episode_record_ids.clone(),
+                route: context,
+                episode_id: snapshot.episode_id.clone(),
+                episode_record_id: snapshot.episode_record_id.clone(),
+                episode_ids: snapshot.episode_ids.clone(),
+                episode_record_ids: snapshot.episode_record_ids.clone(),
                 step: action_step,
-                env_index: predict_snapshot.env_index,
+                env_index: snapshot.env_index,
                 action_space: Arc::clone(&self.action_space),
                 action: Some(model_action.clone()),
                 raw_action: Some(model_action),
@@ -810,380 +947,508 @@ where
                 .await?;
             fan_out_event!(self, action_received, action_event.clone());
 
-            let step_timeout = self.spec.limits.env_step_timeout;
-            let step_timeout_ms = self.spec.limits.env_step_timeout_ms().max(0) as u64;
+            let group = &mut groups[gid];
             // Down-push the authoritative per-lane ids. For a NEXT_STEP autoreset
             // roll (a lane in `pending_roll`), substitute the freshly minted id so
             // the env tags its rolled episode with our id; the slot itself rolls to
-            // the same id below, after the step.
-            let step_episode_ids = episode_ids_with_roll(state.episode_ids(), &pending_roll);
-            let step_request = StepRequest {
+            // the same id after the step.
+            let episode_ids =
+                episode_ids_with_roll(state.episode_ids_at(&group.positions), &group.pending_roll);
+            let request = StepRequest {
                 action: action_event.action.map(leaves_value),
-                timeout_ms: step_timeout_ms,
-                env_indices: Vec::new(),
-                episode_ids: step_episode_ids,
-            };
-            let step_request_bytes = step_request.encoded_len() as u64;
-            let step_started = Instant::now();
-            let step_ok = await_runtime_operation(
-                cancellation,
-                step_timeout,
-                RuntimeError::operation_timeout(
-                    state.env_id(),
-                    state.env_component_id(),
-                    "env.step",
-                    action_step,
-                    step_timeout,
-                ),
-                self.cancelled_error(state, action_step),
-                self.env.step(step_request),
-            )
-            .await?;
-            let step_rpc = step_started.elapsed();
-            record_op(
-                telemetry,
-                SRC_STEP,
-                step_rpc,
-                PeerReport {
-                    endpoint_total_ns: step_ok.endpoint_total_ns,
-                    phases: step_ok.phases,
-                    group_size: None,
+                timeout_ms: self.spec.limits.env_step_timeout_ms().max(0) as u64,
+                env_indices: if group.whole {
+                    Vec::new()
+                } else {
+                    group.lanes.clone()
                 },
-                step_request_bytes,
-                step_ok.response.encoded_len() as u64,
-            );
-            let step_observation = value_leaves(step_ok.response.observation.as_ref())?;
-
-            state.record_step(&step_ok.response.rewards);
-            let step_snapshot = state.snapshot();
-            // On an autoreset roll this response carries the NEW episode's reset
-            // observation + infos, which belong on its observation event below,
-            // not on the old episode's step.
-            let rolled = !pending_roll.is_empty();
-            fan_out_event!(
-                self,
-                step_completed,
-                StepCompletedEvent {
-                    session_id: state.session_id().to_string(),
-                    route: state.env_context(),
-                    episode_id: step_snapshot.episode_id.clone(),
-                    episode_record_id: step_snapshot.episode_record_id.clone(),
-                    step: step_snapshot.step,
-                    env_index: step_snapshot.env_index,
-                    rewards: step_ok.response.rewards.clone(),
-                    infos: if rolled {
-                        None
-                    } else {
-                        step_ok.response.infos.clone()
-                    },
-                }
-            );
-
-            // Apply any NEXT_STEP autoreset roll the env just performed. The env
-            // rolled the lanes in `pending_roll` (from the previous step's
-            // completions) using the ids we pushed above; mirror that here by
-            // rolling our own slots to the same ids. The env no longer mints or
-            // returns ids — the runtime is authoritative.
-            if !pending_roll.is_empty() {
-                let roll_ids = episode_ids_with_roll(state.episode_ids(), &pending_roll);
-                pending_roll.clear();
-                let started_episodes = state.observe_episode_ids(roll_ids);
-                self.invoke_started_episodes(state, started_episodes).await;
-            }
-            // The observation_emitted hook fires once per observation actually
-            // sent to the model, post-transform, below (or at the initial
-            // reset). Emitting the raw step observation here would expose
-            // pre-transform bytes and, when the episode completes, an
-            // observation the model never sees.
-
-            let capped = self.capped_lane_completions(state, &step_ok.response.completed_episodes);
-            let completed_episodes: std::borrow::Cow<'_, [EpisodeMetadata]> = if capped.is_empty() {
-                std::borrow::Cow::Borrowed(&step_ok.response.completed_episodes)
-            } else {
-                let mut all = step_ok.response.completed_episodes.clone();
-                all.extend(capped);
-                std::borrow::Cow::Owned(all)
+                episode_ids,
             };
+            let request_bytes = request.encoded_len() as u64;
+            let timeout = self.spec.limits.env_step_timeout;
+            let timeout_error = RuntimeError::operation_timeout(
+                state.env_id(),
+                state.env_component_id(),
+                "env.step",
+                action_step,
+                timeout,
+            );
+            let mut env = group
+                .env
+                .take()
+                .expect("group env handle present while ready");
+            group.phase = EnvPhase::Stepping;
+            env_ops.spawn(async move {
+                let started = Instant::now();
+                let result = match tokio::time::timeout(timeout, env.step(request)).await {
+                    Ok(result) => result,
+                    Err(_) => Err(timeout_error),
+                };
+                EnvOutcome::Step {
+                    group: gid,
+                    env,
+                    request_bytes,
+                    rpc: started.elapsed(),
+                    result,
+                }
+            });
+        }
+        Ok(())
+    }
 
-            self.emit_completed_episodes(state, &completed_episodes)
-                .await;
-            // Tell the model to evict the ended episodes' frame-stack buffers
-            // (best-effort GC; ids never repeat so a miss only leaks memory).
-            self.emit_reset_adapter(state, &completed_episodes).await;
+    /// Batch the groups waiting for a prediction into one grouped predict,
+    /// per the scheduler, and put it in flight with the model handle.
+    fn dispatch_predict<'m>(
+        &mut self,
+        groups: &mut [Group<E>],
+        state: &RouteState,
+        predict: &mut Option<PredictFuture<'m, M>>,
+        force: bool,
+    ) where
+        M: 'm,
+    {
+        if predict.is_some() || self.model.is_none() {
+            return;
+        }
+        let waiting: Vec<usize> = groups
+            .iter()
+            .enumerate()
+            .filter(|(_, group)| matches!(group.predict, PredictState::Wanted(_)))
+            .map(|(gid, _)| gid)
+            .collect();
+        if waiting.is_empty() {
+            return;
+        }
+        let busy = groups.iter().filter(|group| group.busy()).count();
+        let mut chosen = self.scheduler.plan(&waiting, busy);
+        chosen.retain(|gid| waiting.contains(gid));
+        if chosen.is_empty() {
+            if !force {
+                return;
+            }
+            chosen = waiting;
+        }
+        let mut requests = Vec::with_capacity(chosen.len());
+        let mut metas = Vec::with_capacity(chosen.len());
+        let mut step = 0;
+        for gid in chosen {
+            let PredictState::Wanted(msg) = std::mem::replace(
+                &mut groups[gid].predict,
+                PredictState::InFlight { stale: false },
+            ) else {
+                unreachable!("only waiting groups are planned")
+            };
+            step = step.max(state.snapshot_at(&groups[gid].positions).step);
+            metas.push((gid, msg.context.clone(), msg.encoded_len() as u64));
+            requests.push(msg);
+        }
+        let timeout = self.spec.limits.model_predict_timeout;
+        let timeout_error = RuntimeError::operation_timeout(
+            state.env_id(),
+            state.model_component_id(),
+            "model.predict",
+            step,
+            timeout,
+        );
+        let model = self.model.take().expect("model handle checked above");
+        *predict = Some(Box::pin(async move {
+            let started = Instant::now();
+            let result = match tokio::time::timeout(timeout, model.predict_group(requests)).await {
+                Ok(results) => Ok(results),
+                Err(_) => Err(timeout_error),
+            };
+            PredictOutcome {
+                model,
+                requests: metas,
+                rpc: started.elapsed(),
+                result,
+            }
+        }));
+    }
 
-            // A lane that completed this step gets a fresh episode, so its buffered
-            // future actions are stale. The replay buffer holds whole-batch frames
-            // and cannot be partially invalidated, so flush it and re-plan on the
-            // next step (receding horizon on reset). No-op when not chunking.
-            if !completed_episodes.is_empty() {
-                if !replay_buffer.is_empty() && self.spec.num_envs > 1 && !vector_replay_warned {
-                    vector_replay_warned = true;
-                    tracing::warn!(
-                        num_envs = self.spec.num_envs,
-                        discarded_frames = replay_buffer.len(),
-                        "a lane's episode ended mid-chunk on a vector route: chunk replay is \
-                         whole-batch, so every lane's buffered frames were discarded and the \
-                         run re-plans. Use num_envs=1 with an execution horizon > 1.",
+    /// Apply a finished grouped predict: every group in it gets its frames,
+    /// or has them discarded if its episode ended in the meantime.
+    fn on_predict_outcome(
+        &mut self,
+        outcome: PredictOutcome<M>,
+        groups: &mut [Group<E>],
+        state: &RouteState,
+        telemetry: &Arc<Mutex<Aggregator>>,
+    ) -> Result<(), RuntimeError> {
+        self.model = Some(outcome.model);
+        let results = outcome.result?;
+        if results.len() != outcome.requests.len() {
+            return Err(RuntimeError::Protocol(format!(
+                "model endpoint {} answered {} of {} grouped predicts",
+                state.model_component_id(),
+                results.len(),
+                outcome.requests.len()
+            )));
+        }
+        let group_count = outcome.requests.len() as u64;
+        let mut recorded = false;
+        for ((gid, expected_context, request_bytes), result) in
+            outcome.requests.into_iter().zip(results)
+        {
+            let prediction = result?;
+            if prediction.response.context != expected_context {
+                let request_id = expected_context
+                    .as_ref()
+                    .map(|context| context.request_id.clone())
+                    .unwrap_or_default();
+                return Err(RuntimeError::ModelRouteMismatch {
+                    component_id: state.model_component_id().to_string(),
+                    request_id,
+                });
+            }
+            // One grouped call is one predict op: record its RPC once, with the
+            // peer's report from the first reply and the fused width.
+            if !recorded {
+                recorded = true;
+                record_op(
+                    telemetry,
+                    SRC_PREDICT,
+                    outcome.rpc,
+                    PeerReport {
+                        endpoint_total_ns: prediction.endpoint_total_ns,
+                        phases: prediction.phases,
+                        group_size: if group_count > 1 {
+                            Some(group_count)
+                        } else {
+                            prediction.group_size
+                        },
+                    },
+                    request_bytes,
+                    prediction.response.encoded_len() as u64,
+                );
+            }
+            if prediction.response.actions.is_empty() {
+                return Err(RuntimeError::Protocol(format!(
+                    "model endpoint {} returned a predict response with no actions",
+                    state.model_component_id()
+                )));
+            }
+            // Ordered frames: frame 0 = this step, frames 1.. = open-loop replay.
+            let mut frames = VecDeque::with_capacity(prediction.response.actions.len());
+            for frame in &prediction.response.actions {
+                if let Some(leaves) = value_leaves(Some(frame))? {
+                    frames.push_back(leaves);
+                }
+            }
+            let group = &mut groups[gid];
+            group.predict = match std::mem::replace(&mut group.predict, PredictState::None) {
+                // Conditioned on an observation from before an episode boundary:
+                // the chunk must not leak into the new episode.
+                PredictState::InFlight { stale: true } => PredictState::None,
+                PredictState::InFlight { stale: false } => {
+                    if group.replay.is_empty() {
+                        group.replay = frames;
+                        PredictState::None
+                    } else {
+                        PredictState::Ready(frames)
+                    }
+                }
+                other => other,
+            };
+        }
+        Ok(())
+    }
+
+    async fn on_env_outcome(
+        &mut self,
+        outcome: EnvOutcome<E>,
+        groups: &mut [Group<E>],
+        state: &mut RouteState,
+        env_ops: &mut JoinSet<EnvOutcome<E>>,
+        telemetry: &Arc<Mutex<Aggregator>>,
+    ) -> Result<(), RuntimeError> {
+        match outcome {
+            EnvOutcome::Reset {
+                group: gid,
+                env,
+                initial,
+                request_bytes,
+                rpc,
+                result,
+            } => {
+                groups[gid].env = Some(env);
+                let reset = result?;
+                record_op(
+                    telemetry,
+                    SRC_RESET,
+                    rpc,
+                    PeerReport {
+                        endpoint_total_ns: reset.endpoint_total_ns,
+                        phases: reset.phases,
+                        group_size: None,
+                    },
+                    request_bytes,
+                    reset.response.encoded_len() as u64,
+                );
+                let group = &mut groups[gid];
+                let (episode_ids, slots) = group
+                    .pending_start
+                    .take()
+                    .expect("a reset in flight has its episodes staged");
+                let context = state.group_context(&group.positions, group.lane_group);
+                if initial {
+                    fan_out_event!(
+                        self,
+                        log,
+                        LogEvent {
+                            session_id: state.session_id().to_string(),
+                            route: context.clone(),
+                            level: LogLevel::Info,
+                            message: format!(
+                                "env reset complete in {:.0}ms ({} episode(s) ready)",
+                                rpc.as_secs_f64() * 1000.0,
+                                episode_ids.len()
+                            ),
+                            source: Some("runtime".to_string()),
+                        }
                     );
                 }
-                replay_buffer.clear();
-                // A background predict in flight was conditioned on an
-                // observation from the ended episode; its chunk must not leak
-                // into the new one.
-                prefetch_stale = true;
+                let started =
+                    state.start_episodes_at(&groups[gid].positions, episode_ids, !initial, &slots);
+                self.invoke_started_episodes(state, &context, started).await;
+                groups[gid].round_started = Instant::now();
+                let observation = value_leaves(reset.response.observation.as_ref())?;
+                self.observe(
+                    gid,
+                    groups,
+                    state,
+                    telemetry,
+                    observation,
+                    reset.response.infos,
+                    RequestPhase::ResetObservation,
+                    true,
+                )
+                .await
             }
+            EnvOutcome::Step {
+                group: gid,
+                env,
+                request_bytes,
+                rpc,
+                result,
+            } => {
+                groups[gid].env = Some(env);
+                let step = result?;
+                record_op(
+                    telemetry,
+                    SRC_STEP,
+                    rpc,
+                    PeerReport {
+                        endpoint_total_ns: step.endpoint_total_ns,
+                        phases: step.phases,
+                        group_size: None,
+                    },
+                    request_bytes,
+                    step.response.encoded_len() as u64,
+                );
+                self.on_step(gid, groups, state, env_ops, telemetry, step.response)
+                    .await
+            }
+        }
+    }
 
-            // Under NEXT_STEP, a lane that completed this step (t) autoresets at
-            // t+1. Mint its next id now and stash it; the next step's down-push and
-            // slot roll both consume it. Mirrors the env's `expect_autoreset`.
-            if matches!(
-                self.autoreset_mode(),
-                AutoresetMode::NextStep | AutoresetMode::SameStep
-            ) {
-                for completed in completed_episodes.iter() {
+    /// Apply one group's step: account the step, complete and (per autoreset
+    /// mode) restart its finished lanes, then observe the next observation.
+    #[allow(clippy::too_many_arguments)]
+    async fn on_step(
+        &mut self,
+        gid: usize,
+        groups: &mut [Group<E>],
+        state: &mut RouteState,
+        env_ops: &mut JoinSet<EnvOutcome<E>>,
+        telemetry: &Arc<Mutex<Aggregator>>,
+        response: StepResponse,
+    ) -> Result<(), RuntimeError> {
+        let positions = groups[gid].positions.clone();
+        let lane_group = groups[gid].lane_group;
+        let context = state.group_context(&positions, lane_group);
+        lock_agg(telemetry).record(Sample::dur(
+            SRC_ROUND,
+            metrics::RPC_TOTAL,
+            groups[gid].round_started.elapsed(),
+        ));
+        groups[gid].round_started = Instant::now();
+        groups[gid].phase = EnvPhase::Ready;
+
+        let step_observation = value_leaves(response.observation.as_ref())?;
+        state.record_step_at(&positions, &response.rewards);
+        let snapshot = state.snapshot_at(&positions);
+        // On an autoreset roll this response carries the NEW episode's reset
+        // observation + infos, which belong on its observation event, not on
+        // the old episode's step.
+        let rolled = !groups[gid].pending_roll.is_empty();
+        fan_out_event!(
+            self,
+            step_completed,
+            StepCompletedEvent {
+                session_id: state.session_id().to_string(),
+                route: context.clone(),
+                episode_id: snapshot.episode_id.clone(),
+                episode_record_id: snapshot.episode_record_id.clone(),
+                step: snapshot.step,
+                env_index: snapshot.env_index,
+                rewards: response.rewards.clone(),
+                infos: if rolled { None } else { response.infos.clone() },
+            }
+        );
+
+        // Apply any NEXT_STEP autoreset roll the env just performed with the ids
+        // we pushed down: roll our own slots to the same ids, each on a fresh
+        // route-global slot. The env never mints — the runtime is authoritative.
+        if rolled {
+            let pending_roll = std::mem::take(&mut groups[gid].pending_roll);
+            let roll_ids = episode_ids_with_roll(state.episode_ids_at(&positions), &pending_roll);
+            let rolling: Vec<Option<u64>> = groups[gid]
+                .lanes
+                .iter()
+                .map(|lane| {
                     pending_roll
+                        .contains_key(lane)
+                        .then(|| state.claim_slots(1, false))
+                        .flatten()
+                        .and_then(|slots| slots.first().copied())
+                })
+                .collect();
+            let started = state.observe_episode_ids_at(&positions, roll_ids, &rolling);
+            self.invoke_started_episodes(state, &context, started).await;
+        }
+
+        let capped = self.capped_completions(state, &positions, &response.completed_episodes);
+        let mut completed_episodes = response.completed_episodes.clone();
+        completed_episodes.extend(capped);
+        self.emit_completed_episodes(state, &context, &completed_episodes)
+            .await;
+        // Tell the model to evict the ended episodes' frame-stack buffers
+        // (best-effort GC; ids never repeat so a miss only leaks memory).
+        self.queue_evictions(state, &completed_episodes);
+
+        if !completed_episodes.is_empty() {
+            // A lane that completed gets a fresh episode, so buffered future
+            // actions are stale: flush and re-plan (receding horizon on reset).
+            // A prediction in flight was conditioned on the ended episode; its
+            // chunk must not leak into the new one.
+            let group = &mut groups[gid];
+            if !group.replay.is_empty() && group.width() > 1 && !self.vector_replay_warned {
+                // Tripwire for chunk replay on a lockstep vector group, once per
+                // session: the buffer is whole-batch, so ONE lane's episode end
+                // throws away every lane's remaining frames.
+                self.vector_replay_warned = true;
+                tracing::warn!(
+                    num_envs = group.width(),
+                    discarded_frames = group.replay.len(),
+                    "a lane's episode ended mid-chunk on a lockstep vector group: chunk replay \
+                     is whole-batch, so every lane's buffered frames were discarded and the \
+                     group re-plans. Serve lanes, or use an execution horizon of 1.",
+                );
+            }
+            group.replay.clear();
+            group.predict = match std::mem::replace(&mut group.predict, PredictState::None) {
+                PredictState::InFlight { .. } => PredictState::InFlight { stale: true },
+                _ => PredictState::None,
+            };
+            // Under NEXT_STEP, a lane that completed this step (t) autoresets at
+            // t+1. Mint its next id now; the next step's down-push and slot roll
+            // both consume it. Mirrors the env's `expect_autoreset`.
+            if !self.driver_owns_resets() {
+                for completed in &completed_episodes {
+                    group
+                        .pending_roll
                         .entry(completed.env_index)
                         .or_insert_with(mint_episode_id);
                 }
             }
+        }
 
-            // Under NEXT_STEP, the final episode completes at its done step `t`
-            // and this early-return fires before the `t+1` roll. So the
-            // model-side `on_episode_end` for the final episode is not delivered
-            // at `t+1`; instead it fires via the close-time `finish_lifecycle`
-            // sweep during shutdown. Asymmetric versus mid-run episodes, but the
-            // callback is not lost.
-            if self
+        // The whole-vector group runs until the route's episode budget is spent
+        // (the env keeps rolling under NEXT_STEP; those extra episodes are not
+        // scored). A lane group's budget is the slot counter, checked at reset.
+        if !lane_group
+            && self
                 .spec
                 .max_episodes
                 .is_some_and(|limit| state.total_episodes() >= limit as i64)
-            {
-                // The final iteration exits here instead of the loop bottom;
-                // its round (predict + step + transforms) is complete, so
-                // record it before snapshotting or the last round is lost.
-                lock_agg(telemetry).record(Sample::dur(
-                    SRC_ROUND,
-                    metrics::RPC_TOTAL,
-                    round_started.elapsed(),
-                ));
-                let release_request = state.release_adapter_request("completed requested episodes");
-                self.shutdown_terminal_route(
-                    state,
-                    "completed requested episodes",
-                    release_request,
-                )
-                .await;
-                // The single final session push is delivered by the epilogue in
-                // run_with_cancellation_reason (on every exit path); here we only
-                // capture the durable pull snapshot for the returned report.
-                let telemetry_snapshot = lock_agg(telemetry).snapshot(Horizon::Session);
-                fan_out_event!(
-                    self,
-                    session_ended,
-                    SessionEndedEvent {
-                        session_id: state.session_id().to_string(),
-                        route: state.env_context(),
-                        reason: "completed requested episodes".to_string(),
-                        total_steps: state.total_steps(),
-                        total_episodes: state.total_episodes(),
-                    }
-                );
-                return Ok(RuntimeReport {
-                    session_id: state.session_id().to_string(),
-                    env_id: self.spec.env_id.clone(),
-                    total_steps: state.total_steps(),
-                    total_episodes: state.total_episodes(),
-                    episodes: state.take_episode_summaries(),
-                    telemetry: telemetry_snapshot,
-                });
-            }
-
-            // Mode-aware next observation. The reflexive "any lane completed =>
-            // reset the whole vector" trigger is gone. That was the category
-            // error that cut healthy lanes short.
-            let (next_obs, phase, is_reset_msg, reset_infos) = match self.autoreset_mode() {
-                // NEXT_STEP (and the unreachable SAME_STEP): the env auto-resets a
-                // done lane itself and the rolled episode ids already arrived via
-                // observe_episode_ids above. The driver is purely observational;
-                // it never resets on the hot path.
-                AutoresetMode::NextStep | AutoresetMode::SameStep => (
-                    step_observation.clone(),
-                    RequestPhase::StepObservation,
-                    false,
-                    if rolled {
-                        step_ok.response.infos.clone()
-                    } else {
-                        None
-                    },
-                ),
-                // DISABLED (and the single-env default): the env does not
-                // autoreset, so restart the lanes that just completed. When every
-                // lane completed this is a whole-vector reset (also the num_envs==1
-                // path); a strict subset uses a per-lane seeded reset_subset, the
-                // controlled / reproducible path.
-                AutoresetMode::Unspecified | AutoresetMode::Disabled => {
-                    // Proto env_index is uint32; thread it straight into the
-                    // uint32 ResetRequest.env_indices without a round-trip.
-                    let mut done_lanes: Vec<u32> = completed_episodes
-                        .iter()
-                        .map(|metadata| metadata.env_index)
-                        .collect();
-                    // completed_episodes can carry duplicate env_index entries
-                    // (e.g. drained interrupted episodes), which would inflate
-                    // the lane count and misfire the whole_vector decision below.
-                    // Dedupe so the count reflects distinct lanes. Sorting is
-                    // safe: reset_subset_seeds is derived FROM done_lanes (so
-                    // seeds stay positionally aligned) and env_indices is
-                    // done_lanes.clone().
-                    done_lanes.sort_unstable();
-                    done_lanes.dedup();
-                    if done_lanes.is_empty() {
-                        (
-                            step_observation.clone(),
-                            RequestPhase::StepObservation,
-                            false,
-                            None,
-                        )
-                    } else {
-                        reset_generation += 1;
-                        let step = state.snapshot().step;
-                        let reset_timeout = self.spec.limits.env_reset_timeout;
-                        let reset_timeout_ms =
-                            self.spec.limits.env_reset_timeout_ms().max(0) as u64;
-                        let whole_vector = done_lanes.len() == self.spec.num_envs;
-                        // Mint the authoritative ids for the lanes this reset
-                        // restarts (full-width for a whole reset, aligned to
-                        // done_lanes for a partial one) and push them DOWN.
-                        let (reset_seeds, env_indices, reset_episode_ids) = if whole_vector {
-                            (
-                                self.planned_reset_seeds(state, reset_generation, None),
-                                Vec::new(),
-                                mint_episode_ids(self.spec.num_envs),
-                            )
-                        } else {
-                            (
-                                self.planned_reset_seeds(
-                                    state,
-                                    reset_generation,
-                                    Some(&done_lanes),
-                                ),
-                                done_lanes.clone(),
-                                mint_episode_ids(done_lanes.len()),
-                            )
-                        };
-                        state.note_episode_seeds(&reset_episode_ids, &reset_seeds);
-                        let reset_trials =
-                            self.planned_trial_indices(state, reset_episode_ids.len());
-                        state.note_episode_trials(&reset_episode_ids, &reset_trials);
-                        let reset_request = ResetRequest {
-                            seeds: reset_seeds,
-                            options: self.trial_options(&reset_trials),
-                            timeout_ms: reset_timeout_ms,
-                            env_indices,
-                            episode_ids: reset_episode_ids.clone(),
-                        };
-                        let reset_request_bytes = reset_request.encoded_len() as u64;
-                        let inloop_reset_started = Instant::now();
-                        let reset_ok = await_runtime_operation(
-                            cancellation,
-                            reset_timeout,
-                            RuntimeError::operation_timeout(
-                                state.env_id(),
-                                state.env_component_id(),
-                                "env.reset",
-                                step,
-                                reset_timeout,
-                            ),
-                            self.cancelled_error(state, step),
-                            self.env.reset(reset_request),
-                        )
-                        .await?;
-                        record_op(
-                            telemetry,
-                            SRC_RESET,
-                            inloop_reset_started.elapsed(),
-                            PeerReport {
-                                endpoint_total_ns: reset_ok.endpoint_total_ns,
-                                phases: reset_ok.phases,
-                                group_size: None,
-                            },
-                            reset_request_bytes,
-                            reset_ok.response.encoded_len() as u64,
-                        );
-                        let next_obs = value_leaves(reset_ok.response.observation.as_ref())?;
-                        // Whole-vector reset starts every lane; a partial reset
-                        // rolls only the lanes it restarted (build a full-width id
-                        // vector: current ids with the reset lanes replaced).
-                        let started_episodes = if whole_vector {
-                            state.start_episodes(reset_episode_ids, true)
-                        } else {
-                            let mut full = state.episode_ids();
-                            for (lane, id) in done_lanes.iter().zip(reset_episode_ids) {
-                                if let Some(slot) = full.get_mut(*lane as usize) {
-                                    *slot = id;
-                                }
-                            }
-                            state.observe_episode_ids(full)
-                        };
-                        self.invoke_started_episodes(state, started_episodes).await;
-                        (
-                            next_obs,
-                            RequestPhase::ResetObservation,
-                            true,
-                            reset_ok.response.infos.clone(),
-                        )
-                    }
-                }
-            };
-
-            let mut obs_msg = state.predict_request(next_obs.clone(), phase);
-            let mut outgoing_observation_event = self.observation_event(
-                state,
-                state.snapshot(),
-                is_reset_msg,
-                next_obs,
-                reset_infos,
-            );
-            let transformed_observation = self
-                .invoke_transform_observation(telemetry, outgoing_observation_event.clone())
-                .await?;
-            outgoing_observation_event.observation = transformed_observation.clone();
-            obs_msg.observation = transformed_observation.map(leaves_value);
-            // Emit the transformed observation actually sent to the model, for
-            // both step and reset observations, so hooks always see the same
-            // payload model.predict receives.
-            fan_out_event!(self, observation_emitted, outgoing_observation_event);
-
-            pending_observation_msg = obs_msg;
-
-            // Async-inference mode: with `prefetch_lead` (or fewer) replay
-            // frames left, predict the next chunk in the background from the
-            // observation just built — up to `lead` steps stale by the time it
-            // applies, which is the documented async trade.
-            if self.prefetch_lead > 0
-                && prefetch_inflight.is_none()
-                && replay_buffer.len() <= self.prefetch_lead as usize
-                && let Some(mut model) = self.prefetch_model.take()
-            {
-                let request = pending_observation_msg.clone();
-                let expected_context = request.context.clone();
-                let request_bytes = request.encoded_len() as u64;
-                let join = tokio::spawn(async move {
-                    let result = model.predict(request).await;
-                    (model, result)
-                });
-                prefetch_inflight = Some(PrefetchInflight {
-                    join,
-                    expected_context,
-                    request_bytes,
-                });
-            }
-            lock_agg(telemetry).record(Sample::dur(
-                SRC_ROUND,
-                metrics::RPC_TOTAL,
-                round_started.elapsed(),
-            ));
+        {
+            groups[gid].phase = EnvPhase::Idle;
+            groups[gid].predict = PredictState::None;
+            return Ok(());
         }
+
+        // Driver-owned resets: a finished lane restarts. Groups are reset whole
+        // (a lane group is one lane; a whole-vector group under DISABLED is
+        // num_envs == 1, see RuntimeSessionSpec::validate).
+        if self.driver_owns_resets() {
+            let done: HashSet<u32> = completed_episodes
+                .iter()
+                .map(|metadata| metadata.env_index)
+                .collect();
+            if !done.is_empty() {
+                self.begin_reset(gid, groups, state, env_ops, false);
+                return Ok(());
+            }
+        }
+
+        self.observe(
+            gid,
+            groups,
+            state,
+            telemetry,
+            step_observation,
+            if rolled { response.infos } else { None },
+            RequestPhase::StepObservation,
+            false,
+        )
+        .await
+    }
+
+    /// Hand a group its next observation: build the predict request, run the
+    /// observation transform, emit it, and ask for a prediction unless replay
+    /// frames still cover the next step.
+    #[allow(clippy::too_many_arguments)]
+    async fn observe(
+        &mut self,
+        gid: usize,
+        groups: &mut [Group<E>],
+        state: &mut RouteState,
+        telemetry: &Arc<Mutex<Aggregator>>,
+        observation: Option<Vec<Bytes>>,
+        infos: Option<rlmesh_proto::spaces::v1::MetaMap>,
+        phase: RequestPhase,
+        is_reset: bool,
+    ) -> Result<(), RuntimeError> {
+        let positions = groups[gid].positions.clone();
+        let context = state.group_context(&positions, groups[gid].lane_group);
+        let mut msg = state.predict_request_at(&positions, observation.clone(), phase);
+        let mut event = self.observation_event(
+            state,
+            context,
+            state.snapshot_at(&positions),
+            is_reset,
+            observation,
+            infos,
+            groups[gid].width(),
+        );
+        let transformed = self
+            .invoke_transform_observation(telemetry, event.clone())
+            .await?;
+        event.observation = transformed.clone();
+        msg.observation = transformed.map(leaves_value);
+        // Emit the transformed observation actually sent to the model, for
+        // both step and reset observations, so hooks always see the same
+        // payload model.predict receives.
+        fan_out_event!(self, observation_emitted, event);
+
+        let group = &mut groups[gid];
+        group.obs_msg = Some(msg.clone());
+        group.phase = EnvPhase::Ready;
+        if group.replay.is_empty() && matches!(group.predict, PredictState::None) {
+            group.predict = PredictState::Wanted(msg);
+        }
+        Ok(())
     }
 
     async fn shutdown_after_failure(&mut self, state: &mut RouteState, error: &RuntimeError) {
@@ -1215,8 +1480,14 @@ where
         // it independently: a close impl that blocks (e.g. an RPC on a hung
         // connection) without honoring the deadline must not be able to hang
         // run()/run_with_cancellation() forever during shutdown.
-        let model_close =
-            tokio::time::timeout(timeout, self.model.release_adapter(request, timeout));
+        let model_close = async {
+            match self.model.as_ref() {
+                Some(model) => {
+                    tokio::time::timeout(timeout, model.release_adapter(request, timeout)).await
+                }
+                None => Ok(Ok(())),
+            }
+        };
         if self.spec.close_env_on_end {
             let env_close = tokio::time::timeout(timeout, self.env.close(timeout));
             let (env_result, model_result) = tokio::join!(env_close, model_close);
@@ -1244,11 +1515,21 @@ where
         log_model_close_result(model_close.await, reason, timeout);
     }
 
-    fn cancelled_error(&self, state: &RouteState, step: i64) -> RuntimeError {
+    fn cancelled_error(&self, state: &RouteState, groups: &[Group<E>]) -> RuntimeError {
+        let step = groups
+            .iter()
+            .map(|group| state.snapshot_at(&group.positions).step)
+            .max()
+            .unwrap_or(0);
         RuntimeError::route_cancelled(state.env_id(), step, self.cancellation_reason.as_str())
     }
 
-    async fn invoke_started_episodes(&self, state: &RouteState, episodes: Vec<StartedEpisode>) {
+    async fn invoke_started_episodes(
+        &self,
+        state: &RouteState,
+        context: &RuntimeEnvContext,
+        episodes: Vec<StartedEpisode>,
+    ) {
         for episode in episodes {
             let record = &episode.record;
             fan_out_event!(
@@ -1256,7 +1537,7 @@ where
                 episode_started,
                 EpisodeStartedEvent {
                     session_id: state.session_id().to_string(),
-                    route: state.env_context(),
+                    route: context.clone(),
                     episode_id: episode.episode_id.clone(),
                     episode_record_id: record.record_id.clone(),
                     episode_index: record.index,
@@ -1269,25 +1550,22 @@ where
         }
     }
 
-    /// Runtime-truncated completions for lanes at the step/time cap this step,
-    /// excluding lanes the env itself just completed. Built from the driver's
-    /// own per-slot accounting (steps, accumulated reward, episode start time);
-    /// `validate()` guarantees driver-owned resets (autoreset `DISABLED`)
-    /// whenever a cap is configured, so the DISABLED reset path restarts these
-    /// lanes exactly like env-reported completions.
-    fn capped_lane_completions(
+    /// Runtime-truncated completions for the group's lanes at the step/time cap
+    /// this step, excluding lanes the env itself just completed. Built from the
+    /// driver's own per-slot accounting (steps, accumulated reward, episode
+    /// start time); `validate()` guarantees driver-owned resets (autoreset
+    /// `DISABLED`) whenever a cap is configured, so the reset path restarts
+    /// these lanes exactly like env-reported completions.
+    fn capped_completions(
         &self,
         state: &RouteState,
+        positions: &[usize],
         env_completed: &[EpisodeMetadata],
     ) -> Vec<EpisodeMetadata> {
-        let driver_owns_resets = matches!(
-            self.autoreset_mode(),
-            AutoresetMode::Disabled | AutoresetMode::Unspecified
-        );
-        let step_cap = self
-            .spec
-            .max_episode_steps
-            .or_else(|| driver_owns_resets.then_some(DEFAULT_MAX_EPISODE_STEPS));
+        let step_cap = self.spec.max_episode_steps.or_else(|| {
+            self.driver_owns_resets()
+                .then_some(DEFAULT_MAX_EPISODE_STEPS)
+        });
         let time_cap = self.spec.max_episode_seconds;
         if step_cap.is_none() && time_cap.is_none() {
             return Vec::new();
@@ -1298,8 +1576,8 @@ where
             .collect();
         let now_ns = crate::state::now_unix_ns();
         state
-            .slots()
-            .iter()
+            .slots_at(positions)
+            .into_iter()
             .filter_map(|slot| {
                 let episode = slot.episode.as_ref()?;
                 let env_index = u32::try_from(slot.env_index).ok()?;
@@ -1327,10 +1605,15 @@ where
 
     /// Complete each episode: registry + summary (bounded runs only) + the
     /// `episode_completed` hook event. Summaries are recorded only when
-    /// `max_episodes` is set — that early-return is the report's single drain,
-    /// so an unbounded (`max_episodes: None`) session would otherwise
-    /// accumulate one entry per episode for its whole lifetime with no reader.
-    async fn emit_completed_episodes(&self, state: &mut RouteState, episodes: &[EpisodeMetadata]) {
+    /// `max_episodes` is set — the report is drained once at route end, so an
+    /// unbounded (`max_episodes: None`) session would otherwise accumulate one
+    /// entry per episode for its whole lifetime with no reader.
+    async fn emit_completed_episodes(
+        &self,
+        state: &mut RouteState,
+        context: &RuntimeEnvContext,
+        episodes: &[EpisodeMetadata],
+    ) {
         for completed in episodes {
             let record = state.complete_episode(&completed.episode_id);
             let episode_record_id = record
@@ -1361,7 +1644,7 @@ where
                 episode_completed,
                 EpisodeCompletedEvent {
                     session_id: state.session_id().to_string(),
-                    route: state.env_context(),
+                    route: context.clone(),
                     episode_id: completed.episode_id.clone(),
                     episode_record_id,
                     episode_index: record.as_ref().map_or(0, |record| record.index),
@@ -1380,28 +1663,42 @@ where
         }
     }
 
-    /// Tell the model to evict the ended episodes' per-episode adapter state.
+    /// Queue the ended episodes' adapter state for eviction. The id to evict is
+    /// resolved POSITIONALLY from the runtime's own slot by `env_index` — the
+    /// env's `completed_episodes[].episode_id` echo is never trusted as the
+    /// authority. At the completion step the slot still holds the completing id
+    /// (the autoreset roll lands at t+1), so this is the id the model lazily
+    /// seeded and must drop. Sent by [`flush_evictions`](Self::flush_evictions)
+    /// once the model handle is free.
+    fn queue_evictions(&mut self, state: &RouteState, episodes: &[EpisodeMetadata]) {
+        let all_positions: Vec<usize> = (0..self.spec.num_envs.max(1)).collect();
+        let slot_ids = state.episode_ids_at(&all_positions);
+        self.pending_evictions.extend(
+            episodes
+                .iter()
+                .filter_map(|completed| {
+                    state
+                        .slot_position(completed.env_index)
+                        .and_then(|position| slot_ids.get(position))
+                        .cloned()
+                })
+                .filter(|id| !id.is_empty()),
+        );
+    }
+
     /// Best-effort GC (R2): a failure is logged and the route keeps moving — a
     /// missed evict only leaks model memory, never corrupts state (ids never
-    /// repeat). Skips the call when nothing completed.
-    ///
-    /// The id to evict is resolved POSITIONALLY from the runtime's own slot by
-    /// `env_index` (decision A) — the env's `completed_episodes[].episode_id`
-    /// echo is never trusted as the authority. At the completion step the slot
-    /// still holds the completing id (the autoreset roll lands at t+1), so this
-    /// is the id the model lazily seeded and must drop.
-    async fn emit_reset_adapter(&mut self, state: &mut RouteState, episodes: &[EpisodeMetadata]) {
-        let slot_ids = state.episode_ids();
-        let episode_ids: Vec<String> = episodes
-            .iter()
-            .filter_map(|completed| slot_ids.get(completed.env_index as usize).cloned())
-            .filter(|id| !id.is_empty())
-            .collect();
-        if episode_ids.is_empty() {
+    /// repeat).
+    async fn flush_evictions(&mut self, state: &mut RouteState) {
+        if self.pending_evictions.is_empty() {
             return;
         }
+        let Some(model) = self.model.as_ref() else {
+            return;
+        };
+        let episode_ids = std::mem::take(&mut self.pending_evictions);
         let request = state.reset_adapter_request(episode_ids);
-        if let Err(err) = self.model.reset_adapter(request).await {
+        if let Err(err) = model.reset_adapter(request).await {
             tracing::warn!("model reset_adapter (evict) failed: {err}");
         }
     }
@@ -1448,17 +1745,20 @@ where
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn observation_event(
         &self,
         state: &RouteState,
+        route: RuntimeEnvContext,
         snapshot: RouteSnapshot,
         is_reset: bool,
         observation: Option<Vec<Bytes>>,
         infos: Option<rlmesh_proto::spaces::v1::MetaMap>,
+        width: usize,
     ) -> ObservationEmittedEvent {
         ObservationEmittedEvent {
             session_id: state.session_id().to_string(),
-            route: state.env_context(),
+            route,
             episode_id: snapshot.episode_id,
             episode_record_id: snapshot.episode_record_id,
             episode_ids: snapshot.episode_ids,
@@ -1466,7 +1766,7 @@ where
             step: snapshot.step,
             env_index: snapshot.env_index,
             is_reset,
-            num_envs: self.spec.num_envs as u32,
+            num_envs: width as u32,
             observation_space: Arc::clone(&self.observation_space),
             raw_observation: observation.clone(),
             observation,
@@ -1476,9 +1776,10 @@ where
 }
 
 /// The per-lane reset seed, derived purely from reproducible inputs: the user's
-/// base_seed, the session id, the reset generation, and the lane index. The
-/// container env_id is deliberately NOT mixed in — it is a per-attach random
-/// UUIDv7, so including it would make a base_seed non-reproducible across runs.
+/// base_seed, the session id, the reset generation (or route-global slot), and
+/// the lane index. The container env_id is deliberately NOT mixed in — it is a
+/// per-attach random UUIDv7, so including it would make a base_seed
+/// non-reproducible across runs.
 fn deterministic_reset_seed(
     base_seed: i64,
     session_id: &str,
@@ -1505,50 +1806,6 @@ fn deterministic_reset_seed(
     hash = update(hash, &[0xfc]);
     hash = update(hash, &(env_index as u64).to_le_bytes());
     (hash & i64::MAX as u64) as i64
-}
-
-/// An in-flight background predict (async-inference mode): the spawned task
-/// hands the prefetch model handle back alongside its result so the handle is
-/// reused across chunks.
-type PrefetchOutcome = (
-    Box<dyn RuntimeModel + Send>,
-    Result<RuntimeModelPrediction, RuntimeError>,
-);
-
-struct PrefetchInflight {
-    join: tokio::task::JoinHandle<PrefetchOutcome>,
-    expected_context: Option<AdapterContext>,
-    request_bytes: u64,
-}
-
-async fn join_prefetch(
-    join: tokio::task::JoinHandle<PrefetchOutcome>,
-    model_component_id: &str,
-) -> Result<PrefetchOutcome, RuntimeError> {
-    join.await.map_err(|error| {
-        RuntimeError::Protocol(format!(
-            "model endpoint {model_component_id}: background predict task failed: {error}"
-        ))
-    })
-}
-
-async fn await_runtime_operation<T, F>(
-    cancellation: &CancellationToken,
-    timeout: Duration,
-    timeout_error: RuntimeError,
-    cancelled_error: RuntimeError,
-    operation: F,
-) -> Result<T, RuntimeError>
-where
-    F: Future<Output = Result<T, RuntimeError>>,
-{
-    tokio::select! {
-        _ = cancellation.cancelled() => Err(cancelled_error),
-        result = tokio::time::timeout(timeout, operation) => match result {
-            Ok(result) => result,
-            Err(_) => Err(timeout_error),
-        },
-    }
 }
 
 fn log_model_close_result(
@@ -1594,13 +1851,8 @@ fn mint_episode_ids(count: usize) -> Vec<String> {
 /// Current per-lane ids with the pending NEXT_STEP autoreset rolls substituted
 /// in. Lanes not rolling keep their current id; a rolling lane takes its freshly
 /// minted next id. Used for both the env down-push and our own slot roll so they
-/// stay byte-identical.
-fn episode_ids_with_roll(
-    mut ids: Vec<String>,
-    pending_roll: &std::collections::HashMap<u32, String>,
-) -> Vec<String> {
-    // Consume the already-allocated id vector and roll in place; an empty
-    // `pending_roll` (the steady-state common case) is then zero-copy.
+/// stay byte-identical. `ids[i]` is lane `i`'s id (a whole-vector group).
+fn episode_ids_with_roll(mut ids: Vec<String>, pending_roll: &HashMap<u32, String>) -> Vec<String> {
     for (env_index, new_id) in pending_roll {
         if let Some(slot) = ids.get_mut(*env_index as usize) {
             *slot = new_id.clone();
@@ -1624,14 +1876,6 @@ fn lock_agg(telemetry: &Mutex<Aggregator>) -> MutexGuard<'_, Aggregator> {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
-
-/// Record the per-op telemetry samples — RPC latency, what the peer reported
-/// about its own handling, and request + response wire bytes — under a single
-/// lock. Every driver op (predict, step, reset) records this same shape, so
-/// they all route through here.
-///
-/// An unreported phase is zero and records nothing, so an older peer that stamps
-/// only `endpoint_total_ns` produces exactly the rows it always did.
 fn record_op(
     telemetry: &Mutex<Aggregator>,
     src: Source,

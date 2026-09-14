@@ -11,6 +11,7 @@ use rlmesh_grpc::wire::{
     meta_map_to_proto, render_result_to_proto,
 };
 
+use super::lanes::{LaneEnv, batch_infos, fold_phases};
 use super::types::{
     CloseRequest, EpisodeMetadata, RenderRequest, ResetRequest as VectorResetRequest,
     ResetResult as VectorResetResult, StepRequest as VectorStepRequest,
@@ -72,178 +73,33 @@ fn inject_conformance_warnings(
     );
 }
 
-/// Internal adapter bridging an [`Env`] to the gRPC `Environment` trait.
-#[doc(hidden)]
-pub struct WireEnvAdapter<E> {
-    inner: E,
-    /// Serving-side validation policy for observation/action range deviations.
+/// Serving-side value conformance: validate observations/actions against their
+/// declared space under the active policy. Structural deviations always
+/// reject; range deviations follow the policy (default `warn`, recorded once
+/// per `(kind, path)`). Shared by both adapters; lock-free on the accept path.
+struct Conformance {
     policy: ValidationPolicy,
-    /// Conformance-warning dedup: `(kind, path)` already reported this session.
-    warned: HashSet<(String, String)>,
-    /// Wire decode/encode around the last op, folded with the inner env's own
-    /// split. Read (and cleared) by the server when it stamps the response.
-    last_phases: EndpointPhases,
+    /// `(kind, path)` already reported this session. Behind a lock because
+    /// lane ops run concurrently through `&self`.
+    warned: std::sync::Mutex<HashSet<(String, String)>>,
 }
 
-/// Internal adapter bridging a scalar [`Env`] to the vectorized wire layer.
-#[doc(hidden)]
-pub struct ScalarEnvAdapter<E> {
-    inner: E,
-}
-
-impl<E> ScalarEnvAdapter<E> {
-    /// Wrap a scalar [`Env`] implementation.
-    #[doc(hidden)]
-    pub fn new(inner: E) -> Self {
-        Self { inner }
-    }
-}
-
-#[async_trait]
-impl<E: Env> VectorEnv for ScalarEnvAdapter<E> {
-    fn observation_space(&self) -> &spaces::SpaceSpec {
-        self.inner.observation_space()
-    }
-
-    fn action_space(&self) -> &spaces::SpaceSpec {
-        self.inner.action_space()
-    }
-
-    fn num_envs(&self) -> usize {
-        1
-    }
-
-    fn env_contract(&self) -> &spaces::EnvContract {
-        self.inner.env_contract()
-    }
-
-    async fn reset(
-        &mut self,
-        req: VectorResetRequest,
-    ) -> std::result::Result<VectorResetResult, spaces::EnvRuntimeError> {
-        let result = self
-            .inner
-            .reset(spaces::request::ResetRequest {
-                seed: req.seeds.first().copied(),
-                options: req.options,
-                timeout_ms: req.timeout_ms,
-            })
-            .await?;
-
-        Ok(VectorResetResult {
-            observations: result.observation.into_iter().collect(),
-            info: result.info,
-            episode_ids: result.episode_id.into_iter().collect(),
-        })
-    }
-
-    async fn step(
-        &mut self,
-        req: VectorStepRequest,
-    ) -> std::result::Result<super::VectorStepResult, spaces::EnvRuntimeError> {
-        let result = self
-            .inner
-            .step(spaces::request::StepRequest {
-                action: req.actions.into_iter().next(),
-                timeout_ms: req.timeout_ms,
-            })
-            .await?;
-
-        Ok(super::VectorStepResult {
-            observations: result.observation.into_iter().collect(),
-            rewards: vec![result.reward],
-            terminated: vec![result.terminated],
-            truncated: vec![result.truncated],
-            info: result.info,
-            completed_episodes: vec![],
-            episode_ids: vec![],
-        })
-    }
-
-    async fn render(
-        &mut self,
-        req: RenderRequest,
-    ) -> std::result::Result<spaces::RenderResult, spaces::EnvRuntimeError> {
-        self.inner.render(req).await
-    }
-
-    async fn close(
-        &mut self,
-        req: CloseRequest,
-    ) -> std::result::Result<super::VectorCloseResult, spaces::EnvRuntimeError> {
-        let _ = self.inner.close(req).await?;
-        Ok(super::VectorCloseResult {
-            final_episodes: vec![],
-        })
-    }
-
-    fn take_last_phases(&mut self) -> EndpointPhases {
-        self.inner.take_last_phases()
-    }
-}
-
-impl<E> WireEnvAdapter<E> {
-    /// Wrap a [`VectorEnv`] for the wire layer.
-    #[doc(hidden)]
-    pub fn new(inner: E) -> Self {
+impl Conformance {
+    fn from_env() -> Self {
         Self {
-            inner,
             policy: validation_policy_from_env(),
-            warned: HashSet::new(),
-            last_phases: EndpointPhases::default(),
+            warned: std::sync::Mutex::new(HashSet::new()),
         }
     }
-}
 
-impl<E: VectorEnv> WireEnvAdapter<E> {
-    /// Encode a public [`ResetResult`] into the proto reset response, validating
-    /// the observation batch width. Shared by `reset` and `reset_subset`.
-    fn encode_reset_response(
-        &mut self,
-        mut result: VectorResetResult,
-    ) -> std::result::Result<ProtoResetResponse, EnvError> {
-        validate_count(&result.observations, self.inner.num_envs(), "observations")?;
-
-        let mut warnings = Vec::new();
-        for observation in &result.observations {
-            self.enforce(observation, "observation", &mut warnings)?;
-        }
-        inject_conformance_warnings(&mut result.info, warnings);
-
-        let observations =
-            encode_batched_partial_values(&result.observations, self.inner.observation_space())
-                .map_err(protocol_error_to_env_error)?;
-
-        Ok(ProtoResetResponse {
-            observation: Some(observations),
-            infos: result.info.as_ref().map(meta_map_to_proto),
-        })
-    }
-
-    /// Fold this layer's wire decode/encode around the inner env's own split and
-    /// hold it for the server to stamp.
-    fn record_phases(&mut self, decode_ns: u64, call_ns: u64, encode_started: Instant) {
-        let encode_ns = elapsed_ns(encode_started);
-        let inner = self.inner.take_last_phases();
-        self.last_phases = EndpointPhases::nest(decode_ns, call_ns, encode_ns, inner);
-    }
-
-    /// Validate one observation or action against its declared space under the
-    /// active policy: structural deviations always reject, range deviations
-    /// follow the policy (default `warn`, recorded once per `(kind, path)`).
     fn enforce(
-        &mut self,
+        &self,
+        space: &spaces::SpaceSpec,
         value: &spaces::SpaceValue,
         kind: &str,
         warnings: &mut Vec<ConformanceWarning>,
-    ) -> std::result::Result<(), EnvError> {
-        let space = if kind == "action" {
-            self.inner.action_space()
-        } else {
-            self.inner.observation_space()
-        };
-        let outcome = self.policy.check(space, value);
-        match outcome {
+    ) -> Result<(), EnvError> {
+        match self.policy.check(space, value) {
             PolicyOutcome::Accept => Ok(()),
             PolicyOutcome::Reject(err) => {
                 let code = if kind == "action" {
@@ -255,7 +111,12 @@ impl<E: VectorEnv> WireEnvAdapter<E> {
             }
             PolicyOutcome::Warn(err) => {
                 let path = err.path().to_string();
-                if self.warned.insert((kind.to_string(), path.clone())) {
+                let first_time = self
+                    .warned
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .insert((kind.to_string(), path.clone()));
+                if first_time {
                     warnings.push(ConformanceWarning {
                         kind: kind.to_string(),
                         path,
@@ -266,31 +127,150 @@ impl<E: VectorEnv> WireEnvAdapter<E> {
             }
         }
     }
+
+    fn enforce_all(
+        &self,
+        space: &spaces::SpaceSpec,
+        values: &[spaces::SpaceValue],
+        kind: &str,
+        warnings: &mut Vec<ConformanceWarning>,
+    ) -> Result<(), EnvError> {
+        for value in values {
+            self.enforce(space, value, kind, warnings)?;
+        }
+        Ok(())
+    }
+}
+
+/// Encode a step's per-lane results into the wire reply, checking every
+/// per-lane vector is `width` long.
+fn encode_step_response(
+    conformance: &Conformance,
+    observation_space: &spaces::SpaceSpec,
+    mut result: super::VectorStepResult,
+    width: usize,
+    mut warnings: Vec<ConformanceWarning>,
+    env_indices: Vec<u32>,
+) -> Result<ProtoStepResponse, EnvError> {
+    validate_count(&result.observations, width, "observations")?;
+    validate_count(&result.terminated, width, "terminated values")?;
+    validate_count(&result.truncated, width, "truncated values")?;
+    validate_count(&result.rewards, width, "rewards values")?;
+    conformance.enforce_all(
+        observation_space,
+        &result.observations,
+        "observation",
+        &mut warnings,
+    )?;
+    inject_conformance_warnings(&mut result.info, warnings);
+    let observations = encode_batched_partial_values(&result.observations, observation_space)
+        .map_err(protocol_error_to_env_error)?;
+    Ok(ProtoStepResponse {
+        observation: Some(observations),
+        rewards: result.rewards,
+        terminated_mask: result.terminated.into_iter().map(u8::from).collect(),
+        truncated_mask: result.truncated.into_iter().map(u8::from).collect(),
+        infos: result.info.as_ref().map(meta_map_to_proto),
+        completed_episodes: result
+            .completed_episodes
+            .iter()
+            .map(public_episode_metadata_to_proto)
+            .collect::<Result<Vec<_>, _>>()?,
+        env_indices,
+    })
+}
+
+/// Encode a reset's per-lane observations into the wire reply.
+fn encode_reset_response(
+    conformance: &Conformance,
+    observation_space: &spaces::SpaceSpec,
+    mut result: VectorResetResult,
+    width: usize,
+) -> Result<ProtoResetResponse, EnvError> {
+    validate_count(&result.observations, width, "observations")?;
+    let mut warnings = Vec::new();
+    conformance.enforce_all(
+        observation_space,
+        &result.observations,
+        "observation",
+        &mut warnings,
+    )?;
+    inject_conformance_warnings(&mut result.info, warnings);
+    let observations = encode_batched_partial_values(&result.observations, observation_space)
+        .map_err(protocol_error_to_env_error)?;
+    Ok(ProtoResetResponse {
+        observation: Some(observations),
+        infos: result.info.as_ref().map(meta_map_to_proto),
+    })
+}
+
+/// Decode a wire action slab into `width` per-lane actions, conformance-checked.
+fn decode_actions(
+    conformance: &Conformance,
+    action_space: &spaces::SpaceSpec,
+    action: Option<&rlmesh_proto::spaces::v1::SpaceValue>,
+    width: usize,
+    warnings: &mut Vec<ConformanceWarning>,
+) -> Result<Vec<spaces::SpaceValue>, EnvError> {
+    // N is authoritative; a wrong-width/count action is a client fault, so a
+    // decode failure maps to InvalidAction (not Internal).
+    let actions = decode_batched_partial_values(action, action_space, width)
+        .map_err(|err| EnvError::new(EnvErrorCode::InvalidAction, err.to_string()))?;
+    validate_action_count(&actions, width)?;
+    conformance.enforce_all(action_space, &actions, "action", warnings)?;
+    Ok(actions)
+}
+
+/// Bridges a lockstep [`VectorEnv`] (a natively batched env such as a gym
+/// vector env) to the transport trait. Ops serialize on the env; a step that
+/// names lanes is rejected (`supports_lanes` is false).
+#[doc(hidden)]
+pub struct WireEnvAdapter<E> {
+    inner: tokio::sync::Mutex<E>,
+    observation_space: spaces::SpaceSpec,
+    action_space: spaces::SpaceSpec,
+    env_contract: spaces::EnvContract,
+    num_envs: usize,
+    conformance: Conformance,
+}
+
+impl<E: VectorEnv> WireEnvAdapter<E> {
+    /// Wrap a [`VectorEnv`] for the wire layer.
+    #[doc(hidden)]
+    pub fn new(inner: E) -> Self {
+        Self {
+            observation_space: inner.observation_space().clone(),
+            action_space: inner.action_space().clone(),
+            env_contract: inner.env_contract().clone(),
+            num_envs: inner.num_envs(),
+            inner: tokio::sync::Mutex::new(inner),
+            conformance: Conformance::from_env(),
+        }
+    }
 }
 
 #[async_trait]
 impl<E: VectorEnv> Environment for WireEnvAdapter<E> {
     fn observation_space(&self) -> &spaces::SpaceSpec {
-        self.inner.observation_space()
+        &self.observation_space
     }
 
     fn action_space(&self) -> &spaces::SpaceSpec {
-        self.inner.action_space()
+        &self.action_space
     }
 
     fn num_envs(&self) -> usize {
-        self.inner.num_envs()
+        self.num_envs
     }
 
     fn env_contract(&self) -> &spaces::EnvContract {
-        self.inner.env_contract()
+        &self.env_contract
     }
 
     async fn reset(
-        &mut self,
+        &self,
         req: ProtoResetRequest,
-    ) -> std::result::Result<ProtoResetResponse, EnvError> {
-        self.last_phases = EndpointPhases::default();
+    ) -> Result<(ProtoResetResponse, EndpointPhases), EnvError> {
         let decode_started = Instant::now();
         let request = VectorResetRequest {
             seeds: req.seeds,
@@ -299,79 +279,69 @@ impl<E: VectorEnv> Environment for WireEnvAdapter<E> {
             timeout_ms: i64::try_from(req.timeout_ms).unwrap_or(i64::MAX),
             env_indices: proto_env_indices_to_native(req.env_indices),
         };
-        let decode_ns = elapsed_ns(decode_started);
-
-        let call_started = Instant::now();
-        let result = self
-            .inner
-            .reset(request)
-            .await
-            .map_err(gym_error_to_env_error)?;
-        let call_ns = elapsed_ns(call_started);
-
-        let encode_started = Instant::now();
-        let response = self.encode_reset_response(result)?;
-        self.record_phases(decode_ns, call_ns, encode_started);
-        Ok(response)
-    }
-
-    /// Partial / per-lane reset: forward the requested lane indices to the inner
-    /// env's [`reset_subset`](Env::reset_subset). An env that cannot reset
-    /// individual sub-envs inherits the rejecting default, so it fails loud here
-    /// rather than silently resetting the whole vector.
-    async fn reset_subset(
-        &mut self,
-        req: ProtoResetRequest,
-    ) -> std::result::Result<ProtoResetResponse, EnvError> {
-        self.last_phases = EndpointPhases::default();
-        let decode_started = Instant::now();
-        let request = VectorResetRequest {
-            seeds: req.seeds,
-            options: req.options.map(meta_map_from_proto),
-            // Proto timeout_ms/env_indices are uint64/uint32; native is i64/i32.
-            timeout_ms: i64::try_from(req.timeout_ms).unwrap_or(i64::MAX),
-            env_indices: proto_env_indices_to_native(req.env_indices),
+        // A reset naming lanes replies only those lanes; a whole-vector reset
+        // replies full width.
+        let width = if request.env_indices.is_empty() {
+            self.num_envs
+        } else {
+            request.env_indices.len()
         };
+        let partial = !request.env_indices.is_empty();
         let decode_ns = elapsed_ns(decode_started);
 
+        let lock_started = Instant::now();
+        let mut env = self.inner.lock().await;
+        let queue_ns = elapsed_ns(lock_started);
         let call_started = Instant::now();
-        let result = self
-            .inner
-            .reset_subset(request)
-            .await
-            .map_err(gym_error_to_env_error)?;
+        // An env that cannot reset individual sub-envs inherits the rejecting
+        // `reset_subset` default, so a partial reset fails loud here rather
+        // than silently resetting the whole vector.
+        let result = if partial {
+            env.reset_subset(request).await
+        } else {
+            env.reset(request).await
+        }
+        .map_err(gym_error_to_env_error)?;
         let call_ns = elapsed_ns(call_started);
+        let inner = env.take_last_phases();
+        drop(env);
 
         let encode_started = Instant::now();
-        let response = self.encode_reset_response(result)?;
-        self.record_phases(decode_ns, call_ns, encode_started);
-        Ok(response)
+        let response =
+            encode_reset_response(&self.conformance, &self.observation_space, result, width)?;
+        let mut phases =
+            EndpointPhases::nest(decode_ns, call_ns, elapsed_ns(encode_started), inner);
+        phases.queue_ns = queue_ns;
+        Ok((response, phases))
     }
 
     async fn step(
-        &mut self,
+        &self,
         req: ProtoStepRequest,
-    ) -> std::result::Result<ProtoStepResponse, EnvError> {
-        self.last_phases = EndpointPhases::default();
-        let decode_started = Instant::now();
-        // N is authoritative (num_envs); a wrong-width/count action is a client
-        // fault, so a decode failure maps to InvalidAction (not Internal).
-        let num_envs = self.inner.num_envs();
-        let actions =
-            decode_batched_partial_values(req.action.as_ref(), self.inner.action_space(), num_envs)
-                .map_err(|err| EnvError::new(EnvErrorCode::InvalidAction, err.to_string()))?;
-        validate_action_count(&actions, num_envs)?;
-
-        let mut warnings = Vec::new();
-        for action in &actions {
-            self.enforce(action, "action", &mut warnings)?;
+    ) -> Result<(ProtoStepResponse, EndpointPhases), EnvError> {
+        if !req.env_indices.is_empty() {
+            return Err(EnvError::new(
+                EnvErrorCode::Unsupported,
+                "this environment steps its whole vector in lockstep; a step naming lanes \
+                 (StepRequest.env_indices) needs a lane endpoint",
+            ));
         }
-
+        let decode_started = Instant::now();
+        let mut warnings = Vec::new();
+        let actions = decode_actions(
+            &self.conformance,
+            &self.action_space,
+            req.action.as_ref(),
+            self.num_envs,
+            &mut warnings,
+        )?;
         let decode_ns = elapsed_ns(decode_started);
 
+        let lock_started = Instant::now();
+        let mut env = self.inner.lock().await;
+        let queue_ns = elapsed_ns(lock_started);
         let call_started = Instant::now();
-        let mut result = self
-            .inner
+        let result = env
             .step(VectorStepRequest {
                 actions,
                 // Proto timeout_ms is uint64; native is i64.
@@ -380,73 +350,54 @@ impl<E: VectorEnv> Environment for WireEnvAdapter<E> {
             .await
             .map_err(gym_error_to_env_error)?;
         let call_ns = elapsed_ns(call_started);
+        let inner = env.take_last_phases();
+        drop(env);
 
         let encode_started = Instant::now();
-        let env_count = self.inner.num_envs();
-        validate_count(&result.observations, env_count, "observations")?;
-        validate_count(&result.terminated, env_count, "terminated values")?;
-        validate_count(&result.truncated, env_count, "truncated values")?;
-        validate_count(&result.rewards, env_count, "rewards values")?;
-
-        for observation in &result.observations {
-            self.enforce(observation, "observation", &mut warnings)?;
-        }
-        inject_conformance_warnings(&mut result.info, warnings);
-
-        let observations =
-            encode_batched_partial_values(&result.observations, self.inner.observation_space())
-                .map_err(protocol_error_to_env_error)?;
-
-        let response = ProtoStepResponse {
-            observation: Some(observations),
-            rewards: result.rewards,
-            terminated_mask: result.terminated.into_iter().map(u8::from).collect(),
-            truncated_mask: result.truncated.into_iter().map(u8::from).collect(),
-            infos: result.info.as_ref().map(meta_map_to_proto),
-            completed_episodes: result
-                .completed_episodes
-                .iter()
-                .map(public_episode_metadata_to_proto)
-                .collect::<std::result::Result<Vec<_>, _>>()?,
-            // Full-width response; partial-width is reserved-but-deferred.
-            env_indices: Vec::new(),
-        };
-        self.record_phases(decode_ns, call_ns, encode_started);
-        Ok(response)
+        let response = encode_step_response(
+            &self.conformance,
+            &self.observation_space,
+            result,
+            self.num_envs,
+            warnings,
+            Vec::new(),
+        )?;
+        let mut phases =
+            EndpointPhases::nest(decode_ns, call_ns, elapsed_ns(encode_started), inner);
+        phases.queue_ns = queue_ns;
+        Ok((response, phases))
     }
 
     async fn render(
-        &mut self,
+        &self,
         req: ProtoRenderRequest,
-    ) -> std::result::Result<ProtoRenderResponse, EnvError> {
-        self.last_phases = EndpointPhases::default();
+    ) -> Result<(ProtoRenderResponse, EndpointPhases), EnvError> {
         let request = RenderRequest {
             env_index: render_env_index(&req.env_indices)?,
             // Proto timeout_ms is uint64; native is i64.
             timeout_ms: i64::try_from(req.timeout_ms).unwrap_or(i64::MAX),
         };
-
+        let lock_started = Instant::now();
+        let mut env = self.inner.lock().await;
+        let queue_ns = elapsed_ns(lock_started);
         let call_started = Instant::now();
-        let result = self
-            .inner
-            .render(request)
-            .await
-            .map_err(gym_error_to_env_error)?;
+        let result = env.render(request).await.map_err(gym_error_to_env_error)?;
         let call_ns = elapsed_ns(call_started);
+        let inner = env.take_last_phases();
+        drop(env);
 
         let encode_started = Instant::now();
         let response = render_result_to_proto(&result);
-        self.record_phases(0, call_ns, encode_started);
-        Ok(response)
+        let mut phases = EndpointPhases::nest(0, call_ns, elapsed_ns(encode_started), inner);
+        phases.queue_ns = queue_ns;
+        Ok((response, phases))
     }
 
-    fn take_last_phases(&mut self) -> EndpointPhases {
-        std::mem::take(&mut self.last_phases)
-    }
-
-    async fn close(&mut self) -> std::result::Result<ProtoCloseResponse, EnvError> {
+    async fn close(&self) -> Result<ProtoCloseResponse, EnvError> {
         let result = self
             .inner
+            .lock()
+            .await
             .close(CloseRequest {
                 wait_for_episodes: false,
             })
@@ -457,7 +408,204 @@ impl<E: VectorEnv> Environment for WireEnvAdapter<E> {
                 .final_episodes
                 .iter()
                 .map(public_episode_metadata_to_proto)
-                .collect::<std::result::Result<Vec<_>, _>>()?,
+                .collect::<Result<Vec<_>, _>>()?,
+        })
+    }
+}
+
+/// Bridges a [`LaneEnv`] (N scalar envs, one actor each) to the transport
+/// trait: a request naming lanes fans out to those actors and gathers, a
+/// whole-vector request covers every lane. Lane ops run concurrently.
+#[doc(hidden)]
+pub struct WireLaneAdapter {
+    lanes: LaneEnv,
+    conformance: Conformance,
+}
+
+impl WireLaneAdapter {
+    /// Serve `envs` as the lanes of one endpoint.
+    pub fn new<E: Env + 'static>(envs: Vec<E>) -> Self {
+        Self {
+            lanes: LaneEnv::new(envs),
+            conformance: Conformance::from_env(),
+        }
+    }
+
+    /// The lanes a request covers: the ones it names, else every lane.
+    fn lanes_for(&self, env_indices: &[u32]) -> Vec<usize> {
+        if env_indices.is_empty() {
+            (0..self.lanes.num_envs()).collect()
+        } else {
+            env_indices.iter().map(|&lane| lane as usize).collect()
+        }
+    }
+}
+
+#[async_trait]
+impl Environment for WireLaneAdapter {
+    fn observation_space(&self) -> &spaces::SpaceSpec {
+        self.lanes.observation_space()
+    }
+
+    fn action_space(&self) -> &spaces::SpaceSpec {
+        self.lanes.action_space()
+    }
+
+    fn num_envs(&self) -> usize {
+        self.lanes.num_envs()
+    }
+
+    fn env_contract(&self) -> &spaces::EnvContract {
+        self.lanes.env_contract()
+    }
+
+    fn supports_lanes(&self) -> bool {
+        true
+    }
+
+    async fn reset(
+        &self,
+        req: ProtoResetRequest,
+    ) -> Result<(ProtoResetResponse, EndpointPhases), EnvError> {
+        let decode_started = Instant::now();
+        let lanes = self.lanes_for(&req.env_indices);
+        let options = req.options.map(meta_map_from_proto);
+        let timeout_ms = i64::try_from(req.timeout_ms).unwrap_or(i64::MAX);
+        let decode_ns = elapsed_ns(decode_started);
+
+        let call_started = Instant::now();
+        let results = futures::future::join_all(lanes.iter().enumerate().map(|(pos, &lane)| {
+            let request = spaces::request::ResetRequest {
+                seed: req.seeds.get(pos).copied(),
+                options: options.clone(),
+                timeout_ms,
+            };
+            self.lanes.reset(lane, request)
+        }))
+        .await;
+        let call_ns = elapsed_ns(call_started);
+        let mut observations = Vec::with_capacity(lanes.len());
+        let mut infos = Vec::with_capacity(lanes.len());
+        let mut phases = Vec::with_capacity(lanes.len());
+        for result in results {
+            let (result, lane_phases) = result.map_err(gym_error_to_env_error)?;
+            observations.extend(result.observation);
+            infos.push(result.info);
+            phases.push(lane_phases);
+        }
+
+        let encode_started = Instant::now();
+        let response = encode_reset_response(
+            &self.conformance,
+            self.lanes.observation_space(),
+            VectorResetResult {
+                observations,
+                info: batch_infos(infos, None),
+                episode_ids: Vec::new(),
+            },
+            lanes.len(),
+        )?;
+        let inner = fold_phases(phases);
+        let mut folded =
+            EndpointPhases::nest(decode_ns, call_ns, elapsed_ns(encode_started), inner);
+        folded.queue_ns = inner.queue_ns;
+        Ok((response, folded))
+    }
+
+    async fn step(
+        &self,
+        req: ProtoStepRequest,
+    ) -> Result<(ProtoStepResponse, EndpointPhases), EnvError> {
+        let decode_started = Instant::now();
+        let lanes = self.lanes_for(&req.env_indices);
+        let mut warnings = Vec::new();
+        let actions = decode_actions(
+            &self.conformance,
+            self.lanes.action_space(),
+            req.action.as_ref(),
+            lanes.len(),
+            &mut warnings,
+        )?;
+        let timeout_ms = i64::try_from(req.timeout_ms).unwrap_or(i64::MAX);
+        let decode_ns = elapsed_ns(decode_started);
+
+        let call_started = Instant::now();
+        let results =
+            futures::future::join_all(lanes.iter().zip(actions).map(|(&lane, action)| {
+                self.lanes.step(
+                    lane,
+                    spaces::request::StepRequest {
+                        action: Some(action),
+                        timeout_ms,
+                    },
+                )
+            }))
+            .await;
+        let call_ns = elapsed_ns(call_started);
+        let mut result = super::VectorStepResult::default();
+        let mut infos = Vec::with_capacity(lanes.len());
+        let mut done = Vec::with_capacity(lanes.len());
+        let mut phases = Vec::with_capacity(lanes.len());
+        for lane_result in results {
+            let (step, lane_phases) = lane_result.map_err(gym_error_to_env_error)?;
+            result.observations.extend(step.observation);
+            result.rewards.push(step.reward);
+            result.terminated.push(step.terminated);
+            result.truncated.push(step.truncated);
+            done.push(step.terminated || step.truncated);
+            infos.push(step.info);
+            phases.push(lane_phases);
+        }
+        result.info = batch_infos(infos, Some(&done));
+
+        let encode_started = Instant::now();
+        let response = encode_step_response(
+            &self.conformance,
+            self.lanes.observation_space(),
+            result,
+            lanes.len(),
+            warnings,
+            req.env_indices,
+        )?;
+        let inner = fold_phases(phases);
+        let mut folded =
+            EndpointPhases::nest(decode_ns, call_ns, elapsed_ns(encode_started), inner);
+        folded.queue_ns = inner.queue_ns;
+        Ok((response, folded))
+    }
+
+    async fn render(
+        &self,
+        req: ProtoRenderRequest,
+    ) -> Result<(ProtoRenderResponse, EndpointPhases), EnvError> {
+        let lane = render_env_index(&req.env_indices)?.unwrap_or(0);
+        let request = RenderRequest {
+            env_index: Some(lane),
+            timeout_ms: i64::try_from(req.timeout_ms).unwrap_or(i64::MAX),
+        };
+        let call_started = Instant::now();
+        let (result, inner) = self
+            .lanes
+            .render(lane, request)
+            .await
+            .map_err(gym_error_to_env_error)?;
+        let call_ns = elapsed_ns(call_started);
+        let encode_started = Instant::now();
+        let response = render_result_to_proto(&result);
+        let mut phases = EndpointPhases::nest(0, call_ns, elapsed_ns(encode_started), inner);
+        phases.queue_ns = inner.queue_ns;
+        Ok((response, phases))
+    }
+
+    async fn close(&self) -> Result<ProtoCloseResponse, EnvError> {
+        self.lanes
+            .close(CloseRequest {
+                wait_for_episodes: false,
+            })
+            .await
+            .map_err(gym_error_to_env_error)?;
+        Ok(ProtoCloseResponse {
+            final_episodes: Vec::new(),
         })
     }
 }
@@ -732,26 +880,21 @@ mod tests {
             spaces::SpaceValue::Discrete(2),
         ];
         ProtoStepRequest {
-            action: Some(
-                encode_batched_partial_values(&actions, adapter.inner.action_space()).unwrap(),
-            ),
+            action: Some(encode_batched_partial_values(&actions, adapter.action_space()).unwrap()),
             ..Default::default()
         }
     }
 
     #[tokio::test]
     async fn step_reports_the_wire_split_of_an_env_that_measures_nothing() {
-        let mut adapter = WireEnvAdapter::new(DummyEnv::new());
+        let adapter = WireEnvAdapter::new(DummyEnv::new());
         let request = step_request(&adapter);
-        adapter.step(request).await.unwrap();
+        let (_, phases) = adapter.step(request).await.unwrap();
 
-        let phases = adapter.take_last_phases();
         assert!(phases.decode_ns > 0, "wire decode is measured");
         assert!(phases.encode_ns > 0, "wire encode is measured");
         // Nothing inside reported a split, so the whole call reads as user time.
         assert!(phases.user_ns > 0);
-        // The split is drained by the read: the server stamps it exactly once.
-        assert_eq!(adapter.take_last_phases(), EndpointPhases::default());
     }
 
     #[tokio::test]
@@ -764,11 +907,10 @@ mod tests {
             ..EndpointPhases::default()
         };
         env.step_delay = Duration::from_millis(1);
-        let mut adapter = WireEnvAdapter::new(env);
+        let adapter = WireEnvAdapter::new(env);
         let request = step_request(&adapter);
-        adapter.step(request).await.unwrap();
+        let (_, phases) = adapter.step(request).await.unwrap();
 
-        let phases = adapter.take_last_phases();
         // User time is the measured call (>= the 1ms the env really spent) minus
         // the env's own wire share, so it keeps the env's report plus the real
         // cost of reaching it; the env's conversion costs join the wire codec on
@@ -816,10 +958,10 @@ mod tests {
 
     #[tokio::test]
     async fn wire_adapter_roundtrips_batched_reset_and_step() {
-        let mut env = WireEnvAdapter::new(DummyEnv::new());
+        let env = WireEnvAdapter::new(DummyEnv::new());
 
-        let reset = Environment::reset(
-            &mut env,
+        let (reset, _) = Environment::reset(
+            &env,
             ProtoResetRequest {
                 seeds: vec![7, 8],
                 ..Default::default()
@@ -837,8 +979,8 @@ mod tests {
             spaces::SpaceValue::Discrete(2),
         ];
         let action_space = env.action_space().clone();
-        let step = Environment::step(
-            &mut env,
+        let (step, _) = Environment::step(
+            &env,
             ProtoStepRequest {
                 action: Some(encode_batched_partial_values(&actions, &action_space).unwrap()),
                 timeout_ms: 0,
@@ -859,12 +1001,12 @@ mod tests {
 
     #[tokio::test]
     async fn wire_adapter_rejects_wrong_action_count() {
-        let mut env = WireEnvAdapter::new(DummyEnv::new());
+        let env = WireEnvAdapter::new(DummyEnv::new());
         let actions = [spaces::SpaceValue::Discrete(1)];
         let action_space = env.action_space().clone();
 
         let error = Environment::step(
-            &mut env,
+            &env,
             ProtoStepRequest {
                 action: Some(encode_batched_partial_values(&actions, &action_space).unwrap()),
                 timeout_ms: 0,
@@ -880,10 +1022,10 @@ mod tests {
 
     #[tokio::test]
     async fn wire_adapter_maps_render_env_indices_to_env_index() {
-        let mut env = WireEnvAdapter::new(DummyEnv::new());
+        let env = WireEnvAdapter::new(DummyEnv::new());
 
-        let result = Environment::render(
-            &mut env,
+        let (result, _) = Environment::render(
+            &env,
             ProtoRenderRequest {
                 env_indices: vec![1],
                 timeout_ms: 0,
