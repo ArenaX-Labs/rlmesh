@@ -270,9 +270,10 @@ pub struct RuntimeDriver<E, M> {
     /// Episode ids whose adapter state must be evicted once the model handle
     /// is back from a grouped predict (evictions never wait on a predict).
     pending_evictions: Vec<String>,
-    /// One `trial_index` was minted for an env whose contract does not declare
-    /// the reset option, so the ordinal was withheld from `ResetRequest.options`.
-    /// Latched so the warning fires once per session, not once per reset.
+    /// The session set a non-default `trial_index_base` for an env whose
+    /// contract does not declare the reset option, so the ordinal was withheld
+    /// from `ResetRequest.options`. Latched so the warning fires once per
+    /// session, not once per reset.
     trial_options_warned: AtomicBool,
     /// A lane's episode ended mid-chunk on the whole-vector group, discarding
     /// every lane's buffered frames; warned once per session.
@@ -404,13 +405,17 @@ where
     }
 
     /// Mint the trial ordinals for the lanes a reset restarts, positionally
-    /// aligned to them. Empty unless the session set `trial_index_base` — minting
-    /// is unconditional there, so the events and summaries carry the sweep even
-    /// when the env never asked for the option.
+    /// aligned to them. Always minted under driver-owned resets (off the
+    /// session's `trial_index_base`, 0 by default), so the events and summaries
+    /// carry the sweep even when the env never asked for the option. Empty under
+    /// `NEXT_STEP` autoreset: the env restarts its own lanes there, so the one
+    /// cold-start reset this driver issues would leave every later episode
+    /// unsequenced.
     fn planned_trial_indices(&self, state: &mut RouteState, lanes: usize) -> Vec<u64> {
-        match self.spec.trial_index_base {
-            Some(base) => state.claim_trial_indices(base, lanes),
-            None => Vec::new(),
+        if self.driver_owns_resets() {
+            state.claim_trial_indices(self.spec.trial_index_base(), lanes)
+        } else {
+            Vec::new()
         }
     }
 
@@ -419,14 +424,20 @@ where
     /// Delivered only to an env whose contract metadata declares the key under
     /// [`ENV_RESET_OPTIONS_KEY`]: an env that forwards `options` blindly into a
     /// third-party `reset` must never receive a reserved key it cannot interpret.
-    /// A single lane sends the bare integer; a multi-lane reset sends the list, in
-    /// the same lane order as `seeds` and `episode_ids`.
+    /// Withholding it from a non-declaring env is silent under the default base
+    /// (the env never opted in, and the ordinal is minted regardless) and warns
+    /// once when the session set a non-default base, since that caller expected
+    /// the sweep to reach the env. A single lane sends the bare integer; a
+    /// multi-lane reset sends the list, in the same lane order as `seeds` and
+    /// `episode_ids`.
     fn trial_options(&self, trials: &[u64]) -> Option<MetaMap> {
         if trials.is_empty() {
             return None;
         }
         if !self.env_declares_trial_index() {
-            if !self.trial_options_warned.swap(true, Ordering::Relaxed) {
+            if self.spec.trial_index_base() != 0
+                && !self.trial_options_warned.swap(true, Ordering::Relaxed)
+            {
                 tracing::warn!(
                     env_id = %self.spec.env_id,
                     key = ENV_RESET_OPTIONS_KEY,

@@ -48,15 +48,18 @@ pub struct RuntimeSessionSpec {
     /// seeds its own rolls, so the list would silently not apply.
     pub episode_seeds: Vec<i64>,
     pub max_episodes: Option<u64>,
-    /// First trial ordinal this route's episodes walk. When set the driver mints
-    /// one ordinal per episode start (`base`, `base + 1`, ...), reports it on the
-    /// episode events and summaries, and delivers it as
-    /// `ResetRequest.options["trial_index"]` to an env that declared the key (see
-    /// [`ENV_RESET_OPTIONS_KEY`]). A sharded run gives each shard its own base so
-    /// the shards together walk a benchmark's trials once each, instead of every
-    /// shard re-deriving an index from a hashed seed. Requires driver-owned resets
-    /// (autoreset `DISABLED`): under `NEXT_STEP` the env restarts its own lanes, so
-    /// the runtime has no reset to carry the ordinal on.
+    /// First trial ordinal this route's episodes walk; `None` is the default
+    /// base, 0 (so is an explicit `Some(0)`). Under driver-owned resets
+    /// (autoreset `DISABLED`) the driver always mints one ordinal per episode
+    /// start (`base`, `base + 1`, ...), reports it on the episode events and
+    /// summaries, and delivers it as `ResetRequest.options["trial_index"]` to an
+    /// env that declared the key (see [`ENV_RESET_OPTIONS_KEY`]) -- an env that
+    /// did not never sees it. A sharded run gives each shard its own base so the
+    /// shards together walk a benchmark's trials once each, instead of every
+    /// shard re-deriving an index from a hashed seed. Under `NEXT_STEP` autoreset
+    /// the env restarts its own lanes, so no ordinal is minted at all: the
+    /// default base is inert there, and a non-zero base is rejected by
+    /// [`validate`](Self::validate) since it could never be walked.
     pub trial_index_base: Option<u64>,
     /// Truncate any episode after this many steps (runtime-enforced; the lane
     /// is reset and the episode reported `truncated`). Requires driver-owned
@@ -76,6 +79,12 @@ pub struct RuntimeSessionSpec {
 }
 
 impl RuntimeSessionSpec {
+    /// The first trial ordinal this route walks: `trial_index_base`, or 0 when
+    /// the session left it unset.
+    pub fn trial_index_base(&self) -> u64 {
+        self.trial_index_base.unwrap_or(0)
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         if self.session_id.trim().is_empty() {
             return Err("runtime session_id must not be empty".to_string());
@@ -123,7 +132,7 @@ impl RuntimeSessionSpec {
                         .to_string(),
                 );
             }
-            if self.trial_index_base.is_some() {
+            if self.trial_index_base() != 0 {
                 return Err(
                     "trial_index_base requires an env with autoreset disabled: under \
                      NEXT_STEP autoreset the env restarts its own lanes, so the runtime \
@@ -266,9 +275,11 @@ pub struct EpisodeSummary {
     /// The explicit seed this episode was reset with (`episode_seeds` /
     /// `base_seed` derivation), `None` for an unseeded or autoreset-rolled one.
     pub seed: Option<i64>,
-    /// The trial ordinal this episode walked, `None` unless the session set
-    /// `trial_index_base`. Minted whether or not the env declared the reset
-    /// option, so a coverage audit can read the sweep off the report either way.
+    /// The trial ordinal this episode walked (`trial_index_base` + its
+    /// episode-start position). Minted for every driver-owned reset whether or
+    /// not the env declared the reset option, so a coverage audit can read the
+    /// sweep off the report either way; `None` only under `NEXT_STEP` autoreset,
+    /// where the env restarts its own lanes and no ordinal is minted.
     pub trial_index: Option<u64>,
     pub step_count: i64,
     pub cumulative_reward: f64,
@@ -490,7 +501,7 @@ mod tests {
     #[test]
     fn validate_rejects_a_trial_base_the_env_owns_the_resets_for() {
         let mut spec = valid_spec();
-        spec.trial_index_base = Some(0);
+        spec.trial_index_base = Some(5);
         // Driver-owned resets (the default DISABLED/UNSPECIFIED) carry the ordinal.
         assert!(spec.validate().is_ok());
 
@@ -500,6 +511,20 @@ mod tests {
             error.contains("trial_index_base requires an env with autoreset disabled"),
             "expected the driver-owned-reset rule, got: {error}"
         );
+    }
+
+    #[test]
+    fn validate_accepts_the_default_trial_base_under_next_step() {
+        // The ordinal is on by default, so the default base must not fail a run
+        // the env owns the resets for -- whether it arrives unset or as an
+        // explicit 0 (the Python surface always passes an integer).
+        let mut spec = valid_spec();
+        spec.env_contract.autoreset_mode = AutoresetMode::NextStep as i32;
+        for base in [None, Some(0)] {
+            spec.trial_index_base = base;
+            assert_eq!(spec.trial_index_base(), 0);
+            assert!(spec.validate().is_ok(), "base {base:?} must validate");
+        }
     }
 
     #[test]

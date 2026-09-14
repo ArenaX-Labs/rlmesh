@@ -1179,6 +1179,7 @@ fn leaves_value(data: Bytes) -> SpaceValue {
 #[derive(Clone)]
 struct VectorTestEnv {
     reset_seeds: Arc<Mutex<Vec<Vec<i64>>>>,
+    reset_options: Arc<Mutex<Vec<Option<MetaMap>>>>,
     closed: Arc<AtomicBool>,
     terminal_after: Vec<usize>,
     lane_step: Vec<usize>,
@@ -1193,6 +1194,7 @@ impl VectorTestEnv {
         let n = terminal_after.len();
         Self {
             reset_seeds: Arc::new(Mutex::new(Vec::new())),
+            reset_options: Arc::new(Mutex::new(Vec::new())),
             closed: Arc::new(AtomicBool::new(false)),
             terminal_after,
             lane_step: vec![0; n],
@@ -1209,6 +1211,10 @@ impl RuntimeEnv for VectorTestEnv {
             .lock()
             .expect("reset seed recorder lock poisoned")
             .push(request.seeds);
+        self.reset_options
+            .lock()
+            .expect("reset option recorder lock poisoned")
+            .push(request.options);
         let n = self.terminal_after.len();
         self.lane_step = vec![0; n];
         self.pending_autoreset = vec![false; n];
@@ -1653,22 +1659,29 @@ async fn prefetch_discards_the_stale_chunk_across_episode_boundaries() {
 fn trial_spec(episodes: u64, declared: &[&str]) -> RuntimeSessionSpec {
     let mut spec = one_episode_spec();
     spec.max_episodes = Some(episodes);
-    if !declared.is_empty() {
-        let options = MetaValue {
-            kind: Some(meta_value::Kind::List(rlmesh_proto::spaces::v1::MetaList {
-                items: declared
-                    .iter()
-                    .map(|key| MetaValue {
-                        kind: Some(meta_value::Kind::Text((*key).to_string())),
-                    })
-                    .collect(),
-            })),
-        };
-        spec.env_contract.spec.as_mut().expect("env spec").metadata = Some(MetaMap {
-            entries: [(rlmesh_runtime::ENV_RESET_OPTIONS_KEY.to_string(), options)].into(),
-        });
-    }
+    declare_reset_options(&mut spec, declared);
     spec
+}
+
+/// Stamp `reset_options = declared` onto the spec's env contract metadata, the
+/// way `EnvFactory.make()` publishes the declaration.
+fn declare_reset_options(spec: &mut RuntimeSessionSpec, declared: &[&str]) {
+    if declared.is_empty() {
+        return;
+    }
+    let options = MetaValue {
+        kind: Some(meta_value::Kind::List(rlmesh_proto::spaces::v1::MetaList {
+            items: declared
+                .iter()
+                .map(|key| MetaValue {
+                    kind: Some(meta_value::Kind::Text((*key).to_string())),
+                })
+                .collect(),
+        })),
+    };
+    spec.env_contract.spec.as_mut().expect("env spec").metadata = Some(MetaMap {
+        entries: [(rlmesh_runtime::ENV_RESET_OPTIONS_KEY.to_string(), options)].into(),
+    });
 }
 
 /// The `trial_index` carried by one recorded `ResetRequest.options`, as the
@@ -1761,10 +1774,49 @@ async fn undeclared_env_is_not_sent_the_ordinal_but_the_report_still_carries_it(
 }
 
 #[tokio::test]
-async fn no_trial_base_sends_no_options_and_reports_no_ordinal() {
+async fn no_trial_base_walks_the_ordinals_from_zero() {
+    // The ordinal is on by default: with `trial_index_base` unset a declaring env
+    // receives 0, 1, 2 ... and the report / hooks carry the same sweep.
+    let env = TestEnv::default();
+    let hooks = Arc::new(RecordingHooks::default());
+    let spec = trial_spec(3, &["trial_index"]);
+    assert_eq!(spec.trial_index_base, None);
+
+    let report = RuntimeDriver::new(spec, env.clone(), TestModel::default(), hooks.clone())
+        .run()
+        .await
+        .unwrap();
+
+    let options = env.reset_options.lock().unwrap().clone();
+    assert_eq!(
+        options.iter().map(recorded_trial).collect::<Vec<_>>(),
+        vec![Some(0), Some(1), Some(2)],
+    );
+    assert_eq!(
+        report
+            .episodes
+            .iter()
+            .map(|episode| episode.trial_index)
+            .collect::<Vec<_>>(),
+        vec![Some(0), Some(1), Some(2)],
+    );
+    assert_eq!(
+        *hooks.started_trials.lock().unwrap(),
+        vec![Some(0), Some(1), Some(2)],
+    );
+    assert_eq!(
+        *hooks.completed_trials.lock().unwrap(),
+        vec![Some(0), Some(1), Some(2)],
+    );
+}
+
+#[tokio::test]
+async fn no_trial_base_still_withholds_the_ordinal_from_an_undeclared_env() {
+    // Minted by default, delivered only on declaration: a plain env keeps its
+    // options-less reset, while the report still records the sweep.
     let env = TestEnv::default();
     let report = RuntimeDriver::new(
-        trial_spec(2, &["trial_index"]),
+        trial_spec(2, &[]),
         env.clone(),
         TestModel::default(),
         Arc::new(RecordingHooks::default()),
@@ -1779,13 +1831,60 @@ async fn no_trial_base_sends_no_options_and_reports_no_ordinal() {
             .unwrap()
             .iter()
             .all(|options| options.is_none()),
+        "an env that declared no trial_index must not receive one",
     );
-    assert!(
+    assert_eq!(
         report
             .episodes
             .iter()
-            .all(|episode| episode.trial_index.is_none())
+            .map(|episode| episode.trial_index)
+            .collect::<Vec<_>>(),
+        vec![Some(0), Some(1)],
     );
+}
+
+#[tokio::test]
+async fn next_step_autoreset_mints_no_ordinal() {
+    // Under NEXT_STEP the env restarts its own lanes: the default base validates
+    // (an explicit 0 as well, the Python surface always passes an integer) but
+    // no ordinal is minted, so neither the declaring env nor the report sees one.
+    for base in [None, Some(0)] {
+        let env = VectorTestEnv::new(vec![2, 3]);
+        let hooks = Arc::new(RecordingHooks::default());
+        let mut spec = vector_spec(2, 4);
+        spec.trial_index_base = base;
+        declare_reset_options(&mut spec, &["trial_index"]);
+
+        let report = RuntimeDriver::new(spec, env.clone(), TestModel::default(), hooks.clone())
+            .run()
+            .await
+            .unwrap();
+
+        assert!(report.total_episodes >= 4);
+        assert!(
+            env.reset_options
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|options| options.is_none()),
+            "base {base:?}: no ordinal reaches an env that owns its resets",
+        );
+        assert!(
+            report
+                .episodes
+                .iter()
+                .all(|episode| episode.trial_index.is_none()),
+            "base {base:?}: no ordinal is reported",
+        );
+        assert!(
+            hooks
+                .started_trials
+                .lock()
+                .unwrap()
+                .iter()
+                .all(Option::is_none)
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

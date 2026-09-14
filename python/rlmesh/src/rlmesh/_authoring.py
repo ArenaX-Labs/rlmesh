@@ -201,10 +201,12 @@ def trial_index(options: Mapping[str, Any] | None) -> int | None:
     """The reserved ``trial_index`` reset option, or ``None`` when absent.
 
     The ordinal of the episode a ``reset`` starts, 0-based and walked in order by
-    the runtime, so an env can sweep a fixed list of initial states / goals
-    exactly as its upstream benchmark does instead of re-deriving one from a
-    hashed seed. Delivered only to an env that declared ``"trial_index"`` in
-    :attr:`EnvFactory.reset_options`::
+    the runtime (from ``run(trial_index_base=...)``, 0 by default), so an env
+    can sweep a fixed list of initial states / goals exactly as its upstream
+    benchmark does instead of re-deriving one from a hashed seed. Delivered only
+    to an env that declared ``"trial_index"`` in
+    :attr:`EnvFactory.reset_options`; absent on a hand-driven ``Session.reset()``
+    that passed none::
 
         class MyEnv(rlmesh.EnvFactory):
             reset_options = ("trial_index",)

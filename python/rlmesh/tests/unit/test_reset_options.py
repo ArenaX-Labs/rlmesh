@@ -7,6 +7,7 @@ An env opts into a reserved `reset(options=)` key by naming it in
 
 from __future__ import annotations
 
+import warnings
 from typing import Any, ClassVar, cast
 
 import pytest
@@ -119,7 +120,9 @@ def test_session_reset_warns_and_drops_the_ordinal_for_an_undeclared_env() -> No
     assert env.resets[-1]["options"] is None
 
 
-def test_session_run_walks_trial_ordinals_only_for_a_declaring_env() -> None:
+def test_session_run_walks_trial_ordinals_by_default() -> None:
+    # The ordinal is on by default (base 0): a declaring env receives 0, 1, 2
+    # without the caller asking for anything.
     declared = _TrialFactory().make()
     with rlmesh.session(rlmesh.Model(lambda obs: 0), declared) as sess:
         result = sess.run(max_episodes=3)
@@ -130,11 +133,30 @@ def test_session_run_walks_trial_ordinals_only_for_a_declaring_env() -> None:
         {"trial_index": 2},
     ]
 
+
+def test_session_run_never_sends_the_key_to_an_undeclared_env() -> None:
+    # Delivery is what the declaration gates; the result still records the
+    # ordinal each episode walked, as the native loop's report does.
     plain = _PlainFactory().make()
     with rlmesh.session(rlmesh.Model(lambda obs: 0), plain) as sess:
-        result = sess.run(max_episodes=2)
-    assert [episode.trial for episode in result.episodes] == [None, None]
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            result = sess.run(max_episodes=2)
+    assert [episode.trial for episode in result.episodes] == [0, 1]
     assert all(reset["options"] is None for reset in plain.resets)
+
+
+def test_session_run_walks_trial_ordinals_from_the_base() -> None:
+    declared = _TrialFactory().make()
+    with rlmesh.session(rlmesh.Model(lambda obs: 0), declared) as sess:
+        result = sess.run(max_episodes=2, trial_index_base=10)
+        with pytest.raises(ValueError, match="trial_index_base"):
+            sess.run(max_episodes=1, trial_index_base=-1)
+    assert [episode.trial for episode in result.episodes] == [10, 11]
+    assert [reset["options"] for reset in declared.resets] == [
+        {"trial_index": 10},
+        {"trial_index": 11},
+    ]
 
 
 def test_trial_index_helper_reads_the_reserved_key() -> None:
@@ -214,3 +236,50 @@ def test_native_run_delivers_the_ordinal_over_the_wire() -> None:
         {"trial_index": 42},
     ]
     assert [episode["trial"] for episode in report["episodes"]] == [40, 41, 42]
+
+
+def _run_native(env: _TinyEnv, **kwargs: Any) -> rlmesh.RunResult:
+    """`Model.run` on the native loop, serving `env` on a loopback port."""
+    from rlmesh.numpy import Model
+
+    try:
+        return Model(lambda obs: 0).run(env, **kwargs)
+    except ConnectionError as exc:
+        if "Operation not permitted" in str(exc):
+            pytest.skip("local tcp bind is not permitted in this environment")
+        raise
+
+
+def test_native_run_delivers_the_ordinal_by_default() -> None:
+    env = _TrialFactory().make()
+    result = _run_native(env, max_episodes=3)
+
+    assert [reset["options"] for reset in env.resets] == [
+        {"trial_index": 0},
+        {"trial_index": 1},
+        {"trial_index": 2},
+    ]
+    assert [episode.trial for episode in result.episodes] == [0, 1, 2]
+
+
+def test_native_run_walks_the_ordinals_from_the_base() -> None:
+    env = _TrialFactory().make()
+    result = _run_native(env, max_episodes=2, trial_index_base=5)
+
+    assert [reset["options"] for reset in env.resets] == [
+        {"trial_index": 5},
+        {"trial_index": 6},
+    ]
+    assert [episode.trial for episode in result.episodes] == [5, 6]
+
+    with pytest.raises(ValueError, match="trial_index_base"):
+        _run_native(env, max_episodes=1, trial_index_base=-1)
+
+
+def test_native_run_never_sends_the_key_to_an_undeclared_env() -> None:
+    env = _PlainFactory().make()
+    result = _run_native(env, max_episodes=2)
+
+    assert all(reset["options"] is None for reset in env.resets)
+    # Minted and reported either way, so the sweep can be read off the result.
+    assert [episode.trial for episode in result.episodes] == [0, 1]

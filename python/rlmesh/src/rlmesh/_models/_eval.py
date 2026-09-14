@@ -120,9 +120,12 @@ class EpisodeResult:
         predict_ms: Mean per-step wall time of ``predict``, in milliseconds.
         step_ms: Mean per-step wall time of the env ``step`` round trip, in
             milliseconds.
-        trial: The trial ordinal the episode walked
-            (``reset(options={"trial_index": ...})``), or ``None`` when the env
-            declared no such reset option.
+        trial: The trial ordinal the episode walked, ``trial_index_base + index``
+            on ``run()``. Delivered as ``reset(options={"trial_index": ...})``
+            only to an env that declared the option, but recorded either way so
+            the sweep can be read off the result. ``None`` for a hand-driven
+            :meth:`Session.reset` that passed no ``trial_index``, and for an env
+            that owns its resets (``NEXT_STEP`` autoreset on the native loop).
     """
 
     index: int
@@ -1055,18 +1058,25 @@ class Session(Generic[ObsT, ActT]):
         max_episode_steps: int | None = None,
         max_episode_seconds: float | None = None,
         hooks: RunHooks | None = None,
+        trial_index_base: int = 0,
     ) -> RunResult:
         """Drive whole episodes to completion and return a typed :class:`RunResult`.
 
         The single drive loop: pumps this session's own ``reset`` / ``predict`` /
-        ``step`` primitives, so ``Model.run`` routes through here.
+        ``step`` primitives, so a served model's ``run`` routes through here.
         ``seeds`` gives a per-episode seed and sets the episode count unless
         ``max_episodes`` is given. ``max_episode_steps`` / ``max_episode_seconds``
         cap each episode -- hitting a cap marks it ``truncated``, exactly like the
         built-in step bound (the wall-clock cap is checked at the top of the step
-        loop). ``hooks`` (:class:`RunHooks`) observes the loop; hook exceptions
-        propagate and abort the run, and :meth:`RunHooks.on_run_end` always fires
-        exactly once with the completed episodes, even on an error or interrupt.
+        loop). Episode ``i`` walks trial ordinal ``trial_index_base + i``,
+        delivered as ``reset(options={"trial_index": ...})`` to an env that
+        declared the key in :attr:`EnvFactory.reset_options
+        <rlmesh.EnvFactory.reset_options>` (an env that did not never sees it,
+        and its :attr:`EpisodeResult.trial` stays ``None``); the base lets a local
+        eval walk the same states as a platform shard. ``hooks``
+        (:class:`RunHooks`) observes the loop; hook exceptions propagate and
+        abort the run, and :meth:`RunHooks.on_run_end` always fires exactly once
+        with the completed episodes, even on an error or interrupt.
 
         Does **not** close the session: a caller-held session (from
         :func:`rlmesh.session` / :meth:`Model.session`) stays connected -- viewer
@@ -1081,6 +1091,8 @@ class Session(Generic[ObsT, ActT]):
             raise ValueError(
                 f"max_episode_seconds must be > 0, got {max_episode_seconds}"
             )
+        if trial_index_base < 0:
+            raise ValueError(f"trial_index_base must be >= 0, got {trial_index_base}")
         self._ensure_connected()
         if max_episodes is not None:
             n_episodes = max_episodes
@@ -1096,9 +1108,9 @@ class Session(Generic[ObsT, ActT]):
         episodes: list[EpisodeResult] = []
         run_end_error: BaseException | None = None
         self._ep_total = n_episodes
-        # Walk the benchmark's trials in order (episode i is trial i), but only for
-        # an env that declared the option -- everyone else keeps today's seed-only
-        # reset and no warning.
+        # Walk the benchmark's trials in order (episode i is trial base + i), but
+        # only for an env that declared the option -- everyone else keeps today's
+        # seed-only reset and no warning.
         walks_trials = declares_reset_option(self._contract, "trial_index")
         try:
             if hooks is not None:
@@ -1106,9 +1118,13 @@ class Session(Generic[ObsT, ActT]):
             for i in range(n_episodes):
                 self._ep_index = i + 1
                 seed = seeds[i] if seeds is not None and i < len(seeds) else None
+                trial = trial_index_base + i
                 obs, last_info = self.reset(
-                    seed=seed, trial_index=i if walks_trials else None
+                    seed=seed, trial_index=trial if walks_trials else None
                 )
+                # Recorded whether or not the env asked for it (delivery is what
+                # the declaration gates), matching the native loop's report.
+                self._trial = trial
                 ep_start = time.perf_counter()
                 if hooks is not None:
                     hooks.on_episode_start(episode=i, seed=seed)
@@ -1154,7 +1170,7 @@ class Session(Generic[ObsT, ActT]):
                 episode = EpisodeResult(
                     index=i,
                     seed=seed,
-                    trial=self._trial,
+                    trial=trial,
                     steps=steps,
                     reward=self._reward,
                     terminated=self._terminated,

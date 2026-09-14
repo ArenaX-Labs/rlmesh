@@ -55,10 +55,15 @@ baseline = rlmesh.run(rlmesh.RANDOM_SAMPLE, env, max_episodes=10)
 | `max_episodes`      | `None`  | Number of episodes to run; overrides the length of `seeds`.                                                        |
 | `execution_horizon` | `1`     | Actions executed per predicted chunk; only engages on a chunk corner (see [below](#execution-horizon-end-to-end)). |
 | `close_env`         | `False` | Shut the env down when the run finishes (opt-in).                                                                  |
+| `trial_index_base`  | `0`     | First trial ordinal; episode `i` walks `trial_index_base + i` (see [trial ordinals](#trial-ordinals)).             |
 
 With neither `seeds` nor `max_episodes`, `run()` does a single episode. `execution_horizon` is accepted by both the bound methods (`model.run` / `model.session`) and the module-level {func}`~rlmesh.run` / {func}`~rlmesh.session`, which forwards it through.
 
 `run()` drives the native runtime loop -- the same engine that drives a served model -- so a vectorized env (`num_envs > 1`) runs through the identical call, with all lanes batched into each predict (the batch corners in {doc}`models`). The step-level knobs live on the session loop instead: `instruction=` (per-step text override), `hooks=`, and `view=` are {func}`~rlmesh.session` parameters, and `run()` rejects them with a pointer there.
+
+### Trial ordinals
+
+Every episode walks a trial ordinal: episode `i` is trial `trial_index_base + i`, base `0` unless you pass one. The ordinal reaches the env as `reset(options={"trial_index": ...})` only if the env declared the key in [`EnvFactory.reset_options`](environments/reference.md#reserved-reset-options) -- an env that did not never sees it -- and is recorded on every episode's {attr}`EpisodeResult.trial <rlmesh.EpisodeResult.trial>` either way. A benchmark env that sweeps a fixed list of initial states or goals therefore walks them in order by default, and `trial_index_base` lets a local eval reproduce one shard of a platform run (shard `s` of `M` episodes each is `trial_index_base=s * M`). A non-zero base needs the runtime to own resets, like `seeds`; an autoresetting vector env mints no ordinal.
 
 ### Watching and capping the loop
 
@@ -120,7 +125,7 @@ flowchart LR
     step -->|done| reset
 ```
 
-- `sess.reset(seed=None, trial_index=None)` → `(obs, info)`. Begins an episode; ends the previous one (firing `on_episode_end`) and clears adapter state such as the frame-stack buffer. `trial_index` is the 0-based ordinal of this episode in a benchmark's trial sweep; it reaches the env as `reset(options={"trial_index": ...})`, but only if the env declared the key in [`EnvFactory.reset_options`](environments/reference.md#reserved-reset-options) -- passing one to an env that did not warns and resets without it. `sess.run()` walks the ordinals for you (episode `i` is trial `i`) for a declaring env, and reports each on {attr}`EpisodeResult.trial <rlmesh.EpisodeResult.trial>`.
+- `sess.reset(seed=None, trial_index=None)` → `(obs, info)`. Begins an episode; ends the previous one (firing `on_episode_end`) and clears adapter state such as the frame-stack buffer. `trial_index` is the 0-based ordinal of this episode in a benchmark's trial sweep; it reaches the env as `reset(options={"trial_index": ...})`, but only if the env declared the key in [`EnvFactory.reset_options`](environments/reference.md#reserved-reset-options) -- passing one to an env that did not warns and resets without it. `sess.run(trial_index_base=0)` walks the ordinals for you (episode `i` is trial `trial_index_base + i`), delivers each to a declaring env, and reports each on {attr}`EpisodeResult.trial <rlmesh.EpisodeResult.trial>` whether or not the env asked for it.
 - `sess.predict(obs)` → `action`. Applies the model's adapter around the model's own predict: the declarative obs transform, host-side frame stacking, any {class}`~rlmesh.adapters.Custom` code, instruction injection into declared text leaves, and chunk replay (one action per call). Returns an env-ready action.
 - `sess.step(action)` → `(obs, reward, terminated, truncated, info)`. Applies the action and records reward and termination.
 - `sess.done` is `True` once the current episode terminated or truncated.

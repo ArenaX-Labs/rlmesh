@@ -992,6 +992,7 @@ class ModelBase(Generic[ObsT, ActT]):
         trust_entrypoints: bool | None = None,
         execution_horizon: int = 1,
         view: ViewArg = None,
+        trial_index_base: int = 0,
     ) -> RunResult:
         """Drive this model against an env on the native runtime loop.
 
@@ -1020,7 +1021,15 @@ class ModelBase(Generic[ObsT, ActT]):
         autoresetting vector env (drive it with ``max_episodes``; seeds on a
         driver-reset vector env must be a multiple of ``num_envs``). For a
         vectorized env ``max_episodes`` is a lower bound reached in lane
-        batches (episodes complete interleaved). A per-call
+        batches (episodes complete interleaved). Every episode walks a trial
+        ordinal, ``trial_index_base + i`` for episode ``i``: the runtime
+        delivers it as ``reset(options={"trial_index": ...})`` to an env that
+        declared the key in :attr:`EnvFactory.reset_options
+        <rlmesh.EnvFactory.reset_options>` (an env that did not never sees
+        it) and reports it on :attr:`EpisodeResult.trial
+        <rlmesh.EpisodeResult.trial>`, so a local eval walks the same states
+        as a platform shard given the same base (a non-zero base needs the
+        runtime to own resets, like ``seeds``). A per-call
         ``trust_entrypoints`` override applies to this run only. On the
         result, each episode's ``predict_ms`` / ``step_ms`` carry the run's
         session-mean op latencies (the runtime aggregates timing per op, not
@@ -1051,6 +1060,8 @@ class ModelBase(Generic[ObsT, ActT]):
             )
         if execution_horizon < 1:
             raise ValueError(f"execution_horizon must be >= 1, got {execution_horizon}")
+        if trial_index_base < 0:
+            raise ValueError(f"trial_index_base must be >= 0, got {trial_index_base}")
         self._require_device_support()
         if execution_horizon > 1 and self._raw_predict_chunk is None:
             warnings.warn(
@@ -1077,6 +1088,7 @@ class ModelBase(Generic[ObsT, ActT]):
                 max_episode_seconds=max_episode_seconds,
                 close_env=close_env,
                 execution_horizon=execution_horizon,
+                trial_index_base=trial_index_base,
             )
         finally:
             self._trust_entrypoints = previous_trust
@@ -1112,6 +1124,7 @@ class ModelBase(Generic[ObsT, ActT]):
         max_episode_seconds: float | None,
         close_env: bool,
         execution_horizon: int,
+        trial_index_base: int = 0,
     ) -> dict[str, Any]:
         """Normalize the env target, drive the native loop, return the report.
 
@@ -1173,6 +1186,7 @@ class ModelBase(Generic[ObsT, ActT]):
                 max_episode_steps=max_episode_steps,
                 max_episode_seconds=max_episode_seconds,
                 close_env=close_env and kind == "address",
+                trial_index_base=trial_index_base,
             )
         except (RuntimeError, ConnectionError) as error:
             if "active Join session" in str(error):
@@ -1287,12 +1301,14 @@ class ModelBase(Generic[ObsT, ActT]):
         max_episode_steps: int | None = None,
         max_episode_seconds: float | None = None,
         close_env: bool = False,
+        trial_index_base: int = 0,
     ) -> dict[str, Any]:
         """Native worker loop against a remote env for a fixed episode count.
 
         Returns the report; see :meth:`_run_local` for the shape and what
-        ``execution_horizon`` does. ``seeds`` / the episode caps mirror :meth:`run` (explicit seeds
-        and caps need runtime-owned resets, i.e. autoreset disabled).
+        ``execution_horizon`` does. ``seeds`` / the episode caps /
+        ``trial_index_base`` mirror :meth:`run` (explicit seeds, caps, and a
+        non-zero base need runtime-owned resets, i.e. autoreset disabled).
         """
         return self._install_worker().run_local_for_episodes(
             env_address,
@@ -1302,6 +1318,7 @@ class ModelBase(Generic[ObsT, ActT]):
             max_episode_steps,
             max_episode_seconds,
             close_env,
+            trial_index_base,
         )
 
     def __repr__(self) -> str:
@@ -1463,6 +1480,7 @@ def run(
     trust_entrypoints: bool | None = None,
     execution_horizon: int = 1,
     view: ViewArg = None,
+    trial_index_base: int = 0,
 ) -> RunResult:
     """Drive ``model`` against ``env`` to completion and return a :class:`RunResult`.
 
@@ -1489,6 +1507,7 @@ def run(
             trust_entrypoints=trust_entrypoints,
             execution_horizon=execution_horizon,
             view=view,
+            trial_index_base=trial_index_base,
         )
     sess = session(
         model,
@@ -1506,6 +1525,7 @@ def run(
             max_episode_steps=max_episode_steps,
             max_episode_seconds=max_episode_seconds,
             hooks=hooks,
+            trial_index_base=trial_index_base,
         )
     finally:
         sess.close()

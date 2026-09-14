@@ -45,8 +45,10 @@ pub struct RunLocalOptions {
     /// Overrides `base_seed` when non-empty; requires an env with autoreset
     /// disabled (see `RuntimeSessionSpec::episode_seeds`).
     pub episode_seeds: Vec<i64>,
-    /// First trial ordinal this run's episodes walk; `None` leaves the env to
-    /// pick its own. Requires an env with autoreset disabled (see
+    /// First trial ordinal this run's episodes walk; `None` walks from 0. The
+    /// runtime mints one ordinal per episode and delivers it as
+    /// `reset(options={"trial_index": k})` to an env that declared the option;
+    /// a non-zero base requires an env with autoreset disabled (see
     /// `RuntimeSessionSpec::trial_index_base`).
     pub trial_index_base: Option<u64>,
     /// Truncate any episode after this many steps (reported `truncated`).
@@ -111,8 +113,8 @@ impl RunLocalOptions {
         self
     }
 
-    /// Walk trial ordinals from `trial_index_base`, one per episode
-    /// (autoreset-disabled envs only).
+    /// Walk trial ordinals from `trial_index_base` instead of 0, one per
+    /// episode (a non-zero base needs an autoreset-disabled env).
     pub fn trial_index_base(mut self, trial_index_base: u64) -> Self {
         self.trial_index_base = Some(trial_index_base);
         self

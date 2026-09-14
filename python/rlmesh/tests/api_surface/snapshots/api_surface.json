@@ -248,7 +248,7 @@
           },
           "run": {
             "kind": "function",
-            "signature": "run(env_or_address: LocalEnvTarget, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: RunHooks | None = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, view: ViewArg = None) -> RunResult"
+            "signature": "run(env_or_address: LocalEnvTarget, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: RunHooks | None = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, view: ViewArg = None, trial_index_base: int = 0) -> RunResult"
           },
           "serve": {
             "kind": "function",
@@ -873,7 +873,7 @@
           },
           "run": {
             "kind": "function",
-            "signature": "run(*, seeds: Sequence[int] | None = None, max_episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: RunHooks | None = None)"
+            "signature": "run(*, seeds: Sequence[int] | None = None, max_episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: RunHooks | None = None, trial_index_base: int = 0)"
           },
           "step": {
             "kind": "function",
@@ -1140,7 +1140,7 @@
       },
       "run": {
         "kind": "function",
-        "signature": "run(model: object, env: EnvTarget, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: RunHooks | None = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, view: ViewArg = None)",
+        "signature": "run(model: object, env: EnvTarget, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: RunHooks | None = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, view: ViewArg = None, trial_index_base: int = 0)",
         "stability": "Stable"
       },
       "sanitize_metadata": {
@@ -2276,7 +2276,7 @@
           },
           "run": {
             "kind": "function",
-            "signature": "run(env_or_address: LocalEnvTarget, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: RunHooks | None = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, view: ViewArg = None) -> RunResult"
+            "signature": "run(env_or_address: LocalEnvTarget, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: RunHooks | None = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, view: ViewArg = None, trial_index_base: int = 0) -> RunResult"
           },
           "serve": {
             "kind": "function",
@@ -2850,7 +2850,7 @@
           },
           "run": {
             "kind": "function",
-            "signature": "run(env_or_address: LocalEnvTarget, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: RunHooks | None = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, view: ViewArg = None) -> RunResult"
+            "signature": "run(env_or_address: LocalEnvTarget, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: RunHooks | None = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, view: ViewArg = None, trial_index_base: int = 0) -> RunResult"
           },
           "serve": {
             "kind": "function",
@@ -4121,7 +4121,7 @@
           },
           "run": {
             "kind": "function",
-            "signature": "run(env_or_address: LocalEnvTarget, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: RunHooks | None = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, view: ViewArg = None) -> RunResult"
+            "signature": "run(env_or_address: LocalEnvTarget, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: RunHooks | None = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, view: ViewArg = None, trial_index_base: int = 0) -> RunResult"
           },
           "serve": {
             "kind": "function",
