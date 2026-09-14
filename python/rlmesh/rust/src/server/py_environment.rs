@@ -326,7 +326,7 @@ pub fn build_lane_server_env(envs: Vec<Py<PyAny>>, native_values: bool) -> PyRes
             "EnvServer needs at least one environment",
         ));
     }
-    let mut lanes = Vec::with_capacity(envs.len());
+    let mut lanes: Vec<PySingleEnv> = Vec::with_capacity(envs.len());
     for env in envs {
         let mut env = PyEnvironment::new(env, native_values)?;
         env.pinned = true;
@@ -335,6 +335,17 @@ pub fn build_lane_server_env(envs: Vec<Py<PyAny>>, native_values: bool) -> PyRes
                 "EnvServer serves scalar environments (one per lane). Use VectorEnvServer for \
                  a natively vectorized environment.",
             ));
+        }
+        // Surface a lane that disagrees with lane 0 here, at EnvServer(...),
+        // rather than from the serve thread; LaneEnv::new re-checks at bind.
+        if let Some(first) = lanes.first()
+            && first.0.env_contract != env.env_contract
+        {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "lane {} disagrees with lane 0 on the env contract (spaces, metadata, tags): \
+                 every lane of one EnvServer must be the same make()",
+                lanes.len()
+            )));
         }
         lanes.push(PySingleEnv(env));
     }

@@ -287,6 +287,17 @@ impl PredictFn for PyPredict {
                 frames_len,
                 ValueBackend::Native,
             )?;
+            if let Some(native) = self.native_chunk
+                && frames.len() != native as usize
+            {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "model declares native_chunk={native} but its chunk corner returned {} \
+                     frames at execution_horizon={horizon}: return the WHOLE native chunk and \
+                     let the runtime execute its prefix (do not slice to the horizon), or drop \
+                     the declaration",
+                    frames.len()
+                )));
+            }
             let mut frames = frames.into_iter().take(horizon);
             let first = frames.next().ok_or_else(|| {
                 pyo3::exceptions::PyValueError::new_err(

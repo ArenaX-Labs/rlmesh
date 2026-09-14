@@ -718,73 +718,6 @@ fn predict_grouped_fused(
         .collect()
 }
 
-/// Seeds for the two distinct probe observations (A must differ from B, or an
-/// intervening B cannot perturb accumulating state).
-const PROBE_SEED_A: u64 = 0x5EED_000A;
-const PROBE_SEED_B: u64 = 0x5EED_000B;
-/// Replay drift must exceed the model's own back-to-back floor by this factor
-/// (plus an absolute floor) to count as state leakage rather than nondeterminism.
-const PROBE_TOLERANCE: f64 = 8.0;
-const PROBE_ATOL: f64 = 1e-6;
-
-/// Detect a model that mutates internal state across `predict` calls — which
-/// would corrupt a shared-object vectorized loop — by replaying a fixed input
-/// around an intervening different input and comparing the output drift to the
-/// model's own back-to-back nondeterminism floor (so GPU/dropout noise is not
-/// mistaken for state). Runs once at configure when `num_envs > 1`; returns a
-/// model error (failing route configuration) on detection. Calls `predict`, so
-/// it must run on a blocking worker thread.
-fn probe_model_internal_state(predict: &Arc<dyn PredictFn>, config: &RouteConfig) -> Result<()> {
-    let space = &config.observation_space;
-    let referenced = obs_keys(config);
-    // Sample the env obs space, then run it through the engine so `predict` sees
-    // the production-shaped (frame-stacked / adapted) input, not a raw env obs.
-    let assemble = |seed: u64, episode: &str| -> Result<rlmesh_adapters::v1::Value> {
-        let sampled = rlmesh_spaces::sample_seeded(space, seed)
-            .map_err(|err| Error::Internal(format!("probe sample failed: {err}")))?;
-        let mut scratch = FrameBuffers::new();
-        let raw = space_value_to_obs_map(&sampled, space, &referenced)?;
-        Ok(assemble_obs(
-            &config.adapter,
-            &raw,
-            episode,
-            &mut scratch,
-            config.customs.as_ref(),
-            config.encodings.as_ref(),
-        )?)
-    };
-    let a = assemble(PROBE_SEED_A, "probe-a")?;
-    let b = assemble(PROBE_SEED_B, "probe-b")?;
-    // The model's own back-to-back nondeterminism floor (GPU/dropout noise).
-    let probe_a = EpisodeInfo {
-        episode_id: "probe-a".to_string(),
-        seed: None,
-    };
-    let probe_b = EpisodeInfo {
-        episode_id: "probe-b".to_string(),
-        seed: None,
-    };
-    let floor = rlmesh_adapters::v1::value_max_abs_diff(
-        &predict.predict(a.clone(), Some(&probe_a))?,
-        &predict.predict(a.clone(), Some(&probe_a))?,
-    )
-    .unwrap_or(f64::INFINITY);
-    // Replay A around an intervening, distinct B: drift beyond the floor is state.
-    let before = predict.predict(a.clone(), Some(&probe_a))?;
-    let _ = predict.predict(b, Some(&probe_b))?;
-    let after = predict.predict(a, Some(&probe_a))?;
-    let delta = rlmesh_adapters::v1::value_max_abs_diff(&before, &after).unwrap_or(0.0);
-    if delta > (floor * PROBE_TOLERANCE).max(PROBE_ATOL) {
-        return Err(Error::model(
-            "this model carries internal state across predict() calls, so it cannot be \
-             served against a vectorized route (num_envs>1): one shared model instance \
-             across lanes would interleave their state. Serve it against num_envs=1, or \
-             make predict() pure (move per-step state into the adapter).",
-        ));
-    }
-    Ok(())
-}
-
 #[async_trait]
 impl ModelHandler for AdaptedModelHandler {
     async fn predict(&mut self, observation: ModelObservation) -> Result<Vec<SpaceValue>> {
@@ -1074,22 +1007,6 @@ impl ModelRouteSetup for AdaptedRouteSetup {
                 config.execution_horizon,
             )));
         }
-        // A vectorized route runs ONE shared model object across lanes, so a model
-        // that mutates internal state across predict() calls would interleave them.
-        // Probe once at configure and fail num_envs>1 for such a model. The
-        // adapter's own frame-stack state is engine-managed and lane-correct, so it
-        // is NOT what this gates.
-        let config = if env_contract.num_envs > 1 {
-            let predict = Arc::clone(&self.predict);
-            tokio::task::spawn_blocking(move || -> Result<RouteConfig> {
-                probe_model_internal_state(&predict, &config)?;
-                Ok(config)
-            })
-            .await
-            .map_err(|err| Error::Internal(format!("probe task panicked: {err}")))??
-        } else {
-            config
-        };
         let held = Arc::new(HeldCells::default());
         let entry = Arc::new(Mutex::new(RouteEntry {
             config: Arc::new(config),

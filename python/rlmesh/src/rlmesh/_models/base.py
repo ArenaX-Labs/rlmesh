@@ -227,7 +227,26 @@ def _first_frame(chunk: object) -> object:
     return chunk
 
 
-def _dechunk(chunk_fn: Corner, *, batched: bool) -> Corner:
+def _chunk_len(chunk: object, *, batched: bool) -> int | None:
+    """Frames in one chunk (``batched``: per lane, axis 1), ``None`` if unmeasurable."""
+    if isinstance(chunk, Mapping):
+        for value in cast("Mapping[Any, Any]", chunk).values():
+            if (n := _chunk_len(value, batched=batched)) is not None:
+                return n
+        return None
+    if batched:
+        shape = getattr(chunk, "shape", None)
+        return int(shape[1]) if shape is not None and len(shape) >= 2 else None
+    if isinstance(chunk, (list, tuple)):
+        return len(cast("Any", chunk))
+    if getattr(chunk, "ndim", 0) >= 1:
+        return int(cast("Any", chunk).shape[0])
+    return None
+
+
+def _dechunk(
+    chunk_fn: Corner, *, batched: bool, native_chunk: Callable[[], int | None]
+) -> Corner:
     """Single-action corner from a chunk one: run horizon 1 and take the first action.
 
     Single: take the first frame (``_first_frame``, ``split_chunk`` semantics).
@@ -249,6 +268,18 @@ def _dechunk(chunk_fn: Corner, *, batched: bool) -> Corner:
             else (observation, 1)
         )
         chunk = chunk_fn(*args)
+        # The runtime never sees this chunk (it is sliced to one action right
+        # here), so a declared K is held to it at the only place it is whole.
+        declared = native_chunk()
+        if declared is not None:
+            got = _chunk_len(chunk, batched=batched)
+            if got is not None and got != declared:
+                raise ValueError(
+                    f"model declares native_chunk={declared} but its chunk corner "
+                    f"returned {got} frames at execution_horizon=1: return the WHOLE "
+                    "native chunk and let the runtime execute its prefix (do not "
+                    "slice to the horizon), or drop the declaration"
+                )
         if not batched:
             return _first_frame(chunk)
         return tree_map(
@@ -334,6 +365,7 @@ def _synthesize_corners(
     predict_chunk: Corner | None,
     predict_batch: Corner | None,
     predict_chunk_batch: Corner | None,
+    native_chunk: Callable[[], int | None] = lambda: None,
 ) -> tuple[Corner | None, Corner | None, Corner | None, Corner | None]:
     """Fill missing predict corners by deriving downward from the most general one.
 
@@ -357,12 +389,12 @@ def _synthesize_corners(
         if pc is None:
             pc = _debatch(bridge, pcb, arity=2)
         if pb is None and can_dechunk:
-            pb = _dechunk(pcb, batched=True)
+            pb = _dechunk(pcb, batched=True, native_chunk=native_chunk)
     if p is None:
         if pb is not None:
             p = _debatch(bridge, pb, arity=1)
         elif pc is not None and can_dechunk:
-            p = _dechunk(pc, batched=False)
+            p = _dechunk(pc, batched=False, native_chunk=native_chunk)
     return p, pc, pb, pcb
 
 
@@ -625,6 +657,7 @@ class ModelBase(Generic[ObsT, ActT]):
                 raw_predict_chunk,
                 raw_predict_batch,
                 raw_predict_chunk_batch,
+                self._native_chunk,
             )
         )
         if raw_predict is None:

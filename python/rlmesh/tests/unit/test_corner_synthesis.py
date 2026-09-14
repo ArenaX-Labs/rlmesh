@@ -231,6 +231,28 @@ def test_dechunk_handles_list_of_dict_frames() -> None:
     assert cast("Any", p)(SINGLE)["arm"].tolist() == [0, 0]
 
 
+def test_dechunk_holds_a_declared_native_chunk_at_horizon_one() -> None:
+    # At execution_horizon=1 the derived predict() is the only place the whole
+    # chunk is visible, so a declared K is checked there before the first frame
+    # is sliced off -- on every path, since both Session and native derive here.
+    def _short(obs: Any, execution_horizon: int = 1) -> Any:
+        return np.zeros((execution_horizon, 2), np.float32)
+
+    def _whole(obs: Any, execution_horizon: int = 1) -> Any:
+        return np.zeros((8, 2), np.float32)
+
+    obs = np.zeros(2, np.float32)
+    p, _, _, _ = _synthesize_corners(bridge, None, _short, None, None, lambda: 8)
+    assert p is not None
+    with pytest.raises(
+        ValueError, match="native_chunk=8 but its chunk corner returned 1"
+    ):
+        p(obs)
+    p, _, _, _ = _synthesize_corners(bridge, None, _whole, None, None, lambda: 8)
+    assert p is not None
+    assert cast("Any", p(obs)).shape == (2,)
+
+
 def test_first_frame_recurses_into_dict_action() -> None:
     from rlmesh._models.base import _first_frame
 

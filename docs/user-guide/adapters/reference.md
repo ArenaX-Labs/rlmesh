@@ -462,7 +462,9 @@ per vector lane). The spec's `stack`/`offsets`/`stack_pad` round-trip through `t
 clears on `reset`, and the env still sends one frame per step -- so no frames leak across episodes or
 lanes and nothing extra crosses the wire. The window advances on **every** env step, including one
 whose action came from a replayed chunk, so a stacked model sees the same frames at any
-`execution_horizon`.
+`execution_horizon`. That holds for a Python session today; the native engine (`Model.run`, a served
+route) only assembles observations at decision points, so it refuses `stack > 1` together with
+`execution_horizon > 1` until replay observations reach the model side (planned for rc.10).
 ```
 
 ## Match your shape

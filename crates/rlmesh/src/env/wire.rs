@@ -423,12 +423,13 @@ pub struct WireLaneAdapter {
 }
 
 impl WireLaneAdapter {
-    /// Serve `envs` as the lanes of one endpoint.
-    pub fn new<E: Env + 'static>(envs: Vec<E>) -> Self {
-        Self {
-            lanes: LaneEnv::new(envs),
+    /// Serve `envs` as the lanes of one endpoint. Errors if the lanes disagree
+    /// on their env contract.
+    pub fn new<E: Env + 'static>(envs: Vec<E>) -> Result<Self, spaces::EnvRuntimeError> {
+        Ok(Self {
+            lanes: LaneEnv::new(envs)?,
             conformance: Conformance::from_env(),
-        }
+        })
     }
 
     /// The lanes a request covers: the ones it names, else every lane.

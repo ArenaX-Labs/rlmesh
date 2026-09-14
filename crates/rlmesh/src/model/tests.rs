@@ -892,7 +892,7 @@ async fn public_env_runtime_adapter_drives_a_remote_env_with_telemetry() {
     let env_server = tokio::spawn(async move {
         tonic::transport::Server::builder()
             .add_service(rlmesh_grpc::env::env_service(
-                crate::env::WireLaneAdapter::new(vec![SmokeEnv::new()]),
+                crate::env::WireLaneAdapter::new(vec![SmokeEnv::new()]).unwrap(),
             ))
             .serve_with_incoming(TcpListenerStream::new(listener))
             .await

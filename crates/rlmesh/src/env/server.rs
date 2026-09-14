@@ -51,7 +51,9 @@ impl<E: Env + 'static> EnvServer<E> {
 
         // A scalar env is the one-lane case of the lane server: same wire,
         // same code path as `num_envs > 1`.
-        let env = Arc::new(WireLaneAdapter::new(vec![self.env]));
+        let env = Arc::new(
+            WireLaneAdapter::new(vec![self.env]).map_err(|err| Error::Internal(err.to_string()))?,
+        );
         let service = rlmesh_grpc::env::env_service_from_shared(
             Arc::clone(&env),
             shutdown.clone(),

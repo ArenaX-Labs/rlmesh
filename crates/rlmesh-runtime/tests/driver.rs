@@ -1551,8 +1551,12 @@ async fn prefetch_discards_the_stale_chunk_across_episode_boundaries() {
         terminal_after: 3,
         ..Default::default()
     };
+    // The stale prediction must land AFTER the reset observation: that is the
+    // ordering in which the driver has to re-plan from the saved observation
+    // itself, or the group stalls with nothing in flight.
     let model = TestModel {
         replay_frames: 2,
+        predict_delay: Some(Duration::from_millis(20)),
         ..Default::default()
     };
     let hooks = Arc::new(RecordingHooks::default());

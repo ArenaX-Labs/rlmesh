@@ -1138,8 +1138,15 @@ where
             let group = &mut groups[gid];
             group.predict = match std::mem::replace(&mut group.predict, PredictState::None) {
                 // Conditioned on an observation from before an episode boundary:
-                // the chunk must not leak into the new episode.
-                PredictState::InFlight { stale: true } => PredictState::None,
+                // the chunk must not leak into the new episode. If the next
+                // observation already landed while this was in flight, nothing
+                // else will re-plan from it: re-arm here or the group stalls.
+                PredictState::InFlight { stale: true } => match (&group.phase, &group.obs_msg) {
+                    (EnvPhase::Ready, Some(msg)) if group.replay.is_empty() => {
+                        PredictState::Wanted(msg.clone())
+                    }
+                    _ => PredictState::None,
+                },
                 PredictState::InFlight { stale: false } => {
                     if group.replay.is_empty() {
                         group.replay = frames;

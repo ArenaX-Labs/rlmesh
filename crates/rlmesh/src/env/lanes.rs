@@ -56,27 +56,36 @@ pub struct LaneEnv {
 
 impl LaneEnv {
     /// Host `envs` as lanes `0..envs.len()`, each on its own thread. Spaces
-    /// and the contract are read from lane 0; every lane is expected to be
-    /// the same `make()`.
+    /// and the contract are served from lane 0, so every lane must carry the
+    /// same contract (spaces, metadata, tags): a lane that disagrees is an
+    /// error, since the model resolves its adapter against lane 0 alone.
     ///
     /// # Panics
     /// Panics on an empty `envs`.
-    pub fn new<E: Env + 'static>(envs: Vec<E>) -> Self {
+    pub fn new<E: Env + 'static>(envs: Vec<E>) -> Result<Self, spaces::EnvRuntimeError> {
         let first = envs.first().expect("LaneEnv needs at least one lane");
         let observation_space = first.observation_space().clone();
         let action_space = first.action_space().clone();
         let env_contract = first.env_contract().clone();
+        for (index, env) in envs.iter().enumerate().skip(1) {
+            if env.env_contract() != &env_contract {
+                return Err(spaces::EnvRuntimeError::Runtime(format!(
+                    "lane {index} disagrees with lane 0 on the env contract (spaces, metadata, \
+                     tags): every lane of one endpoint must be the same make()"
+                )));
+            }
+        }
         let lanes = envs
             .into_iter()
             .enumerate()
             .map(|(index, env)| LaneActor::spawn(index, env))
             .collect();
-        Self {
+        Ok(Self {
             lanes,
             observation_space,
             action_space,
             env_contract,
-        }
+        })
     }
 
     /// The lane count (the endpoint's vector width).
@@ -390,6 +399,30 @@ mod tests {
         }
     }
 
+    #[test]
+    fn lanes_must_agree_with_lane_0_on_the_env_contract() {
+        // The endpoint serves lane 0's contract and the model resolves its
+        // adapter against it, so a lane whose contract differs (here: tags in
+        // metadata) is a startup error, not a silent adoption of lane 0's.
+        let threads = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut odd = SleepyEnv::new(Duration::ZERO, std::sync::Arc::clone(&threads));
+        odd.env_contract.metadata = Some(MetaMap::from([(
+            "action_role".to_string(),
+            MetaValue::String("delta".to_string()),
+        )]));
+        let envs = vec![
+            SleepyEnv::new(Duration::ZERO, std::sync::Arc::clone(&threads)),
+            odd,
+        ];
+        let err = LaneEnv::new(envs)
+            .err()
+            .expect("mismatched lanes must be refused");
+        assert!(
+            err.to_string().contains("lane 1 disagrees with lane 0"),
+            "{err}"
+        );
+    }
+
     #[tokio::test]
     async fn lanes_step_concurrently_on_their_own_threads_over_one_join_stream() {
         // Wide enough that even a slow runner's overhead cannot make two
@@ -406,7 +439,9 @@ mod tests {
         let address = format!("tcp://{}", listener.local_addr().unwrap());
         let server = tokio::spawn(async move {
             tonic::transport::Server::builder()
-                .add_service(rlmesh_grpc::env::env_service(WireLaneAdapter::new(envs)))
+                .add_service(rlmesh_grpc::env::env_service(
+                    WireLaneAdapter::new(envs).unwrap(),
+                ))
                 .serve_with_incoming(TcpListenerStream::new(listener))
                 .await
                 .unwrap()

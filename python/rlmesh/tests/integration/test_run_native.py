@@ -172,6 +172,29 @@ def test_run_truncates_an_over_produced_dict_chunk_to_the_horizon() -> None:
     )
 
 
+def test_run_holds_a_declared_native_chunk_to_its_length() -> None:
+    """The spec-less native path measures the chunk against a declared K the
+    way a Session does: a short chunk is a model error, not a silent early
+    re-plan that only the adapted route would have caught."""
+    from rlmesh.numpy import Model
+
+    class ShortChunk(Model):
+        native_chunk = 8
+
+        def predict_chunk(self, obs: Any) -> Any:
+            return np.zeros((2, 2), np.float32)
+
+    try:
+        with pytest.raises(
+            Exception, match="native_chunk=8 but its chunk corner returned 2"
+        ):
+            ShortChunk().run(CountEnv(), max_episodes=1, execution_horizon=4)
+    except ConnectionError as exc:
+        if "Operation not permitted" in str(exc):
+            pytest.skip("local tcp bind is not permitted in this environment")
+        raise
+
+
 def test_run_max_episode_steps_truncates_via_the_runtime() -> None:
     env = CountEnv(episode_len=0)
     try:

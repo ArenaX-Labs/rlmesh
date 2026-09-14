@@ -557,7 +557,8 @@ fn run_server(
 
         match env {
             PyServerEnv::Lanes(lanes) => {
-                run_env_server(WireLaneAdapter::new(lanes), listener, options, shutdown).await
+                let lanes = WireLaneAdapter::new(lanes).map_err(|err| err.to_string())?;
+                run_env_server(lanes, listener, options, shutdown).await
             }
             PyServerEnv::Vector(env) => {
                 run_env_server(WireEnvAdapter::new(*env), listener, options, shutdown).await

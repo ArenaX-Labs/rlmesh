@@ -331,6 +331,9 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
                     let tracker = episode_tracker.clone();
                     let tx = tx.clone();
                     let activity_tx = activity_tx.clone();
+                    // Finished tasks sit in the set until polled; a lane-only
+                    // session would otherwise grow it by one entry per request.
+                    while inflight.try_join_next().is_some() {}
                     inflight.spawn(async move {
                         if let Some(activity_tx) = &activity_tx {
                             let _ = activity_tx.send(IdleActivity::Started);
