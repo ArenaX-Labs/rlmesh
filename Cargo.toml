@@ -2,6 +2,7 @@
 default-members = [
   "crates/rlmesh",
   "crates/rlmesh-adapters",
+  "crates/rlmesh-capi",
   "crates/rlmesh-cli",
   "crates/rlmesh-grpc",
   "crates/rlmesh-proto",
@@ -116,5 +117,8 @@ unimplemented = "warn"
 print_stdout = "warn"
 print_stderr = "warn"
 
+# Keep unwinding well-defined across the rlmesh-capi `extern "C"` boundary: every
+# FFI body relies on `catch_unwind`, which is a no-op under `panic = "abort"`.
 [profile.release]
 overflow-checks = true
+panic = "unwind"

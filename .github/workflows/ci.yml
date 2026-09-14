@@ -39,6 +39,12 @@ jobs:
       - name: Unit, integration, and conformance tests
         run: mise run --skip-tools test
 
+      # `test` runs the C/C++ bindings under zig (libc++); re-run under clang and gcc.
+      - name: C/C++ bindings under clang and gcc
+        run: |
+          CC=clang CXX=clang++ mise run --skip-tools test:cxx
+          CC=gcc CXX=g++ mise run --skip-tools test:cxx
+
       - name: Python API surface tests
         run: mise run --skip-tools test:python:api-surface
 
@@ -74,3 +80,9 @@ jobs:
 
       - name: Rust package verification
         run: mise run --skip-tools release:rust:package
+
+      - name: C/C++ package verification (pkg-config + CMake find_package)
+        env:
+          CC: clang
+          CXX: clang++
+        run: mise run --skip-tools test:cxx:pkg

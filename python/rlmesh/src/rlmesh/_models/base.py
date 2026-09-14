@@ -1141,7 +1141,7 @@ class ModelBase(Generic[ObsT, ActT]):
                 max_episode_seconds=max_episode_seconds,
                 close_env=close_env and kind == "address",
             )
-        except RuntimeError as error:
+        except (RuntimeError, ConnectionError) as error:
             if "active Join session" in str(error):
                 raise RuntimeError(
                     "the target env already has an active session: a RemoteEnv / "

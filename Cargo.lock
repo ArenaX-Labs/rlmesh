@@ -2794,6 +2794,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rlmesh-capi"
+version = "0.1.0-rc.8"
+dependencies = [
+ "async-trait",
+ "rlmesh",
+ "rlmesh-adapters",
+ "rlmesh-grpc",
+ "rlmesh-spaces",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "rlmesh-cli"
 version = "0.1.0-rc.8"
 dependencies = [
