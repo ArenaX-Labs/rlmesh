@@ -1309,6 +1309,9 @@ where
         // route-global slot. The env never mints — the runtime is authoritative.
         if rolled {
             let pending_roll = std::mem::take(&mut groups[gid].pending_roll);
+            // The ended ids leave their slots now, so this is when the model
+            // drops them (see `queue_evictions` for why not at completion).
+            self.queue_evictions(state, pending_roll.keys().copied());
             let roll_ids = episode_ids_with_roll(state.episode_ids_at(&positions), &pending_roll);
             let rolling: Vec<Option<u64>> = groups[gid]
                 .lanes
@@ -1330,9 +1333,13 @@ where
         completed_episodes.extend(capped);
         self.emit_completed_episodes(state, &context, &completed_episodes)
             .await;
-        // Tell the model to evict the ended episodes' frame-stack buffers
-        // (best-effort GC; ids never repeat so a miss only leaks memory).
-        self.queue_evictions(state, &completed_episodes);
+        // Tell the model to evict the ended episodes' state (best-effort GC;
+        // ids never repeat so a miss only leaks memory). Under NEXT_STEP the
+        // ended id is still predicted on once more (below), so its eviction
+        // waits for the roll at t+1.
+        if self.driver_owns_resets() {
+            self.queue_evictions(state, completed_episodes.iter().map(|c| c.env_index));
+        }
 
         if !completed_episodes.is_empty() {
             // A lane that completed gets a fresh episode, so buffered future
@@ -1380,6 +1387,11 @@ where
                 .max_episodes
                 .is_some_and(|limit| state.total_episodes() >= limit as i64)
         {
+            // The group never steps again, so the ended lanes' deferred
+            // evictions (NEXT_STEP, see `queue_evictions`) go out now: the
+            // route-end flush sends them before the model is released.
+            let pending_roll = std::mem::take(&mut groups[gid].pending_roll);
+            self.queue_evictions(state, pending_roll.keys().copied());
             groups[gid].phase = EnvPhase::Idle;
             groups[gid].predict = PredictState::None;
             return Ok(());
@@ -1670,22 +1682,28 @@ where
         }
     }
 
-    /// Queue the ended episodes' adapter state for eviction. The id to evict is
-    /// resolved POSITIONALLY from the runtime's own slot by `env_index` — the
-    /// env's `completed_episodes[].episode_id` echo is never trusted as the
-    /// authority. At the completion step the slot still holds the completing id
-    /// (the autoreset roll lands at t+1), so this is the id the model lazily
-    /// seeded and must drop. Sent by [`flush_evictions`](Self::flush_evictions)
-    /// once the model handle is free.
-    fn queue_evictions(&mut self, state: &RouteState, episodes: &[EpisodeMetadata]) {
+    /// Queue the ended episodes' model-side state for eviction. The id to
+    /// evict is resolved POSITIONALLY from the runtime's own slot by
+    /// `env_index` — the env's `completed_episodes[].episode_id` echo is never
+    /// trusted as the authority — so this must run while the slot still holds
+    /// the ended id. Under driver-owned resets that is the completion step.
+    /// Under NEXT_STEP the lockstep group predicts once more on the terminal
+    /// observation (the autoreset step's action, which the env discards for
+    /// that lane) and that predict has to land on the ended id — evicting first
+    /// would make the model re-seed the ended episode, and re-tagging it with
+    /// the new id would leak the old episode's last frame into the new one —
+    /// so the eviction waits for the roll at t+1, just before the slot moves
+    /// on. Either way the model sees its `on_episode_end` after the last
+    /// predict under that id and never a predict after it. Sent by
+    /// [`flush_evictions`](Self::flush_evictions) once the model handle is free.
+    fn queue_evictions(&mut self, state: &RouteState, env_indices: impl Iterator<Item = u32>) {
         let all_positions: Vec<usize> = (0..self.spec.num_envs.max(1)).collect();
         let slot_ids = state.episode_ids_at(&all_positions);
         self.pending_evictions.extend(
-            episodes
-                .iter()
-                .filter_map(|completed| {
+            env_indices
+                .filter_map(|env_index| {
                     state
-                        .slot_position(completed.env_index)
+                        .slot_position(env_index)
                         .and_then(|position| slot_ids.get(position))
                         .cloned()
                 })

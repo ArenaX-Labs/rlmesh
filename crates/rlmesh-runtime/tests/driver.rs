@@ -860,6 +860,9 @@ impl RuntimeEnv for TestEnv {
     }
 }
 
+/// Model calls in arrival order: `("predict" | "evict", episode ids)`.
+type Lifecycle = Arc<Mutex<Vec<(&'static str, Vec<String>)>>>;
+
 #[derive(Clone, Default)]
 struct TestModel {
     closed: Arc<AtomicBool>,
@@ -869,6 +872,9 @@ struct TestModel {
     // Episode ids the driver asked the model to evict via ResetAdapter (R2), in
     // order — one ResetAdapterRequest's episode_ids per entry.
     reset_adapters: Arc<Mutex<Vec<Vec<String>>>>,
+    // Every model call in arrival order: ("predict", the request's episode ids)
+    // or ("evict", the ResetAdapter's ids) — the model-side episode lifecycle.
+    lifecycle: Lifecycle,
     // Number of chunk replay frames to return per predict (frames 1.. of the
     // ordered `actions` list; frame 0 is always present). 0 = not chunking (a
     // single-frame `actions`, the unchanged path).
@@ -892,6 +898,17 @@ impl RuntimeModel for TestModel {
             tokio::time::sleep(delay).await;
         }
         self.predicts.fetch_add(1, Ordering::SeqCst);
+        self.lifecycle
+            .lock()
+            .expect("lifecycle lock poisoned")
+            .push((
+                "predict",
+                request
+                    .episode_info
+                    .iter()
+                    .map(|e| e.episode_id.clone())
+                    .collect(),
+            ));
         let observation_bytes = request
             .observation
             .as_ref()
@@ -918,6 +935,10 @@ impl RuntimeModel for TestModel {
     }
 
     async fn reset_adapter(&self, request: ResetAdapterRequest) -> Result<(), RuntimeError> {
+        self.lifecycle
+            .lock()
+            .expect("lifecycle lock poisoned")
+            .push(("evict", request.episode_ids.clone()));
         self.reset_adapters
             .lock()
             .expect("reset_adapter recorder lock poisoned")
@@ -1412,6 +1433,50 @@ async fn chunking_does_not_break_autoreset_eviction() {
         assert_eq!(id.len(), 36, "evicted a UUID id, got {id:?}");
         assert_eq!(id.as_bytes()[14], b'7', "UUIDv7 version nibble: {id:?}");
     }
+}
+
+#[tokio::test]
+async fn next_step_autoreset_never_predicts_on_an_evicted_episode() {
+    // NEXT_STEP × lockstep vector: a lane that ends at t is predicted on once
+    // more (the terminal observation feeds the autoreset step, whose action
+    // the env discards) before its slot rolls at t+1. The model's lifecycle
+    // for that id must still be predict* → evict, never evict → predict: an
+    // eviction-then-predict would re-seed the ended episode's state and leak
+    // the entry. Uneven lane lengths make the rolls land on different steps.
+    let env = VectorTestEnv::new(vec![1, 3]);
+    let model = TestModel::default();
+    let report = RuntimeDriver::new(
+        vector_spec(2, 4),
+        env.clone(),
+        model.clone(),
+        Arc::new(RecordingHooks::default()),
+    )
+    .run()
+    .await
+    .unwrap();
+    assert!(report.total_episodes >= 4);
+
+    let lifecycle = model
+        .lifecycle
+        .lock()
+        .expect("lifecycle lock poisoned")
+        .clone();
+    let mut evicted: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (kind, ids) in &lifecycle {
+        match *kind {
+            "evict" => evicted.extend(ids.iter().cloned()),
+            _ => {
+                for id in ids {
+                    assert!(
+                        !evicted.contains(id),
+                        "predict on {id} after its eviction; lifecycle: {lifecycle:?}"
+                    );
+                }
+            }
+        }
+    }
+    // Every ended episode was evicted, so nothing is left behind in the model.
+    assert_eq!(evicted.len() as i64, report.total_episodes);
 }
 
 /// A `tracing` writer that appends everything into a shared buffer, so a test can
