@@ -201,7 +201,7 @@ One action is applied per step regardless. The model returns its whole native ch
 
 A model whose chunk length K is fixed declares it (`native_chunk = K`, see {doc}`models`). The runtime then refuses an `execution_horizon` above K when the adapter resolves, instead of quietly re-planning every K steps of an H-step plan, and fails a predict whose chunk is not exactly K long. Undeclared, the contract is elastic: a short chunk is replayed as far as it goes and warns once.
 
-`execution_horizon` only matters when the model defines a chunk corner. Requesting `execution_horizon > 1` on a model with no `predict_chunk` warns and runs un-chunked (one fresh prediction per step), so the default of `1` is always safe. The horizon is bounded at 1024, and it cannot be combined with a vectorized env: chunk replay is whole-batch, so one lane's episode end would discard every lane's buffered frames.
+`execution_horizon` only matters when the model defines a chunk corner. Requesting `execution_horizon > 1` on a model with no `predict_chunk` warns and runs un-chunked (one fresh prediction per step), so the default of `1` is always safe. The horizon is bounded at 1024, and it cannot be combined with a lockstep vector env (a gym vector env served as one endpoint): chunk replay is whole-batch there, so one lane's episode end would discard every lane's buffered frames. A lane endpoint (`EnvServer([env, ...])`) replays per lane and takes any horizon.
 
 ## Where next
 
