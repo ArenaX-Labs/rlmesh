@@ -11,7 +11,7 @@ pub(crate) mod status;
 /// header's
 /// `RLMESH_ABI_VERSION` macro + `rlmesh_abi_check()`; the versioned SONAME
 /// (`librlmesh_capi.so.N`) makes the loader enforce the same generation.
-pub const RLMESH_ABI_VERSION: u32 = 1;
+pub const RLMESH_ABI_VERSION: u32 = 2;
 
 /// The linked library's ABI generation (see [`RLMESH_ABI_VERSION`]). A consumer
 /// compares this against the `RLMESH_ABI_VERSION` macro it compiled against.

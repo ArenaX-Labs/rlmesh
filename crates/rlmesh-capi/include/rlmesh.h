@@ -31,7 +31,7 @@ extern "C" {
  * repr(C) layout/enum-discriminant change, an extern "C" signature retype, or a
  * symbol removal). Decoupled from the package semver below, which can't express
  * an ABI break. Appending a struct_size-guarded vtable field is NOT a break. */
-#define RLMESH_ABI_VERSION 1
+#define RLMESH_ABI_VERSION 2
 
 RLMESH_API uint32_t rlmesh_abi_version(void);
 
