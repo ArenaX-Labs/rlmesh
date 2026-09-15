@@ -104,6 +104,7 @@ def _install_native_docs_stub() -> None:
         "EEF_POS": "proprio/eef_pos",
         "EEF_ROT": "proprio/eef_rot",
         "GRIPPER_POS": "proprio/gripper",
+        "EEF_WRENCH": "proprio/eef_wrench",
         "EEF_POS_2": "proprio/eef_pos_2",
         "EEF_ROT_2": "proprio/eef_rot_2",
         "GRIPPER_POS_2": "proprio/gripper_2",

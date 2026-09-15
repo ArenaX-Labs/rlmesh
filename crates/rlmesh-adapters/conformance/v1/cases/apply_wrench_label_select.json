@@ -1,0 +1,168 @@
+{
+  "action_space": {
+    "dtype": "float32",
+    "kind": "box",
+    "shape": [4]
+  },
+  "env_tags": {
+    "action": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "reference": "current",
+          "role": "action/delta_eef_pos"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": null,
+          "role": "action/gripper"
+        }
+      ]
+    },
+    "observation": {
+      "eef": {
+        "encoding": null,
+        "frame": "robot_base",
+        "range": null,
+        "role": "proprio/eef_pos",
+        "type": "state"
+      },
+      "wrench": {
+        "encoding": null,
+        "frame": "tool",
+        "labels": ["fx", "fy", "fz", "tx", "ty", "tz"],
+        "provenance": "sensed",
+        "range": null,
+        "role": "proprio/eef_wrench",
+        "type": "state"
+      },
+      "wrench_est": {
+        "encoding": null,
+        "frame": "robot_base",
+        "provenance": "estimated",
+        "range": null,
+        "role": "proprio/eef_wrench",
+        "type": "state"
+      }
+    }
+  },
+  "expect": {
+    "action": {
+      "data": [0.009999999776482582, 0.0, -0.004999999888241291, 1.0],
+      "dtype": "float32",
+      "kind": "array",
+      "shape": [4]
+    },
+    "atol": 1e-6,
+    "payload": {
+      "data": {
+        "obs": {
+          "data": [0.10000000149011612, 0.20000000298023224, 0.30000001192092896, 3.0, 4.0],
+          "dtype": "float32",
+          "kind": "array",
+          "shape": [5]
+        }
+      },
+      "kind": "map"
+    }
+  },
+  "kind": "apply",
+  "model_output": {
+    "data": [0.01, 0.0, -0.005, 1.0],
+    "dtype": "float32",
+    "kind": "array",
+    "shape": [4]
+  },
+  "model_spec": {
+    "input": {
+      "obs": {
+        "components": [
+          {
+            "dim": 3,
+            "frame": "robot_base",
+            "role": "proprio/eef_pos"
+          },
+          {
+            "frame": "tool",
+            "labels": ["fz", "tx"],
+            "provenance": "sensed",
+            "role": "proprio/eef_wrench"
+          }
+        ],
+        "dtype": "float32",
+        "type": "state"
+      }
+    },
+    "output": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "reference": "current",
+          "role": "action/delta_eef_pos"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": null,
+          "role": "action/gripper"
+        }
+      ]
+    }
+  },
+  "observation": {
+    "data": {
+      "eef": {
+        "data": [0.1, 0.2, 0.3],
+        "dtype": "float32",
+        "kind": "array",
+        "shape": [3]
+      },
+      "wrench": {
+        "data": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+        "dtype": "float32",
+        "kind": "array",
+        "shape": [6]
+      },
+      "wrench_est": {
+        "data": [-1.0, -2.0, -3.0, -4.0, -5.0, -6.0],
+        "dtype": "float32",
+        "kind": "array",
+        "shape": [6]
+      }
+    },
+    "kind": "map"
+  },
+  "observation_space": {
+    "children": [
+      {
+        "dtype": "float32",
+        "kind": "box",
+        "shape": [3]
+      },
+      {
+        "dtype": "float32",
+        "kind": "box",
+        "shape": [6]
+      },
+      {
+        "dtype": "float32",
+        "kind": "box",
+        "shape": [6]
+      }
+    ],
+    "dtype": "unspecified",
+    "keys": ["eef", "wrench", "wrench_est"],
+    "kind": "dict"
+  }
+}

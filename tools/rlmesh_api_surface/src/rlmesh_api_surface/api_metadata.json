@@ -331,6 +331,9 @@
     "rlmesh.adapters.JOINT_VEL": {
       "description": "Observation role for joint velocities (proprio/joint_vel)."
     },
+    "rlmesh.adapters.EEF_WRENCH": {
+      "description": "Observation role for the end-effector wrench [fx, fy, fz, tx, ty, tz] a wrist force/torque sensor reads (proprio/eef_wrench), framed."
+    },
     "rlmesh.adapters.BASE_ANG_VEL": {
       "description": "Observation role for the base angular velocity, the IMU gyro (proprio/base_ang_vel)."
     },

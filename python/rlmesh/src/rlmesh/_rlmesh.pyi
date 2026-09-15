@@ -37,6 +37,7 @@ __all__ = [
     "EEF_POS_2",
     "EEF_ROT",
     "EEF_ROT_2",
+    "EEF_WRENCH",
     "EMBODIMENTS",
     "ENV_BRANCH_METADATA_KEY",
     "ENV_METADATA_KEY",
@@ -123,6 +124,7 @@ EEF_POS: builtins.str
 EEF_POS_2: builtins.str
 EEF_ROT: builtins.str
 EEF_ROT_2: builtins.str
+EEF_WRENCH: builtins.str
 EMBODIMENTS: builtins.list[tuple[builtins.str, builtins.list[builtins.str], builtins.list[builtins.str]]]
 ENV_BRANCH_METADATA_KEY: builtins.str
 ENV_METADATA_KEY: builtins.str

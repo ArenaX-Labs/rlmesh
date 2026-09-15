@@ -4845,6 +4845,66 @@ def test_body_role_constants_mirror_the_rust_rows() -> None:
     assert adapt.ROTATION_DIMS["gravity_xyz"] == 3
 
 
+def test_wrench_binds_in_the_tool_frame_and_selects_its_own_axes() -> None:
+    # The UR5e cell: a wrist F/T sensor reads the wrench in `tool`, the
+    # controller estimates one in `robot_base`; a model pins the sensed one and
+    # gathers two axes by label. The axes are the wrench's own, never a joint
+    # profile's, so the strict label tier has nothing to say about them.
+    assert adapt.EEF_WRENCH == "proprio/eef_wrench"
+    axes = ("fx", "fy", "fz", "tx", "ty", "tz")
+    env = Env(
+        adapt.EnvTags(
+            observation={
+                "wrench": adapt.StateTag(
+                    adapt.EEF_WRENCH, frame="tool", provenance="sensed", labels=axes
+                ),
+                "wrench_est": adapt.StateTag(
+                    adapt.EEF_WRENCH, frame="robot_base", provenance="estimated"
+                ),
+            },
+            action=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1)),
+        ),
+        obs_space=gym.spaces.Dict({"wrench": box(6), "wrench_est": box(6)}),
+        action_space=box(1),
+    )
+    assert adapt.EnvTags.from_dict(env.tags.to_dict()) == env.tags
+    spec = adapt.ModelSpec(
+        input={
+            "obs": adapt.State(
+                adapt.EEF_WRENCH, frame="tool", provenance="sensed", labels=("fz", "tx")
+            )
+        },
+        output=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1)),
+    )
+    adapter = resolve(env, spec)
+    assert "wrench select[2,3]@tool#sensed" in adapter.explain()
+    payload = adapter.transform_obs(
+        {
+            "wrench": np.arange(1.0, 7.0, dtype=np.float32),
+            "wrench_est": -np.arange(1.0, 7.0, dtype=np.float32),
+        }
+    )
+    np.testing.assert_array_equal(
+        payload["obs"], np.array([3.0, 4.0], dtype=np.float32)
+    )
+
+    with pytest.raises(
+        adapt.AdapterResolutionError,
+        match='the model expects frame "world" but the env declares "tool"',
+    ):
+        resolve(
+            env,
+            adapt.ModelSpec(
+                input={
+                    "obs": adapt.State(
+                        adapt.EEF_WRENCH, dim=6, frame="world", provenance="sensed"
+                    )
+                },
+                output=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1)),
+            ),
+        )
+
+
 def test_provenance_and_clip_round_trip_only_when_set() -> None:
     tags = _go2_body_env().tags
     doc = tags.to_dict()

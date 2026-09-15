@@ -5,8 +5,8 @@ model specs agree. The two domains below are the registry of well-known
 conventions that ship with RLMesh:
 
 - Domain-agnostic roles (cameras, instruction text, joints).
-- Arm manipulation roles (end-effector, gripper, and the bimanual ``_2``
-  convention).
+- Arm manipulation roles (end-effector pose, gripper, the six-axis wrench,
+  and the bimanual ``_2`` convention).
 - Body roles (the floating base: gyro, orientation, and the velocity command
   under the ``command/`` kind). Projected gravity is not a role but the
   ``gravity_xyz`` encoding of ``BASE_ROT``; the base linear velocity is
@@ -59,6 +59,7 @@ from ..._rlmesh import (
     EEF_POS_2,
     EEF_ROT,
     EEF_ROT_2,
+    EEF_WRENCH,
     GRIPPER_POS,
     GRIPPER_POS_2,
     IMAGE_PRIMARY,
@@ -91,6 +92,7 @@ __all__ = [
     "EEF_POS_2",
     "EEF_ROT",
     "EEF_ROT_2",
+    "EEF_WRENCH",
     "GRIPPER_POS",
     "GRIPPER_POS_2",
     "IMAGE_PRIMARY",

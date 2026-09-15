@@ -51,7 +51,9 @@ Resample: TypeAlias = Literal[
 # here for static checking and validated by the Rust codec at normalize. `Frame`
 # qualifies an absolute pose -- the coordinate frame its numbers are in;
 # `Reference` qualifies a delta -- the pose the controller integrates it against.
-Frame: TypeAlias = Literal["world", "robot_base"]
+# ``tool`` is the frame attached to the end effector (flange or TCP), where a
+# wrist-mounted force/torque sensor reads.
+Frame: TypeAlias = Literal["world", "robot_base", "tool"]
 Reference: TypeAlias = Literal["current", "target"]
 # Where a state leaf's numbers come from (PROVENANCES in v1/spec/frames.rs): a
 # physical sensor or its simulated equivalent, a state estimator, or simulator

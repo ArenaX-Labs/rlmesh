@@ -1,0 +1,122 @@
+{
+  "action_space": {
+    "dtype": "float32",
+    "kind": "box",
+    "shape": [4]
+  },
+  "env_tags": {
+    "action": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "reference": "current",
+          "role": "action/delta_eef_pos"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": null,
+          "role": "action/gripper"
+        }
+      ]
+    },
+    "observation": {
+      "eef": {
+        "encoding": null,
+        "frame": "robot_base",
+        "range": null,
+        "role": "proprio/eef_pos",
+        "type": "state"
+      },
+      "wrench": {
+        "encoding": null,
+        "frame": "tool",
+        "labels": ["fx", "fy", "fz", "tx", "ty", "tz"],
+        "provenance": "sensed",
+        "range": null,
+        "role": "proprio/eef_wrench",
+        "type": "state"
+      },
+      "wrench_est": {
+        "encoding": null,
+        "frame": "robot_base",
+        "provenance": "estimated",
+        "range": null,
+        "role": "proprio/eef_wrench",
+        "type": "state"
+      }
+    }
+  },
+  "expect": {
+    "error_contains": "role \"proprio/eef_wrench\": the model expects frame \"world\" but the env declares \"tool\""
+  },
+  "kind": "resolve",
+  "model_spec": {
+    "input": {
+      "obs": {
+        "components": [
+          {
+            "dim": 3,
+            "frame": "robot_base",
+            "role": "proprio/eef_pos"
+          },
+          {
+            "dim": 6,
+            "frame": "world",
+            "provenance": "sensed",
+            "role": "proprio/eef_wrench"
+          }
+        ],
+        "dtype": "float32",
+        "type": "state"
+      }
+    },
+    "output": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "reference": "current",
+          "role": "action/delta_eef_pos"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": null,
+          "role": "action/gripper"
+        }
+      ]
+    }
+  },
+  "observation_space": {
+    "children": [
+      {
+        "dtype": "float32",
+        "kind": "box",
+        "shape": [3]
+      },
+      {
+        "dtype": "float32",
+        "kind": "box",
+        "shape": [6]
+      },
+      {
+        "dtype": "float32",
+        "kind": "box",
+        "shape": [6]
+      }
+    ],
+    "dtype": "unspecified",
+    "keys": ["eef", "wrench", "wrench_est"],
+    "kind": "dict"
+  }
+}

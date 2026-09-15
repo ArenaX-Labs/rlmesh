@@ -833,8 +833,8 @@ mod tests {
         // the closest; a labeled leaf of any other role names its own axes and
         // is never held to a profile.
         let axes: EnvTags = serde_json::from_str(
-            r#"{"observation": {"w": {"type": "state", "role": "x/eef_wrench",
-                    "labels": ["fx", "fy", "fz", "tx", "ty", "tz"]}},
+            r#"{"observation": {"w": {"type": "state", "role": "proprio/eef_wrench",
+                    "frame": "tool", "labels": ["fx", "fy", "fz", "tx", "ty", "tz"]}},
                 "action": {"components": [{"role": "action/gripper", "dim": 1}]}}"#,
         )
         .unwrap();

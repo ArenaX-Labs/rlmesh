@@ -21,7 +21,7 @@
 //! whole role. A role with no `/` names no kind and stays ad-hoc.
 //!
 //! **Parts, not suffixes.** Where a role repeats on a body the leaf carries a
-//! `part` ([`parts`](super::parts)). The ten `_2` roles predate parts and stay
+//! `part` ([`parts`]). The ten `_2` roles predate parts and stay
 //! as data; [`ALIASES`] folds each onto its base role under `part="arm_2"`
 //! before any lookup, so the two spellings bind each other. No further `_N`
 //! role is ever added (`no_further_suffixed_roles`).
@@ -225,6 +225,7 @@ mod tests {
         "proprio/eef_pos",
         "proprio/eef_rot",
         "proprio/gripper",
+        "proprio/eef_wrench", // the wrist force/torque sensor, read verbatim
         "proprio/eef_pos_2",
         "proprio/eef_rot_2",
         "proprio/gripper_2",
@@ -474,6 +475,19 @@ mod tests {
         let gripper = role_def("proprio/gripper").expect("registered");
         assert_eq!(gripper.frame, FrameLaw::Frameless);
         assert_eq!(gripper.reference, ReferenceLaw::Unreferenced);
+    }
+
+    #[test]
+    fn the_wrench_is_six_wide_framed_and_owes_no_profile() {
+        use super::FrameLaw;
+        let def = role_def("proprio/eef_wrench").expect("registered");
+        assert_eq!(def.dim, DimLaw::Fixed(6));
+        assert_eq!(def.frame, FrameLaw::Framed);
+        // Its six axes are its own, not an embodiment's joints.
+        assert!(!crate::spec::strict::is_labeled_role("proprio/eef_wrench"));
+        // A sensed wrench is the only registered force quantity: a contact
+        // model's output or a commanded force is not a role.
+        assert!(!is_known_role("action/eef_wrench"));
     }
 
     #[test]

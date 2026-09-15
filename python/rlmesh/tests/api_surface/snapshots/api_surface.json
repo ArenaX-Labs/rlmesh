@@ -1196,6 +1196,7 @@
       "EEF_POS_2",
       "EEF_ROT",
       "EEF_ROT_2",
+      "EEF_WRENCH",
       "ENV_BRANCH_METADATA_KEY",
       "ENV_METADATA_KEY",
       "FRANKA_PANDA",
@@ -1665,6 +1666,11 @@
         "signature": "EEF_ROT_2 = str",
         "stability": "Stable"
       },
+      "EEF_WRENCH": {
+        "kind": "type alias",
+        "signature": "EEF_WRENCH = str",
+        "stability": "Stable"
+      },
       "ENV_BRANCH_METADATA_KEY": {
         "kind": "type alias",
         "signature": "ENV_BRANCH_METADATA_KEY = str",
@@ -1788,7 +1794,7 @@
       },
       "Frame": {
         "kind": "type alias",
-        "signature": "Frame = Literal['world', 'robot_base']",
+        "signature": "Frame = Literal['world', 'robot_base', 'tool']",
         "stability": "Stable"
       },
       "G1_29DOF": {

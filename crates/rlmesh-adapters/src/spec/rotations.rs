@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// **Adding a value.** The vocabulary is closed on both sides, but the two
 /// sides tolerate a new value differently, and that decides what a new value
-/// costs. On the observation side the field is an [`AcceptSet`](super::AcceptSet):
+/// costs. On the observation side the field is an `AcceptSet`:
 /// an old core parses a value it does not know as an unknown entry, round-trips
 /// it, and fails at *resolve* naming it, so an observation-side value (such as
 /// [`GravityXyz`](Self::GravityXyz)) mints no edition and no key bump. On the

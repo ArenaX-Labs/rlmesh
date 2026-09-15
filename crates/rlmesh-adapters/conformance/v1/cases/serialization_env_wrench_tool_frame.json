@@ -1,0 +1,52 @@
+{
+  "kind": "serialization",
+  "side": "env",
+  "doc": {
+    "observation": {
+      "eef": {
+        "type": "state",
+        "role": "proprio/eef_pos",
+        "encoding": null,
+        "range": null,
+        "frame": "robot_base"
+      },
+      "wrench": {
+        "type": "state",
+        "role": "proprio/eef_wrench",
+        "encoding": null,
+        "range": null,
+        "frame": "tool",
+        "provenance": "sensed",
+        "labels": ["fx", "fy", "fz", "tx", "ty", "tz"]
+      },
+      "wrench_est": {
+        "type": "state",
+        "role": "proprio/eef_wrench",
+        "encoding": null,
+        "range": null,
+        "frame": "robot_base",
+        "provenance": "estimated"
+      }
+    },
+    "action": {
+      "clip": null,
+      "components": [
+        {
+          "role": "action/delta_eef_pos",
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "binary": false,
+          "reference": "current"
+        },
+        {
+          "role": "action/gripper",
+          "dim": 1,
+          "encoding": null,
+          "range": null,
+          "binary": false
+        }
+      ]
+    }
+  }
+}

@@ -12,27 +12,28 @@ A role is the string that matches an environment feature to a model input. Roles
 
 Role strings carry a feature-kind prefix, not a domain prefix (two domains sharing `proprio/joint_pos` is intentional). The kinds are a **closed set of five**: `image/`, `proprio/`, `text/`, `action/`, and `command/` (a numeric setpoint the runner hands the policy, the numeric sibling of `text/instruction`; `command/base_vel` is its first registered role). The set is enforced in code: a role under any other prefix is refused when you author it (`adapt.tag`, `to_dict()`, the publish gate) and when a pair resolves, so a spec written by a newer core still parses and relays but fails loudly here rather than binding to nothing. `x/` remains the escape for a whole role; a role with no `/` names no kind and is simply ad-hoc.
 
-| Constant           | Wire string            | Domain       | Kind       | Typical width / encoding            |
-| ------------------ | ---------------------- | ------------ | ---------- | ----------------------------------- |
-| `IMAGE_PRIMARY`    | `image/primary`        | core         | `image/`   | H×W×C frame (main camera)           |
-| `IMAGE_SECONDARY`  | `image/secondary`      | core         | `image/`   | H×W×C frame (second fixed camera)   |
-| `IMAGE_WRIST`      | `image/wrist`          | core         | `image/`   | H×W×C frame (wrist/hand camera)     |
-| `INSTRUCTION`      | `text/instruction`     | core         | `text/`    | string (task instruction)           |
-| `JOINT_POS`        | `proprio/joint_pos`    | core         | `proprio/` | N joints (embodiment-dependent)     |
-| `JOINT_VEL`        | `proprio/joint_vel`    | core         | `proprio/` | N joints                            |
-| `ACTION_JOINT_POS` | `action/joint_pos`     | core         | `action/`  | N joints (embodiment-dependent)     |
-| `ACTION_JOINT_VEL` | `action/joint_vel`     | core         | `action/`  | N joints                            |
-| `EEF_POS`          | `proprio/eef_pos`      | manipulation | `proprio/` | 3 (Cartesian xyz)                   |
-| `EEF_ROT`          | `proprio/eef_rot`      | manipulation | `proprio/` | width follows the rotation encoding |
-| `GRIPPER_POS`      | `proprio/gripper`      | manipulation | `proprio/` | 1+ (embodiment-dependent)           |
-| `ACTION_DELTA_POS` | `action/delta_eef_pos` | manipulation | `action/`  | 3 (Cartesian delta)                 |
-| `ACTION_DELTA_ROT` | `action/delta_eef_rot` | manipulation | `action/`  | width follows the rotation encoding |
-| `ACTION_GRIPPER`   | `action/gripper`       | manipulation | `action/`  | 1                                   |
-| `ACTION_EEF_POS`   | `action/eef_pos`       | manipulation | `action/`  | 3 (absolute Cartesian target)       |
-| `ACTION_EEF_ROT`   | `action/eef_rot`       | manipulation | `action/`  | width follows the rotation encoding |
-| `BASE_ANG_VEL`     | `proprio/base_ang_vel` | body         | `proprio/` | 3 (the IMU gyro, framed)            |
-| `BASE_ROT`         | `proprio/base_rot`     | body         | `proprio/` | width follows the rotation encoding |
-| `COMMAND_BASE_VEL` | `command/base_vel`     | body         | `command/` | 3 (`[vx, vy, wz]`, framed)          |
+| Constant           | Wire string            | Domain       | Kind       | Typical width / encoding               |
+| ------------------ | ---------------------- | ------------ | ---------- | -------------------------------------- |
+| `IMAGE_PRIMARY`    | `image/primary`        | core         | `image/`   | H×W×C frame (main camera)              |
+| `IMAGE_SECONDARY`  | `image/secondary`      | core         | `image/`   | H×W×C frame (second fixed camera)      |
+| `IMAGE_WRIST`      | `image/wrist`          | core         | `image/`   | H×W×C frame (wrist/hand camera)        |
+| `INSTRUCTION`      | `text/instruction`     | core         | `text/`    | string (task instruction)              |
+| `JOINT_POS`        | `proprio/joint_pos`    | core         | `proprio/` | N joints (embodiment-dependent)        |
+| `JOINT_VEL`        | `proprio/joint_vel`    | core         | `proprio/` | N joints                               |
+| `ACTION_JOINT_POS` | `action/joint_pos`     | core         | `action/`  | N joints (embodiment-dependent)        |
+| `ACTION_JOINT_VEL` | `action/joint_vel`     | core         | `action/`  | N joints                               |
+| `EEF_POS`          | `proprio/eef_pos`      | manipulation | `proprio/` | 3 (Cartesian xyz)                      |
+| `EEF_ROT`          | `proprio/eef_rot`      | manipulation | `proprio/` | width follows the rotation encoding    |
+| `GRIPPER_POS`      | `proprio/gripper`      | manipulation | `proprio/` | 1+ (embodiment-dependent)              |
+| `EEF_WRENCH`       | `proprio/eef_wrench`   | manipulation | `proprio/` | 6 (`[fx, fy, fz, tx, ty, tz]`, framed) |
+| `ACTION_DELTA_POS` | `action/delta_eef_pos` | manipulation | `action/`  | 3 (Cartesian delta)                    |
+| `ACTION_DELTA_ROT` | `action/delta_eef_rot` | manipulation | `action/`  | width follows the rotation encoding    |
+| `ACTION_GRIPPER`   | `action/gripper`       | manipulation | `action/`  | 1                                      |
+| `ACTION_EEF_POS`   | `action/eef_pos`       | manipulation | `action/`  | 3 (absolute Cartesian target)          |
+| `ACTION_EEF_ROT`   | `action/eef_rot`       | manipulation | `action/`  | width follows the rotation encoding    |
+| `BASE_ANG_VEL`     | `proprio/base_ang_vel` | body         | `proprio/` | 3 (the IMU gyro, framed)               |
+| `BASE_ROT`         | `proprio/base_rot`     | body         | `proprio/` | width follows the rotation encoding    |
+| `COMMAND_BASE_VEL` | `command/base_vel`     | body         | `command/` | 3 (`[vx, vy, wz]`, framed)             |
 
 You always pin widths explicitly (`dim`/`index` on a part, `dim` on an actuator); a _registered_ role with a fixed canonical width then **validates** that declared `dim` (e.g. `eef_pos` must be 3-D, a mismatch is a resolve error); it never supplies it. Rotation widths follow the declared encoding (see [Vocabularies](#vocabularies)).
 
@@ -40,7 +41,7 @@ You always pin widths explicitly (`dim`/`index` on a part, `dim` on an actuator)
 
 A role is **registered when both sides of it exist**: an environment that produces the data and a model that reads it. One side alone does not earn a slot — a camera nothing looks at, or a command no policy emits, stays ad-hoc (or `x/`) until its counterpart ships, because until then nothing has pinned what the numbers mean.
 
-A role also names a **raw sensed or commanded quantity**, never a function of one. The three body roles are what a legged robot's base reports and takes: the gyro (`BASE_ANG_VEL`), the IMU orientation (`BASE_ROT`) and the velocity setpoint the runner hands the policy (`COMMAND_BASE_VEL`), all three expressed in a `frame`. The projected gravity every locomotion checkpoint reads is not a fourth role: it is `BASE_ROT` read with `encoding="gravity_xyz"` (see [Vocabularies](#vocabularies)). The base linear velocity is deliberately unregistered: a real robot has only an estimate of it, so a role would silently mean two different things in sim and on hardware; a gait-phase clock is neither sensed nor commanded and stays a `Constant` or an `x/` role.
+A role also names a **raw sensed or commanded quantity**, never a function of one. The three body roles are what a legged robot's base reports and takes: the gyro (`BASE_ANG_VEL`), the IMU orientation (`BASE_ROT`) and the velocity setpoint the runner hands the policy (`COMMAND_BASE_VEL`), all three expressed in a `frame`. The projected gravity every locomotion checkpoint reads is not a fourth role: it is `BASE_ROT` read with `encoding="gravity_xyz"` (see [Vocabularies](#vocabularies)). The base linear velocity is deliberately unregistered: a real robot has only an estimate of it, so a role would silently mean two different things in sim and on hardware; a gait-phase clock is neither sensed nor commanded and stays a `Constant` or an `x/` role. The same law gives manipulation one force role: `EEF_WRENCH` is the six-axis force/torque a wrist sensor reads (force first, `[fx, fy, fz, tx, ty, tz]`), framed like a pose. A wrist-mounted sensor reads it in `tool`; a robot controller's estimate is usually in `robot_base`; an env that has both publishes both under `provenance="sensed"` and `"estimated"`. Its `labels` (`fx`..`tz`) name its own axes and are never held to an embodiment profile. A commanded force is not a role: the controller that tracks it is the env's, and its setpoint is an `x/` role until a second consumer earns it.
 
 ### Parts
 
@@ -172,10 +173,10 @@ Other vocabularies:
 
 Cartesian numbers mean nothing on their own: `[0.31, -0.02, 0.18]` is a point in _some_ frame, and `[0.01, 0.0, -0.005]` is a step away from _some_ pose. Two keyword-only attributes say which, and they are how the contract catches a pairing whose numbers type-check and whose geometry does not.
 
-| Attribute   | Values                | Applies to                                                | Declared on                                            |
-| ----------- | --------------------- | --------------------------------------------------------- | ------------------------------------------------------ |
-| `frame`     | `world`, `robot_base` | absolute poses: `proprio/eef_*`, `action/eef_*` (8 roles) | `StateTag`, `Field`, `State`/`Concat` part, `Actuator` |
-| `reference` | `current`, `target`   | deltas: `action/delta_eef_*` (4 roles)                    | `Actuator`                                             |
+| Attribute   | Values                        | Applies to                                                                | Declared on                                            |
+| ----------- | ----------------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------ |
+| `frame`     | `world`, `robot_base`, `tool` | absolute poses (`proprio/eef_*`, `action/eef_*`) and the wrench (9 roles) | `StateTag`, `Field`, `State`/`Concat` part, `Actuator` |
+| `reference` | `current`, `target`           | deltas: `action/delta_eef_*` (4 roles)                                    | `Actuator`                                             |
 
 **A delta never carries a `frame`** -- it is expressed in the controller's own frame by definition, and there is nothing to agree about. What a delta _does_ need is the pose it is added to: an env declares what its Cartesian controller integrates against -- the measured pose (`current`) or the last commanded target (`target`) -- and a model declares what it was trained against. That is `reference`, and it is the attribute delta roles get instead of `frame`.
 

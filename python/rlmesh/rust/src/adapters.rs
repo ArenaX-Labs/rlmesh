@@ -126,6 +126,7 @@ const WIRE_CONSTANTS: &[(&str, &str)] = &[
     ("EEF_POS", roles::manipulation::EEF_POS),
     ("EEF_ROT", roles::manipulation::EEF_ROT),
     ("GRIPPER_POS", roles::manipulation::GRIPPER_POS),
+    ("EEF_WRENCH", roles::manipulation::EEF_WRENCH),
     ("EEF_POS_2", roles::manipulation::EEF_POS_2),
     ("EEF_ROT_2", roles::manipulation::EEF_ROT_2),
     ("GRIPPER_POS_2", roles::manipulation::GRIPPER_POS_2),
@@ -184,6 +185,7 @@ mod stub_constants {
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "EEF_POS", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "EEF_ROT", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "GRIPPER_POS", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "EEF_WRENCH", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "EEF_POS_2", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "EEF_ROT_2", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "GRIPPER_POS_2", String);

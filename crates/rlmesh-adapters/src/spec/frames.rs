@@ -31,8 +31,10 @@
 use serde::{Deserialize, Serialize};
 
 /// The recognized reference frames: the `Frame` vocabulary
-/// (`Literal["world", "robot_base"]` on the Python side).
-pub const FRAMES: [&str; 2] = ["world", "robot_base"];
+/// (`Literal["world", "robot_base", "tool"]` on the Python side). `tool` is
+/// the frame attached to the end effector (the flange or TCP), where a
+/// wrist-mounted force/torque sensor reads.
+pub const FRAMES: [&str; 3] = ["world", "robot_base", "tool"];
 
 /// The recognized delta references: what an env's Cartesian controller
 /// integrates a delta against, and what a policy was trained against.
@@ -42,7 +44,7 @@ pub const REFERENCES: [&str; 2] = ["current", "target"];
 pub const PROVENANCES: [&str; 3] = ["sensed", "estimated", "privileged"];
 
 /// A provenance value, closed: the model side declares an
-/// [`AcceptSet`](super::AcceptSet) of these (a bare string when one), so an
+/// `AcceptSet` of these (a bare string when one), so an
 /// unknown value round-trips and fails at resolve like an unknown encoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Provenance {
