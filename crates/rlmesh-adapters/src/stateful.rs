@@ -157,6 +157,25 @@ impl FrameBuffers {
             .and_then(|episode| episode.last_step)
     }
 
+    /// The step at which the next chunk this episode returns starts executing:
+    /// one past its last recorded action, or the last observed step when none
+    /// is recorded yet. The two differ under an async prefetch lead, where the
+    /// request's own observation is `lead` steps before the chunk it asks for
+    /// begins (the frames still queued execute first); the recorded rows know
+    /// where that queue ends, the observation does not.
+    #[must_use]
+    pub fn chunk_start(&self, episode_id: &str) -> i64 {
+        let Some(episode) = self.inner.get(episode_id) else {
+            return 0;
+        };
+        let observed = episode.last_step.unwrap_or(0);
+        episode
+            .actions
+            .keys()
+            .next_back()
+            .map_or(observed, |last| observed.max(last + 1))
+    }
+
     /// The step the episode's next frame carries when the caller counts
     /// steps itself: one past the last, or `0` for an episode not yet held.
     #[must_use]

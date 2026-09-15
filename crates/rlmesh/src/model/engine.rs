@@ -584,12 +584,15 @@ fn finish_route_frames_inner(
     let mut frame0 = Vec::with_capacity(num_envs);
     let mut lane_replays: Vec<Vec<SpaceValue>> = Vec::with_capacity(num_envs);
     for (lane, raw_steps) in lane_raw_steps.into_iter().enumerate() {
-        // The lane assembled at the episode's last counted step; a route that
-        // counts none holds no per-step state, so the value goes unread.
+        // Frame `k` executes at `step + k`, where `step` is where the frames
+        // the runtime still holds queued end: the episode's last counted step
+        // when nothing is queued, or past the last recorded action under an
+        // async prefetch lead. A route that counts none holds no per-step
+        // state, so the value goes unread.
         let episode_id = episodes
             .get(lane)
             .map_or("", |episode| episode.episode_id.as_str());
-        let step = buffers.last_step(episode_id).unwrap_or(0);
+        let step = buffers.chunk_start(episode_id);
         let mut applied = raw_steps
             .into_iter()
             .enumerate()
@@ -3002,6 +3005,50 @@ mod fused_route_tests {
         assert_eq!(
             recorder.inputs.lock().unwrap().clone(),
             vec![vec![1.0, 0.0, 0.0], vec![5.0, 13.0, 23.0]]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_previous_action_part_under_a_prefetch_lead_reads_the_frame_that_executed() {
+        // execution_horizon 4 with a prefetch lead of 1: the re-plan is
+        // requested at step 3, one frame before the first chunk runs out, so
+        // its own observation is step 3 but its frames execute from step 4.
+        // The predict at step 7 must read call 1's frame 2 (executed at 6),
+        // not frame 3, which the request's own step would have recorded there.
+        let (mut handler, recorder, _) = previous_handler("env-lead", PREVIOUS_MODEL_SPEC, true, 4)
+            .await
+            .unwrap();
+        handler
+            .predict_chunked(g_predict("env-lead", "ep", Some(0), 1.0, &[]))
+            .await
+            .expect("first predict");
+        handler
+            .predict_chunked(g_predict(
+                "env-lead",
+                "ep",
+                Some(3),
+                4.0,
+                &[(1, 2.0), (2, 3.0)],
+            ))
+            .await
+            .expect("prefetched re-plan");
+        handler
+            .predict_chunked(g_predict(
+                "env-lead",
+                "ep",
+                Some(7),
+                8.0,
+                &[(4, 5.0), (5, 6.0), (6, 7.0)],
+            ))
+            .await
+            .expect("second prefetched re-plan");
+        assert_eq!(
+            recorder.inputs.lock().unwrap().clone(),
+            vec![
+                vec![1.0, 0.0, 0.0],
+                vec![4.0, 12.0, 22.0],
+                vec![8.0, 112.0, 122.0]
+            ]
         );
     }
 
