@@ -33,15 +33,19 @@ use super::model::{InputNode, ModelLeaf, ModelSpec};
 
 /// Reject any bare unknown field **or** unknown leaf kind in an env spec (the
 /// PUBLISH gate: an author's own core must understand every kind and bare field).
+/// The role identity rules (a closed kind prefix, no part on a legacy `_2`
+/// role) are part of the same door: they hold under every role policy.
 pub fn reject_unknowns_env(tags: &EnvTags) -> Result<(), String> {
     walk_obs(&tags.observation, &NodePath::root(), true)?;
-    reject_action(&tags.action)
+    reject_action(&tags.action)?;
+    reject_unsanctioned_roles_env(tags, RolePolicy::Passthrough)
 }
 
 /// Reject any bare unknown field **or** unknown leaf kind in a model spec.
 pub fn reject_unknowns_model(spec: &ModelSpec) -> Result<(), String> {
     walk_input(&spec.input, &NodePath::root(), true)?;
-    reject_action(&spec.output)
+    reject_action(&spec.output)?;
+    reject_unsanctioned_roles_model(spec, RolePolicy::Passthrough)
 }
 
 /// Reject only *bare* unknown fields in an env spec, tolerating unknown kinds
@@ -58,8 +62,9 @@ pub fn reject_bare_fields_model(spec: &ModelSpec) -> Result<(), String> {
     reject_action(&spec.output)
 }
 
-/// The publish-gate policy for ad-hoc (unregistered) roles, from most to least
-/// permissive.
+/// The publish-gate policy for ad-hoc (unregistered) roles and parts, from
+/// most to least permissive. A part is governed by the same tier as a role:
+/// it is the same kind of vocabulary, grown the same way.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RolePolicy {
     /// Every role passes -- the open vocabulary (an authoring nudge only). The
@@ -82,21 +87,51 @@ impl RolePolicy {
             RolePolicy::Forbid => crate::roles::registry::is_known_role(role),
         }
     }
+
+    /// Whether `part` is allowed under this policy (the same tiers as a role).
+    fn allows_part(self, part: &str) -> bool {
+        match self {
+            RolePolicy::Passthrough => true,
+            RolePolicy::Strict => crate::roles::parts::is_sanctioned_part(part),
+            RolePolicy::Forbid => crate::roles::parts::is_known_part(part),
+        }
+    }
 }
 
-/// Reject one role that `policy` disallows.
-fn reject_role(role: &str, locus: &str, policy: RolePolicy) -> Result<(), String> {
-    if policy.allows(role) {
-        return Ok(());
+/// Reject one `(role, part)` that `policy` disallows, or whose identity is
+/// malformed under any policy (an unknown kind prefix, a part on a legacy
+/// `_2` role).
+fn reject_role(
+    role: &str,
+    part: Option<&str>,
+    locus: &str,
+    policy: RolePolicy,
+) -> Result<(), String> {
+    crate::roles::registry::check_role(role, part)
+        .map_err(|reason| format!("{locus}: {reason}"))?;
+    if !policy.allows(role) {
+        let hint = if policy == RolePolicy::Forbid {
+            "use a blessed role (this gate forbids every unregistered role, including the `x/` escape)"
+        } else {
+            "use a blessed role, or the `x/` escape namespace for an intentionally non-standard one"
+        };
+        return Err(format!(
+            "{locus} declares unregistered role {role:?}; {hint}"
+        ));
     }
-    let hint = if policy == RolePolicy::Forbid {
-        "use a blessed role (this gate forbids every unregistered role, including the `x/` escape)"
-    } else {
-        "use a blessed role, or the `x/` escape namespace for an intentionally non-standard one"
-    };
-    Err(format!(
-        "{locus} declares unregistered role {role:?}; {hint}"
-    ))
+    if let Some(part) = part
+        && !policy.allows_part(part)
+    {
+        let hint = if policy == RolePolicy::Forbid {
+            "use a registered part (this gate forbids every unregistered part, including the `x/` escape)"
+        } else {
+            "use a registered part, or the `x/` escape namespace for an intentionally non-standard one"
+        };
+        return Err(format!(
+            "{locus} declares unregistered part {part:?} on role {role:?}; {hint}"
+        ));
+    }
+    Ok(())
 }
 
 /// Reject any role an env spec declares that `policy` disallows. A separate pass
@@ -128,14 +163,14 @@ fn walk_obs_roles(node: &ObsNode, path: &NodePath, policy: RolePolicy) -> Result
 fn obs_leaf_roles(leaf: &ObsLeaf, path: &NodePath, policy: RolePolicy) -> Result<(), String> {
     let locus = format!("observation {:?}", path.to_string());
     match leaf {
-        ObsLeaf::Image(tag) => reject_role(&tag.role, &locus, policy),
-        ObsLeaf::State(tag) => reject_role(&tag.role, &locus, policy),
-        ObsLeaf::Text(tag) => reject_role(&tag.role, &locus, policy),
+        ObsLeaf::Image(tag) => reject_role(&tag.role, tag.part.as_deref(), &locus, policy),
+        ObsLeaf::State(tag) => reject_role(&tag.role, tag.part.as_deref(), &locus, policy),
+        ObsLeaf::Text(tag) => reject_role(&tag.role, None, &locus, policy),
         ObsLeaf::Split(layout) => layout
             .fields
             .iter()
             .try_for_each(|field| match &field.role {
-                Some(role) => reject_role(role, &locus, policy),
+                Some(role) => reject_role(role, field.part.as_deref(), &locus, policy),
                 None => Ok(()),
             }),
         ObsLeaf::Unknown { .. } => Ok(()),
@@ -157,15 +192,19 @@ fn walk_input_roles(node: &InputNode, path: &NodePath, policy: RolePolicy) -> Re
 fn model_leaf_roles(leaf: &ModelLeaf, path: &NodePath, policy: RolePolicy) -> Result<(), String> {
     let locus = format!("model input {:?}", path.to_string());
     match leaf {
-        ModelLeaf::Image(input) => reject_role(&input.role, &locus, policy),
+        ModelLeaf::Image(input) => reject_role(&input.role, input.part.as_deref(), &locus, policy),
         // A role-less part is a declared constant, not a role claim: there is
         // nothing for the role tier to sanction.
         ModelLeaf::State(input) => input
             .components
             .iter()
-            .filter_map(|part| part.role.as_deref())
-            .try_for_each(|role| reject_role(role, &locus, policy)),
-        ModelLeaf::Text(input) => reject_role(&input.role, &locus, policy),
+            .filter_map(|part| {
+                part.role
+                    .as_deref()
+                    .map(|role| (role, part.part.as_deref()))
+            })
+            .try_for_each(|(role, part)| reject_role(role, part, &locus, policy)),
+        ModelLeaf::Text(input) => reject_role(&input.role, None, &locus, policy),
         ModelLeaf::Custom(_) | ModelLeaf::Unknown { .. } => Ok(()),
     }
 }
@@ -173,7 +212,12 @@ fn model_leaf_roles(leaf: &ModelLeaf, path: &NodePath, policy: RolePolicy) -> Re
 fn reject_action_roles(action: &Action, policy: RolePolicy) -> Result<(), String> {
     for (index, actuator) in action.components.iter().enumerate() {
         if let Some(role) = &actuator.role {
-            reject_role(role, &format!("action component[{index}]"), policy)?;
+            reject_role(
+                role,
+                actuator.part.as_deref(),
+                &format!("action component[{index}]"),
+                policy,
+            )?;
         }
     }
     Ok(())
@@ -641,5 +685,59 @@ mod tests {
         .unwrap();
         let err = reject_unsanctioned_roles_model(&bad_model, RolePolicy::Strict).unwrap_err();
         assert!(err.contains("proprio/made_up"), "{err}");
+    }
+
+    #[test]
+    fn parts_follow_the_role_tiers_and_kinds_hold_at_the_publish_door() {
+        use super::{RolePolicy, reject_unsanctioned_roles_env, reject_unsanctioned_roles_model};
+
+        // A registered part passes every tier; an ad-hoc one is nudged only,
+        // Strict refuses it, and `x/` is the escape Strict allows and Forbid does not.
+        let registered: EnvTags = serde_json::from_str(
+            r#"{"observation": {"l": {"type": "state", "role": "proprio/eef_pos", "part": "left_arm"}},
+                "action": {"components": [{"role": "action/gripper", "dim": 1, "part": "left_arm"}]}}"#,
+        )
+        .unwrap();
+        assert!(reject_unsanctioned_roles_env(&registered, RolePolicy::Forbid).is_ok());
+
+        let ad_hoc: EnvTags = serde_json::from_str(
+            r#"{"observation": {"l": {"type": "state", "role": "proprio/eef_pos", "part": "franka"}},
+                "action": {"components": []}}"#,
+        )
+        .unwrap();
+        assert!(reject_unsanctioned_roles_env(&ad_hoc, RolePolicy::Passthrough).is_ok());
+        let err = reject_unsanctioned_roles_env(&ad_hoc, RolePolicy::Strict).unwrap_err();
+        assert!(
+            err.contains(r#"unregistered part "franka" on role "proprio/eef_pos""#),
+            "{err}"
+        );
+
+        let escaped: ModelSpec = serde_json::from_str(
+            r#"{"input": {"type": "state", "components": [{"role": "proprio/eef_pos", "part": "x/tail"}]},
+                "output": {"components": [{"role": "action/gripper", "dim": 1, "part": "x/tail"}]}}"#,
+        )
+        .unwrap();
+        assert!(reject_unsanctioned_roles_model(&escaped, RolePolicy::Strict).is_ok());
+        let err = reject_unsanctioned_roles_model(&escaped, RolePolicy::Forbid).unwrap_err();
+        assert!(err.contains("including the `x/` escape"), "{err}");
+
+        // The identity rules are not a tier: an unknown kind prefix and a part
+        // on a legacy `_2` role fail the publish door under every policy.
+        let bad_kind: EnvTags = serde_json::from_str(
+            r#"{"observation": {"l": {"type": "state", "role": "audio/mic"}},
+                "action": {"components": []}}"#,
+        )
+        .unwrap();
+        let err = reject_unknowns_env(&bad_kind).unwrap_err();
+        assert!(err.contains("kind this core does not define"), "{err}");
+        let aliased: ModelSpec = serde_json::from_str(
+            r#"{"input": {"type": "text", "role": "text/instruction"},
+                "output": {"components": [{"role": "action/gripper_2", "dim": 1, "part": "left_arm"}]}}"#,
+        )
+        .unwrap();
+        let err = reject_unknowns_model(&aliased).unwrap_err();
+        assert!(err.contains("legacy spelling"), "{err}");
+        // The READ taint stays tolerant of both (resolve is where they fail).
+        assert!(reject_bare_fields_env(&bad_kind).is_ok());
     }
 }

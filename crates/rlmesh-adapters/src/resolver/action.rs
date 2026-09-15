@@ -2,10 +2,11 @@
 
 use std::collections::BTreeMap;
 
-use super::{Result, check_geometry, err};
+use super::state::part_suffix;
+use super::{Indexed, LeafKey, Result, bind, check_geometry, err, index_by_key};
 use crate::advisory::Advisory;
 use crate::error::ErrorCode;
-use crate::fmt::{quoted, quoted_encoding, quoted_keys};
+use crate::fmt::{quoted, quoted_encoding, quoted_leaf_keys};
 use crate::plans::{ActionPlan, ActionSegment};
 use crate::spec::{Action, Actuator, Attr};
 
@@ -126,20 +127,14 @@ pub(super) fn plan_action(
                 .to_owned(),
         ));
     }
-    let mut offsets: BTreeMap<String, (u32, &Actuator)> = BTreeMap::new();
+    // Model outputs keyed by `(role, part)`, each with its start offset. A
+    // role-less (opaque) model actuator emits dims the env ignores: it advances
+    // the cursor but is matched by nothing, so only roled components are keyed.
+    let mut placed: Vec<(&str, Option<&str>, (u32, &Actuator))> = Vec::new();
     let mut cursor: u32 = 0;
     for component in &model.components {
-        // A role-less (opaque) model actuator emits dims the env ignores: it
-        // advances the cursor but is matched by nothing, so only roled components
-        // join the offset map.
         if let Some(role) = &component.role {
-            if offsets.contains_key(role) {
-                return Err(err(
-                    ErrorCode::Duplicate,
-                    format!("duplicate model action role {}", quoted(role)),
-                ));
-            }
-            offsets.insert(role.clone(), (cursor, component));
+            placed.push((role, component.part.as_deref(), (cursor, component)));
         }
         cursor = cursor.checked_add(component.dim).ok_or_else(|| {
             err(
@@ -149,9 +144,11 @@ pub(super) fn plan_action(
         })?;
     }
     let in_dim = cursor;
+    let offsets: BTreeMap<LeafKey, Indexed<(u32, &Actuator)>> =
+        index_by_key(placed.into_iter(), "model action")?;
 
     let mut segments: Vec<ActionSegment> = Vec::with_capacity(env.components.len());
-    let mut seen_env_roles: BTreeMap<&str, ()> = BTreeMap::new();
+    let mut seen_env: BTreeMap<LeafKey, ()> = BTreeMap::new();
     for env_component in &env.components {
         // A role-less (opaque) env actuator occupies its dims with a constant
         // fill, matched by no model output (the action-side mirror of a role-less
@@ -175,21 +172,45 @@ pub(super) fn plan_action(
                 clip: None,
                 frame: None,
                 reference: None,
+                part: None,
                 fill: Some((env_component.dim, env_component.fill)),
             });
             continue;
         };
-        if seen_env_roles.insert(role.as_str(), ()).is_some() {
+        let env_key = {
+            let (role, part) =
+                crate::roles::registry::canonical(role, env_component.part.as_deref());
+            (role.to_owned(), part.map(str::to_owned))
+        };
+        if seen_env.insert(env_key.clone(), ()).is_some() {
             // Mirror the model-side dedup above (and the env-side StateLayout
             // role check): a role repeated in the env layout would resolve
             // every copy against the same model slice, building the env action
             // by repetition instead of a real mapping.
             return Err(err(
                 ErrorCode::Duplicate,
-                format!("duplicate env action role {}", quoted(role)),
+                match &env_key.1 {
+                    Some(part) => format!(
+                        "duplicate env action role {} under part {}",
+                        quoted(&env_key.0),
+                        quoted(part)
+                    ),
+                    None => format!("duplicate env action role {}", quoted(&env_key.0)),
+                },
             ));
         }
-        let Some(&(start, model_component)) = offsets.get(role) else {
+        // The env actuator is the seeker here: it looks for the model output
+        // that drives it, under the same part rules a model input follows.
+        let bound = bind(
+            &offsets,
+            role,
+            env_component.part.as_deref(),
+            "env action",
+            "role",
+            "model",
+            advisories,
+        )?;
+        let Some(bound) = bound else {
             // An optional roled actuator the model does not output falls back to
             // its constant `fill` -- the action-side mirror of a model input's
             // `optional` zero-fill, reusing the opaque branch's fill segment. The
@@ -214,6 +235,7 @@ pub(super) fn plan_action(
                     clip: None,
                     frame: None,
                     reference: None,
+                    part: env_component.part.clone(),
                     fill: Some((env_component.dim, env_component.fill)),
                 });
                 continue;
@@ -221,12 +243,14 @@ pub(super) fn plan_action(
             return Err(err(
                 ErrorCode::MissingRole,
                 format!(
-                    "env action needs role {} but the model only outputs {}",
+                    "env action needs role {}{} but the model only outputs {}",
                     quoted(role),
-                    quoted_keys(&offsets)
+                    part_suffix(env_component.part.as_deref()),
+                    quoted_leaf_keys(&offsets)
                 ),
             ));
         };
+        let (start, model_component) = *bound.feature;
         check_action_dims(model_component, env_component, role)?;
         // clip is an env-side clamp to the env actuator's range; it has no meaning
         // on the model output (whose range is a mapping source, not a final bound).
@@ -320,6 +344,7 @@ pub(super) fn plan_action(
             clip,
             frame,
             reference,
+            part: bound.part,
             fill: None,
         });
     }
@@ -351,6 +376,7 @@ mod tests {
             optional: false,
             unknown: Default::default(),
             frame: None,
+            part: None,
             reference: None,
         }
     }
@@ -370,6 +396,7 @@ mod tests {
             optional: false,
             unknown: Default::default(),
             frame: None,
+            part: None,
             reference: None,
         }
     }

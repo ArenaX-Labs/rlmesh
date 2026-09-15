@@ -44,6 +44,11 @@ pub struct StatePiece {
     /// declared one (`None` when both were silent). Rendered by `describe`; the
     /// disagreement it would represent is already a resolve error.
     pub frame: Option<FrameRef>,
+    /// The body part this piece was bound under, when a side declared one:
+    /// the model's own `part`, else the env leaf's. Rendered by `describe` as
+    /// `#part`; `None` when neither side named one, so every pre-`part`
+    /// summary is unchanged.
+    pub part: Option<String>,
     /// Resolved output width of this piece, when statically known (`None` when
     /// the env feature declares no width and nothing else fixes it). A
     /// host-side custom encoding addresses its own slice of a multi-part state

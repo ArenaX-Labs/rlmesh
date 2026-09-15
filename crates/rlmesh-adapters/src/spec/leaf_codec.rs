@@ -60,6 +60,11 @@ macro_rules! leaf_codec {
         /// lives in one derive, not hand-rolled dispatch.
         #[derive(serde::Deserialize)]
         #[serde(tag = "type", rename_all = "lowercase")]
+        #[allow(
+            clippy::large_enum_variant,
+            reason = "a transient decode mirror of the leaf enum, which carries the same \
+                      allowance; it lives only until the `From` lift below"
+        )]
         enum $known {
             $( $variant($payload) ),+
         }

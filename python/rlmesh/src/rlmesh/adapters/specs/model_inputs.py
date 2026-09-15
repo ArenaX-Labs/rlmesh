@@ -144,6 +144,12 @@ class Image:
             it before the run; resolution then fails with ``RenderMismatch`` if
             the camera it bound does not actually render at this size. Declare
             it instead of pinning the env's camera width/height by hand.
+        part: The body part the wanted camera sits on, when the role repeats
+            across a body (``"head"``, ``"left_arm"``, ...): an identity key
+            the resolver matches on. Naming one binds only that camera; naming
+            none binds the env's only camera of the role under any part (with
+            an ``info``) and fails when there are several. Keyword-only and
+            omitted from the wire when unset.
     """
 
     role: str
@@ -171,6 +177,7 @@ class Image:
     render: int | tuple[int, int] | None = field(default=None, kw_only=True)
     offsets: StackSpec | None = field(default=None, kw_only=True)
     stack_pad: StackPad = field(default="first", kw_only=True)
+    part: str | None = field(default=None, kw_only=True)
     size: InitVar[int | None] = None
     # Kw-only like the fields it sugars, so the positional signature stays
     # exactly what specs were written against.
@@ -350,7 +357,8 @@ class State:
     The 1-part case: one role packed into the value, sourced from an env state
     feature. Use :class:`Concat` to pack several roles into one tensor. A
     ``State`` is also a valid :class:`Concat` part (its part fields -- ``role``,
-    ``encoding``, ``dim``, ``index``, ``optional``, ``range`` -- are taken; its
+    ``encoding``, ``dim``, ``index``, ``optional``, ``range``, ``fill``,
+    ``post_rotate``, ``scale``, ``offset``, ``frame``, ``part`` -- are taken; its
     container fields must stay default when used as a part).
 
     There is no ``key`` -- placement in the input tree *is* the payload position.
@@ -388,6 +396,13 @@ class State:
             and omitted from the wire when unset. A frame the env contradicts
             fails resolution; a frame the env does not declare draws a caution
             (the model states a requirement nothing can confirm).
+        part: The body part this part reads, when the role repeats across a
+            body (``"left_arm"``, ``"right_arm"``, ...): an identity key the
+            resolver matches on. Naming one binds only that env leaf (a missing
+            one fills if ``optional``, else fails); naming none binds the env's
+            only leaf of the role under any part (with an ``info``) and fails
+            when there are several, naming them. Keyword-only and omitted from
+            the wire when unset.
         pad_to: Zero-pad the resulting vector to this length. Padding is the
             last step: every part is converted, ranged and scaled, the parts are
             concatenated in order, and only then is the result padded.
@@ -409,6 +424,7 @@ class State:
     scale: float | None = field(default=None, kw_only=True)
     offset: float | None = field(default=None, kw_only=True)
     frame: Frame | None = field(default=None, kw_only=True)
+    part: str | None = field(default=None, kw_only=True)
     pad_to: int | None = None
     dtype: str = "float32"
     reshape: tuple[int, ...] | None = None

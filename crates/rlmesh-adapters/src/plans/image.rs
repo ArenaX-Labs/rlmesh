@@ -96,4 +96,8 @@ pub struct ImagePlan {
     /// to the env's single camera under a different role than the model asked
     /// for. Surfaced as a resolve advisory; `None` for an exact role match.
     pub role_rebound: Option<(String, String)>,
+    /// The body part this camera was bound under, when a side declared one
+    /// (the model's own `part`, else the env camera's). Rendered by `describe`
+    /// as `#part`.
+    pub part: Option<String>,
 }

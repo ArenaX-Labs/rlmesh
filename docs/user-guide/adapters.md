@@ -172,6 +172,6 @@ The system targets the manipulation/VLA case: RGB cameras, proprioception, and a
 
 ## Where next
 
-- {doc}`adapters/reference`: the full role registry (including the bimanual `_2` variants), every field on every leaf, the rotation/layout/fit vocabularies, the conversion policy (silent / advisory / opt-in / error), and how to match your model's shape.
+- {doc}`adapters/reference`: the full role registry, the parts vocabulary (where a role repeats on a body, and the legacy bimanual `_2` roles), every field on every leaf, the rotation/layout/fit vocabularies, the conversion policy (silent / advisory / opt-in / error), and how to match your model's shape.
 - {doc}`adapters/escape-hatches`: {class}`~rlmesh.adapters.Custom` inputs, {class}`~rlmesh.adapters.AdapterBase` subclasses, pair overrides, and {class}`~rlmesh.adapters.CustomEncoding`.
 - {doc}`../api/adapters`: the autodoc signatures for every symbol above.

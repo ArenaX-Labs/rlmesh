@@ -909,6 +909,7 @@ mod tests {
                 stack_pad,
                 frame_bytes: 3,
                 role_rebound: None,
+                part: None,
             })],
             ActionPlan {
                 segments: vec![],

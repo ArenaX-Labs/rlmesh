@@ -119,6 +119,24 @@ pub(super) fn check_geometry(
     }
 }
 
+/// The identity a leaf binds by: its canonical `(role, part)` -- the legacy
+/// `_2` spelling folded onto `(base, "arm_2")` by
+/// [`canonical`](crate::roles::registry::canonical), so both spellings meet
+/// on one key.
+pub(super) type LeafKey = (String, Option<String>);
+
+/// A leaf indexed under its [`LeafKey`], keeping the part it *declared* (which
+/// the alias fold may differ from) for `describe`.
+pub(super) struct Indexed<T> {
+    pub declared_part: Option<String>,
+    pub feature: T,
+}
+
+fn leaf_key(role: &str, part: Option<&str>) -> LeafKey {
+    let (role, part) = crate::roles::registry::canonical(role, part);
+    (role.to_owned(), part.map(str::to_owned))
+}
+
 fn index_by_role<'spec, T>(
     features: impl Iterator<Item = (&'spec String, T)>,
     label: &str,
@@ -134,6 +152,156 @@ fn index_by_role<'spec, T>(
         by_role.insert(role.clone(), feature);
     }
     Ok(by_role)
+}
+
+/// Index leaves by `(role, part)`: a role may repeat across parts (one
+/// `proprio/eef_pos` per arm), never within one.
+pub(super) fn index_by_key<'spec, T>(
+    features: impl Iterator<Item = (&'spec str, Option<&'spec str>, T)>,
+    label: &str,
+) -> Result<BTreeMap<LeafKey, Indexed<T>>> {
+    let mut by_key: BTreeMap<LeafKey, Indexed<T>> = BTreeMap::new();
+    for (role, part, feature) in features {
+        let key = leaf_key(role, part);
+        if by_key.contains_key(&key) {
+            return Err(err(
+                ErrorCode::Duplicate,
+                match &key.1 {
+                    Some(part) => format!(
+                        "duplicate {label} role {} under part {}",
+                        quoted(&key.0),
+                        quoted(part)
+                    ),
+                    None => format!("duplicate {label} role {}", quoted(&key.0)),
+                },
+            ));
+        }
+        by_key.insert(
+            key,
+            Indexed {
+                declared_part: part.map(str::to_owned),
+                feature,
+            },
+        );
+    }
+    Ok(by_key)
+}
+
+/// Whether any indexed leaf carries `role` (under any part).
+pub(super) fn has_role<T>(by_key: &BTreeMap<LeafKey, Indexed<T>>, role: &str) -> bool {
+    let (role, _) = crate::roles::registry::canonical(role, None);
+    by_key.keys().any(|(indexed, _)| indexed == role)
+}
+
+/// What a seeker found for `(role, part)` among the other side's leaves.
+pub(super) struct Bound<'a, T> {
+    pub feature: &'a T,
+    /// The part to print: the seeker's own when it named one, else the part
+    /// the leaf was bound under.
+    pub part: Option<String>,
+}
+
+/// The `part` identity rules, shared by every planner. `seeker` names who is
+/// looking (`model input "state"`, `env action`), `what` the role's kind word
+/// (`state role`), `offerer` whose leaves are searched (`env`, `model`).
+///
+/// - A named part binds only that leaf; it never rebinds (`Ok(None)` when the
+///   offerer lacks it, for the caller's optional/fill fallback or error).
+/// - No part binds the offerer's part-less leaf when there is one; else its
+///   *only* leaf of that role under any part, with an `info` naming the bind;
+///   else, several candidates are a [`MissingRole`](ErrorCode::MissingRole)
+///   that names the parts -- ambiguity is never guessed through.
+pub(super) fn bind<'a, T>(
+    by_key: &'a BTreeMap<LeafKey, Indexed<T>>,
+    role: &str,
+    part: Option<&str>,
+    seeker: &str,
+    what: &str,
+    offerer: &str,
+    advisories: &mut Vec<Advisory>,
+) -> Result<Option<Bound<'a, T>>> {
+    let key = leaf_key(role, part);
+    if let Some(indexed) = by_key.get(&key) {
+        return Ok(Some(Bound {
+            feature: &indexed.feature,
+            part: part
+                .map(str::to_owned)
+                .or_else(|| indexed.declared_part.clone()),
+        }));
+    }
+    if key.1.is_some() {
+        return Ok(None);
+    }
+    let candidates: Vec<(&str, &Indexed<T>)> = by_key
+        .iter()
+        .filter_map(|((indexed_role, indexed_part), indexed)| {
+            (*indexed_role == key.0)
+                .then_some(indexed_part.as_deref())
+                .flatten()
+                .map(|part| (part, indexed))
+        })
+        .collect();
+    match candidates.as_slice() {
+        [] => Ok(None),
+        [(bound_part, indexed)] => {
+            advisories.push(Advisory::info(format!(
+                "{seeker}: {what} {} declares no part and the {offerer} declares it only under \
+                 part {}; bound to that leaf (declare part= to pin it)",
+                quoted(role),
+                quoted(bound_part)
+            )));
+            Ok(Some(Bound {
+                feature: &indexed.feature,
+                part: Some((*bound_part).to_owned()),
+            }))
+        }
+        several => Err(err(
+            ErrorCode::MissingRole,
+            format!(
+                "{seeker} needs {what} {} but the {offerer} declares it under parts {:?}; \
+                 declare part=",
+                quoted(role),
+                several.iter().map(|(part, _)| *part).collect::<Vec<_>>()
+            ),
+        )),
+    }
+}
+
+/// Enforce the role identity rules on the model side (the env side runs them
+/// at `join`): the closed kind set and the alias-versus-part rule. A newer
+/// peer's kind still parses and relays; it fails here, named by placement.
+fn check_model_roles(model_spec: &ModelSpec) -> Result<()> {
+    let check = |role: &str, part: Option<&str>, locus: String| {
+        crate::roles::registry::check_role(role, part).map_err(|reason| {
+            err(
+                ErrorCode::UnsupportedKind,
+                format!("{locus}: {reason}; if a newer peer wrote it, upgrade the runtime"),
+            )
+        })
+    };
+    let mut leaves: Vec<PlacedLeaf> = Vec::new();
+    collect_leaves(&model_spec.input, NodePath::root(), &mut leaves);
+    for PlacedLeaf { leaf, placement } in &leaves {
+        let locus = || format!("model input {}", quoted(&placement.to_string()));
+        match leaf {
+            ModelLeaf::Image(input) => check(&input.role, input.part.as_deref(), locus())?,
+            ModelLeaf::State(input) => {
+                for part in &input.components {
+                    if let Some(role) = &part.role {
+                        check(role, part.part.as_deref(), locus())?;
+                    }
+                }
+            }
+            ModelLeaf::Text(input) => check(&input.role, None, locus())?,
+            ModelLeaf::Custom(_) | ModelLeaf::Unknown { .. } => {}
+        }
+    }
+    for actuator in &model_spec.output.components {
+        if let Some(role) = &actuator.role {
+            check(role, actuator.part.as_deref(), "model action".to_owned())?;
+        }
+    }
+    Ok(())
 }
 
 /// One model input leaf paired with its placement (tree position) in the
@@ -189,6 +357,7 @@ pub fn resolve(
         .map_err(|message| err(ErrorCode::UnsupportedKind, message))?;
     crate::spec::reject_bare_fields_model(model_spec)
         .map_err(|message| err(ErrorCode::UnsupportedKind, message))?;
+    check_model_roles(model_spec)?;
 
     let env_spec = join(env_tags, observation_space, action_space)
         .map_err(|error| err(ErrorCode::InvalidTag, error.to_string()))?;
@@ -196,14 +365,14 @@ pub fn resolve(
         .observation
         .iter()
         .filter_map(|feature| match feature {
-            EnvFeature::Image(image) => Some((&image.role, image)),
+            EnvFeature::Image(image) => Some((image.role.as_str(), image.part.as_deref(), image)),
             _ => None,
         });
     let states = env_spec
         .observation
         .iter()
         .filter_map(|feature| match feature {
-            EnvFeature::State(state) => Some((&state.role, state)),
+            EnvFeature::State(state) => Some((state.role.as_str(), state.part.as_deref(), state)),
             _ => None,
         });
     let texts = env_spec
@@ -213,8 +382,8 @@ pub fn resolve(
             EnvFeature::Text(text) => Some((&text.role, text)),
             _ => None,
         });
-    let images_by_role: BTreeMap<String, &EnvImage> = index_by_role(images, "env image")?;
-    let states_by_role: BTreeMap<String, &EnvState> = index_by_role(states, "env state")?;
+    let images_by_role: BTreeMap<LeafKey, Indexed<&EnvImage>> = index_by_key(images, "env image")?;
+    let states_by_role: BTreeMap<LeafKey, Indexed<&EnvState>> = index_by_key(states, "env state")?;
     let texts_by_role: BTreeMap<String, &EnvText> = index_by_role(texts, "env text")?;
 
     // Side table for referenced-unknown detection: a role the env declares only
@@ -247,6 +416,7 @@ pub fn resolve(
                 placement,
                 &images_by_role,
                 &unknown_roles,
+                &mut quiet,
             )?),
             ModelLeaf::State(input) => ObsPlan::State(state::plan_state(
                 input,
@@ -306,24 +476,60 @@ pub fn resolve(
     let mut leaves: Vec<PlacedLeaf> = Vec::new();
     collect_leaves(&model_spec.input, NodePath::root(), &mut leaves);
     let mut ad_hoc: BTreeSet<&str> = BTreeSet::new();
+    // Model-side ad-hoc parts: an identity key, so a private spelling binds
+    // only itself -- the same nudge an ad-hoc role gets at join.
+    let mut ad_hoc_parts: BTreeSet<&str> = BTreeSet::new();
     for PlacedLeaf { leaf, .. } in &leaves {
         match leaf {
-            ModelLeaf::Image(input) if !images_by_role.contains_key(&input.role) => {
-                ad_hoc.insert(&input.role);
+            ModelLeaf::Image(input) => {
+                if !has_role(&images_by_role, &input.role) {
+                    ad_hoc.insert(&input.role);
+                }
+                ad_hoc_parts.extend(input.part.as_deref());
             }
-            ModelLeaf::State(input) => ad_hoc.extend(
-                input
-                    .components
-                    .iter()
-                    .filter_map(|part| part.role.as_deref())
-                    .filter(|role| !states_by_role.contains_key(*role)),
-            ),
+            ModelLeaf::State(input) => {
+                ad_hoc.extend(
+                    input
+                        .components
+                        .iter()
+                        .filter_map(|part| part.role.as_deref())
+                        .filter(|role| !has_role(&states_by_role, role)),
+                );
+                ad_hoc_parts.extend(
+                    input
+                        .components
+                        .iter()
+                        .filter_map(|part| part.part.as_deref()),
+                );
+            }
             ModelLeaf::Text(input) if !texts_by_role.contains_key(&input.role) => {
                 ad_hoc.insert(&input.role);
             }
             _ => {}
         }
     }
+    ad_hoc_parts.extend(
+        model_spec
+            .output
+            .components
+            .iter()
+            .filter_map(|actuator| actuator.part.as_deref()),
+    );
+    quiet.extend(
+        ad_hoc_parts
+            .into_iter()
+            .filter(|part| !crate::roles::parts::is_sanctioned_part(part))
+            .map(|part| {
+                Advisory::info(format!(
+                    "model declares ad-hoc part {}: a part binds only on the exact string, so \
+                     prefer a registered part ({:?}), or the {} prefix to mark it \
+                     intentionally non-standard",
+                    quoted(part),
+                    crate::roles::parts::PARTS,
+                    quoted("x/"),
+                ))
+            }),
+    );
     let env_action_roles: BTreeSet<&str> = env_spec
         .action
         .components
@@ -827,5 +1033,368 @@ mod geometry_rule_tests {
                 error.message
             );
         }
+    }
+}
+
+/// The `part` identity rules (section 3 of the parts design), end to end.
+#[cfg(test)]
+mod part_tests {
+    use super::resolve;
+    use crate::advisory::AdvisorySeverity;
+    use crate::error::ErrorCode;
+    use crate::space_view::SpaceView;
+    use crate::spec::{EnvTags, ModelSpec};
+
+    fn space(json: &str) -> SpaceView {
+        serde_json::from_str(json).expect("parse space")
+    }
+
+    fn do_resolve(
+        env_tags: &str,
+        obs_space: &str,
+        action_space: &str,
+        model_spec: &str,
+    ) -> Result<crate::plans::ResolvedAdapter, crate::error::AdapterResolutionError> {
+        let tags: EnvTags = serde_json::from_str(env_tags).expect("parse env tags");
+        let spec: ModelSpec = serde_json::from_str(model_spec).expect("parse model spec");
+        resolve(&tags, &space(obs_space), &space(action_space), &spec, false)
+    }
+
+    const ACTION_SPACE: &str = r#"{"kind":"box","shape":[1],"dtype":"float32"}"#;
+    const ACTION_OUT: &str = r#"{"components":[{"role":"action/gripper","dim":1}]}"#;
+    const ACTION_TAGS: &str = r#"{"components":[{"role":"action/gripper","dim":1}]}"#;
+    const TWO_POS: &str = r#"{"kind":"dict","dtype":"unspecified","keys":["l","r"],"children":[
+        {"kind":"box","shape":[3],"dtype":"float32"},
+        {"kind":"box","shape":[3],"dtype":"float32"}]}"#;
+    const ONE_POS: &str = r#"{"kind":"dict","dtype":"unspecified","keys":["l"],"children":[
+        {"kind":"box","shape":[3],"dtype":"float32"}]}"#;
+
+    fn env_two_arms() -> String {
+        format!(
+            r#"{{"observation":{{
+                "l":{{"type":"state","role":"proprio/eef_pos","part":"left_arm"}},
+                "r":{{"type":"state","role":"proprio/eef_pos","part":"right_arm"}}}},
+                "action":{ACTION_TAGS}}}"#
+        )
+    }
+
+    fn env_one_arm(part: &str) -> String {
+        format!(
+            r#"{{"observation":{{"l":{{"type":"state","role":"proprio/eef_pos","part":{part:?}}}}},
+                "action":{ACTION_TAGS}}}"#
+        )
+    }
+
+    fn model_part(part: Option<&str>) -> String {
+        let part = part.map_or(String::new(), |part| format!(r#","part":{part:?}"#));
+        format!(
+            r#"{{"input":{{"s":{{"type":"state","components":[{{"role":"proprio/eef_pos","dim":3{part}}}]}}}},"output":{ACTION_OUT}}}"#
+        )
+    }
+
+    #[test]
+    fn a_named_part_binds_only_its_leaf_and_prints_it() {
+        let adapter = do_resolve(
+            &env_two_arms(),
+            TWO_POS,
+            ACTION_SPACE,
+            &model_part(Some("right_arm")),
+        )
+        .expect("resolves");
+        let described = adapter.describe();
+        assert!(
+            described.contains(r##""s" <- concat(r[:3]#right_arm)"##),
+            "got:\n{described}"
+        );
+        assert!(
+            adapter.advisories().is_empty(),
+            "{:?}",
+            adapter.advisories()
+        );
+    }
+
+    #[test]
+    fn no_part_against_several_parts_is_missing_role_naming_them() {
+        let err = do_resolve(&env_two_arms(), TWO_POS, ACTION_SPACE, &model_part(None))
+            .expect_err("ambiguous");
+        assert_eq!(err.code, ErrorCode::MissingRole);
+        assert!(
+            err.message
+                .contains(r#"under parts ["left_arm", "right_arm"]; declare part="#),
+            "got: {}",
+            err.message
+        );
+        // `optional` does not turn ambiguity into a fill: the env has the data.
+        let optional = format!(
+            r#"{{"input":{{"s":{{"type":"state","components":[{{"role":"proprio/eef_pos","dim":3,"optional":true}}]}}}},"output":{ACTION_OUT}}}"#
+        );
+        let err = do_resolve(&env_two_arms(), TWO_POS, ACTION_SPACE, &optional).expect_err("err");
+        assert_eq!(err.code, ErrorCode::MissingRole);
+    }
+
+    #[test]
+    fn no_part_against_one_part_rebinds_with_an_info() {
+        let adapter = do_resolve(
+            &env_one_arm("left_arm"),
+            ONE_POS,
+            ACTION_SPACE,
+            &model_part(None),
+        )
+        .expect("resolves");
+        let notes = adapter.advisories();
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert_eq!(notes[0].severity, AdvisorySeverity::Info);
+        assert!(
+            notes[0]
+                .message
+                .contains(r#"declares it only under part "left_arm"; bound to that leaf"#),
+            "{}",
+            notes[0].message
+        );
+        assert!(
+            adapter.describe().contains("l[:3]#left_arm"),
+            "got:\n{}",
+            adapter.describe()
+        );
+        assert!(!adapter.describe().contains("dropped:"));
+    }
+
+    #[test]
+    fn a_named_part_never_rebinds() {
+        // The env has the role under another part: a named part is missing,
+        // not rebound -- fill if optional, else MissingRole naming what exists.
+        let err = do_resolve(
+            &env_one_arm("left_arm"),
+            ONE_POS,
+            ACTION_SPACE,
+            &model_part(Some("torso")),
+        )
+        .expect_err("missing");
+        assert_eq!(err.code, ErrorCode::MissingRole);
+        assert!(
+            err.message.contains(r#"(part "torso")"#)
+                && err.message.contains(r#"["proprio/eef_pos#left_arm"]"#),
+            "got: {}",
+            err.message
+        );
+        let optional = format!(
+            r#"{{"input":{{"s":{{"type":"state","components":[{{"role":"proprio/eef_pos","dim":3,"part":"torso","optional":true}}]}}}},"output":{ACTION_OUT}}}"#
+        );
+        let adapter =
+            do_resolve(&env_one_arm("left_arm"), ONE_POS, ACTION_SPACE, &optional).expect("fills");
+        assert!(
+            adapter.describe().contains("zeros(3)#torso"),
+            "got:\n{}",
+            adapter.describe()
+        );
+    }
+
+    #[test]
+    fn the_legacy_second_arm_role_and_part_arm_2_bind_each_other() {
+        // A v1 `eef_pos_2` model against an env that names its second arm.
+        let model = format!(
+            r#"{{"input":{{"s":{{"type":"state","components":[{{"role":"proprio/eef_pos_2","dim":3}}]}}}},"output":{ACTION_OUT}}}"#
+        );
+        let adapter = do_resolve(&env_one_arm("arm_2"), ONE_POS, ACTION_SPACE, &model)
+            .expect("alias binds the part");
+        assert!(
+            adapter.advisories().is_empty(),
+            "{:?}",
+            adapter.advisories()
+        );
+        assert!(
+            adapter.describe().contains("l[:3]#arm_2"),
+            "{}",
+            adapter.describe()
+        );
+        // And the other way round: a parted model against a `_2` env.
+        let env = format!(
+            r#"{{"observation":{{"l":{{"type":"state","role":"proprio/eef_pos_2"}}}},"action":{ACTION_TAGS}}}"#
+        );
+        let adapter = do_resolve(&env, ONE_POS, ACTION_SPACE, &model_part(Some("arm_2")))
+            .expect("part binds the alias");
+        assert!(
+            adapter.advisories().is_empty(),
+            "{:?}",
+            adapter.advisories()
+        );
+        // The right arm is not the second arm: `_2` never guesses a side.
+        let err = do_resolve(&env_one_arm("right_arm"), ONE_POS, ACTION_SPACE, &model)
+            .expect_err("no rebind");
+        assert_eq!(err.code, ErrorCode::MissingRole);
+        assert!(
+            err.message.contains(r#"["proprio/eef_pos#right_arm"]"#),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn a_legacy_role_carrying_a_part_is_refused_on_both_sides() {
+        let model = format!(
+            r#"{{"input":{{"s":{{"type":"state","components":[{{"role":"proprio/eef_pos_2","dim":3,"part":"left_arm"}}]}}}},"output":{ACTION_OUT}}}"#
+        );
+        let err =
+            do_resolve(&env_one_arm("arm_2"), ONE_POS, ACTION_SPACE, &model).expect_err("err");
+        assert!(err.message.contains("legacy spelling"), "{}", err.message);
+        let env = format!(
+            r#"{{"observation":{{"l":{{"type":"state","role":"proprio/eef_pos_2","part":"left_arm"}}}},"action":{ACTION_TAGS}}}"#
+        );
+        let err = do_resolve(&env, ONE_POS, ACTION_SPACE, &model_part(None)).expect_err("err");
+        assert_eq!(err.code, ErrorCode::InvalidTag);
+        assert!(err.message.contains("legacy spelling"), "{}", err.message);
+    }
+
+    #[test]
+    fn an_unknown_kind_prefix_parses_and_fails_at_resolve() {
+        // The kind set is closed; a newer peer's kind relays and dies here,
+        // named. `x/` stays the whole-role escape.
+        let model = format!(
+            r#"{{"input":{{"s":{{"type":"state","components":[{{"role":"audio/mic","dim":3}}]}}}},"output":{ACTION_OUT}}}"#
+        );
+        let err =
+            do_resolve(&env_one_arm("arm_2"), ONE_POS, ACTION_SPACE, &model).expect_err("err");
+        assert_eq!(err.code, ErrorCode::UnsupportedKind);
+        assert!(
+            err.message.contains(r#"model input "s""#)
+                && err.message.contains("kind this core does not define")
+                && err.message.contains("upgrade the runtime"),
+            "{}",
+            err.message
+        );
+        let env = format!(
+            r#"{{"observation":{{"l":{{"type":"state","role":"audio/mic"}}}},"action":{ACTION_TAGS}}}"#
+        );
+        let err = do_resolve(&env, ONE_POS, ACTION_SPACE, &model_part(None)).expect_err("err");
+        assert_eq!(err.code, ErrorCode::InvalidTag);
+        let escaped = format!(
+            r#"{{"observation":{{"l":{{"type":"state","role":"x/mic"}}}},"action":{ACTION_TAGS}}}"#
+        );
+        let model = format!(
+            r#"{{"input":{{"s":{{"type":"state","components":[{{"role":"x/mic","dim":3}}]}}}},"output":{ACTION_OUT}}}"#
+        );
+        do_resolve(&escaped, ONE_POS, ACTION_SPACE, &model).expect("x/ escapes");
+    }
+
+    #[test]
+    fn an_action_role_split_by_part_binds_per_arm() {
+        let env = r#"{"observation":{"l":{"type":"state","role":"proprio/eef_pos","part":"left_arm"}},
+            "action":{"components":[
+                {"role":"action/joint_pos","dim":2,"part":"left_arm"},
+                {"role":"action/joint_pos","dim":2,"part":"right_arm"}]}}"#;
+        let model = r#"{"input":{"s":{"type":"state","components":[{"role":"proprio/eef_pos","dim":3,"part":"left_arm"}]}},
+            "output":{"components":[
+                {"role":"action/joint_pos","dim":2,"part":"right_arm"},
+                {"role":"action/joint_pos","dim":2,"part":"left_arm"}]}}"#;
+        let action_space = r#"{"kind":"box","shape":[4],"dtype":"float32"}"#;
+        let adapter = do_resolve(env, ONE_POS, action_space, model).expect("resolves");
+        let described = adapter.describe();
+        assert!(
+            described.contains(r##""action/joint_pos" <- model[2:4]#left_arm"##)
+                && described.contains(r##""action/joint_pos" <- model[0:2]#right_arm"##),
+            "got:\n{described}"
+        );
+        // A part-less env actuator binds the model's only output of the role
+        // under any part, with the same info; two candidates are an error.
+        let env_bare = r#"{"observation":{"l":{"type":"state","role":"proprio/eef_pos","part":"left_arm"}},
+            "action":{"components":[{"role":"action/joint_pos","dim":2}]}}"#;
+        let model_one = r#"{"input":{"s":{"type":"state","components":[{"role":"proprio/eef_pos","dim":3,"part":"left_arm"}]}},
+            "output":{"components":[{"role":"action/joint_pos","dim":2,"part":"left_arm"}]}}"#;
+        let adapter = do_resolve(
+            env_bare,
+            ONE_POS,
+            r#"{"kind":"box","shape":[2],"dtype":"float32"}"#,
+            model_one,
+        )
+        .expect("resolves");
+        assert!(
+            adapter.advisories().iter().any(|note| note
+                .message
+                .contains(r#"env action: role "action/joint_pos" declares no part"#)),
+            "{:?}",
+            adapter.advisories()
+        );
+        let err = do_resolve(
+            env_bare,
+            ONE_POS,
+            r#"{"kind":"box","shape":[2],"dtype":"float32"}"#,
+            model,
+        )
+        .expect_err("ambiguous");
+        assert_eq!(err.code, ErrorCode::MissingRole);
+        assert!(err.message.contains("declare part="), "{}", err.message);
+    }
+
+    #[test]
+    fn an_ad_hoc_part_draws_one_info_on_each_side() {
+        let adapter = do_resolve(
+            &env_one_arm("franka"),
+            ONE_POS,
+            ACTION_SPACE,
+            &model_part(Some("franka")),
+        )
+        .expect("resolves on exact agreement");
+        let notes: Vec<String> = adapter
+            .advisories()
+            .iter()
+            .filter(|note| note.message.contains("franka"))
+            .map(|note| note.message.clone())
+            .collect();
+        assert_eq!(notes.len(), 2, "{notes:?}");
+        assert!(
+            notes.iter().any(|note| note.contains("parts registry")),
+            "{notes:?}"
+        );
+        assert!(
+            notes.iter().any(|note| note.contains("ad-hoc part")),
+            "{notes:?}"
+        );
+        assert!(!adapter.describe().contains("dropped:"));
+        let adapter = do_resolve(
+            &env_one_arm("x/franka"),
+            ONE_POS,
+            ACTION_SPACE,
+            &model_part(Some("x/franka")),
+        )
+        .expect("resolves");
+        assert!(
+            adapter.advisories().is_empty(),
+            "{:?}",
+            adapter.advisories()
+        );
+    }
+
+    #[test]
+    fn a_parted_camera_follows_the_same_rules() {
+        let env = format!(
+            r#"{{"observation":{{"cam":{{"type":"image","role":"image/wrist","part":"left_arm"}}}},"action":{ACTION_TAGS}}}"#
+        );
+        let obs = r#"{"kind":"dict","dtype":"unspecified","keys":["cam"],"children":[
+            {"kind":"box","shape":[4,4,3],"dtype":"uint8"}]}"#;
+        let model = format!(
+            r#"{{"input":{{"pixels":{{"type":"image","role":"image/wrist"}}}},"output":{ACTION_OUT}}}"#
+        );
+        let adapter = do_resolve(&env, obs, ACTION_SPACE, &model).expect("rebinds by part");
+        assert!(
+            adapter
+                .describe()
+                .contains(r##"<- image "cam"#left_arm ("##),
+            "{}",
+            adapter.describe()
+        );
+        assert!(
+            adapter
+                .advisories()
+                .iter()
+                .all(|note| note.severity == AdvisorySeverity::Info),
+            "{:?}",
+            adapter.advisories()
+        );
+        // A named part never falls through to the lone-camera fallback.
+        let model = format!(
+            r#"{{"input":{{"pixels":{{"type":"image","role":"image/primary","part":"head"}}}},"output":{ACTION_OUT}}}"#
+        );
+        let err = do_resolve(&env, obs, ACTION_SPACE, &model).expect_err("no rebind");
+        assert_eq!(err.code, ErrorCode::MissingRole);
     }
 }

@@ -52,6 +52,11 @@ pub enum JoinError {
     StateLayoutWidthOverflow { key: String },
     #[error("state layout for {key:?} declares role {role:?} more than once")]
     DuplicateLayoutRole { key: String, role: String },
+    /// The role/part identity itself is malformed: a kind prefix this core does
+    /// not define, or a legacy `_2` role that also names a part. See
+    /// [`check_role`](crate::roles::registry::check_role).
+    #[error("{key:?}: {reason}")]
+    InvalidRole { key: String, reason: String },
     #[error(
         "{key:?} tag range {tag:?} disagrees with the space's finite bounds \
          {space:?}"
@@ -111,6 +116,16 @@ fn check_role_dim_law(role: &str, actual: u32, key: &str) -> Result<()> {
     Ok(())
 }
 
+/// Enforce the role identity rules at the env's authoring seam: the closed
+/// kind set and the alias-versus-part rule. Runs at `adapt.tag` and again at
+/// resolve, like every other join check.
+fn check_role_identity(role: &str, part: Option<&str>, key: &str) -> Result<()> {
+    crate::roles::registry::check_role(role, part).map_err(|reason| JoinError::InvalidRole {
+        key: key.to_owned(),
+        reason,
+    })
+}
+
 type Result<T> = std::result::Result<T, JoinError>;
 
 /// Join the env observation tree and action layout against their spaces.
@@ -137,20 +152,26 @@ pub fn join(
         })
         .collect();
     for feature in &observation {
-        let role = match feature {
-            EnvFeature::Image(image) => &image.role,
-            EnvFeature::State(state) => &state.role,
-            EnvFeature::Text(text) => &text.role,
+        let (role, part) = match feature {
+            EnvFeature::Image(image) => (&image.role, image.part.as_deref()),
+            EnvFeature::State(state) => (&state.role, state.part.as_deref()),
+            EnvFeature::Text(text) => (&text.role, None),
         };
         if let Some(note) = role_registry_advisory(role) {
             advisories.push(note);
         }
+        if let Some(note) = part.and_then(part_registry_advisory) {
+            advisories.push(note);
+        }
     }
     for component in &action.components {
-        if let Some(role) = &component.role
-            && let Some(note) = role_registry_advisory(role)
-        {
-            advisories.push(note);
+        if let Some(role) = &component.role {
+            if let Some(note) = role_registry_advisory(role) {
+                advisories.push(note);
+            }
+            if let Some(note) = component.part.as_deref().and_then(part_registry_advisory) {
+                advisories.push(note);
+            }
         }
     }
     Ok(EnvFeatures {
@@ -173,6 +194,21 @@ fn role_registry_advisory(role: &str) -> Option<Advisory> {
          model agree on its exact string. Prefer a blessed role, mark it intentionally \
          non-standard with an `x/` prefix, or -- for dims no model reads -- use a \
          role-less (opaque) actuator"
+    )))
+}
+
+/// One advisory if `part` is neither registered nor an `x/` escape -- the
+/// part-side twin of [`role_registry_advisory`]: a part is an identity key, so
+/// a private spelling matches only itself.
+fn part_registry_advisory(part: &str) -> Option<Advisory> {
+    if crate::roles::parts::is_sanctioned_part(part) {
+        return None;
+    }
+    Some(Advisory::info(format!(
+        "part {part:?} is not in the parts registry; it binds only when the env and model \
+         agree on its exact string. Prefer a registered part ({:?}), or mark it \
+         intentionally non-standard with an `x/` prefix",
+        crate::roles::parts::PARTS
     )))
 }
 
@@ -292,10 +328,12 @@ fn join_feature(
                     actual: describe_space(leaf),
                 });
             }
+            check_role_identity(&image.role, image.part.as_deref(), &path)?;
             let (height, width, channels) = image_hwc(&leaf.shape, image.layout);
             Ok(vec![EnvFeature::Image(EnvImage {
                 source: source.clone(),
                 role: image.role.clone(),
+                part: image.part.clone(),
                 layout: image.layout,
                 upside_down: image.upside_down,
                 height,
@@ -326,10 +364,12 @@ fn join_feature(
                 });
             }
             check_role_dim_law(&state.role, width, &path)?;
+            check_role_identity(&state.role, state.part.as_deref(), &path)?;
             let range = reconcile_range(uniform_finite_range(leaf), state.range, &path)?;
             Ok(vec![EnvFeature::State(EnvState {
                 source: source.clone(),
                 role: state.role.clone(),
+                part: state.part.clone(),
                 slice_offset: None,
                 dim: Some(width),
                 encoding: state.encoding.clone(),
@@ -346,6 +386,7 @@ fn join_feature(
                     actual: describe_space(leaf),
                 });
             }
+            check_role_identity(&text.role, None, &path)?;
             Ok(vec![EnvFeature::Text(EnvText {
                 source: source.clone(),
                 role: text.role.clone(),
@@ -387,7 +428,8 @@ fn join_split(
         });
     }
     let mut features = Vec::new();
-    let mut seen_roles: Vec<&str> = Vec::new();
+    // Keyed by `(role, part)`: one role may repeat across parts, never within one.
+    let mut seen: Vec<(&str, Option<&str>)> = Vec::new();
     let mut offset: u32 = 0;
     for field in &layout.fields {
         if let Some(role) = &field.role {
@@ -402,18 +444,20 @@ fn join_split(
                 });
             }
             check_role_dim_law(role, field.dim, &path)?;
-            if seen_roles.contains(&role.as_str()) {
+            check_role_identity(role, field.part.as_deref(), &path)?;
+            if seen.contains(&(role.as_str(), field.part.as_deref())) {
                 return Err(JoinError::DuplicateLayoutRole {
                     key: path,
                     role: role.clone(),
                 });
             }
-            seen_roles.push(role.as_str());
+            seen.push((role.as_str(), field.part.as_deref()));
             let space_range = slice_uniform_finite_range(leaf, offset, field.dim);
             let range = reconcile_range(space_range, field.range, &path)?;
             features.push(EnvFeature::State(EnvState {
                 source: source.clone(),
                 role: role.clone(),
+                part: field.part.clone(),
                 slice_offset: Some(offset),
                 dim: Some(field.dim),
                 encoding: field.encoding.clone(),
@@ -554,6 +598,7 @@ fn resolve_action(action: &Action, action_space: &SpaceView) -> Result<Action> {
             });
         }
         check_role_dim_law(role, component.dim, role)?;
+        check_role_identity(role, component.part.as_deref(), role)?;
         let space_range = slice_uniform_finite_range(action_space, offset, component.dim);
         let range = reconcile_range(space_range, component.range, role)?;
         components.push(Actuator {
@@ -676,6 +721,7 @@ mod tests {
             optional: false,
             unknown: Default::default(),
             frame: None,
+            part: None,
             reference: None,
         }
     }
@@ -724,6 +770,7 @@ mod tests {
                 role: "image/primary".to_owned(),
                 layout: Default::default(),
                 upside_down: false,
+                part: None,
                 unknown: Default::default(),
             })),
         );
@@ -735,6 +782,7 @@ mod tests {
                 range: None,
                 unknown: Default::default(),
                 frame: None,
+                part: None,
             })),
         );
         observation.insert(
@@ -839,6 +887,7 @@ mod tests {
                 range: None,
                 unknown: Default::default(),
                 frame: None,
+                part: None,
             })),
         );
         let mut root = BTreeMap::new();
@@ -877,6 +926,7 @@ mod tests {
                     range: None,
                     unknown: Default::default(),
                     frame: None,
+                    part: None,
                 })),
                 ObsNode::Leaf(ObsLeaf::Text(TextTag {
                     role: "instruction".to_owned(),
@@ -913,6 +963,7 @@ mod tests {
                     range: None,
                     unknown: Default::default(),
                     frame: None,
+                    part: None,
                 })),
                 ObsNode::Leaf(ObsLeaf::State(StateTag {
                     role: "b".to_owned(),
@@ -920,6 +971,7 @@ mod tests {
                     range: None,
                     unknown: Default::default(),
                     frame: None,
+                    part: None,
                 })),
             ]),
             action: action_layout(vec![]),
@@ -947,6 +999,7 @@ mod tests {
                     range: None,
                     unknown: Default::default(),
                     frame: None,
+                    part: None,
                 }),
             ),
             action: action_layout(vec![]),
@@ -971,6 +1024,7 @@ mod tests {
                 range: None,
                 unknown: Default::default(),
                 frame: None,
+                part: None,
             })),
             action: action_layout(vec![]),
         };
@@ -1035,6 +1089,7 @@ mod tests {
                         range: None,
                         unknown: Default::default(),
                         frame: None,
+                        part: None,
                     },
                     Field {
                         role: Some("b".to_owned()),
@@ -1043,6 +1098,7 @@ mod tests {
                         range: None,
                         unknown: Default::default(),
                         frame: None,
+                        part: None,
                     },
                 ],
             }),
@@ -1062,6 +1118,7 @@ mod tests {
                 role: "image/primary".to_owned(),
                 layout: Default::default(),
                 upside_down: false,
+                part: None,
                 unknown: Default::default(),
             }),
         );
@@ -1076,6 +1133,7 @@ mod tests {
             role: "image/primary".to_owned(),
             layout,
             upside_down: false,
+            part: None,
             unknown: Default::default(),
         })
     }
@@ -1141,6 +1199,7 @@ mod tests {
                 range: None,
                 unknown: Default::default(),
                 frame: None,
+                part: None,
             }),
         );
         assert!(matches!(
@@ -1162,6 +1221,7 @@ mod tests {
                 range: Some((0.0, 2.0)),
                 unknown: Default::default(),
                 frame: None,
+                part: None,
             })
         };
         assert!(matches!(
@@ -1197,6 +1257,7 @@ mod tests {
                 range: Some((0.0, 0.08)),
                 unknown: Default::default(),
                 frame: None,
+                part: None,
             }),
         )
         .expect("join");
@@ -1214,6 +1275,7 @@ mod tests {
             range: None,
             unknown: Default::default(),
             frame: None,
+            part: None,
         }
     }
 
@@ -1310,6 +1372,43 @@ mod tests {
             join(&tags, &obs, &action),
             Err(JoinError::DuplicateLayoutRole { role, .. }) if role == "proprio/eef_pos"
         ));
+    }
+
+    #[test]
+    fn a_role_repeats_across_parts_and_an_unknown_kind_fails_the_join() {
+        // One role per arm is a real layout; the same arm twice is not.
+        let obs = box_view(vec![6], None, None);
+        let action = box_view(vec![0], None, None);
+        let mut left = field(Some("proprio/eef_pos"), 3, None);
+        left.part = Some("left_arm".to_owned());
+        let mut right = field(Some("proprio/eef_pos"), 3, None);
+        right.part = Some("right_arm".to_owned());
+        let joined = join(&layout_tags(vec![left.clone(), right]), &obs, &action).expect("joins");
+        assert_eq!(joined.observation.len(), 2);
+        assert!(joined.advisories.is_empty(), "{:?}", joined.advisories);
+        assert!(matches!(
+            join(&layout_tags(vec![left.clone(), left.clone()]), &obs, &action),
+            Err(JoinError::DuplicateLayoutRole { role, .. }) if role == "proprio/eef_pos"
+        ));
+
+        // The closed kind set holds at the env's authoring seam; an ad-hoc
+        // part draws the nudge an ad-hoc role does.
+        let mut odd = field(Some("audio/mic"), 3, None);
+        odd.part = Some("franka".to_owned());
+        assert!(matches!(
+            join(&layout_tags(vec![odd.clone(), left.clone()]), &obs, &action),
+            Err(JoinError::InvalidRole { reason, .. }) if reason.contains("kind this core does not define")
+        ));
+        odd.role = Some("x/mic".to_owned());
+        let joined = join(&layout_tags(vec![odd, left]), &obs, &action).expect("x/ escapes");
+        assert_eq!(joined.advisories.len(), 1, "{:?}", joined.advisories);
+        assert!(
+            joined.advisories[0]
+                .message
+                .contains(r#"part "franka" is not in the parts registry"#),
+            "{}",
+            joined.advisories[0].message
+        );
     }
 
     #[test]

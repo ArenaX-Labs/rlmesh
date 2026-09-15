@@ -144,6 +144,14 @@ const WIRE_CONSTANTS: &[(&str, &str)] = &[
     ("ACTION_EEF_ROT", roles::manipulation::ACTION_EEF_ROT),
     ("ACTION_EEF_POS_2", roles::manipulation::ACTION_EEF_POS_2),
     ("ACTION_EEF_ROT_2", roles::manipulation::ACTION_EEF_ROT_2),
+    ("LEFT_ARM", roles::parts::LEFT_ARM),
+    ("RIGHT_ARM", roles::parts::RIGHT_ARM),
+    ("ARM_2", roles::parts::ARM_2),
+    ("HEAD", roles::parts::HEAD),
+    ("TORSO", roles::parts::TORSO),
+    ("BASE", roles::parts::BASE),
+    ("LEFT_LEG", roles::parts::LEFT_LEG),
+    ("RIGHT_LEG", roles::parts::RIGHT_LEG),
 ];
 
 /// Stub-only declarations for the wire constants that [`register_constants`]
@@ -185,6 +193,15 @@ mod stub_constants {
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_EEF_ROT", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_EEF_POS_2", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_EEF_ROT_2", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "LEFT_ARM", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "RIGHT_ARM", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ARM_2", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "HEAD", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "TORSO", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "BASE", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "LEFT_LEG", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "RIGHT_LEG", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "PARTS", Vec<String>);
     pyo3_stub_gen::module_variable!(
         "rlmesh._rlmesh",
         "ROTATION_DIMS",
@@ -211,6 +228,7 @@ pub fn register_constants(m: &Bound<'_, PyModule>) -> PyResult<()> {
         .map(|layout| layout.as_str())
         .collect();
     m.add("IMAGE_LAYOUTS", layouts)?;
+    m.add("PARTS", roles::parts::PARTS.to_vec())?;
     m.add("RESAMPLES", rlmesh_adapters::v1::RESAMPLES.to_vec())?;
     m.add("CROP_MODES", rlmesh_adapters::v1::CROP_MODES.to_vec())?;
     m.add(

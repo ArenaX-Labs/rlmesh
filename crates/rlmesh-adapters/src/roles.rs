@@ -4,7 +4,8 @@
 //! keeps a [`registry`] over the vocabulary: each domain module ships a `ROLES`
 //! table and the registry is their union. The registry is the *mechanism* (a
 //! domain-neutral table + a dim law); the domain modules are the *vocabulary*, so
-//! a new domain is a new module, not a core change.
+//! a new domain is a new module, not a core change. [`parts`] is the sibling
+//! vocabulary for where a role repeats on a body.
 //!
 //! Width conventions: a registered role may pin its dim via [`registry::DimLaw`],
 //! but only as *validation* -- the author always declares `dim=` explicitly and
@@ -13,4 +14,5 @@
 
 pub mod core;
 pub mod manipulation;
+pub mod parts;
 pub mod registry;

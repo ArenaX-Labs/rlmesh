@@ -137,6 +137,11 @@ impl<'de, N: TreeNode> Visitor<'de> for NodeVisitor<N> {
 /// kind is always an [`UnsupportedKind`](crate::v1::ErrorCode) error (an old core
 /// has no apply path for it), named by its placement.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "the image leaf carries the whole pixel pipeline; a leaf is built once per \
+              spec and read by placement, so boxing it would buy nothing on the hot path"
+)]
 pub enum ModelLeaf {
     Image(Image),
     State(State),

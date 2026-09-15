@@ -56,6 +56,8 @@ def _actuator_to_dict(component: Actuator) -> dict[str, Any]:
         out["frame"] = component.frame
     if component.reference is not None:
         out["reference"] = component.reference
+    if component.part is not None:
+        out["part"] = component.part
     return out
 
 
@@ -76,6 +78,7 @@ def action_from_dict(data: Mapping[str, Any]) -> Action:
             optional=bool(item.get("optional", False)),
             frame=item.get("frame"),
             reference=item.get("reference"),
+            part=item.get("part"),
         )
         for item in data["components"]
     ]

@@ -2,10 +2,10 @@
 
 use std::collections::BTreeMap;
 
-use super::{Result, check_geometry, err};
+use super::{Indexed, LeafKey, Result, bind, check_geometry, err};
 use crate::advisory::Advisory;
 use crate::error::ErrorCode;
-use crate::fmt::{quoted, quoted_accept_set, quoted_encoding, quoted_keys};
+use crate::fmt::{quoted, quoted_accept_set, quoted_encoding, quoted_leaf_keys};
 use crate::path::NodePath;
 use crate::plans::{StatePiece, StatePlan};
 use crate::spec::{AcceptSet, Attr, ConcatPart, EnvState, RotationEncoding, State};
@@ -35,6 +35,14 @@ fn fill_width(component: &ConcatPart, role: &str, at: &str) -> Result<u32> {
     ))
 }
 
+/// ` (part "p")` for a message about a leaf that named one, else nothing.
+pub(super) fn part_suffix(part: Option<&str>) -> String {
+    match part {
+        Some(part) => format!(" (part {})", quoted(part)),
+        None => String::new(),
+    }
+}
+
 /// The constant an absent (or role-less) part contributes, with the model-side
 /// affine folded in — so `apply_state` never needs the spec again.
 fn folded_fill(component: &ConcatPart) -> f64 {
@@ -42,7 +50,7 @@ fn folded_fill(component: &ConcatPart) -> f64 {
 }
 
 /// A piece with no env source: `dim` copies of `fill`.
-fn fill_piece(width: u32, fill: f64, absent_role: bool) -> StatePiece {
+fn fill_piece(width: u32, fill: f64, absent_role: bool, part: Option<String>) -> StatePiece {
     StatePiece {
         source: NodePath::root(),
         src_offset: None,
@@ -59,6 +67,7 @@ fn fill_piece(width: u32, fill: f64, absent_role: bool) -> StatePiece {
         fill: Some(fill),
         absent_role,
         frame: None,
+        part,
         width: Some(width),
     }
 }
@@ -129,7 +138,7 @@ fn select_state_encoding(
 pub(super) fn plan_state(
     model_input: &State,
     placement: NodePath,
-    states_by_role: &BTreeMap<String, &EnvState>,
+    states_by_role: &BTreeMap<LeafKey, Indexed<&EnvState>>,
     unknown_roles: &BTreeMap<String, String>,
     advisories: &mut Vec<Advisory>,
 ) -> Result<StatePlan> {
@@ -142,7 +151,7 @@ pub(super) fn plan_state(
             let width = component
                 .dim
                 .expect("a constant part is codec-checked for dim");
-            pieces.push(fill_piece(width, component.fill, false));
+            pieces.push(fill_piece(width, component.fill, false, None));
             continue;
         };
         // A custom encoding resolves structurally to its `base` here and the
@@ -164,25 +173,41 @@ pub(super) fn plan_state(
                 ),
             ));
         }
-        let Some(env_state) = states_by_role.get(role).copied() else {
+        let bound = bind(
+            states_by_role,
+            role,
+            component.part.as_deref(),
+            &format!("model input {at}"),
+            "state role",
+            "env",
+            advisories,
+        )?;
+        let Some(bound) = bound else {
             // The role's data is present but under a kind this core can't read:
             // fail loud before the optional zero-fill silently degrades it. A
             // role the env genuinely lacks falls through to the optional branch.
             super::reject_referenced_unknown(role, &placement, unknown_roles)?;
             if component.optional {
                 let width = fill_width(component, role, &at)?;
-                pieces.push(fill_piece(width, folded_fill(component), true));
+                pieces.push(fill_piece(
+                    width,
+                    folded_fill(component),
+                    true,
+                    component.part.clone(),
+                ));
                 continue;
             }
             return Err(err(
                 ErrorCode::MissingRole,
                 format!(
-                    "model input {at} needs state role {} but the env offers {}",
+                    "model input {at} needs state role {}{} but the env offers {}",
                     quoted(role),
-                    quoted_keys(states_by_role)
+                    part_suffix(component.part.as_deref()),
+                    quoted_leaf_keys(states_by_role)
                 ),
             ));
         };
+        let env_state: &EnvState = bound.feature;
         // A custom encoding shadows to its `base` for the structural
         // negotiation; the host-side arm is never imported or run here (only a
         // trusted in-process resolve does). Validate the obs-side invariants the
@@ -319,6 +344,7 @@ pub(super) fn plan_state(
             fill: None,
             absent_role: false,
             frame,
+            part: bound.part,
             width,
         });
     }

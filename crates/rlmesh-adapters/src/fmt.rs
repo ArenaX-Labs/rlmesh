@@ -51,3 +51,17 @@ pub(crate) fn quoted_keys<V>(map: &BTreeMap<String, V>) -> String {
     let keys: Vec<&String> = map.keys().collect();
     format!("{keys:?}")
 }
+
+/// A leaf-keyed map's sorted keys, quoted, a part-less key as its bare role
+/// (`"a"`, exactly as [`quoted_keys`] prints it) and a parted one as
+/// `"role#part"`.
+pub(crate) fn quoted_leaf_keys<V>(map: &BTreeMap<(String, Option<String>), V>) -> String {
+    let keys: Vec<String> = map
+        .keys()
+        .map(|(role, part)| match part {
+            Some(part) => format!("{role}#{part}"),
+            None => role.clone(),
+        })
+        .collect();
+    format!("{keys:?}")
+}

@@ -1,0 +1,103 @@
+{
+  "action_space": {
+    "dtype": "float32",
+    "kind": "box",
+    "shape": [2]
+  },
+  "env_tags": {
+    "action": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": null,
+          "role": "action/gripper"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "part": "arm_2",
+          "range": null,
+          "role": "action/gripper"
+        }
+      ]
+    },
+    "observation": {
+      "l": {
+        "encoding": null,
+        "range": null,
+        "role": "proprio/eef_pos",
+        "type": "state"
+      },
+      "r": {
+        "encoding": null,
+        "part": "arm_2",
+        "range": null,
+        "role": "proprio/eef_pos",
+        "type": "state"
+      }
+    }
+  },
+  "expect": {
+    "describe": "observation:\n  \"state\" <- concat(l[:3], r[:3]#arm_2)\naction:\n  \"action/gripper\" <- model[0:1]\n  \"action/gripper\" <- model[1:2]#arm_2",
+    "ok": true
+  },
+  "kind": "resolve",
+  "model_spec": {
+    "input": {
+      "state": {
+        "components": [
+          {
+            "dim": 3,
+            "role": "proprio/eef_pos"
+          },
+          {
+            "dim": 3,
+            "role": "proprio/eef_pos_2"
+          }
+        ],
+        "dtype": "float32",
+        "type": "state"
+      }
+    },
+    "output": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": null,
+          "role": "action/gripper"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": null,
+          "role": "action/gripper_2"
+        }
+      ]
+    }
+  },
+  "observation_space": {
+    "children": [
+      {
+        "dtype": "float32",
+        "kind": "box",
+        "shape": [3]
+      },
+      {
+        "dtype": "float32",
+        "kind": "box",
+        "shape": [3]
+      }
+    ],
+    "dtype": "unspecified",
+    "keys": ["l", "r"],
+    "kind": "dict"
+  }
+}

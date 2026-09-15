@@ -604,9 +604,21 @@ def test_role_constants_match_rust_crate():
     python_roles = {
         name: getattr(constants, name)
         for name in constants.__all__
-        if not name.endswith("_METADATA_KEY")
+        if not name.endswith("_METADATA_KEY") and name != "PARTS"
     }
     assert python_roles == rust_roles
+    # The parts table is the registry order of the part constants, exported
+    # whole (like IMAGE_LAYOUTS) for consumers that enumerate the vocabulary.
+    assert list(constants.PARTS) == [
+        constants.LEFT_ARM,
+        constants.RIGHT_ARM,
+        constants.ARM_2,
+        constants.HEAD,
+        constants.TORSO,
+        constants.BASE,
+        constants.LEFT_LEG,
+        constants.RIGHT_LEG,
+    ]
 
 
 def test_custom_adapter_subclass_is_interchangeable():
@@ -4292,3 +4304,158 @@ def _frame_history_limit(limit: int) -> Any:
             del os.environ["RLMESH_FRAME_HISTORY_LIMIT_BYTES"]
         else:
             os.environ["RLMESH_FRAME_HISTORY_LIMIT_BYTES"] = previous
+
+
+# ---------------------------------------------------------------------------
+# Parts: where a role repeats on a body
+# ---------------------------------------------------------------------------
+
+
+def _two_arm_env() -> Env:
+    return Env(
+        tags=adapt.EnvTags(
+            observation={
+                "l": adapt.StateTag(adapt.EEF_POS, part=adapt.LEFT_ARM),
+                "r": adapt.StateTag(adapt.EEF_POS, part=adapt.RIGHT_ARM),
+            },
+            action=adapt.Action(
+                adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, part=adapt.LEFT_ARM),
+                adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, part=adapt.RIGHT_ARM),
+            ),
+        ),
+        obs_space=gym.spaces.Dict({"l": box(3), "r": box(3)}),
+        action_space=box(2),
+    )
+
+
+def test_part_is_keyword_only_and_round_trips_only_when_set() -> None:
+    tags = _two_arm_env().tags
+    doc = tags.to_dict()
+    assert doc["observation"]["l"]["part"] == "left_arm"
+    assert doc["action"]["components"][1]["part"] == "right_arm"
+    assert adapt.EnvTags.from_dict(doc) == tags
+    # Unset stays off the wire, so every pre-`part` spec is byte-identical.
+    assert "part" not in LIBERO_ENV.tags.to_dict()["observation"]["robot0_eef_pos"]
+    spec = adapt.ModelSpec(
+        input={
+            "state": adapt.Concat(
+                adapt.State(adapt.EEF_POS, dim=3, part=adapt.LEFT_ARM),
+                adapt.EEF_POS,
+            ),
+            "cam": adapt.Image(adapt.IMAGE_WRIST, part=adapt.HEAD),
+        },
+        output=adapt.Action(
+            adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, part=adapt.LEFT_ARM)
+        ),
+    )
+    doc = spec.to_dict()
+    assert doc["input"]["state"]["components"][0]["part"] == "left_arm"
+    assert doc["input"]["state"]["components"][1] == adapt.EEF_POS
+    assert doc["input"]["cam"]["part"] == "head"
+    assert adapt.ModelSpec.from_dict(doc) == spec
+    with pytest.raises(TypeError):
+        adapt.StateTag(adapt.EEF_POS, None, None, None, "left_arm")  # type: ignore[misc]
+
+
+def test_a_role_repeats_across_parts_never_within_one() -> None:
+    adapt.Split(
+        adapt.Field(adapt.EEF_POS, 3, part=adapt.LEFT_ARM),
+        adapt.Field(adapt.EEF_POS, 3, part=adapt.RIGHT_ARM),
+    )
+    with pytest.raises(ValueError, match="role more than once"):
+        adapt.Split(
+            adapt.Field(adapt.EEF_POS, 3, part=adapt.LEFT_ARM),
+            adapt.Field(adapt.EEF_POS, 3, part=adapt.LEFT_ARM),
+        )
+    with pytest.raises(ValueError, match=r"under part 'left_arm' more than once"):
+        adapt.EnvTags(
+            observation={
+                "a": adapt.StateTag(adapt.EEF_POS, part=adapt.LEFT_ARM),
+                "b": adapt.StateTag(adapt.EEF_POS, part=adapt.LEFT_ARM),
+            },
+            action=LIBERO_ACTION,
+        )
+    with pytest.raises(ValueError, match="role-less"):
+        adapt.Actuator(dim=2, part=adapt.LEFT_ARM)
+    with pytest.raises(ValueError, match="role-less"):
+        adapt.EnvTags(
+            observation=adapt.Split(adapt.Field(dim=2, part=adapt.LEFT_ARM)),
+            action=LIBERO_ACTION,
+        ).to_dict()
+
+
+def test_parts_resolve_by_identity_and_show_in_the_summary() -> None:
+    env = _two_arm_env()
+    spec = adapt.ModelSpec(
+        input={"state": adapt.State(adapt.EEF_POS, part=adapt.RIGHT_ARM)},
+        output=adapt.Action(
+            adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, part=adapt.RIGHT_ARM),
+            adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, part=adapt.LEFT_ARM),
+        ),
+    )
+    adapter = resolve(env, spec)
+    assert "r#right_arm" in adapter.explain()
+    assert '"action/gripper" <- model[1:2]#left_arm' in adapter.explain()
+    assert adapter.advisories() == []
+    # No part against two parts is an error that names them; a named part the
+    # env lacks never rebinds.
+    with pytest.raises(adapt.AdapterResolutionError, match="declare part="):
+        resolve(
+            env,
+            adapt.ModelSpec(
+                input={"state": adapt.State(adapt.EEF_POS)}, output=spec.output
+            ),
+        )
+    with pytest.raises(
+        adapt.AdapterResolutionError, match=r"\(part 'torso'\)|part \"torso\""
+    ):
+        resolve(
+            env,
+            adapt.ModelSpec(
+                input={"state": adapt.State(adapt.EEF_POS, part=adapt.TORSO)},
+                output=spec.output,
+            ),
+        )
+    # A v1 `_2` model binds an env that names its second arm `arm_2`.
+    env_arm_2 = Env(
+        tags=adapt.EnvTags(
+            observation={"r": adapt.StateTag(adapt.EEF_POS, part=adapt.ARM_2)},
+            action=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER_2, dim=1)),
+        ),
+        obs_space=gym.spaces.Dict({"r": box(3)}),
+        action_space=box(1),
+    )
+    legacy = adapt.ModelSpec(
+        input={"state": adapt.State(adapt.EEF_POS_2, dim=3)},
+        output=adapt.Action(
+            adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, part=adapt.ARM_2)
+        ),
+    )
+    adapter = resolve(env_arm_2, legacy)
+    assert adapter.advisories() == []
+    assert "r[:3]#arm_2" in adapter.explain()
+
+
+def test_an_ad_hoc_part_nudges_and_the_strict_gate_refuses_it() -> None:
+    import json
+
+    from rlmesh._rlmesh import adapters_spec_normalize
+
+    tags = adapt.EnvTags(
+        observation={"l": adapt.StateTag(adapt.EEF_POS, part="franka")},
+        action=LIBERO_ACTION,
+    )
+    doc = json.dumps(tags.to_dict())
+    adapters_spec_normalize("env", doc, True, "passthrough", False)
+    with pytest.raises(ValueError, match='unregistered part "franka"'):
+        adapters_spec_normalize("env", doc, True, "strict", False)
+    escaped = adapt.EnvTags(
+        observation={"l": adapt.StateTag(adapt.EEF_POS, part="x/franka")},
+        action=LIBERO_ACTION,
+    )
+    adapters_spec_normalize("env", json.dumps(escaped.to_dict()), True, "strict", False)
+    # The kind prefix is closed at the publish door under every policy.
+    with pytest.raises(ValueError, match="kind this core does not define"):
+        adapt.EnvTags(
+            observation={"l": adapt.StateTag("audio/mic")}, action=LIBERO_ACTION
+        ).to_dict()

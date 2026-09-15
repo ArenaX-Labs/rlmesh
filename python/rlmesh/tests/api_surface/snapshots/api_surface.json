@@ -1187,6 +1187,8 @@
       "ACTION_JOINT_POS",
       "ACTION_JOINT_POS_2",
       "ACTION_JOINT_VEL",
+      "ARM_2",
+      "BASE",
       "EEF_POS",
       "EEF_POS_2",
       "EEF_ROT",
@@ -1195,6 +1197,7 @@
       "ENV_METADATA_KEY",
       "GRIPPER_POS",
       "GRIPPER_POS_2",
+      "HEAD",
       "IMAGE_PRIMARY",
       "IMAGE_SECONDARY",
       "IMAGE_WRIST",
@@ -1202,8 +1205,14 @@
       "INSTRUCTION",
       "JOINT_POS",
       "JOINT_VEL",
+      "LEFT_ARM",
+      "LEFT_LEG",
       "MODEL_METADATA_KEY",
+      "PARTS",
+      "RIGHT_ARM",
+      "RIGHT_LEG",
       "ROTATION_DIMS",
+      "TORSO",
       "Action",
       "Actuator",
       "Adapter",
@@ -1311,6 +1320,11 @@
         "signature": "ACTION_JOINT_VEL = str",
         "stability": "Stable"
       },
+      "ARM_2": {
+        "kind": "type alias",
+        "signature": "ARM_2 = str",
+        "stability": "Stable"
+      },
       "Action": {
         "kind": "class",
         "members": {
@@ -1365,6 +1379,10 @@
             "kind": "attribute",
             "signature": "optional: bool"
           },
+          "part": {
+            "kind": "attribute",
+            "signature": "part: str | None"
+          },
           "range": {
             "kind": "attribute",
             "signature": "range: tuple[float, float] | None"
@@ -1386,7 +1404,7 @@
             "signature": "threshold: float | None"
           }
         },
-        "signature": "Actuator(role: str | None = None, dim: int = 0, encoding: RotationEncoding | CustomEncoding | None = None, range: tuple[float, float] | None = None, binary: bool = False, scale: float | None = None, invert: bool = False, threshold: float | None = None, clip: bool = False, fill: float = 0.0, optional: bool = False, *, frame: Frame | None = None, reference: Reference | None = None)",
+        "signature": "Actuator(role: str | None = None, dim: int = 0, encoding: RotationEncoding | CustomEncoding | None = None, range: tuple[float, float] | None = None, binary: bool = False, scale: float | None = None, invert: bool = False, threshold: float | None = None, clip: bool = False, fill: float = 0.0, optional: bool = False, *, frame: Frame | None = None, reference: Reference | None = None, part: str | None = None)",
         "stability": "Stable"
       },
       "Adapter": {
@@ -1490,6 +1508,11 @@
             "signature": "property severity: str"
           }
         },
+        "stability": "Stable"
+      },
+      "BASE": {
+        "kind": "type alias",
+        "signature": "BASE = str",
         "stability": "Stable"
       },
       "Concat": {
@@ -1673,6 +1696,10 @@
             "kind": "attribute",
             "signature": "frame: Frame | None"
           },
+          "part": {
+            "kind": "attribute",
+            "signature": "part: str | None"
+          },
           "range": {
             "kind": "attribute",
             "signature": "range: tuple[float, float] | None"
@@ -1682,7 +1709,7 @@
             "signature": "role: str | None"
           }
         },
-        "signature": "Field(role: str | None = None, dim: int = 0, encoding: RotationEncoding | Sequence[RotationEncoding] | None = None, range: tuple[float, float] | None = None, *, frame: Frame | None = None)",
+        "signature": "Field(role: str | None = None, dim: int = 0, encoding: RotationEncoding | Sequence[RotationEncoding] | None = None, range: tuple[float, float] | None = None, *, frame: Frame | None = None, part: str | None = None)",
         "stability": "Stable"
       },
       "FitMode": {
@@ -1703,6 +1730,11 @@
       "GRIPPER_POS_2": {
         "kind": "type alias",
         "signature": "GRIPPER_POS_2 = str",
+        "stability": "Stable"
+      },
+      "HEAD": {
+        "kind": "type alias",
+        "signature": "HEAD = str",
         "stability": "Stable"
       },
       "IMAGE_PRIMARY": {
@@ -1797,6 +1829,10 @@
             "kind": "attribute",
             "signature": "optional: bool"
           },
+          "part": {
+            "kind": "attribute",
+            "signature": "part: str | None"
+          },
           "render": {
             "kind": "attribute",
             "signature": "render: int | tuple[int, int] | None"
@@ -1826,7 +1862,7 @@
             "signature": "width: int | None"
           }
         },
-        "signature": "Image(role: str, height: int | None = None, width: int | None = None, layout: ImageLayout = 'hwc', channels: int | None = None, dtype: str = 'uint8', normalize: bool | tuple[float, float] = False, lead_dims: int = 0, upside_down: bool = False, resample: Resample = 'bilinear', allow_upscale: bool = False, fit: FitMode | Sequence[FitMode] | None = None, optional: bool = False, fill: int | None = None, stack: int = 1, size: InitVar[int | None] = None, *, crop: float | None = None, crop_area: float | None = None, crop_mode: CropMode = 'zoom', jpeg_quality: int | None = None, channel_order: ChannelOrder = 'rgb', render: int | tuple[int, int] | None = None, offsets: StackSpec | None = None, stack_pad: StackPad = 'first', stride: InitVar[int | None] = None)",
+        "signature": "Image(role: str, height: int | None = None, width: int | None = None, layout: ImageLayout = 'hwc', channels: int | None = None, dtype: str = 'uint8', normalize: bool | tuple[float, float] = False, lead_dims: int = 0, upside_down: bool = False, resample: Resample = 'bilinear', allow_upscale: bool = False, fit: FitMode | Sequence[FitMode] | None = None, optional: bool = False, fill: int | None = None, stack: int = 1, size: InitVar[int | None] = None, *, crop: float | None = None, crop_area: float | None = None, crop_mode: CropMode = 'zoom', jpeg_quality: int | None = None, channel_order: ChannelOrder = 'rgb', render: int | tuple[int, int] | None = None, offsets: StackSpec | None = None, stack_pad: StackPad = 'first', part: str | None = None, stride: InitVar[int | None] = None)",
         "stability": "Stable"
       },
       "ImageLayout": {
@@ -1841,6 +1877,10 @@
             "kind": "attribute",
             "signature": "layout: ImageLayout"
           },
+          "part": {
+            "kind": "attribute",
+            "signature": "part: str | None"
+          },
           "role": {
             "kind": "attribute",
             "signature": "role: str"
@@ -1850,7 +1890,7 @@
             "signature": "upside_down: bool"
           }
         },
-        "signature": "ImageTag(role: str, layout: ImageLayout = 'hwc', upside_down: bool = False)",
+        "signature": "ImageTag(role: str, layout: ImageLayout = 'hwc', upside_down: bool = False, *, part: str | None = None)",
         "stability": "Stable"
       },
       "InputNode": {
@@ -1866,6 +1906,16 @@
       "JOINT_VEL": {
         "kind": "type alias",
         "signature": "JOINT_VEL = str",
+        "stability": "Stable"
+      },
+      "LEFT_ARM": {
+        "kind": "type alias",
+        "signature": "LEFT_ARM = str",
+        "stability": "Stable"
+      },
+      "LEFT_LEG": {
+        "kind": "type alias",
+        "signature": "LEFT_LEG = str",
         "stability": "Stable"
       },
       "MODEL_METADATA_KEY": {
@@ -1949,6 +1999,21 @@
           }
         },
         "signature": "ObservationRoles(images: tuple[str, ...] = (), states: tuple[str, ...] = (), texts: tuple[str, ...] = ())",
+        "stability": "Stable"
+      },
+      "PARTS": {
+        "kind": "type alias",
+        "signature": "PARTS = list[str]",
+        "stability": "Stable"
+      },
+      "RIGHT_ARM": {
+        "kind": "type alias",
+        "signature": "RIGHT_ARM = str",
+        "stability": "Stable"
+      },
+      "RIGHT_LEG": {
+        "kind": "type alias",
+        "signature": "RIGHT_LEG = str",
         "stability": "Stable"
       },
       "ROTATION_DIMS": {
@@ -2059,6 +2124,10 @@
             "kind": "attribute",
             "signature": "pad_to: int | None"
           },
+          "part": {
+            "kind": "attribute",
+            "signature": "part: str | None"
+          },
           "post_rotate": {
             "kind": "attribute",
             "signature": "post_rotate: Rotation | None"
@@ -2080,7 +2149,7 @@
             "signature": "scale: float | None"
           }
         },
-        "signature": "State(role: str, encoding: RotationEncoding | Sequence[RotationEncoding] | CustomEncoding | None = None, dim: int | None = None, index: int | None = None, optional: bool = False, range: tuple[float, float] | None = None, pad_to: int | None = None, dtype: str = 'float32', reshape: tuple[int, ...] | None = None, container: Literal['array', 'list'] = 'array', *, fill: float = 0.0, post_rotate: Rotation | None = None, scale: float | None = None, offset: float | None = None, frame: Frame | None = None)",
+        "signature": "State(role: str, encoding: RotationEncoding | Sequence[RotationEncoding] | CustomEncoding | None = None, dim: int | None = None, index: int | None = None, optional: bool = False, range: tuple[float, float] | None = None, pad_to: int | None = None, dtype: str = 'float32', reshape: tuple[int, ...] | None = None, container: Literal['array', 'list'] = 'array', *, fill: float = 0.0, post_rotate: Rotation | None = None, scale: float | None = None, offset: float | None = None, frame: Frame | None = None, part: str | None = None)",
         "stability": "Stable"
       },
       "StateTag": {
@@ -2094,6 +2163,10 @@
             "kind": "attribute",
             "signature": "frame: Frame | None"
           },
+          "part": {
+            "kind": "attribute",
+            "signature": "part: str | None"
+          },
           "range": {
             "kind": "attribute",
             "signature": "range: tuple[float, float] | None"
@@ -2103,7 +2176,12 @@
             "signature": "role: str"
           }
         },
-        "signature": "StateTag(role: str, encoding: RotationEncoding | Sequence[RotationEncoding] | None = None, range: tuple[float, float] | None = None, *, frame: Frame | None = None)",
+        "signature": "StateTag(role: str, encoding: RotationEncoding | Sequence[RotationEncoding] | None = None, range: tuple[float, float] | None = None, *, frame: Frame | None = None, part: str | None = None)",
+        "stability": "Stable"
+      },
+      "TORSO": {
+        "kind": "type alias",
+        "signature": "TORSO = str",
         "stability": "Stable"
       },
       "Text": {

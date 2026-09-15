@@ -33,6 +33,10 @@ pub struct ActionSegment {
     /// one. Rendered by `describe`; a disagreement is already a resolve error.
     pub frame: Option<FrameRef>,
     pub reference: Option<FrameRef>,
+    /// The body part this actuator was bound under, when a side declared one
+    /// (the env actuator's own `part`, else the model output's). Rendered by
+    /// `describe` as `#part`.
+    pub part: Option<String>,
     /// An opaque segment: `Some((width, value))` emits `width` copies of `value`
     /// and reads nothing from the model (the env requires these dims but no model
     /// produces them). `None` for a normal model-mapped segment.

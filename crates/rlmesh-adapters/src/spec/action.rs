@@ -83,6 +83,11 @@ pub struct Actuator {
     /// are omitted when unset, so every pre-geometry layout is byte-identical.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reference: Option<FrameRef>,
+    /// The body part this actuator drives, when the role repeats across a
+    /// body (`left_arm`, `right_arm`, ...): an identity key, matched never
+    /// checked. Omitted when unset. An opaque actuator may not carry one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub part: Option<String>,
     /// Unrecognized additive fields, retained for round-trip and surfaced to the
     /// publish-door `reject_unknowns` guard. See the strict-v1 publish gate.
     #[serde(flatten)]
@@ -98,10 +103,11 @@ fn is_default_fill(fill: &f64) -> bool {
 /// Ordered action components plus optional clipping bounds.
 ///
 /// Deserialization goes through `ActionWire` so a duplicate component
-/// role is rejected by the authoritative codec — matching Rust `resolve`
+/// `(role, part)` is rejected by the authoritative codec — matching Rust `resolve`
 /// (`plan_action`), which rejects a repeated action role (it would build the
 /// action by repetition instead of a real mapping). Without this the
-/// normalize/publish door would bless a layout resolve cannot consume.
+/// normalize/publish door would bless a layout resolve cannot consume. One
+/// role may repeat across parts (a joint command per arm), never within one.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "ActionWire")]
 pub struct Action {
@@ -130,10 +136,16 @@ impl TryFrom<ActionWire> for Action {
             }
             match &component.role {
                 Some(role) => {
-                    if !seen.insert(role.as_str()) {
-                        return Err(format!(
-                            "an action layout declares role {role:?} more than once"
-                        ));
+                    if !seen.insert((role.as_str(), component.part.as_deref())) {
+                        return Err(match &component.part {
+                            Some(part) => format!(
+                                "an action layout declares role {role:?} under part {part:?} \
+                                 more than once"
+                            ),
+                            None => {
+                                format!("an action layout declares role {role:?} more than once")
+                            }
+                        });
                     }
                     // fill is the opaque constant; a roled actuator normally takes
                     // its values from the model. The exception is an `optional`
@@ -161,11 +173,12 @@ impl TryFrom<ActionWire> for Action {
                         || component.optional
                         || component.frame.is_some()
                         || component.reference.is_some()
+                        || component.part.is_some()
                     {
                         return Err("a role-less (opaque) actuator carries only dim and \
                              fill; drop encoding/range/scale/invert/threshold/binary/clip/\
-                             optional/frame/reference (an opaque actuator is already always \
-                             filled)"
+                             optional/frame/reference/part (an opaque actuator is already \
+                             always filled)"
                             .to_owned());
                     }
                 }
@@ -313,6 +326,38 @@ mod opaque_actuator_contract {
             serde_json::from_str::<Action>(r#"{"components": [{"dim": 1, "optional": true}]}"#)
                 .unwrap_err();
         assert!(err.to_string().contains("role-less"), "{err}");
+    }
+
+    #[test]
+    fn part_is_barred_from_an_opaque_actuator_and_keys_the_dup_check() {
+        let err =
+            serde_json::from_str::<Action>(r#"{"components": [{"dim": 2, "part": "left_arm"}]}"#)
+                .unwrap_err();
+        assert!(err.to_string().contains("role-less"), "{err}");
+
+        // One role per arm is a real layout; the same arm twice is not.
+        let ok: Action = serde_json::from_str(
+            r#"{"components": [{"role": "action/joint_pos", "dim": 7, "part": "left_arm"},
+                               {"role": "action/joint_pos", "dim": 7, "part": "right_arm"}]}"#,
+        )
+        .expect("a role split across parts parses");
+        assert_eq!(ok.components[0].part.as_deref(), Some("left_arm"));
+        let json = serde_json::to_string(&ok).unwrap();
+        assert!(json.contains(r#""part":"left_arm""#), "{json}");
+        let err = serde_json::from_str::<Action>(
+            r#"{"components": [{"role": "action/joint_pos", "dim": 7, "part": "left_arm"},
+                               {"role": "action/joint_pos", "dim": 7, "part": "left_arm"}]}"#,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains(r#"under part "left_arm" more than once"#),
+            "{err}"
+        );
+        // Unset stays off the wire.
+        let bare: Action =
+            serde_json::from_str(r#"{"components": [{"role": "g", "dim": 1}]}"#).unwrap();
+        assert!(!serde_json::to_string(&bare).unwrap().contains("part"));
     }
 
     #[test]

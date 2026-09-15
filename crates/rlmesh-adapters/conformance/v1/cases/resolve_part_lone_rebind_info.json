@@ -1,0 +1,76 @@
+{
+  "action_space": {
+    "dtype": "float32",
+    "kind": "box",
+    "shape": [1]
+  },
+  "env_tags": {
+    "action": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": null,
+          "role": "action/gripper"
+        }
+      ]
+    },
+    "observation": {
+      "l": {
+        "encoding": null,
+        "part": "left_arm",
+        "range": null,
+        "role": "proprio/eef_pos",
+        "type": "state"
+      }
+    }
+  },
+  "expect": {
+    "advisories_contain": [
+      "info: model input \"state\": state role \"proprio/eef_pos\" declares no part and the env declares it only under part \"left_arm\"; bound to that leaf"
+    ],
+    "describe": "observation:\n  \"state\" <- concat(l[:3]#left_arm)\naction:\n  \"action/gripper\" <- model[0:1]",
+    "ok": true
+  },
+  "kind": "resolve",
+  "model_spec": {
+    "input": {
+      "state": {
+        "components": [
+          {
+            "dim": 3,
+            "role": "proprio/eef_pos"
+          }
+        ],
+        "dtype": "float32",
+        "type": "state"
+      }
+    },
+    "output": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": null,
+          "role": "action/gripper"
+        }
+      ]
+    }
+  },
+  "observation_space": {
+    "children": [
+      {
+        "dtype": "float32",
+        "kind": "box",
+        "shape": [3]
+      }
+    ],
+    "dtype": "unspecified",
+    "keys": ["l"],
+    "kind": "dict"
+  }
+}

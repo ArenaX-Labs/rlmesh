@@ -12,6 +12,8 @@ pub struct EnvImage {
     /// from (the env-side placement); empty (root) for a bare single-leaf obs.
     pub source: NodePath,
     pub role: String,
+    /// The body part the camera sits on, lifted verbatim from the `ImageTag`.
+    pub part: Option<String>,
     pub layout: ImageLayout,
     pub upside_down: bool,
     /// Pixel height of the image, derived from the observation space by

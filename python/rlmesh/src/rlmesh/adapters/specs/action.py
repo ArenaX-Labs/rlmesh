@@ -58,6 +58,11 @@ class Actuator:
             delta controller. A delta never carries a ``frame`` (it lives in the
             controller's own frame); ``reference`` is the attribute it gets
             instead.
+        part: The body part this actuator drives, when the role repeats across
+            a body (``"left_arm"``, ``"right_arm"``, ...): an identity key the
+            resolver matches on, never a value it checks. Keyword-only and
+            omitted from the wire when unset; an opaque actuator may not carry
+            one.
 
     ``scale``, ``invert``, and ``threshold`` declare a side's actuator convention.
     They can be set on either side and compose as literal transforms applied after
@@ -83,6 +88,7 @@ class Actuator:
     optional: bool = False
     frame: Frame | None = field(default=None, kw_only=True)
     reference: Reference | None = field(default=None, kw_only=True)
+    part: str | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         if self.dim < 1:
@@ -101,11 +107,12 @@ class Actuator:
                 or self.optional
                 or self.frame is not None
                 or self.reference is not None
+                or self.part is not None
             ):
                 raise ValueError(
                     "a role-less (opaque) Actuator carries only dim and fill; drop "
                     "encoding/range/scale/invert/threshold/binary/clip/optional/"
-                    "frame/reference"
+                    "frame/reference/part"
                 )
             return
         if self.fill != 0.0 and not self.optional:

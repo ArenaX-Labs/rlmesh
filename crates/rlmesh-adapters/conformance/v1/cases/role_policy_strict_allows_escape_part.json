@@ -1,0 +1,29 @@
+{
+  "doc": {
+    "input": {
+      "state": {
+        "components": [
+          {
+            "dim": 3,
+            "part": "x/tail",
+            "role": "proprio/eef_pos"
+          }
+        ],
+        "type": "state"
+      }
+    },
+    "output": {
+      "components": [
+        {
+          "dim": 1,
+          "part": "x/tail",
+          "role": "action/gripper"
+        }
+      ]
+    }
+  },
+  "expect": {},
+  "kind": "role_policy",
+  "policy": "strict",
+  "side": "model"
+}

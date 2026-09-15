@@ -1,0 +1,46 @@
+{
+  "doc": {
+    "input": {
+      "cam": {
+        "dtype": "uint8",
+        "height": null,
+        "layout": "hwc",
+        "lead_dims": 0,
+        "normalize": false,
+        "part": "head",
+        "resample": "bilinear",
+        "role": "image/wrist",
+        "type": "image",
+        "upside_down": false,
+        "width": null
+      },
+      "state": {
+        "components": [
+          {
+            "dim": 3,
+            "part": "left_arm",
+            "role": "proprio/eef_pos"
+          },
+          "proprio/gripper"
+        ],
+        "dtype": "float32",
+        "type": "state"
+      }
+    },
+    "output": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "part": "left_arm",
+          "range": null,
+          "role": "action/gripper"
+        }
+      ]
+    }
+  },
+  "kind": "serialization",
+  "side": "model"
+}

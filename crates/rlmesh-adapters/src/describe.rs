@@ -106,6 +106,14 @@ fn write_geometry(note: &mut String, attr: Attr, value: Option<&FrameRef>) {
     }
 }
 
+/// Append the part a leaf was bound under, as `#left_arm`. Renders only when
+/// a side declared one, so every pre-`part` summary is byte-identical.
+fn write_part(note: &mut String, part: Option<&str>) {
+    if let Some(part) = part {
+        let _ = write!(note, "#{part}");
+    }
+}
+
 /// Summarize how one env action component is derived from the model output.
 fn describe_segment(segment: &ActionSegment) -> String {
     if let Some((width, value)) = segment.fill {
@@ -113,10 +121,14 @@ fn describe_segment(segment: &ActionSegment) -> String {
         // surface it as a fabrication (like a zero-filled camera) rather than a
         // plain opaque dim. A role-less fill is the opaque control-dim case.
         return match &segment.role {
-            Some(role) => format!(
-                "{} <- fill {value} ({width}d; model did not output this optional role)",
-                quoted(role)
-            ),
+            Some(role) => {
+                let mut note = format!(
+                    "{} <- fill {value} ({width}d; model did not output this optional role)",
+                    quoted(role)
+                );
+                write_part(&mut note, segment.part.as_deref());
+                note
+            }
             None => format!("(opaque {width}d) <- fill {value}"),
         };
     }
@@ -158,15 +170,18 @@ fn describe_segment(segment: &ActionSegment) -> String {
     }
     write_geometry(&mut note, Attr::Frame, segment.frame.as_ref());
     write_geometry(&mut note, Attr::Reference, segment.reference.as_ref());
+    write_part(&mut note, segment.part.as_deref());
     note
 }
 
 fn describe_image(plan: &ImagePlan) -> String {
     if let Some((height, width, channels)) = plan.zero_fill {
-        return format!(
+        let mut note = format!(
             "{} <- zeros({height}x{width}x{channels})",
             quoted(&plan.placement.to_string())
         );
+        write_part(&mut note, plan.part.as_deref());
+        return note;
     }
     let mut steps: Vec<String> = Vec::new();
     // The asserted camera size leads: it describes the frame arriving, not a
@@ -228,10 +243,12 @@ fn describe_image(plan: &ImagePlan) -> String {
     if plan.stack_pad != StackPad::First {
         steps.push("pad black".to_owned());
     }
+    let mut source = quoted(&plan.source.to_string());
+    write_part(&mut source, plan.part.as_deref());
     format!(
         "{} <- image {} ({})",
         quoted(&plan.placement.to_string()),
-        quoted(&plan.source.to_string()),
+        source,
         steps.join(", ")
     )
 }
@@ -244,11 +261,13 @@ fn describe_state(plan: &StatePlan) -> String {
             // An absent optional role filled with zeros keeps the original
             // `zeros(n)` wording; the new tokens render only when the new
             // features are used.
-            parts.push(match (piece.absent_role, fill == 0.0) {
+            let mut note = match (piece.absent_role, fill == 0.0) {
                 (true, true) => format!("zeros({width})"),
                 (true, false) => format!("fill({width})={}", number(fill)),
                 (false, _) => format!("const({width})={}", number(fill)),
-            });
+            };
+            write_part(&mut note, piece.part.as_deref());
+            parts.push(note);
             continue;
         }
         let mut note = piece.source.to_string();
@@ -300,6 +319,7 @@ fn describe_state(plan: &StatePlan) -> String {
             let _ = write!(note, " ({})", affine.join(" "));
         }
         write_geometry(&mut note, Attr::Frame, piece.frame.as_ref());
+        write_part(&mut note, piece.part.as_deref());
         parts.push(note);
     }
     let suffix = match plan.pad_to {

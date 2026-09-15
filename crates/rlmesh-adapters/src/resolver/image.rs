@@ -2,9 +2,11 @@
 
 use std::collections::BTreeMap;
 
-use super::{Result, err};
+use super::state::part_suffix;
+use super::{Indexed, LeafKey, Result, bind, err};
+use crate::advisory::Advisory;
 use crate::error::ErrorCode;
-use crate::fmt::{quoted, quoted_keys};
+use crate::fmt::{quoted, quoted_leaf_keys};
 use crate::path::NodePath;
 use crate::plans::{CropPlan, ImagePlan};
 use crate::spec::{
@@ -14,8 +16,9 @@ use crate::spec::{
 pub(super) fn plan_image(
     model_input: &Image,
     placement: NodePath,
-    images_by_role: &BTreeMap<String, &EnvImage>,
+    images_by_role: &BTreeMap<LeafKey, Indexed<&EnvImage>>,
     unknown_roles: &BTreeMap<String, String>,
+    advisories: &mut Vec<Advisory>,
 ) -> Result<ImagePlan> {
     let at = quoted(&placement.to_string());
     // `fill` only colors the zero-filled frame an `optional` camera
@@ -30,7 +33,19 @@ pub(super) fn plan_image(
             ),
         ));
     }
-    let mut env_image = images_by_role.get(&model_input.role).copied();
+    let bound = bind(
+        images_by_role,
+        &model_input.role,
+        model_input.part.as_deref(),
+        &format!("model input {at}"),
+        "image role",
+        "env",
+        advisories,
+    )?;
+    let (mut env_image, mut part) = match bound {
+        Some(bound) => (Some(*bound.feature), bound.part),
+        None => (None, model_input.part.clone()),
+    };
     if env_image.is_none() {
         // The role's data is present but under a kind this core can't read: fail
         // loud before any fallback (lone-camera bind, optional zero-fill) papers
@@ -41,18 +56,23 @@ pub(super) fn plan_image(
     // single camera -- but only for a sanctioned (registered or `x/`) role, so
     // a typo'd role name fails loudly instead of silently feeding the camera.
     // An `optional` input has opted into zero-filling instead; that wins. A
-    // `_2` role names the *second* of a pair, and an env with one camera has no
-    // second of anything: rebinding it would quietly feed the first arm's view
-    // to an input asking for the other arm's.
+    // named part (which a `_2` role spells: the *second* of a pair) never
+    // rebinds -- an env with one camera has no second of anything, and
+    // rebinding would quietly feed the first arm's view to an input asking for
+    // the other arm's.
     let mut role_rebound = None;
     if env_image.is_none()
         && !model_input.optional
         && images_by_role.len() == 1
-        && !model_input.role.ends_with("_2")
+        && crate::roles::registry::canonical(&model_input.role, model_input.part.as_deref())
+            .1
+            .is_none()
         && crate::roles::registry::is_sanctioned_role(&model_input.role)
     {
-        env_image = images_by_role.values().next().copied();
-        role_rebound = env_image.map(|env| (model_input.role.clone(), env.role.clone()));
+        let only = images_by_role.values().next().expect("one camera");
+        env_image = Some(only.feature);
+        part = only.declared_part.clone();
+        role_rebound = Some((model_input.role.clone(), only.feature.role.clone()));
     }
     let Some(env_image) = env_image else {
         // An optional camera the env does not provide is zero-filled (a black
@@ -64,9 +84,10 @@ pub(super) fn plan_image(
         return Err(err(
             ErrorCode::MissingRole,
             format!(
-                "model input {at} wants an image with role {} but the env offers {}",
+                "model input {at} wants an image with role {}{} but the env offers {}",
                 quoted(&model_input.role),
-                quoted_keys(images_by_role)
+                part_suffix(model_input.part.as_deref()),
+                quoted_leaf_keys(images_by_role)
             ),
         ));
     };
@@ -223,6 +244,7 @@ pub(super) fn plan_image(
         stack_pad: model_input.stack_pad,
         frame_bytes: frame_bytes(&model_input.dtype, processed, channels),
         role_rebound,
+        part,
     })
 }
 
@@ -319,6 +341,7 @@ fn zero_fill_image_plan(model_input: &Image, placement: NodePath) -> Result<Imag
         stack_pad: model_input.stack_pad,
         frame_bytes: frame_bytes(&model_input.dtype, Some((height, width)), Some(channels)),
         role_rebound: None,
+        part: model_input.part.clone(),
     })
 }
 
@@ -523,6 +546,7 @@ fn resolve_fit(
 mod image_resolve_tests {
     use std::collections::BTreeMap;
 
+    use super::super::{Indexed, LeafKey};
     use super::plan_image;
     use crate::error::ErrorCode;
     use crate::path::NodePath;
@@ -531,15 +555,22 @@ mod image_resolve_tests {
     /// Resolve at the root placement (the common single-leaf-payload case).
     fn plan(
         model: &Image,
-        images: &BTreeMap<String, &EnvImage>,
+        images: &BTreeMap<LeafKey, Indexed<&EnvImage>>,
     ) -> Result<crate::plans::ImagePlan, crate::error::AdapterResolutionError> {
-        plan_image(model, NodePath::root(), images, &BTreeMap::new())
+        plan_image(
+            model,
+            NodePath::root(),
+            images,
+            &BTreeMap::new(),
+            &mut Vec::new(),
+        )
     }
 
     fn env_image(height: u32, width: u32) -> EnvImage {
         EnvImage {
             source: NodePath::root().push_key("cam"),
             role: "image/primary".to_owned(),
+            part: None,
             layout: ImageLayout::Hwc,
             upside_down: false,
             height,
@@ -554,6 +585,7 @@ mod image_resolve_tests {
             offsets: None,
             stack_pad: StackPad::First,
             role: "image/primary".to_owned(),
+            part: None,
             height: Some(height),
             width: Some(width),
             layout: ImageLayout::Hwc,
@@ -578,8 +610,14 @@ mod image_resolve_tests {
         }
     }
 
-    fn images(env: &EnvImage) -> BTreeMap<String, &EnvImage> {
-        BTreeMap::from([(env.role.clone(), env)])
+    fn images(env: &EnvImage) -> BTreeMap<LeafKey, Indexed<&EnvImage>> {
+        BTreeMap::from([(
+            (env.role.clone(), env.part.clone()),
+            Indexed {
+                declared_part: env.part.clone(),
+                feature: env,
+            },
+        )])
     }
 
     #[test]
@@ -757,7 +795,7 @@ mod image_resolve_tests {
         let mut model = model_image(8, 8, false);
         model.optional = true;
         model.channels = Some(3);
-        let empty: BTreeMap<String, &EnvImage> = BTreeMap::new();
+        let empty: BTreeMap<LeafKey, Indexed<&EnvImage>> = BTreeMap::new();
         let plan = plan(&model, &empty).expect("ok");
         assert_eq!(plan.zero_fill, Some((8, 8, 3)));
         assert!(plan.source.is_root());
@@ -781,14 +819,14 @@ mod image_resolve_tests {
     fn optional_image_without_channels_is_an_error() {
         let mut model = model_image(8, 8, false);
         model.optional = true; // height+width set, channels None -> cannot size
-        let empty: BTreeMap<String, &EnvImage> = BTreeMap::new();
+        let empty: BTreeMap<LeafKey, Indexed<&EnvImage>> = BTreeMap::new();
         let error = plan(&model, &empty).expect_err("err");
         assert_eq!(error.code, ErrorCode::MissingWidth);
     }
 
     #[test]
     fn non_optional_absent_image_is_missing_role() {
-        let empty: BTreeMap<String, &EnvImage> = BTreeMap::new();
+        let empty: BTreeMap<LeafKey, Indexed<&EnvImage>> = BTreeMap::new();
         let error = plan(&model_image(8, 8, false), &empty).expect_err("err");
         assert_eq!(error.code, ErrorCode::MissingRole);
     }
@@ -837,10 +875,8 @@ mod image_resolve_tests {
         let primary = env_image(8, 8);
         let mut wrist = env_image(8, 8);
         wrist.role = "image/wrist".to_owned();
-        let images = BTreeMap::from([
-            (primary.role.clone(), &primary),
-            (wrist.role.clone(), &wrist),
-        ]);
+        let mut images = images(&primary);
+        images.extend(self::images(&wrist));
         let mut model = model_image(8, 8, false);
         model.role = "image/overhead".to_owned();
         let error = plan(&model, &images).expect_err("err");
@@ -918,7 +954,7 @@ mod image_resolve_tests {
         model.optional = true;
         model.channels = Some(3);
         model.render = Some((448, 448));
-        let empty: BTreeMap<String, &EnvImage> = BTreeMap::new();
+        let empty: BTreeMap<LeafKey, Indexed<&EnvImage>> = BTreeMap::new();
         let plan = plan(&model, &empty).expect("ok");
         assert_eq!(plan.zero_fill, Some((224, 224, 3)));
         assert_eq!(plan.render, None);

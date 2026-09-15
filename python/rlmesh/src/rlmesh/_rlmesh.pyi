@@ -22,8 +22,10 @@ __all__ = [
     "ACTION_JOINT_POS",
     "ACTION_JOINT_POS_2",
     "ACTION_JOINT_VEL",
+    "ARM_2",
     "AdapterPlan",
     "Advisory",
+    "BASE",
     "CHANNEL_ORDERS",
     "CROP_MODES",
     "DESCRIBE_METADATA_KEY",
@@ -38,6 +40,7 @@ __all__ = [
     "EnvContract",
     "GRIPPER_POS",
     "GRIPPER_POS_2",
+    "HEAD",
     "IMAGE_LAYOUTS",
     "IMAGE_PRIMARY",
     "IMAGE_SECONDARY",
@@ -46,7 +49,10 @@ __all__ = [
     "INSTRUCTION",
     "JOINT_POS",
     "JOINT_VEL",
+    "LEFT_ARM",
+    "LEFT_LEG",
     "MODEL_METADATA_KEY",
+    "PARTS",
     "PrimitiveValue",
     "PyEnvClient",
     "PyEnvServer",
@@ -57,10 +63,13 @@ __all__ = [
     "PyVideoWriter",
     "PyViewer",
     "RESAMPLES",
+    "RIGHT_ARM",
+    "RIGHT_LEG",
     "ROTATION_DIMS",
     "ServeOptions",
     "Space",
     "SpaceSpec",
+    "TORSO",
     "Tensor",
     "Value",
     "adapters_join_check",
@@ -97,6 +106,8 @@ ACTION_GRIPPER_2: builtins.str
 ACTION_JOINT_POS: builtins.str
 ACTION_JOINT_POS_2: builtins.str
 ACTION_JOINT_VEL: builtins.str
+ARM_2: builtins.str
+BASE: builtins.str
 CHANNEL_ORDERS: builtins.list[builtins.str]
 CROP_MODES: builtins.list[builtins.str]
 DESCRIBE_METADATA_KEY: builtins.str
@@ -110,6 +121,7 @@ ENV_METADATA_KEY: builtins.str
 ENV_RESET_OPTIONS_KEY: builtins.str
 GRIPPER_POS: builtins.str
 GRIPPER_POS_2: builtins.str
+HEAD: builtins.str
 IMAGE_LAYOUTS: builtins.list[builtins.str]
 IMAGE_PRIMARY: builtins.str
 IMAGE_SECONDARY: builtins.str
@@ -118,9 +130,15 @@ IMAGE_WRIST_2: builtins.str
 INSTRUCTION: builtins.str
 JOINT_POS: builtins.str
 JOINT_VEL: builtins.str
+LEFT_ARM: builtins.str
+LEFT_LEG: builtins.str
 MODEL_METADATA_KEY: builtins.str
+PARTS: builtins.list[builtins.str]
 RESAMPLES: builtins.list[builtins.str]
+RIGHT_ARM: builtins.str
+RIGHT_LEG: builtins.str
 ROTATION_DIMS: builtins.dict[builtins.str, builtins.int]
+TORSO: builtins.str
 __version__: builtins.str
 
 __build__: builtins.str

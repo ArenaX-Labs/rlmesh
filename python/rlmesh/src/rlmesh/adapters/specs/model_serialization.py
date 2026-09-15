@@ -155,6 +155,8 @@ def _image_to_dict(item: Image) -> dict[str, Any]:
         image["offsets"] = list(item.offsets)
     if item.stack_pad != "first":
         image["stack_pad"] = item.stack_pad
+    if item.part is not None:
+        image["part"] = item.part
     return image
 
 
@@ -182,6 +184,7 @@ def _part_to_dict(part: State | Constant) -> Any:
         and part.scale is None
         and part.offset is None
         and part.frame is None
+        and part.part is None
     )
     if role_only:
         return part.role
@@ -209,6 +212,8 @@ def _part_to_dict(part: State | Constant) -> Any:
         out["offset"] = part.offset
     if part.frame is not None:
         out["frame"] = part.frame
+    if part.part is not None:
+        out["part"] = part.part
     return out
 
 
@@ -312,6 +317,7 @@ def _part_from_dict(item: object) -> ConcatPart:
         scale=part.get("scale"),
         offset=part.get("offset"),
         frame=part.get("frame"),
+        part=part.get("part"),
     )
 
 
@@ -356,6 +362,7 @@ def model_leaf_from_dict(data: Mapping[str, Any]) -> ModelLeaf:
             if (offsets := data.get("offsets")) is None
             else tuple(int(offset) for offset in offsets),
             stack_pad=data.get("stack_pad", "first"),
+            part=data.get("part"),
         )
     if kind == "state":
         reshape = data.get("reshape")
@@ -387,6 +394,7 @@ def model_leaf_from_dict(data: Mapping[str, Any]) -> ModelLeaf:
                 scale=base.scale,
                 offset=base.offset,
                 frame=base.frame,
+                part=base.part,
                 pad_to=pad_to,
                 dtype=dtype,
                 reshape=reshape_t,

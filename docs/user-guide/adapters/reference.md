@@ -10,7 +10,7 @@ Every snippet uses `import rlmesh.adapters as adapt`.
 
 A role is the string that matches an environment feature to a model input. Roles are an **open vocabulary**: any string works as long as the env tag and the model spec agree on it verbatim. The constants below are the well-known conventions RLMesh ships; reach for them so independently authored envs and models line up, and invent your own string for anything they do not cover.
 
-Role strings carry a feature-kind prefix (`image/`, `proprio/`, `text/`, `action/`), not a domain prefix (two domains sharing `proprio/joint_pos` is intentional).
+Role strings carry a feature-kind prefix, not a domain prefix (two domains sharing `proprio/joint_pos` is intentional). The kinds are a **closed set of five**: `image/`, `proprio/`, `text/`, `action/`, and `command/` (a numeric setpoint the runner hands the policy, the numeric sibling of `text/instruction`; no `command/` role is registered yet). The set is enforced in code: a role under any other prefix is refused when you author it (`adapt.tag`, `to_dict()`, the publish gate) and when a pair resolves, so a spec written by a newer core still parses and relays but fails loudly here rather than binding to nothing. `x/` remains the escape for a whole role; a role with no `/` names no kind and is simply ad-hoc.
 
 | Constant           | Wire string            | Domain       | Kind       | Typical width / encoding            |
 | ------------------ | ---------------------- | ------------ | ---------- | ----------------------------------- |
@@ -37,9 +37,39 @@ You always pin widths explicitly (`dim`/`index` on a part, `dim` on an actuator)
 
 A role is **registered when both sides of it exist**: an environment that produces the data and a model that reads it. One side alone does not earn a slot — a camera nothing looks at, or a command no policy emits, stays ad-hoc (or `x/`) until its counterpart ships, because until then nothing has pinned what the numbers mean.
 
-### Bimanual roles
+### Parts
 
-Every manipulation role has a `_2` variant for the second arm: `EEF_POS_2`, `EEF_ROT_2`, `GRIPPER_POS_2`, `ACTION_DELTA_POS_2`, `ACTION_DELTA_ROT_2`, `ACTION_GRIPPER_2`, `ACTION_EEF_POS_2`, `ACTION_EEF_ROT_2`, plus `ACTION_JOINT_POS_2` and the second wrist camera `IMAGE_WRIST_2`. The first (or only) arm uses the unsuffixed role; the second arm uses `_2`. A single-arm environment never declares `_2`, so a model part targeting it zero-fills on the observation side and drops the extra dims on the action side.
+A role names a quantity; a **part** names where on the body it is measured or commanded when the same role repeats. A bimanual robot has one `proprio/eef_pos` per arm, a humanoid has a camera on its head and a joint vector per leg: each is the same role under a different part. `part` is a keyword-only attribute on `ImageTag`, `StateTag`, `Field`, `Actuator`, `Image`, and a `State`/`Concat` part. It is an **identity key**, not a value the resolver checks: two leaves agree on a part or they do not, and nothing is converted.
+
+```python
+tags = adapt.EnvTags(
+    observation={
+        "left_pos": adapt.StateTag(adapt.EEF_POS, part=adapt.LEFT_ARM),
+        "right_pos": adapt.StateTag(adapt.EEF_POS, part=adapt.RIGHT_ARM),
+        "head_cam": adapt.ImageTag(adapt.IMAGE_PRIMARY, part=adapt.HEAD),
+    },
+    action=adapt.Action(
+        adapt.Actuator(adapt.ACTION_JOINT_POS, dim=7, part=adapt.LEFT_ARM),
+        adapt.Actuator(adapt.ACTION_JOINT_POS, dim=7, part=adapt.RIGHT_ARM),
+    ),
+)
+```
+
+Parts are a registered vocabulary governed exactly like roles. The registered parts are `LEFT_ARM`, `RIGHT_ARM`, `ARM_2`, `HEAD`, `TORSO`, `BASE`, `LEFT_LEG`, and `RIGHT_LEG` (the list is `adapt.PARTS`); a part is a physical place a role can repeat at, never a per-robot name, and the list grows when a real env and model pair needs a slot. Any other part is ad-hoc: it still binds on verbatim agreement, it draws the same non-fatal authoring nudge an ad-hoc role does, and the managed `role_policy="strict"` tier rejects it. Write an intentionally non-standard part under the `x/` prefix (`part="x/tail"`) to declare that and pass the gate. A role-less skip, opaque actuator, or `Constant` carries no part.
+
+A role may repeat across parts on one side but never within one: a `Split`, an `Action`, or an `EnvTags` that declares the same `(role, part)` twice is refused at construction and at the codec. The resolve rules, per leaf:
+
+| Model says | Env has, for that role                   | Outcome                                                                           |
+| ---------- | ---------------------------------------- | --------------------------------------------------------------------------------- |
+| no part    | a leaf with no part                      | match                                                                             |
+| no part    | exactly one leaf, under some part        | binds to it, with an `info` naming the part (declare `part=` to pin it)           |
+| no part    | several leaves, under parts              | **resolve error** naming the parts (`declare part=`), even for an `optional` part |
+| `part=P`   | a leaf under `P`                         | match                                                                             |
+| `part=P`   | no leaf under `P` (whatever else it has) | **resolve error**, or the fill when `optional` -- a named part never rebinds      |
+
+The action side follows the same table with the env actuator as the one looking: an env actuator without a part binds the model's only output of that role under any part, and a named part binds only its own. `explain()` shows the part a leaf was bound under as a `#part` suffix -- `left_pos[:3]#left_arm`, `"action/joint_pos" <- model[0:7]#right_arm` -- and only when a side declared one, so a pre-`part` summary is unchanged.
+
+**The `_2` roles.** The ten second-arm roles that predate parts (`EEF_POS_2`, `EEF_ROT_2`, `GRIPPER_POS_2`, `ACTION_DELTA_POS_2`, `ACTION_DELTA_ROT_2`, `ACTION_GRIPPER_2`, `ACTION_EEF_POS_2`, `ACTION_EEF_ROT_2`, `ACTION_JOINT_POS_2`, `IMAGE_WRIST_2`) are the legacy spelling of the base role under `part=ARM_2`, and the resolver folds them before it matches: a model written against `EEF_POS_2` binds an environment that declares `StateTag(EEF_POS, part=ARM_2)`, and a model that names `part=ARM_2` binds a `_2` environment. `arm_2` means "the second arm", not a side, so a fresh bimanual environment that wants to serve shipped `_2` models names its second arm `ARM_2`; one that names `LEFT_ARM`/`RIGHT_ARM` cannot, and the error says so. A `_2` role may not also carry a part, and no further `_N` role will ever be added. Prefer `part=` for new specs; the `_2` constants remain for the environments and models that already use them.
 
 ## Vocabularies
 
@@ -142,6 +172,7 @@ Nesting is real `dict` nesting that mirrors a nested `Dict` space (`{"agent": {"
 | `role` (1st positional) | --      | the image role to match                      | always                |
 | `layout`                | `"hwc"` | axis order of the stored frame               | the env stores `chw`  |
 | `upside_down`           | `False` | the camera renders 180° rotated from upright | a known flipped mount |
+| `part` (keyword-only)   | `None`  | the body part the camera sits on             | the role repeats      |
 
 ### StateTag
 
@@ -153,6 +184,7 @@ Nesting is real `dict` nesting that mirrors a nested `Dict` space (`{"agent": {"
 | `encoding`              | `None`  | rotation encoding (single, or a native-first preference sequence) | the role is a rotation               |
 | `range`                 | `None`  | `(low, high)` bounds where the space is unbounded                 | the space leaves this leaf unbounded |
 | `frame` (keyword-only)  | `None`  | the coordinate frame these values are expressed in                | the role is an absolute pose         |
+| `part` (keyword-only)   | `None`  | the body part this entry belongs to (see [Parts](#parts))         | the role repeats across the body     |
 
 `range` only supplies bounds the space lacks. If the space declares finite bounds that disagree with it, resolution errors rather than silently overriding them.
 
@@ -185,8 +217,9 @@ adapt.EnvTags(
 | `encoding`              | `None`             | rotation encoding (single or preference sequence) | the slice is a rotation             |
 | `range`                 | `None`             | `(low, high)` where the space is unbounded        | the slice is unbounded in the space |
 | `frame` (keyword-only)  | `None`             | the coordinate frame this slice is expressed in   | the role is an absolute pose        |
+| `part` (keyword-only)   | `None`             | the body part this slice belongs to               | the role repeats across the body    |
 
-A `role=None` field advances the offset without producing a feature; use it to step over indices the model never reads. A skip carries no encoding, range or frame.
+A `role=None` field advances the offset without producing a feature; use it to step over indices the model never reads. A skip carries no encoding, range, frame or part.
 
 ## The model side
 
@@ -242,6 +275,7 @@ spec = adapt.ModelSpec(
 | `jpeg_quality`          | `None`       | round-trip the frame through JPEG at this quality (1-100) before the crop     | the training pipeline stored its frames as JPEG                     |
 | `channel_order`         | `"rgb"`      | channel order the model wants; `bgr` swaps red and blue                       | a model trained on OpenCV-ordered frames                            |
 | `render`                | `None`       | assert the camera renders at this size (square `int` or `(h, w)`)             | the model needs the env's camera dial moved (see [Render](#render)) |
+| `part`                  | `None`       | the body part the wanted camera sits on (see [Parts](#parts))                 | the env has the role on several parts                               |
 
 `size` is the idiomatic square form. `fit` accepts a preference sequence (`("crop", "pad")`); the resolver picks, per env, the first that does not need a disallowed upscale, so one spec can crop a large camera and letterbox a small one.
 
@@ -301,6 +335,7 @@ Perturbations that speak in pixels (a shift in `dx`/`dy`, say) are scaled by the
 | `scale`                 | `None`      | multiply by this after the range map                                | the model's own units                          |
 | `offset`                | `None`      | add this after `scale` (`value * scale + offset`)                   | e.g. a `1 - 2g` gripper (`scale=-2, offset=1`) |
 | `frame` (keyword-only)  | `None`      | the coordinate frame the checkpoint was trained to read             | the part is an absolute pose                   |
+| `part` (keyword-only)   | `None`      | the body part this part reads (see [Parts](#parts))                 | the env has the role on several parts          |
 | `pad_to`                | `None`      | zero-pad the result to this length                                  | fixed-width input                              |
 | `dtype`                 | `"float32"` | NumPy dtype of the result                                           | non-default dtype                              |
 | `reshape`               | `None`      | target shape for the result                                         | the model wants a specific shape               |
@@ -312,7 +347,7 @@ The steps run in a fixed order: slice the env feature, convert the rotation (wit
 
 `post_rotate` takes a {class}`~rlmesh.adapters.Rotation`, built from a 3x3 matrix with `Rotation.from_matrix(rows)` (stored as `rot6d`, so the round-trip is exact). It needs a rotation `encoding` and cannot combine with a `CustomEncoding`; the matrix must already be a rotation (orthonormal, `|det - 1| <= 1e-4`).
 
-A `State` is also a valid `Concat` part: its part fields (`role`, `encoding`, `dim`, `index`, `optional`, `range`, `fill`, `post_rotate`, `scale`, `offset`, `frame`) are taken, and its container fields (`pad_to`, `dtype`, `reshape`, `container`) must stay default when used as a part.
+A `State` is also a valid `Concat` part: its part fields (`role`, `encoding`, `dim`, `index`, `optional`, `range`, `fill`, `post_rotate`, `scale`, `offset`, `frame`, `part`) are taken, and its container fields (`pad_to`, `dtype`, `reshape`, `container`) must stay default when used as a part.
 
 ### Concat
 
@@ -372,6 +407,7 @@ Tokenization stays in the model; `Text` delivers the raw string.
 | `fill`                  | `0.0`         | constant per dim of an opaque (role-less) actuator        | env-required dims no model reads       |
 | `frame` (keyword-only)  | `None`        | coordinate frame of an **absolute** pose command          | `action/eef_*`                         |
 | `reference` (kw-only)   | `None`        | pose a **delta** is integrated against                    | `action/delta_eef_*`                   |
+| `part` (kw-only)        | `None`        | the body part this actuator drives (see [Parts](#parts))  | one `action/joint_pos` per arm         |
 
 `scale`, `invert`, and `threshold` declare a side's actuator convention. They can be set on **either side** and compose as literal transforms applied **after** the declared formats (rotation, range) are bridged, **model-side first** (the model's own output convention), then **env-side** (the env's):
 
@@ -478,7 +514,8 @@ Find the row that matches your environment, then tag it:
 | a `Tuple` of sub-spaces                   | a Python `tuple` of leaves                      |
 | an upside-down camera                     | `ImageTag(role, upside_down=True)`              |
 | quaternion proprioception                 | `StateTag(EEF_ROT, encoding="quat_xyzw")`       |
-| two arms                                  | the role plus its `_2` variant per arm          |
+| two arms                                  | the role with `part=LEFT_ARM` / `RIGHT_ARM`     |
+| a camera on the head                      | `ImageTag(IMAGE_PRIMARY, part=HEAD)`            |
 
 Find the row that matches your model, then spec it:
 

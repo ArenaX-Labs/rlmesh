@@ -117,11 +117,29 @@ def _install_native_docs_stub() -> None:
         "ACTION_EEF_ROT": "action/eef_rot",
         "ACTION_EEF_POS_2": "action/eef_pos_2",
         "ACTION_EEF_ROT_2": "action/eef_rot_2",
+        "LEFT_ARM": "left_arm",
+        "RIGHT_ARM": "right_arm",
+        "ARM_2": "arm_2",
+        "HEAD": "head",
+        "TORSO": "torso",
+        "BASE": "base",
+        "LEFT_LEG": "left_leg",
+        "RIGHT_LEG": "right_leg",
     }
     for name, value in adapter_constants.items():
         setattr(native, name, value)
     native.ROTATION_DIMS = {"quat_xyzw": 4, "quat_wxyz": 4, "axis_angle": 3, "rot6d": 6}
     native.IMAGE_LAYOUTS = ["hwc", "chw"]
+    native.PARTS = [
+        "left_arm",
+        "right_arm",
+        "arm_2",
+        "head",
+        "torso",
+        "base",
+        "left_leg",
+        "right_leg",
+    ]
     native.AdapterPlan = _native_type("AdapterPlan")
     for name in ("adapters_resolve", "adapters_join_check"):
         setattr(native, name, _native_unavailable)

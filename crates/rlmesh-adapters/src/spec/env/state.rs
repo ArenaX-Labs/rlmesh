@@ -14,6 +14,9 @@ pub struct EnvState {
     /// from (the env-side placement); empty (root) for a bare single-leaf obs.
     pub source: NodePath,
     pub role: String,
+    /// The body part this feature belongs to, lifted verbatim from the
+    /// `StateTag`/`Field` that tagged it.
+    pub part: Option<String>,
     /// Start index of this feature within its space leaf, set only when it is
     /// one field of a [`SplitLayout`](crate::spec::env_tags::SplitLayout)
     /// slicing several role fields out of one flat numeric leaf. `None` for a

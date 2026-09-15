@@ -1,0 +1,109 @@
+{
+  "action_space": {
+    "dtype": "float32",
+    "kind": "box",
+    "shape": [4]
+  },
+  "env_tags": {
+    "action": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 2,
+          "encoding": null,
+          "part": "left_arm",
+          "range": null,
+          "role": "action/joint_pos"
+        },
+        {
+          "binary": false,
+          "dim": 2,
+          "encoding": null,
+          "part": "right_arm",
+          "range": null,
+          "role": "action/joint_pos"
+        }
+      ]
+    },
+    "observation": {
+      "l": {
+        "encoding": null,
+        "part": "left_arm",
+        "range": null,
+        "role": "proprio/joint_pos",
+        "type": "state"
+      },
+      "r": {
+        "encoding": null,
+        "part": "right_arm",
+        "range": null,
+        "role": "proprio/joint_pos",
+        "type": "state"
+      }
+    }
+  },
+  "expect": {
+    "describe": "observation:\n  \"state\" <- concat(l[:2]#left_arm, r[:2]#right_arm)\naction:\n  \"action/joint_pos\" <- model[2:4]#left_arm\n  \"action/joint_pos\" <- model[0:2]#right_arm",
+    "ok": true
+  },
+  "kind": "resolve",
+  "model_spec": {
+    "input": {
+      "state": {
+        "components": [
+          {
+            "dim": 2,
+            "part": "left_arm",
+            "role": "proprio/joint_pos"
+          },
+          {
+            "dim": 2,
+            "part": "right_arm",
+            "role": "proprio/joint_pos"
+          }
+        ],
+        "dtype": "float32",
+        "type": "state"
+      }
+    },
+    "output": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 2,
+          "encoding": null,
+          "part": "right_arm",
+          "range": null,
+          "role": "action/joint_pos"
+        },
+        {
+          "binary": false,
+          "dim": 2,
+          "encoding": null,
+          "part": "left_arm",
+          "range": null,
+          "role": "action/joint_pos"
+        }
+      ]
+    }
+  },
+  "observation_space": {
+    "children": [
+      {
+        "dtype": "float32",
+        "kind": "box",
+        "shape": [2]
+      },
+      {
+        "dtype": "float32",
+        "kind": "box",
+        "shape": [2]
+      }
+    ],
+    "dtype": "unspecified",
+    "keys": ["l", "r"],
+    "kind": "dict"
+  }
+}

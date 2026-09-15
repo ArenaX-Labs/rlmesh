@@ -35,6 +35,12 @@ pub struct ImageTag {
     // bool→enum wire break.
     #[serde(default)]
     pub upside_down: bool,
+    /// The body part this leaf sits on, when the role repeats across a body
+    /// (`left_arm`, `head`, ...): an identity key the resolver matches on, not
+    /// a value it checks. Omitted when unset, so every pre-`part` spec is
+    /// byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub part: Option<String>,
     /// Unrecognized additive fields, retained verbatim for round-trip and
     /// surfaced to the publish-door `reject_unknowns` guard. See the strict-v1 publish gate.
     #[serde(flatten)]
@@ -57,6 +63,9 @@ pub struct StateTag {
     /// is byte-identical.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frame: Option<FrameRef>,
+    /// The body part this feature belongs to; see [`ImageTag::part`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub part: Option<String>,
     /// Unrecognized additive fields, retained for round-trip (see [`ImageTag`]).
     #[serde(flatten)]
     pub unknown: BTreeMap<String, serde_json::Value>,
@@ -85,6 +94,8 @@ struct FieldWire {
     range: Option<(f64, f64)>,
     #[serde(default)]
     frame: Option<FrameRef>,
+    #[serde(default)]
+    part: Option<String>,
     /// Unrecognized additive fields, captured instead of hard-erroring so a
     /// newer writer's field survives an older reader; the publish gate rejects
     /// a bare one. See [`ImageTag`].
@@ -100,10 +111,14 @@ impl TryFrom<FieldWire> for Field {
             return Err(format!("state field dim must be >= 1, got {}", wire.dim));
         }
         if wire.role.is_none()
-            && (wire.encoding.is_some() || wire.range.is_some() || wire.frame.is_some())
+            && (wire.encoding.is_some()
+                || wire.range.is_some()
+                || wire.frame.is_some()
+                || wire.part.is_some())
         {
             return Err(
-                "a role-less field (a skip) cannot carry an encoding, range or frame".to_owned(),
+                "a role-less field (a skip) cannot carry an encoding, range, frame or part"
+                    .to_owned(),
             );
         }
         Ok(Field {
@@ -112,6 +127,7 @@ impl TryFrom<FieldWire> for Field {
             encoding: wire.encoding,
             range: wire.range,
             frame: wire.frame,
+            part: wire.part,
             unknown: wire.unknown,
         })
     }
@@ -139,13 +155,17 @@ pub struct Field {
     /// [`StateTag::frame`]. A role-less skip may not carry one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frame: Option<FrameRef>,
+    /// The body part this field belongs to; see [`ImageTag::part`]. A
+    /// role-less skip may not carry one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub part: Option<String>,
     /// Unrecognized additive fields, retained for round-trip (see [`ImageTag`]).
     #[serde(flatten)]
     pub unknown: BTreeMap<String, serde_json::Value>,
 }
 
 /// Wire form of a [`SplitLayout`], validated via [`TryFrom`] so an empty layout
-/// (zero fields) and a duplicate role are rejected by the authoritative Rust
+/// (zero fields) and a duplicate `(role, part)` are rejected by the authoritative Rust
 /// codec — matching the Python `SplitLayout` guard and Rust `join`
 /// ([`JoinError::DuplicateLayoutRole`](crate::v1::JoinError)). Without this the
 /// two engines disagree: Rust accepts `fields: []` (or a repeated role) and
@@ -164,12 +184,19 @@ impl TryFrom<SplitLayoutWire> for SplitLayout {
         if wire.fields.is_empty() {
             return Err("a state layout needs at least one field".to_owned());
         }
+        // Keyed by `(role, part)`: one role may repeat across parts (a joint
+        // vector per arm), never within the same part.
         let mut seen = std::collections::BTreeSet::new();
-        for role in wire.fields.iter().filter_map(|field| field.role.as_deref()) {
-            if !seen.insert(role) {
-                return Err(format!(
-                    "a state layout declares role {role:?} more than once"
-                ));
+        for field in &wire.fields {
+            if let Some(role) = field.role.as_deref()
+                && !seen.insert((role, field.part.as_deref()))
+            {
+                return Err(match &field.part {
+                    Some(part) => format!(
+                        "a state layout declares role {role:?} under part {part:?} more than once"
+                    ),
+                    None => format!("a state layout declares role {role:?} more than once"),
+                });
             }
         }
         Ok(SplitLayout {
@@ -387,6 +414,69 @@ mod state_field_wire_tests {
         let ok: SplitLayout = serde_json::from_str(r#"{"fields": [{"role": "x", "dim": 1}]}"#)
             .expect("non-empty layout parses");
         assert_eq!(ok.fields.len(), 1);
+    }
+
+    #[test]
+    fn part_is_optional_omitted_when_unset_and_barred_from_a_skip() {
+        // Additive: absent on the wire when unset (every pre-`part` spec is
+        // byte-identical), carried verbatim when set, and meaningless on a
+        // role-less skip (it names nothing to place on a body).
+        let field: Field = serde_json::from_str(r#"{"role": "x", "dim": 3}"#).unwrap();
+        assert_eq!(field.part, None);
+        assert!(!serde_json::to_string(&field).unwrap().contains("part"));
+        let field: Field =
+            serde_json::from_str(r#"{"role": "x", "dim": 3, "part": "left_arm"}"#).unwrap();
+        assert_eq!(field.part.as_deref(), Some("left_arm"));
+        assert!(
+            serde_json::to_string(&field)
+                .unwrap()
+                .contains(r#""part":"left_arm""#)
+        );
+        let err = serde_json::from_str::<Field>(r#"{"dim": 3, "part": "left_arm"}"#).unwrap_err();
+        assert!(err.to_string().contains("role-less"), "got: {err}");
+
+        for (doc, expect) in [
+            (
+                r#"{"type": "state", "role": "proprio/eef_pos", "part": "left_arm"}"#,
+                true,
+            ),
+            (r#"{"type": "state", "role": "proprio/eef_pos"}"#, false),
+            (
+                r#"{"type": "image", "role": "image/wrist", "part": "left_arm"}"#,
+                true,
+            ),
+            (r#"{"type": "image", "role": "image/wrist"}"#, false),
+        ] {
+            let leaf: super::ObsLeaf = serde_json::from_str(doc).unwrap();
+            let json = serde_json::to_string(&leaf).unwrap();
+            assert_eq!(
+                json.contains(r#""part":"left_arm""#),
+                expect,
+                "{doc} -> {json}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_role_may_repeat_across_parts_but_not_within_one() {
+        use super::SplitLayout;
+        let ok: SplitLayout = serde_json::from_str(
+            r#"{"fields": [{"role": "r", "dim": 1, "part": "left_arm"},
+                           {"role": "r", "dim": 1, "part": "right_arm"},
+                           {"role": "r", "dim": 1}]}"#,
+        )
+        .expect("one role, three parts");
+        assert_eq!(ok.fields.len(), 3);
+        let err = serde_json::from_str::<SplitLayout>(
+            r#"{"fields": [{"role": "r", "dim": 1, "part": "left_arm"},
+                           {"role": "r", "dim": 1, "part": "left_arm"}]}"#,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains(r#"under part "left_arm" more than once"#),
+            "got: {err}"
+        );
     }
 
     #[test]

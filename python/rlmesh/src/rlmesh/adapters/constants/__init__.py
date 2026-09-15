@@ -1,4 +1,4 @@
-"""Shared adapter constants: semantic roles and metadata keys.
+"""Shared adapter constants: semantic roles, body parts and metadata keys.
 
 Metadata keys are versioned like protobuf packages: within ``v1`` the JSON spec
 format evolves additively only (new optional fields with defaults), and a
@@ -13,6 +13,17 @@ from ..._rlmesh import (
     ENV_BRANCH_METADATA_KEY,
     ENV_METADATA_KEY,
     MODEL_METADATA_KEY,
+)
+from .parts import (
+    ARM_2,
+    BASE,
+    HEAD,
+    LEFT_ARM,
+    LEFT_LEG,
+    PARTS,
+    RIGHT_ARM,
+    RIGHT_LEG,
+    TORSO,
 )
 from .roles import (
     ACTION_DELTA_POS,
@@ -57,6 +68,8 @@ __all__ = [
     "ACTION_JOINT_POS",
     "ACTION_JOINT_POS_2",
     "ACTION_JOINT_VEL",
+    "ARM_2",
+    "BASE",
     "EEF_POS",
     "EEF_POS_2",
     "EEF_ROT",
@@ -65,6 +78,7 @@ __all__ = [
     "ENV_METADATA_KEY",
     "GRIPPER_POS",
     "GRIPPER_POS_2",
+    "HEAD",
     "IMAGE_PRIMARY",
     "IMAGE_SECONDARY",
     "IMAGE_WRIST",
@@ -72,5 +86,11 @@ __all__ = [
     "INSTRUCTION",
     "JOINT_POS",
     "JOINT_VEL",
+    "LEFT_ARM",
+    "LEFT_LEG",
     "MODEL_METADATA_KEY",
+    "PARTS",
+    "RIGHT_ARM",
+    "RIGHT_LEG",
+    "TORSO",
 ]

@@ -176,14 +176,14 @@ batched env that returns `[N, ...]` tensors works, or use `framework="numpy"`.
 
 Most authoring effort is matching the environment's actual shape to a tag. Each row links into {doc}`adapters/reference`.
 
-| Quirk                                                            | Tag it with                                                                                                                           |
-| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| One flat `Box` observation with fixed index ranges (Metaworld)   | {class}`~rlmesh.adapters.Split` of {class}`~rlmesh.adapters.Field` slices; a role-less `Field` skips indices the model does not read. |
-| Upside-down simulator camera (robosuite / LIBERO render flipped) | `adapt.ImageTag(adapt.IMAGE_PRIMARY, upside_down=True)`.                                                                              |
-| A `Dict` observation (one key per quantity)                      | A Python `dict` of tags; the container _is_ the space, with real nesting and no dotted keys.                                          |
-| A `Tuple` observation                                            | A Python `tuple` of tags.                                                                                                             |
-| A single space leaf                                              | A bare leaf, no dict wrapper: `EnvTags(observation=adapt.Split(...), action=...)`.                                                    |
-| A second arm (bimanual)                                          | The unsuffixed roles for the first arm, the `_2` roles for the second (`EEF_POS_2`, `ACTION_GRIPPER_2`, ...).                         |
+| Quirk                                                            | Tag it with                                                                                                                            |
+| ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| One flat `Box` observation with fixed index ranges (Metaworld)   | {class}`~rlmesh.adapters.Split` of {class}`~rlmesh.adapters.Field` slices; a role-less `Field` skips indices the model does not read.  |
+| Upside-down simulator camera (robosuite / LIBERO render flipped) | `adapt.ImageTag(adapt.IMAGE_PRIMARY, upside_down=True)`.                                                                               |
+| A `Dict` observation (one key per quantity)                      | A Python `dict` of tags; the container _is_ the space, with real nesting and no dotted keys.                                           |
+| A `Tuple` observation                                            | A Python `tuple` of tags.                                                                                                              |
+| A single space leaf                                              | A bare leaf, no dict wrapper: `EnvTags(observation=adapt.Split(...), action=...)`.                                                     |
+| A second arm (bimanual)                                          | The same role once per arm with `part=LEFT_ARM` / `part=RIGHT_ARM` (or `ARM_2` to serve models written against the legacy `_2` roles). |
 
 ## Serve and run
 

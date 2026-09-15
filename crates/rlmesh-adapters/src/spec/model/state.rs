@@ -23,7 +23,7 @@ fn is_default_fill(fill: &f64) -> bool {
 /// A part deserializes from **either** a bare JSON string (a role, sugar for a
 /// part carrying only that role) **or** a JSON object with the full field set
 /// (`role`, `encoding`, `dim`, `index`, `optional`, `range`, `fill`,
-/// `post_rotate`, `scale`, `offset`). On the wire a role-only part round-trips
+/// `post_rotate`, `scale`, `offset`, `frame`, `part`). On the wire a role-only part round-trips
 /// back to a bare string; any other part to an object.
 ///
 /// A part with **no** `role` is a constant: it reads nothing from the env and
@@ -74,6 +74,12 @@ pub struct ConcatPart {
     /// pre-`frame` spec is byte-identical.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frame: Option<FrameRef>,
+    /// The body part this part reads, when the role repeats across a body
+    /// (`left_arm`, ...): an identity key the resolver matches on. Naming one
+    /// binds only that leaf; naming none binds the env's only leaf of the role
+    /// under any part. Omitted when unset; a constant part may not carry one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub part: Option<String>,
     /// Unrecognized additive fields, retained for round-trip and surfaced to the
     /// publish-door `reject_unknowns` guard. See the strict-v1 publish gate.
     #[serde(flatten)]
@@ -106,6 +112,8 @@ struct ConcatPartWire {
     offset: Option<f64>,
     #[serde(default)]
     frame: Option<FrameRef>,
+    #[serde(default)]
+    part: Option<String>,
     // Captured instead of hard-erroring so a newer writer's field survives an
     // older reader; the publish gate rejects a bare one.
     #[serde(flatten)]
@@ -178,9 +186,11 @@ impl TryFrom<ConcatPartWire> for ConcatPart {
                     || wire.scale.is_some()
                     || wire.offset.is_some()
                     || wire.frame.is_some()
+                    || wire.part.is_some()
                 {
                     return Err("a constant (role-less) state part carries only dim and \
-                         fill; drop encoding/index/range/optional/post_rotate/scale/offset/frame"
+                         fill; drop encoding/index/range/optional/post_rotate/scale/offset/\
+                         frame/part"
                         .to_owned());
                 }
             }
@@ -197,6 +207,7 @@ impl TryFrom<ConcatPartWire> for ConcatPart {
             scale: wire.scale,
             offset: wire.offset,
             frame: wire.frame,
+            part: wire.part,
             unknown: wire.unknown,
         })
     }
@@ -226,6 +237,7 @@ impl<'de> Deserialize<'de> for ConcatPart {
                     scale: None,
                     offset: None,
                     frame: None,
+                    part: None,
                     unknown: BTreeMap::new(),
                 })
             }
@@ -257,6 +269,7 @@ fn serialize_concat_part<S: Serializer>(
         && part.scale.is_none()
         && part.offset.is_none()
         && part.frame.is_none()
+        && part.part.is_none()
         && part.unknown.is_empty();
     if let (true, Some(role)) = (role_only, &part.role) {
         serializer.serialize_str(role)
@@ -496,6 +509,27 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("needs a rotation"), "got: {err}");
+    }
+
+    #[test]
+    fn part_round_trips_as_an_object_field_and_is_barred_from_a_constant() {
+        // A part with a `part` is no longer role-only, so it serializes as an
+        // object; a role-only part still collapses to the bare string.
+        let state: State = serde_json::from_str(
+            r#"{"components": [{"role": "proprio/eef_pos", "part": "left_arm"}, "proprio/gripper"]}"#,
+        )
+        .unwrap();
+        assert_eq!(state.components[0].part.as_deref(), Some("left_arm"));
+        let json = serde_json::to_string(&state).unwrap();
+        assert!(
+            json.contains(r#"[{"role":"proprio/eef_pos","part":"left_arm"},"proprio/gripper"]"#),
+            "got: {json}"
+        );
+        let err = serde_json::from_str::<State>(
+            r#"{"components": ["r", {"dim": 1, "part": "left_arm"}]}"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("only dim and"), "got: {err}");
     }
 
     #[test]

@@ -1,9 +1,12 @@
 //! Arm manipulation roles (single-arm and bimanual).
 //!
-//! Bimanual convention: the first (or only) arm uses the unsuffixed
-//! roles; the second arm uses the `_2` variants. Single-arm envs simply
-//! never declare `_2` roles, so model components targeting them resolve
-//! to zero fill (observations) or dropped output dims (actions).
+//! Bimanual convention: a second arm is a `part` on the leaf (`left_arm`,
+//! `right_arm`, `arm_2`; see [`parts`](super::parts)). The `_2` roles below
+//! are the legacy spelling of `part="arm_2"` and stay as data, folded onto
+//! their base role by [`ALIASES`](super::registry::ALIASES) before any lookup.
+//! Single-arm envs simply never declare a second arm, so model components
+//! targeting one resolve to zero fill (observations) or dropped output dims
+//! (actions).
 //!
 //! By convention `eef_pos`/`delta_eef_pos` are 3-D Cartesian; gripper
 //! widths vary by embodiment.

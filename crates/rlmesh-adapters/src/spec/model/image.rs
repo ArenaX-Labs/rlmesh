@@ -177,6 +177,13 @@ where
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Image {
     pub role: String,
+    /// The body part the camera the model wants sits on, when the role
+    /// repeats across a body (`head`, `left_arm`, ...): an identity key the
+    /// resolver matches on. A model that names one binds only that camera; one
+    /// that names none binds the env's only camera of the role under any part.
+    /// Omitted when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub part: Option<String>,
     #[serde(default, deserialize_with = "crate::spec::num::de_opt_count")]
     pub height: Option<u32>,
     #[serde(default, deserialize_with = "crate::spec::num::de_opt_count")]
@@ -349,6 +356,26 @@ pub struct Image {
     /// publish-door `reject_unknowns` guard. See the strict-v1 publish gate.
     #[serde(flatten)]
     pub unknown: BTreeMap<String, serde_json::Value>,
+}
+
+#[cfg(test)]
+mod part_tests {
+    use super::Image;
+
+    #[test]
+    fn part_is_omitted_when_unset_and_carried_when_set() {
+        let image: Image = serde_json::from_str(r#"{"role": "image/wrist"}"#).expect("parse");
+        assert_eq!(image.part, None);
+        assert!(!serde_json::to_string(&image).unwrap().contains("part"));
+        let image: Image =
+            serde_json::from_str(r#"{"role": "image/wrist", "part": "left_arm"}"#).expect("parse");
+        assert_eq!(image.part.as_deref(), Some("left_arm"));
+        assert!(
+            serde_json::to_string(&image)
+                .unwrap()
+                .contains(r#""part":"left_arm""#)
+        );
+    }
 }
 
 #[cfg(test)]

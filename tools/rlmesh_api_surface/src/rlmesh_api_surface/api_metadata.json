@@ -331,6 +331,33 @@
     "rlmesh.adapters.JOINT_VEL": {
       "description": "Observation role for joint velocities (proprio/joint_vel)."
     },
+    "rlmesh.adapters.LEFT_ARM": {
+      "description": "Body part for the left arm (left_arm), where a role repeats across a bimanual body."
+    },
+    "rlmesh.adapters.RIGHT_ARM": {
+      "description": "Body part for the right arm (right_arm)."
+    },
+    "rlmesh.adapters.ARM_2": {
+      "description": "Body part for the second arm when no side is meant (arm_2); the part the legacy _2 roles spell."
+    },
+    "rlmesh.adapters.HEAD": {
+      "description": "Body part for the head (head), e.g. a head-mounted camera."
+    },
+    "rlmesh.adapters.TORSO": {
+      "description": "Body part for the torso (torso)."
+    },
+    "rlmesh.adapters.BASE": {
+      "description": "Body part for the mobile base (base)."
+    },
+    "rlmesh.adapters.LEFT_LEG": {
+      "description": "Body part for the left leg (left_leg)."
+    },
+    "rlmesh.adapters.RIGHT_LEG": {
+      "description": "Body part for the right leg (right_leg)."
+    },
+    "rlmesh.adapters.PARTS": {
+      "description": "The registered body parts, in registry order."
+    },
     "rlmesh.adapters.MODEL_METADATA_KEY": {
       "description": "Contract metadata key under which a model publishes its ModelSpec (rlmesh.adapters.v1.model_spec)."
     },

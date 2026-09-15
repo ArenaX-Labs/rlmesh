@@ -1299,6 +1299,7 @@ mod tests {
             stack_pad: crate::spec::StackPad::First,
             frame_bytes: 0,
             role_rebound: None,
+            part: None,
         };
         let Value::Tensor(tensor) =
             apply_image(&plan, &std::collections::BTreeMap::new()).expect("zero-fill")
@@ -1341,6 +1342,7 @@ mod tests {
             stack_pad: crate::spec::StackPad::First,
             frame_bytes: 0,
             role_rebound: None,
+            part: None,
         };
         let Value::Tensor(tensor) =
             apply_image(&plan, &std::collections::BTreeMap::new()).expect("zero-fill")

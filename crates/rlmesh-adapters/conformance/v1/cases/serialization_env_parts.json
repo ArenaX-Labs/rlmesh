@@ -1,0 +1,68 @@
+{
+  "doc": {
+    "action": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "part": "left_arm",
+          "range": null,
+          "role": "action/gripper"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "part": "right_arm",
+          "range": null,
+          "role": "action/gripper"
+        }
+      ]
+    },
+    "observation": {
+      "cam": {
+        "layout": "hwc",
+        "part": "left_arm",
+        "role": "image/wrist",
+        "type": "image",
+        "upside_down": false
+      },
+      "flat": {
+        "fields": [
+          {
+            "dim": 1,
+            "encoding": null,
+            "part": "left_arm",
+            "range": null,
+            "role": "proprio/gripper"
+          },
+          {
+            "dim": 1,
+            "encoding": null,
+            "part": "right_arm",
+            "range": null,
+            "role": "proprio/gripper"
+          },
+          {
+            "dim": 2,
+            "encoding": null,
+            "range": null,
+            "role": null
+          }
+        ],
+        "type": "split"
+      },
+      "l": {
+        "encoding": null,
+        "part": "left_arm",
+        "range": null,
+        "role": "proprio/eef_pos",
+        "type": "state"
+      }
+    }
+  },
+  "kind": "serialization",
+  "side": "env"
+}
