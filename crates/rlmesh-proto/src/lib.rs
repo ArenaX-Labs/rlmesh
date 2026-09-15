@@ -800,10 +800,19 @@ mod tests {
             os_version: "ubuntu-22.04".to_string(),
             arch: "aarch64".to_string(),
             framework_versions: frameworks,
-            extra: HashMap::new(),
+            extra: HashMap::from([("rlmesh.startup.listen_ms".to_string(), "4200".to_string())]),
         });
 
         let py_info = peer_info("rlmesh-env");
+        // Host-supplied extras ride beside the build keys, never replace them.
+        assert_eq!(
+            py_info
+                .extra
+                .get("rlmesh.startup.listen_ms")
+                .map(String::as_str),
+            Some("4200")
+        );
+        assert!(py_info.extra.contains_key("rlmesh.build.cohort"));
         // component still names this call site; not taken from the override.
         assert_eq!(py_info.component, "rlmesh-env");
         // Python values win.

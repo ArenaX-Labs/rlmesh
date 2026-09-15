@@ -12,17 +12,81 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import time
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
 from ._entrypoint import resolve_entrypoint
+
+# Startup phase marks. Every mark is wall-clock milliseconds since the process
+# started (interpreter start plus the ``rlmesh`` import land before this module
+# does), so a model container's wait splits into imports, construction (weights),
+# and the listen point without a profiler. Printed on the serving line and
+# stamped on the handshake ``PeerInfo.extra`` as ``rlmesh.startup.<phase>_ms``;
+# the runtime's first ``endpoint.total`` sample is the first predict.
+_ENTRY = time.monotonic()
+
+
+def _process_age_ms() -> int | None:
+    """Milliseconds this process had been alive when this module loaded.
+
+    Linux only (``/proc``); ``None`` elsewhere, and the marks then count from
+    this module's import instead.
+    """
+    try:
+        with open("/proc/self/stat", encoding="ascii") as stat:
+            fields = stat.read().rsplit(")", 1)[1].split()
+        with open("/proc/uptime", encoding="ascii") as uptime_file:
+            uptime = float(uptime_file.read().split()[0])
+        # Field 22 of /proc/[pid]/stat is starttime in clock ticks since boot;
+        # after the ')' split the command name is gone, so it is index 19.
+        started = int(fields[19]) / os.sysconf("SC_CLK_TCK")
+        return max(0, int((uptime - started) * 1000))
+    except (OSError, ValueError, IndexError, AttributeError):
+        return None
+
+
+_PROCESS_AGE_MS = _process_age_ms()
+_marks: dict[str, int] = {}
+
+
+def _mark(phase: str) -> int:
+    """Record ``phase`` as reached now; returns its millisecond mark."""
+    since_entry = int((time.monotonic() - _ENTRY) * 1000)
+    _marks[phase] = since_entry + (_PROCESS_AGE_MS or 0)
+    return _marks[phase]
+
+
+def startup_marks() -> dict[str, str]:
+    """The phase marks reached so far, as ``rlmesh.startup.<phase>_ms`` strings."""
+    marks = {f"rlmesh.startup.{phase}_ms": str(ms) for phase, ms in _marks.items()}
+    if _PROCESS_AGE_MS is not None:
+        marks["rlmesh.startup.process_ms"] = str(_PROCESS_AGE_MS)
+    return marks
+
+
+def _stamp_startup(kind: str, address: str) -> None:
+    """Mark the listen point, put the marks on the handshake, print them."""
+    from ._peer_info import register_python_peer_info
+
+    _mark("listen")
+    register_python_peer_info(extra=startup_marks())
+    phases = ", ".join(
+        f"{phase} {ms / 1000:.1f}s"
+        for phase, ms in (
+            [("process", _PROCESS_AGE_MS)] if _PROCESS_AGE_MS is not None else []
+        )
+        + list(_marks.items())
+    )
+    print(f"RLMesh serving {kind} on {address} (startup: {phases})", flush=True)
+
 
 if TYPE_CHECKING:
     from rlmesh._models.base import ModelBase
     from rlmesh._value_conversion import ValueBridge
     from rlmesh.types import EnvLike
 
-__all__ = ["main", "serve_env", "serve_model"]
+__all__ = ["main", "serve_env", "serve_model", "startup_marks"]
 
 # Frameworks whose obs/action seam carries device tensors. numpy and the default
 # Auto backend have no device, so a device= is meaningless (and unsupported) there.
@@ -165,6 +229,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "RLMESH_MAKE_KWARGS / --kwargs-json"
             )
         env = resolve_entrypoint(args.env, label="env entrypoint")
+        _mark("imports")
         serve_env(
             env,
             args.address,
@@ -176,6 +241,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     else:
         model = resolve_entrypoint(args.model, label="model entrypoint")
+        _mark("imports")
         serve_model(model, args.address, binding=binding)
     return 0
 
@@ -206,10 +272,12 @@ def serve_model(
     model's declared ``params`` and is applied to ``load(**binding)`` on the
     bootstrap-authoritative path. Heavy imports stay inside this call so importing
     the authoring base stays cheap. A one-line serving status is printed once the
-    model is resolved and loaded, before the blocking serve.
+    model is resolved and loaded, before the blocking serve, with the startup
+    phase marks (see :func:`startup_marks`), which also ride the handshake.
     """
     model = _resolve_model(model_source, binding)
-    print(f"RLMesh serving model on {address}", flush=True)
+    _mark("model")
+    _stamp_startup("model", address)
     model.serve(address)
 
 
@@ -350,7 +418,8 @@ def serve_env(
         framework=env_framework,
         device=_gate_device(device, env_framework),
     )
-    print(f"RLMesh serving env on {server.address}", flush=True)
+    _mark("env")
+    _stamp_startup("env", server.address)
     server.serve()
 
 

@@ -128,8 +128,13 @@ def collect_peer_info() -> PeerInfoDict:
     )
 
 
-def register_python_peer_info() -> None:
+def register_python_peer_info(extra: dict[str, str] | None = None) -> None:
     """Install the collected identity into the native handshake builder.
+
+    ``extra`` adds advisory key/value facts to the handshake ``PeerInfo.extra``
+    map beside the build keys (the serve entrypoint stamps its startup phase
+    marks this way). Each call replaces the whole override, so pass everything
+    the peer should report.
 
     Best-effort and idempotent: a missing native symbol or any collection error
     is swallowed so importing the package never fails over advisory diagnostics.
@@ -150,6 +155,7 @@ def register_python_peer_info() -> None:
             os_version=info["os_version"],
             arch=info["arch"],
             framework_versions=info["framework_versions"],
+            extra=dict(extra or {}),
         )
     except Exception:
         return

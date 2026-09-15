@@ -124,6 +124,10 @@ A long run should wait for the endpoint to be serving rather than racing its sta
 
 The public Python clients connect once when you construct them; they do not poll a not-yet-bound endpoint for you. Gate your run on the health signal, then dial.
 
+## Startup phases
+
+`python -m rlmesh.serve` records when it reached each startup phase, in milliseconds of wall clock since the process started: `imports` (the entrypoint's module, so the model's framework imports, is loaded), `model` or `env` (constructed, so a model's weights are loaded), and `listen` (about to serve). The serving line prints them (`RLMesh serving model on ... (startup: process 0.4s, imports 9.8s, model 38.2s, listen 38.3s)`) and the same values ride the handshake as `PeerInfo.extra` keys `rlmesh.startup.<phase>_ms`, next to the build keys, so a runtime or platform can read where a container's wait went without a profiler. `process` is the interpreter and `rlmesh` import time before the entrypoint ran, available on Linux. The first predict is the runtime's first `endpoint.total` sample.
+
 ## Episode accounting
 
 `run` counts episodes from `seeds` and `max_episodes`, and reports each one in the result.

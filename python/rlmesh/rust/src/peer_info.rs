@@ -28,7 +28,7 @@ use rlmesh_proto::{PeerInfoOverride, set_peer_info_override};
     gen_stub_pyfunction(
         module = "rlmesh._rlmesh",
         python = r#"
-def _set_python_peer_info(*, language: str | None = None, language_version: str | None = None, package_version: str | None = None, os: str | None = None, os_version: str | None = None, arch: str | None = None, framework_versions: dict[str, str] | None = None) -> None: ...
+def _set_python_peer_info(*, language: str | None = None, language_version: str | None = None, package_version: str | None = None, os: str | None = None, os_version: str | None = None, arch: str | None = None, framework_versions: dict[str, str] | None = None, extra: dict[str, str] | None = None) -> None: ...
 "#
     )
 )]
@@ -44,6 +44,7 @@ def _set_python_peer_info(*, language: str | None = None, language_version: str 
         os_version = None,
         arch = None,
         framework_versions = None,
+        extra = None,
     )
 )]
 #[allow(clippy::too_many_arguments)]
@@ -55,6 +56,7 @@ pub fn set_python_peer_info(
     os_version: Option<String>,
     arch: Option<String>,
     framework_versions: Option<HashMap<String, String>>,
+    extra: Option<HashMap<String, String>>,
 ) {
     set_peer_info_override(PeerInfoOverride {
         language: language.unwrap_or_default(),
@@ -64,6 +66,6 @@ pub fn set_python_peer_info(
         os_version: os_version.unwrap_or_default(),
         arch: arch.unwrap_or_default(),
         framework_versions: framework_versions.unwrap_or_default(),
-        extra: HashMap::new(),
+        extra: extra.unwrap_or_default(),
     });
 }

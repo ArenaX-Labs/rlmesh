@@ -6,6 +6,24 @@ import pytest
 from rlmesh._peer_info import collect_peer_info, register_python_peer_info
 
 
+def test_register_forwards_extra_to_the_native_setter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import rlmesh._rlmesh as native
+
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        native, "_set_python_peer_info", lambda **kwargs: captured.update(kwargs)
+    )
+
+    register_python_peer_info(extra={"rlmesh.startup.listen_ms": "4200"})
+
+    assert captured["language"] == "python"
+    assert captured["extra"] == {"rlmesh.startup.listen_ms": "4200"}
+    register_python_peer_info()
+    assert captured["extra"] == {}
+
+
 def test_collect_peer_info_reports_python_runtime() -> None:
     info = collect_peer_info()
 
