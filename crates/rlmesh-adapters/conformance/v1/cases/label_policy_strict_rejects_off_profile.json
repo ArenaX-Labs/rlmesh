@@ -6,7 +6,7 @@
     "observation": {
       "g": {
         "type": "state",
-        "role": "proprio/gripper",
+        "role": "proprio/joint_pos",
         "labels": ["FR_hip", "FR_shin"]
       }
     },

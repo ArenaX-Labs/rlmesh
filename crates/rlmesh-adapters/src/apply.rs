@@ -74,12 +74,16 @@ impl CustomTransform for SkipCustoms {
 
 impl ResolvedAdapter {
     /// Convert a raw env observation into the model input payload `Value` tree.
+    ///
+    /// The stateless half: a frame-stacked input yields its single frame and an
+    /// action-source part its `fill`. The per-episode windows live behind
+    /// [`assemble_obs`](crate::stateful::assemble_obs).
     pub fn transform_obs(
         &self,
         raw_obs: &BTreeMap<String, Value>,
         customs: &dyn CustomTransform,
     ) -> Result<Value, ApplyError> {
-        obs::transform_obs(&self.obs_plans, raw_obs, customs)
+        obs::transform_obs(&self.obs_plans, raw_obs, customs, None)
     }
 
     /// Convert a model action output into the env action vector (float32).

@@ -494,9 +494,19 @@ pub fn resolve(
     crate::spec::reject_bare_fields_model(model_spec)
         .map_err(|message| err(ErrorCode::UnsupportedKind, message))?;
     check_model_roles(model_spec)?;
+    // The model's own outputs, keyed once: the action planner binds env
+    // actuators to them, and a state part reading its previous action does too.
+    let outputs = action::index_outputs(&model_spec.output)?;
 
-    let env_spec = join(env_tags, observation_space, action_space)
-        .map_err(|error| err(ErrorCode::InvalidTag, error.to_string()))?;
+    let env_spec = join(env_tags, observation_space, action_space).map_err(|error| {
+        let code = match error {
+            crate::join::JoinError::ActionRoleOnObservation { .. } => {
+                ErrorCode::ActionRoleOnObservation
+            }
+            _ => ErrorCode::InvalidTag,
+        };
+        err(code, error.to_string())
+    })?;
     let images = env_spec
         .observation
         .iter()
@@ -565,6 +575,7 @@ pub fn resolve(
                 input,
                 placement,
                 &states_by_role,
+                &outputs,
                 &unknown_roles,
                 &mut quiet,
             )?),
@@ -609,7 +620,8 @@ pub fn resolve(
         })
         .collect();
 
-    let action_plan = action::plan_action(&model_spec.output, &env_spec.action, &mut quiet)?;
+    let action_plan =
+        action::plan_action(&model_spec.output, &env_spec.action, &outputs, &mut quiet)?;
 
     // Model-side ad-hoc roles the env does not answer. An ad-hoc role matches
     // only on the exact string, so a typo or a private name silently degrades
@@ -634,10 +646,13 @@ pub fn resolve(
                 ad_hoc_parts.extend(input.part.as_deref());
             }
             ModelLeaf::State(input) => {
+                // An action-source part is answered by the model's own
+                // actuator (resolved above), never by an env leaf.
                 ad_hoc.extend(
                     input
                         .components
                         .iter()
+                        .filter(|part| part.source == crate::spec::PartSource::Observation)
                         .filter_map(|part| part.role.as_deref())
                         .filter(|role| !has_role(&states_by_role, role)),
                 );
@@ -1970,6 +1985,194 @@ mod labels_tests {
         // The container clamp caught the runaway encoder reading.
         assert_eq!(obs[9], 100.0);
         assert!((obs[10] + 0.8).abs() < 1e-6, "{obs:?}");
+    }
+
+    /// The design's Go2 pairing complete: the body model plus a part reading
+    /// the model's own previous action, 45 wide.
+    fn go2_full_model(previous: &str) -> String {
+        go2_body_model("").replacen(
+            r#""scale":0.05}]}"#,
+            &format!(r#""scale":0.05}},{previous}]}}"#),
+            1,
+        )
+    }
+
+    const PREVIOUS: &str = r#"{"role":"action/joint_pos","source":"action"}"#;
+
+    fn go2_full_resolve(
+        env: &str,
+        previous: &str,
+    ) -> Result<crate::plans::ResolvedAdapter, crate::error::AdapterResolutionError> {
+        let tags: EnvTags = serde_json::from_str(env).unwrap();
+        let spec: ModelSpec = serde_json::from_str(&go2_full_model(previous)).unwrap();
+        let obs = go2_body_obs(&["ang_vel", "base_quat", "command", "joint_pos", "joint_vel"]);
+        resolve(&tags, &space(&obs), &space(GO2_ACT), &spec, false)
+    }
+
+    fn go2_body_raw() -> BTreeMap<String, Value> {
+        let mut raw: BTreeMap<String, Value> = BTreeMap::new();
+        raw.insert("ang_vel".to_owned(), tensor(&[4.0, 0.0, 0.0]));
+        raw.insert("base_quat".to_owned(), tensor(&[1.0, 0.0, 0.0, 0.0]));
+        raw.insert("command".to_owned(), tensor(&[0.5, 0.0, 0.0]));
+        raw.insert("joint_pos".to_owned(), tensor(&[0.0; 12]));
+        raw.insert("joint_vel".to_owned(), tensor(&[0.0; 12]));
+        raw
+    }
+
+    /// The assembled `obs` vector at `step`, through the stateful seam.
+    fn assembled(
+        adapter: &crate::plans::ResolvedAdapter,
+        buffers: &mut crate::stateful::FrameBuffers,
+        step: i64,
+    ) -> Vec<f32> {
+        let payload = crate::stateful::assemble_obs(
+            adapter,
+            &go2_body_raw(),
+            "ep",
+            step,
+            buffers,
+            &NoCustoms,
+            &crate::stateful::NoEncodings,
+        )
+        .expect("assemble");
+        let Value::Map(payload) = payload else {
+            panic!("expected a map");
+        };
+        let Value::Tensor(obs) = &payload["obs"] else {
+            panic!("expected a tensor");
+        };
+        crate::apply::value::to_f32_vec(obs)
+    }
+
+    #[test]
+    fn the_previous_action_completes_the_go2_observation_at_45_wide() {
+        let adapter = go2_full_resolve(&go2_body_env(GO2_BODY_QUAT), PREVIOUS).expect("resolves");
+        let described = adapter.describe();
+        assert!(
+            described.contains(
+                "joint_vel[:12] (*0.05)#sensed, previous action/joint_pos (fill 0.0)) clip[-100.0,100.0]\n"
+            ),
+            "got:\n{described}"
+        );
+        // Answered by the model's own actuator: no ad-hoc-role nudge, and the
+        // route holds history the way a stacked one does.
+        assert!(
+            adapter.advisories().is_empty(),
+            "{:?}",
+            adapter.advisories()
+        );
+        assert_eq!(adapter.history_keys(), vec!["obs".to_owned()]);
+        assert!(adapter.reads_previous_action() && adapter.holds_history());
+        assert!(adapter.history_windows().is_empty());
+        let crate::plans::ObsPlan::State(plan) = &adapter.obs_plans[0] else {
+            panic!("expected a state plan");
+        };
+        assert_eq!(plan.native_width, Some(45));
+        // The stateless transform reads the fill; the stateful seam reads the
+        // raw output executed at the previous step, before the actuator's
+        // affine, and the fill at the episode's first step.
+        let Value::Map(payload) = adapter
+            .transform_obs(&go2_body_raw(), &NoCustoms)
+            .expect("apply")
+        else {
+            panic!("expected a map");
+        };
+        let Value::Tensor(obs) = &payload["obs"] else {
+            panic!("expected a tensor");
+        };
+        assert_eq!(&crate::apply::value::to_f32_vec(obs)[33..], &[0.0; 12]);
+        let mut buffers = crate::stateful::FrameBuffers::new();
+        assert_eq!(&assembled(&adapter, &mut buffers, 0)[33..], &[0.0; 12]);
+        let raw: Vec<f32> = (0..12).map(|i| 0.1 * i as f32).collect();
+        crate::stateful::record_action(&adapter, &tensor(&raw), &mut buffers, "ep", 0)
+            .expect("record");
+        let obs = assembled(&adapter, &mut buffers, 1);
+        assert_eq!(obs.len(), 45);
+        assert_eq!(&obs[33..], raw.as_slice());
+    }
+
+    #[test]
+    fn a_previous_action_part_selects_the_actuator_axes_by_label() {
+        // The model reads back only the front legs of its own output, in
+        // Isaac order, and a stand-in of 0.5 before the first action.
+        let front = labels(&ISAAC[..6]);
+        let previous = format!(
+            r#"{{"role":"action/joint_pos","source":"action","labels":{front},"fill":0.5}}"#
+        );
+        let adapter = go2_full_resolve(&go2_body_env(GO2_BODY_QUAT), &previous).expect("resolves");
+        assert!(
+            adapter
+                .describe()
+                .contains("previous action/joint_pos select[3,4,5,0,1,2] (fill 0.5)) clip"),
+            "got:\n{}",
+            adapter.describe()
+        );
+        let mut buffers = crate::stateful::FrameBuffers::new();
+        assert_eq!(&assembled(&adapter, &mut buffers, 0)[33..], &[0.5; 6]);
+        let raw: Vec<f32> = (0..12).map(|i| i as f32).collect();
+        crate::stateful::record_action(&adapter, &tensor(&raw), &mut buffers, "ep", 0)
+            .expect("record");
+        assert_eq!(
+            &assembled(&adapter, &mut buffers, 1)[33..],
+            &[3.0, 4.0, 5.0, 0.0, 1.0, 2.0]
+        );
+        // A label the actuator lacks is a mismatch naming the actuator.
+        let err = go2_full_resolve(
+            &go2_body_env(GO2_BODY_QUAT),
+            r#"{"role":"action/joint_pos","source":"action","labels":["FR_hip","FR_shin"]}"#,
+        )
+        .expect_err("missing label");
+        assert_eq!(err.code, ErrorCode::LabelMismatch);
+        assert!(
+            err.message
+                .contains(r#"["FR_shin"] that the actuator lacks"#),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn a_previous_action_part_binds_only_the_models_own_actuator() {
+        let env = go2_body_env(GO2_BODY_QUAT);
+        let err = go2_full_resolve(&env, r#"{"role":"action/gripper","source":"action"}"#)
+            .expect_err("no actuator");
+        assert_eq!(err.code, ErrorCode::MissingRole);
+        assert!(
+            err.message.contains(
+                r#"reads the previous action for role "action/gripper" but no actuator emits it"#
+            ),
+            "{}",
+            err.message
+        );
+        // A declared dim must be the actuator's.
+        let err = go2_full_resolve(
+            &env,
+            r#"{"role":"action/joint_pos","source":"action","dim":6}"#,
+        )
+        .expect_err("dim");
+        assert_eq!(err.code, ErrorCode::DimMismatch);
+        assert!(
+            err.message
+                .contains("declares dim 6 but the actuator emits 12"),
+            "{}",
+            err.message
+        );
+        // Never an env role: an observation tag under `action/` is refused at
+        // join, before any model part is planned.
+        let env = env.replacen(
+            r#""role":"command/base_vel""#,
+            r#""role":"action/base_vel""#,
+            1,
+        );
+        let err = go2_full_resolve(&env, PREVIOUS).expect_err("action role on an observation");
+        assert_eq!(err.code, ErrorCode::ActionRoleOnObservation);
+        assert!(
+            err.message.contains(
+                r#"observation "command" declares role "action/base_vel", an action kind"#
+            ),
+            "{}",
+            err.message
+        );
     }
 
     #[test]

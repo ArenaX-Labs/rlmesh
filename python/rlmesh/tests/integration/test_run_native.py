@@ -332,3 +332,134 @@ def test_session_served_env_context_carries_stable_episode_identity() -> None:
     assert len(episode_ids) == 1, f"episode_id changed mid-episode: {seen}"
     assert all(episode_ids), f"episode_id blank on some step: {seen}"
     assert [context["episode_seed"] for context in seen] == [7, 7, 7]
+
+
+def test_run_feeds_a_previous_action_part_the_frame_executed_the_step_before() -> None:
+    """A Go2-style policy reading its own last command sees, at every re-plan,
+    the raw chunk frame the runtime executed at the step before: the last frame
+    of the previous chunk at execution_horizon 7, the only one at 1, and the
+    fill at step 0, on the native and the session paths alike."""
+    import gymnasium as gym
+    import rlmesh.adapters as adapt
+    from rlmesh.numpy import Model
+
+    sdk = adapt.GO2.joints
+    default_pose = (0.0, 0.8, -1.5) * 4
+
+    class Go2Env:
+        observation_space = gym.spaces.Dict(
+            {
+                "ang_vel": gym.spaces.Box(-20.0, 20.0, (3,), np.float32),
+                "base_quat": gym.spaces.Box(-1.0, 1.0, (4,), np.float32),
+                "command": gym.spaces.Box(-3.0, 3.0, (3,), np.float32),
+                "joint_pos": gym.spaces.Box(-10.0, 10.0, (12,), np.float32),
+                "joint_vel": gym.spaces.Box(-30.0, 30.0, (12,), np.float32),
+            }
+        )
+        action_space = gym.spaces.Box(-10.0, 10.0, (12,), np.float32)
+
+        def __init__(self) -> None:
+            self.n = 0
+
+        def _obs(self) -> dict[str, Any]:
+            return {
+                "ang_vel": np.zeros(3, np.float32),
+                "base_quat": np.array([1.0, 0.0, 0.0, 0.0], np.float32),
+                "command": np.zeros(3, np.float32),
+                "joint_pos": np.full(12, self.n, np.float32),
+                "joint_vel": np.zeros(12, np.float32),
+            }
+
+        def reset(self, *, seed: Any = None, options: Any = None) -> tuple[Any, Any]:
+            self.n = 0
+            return self._obs(), {}
+
+        def step(self, action: Any) -> tuple[Any, Any, Any, Any, Any]:
+            self.n += 1
+            return self._obs(), 1.0, self.n >= 15, False, {}
+
+        def close(self) -> None:
+            return None
+
+    tags = adapt.EnvTags(
+        observation={
+            "ang_vel": adapt.StateTag(adapt.BASE_ANG_VEL, frame="robot_base"),
+            "base_quat": adapt.StateTag(
+                adapt.BASE_ROT, encoding="quat_wxyz", frame="world"
+            ),
+            "command": adapt.StateTag(adapt.COMMAND_BASE_VEL, frame="robot_base"),
+            "joint_pos": adapt.StateTag(adapt.JOINT_POS, labels=sdk),
+            "joint_vel": adapt.StateTag(adapt.JOINT_VEL, labels=sdk),
+        },
+        action=adapt.Action(adapt.Actuator(adapt.ACTION_JOINT_POS, dim=12, labels=sdk)),
+    )
+
+    class Walk(Model):
+        native_chunk = 7
+        spec = adapt.ModelSpec(
+            input={
+                "obs": adapt.Concat(
+                    adapt.State(adapt.BASE_ANG_VEL, frame="robot_base", scale=0.25),
+                    adapt.State(adapt.BASE_ROT, encoding="gravity_xyz", frame="world"),
+                    adapt.State(adapt.COMMAND_BASE_VEL, frame="robot_base"),
+                    adapt.State(
+                        adapt.JOINT_POS,
+                        labels=sdk,
+                        offset=tuple(-q for q in default_pose),
+                    ),
+                    adapt.State(adapt.JOINT_VEL, labels=sdk, scale=0.05),
+                    adapt.Previous(adapt.ACTION_JOINT_POS),
+                    clip=(-100.0, 100.0),
+                )
+            },
+            output=adapt.Action(
+                adapt.Actuator(
+                    adapt.ACTION_JOINT_POS,
+                    dim=12,
+                    labels=sdk,
+                    scale=(0.125, 0.25, 0.25) * 4,
+                    offset=default_pose,
+                )
+            ),
+        )
+
+        def load(self) -> None:
+            self.previous: list[float] = []
+            self.calls = 0
+
+        def predict_chunk(self, observation: Any) -> Any:
+            obs = observation["obs"]
+            assert obs.shape == (45,)
+            # The previous-action slot is uniform by construction; record it.
+            assert len(set(obs[33:].tolist())) == 1
+            self.previous.append(float(obs[33]))
+            # Frame k of call c is 5c + k + 1 on every joint (inside the
+            # container clip): the scaled, offset env command is a different
+            # number, so a slot holding anything but the raw frame is visible.
+            chunk = np.full((7, 12), 5 * self.calls + 1, np.float32)
+            chunk += np.arange(7, dtype=np.float32)[:, None]
+            self.calls += 1
+            return chunk
+
+    def previous(path: str, horizon: int) -> list[float]:
+        model = Walk()
+        env = adapt.tag(Go2Env(), tags)
+        try:
+            if path == "session":
+                model.session(env, execution_horizon=horizon).run(max_episodes=1)
+            else:
+                model.run(env, max_episodes=1, execution_horizon=horizon)
+        except ConnectionError as exc:
+            if "Operation not permitted" in str(exc):
+                pytest.skip("local tcp bind is not permitted in this environment")
+            raise
+        return model.previous
+
+    # Horizon 1: predict k+1 sees frame 0 of call k (5k + 1).
+    every_step = [0.0] + [5.0 * call + 1 for call in range(14)]
+    assert previous("native", 1) == every_step
+    assert previous("session", 1) == every_step
+    # Horizon 7: re-plans at 0, 7 and 14 see the fill, then frame 6 of the
+    # chunk executed before (7 and 12), never frame 0 of it (1 and 6).
+    assert previous("native", 7) == [0.0, 7.0, 12.0]
+    assert previous("session", 7) == [0.0, 7.0, 12.0]

@@ -372,7 +372,11 @@ class Adapter(AdapterBase[NumpyArray]):
         Only the observation keys the plan reads are encoded -- exactly as
         :meth:`transform_obs_value` does -- and nothing else in the spec is
         applied, so a custom input's transform never runs on a replayed step.
-        A no-op for a plan with no frame history.
+        It also counts the step, so the action :meth:`transform_action`
+        converts next is recorded as the one executed here for a part reading
+        the previous action. A no-op for a plan with no per-episode history.
+        Without ``input_bridge`` the observation is read as NumPy, like
+        :meth:`transform_obs`.
         """
         if not self._history_keys:
             return
@@ -382,7 +386,8 @@ class Adapter(AdapterBase[NumpyArray]):
         selected = {
             key: obs[key] for key in self._plan.referenced_obs_keys() if key in obs
         }
-        self._plan.transform_history(to_value(selected, input_bridge))
+        bridge = input_bridge if input_bridge is not None else _numpy_value_bridge()
+        self._plan.transform_history(to_value(selected, bridge))
 
     def history_windows(self) -> tuple[tuple[str, int, int], ...]:
         """``(placement, span, frame_bytes)`` per frame window, per live episode.

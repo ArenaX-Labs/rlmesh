@@ -3,11 +3,23 @@
 use crate::path::NodePath;
 use crate::spec::{FrameRef, RotationEncoding, RotationLiteral, StateContainer};
 
+/// The model's own output an action-source piece reads (`source="action"`):
+/// the `[start, stop)` slice of the raw action executed at the previous step,
+/// in model order, before the actuator's affine.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PreviousAction {
+    /// The actuator's role, for `describe`.
+    pub role: String,
+    pub start: u32,
+    pub stop: u32,
+}
+
 /// One source slice feeding a resolved state input.
 ///
 /// When `fill` is set the piece has no env source: it contributes `dim` copies
-/// of the fill value — a declared constant part, or (with `absent_role`) an
-/// optional component the env did not declare.
+/// of the fill value — a declared constant part, (with `absent_role`) an
+/// optional component the env did not declare, or (with `previous`) what an
+/// action-source part reads before the episode's first action.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StatePiece {
     /// Where this piece is read from in the raw observation tree (empty when
@@ -52,6 +64,11 @@ pub struct StatePiece {
     /// Whether a set `fill` stands in for an *absent* optional role (fabricated
     /// data the fit report confesses) rather than a declared constant part.
     pub absent_role: bool,
+    /// The model output this piece reads instead of an env leaf, when the
+    /// part's `source` is `action`; `fill` is then what it reads before the
+    /// episode's first action, and `gather` selects the actuator's axes by
+    /// label. `None` for an env-sourced or constant piece.
+    pub previous: Option<PreviousAction>,
     /// The agreed coordinate frame this piece's values are in, when either side
     /// declared one (`None` when both were silent). Rendered by `describe`; the
     /// disagreement it would represent is already a resolve error.

@@ -18,22 +18,46 @@ fn is_default_fill(fill: &f64) -> bool {
     *fill == 0.0
 }
 
+/// Where a [`ConcatPart`] reads its value from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PartSource {
+    /// An env state feature matched by role (the default, omitted on the wire).
+    #[default]
+    Observation,
+    /// The model's own output actuator of the same `(role, part)`: the raw
+    /// action it emitted at the previous step, in model order, before any
+    /// affine; `fill` before the episode's first action.
+    Action,
+}
+
+fn is_observation(source: &PartSource) -> bool {
+    *source == PartSource::Observation
+}
+
 /// One part of a [`State`] concat, sourced from an env state feature.
 ///
 /// A part deserializes from **either** a bare JSON string (a role, sugar for a
 /// part carrying only that role) **or** a JSON object with the full field set
-/// (`role`, `encoding`, `dim`, `index`, `optional`, `range`, `fill`,
+/// (`role`, `source`, `encoding`, `dim`, `index`, `optional`, `range`, `fill`,
 /// `post_rotate`, `scale`, `offset`, `axis_scale`, `axis_offset`, `frame`,
 /// `provenance`, `part`, `labels`). On the wire a role-only part round-trips
 /// back to a bare string; any other part to an object.
 ///
 /// A part with **no** `role` is a constant: it reads nothing from the env and
 /// contributes `dim` copies of `fill` (serialized `{"dim": N[, "fill": v]}`).
+/// A part with `source: "action"` reads the model's own previous output for
+/// the role instead of an env feature; it carries only `part`, `labels`, `dim`
+/// and `fill`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ConcatPart {
     /// The env state feature this part reads, or `None` for a constant part.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// Where the value comes from: the env (default) or the model's own
+    /// previous action for the role. Omitted when the default.
+    #[serde(default, skip_serializing_if = "is_observation")]
+    pub source: PartSource,
     /// Rotation encoding(s) the model accepts for this part. A bare string (the
     /// common single-encoding case) or a list, in preference order -- the
     /// resolver picks the env's native encoding when it appears here (no
@@ -114,6 +138,8 @@ struct ConcatPartWire {
     #[serde(default)]
     role: Option<String>,
     #[serde(default)]
+    source: PartSource,
+    #[serde(default)]
     encoding: Option<StateEncoding>,
     #[serde(default, deserialize_with = "crate::spec::num::de_opt_count")]
     dim: Option<u32>,
@@ -167,6 +193,36 @@ impl TryFrom<ConcatPartWire> for ConcatPart {
             return Err(format!("state part {:?} fill must be finite", wire.role));
         }
         let locus = format!("state part {:?}", wire.role);
+        // An action-source part reads the model's own raw output for the role:
+        // no env feature is consulted, so nothing that maps one applies, and
+        // `fill` is what it reads before the episode's first action.
+        if wire.source == PartSource::Action {
+            if wire.role.is_none() {
+                return Err(
+                    "a state part with source \"action\" needs the role of the actuator it \
+                     reads"
+                        .to_owned(),
+                );
+            }
+            if wire.encoding.is_some()
+                || wire.index.is_some()
+                || wire.range.is_some()
+                || wire.optional
+                || wire.post_rotate.is_some()
+                || wire.scale.is_some()
+                || wire.offset.is_some()
+                || wire.axis_scale.is_some()
+                || wire.axis_offset.is_some()
+                || wire.frame.is_some()
+                || wire.provenance.is_some()
+            {
+                return Err(format!(
+                    "{locus}: source \"action\" reads the model's own raw output and carries \
+                     only part/labels/dim/fill; drop encoding/index/range/optional/\
+                     post_rotate/scale/offset/axis_scale/axis_offset/frame/provenance"
+                ));
+            }
+        }
         // One quantity, one form: a scalar and a per-axis vector for the same
         // affine would need a precedence rule nobody declared.
         for (name, scalar, axis) in [
@@ -205,8 +261,9 @@ impl TryFrom<ConcatPartWire> for ConcatPart {
             Some(role) => {
                 // `fill` is what an absent part contributes; a roled part that
                 // is not `optional` always has an env source, so a non-zero
-                // fill there could never fire (the `Actuator` rule's twin).
-                if wire.fill != 0.0 && !wire.optional {
+                // fill there could never fire (the `Actuator` rule's twin). An
+                // action-source part reads it before the first action.
+                if wire.fill != 0.0 && !wire.optional && wire.source == PartSource::Observation {
                     return Err(format!(
                         "state part {role:?}: fill applies only to a constant (role-less) \
                          or optional part; a roled, non-optional part takes its values \
@@ -265,6 +322,7 @@ impl TryFrom<ConcatPartWire> for ConcatPart {
         }
         Ok(ConcatPart {
             role: wire.role,
+            source: wire.source,
             encoding: wire.encoding,
             dim: wire.dim,
             index: wire.index,
@@ -299,6 +357,7 @@ impl<'de> Deserialize<'de> for ConcatPart {
             fn visit_str<E: de::Error>(self, value: &str) -> Result<ConcatPart, E> {
                 Ok(ConcatPart {
                     role: Some(value.to_owned()),
+                    source: PartSource::Observation,
                     encoding: None,
                     dim: None,
                     index: None,
@@ -335,6 +394,7 @@ fn serialize_concat_part<S: Serializer>(
     serializer: S,
 ) -> Result<S::Ok, S::Error> {
     let role_only = part.role.is_some()
+        && is_observation(&part.source)
         && part.encoding.is_none()
         && part.dim.is_none()
         && part.index.is_none()
@@ -475,7 +535,7 @@ impl TryFrom<StateWire> for State {
 
 #[cfg(test)]
 mod tests {
-    use super::{ConcatPart, State};
+    use super::{ConcatPart, PartSource, State};
     use crate::spec::Provenance;
 
     #[test]
@@ -757,6 +817,52 @@ mod tests {
         let err = serde_json::from_str::<State>(r#"{"components": ["r"], "clip": [1.0, -1.0]}"#)
             .unwrap_err();
         assert!(!err.to_string().is_empty());
+    }
+
+    #[test]
+    fn an_action_source_part_carries_only_its_identity_labels_and_fill() {
+        let state: State = serde_json::from_str(
+            r#"{"components": ["proprio/joint_pos",
+                {"role": "action/joint_pos", "source": "action"},
+                {"role": "action/joint_pos", "source": "action", "part": "left_arm",
+                 "labels": ["a", "b"], "dim": 2, "fill": 0.5}]}"#,
+        )
+        .unwrap();
+        assert_eq!(state.components[0].source, PartSource::Observation);
+        assert_eq!(state.components[1].source, PartSource::Action);
+        assert_eq!(state.components[2].fill, 0.5);
+        // The default source stays off the wire; an action source is an object.
+        let json = serde_json::to_string(&state).unwrap();
+        assert!(
+            json.contains(r#"["proprio/joint_pos",{"role":"action/joint_pos","source":"action"},"#),
+            "got: {json}"
+        );
+        assert_eq!(json.matches("source").count(), 2);
+        for (doc, expect) in [
+            (
+                r#"{"components": ["r", {"dim": 1, "source": "action"}]}"#,
+                "needs the role",
+            ),
+            (
+                r#"{"components": [{"role": "r", "source": "action", "scale": 2.0}]}"#,
+                "carries only part/labels/dim/fill",
+            ),
+            (
+                r#"{"components": [{"role": "r", "source": "action", "optional": true}]}"#,
+                "carries only part/labels/dim/fill",
+            ),
+            (
+                r#"{"components": [{"role": "r", "source": "action", "provenance": "sensed"}]}"#,
+                "carries only part/labels/dim/fill",
+            ),
+            (
+                r#"{"components": [{"role": "r", "source": "sideways"}]}"#,
+                "unknown variant",
+            ),
+        ] {
+            let err = serde_json::from_str::<State>(doc).unwrap_err();
+            assert!(err.to_string().contains(expect), "{doc}: {err}");
+        }
     }
 
     #[test]

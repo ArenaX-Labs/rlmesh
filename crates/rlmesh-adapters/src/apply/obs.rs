@@ -22,11 +22,14 @@ use crate::plans::{ObsPlan, StackedPlacement};
 /// en route). A root (empty) placement means the whole payload IS that one
 /// value (a bare-tensor model). Role fan-out is automatic: two plans with the
 /// same role but different placements each read the same env source and place
-/// into different positions — no special machinery.
+/// into different positions — no special machinery. `previous` is the raw
+/// action executed at the previous step for any action-source state part
+/// (`None` reads its fill; the stateful seam supplies the recorded row).
 pub fn transform_obs(
     plans: &[ObsPlan],
     raw_obs: &BTreeMap<String, Value>,
     customs: &dyn CustomTransform,
+    previous: Option<&[f32]>,
 ) -> Result<Value, ApplyError> {
     let mut builder = NodeBuilder::new();
     for plan in plans {
@@ -35,7 +38,10 @@ pub fn transform_obs(
                 builder.place(&image_plan.placement, apply_image(image_plan, raw_obs)?)?;
             }
             ObsPlan::State(state_plan) => {
-                builder.place(&state_plan.placement, apply_state(state_plan, raw_obs)?)?;
+                builder.place(
+                    &state_plan.placement,
+                    apply_state(state_plan, raw_obs, previous)?,
+                )?;
             }
             ObsPlan::Text(text_plan) => {
                 if let Some(value) = apply_text(text_plan, raw_obs)? {

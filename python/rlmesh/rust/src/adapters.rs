@@ -27,7 +27,7 @@ use rlmesh_adapters::v1::{
     Advisory, ApplyError, CustomTransform, EncodingTransform, EnvTags, FrameBuffers, FramePolicy,
     InputNode, LabelPolicy, ModelLeaf, ModelSpec, NoEncodings, NodePath, ObsPlan, PathSeg,
     ResolvedAdapter, RolePolicy, SkipCustoms, SpaceView, Value, assemble_obs,
-    build_describe_envelope, join, observe_obs, reject_unframed_roles_env,
+    build_describe_envelope, join, observe_obs, record_action, reject_unframed_roles_env,
     reject_unframed_roles_model, reject_unknowns_env, reject_unknowns_model,
     reject_unlabeled_roles_env, reject_unlabeled_roles_model, reject_unsanctioned_roles_env,
     reject_unsanctioned_roles_model, resolve, roles,
@@ -553,6 +553,9 @@ type StateLayout = (Py<PyList>, Vec<u32>, u32);
 /// drive loop runs one episode at a time and clears the windows at its boundary
 /// (`reset_history`), so there is nothing to key them apart by — unlike the
 /// served engine, which holds one [`FrameBuffers`] per route across live lanes.
+/// The local step counter lives in the same windows: every `transform_obs` or
+/// `transform_history` is one env step, and `transform_action` records the
+/// action executed at the step last ticked.
 const LOCAL_EPISODE: &str = "";
 
 /// A resolved adapter plan handle backed by the `rlmesh-adapters` core.
@@ -684,13 +687,18 @@ impl PyAdapterPlan {
     ) -> PyResult<Py<PyAny>> {
         let raw_obs = decode_referenced_obs(raw_obs, &self.adapter.referenced_obs_keys())?;
         // The stateful seam, so an input that declares a frame history is
-        // stacked by the same window the served engine uses. Encoding shims stay
-        // host-side (they only ever touch state leaves, never a stacked image).
+        // stacked by the same window the served engine uses, and one reading
+        // its previous action reads the local window under the local step.
+        // Encoding shims stay host-side (they only ever touch state leaves,
+        // never a stacked image).
+        let mut windows = self.windows.lock().expect("frame windows");
+        let step = self.tick(&mut windows)?;
         let payload = assemble_obs(
             &self.adapter,
             &raw_obs,
             LOCAL_EPISODE,
-            &mut self.windows.lock().expect("frame windows"),
+            step,
+            &mut windows,
             &SkipCustoms,
             &NoEncodings,
         )
@@ -698,7 +706,8 @@ impl PyAdapterPlan {
         Ok(encode_value(py, &payload)?.unbind())
     }
 
-    /// Canonical placement strings of the inputs that hold a frame window.
+    /// Canonical placement strings of the inputs that hold per-episode history:
+    /// a frame window, or a part reading the model's previous action.
     ///
     /// Empty means an env step that predicts nothing has no state to advance, so
     /// the caller can skip [`transform_history`](Self::transform_history)
@@ -722,34 +731,65 @@ impl PyAdapterPlan {
     /// Advance the frame windows from a raw observation, assembling nothing.
     ///
     /// The tick a step that replays a queued action owes its history: the frame
-    /// still happened, so it still goes in the window.
+    /// still happened, so it still goes in the window, and the local step
+    /// counter advances so the replayed action is recorded under its step.
     fn transform_history<'py>(&self, raw_obs: &Bound<'py, PyAny>) -> PyResult<()> {
         let raw_obs = decode_referenced_obs(raw_obs, &self.adapter.referenced_obs_keys())?;
-        observe_obs(
-            &self.adapter,
-            &raw_obs,
-            LOCAL_EPISODE,
-            &mut self.windows.lock().expect("frame windows"),
-        )
-        .map_err(|err| PyValueError::new_err(err.message))
+        let mut windows = self.windows.lock().expect("frame windows");
+        self.tick(&mut windows)?;
+        observe_obs(&self.adapter, &raw_obs, LOCAL_EPISODE, &mut windows)
+            .map_err(|err| PyValueError::new_err(err.message))
     }
 
-    /// Drop the in-process frame windows at an episode boundary.
+    /// Drop the in-process frame windows (and the local step counter) at an
+    /// episode boundary.
     fn reset_history(&self) {
         self.windows.lock().expect("frame windows").clear();
     }
 
-    /// Apply the action plan to a canonical value-tree model action.
+    /// Apply the action plan to a canonical value-tree model action, recording
+    /// it as the action executed at the step last ticked when a state part
+    /// reads the previous action (the local half of the served engine's
+    /// `apply_actions`). Before any tick there is no step to record under.
     fn transform_action<'py>(
         &self,
         py: Python<'py>,
         raw_action: &Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let raw_action = decode_value(raw_action)?;
         let action = self
             .adapter
-            .transform_action(&decode_value(raw_action)?)
+            .transform_action(&raw_action)
             .map_err(|err| PyValueError::new_err(err.message))?;
+        if self.adapter.reads_previous_action() {
+            let mut windows = self.windows.lock().expect("frame windows");
+            if let Some(step) = windows.last_step(LOCAL_EPISODE) {
+                record_action(
+                    &self.adapter,
+                    &raw_action,
+                    &mut windows,
+                    LOCAL_EPISODE,
+                    step,
+                )
+                .map_err(|err| PyValueError::new_err(err.message))?;
+            }
+        }
         encode_value(py, &Value::Tensor(action))
+    }
+}
+
+impl PyAdapterPlan {
+    /// Count one env step on the local episode and return it. A plan holding no
+    /// per-episode history never touches the windows, so the counter (and the
+    /// lock) stays inert for it.
+    fn tick(&self, windows: &mut FrameBuffers) -> PyResult<i64> {
+        let step = windows.next_step(LOCAL_EPISODE);
+        if self.adapter.holds_history() {
+            windows
+                .advance_step(LOCAL_EPISODE, step)
+                .map_err(|err| PyValueError::new_err(err.message))?;
+        }
+        Ok(step)
     }
 }
 

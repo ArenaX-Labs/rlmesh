@@ -59,6 +59,10 @@ pub enum ErrorCode {
     /// that publishes its truth beside its estimate leaves nothing to guess
     /// through, so the model must declare `provenance=`.
     Ambiguous,
+    /// An env observation tag declares a role under `action/`: a command is
+    /// what an actuator carries, and a model reads its own previous command
+    /// with `source="action"`, never from an env observation.
+    ActionRoleOnObservation,
 }
 
 /// A model input or action component has no usable counterpart in the env

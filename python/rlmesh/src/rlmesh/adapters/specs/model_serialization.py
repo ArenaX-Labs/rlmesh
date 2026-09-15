@@ -187,10 +187,14 @@ def _part_to_dict(part: State | Constant) -> Any:
         and part.provenance is None
         and part.part is None
         and part.labels is None
+        and part.source == "observation"
     )
     if role_only:
         return part.role
     out = {"role": part.role}
+    # Additive: the default source stays off the wire.
+    if part.source == "action":
+        out["source"] = "action"
     if part.encoding is not None:
         out["encoding"] = encoding_to_wire(part.encoding)
     if part.dim is not None:
@@ -337,6 +341,7 @@ def _part_from_dict(item: object) -> ConcatPart:
         provenance=one_or_many(part.get("provenance")),
         part=part.get("part"),
         labels=part.get("labels"),
+        source=part.get("source", "observation"),
     )
 
 

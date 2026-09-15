@@ -39,7 +39,7 @@ mod model;
 mod num;
 mod rotation_literal;
 mod rotations;
-mod strict;
+pub(crate) mod strict;
 
 pub use accept_set::AcceptSet;
 pub use action::{Action, Actuator};
@@ -53,7 +53,7 @@ pub use layouts::{FitMode, ImageLayout};
 pub(crate) use model::MAX_STACK_SPAN;
 pub use model::{
     CHANNEL_ORDERS, CROP_MODES, ConcatPart, Custom, Image, InputNode, ModelLeaf, ModelSpec,
-    Normalize, StackPad, State, StateContainer, Text, TextContainer, render_requests,
+    Normalize, PartSource, StackPad, State, StateContainer, Text, TextContainer, render_requests,
 };
 pub use rotation_literal::RotationLiteral;
 pub use rotations::RotationEncoding;

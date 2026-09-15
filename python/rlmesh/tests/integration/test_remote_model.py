@@ -233,3 +233,106 @@ def test_predict_seed_is_the_same_local_and_served() -> None:
 
     assert local_seeds == [rlmesh.predict_seed(11, index) for index in range(3)]
     assert served_seeds == local_seeds
+
+
+def test_served_model_reads_its_previous_action_through_remote_model_replay() -> None:
+    """RemoteModel replays chunk frames client-side; a served policy reading
+    its own last command still sees, at each re-plan, the raw frame executed
+    at the step before (frame 3 of the last chunk at execution_horizon 4),
+    because the route negotiates history and every replayed step rides as a
+    numbered row."""
+    import gymnasium as gym
+    import numpy as np
+    import rlmesh
+    import rlmesh.adapters as adapt
+    from rlmesh.numpy import Model
+
+    class JointEnv:
+        observation_space = gym.spaces.Dict(
+            {"joint_pos": gym.spaces.Box(-10.0, 10.0, (2,), np.float32)}
+        )
+        action_space = gym.spaces.Box(-1000.0, 1000.0, (2,), np.float32)
+
+        def __init__(self) -> None:
+            self.n = 0
+
+        def reset(self, *, seed: Any = None, options: Any = None) -> tuple[Any, Any]:
+            self.n = 0
+            return {"joint_pos": np.zeros(2, np.float32)}, {}
+
+        def step(self, action: Any) -> tuple[Any, Any, Any, Any, Any]:
+            self.n += 1
+            return (
+                {"joint_pos": np.full(2, self.n, np.float32)},
+                1.0,
+                self.n >= 9,
+                False,
+                {},
+            )
+
+        def close(self) -> None:
+            return None
+
+    out = adapt.Action(adapt.Actuator(adapt.ACTION_JOINT_POS, dim=2))
+    tags = adapt.EnvTags(
+        observation={"joint_pos": adapt.StateTag(adapt.JOINT_POS)}, action=out
+    )
+    seen: list[float] = []
+
+    class Walk(Model):
+        native_chunk = 4
+        spec = adapt.ModelSpec(
+            input=adapt.Concat(
+                adapt.State(adapt.JOINT_POS, dim=2),
+                adapt.Previous(adapt.ACTION_JOINT_POS),
+            ),
+            output=out,
+        )
+
+        def load(self) -> None:
+            self.calls = 0
+
+        def predict_chunk(self, observation: Any) -> Any:
+            seen.append(float(observation[2]))
+            chunk = np.full((4, 2), 100 * self.calls + 1, np.float32)
+            chunk += np.arange(4, dtype=np.float32)[:, None]
+            self.calls += 1
+            return chunk
+
+    env_server = _serve_env(adapt.tag(JointEnv(), tags))
+    model_address = f"127.0.0.1:{_free_port()}"
+
+    def serve() -> None:
+        Walk().serve(
+            model_address, options=rlmesh.ServeOptions(allow_remote_shutdown=True)
+        )
+
+    threading.Thread(target=serve, daemon=True).start()
+    try:
+        env = rlmesh.RemoteEnv(env_server.address)
+        deadline = time.monotonic() + 5.0
+        last_error: BaseException | None = None
+        while True:
+            try:
+                sess = rlmesh.session(
+                    rlmesh.RemoteModel(model_address), env, execution_horizon=4
+                )
+                break
+            except (ConnectionError, OSError) as exc:
+                last_error = exc
+                if time.monotonic() >= deadline:
+                    raise AssertionError(
+                        f"model server never came up: {last_error}"
+                    ) from exc
+                time.sleep(0.05)
+        obs, _info = sess.reset(seed=0)
+        while not sess.done:
+            action = sess.predict(obs)
+            obs, _reward, _terminated, _truncated, _info = sess.step(action)
+        # Re-plans at steps 0, 4 and 8: the fill, then frame 3 of the chunk
+        # executed before each (4 and 104), never that chunk's frame 0.
+        assert seen == [0.0, 4.0, 104.0]
+        sess.close()
+        env.close()
+    finally:
+        env_server.shutdown()

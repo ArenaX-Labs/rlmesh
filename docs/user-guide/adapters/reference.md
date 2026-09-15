@@ -139,7 +139,7 @@ The label tuples ship as data so nobody retypes twelve joint names: `rlmesh.adap
 | `embodiments.FRANKA_PANDA` | `franka_panda`     | 7: `panda_joint1` .. `panda_joint7`                                                                                                                                                         |
 | `embodiments.UR5E`         | `ur5e`             | 6, URDF order: `shoulder_pan_joint`, `shoulder_lift_joint`, `elbow_joint`, `wrist_1_joint`, `wrist_2_joint`, `wrist_3_joint` (a Robotiq or other gripper is its own `proprio/gripper` leaf) |
 
-An environment writes `labels=embodiments.GO2.joints`; a model writes the same tuple, a subset, or a reordering. Profiles are data, not a resolver input: the resolver never consults them, two sides agree on label strings or they do not. What consults them is the **label lint**: a tuple whose set matches no shipped profile (subsets allowed, order ignored) draws the same non-fatal `info` an ad-hoc role does, `unknown_labels`, naming the closest profile by overlap, and the managed `--require-labels` tier refuses it. A profile grows the way a role does, when a real environment and model pair needs it.
+An environment writes `labels=embodiments.GO2.joints`; a model writes the same tuple, a subset, or a reordering. Profiles are data, not a resolver input: the resolver never consults them, two sides agree on label strings or they do not. What consults them is the **label lint**: on a joint role (`proprio/joint_pos`, `proprio/joint_vel`, `action/joint_pos`, `action/joint_vel`), a tuple whose set matches no shipped profile (subsets allowed, order ignored) draws the same non-fatal `info` an ad-hoc role does, `unknown_labels`, naming the closest profile by overlap, and the managed `--require-labels` tier refuses it. A labeled leaf of any other role (the six axes of a wrench, say) names its own axes and is never checked against a profile. A profile grows the way a role does, when a real environment and model pair needs it.
 
 ## Vocabularies
 
@@ -423,27 +423,28 @@ Perturbations that speak in pixels (a shift in `dx`/`dy`, say) are scaled by the
 
 {class}`~rlmesh.adapters.State`: the single-part numeric input. Every field:
 
-| Field                       | Default     | What it does                                                                                                         | When to use                                             |
-| --------------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
-| `role` (1st positional)     | --          | match an env state feature                                                                                           | always                                                  |
-| `encoding`                  | `None`      | rotation encoding: single, preference sequence, or `CustomEncoding`                                                  | the part is a rotation                                  |
-| `dim`                       | `None`      | keep the leading N elements                                                                                          | truncate the source                                     |
-| `index`                     | `None`      | select one element after conversion                                                                                  | pick a single scalar                                    |
-| `optional`                  | `False`     | zero-fill when the env lacks the role                                                                                | the role may be absent                                  |
-| `range`                     | `None`      | `(low, high)` the model wants; affinely maps from the env range                                                      | model and env disagree on scale                         |
-| `fill`                      | `0.0`       | value contributed when `optional` and the env lacks the role                                                         | a non-zero stand-in (needs `optional`)                  |
-| `post_rotate`               | `None`      | a fixed `Rotation` right-multiplied onto the env's rotation                                                          | the checkpoint was trained in an offset frame           |
-| `scale`                     | `None`      | multiply by this after the range map; a float, or one value per axis                                                 | the model's own units                                   |
-| `offset`                    | `None`      | add this after `scale` (`value * scale + offset`); float or per-axis                                                 | a `1 - 2g` gripper (`scale=-2, offset=1`), a stand pose |
-| `frame` (keyword-only)      | `None`      | the coordinate frame the checkpoint was trained to read                                                              | the part is an absolute pose                            |
-| `provenance` (keyword-only) | `None`      | where the checkpoint expects the numbers to come from; one value or the accepted set (see [Provenance](#provenance)) | a sim/real pairing, or an env publishing a role twice   |
-| `part` (keyword-only)       | `None`      | the body part this part reads (see [Parts](#parts))                                                                  | the env has the role on several parts                   |
-| `labels` (keyword-only)     | `None`      | the axis names this part reads, in training order (see [Labels](#labels))                                            | a joint vector; fixes the width                         |
-| `pad_to`                    | `None`      | zero-pad the result to this length                                                                                   | fixed-width input                                       |
-| `dtype`                     | `"float32"` | NumPy dtype of the result                                                                                            | non-default dtype                                       |
-| `reshape`                   | `None`      | target shape for the result                                                                                          | the model wants a specific shape                        |
-| `container`                 | `"array"`   | emit a NumPy array or a plain `list`                                                                                 | the model wants a list                                  |
-| `clip` (keyword-only)       | `None`      | clamp the assembled vector to `(low, high)`, after every part and before `pad_to`                                    | legged_gym's `clip_obs`                                 |
+| Field                       | Default         | What it does                                                                                                                      | When to use                                             |
+| --------------------------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| `role` (1st positional)     | --              | match an env state feature                                                                                                        | always                                                  |
+| `encoding`                  | `None`          | rotation encoding: single, preference sequence, or `CustomEncoding`                                                               | the part is a rotation                                  |
+| `dim`                       | `None`          | keep the leading N elements                                                                                                       | truncate the source                                     |
+| `index`                     | `None`          | select one element after conversion                                                                                               | pick a single scalar                                    |
+| `optional`                  | `False`         | zero-fill when the env lacks the role                                                                                             | the role may be absent                                  |
+| `range`                     | `None`          | `(low, high)` the model wants; affinely maps from the env range                                                                   | model and env disagree on scale                         |
+| `fill`                      | `0.0`           | value contributed when `optional` and the env lacks the role                                                                      | a non-zero stand-in (needs `optional`)                  |
+| `post_rotate`               | `None`          | a fixed `Rotation` right-multiplied onto the env's rotation                                                                       | the checkpoint was trained in an offset frame           |
+| `scale`                     | `None`          | multiply by this after the range map; a float, or one value per axis                                                              | the model's own units                                   |
+| `offset`                    | `None`          | add this after `scale` (`value * scale + offset`); float or per-axis                                                              | a `1 - 2g` gripper (`scale=-2, offset=1`), a stand pose |
+| `frame` (keyword-only)      | `None`          | the coordinate frame the checkpoint was trained to read                                                                           | the part is an absolute pose                            |
+| `provenance` (keyword-only) | `None`          | where the checkpoint expects the numbers to come from; one value or the accepted set (see [Provenance](#provenance))              | a sim/real pairing, or an env publishing a role twice   |
+| `part` (keyword-only)       | `None`          | the body part this part reads (see [Parts](#parts))                                                                               | the env has the role on several parts                   |
+| `labels` (keyword-only)     | `None`          | the axis names this part reads, in training order (see [Labels](#labels))                                                         | a joint vector; fixes the width                         |
+| `source` (keyword-only)     | `"observation"` | `"action"` reads the model's own previous action for the role instead of an env feature (see [Previous action](#previous-action)) | a policy conditioned on its last command                |
+| `pad_to`                    | `None`          | zero-pad the result to this length                                                                                                | fixed-width input                                       |
+| `dtype`                     | `"float32"`     | NumPy dtype of the result                                                                                                         | non-default dtype                                       |
+| `reshape`                   | `None`          | target shape for the result                                                                                                       | the model wants a specific shape                        |
+| `container`                 | `"array"`       | emit a NumPy array or a plain `list`                                                                                              | the model wants a list                                  |
+| `clip` (keyword-only)       | `None`          | clamp the assembled vector to `(low, high)`, after every part and before `pad_to`                                                 | legged_gym's `clip_obs`                                 |
 
 `dim` and `index` are mutually exclusive (`dim` keeps the leading N, `index` selects one), and `labels` fixes the width itself (no `dim`, no `index`). When `optional` is set the fill width must be known without an env feature, so set one of `index`, `dim`, `labels`, or `encoding`. `range` is a no-op when the env has no source range to map from; it does not clamp on its own.
 
@@ -451,7 +452,7 @@ The steps run in a fixed order: slice the env feature, gather by `labels`, conve
 
 `post_rotate` takes a {class}`~rlmesh.adapters.Rotation`, built from a 3x3 matrix with `Rotation.from_matrix(rows)` (stored as `rot6d`, so the round-trip is exact). It needs a rotation `encoding` and cannot combine with a `CustomEncoding`; the matrix must already be a rotation (orthonormal, `|det - 1| <= 1e-4`).
 
-A `State` is also a valid `Concat` part: its part fields (`role`, `encoding`, `dim`, `index`, `optional`, `range`, `fill`, `post_rotate`, `scale`, `offset`, `frame`, `provenance`, `part`, `labels`) are taken, and its container fields (`pad_to`, `dtype`, `reshape`, `container`, `clip`) must stay default when used as a part.
+A `State` is also a valid `Concat` part: its part fields (`role`, `encoding`, `dim`, `index`, `optional`, `range`, `fill`, `post_rotate`, `scale`, `offset`, `frame`, `provenance`, `part`, `labels`, `source`) are taken, and its container fields (`pad_to`, `dtype`, `reshape`, `container`, `clip`) must stay default when used as a part.
 
 ### Concat
 
@@ -474,6 +475,26 @@ adapt.Concat(
 | `fill` | `0.0`   | the value every element carries |
 
 Parts are concatenated in order. The container-level fields (`pad_to`, `dtype`, `reshape`, `container`, `clip`) apply to the concatenated result and behave as in `State` -- `clip` clamps the assembled vector once, and `pad_to` is the last step. `explain()` prints a set clip as `clip[-100.0,100.0]` after the parts. A single-role state is `State` directly; `Concat` is the >1-part case (both serialize to the same wire form).
+
+### Previous action
+
+{func}`~rlmesh.adapters.Previous`: the model's own last command as a state part. `Previous(role, part=None, fill=0.0)` is sugar for `State(role, part=part, fill=fill, source="action")`, the declarative form of the `last_action` slot a locomotion checkpoint reads:
+
+```python
+adapt.Concat(
+    adapt.State(adapt.JOINT_POS, labels=SDK, offset=tuple(-q for q in DEFAULT_POSE)),
+    adapt.State(adapt.JOINT_VEL, labels=SDK, scale=0.05),
+    adapt.Previous(adapt.ACTION_JOINT_POS),   # the raw output at t-1, 0 at t=0
+)
+```
+
+**What it binds.** The spec's **own output actuator** with the same `role` and `part`. No env leaf is consulted, and a spec with no such actuator fails resolution (`MissingRole`, "no actuator emits"). The width is the actuator's `dim` (a declared `dim` must agree); `labels` on the part select from the actuator's labels, a subset in the model's own order, the way an observation part gathers from an env leaf, and a name the actuator lacks is a `LabelMismatch`. `explain()` prints the part as `previous action/joint_pos (fill 0.0)`, with `select[..]` when it names a subset.
+
+**What it reads.** The **raw model output** executed at the previous step, in model order, before the actuator's `scale`/`offset`/`range`/scatter: the number the policy emitted, not the command the env received. At the first step of an episode there is no previous action, so the part reads `fill` (`0.0` by default). The window clears on `reset` with the frame windows.
+
+**The replay tick.** Every executed action is recorded under the step it executes at, including a chunk frame the runtime replayed without predicting, so at execution_horizon `H` the re-plan sees the frame executed at the step before it (frame `H - 1` of the last chunk), never the first frame of that chunk. The served engine records each frame of a chunk under its step as it applies the chunk per lane, the Python session records the frame `transform_action` converts on every step, and `observe` counts a replayed step so the frame lands under it. An observation whose previous step recorded no action is an error naming the episode and the step (a `transform_action` or `apply_actions` was skipped), so a missed tick is loud rather than a stale command fed back silently. A model with a `Previous` part therefore holds per-episode history the way a stacked image does: `history_keys()` lists its input, the runtime delivers replayed steps to its route (see [Frame history](#frame-history-stack)), and async prefetch is off there.
+
+**Not an env role.** An environment never publishes `action/` roles on its observation side: a tag under `action/` is refused at `tag` and at resolve with `ActionRoleOnObservation`. An action-source part carries only `part`, `labels`, `dim` and `fill`; `encoding`, `index`, `range`, `optional`, `post_rotate`, `scale`, `offset`, `frame` and `provenance` are refused at construction.
 
 ### Text
 
@@ -545,6 +566,7 @@ Each conversion the resolver can perform falls into one of four policies. **Sile
 | Rotation encoding conversion           | SILENT        | model encoding differs (both known)                                                                                                                                                              |
 | Projection to `gravity_xyz`            | SILENT        | model reads a rotation as `gravity_xyz`; **an env `gravity_xyz` read as anything else → resolve error**                                                                                          |
 | Container `clip`                       | SILENT        | declared on a `State`/`Concat`; clamps the assembled vector before `pad_to`                                                                                                                      |
+| Previous action (`source="action"`)    | SILENT        | `Previous(role)` reads the spec's own actuator's raw output at the previous step, `fill` at the first; **no actuator with that role and part → resolve error**                                   |
 | Provenance agreement                   | RESOLVE-ERROR | the env's value outside the model's set, or a value outside the vocabulary; model-only is a `caution`; an env publishing a role under two provenances against a model naming none is `Ambiguous` |
 | Range map (affine)                     | SILENT        | model `range` set and env range known                                                                                                                                                            |
 | Gather / scatter by `labels`           | SILENT        | both sides name their axes; a differing order is a permutation, a subset a selection                                                                                                             |
@@ -577,7 +599,7 @@ A model that conditions on a short history sets `stack=N` on an `Image`. The ada
 adapt.Image(adapt.IMAGE_PRIMARY, size=256, stack=4)
 ```
 
-Frame history is **image-only**: `stack` exists on `Image` and nowhere else. A model that conditions on a low-dimensional history (past proprio, past actions) has no declarative form yet -- keep that in the model.
+`stack` is **image-only**: it exists on `Image` and nowhere else. A model that conditions on its own last command declares a [`Previous`](#previous-action) part, which holds a one-row action window per episode and makes the route a history route the same way; a model that conditions on past proprio has no declarative form yet -- keep that in the model.
 
 ### Strided windows
 
@@ -612,7 +634,9 @@ lanes. The window advances on **every** env step, including one whose action cam
 chunk, so a stacked model sees the same frames at any `execution_horizon`. A Python session ticks the
 window itself; the native runtime and a served model negotiate it at resolve, and the runtime then
 carries each replayed step's observation to the model as history rows on the next predict (so above
-`execution_horizon=1`, stacking does cost wire bytes: see {doc}`../performance`).
+`execution_horizon=1`, stacking does cost wire bytes: see {doc}`../performance`). A `Previous` part
+puts a route in the same class: its window is one raw action row per lane, recorded on every executed
+step, and the same rows number those steps.
 ```
 
 ## Match your shape
@@ -661,9 +685,9 @@ Find the row that matches your model, then spec it:
 
 ## Errors and `explain()`
 
-Resolution raises {exc}`~rlmesh.adapters.AdapterResolutionError` when a spec cannot be bridged to the spaces: a required role with no `optional`/zero-fill, a declared channel mismatch, an upscale without `allow_upscale`, an aspect mismatch without `fit`, an unsupported `resample`/`dtype`, an impossible encoding conversion, a bare unknown field on a known kind, a label the other side lacks or a labeled model against an unlabeled env (`LabelMismatch`), a provenance the env contradicts or a value outside its vocabulary (`ProvenanceMismatch`), an env publishing a role under several provenances against a model that pins none (`Ambiguous`), or a join-time class/width/encoding/range disagreement between a tag and its space. The message names the offending leaf and what it expected.
+Resolution raises {exc}`~rlmesh.adapters.AdapterResolutionError` when a spec cannot be bridged to the spaces: a required role with no `optional`/zero-fill, a declared channel mismatch, an upscale without `allow_upscale`, an aspect mismatch without `fit`, an unsupported `resample`/`dtype`, an impossible encoding conversion, a bare unknown field on a known kind, a label the other side lacks or a labeled model against an unlabeled env (`LabelMismatch`), a provenance the env contradicts or a value outside its vocabulary (`ProvenanceMismatch`), an env publishing a role under several provenances against a model that pins none (`Ambiguous`), a `Previous` part whose role no actuator of the spec emits (`MissingRole`), an env observation tagged under `action/` (`ActionRoleOnObservation`), or a join-time class/width/encoding/range disagreement between a tag and its space. The message names the offending leaf and what it expected.
 
-Once resolution succeeds, call `adapter.explain()` to print the exact transforms the resolver chose (each resize, layout transpose, encoding conversion, range map, key remap, slice, label permutation, per-axis value, provenance, and clip) before you run a single step. It is the fastest way to confirm the bridge is what you intended.
+Once resolution succeeds, call `adapter.explain()` to print the exact transforms the resolver chose (each resize, layout transpose, encoding conversion, range map, key remap, slice, label permutation, per-axis value, provenance, previous-action part, and clip) before you run a single step. It is the fastest way to confirm the bridge is what you intended.
 
 ```python
 adapter = adapt.resolve(tags, env.observation_space, env.action_space, spec)

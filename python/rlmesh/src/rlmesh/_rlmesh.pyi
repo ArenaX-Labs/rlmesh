@@ -230,7 +230,8 @@ class AdapterPlan:
         """
     def history_keys(self) -> builtins.list[builtins.str]:
         r"""
-        Canonical placement strings of the inputs that hold a frame window.
+        Canonical placement strings of the inputs that hold per-episode history:
+        a frame window, or a part reading the model's previous action.
         
         Empty means an env step that predicts nothing has no state to advance, so
         the caller can skip [`transform_history`](Self::transform_history)
@@ -248,15 +249,20 @@ class AdapterPlan:
         Advance the frame windows from a raw observation, assembling nothing.
         
         The tick a step that replays a queued action owes its history: the frame
-        still happened, so it still goes in the window.
+        still happened, so it still goes in the window, and the local step
+        counter advances so the replayed action is recorded under its step.
         """
     def reset_history(self) -> None:
         r"""
-        Drop the in-process frame windows at an episode boundary.
+        Drop the in-process frame windows (and the local step counter) at an
+        episode boundary.
         """
     def transform_action(self, raw_action: typing.Any) -> typing.Any:
         r"""
-        Apply the action plan to a canonical value-tree model action.
+        Apply the action plan to a canonical value-tree model action, recording
+        it as the action executed at the step last ticked when a state part
+        reads the previous action (the local half of the served engine's
+        `apply_actions`). Before any tick there is no step to record under.
         """
 
 @typing.final

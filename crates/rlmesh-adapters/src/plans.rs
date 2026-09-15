@@ -30,7 +30,7 @@ pub(crate) fn envelope_key(source: &NodePath) -> String {
 }
 pub use custom::CustomPlan;
 pub use image::{CropPlan, ImagePlan};
-pub use state::{StatePiece, StatePlan};
+pub use state::{PreviousAction, StatePiece, StatePlan};
 pub use text::TextPlan;
 
 /// Resolved instructions for one model input.
@@ -101,6 +101,11 @@ pub struct ResolvedAdapter {
     /// from `obs_plans` in the same step; do not mutate `obs_plans` afterward or
     /// this summary goes stale.
     stacked: Vec<StackedPlacement>,
+    /// Canonical placements of the state inputs with an action-source part
+    /// (`source="action"`), precomputed like `stacked`: each reads the raw
+    /// action executed at the previous step from the per-episode window, so a
+    /// route with one is a history route the same way a stacked one is.
+    previous: Vec<String>,
     /// Resolve-time advisories the plans cannot reconstruct: one per
     /// *unreferenced* unknown observation kind the env declared (an old core
     /// ignored it). Surfaced through [`advisories`](Self::advisories) alongside
@@ -151,10 +156,22 @@ impl ResolvedAdapter {
                 _ => None,
             })
             .collect();
+        let previous = obs_plans
+            .iter()
+            .filter_map(|plan| match plan {
+                ObsPlan::State(state)
+                    if state.pieces.iter().any(|piece| piece.previous.is_some()) =>
+                {
+                    Some(state.placement.to_string())
+                }
+                _ => None,
+            })
+            .collect();
         Self {
             obs_plans,
             action_plan,
             stacked,
+            previous,
             resolve_advisories,
             quiet_advisories,
         }
@@ -248,13 +265,31 @@ impl ResolvedAdapter {
             .collect()
     }
 
-    /// Canonical placement strings of the inputs that hold a frame window.
+    /// Canonical placement strings of the inputs that hold per-episode history:
+    /// a frame window (`stack > 1`), or a previous-action part (`source="action"`).
     ///
     /// The set a host binding drives [`observe`](crate::v1::observe_obs) for:
     /// empty means an env step that predicts nothing has no state to advance,
-    /// so the tick can be skipped entirely.
+    /// so the tick can be skipped entirely. A runtime that replays chunks must
+    /// deliver every step to a route with any of these.
     pub fn history_keys(&self) -> Vec<String> {
-        self.stacked.iter().map(|entry| entry.key.clone()).collect()
+        self.stacked
+            .iter()
+            .map(|entry| entry.key.clone())
+            .chain(self.previous.iter().cloned())
+            .collect()
+    }
+
+    /// Whether any input holds per-episode history (see
+    /// [`history_keys`](Self::history_keys)), without allocating the list.
+    pub fn holds_history(&self) -> bool {
+        !self.stacked.is_empty() || !self.previous.is_empty()
+    }
+
+    /// Whether any state input reads the model's own previous action, so the
+    /// stateful seam has to record every executed action under its step.
+    pub fn reads_previous_action(&self) -> bool {
+        !self.previous.is_empty()
     }
 
     /// The frame windows this adapter holds per live episode, for an

@@ -95,12 +95,36 @@ pub(super) fn apply_affine(
 }
 
 /// Produce one model state input from a raw observation.
+///
+/// `previous` is the raw action the model executed at the previous step (in
+/// model order, the action plan's width), read by any action-source piece;
+/// `None` is the episode's first step, where such a piece reads its `fill`.
 pub(super) fn apply_state(
     plan: &StatePlan,
     raw_obs: &BTreeMap<String, Value>,
+    previous: Option<&[f32]>,
 ) -> Result<Value, ApplyError> {
     let mut state: Vec<f32> = Vec::new();
     for piece in &plan.pieces {
+        if let (Some(action), Some(row)) = (&piece.previous, previous) {
+            let slice = row
+                .get(action.start as usize..action.stop as usize)
+                .ok_or_else(|| {
+                    ApplyError::new(format!(
+                        "previous action for '{}' reads [{}, {}) but the recorded action has \
+                         {} elements",
+                        action.role,
+                        action.start,
+                        action.stop,
+                        row.len()
+                    ))
+                })?;
+            match &piece.gather {
+                Some(gather) => state.extend(gather.iter().map(|&index| slice[index as usize])),
+                None => state.extend_from_slice(slice),
+            }
+            continue;
+        }
         if let Some(fill) = piece.fill {
             let mut value = vec![fill as f32; piece.dim.unwrap_or(0) as usize];
             // The scalar affine was folded into `fill` at resolve; a per-axis
@@ -266,6 +290,7 @@ mod tests {
                 src_labels: None,
                 fill: None,
                 absent_role: false,
+                previous: None,
                 width: Some(3),
                 frame: None,
                 provenance: None,
@@ -283,7 +308,7 @@ mod tests {
             "gripper".to_owned(),
             Value::Tensor(value::tensor_from_f32(vec![3], &[0.0, 127.5, 255.0])),
         );
-        let Value::Tensor(out) = apply_state(&plan, &raw).expect("apply") else {
+        let Value::Tensor(out) = apply_state(&plan, &raw, None).expect("apply") else {
             panic!("expected a tensor");
         };
         let values = value::to_f32_vec(&out);
@@ -328,6 +353,7 @@ mod tests {
                 src_labels: None,
                 fill: None,
                 absent_role: false,
+                previous: None,
                 width: Some(1),
                 frame: None,
                 provenance: None,
@@ -348,7 +374,7 @@ mod tests {
                 &[0.0, 0.1, 0.2, 0.9, 0.4, 0.5, 0.6, 0.7],
             )),
         );
-        let Value::Tensor(out) = apply_state(&plan, &raw).expect("apply") else {
+        let Value::Tensor(out) = apply_state(&plan, &raw, None).expect("apply") else {
             panic!("expected a tensor");
         };
         assert_eq!(value::to_f32_vec(&out), vec![0.9]);

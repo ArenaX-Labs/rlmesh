@@ -5025,3 +5025,161 @@ def test_provenance_disagreement_is_an_error_and_model_only_is_a_caution() -> No
                 output=LIBERO_MODEL_ACTION,
             ),
         )
+
+
+# ---------------------------------------------------------------------------
+# Previous action (PR-4 of the adapter expansion)
+# ---------------------------------------------------------------------------
+
+
+def _go2_full_model(previous: adapt.State | None = None) -> adapt.ModelSpec:
+    """The design's Go2 model complete: the body model plus the previous action."""
+    body = _go2_body_model()
+    obs = cast("dict[str, Any]", body.input)["obs"]
+    assert isinstance(obs, adapt.Concat)
+    return adapt.ModelSpec(
+        input={
+            "obs": adapt.Concat(
+                *obs.parts,
+                previous
+                if previous is not None
+                else adapt.Previous(adapt.ACTION_JOINT_POS),
+                clip=obs.clip,
+                dtype=obs.dtype,
+            )
+        },
+        output=body.output,
+    )
+
+
+def _go2_raw() -> dict[str, np.ndarray]:
+    return {
+        "ang_vel": np.array([4.0, 0.0, 0.0], np.float32),
+        "base_quat": np.array([1.0, 0.0, 0.0, 0.0], np.float32),
+        "command": np.zeros(3, np.float32),
+        "joint_pos": np.zeros(12, np.float32),
+        "joint_vel": np.zeros(12, np.float32),
+    }
+
+
+def test_previous_is_an_action_source_state_part_that_round_trips() -> None:
+    import json
+
+    part = adapt.Previous(adapt.ACTION_JOINT_POS, part="left_arm", fill=0.5)
+    assert part == adapt.State(
+        adapt.ACTION_JOINT_POS, part="left_arm", fill=0.5, source="action"
+    )
+    spec = _go2_full_model()
+    doc = spec.to_dict()
+    assert doc["input"]["obs"]["components"][5] == {
+        "role": "action/joint_pos",
+        "source": "action",
+    }
+    assert adapt.ModelSpec.from_dict(doc) == spec
+    # The default source stays off the wire, so every earlier spec is byte-identical.
+    assert "source" not in json.dumps(_go2_body_model().to_dict())
+    # An action-source part reads the model's own raw output and nothing else.
+    with pytest.raises(ValueError, match="carries only part/labels/dim/fill"):
+        adapt.State(adapt.ACTION_JOINT_POS, source="action", scale=0.5)
+    with pytest.raises(ValueError, match="carries only part/labels/dim/fill"):
+        adapt.State(adapt.ACTION_JOINT_POS, source="action", optional=True)
+    with pytest.raises(ValueError, match="'observation' or 'action'"):
+        adapt.State(adapt.ACTION_JOINT_POS, source="sideways")  # type: ignore[arg-type]
+    # A non-zero fill needs no `optional` here: it is the value before step 0.
+    assert adapt.Previous(adapt.ACTION_JOINT_POS, fill=1.0).fill == 1.0
+    with pytest.raises(ValueError, match="fill applies only to an optional part"):
+        adapt.State(adapt.JOINT_POS, fill=1.0)
+
+
+def test_the_previous_action_completes_the_go2_observation_at_45_wide() -> None:
+    adapter = resolve(_go2_body_env(), _go2_full_model())
+    text = adapter.explain()
+    assert (
+        "joint_vel[:12] (*0.05)#sensed, previous action/joint_pos (fill 0.0)) "
+        "clip[-100.0,100.0]" in text
+    )
+    assert adapter.advisories() == []
+    # Answered by the model's own actuator, and a history route like a stacked one.
+    assert adapter.history_keys() == ("obs",)
+    assert adapter.history_windows() == ()
+    raw = _go2_raw()
+    adapter.reset()
+    first = adapter.transform_obs(raw)["obs"]
+    assert first.shape == (45,)
+    np.testing.assert_array_equal(first[33:], np.zeros(12))
+    output = np.arange(12, dtype=np.float32) / 10
+    action = adapter.transform_action(output)
+    # The env receives the scaled, offset command...
+    np.testing.assert_allclose(
+        action,
+        output * np.array(GO2_ACTION_SCALE) + np.array(GO2_DEFAULT_POSE),
+        atol=1e-6,
+    )
+    # ...and the policy reads back its raw output at the next step.
+    np.testing.assert_allclose(
+        adapter.transform_obs(raw)["obs"][33:], output, atol=1e-6
+    )
+    # A replayed step predicts nothing but still ticks, so the frame executed
+    # there is recorded under its step and read at the re-plan.
+    adapter.observe(raw)
+    adapter.transform_action(output * 2)
+    np.testing.assert_allclose(
+        adapter.transform_obs(raw)["obs"][33:], output * 2, atol=1e-6
+    )
+    # A missed tick is loud, and reset clears the window.
+    with pytest.raises(ValueError, match="no action was recorded for step 3"):
+        adapter.transform_obs(raw)
+    adapter.reset()
+    np.testing.assert_array_equal(adapter.transform_obs(raw)["obs"][33:], np.zeros(12))
+
+
+def test_a_previous_action_part_selects_by_label_and_needs_its_actuator() -> None:
+    env = _go2_body_env()
+    front = GO2_ISAAC[:6]
+    adapter = resolve(
+        env,
+        _go2_full_model(
+            adapt.State(adapt.ACTION_JOINT_POS, source="action", labels=front, fill=0.5)
+        ),
+    )
+    assert (
+        "previous action/joint_pos select[3,4,5,0,1,2] (fill 0.5)" in adapter.explain()
+    )
+    raw = _go2_raw()
+    adapter.reset()
+    np.testing.assert_array_equal(
+        adapter.transform_obs(raw)["obs"][33:], np.full(6, 0.5)
+    )
+    adapter.transform_action(np.arange(12, dtype=np.float32))
+    np.testing.assert_array_equal(
+        adapter.transform_obs(raw)["obs"][33:], [3.0, 4.0, 5.0, 0.0, 1.0, 2.0]
+    )
+    with pytest.raises(adapt.AdapterResolutionError, match="no actuator emits"):
+        resolve(env, _go2_full_model(adapt.Previous(adapt.ACTION_GRIPPER)))
+    with pytest.raises(adapt.AdapterResolutionError, match="the actuator lacks"):
+        resolve(
+            env,
+            _go2_full_model(
+                adapt.State(
+                    adapt.ACTION_JOINT_POS,
+                    source="action",
+                    labels=("FR_hip", "FR_shin"),
+                )
+            ),
+        )
+
+
+def test_an_action_role_on_an_observation_tag_is_a_join_error() -> None:
+    env = Env(
+        adapt.EnvTags(
+            observation={"last": adapt.StateTag(adapt.ACTION_JOINT_POS)},
+            action=LIBERO_ACTION,
+        ),
+        obs_space=gym.spaces.Dict({"last": box(7)}),
+        action_space=box(7),
+    )
+    spec = adapt.ModelSpec(
+        input={"t": adapt.Text(adapt.INSTRUCTION)}, output=LIBERO_MODEL_ACTION
+    )
+    with pytest.raises(adapt.AdapterResolutionError, match="an action kind"):
+        resolve(env, spec)

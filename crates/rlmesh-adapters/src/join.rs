@@ -65,6 +65,15 @@ pub enum JoinError {
     /// [`check_role`](crate::roles::registry::check_role).
     #[error("{key:?}: {reason}")]
     InvalidRole { key: String, reason: String },
+    /// An observation tag under the `action/` kind: a command is an actuator's
+    /// to carry, and a model reads its own previous command with
+    /// `source="action"` (`Previous`), never from an env observation.
+    #[error(
+        "observation {key:?} declares role {role:?}, an action kind; a command is carried by an \
+         actuator, and a model reads its previous action with source=\"action\" (Previous), not \
+         from an env observation"
+    )]
+    ActionRoleOnObservation { key: String, role: String },
     #[error(
         "{key:?} tag range {tag:?} disagrees with the space's finite bounds \
          {space:?}"
@@ -132,6 +141,19 @@ fn check_role_identity(role: &str, part: Option<&str>, key: &str) -> Result<()> 
         key: key.to_owned(),
         reason,
     })
+}
+
+/// An observation leaf may not carry an `action/` role: a command is what an
+/// actuator carries, and a model reads its own previous command from its
+/// actuator (`source="action"`), never from an env leaf.
+fn check_observation_role(role: &str, key: &str) -> Result<()> {
+    if role.starts_with("action/") {
+        return Err(JoinError::ActionRoleOnObservation {
+            key: key.to_owned(),
+            role: role.to_owned(),
+        });
+    }
+    Ok(())
 }
 
 type Result<T> = std::result::Result<T, JoinError>;
@@ -232,13 +254,16 @@ fn part_registry_advisory(part: &str) -> Option<Advisory> {
     )))
 }
 
-/// One advisory if `labels` match no shipped embodiment profile as a set (a
-/// subset is fine: a model may name fewer joints than a body has). The label
-/// twin of the role nudge: labels bind on exact strings, so a private
-/// spelling matches only itself. Never a resolve rule; the strict publish
-/// tier refuses what this nudges.
+/// One advisory if `labels` on a joint role match no shipped embodiment profile
+/// as a set (a subset is fine: a model may name fewer joints than a body has).
+/// The label twin of the role nudge: labels bind on exact strings, so a private
+/// spelling matches only itself. Never a resolve rule; the strict publish tier
+/// refuses what this nudges. A labeled leaf of any other role (a wrench's six
+/// axes) names its own axes and is never held to a profile.
 pub(crate) fn labels_profile_advisory(role: &str, labels: &[String]) -> Option<Advisory> {
-    if crate::roles::embodiments::matching_profile(labels).is_some() {
+    if !crate::spec::strict::is_labeled_role(role)
+        || crate::roles::embodiments::matching_profile(labels).is_some()
+    {
         return None;
     }
     let hint = match crate::roles::embodiments::closest_profile(labels) {
@@ -373,6 +398,7 @@ fn join_feature(
                 });
             }
             check_role_identity(&image.role, image.part.as_deref(), &path)?;
+            check_observation_role(&image.role, &path)?;
             let (height, width, channels) = image_hwc(&leaf.shape, image.layout);
             Ok(vec![EnvFeature::Image(EnvImage {
                 source: source.clone(),
@@ -409,6 +435,7 @@ fn join_feature(
             }
             check_role_dim_law(&state.role, width, &path)?;
             check_role_identity(&state.role, state.part.as_deref(), &path)?;
+            check_observation_role(&state.role, &path)?;
             // A `Field` pins its labels to `dim` at the codec; a whole-leaf tag
             // learns its width only here.
             if let Some(labels) = &state.labels
@@ -444,6 +471,7 @@ fn join_feature(
                 });
             }
             check_role_identity(&text.role, None, &path)?;
+            check_observation_role(&text.role, &path)?;
             Ok(vec![EnvFeature::Text(EnvText {
                 source: source.clone(),
                 role: text.role.clone(),
@@ -503,6 +531,7 @@ fn join_split(
             }
             check_role_dim_law(role, field.dim, &path)?;
             check_role_identity(role, field.part.as_deref(), &path)?;
+            check_observation_role(role, &path)?;
             let key = (
                 role.as_str(),
                 field.part.as_deref(),
@@ -1498,6 +1527,24 @@ mod tests {
             join(&tags, &obs, &action),
             Err(JoinError::DuplicateLayoutRole { role, .. }) if role == "proprio/eef_pos"
         ));
+    }
+
+    #[test]
+    fn an_action_role_on_an_observation_leaf_fails_the_join() {
+        // A command is an actuator's to carry; a model reads its previous
+        // command with `source="action"`, never from an env observation.
+        let obs = box_view(vec![6], None, None);
+        let action = box_view(vec![0], None, None);
+        let mut last = field(Some("action/joint_pos"), 3, None);
+        let fine = field(Some("proprio/eef_pos"), 3, None);
+        assert!(matches!(
+            join(&layout_tags(vec![last.clone(), fine.clone()]), &obs, &action),
+            Err(JoinError::ActionRoleOnObservation { role, .. }) if role == "action/joint_pos"
+        ));
+        // A proprio role in the same slot joins (the action layout carries
+        // `action/` roles as a matter of course, see the tests above).
+        last.role = Some("proprio/joint_pos".to_owned());
+        join(&layout_tags(vec![last, fine]), &obs, &action).expect("joins");
     }
 
     #[test]

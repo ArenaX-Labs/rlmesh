@@ -382,6 +382,9 @@
     "rlmesh.adapters.Constant": {
       "description": "A constant Concat part: dim copies of fill, read from nothing."
     },
+    "rlmesh.adapters.Previous": {
+      "description": "A state part reading the model's own previous action for a role: the raw output executed at the previous step, fill before the first."
+    },
     "rlmesh.adapters.FitMode": {
       "description": "How an image is fit to a declared size: 'stretch', 'letterbox', or 'crop'."
     },

@@ -397,10 +397,15 @@ fn sequence_payloads(
             let Value::Map(raw_obs) = dec(observation) else {
                 panic!("{name}: each observation must decode to a map");
             };
+            let step = buffers.next_step("ep");
+            buffers
+                .advance_step("ep", step)
+                .unwrap_or_else(|e| panic!("{name}: advance_step failed: {e}"));
             assemble_obs(
                 adapter,
                 &raw_obs,
                 "ep",
+                step,
                 &mut buffers,
                 &NoCustoms,
                 &NoEncodings,

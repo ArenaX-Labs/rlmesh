@@ -356,6 +356,24 @@ fn describe_image(plan: &ImagePlan) -> String {
 fn describe_state(plan: &StatePlan) -> String {
     let mut parts: Vec<String> = Vec::new();
     for piece in &plan.pieces {
+        // An action-source part: the model's own previous output for the role,
+        // selected by label when it names a subset, and what it reads before
+        // the episode's first action.
+        if let Some(action) = &piece.previous {
+            let mut note = format!("previous {}", action.role);
+            if let Some(gather) = &piece.gather {
+                let listed: Vec<String> = gather.iter().map(u32::to_string).collect();
+                let _ = write!(note, " select[{}]", listed.join(","));
+            }
+            let _ = write!(
+                note,
+                " (fill {})",
+                number(piece.fill.expect("action pieces carry their fill"))
+            );
+            write_part(&mut note, piece.part.as_deref());
+            parts.push(note);
+            continue;
+        }
         if let Some(fill) = piece.fill {
             let width = piece.dim.expect("fill pieces always carry a width");
             // An absent optional role filled with zeros keeps the original

@@ -373,6 +373,15 @@ const LABELED_ROLES: [&str; 4] = [
     crate::roles::core::ACTION_JOINT_VEL,
 ];
 
+/// Whether `role` (or its canonical alias) is a joint vector, the only kind of
+/// leaf whose labels are checked against the shipped embodiment profiles. Any
+/// other labeled leaf (the six axes of a wrench, say) names its own axes and is
+/// never held to a profile.
+pub(crate) fn is_labeled_role(role: &str) -> bool {
+    let (canonical, _) = crate::roles::registry::canonical(role, None);
+    LABELED_ROLES.contains(&canonical)
+}
+
 /// Reject any joint-role leaf in an env spec that omits `labels`, and any
 /// label tuple that matches no shipped profile.
 pub fn reject_unlabeled_roles_env(tags: &EnvTags, policy: LabelPolicy) -> Result<(), String> {
@@ -395,13 +404,14 @@ pub fn reject_unlabeled_roles_model(spec: &ModelSpec, policy: LabelPolicy) -> Re
 
 /// Reject one leaf: a joint role with no labels, or labels off every profile.
 fn require_labels(role: &str, labels: Option<&[String]>, locus: &str) -> Result<(), String> {
-    let (canonical, _) = crate::roles::registry::canonical(role, None);
+    let joint = is_labeled_role(role);
     match labels {
-        None if LABELED_ROLES.contains(&canonical) => Err(format!(
+        None if joint => Err(format!(
             "{locus} declares joint role {role:?} without labels; this gate requires one label \
              per axis (write them from a shipped profile: rlmesh.adapters.embodiments)"
         )),
         None => Ok(()),
+        Some(_) if !joint => Ok(()),
         Some(labels) => {
             if crate::roles::embodiments::matching_profile(labels).is_some() {
                 return Ok(());
@@ -819,9 +829,18 @@ mod tests {
         .unwrap();
         assert!(reject_unlabeled_roles_env(&labeled, LabelPolicy::Strict).is_ok());
 
-        // Off-profile labels are the lint's rejection, naming the closest.
+        // Off-profile labels on a joint role are the lint's rejection, naming
+        // the closest; a labeled leaf of any other role names its own axes and
+        // is never held to a profile.
+        let axes: EnvTags = serde_json::from_str(
+            r#"{"observation": {"w": {"type": "state", "role": "x/eef_wrench",
+                    "labels": ["fx", "fy", "fz", "tx", "ty", "tz"]}},
+                "action": {"components": [{"role": "action/gripper", "dim": 1}]}}"#,
+        )
+        .unwrap();
+        assert!(reject_unlabeled_roles_env(&axes, LabelPolicy::Strict).is_ok());
         let stray: EnvTags = serde_json::from_str(
-            r#"{"observation": {"g": {"type": "state", "role": "proprio/gripper",
+            r#"{"observation": {"g": {"type": "state", "role": "proprio/joint_pos",
                     "labels": ["FR_hip", "FR_shin"]}},
                 "action": {"components": [{"role": "action/gripper", "dim": 1}]}}"#,
         )

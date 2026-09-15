@@ -2,13 +2,14 @@
 
 use std::collections::BTreeMap;
 
+use super::action::ModelOutputs;
 use super::{Indexed, LeafKey, Result, bind, check_geometry, check_provenance, err};
 use crate::advisory::Advisory;
 use crate::error::ErrorCode;
 use crate::fmt::{quoted, quoted_accept_set, quoted_encoding, quoted_leaf_keys};
 use crate::path::NodePath;
-use crate::plans::{StatePiece, StatePlan};
-use crate::spec::{AcceptSet, Attr, ConcatPart, EnvState, RotationEncoding, State};
+use crate::plans::{PreviousAction, StatePiece, StatePlan};
+use crate::spec::{AcceptSet, Attr, ConcatPart, EnvState, PartSource, RotationEncoding, State};
 
 /// Width of an optional component's fill when the env lacks it.
 fn fill_width(component: &ConcatPart, role: &str, at: &str) -> Result<u32> {
@@ -82,11 +83,101 @@ fn fill_piece(
         src_labels: None,
         fill: Some(fill),
         absent_role,
+        previous: None,
         frame: None,
         provenance: None,
         part,
         width: Some(width),
     }
+}
+
+/// An action-source part reads the spec's own output actuator of the same
+/// `(role, part)`: the raw slice of the action the model executed at the
+/// previous step, in model order, or `fill` before the episode's first one.
+/// The width is the actuator's; `labels` select from the actuator's labels.
+fn previous_action_piece(
+    component: &ConcatPart,
+    role: &str,
+    at: &str,
+    outputs: &ModelOutputs<'_>,
+    advisories: &mut Vec<Advisory>,
+) -> Result<StatePiece> {
+    let bound = bind(
+        &outputs.by_key,
+        role,
+        component.part.as_deref(),
+        None,
+        &format!("model input {at}"),
+        "previous action role",
+        "model",
+        advisories,
+    )?;
+    let Some(bound) = bound else {
+        return Err(err(
+            ErrorCode::MissingRole,
+            format!(
+                "model input {at} reads the previous action for role {}{} but no actuator \
+                 emits it; the model outputs {}",
+                quoted(role),
+                part_suffix(component.part.as_deref()),
+                quoted_leaf_keys(&outputs.by_key)
+            ),
+        ));
+    };
+    let (start, actuator) = *bound.feature;
+    let gather = label_gather(
+        role,
+        actuator.labels.as_deref(),
+        component.labels.as_deref(),
+        at,
+        "actuator",
+    )?;
+    let width = component
+        .labels
+        .as_ref()
+        .map_or(actuator.dim, |labels| labels.len() as u32);
+    if let Some(dim) = component.dim
+        && dim != width
+    {
+        return Err(err(
+            ErrorCode::DimMismatch,
+            format!(
+                "model input {at}: previous action role {} declares dim {dim} but the actuator \
+                 emits {width}",
+                quoted(role)
+            ),
+        ));
+    }
+    Ok(StatePiece {
+        source: NodePath::root(),
+        src_offset: None,
+        src_dim: None,
+        src_encoding: None,
+        dst_encoding: None,
+        post_rotate: None,
+        dim: Some(width),
+        index: None,
+        src_range: None,
+        dst_range: None,
+        scale: None,
+        offset: None,
+        axis_scale: None,
+        axis_offset: None,
+        gather,
+        labels: component.labels.clone().or_else(|| actuator.labels.clone()),
+        src_labels: actuator.labels.clone(),
+        fill: Some(component.fill),
+        absent_role: false,
+        previous: Some(PreviousAction {
+            role: role.to_owned(),
+            start,
+            stop: start + actuator.dim,
+        }),
+        frame: None,
+        provenance: None,
+        part: bound.part,
+        width: Some(width),
+    })
 }
 
 /// A per-axis vector must name exactly one value per resolved axis.
@@ -131,16 +222,19 @@ pub(super) fn positions(
     }
 }
 
-/// The gather a model label tuple implies against an env leaf: `None` when
-/// the model names none, the env's own order (identity), or a
-/// [`LabelMismatch`](ErrorCode::LabelMismatch) when the env declares no
-/// labels or lacks one the model names. A labeled model against an unlabeled
-/// env is an error, not a caution: identity-on-hope is the bug.
+/// The gather a model label tuple implies against the leaf it reads (an env
+/// leaf, or the model's own actuator for an action-source part; `offerer`
+/// names which): `None` when the model names none, the offerer's own order
+/// (identity), or a [`LabelMismatch`](ErrorCode::LabelMismatch) when the
+/// offerer declares no labels or lacks one the model names. A labeled model
+/// against an unlabeled leaf is an error, not a caution: identity-on-hope is
+/// the bug.
 fn label_gather(
     role: &str,
     env: Option<&[String]>,
     model: Option<&[String]>,
     at: &str,
+    offerer: &str,
 ) -> Result<Option<Vec<u32>>> {
     let Some(model) = model else {
         return Ok(None);
@@ -149,8 +243,8 @@ fn label_gather(
         return Err(err(
             ErrorCode::LabelMismatch,
             format!(
-                "model input {at}: state role {} names labels {:?} but the env leaf declares \
-                 none; label the env leaf (labels=) so the axes can be aligned",
+                "model input {at}: state role {} names labels {:?} but the {offerer} declares \
+                 none; label the {offerer} (labels=) so the axes can be aligned",
                 quoted(role),
                 model
             ),
@@ -165,8 +259,8 @@ fn label_gather(
         Err(missing) => Err(err(
             ErrorCode::LabelMismatch,
             format!(
-                "model input {at}: state role {} names labels {:?} that the env leaf lacks; \
-                 the env declares {:?}",
+                "model input {at}: state role {} names labels {:?} that the {offerer} lacks; \
+                 the {offerer} declares {:?}",
                 quoted(role),
                 missing,
                 env
@@ -257,6 +351,7 @@ pub(super) fn plan_state(
     model_input: &State,
     placement: NodePath,
     states_by_role: &BTreeMap<LeafKey, Indexed<&EnvState>>,
+    outputs: &ModelOutputs<'_>,
     unknown_roles: &BTreeMap<String, String>,
     advisories: &mut Vec<Advisory>,
 ) -> Result<StatePlan> {
@@ -272,6 +367,14 @@ pub(super) fn plan_state(
             pieces.push(fill_piece(width, component.fill, false, None, component));
             continue;
         };
+        // An action-source part reads the model's own output, never an env
+        // leaf: it binds the spec's actuator and consults nothing here.
+        if component.source == PartSource::Action {
+            pieces.push(previous_action_piece(
+                component, role, &at, outputs, advisories,
+            )?);
+            continue;
+        }
         // A custom encoding resolves structurally to its `base` here and the
         // host-side repack runs on its own slice, addressed by the resolved
         // piece widths this plan records — so it may sit at any offset of a
@@ -343,6 +446,7 @@ pub(super) fn plan_state(
             env_state.labels.as_deref(),
             component.labels.as_deref(),
             &at,
+            "env leaf",
         ) {
             Ok(gather) => gather,
             Err(_) if component.optional && env_state.labels.is_some() => {
@@ -541,6 +645,7 @@ pub(super) fn plan_state(
             src_labels: env_state.labels.clone(),
             fill: None,
             absent_role: false,
+            previous: None,
             frame,
             provenance,
             part: bound.part,

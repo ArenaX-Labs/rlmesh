@@ -1246,6 +1246,7 @@
       "ObsNode",
       "ObsTransform",
       "ObservationRoles",
+      "Previous",
       "Provenance",
       "Reference",
       "Resample",
@@ -2084,6 +2085,11 @@
         "signature": "PARTS = list[str]",
         "stability": "Stable"
       },
+      "Previous": {
+        "kind": "function",
+        "signature": "Previous(role: str, *, part: str | None = None, fill: float = 0.0)",
+        "stability": "Stable"
+      },
       "Provenance": {
         "kind": "type alias",
         "signature": "Provenance = Literal['sensed', 'estimated', 'privileged']",
@@ -2242,9 +2248,13 @@
           "scale": {
             "kind": "attribute",
             "signature": "scale: float | Sequence[float] | None"
+          },
+          "source": {
+            "kind": "attribute",
+            "signature": "source: Literal['observation', 'action']"
           }
         },
-        "signature": "State(role: str, encoding: RotationEncoding | Sequence[RotationEncoding] | CustomEncoding | None = None, dim: int | None = None, index: int | None = None, optional: bool = False, range: tuple[float, float] | None = None, pad_to: int | None = None, dtype: str = 'float32', reshape: tuple[int, ...] | None = None, container: Literal['array', 'list'] = 'array', *, fill: float = 0.0, post_rotate: Rotation | None = None, scale: float | Sequence[float] | None = None, offset: float | Sequence[float] | None = None, frame: Frame | None = None, provenance: Provenance | Sequence[Provenance] | None = None, part: str | None = None, labels: Sequence[str] | None = None, clip: tuple[float, float] | None = None)",
+        "signature": "State(role: str, encoding: RotationEncoding | Sequence[RotationEncoding] | CustomEncoding | None = None, dim: int | None = None, index: int | None = None, optional: bool = False, range: tuple[float, float] | None = None, pad_to: int | None = None, dtype: str = 'float32', reshape: tuple[int, ...] | None = None, container: Literal['array', 'list'] = 'array', *, fill: float = 0.0, post_rotate: Rotation | None = None, scale: float | Sequence[float] | None = None, offset: float | Sequence[float] | None = None, frame: Frame | None = None, provenance: Provenance | Sequence[Provenance] | None = None, part: str | None = None, labels: Sequence[str] | None = None, source: Literal['observation', 'action'] = 'observation', clip: tuple[float, float] | None = None)",
         "stability": "Stable"
       },
       "StateTag": {

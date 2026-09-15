@@ -246,7 +246,7 @@ fn assemble_route_inputs_inner(
     // replayed steps first, then holds this request's own row to the next
     // step. A route that did not must not be handed rows: the producer thinks
     // it is feeding a window this route does not keep.
-    let step = if config.delivers_history {
+    let stamped = if config.delivers_history {
         ingest_history(config, buffers, observation, &referenced)?;
         Some(observation.step.ok_or_else(|| {
             Error::model(
@@ -263,6 +263,11 @@ fn assemble_route_inputs_inner(
              asked for them",
         ));
     };
+    // A route that reads its previous action needs every step numbered even
+    // when the runtime stamps none (no history offered, so execution_horizon
+    // is 1 and every predict is one step): the engine counts the episode's
+    // predicts itself. Any other unstamped route holds no per-step state.
+    let counted = stamped.is_none() && config.adapter.reads_previous_action();
 
     let decoded = observation.decoded_lanes()?;
 
@@ -279,7 +284,8 @@ fn assemble_route_inputs_inner(
                     episodes.len()
                 ))
             })?;
-        if let Some(step) = step {
+        let step = stamped.unwrap_or_else(|| buffers.next_step(episode_id));
+        if stamped.is_some() || counted {
             buffers.advance_step(episode_id, step)?;
         }
         let raw = space_value_to_obs_map(lane, &config.observation_space, &referenced)?;
@@ -287,6 +293,7 @@ fn assemble_route_inputs_inner(
             &config.adapter,
             &raw,
             episode_id,
+            step,
             buffers,
             customs,
             encodings,
@@ -540,31 +547,62 @@ fn bucket_fuses(predict: &dyn PredictFn, horizon: u32) -> bool {
 /// transpose the per-lane future frames into per-step batched frames
 /// (`replay[step][lane]`), to the shortest lane (uniform for a homogeneous
 /// fleet; a short lane caps the batch — receding horizon).
+///
+/// Each lane's frame `k` is applied under the step it executes at, `k` past
+/// the step the lane assembled at, so a route reading its previous action
+/// sees, at the re-plan, the frame the runtime replayed last. That record
+/// lives in the route's buffers, so the entry lock is taken again here (after
+/// the model call, never across it).
 fn finish_route_frames(
-    config: &RouteConfig,
+    entry: &Arc<Mutex<RouteEntry>>,
     lane_raw_steps: Vec<Vec<Value>>,
+    episodes: &[EpisodeInfo],
     num_envs: usize,
     adapter_ns: &AtomicU64,
 ) -> Result<PredictFrames> {
     let started = Instant::now();
-    let result = finish_route_frames_inner(config, lane_raw_steps, num_envs);
+    let result = {
+        let mut guard = entry.lock().expect("route entry poisoned");
+        let result = finish_route_frames_inner(&mut guard, lane_raw_steps, episodes, num_envs);
+        guard.publish_held();
+        result
+    };
     adapter_ns.fetch_add(rlmesh_proto::elapsed_ns(started), Ordering::Relaxed);
     result
 }
 
 fn finish_route_frames_inner(
-    config: &RouteConfig,
+    entry: &mut RouteEntry,
     lane_raw_steps: Vec<Vec<Value>>,
+    episodes: &[EpisodeInfo],
     num_envs: usize,
 ) -> Result<PredictFrames> {
+    let RouteEntry {
+        config, buffers, ..
+    } = entry;
     let encodings: &dyn rlmesh_adapters::v1::EncodingTransform = config.encodings.as_ref();
     let mut frame0 = Vec::with_capacity(num_envs);
     let mut lane_replays: Vec<Vec<SpaceValue>> = Vec::with_capacity(num_envs);
-    for raw_steps in lane_raw_steps {
+    for (lane, raw_steps) in lane_raw_steps.into_iter().enumerate() {
+        // The lane assembled at the episode's last counted step; a route that
+        // counts none holds no per-step state, so the value goes unread.
+        let episode_id = episodes
+            .get(lane)
+            .map_or("", |episode| episode.episode_id.as_str());
+        let step = buffers.last_step(episode_id).unwrap_or(0);
         let mut applied = raw_steps
             .into_iter()
-            .map(|raw_action| {
-                apply_actions(&config.adapter, raw_action, &config.action_space, encodings)
+            .enumerate()
+            .map(|(frame, raw_action)| {
+                apply_actions(
+                    &config.adapter,
+                    raw_action,
+                    &config.action_space,
+                    encodings,
+                    buffers,
+                    episode_id,
+                    step + frame as i64,
+                )
             })
             .collect::<std::result::Result<Vec<SpaceValue>, _>>()?
             .into_iter();
@@ -592,10 +630,12 @@ fn finish_route_frames_inner(
 }
 
 /// The spec'd per-lane loop (CPU + the model's predict callback), run on a
-/// blocking worker thread. Holds the per-route entry lock only across input
-/// assembly (the frame buffers mutate in place there); the horizon it
-/// dispatches with is the runtime-chosen execution horizon pinned on
-/// `ResolveAdapter`, not the model spec.
+/// blocking worker thread. Holds the per-route entry lock across input
+/// assembly (the frame buffers mutate in place there) and again, after the
+/// model call, across the per-frame apply (the action window records there),
+/// never across the call itself; the horizon it dispatches with is the
+/// runtime-chosen execution horizon pinned on `ResolveAdapter`, not the model
+/// spec.
 ///
 /// Emits each lane's action chunk as [`PredictFrames`]: frame 0 per lane plus the
 /// future-step frames the runtime driver replays. With execution horizon 1 every
@@ -623,7 +663,13 @@ fn predict_route(
         num_envs,
         short_chunk_warned,
     )?;
-    finish_route_frames(&config, lane_raw_steps, num_envs, adapter_ns)
+    finish_route_frames(
+        entry,
+        lane_raw_steps,
+        &observation.route.episodes,
+        num_envs,
+        adapter_ns,
+    )
 }
 
 /// One grouped predict group's serving lane, classified once (on the async
@@ -667,6 +713,7 @@ fn predict_grouped_fused(
         index: usize,
         inputs: Vec<Value>,
         episodes: Vec<EpisodeInfo>,
+        entry: Arc<Mutex<RouteEntry>>,
         config: Arc<RouteConfig>,
         num_envs: usize,
     }
@@ -692,6 +739,7 @@ fn predict_grouped_fused(
                             index,
                             inputs,
                             episodes: observation.route.episodes,
+                            entry,
                             config,
                             num_envs,
                         });
@@ -716,7 +764,8 @@ fn predict_grouped_fused(
                 index: usize,
                 lane_count: usize,
                 summary: String,
-                config: Arc<RouteConfig>,
+                entry: Arc<Mutex<RouteEntry>>,
+                episodes: Vec<EpisodeInfo>,
                 num_envs: usize,
             }
             let mut flat: Vec<Value> = Vec::new();
@@ -727,7 +776,8 @@ fn predict_grouped_fused(
                     index: group.index,
                     lane_count: group.inputs.len(),
                     summary: inputs_summary(&group.inputs),
-                    config: group.config,
+                    entry: group.entry,
+                    episodes: group.episodes.clone(),
                     num_envs: group.num_envs,
                 });
                 flat.extend(group.inputs);
@@ -758,8 +808,9 @@ fn predict_grouped_fused(
                         let group_frames: Vec<Vec<Value>> =
                             frames.by_ref().take(group.lane_count).collect();
                         results[group.index] = Some(finish_route_frames(
-                            &group.config,
+                            &group.entry,
                             group_frames,
+                            &group.episodes,
                             group.num_envs,
                             adapter_ns,
                         ));
@@ -787,7 +838,13 @@ fn predict_grouped_fused(
                         short_chunk_warned,
                     )
                     .and_then(|raw| {
-                        finish_route_frames(&group.config, raw, group.num_envs, adapter_ns)
+                        finish_route_frames(
+                            &group.entry,
+                            raw,
+                            &group.episodes,
+                            group.num_envs,
+                            adapter_ns,
+                        )
                     }),
                 );
             }
@@ -1082,12 +1139,14 @@ impl ModelRouteSetup for AdaptedRouteSetup {
                  (predict_chunk); chunking is inactive — the model re-plans every step",
             );
         }
-        // A stacked adapter keeps a frame window that has to see EVERY env step.
-        // At execution_horizon 1 every step is a predict, so the window is fed by
-        // construction. Above 1 the runtime must deliver the replayed steps as
-        // history rows: a runtime that offered to gets the route's needs back
-        // (and the engine then holds it to consecutive steps); one that did not
-        // would leave the window holding decision points only, so refuse.
+        // A stacked adapter keeps a frame window that has to see EVERY env step,
+        // and one reading its previous action needs every executed action
+        // numbered. At execution_horizon 1 every step is a predict, so both
+        // are fed by construction. Above 1 the runtime must deliver the replayed
+        // steps as history rows: a runtime that offered to gets the route's
+        // needs back (and the engine then holds it to consecutive steps); one
+        // that did not would leave the window holding decision points only, so
+        // refuse.
         let history_keys = config.adapter.history_keys();
         if !history_keys.is_empty() {
             check_history_budget(
@@ -1101,17 +1160,15 @@ impl ModelRouteSetup for AdaptedRouteSetup {
                     prunable: false,
                 });
             } else if config.execution_horizon > 1 {
-                let (key, depth) = config
-                    .adapter
-                    .stacks()
-                    .into_iter()
-                    .next()
-                    .expect("history_keys non-empty implies a stacked input");
+                let what = match config.adapter.stacks().into_iter().next() {
+                    Some((key, depth)) => format!("frame-stacking (input '{key}' stack={depth})"),
+                    None => format!("a previous-action part (input '{}')", history_keys[0]),
+                };
                 return Err(Error::model(format!(
-                    "frame-stacking (input '{key}' stack={depth}) needs every env step, but the \
-                     runtime did not offer observation history (delivers_history) at \
-                     execution_horizon={}: the window would hold only decision-point frames. \
-                     Use a runtime that delivers history, stack=1, or execution_horizon=1.",
+                    "{what} needs every env step, but the runtime did not offer observation \
+                     history (delivers_history) at execution_horizon={}: the window would hold \
+                     only decision-point frames. Use a runtime that delivers history, stack=1 \
+                     (or no Previous part), or execution_horizon=1.",
                     config.execution_horizon,
                 )));
             }
@@ -2696,6 +2753,303 @@ mod fused_route_tests {
                 expected[7].clone()
             ]
         );
+    }
+
+    // ---- previous action (a route reading back its own executed frames) ----
+
+    const PREVIOUS_ENV_TAGS: &str = r#"{
+        "observation": {"g": {"type": "state", "role": "proprio/gripper"}},
+        "action": {"components": [{"role": "action/joint_pos", "dim": 2}]}
+    }"#;
+    const PREVIOUS_MODEL_SPEC: &str = r#"{
+        "input": {"type": "state", "components": ["proprio/gripper",
+                  {"role": "action/joint_pos", "source": "action"}]},
+        "output": {"components": [{"role": "action/joint_pos", "dim": 2}]}
+    }"#;
+    const PLAIN_MODEL_SPEC: &str = r#"{
+        "input": {"type": "state", "components": ["proprio/gripper"]},
+        "output": {"components": [{"role": "action/joint_pos", "dim": 2}]}
+    }"#;
+
+    /// Resolves every route as a scalar gripper reading plus, with
+    /// [`PREVIOUS_MODEL_SPEC`], the model's own previous 2-d joint command.
+    struct PreviousResolver(&'static str);
+
+    #[async_trait]
+    impl RouteResolver for PreviousResolver {
+        async fn resolve(
+            &self,
+            _route_key: &str,
+            env_contract: &EnvContract,
+        ) -> Result<Option<RouteConfig>> {
+            let tags: EnvTags = serde_json::from_str(PREVIOUS_ENV_TAGS).expect("env tags parse");
+            let spec: ModelSpec = serde_json::from_str(self.0).expect("spec parse");
+            let obs = env_contract
+                .observation_space
+                .clone()
+                .expect("contract obs space");
+            let action = env_contract
+                .action_space
+                .clone()
+                .expect("contract action space");
+            let adapter = resolve(
+                &tags,
+                &SpaceView::from(&obs),
+                &SpaceView::from(&action),
+                &spec,
+                true,
+            )
+            .map_err(|err| Error::model(err.message))?;
+            Ok(Some(RouteConfig::new(
+                adapter,
+                obs,
+                action,
+                Box::new(NoCustoms),
+                Box::new(NoEncodings),
+            )))
+        }
+    }
+
+    fn g_obs_space() -> spaces::SpaceSpec {
+        spaces::spaces::DictSpaceBuilder::new()
+            .insert(
+                "g",
+                spaces::spaces::BoxSpaceBuilder::scalar(0.0, 100.0, vec![1])
+                    .dtype(DType::Float32)
+                    .build()
+                    .unwrap(),
+            )
+            .build()
+            .unwrap()
+    }
+
+    fn g_contract(env_id: &str) -> Arc<spaces::EnvContract> {
+        Arc::new(spaces::EnvContract {
+            id: env_id.to_string(),
+            observation_space: Some(g_obs_space()),
+            action_space: Some(
+                spaces::spaces::BoxSpaceBuilder::scalar(-1000.0, 1000.0, vec![2])
+                    .dtype(DType::Float32)
+                    .build()
+                    .unwrap(),
+            ),
+            metadata: None,
+            render_mode: String::new(),
+            num_envs: 1,
+            autoreset_mode: Default::default(),
+        })
+    }
+
+    fn g_leaves(g: f32) -> Vec<rlmesh_grpc::wire::Bytes> {
+        let lane = SpaceValue::Dict(BTreeMap::from([(
+            "g".to_string(),
+            SpaceValue::Box(
+                Tensor::from_vec(g.to_le_bytes().to_vec(), vec![1], DType::Float32).unwrap(),
+            ),
+        )]));
+        rlmesh_grpc::wire::encode_batched_partial_values(&[lane], &g_obs_space())
+            .unwrap()
+            .leaves
+    }
+
+    /// A predict at `step` reading `g`, preceded by `rows` of `(step, g)`
+    /// replayed steps.
+    fn g_predict(
+        env_id: &str,
+        episode_id: &str,
+        step: Option<i64>,
+        g: f32,
+        rows: &[(i64, f32)],
+    ) -> ModelObservation {
+        ModelObservation {
+            observation: Some(g_leaves(g)),
+            route: ModelRouteContext {
+                env_id: env_id.to_string(),
+                episodes: episode(episode_id),
+                ..Default::default()
+            },
+            num_envs: 1,
+            env_contract: Some(g_contract(env_id)),
+            history: rows
+                .iter()
+                .map(|&(step, g)| crate::model::types::HistoryFrame {
+                    observation: Some(g_leaves(g)),
+                    episodes: episode(episode_id),
+                    step,
+                })
+                .collect(),
+            step,
+        }
+    }
+
+    /// Records the state each predict was handed and answers a chunk whose
+    /// frame `k` of call `c` is `[100c + 10 + k, 100c + 20 + k]`, so every
+    /// executed frame is telling.
+    struct PreviousRecorder {
+        inputs: Mutex<Vec<Vec<f32>>>,
+        calls: AtomicUsize,
+    }
+
+    impl PreviousRecorder {
+        fn record(&self, model_input: &Value) -> usize {
+            let Value::Tensor(state) = model_input else {
+                panic!("expected a bare state tensor, got {model_input:?}");
+            };
+            let values: Vec<f32> = state
+                .to_contiguous_bytes()
+                .chunks(4)
+                .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()))
+                .collect();
+            self.inputs.lock().expect("inputs poisoned").push(values);
+            self.calls.fetch_add(1, Ordering::SeqCst)
+        }
+
+        fn frame(call: usize, k: usize) -> Value {
+            let (a, b) = ((100 * call + 10 + k) as f32, (100 * call + 20 + k) as f32);
+            let mut bytes = a.to_le_bytes().to_vec();
+            bytes.extend(b.to_le_bytes());
+            Value::Tensor(Tensor::from_vec(bytes, vec![2], DType::Float32).unwrap())
+        }
+    }
+
+    impl PredictFn for PreviousRecorder {
+        fn predict(&self, model_input: Value, _episode: Option<&EpisodeInfo>) -> Result<Value> {
+            let call = self.record(&model_input);
+            Ok(Self::frame(call, 0))
+        }
+
+        fn has_chunk(&self) -> bool {
+            true
+        }
+
+        fn predict_chunk(
+            &self,
+            model_input: Value,
+            _horizon: u32,
+            _episode: Option<&EpisodeInfo>,
+        ) -> Result<Option<Value>> {
+            let call = self.record(&model_input);
+            Ok(Some(Value::List(
+                (0..4).map(|k| Self::frame(call, k)).collect(),
+            )))
+        }
+
+        fn predict_spec_less(&self, observation: ModelObservation) -> Result<Vec<SpaceValue>> {
+            Ok((0..observation.num_envs)
+                .map(|_| SpaceValue::Discrete(0))
+                .collect())
+        }
+    }
+
+    async fn previous_handler(
+        env_id: &str,
+        spec: &'static str,
+        delivers_history: bool,
+        horizon: u32,
+    ) -> Result<(AdaptedModelHandler, Arc<PreviousRecorder>, RouteNeeds)> {
+        let recorder = Arc::new(PreviousRecorder {
+            inputs: Mutex::new(Vec::new()),
+            calls: AtomicUsize::new(0),
+        });
+        let handler = AdaptedModelHandler::new(
+            Arc::clone(&recorder) as Arc<dyn PredictFn>,
+            Some(Arc::new(PreviousResolver(spec)) as Arc<dyn RouteResolver>),
+        );
+        let needs = handler
+            .route_setup()
+            .expect("resolver-backed route setup")
+            .resolve_adapter(
+                env_id,
+                &g_contract(env_id),
+                ResolveOptions {
+                    execution_horizon: horizon,
+                    delivers_history,
+                },
+            )
+            .await?;
+        Ok((handler, recorder, needs))
+    }
+
+    #[tokio::test]
+    async fn a_previous_action_part_reads_the_last_replayed_frame_at_the_replan() {
+        // execution_horizon 4: the predict at step 0 emits frames 0..3, the
+        // runtime replays 1..3 and re-plans at 4 carrying their rows. The
+        // policy then reads frame 3 (the action executed at step 3), not
+        // frame 0 (the one it saw itself emit), and the fill before any.
+        let (mut handler, recorder, needs) =
+            previous_handler("env-prev", PREVIOUS_MODEL_SPEC, true, 4)
+                .await
+                .unwrap();
+        let history = needs
+            .history
+            .expect("a previous-action route asks for history");
+        assert_eq!(history.keys, vec!["<root>".to_string()]);
+        let frames = handler
+            .predict_chunked(g_predict("env-prev", "ep", Some(0), 1.0, &[]))
+            .await
+            .expect("first predict");
+        assert_eq!(frames.replay.len(), 3);
+        handler
+            .predict_chunked(g_predict(
+                "env-prev",
+                "ep",
+                Some(4),
+                5.0,
+                &[(1, 2.0), (2, 3.0), (3, 4.0)],
+            ))
+            .await
+            .expect("re-plan");
+        assert_eq!(
+            recorder.inputs.lock().unwrap().clone(),
+            vec![vec![1.0, 0.0, 0.0], vec![5.0, 13.0, 23.0]]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_previous_action_route_counts_its_own_steps_when_none_are_stamped() {
+        // No history offered at execution_horizon 1: every predict is one env
+        // step, so the engine numbers them itself and each predict reads the
+        // frame the one before it emitted.
+        let (mut handler, recorder, needs) =
+            previous_handler("env-count", PREVIOUS_MODEL_SPEC, false, 1)
+                .await
+                .unwrap();
+        assert!(needs.history.is_none());
+        for g in [1.0f32, 2.0, 3.0] {
+            handler
+                .predict_chunked(g_predict("env-count", "ep", None, g, &[]))
+                .await
+                .expect("predict");
+        }
+        assert_eq!(
+            recorder.inputs.lock().unwrap().clone(),
+            vec![
+                vec![1.0, 0.0, 0.0],
+                vec![2.0, 10.0, 20.0],
+                vec![3.0, 110.0, 120.0]
+            ]
+        );
+        // Above 1 without the offer the route is refused, like a stacked one.
+        let refused = previous_handler("env-refuse", PREVIOUS_MODEL_SPEC, false, 4)
+            .await
+            .err()
+            .expect("a chunked previous-action route without history is refused")
+            .to_string();
+        assert!(
+            refused.contains("a previous-action part (input '<root>') needs every env step"),
+            "{refused}"
+        );
+        // A route without the part negotiates nothing, offered or not, and
+        // its predicts are the plain ones.
+        let (mut plain, recorder, needs) = previous_handler("env-plain", PLAIN_MODEL_SPEC, true, 4)
+            .await
+            .unwrap();
+        assert!(needs.history.is_none());
+        plain
+            .predict_chunked(g_predict("env-plain", "ep", None, 1.0, &[]))
+            .await
+            .expect("plain predict");
+        assert_eq!(recorder.inputs.lock().unwrap().clone(), vec![vec![1.0]]);
     }
 
     #[tokio::test]

@@ -88,11 +88,20 @@ pub struct FrameBuffers {
 }
 
 /// One episode's frame windows plus the step counter its last frame carried,
-/// for the continuity check a history-delivering runtime is held to.
+/// for the continuity check a history-delivering runtime is held to, and the
+/// action window an action-source part reads.
 #[derive(Default)]
 struct EpisodeWindows {
     windows: BTreeMap<String, Window>,
     last_step: Option<i64>,
+    /// The raw model action executed at each step, in model order, recorded
+    /// by [`record_action`]; an observation at step `s` reads row `s - 1`.
+    /// Rows behind the last read are pruned, so it holds at most one chunk.
+    actions: BTreeMap<i64, Vec<f32>>,
+    /// The step of the episode's first assembled observation, which reads the
+    /// parts' `fill` (no action has executed yet). Every later step needs its
+    /// row, so a missed tick is loud.
+    first_step: Option<i64>,
 }
 
 impl FrameBuffers {
@@ -117,15 +126,70 @@ impl FrameBuffers {
         self.inner.len()
     }
 
-    /// Total bytes held across every episode's frame windows.
+    /// Total bytes held across every episode's frame and action windows.
     #[must_use]
     pub fn state_bytes(&self) -> u64 {
         self.inner
             .values()
-            .flat_map(|episode| episode.windows.values())
-            .flat_map(|window| window.frames.iter())
-            .map(|tensor| tensor.nbytes() as u64)
+            .map(|episode| {
+                let frames: u64 = episode
+                    .windows
+                    .values()
+                    .flat_map(|window| window.frames.iter())
+                    .map(|tensor| tensor.nbytes() as u64)
+                    .sum();
+                let actions: u64 = episode
+                    .actions
+                    .values()
+                    .map(|row| (row.len() * std::mem::size_of::<f32>()) as u64)
+                    .sum();
+                frames + actions
+            })
             .sum()
+    }
+
+    /// The step the episode's last frame carried (`None` before its first
+    /// [`advance_step`](Self::advance_step)).
+    #[must_use]
+    pub fn last_step(&self, episode_id: &str) -> Option<i64> {
+        self.inner
+            .get(episode_id)
+            .and_then(|episode| episode.last_step)
+    }
+
+    /// The step the episode's next frame carries when the caller counts
+    /// steps itself: one past the last, or `0` for an episode not yet held.
+    #[must_use]
+    pub fn next_step(&self, episode_id: &str) -> i64 {
+        self.last_step(episode_id).map_or(0, |last| last + 1)
+    }
+
+    /// The raw action row an observation at `step` reads: `None` at the
+    /// episode's first assembled step (the parts read their `fill`), row
+    /// `step - 1` after that, and an error when that row was never recorded,
+    /// so an executed action that skipped [`record_action`] fails loud rather
+    /// than feeding the policy a stale command. Rows behind the read are
+    /// dropped.
+    fn previous_action(
+        &mut self,
+        episode_id: &str,
+        step: i64,
+    ) -> Result<Option<&[f32]>, ApplyError> {
+        let episode = self.inner.entry(episode_id.to_owned()).or_default();
+        let first = *episode.first_step.get_or_insert(step);
+        if first == step {
+            return Ok(None);
+        }
+        let wanted = step - 1;
+        episode.actions.retain(|&recorded, _| recorded >= wanted);
+        match episode.actions.get(&wanted) {
+            Some(row) => Ok(Some(row.as_slice())),
+            None => Err(ApplyError::new(format!(
+                "episode {episode_id}: the observation at step {step} reads the previous action \
+                 but no action was recorded for step {wanted}; every executed action of the \
+                 episode must reach apply_actions (or transform_action) once, under its step"
+            ))),
+        }
     }
 
     /// Record that the episode's next frame carries `step`, holding a runtime
@@ -331,24 +395,42 @@ pub fn split_chunk(raw_action: Value) -> Result<Vec<Value>, ApplyError> {
     }
 }
 
-/// Assemble one lane's model-input payload from its raw observation.
+/// Assemble one lane's model-input payload from its raw observation at `step`.
 ///
 /// Pipeline order (matching the Python truth, `adapter.py:179-205`):
-/// 1. declarative native transform (customs dispatched inside it),
+/// 1. declarative native transform (customs dispatched inside it), with any
+///    action-source part reading the action recorded for `step - 1` (its
+///    `fill` at the episode's first step; a missing row is an error),
 /// 2. observation encoding-shim repack ([`EncodingTransform::repack_obs`]),
 /// 3. per-episode frame-stacking for keys in [`ResolvedAdapter::stacks`].
 ///
-/// Frozen so a future fused path can stack N `assemble_obs` outputs into one
-/// forward pass without re-shaping callers.
+/// `step` is read only by an adapter that
+/// [reads its previous action](ResolvedAdapter::reads_previous_action); a
+/// caller that stamps none counts the episode's steps itself
+/// ([`FrameBuffers::next_step`]). Frozen so a future fused path can stack N
+/// `assemble_obs` outputs into one forward pass without re-shaping callers.
 pub fn assemble_obs(
     adapter: &ResolvedAdapter,
     raw_obs: &BTreeMap<String, Value>,
     episode_id: &str,
+    step: i64,
     buffers: &mut FrameBuffers,
     customs: &dyn CustomTransform,
     encodings: &dyn EncodingTransform,
 ) -> Result<Value, ApplyError> {
-    let mut payload = adapter.transform_obs(raw_obs, customs)?;
+    let previous = if adapter.reads_previous_action() {
+        buffers
+            .previous_action(episode_id, step)?
+            .map(<[f32]>::to_vec)
+    } else {
+        None
+    };
+    let mut payload = crate::apply::obs::transform_obs(
+        &adapter.obs_plans,
+        raw_obs,
+        customs,
+        previous.as_deref(),
+    )?;
     encodings.repack_obs(&mut payload)?;
     // Frame-stacking runs as a post-scatter pass over the single precomputed
     // stacking list ([`ResolvedAdapter::stacked_placements`]): walk the assembled
@@ -421,23 +503,65 @@ pub fn observe_obs(
     Ok(())
 }
 
-/// Convert one lane's model action into the env action [`SpaceValue`].
+/// Convert one lane's model action into the env action [`SpaceValue`], and
+/// record it as the action executed at `step`.
 ///
 /// Runs the action encoding-shim repack ([`EncodingTransform::repack_action`])
 /// **before** the native conversion, matching `adapter.py:318-327`, then encodes
-/// the resulting env-action tensor into the route's `action_space`. Frozen so a
-/// future action-chunk replay queue / externalize-scatter inserts here without
-/// re-shaping callers.
+/// the resulting env-action tensor into the route's `action_space`. Each chunk
+/// frame is applied under the step it executes at (`step + k` for frame `k`),
+/// so the observation at the next step reads it back through an action-source
+/// part ([`record_action`]). Frozen so a future externalize-scatter inserts
+/// here without re-shaping callers.
 pub fn apply_actions(
     adapter: &ResolvedAdapter,
     raw_action: Value,
     action_space: &SpaceSpec,
     encodings: &dyn EncodingTransform,
+    buffers: &mut FrameBuffers,
+    episode_id: &str,
+    step: i64,
 ) -> Result<SpaceValue, ApplyError> {
     let mut action = raw_action;
     encodings.repack_action(&mut action)?;
     let env_action = adapter.transform_action(&action)?;
-    tensor_to_space_value(env_action, action_space)
+    let value = tensor_to_space_value(env_action, action_space)?;
+    record_action(adapter, &action, buffers, episode_id, step)?;
+    Ok(value)
+}
+
+/// Record the raw model action executed at `step` for the episode's
+/// action-source parts: the action as the action plan reads it (after any
+/// host-side encoding repack, before any scale, offset, range or scatter), in
+/// model order. A no-op for an adapter with no such part, so a route without
+/// one holds nothing. The record half of [`apply_actions`], for a caller that
+/// converts the action itself (the in-process binding).
+pub fn record_action(
+    adapter: &ResolvedAdapter,
+    raw_action: &Value,
+    buffers: &mut FrameBuffers,
+    episode_id: &str,
+    step: i64,
+) -> Result<(), ApplyError> {
+    if !adapter.reads_previous_action() {
+        return Ok(());
+    }
+    let row = crate::apply::lookup::numeric_vector(raw_action)?;
+    if row.len() != adapter.action_plan.in_dim as usize {
+        return Err(ApplyError::new(format!(
+            "cannot record the action executed at step {step}: it has {} elements but the \
+             action plan reads {}",
+            row.len(),
+            adapter.action_plan.in_dim
+        )));
+    }
+    buffers
+        .inner
+        .entry(episode_id.to_owned())
+        .or_default()
+        .actions
+        .insert(step, row);
+    Ok(())
 }
 
 /// Encode an env-action tensor into the action [`SpaceValue`] for `space`.
@@ -962,6 +1086,7 @@ mod tests {
                     adapter,
                     &tagged_obs(tag),
                     "ep",
+                    0,
                     buffers,
                     &NoCustoms,
                     &NoEncodings,
@@ -1013,6 +1138,7 @@ mod tests {
                     &adapter,
                     &tagged_obs(tag),
                     "ep",
+                    0,
                     buffers,
                     &NoCustoms,
                     &NoEncodings,
@@ -1061,6 +1187,7 @@ mod tests {
             &adapter,
             &tagged_obs(255),
             "ep",
+            0,
             &mut buffers,
             &NoCustoms,
             &NoEncodings,
@@ -1096,6 +1223,7 @@ mod tests {
                     &adapter,
                     &tagged_obs(tag),
                     "ep",
+                    0,
                     buffers,
                     &NoCustoms,
                     &NoEncodings,
@@ -1123,6 +1251,167 @@ mod tests {
         }
     }
 
+    /// A model reading a scalar env state and its own previous 2-d joint
+    /// command (fill -1 before the first action), driving a 3-d env action.
+    fn previous_adapter() -> ResolvedAdapter {
+        let tags: crate::spec::EnvTags = serde_json::from_str(
+            r#"{"observation":{"g":{"type":"state","role":"proprio/gripper"}},
+                "action":{"components":[{"role":"action/gripper","dim":1},
+                                        {"role":"action/joint_pos","dim":2}]}}"#,
+        )
+        .expect("env tags");
+        let spec: crate::spec::ModelSpec = serde_json::from_str(
+            r#"{"input":{"type":"state","components":["proprio/gripper",
+                    {"role":"action/joint_pos","source":"action","fill":-1.0}]},
+                "output":{"components":[{"role":"action/gripper","dim":1},
+                                        {"role":"action/joint_pos","dim":2}]}}"#,
+        )
+        .expect("model spec");
+        let obs: crate::space_view::SpaceView = serde_json::from_str(
+            r#"{"kind":"dict","dtype":"unspecified","keys":["g"],
+                "children":[{"kind":"box","shape":[1],"dtype":"float32"}]}"#,
+        )
+        .expect("obs space");
+        let act: crate::space_view::SpaceView =
+            serde_json::from_str(r#"{"kind":"box","shape":[3],"dtype":"float32"}"#)
+                .expect("action space");
+        crate::resolver::resolve(&tags, &obs, &act, &spec, false).expect("resolves")
+    }
+
+    fn vector(values: &[f32]) -> Value {
+        Value::Tensor(crate::apply::value::tensor_from_f32(
+            vec![values.len() as i64],
+            values,
+        ))
+    }
+
+    /// The assembled bare-tensor payload at `step`, for a `g` reading of 9.
+    fn assembled(adapter: &ResolvedAdapter, buffers: &mut FrameBuffers, step: i64) -> Vec<f32> {
+        use crate::apply::NoCustoms;
+        let raw = [("g".to_owned(), vector(&[9.0]))].into_iter().collect();
+        match assemble_obs(adapter, &raw, "ep", step, buffers, &NoCustoms, &NoEncodings)
+            .expect("assemble")
+        {
+            Value::Tensor(tensor) => crate::apply::value::to_f64_vec(&tensor)
+                .into_iter()
+                .map(|v| v as f32)
+                .collect(),
+            other => panic!("expected a tensor, got {other:?}"),
+        }
+    }
+
+    fn executed(
+        adapter: &ResolvedAdapter,
+        buffers: &mut FrameBuffers,
+        raw: &[f32],
+        step: i64,
+    ) -> SpaceValue {
+        let space = SpaceSpec {
+            shape: vec![3],
+            dtype: DType::Float32,
+            spec: Some(SpaceKind::Box(rlmesh_spaces::BoxSpec { bounds: None })),
+        };
+        apply_actions(
+            adapter,
+            vector(raw),
+            &space,
+            &NoEncodings,
+            buffers,
+            "ep",
+            step,
+        )
+        .expect("apply")
+    }
+
+    #[test]
+    fn a_previous_action_part_reads_the_fill_then_the_raw_action_of_the_step_before() {
+        let adapter = previous_adapter();
+        let mut buffers = FrameBuffers::new();
+        // Step 0: no action has executed, so the part reads its fill.
+        assert_eq!(assembled(&adapter, &mut buffers, 0), [9.0, -1.0, -1.0]);
+        // The row is the raw model output, in model order, before any
+        // conversion the env action underwent.
+        let env_action = executed(&adapter, &mut buffers, &[0.5, 7.0, 8.0], 0);
+        assert!(matches!(env_action, SpaceValue::Box(_)));
+        assert_eq!(assembled(&adapter, &mut buffers, 1), [9.0, 7.0, 8.0]);
+        executed(&adapter, &mut buffers, &[0.5, 9.0, 10.0], 1);
+        assert_eq!(assembled(&adapter, &mut buffers, 2), [9.0, 9.0, 10.0]);
+        // Rows behind the read are pruned; the window holds one row here.
+        assert_eq!(buffers.state_bytes(), 3 * 4);
+        // The window clears with the episode.
+        buffers.evict("ep");
+        assert_eq!(assembled(&adapter, &mut buffers, 0), [9.0, -1.0, -1.0]);
+    }
+
+    #[test]
+    fn a_missed_action_tick_is_loud() {
+        let adapter = previous_adapter();
+        let mut buffers = FrameBuffers::new();
+        assembled(&adapter, &mut buffers, 0);
+        let raw = [("g".to_owned(), vector(&[9.0]))].into_iter().collect();
+        let err = assemble_obs(
+            &adapter,
+            &raw,
+            "ep",
+            1,
+            &mut buffers,
+            &crate::apply::NoCustoms,
+            &NoEncodings,
+        )
+        .expect_err("no action was recorded for step 0")
+        .to_string();
+        assert!(
+            err.contains("episode ep: the observation at step 1 reads the previous action but no action was recorded for step 0"),
+            "{err}"
+        );
+        // A row of the wrong width never lands.
+        let err = record_action(&adapter, &vector(&[1.0]), &mut buffers, "ep", 0)
+            .expect_err("width")
+            .to_string();
+        assert!(
+            err.contains("has 1 elements but the action plan reads 3"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn chunk_frames_recorded_under_their_steps_feed_the_replan() {
+        // execution_horizon 4: the predict at step 0 applies four frames under
+        // steps 0..3, and the re-plan at step 4 reads frame 3, not frame 0.
+        let adapter = previous_adapter();
+        let mut buffers = FrameBuffers::new();
+        assembled(&adapter, &mut buffers, 0);
+        for frame in 0..4 {
+            let k = frame as f32;
+            executed(&adapter, &mut buffers, &[0.0, 10.0 + k, 20.0 + k], frame);
+        }
+        assert_eq!(buffers.state_bytes(), 4 * 3 * 4);
+        assert_eq!(assembled(&adapter, &mut buffers, 4), [9.0, 13.0, 23.0]);
+        // A chunk cut short (the runtime re-planned at step 6) leaves stale
+        // future rows, which the next chunk overwrites before they are read.
+        for frame in 0..4 {
+            let k = frame as f32;
+            executed(
+                &adapter,
+                &mut buffers,
+                &[0.0, 30.0 + k, 40.0 + k],
+                4 + frame,
+            );
+        }
+        assert_eq!(assembled(&adapter, &mut buffers, 6), [9.0, 31.0, 41.0]);
+        executed(&adapter, &mut buffers, &[0.0, 50.0, 60.0], 6);
+        assert_eq!(assembled(&adapter, &mut buffers, 7), [9.0, 50.0, 60.0]);
+    }
+
+    #[test]
+    fn a_route_without_an_action_source_part_records_nothing() {
+        let adapter = stacked_adapter(2);
+        let mut buffers = FrameBuffers::new();
+        record_action(&adapter, &Value::Number(1.0), &mut buffers, "ep", 0).expect("no-op");
+        assert_eq!((buffers.episodes(), buffers.state_bytes()), (0, 0));
+        assert!(!adapter.reads_previous_action());
+    }
+
     #[test]
     fn assemble_obs_stacks_each_episode_independently_across_autoreset() {
         use crate::apply::NoCustoms;
@@ -1136,6 +1425,7 @@ mod tests {
                     adapter,
                     &tagged_obs(tag),
                     episode,
+                    0,
                     buffers,
                     &NoCustoms,
                     &NoEncodings,

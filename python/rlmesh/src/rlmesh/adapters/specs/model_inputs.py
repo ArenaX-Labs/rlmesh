@@ -360,7 +360,7 @@ class State:
     ``State`` is also a valid :class:`Concat` part (its part fields -- ``role``,
     ``encoding``, ``dim``, ``index``, ``optional``, ``range``, ``fill``,
     ``post_rotate``, ``scale``, ``offset``, ``frame``, ``provenance``, ``part``,
-    ``labels`` -- are taken; its container fields must stay default when used
+    ``labels``, ``source`` -- are taken; its container fields must stay default when used
     as a part).
 
     There is no ``key`` -- placement in the input tree *is* the payload position.
@@ -427,7 +427,16 @@ class State:
             gathered by name, so a differing order is a permutation and a
             subset a selection; an env leaf that declares no labels is a
             resolve error. Keyword-only and omitted from the wire when unset;
-            not combinable with ``index``.
+            not combinable with ``index``. On an action-source part the
+            names select from the actuator's labels.
+        source: Where the value comes from: ``"observation"`` (the default,
+            an env state feature matched by role) or ``"action"`` (the
+            model's own output actuator of the same ``role`` and ``part``,
+            read back as the raw action executed at the previous step, in
+            model order, before the actuator's scale/offset; ``fill`` before
+            the episode's first action). :func:`Previous` is the sugar. An
+            action-source part carries only ``part``, ``labels``, ``dim`` and
+            ``fill``. Keyword-only and omitted from the wire when default.
         pad_to: Zero-pad the resulting vector to this length. Padding is the
             last step: every part is converted, ranged and scaled, the parts are
             concatenated in order, and only then is the result padded.
@@ -457,6 +466,9 @@ class State:
     )
     part: str | None = field(default=None, kw_only=True)
     labels: Sequence[str] | None = field(default=None, kw_only=True)
+    source: Literal["observation", "action"] = field(
+        default="observation", kw_only=True
+    )
     pad_to: int | None = None
     dtype: str = "float32"
     reshape: tuple[int, ...] | None = None
@@ -473,9 +485,34 @@ class State:
                 f"State {self.role!r}: set dim or index, not both "
                 "(index selects one element, dim truncates to the leading N)"
             )
+        if self.source not in ("observation", "action"):
+            raise ValueError(
+                f"State {self.role!r}: source must be 'observation' or 'action', "
+                f"got {self.source!r}"
+            )
+        # An action-source part reads the model's own raw output for the role:
+        # no env feature is consulted, so nothing that maps one applies, and
+        # `fill` is what it reads before the episode's first action (matching
+        # the Rust codec guard).
+        if self.source == "action" and (
+            self.encoding is not None
+            or self.index is not None
+            or self.range is not None
+            or self.optional
+            or self.post_rotate is not None
+            or self.scale is not None
+            or self.offset is not None
+            or self.frame is not None
+            or self.provenance is not None
+        ):
+            raise ValueError(
+                f"State {self.role!r}: source='action' reads the model's own raw "
+                "output and carries only part/labels/dim/fill; drop encoding/index/"
+                "range/optional/post_rotate/scale/offset/frame/provenance"
+            )
         # `fill` is what an absent part contributes; a non-optional part always
         # has an env source, so a non-zero fill there could never fire.
-        if self.fill != 0.0 and not self.optional:
+        if self.fill != 0.0 and not self.optional and self.source == "observation":
             raise ValueError(
                 f"State {self.role!r}: fill applies only to an optional part; a "
                 "non-optional part takes its values from the env"
@@ -513,6 +550,30 @@ class State:
                     f"State {self.role!r}: dim {self.dim} disagrees with the "
                     f"{len(self.labels)} labels; labels fix the width, so drop dim"
                 )
+
+
+def Previous(  # noqa: N802 -- a part constructor, read like the leaf classes
+    role: str, *, part: str | None = None, fill: float = 0.0
+) -> State:
+    """The model's own previous action as a state part.
+
+    Sugar for ``State(role, part=part, fill=fill, source="action")``: the part
+    binds the spec's own output :class:`Actuator` with the same ``role`` and
+    ``part`` (no actuator emits it is a resolve error) and reads back the raw
+    action executed at the previous step, in model order, before the
+    actuator's ``scale``/``offset``; ``fill`` is what it reads before the
+    episode's first action. It is not an env role: an env observation tagged
+    under ``action/`` is refused at ``tag``. A model with one holds per-episode
+    history the way a stacked image does, so every executed action, including
+    a replayed chunk frame, is recorded under its step and a missed step fails
+    the next observation loudly.
+
+    Args:
+        role: The action role to read back (``ACTION_JOINT_POS``).
+        part: The body part, when the actuator names one.
+        fill: The value every element carries before the first action.
+    """
+    return State(role, part=part, fill=fill, source="action")
 
 
 # A part of a :class:`Concat`: a bare role string, a :class:`State` whose part
@@ -671,6 +732,7 @@ __all__ = [
     "InputNode",
     "ModelLeaf",
     "ObsTransform",
+    "Previous",
     "State",
     "Text",
 ]
