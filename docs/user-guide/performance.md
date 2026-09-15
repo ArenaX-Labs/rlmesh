@@ -41,6 +41,16 @@ This cuts the number of model forwards per episode by the horizon, at the cost o
 
 The saving is real only up to the model's own chunk length K: forwards drop by `min(K, execution_horizon)`, not by the horizon you asked for. A model that slices its chunk down to the horizon in its own corner gets no saving at all beyond K, silently -- so declare {attr}`native_chunk <rlmesh._models.base.ModelBase.native_chunk>` and return the whole chunk, and a horizon K cannot serve is refused when the adapter resolves rather than quietly costing a forward per K steps.
 
+## Overlap inference with replay
+
+The loop above is synchronous: the runtime calls the model when the chunk runs out, and the env waits for the forward. Pass `prefetch_lead` to `run` and the runtime predicts the next chunk while `prefetch_lead` (or fewer) replay frames of the current one still execute, so the forward overlaps the env steps instead of stalling them.
+
+```python
+result = model.run(env, seeds=range(50), execution_horizon=8, prefetch_lead=2)
+```
+
+The prefetched chunk is conditioned on an observation up to `prefetch_lead` steps stale. That is how a deployed asynchronous policy behaves, and it is a different measurement: scores from a run with a lead are not comparable to the synchronous loop, so label them. A chunk prefetched across an episode boundary is discarded, and the new episode re-plans from its own reset observation. A lead at or above the chunk length asks for the next chunk as soon as the current one starts playing. The default of `0` is the synchronous loop. The lead is a native-loop knob: `session` steps in Python and has no replay to overlap, and a served model driven through `rlmesh.run` rejects it.
+
 ## Frame-stack overhead
 
 A model that conditions on a short history declares `stack=N` on an image input. The env still sends one frame per step; RLMesh buffers the last `N` processed frames and emits them on a new leading axis.

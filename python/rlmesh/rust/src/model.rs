@@ -712,12 +712,13 @@ impl PyModel {
         })
     }
 
-    #[pyo3(signature = (env_address, execution_horizon=1))]
+    #[pyo3(signature = (env_address, execution_horizon=1, prefetch_lead=0))]
     fn run_local(
         &self,
         py: Python<'_>,
         env_address: &str,
         execution_horizon: u32,
+        prefetch_lead: u32,
     ) -> PyResult<Py<PyAny>> {
         let run_span = tracing::info_span!("rlmesh.model.run_local", env_address = env_address);
         let _run_enter = run_span.enter();
@@ -725,7 +726,9 @@ impl PyModel {
 
         let env_address = ConnectAddress::parse(env_address).map_err(to_py_err)?;
         let handler = self.build_handler();
-        let options = RunLocalOptions::new(env_address).execution_horizon(execution_horizon);
+        let options = RunLocalOptions::new(env_address)
+            .execution_horizon(execution_horizon)
+            .prefetch_lead(prefetch_lead);
 
         let report = run_local_blocking(py, handler, options)?;
 
@@ -734,7 +737,7 @@ impl PyModel {
         report_to_py(py, &report)
     }
 
-    #[pyo3(signature = (env_address, max_episodes, execution_horizon=1, seeds=None, max_episode_steps=None, max_episode_seconds=None, close_env=false, trial_index_base=None))]
+    #[pyo3(signature = (env_address, max_episodes, execution_horizon=1, seeds=None, max_episode_steps=None, max_episode_seconds=None, close_env=false, trial_index_base=None, prefetch_lead=0))]
     #[allow(clippy::too_many_arguments)]
     fn run_local_for_episodes(
         &self,
@@ -747,6 +750,7 @@ impl PyModel {
         max_episode_seconds: Option<f64>,
         close_env: bool,
         trial_index_base: Option<u64>,
+        prefetch_lead: u32,
     ) -> PyResult<Py<PyAny>> {
         let run_span = tracing::info_span!(
             "rlmesh.model.run_local_for_episodes",
@@ -761,6 +765,7 @@ impl PyModel {
         let mut options = RunLocalOptions::new(env_address)
             .for_episodes(max_episodes)
             .execution_horizon(execution_horizon)
+            .prefetch_lead(prefetch_lead)
             .episode_seeds(seeds.unwrap_or_default())
             .close_env(close_env);
         if let Some(cap) = max_episode_steps {
@@ -819,8 +824,8 @@ import typing
 
 class PyModel:
     def __init__(self, predict_fn: collections.abc.Callable[[Value], Value], configure_fn: collections.abc.Callable[[EnvContract], object] | None = None, on_episode_end: collections.abc.Callable[[str], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None, predict_chunk_fn: collections.abc.Callable[[Value, int], Value] | None = None, predict_batch_fn: collections.abc.Callable[[list[Value], list[dict[str, typing.Any]]], list[Value]] | None = None, predict_chunk_batch_fn: collections.abc.Callable[[list[Value], int, list[dict[str, typing.Any]]], list[Value]] | None = None, allow_fusion: bool = True, native_chunk: int | None = None) -> None: ...
-    def run_local(self, env_address: str, execution_horizon: int = 1) -> dict[str, typing.Any]: ...
-    def run_local_for_episodes(self, env_address: str, max_episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trial_index_base: int | None = None) -> dict[str, typing.Any]: ...
+    def run_local(self, env_address: str, execution_horizon: int = 1, prefetch_lead: int = 0) -> dict[str, typing.Any]: ...
+    def run_local_for_episodes(self, env_address: str, max_episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trial_index_base: int | None = None, prefetch_lead: int = 0) -> dict[str, typing.Any]: ...
     def serve(self, address: str, options: ServeOptions | None = None) -> None: ...
 "#
     }

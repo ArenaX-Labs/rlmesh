@@ -574,6 +574,22 @@ def test_invalid_execution_horizon_raises_value_error_at_entry() -> None:
         rlmesh.run(rlmesh.Model(lambda obs: 0), _TinyEnv(), execution_horizon=-2)
 
 
+def test_negative_prefetch_lead_is_rejected_at_entry() -> None:
+    # The lead is a frame count; the native loop treats 0 as synchronous and
+    # anything else as async, so a negative one is a mis-set knob.
+    with pytest.raises(ValueError, match="prefetch_lead must be >= 0"):
+        rlmesh.run(rlmesh.Model(lambda obs: 0), _TinyEnv(), prefetch_lead=-1)
+    with pytest.raises(ValueError, match="prefetch_lead must be >= 0"):
+        rlmesh.Model(lambda obs: 0).run(_TinyEnv(), prefetch_lead=-1)
+
+
+def test_prefetch_lead_is_refused_on_the_session_loop() -> None:
+    # RANDOM_SAMPLE (like a served handle) runs through the Python session loop,
+    # which steps in Python and has no chunk replay to prefetch over.
+    with pytest.raises(ValueError, match="prefetch_lead=1 drives the native runtime"):
+        rlmesh.run(rlmesh.RANDOM_SAMPLE, _TinyEnv(), prefetch_lead=1)
+
+
 def test_execution_horizon_over_the_bound_is_rejected() -> None:
     # The ceiling is the SDK twin of the engine's MAX_EXECUTION_HORIZON: above it
     # a horizon is always a mis-set knob, not a real open-loop plan.

@@ -31,7 +31,8 @@ impl<H> ModelWorker<H> {
 /// string address) and the chaining setters covering the run axes:
 /// `for_episodes` (run a bounded number of episodes), `base_seed` /
 /// `episode_seeds` (deterministic env seeding), the episode caps, and
-/// `execution_horizon` (action chunking).
+/// `execution_horizon` (action chunking) with `prefetch_lead` (async
+/// inference over the chunk replay).
 #[derive(Debug, Clone, PartialEq)]
 pub struct RunLocalOptions {
     /// Address of the environment server to connect to.
@@ -63,6 +64,13 @@ pub struct RunLocalOptions {
     /// re-planning (1 = no chunking). Pinned onto the route at resolve, exactly
     /// as the served path pins it via `ResolveAdapter`.
     pub execution_horizon: u32,
+    /// Async inference: with this many (or fewer) replay frames of the current
+    /// chunk left, the driver predicts the next chunk while they execute (see
+    /// `RuntimeDriver::with_prefetch`). The prefetched chunk is conditioned on
+    /// an observation up to `prefetch_lead` steps stale, and one prefetched
+    /// across an episode boundary is discarded. 0 = synchronous (predict only
+    /// when no frame is left to play).
+    pub prefetch_lead: u32,
 }
 
 impl RunLocalOptions {
@@ -78,6 +86,7 @@ impl RunLocalOptions {
             max_episode_seconds: None,
             close_env: false,
             execution_horizon: 1,
+            prefetch_lead: 0,
         }
     }
 
@@ -102,6 +111,15 @@ impl RunLocalOptions {
     /// re-planning (1 = no chunking).
     pub fn execution_horizon(mut self, execution_horizon: u32) -> Self {
         self.execution_horizon = execution_horizon.max(1);
+        self
+    }
+
+    /// Predict the next chunk while `prefetch_lead` (or fewer) replay frames
+    /// of the current one remain (0 = synchronous). The chunk sees an
+    /// observation up to `prefetch_lead` steps stale, so the run is not
+    /// comparable to the synchronous loop.
+    pub fn prefetch_lead(mut self, prefetch_lead: u32) -> Self {
+        self.prefetch_lead = prefetch_lead;
         self
     }
 

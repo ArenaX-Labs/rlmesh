@@ -172,6 +172,66 @@ def test_run_truncates_an_over_produced_dict_chunk_to_the_horizon() -> None:
     )
 
 
+def test_run_prefetch_lead_predicts_the_next_chunk_from_a_stale_observation() -> None:
+    """``prefetch_lead`` reaches the runtime driver: at chunk 3 / lead 1 the
+    second chunk is asked for while one replay frame is still queued, from the
+    observation after step 1 rather than step 3, and the chunk prefetched at
+    each episode's tail is discarded so the next episode re-plans from its
+    reset observation. Every episode still completes and scores."""
+    import gymnasium as gym
+    from rlmesh.numpy import Model
+
+    class StepEnv(CountEnv):
+        """Observation ``[t, 0]``: the step count, so a chunk corner can
+        report which observation it was conditioned on."""
+
+        def __init__(self) -> None:
+            super().__init__(episode_len=6, final_info={"is_success": True})
+            self.observation_space = gym.spaces.Box(0.0, 100.0, (2,), np.float32)
+
+        def reset(self, *, seed: Any = None, options: Any = None) -> tuple[Any, Any]:
+            super().reset(seed=seed, options=options)
+            return np.array([0.0, 0.0], np.float32), {}
+
+        def step(self, action: Any) -> tuple[Any, Any, Any, Any, Any]:
+            _, reward, done, truncated, info = super().step(action)
+            return np.array([self._t, 0.0], np.float32), reward, done, truncated, info
+
+    def run(lead: int) -> tuple[Any, list[int]]:
+        seen: list[int] = []
+
+        class ChunkPolicy(Model):
+            native_chunk = 3
+
+            def predict_chunk(self, obs: Any) -> Any:
+                seen.append(int(obs[0]))
+                return np.zeros((3, 2), np.float32)
+
+        try:
+            result = ChunkPolicy().run(
+                StepEnv(), max_episodes=2, execution_horizon=3, prefetch_lead=lead
+            )
+        except ConnectionError as exc:
+            if "Operation not permitted" in str(exc):
+                pytest.skip("local tcp bind is not permitted in this environment")
+            raise
+        return result, seen
+
+    result, seen = run(1)
+    assert [e.steps for e in result.episodes] == [6, 6]
+    assert all(e.success is True for e in result.episodes)
+    assert result.success_rate == 1.0
+    # The prefetch at each episode's tail (from step 4, with the last frame
+    # still queued) may or may not reach the model before the terminal step
+    # lands; every other chunk is pinned: the reset observation opens each
+    # episode (the tail prefetch was discarded) and the second chunk was
+    # conditioned on step 1, two steps before the synchronous loop's step 3.
+    assert [obs for obs in seen if obs != 4] == [0, 1, 0, 1]
+
+    _, synchronous = run(0)
+    assert synchronous == [0, 3, 0, 3]
+
+
 def test_run_holds_a_declared_native_chunk_to_its_length() -> None:
     """The spec-less native path measures the chunk against a declared K the
     way a Session does: a short chunk is a model error, not a silent early

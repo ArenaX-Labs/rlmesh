@@ -991,6 +991,7 @@ class ModelBase(Generic[ObsT, ActT]):
         close_env: bool = False,
         trust_entrypoints: bool | None = None,
         execution_horizon: int = 1,
+        prefetch_lead: int = 0,
         view: ViewArg = None,
         trial_index_base: int = 0,
     ) -> RunResult:
@@ -1003,6 +1004,12 @@ class ModelBase(Generic[ObsT, ActT]):
         (:meth:`predict_batch` / :meth:`predict_chunk_batch` for a vectorized
         route), and ``execution_horizon`` (> 1) executes that many actions of
         each predicted chunk before re-planning (needs :meth:`predict_chunk`).
+        ``prefetch_lead`` (> 0) turns on async inference over that replay:
+        with that many (or fewer) frames of the current chunk left, the
+        runtime predicts the next chunk while they execute, so the chunk is
+        conditioned on an observation up to ``prefetch_lead`` steps stale and
+        the result is not comparable to a synchronous run; a chunk prefetched
+        across an episode boundary is discarded.
 
         ``env_or_address`` is a bare address string the loop dials, an object
         with an ``address`` (:class:`~rlmesh.EnvServer`, ``RemoteEnv`` /
@@ -1060,6 +1067,8 @@ class ModelBase(Generic[ObsT, ActT]):
             )
         if execution_horizon < 1:
             raise ValueError(f"execution_horizon must be >= 1, got {execution_horizon}")
+        if prefetch_lead < 0:
+            raise ValueError(f"prefetch_lead must be >= 0, got {prefetch_lead}")
         if trial_index_base < 0:
             raise ValueError(f"trial_index_base must be >= 0, got {trial_index_base}")
         self._require_device_support()
@@ -1088,6 +1097,7 @@ class ModelBase(Generic[ObsT, ActT]):
                 max_episode_seconds=max_episode_seconds,
                 close_env=close_env,
                 execution_horizon=execution_horizon,
+                prefetch_lead=prefetch_lead,
                 trial_index_base=trial_index_base,
             )
         finally:
@@ -1124,6 +1134,7 @@ class ModelBase(Generic[ObsT, ActT]):
         max_episode_seconds: float | None,
         close_env: bool,
         execution_horizon: int,
+        prefetch_lead: int = 0,
         trial_index_base: int = 0,
     ) -> dict[str, Any]:
         """Normalize the env target, drive the native loop, return the report.
@@ -1182,6 +1193,7 @@ class ModelBase(Generic[ObsT, ActT]):
                 address,
                 max_episodes=max_episodes,
                 execution_horizon=execution_horizon,
+                prefetch_lead=prefetch_lead,
                 seeds=list(seeds) if seeds is not None else None,
                 max_episode_steps=max_episode_steps,
                 max_episode_seconds=max_episode_seconds,
@@ -1278,7 +1290,7 @@ class ModelBase(Generic[ObsT, ActT]):
         self._install_worker().serve(address, options)
 
     def _run_local(
-        self, env_address: str, *, execution_horizon: int = 1
+        self, env_address: str, *, execution_horizon: int = 1, prefetch_lead: int = 0
     ) -> dict[str, Any]:
         """Native worker loop against a remote env, until the env ends.
 
@@ -1286,10 +1298,14 @@ class ModelBase(Generic[ObsT, ActT]):
         ``EpisodeResult``-shaped dict per completed episode, plus the session
         metric aggregate (``TelemetryRow``-shaped dicts). Drives vectorized (``num_envs > 1``) envs through the
         native engine: the route resolves at connect (adapter + batched
-        predict corners), and ``execution_horizon`` (> 1) enables action
-        chunking exactly as the served path's ``ResolveAdapter`` pin does.
+        predict corners), ``execution_horizon`` (> 1) enables action
+        chunking exactly as the served path's ``ResolveAdapter`` pin does, and
+        ``prefetch_lead`` (> 0) predicts the next chunk while that many replay
+        frames of the current one remain (see :meth:`run`).
         """
-        return self._install_worker().run_local(env_address, execution_horizon)
+        return self._install_worker().run_local(
+            env_address, execution_horizon, prefetch_lead
+        )
 
     def _run_local_for_episodes(
         self,
@@ -1302,11 +1318,12 @@ class ModelBase(Generic[ObsT, ActT]):
         max_episode_seconds: float | None = None,
         close_env: bool = False,
         trial_index_base: int = 0,
+        prefetch_lead: int = 0,
     ) -> dict[str, Any]:
         """Native worker loop against a remote env for a fixed episode count.
 
         Returns the report; see :meth:`_run_local` for the shape and what
-        ``execution_horizon`` does. ``seeds`` / the episode caps /
+        ``execution_horizon`` / ``prefetch_lead`` do. ``seeds`` / the episode caps /
         ``trial_index_base`` mirror :meth:`run` (explicit seeds, caps, and a
         non-zero base need runtime-owned resets, i.e. autoreset disabled).
         """
@@ -1319,6 +1336,7 @@ class ModelBase(Generic[ObsT, ActT]):
             max_episode_seconds,
             close_env,
             trial_index_base,
+            prefetch_lead,
         )
 
     def __repr__(self) -> str:
@@ -1479,6 +1497,7 @@ def run(
     close_env: bool = False,
     trust_entrypoints: bool | None = None,
     execution_horizon: int = 1,
+    prefetch_lead: int = 0,
     view: ViewArg = None,
     trial_index_base: int = 0,
 ) -> RunResult:
@@ -1488,9 +1507,13 @@ def run(
     callable) runs on :meth:`Model.run`'s native runtime loop -- single or
     vectorized env, batched predict corners, runtime-enforced seeds/caps; see
     its docstring for the parameter surface (``hooks`` / ``instruction`` /
-    ``view`` are :func:`rlmesh.session`-only). A served :class:`RemoteModel` /
-    :class:`SandboxModel` (and the :data:`rlmesh.RANDOM_SAMPLE` baseline) runs
-    through its own session loop, which supports all parameters.
+    ``view`` are :func:`rlmesh.session`-only). ``prefetch_lead`` (> 0) is the
+    native loop's async inference: the next chunk is predicted while that many
+    replay frames of the current one remain, from an observation up to
+    ``prefetch_lead`` steps stale, so the result is not comparable to a
+    synchronous run. A served :class:`RemoteModel` / :class:`SandboxModel`
+    (and the :data:`rlmesh.RANDOM_SAMPLE` baseline) runs through its own
+    session loop, which supports every parameter except ``prefetch_lead``.
     """
     from ._eval import RANDOM_SAMPLE
 
@@ -1506,8 +1529,15 @@ def run(
             close_env=close_env,
             trust_entrypoints=trust_entrypoints,
             execution_horizon=execution_horizon,
+            prefetch_lead=prefetch_lead,
             view=view,
             trial_index_base=trial_index_base,
+        )
+    if prefetch_lead != 0:
+        raise ValueError(
+            f"prefetch_lead={prefetch_lead} drives the native runtime loop; a "
+            "served model or RANDOM_SAMPLE runs through the Python session loop, "
+            "which does not prefetch. Remove prefetch_lead or run a local Model."
         )
     sess = session(
         model,

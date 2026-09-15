@@ -111,6 +111,7 @@ where
     let env = EnvClientRuntimeEnv::new(env);
     let model = ModelHandlerRuntimeModel::new(handler, env_contract).with_history(wants_history);
     RuntimeDriver::new(spec, env, model, Arc::new(NoopRuntimeHooks))
+        .with_prefetch(options.prefetch_lead)
         .run_with_cancellation_reason(cancellation, "interrupted by the host (signal)")
         .await
         .map_err(run_error)

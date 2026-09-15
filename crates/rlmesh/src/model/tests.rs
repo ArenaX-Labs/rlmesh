@@ -234,10 +234,12 @@ fn run_local_and_serve_options_cover_all_axes() {
         .unwrap()
         .for_episodes(5)
         .base_seed(123)
-        .execution_horizon(8);
+        .execution_horizon(8)
+        .prefetch_lead(2);
     assert_eq!(run.max_episodes, Some(5));
     assert_eq!(run.base_seed, Some(123));
     assert_eq!(run.execution_horizon, 8);
+    assert_eq!(run.prefetch_lead, 2);
     assert_eq!(
         run.env_address,
         ConnectAddress::parse("tcp://env:50051").unwrap()
@@ -247,6 +249,7 @@ fn run_local_and_serve_options_cover_all_axes() {
     assert_eq!(default_run.max_episodes, None);
     assert_eq!(default_run.base_seed, None);
     assert_eq!(default_run.execution_horizon, 1);
+    assert_eq!(default_run.prefetch_lead, 0);
     assert_eq!(default_run.execution_horizon(0).execution_horizon, 1);
 
     let serve = ServeModelOptions::parse("tcp://0.0.0.0:50061")
