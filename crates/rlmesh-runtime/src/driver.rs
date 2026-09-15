@@ -363,6 +363,10 @@ struct Group<E> {
     /// fresh id minted for their next episode. Set on completion (step t),
     /// consumed on the autoreset roll (step t+1).
     pending_roll: HashMap<u32, String>,
+    /// NEXT_STEP autoreset: the `episode_completed` events of the lanes in
+    /// `pending_roll`, held until the roll so a hook sees the ended id's last
+    /// observation and step before its completion, as the model does.
+    pending_completed: Vec<EpisodeCompletedEvent>,
     /// The ids and slots of the episodes a pending reset starts.
     pending_start: Option<(Vec<String>, Vec<u64>)>,
     reset_generation: u64,
@@ -584,6 +588,7 @@ where
                 history: Vec::new(),
                 steps: 0,
                 pending_roll: HashMap::new(),
+                pending_completed: Vec::new(),
                 pending_start: None,
                 reset_generation: 0,
                 round_started: Instant::now(),
@@ -1377,6 +1382,10 @@ where
         // we pushed down: roll our own slots to the same ids, each on a fresh
         // route-global slot. The env never mints — the runtime is authoritative.
         if rolled {
+            // The step event above was the ended ids' last hook event, so their
+            // completions go out now, ahead of the new episodes' start.
+            let completions = std::mem::take(&mut groups[gid].pending_completed);
+            self.fan_out_completions(completions).await;
             let pending_roll = std::mem::take(&mut groups[gid].pending_roll);
             // The ended ids leave their slots now, so this is when the model
             // drops them (see `queue_evictions` for why not at completion).
@@ -1400,14 +1409,17 @@ where
         let capped = self.capped_completions(state, &positions, &response.completed_episodes);
         let mut completed_episodes = response.completed_episodes.clone();
         completed_episodes.extend(capped);
-        self.emit_completed_episodes(state, &context, &completed_episodes)
-            .await;
+        let completions = self.complete_episodes(state, &context, &completed_episodes);
         // Tell the model to evict the ended episodes' state (best-effort GC;
         // ids never repeat so a miss only leaks memory). Under NEXT_STEP the
-        // ended id is still predicted on once more (below), so its eviction
-        // waits for the roll at t+1.
+        // ended id is still observed and predicted on once more (below) and
+        // stepped at t+1, so its `episode_completed` event and its eviction
+        // both wait for the roll at t+1.
         if self.driver_owns_resets() {
+            self.fan_out_completions(completions).await;
             self.queue_evictions(state, completed_episodes.iter().map(|c| c.env_index));
+        } else {
+            groups[gid].pending_completed.extend(completions);
         }
 
         if !completed_episodes.is_empty() {
@@ -1457,8 +1469,11 @@ where
                 .is_some_and(|limit| state.total_episodes() >= limit as i64)
         {
             // The group never steps again, so the ended lanes' deferred
-            // evictions (NEXT_STEP, see `queue_evictions`) go out now: the
-            // route-end flush sends them before the model is released.
+            // completions and evictions (NEXT_STEP, see `queue_evictions`) go
+            // out now: the route-end flush sends the evictions before the
+            // model is released.
+            let completions = std::mem::take(&mut groups[gid].pending_completed);
+            self.fan_out_completions(completions).await;
             let pending_roll = std::mem::take(&mut groups[gid].pending_roll);
             self.queue_evictions(state, pending_roll.keys().copied());
             groups[gid].phase = EnvPhase::Idle;
@@ -1753,17 +1768,20 @@ where
             .collect()
     }
 
-    /// Complete each episode: registry + summary (bounded runs only) + the
-    /// `episode_completed` hook event. Summaries are recorded only when
-    /// `max_episodes` is set — the report is drained once at route end, so an
-    /// unbounded (`max_episodes: None`) session would otherwise accumulate one
-    /// entry per episode for its whole lifetime with no reader.
-    async fn emit_completed_episodes(
+    /// Complete each episode: registry + summary (bounded runs only), and
+    /// build its `episode_completed` hook event for the caller to fan out once
+    /// the ended id's last event is out (see `Group::pending_completed`).
+    /// Summaries are recorded only when `max_episodes` is set — the report is
+    /// drained once at route end, so an unbounded (`max_episodes: None`)
+    /// session would otherwise accumulate one entry per episode for its whole
+    /// lifetime with no reader.
+    fn complete_episodes(
         &self,
         state: &mut RouteState,
         context: &RuntimeEnvContext,
         episodes: &[EpisodeMetadata],
-    ) {
+    ) -> Vec<EpisodeCompletedEvent> {
+        let mut events = Vec::with_capacity(episodes.len());
         for completed in episodes {
             let record = state.complete_episode(&completed.episode_id);
             let episode_record_id = record
@@ -1789,27 +1807,31 @@ where
                     success: success_from_final_info(completed.final_info.as_ref()),
                 });
             }
-            fan_out_event!(
-                self,
-                episode_completed,
-                EpisodeCompletedEvent {
-                    session_id: state.session_id().to_string(),
-                    route: context.clone(),
-                    episode_id: completed.episode_id.clone(),
-                    episode_record_id,
-                    episode_index: record.as_ref().map_or(0, |record| record.index),
-                    env_index,
-                    step_count: completed.step_count,
-                    cumulative_reward: completed.cumulative_reward,
-                    terminated: completed.terminated,
-                    truncated: completed.truncated,
-                    duration_ms: (completed.end_timestamp_ns - completed.start_timestamp_ns).max(0)
-                        / 1_000_000,
-                    final_info: completed.final_info.clone(),
-                    seed,
-                    trial_index,
-                }
-            );
+            events.push(EpisodeCompletedEvent {
+                session_id: state.session_id().to_string(),
+                route: context.clone(),
+                episode_id: completed.episode_id.clone(),
+                episode_record_id,
+                episode_index: record.as_ref().map_or(0, |record| record.index),
+                env_index,
+                step_count: completed.step_count,
+                cumulative_reward: completed.cumulative_reward,
+                terminated: completed.terminated,
+                truncated: completed.truncated,
+                duration_ms: (completed.end_timestamp_ns - completed.start_timestamp_ns).max(0)
+                    / 1_000_000,
+                final_info: completed.final_info.clone(),
+                seed,
+                trial_index,
+            });
+        }
+        events
+    }
+
+    /// `episode_completed` is the last hook event under its episode id.
+    async fn fan_out_completions(&self, events: Vec<EpisodeCompletedEvent>) {
+        for event in events {
+            fan_out_event!(self, episode_completed, event);
         }
     }
 

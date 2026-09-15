@@ -42,6 +42,14 @@ async fn driver_runs_one_episode_and_closes_terminal_route() {
 
     assert_eq!(report.total_steps, 1);
     assert_eq!(report.total_episodes, 1);
+    // A driver-owned reset completes the episode right at its terminal step:
+    // no observation follows under its id, and the completion is its last event.
+    let completed = hooks.completed_ids();
+    assert_eq!(completed.len(), 1);
+    assert_eq!(
+        hooks.events_for(&completed[0]),
+        ["started", "observation", "step", "completed"]
+    );
     // Telemetry flows end-to-end: the session snapshot carries per-op rows.
     let predict_rpc = report
         .telemetry
@@ -1027,12 +1035,46 @@ struct RecordingHooks {
     completed_seeds: Mutex<Vec<Option<i64>>>,
     started_trials: Mutex<Vec<Option<u64>>>,
     completed_trials: Mutex<Vec<Option<u64>>>,
+    // Every per-episode hook event in arrival order, as (kind, the episode ids
+    // it names): the hook-side episode lifecycle.
+    events: Mutex<Vec<(&'static str, Vec<String>)>>,
     // Counts of live telemetry snapshots streamed via on_telemetry, by horizon.
     telemetry_windows: AtomicUsize,
     telemetry_sessions: AtomicUsize,
     // Largest row count seen in any Session snapshot — proves the final push
     // carried real telemetry, not an empty event.
     telemetry_session_rows: AtomicUsize,
+}
+
+impl RecordingHooks {
+    fn note_event(&self, kind: &'static str, ids: Vec<String>) {
+        self.events
+            .lock()
+            .expect("event recorder lock poisoned")
+            .push((kind, ids));
+    }
+
+    /// The kinds of the events that named `episode_id`, in arrival order.
+    fn events_for(&self, episode_id: &str) -> Vec<&'static str> {
+        self.events
+            .lock()
+            .expect("event recorder lock poisoned")
+            .iter()
+            .filter(|(_, ids)| ids.iter().any(|id| id == episode_id))
+            .map(|(kind, _)| *kind)
+            .collect()
+    }
+
+    /// Every episode id an `episode_completed` event named, in arrival order.
+    fn completed_ids(&self) -> Vec<String> {
+        self.events
+            .lock()
+            .expect("event recorder lock poisoned")
+            .iter()
+            .filter(|(kind, _)| *kind == "completed")
+            .flat_map(|(_, ids)| ids.clone())
+            .collect()
+    }
 }
 
 #[async_trait]
@@ -1082,6 +1124,7 @@ impl RuntimeHooks for RecordingHooks {
                 .map(|leaf| leaf.to_vec())
                 .unwrap_or_default()
         };
+        self.note_event("observation", event.episode_ids.clone());
         self.emitted_observations
             .lock()
             .expect("emitted observation recorder lock poisoned")
@@ -1098,6 +1141,7 @@ impl RuntimeHooks for RecordingHooks {
         &self,
         event: rlmesh_runtime::StepCompletedEvent,
     ) -> Result<(), HookError> {
+        self.note_event("step", vec![event.episode_id]);
         self.step_infos
             .lock()
             .expect("step info recorder lock poisoned")
@@ -1109,6 +1153,7 @@ impl RuntimeHooks for RecordingHooks {
         &self,
         event: rlmesh_runtime::EpisodeStartedEvent,
     ) -> Result<(), HookError> {
+        self.note_event("started", vec![event.episode_id]);
         self.started_seeds
             .lock()
             .expect("started seed recorder lock poisoned")
@@ -1124,6 +1169,7 @@ impl RuntimeHooks for RecordingHooks {
         &self,
         event: rlmesh_runtime::EpisodeCompletedEvent,
     ) -> Result<(), HookError> {
+        self.note_event("completed", vec![event.episode_id]);
         self.completed_seeds
             .lock()
             .expect("completed seed recorder lock poisoned")
@@ -1515,6 +1561,70 @@ async fn next_step_autoreset_never_predicts_on_an_evicted_episode() {
     }
     // Every ended episode was evicted, so nothing is left behind in the model.
     assert_eq!(evicted.len() as i64, report.total_episodes);
+}
+
+#[tokio::test]
+async fn next_step_episode_completed_is_the_last_hook_event_under_its_id() {
+    // NEXT_STEP × lockstep vector, lanes of 1 and 3 steps, budget 4. Lane 0
+    // ends at steps 1, 3 and 5; lane 1 at step 3. The step-5 completion hits
+    // the budget, so that episode's roll never lands. From a hook's side an
+    // ended id is still observed once more (the terminal observation feeding
+    // the autoreset step) and stepped once more (the autoreset step itself),
+    // both under the old id; `episode_completed` follows those, as the last
+    // event the hook sees under that id, mirroring the model's
+    // predict* → evict lifecycle. The budget-ended episode completes with no
+    // roll behind it. Every episode is completed exactly once and summarized.
+    let env = VectorTestEnv::new(vec![1, 3]);
+    let hooks = Arc::new(RecordingHooks::default());
+    let report = RuntimeDriver::new(vector_spec(2, 4), env, TestModel::default(), hooks.clone())
+        .run()
+        .await
+        .unwrap();
+    assert_eq!(report.total_episodes, 4);
+
+    let completed = hooks.completed_ids();
+    let unique: std::collections::HashSet<&String> = completed.iter().collect();
+    assert_eq!(
+        completed.len(),
+        4,
+        "one completion per episode: {completed:?}"
+    );
+    assert_eq!(unique.len(), 4, "no id completed twice: {completed:?}");
+    assert_eq!(report.episodes.len(), 4, "one summary per episode");
+    let events = hooks.events.lock().unwrap().clone();
+    for id in &completed {
+        let last = events
+            .iter()
+            .rposition(|(_, ids)| ids.contains(id))
+            .expect("completed id was seen");
+        assert_eq!(
+            events[last].0, "completed",
+            "episode_completed must be the last event under {id}; events: {events:?}"
+        );
+    }
+    // A mid-run boundary (lane 0's first episode): its terminal step, the
+    // post-end observation, the autoreset step, then the completion.
+    assert_eq!(
+        hooks.events_for(&completed[0]),
+        [
+            "started",
+            "observation",
+            "step",
+            "observation",
+            "step",
+            "completed"
+        ],
+        "events: {events:?}"
+    );
+    // The budget-ended episode (lane 0's third, the last completion): the
+    // group idles right after its terminal step, so nothing is observed
+    // between that step and its completion, and it is the run's last event.
+    assert_eq!(
+        hooks.events_for(&completed[3]),
+        ["started", "observation", "step", "completed"],
+        "events: {events:?}"
+    );
+    assert_eq!(events.last().map(|(kind, _)| *kind), Some("completed"));
 }
 
 /// Every predict's history rows followed by its own observation, as steps,
@@ -2325,16 +2435,27 @@ async fn lane_sessions_idle_surplus_lanes_when_the_budget_is_smaller() {
     // Four lanes, two episodes: two lanes run one episode each and the other
     // two never reset (their first slot claim is already past the budget).
     let env = LaneTestEnv::new(vec![(1, Duration::ZERO); 4]);
+    let hooks = Arc::new(RecordingHooks::default());
     let report = RuntimeDriver::new(
         lane_spec(4, 2, Vec::new()),
         env.clone(),
         TestModel::default(),
-        Arc::new(RecordingHooks::default()),
+        hooks.clone(),
     )
     .run()
     .await
     .unwrap();
     assert_eq!(report.total_episodes, 2);
+    // Driver-owned lane resets complete each episode at its terminal step, as
+    // the last event under its id.
+    let completed = hooks.completed_ids();
+    assert_eq!(completed.len(), 2);
+    for id in &completed {
+        assert_eq!(
+            hooks.events_for(id),
+            ["started", "observation", "step", "completed"]
+        );
+    }
     assert_eq!(
         env.inner
             .lock()

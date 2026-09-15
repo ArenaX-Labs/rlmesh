@@ -51,6 +51,9 @@ pub trait RuntimeHooks: Send + Sync {
         Ok(())
     }
 
+    /// The last event under its episode id: no observation or step of that
+    /// episode follows it. Under `NEXT_STEP` autoreset the ended episode is
+    /// observed and stepped once more (the autoreset step) before this fires.
     async fn episode_completed(&self, _event: EpisodeCompletedEvent) -> Result<(), HookError> {
         Ok(())
     }
