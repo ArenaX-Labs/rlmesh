@@ -13,6 +13,7 @@
 //! the registry checks it, never supplies it. An unregistered (ad-hoc) role has
 //! no dim law and resolves on string agreement alone.
 
+pub mod body;
 pub mod core;
 pub mod embodiments;
 pub mod manipulation;

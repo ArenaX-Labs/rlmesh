@@ -73,6 +73,9 @@ from .constants import (
     ACTION_JOINT_VEL,
     ARM_2,
     BASE,
+    BASE_ANG_VEL,
+    BASE_ROT,
+    COMMAND_BASE_VEL,
     EEF_POS,
     EEF_POS_2,
     EEF_ROT,
@@ -97,7 +100,7 @@ from .constants import (
     RIGHT_LEG,
     TORSO,
 )
-from .embodiments import FRANKA_PANDA, G1_29DOF, GO2, EmbodimentProfile
+from .embodiments import FRANKA_PANDA, G1_29DOF, GO2, UR5E, EmbodimentProfile
 from .resolver import AdapterResolutionError, resolve, resolve_from_contract
 from .specs import (
     ROTATION_DIMS,
@@ -122,6 +125,7 @@ from .specs import (
     ObsLeaf,
     ObsNode,
     ObsTransform,
+    Provenance,
     Reference,
     Resample,
     Rotation,
@@ -153,6 +157,9 @@ __all__ = [
     "ACTION_JOINT_VEL",
     "ARM_2",
     "BASE",
+    "BASE_ANG_VEL",
+    "BASE_ROT",
+    "COMMAND_BASE_VEL",
     "EEF_POS",
     "EEF_POS_2",
     "EEF_ROT",
@@ -180,6 +187,7 @@ __all__ = [
     "RIGHT_LEG",
     "ROTATION_DIMS",
     "TORSO",
+    "UR5E",
     "Action",
     "Actuator",
     "Adapter",
@@ -206,6 +214,7 @@ __all__ = [
     "ObsNode",
     "ObsTransform",
     "ObservationRoles",
+    "Provenance",
     "Reference",
     "Resample",
     "Rotation",

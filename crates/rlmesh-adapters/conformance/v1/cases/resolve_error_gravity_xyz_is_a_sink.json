@@ -1,0 +1,71 @@
+{
+  "action_space": {
+    "dtype": "float32",
+    "kind": "box",
+    "shape": [1]
+  },
+  "env_tags": {
+    "action": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": null,
+          "role": "action/gripper"
+        }
+      ]
+    },
+    "observation": {
+      "g": {
+        "encoding": "gravity_xyz",
+        "range": null,
+        "role": "proprio/base_rot",
+        "type": "state"
+      }
+    }
+  },
+  "expect": {
+    "error_contains": "is a direction, not a rotation, so it cannot be converted to \"quat_wxyz\""
+  },
+  "kind": "resolve",
+  "model_spec": {
+    "input": {
+      "s": {
+        "components": [
+          {
+            "encoding": "quat_wxyz",
+            "role": "proprio/base_rot"
+          }
+        ],
+        "dtype": "float32",
+        "type": "state"
+      }
+    },
+    "output": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": null,
+          "role": "action/gripper"
+        }
+      ]
+    }
+  },
+  "observation_space": {
+    "children": [
+      {
+        "dtype": "float32",
+        "kind": "box",
+        "shape": [3]
+      }
+    ],
+    "dtype": "unspecified",
+    "keys": ["g"],
+    "kind": "dict"
+  }
+}

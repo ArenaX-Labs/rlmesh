@@ -4538,10 +4538,20 @@ def test_embodiment_profiles_mirror_the_rust_rows() -> None:
         "head",
     )
     assert adapt.FRANKA_PANDA.joints == tuple(f"panda_joint{i}" for i in range(1, 8))
+    assert adapt.UR5E.joints == (
+        "shoulder_pan_joint",
+        "shoulder_lift_joint",
+        "elbow_joint",
+        "wrist_1_joint",
+        "wrist_2_joint",
+        "wrist_3_joint",
+    )
+    assert adapt.UR5E.parts == ()
     assert [profile.name for profile in embodiments.PROFILES] == [
         "unitree_go2",
         "unitree_g1_29dof",
         "franka_panda",
+        "ur5e",
     ]
     assert isinstance(adapt.GO2, adapt.EmbodimentProfile)
 
@@ -4730,3 +4740,288 @@ def test_unknown_labels_nudge_and_the_require_labels_gate() -> None:
     adapters_spec_normalize("env", good, True, "strict", False, True)
     model = json.dumps(_go2_model(GO2_ISAAC).to_dict())
     adapters_spec_normalize("model", model, True, "strict", False, True)
+
+
+# ---------------------------------------------------------------------------
+# Body roles, provenance, gravity_xyz and the container clip (PR-3 of the
+# adapter expansion)
+# ---------------------------------------------------------------------------
+
+
+def _go2_body_env(*, second_base_rot: bool = False) -> Env:
+    """The Go2 body beside its joints: gyro, IMU orientation, velocity command.
+
+    With ``second_base_rot`` the env is a simulator publishing the orientation
+    twice, as its privileged truth and as the estimate a robot would have.
+    """
+    observation: dict[str, adapt.ObsLeaf] = {
+        "ang_vel": adapt.StateTag(
+            adapt.BASE_ANG_VEL,
+            frame="robot_base",
+            provenance="sensed",
+            range=(-20.0, 20.0),
+        ),
+        "base_quat": adapt.StateTag(
+            adapt.BASE_ROT,
+            encoding="quat_wxyz",
+            frame="world",
+            provenance="privileged" if second_base_rot else "sensed",
+        ),
+        "command": adapt.StateTag(
+            adapt.COMMAND_BASE_VEL, frame="robot_base", range=(-3.0, 3.0)
+        ),
+        "joint_pos": adapt.StateTag(
+            adapt.JOINT_POS, labels=GO2_SDK, provenance="sensed"
+        ),
+        "joint_vel": adapt.StateTag(
+            adapt.JOINT_VEL, labels=GO2_SDK, provenance="sensed", range=(-30.0, 30.0)
+        ),
+    }
+    spaces: dict[str, gym.spaces.Space[Any]] = {
+        "ang_vel": box(3),
+        "base_quat": box(4),
+        "command": box(3),
+        "joint_pos": box(12),
+        "joint_vel": box(12),
+    }
+    if second_base_rot:
+        observation["base_quat_est"] = adapt.StateTag(
+            adapt.BASE_ROT, encoding="quat_wxyz", frame="world", provenance="estimated"
+        )
+        spaces["base_quat_est"] = box(4)
+    return Env(
+        adapt.EnvTags(
+            observation=observation,
+            action=adapt.Action(
+                adapt.Actuator(adapt.ACTION_JOINT_POS, dim=12, labels=GO2_SDK)
+            ),
+        ),
+        obs_space=gym.spaces.Dict(spaces),
+        action_space=box(12),
+    )
+
+
+def _go2_body_model(
+    provenance: adapt.Provenance | tuple[adapt.Provenance, ...] | None = None,
+) -> adapt.ModelSpec:
+    # rl_sar robot_lab without the previous-action part: 3 + 3 + 3 + 12 + 12.
+    return adapt.ModelSpec(
+        input={
+            "obs": adapt.Concat(
+                adapt.State(adapt.BASE_ANG_VEL, frame="robot_base", scale=0.25),
+                adapt.State(
+                    adapt.BASE_ROT,
+                    encoding="gravity_xyz",
+                    frame="world",
+                    provenance=provenance,
+                ),
+                adapt.State(adapt.COMMAND_BASE_VEL, frame="robot_base"),
+                adapt.State(
+                    adapt.JOINT_POS,
+                    labels=GO2_SDK,
+                    offset=tuple(-q for q in GO2_DEFAULT_POSE),
+                ),
+                adapt.State(adapt.JOINT_VEL, labels=GO2_SDK, scale=0.05),
+                clip=(-100.0, 100.0),
+                dtype="float32",
+            )
+        },
+        output=adapt.Action(
+            adapt.Actuator(
+                adapt.ACTION_JOINT_POS,
+                dim=12,
+                labels=GO2_SDK,
+                scale=GO2_ACTION_SCALE,
+                offset=GO2_DEFAULT_POSE,
+            )
+        ),
+    )
+
+
+def test_body_role_constants_mirror_the_rust_rows() -> None:
+    assert adapt.BASE_ANG_VEL == "proprio/base_ang_vel"
+    assert adapt.BASE_ROT == "proprio/base_rot"
+    assert adapt.COMMAND_BASE_VEL == "command/base_vel"
+    assert adapt.ROTATION_DIMS["gravity_xyz"] == 3
+
+
+def test_provenance_and_clip_round_trip_only_when_set() -> None:
+    tags = _go2_body_env().tags
+    doc = tags.to_dict()
+    assert doc["observation"]["ang_vel"]["provenance"] == "sensed"
+    assert "provenance" not in doc["observation"]["command"]
+    assert adapt.EnvTags.from_dict(doc) == tags
+    split = adapt.EnvTags(
+        observation=adapt.Split(
+            adapt.Field(
+                adapt.BASE_ROT, 4, encoding="quat_wxyz", provenance="privileged"
+            ),
+            adapt.Field(
+                adapt.BASE_ROT, 4, encoding="quat_wxyz", provenance="estimated"
+            ),
+        ),
+        action=LIBERO_ACTION,
+    )
+    fields = split.to_dict()["observation"]["fields"]
+    assert [f["provenance"] for f in fields] == ["privileged", "estimated"]
+    assert adapt.EnvTags.from_dict(split.to_dict()) == split
+
+    spec = _go2_body_model(("privileged", "estimated"))
+    doc = spec.to_dict()
+    obs = doc["input"]["obs"]
+    assert obs["clip"] == [-100.0, 100.0]
+    assert obs["components"][1]["provenance"] == ["privileged", "estimated"]
+    assert obs["components"][1]["encoding"] == "gravity_xyz"
+    assert "provenance" not in obs["components"][0]
+    assert adapt.ModelSpec.from_dict(doc) == spec
+    single = _go2_body_model("estimated").to_dict()["input"]["obs"]["components"][1]
+    assert single["provenance"] == "estimated"
+    assert "clip" not in _go2_model(GO2_SDK).to_dict()["input"]["obs"]
+    # A bare State leaf carries the clip too, and it survives the round trip.
+    leaf = adapt.ModelSpec(
+        input={"s": adapt.State(adapt.JOINT_POS, dim=12, clip=(-5.0, 5.0))},
+        output=spec.output,
+    )
+    assert leaf.to_dict()["input"]["s"]["clip"] == [-5.0, 5.0]
+    assert adapt.ModelSpec.from_dict(leaf.to_dict()) == leaf
+    # Keyword-only, like `part`.
+    with pytest.raises(TypeError):
+        adapt.StateTag(adapt.BASE_ROT, None, None, None, "sensed")  # type: ignore[misc]
+
+
+def test_provenance_and_clip_codec_rules() -> None:
+    with pytest.raises(ValueError, match="more than once"):
+        adapt.EnvTags(
+            observation={
+                "a": adapt.StateTag(adapt.BASE_ROT, provenance="estimated"),
+                "b": adapt.StateTag(adapt.BASE_ROT, provenance="estimated"),
+            },
+            action=LIBERO_ACTION,
+        )
+    with pytest.raises(ValueError, match="more than once"):
+        adapt.Split(
+            adapt.Field(adapt.BASE_ROT, 4, provenance="sensed"),
+            adapt.Field(adapt.BASE_ROT, 4, provenance="sensed"),
+        )
+    with pytest.raises(ValueError, match="container fields"):
+        adapt.Concat(adapt.State(adapt.JOINT_POS, clip=(-1.0, 1.0)), adapt.JOINT_VEL)
+    # The direction law on the rigid action side: a codec error at publish.
+    with pytest.raises(ValueError, match="observation-only"):
+        adapt.ModelSpec(
+            input={"t": adapt.Text(adapt.INSTRUCTION)},
+            output=adapt.Action(
+                adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=3, encoding="gravity_xyz")
+            ),
+        ).to_dict()
+    with pytest.raises(ValueError, match="not a rotation"):
+        adapt.ModelSpec(
+            input={
+                "s": adapt.State(
+                    adapt.BASE_ROT,
+                    encoding="gravity_xyz",
+                    post_rotate=adapt.Rotation(
+                        encoding="gravity_xyz", value=(0.0, 0.0, -1.0)
+                    ),
+                )
+            },
+            output=LIBERO_MODEL_ACTION,
+        ).to_dict()
+
+
+def test_go2_body_resolves_to_33_dims_reading_gravity_and_clamping() -> None:
+    adapter = resolve(_go2_body_env(), _go2_body_model())
+    text = adapter.explain()
+    assert (
+        "concat(ang_vel (*0.25)@robot_base#sensed, "
+        "base_quat (quat_wxyz->gravity_xyz)@world#sensed, command@robot_base, "
+        "joint_pos[:12] (+[FR_hip:-0.0," in text
+    )
+    assert "#sensed, joint_vel[:12] (*0.05)#sensed) clip[-100.0,100.0]\n" in text
+    assert adapter.advisories() == []
+    obs = adapter.transform_obs(
+        {
+            "ang_vel": np.array([4.0, 0.0, 0.0], dtype=np.float32),
+            # Identity orientation (wxyz): gravity is straight down in the base.
+            "base_quat": np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+            "command": np.array([0.5, 0.0, 0.0], dtype=np.float32),
+            "joint_pos": np.array([1e6] + [0.0] * 11, dtype=np.float32),
+            "joint_vel": np.zeros(12, dtype=np.float32),
+        }
+    )["obs"]
+    assert obs.shape == (33,)
+    np.testing.assert_allclose(obs[:3], [1.0, 0.0, 0.0])
+    np.testing.assert_allclose(obs[3:6], [0.0, 0.0, -1.0])
+    np.testing.assert_allclose(obs[6:9], [0.5, 0.0, 0.0])
+    assert obs[9] == 100.0  # the container clamp
+    # A robot on its back (180 degree roll, quat wxyz = (0, 1, 0, 0)): +z.
+    flipped = adapter.transform_obs(
+        {
+            "ang_vel": np.zeros(3, dtype=np.float32),
+            "base_quat": np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float32),
+            "command": np.zeros(3, dtype=np.float32),
+            "joint_pos": np.zeros(12, dtype=np.float32),
+            "joint_vel": np.zeros(12, dtype=np.float32),
+        }
+    )["obs"]
+    np.testing.assert_allclose(flipped[3:6], [0.0, 0.0, 1.0], atol=1e-6)
+
+
+def test_a_sim_publishing_base_rot_twice_needs_a_pinned_provenance() -> None:
+    sim = _go2_body_env(second_base_rot=True)
+    with pytest.raises(adapt.AdapterResolutionError, match="declare provenance="):
+        resolve(sim, _go2_body_model())
+    adapter = resolve(sim, _go2_body_model("estimated"))
+    assert "base_quat_est (quat_wxyz->gravity_xyz)@world#estimated" in adapter.explain()
+    assert adapter.advisories() == []
+    # An accept set binds in its own order; the env's value is what prints.
+    adapter = resolve(sim, _go2_body_model(("privileged", "estimated")))
+    assert "base_quat (quat_wxyz->gravity_xyz)@world#privileged" in adapter.explain()
+    with pytest.raises(adapt.AdapterResolutionError, match="accepts provenance"):
+        resolve(sim, _go2_body_model("sensed"))
+
+
+def test_provenance_disagreement_is_an_error_and_model_only_is_a_caution() -> None:
+    real = _go2_body_env()
+    with pytest.raises(adapt.AdapterResolutionError, match="expects provenance"):
+        resolve(real, _go2_body_model("privileged"))
+    unstated = Env(
+        adapt.EnvTags(
+            observation={"rot": adapt.StateTag(adapt.BASE_ROT, encoding="quat_wxyz")},
+            action=LIBERO_ACTION,
+        ),
+        obs_space=gym.spaces.Dict({"rot": box(4)}),
+        action_space=box(7),
+    )
+    spec = adapt.ModelSpec(
+        input={
+            "s": adapt.State(
+                adapt.BASE_ROT, encoding="gravity_xyz", provenance="sensed"
+            )
+        },
+        output=LIBERO_MODEL_ACTION,
+    )
+    adapter = resolve(unstated, spec)
+    assert any(
+        note.severity == "caution" and 'declares provenance "sensed"' in note.message
+        for note in adapter.advisories()
+    )
+    assert "rot (quat_wxyz->gravity_xyz)#sensed" in adapter.explain()
+    # The sink never becomes a rotation again.
+    gravity_env = Env(
+        adapt.EnvTags(
+            observation={"g": adapt.StateTag(adapt.BASE_ROT, encoding="gravity_xyz")},
+            action=LIBERO_ACTION,
+        ),
+        obs_space=gym.spaces.Dict({"g": box(3)}),
+        action_space=box(7),
+    )
+    with pytest.raises(
+        adapt.AdapterResolutionError, match="a direction, not a rotation"
+    ):
+        resolve(
+            gravity_env,
+            adapt.ModelSpec(
+                input={"s": adapt.State(adapt.BASE_ROT, encoding="quat_wxyz")},
+                output=LIBERO_MODEL_ACTION,
+            ),
+        )

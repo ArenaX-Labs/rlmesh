@@ -50,6 +50,15 @@ pub enum ErrorCode {
     /// that is not `optional`. Structural, never a caution: a joint vector
     /// bound on hope is the bug labels exist to catch.
     LabelMismatch,
+    /// The two sides disagree about where a state leaf's numbers come from
+    /// (`sensed`, `estimated`, `privileged`), or one of them declares a value
+    /// outside that vocabulary: a checkpoint trained on privileged simulator
+    /// state bound to an estimate on the robot is the pairing this refuses.
+    ProvenanceMismatch,
+    /// A seeker that pins no provenance found the role under several: a sim
+    /// that publishes its truth beside its estimate leaves nothing to guess
+    /// through, so the model must declare `provenance=`.
+    Ambiguous,
 }
 
 /// A model input or action component has no usable counterpart in the env

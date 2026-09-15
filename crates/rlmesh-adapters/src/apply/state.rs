@@ -201,6 +201,14 @@ pub(super) fn apply_state(
         );
         state.extend(value);
     }
+    // The container clamp sits after every part's own transforms and before
+    // the pad, so a pad slot is never clamped into a non-zero value.
+    if let Some((low, high)) = plan.clip {
+        let (low, high) = (low as f32, high as f32);
+        for entry in &mut state {
+            *entry = entry.clamp(low, high);
+        }
+    }
     if let Some(pad_to) = plan.pad_to {
         let pad_to = pad_to as usize;
         if state.len() > pad_to {
@@ -260,9 +268,11 @@ mod tests {
                 absent_role: false,
                 width: Some(3),
                 frame: None,
+                provenance: None,
                 part: None,
             }],
             pad_to: None,
+            clip: None,
             native_width: Some(3),
             dtype: "float32".to_owned(),
             reshape: None,
@@ -320,9 +330,11 @@ mod tests {
                 absent_role: false,
                 width: Some(1),
                 frame: None,
+                provenance: None,
                 part: None,
             }],
             pad_to: None,
+            clip: None,
             native_width: Some(1),
             dtype: "float32".to_owned(),
             reshape: None,

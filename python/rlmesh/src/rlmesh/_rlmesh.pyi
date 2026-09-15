@@ -26,7 +26,10 @@ __all__ = [
     "AdapterPlan",
     "Advisory",
     "BASE",
+    "BASE_ANG_VEL",
+    "BASE_ROT",
     "CHANNEL_ORDERS",
+    "COMMAND_BASE_VEL",
     "CROP_MODES",
     "DESCRIBE_METADATA_KEY",
     "DESCRIBE_SCHEMA_VERSION",
@@ -109,7 +112,10 @@ ACTION_JOINT_POS_2: builtins.str
 ACTION_JOINT_VEL: builtins.str
 ARM_2: builtins.str
 BASE: builtins.str
+BASE_ANG_VEL: builtins.str
+BASE_ROT: builtins.str
 CHANNEL_ORDERS: builtins.list[builtins.str]
+COMMAND_BASE_VEL: builtins.str
 CROP_MODES: builtins.list[builtins.str]
 DESCRIBE_METADATA_KEY: builtins.str
 DESCRIBE_SCHEMA_VERSION: builtins.int

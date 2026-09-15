@@ -20,6 +20,7 @@ from .vocabularies import (
     FitMode,
     Frame,
     ImageLayout,
+    Provenance,
     Resample,
     RotationEncoding,
     StackPad,
@@ -358,8 +359,9 @@ class State:
     feature. Use :class:`Concat` to pack several roles into one tensor. A
     ``State`` is also a valid :class:`Concat` part (its part fields -- ``role``,
     ``encoding``, ``dim``, ``index``, ``optional``, ``range``, ``fill``,
-    ``post_rotate``, ``scale``, ``offset``, ``frame``, ``part``, ``labels`` -- are
-    taken; its container fields must stay default when used as a part).
+    ``post_rotate``, ``scale``, ``offset``, ``frame``, ``provenance``, ``part``,
+    ``labels`` -- are taken; its container fields must stay default when used
+    as a part).
 
     There is no ``key`` -- placement in the input tree *is* the payload position.
 
@@ -370,6 +372,9 @@ class State:
             first) — the resolver picks the env's native encoding when it
             appears here (no conversion), else converts into the first entry.
             A ``CustomEncoding`` is a single host-side packing (not a set).
+            ``"gravity_xyz"`` reads any env rotation as the gravity direction in
+            the body frame (projected gravity, 3 wide); an env that publishes
+            ``gravity_xyz`` itself binds only a part that wants it.
         dim: Optional number of leading elements to keep from the source.
         index: Optional single element to select after any conversion.
         optional: Zero-fill this part when the env does not declare the role,
@@ -401,6 +406,14 @@ class State:
             and omitted from the wire when unset. A frame the env contradicts
             fails resolution; a frame the env does not declare draws a caution
             (the model states a requirement nothing can confirm).
+        provenance: Where the checkpoint expects this part's numbers to come
+            from: ``"sensed"``, ``"estimated"`` or ``"privileged"``, or a
+            sequence of the ones it accepts. Against an env that publishes the
+            role under several provenances the declaration picks the leaf (an
+            env publishing several and a model naming none is an error); a
+            value the env contradicts fails resolution, and one the env does
+            not declare draws a caution. Keyword-only and omitted from the wire
+            when unset.
         part: The body part this part reads, when the role repeats across a
             body (``"left_arm"``, ``"right_arm"``, ...): an identity key the
             resolver matches on. Naming one binds only that env leaf (a missing
@@ -421,6 +434,9 @@ class State:
         dtype: NumPy dtype name of the resulting value.
         reshape: Optional target shape for the resulting value.
         container: Emit a NumPy array or a plain Python list.
+        clip: Clamp the assembled vector to ``(low, high)`` after every part's
+            own transforms and before ``pad_to`` (legged_gym's ``clip_obs``).
+            Keyword-only and omitted from the wire when unset.
     """
 
     role: str
@@ -436,12 +452,16 @@ class State:
     scale: float | Sequence[float] | None = field(default=None, kw_only=True)
     offset: float | Sequence[float] | None = field(default=None, kw_only=True)
     frame: Frame | None = field(default=None, kw_only=True)
+    provenance: Provenance | Sequence[Provenance] | None = field(
+        default=None, kw_only=True
+    )
     part: str | None = field(default=None, kw_only=True)
     labels: Sequence[str] | None = field(default=None, kw_only=True)
     pad_to: int | None = None
     dtype: str = "float32"
     reshape: tuple[int, ...] | None = None
     container: Literal["array", "list"] = "array"
+    clip: tuple[float, float] | None = field(default=None, kw_only=True)
     # dim/index/pad_to >= 0 is enforced by the Rust codec (u32) at serialize.
 
     def __post_init__(self) -> None:
@@ -472,6 +492,7 @@ class State:
                 )
         object.__setattr__(self, "encoding", one_or_many(self.encoding))
         check_accept_set("State", self.role, self.encoding)
+        object.__setattr__(self, "provenance", one_or_many(self.provenance))
         for name in ("scale", "offset"):
             object.__setattr__(
                 self,
@@ -521,6 +542,8 @@ class Concat:
         dtype: NumPy dtype name of the resulting value.
         reshape: Optional target shape for the resulting value.
         container: Emit a NumPy array or a plain Python list.
+        clip: Clamp the concatenated vector to ``(low, high)`` after every
+            part's own transforms and before ``pad_to``.
     """
 
     parts: tuple[ConcatPart, ...]
@@ -528,6 +551,7 @@ class Concat:
     dtype: str = "float32"
     reshape: tuple[int, ...] | None = None
     container: Literal["array", "list"] = "array"
+    clip: tuple[float, float] | None = None
 
     def __init__(
         self,
@@ -536,6 +560,7 @@ class Concat:
         dtype: str = "float32",
         reshape: tuple[int, ...] | None = None,
         container: Literal["array", "list"] = "array",
+        clip: tuple[float, float] | None = None,
     ) -> None:
         if not parts:
             raise ValueError("Concat needs at least one part")
@@ -563,17 +588,19 @@ class Concat:
                 or part.dtype != "float32"
                 or part.reshape is not None
                 or part.container != "array"
+                or part.clip is not None
             ):
                 raise ValueError(
                     f"Concat part {part.role!r}: a State used as a part must keep "
-                    "its container fields (pad_to, dtype, reshape, container) at "
-                    "their defaults; set them on the Concat instead"
+                    "its container fields (pad_to, dtype, reshape, container, clip) "
+                    "at their defaults; set them on the Concat instead"
                 )
         object.__setattr__(self, "parts", tuple(parts))
         object.__setattr__(self, "pad_to", pad_to)
         object.__setattr__(self, "dtype", dtype)
         object.__setattr__(self, "reshape", reshape)
         object.__setattr__(self, "container", container)
+        object.__setattr__(self, "clip", clip)
 
 
 @dataclass(frozen=True)

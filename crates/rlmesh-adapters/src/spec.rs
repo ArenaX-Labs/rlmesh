@@ -46,7 +46,9 @@ pub use action::{Action, Actuator};
 pub use custom_encoding::{ActionEncoding, CustomEncoding, StateEncoding};
 pub use env::{EnvFeature, EnvFeatures, EnvImage, EnvState, EnvText, UnknownFeature};
 pub use env_tags::{EnvTags, Field, ImageTag, ObsLeaf, ObsNode, SplitLayout, StateTag, TextTag};
-pub use frames::{Attr, FRAMES, FrameLaw, FrameRef, REFERENCES, ReferenceLaw};
+pub use frames::{
+    Attr, FRAMES, FrameLaw, FrameRef, PROVENANCES, Provenance, REFERENCES, ReferenceLaw,
+};
 pub use layouts::{FitMode, ImageLayout};
 pub(crate) use model::MAX_STACK_SPAN;
 pub use model::{

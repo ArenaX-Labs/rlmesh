@@ -6,7 +6,7 @@ use std::fmt;
 use serde::de::{self, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::spec::{FrameRef, RotationLiteral, StateEncoding};
+use crate::spec::{AcceptSet, FrameRef, Provenance, RotationLiteral, StateEncoding};
 
 fn default_float32() -> String {
     "float32".to_owned()
@@ -24,7 +24,7 @@ fn is_default_fill(fill: &f64) -> bool {
 /// part carrying only that role) **or** a JSON object with the full field set
 /// (`role`, `encoding`, `dim`, `index`, `optional`, `range`, `fill`,
 /// `post_rotate`, `scale`, `offset`, `axis_scale`, `axis_offset`, `frame`,
-/// `part`, `labels`). On the wire a role-only part round-trips
+/// `provenance`, `part`, `labels`). On the wire a role-only part round-trips
 /// back to a bare string; any other part to an object.
 ///
 /// A part with **no** `role` is a constant: it reads nothing from the env and
@@ -82,6 +82,13 @@ pub struct ConcatPart {
     /// pre-`frame` spec is byte-identical.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frame: Option<FrameRef>,
+    /// Where the checkpoint expects this part's numbers to come from: one
+    /// provenance, or the set it accepts (a bare string on the wire when
+    /// one). Against an env that publishes the role under several, the set
+    /// picks the leaf; a value the env contradicts is a resolve error.
+    /// Omitted when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<AcceptSet<Provenance>>,
     /// The body part this part reads, when the role repeats across a body
     /// (`left_arm`, ...): an identity key the resolver matches on. Naming one
     /// binds only that leaf; naming none binds the env's only leaf of the role
@@ -130,6 +137,8 @@ struct ConcatPartWire {
     axis_offset: Option<Vec<f64>>,
     #[serde(default)]
     frame: Option<FrameRef>,
+    #[serde(default)]
+    provenance: Option<AcceptSet<Provenance>>,
     #[serde(default)]
     part: Option<String>,
     #[serde(default)]
@@ -243,12 +252,13 @@ impl TryFrom<ConcatPartWire> for ConcatPart {
                     || wire.axis_scale.is_some()
                     || wire.axis_offset.is_some()
                     || wire.frame.is_some()
+                    || wire.provenance.is_some()
                     || wire.part.is_some()
                     || wire.labels.is_some()
                 {
                     return Err("a constant (role-less) state part carries only dim and \
                          fill; drop encoding/index/range/optional/post_rotate/scale/offset/\
-                         axis_scale/axis_offset/frame/part/labels"
+                         axis_scale/axis_offset/frame/provenance/part/labels"
                         .to_owned());
                 }
             }
@@ -267,6 +277,7 @@ impl TryFrom<ConcatPartWire> for ConcatPart {
             axis_scale: wire.axis_scale,
             axis_offset: wire.axis_offset,
             frame: wire.frame,
+            provenance: wire.provenance,
             part: wire.part,
             labels: wire.labels,
             unknown: wire.unknown,
@@ -300,6 +311,7 @@ impl<'de> Deserialize<'de> for ConcatPart {
                     axis_scale: None,
                     axis_offset: None,
                     frame: None,
+                    provenance: None,
                     part: None,
                     labels: None,
                     unknown: BTreeMap::new(),
@@ -335,6 +347,7 @@ fn serialize_concat_part<S: Serializer>(
         && part.axis_scale.is_none()
         && part.axis_offset.is_none()
         && part.frame.is_none()
+        && part.provenance.is_none()
         && part.part.is_none()
         && part.labels.is_none()
         && part.unknown.is_empty();
@@ -396,6 +409,11 @@ pub struct State {
     pub reshape: Option<Vec<i64>>,
     #[serde(default, skip_serializing_if = "is_default_container")]
     pub container: StateContainer,
+    /// Clamp the assembled vector to `(low, high)`, after every part's own
+    /// transforms and before `pad_to` (legged_gym's `clip_obs`). Omitted when
+    /// unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clip: Option<(f64, f64)>,
     /// Unrecognized additive fields, retained for round-trip and surfaced to the
     /// publish-door `reject_unknowns` guard. See the strict-v1 publish gate. Threaded
     /// through `StateWire` (which previously dropped unknown fields silently).
@@ -419,6 +437,8 @@ struct StateWire {
     reshape: Option<Vec<i64>>,
     #[serde(default)]
     container: StateContainer,
+    #[serde(default, deserialize_with = "crate::spec::num::de_opt_range")]
+    clip: Option<(f64, f64)>,
     // Retained verbatim instead of silently dropped (the pre-tolerance bug): the
     // single field rule is flatten-capture, threaded into `State` below.
     #[serde(flatten)]
@@ -447,6 +467,7 @@ impl TryFrom<StateWire> for State {
             dtype: wire.dtype,
             reshape: wire.reshape,
             container: wire.container,
+            clip: wire.clip,
             unknown: wire.unknown,
         })
     }
@@ -455,6 +476,7 @@ impl TryFrom<StateWire> for State {
 #[cfg(test)]
 mod tests {
     use super::{ConcatPart, State};
+    use crate::spec::Provenance;
 
     #[test]
     fn rejects_empty_components() {
@@ -684,6 +706,57 @@ mod tests {
             let err = serde_json::from_str::<State>(doc).unwrap_err();
             assert!(err.to_string().contains(expect), "{doc}: {err}");
         }
+    }
+
+    #[test]
+    fn provenance_is_one_value_or_a_set_and_is_barred_from_a_constant() {
+        let state: State = serde_json::from_str(
+            r#"{"components": [{"role": "proprio/base_rot", "provenance": "estimated"},
+                {"role": "proprio/joint_pos", "provenance": ["privileged", "estimated"]}]}"#,
+        )
+        .unwrap();
+        let single = state.components[0].provenance.as_ref().unwrap();
+        assert_eq!(single.first_known(), Some(Provenance::Estimated));
+        let set = state.components[1].provenance.as_ref().unwrap();
+        assert!(set.accepts(Provenance::Privileged) && set.accepts(Provenance::Estimated));
+        let json = serde_json::to_string(&state).unwrap();
+        assert!(
+            json.contains(r#"{"role":"proprio/base_rot","provenance":"estimated"}"#)
+                && json.contains(r#""provenance":["privileged","estimated"]"#),
+            "got: {json}"
+        );
+        // An unknown value rides along (a newer peer's vocabulary) and is
+        // refused at resolve, not here.
+        let state: State =
+            serde_json::from_str(r#"{"components": [{"role": "r", "provenance": "guessed"}]}"#)
+                .unwrap();
+        assert_eq!(
+            state.components[0]
+                .provenance
+                .as_ref()
+                .unwrap()
+                .first_known(),
+            None
+        );
+        let err = serde_json::from_str::<State>(
+            r#"{"components": ["r", {"dim": 1, "provenance": "sensed"}]}"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("only dim and"), "got: {err}");
+    }
+
+    #[test]
+    fn clip_is_a_container_range_omitted_when_unset() {
+        let state: State =
+            serde_json::from_str(r#"{"components": ["r"], "clip": [-100, 100]}"#).unwrap();
+        assert_eq!(state.clip, Some((-100.0, 100.0)));
+        let json = serde_json::to_string(&state).unwrap();
+        assert!(json.contains(r#""clip":[-100.0,100.0]"#), "got: {json}");
+        let bare: State = serde_json::from_str(r#"{"components": ["r"]}"#).unwrap();
+        assert!(!serde_json::to_string(&bare).unwrap().contains("clip"));
+        let err = serde_json::from_str::<State>(r#"{"components": ["r"], "clip": [1.0, -1.0]}"#)
+            .unwrap_err();
+        assert!(!err.to_string().is_empty());
     }
 
     #[test]

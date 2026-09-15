@@ -48,5 +48,7 @@ GO2: EmbodimentProfile = _BY_NAME["unitree_go2"]
 G1_29DOF: EmbodimentProfile = _BY_NAME["unitree_g1_29dof"]
 #: Franka Emika Panda: ``panda_joint1`` .. ``panda_joint7``.
 FRANKA_PANDA: EmbodimentProfile = _BY_NAME["franka_panda"]
+#: Universal Robots UR5e: ``shoulder_pan_joint`` .. ``wrist_3_joint`` (no gripper).
+UR5E: EmbodimentProfile = _BY_NAME["ur5e"]
 
-__all__ = ["FRANKA_PANDA", "G1_29DOF", "GO2", "PROFILES", "EmbodimentProfile"]
+__all__ = ["FRANKA_PANDA", "G1_29DOF", "GO2", "PROFILES", "UR5E", "EmbodimentProfile"]

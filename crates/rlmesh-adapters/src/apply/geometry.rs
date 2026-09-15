@@ -106,9 +106,14 @@ fn rot6d_basis_to_matrix(a1: [f32; 3], a2: [f32; 3]) -> Matrix {
     ]
 }
 
-/// Convert a rotation vector in any supported encoding to a matrix.
+/// Convert a rotation vector in any supported encoding to a matrix. A sink
+/// encoding never reaches here: [`check_source`] refuses it on every
+/// conversion path and the `post_rotate` codec refuses it as a literal.
 pub(crate) fn to_matrix(value: &[f32], encoding: RotationEncoding) -> Matrix {
     match encoding {
+        RotationEncoding::GravityXyz => {
+            unreachable!("gravity_xyz is a sink; check_source refuses it before decoding")
+        }
         RotationEncoding::QuatXyzw | RotationEncoding::QuatWxyz => {
             let quat = as_quat_xyzw(value, encoding);
             let quat_norm = norm(&quat);
@@ -185,6 +190,10 @@ pub(crate) fn to_matrix(value: &[f32], encoding: RotationEncoding) -> Matrix {
 /// Convert a rotation matrix to a vector in any supported encoding.
 fn matrix_to(matrix: &Matrix, encoding: RotationEncoding) -> Vec<f32> {
     match encoding {
+        RotationEncoding::GravityXyz => {
+            // R_world_from_base^T · (0, 0, -1): the negated third row of R.
+            vec![-matrix[2][0], -matrix[2][1], -matrix[2][2]]
+        }
         RotationEncoding::AxisAngle => {
             let trace = f64::from(matrix[0][0] + matrix[1][1] + matrix[2][2]);
             let theta = ((trace - 1.0) / 2.0).clamp(-1.0, 1.0).acos();
@@ -288,14 +297,24 @@ pub fn convert_rotation_with(
     let Some(post) = post else {
         return convert_rotation(value, source, target);
     };
-    check_width(value, source)?;
+    check_source(value, source)?;
     Ok(matrix_to(
         &mat_mul(&to_matrix(value, source), &post.matrix()),
         target,
     ))
 }
 
-fn check_width(value: &[f32], source: RotationEncoding) -> Result<(), ApplyError> {
+/// A source must be a rotation of its declared width: a sink encoding carries
+/// a direction, not a rotation, so nothing decodes out of it (the direction
+/// law; the resolver refuses the pairing first, this is the apply-side guard).
+fn check_source(value: &[f32], source: RotationEncoding) -> Result<(), ApplyError> {
+    if source.is_sink() {
+        return Err(ApplyError::new(format!(
+            "encoding {} is a sink (a direction, not a rotation) and cannot be converted \
+             out of; only a rotation encoding converts into it",
+            source.as_str()
+        )));
+    }
     let expected = source.dims() as usize;
     if value.len() != expected {
         return Err(ApplyError::new(format!(
@@ -313,10 +332,10 @@ pub fn convert_rotation(
     source: RotationEncoding,
     target: RotationEncoding,
 ) -> Result<Vec<f32>, ApplyError> {
-    check_width(value, source)?;
     if source == target {
         return Ok(value.to_vec());
     }
+    check_source(value, source)?;
     if matches!(
         source,
         RotationEncoding::QuatXyzw | RotationEncoding::QuatWxyz
@@ -433,6 +452,46 @@ mod tests {
         for (expected, actual) in axis_angle.iter().zip(&back) {
             assert!((expected - actual).abs() < 1e-4, "{expected} vs {actual}");
         }
+    }
+
+    #[test]
+    fn gravity_xyz_points_down_in_the_base_frame_and_never_converts_out() {
+        use RotationEncoding::{EulerXyz, GravityXyz, QuatWxyz, QuatXyzw};
+        // Identity orientation: gravity is straight down.
+        let down = convert_rotation(&[1.0, 0.0, 0.0, 0.0], QuatWxyz, GravityXyz).expect("ok");
+        assert_eq!(down, vec![0.0, 0.0, -1.0]);
+        // A 180 degree roll: the robot is on its back, so "down" is +z.
+        let pi = std::f32::consts::PI;
+        let up = convert_rotation(&[pi, 0.0, 0.0], EulerXyz, GravityXyz).expect("ok");
+        for (got, want) in up.iter().zip(&[0.0, 0.0, 1.0]) {
+            assert!((got - want).abs() < 1e-6, "{up:?}");
+        }
+        // A 90 degree pitch (nose down about y): gravity points along +x.
+        let half_pi = std::f32::consts::FRAC_PI_2;
+        let nose = convert_rotation(&[0.0, half_pi, 0.0], EulerXyz, GravityXyz).expect("ok");
+        for (got, want) in nose.iter().zip(&[1.0, 0.0, 0.0]) {
+            assert!((got - want).abs() < 1e-6, "{nose:?}");
+        }
+        // The post-rotation composes before the projection: Rx(pi) on an
+        // identity source flips it.
+        let roll: RotationLiteral = serde_json::from_str(
+            r#"{"encoding": "rot6d", "value": [1.0, 0.0, 0.0, 0.0, -1.0, 0.0]}"#,
+        )
+        .expect("literal");
+        let flipped =
+            convert_rotation_with(&[0.0, 0.0, 0.0, 1.0], QuatXyzw, GravityXyz, Some(&roll))
+                .expect("ok");
+        for (got, want) in flipped.iter().zip(&[0.0, 0.0, 1.0]) {
+            assert!((got - want).abs() < 1e-6, "{flipped:?}");
+        }
+        // The direction law: a sink is never a source, except of itself.
+        let same = convert_rotation(&[0.0, 0.0, -1.0], GravityXyz, GravityXyz).expect("ok");
+        assert_eq!(same, vec![0.0, 0.0, -1.0]);
+        let err = convert_rotation(&[0.0, 0.0, -1.0], GravityXyz, QuatXyzw).unwrap_err();
+        assert!(err.to_string().contains("is a sink"), "{err}");
+        let err = convert_rotation_with(&[0.0, 0.0, -1.0], GravityXyz, GravityXyz, Some(&roll))
+            .unwrap_err();
+        assert!(err.to_string().contains("is a sink"), "{err}");
     }
 
     #[test]

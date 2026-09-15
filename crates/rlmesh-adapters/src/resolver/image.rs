@@ -37,6 +37,7 @@ pub(super) fn plan_image(
         images_by_role,
         &model_input.role,
         model_input.part.as_deref(),
+        None,
         &format!("model input {at}"),
         "image role",
         "env",
@@ -612,7 +613,7 @@ mod image_resolve_tests {
 
     fn images(env: &EnvImage) -> BTreeMap<LeafKey, Indexed<&EnvImage>> {
         BTreeMap::from([(
-            (env.role.clone(), env.part.clone()),
+            (env.role.clone(), env.part.clone(), None),
             Indexed {
                 declared_part: env.part.clone(),
                 feature: env,

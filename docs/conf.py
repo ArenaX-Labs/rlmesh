@@ -117,6 +117,9 @@ def _install_native_docs_stub() -> None:
         "ACTION_EEF_ROT": "action/eef_rot",
         "ACTION_EEF_POS_2": "action/eef_pos_2",
         "ACTION_EEF_ROT_2": "action/eef_rot_2",
+        "BASE_ANG_VEL": "proprio/base_ang_vel",
+        "BASE_ROT": "proprio/base_rot",
+        "COMMAND_BASE_VEL": "command/base_vel",
         "LEFT_ARM": "left_arm",
         "RIGHT_ARM": "right_arm",
         "ARM_2": "arm_2",
@@ -128,7 +131,15 @@ def _install_native_docs_stub() -> None:
     }
     for name, value in adapter_constants.items():
         setattr(native, name, value)
-    native.ROTATION_DIMS = {"quat_xyzw": 4, "quat_wxyz": 4, "axis_angle": 3, "rot6d": 6}
+    native.ROTATION_DIMS = {
+        "quat_xyzw": 4,
+        "quat_wxyz": 4,
+        "axis_angle": 3,
+        "rot6d": 6,
+        "rot6d_rowmajor": 6,
+        "euler_xyz": 3,
+        "gravity_xyz": 3,
+    }
     native.IMAGE_LAYOUTS = ["hwc", "chw"]
     native.PARTS = [
         "left_arm",
@@ -144,10 +155,30 @@ def _install_native_docs_stub() -> None:
         (
             "unitree_go2",
             ["base"],
-            [f"{leg}_{joint}" for leg in ("FR", "FL", "RR", "RL") for joint in ("hip", "thigh", "calf")],
+            [
+                f"{leg}_{joint}"
+                for leg in ("FR", "FL", "RR", "RL")
+                for joint in ("hip", "thigh", "calf")
+            ],
         ),
-        ("unitree_g1_29dof", ["left_leg", "right_leg", "torso", "left_arm", "right_arm", "head"], []),
+        (
+            "unitree_g1_29dof",
+            ["left_leg", "right_leg", "torso", "left_arm", "right_arm", "head"],
+            [],
+        ),
         ("franka_panda", [], [f"panda_joint{i}" for i in range(1, 8)]),
+        (
+            "ur5e",
+            [],
+            [
+                "shoulder_pan_joint",
+                "shoulder_lift_joint",
+                "elbow_joint",
+                "wrist_1_joint",
+                "wrist_2_joint",
+                "wrist_3_joint",
+            ],
+        ),
     ]
     native.AdapterPlan = _native_type("AdapterPlan")
     for name in ("adapters_resolve", "adapters_join_check"):

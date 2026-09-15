@@ -1,7 +1,7 @@
 //! The role registry: the framework-owned mechanism over the domain-owned
 //! vocabulary.
 //!
-//! Each domain module (`core`, `manipulation`, `locomotion`, ...) ships a
+//! Each domain module (`core`, `manipulation`, `body`, ...) ships a
 //! [`ROLES`](core::ROLES) table; the registry is their union, looked up by name.
 //! The registry only ever *validates* the dim an author declares -- it never
 //! supplies one. The author always writes `dim=`; the dim law just checks it.
@@ -26,7 +26,7 @@
 //! before any lookup, so the two spellings bind each other. No further `_N`
 //! role is ever added (`no_further_suffixed_roles`).
 
-use super::{core, manipulation, parts};
+use super::{body, core, manipulation, parts};
 use crate::spec::{FrameLaw, ReferenceLaw};
 
 /// The closed set of feature kinds a role's prefix may name.
@@ -170,7 +170,7 @@ pub struct RoleDef {
 /// mobile base with no policy that consumes it -- is not enough, and a
 /// heterogeneous bundle like a base motion command must be decomposed into Fixed
 /// primitives or stay ad-hoc/opaque until that contract exists.)
-const DOMAINS: &[&[RoleDef]] = &[core::ROLES, manipulation::ROLES];
+const DOMAINS: &[&[RoleDef]] = &[core::ROLES, manipulation::ROLES, body::ROLES];
 
 /// The registry entry for `name`, or `None` for an ad-hoc (unregistered) role.
 pub fn role_def(name: &str) -> Option<&'static RoleDef> {
@@ -242,6 +242,12 @@ mod tests {
         "action/eef_rot",
         "action/eef_pos_2",
         "action/eef_rot_2",
+        // The floating base: the gyro reads it, the IMU reports it, the runner
+        // commands it. Projected gravity is the `gravity_xyz` encoding of
+        // `base_rot`, never a role of its own.
+        "proprio/base_ang_vel", // the IMU gyro, read verbatim
+        "proprio/base_rot",     // the IMU orientation, read verbatim
+        "command/base_vel",     // the velocity setpoint the runner hands the policy
     ];
 
     /// Registered roles that are *not* raw quantities, each with the reason it
@@ -468,6 +474,24 @@ mod tests {
         let gripper = role_def("proprio/gripper").expect("registered");
         assert_eq!(gripper.frame, FrameLaw::Frameless);
         assert_eq!(gripper.reference, ReferenceLaw::Unreferenced);
+    }
+
+    #[test]
+    fn the_body_roles_are_three_framed_raw_quantities() {
+        use super::FrameLaw;
+        for (name, dim) in [
+            ("proprio/base_ang_vel", DimLaw::Fixed(3)),
+            ("proprio/base_rot", DimLaw::ByEncoding),
+            ("command/base_vel", DimLaw::Fixed(3)),
+        ] {
+            let def = role_def(name).expect("registered");
+            assert_eq!(def.dim, dim, "{name}");
+            assert_eq!(def.frame, FrameLaw::Framed, "{name}");
+        }
+        // Derived of the orientation, and an estimate on hardware: neither is
+        // a role (see the module docs and the research on the Go2 pair).
+        assert!(!is_known_role("proprio/projected_gravity"));
+        assert!(!is_known_role("proprio/base_lin_vel"));
     }
 
     #[test]

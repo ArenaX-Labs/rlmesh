@@ -1,0 +1,295 @@
+{
+  "action_space": {
+    "dtype": "float32",
+    "kind": "box",
+    "shape": [12]
+  },
+  "env_tags": {
+    "action": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 12,
+          "encoding": null,
+          "labels": [
+            "FR_hip",
+            "FR_thigh",
+            "FR_calf",
+            "FL_hip",
+            "FL_thigh",
+            "FL_calf",
+            "RR_hip",
+            "RR_thigh",
+            "RR_calf",
+            "RL_hip",
+            "RL_thigh",
+            "RL_calf"
+          ],
+          "range": null,
+          "role": "action/joint_pos"
+        }
+      ]
+    },
+    "observation": {
+      "ang_vel": {
+        "encoding": null,
+        "frame": "robot_base",
+        "provenance": "sensed",
+        "range": [-20.0, 20.0],
+        "role": "proprio/base_ang_vel",
+        "type": "state"
+      },
+      "base_quat": {
+        "encoding": "quat_wxyz",
+        "frame": "world",
+        "provenance": "sensed",
+        "range": null,
+        "role": "proprio/base_rot",
+        "type": "state"
+      },
+      "command": {
+        "encoding": null,
+        "frame": "robot_base",
+        "range": [-3.0, 3.0],
+        "role": "command/base_vel",
+        "type": "state"
+      },
+      "joint_pos": {
+        "encoding": null,
+        "labels": [
+          "FR_hip",
+          "FR_thigh",
+          "FR_calf",
+          "FL_hip",
+          "FL_thigh",
+          "FL_calf",
+          "RR_hip",
+          "RR_thigh",
+          "RR_calf",
+          "RL_hip",
+          "RL_thigh",
+          "RL_calf"
+        ],
+        "provenance": "sensed",
+        "range": null,
+        "role": "proprio/joint_pos",
+        "type": "state"
+      },
+      "joint_vel": {
+        "encoding": null,
+        "labels": [
+          "FR_hip",
+          "FR_thigh",
+          "FR_calf",
+          "FL_hip",
+          "FL_thigh",
+          "FL_calf",
+          "RR_hip",
+          "RR_thigh",
+          "RR_calf",
+          "RL_hip",
+          "RL_thigh",
+          "RL_calf"
+        ],
+        "provenance": "sensed",
+        "range": [-30.0, 30.0],
+        "role": "proprio/joint_vel",
+        "type": "state"
+      }
+    }
+  },
+  "expect": {
+    "action": {
+      "data": [
+        0.0, 0.800000011920929, -1.5, 0.0, 0.800000011920929, -1.5, 0.0, 0.800000011920929, -1.5,
+        0.0, 0.800000011920929, -1.5
+      ],
+      "dtype": "float32",
+      "kind": "array",
+      "shape": [12]
+    },
+    "atol": 1e-6,
+    "payload": {
+      "data": {
+        "obs": {
+          "data": [
+            0.0, 0.0, 0.0, -0.0, -0.0, 1.0, 0.0, 0.0, 0.0, 0.0, -0.800000011920929, 1.5, 0.0,
+            -0.800000011920929, 1.5, 0.0, -0.800000011920929, 1.5, 0.0, -0.800000011920929, 1.5,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+          ],
+          "dtype": "float32",
+          "kind": "array",
+          "shape": [33]
+        }
+      },
+      "kind": "map"
+    }
+  },
+  "kind": "apply",
+  "model_output": {
+    "data": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    "dtype": "float32",
+    "kind": "array",
+    "shape": [12]
+  },
+  "model_spec": {
+    "input": {
+      "obs": {
+        "clip": [-100.0, 100.0],
+        "components": [
+          {
+            "frame": "robot_base",
+            "role": "proprio/base_ang_vel",
+            "scale": 0.25
+          },
+          {
+            "encoding": "gravity_xyz",
+            "frame": "world",
+            "provenance": "sensed",
+            "role": "proprio/base_rot"
+          },
+          {
+            "frame": "robot_base",
+            "role": "command/base_vel"
+          },
+          {
+            "axis_offset": [0.0, -0.8, 1.5, 0.0, -0.8, 1.5, 0.0, -0.8, 1.5, 0.0, -0.8, 1.5],
+            "labels": [
+              "FR_hip",
+              "FR_thigh",
+              "FR_calf",
+              "FL_hip",
+              "FL_thigh",
+              "FL_calf",
+              "RR_hip",
+              "RR_thigh",
+              "RR_calf",
+              "RL_hip",
+              "RL_thigh",
+              "RL_calf"
+            ],
+            "role": "proprio/joint_pos"
+          },
+          {
+            "labels": [
+              "FR_hip",
+              "FR_thigh",
+              "FR_calf",
+              "FL_hip",
+              "FL_thigh",
+              "FL_calf",
+              "RR_hip",
+              "RR_thigh",
+              "RR_calf",
+              "RL_hip",
+              "RL_thigh",
+              "RL_calf"
+            ],
+            "role": "proprio/joint_vel",
+            "scale": 0.05
+          }
+        ],
+        "dtype": "float32",
+        "type": "state"
+      }
+    },
+    "output": {
+      "clip": null,
+      "components": [
+        {
+          "axis_offset": [0.0, 0.8, -1.5, 0.0, 0.8, -1.5, 0.0, 0.8, -1.5, 0.0, 0.8, -1.5],
+          "axis_scale": [
+            0.125, 0.25, 0.25, 0.125, 0.25, 0.25, 0.125, 0.25, 0.25, 0.125, 0.25, 0.25
+          ],
+          "binary": false,
+          "dim": 12,
+          "encoding": null,
+          "labels": [
+            "FR_hip",
+            "FR_thigh",
+            "FR_calf",
+            "FL_hip",
+            "FL_thigh",
+            "FL_calf",
+            "RR_hip",
+            "RR_thigh",
+            "RR_calf",
+            "RL_hip",
+            "RL_thigh",
+            "RL_calf"
+          ],
+          "range": null,
+          "role": "action/joint_pos"
+        }
+      ]
+    }
+  },
+  "observation": {
+    "data": {
+      "ang_vel": {
+        "data": [0.0, 0.0, 0.0],
+        "dtype": "float32",
+        "kind": "array",
+        "shape": [3]
+      },
+      "base_quat": {
+        "data": [0.0, 1.0, 0.0, 0.0],
+        "dtype": "float32",
+        "kind": "array",
+        "shape": [4]
+      },
+      "command": {
+        "data": [0.0, 0.0, 0.0],
+        "dtype": "float32",
+        "kind": "array",
+        "shape": [3]
+      },
+      "joint_pos": {
+        "data": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        "dtype": "float32",
+        "kind": "array",
+        "shape": [12]
+      },
+      "joint_vel": {
+        "data": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        "dtype": "float32",
+        "kind": "array",
+        "shape": [12]
+      }
+    },
+    "kind": "map"
+  },
+  "observation_space": {
+    "children": [
+      {
+        "dtype": "float32",
+        "kind": "box",
+        "shape": [3]
+      },
+      {
+        "dtype": "float32",
+        "kind": "box",
+        "shape": [4]
+      },
+      {
+        "dtype": "float32",
+        "kind": "box",
+        "shape": [3]
+      },
+      {
+        "dtype": "float32",
+        "kind": "box",
+        "shape": [12]
+      },
+      {
+        "dtype": "float32",
+        "kind": "box",
+        "shape": [12]
+      }
+    ],
+    "dtype": "unspecified",
+    "keys": ["ang_vel", "base_quat", "command", "joint_pos", "joint_vel"],
+    "kind": "dict"
+  }
+}

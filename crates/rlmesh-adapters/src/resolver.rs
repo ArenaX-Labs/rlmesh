@@ -7,6 +7,7 @@ mod state;
 mod text;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 
 use super::advisory::Advisory;
 use super::error::{AdapterResolutionError, ErrorCode};
@@ -16,8 +17,8 @@ use super::path::NodePath;
 use super::plans::{ObsPlan, ResolvedAdapter};
 use super::space_view::SpaceView;
 use super::spec::{
-    Attr, EnvFeature, EnvImage, EnvState, EnvTags, EnvText, FrameRef, InputNode, ModelLeaf,
-    ModelSpec,
+    AcceptSet, Attr, EnvFeature, EnvImage, EnvState, EnvTags, EnvText, FrameRef, InputNode,
+    ModelLeaf, ModelSpec, Provenance,
 };
 
 type Result<T> = std::result::Result<T, AdapterResolutionError>;
@@ -119,11 +120,13 @@ pub(super) fn check_geometry(
     }
 }
 
-/// The identity a leaf binds by: its canonical `(role, part)` -- the legacy
-/// `_2` spelling folded onto `(base, "arm_2")` by
+/// The identity a leaf binds by: its canonical `(role, part, provenance)` --
+/// the legacy `_2` spelling folded onto `(base, "arm_2")` by
 /// [`canonical`](crate::roles::registry::canonical), so both spellings meet
-/// on one key.
-pub(super) type LeafKey = (String, Option<String>);
+/// on one key, and the provenance an env state declares, so a sim may
+/// publish one role as its truth and as its estimate. Images and actions
+/// carry no provenance (`None`).
+pub(super) type LeafKey = (String, Option<String>, Option<String>);
 
 /// A leaf indexed under its [`LeafKey`], keeping the part it *declared* (which
 /// the alias fold may differ from) for `describe`.
@@ -132,9 +135,78 @@ pub(super) struct Indexed<T> {
     pub feature: T,
 }
 
-fn leaf_key(role: &str, part: Option<&str>) -> LeafKey {
+fn leaf_key(role: &str, part: Option<&str>, provenance: Option<&str>) -> LeafKey {
     let (role, part) = crate::roles::registry::canonical(role, part);
-    (role.to_owned(), part.map(str::to_owned))
+    (
+        role.to_owned(),
+        part.map(str::to_owned),
+        provenance.map(str::to_owned),
+    )
+}
+
+/// The `provenance` rules, the frame table verbatim with the model side an
+/// accept set: both silent, silent; env only, silent; model only, `caution`;
+/// the env's value in the model's set, silent; anything else, including a
+/// value outside the vocabulary on either side, a hard
+/// [`ErrorCode::ProvenanceMismatch`]. Returns the value to record on the plan.
+pub(super) fn check_provenance(
+    role: &str,
+    env: Option<&FrameRef>,
+    model: Option<&AcceptSet<Provenance>>,
+    advisories: &mut Vec<Advisory>,
+) -> Result<Option<FrameRef>> {
+    let attr = Attr::Provenance;
+    if let Some(value) = env
+        && !attr.recognizes(value)
+    {
+        return Err(err(
+            ErrorCode::ProvenanceMismatch,
+            format!(
+                "role {}: the env declares unrecognized provenance {}; this core knows {:?}",
+                quoted(role),
+                quoted(value.as_str()),
+                attr.vocabulary()
+            ),
+        ));
+    }
+    if let Some(set) = model
+        && set.first_known().is_none()
+    {
+        return Err(err(
+            ErrorCode::ProvenanceMismatch,
+            format!(
+                "role {}: the model declares unrecognized provenance {:?}; this core knows {:?}",
+                quoted(role),
+                set.wire_names(),
+                attr.vocabulary()
+            ),
+        ));
+    }
+    match (env, model) {
+        (None, None) => Ok(None),
+        (Some(env), None) => Ok(Some(env.clone())),
+        (None, Some(set)) => {
+            let declared = set.wire_names().join("|");
+            advisories.push(Advisory::caution(format!(
+                "role {}: the model declares provenance {} but the env declares none, so where \
+                 the values it was trained on came from cannot be verified -- declare it on the \
+                 env to silence this",
+                quoted(role),
+                quoted(&declared),
+            )));
+            Ok(Some(FrameRef::from(declared.as_str())))
+        }
+        (Some(env), Some(set)) if set.wire_names().contains(&env.as_str()) => Ok(Some(env.clone())),
+        (Some(env), Some(set)) => Err(err(
+            ErrorCode::ProvenanceMismatch,
+            format!(
+                "role {}: the model expects provenance {:?} but the env declares {}",
+                quoted(role),
+                set.wire_names(),
+                quoted(env.as_str()),
+            ),
+        )),
+    }
 }
 
 fn index_by_role<'spec, T>(
@@ -154,27 +226,25 @@ fn index_by_role<'spec, T>(
     Ok(by_role)
 }
 
-/// Index leaves by `(role, part)`: a role may repeat across parts (one
-/// `proprio/eef_pos` per arm), never within one.
+/// Index leaves by `(role, part, provenance)`: a role may repeat across
+/// parts (one `proprio/eef_pos` per arm) or provenances (a sim's truth beside
+/// its estimate), never within one key.
 pub(super) fn index_by_key<'spec, T>(
-    features: impl Iterator<Item = (&'spec str, Option<&'spec str>, T)>,
+    features: impl Iterator<Item = (&'spec str, Option<&'spec str>, Option<&'spec str>, T)>,
     label: &str,
 ) -> Result<BTreeMap<LeafKey, Indexed<T>>> {
     let mut by_key: BTreeMap<LeafKey, Indexed<T>> = BTreeMap::new();
-    for (role, part, feature) in features {
-        let key = leaf_key(role, part);
+    for (role, part, provenance, feature) in features {
+        let key = leaf_key(role, part, provenance);
         if by_key.contains_key(&key) {
-            return Err(err(
-                ErrorCode::Duplicate,
-                match &key.1 {
-                    Some(part) => format!(
-                        "duplicate {label} role {} under part {}",
-                        quoted(&key.0),
-                        quoted(part)
-                    ),
-                    None => format!("duplicate {label} role {}", quoted(&key.0)),
-                },
-            ));
+            let mut message = format!("duplicate {label} role {}", quoted(&key.0));
+            if let Some(part) = &key.1 {
+                let _ = write!(message, " under part {}", quoted(part));
+            }
+            if let Some(provenance) = &key.2 {
+                let _ = write!(message, " with provenance {}", quoted(provenance));
+            }
+            return Err(err(ErrorCode::Duplicate, message));
         }
         by_key.insert(
             key,
@@ -190,7 +260,7 @@ pub(super) fn index_by_key<'spec, T>(
 /// Whether any indexed leaf carries `role` (under any part).
 pub(super) fn has_role<T>(by_key: &BTreeMap<LeafKey, Indexed<T>>, role: &str) -> bool {
     let (role, _) = crate::roles::registry::canonical(role, None);
-    by_key.keys().any(|(indexed, _)| indexed == role)
+    by_key.keys().any(|(indexed, _, _)| indexed == role)
 }
 
 /// What a seeker found for `(role, part)` among the other side's leaves.
@@ -201,9 +271,12 @@ pub(super) struct Bound<'a, T> {
     pub part: Option<String>,
 }
 
-/// The `part` identity rules, shared by every planner. `seeker` names who is
-/// looking (`model input "state"`, `env action`), `what` the role's kind word
-/// (`state role`), `offerer` whose leaves are searched (`env`, `model`).
+/// The `part` and `provenance` identity rules, shared by every planner.
+/// `seeker` names who is looking (`model input "state"`, `env action`),
+/// `what` the role's kind word (`state role`), `offerer` whose leaves are
+/// searched (`env`, `model`).
+///
+/// The part rule picks the `(role, part)` the seeker binds under:
 ///
 /// - A named part binds only that leaf; it never rebinds (`Ok(None)` when the
 ///   offerer lacks it, for the caller's optional/fill fallback or error).
@@ -211,60 +284,123 @@ pub(super) struct Bound<'a, T> {
 ///   *only* leaf of that role under any part, with an `info` naming the bind;
 ///   else, several candidates are a [`MissingRole`](ErrorCode::MissingRole)
 ///   that names the parts -- ambiguity is never guessed through.
+///
+/// The provenance rule then picks one leaf among those under that key (an
+/// env may publish a role as its truth and as its estimate):
+///
+/// - A seeker that accepts provenances binds the first of them, in its own
+///   order, that the offerer declares; when none matches and the offerer has
+///   one leaf, that leaf binds and [`check_provenance`] reports the
+///   disagreement (or the caution) precisely; with several it is a
+///   [`ProvenanceMismatch`](ErrorCode::ProvenanceMismatch) naming them.
+/// - A seeker that pins none binds the only leaf; several are an
+///   [`Ambiguous`](ErrorCode::Ambiguous) naming their provenances.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the seeker's identity (role, part, provenance) plus the three message words; \
+              a struct for the words would name nothing the call sites do not already say"
+)]
 pub(super) fn bind<'a, T>(
     by_key: &'a BTreeMap<LeafKey, Indexed<T>>,
     role: &str,
     part: Option<&str>,
+    provenance: Option<&AcceptSet<Provenance>>,
     seeker: &str,
     what: &str,
     offerer: &str,
     advisories: &mut Vec<Advisory>,
 ) -> Result<Option<Bound<'a, T>>> {
-    let key = leaf_key(role, part);
-    if let Some(indexed) = by_key.get(&key) {
-        return Ok(Some(Bound {
-            feature: &indexed.feature,
-            part: part
-                .map(str::to_owned)
-                .or_else(|| indexed.declared_part.clone()),
-        }));
-    }
-    if key.1.is_some() {
-        return Ok(None);
-    }
-    let candidates: Vec<(&str, &Indexed<T>)> = by_key
-        .iter()
-        .filter_map(|((indexed_role, indexed_part), indexed)| {
-            (*indexed_role == key.0)
-                .then_some(indexed_part.as_deref())
-                .flatten()
-                .map(|part| (part, indexed))
-        })
-        .collect();
-    match candidates.as_slice() {
-        [] => Ok(None),
-        [(bound_part, indexed)] => {
-            advisories.push(Advisory::info(format!(
-                "{seeker}: {what} {} declares no part and the {offerer} declares it only under \
-                 part {}; bound to that leaf (declare part= to pin it)",
-                quoted(role),
-                quoted(bound_part)
-            )));
-            Ok(Some(Bound {
-                feature: &indexed.feature,
-                part: Some((*bound_part).to_owned()),
-            }))
+    let (role_key, part_key, _) = leaf_key(role, part, None);
+    let under_part = |wanted: Option<&str>| -> Vec<(&LeafKey, &Indexed<T>)> {
+        by_key
+            .iter()
+            .filter(|((indexed_role, indexed_part, _), _)| {
+                *indexed_role == role_key && indexed_part.as_deref() == wanted
+            })
+            .collect()
+    };
+    let mut candidates = under_part(part_key.as_deref());
+    // The part the rebind chose, when the seeker named none and the offerer
+    // has the role only under one.
+    let mut rebound_part: Option<String> = None;
+    if candidates.is_empty() {
+        if part_key.is_some() {
+            return Ok(None);
         }
-        several => Err(err(
-            ErrorCode::MissingRole,
-            format!(
-                "{seeker} needs {what} {} but the {offerer} declares it under parts {:?}; \
-                 declare part=",
-                quoted(role),
-                several.iter().map(|(part, _)| *part).collect::<Vec<_>>()
-            ),
-        )),
+        let parts: BTreeSet<&str> = by_key
+            .keys()
+            .filter(|(indexed_role, _, _)| *indexed_role == role_key)
+            .filter_map(|(_, indexed_part, _)| indexed_part.as_deref())
+            .collect();
+        match parts.iter().copied().collect::<Vec<_>>().as_slice() {
+            [] => return Ok(None),
+            [only] => {
+                advisories.push(Advisory::info(format!(
+                    "{seeker}: {what} {} declares no part and the {offerer} declares it only \
+                     under part {}; bound to that leaf (declare part= to pin it)",
+                    quoted(role),
+                    quoted(only)
+                )));
+                candidates = under_part(Some(only));
+                rebound_part = Some((*only).to_owned());
+            }
+            several => {
+                return Err(err(
+                    ErrorCode::MissingRole,
+                    format!(
+                        "{seeker} needs {what} {} but the {offerer} declares it under parts \
+                         {several:?}; declare part=",
+                        quoted(role),
+                    ),
+                ));
+            }
+        }
     }
+    let chosen = match provenance {
+        Some(set) => set
+            .wire_names()
+            .into_iter()
+            .find_map(|wanted| {
+                candidates
+                    .iter()
+                    .find(|((_, _, indexed), _)| indexed.as_deref() == Some(wanted))
+                    .copied()
+            })
+            .or_else(|| (candidates.len() == 1).then(|| candidates[0])),
+        None => (candidates.len() == 1).then(|| candidates[0]),
+    };
+    let Some(((_, _, _), indexed)) = chosen else {
+        let offered: Vec<&str> = candidates
+            .iter()
+            .map(|((_, _, indexed), _)| indexed.as_deref().unwrap_or("none"))
+            .collect();
+        return Err(match provenance {
+            None => err(
+                ErrorCode::Ambiguous,
+                format!(
+                    "{seeker}: {what} {} declares no provenance and the {offerer} declares it \
+                     under provenances {offered:?}; declare provenance= to pin one",
+                    quoted(role),
+                ),
+            ),
+            Some(set) => err(
+                ErrorCode::ProvenanceMismatch,
+                format!(
+                    "{seeker}: {what} {} accepts provenance {:?} but the {offerer} declares it \
+                     under {offered:?}",
+                    quoted(role),
+                    set.wire_names(),
+                ),
+            ),
+        });
+    };
+    Ok(Some(Bound {
+        feature: &indexed.feature,
+        part: rebound_part.or_else(|| {
+            part.map(str::to_owned)
+                .or_else(|| indexed.declared_part.clone())
+        }),
+    }))
 }
 
 /// Enforce the role identity rules on the model side (the env side runs them
@@ -365,14 +501,21 @@ pub fn resolve(
         .observation
         .iter()
         .filter_map(|feature| match feature {
-            EnvFeature::Image(image) => Some((image.role.as_str(), image.part.as_deref(), image)),
+            EnvFeature::Image(image) => {
+                Some((image.role.as_str(), image.part.as_deref(), None, image))
+            }
             _ => None,
         });
     let states = env_spec
         .observation
         .iter()
         .filter_map(|feature| match feature {
-            EnvFeature::State(state) => Some((state.role.as_str(), state.part.as_deref(), state)),
+            EnvFeature::State(state) => Some((
+                state.role.as_str(),
+                state.part.as_deref(),
+                state.provenance.as_ref().map(FrameRef::as_str),
+                state,
+            )),
             _ => None,
         });
     let texts = env_spec
@@ -1729,5 +1872,279 @@ mod labels_tests {
             "{notes:?}"
         );
         assert!(!adapter.describe().contains("dropped:"));
+    }
+    /// The Go2 body: gyro, IMU orientation and the velocity command beside the
+    /// joints, with the model reading the orientation as projected gravity and
+    /// clamping the assembled vector (rl_sar `robot_lab`, 45 - 12 for the
+    /// previous action, which is not part of this pairing).
+    fn go2_body_env(base_quat: &str) -> String {
+        let sdk = sdk();
+        format!(
+            r#"{{"observation":{{
+                "ang_vel":{{"type":"state","role":"proprio/base_ang_vel","frame":"robot_base","provenance":"sensed","range":[-20.0,20.0]}},
+                {base_quat},
+                "command":{{"type":"state","role":"command/base_vel","frame":"robot_base","range":[-3.0,3.0]}},
+                "joint_pos":{{"type":"state","role":"proprio/joint_pos","labels":{sdk},"provenance":"sensed"}},
+                "joint_vel":{{"type":"state","role":"proprio/joint_vel","labels":{sdk},"provenance":"sensed","range":[-30.0,30.0]}}}},
+                "action":{{"components":[{{"role":"action/joint_pos","dim":12,"labels":{sdk}}}]}}}}"#
+        )
+    }
+
+    const GO2_BODY_QUAT: &str = r#""base_quat":{"type":"state","role":"proprio/base_rot","encoding":"quat_wxyz","frame":"world","provenance":"sensed"}"#;
+
+    fn go2_body_obs(keys: &[&str]) -> String {
+        let children: Vec<&str> = keys
+            .iter()
+            .map(|key| match *key {
+                "joint_pos" | "joint_vel" => r#"{"kind":"box","shape":[12],"dtype":"float32"}"#,
+                "base_quat" | "base_quat_est" => r#"{"kind":"box","shape":[4],"dtype":"float32"}"#,
+                _ => r#"{"kind":"box","shape":[3],"dtype":"float32"}"#,
+            })
+            .collect();
+        let keys: Vec<String> = keys.iter().map(|key| format!("{key:?}")).collect();
+        format!(
+            r#"{{"kind":"dict","dtype":"unspecified","keys":[{}],"children":[{}]}}"#,
+            keys.join(","),
+            children.join(",")
+        )
+    }
+
+    fn go2_body_model(provenance: &str) -> String {
+        let sdk = sdk();
+        format!(
+            r#"{{"input":{{"obs":{{"type":"state","clip":[-100.0,100.0],"components":[
+                {{"role":"proprio/base_ang_vel","frame":"robot_base","scale":0.25}},
+                {{"role":"proprio/base_rot","encoding":"gravity_xyz","frame":"world"{provenance}}},
+                {{"role":"command/base_vel","frame":"robot_base"}},
+                {{"role":"proprio/joint_pos","labels":{sdk},"axis_offset":[0.0,-0.8,1.5,0.0,-0.8,1.5,0.0,-0.8,1.5,0.0,-0.8,1.5]}},
+                {{"role":"proprio/joint_vel","labels":{sdk},"scale":0.05}}]}}}},
+                "output":{{"components":[{{"role":"action/joint_pos","dim":12,"labels":{sdk},
+                    "axis_scale":[0.125,0.25,0.25,0.125,0.25,0.25,0.125,0.25,0.25,0.125,0.25,0.25],
+                    "axis_offset":[0.0,0.8,-1.5,0.0,0.8,-1.5,0.0,0.8,-1.5,0.0,0.8,-1.5]}}]}}}}"#
+        )
+    }
+
+    #[test]
+    fn the_go2_body_resolves_to_a_33_wide_clamped_observation_reading_gravity() {
+        let tags: EnvTags = serde_json::from_str(&go2_body_env(GO2_BODY_QUAT)).unwrap();
+        let spec: ModelSpec = serde_json::from_str(&go2_body_model("")).unwrap();
+        let obs = go2_body_obs(&["ang_vel", "base_quat", "command", "joint_pos", "joint_vel"]);
+        let adapter =
+            resolve(&tags, &space(&obs), &space(GO2_ACT), &spec, false).expect("resolves");
+        let described = adapter.describe();
+        assert!(
+            described.contains(
+                "concat(ang_vel (*0.25)@robot_base#sensed, base_quat (quat_wxyz->gravity_xyz)@world#sensed, command@robot_base, joint_pos[:12] (+[FR_hip:0.0,"
+            ) && described.contains("#sensed, joint_vel[:12] (*0.05)#sensed) clip[-100.0,100.0]\n"),
+            "got:\n{described}"
+        );
+        assert!(
+            adapter.advisories().is_empty(),
+            "{:?}",
+            adapter.advisories()
+        );
+        let crate::plans::ObsPlan::State(plan) = &adapter.obs_plans[0] else {
+            panic!("expected a state plan");
+        };
+        assert_eq!(plan.native_width, Some(33));
+        let mut raw: BTreeMap<String, Value> = BTreeMap::new();
+        raw.insert("ang_vel".to_owned(), tensor(&[4.0, 0.0, 0.0]));
+        // Identity orientation, wxyz: gravity is straight down in the base.
+        raw.insert("base_quat".to_owned(), tensor(&[1.0, 0.0, 0.0, 0.0]));
+        raw.insert("command".to_owned(), tensor(&[0.5, 0.0, 0.0]));
+        let mut joints = vec![0.0; 12];
+        joints[0] = 1.0e6;
+        raw.insert("joint_pos".to_owned(), tensor(&joints));
+        raw.insert("joint_vel".to_owned(), tensor(&[0.0; 12]));
+        let Value::Map(payload) = adapter.transform_obs(&raw, &NoCustoms).expect("apply") else {
+            panic!("expected a map");
+        };
+        let Value::Tensor(obs) = &payload["obs"] else {
+            panic!("expected a tensor");
+        };
+        let obs = crate::apply::value::to_f32_vec(obs);
+        assert_eq!(obs.len(), 33);
+        assert_eq!(&obs[..3], &[1.0, 0.0, 0.0]);
+        assert_eq!(&obs[3..6], &[0.0, 0.0, -1.0]);
+        assert_eq!(&obs[6..9], &[0.5, 0.0, 0.0]);
+        // The container clamp caught the runaway encoder reading.
+        assert_eq!(obs[9], 100.0);
+        assert!((obs[10] + 0.8).abs() < 1e-6, "{obs:?}");
+    }
+
+    #[test]
+    fn a_sim_publishing_base_rot_twice_needs_the_model_to_pin_a_provenance() {
+        let two = format!(
+            r#"{GO2_BODY_QUAT}, "base_quat_est":{{"type":"state","role":"proprio/base_rot","encoding":"quat_wxyz","frame":"world","provenance":"estimated"}}"#
+        );
+        let truth = GO2_BODY_QUAT.replace("sensed", "privileged");
+        let two = two.replacen(GO2_BODY_QUAT, &truth, 1);
+        let tags: EnvTags = serde_json::from_str(&go2_body_env(&two)).unwrap();
+        let obs = go2_body_obs(&[
+            "ang_vel",
+            "base_quat",
+            "base_quat_est",
+            "command",
+            "joint_pos",
+            "joint_vel",
+        ]);
+        let spec: ModelSpec = serde_json::from_str(&go2_body_model("")).unwrap();
+        let err =
+            resolve(&tags, &space(&obs), &space(GO2_ACT), &spec, false).expect_err("ambiguous");
+        assert_eq!(err.code, ErrorCode::Ambiguous);
+        assert!(
+            err.message
+                .contains(r#"under provenances ["estimated", "privileged"]"#),
+            "{}",
+            err.message
+        );
+        let spec: ModelSpec =
+            serde_json::from_str(&go2_body_model(r#","provenance":"estimated""#)).unwrap();
+        let adapter = resolve(&tags, &space(&obs), &space(GO2_ACT), &spec, false).expect("pinned");
+        assert!(
+            adapter
+                .describe()
+                .contains("base_quat_est (quat_wxyz->gravity_xyz)@world#estimated"),
+            "{}",
+            adapter.describe()
+        );
+        assert!(
+            adapter.advisories().is_empty(),
+            "{:?}",
+            adapter.advisories()
+        );
+        let spec: ModelSpec =
+            serde_json::from_str(&go2_body_model(r#","provenance":"sensed""#)).unwrap();
+        let err = resolve(&tags, &space(&obs), &space(GO2_ACT), &spec, false).expect_err("neither");
+        assert_eq!(err.code, ErrorCode::ProvenanceMismatch);
+        assert!(
+            err.message.contains(r#"accepts provenance ["sensed"] but the env declares it under ["estimated", "privileged"]"#),
+            "{}",
+            err.message
+        );
+    }
+}
+
+#[cfg(test)]
+mod provenance_tests {
+    use super::resolve;
+    use crate::advisory::AdvisorySeverity;
+    use crate::error::ErrorCode;
+    use crate::space_view::SpaceView;
+    use crate::spec::{EnvTags, ModelSpec};
+
+    const OBS: &str = r#"{"kind":"dict","dtype":"unspecified","keys":["rot"],"children":[
+        {"kind":"box","shape":[4],"dtype":"float32"}]}"#;
+    const ACT: &str = r#"{"kind":"box","shape":[1],"dtype":"float32"}"#;
+
+    fn env(provenance: &str) -> String {
+        format!(
+            r#"{{"observation":{{"rot":{{"type":"state","role":"proprio/base_rot","encoding":"quat_wxyz"{provenance}}}}},
+                "action":{{"components":[{{"role":"action/gripper","dim":1}}]}}}}"#
+        )
+    }
+
+    fn model(provenance: &str) -> String {
+        format!(
+            r#"{{"input":{{"s":{{"type":"state","components":[{{"role":"proprio/base_rot","encoding":"quat_wxyz"{provenance}}}]}}}},
+                "output":{{"components":[{{"role":"action/gripper","dim":1}}]}}}}"#
+        )
+    }
+
+    fn do_resolve(
+        env: &str,
+        model: &str,
+    ) -> Result<crate::plans::ResolvedAdapter, crate::error::AdapterResolutionError> {
+        let tags: EnvTags = serde_json::from_str(env).expect("parse env tags");
+        let spec: ModelSpec = serde_json::from_str(model).expect("parse model spec");
+        let obs: SpaceView = serde_json::from_str(OBS).unwrap();
+        let act: SpaceView = serde_json::from_str(ACT).unwrap();
+        resolve(&tags, &obs, &act, &spec, false)
+    }
+
+    #[test]
+    fn agreement_and_env_only_are_silent_and_print_the_value() {
+        for model_side in [
+            "",
+            r#","provenance":"sensed""#,
+            r#","provenance":["estimated","sensed"]"#,
+        ] {
+            let adapter = do_resolve(&env(r#","provenance":"sensed""#), &model(model_side))
+                .expect("resolves");
+            assert!(
+                adapter.describe().contains("concat(rot#sensed)"),
+                "{model_side}: {}",
+                adapter.describe()
+            );
+            assert!(
+                adapter.advisories().is_empty(),
+                "{:?}",
+                adapter.advisories()
+            );
+        }
+        let adapter = do_resolve(&env(""), &model("")).expect("resolves");
+        assert!(
+            adapter.describe().contains("concat(rot)"),
+            "{}",
+            adapter.describe()
+        );
+    }
+
+    #[test]
+    fn a_model_only_declaration_is_a_caution() {
+        let adapter = do_resolve(&env(""), &model(r#","provenance":["sensed","estimated"]"#))
+            .expect("resolves");
+        let notes = adapter.advisories();
+        assert!(
+            notes
+                .iter()
+                .any(|note| note.severity == AdvisorySeverity::Caution
+                    && note.message.contains(
+                        r#"declares provenance "sensed|estimated" but the env declares none"#
+                    )),
+            "{notes:?}"
+        );
+        assert!(
+            adapter.describe().contains("rot#sensed|estimated"),
+            "{}",
+            adapter.describe()
+        );
+        // Quiet channel: never under `dropped:`.
+        assert!(!adapter.describe().contains("dropped:"));
+    }
+
+    #[test]
+    fn a_disagreement_or_an_unknown_value_is_a_provenance_mismatch() {
+        let err = do_resolve(
+            &env(r#","provenance":"privileged""#),
+            &model(r#","provenance":"sensed""#),
+        )
+        .expect_err("mismatch");
+        assert_eq!(err.code, ErrorCode::ProvenanceMismatch);
+        assert!(
+            err.message
+                .contains(r#"expects provenance ["sensed"] but the env declares "privileged""#),
+            "{}",
+            err.message
+        );
+        let err = do_resolve(&env(r#","provenance":"guessed""#), &model("")).expect_err("unknown");
+        assert_eq!(err.code, ErrorCode::ProvenanceMismatch);
+        assert!(
+            err.message.contains("unrecognized provenance \"guessed\""),
+            "{}",
+            err.message
+        );
+        let err = do_resolve(
+            &env(r#","provenance":"sensed""#),
+            &model(r#","provenance":"guessed""#),
+        )
+        .expect_err("unknown");
+        assert_eq!(err.code, ErrorCode::ProvenanceMismatch);
+        assert!(
+            err.message
+                .contains(r#"unrecognized provenance ["guessed"]"#),
+            "{}",
+            err.message
+        );
     }
 }

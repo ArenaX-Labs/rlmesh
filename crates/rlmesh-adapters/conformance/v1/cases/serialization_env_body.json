@@ -1,0 +1,71 @@
+{
+  "kind": "serialization",
+  "side": "env",
+  "doc": {
+    "observation": {
+      "ang_vel": {
+        "type": "state",
+        "role": "proprio/base_ang_vel",
+        "encoding": null,
+        "range": [-20.0, 20.0],
+        "frame": "robot_base",
+        "provenance": "sensed"
+      },
+      "base_quat": {
+        "type": "state",
+        "role": "proprio/base_rot",
+        "encoding": "quat_wxyz",
+        "range": null,
+        "frame": "world",
+        "provenance": "privileged"
+      },
+      "gravity": {
+        "type": "state",
+        "role": "proprio/base_rot",
+        "encoding": "gravity_xyz",
+        "range": null,
+        "frame": "world",
+        "provenance": "estimated"
+      },
+      "command": {
+        "type": "state",
+        "role": "command/base_vel",
+        "encoding": null,
+        "range": [-3.0, 3.0],
+        "frame": "robot_base"
+      },
+      "flat": {
+        "type": "split",
+        "fields": [
+          {
+            "role": "proprio/joint_pos",
+            "dim": 2,
+            "encoding": null,
+            "range": null,
+            "provenance": "sensed",
+            "labels": ["FR_hip", "FR_thigh"]
+          },
+          {
+            "role": null,
+            "dim": 1,
+            "encoding": null,
+            "range": null
+          }
+        ]
+      }
+    },
+    "action": {
+      "clip": null,
+      "components": [
+        {
+          "role": "action/joint_pos",
+          "dim": 2,
+          "encoding": null,
+          "range": null,
+          "binary": false,
+          "labels": ["FR_hip", "FR_thigh"]
+        }
+      ]
+    }
+  }
+}

@@ -430,6 +430,7 @@ fn join_feature(
                 encoding: state.encoding.clone(),
                 range,
                 frame: state.frame.clone(),
+                provenance: state.provenance.clone(),
                 labels: state.labels.clone(),
             })])
         }
@@ -484,8 +485,9 @@ fn join_split(
         });
     }
     let mut features = Vec::new();
-    // Keyed by `(role, part)`: one role may repeat across parts, never within one.
-    let mut seen: Vec<(&str, Option<&str>)> = Vec::new();
+    // Keyed by `(role, part, provenance)`: one role may repeat across parts or
+    // provenances, never within one key.
+    let mut seen: Vec<(&str, Option<&str>, Option<&str>)> = Vec::new();
     let mut offset: u32 = 0;
     for field in &layout.fields {
         if let Some(role) = &field.role {
@@ -501,13 +503,18 @@ fn join_split(
             }
             check_role_dim_law(role, field.dim, &path)?;
             check_role_identity(role, field.part.as_deref(), &path)?;
-            if seen.contains(&(role.as_str(), field.part.as_deref())) {
+            let key = (
+                role.as_str(),
+                field.part.as_deref(),
+                field.provenance.as_ref().map(|value| value.as_str()),
+            );
+            if seen.contains(&key) {
                 return Err(JoinError::DuplicateLayoutRole {
                     key: path,
                     role: role.clone(),
                 });
             }
-            seen.push((role.as_str(), field.part.as_deref()));
+            seen.push(key);
             let space_range = slice_uniform_finite_range(leaf, offset, field.dim);
             let range = reconcile_range(space_range, field.range, &path)?;
             features.push(EnvFeature::State(EnvState {
@@ -519,6 +526,7 @@ fn join_split(
                 encoding: field.encoding.clone(),
                 range,
                 frame: field.frame.clone(),
+                provenance: field.provenance.clone(),
                 labels: field.labels.clone(),
             }));
         }
@@ -717,7 +725,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use crate::spec::{AcceptSet, RotationEncoding};
+    use crate::spec::{AcceptSet, FrameRef, RotationEncoding};
     use crate::spec::{Actuator, Field, ImageTag, SplitLayout, StateTag, TextTag};
 
     fn box_view(shape: Vec<i64>, low: Option<Vec<f64>>, high: Option<Vec<f64>>) -> SpaceView {
@@ -844,6 +852,7 @@ mod tests {
                 range: None,
                 unknown: Default::default(),
                 frame: None,
+                provenance: None,
                 part: None,
                 labels: None,
             })),
@@ -950,6 +959,7 @@ mod tests {
                 range: None,
                 unknown: Default::default(),
                 frame: None,
+                provenance: None,
                 part: None,
                 labels: None,
             })),
@@ -990,6 +1000,7 @@ mod tests {
                     range: None,
                     unknown: Default::default(),
                     frame: None,
+                    provenance: None,
                     part: None,
                     labels: None,
                 })),
@@ -1028,6 +1039,7 @@ mod tests {
                     range: None,
                     unknown: Default::default(),
                     frame: None,
+                    provenance: None,
                     part: None,
                     labels: None,
                 })),
@@ -1037,6 +1049,7 @@ mod tests {
                     range: None,
                     unknown: Default::default(),
                     frame: None,
+                    provenance: None,
                     part: None,
                     labels: None,
                 })),
@@ -1066,6 +1079,7 @@ mod tests {
                     range: None,
                     unknown: Default::default(),
                     frame: None,
+                    provenance: None,
                     part: None,
                     labels: None,
                 }),
@@ -1092,6 +1106,7 @@ mod tests {
                 range: None,
                 unknown: Default::default(),
                 frame: None,
+                provenance: None,
                 part: None,
                 labels: None,
             })),
@@ -1158,6 +1173,7 @@ mod tests {
                         range: None,
                         unknown: Default::default(),
                         frame: None,
+                        provenance: None,
                         part: None,
                         labels: None,
                     },
@@ -1168,6 +1184,7 @@ mod tests {
                         range: None,
                         unknown: Default::default(),
                         frame: None,
+                        provenance: None,
                         part: None,
                         labels: None,
                     },
@@ -1270,6 +1287,7 @@ mod tests {
                 range: None,
                 unknown: Default::default(),
                 frame: None,
+                provenance: None,
                 part: None,
                 labels: None,
             }),
@@ -1293,6 +1311,7 @@ mod tests {
                 range: Some((0.0, 2.0)),
                 unknown: Default::default(),
                 frame: None,
+                provenance: None,
                 part: None,
                 labels: None,
             })
@@ -1330,6 +1349,7 @@ mod tests {
                 range: Some((0.0, 0.08)),
                 unknown: Default::default(),
                 frame: None,
+                provenance: None,
                 part: None,
                 labels: None,
             }),
@@ -1349,6 +1369,7 @@ mod tests {
             range: None,
             unknown: Default::default(),
             frame: None,
+            provenance: None,
             part: None,
             labels: None,
         }
@@ -1389,6 +1410,36 @@ mod tests {
         assert_eq!(states[2].role, "proprio/obj_pos");
         // Offset skips past the role-less field (3 + 1 + 1 = 5).
         assert_eq!((states[2].slice_offset, states[2].dim), (Some(5), Some(3)));
+    }
+
+    #[test]
+    fn a_split_may_publish_one_role_under_two_provenances() {
+        let obs = box_view(vec![8], None, None);
+        let action = box_view(vec![0], None, None);
+        let mut truth = field(
+            Some("proprio/base_rot"),
+            4,
+            Some(RotationEncoding::QuatWxyz),
+        );
+        truth.provenance = Some(FrameRef::from("privileged"));
+        let mut estimate = truth.clone();
+        estimate.provenance = Some(FrameRef::from("estimated"));
+        let features = join(&layout_tags(vec![truth.clone(), estimate]), &obs, &action)
+            .expect("two provenances are two leaves");
+        let provenances: Vec<Option<&str>> = features
+            .observation
+            .iter()
+            .filter_map(|feature| match feature {
+                EnvFeature::State(state) => Some(state.provenance.as_ref().map(FrameRef::as_str)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(provenances, vec![Some("privileged"), Some("estimated")]);
+        let err = join(&layout_tags(vec![truth.clone(), truth]), &obs, &action).unwrap_err();
+        assert!(
+            matches!(err, JoinError::DuplicateLayoutRole { .. }),
+            "{err}"
+        );
     }
 
     #[test]

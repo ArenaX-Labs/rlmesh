@@ -267,7 +267,9 @@ fn require_attr(
     let owed = match (attr, crate::roles::registry::role_def(role)) {
         (Attr::Frame, Some(def)) => def.frame == FrameLaw::Framed,
         (Attr::Reference, Some(def)) => def.reference == ReferenceLaw::Referenced,
-        (_, None) => false,
+        // No tier requires a provenance: an env that names none is one that
+        // makes no claim, which the resolve rules treat as silence.
+        (Attr::Provenance, Some(_)) | (_, None) => false,
     };
     if !owed || declared.is_some() {
         return Ok(());

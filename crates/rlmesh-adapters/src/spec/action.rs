@@ -174,6 +174,18 @@ impl TryFrom<ActionWire> for Action {
                 return Err(format!("actuator {:?} fill must be finite", component.role));
             }
             let locus = format!("actuator {:?}", component.role);
+            // A sink encoding is observation-only: a controller takes a
+            // rotation, and a direction does not determine one (the direction
+            // law). Rigid on the action side, so this is a parse error.
+            if let Some(encoding) = component.encoding.as_ref().map(|encoding| encoding.base())
+                && encoding.is_sink()
+            {
+                return Err(format!(
+                    "{locus}: encoding {:?} is observation-only (a direction gravity points, \
+                     not a rotation a controller can take); declare a rotation encoding",
+                    encoding.as_str()
+                ));
+            }
             for (name, scalar, axis) in [
                 (
                     "scale",
@@ -566,6 +578,20 @@ mod no_action_accept_set_contract {
 
     const LIST_ENCODED_COMPONENTS: &str =
         r#"{"components": [{"role": "action/rot", "dim": 6, "encoding": ["rot6d", "quat_wxyz"]}]}"#;
+
+    #[test]
+    fn the_gravity_sink_is_refused_on_any_actuator() {
+        // Observation-only: a direction does not determine the rotation a
+        // controller takes, so the rigid action side refuses it at parse,
+        // native or as a custom encoding's base.
+        for doc in [
+            r#"{"components": [{"role": "action/rot", "dim": 3, "encoding": "gravity_xyz"}]}"#,
+            r#"{"components": [{"role": "action/rot", "dim": 3, "encoding": {"base": "gravity_xyz", "to_base": "m:g"}}]}"#,
+        ] {
+            let err = serde_json::from_str::<Action>(doc).unwrap_err();
+            assert!(err.to_string().contains("observation-only"), "{doc}: {err}");
+        }
+    }
 
     #[test]
     fn action_encoding_list_fails_to_parse() {

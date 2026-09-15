@@ -1,0 +1,76 @@
+{
+  "action_space": {
+    "dtype": "float32",
+    "kind": "box",
+    "shape": [1]
+  },
+  "env_tags": {
+    "action": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": null,
+          "role": "action/gripper"
+        }
+      ]
+    },
+    "observation": {
+      "rot": {
+        "encoding": "quat_wxyz",
+        "range": null,
+        "role": "proprio/base_rot",
+        "type": "state"
+      }
+    }
+  },
+  "expect": {
+    "advisories_contain": [
+      "caution: role \"proprio/base_rot\": the model declares provenance \"sensed|estimated\" but the env declares none"
+    ],
+    "describe": "observation:\n  \"s\" <- concat(rot (quat_wxyz->gravity_xyz)#sensed|estimated)\naction:\n  \"action/gripper\" <- model[0:1]",
+    "ok": true
+  },
+  "kind": "resolve",
+  "model_spec": {
+    "input": {
+      "s": {
+        "components": [
+          {
+            "encoding": "gravity_xyz",
+            "provenance": ["sensed", "estimated"],
+            "role": "proprio/base_rot"
+          }
+        ],
+        "dtype": "float32",
+        "type": "state"
+      }
+    },
+    "output": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": null,
+          "role": "action/gripper"
+        }
+      ]
+    }
+  },
+  "observation_space": {
+    "children": [
+      {
+        "dtype": "float32",
+        "kind": "box",
+        "shape": [4]
+      }
+    ],
+    "dtype": "unspecified",
+    "keys": ["rot"],
+    "kind": "dict"
+  }
+}

@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use super::{Indexed, LeafKey, Result, bind, check_geometry, err};
+use super::{Indexed, LeafKey, Result, bind, check_geometry, check_provenance, err};
 use crate::advisory::Advisory;
 use crate::error::ErrorCode;
 use crate::fmt::{quoted, quoted_accept_set, quoted_encoding, quoted_leaf_keys};
@@ -83,6 +83,7 @@ fn fill_piece(
         fill: Some(fill),
         absent_role,
         frame: None,
+        provenance: None,
         part,
         width: Some(width),
     }
@@ -234,6 +235,21 @@ fn select_state_encoding(
             .first_known()
             .expect("model has a recognized encoding")
     };
+    // The direction law: a sink carries a direction, not a rotation, so an
+    // env that publishes one binds only a model that reads that same sink.
+    if native.is_sink() && dst != native {
+        return Err(err(
+            ErrorCode::EncodingMismatch,
+            format!(
+                "state role {}: the env declares encoding {} which is a direction, not a \
+                 rotation, so it cannot be converted to {}; only a rotation encoding \
+                 converts into it",
+                quoted(role),
+                quoted_encoding(Some(native)),
+                quoted_encoding(Some(dst))
+            ),
+        ));
+    }
     Ok((Some(native), Some(dst)))
 }
 
@@ -280,6 +296,7 @@ pub(super) fn plan_state(
             states_by_role,
             role,
             component.part.as_deref(),
+            component.provenance.as_ref(),
             &format!("model input {at}"),
             "state role",
             "env",
@@ -381,11 +398,33 @@ pub(super) fn plan_state(
         };
         let (src_encoding, dst_encoding) =
             select_state_encoding(role, env_state.encoding.as_ref(), model_set.as_ref())?;
+        // A post-rotation decodes the source into a matrix, which a sink has
+        // none of (the codec already refuses a sink as the literal itself).
+        if let Some(src) = src_encoding
+            && src.is_sink()
+            && component.post_rotate.is_some()
+        {
+            return Err(err(
+                ErrorCode::EncodingMismatch,
+                format!(
+                    "state role {}: post_rotate needs a rotation to decode but the env \
+                     declares encoding {}, a direction",
+                    quoted(role),
+                    quoted_encoding(Some(src))
+                ),
+            ));
+        }
         let frame = check_geometry(
             Attr::Frame,
             role,
             env_state.frame.as_ref(),
             component.frame.as_ref(),
+            advisories,
+        )?;
+        let provenance = check_provenance(
+            role,
+            env_state.provenance.as_ref(),
+            component.provenance.as_ref(),
             advisories,
         )?;
         // When converting, the env feature's declared width must match the
@@ -503,6 +542,7 @@ pub(super) fn plan_state(
             fill: None,
             absent_role: false,
             frame,
+            provenance,
             part: bound.part,
             width,
         });
@@ -516,6 +556,7 @@ pub(super) fn plan_state(
         placement,
         pieces,
         pad_to: model_input.pad_to,
+        clip: model_input.clip,
         native_width,
         dtype: model_input.dtype.clone(),
         reshape: model_input.reshape.clone(),
@@ -583,6 +624,40 @@ mod encoding_selection_tests {
         assert!(
             error.message.contains("unrecognized"),
             "got: {}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn the_gravity_sink_converts_in_but_never_out() {
+        // Any rotation projects to gravity...
+        let (env, model) = (set(r#""quat_wxyz""#), set(r#""gravity_xyz""#));
+        let (src, dst) =
+            select_state_encoding("proprio/base_rot", Some(&env), Some(&model)).expect("ok");
+        assert_eq!(src, Some(RotationEncoding::QuatWxyz));
+        assert_eq!(dst, Some(RotationEncoding::GravityXyz));
+        // ...gravity reads as itself...
+        let (env, model) = (
+            set(r#""gravity_xyz""#),
+            set(r#"["quat_wxyz", "gravity_xyz"]"#),
+        );
+        let (src, dst) =
+            select_state_encoding("proprio/base_rot", Some(&env), Some(&model)).expect("ok");
+        assert_eq!(
+            (src, dst),
+            (
+                Some(RotationEncoding::GravityXyz),
+                Some(RotationEncoding::GravityXyz)
+            )
+        );
+        // ...and never becomes a rotation again.
+        let (env, model) = (set(r#""gravity_xyz""#), set(r#""quat_wxyz""#));
+        let error =
+            select_state_encoding("proprio/base_rot", Some(&env), Some(&model)).expect_err("err");
+        assert_eq!(error.code, ErrorCode::EncodingMismatch);
+        assert!(
+            error.message.contains("a direction, not a rotation"),
+            "{}",
             error.message
         );
     }

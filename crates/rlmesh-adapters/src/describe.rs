@@ -444,12 +444,17 @@ fn describe_state(plan: &StatePlan) -> String {
         }
         write_geometry(&mut note, Attr::Frame, piece.frame.as_ref());
         write_part(&mut note, piece.part.as_deref());
+        write_geometry(&mut note, Attr::Provenance, piece.provenance.as_ref());
         parts.push(note);
     }
-    let suffix = match plan.pad_to {
-        Some(pad_to) => format!(", pad to {pad_to}"),
-        None => String::new(),
-    };
+    let mut suffix = String::new();
+    // The container steps in their order: the clamp, then the pad.
+    if let Some((low, high)) = plan.clip {
+        let _ = write!(suffix, " clip[{},{}]", number(low), number(high));
+    }
+    if let Some(pad_to) = plan.pad_to {
+        let _ = write!(suffix, ", pad to {pad_to}");
+    }
     format!(
         "{} <- concat({}){}",
         quoted(&plan.placement.to_string()),

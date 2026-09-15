@@ -56,6 +56,10 @@ pub struct StatePiece {
     /// declared one (`None` when both were silent). Rendered by `describe`; the
     /// disagreement it would represent is already a resolve error.
     pub frame: Option<FrameRef>,
+    /// The agreed provenance, when either side declared one: the env leaf's
+    /// value, else the model's declaration (its accepted values joined by
+    /// `|` when it named several). Rendered by `describe` as `#sensed`.
+    pub provenance: Option<FrameRef>,
     /// The body part this piece was bound under, when a side declared one:
     /// the model's own `part`, else the env leaf's. Rendered by `describe` as
     /// `#part`; `None` when neither side named one, so every pre-`part`
@@ -77,6 +81,8 @@ pub struct StatePlan {
     pub placement: NodePath,
     pub pieces: Vec<StatePiece>,
     pub pad_to: Option<u32>,
+    /// Clamp bounds applied to the assembled vector, before `pad_to`.
+    pub clip: Option<(f64, f64)>,
     /// Assembled width before `pad_to`, when every piece's width is known.
     pub native_width: Option<u32>,
     pub dtype: String,

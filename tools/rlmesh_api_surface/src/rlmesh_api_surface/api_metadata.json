@@ -331,6 +331,18 @@
     "rlmesh.adapters.JOINT_VEL": {
       "description": "Observation role for joint velocities (proprio/joint_vel)."
     },
+    "rlmesh.adapters.BASE_ANG_VEL": {
+      "description": "Observation role for the base angular velocity, the IMU gyro (proprio/base_ang_vel)."
+    },
+    "rlmesh.adapters.BASE_ROT": {
+      "description": "Observation role for the base orientation (proprio/base_rot); read it with encoding=\"gravity_xyz\" for projected gravity."
+    },
+    "rlmesh.adapters.COMMAND_BASE_VEL": {
+      "description": "Command role for the base velocity setpoint [vx, vy, wz] the runner hands the policy (command/base_vel)."
+    },
+    "rlmesh.adapters.Provenance": {
+      "description": "Literal of where a state leaf's numbers come from: sensed, estimated, or privileged."
+    },
     "rlmesh.adapters.LEFT_ARM": {
       "description": "Body part for the left arm (left_arm), where a role repeats across a bimanual body."
     },
@@ -465,6 +477,9 @@
     },
     "rlmesh.adapters.FRANKA_PANDA": {
       "description": "Embodiment profile for the Franka Emika Panda: panda_joint1 through panda_joint7."
+    },
+    "rlmesh.adapters.UR5E": {
+      "description": "Embodiment profile for the Universal Robots UR5e: the six URDF arm joints, shoulder_pan_joint through wrist_3_joint; a gripper is its own leaf."
     }
   },
   "native": {

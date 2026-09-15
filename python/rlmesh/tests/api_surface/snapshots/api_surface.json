@@ -1189,6 +1189,9 @@
       "ACTION_JOINT_VEL",
       "ARM_2",
       "BASE",
+      "BASE_ANG_VEL",
+      "BASE_ROT",
+      "COMMAND_BASE_VEL",
       "EEF_POS",
       "EEF_POS_2",
       "EEF_ROT",
@@ -1216,6 +1219,7 @@
       "RIGHT_LEG",
       "ROTATION_DIMS",
       "TORSO",
+      "UR5E",
       "Action",
       "Actuator",
       "Adapter",
@@ -1242,6 +1246,7 @@
       "ObsNode",
       "ObsTransform",
       "ObservationRoles",
+      "Provenance",
       "Reference",
       "Resample",
       "Rotation",
@@ -1527,9 +1532,28 @@
         "signature": "BASE = str",
         "stability": "Stable"
       },
+      "BASE_ANG_VEL": {
+        "kind": "type alias",
+        "signature": "BASE_ANG_VEL = str",
+        "stability": "Stable"
+      },
+      "BASE_ROT": {
+        "kind": "type alias",
+        "signature": "BASE_ROT = str",
+        "stability": "Stable"
+      },
+      "COMMAND_BASE_VEL": {
+        "kind": "type alias",
+        "signature": "COMMAND_BASE_VEL = str",
+        "stability": "Stable"
+      },
       "Concat": {
         "kind": "class",
         "members": {
+          "clip": {
+            "kind": "attribute",
+            "signature": "clip: tuple[float, float] | None"
+          },
           "container": {
             "kind": "attribute",
             "signature": "container: Literal['array', 'list']"
@@ -1551,7 +1575,7 @@
             "signature": "reshape: tuple[int, ...] | None"
           }
         },
-        "signature": "Concat(*parts: ConcatPart, pad_to: int | None = None, dtype: str = 'float32', reshape: tuple[int, ...] | None = None, container: Literal['array', 'list'] = 'array')",
+        "signature": "Concat(*parts: ConcatPart, pad_to: int | None = None, dtype: str = 'float32', reshape: tuple[int, ...] | None = None, container: Literal['array', 'list'] = 'array', clip: tuple[float, float] | None = None)",
         "stability": "Stable"
       },
       "ConcatPart": {
@@ -1740,6 +1764,10 @@
             "kind": "attribute",
             "signature": "part: str | None"
           },
+          "provenance": {
+            "kind": "attribute",
+            "signature": "provenance: Provenance | None"
+          },
           "range": {
             "kind": "attribute",
             "signature": "range: tuple[float, float] | None"
@@ -1749,7 +1777,7 @@
             "signature": "role: str | None"
           }
         },
-        "signature": "Field(role: str | None = None, dim: int = 0, encoding: RotationEncoding | Sequence[RotationEncoding] | None = None, range: tuple[float, float] | None = None, *, frame: Frame | None = None, part: str | None = None, labels: Sequence[str] | None = None)",
+        "signature": "Field(role: str | None = None, dim: int = 0, encoding: RotationEncoding | Sequence[RotationEncoding] | None = None, range: tuple[float, float] | None = None, *, frame: Frame | None = None, provenance: Provenance | None = None, part: str | None = None, labels: Sequence[str] | None = None)",
         "stability": "Stable"
       },
       "FitMode": {
@@ -2056,6 +2084,11 @@
         "signature": "PARTS = list[str]",
         "stability": "Stable"
       },
+      "Provenance": {
+        "kind": "type alias",
+        "signature": "Provenance = Literal['sensed', 'estimated', 'privileged']",
+        "stability": "Stable"
+      },
       "RIGHT_ARM": {
         "kind": "type alias",
         "signature": "RIGHT_ARM = str",
@@ -2102,7 +2135,7 @@
       },
       "RotationEncoding": {
         "kind": "type alias",
-        "signature": "RotationEncoding = Literal['quat_xyzw', 'quat_wxyz', 'axis_angle', 'rot6d', 'rot6d_rowmajor', 'euler_xyz']",
+        "signature": "RotationEncoding = Literal['quat_xyzw', 'quat_wxyz', 'axis_angle', 'rot6d', 'rot6d_rowmajor', 'euler_xyz', 'gravity_xyz']",
         "stability": "Stable"
       },
       "RotationTransform": {
@@ -2134,6 +2167,10 @@
       "State": {
         "kind": "class",
         "members": {
+          "clip": {
+            "kind": "attribute",
+            "signature": "clip: tuple[float, float] | None"
+          },
           "container": {
             "kind": "attribute",
             "signature": "container: Literal['array', 'list']"
@@ -2186,6 +2223,10 @@
             "kind": "attribute",
             "signature": "post_rotate: Rotation | None"
           },
+          "provenance": {
+            "kind": "attribute",
+            "signature": "provenance: Provenance | Sequence[Provenance] | None"
+          },
           "range": {
             "kind": "attribute",
             "signature": "range: tuple[float, float] | None"
@@ -2203,7 +2244,7 @@
             "signature": "scale: float | Sequence[float] | None"
           }
         },
-        "signature": "State(role: str, encoding: RotationEncoding | Sequence[RotationEncoding] | CustomEncoding | None = None, dim: int | None = None, index: int | None = None, optional: bool = False, range: tuple[float, float] | None = None, pad_to: int | None = None, dtype: str = 'float32', reshape: tuple[int, ...] | None = None, container: Literal['array', 'list'] = 'array', *, fill: float = 0.0, post_rotate: Rotation | None = None, scale: float | Sequence[float] | None = None, offset: float | Sequence[float] | None = None, frame: Frame | None = None, part: str | None = None, labels: Sequence[str] | None = None)",
+        "signature": "State(role: str, encoding: RotationEncoding | Sequence[RotationEncoding] | CustomEncoding | None = None, dim: int | None = None, index: int | None = None, optional: bool = False, range: tuple[float, float] | None = None, pad_to: int | None = None, dtype: str = 'float32', reshape: tuple[int, ...] | None = None, container: Literal['array', 'list'] = 'array', *, fill: float = 0.0, post_rotate: Rotation | None = None, scale: float | Sequence[float] | None = None, offset: float | Sequence[float] | None = None, frame: Frame | None = None, provenance: Provenance | Sequence[Provenance] | None = None, part: str | None = None, labels: Sequence[str] | None = None, clip: tuple[float, float] | None = None)",
         "stability": "Stable"
       },
       "StateTag": {
@@ -2225,6 +2266,10 @@
             "kind": "attribute",
             "signature": "part: str | None"
           },
+          "provenance": {
+            "kind": "attribute",
+            "signature": "provenance: Provenance | None"
+          },
           "range": {
             "kind": "attribute",
             "signature": "range: tuple[float, float] | None"
@@ -2234,7 +2279,7 @@
             "signature": "role: str"
           }
         },
-        "signature": "StateTag(role: str, encoding: RotationEncoding | Sequence[RotationEncoding] | None = None, range: tuple[float, float] | None = None, *, frame: Frame | None = None, part: str | None = None, labels: Sequence[str] | None = None)",
+        "signature": "StateTag(role: str, encoding: RotationEncoding | Sequence[RotationEncoding] | None = None, range: tuple[float, float] | None = None, *, frame: Frame | None = None, provenance: Provenance | None = None, part: str | None = None, labels: Sequence[str] | None = None)",
         "stability": "Stable"
       },
       "TORSO": {
@@ -2270,6 +2315,11 @@
           }
         },
         "signature": "TextTag(role: str)",
+        "stability": "Stable"
+      },
+      "UR5E": {
+        "kind": "type alias",
+        "signature": "UR5E = EmbodimentProfile",
         "stability": "Stable"
       },
       "resolve": {

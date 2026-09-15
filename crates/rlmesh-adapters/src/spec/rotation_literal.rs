@@ -71,6 +71,15 @@ impl TryFrom<RotationLiteralWire> for RotationLiteral {
     type Error = String;
 
     fn try_from(wire: RotationLiteralWire) -> Result<Self, Self::Error> {
+        // A sink encoding is a direction, not a rotation: there is no matrix
+        // to right-multiply (the direction law).
+        if wire.encoding.is_sink() {
+            return Err(format!(
+                "post_rotate: encoding {:?} is a direction, not a rotation; only a rotation \
+                 encoding converts into it, and none out of it",
+                wire.encoding.as_str()
+            ));
+        }
         let expected = wire.encoding.dims() as usize;
         if wire.value.len() != expected {
             return Err(format!(
@@ -147,6 +156,15 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("orthonormal"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_the_gravity_sink() {
+        let err = serde_json::from_str::<RotationLiteral>(
+            r#"{"encoding": "gravity_xyz", "value": [0.0, 0.0, -1.0]}"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("not a rotation"), "got: {err}");
     }
 
     #[test]

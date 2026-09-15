@@ -7,6 +7,10 @@ conventions that ship with RLMesh:
 - Domain-agnostic roles (cameras, instruction text, joints).
 - Arm manipulation roles (end-effector, gripper, and the bimanual ``_2``
   convention).
+- Body roles (the floating base: gyro, orientation, and the velocity command
+  under the ``command/`` kind). Projected gravity is not a role but the
+  ``gravity_xyz`` encoding of ``BASE_ROT``; the base linear velocity is
+  deliberately unregistered (a real robot only has an estimate of it).
 
 Registry policy: a domain earns its roles here when its first real env/model
 pair lands; until then its specs use ad-hoc strings. Role strings are wire
@@ -48,6 +52,9 @@ from ..._rlmesh import (
     ACTION_JOINT_POS,
     ACTION_JOINT_POS_2,
     ACTION_JOINT_VEL,
+    BASE_ANG_VEL,
+    BASE_ROT,
+    COMMAND_BASE_VEL,
     EEF_POS,
     EEF_POS_2,
     EEF_ROT,
@@ -77,6 +84,9 @@ __all__ = [
     "ACTION_JOINT_POS",
     "ACTION_JOINT_POS_2",
     "ACTION_JOINT_VEL",
+    "BASE_ANG_VEL",
+    "BASE_ROT",
+    "COMMAND_BASE_VEL",
     "EEF_POS",
     "EEF_POS_2",
     "EEF_ROT",

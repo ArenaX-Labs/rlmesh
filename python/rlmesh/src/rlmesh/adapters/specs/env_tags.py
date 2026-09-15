@@ -35,7 +35,7 @@ from ._codec import (
 from .action import Action
 from .action_serialization import action_from_dict, action_to_dict
 from .model_serialization import COMMON_LEAF_TYPES, decode_node, encode_node
-from .vocabularies import Frame, ImageLayout, RotationEncoding
+from .vocabularies import Frame, ImageLayout, Provenance, RotationEncoding
 
 
 @dataclass(frozen=True)
@@ -81,6 +81,13 @@ class StateTag:
             omitted from the wire when unset. A model that declares a different
             one fails resolution; a model that declares one the env does not
             draws a caution.
+        provenance: Where this entry's numbers come from: ``"sensed"`` (a
+            physical sensor or its simulated equivalent), ``"estimated"`` (a
+            state estimator) or ``"privileged"`` (simulator truth with no
+            hardware counterpart). Part of the leaf's identity, so an env may
+            publish one role twice under two provenances; a model that
+            declares one the env contradicts fails resolution. Keyword-only
+            and omitted from the wire when unset.
         part: The body part this entry belongs to, when the role repeats
             across a body (``"left_arm"``, ``"right_arm"``, ...). An identity
             key the resolver matches on; see :class:`ImageTag`. Keyword-only
@@ -96,6 +103,7 @@ class StateTag:
     encoding: RotationEncoding | Sequence[RotationEncoding] | None = None
     range: tuple[float, float] | None = None
     frame: Frame | None = field(default=None, kw_only=True)
+    provenance: Provenance | None = field(default=None, kw_only=True)
     part: str | None = field(default=None, kw_only=True)
     labels: Sequence[str] | None = field(default=None, kw_only=True)
 
@@ -140,6 +148,8 @@ class Field:
             resolution errors rather than silently overriding them.
         frame: Coordinate frame this field's values are expressed in; see
             :attr:`StateTag.frame`. A role-less skip may not carry one.
+        provenance: Where this field's numbers come from; see
+            :attr:`StateTag.provenance`. A role-less skip may not carry one.
         part: The body part this field belongs to; see :attr:`StateTag.part`.
             A role-less skip may not carry one.
         labels: The axis names of this field, ``dim`` of them; see
@@ -151,6 +161,7 @@ class Field:
     encoding: RotationEncoding | Sequence[RotationEncoding] | None = None
     range: tuple[float, float] | None = None
     frame: Frame | None = field(default=None, kw_only=True)
+    provenance: Provenance | None = field(default=None, kw_only=True)
     part: str | None = field(default=None, kw_only=True)
     labels: Sequence[str] | None = field(default=None, kw_only=True)
     # The `dim = 0` default only satisfies dataclass field ordering (the optional
@@ -185,8 +196,9 @@ class Split:
 
         Split(Field(EEF_POS, 3), Field(GRIPPER, 1))
 
-    Construction rejects a ``(role, part)`` declared by more than one field (a
-    role may repeat across parts, never within one). The
+    Construction rejects a ``(role, part, provenance)`` declared by more than
+    one field (a role may repeat across parts or provenances, never within one
+    key). The
     authoritative Rust codec enforces the same rule at the wire door;
     duplicating it here is deliberate (the fail-fast-at-construction exception,
     like ``Field``'s ``dim >= 1`` check), so the author's own mistake surfaces
@@ -201,7 +213,11 @@ class Split:
     def __init__(self, *fields: Field) -> None:
         if not fields:
             raise ValueError("Split needs at least one Field")
-        keys = [(field.role, field.part) for field in fields if field.role is not None]
+        keys = [
+            (field.role, field.part, field.provenance)
+            for field in fields
+            if field.role is not None
+        ]
         if len(keys) != len(set(keys)):
             raise ValueError("Split declares a role more than once")
         object.__setattr__(self, "fields", tuple(fields))
@@ -227,6 +243,8 @@ def _field_to_dict(field: Field) -> dict[str, Any]:
     # Additive: emitted only when set, so pre-`frame` tags stay byte-identical.
     if field.frame is not None:
         out["frame"] = field.frame
+    if field.provenance is not None:
+        out["provenance"] = field.provenance
     if field.part is not None:
         out["part"] = field.part
     if field.labels is not None:
@@ -242,6 +260,7 @@ def _field_from_dict(item: Mapping[str, Any]) -> Field:
         encoding=one_or_many(item.get("encoding")),
         range=to_pair(item.get("range")),
         frame=item.get("frame"),
+        provenance=item.get("provenance"),
         part=item.get("part"),
         labels=item.get("labels"),
     )
@@ -268,6 +287,8 @@ def _leaf_to_dict(tag: ObsLeaf) -> dict[str, Any]:
         }
         if tag.frame is not None:
             state["frame"] = tag.frame
+        if tag.provenance is not None:
+            state["provenance"] = tag.provenance
         if tag.part is not None:
             state["part"] = tag.part
         if tag.labels is not None:
@@ -317,6 +338,7 @@ def _leaf_from_dict(item: Mapping[str, Any]) -> ObsLeaf:
             encoding=one_or_many(item.get("encoding")),
             range=to_pair(item.get("range")),
             frame=item.get("frame"),
+            provenance=item.get("provenance"),
             part=item.get("part"),
             labels=item.get("labels"),
         )
@@ -360,7 +382,9 @@ class ObservationRoles:
     texts: tuple[str, ...] = ()
 
 
-_RolePart: TypeAlias = tuple[str, str | None]
+# A leaf's identity: ``(role, part, provenance)``; an image or text carries no
+# provenance.
+_RolePart: TypeAlias = tuple[str, str | None, str | None]
 
 
 def _walk_observation_roles(
@@ -369,11 +393,11 @@ def _walk_observation_roles(
     states: list[_RolePart],
     texts: list[_RolePart],
 ) -> None:
-    """Collect declared ``(role, part)`` pairs from an observation tag tree, in declaration order.
+    """Collect declared ``(role, part, provenance)`` keys from an observation tag tree, in declaration order.
 
     Handles the three node shapes of ``ObsNode``: a Dict node (mapping), a Tuple
     node, and a bare leaf. A role-less (skip) :class:`Field` produces nothing;
-    a leaf without a part carries ``None``. Any other node (e.g. a ``list``
+    a leaf without a part or provenance carries ``None``. Any other node (e.g. a ``list``
     container) raises the same ``TypeError`` the wire encoder raises for that
     tree, so the walker cannot silently accept a tree ``to_dict`` rejects.
     """
@@ -384,13 +408,15 @@ def _walk_observation_roles(
         for child in cast("tuple[Any, ...]", node):
             _walk_observation_roles(child, images, states, texts)
     elif isinstance(node, ImageTag):
-        images.append((node.role, node.part))
+        images.append((node.role, node.part, None))
     elif isinstance(node, StateTag):
-        states.append((node.role, node.part))
+        states.append((node.role, node.part, node.provenance))
     elif isinstance(node, Split):
-        states.extend((f.role, f.part) for f in node.fields if f.role is not None)
+        states.extend(
+            (f.role, f.part, f.provenance) for f in node.fields if f.role is not None
+        )
     elif isinstance(node, TextTag):
-        texts.append((node.role, None))
+        texts.append((node.role, None, None))
     else:
         raise TypeError(
             f"observation node must be a leaf, a dict, or a tuple, got {node!r}"
@@ -416,15 +442,16 @@ class EnvTags:
     action: Action
 
     def __post_init__(self) -> None:
-        """Fail fast on a duplicate observation ``(role, part)`` at construction.
+        """Fail fast on a duplicate observation ``(role, part, provenance)`` at construction.
 
-        Every consumer's resolve indexes env features by role and part per kind
-        and rejects a duplicate, so tags that declare one can never resolve;
-        catch it here (width-independently -- a vector env skips space-width
-        checks but a duplicate is invalid regardless), extending the same
-        fail-fast-at-construction pattern as ``Split``'s duplicate-field check.
-        A role may repeat across parts (one ``proprio/eef_pos`` per arm), never
-        within one.
+        Every consumer's resolve indexes env features by role, part and
+        provenance per kind and rejects a duplicate, so tags that declare one
+        can never resolve; catch it here (width-independently -- a vector env
+        skips space-width checks but a duplicate is invalid regardless),
+        extending the same fail-fast-at-construction pattern as ``Split``'s
+        duplicate-field check. A role may repeat across parts (one
+        ``proprio/eef_pos`` per arm) or provenances (a sim's truth beside its
+        estimate), never within one key.
         """
         images: list[_RolePart] = []
         states: list[_RolePart] = []
@@ -432,13 +459,16 @@ class EnvTags:
         _walk_observation_roles(self.observation, images, states, texts)
         for kind, keys in (("image", images), ("state", states), ("text", texts)):
             seen: set[_RolePart] = set()
-            for role, part in keys:
-                if (role, part) in seen:
+            for key in keys:
+                if key in seen:
+                    role, part, provenance = key
                     where = "" if part is None else f" under part {part!r}"
+                    if provenance is not None:
+                        where += f" with provenance {provenance!r}"
                     raise ValueError(
                         f"env tags declare {kind} role {role!r}{where} more than once"
                     )
-                seen.add((role, part))
+                seen.add(key)
 
     def __hash__(self) -> int:
         """Hash consistently with the generated order-insensitive ``__eq__``.
@@ -465,9 +495,9 @@ class EnvTags:
         texts: list[_RolePart] = []
         _walk_observation_roles(self.observation, images, states, texts)
         return ObservationRoles(
-            images=tuple(role for role, _ in images),
-            states=tuple(role for role, _ in states),
-            texts=tuple(role for role, _ in texts),
+            images=tuple(role for role, _, _ in images),
+            states=tuple(role for role, _, _ in states),
+            texts=tuple(role for role, _, _ in texts),
         )
 
     def to_dict(self) -> dict[str, Any]:

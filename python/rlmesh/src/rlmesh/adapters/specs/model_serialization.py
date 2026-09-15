@@ -184,6 +184,7 @@ def _part_to_dict(part: State | Constant) -> Any:
         and part.scale is None
         and part.offset is None
         and part.frame is None
+        and part.provenance is None
         and part.part is None
         and part.labels is None
     )
@@ -217,6 +218,11 @@ def _part_to_dict(part: State | Constant) -> Any:
             out[name] = value
     if part.frame is not None:
         out["frame"] = part.frame
+    # One value is a bare string, an accept-set a list (the encoding's form).
+    if isinstance(part.provenance, tuple):
+        out["provenance"] = list(cast("tuple[str, ...]", part.provenance))
+    elif part.provenance is not None:
+        out["provenance"] = part.provenance
     if part.part is not None:
         out["part"] = part.part
     if part.labels is not None:
@@ -238,7 +244,7 @@ def _state_parts(item: State | Concat) -> tuple[State | Constant, ...]:
 
 
 def _state_to_dict(item: State | Concat) -> dict[str, Any]:
-    return {
+    state: dict[str, Any] = {
         "type": "state",
         "components": [_part_to_dict(part) for part in _state_parts(item)],
         "pad_to": item.pad_to,
@@ -247,6 +253,10 @@ def _state_to_dict(item: State | Concat) -> dict[str, Any]:
         "reshape": list(item.reshape) if item.reshape is not None else None,
         "container": item.container,
     }
+    # Additive: emitted only when set, so every pre-`clip` spec is byte-identical.
+    if item.clip is not None:
+        state["clip"] = list(item.clip)
+    return state
 
 
 def model_leaf_to_dict(item: ModelLeaf) -> dict[str, Any]:
@@ -324,6 +334,7 @@ def _part_from_dict(item: object) -> ConcatPart:
         scale=part.get("axis_scale", part.get("scale")),
         offset=part.get("axis_offset", part.get("offset")),
         frame=part.get("frame"),
+        provenance=one_or_many(part.get("provenance")),
         part=part.get("part"),
         labels=part.get("labels"),
     )
@@ -378,6 +389,7 @@ def model_leaf_from_dict(data: Mapping[str, Any]) -> ModelLeaf:
         pad_to = data.get("pad_to")
         dtype = data.get("dtype", "float32")
         container = data.get("container", "array")
+        clip = to_pair(data.get("clip"))
         # `_part_from_dict` yields a bare role ``str`` for a role-only wire
         # component and a parameterized ``State`` for an object component.
         parts = tuple(_part_from_dict(part) for part in data["components"])
@@ -402,12 +414,14 @@ def model_leaf_from_dict(data: Mapping[str, Any]) -> ModelLeaf:
                 scale=base.scale,
                 offset=base.offset,
                 frame=base.frame,
+                provenance=base.provenance,
                 part=base.part,
                 labels=base.labels,
                 pad_to=pad_to,
                 dtype=dtype,
                 reshape=reshape_t,
                 container=container,
+                clip=clip,
             )
         return Concat(
             *parts,
@@ -415,6 +429,7 @@ def model_leaf_from_dict(data: Mapping[str, Any]) -> ModelLeaf:
             dtype=dtype,
             reshape=reshape_t,
             container=container,
+            clip=clip,
         )
     if kind == "text":
         return Text(

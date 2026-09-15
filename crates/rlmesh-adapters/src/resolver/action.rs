@@ -202,6 +202,15 @@ fn check_action_dims(model: &Actuator, env: &Actuator, role: &str, subset: bool)
     Ok(())
 }
 
+/// A model output keyed for [`index_by_key`]: `(role, part, no provenance,
+/// (start offset, actuator))`.
+type PlacedOutput<'a> = (
+    &'a str,
+    Option<&'a str>,
+    Option<&'a str>,
+    (u32, &'a Actuator),
+);
+
 pub(super) fn plan_action(
     model: &Action,
     env: &Action,
@@ -221,11 +230,11 @@ pub(super) fn plan_action(
     // Model outputs keyed by `(role, part)`, each with its start offset. A
     // role-less (opaque) model actuator emits dims the env ignores: it advances
     // the cursor but is matched by nothing, so only roled components are keyed.
-    let mut placed: Vec<(&str, Option<&str>, (u32, &Actuator))> = Vec::new();
+    let mut placed: Vec<PlacedOutput<'_>> = Vec::new();
     let mut cursor: u32 = 0;
     for component in &model.components {
         if let Some(role) = &component.role {
-            placed.push((role, component.part.as_deref(), (cursor, component)));
+            placed.push((role, component.part.as_deref(), None, (cursor, component)));
         }
         cursor = cursor.checked_add(component.dim).ok_or_else(|| {
             err(
@@ -281,7 +290,7 @@ pub(super) fn plan_action(
         let env_key = {
             let (role, part) =
                 crate::roles::registry::canonical(role, env_component.part.as_deref());
-            (role.to_owned(), part.map(str::to_owned))
+            (role.to_owned(), part.map(str::to_owned), None)
         };
         if seen_env.insert(env_key.clone(), ()).is_some() {
             // Mirror the model-side dedup above (and the env-side StateLayout
@@ -306,6 +315,7 @@ pub(super) fn plan_action(
             &offsets,
             role,
             env_component.part.as_deref(),
+            None,
             "env action",
             "role",
             "model",

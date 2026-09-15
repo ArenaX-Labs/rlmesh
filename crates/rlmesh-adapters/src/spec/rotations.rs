@@ -4,15 +4,17 @@ use serde::{Deserialize, Serialize};
 
 /// Rotation representation of a state feature or action component.
 ///
-/// **Frozen v1 vocabulary.** The known encodings below are part of the v1 wire
-/// contract; an unknown encoding string is rejected (today at parse time).
-/// Adding an encoding is a v2 key bump (see the version dispatch in
-/// [`crate::v1`]) with v1 still readable. Graceful per-field degradation
-/// (parse-now / reject-at-resolve via an `Unknown(String)` arm) is an
-/// *additive, non-wire-breaking* reader refinement that may land post-freeze —
-/// it does not change what a valid v1 document looks like, so it is not gated
-/// on the freeze. The TS/FE binding already models this field as an open
-/// `string`, so it degrades gracefully regardless of the Rust representation.
+/// **Adding a value.** The vocabulary is closed on both sides, but the two
+/// sides tolerate a new value differently, and that decides what a new value
+/// costs. On the observation side the field is an [`AcceptSet`](super::AcceptSet):
+/// an old core parses a value it does not know as an unknown entry, round-trips
+/// it, and fails at *resolve* naming it, so an observation-side value (such as
+/// [`GravityXyz`](Self::GravityXyz)) mints no edition and no key bump. On the
+/// action side [`ActionEncoding`](super::ActionEncoding) is rigid (a single
+/// value, rejected at parse when unknown), so a value a controller can take
+/// would need an edition before an old core could read a spec that names it.
+/// The TS/FE binding models this field as an open `string`, so it degrades
+/// gracefully regardless of the Rust representation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RotationEncoding {
@@ -35,26 +37,44 @@ pub enum RotationEncoding {
     /// `'xyz'` convention; pitch is recovered in `[-pi/2, pi/2]`). Other
     /// Euler conventions are not built in -- use a custom input for them.
     EulerXyz,
+    /// Projected gravity: the gravity direction expressed in the body frame,
+    /// `R_world_from_base^T · (0, 0, -1)`, the 3-vector every locomotion
+    /// checkpoint reads instead of an orientation. An identity orientation
+    /// yields `(0, 0, -1)`; a robot on its back yields `(0, 0, 1)`.
+    ///
+    /// **A sink, not a rotation.** Any rotation encoding converts *into* it,
+    /// but it carries only a direction (the yaw is gone), so nothing converts
+    /// *out of* it: a source declared `gravity_xyz` binds only a reader that
+    /// wants `gravity_xyz`, a `post_rotate` cannot decode it, and an action
+    /// component cannot be expressed in it.
+    GravityXyz,
 }
 
 impl RotationEncoding {
     /// Every encoding, for consumers exporting the vocabulary.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::QuatXyzw,
         Self::QuatWxyz,
         Self::AxisAngle,
         Self::Rot6d,
         Self::Rot6dRowMajor,
         Self::EulerXyz,
+        Self::GravityXyz,
     ];
 
     /// Definitional width of this encoding (the `ROTATION_DIMS` law).
     pub const fn dims(self) -> u32 {
         match self {
             Self::QuatXyzw | Self::QuatWxyz => 4,
-            Self::AxisAngle | Self::EulerXyz => 3,
+            Self::AxisAngle | Self::EulerXyz | Self::GravityXyz => 3,
             Self::Rot6d | Self::Rot6dRowMajor => 6,
         }
+    }
+
+    /// Whether this encoding is a sink: a direction a rotation projects to,
+    /// which nothing decodes back into a rotation (the direction law).
+    pub const fn is_sink(self) -> bool {
+        matches!(self, Self::GravityXyz)
     }
 
     /// Wire/display name (matches the JSON form).
@@ -66,6 +86,7 @@ impl RotationEncoding {
             Self::Rot6d => "rot6d",
             Self::Rot6dRowMajor => "rot6d_rowmajor",
             Self::EulerXyz => "euler_xyz",
+            Self::GravityXyz => "gravity_xyz",
         }
     }
 }
@@ -101,9 +122,18 @@ mod tests {
 
     #[test]
     fn unknown_encoding_is_rejected() {
-        // Frozen vocabulary: an unrecognized encoding is rejected (today at
-        // parse). If graceful degradation lands later this becomes a
-        // resolve-time rejection — update this test deliberately then.
+        // The bare enum rejects an unrecognized value at parse; the
+        // observation-side `AcceptSet` is what tolerates one until resolve.
         assert!(serde_json::from_str::<RotationEncoding>("\"rot10d\"").is_err());
+    }
+
+    #[test]
+    fn gravity_is_the_only_sink_and_is_three_wide() {
+        assert_eq!(RotationEncoding::GravityXyz.dims(), 3);
+        let sinks: Vec<_> = RotationEncoding::ALL
+            .into_iter()
+            .filter(|encoding| encoding.is_sink())
+            .collect();
+        assert_eq!(sinks, vec![RotationEncoding::GravityXyz]);
     }
 }

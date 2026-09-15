@@ -63,6 +63,12 @@ pub struct StateTag {
     /// is byte-identical.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frame: Option<FrameRef>,
+    /// Where this feature's numbers come from: `sensed`, `estimated` or
+    /// `privileged` (see [`PROVENANCES`](super::frames::PROVENANCES)). Part
+    /// of the leaf's identity, so an env may publish one role under two
+    /// provenances. Omitted when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<FrameRef>,
     /// The body part this feature belongs to; see [`ImageTag::part`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub part: Option<String>,
@@ -101,6 +107,8 @@ struct FieldWire {
     #[serde(default)]
     frame: Option<FrameRef>,
     #[serde(default)]
+    provenance: Option<FrameRef>,
+    #[serde(default)]
     part: Option<String>,
     #[serde(default)]
     labels: Option<Vec<String>>,
@@ -122,11 +130,13 @@ impl TryFrom<FieldWire> for Field {
             && (wire.encoding.is_some()
                 || wire.range.is_some()
                 || wire.frame.is_some()
+                || wire.provenance.is_some()
                 || wire.part.is_some()
                 || wire.labels.is_some())
         {
             return Err(
-                "a role-less field (a skip) cannot carry an encoding, range, frame, part or labels"
+                "a role-less field (a skip) cannot carry an encoding, range, frame, \
+                 provenance, part or labels"
                     .to_owned(),
             );
         }
@@ -147,6 +157,7 @@ impl TryFrom<FieldWire> for Field {
             encoding: wire.encoding,
             range: wire.range,
             frame: wire.frame,
+            provenance: wire.provenance,
             part: wire.part,
             labels: wire.labels,
             unknown: wire.unknown,
@@ -176,6 +187,10 @@ pub struct Field {
     /// [`StateTag::frame`]. A role-less skip may not carry one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frame: Option<FrameRef>,
+    /// Where this field's numbers come from; see [`StateTag::provenance`]. A
+    /// role-less skip may not carry one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<FrameRef>,
     /// The body part this field belongs to; see [`ImageTag::part`]. A
     /// role-less skip may not carry one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -209,12 +224,17 @@ impl TryFrom<SplitLayoutWire> for SplitLayout {
         if wire.fields.is_empty() {
             return Err("a state layout needs at least one field".to_owned());
         }
-        // Keyed by `(role, part)`: one role may repeat across parts (a joint
-        // vector per arm), never within the same part.
+        // Keyed by `(role, part, provenance)`: one role may repeat across
+        // parts (a joint vector per arm) or provenances (a sim's truth beside
+        // its estimate), never within the same key.
         let mut seen = std::collections::BTreeSet::new();
         for field in &wire.fields {
             if let Some(role) = field.role.as_deref()
-                && !seen.insert((role, field.part.as_deref()))
+                && !seen.insert((
+                    role,
+                    field.part.as_deref(),
+                    field.provenance.as_ref().map(FrameRef::as_str),
+                ))
             {
                 return Err(match &field.part {
                     Some(part) => format!(
@@ -514,6 +534,40 @@ mod state_field_wire_tests {
         .unwrap();
         let json = serde_json::to_string(&tag).unwrap();
         assert!(json.contains(r#""labels":["FR_hip"]"#), "{json}");
+    }
+
+    #[test]
+    fn provenance_is_one_value_omitted_when_unset_and_keys_a_split_field() {
+        use super::SplitLayout;
+        let tag: super::ObsLeaf = serde_json::from_str(
+            r#"{"type": "state", "role": "proprio/base_rot", "provenance": "privileged"}"#,
+        )
+        .unwrap();
+        let json = serde_json::to_string(&tag).unwrap();
+        assert!(json.contains(r#""provenance":"privileged""#), "{json}");
+        let bare: super::ObsLeaf =
+            serde_json::from_str(r#"{"type": "state", "role": "proprio/base_rot"}"#).unwrap();
+        assert!(!serde_json::to_string(&bare).unwrap().contains("provenance"));
+        let err =
+            serde_json::from_str::<Field>(r#"{"dim": 3, "provenance": "sensed"}"#).unwrap_err();
+        assert!(err.to_string().contains("role-less"), "got: {err}");
+        // A sim publishes its truth beside its estimate: two fields, one
+        // role, distinct provenances.
+        let ok: SplitLayout = serde_json::from_str(
+            r#"{"fields": [{"role": "proprio/base_rot", "dim": 4, "provenance": "privileged"},
+                           {"role": "proprio/base_rot", "dim": 4, "provenance": "estimated"}]}"#,
+        )
+        .expect("one role, two provenances");
+        assert_eq!(
+            ok.fields[1].provenance.as_ref().map(|p| p.as_str()),
+            Some("estimated")
+        );
+        let err = serde_json::from_str::<SplitLayout>(
+            r#"{"fields": [{"role": "r", "dim": 1, "provenance": "estimated"},
+                           {"role": "r", "dim": 1, "provenance": "estimated"}]}"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("more than once"), "got: {err}");
     }
 
     #[test]

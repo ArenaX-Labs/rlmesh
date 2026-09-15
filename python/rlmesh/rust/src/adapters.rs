@@ -145,6 +145,9 @@ const WIRE_CONSTANTS: &[(&str, &str)] = &[
     ("ACTION_EEF_ROT", roles::manipulation::ACTION_EEF_ROT),
     ("ACTION_EEF_POS_2", roles::manipulation::ACTION_EEF_POS_2),
     ("ACTION_EEF_ROT_2", roles::manipulation::ACTION_EEF_ROT_2),
+    ("BASE_ANG_VEL", roles::body::BASE_ANG_VEL),
+    ("BASE_ROT", roles::body::BASE_ROT),
+    ("COMMAND_BASE_VEL", roles::body::COMMAND_BASE_VEL),
     ("LEFT_ARM", roles::parts::LEFT_ARM),
     ("RIGHT_ARM", roles::parts::RIGHT_ARM),
     ("ARM_2", roles::parts::ARM_2),
@@ -194,6 +197,9 @@ mod stub_constants {
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_EEF_ROT", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_EEF_POS_2", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_EEF_ROT_2", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "BASE_ANG_VEL", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "BASE_ROT", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "COMMAND_BASE_VEL", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "LEFT_ARM", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "RIGHT_ARM", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ARM_2", String);

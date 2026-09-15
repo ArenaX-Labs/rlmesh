@@ -21,8 +21,18 @@ from ..._rlmesh import (
 )
 
 ImageLayout: TypeAlias = Literal["hwc", "chw"]
+# ``gravity_xyz`` is a sink: the gravity direction in the body frame
+# (``R_world_from_base^T · (0, 0, -1)``), which any rotation encoding converts
+# into and nothing converts out of. Observation-side only; an actuator or a
+# ``post_rotate`` naming it is a codec error.
 RotationEncoding: TypeAlias = Literal[
-    "quat_xyzw", "quat_wxyz", "axis_angle", "rot6d", "rot6d_rowmajor", "euler_xyz"
+    "quat_xyzw",
+    "quat_wxyz",
+    "axis_angle",
+    "rot6d",
+    "rot6d_rowmajor",
+    "euler_xyz",
+    "gravity_xyz",
 ]
 # Typing view of the frozen FitMode vocab (FitMode::ALL in v1/spec/layouts.rs).
 # Validated by the Rust codec at normalize; this only gives authors static
@@ -43,6 +53,10 @@ Resample: TypeAlias = Literal[
 # `Reference` qualifies a delta -- the pose the controller integrates it against.
 Frame: TypeAlias = Literal["world", "robot_base"]
 Reference: TypeAlias = Literal["current", "target"]
+# Where a state leaf's numbers come from (PROVENANCES in v1/spec/frames.rs): a
+# physical sensor or its simulated equivalent, a state estimator, or simulator
+# truth with no hardware counterpart. A disagreement is a resolve error.
+Provenance: TypeAlias = Literal["sensed", "estimated", "privileged"]
 # How a crop box is taken: ``"zoom"`` resamples the fractional box straight to
 # the target (PIL's ``Image.resize(size, box=...)``), ``"slice"`` cuts an
 # integer center box out first and resizes that.
@@ -70,6 +84,7 @@ __all__ = [
     "FitMode",
     "Frame",
     "ImageLayout",
+    "Provenance",
     "Reference",
     "Resample",
     "RotationEncoding",

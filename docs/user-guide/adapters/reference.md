@@ -10,7 +10,7 @@ Every snippet uses `import rlmesh.adapters as adapt`.
 
 A role is the string that matches an environment feature to a model input. Roles are an **open vocabulary**: any string works as long as the env tag and the model spec agree on it verbatim. The constants below are the well-known conventions RLMesh ships; reach for them so independently authored envs and models line up, and invent your own string for anything they do not cover.
 
-Role strings carry a feature-kind prefix, not a domain prefix (two domains sharing `proprio/joint_pos` is intentional). The kinds are a **closed set of five**: `image/`, `proprio/`, `text/`, `action/`, and `command/` (a numeric setpoint the runner hands the policy, the numeric sibling of `text/instruction`; no `command/` role is registered yet). The set is enforced in code: a role under any other prefix is refused when you author it (`adapt.tag`, `to_dict()`, the publish gate) and when a pair resolves, so a spec written by a newer core still parses and relays but fails loudly here rather than binding to nothing. `x/` remains the escape for a whole role; a role with no `/` names no kind and is simply ad-hoc.
+Role strings carry a feature-kind prefix, not a domain prefix (two domains sharing `proprio/joint_pos` is intentional). The kinds are a **closed set of five**: `image/`, `proprio/`, `text/`, `action/`, and `command/` (a numeric setpoint the runner hands the policy, the numeric sibling of `text/instruction`; `command/base_vel` is its first registered role). The set is enforced in code: a role under any other prefix is refused when you author it (`adapt.tag`, `to_dict()`, the publish gate) and when a pair resolves, so a spec written by a newer core still parses and relays but fails loudly here rather than binding to nothing. `x/` remains the escape for a whole role; a role with no `/` names no kind and is simply ad-hoc.
 
 | Constant           | Wire string            | Domain       | Kind       | Typical width / encoding            |
 | ------------------ | ---------------------- | ------------ | ---------- | ----------------------------------- |
@@ -30,12 +30,17 @@ Role strings carry a feature-kind prefix, not a domain prefix (two domains shari
 | `ACTION_GRIPPER`   | `action/gripper`       | manipulation | `action/`  | 1                                   |
 | `ACTION_EEF_POS`   | `action/eef_pos`       | manipulation | `action/`  | 3 (absolute Cartesian target)       |
 | `ACTION_EEF_ROT`   | `action/eef_rot`       | manipulation | `action/`  | width follows the rotation encoding |
+| `BASE_ANG_VEL`     | `proprio/base_ang_vel` | body         | `proprio/` | 3 (the IMU gyro, framed)            |
+| `BASE_ROT`         | `proprio/base_rot`     | body         | `proprio/` | width follows the rotation encoding |
+| `COMMAND_BASE_VEL` | `command/base_vel`     | body         | `command/` | 3 (`[vx, vy, wz]`, framed)          |
 
 You always pin widths explicitly (`dim`/`index` on a part, `dim` on an actuator); a _registered_ role with a fixed canonical width then **validates** that declared `dim` (e.g. `eef_pos` must be 3-D, a mismatch is a resolve error); it never supplies it. Rotation widths follow the declared encoding (see [Vocabularies](#vocabularies)).
 
 **Registered vs. ad-hoc roles.** A registered role (the table above) is a shared contract: independently authored envs and models line up on it without prior agreement, and the fixed-width ones validate their `dim`. An _ad-hoc_ role (any other `<kind>/<name>` string) still resolves on verbatim agreement, but it draws a non-fatal authoring nudge, and at the managed-service publish boundary a curated tier may reject it (`role_policy="strict"`). When a role is _intentionally_ non-standard (a self-contained env/model pair you own, or a not-yet-blessed domain), mark it with the reserved **`x/` prefix**: an `x/...` role is never nudged and always passes the publish gate, declaring "I know this isn't standard." For an action dim no model reads, prefer a role-less (opaque) actuator over an ad-hoc role.
 
 A role is **registered when both sides of it exist**: an environment that produces the data and a model that reads it. One side alone does not earn a slot — a camera nothing looks at, or a command no policy emits, stays ad-hoc (or `x/`) until its counterpart ships, because until then nothing has pinned what the numbers mean.
+
+A role also names a **raw sensed or commanded quantity**, never a function of one. The three body roles are what a legged robot's base reports and takes: the gyro (`BASE_ANG_VEL`), the IMU orientation (`BASE_ROT`) and the velocity setpoint the runner hands the policy (`COMMAND_BASE_VEL`), all three expressed in a `frame`. The projected gravity every locomotion checkpoint reads is not a fourth role: it is `BASE_ROT` read with `encoding="gravity_xyz"` (see [Vocabularies](#vocabularies)). The base linear velocity is deliberately unregistered: a real robot has only an estimate of it, so a role would silently mean two different things in sim and on hardware; a gait-phase clock is neither sensed nor commanded and stays a `Constant` or an `x/` role.
 
 ### Parts
 
@@ -127,11 +132,12 @@ A humanoid with more joints than a checkpoint drives is the subset case end to e
 
 The label tuples ship as data so nobody retypes twelve joint names: `rlmesh.adapters.embodiments` carries one `EmbodimentProfile` (`.name`, `.parts`, `.joints`) per body, defined once in the native crate.
 
-| Profile                    | `.name`            | `.joints`                                                                                                                                                  |
-| -------------------------- | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `embodiments.GO2`          | `unitree_go2`      | 12, SDK motor order: `FR_hip, FR_thigh, FR_calf, FL_hip, ..., RR_..., RL_...`                                                                              |
-| `embodiments.G1_29DOF`     | `unitree_g1_29dof` | 29: `left_hip_pitch` .. `left_ankle_roll`, `right_*` x6, `waist_yaw`, `waist_roll`, `waist_pitch`, `left_shoulder_pitch` .. `left_wrist_yaw`, `right_*` x7 |
-| `embodiments.FRANKA_PANDA` | `franka_panda`     | 7: `panda_joint1` .. `panda_joint7`                                                                                                                        |
+| Profile                    | `.name`            | `.joints`                                                                                                                                                                                   |
+| -------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `embodiments.GO2`          | `unitree_go2`      | 12, SDK motor order: `FR_hip, FR_thigh, FR_calf, FL_hip, ..., RR_..., RL_...`                                                                                                               |
+| `embodiments.G1_29DOF`     | `unitree_g1_29dof` | 29: `left_hip_pitch` .. `left_ankle_roll`, `right_*` x6, `waist_yaw`, `waist_roll`, `waist_pitch`, `left_shoulder_pitch` .. `left_wrist_yaw`, `right_*` x7                                  |
+| `embodiments.FRANKA_PANDA` | `franka_panda`     | 7: `panda_joint1` .. `panda_joint7`                                                                                                                                                         |
+| `embodiments.UR5E`         | `ur5e`             | 6, URDF order: `shoulder_pan_joint`, `shoulder_lift_joint`, `elbow_joint`, `wrist_1_joint`, `wrist_2_joint`, `wrist_3_joint` (a Robotiq or other gripper is its own `proprio/gripper` leaf) |
 
 An environment writes `labels=embodiments.GO2.joints`; a model writes the same tuple, a subset, or a reordering. Profiles are data, not a resolver input: the resolver never consults them, two sides agree on label strings or they do not. What consults them is the **label lint**: a tuple whose set matches no shipped profile (subsets allowed, order ignored) draws the same non-fatal `info` an ad-hoc role does, `unknown_labels`, naming the closest profile by overlap, and the managed `--require-labels` tier refuses it. A profile grows the way a role does, when a real environment and model pair needs it.
 
@@ -147,16 +153,20 @@ Rotation encodings are a closed set (a remote client must resolve a spec with no
 | `rot6d`          | 6     | 6-D continuous (Zhou et al.)      |
 | `rot6d_rowmajor` | 6     | 6-D continuous, row-major packing |
 | `euler_xyz`      | 3     | Euler angles, XYZ                 |
+| `gravity_xyz`    | 3     | projected gravity, a sink (below) |
+
+`gravity_xyz` is the gravity direction expressed in the body frame, `R_world_from_base^T · (0, 0, -1)`: an upright base reads `(0, 0, -1)`, one on its back `(0, 0, 1)`. It is the 3-vector locomotion checkpoints consume instead of an orientation, and it follows a **direction law**: any rotation encoding converts _into_ it, but it carries only a direction (the yaw is gone), so nothing converts _out_ of it. An env that publishes `gravity_xyz` natively binds only a model part that reads `gravity_xyz` (anything else is an `EncodingMismatch`), a `post_rotate` cannot name it (it composes _before_ the projection when the model reads a rotation as gravity), and an actuator cannot be expressed in it (a codec error). It is observation-side only, and because the observation side reads encodings through an accept set, an older core parses it as an unknown entry and fails at resolve naming it; no edition is minted.
 
 Other vocabularies:
 
-| Vocabulary    | Values                   | Default                             | Notes                               |
-| ------------- | ------------------------ | ----------------------------------- | ----------------------------------- |
-| Image layout  | `hwc`, `chw`             | `hwc`                               | axis order of the stored image      |
-| Fit mode      | `stretch`, `crop`, `pad` | (none)                              | how to reconcile an aspect mismatch |
-| Crop mode     | `zoom`, `slice`          | `zoom`                              | how a `crop` box is taken           |
-| Channel order | `rgb`, `bgr`             | `rgb`                               | channel order the model expects     |
-| dtype         | any NumPy dtype name     | `uint8` (image) / `float32` (state) | string, e.g. `"float32"`            |
+| Vocabulary    | Values                              | Default                             | Notes                                                                  |
+| ------------- | ----------------------------------- | ----------------------------------- | ---------------------------------------------------------------------- |
+| Provenance    | `sensed`, `estimated`, `privileged` | (none)                              | where a state leaf's numbers come from (see [Provenance](#provenance)) |
+| Image layout  | `hwc`, `chw`                        | `hwc`                               | axis order of the stored image                                         |
+| Fit mode      | `stretch`, `crop`, `pad`            | (none)                              | how to reconcile an aspect mismatch                                    |
+| Crop mode     | `zoom`, `slice`                     | `zoom`                              | how a `crop` box is taken                                              |
+| Channel order | `rgb`, `bgr`                        | `rgb`                               | channel order the model expects                                        |
+| dtype         | any NumPy dtype name                | `uint8` (image) / `float32` (state) | string, e.g. `"float32"`                                               |
 
 ### Frames and references
 
@@ -191,6 +201,29 @@ action:
 ```
 
 At the managed publish boundary the `--require-frames` tier turns the optionality off: every role the registry says owes an attribute must declare one. Its twin, `--require-labels`, requires `labels` on every numeric leaf that carries a joint role (`proprio/joint_pos`, `proprio/joint_vel`, `action/joint_pos`, `action/joint_vel`) and requires every label tuple to match a shipped [embodiment profile](#embodiment-profiles). Locally, and by default, declaring nothing stays legal.
+
+Neither attribute is part of a leaf's identity: an env leaf is found by `(role, part, provenance)` (see [Provenance](#provenance)), and its frame or reference is then checked against the model's.
+
+### Provenance
+
+Two envs can publish `proprio/base_rot` as the same four numbers and mean different things: a simulator hands out the true orientation, a robot hands out what its state estimator believes. A checkpoint trained on the first that silently binds the second is the sim-to-real failure nobody sees until the robot moves. `provenance` names where a state leaf's numbers come from, so that pairing is a resolve error instead of a limp.
+
+| Value        | Meaning                                        |
+| ------------ | ---------------------------------------------- |
+| `sensed`     | a physical sensor, or its simulated equivalent |
+| `estimated`  | a state estimator's output                     |
+| `privileged` | simulator truth with no hardware counterpart   |
+
+It is keyword-only on `StateTag` and `Field` (one value) and on a `State`/`Concat` part (one value, or a sequence of the ones the checkpoint accepts, serialized as a bare string when one). The rules are the frame table above, verbatim, with the model side a set: both silent, silent; env only, silent; model only, `caution`; the env's value in the model's set, silent; anything else, including a value outside the vocabulary on either side, a `ProvenanceMismatch`.
+
+Unlike `frame`, provenance is part of the leaf's **identity**: an env leaf is keyed `(role, part, provenance)`, so a simulator may publish one role twice, as its truth and as the estimate a robot would have, and a model picks by declaring what it wants. A model that declares none against two such leaves is `Ambiguous` (the error names the provenances; declare `provenance=`); one that declares `"estimated"` binds the estimate; one that accepts several binds the first of them, in its own order, that the env declares. A gyro, an IMU orientation and joint encoders are `sensed` on both a simulated and a real robot by the vocabulary's definition, so a sim/real env pair needs no branch for them; a sim-only privileged leaf is a different observation space and belongs on a `tag_params` branch.
+
+`explain()` shows the agreed value as a `#sensed` suffix after any `#part`, and a model-only set as `#sensed|estimated`:
+
+```text
+observation:
+  "obs" <- concat(ang_vel (*0.25)@robot_base#sensed, base_quat (quat_wxyz->gravity_xyz)@world#sensed, ...)
+```
 
 Normalization is one overloaded field, `normalize`: `False` (off, the default), `True` (the conventional `[0, 1]`), or a `(low, high)` pair (e.g. `(-1.0, 1.0)`) to map into a specific range. One field, so an on/off flag can never disagree with a range, and `False` is an authoritative off-switch.
 
@@ -242,14 +275,15 @@ Nesting is real `dict` nesting that mirrors a nested `Dict` space (`{"agent": {"
 
 {class}`~rlmesh.adapters.StateTag`: one numeric proprioception leaf.
 
-| Field                   | Default | What it declares                                                           | When to use                          |
-| ----------------------- | ------- | -------------------------------------------------------------------------- | ------------------------------------ |
-| `role` (1st positional) | --      | the state role to match                                                    | always                               |
-| `encoding`              | `None`  | rotation encoding (single, or a native-first preference sequence)          | the role is a rotation               |
-| `range`                 | `None`  | `(low, high)` bounds where the space is unbounded                          | the space leaves this leaf unbounded |
-| `frame` (keyword-only)  | `None`  | the coordinate frame these values are expressed in                         | the role is an absolute pose         |
-| `part` (keyword-only)   | `None`  | the body part this entry belongs to (see [Parts](#parts))                  | the role repeats across the body     |
-| `labels` (keyword-only) | `None`  | the axis names in the env's order, one per element (see [Labels](#labels)) | a joint vector                       |
+| Field                       | Default | What it declares                                                           | When to use                                                     |
+| --------------------------- | ------- | -------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| `role` (1st positional)     | --      | the state role to match                                                    | always                                                          |
+| `encoding`                  | `None`  | rotation encoding (single, or a native-first preference sequence)          | the role is a rotation                                          |
+| `range`                     | `None`  | `(low, high)` bounds where the space is unbounded                          | the space leaves this leaf unbounded                            |
+| `frame` (keyword-only)      | `None`  | the coordinate frame these values are expressed in                         | the role is an absolute pose                                    |
+| `provenance` (keyword-only) | `None`  | where these numbers come from (see [Provenance](#provenance))              | a sim publishes truth beside an estimate, or a checkpoint cares |
+| `part` (keyword-only)       | `None`  | the body part this entry belongs to (see [Parts](#parts))                  | the role repeats across the body                                |
+| `labels` (keyword-only)     | `None`  | the axis names in the env's order, one per element (see [Labels](#labels)) | a joint vector                                                  |
 
 `range` only supplies bounds the space lacks. If the space declares finite bounds that disagree with it, resolution errors rather than silently overriding them.
 
@@ -275,17 +309,18 @@ adapt.EnvTags(
 
 `Split(*Field)` takes its fields positionally and needs at least one. Field widths must sum to the leaf width (checked at join). A {class}`~rlmesh.adapters.Field`:
 
-| Field                   | Default            | What it declares                                  | When to use                         |
-| ----------------------- | ------------------ | ------------------------------------------------- | ----------------------------------- |
-| `role` (1st positional) | `None`             | the role for this slice; `None` is a **skip**     | name it, or skip with `None`        |
-| `dim`                   | -- (required, ≥ 1) | element count of the slice                        | always                              |
-| `encoding`              | `None`             | rotation encoding (single or preference sequence) | the slice is a rotation             |
-| `range`                 | `None`             | `(low, high)` where the space is unbounded        | the slice is unbounded in the space |
-| `frame` (keyword-only)  | `None`             | the coordinate frame this slice is expressed in   | the role is an absolute pose        |
-| `part` (keyword-only)   | `None`             | the body part this slice belongs to               | the role repeats across the body    |
-| `labels` (keyword-only) | `None`             | the axis names of this slice, `dim` of them       | a joint vector                      |
+| Field                       | Default            | What it declares                                  | When to use                         |
+| --------------------------- | ------------------ | ------------------------------------------------- | ----------------------------------- |
+| `role` (1st positional)     | `None`             | the role for this slice; `None` is a **skip**     | name it, or skip with `None`        |
+| `dim`                       | -- (required, ≥ 1) | element count of the slice                        | always                              |
+| `encoding`                  | `None`             | rotation encoding (single or preference sequence) | the slice is a rotation             |
+| `range`                     | `None`             | `(low, high)` where the space is unbounded        | the slice is unbounded in the space |
+| `frame` (keyword-only)      | `None`             | the coordinate frame this slice is expressed in   | the role is an absolute pose        |
+| `provenance` (keyword-only) | `None`             | where this slice's numbers come from              | see [Provenance](#provenance)       |
+| `part` (keyword-only)       | `None`             | the body part this slice belongs to               | the role repeats across the body    |
+| `labels` (keyword-only)     | `None`             | the axis names of this slice, `dim` of them       | a joint vector                      |
 
-A `role=None` field advances the offset without producing a feature; use it to step over indices the model never reads. A skip carries no encoding, range, frame, part or labels.
+A `role=None` field advances the offset without producing a feature; use it to step over indices the model never reads. A skip carries no encoding, range, frame, provenance, part or labels. Fields are keyed by `(role, part, provenance)`, so one role may appear twice under two provenances.
 
 ## The model side
 
@@ -388,37 +423,39 @@ Perturbations that speak in pixels (a shift in `dx`/`dy`, say) are scaled by the
 
 {class}`~rlmesh.adapters.State`: the single-part numeric input. Every field:
 
-| Field                   | Default     | What it does                                                              | When to use                                             |
-| ----------------------- | ----------- | ------------------------------------------------------------------------- | ------------------------------------------------------- |
-| `role` (1st positional) | --          | match an env state feature                                                | always                                                  |
-| `encoding`              | `None`      | rotation encoding: single, preference sequence, or `CustomEncoding`       | the part is a rotation                                  |
-| `dim`                   | `None`      | keep the leading N elements                                               | truncate the source                                     |
-| `index`                 | `None`      | select one element after conversion                                       | pick a single scalar                                    |
-| `optional`              | `False`     | zero-fill when the env lacks the role                                     | the role may be absent                                  |
-| `range`                 | `None`      | `(low, high)` the model wants; affinely maps from the env range           | model and env disagree on scale                         |
-| `fill`                  | `0.0`       | value contributed when `optional` and the env lacks the role              | a non-zero stand-in (needs `optional`)                  |
-| `post_rotate`           | `None`      | a fixed `Rotation` right-multiplied onto the env's rotation               | the checkpoint was trained in an offset frame           |
-| `scale`                 | `None`      | multiply by this after the range map; a float, or one value per axis      | the model's own units                                   |
-| `offset`                | `None`      | add this after `scale` (`value * scale + offset`); float or per-axis      | a `1 - 2g` gripper (`scale=-2, offset=1`), a stand pose |
-| `frame` (keyword-only)  | `None`      | the coordinate frame the checkpoint was trained to read                   | the part is an absolute pose                            |
-| `part` (keyword-only)   | `None`      | the body part this part reads (see [Parts](#parts))                       | the env has the role on several parts                   |
-| `labels` (keyword-only) | `None`      | the axis names this part reads, in training order (see [Labels](#labels)) | a joint vector; fixes the width                         |
-| `pad_to`                | `None`      | zero-pad the result to this length                                        | fixed-width input                                       |
-| `dtype`                 | `"float32"` | NumPy dtype of the result                                                 | non-default dtype                                       |
-| `reshape`               | `None`      | target shape for the result                                               | the model wants a specific shape                        |
-| `container`             | `"array"`   | emit a NumPy array or a plain `list`                                      | the model wants a list                                  |
+| Field                       | Default     | What it does                                                                                                         | When to use                                             |
+| --------------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| `role` (1st positional)     | --          | match an env state feature                                                                                           | always                                                  |
+| `encoding`                  | `None`      | rotation encoding: single, preference sequence, or `CustomEncoding`                                                  | the part is a rotation                                  |
+| `dim`                       | `None`      | keep the leading N elements                                                                                          | truncate the source                                     |
+| `index`                     | `None`      | select one element after conversion                                                                                  | pick a single scalar                                    |
+| `optional`                  | `False`     | zero-fill when the env lacks the role                                                                                | the role may be absent                                  |
+| `range`                     | `None`      | `(low, high)` the model wants; affinely maps from the env range                                                      | model and env disagree on scale                         |
+| `fill`                      | `0.0`       | value contributed when `optional` and the env lacks the role                                                         | a non-zero stand-in (needs `optional`)                  |
+| `post_rotate`               | `None`      | a fixed `Rotation` right-multiplied onto the env's rotation                                                          | the checkpoint was trained in an offset frame           |
+| `scale`                     | `None`      | multiply by this after the range map; a float, or one value per axis                                                 | the model's own units                                   |
+| `offset`                    | `None`      | add this after `scale` (`value * scale + offset`); float or per-axis                                                 | a `1 - 2g` gripper (`scale=-2, offset=1`), a stand pose |
+| `frame` (keyword-only)      | `None`      | the coordinate frame the checkpoint was trained to read                                                              | the part is an absolute pose                            |
+| `provenance` (keyword-only) | `None`      | where the checkpoint expects the numbers to come from; one value or the accepted set (see [Provenance](#provenance)) | a sim/real pairing, or an env publishing a role twice   |
+| `part` (keyword-only)       | `None`      | the body part this part reads (see [Parts](#parts))                                                                  | the env has the role on several parts                   |
+| `labels` (keyword-only)     | `None`      | the axis names this part reads, in training order (see [Labels](#labels))                                            | a joint vector; fixes the width                         |
+| `pad_to`                    | `None`      | zero-pad the result to this length                                                                                   | fixed-width input                                       |
+| `dtype`                     | `"float32"` | NumPy dtype of the result                                                                                            | non-default dtype                                       |
+| `reshape`                   | `None`      | target shape for the result                                                                                          | the model wants a specific shape                        |
+| `container`                 | `"array"`   | emit a NumPy array or a plain `list`                                                                                 | the model wants a list                                  |
+| `clip` (keyword-only)       | `None`      | clamp the assembled vector to `(low, high)`, after every part and before `pad_to`                                    | legged_gym's `clip_obs`                                 |
 
 `dim` and `index` are mutually exclusive (`dim` keeps the leading N, `index` selects one), and `labels` fixes the width itself (no `dim`, no `index`). When `optional` is set the fill width must be known without an env feature, so set one of `index`, `dim`, `labels`, or `encoding`. `range` is a no-op when the env has no source range to map from; it does not clamp on its own.
 
-The steps run in a fixed order: slice the env feature, gather by `labels`, convert the rotation (with `post_rotate` right-multiplied onto it), apply `index`/`dim`, map `range`, then apply `scale`/`offset` (scalar or per-axis). Padding is last of all -- the parts are concatenated in order and only then is the result zero-padded to `pad_to`, so `pad_to` never interacts with a part's own transforms. Setting both `range` and `scale`/`offset` on one part is legal (the affine applies to the range map's result) and raises an `info` advisory, since two rescalings on one value is usually a mistake.
+The steps run in a fixed order: slice the env feature, gather by `labels`, convert the rotation (with `post_rotate` right-multiplied onto it, then the `gravity_xyz` projection when that is the target), apply `index`/`dim`, map `range`, then apply `scale`/`offset` (scalar or per-axis). The container steps come after the parts are concatenated in order: `clip` clamps the assembled vector, and only then is the result zero-padded to `pad_to`, so neither interacts with a part's own transforms and a pad slot is never clamped into a non-zero value. Setting both `range` and `scale`/`offset` on one part is legal (the affine applies to the range map's result) and raises an `info` advisory, since two rescalings on one value is usually a mistake.
 
 `post_rotate` takes a {class}`~rlmesh.adapters.Rotation`, built from a 3x3 matrix with `Rotation.from_matrix(rows)` (stored as `rot6d`, so the round-trip is exact). It needs a rotation `encoding` and cannot combine with a `CustomEncoding`; the matrix must already be a rotation (orthonormal, `|det - 1| <= 1e-4`).
 
-A `State` is also a valid `Concat` part: its part fields (`role`, `encoding`, `dim`, `index`, `optional`, `range`, `fill`, `post_rotate`, `scale`, `offset`, `frame`, `part`, `labels`) are taken, and its container fields (`pad_to`, `dtype`, `reshape`, `container`) must stay default when used as a part.
+A `State` is also a valid `Concat` part: its part fields (`role`, `encoding`, `dim`, `index`, `optional`, `range`, `fill`, `post_rotate`, `scale`, `offset`, `frame`, `provenance`, `part`, `labels`) are taken, and its container fields (`pad_to`, `dtype`, `reshape`, `container`, `clip`) must stay default when used as a part.
 
 ### Concat
 
-{class}`~rlmesh.adapters.Concat`: the **multi-part** state leaf, several roles packed into one tensor. `Concat(*parts, pad_to=None, dtype="float32", reshape=None, container="array")` needs at least one part. A part is a bare role string (sugar for a role-only `State`), a `State` carrying part fields, or a `Constant` block:
+{class}`~rlmesh.adapters.Concat`: the **multi-part** state leaf, several roles packed into one tensor. `Concat(*parts, pad_to=None, dtype="float32", reshape=None, container="array", clip=None)` needs at least one part. A part is a bare role string (sugar for a role-only `State`), a `State` carrying part fields, or a `Constant` block:
 
 ```python
 adapt.Concat(
@@ -436,7 +473,7 @@ adapt.Concat(
 | `dim`  | `1`     | width of the constant block     |
 | `fill` | `0.0`   | the value every element carries |
 
-Parts are concatenated in order. The container-level fields (`pad_to`, `dtype`, `reshape`, `container`) apply to the concatenated result and behave as in `State` -- `pad_to` is the last step, applied once to the assembled vector. A single-role state is `State` directly; `Concat` is the >1-part case (both serialize to the same wire form).
+Parts are concatenated in order. The container-level fields (`pad_to`, `dtype`, `reshape`, `container`, `clip`) apply to the concatenated result and behave as in `State` -- `clip` clamps the assembled vector once, and `pad_to` is the last step. `explain()` prints a set clip as `clip[-100.0,100.0]` after the parts. A single-role state is `State` directly; `Concat` is the >1-part case (both serialize to the same wire form).
 
 ### Text
 
@@ -499,27 +536,30 @@ A **role-less actuator** (`Actuator(dim=N, fill=...)` with no `role`) is _opaque
 
 Each conversion the resolver can perform falls into one of four policies. **Silent** is always applied when declared; **opt-in** is off until you set the flag; **advisory-warn** succeeds but logs data loss; **resolve-error** fails resolution.
 
-| Conversion                             | Policy        | Trigger                                                                              |
-| -------------------------------------- | ------------- | ------------------------------------------------------------------------------------ |
-| Image resize (target ≤ env resolution) | SILENT        | a smaller `size`/`height`/`width`                                                    |
-| Layout transpose (`hwc` ↔ `chw`)       | SILENT        | model `layout` differs from the env's                                                |
-| Normalize                              | SILENT        | `normalize` set (`True` or a `(low, high)` range)                                    |
-| dtype cast                             | SILENT        | model `dtype` differs from the env's                                                 |
-| Rotation encoding conversion           | SILENT        | model encoding differs (both known)                                                  |
-| Range map (affine)                     | SILENT        | model `range` set and env range known                                                |
-| Gather / scatter by `labels`           | SILENT        | both sides name their axes; a differing order is a permutation, a subset a selection |
-| Per-axis `scale` / `offset` / `fill`   | SILENT        | declared as a sequence; **a length other than the resolved width → resolve error**   |
-| `binary` + `threshold` snap            | SILENT        | declared on the actuator                                                             |
-| `fit` (aspect-changing resize)         | OPT-IN        | aspect mismatch; **absent `fit` → resolve error**                                    |
-| `allow_upscale`                        | OPT-IN        | target > env resolution; **absent → resolve error**                                  |
-| `channels` declared                    | OPT-IN        | declaring it turns a channel-count mismatch into a resolve error (silent otherwise)  |
-| `optional` / `fill`                    | OPT-IN        | env lacks the camera/role; **absent → resolve error**                                |
-| `crop` / `crop_area`                   | SILENT        | declared; the box is a stated part of the model's preprocessing                      |
-| `channel_order="bgr"`                  | SILENT        | declared; **a non-3-channel camera → resolve error**                                 |
-| `jpeg_quality`                         | SILENT        | declared; **a non-3-channel camera → resolve error**                                 |
-| Crop                                   | ADVISORY-WARN | `fit="crop"` chosen (pixels discarded)                                               |
-| Pad                                    | ADVISORY-WARN | `fit="pad"` chosen (border added)                                                    |
-| Zero-filled camera / state             | ADVISORY-WARN | an `optional` part filled because the env lacks the role                             |
+| Conversion                             | Policy        | Trigger                                                                                                                                                                                          |
+| -------------------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Image resize (target ≤ env resolution) | SILENT        | a smaller `size`/`height`/`width`                                                                                                                                                                |
+| Layout transpose (`hwc` ↔ `chw`)       | SILENT        | model `layout` differs from the env's                                                                                                                                                            |
+| Normalize                              | SILENT        | `normalize` set (`True` or a `(low, high)` range)                                                                                                                                                |
+| dtype cast                             | SILENT        | model `dtype` differs from the env's                                                                                                                                                             |
+| Rotation encoding conversion           | SILENT        | model encoding differs (both known)                                                                                                                                                              |
+| Projection to `gravity_xyz`            | SILENT        | model reads a rotation as `gravity_xyz`; **an env `gravity_xyz` read as anything else → resolve error**                                                                                          |
+| Container `clip`                       | SILENT        | declared on a `State`/`Concat`; clamps the assembled vector before `pad_to`                                                                                                                      |
+| Provenance agreement                   | RESOLVE-ERROR | the env's value outside the model's set, or a value outside the vocabulary; model-only is a `caution`; an env publishing a role under two provenances against a model naming none is `Ambiguous` |
+| Range map (affine)                     | SILENT        | model `range` set and env range known                                                                                                                                                            |
+| Gather / scatter by `labels`           | SILENT        | both sides name their axes; a differing order is a permutation, a subset a selection                                                                                                             |
+| Per-axis `scale` / `offset` / `fill`   | SILENT        | declared as a sequence; **a length other than the resolved width → resolve error**                                                                                                               |
+| `binary` + `threshold` snap            | SILENT        | declared on the actuator                                                                                                                                                                         |
+| `fit` (aspect-changing resize)         | OPT-IN        | aspect mismatch; **absent `fit` → resolve error**                                                                                                                                                |
+| `allow_upscale`                        | OPT-IN        | target > env resolution; **absent → resolve error**                                                                                                                                              |
+| `channels` declared                    | OPT-IN        | declaring it turns a channel-count mismatch into a resolve error (silent otherwise)                                                                                                              |
+| `optional` / `fill`                    | OPT-IN        | env lacks the camera/role; **absent → resolve error**                                                                                                                                            |
+| `crop` / `crop_area`                   | SILENT        | declared; the box is a stated part of the model's preprocessing                                                                                                                                  |
+| `channel_order="bgr"`                  | SILENT        | declared; **a non-3-channel camera → resolve error**                                                                                                                                             |
+| `jpeg_quality`                         | SILENT        | declared; **a non-3-channel camera → resolve error**                                                                                                                                             |
+| Crop                                   | ADVISORY-WARN | `fit="crop"` chosen (pixels discarded)                                                                                                                                                           |
+| Pad                                    | ADVISORY-WARN | `fit="pad"` chosen (border added)                                                                                                                                                                |
+| Zero-filled camera / state             | ADVISORY-WARN | an `optional` part filled because the env lacks the role                                                                                                                                         |
 
 ### Two axes: parsing and resolve
 
@@ -621,9 +661,9 @@ Find the row that matches your model, then spec it:
 
 ## Errors and `explain()`
 
-Resolution raises {exc}`~rlmesh.adapters.AdapterResolutionError` when a spec cannot be bridged to the spaces: a required role with no `optional`/zero-fill, a declared channel mismatch, an upscale without `allow_upscale`, an aspect mismatch without `fit`, an unsupported `resample`/`dtype`, an impossible encoding conversion, a bare unknown field on a known kind, a label the other side lacks or a labeled model against an unlabeled env (`LabelMismatch`), or a join-time class/width/encoding/range disagreement between a tag and its space. The message names the offending leaf and what it expected.
+Resolution raises {exc}`~rlmesh.adapters.AdapterResolutionError` when a spec cannot be bridged to the spaces: a required role with no `optional`/zero-fill, a declared channel mismatch, an upscale without `allow_upscale`, an aspect mismatch without `fit`, an unsupported `resample`/`dtype`, an impossible encoding conversion, a bare unknown field on a known kind, a label the other side lacks or a labeled model against an unlabeled env (`LabelMismatch`), a provenance the env contradicts or a value outside its vocabulary (`ProvenanceMismatch`), an env publishing a role under several provenances against a model that pins none (`Ambiguous`), or a join-time class/width/encoding/range disagreement between a tag and its space. The message names the offending leaf and what it expected.
 
-Once resolution succeeds, call `adapter.explain()` to print the exact transforms the resolver chose (each resize, layout transpose, encoding conversion, range map, key remap, slice, label permutation, per-axis value, and clip) before you run a single step. It is the fastest way to confirm the bridge is what you intended.
+Once resolution succeeds, call `adapter.explain()` to print the exact transforms the resolver chose (each resize, layout transpose, encoding conversion, range map, key remap, slice, label permutation, per-axis value, provenance, and clip) before you run a single step. It is the fastest way to confirm the bridge is what you intended.
 
 ```python
 adapter = adapt.resolve(tags, env.observation_space, env.action_space, spec)

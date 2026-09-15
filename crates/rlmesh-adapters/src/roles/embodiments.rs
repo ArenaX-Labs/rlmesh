@@ -98,8 +98,25 @@ pub const FRANKA_PANDA: EmbodimentProfile = EmbodimentProfile {
     ],
 };
 
+/// Universal Robots UR5e, 6 arm joints as the `ur_description` URDF names
+/// them, base to wrist. A gripper (Robotiq or other) is not part of the arm:
+/// it is its own `proprio/gripper` leaf.
+pub const UR5E: EmbodimentProfile = EmbodimentProfile {
+    name: "ur5e",
+    parts: &[],
+    joints: &[
+        "shoulder_pan_joint",
+        "shoulder_lift_joint",
+        "elbow_joint",
+        "wrist_1_joint",
+        "wrist_2_joint",
+        "wrist_3_joint",
+    ],
+};
+
 /// Every shipped profile, for consumers exporting the table.
-pub const PROFILES: [&EmbodimentProfile; 3] = [&UNITREE_GO2, &UNITREE_G1_29DOF, &FRANKA_PANDA];
+pub const PROFILES: [&EmbodimentProfile; 4] =
+    [&UNITREE_GO2, &UNITREE_G1_29DOF, &FRANKA_PANDA, &UR5E];
 
 /// The shipped profile whose joints cover every one of `labels` (order-free;
 /// a model may name fewer joints than the body has), or `None`.
@@ -131,7 +148,8 @@ pub fn closest_profile(labels: &[String]) -> Option<(&'static EmbodimentProfile,
 #[cfg(test)]
 mod tests {
     use super::{
-        FRANKA_PANDA, PROFILES, UNITREE_G1_29DOF, UNITREE_GO2, closest_profile, matching_profile,
+        FRANKA_PANDA, PROFILES, UNITREE_G1_29DOF, UNITREE_GO2, UR5E, closest_profile,
+        matching_profile,
     };
 
     fn owned(labels: &[&str]) -> Vec<String> {
@@ -139,10 +157,14 @@ mod tests {
     }
 
     #[test]
-    fn the_three_profiles_carry_their_joint_counts_and_unique_labels() {
+    fn the_four_profiles_carry_their_joint_counts_and_unique_labels() {
         assert_eq!(UNITREE_GO2.joints.len(), 12);
         assert_eq!(UNITREE_G1_29DOF.joints.len(), 29);
         assert_eq!(FRANKA_PANDA.joints.len(), 7);
+        assert_eq!(UR5E.joints.len(), 6);
+        assert_eq!(UR5E.joints[0], "shoulder_pan_joint");
+        assert_eq!(UR5E.joints[5], "wrist_3_joint");
+        assert!(UR5E.parts.is_empty());
         for profile in PROFILES {
             let mut joints = profile.joints.to_vec();
             joints.sort_unstable();
