@@ -145,9 +145,10 @@ pub trait RuntimeModel: Send + Sync {
     /// Whether the model's route negotiated observation history at resolve
     /// (`RouteNeeds::history`). The driver then carries every env step it
     /// executed from a replayed chunk, without predicting, as a
-    /// `PredictRequest.history` row on the next predict, stamps requests and
-    /// rows with the group's step counter, and runs synchronously (a prefetch
-    /// lead is reset to 0 with a warning: its refill would deliver a step twice).
+    /// `PredictRequest.history` row on the next predict, and stamps requests
+    /// and rows with the group's step counter. An async prefetch lead keeps
+    /// working: the prefetched request carries the rows buffered so far, with
+    /// the observation it predicts from as its own rather than a row.
     /// Default `false`: no rows are buffered.
     fn wants_history(&self) -> bool {
         false
@@ -671,18 +672,6 @@ where
         self.cancellation_reason = reason.into();
         self.spec.validate().map_err(RuntimeError::InvalidSpec)?;
         self.deliver_history = self.model.as_ref().is_some_and(RuntimeModel::wants_history);
-        if self.deliver_history && self.prefetch_lead > 0 {
-            // A prefetch predicts from an observation that is not the latest and
-            // then refills without observing, so its rows would deliver a step
-            // twice and skip another. Lifting this needs the refill to drain the
-            // backlog (see the ignored driver test); until then, synchronous.
-            tracing::warn!(
-                prefetch_lead = self.prefetch_lead,
-                "the model negotiated observation history; async prefetch is disabled for this \
-                 route (prefetch_lead reset to 0)"
-            );
-            self.prefetch_lead = 0;
-        }
         // validate() confirmed both spaces are present; cache them as shared
         // Arcs so per-step hook events clone a pointer, not the whole spec.
         self.action_space = Arc::new(self.spec.action_space_validated().clone());
@@ -976,11 +965,14 @@ where
                 continue;
             };
             // Async-inference mode: with `prefetch_lead` (or fewer) replay frames
-            // left, ask for the next chunk from the latest observation now.
+            // left, ask for the next chunk from the latest observation now. On a
+            // history route that observation is the backlog's trailing row (it
+            // landed while a frame covered its step); `latest_request` promotes
+            // it to the request's own and the rows before it ride along.
             if self.prefetch_lead > 0
                 && groups[gid].replay.len() <= self.prefetch_lead as usize
                 && matches!(groups[gid].predict, PredictState::None)
-                && let Some(msg) = groups[gid].obs_msg.clone()
+                && let Some(msg) = self.latest_request(&mut groups[gid], telemetry)
             {
                 groups[gid].predict = PredictState::Wanted(msg);
             }
@@ -1201,12 +1193,28 @@ where
                 // the chunk must not leak into the new episode. If the next
                 // observation already landed while this was in flight, nothing
                 // else will re-plan from it: re-arm here or the group stalls.
-                PredictState::InFlight { stale: true } => match (&group.phase, &group.obs_msg) {
-                    (EnvPhase::Ready, Some(msg)) if group.replay.is_empty() => {
-                        PredictState::Wanted(msg.clone())
+                //
+                // History routes deliver that observation exactly once either
+                // way. It landed with this predict in flight, so `observe`
+                // buffered it as a row, and `latest_request` promotes it off the
+                // backlog to the re-armed request's own. Under driver-owned
+                // resets it is the reset observation: `begin_reset` cleared the
+                // ended episode's rows before it, so it is the backlog's only
+                // row and the request carries none. Under NEXT_STEP it is the
+                // terminal observation, predicted on under the ended id before
+                // its eviction at t+1; the ended episode's earlier rows are
+                // still buffered (completion does not clear them) and ride that
+                // request, where they belong. If instead the stale result lands
+                // before the observation (a reset still in flight), nothing is
+                // re-armed and `observe` re-plans from it as its own.
+                PredictState::InFlight { stale: true } => {
+                    if group.phase == EnvPhase::Ready && group.replay.is_empty() {
+                        self.latest_request(group, telemetry)
+                            .map_or(PredictState::None, PredictState::Wanted)
+                    } else {
+                        PredictState::None
                     }
-                    _ => PredictState::None,
-                },
+                }
                 PredictState::InFlight { stale: false } => {
                     if group.replay.is_empty() {
                         group.replay = frames;
@@ -1523,21 +1531,23 @@ where
         fan_out_event!(self, observation_emitted, event);
 
         let group = &mut groups[gid];
+        // The observation re-plans now only if nothing covers the next step: no
+        // replay frame left, and no chunk in flight or waiting to be played
+        // (with a prefetch lead the replay can be spent while the prefetched
+        // chunk is still on its way, so the replay alone does not decide).
+        let replans = group.replay.is_empty() && matches!(group.predict, PredictState::None);
         if self.deliver_history {
-            // Exactly-once: an observation is either the predict's own (the
-            // replay is spent, so this step re-plans) or a history row carried
-            // on the next predict (a buffered frame will act on it). Never both,
-            // never neither.
+            // Exactly-once: an observation is either the predict's own (it
+            // re-plans now, carrying the backlog as its rows) or a history row
+            // (a buffered or arriving frame will act on it). Never both, never
+            // neither. A row stays the group's latest observation: should an
+            // async prefetch or a stale-result re-arm re-plan from it later,
+            // `latest_request` promotes it off the backlog to that request's
+            // own, so it still leaves the group once.
             msg.step = Some(group.steps);
-            if group.replay.is_empty() {
+            if replans {
                 msg.history = std::mem::take(&mut group.history);
-                if !msg.history.is_empty() {
-                    lock_agg(telemetry).record(Sample::count(
-                        SRC_PREDICT,
-                        metrics::HISTORY_ROWS,
-                        msg.history.len() as u64,
-                    ));
-                }
+                record_history_rows(telemetry, &msg);
             } else {
                 if group.history.len() >= HISTORY_BACKLOG_CAP {
                     return Err(RuntimeError::Protocol(format!(
@@ -1557,10 +1567,38 @@ where
         }
         group.obs_msg = Some(msg.clone());
         group.phase = EnvPhase::Ready;
-        if group.replay.is_empty() && matches!(group.predict, PredictState::None) {
+        if replans {
             group.predict = PredictState::Wanted(msg);
         }
         Ok(())
+    }
+
+    /// The request a re-plan from the group's latest observation sends: the
+    /// prefetch arm in `dispatch_steps` and the stale-result re-arm in
+    /// `on_predict_outcome` both predict from `obs_msg` rather than from a
+    /// fresh observation. On a history route that observation was buffered as
+    /// a row when it landed (nothing re-planned then), so it is popped off the
+    /// backlog as the request's own and the rows before it ride along: every
+    /// step still leaves the group exactly once. If it is not the backlog's
+    /// trailing row it already left as an earlier request's own (a lead of at
+    /// least the chunk length re-arms before the next observation lands);
+    /// re-sending it would deliver that step twice, so wait for the next
+    /// observation instead. Routes without history re-send it as before.
+    fn latest_request(
+        &self,
+        group: &mut Group<E>,
+        telemetry: &Arc<Mutex<Aggregator>>,
+    ) -> Option<PredictRequest> {
+        let mut msg = group.obs_msg.clone()?;
+        if self.deliver_history {
+            if group.history.last().map(|row| row.step) != msg.step {
+                return None;
+            }
+            group.history.pop();
+            msg.history = std::mem::take(&mut group.history);
+            record_history_rows(telemetry, &msg);
+        }
+        Some(msg)
     }
 
     async fn shutdown_after_failure(&mut self, state: &mut RouteState, error: &RuntimeError) {
@@ -1994,6 +2032,19 @@ fn lock_agg(telemetry: &Mutex<Aggregator>) -> MutexGuard<'_, Aggregator> {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
+
+/// Account the observation-history rows riding a predict request as a
+/// `history.rows` sample, if it carries any.
+fn record_history_rows(telemetry: &Arc<Mutex<Aggregator>>, msg: &PredictRequest) {
+    if !msg.history.is_empty() {
+        lock_agg(telemetry).record(Sample::count(
+            SRC_PREDICT,
+            metrics::HISTORY_ROWS,
+            msg.history.len() as u64,
+        ));
+    }
+}
+
 fn record_op(
     telemetry: &Mutex<Aggregator>,
     src: Source,

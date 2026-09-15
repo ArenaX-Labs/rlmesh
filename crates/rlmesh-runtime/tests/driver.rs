@@ -862,9 +862,11 @@ impl RuntimeEnv for TestEnv {
 
 /// Model calls in arrival order: `("predict" | "evict", episode ids)`.
 type Lifecycle = Arc<Mutex<Vec<(&'static str, Vec<String>)>>>;
-/// One entry per predict request: its history rows and its own observation,
-/// each as `(step, first observation byte)`.
-type Ledger = Arc<Mutex<Vec<(Vec<(i64, u8)>, (i64, u8))>>>;
+/// One predict request's history rows and its own observation, each as
+/// `(step, first observation byte)`.
+type LedgerEntry = (Vec<(i64, u8)>, (i64, u8));
+/// One entry per predict request, in arrival order.
+type Ledger = Arc<Mutex<Vec<LedgerEntry>>>;
 
 #[derive(Clone, Default)]
 struct TestModel {
@@ -1515,20 +1517,81 @@ async fn next_step_autoreset_never_predicts_on_an_evicted_episode() {
     assert_eq!(evicted.len() as i64, report.total_episodes);
 }
 
+/// Every predict's history rows followed by its own observation, as steps,
+/// in arrival order: the sequence of steps the model was handed.
+fn delivered_steps(ledger: &[LedgerEntry]) -> Vec<i64> {
+    ledger
+        .iter()
+        .flat_map(|(rows, own)| rows.iter().map(|row| row.0).chain([own.0]))
+        .collect()
+}
+
+/// The ledger split per episode, by the episode id each predict named, in
+/// first-predict order.
+fn ledger_per_episode(model: &TestModel) -> Vec<(String, Vec<LedgerEntry>)> {
+    let ledger = model.ledger.lock().expect("ledger poisoned").clone();
+    let predicts: Vec<String> = model
+        .lifecycle
+        .lock()
+        .expect("lifecycle lock poisoned")
+        .iter()
+        .filter(|(call, _)| *call == "predict")
+        .map(|(_, ids)| ids.join(","))
+        .collect();
+    assert_eq!(predicts.len(), ledger.len());
+    let mut episodes: Vec<(String, Vec<_>)> = Vec::new();
+    for (id, entry) in predicts.into_iter().zip(ledger) {
+        match episodes.iter_mut().find(|(known, _)| *known == id) {
+            Some((_, entries)) => entries.push(entry),
+            None => episodes.push((id, vec![entry])),
+        }
+    }
+    episodes
+}
+
 #[tokio::test]
 async fn a_history_route_sees_every_env_step_exactly_once_in_order() {
     // The exactly-once invariant behind observation history: across an
     // episode, the union of every predict's history rows and its own
-    // observation is the env-step sequence, in order, each step once. A
-    // prefetch lead would deliver a step twice and skip another, so it is
-    // forced off for a history route and the ledger is the same either way.
-    for lead in [0u32, 1] {
+    // observation is the env-step sequence, in order, each step once, with no
+    // gap within or between requests. A prefetch lead moves each re-plan
+    // earlier (it fires with `lead` frames still buffered, from the latest
+    // observation, which then rides as the request's own instead of a row),
+    // so the rows per request shrink and the steps after the episode's last
+    // predict have no request left to ride — but nothing is delivered twice.
+    // Chunks of 4 over a 9-step episode (steps 0..=8 observed; the terminal
+    // observation ends the episode without a predict):
+    //   lead 0: predicts at 0, 4, 8 — every replayed step rides the next one.
+    //   lead 1: the second predict fires while frame 4 is still buffered, from
+    //           step 2 (step 1 rides); the third from step 6 (3, 4, 5 ride);
+    //           the chunk from 6 covers 7, 8 and the episode ends.
+    //   lead 2: the second fires from step 1 with the first chunk barely
+    //           started (no row yet); its chunk plays 5..=8, so the third
+    //           fires from step 5 (2, 3, 4 ride) and steps 6..=8 replay.
+    let expected: [Vec<LedgerEntry>; 3] = [
+        vec![
+            (vec![], (0, 1)),
+            (vec![(1, 1), (2, 2), (3, 3)], (4, 4)),
+            (vec![(5, 5), (6, 6), (7, 7)], (8, 8)),
+        ],
+        vec![
+            (vec![], (0, 1)),
+            (vec![(1, 1)], (2, 2)),
+            (vec![(3, 3), (4, 4), (5, 5)], (6, 6)),
+        ],
+        vec![
+            (vec![], (0, 1)),
+            (vec![], (1, 1)),
+            (vec![(2, 2), (3, 3), (4, 4)], (5, 5)),
+        ],
+    ];
+    for (lead, expected) in (0u32..).zip(expected) {
         let env = TestEnv {
             terminal_after: 9,
             ..Default::default()
         };
         let model = TestModel {
-            replay_frames: 3, // chunks of 4: predict at 0, 4, 8
+            replay_frames: 3, // chunks of 4
             wants_history: true,
             ..Default::default()
         };
@@ -1547,22 +1610,104 @@ async fn a_history_route_sees_every_env_step_exactly_once_in_order() {
 
         // Reset observation carries byte 1 at step 0; step n carries byte n.
         let ledger = model.ledger.lock().unwrap().clone();
-        assert_eq!(
-            ledger,
-            vec![
-                (vec![], (0, 1)),
-                (vec![(1, 1), (2, 2), (3, 3)], (4, 4)),
-                (vec![(5, 5), (6, 6), (7, 7)], (8, 8)),
-            ],
-            "lead {lead}"
-        );
-        let union: Vec<i64> = ledger
-            .iter()
-            .flat_map(|(rows, own)| rows.iter().map(|row| row.0).chain([own.0]))
-            .collect();
-        assert_eq!(union, (0..9).collect::<Vec<_>>(), "lead {lead}");
+        assert_eq!(ledger, expected, "lead {lead}");
+        // Each step once, consecutive within and across requests, from step 0:
+        // the union is a prefix of the episode, and the whole of it without a
+        // lead.
+        let union = delivered_steps(&ledger);
+        let last = *union.last().unwrap();
+        assert_eq!(union, (0..=last).collect::<Vec<_>>(), "lead {lead}");
+        assert_eq!(last, [8, 6, 5][lead as usize], "lead {lead}");
         assert_eq!(model.predicts.load(Ordering::SeqCst), 3, "lead {lead}");
     }
+}
+
+#[tokio::test]
+async fn a_prefetch_across_a_reset_delivers_the_reset_observation_once() {
+    // Driver-owned resets, chunks of 3, lead 1, two 3-step episodes. The
+    // prefetch fired at each episode's tail is conditioned on step 1 and
+    // lands stale, AFTER the next episode's reset observation, which was
+    // buffered as a row while it was in flight. The re-arm must promote that
+    // row to the fresh request's own — not send it as a row AND as the own.
+    let env = TestEnv {
+        terminal_after: 3,
+        ..Default::default()
+    };
+    let model = TestModel {
+        replay_frames: 2,
+        wants_history: true,
+        // Slower than the env: the stale result lands after the reset.
+        predict_delay: Some(Duration::from_millis(20)),
+        ..Default::default()
+    };
+    let mut spec = one_episode_spec();
+    spec.max_episodes = Some(2);
+    let report = RuntimeDriver::new(
+        spec,
+        env.clone(),
+        model.clone(),
+        Arc::new(RecordingHooks::default()),
+    )
+    .with_prefetch(1)
+    .run()
+    .await
+    .unwrap();
+    assert_eq!(report.total_episodes, 2);
+    assert_eq!(report.total_steps, 6);
+
+    // The group's step counter runs across episodes: the second episode's
+    // reset observation is step 3. Its first predict is the re-arm from that
+    // observation, carrying no row (the first episode's rows were dropped
+    // with its reset; the reset observation itself is the own). Step 2 and
+    // step 5 landed after their episode's last predict fired, so no request
+    // was left to carry them.
+    let episodes = ledger_per_episode(&model);
+    assert_eq!(episodes.len(), 2);
+    assert_ne!(episodes[0].0, episodes[1].0);
+    assert_eq!(episodes[0].1, vec![(vec![], (0, 1)), (vec![], (1, 1))]);
+    assert_eq!(episodes[1].1, vec![(vec![], (3, 1)), (vec![], (4, 1))]);
+    assert_eq!(delivered_steps(&episodes[0].1), vec![0, 1]);
+    assert_eq!(delivered_steps(&episodes[1].1), vec![3, 4]);
+}
+
+#[tokio::test]
+async fn a_prefetch_across_a_next_step_roll_delivers_the_terminal_step_once() {
+    // NEXT_STEP autoreset, one lane, chunks of 3, lead 1, two 3-step episodes.
+    // The prefetch fired from step 1 lands stale after the terminal
+    // observation (step 3) was buffered as a row behind step 2. The re-arm
+    // promotes step 3 to the own of the predict the ended episode still gets
+    // (the autoreset step's action), and step 2 rides it as the row it is —
+    // so the ended episode's every step reached the model exactly once,
+    // under its own id. The roll observation (step 4) starts the next
+    // episode's ledger.
+    let env = VectorTestEnv::new(vec![3]);
+    let model = TestModel {
+        replay_frames: 2,
+        wants_history: true,
+        predict_delay: Some(Duration::from_millis(20)),
+        ..Default::default()
+    };
+    let report = RuntimeDriver::new(
+        vector_spec(1, 2),
+        env.clone(),
+        model.clone(),
+        Arc::new(RecordingHooks::default()),
+    )
+    .with_prefetch(1)
+    .run()
+    .await
+    .unwrap();
+    assert_eq!(report.total_episodes, 2);
+
+    let episodes = ledger_per_episode(&model);
+    assert_eq!(episodes.len(), 2);
+    assert_ne!(episodes[0].0, episodes[1].0);
+    assert_eq!(
+        episodes[0].1,
+        vec![(vec![], (0, 0)), (vec![], (1, 0)), (vec![(2, 0)], (3, 0))]
+    );
+    assert_eq!(delivered_steps(&episodes[0].1), vec![0, 1, 2, 3]);
+    assert_eq!(episodes[1].1, vec![(vec![], (4, 0))]);
 }
 
 #[tokio::test]
