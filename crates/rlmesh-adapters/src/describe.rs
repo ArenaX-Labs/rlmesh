@@ -114,6 +114,48 @@ fn write_part(note: &mut String, part: Option<&str>) {
     }
 }
 
+/// A per-axis vector as `[FR_hip:0.125,FR_thigh:0.25]`, or bare values when
+/// no labels name the axes.
+fn axis_list(values: &[f64], labels: Option<&[String]>) -> String {
+    let entries: Vec<String> = values
+        .iter()
+        .enumerate()
+        .map(
+            |(index, value)| match labels.and_then(|labels| labels.get(index)) {
+                Some(label) => format!("{label}:{}", number(*value)),
+                None => number(*value),
+            },
+        )
+        .collect();
+    format!("[{}]", entries.join(","))
+}
+
+/// The per-axis affine tokens `*[..]` and `+[..]`, rendered only when a side
+/// declared a per-axis vector, so every scalar-only summary is unchanged.
+fn axis_affine_tokens(
+    axis_scale: Option<&[f64]>,
+    axis_offset: Option<&[f64]>,
+    labels: Option<&[String]>,
+) -> Vec<String> {
+    let mut tokens = Vec::new();
+    if let Some(scale) = axis_scale {
+        tokens.push(format!("*{}", axis_list(scale, labels)));
+    }
+    if let Some(offset) = axis_offset {
+        tokens.push(format!("+{}", axis_list(offset, labels)));
+    }
+    tokens
+}
+
+/// A comma-joined index list, `-` marking a slot nothing drives.
+fn index_list(indices: &[Option<u32>]) -> String {
+    indices
+        .iter()
+        .map(|index| index.map_or("-".to_owned(), |index| index.to_string()))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 /// Summarize how one env action component is derived from the model output.
 fn describe_segment(segment: &ActionSegment) -> String {
     if let Some((width, value)) = segment.fill {
@@ -122,10 +164,17 @@ fn describe_segment(segment: &ActionSegment) -> String {
         // plain opaque dim. A role-less fill is the opaque control-dim case.
         return match &segment.role {
             Some(role) => {
-                let mut note = format!(
-                    "{} <- fill {value} ({width}d; model did not output this optional role)",
-                    quoted(role)
-                );
+                let mut note = match &segment.axis_fill {
+                    Some(axis) => format!(
+                        "{} <- fill {} ({width}d; model did not output this optional role)",
+                        quoted(role),
+                        axis_list(axis, segment.labels.as_deref())
+                    ),
+                    None => format!(
+                        "{} <- fill {value} ({width}d; model did not output this optional role)",
+                        quoted(role)
+                    ),
+                };
                 write_part(&mut note, segment.part.as_deref());
                 note
             }
@@ -156,8 +205,59 @@ fn describe_segment(segment: &ActionSegment) -> String {
             quoted_range(dst_range)
         );
     }
+    // The model's own affine, in the model's axis order; new tokens, so a
+    // scalar-only model side stays silent as it always was.
+    let mut model_affine = axis_affine_tokens(
+        segment.model_axis_scale.as_deref(),
+        segment.model_axis_offset.as_deref(),
+        segment.model_labels.as_deref(),
+    );
+    if let Some(offset) = segment.model_offset {
+        model_affine.push(format!("+{}", number(offset)));
+    }
+    if !model_affine.is_empty() {
+        let _ = write!(note, " (model {})", model_affine.join(" "));
+    }
+    // The scatter onto the env's axes: a permutation when every env axis is
+    // driven, a selection (with `-` for a filled axis) when the model drives
+    // a subset.
+    if let Some(scatter) = &segment.scatter {
+        let word = if scatter.iter().all(Option::is_some) {
+            "perm"
+        } else {
+            "select"
+        };
+        let _ = write!(note, " {word}[{}]", index_list(scatter));
+        if let Some(axis) = &segment.axis_fill {
+            let filled: Vec<f64> = scatter
+                .iter()
+                .zip(axis)
+                .filter(|(slot, _)| slot.is_none())
+                .map(|(_, value)| *value)
+                .collect();
+            let labels: Option<Vec<String>> = segment.labels.as_ref().map(|labels| {
+                scatter
+                    .iter()
+                    .zip(labels)
+                    .filter(|(slot, _)| slot.is_none())
+                    .map(|(_, label)| label.clone())
+                    .collect()
+            });
+            let _ = write!(note, " (fill {})", axis_list(&filled, labels.as_deref()));
+        }
+    }
     if let Some(scale) = segment.scale {
         let _ = write!(note, " (*{scale})");
+    }
+    for token in axis_affine_tokens(
+        segment.axis_scale.as_deref(),
+        segment.axis_offset.as_deref(),
+        segment.labels.as_deref(),
+    ) {
+        let _ = write!(note, " ({token})");
+    }
+    if let Some(offset) = segment.offset {
+        let _ = write!(note, " (+{})", number(offset));
     }
     if segment.invert {
         note.push_str(" (invert)");
@@ -266,6 +366,14 @@ fn describe_state(plan: &StatePlan) -> String {
                 (true, false) => format!("fill({width})={}", number(fill)),
                 (false, _) => format!("const({width})={}", number(fill)),
             };
+            let affine = axis_affine_tokens(
+                piece.axis_scale.as_deref(),
+                piece.axis_offset.as_deref(),
+                piece.labels.as_deref(),
+            );
+            if !affine.is_empty() {
+                let _ = write!(note, " ({})", affine.join(" "));
+            }
             write_part(&mut note, piece.part.as_deref());
             parts.push(note);
             continue;
@@ -277,6 +385,17 @@ fn describe_state(plan: &StatePlan) -> String {
         if let Some(offset) = piece.src_offset {
             let width = piece.src_dim.expect("layout fields carry src_dim");
             let _ = write!(note, "[{offset}:{}]", offset + width);
+        }
+        // The gather by name: `perm` when the model reads every env axis in its
+        // own order, `select` when it reads a subset. The index list states the
+        // width, so the `[:dim]` suffix below stays quiet.
+        if let Some(gather) = &piece.gather {
+            let word = match (&piece.labels, &piece.src_labels) {
+                (Some(labels), Some(src)) if labels.len() == src.len() => "perm",
+                _ => "select",
+            };
+            let listed: Vec<String> = gather.iter().map(u32::to_string).collect();
+            let _ = write!(note, " {word}[{}]", listed.join(","));
         }
         if piece.src_encoding != piece.dst_encoding {
             let src = piece
@@ -292,7 +411,7 @@ fn describe_state(plan: &StatePlan) -> String {
         } else if let Some(dim) = piece.dim {
             // The env slice above already states a layout field's width; only
             // note a model-side truncation when it narrows that slice further.
-            if piece.src_dim != Some(dim) {
+            if piece.src_dim != Some(dim) && piece.gather.is_none() {
                 let _ = write!(note, "[:{dim}]");
             }
         }
@@ -307,15 +426,20 @@ fn describe_state(plan: &StatePlan) -> String {
         if piece.post_rotate.is_some() {
             note.push_str(" (post_rotate)");
         }
-        if piece.scale.is_some() || piece.offset.is_some() {
-            let mut affine: Vec<String> = Vec::new();
-            if let Some(scale) = piece.scale {
-                affine.push(format!("*{}", number(scale)));
-            }
-            if let Some(offset) = piece.offset {
-                let sign = if offset.is_sign_negative() { "" } else { "+" };
-                affine.push(format!("{sign}{}", number(offset)));
-            }
+        let mut affine: Vec<String> = Vec::new();
+        if let Some(scale) = piece.scale {
+            affine.push(format!("*{}", number(scale)));
+        }
+        if let Some(offset) = piece.offset {
+            let sign = if offset.is_sign_negative() { "" } else { "+" };
+            affine.push(format!("{sign}{}", number(offset)));
+        }
+        affine.extend(axis_affine_tokens(
+            piece.axis_scale.as_deref(),
+            piece.axis_offset.as_deref(),
+            piece.labels.as_deref(),
+        ));
+        if !affine.is_empty() {
             let _ = write!(note, " ({})", affine.join(" "));
         }
         write_geometry(&mut note, Attr::Frame, piece.frame.as_ref());

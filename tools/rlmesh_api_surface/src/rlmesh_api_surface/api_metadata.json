@@ -456,6 +456,15 @@
     },
     "rlmesh.specs.SpaceSpec": {
       "description": "Native space specification."
+    },
+    "rlmesh.adapters.GO2": {
+      "description": "Embodiment profile for the Unitree Go2: twelve joint labels in SDK motor order."
+    },
+    "rlmesh.adapters.G1_29DOF": {
+      "description": "Embodiment profile for the 29-DoF Unitree G1: legs, waist and arms in SDK order."
+    },
+    "rlmesh.adapters.FRANKA_PANDA": {
+      "description": "Embodiment profile for the Franka Emika Panda: panda_joint1 through panda_joint7."
     }
   },
   "native": {

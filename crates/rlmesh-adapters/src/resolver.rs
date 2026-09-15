@@ -479,6 +479,9 @@ pub fn resolve(
     // Model-side ad-hoc parts: an identity key, so a private spelling binds
     // only itself -- the same nudge an ad-hoc role gets at join.
     let mut ad_hoc_parts: BTreeSet<&str> = BTreeSet::new();
+    // Model-side label tuples, linted against the shipped profiles the same
+    // way (one note per leaf; never a resolve rule).
+    let mut labeled: Vec<(&str, &[String])> = Vec::new();
     for PlacedLeaf { leaf, .. } in &leaves {
         match leaf {
             ModelLeaf::Image(input) => {
@@ -501,6 +504,12 @@ pub fn resolve(
                         .iter()
                         .filter_map(|part| part.part.as_deref()),
                 );
+                labeled.extend(
+                    input
+                        .components
+                        .iter()
+                        .filter_map(|part| Some((part.role.as_deref()?, part.labels.as_deref()?))),
+                );
             }
             ModelLeaf::Text(input) if !texts_by_role.contains_key(&input.role) => {
                 ad_hoc.insert(&input.role);
@@ -514,6 +523,19 @@ pub fn resolve(
             .components
             .iter()
             .filter_map(|actuator| actuator.part.as_deref()),
+    );
+    labeled.extend(
+        model_spec
+            .output
+            .components
+            .iter()
+            .filter_map(|actuator| Some((actuator.role.as_deref()?, actuator.labels.as_deref()?))),
+    );
+    quiet.extend(
+        labeled
+            .into_iter()
+            .filter_map(|(role, labels)| crate::join::labels_profile_advisory(role, labels))
+            .map(|note| Advisory::info(format!("model {}", note.message))),
     );
     quiet.extend(
         ad_hoc_parts
@@ -1396,5 +1418,316 @@ mod part_tests {
         );
         let err = do_resolve(&env, obs, ACTION_SPACE, &model).expect_err("no rebind");
         assert_eq!(err.code, ErrorCode::MissingRole);
+    }
+}
+
+/// The `labels` layout rules (section 3 of the design), end to end, on the
+/// Go2: SDK motor order on the env, Isaac order on a model.
+#[cfg(test)]
+mod labels_tests {
+    use std::collections::BTreeMap;
+
+    use super::resolve;
+    use crate::advisory::AdvisorySeverity;
+    use crate::apply::{NoCustoms, Value};
+    use crate::error::ErrorCode;
+    use crate::roles::embodiments::UNITREE_GO2;
+    use crate::space_view::SpaceView;
+    use crate::spec::{EnvTags, ModelSpec};
+
+    /// SDK order → Isaac order: FL,FR,RL,RR x hip,thigh,calf.
+    const ISAAC: [usize; 12] = [3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8];
+
+    fn labels(order: &[usize]) -> String {
+        let names: Vec<String> = order
+            .iter()
+            .map(|&i| format!("{:?}", UNITREE_GO2.joints[i]))
+            .collect();
+        format!("[{}]", names.join(","))
+    }
+
+    fn sdk() -> String {
+        labels(&(0..12).collect::<Vec<_>>())
+    }
+
+    fn space(json: &str) -> SpaceView {
+        serde_json::from_str(json).expect("parse space")
+    }
+
+    fn go2_env(actuator_extra: &str) -> String {
+        let sdk = sdk();
+        format!(
+            r#"{{"observation":{{
+                "joint_pos":{{"type":"state","role":"proprio/joint_pos","labels":{sdk}}},
+                "joint_vel":{{"type":"state","role":"proprio/joint_vel","labels":{sdk}}}}},
+                "action":{{"components":[{{"role":"action/joint_pos","dim":12,"labels":{sdk}{actuator_extra}}}]}}}}"#
+        )
+    }
+
+    const GO2_OBS: &str = r#"{"kind":"dict","dtype":"unspecified","keys":["joint_pos","joint_vel"],"children":[
+        {"kind":"box","shape":[12],"dtype":"float32"},
+        {"kind":"box","shape":[12],"dtype":"float32"}]}"#;
+    const GO2_ACT: &str = r#"{"kind":"box","shape":[12],"dtype":"float32"}"#;
+
+    fn go2_model(model_labels: Option<&str>) -> String {
+        let labels = model_labels.map_or(String::new(), |labels| format!(r#","labels":{labels}"#));
+        let dim = if model_labels.is_some() {
+            ""
+        } else {
+            r#","dim":12"#
+        };
+        format!(
+            r#"{{"input":{{"obs":{{"type":"state","components":[
+                {{"role":"proprio/joint_pos"{dim}{labels},"axis_offset":[0.0,-0.8,1.5,0.0,-0.8,1.5,0.0,-0.8,1.5,0.0,-0.8,1.5]}},
+                {{"role":"proprio/joint_vel"{dim}{labels},"scale":0.05}}]}}}},
+                "output":{{"components":[{{"role":"action/joint_pos","dim":12{labels},
+                    "axis_scale":[0.125,0.25,0.25,0.125,0.25,0.25,0.125,0.25,0.25,0.125,0.25,0.25],
+                    "axis_offset":[0.0,0.8,-1.5,0.0,0.8,-1.5,0.0,0.8,-1.5,0.0,0.8,-1.5]}}]}}}}"#
+        )
+    }
+
+    fn do_resolve(
+        env: &str,
+        model: &str,
+    ) -> Result<crate::plans::ResolvedAdapter, crate::error::AdapterResolutionError> {
+        let tags: EnvTags = serde_json::from_str(env).expect("parse env tags");
+        let spec: ModelSpec = serde_json::from_str(model).expect("parse model spec");
+        resolve(&tags, &space(GO2_OBS), &space(GO2_ACT), &spec, false)
+    }
+
+    fn tensor(values: &[f32]) -> Value {
+        Value::Tensor(crate::apply::value::tensor_from_f32(
+            vec![values.len() as i64],
+            values,
+        ))
+    }
+
+    #[test]
+    fn an_isaac_order_model_resolves_to_the_permutation_on_both_sides() {
+        let adapter =
+            do_resolve(&go2_env(""), &go2_model(Some(&labels(&ISAAC)))).expect("resolves");
+        let described = adapter.describe();
+        assert!(
+            described.contains("joint_pos perm[3,4,5,0,1,2,9,10,11,6,7,8] (+[FL_hip:0.0,FL_thigh:-0.8,FL_calf:1.5,")
+                && described.contains("joint_vel perm[3,4,5,0,1,2,9,10,11,6,7,8] (*0.05)")
+                && described.contains(
+                    "\"action/joint_pos\" <- model[0:12] (model *[FL_hip:0.125,FL_thigh:0.25,FL_calf:0.25,"
+                )
+                && described.ends_with("]) perm[3,4,5,0,1,2,9,10,11,6,7,8]"),
+            "got:\n{described}"
+        );
+        // The permutation is its own inverse on the Go2, so the action-side
+        // scatter lists the same indices; the values prove the direction.
+        assert!(
+            adapter.advisories().is_empty(),
+            "{:?}",
+            adapter.advisories()
+        );
+        let mut raw: BTreeMap<String, Value> = BTreeMap::new();
+        let sdk_values: Vec<f32> = (0..12).map(|i| i as f32).collect();
+        raw.insert("joint_pos".to_owned(), tensor(&sdk_values));
+        raw.insert("joint_vel".to_owned(), tensor(&sdk_values));
+        let Value::Map(payload) = adapter.transform_obs(&raw, &NoCustoms).expect("apply") else {
+            panic!("expected a map");
+        };
+        let Value::Tensor(obs) = &payload["obs"] else {
+            panic!("expected a tensor");
+        };
+        let obs = crate::apply::value::to_f32_vec(obs);
+        // joint_pos: SDK value at ISAAC[i], minus the stand pose in Isaac order.
+        let expected_pos: Vec<f32> = ISAAC
+            .iter()
+            .enumerate()
+            .map(|(i, &j)| sdk_values[j] + [0.0, -0.8, 1.5][i % 3])
+            .collect();
+        for (got, want) in obs[..12].iter().zip(&expected_pos) {
+            assert!((got - want).abs() < 1e-6, "{obs:?}");
+        }
+        assert!((obs[12] - 3.0 * 0.05).abs() < 1e-6, "{obs:?}");
+        // Action: the model emits ones in Isaac order; each env axis reads its
+        // own joint's scale and pose back in SDK order.
+        let action = adapter
+            .transform_action(&tensor(&[1.0; 12]))
+            .expect("apply");
+        let action = crate::apply::value::to_f32_vec(&action);
+        let expected_act: Vec<f32> = (0..12)
+            .map(|j| [0.125, 0.25, 0.25][j % 3] + [0.0, 0.8, -1.5][j % 3])
+            .collect();
+        for (got, want) in action.iter().zip(&expected_act) {
+            assert!((got - want).abs() < 1e-6, "{action:?}");
+        }
+    }
+
+    #[test]
+    fn an_sdk_order_model_is_the_identity() {
+        let adapter = do_resolve(&go2_env(""), &go2_model(Some(&sdk()))).expect("resolves");
+        let described = adapter.describe();
+        assert!(
+            described.contains("joint_pos[:12] (+[FR_hip:0.0,FR_thigh:-0.8,")
+                && !described.contains("perm")
+                && !described.contains("select"),
+            "got:\n{described}"
+        );
+        assert!(
+            adapter.advisories().is_empty(),
+            "{:?}",
+            adapter.advisories()
+        );
+    }
+
+    #[test]
+    fn model_only_labels_are_a_mismatch_and_env_only_labels_are_silent() {
+        let unlabeled_env = r#"{"observation":{
+                "joint_pos":{"type":"state","role":"proprio/joint_pos"},
+                "joint_vel":{"type":"state","role":"proprio/joint_vel"}},
+                "action":{"components":[{"role":"action/joint_pos","dim":12}]}}"#;
+        let err = do_resolve(unlabeled_env, &go2_model(Some(&sdk()))).expect_err("model-only");
+        assert_eq!(err.code, ErrorCode::LabelMismatch);
+        assert!(
+            err.message.contains("the env leaf declares none"),
+            "{}",
+            err.message
+        );
+        // Env-only: silent, and the env's names annotate a per-axis vector the
+        // model declared positionally.
+        let adapter = do_resolve(&go2_env(""), &go2_model(None)).expect("env-only labels resolve");
+        let described = adapter.describe();
+        assert!(
+            described.contains("joint_pos[:12] (+[FR_hip:0.0,FR_thigh:-0.8,")
+                && described.contains("(model *[FR_hip:0.125,"),
+            "got:\n{described}"
+        );
+        assert!(
+            adapter.advisories().is_empty(),
+            "{:?}",
+            adapter.advisories()
+        );
+    }
+
+    #[test]
+    fn a_subset_selects_on_the_observation_side_and_scatters_on_an_optional_actuator() {
+        // A front-legs-only checkpoint: six labels, Isaac order.
+        let front = labels(&[3, 4, 5, 0, 1, 2]);
+        let model = format!(
+            r#"{{"input":{{"obs":{{"type":"state","components":[{{"role":"proprio/joint_pos","labels":{front}}}]}}}},
+                "output":{{"components":[{{"role":"action/joint_pos","dim":6,"labels":{front}}}]}}}}"#
+        );
+        let err = do_resolve(&go2_env(""), &model).expect_err("env actuator not optional");
+        assert_eq!(err.code, ErrorCode::LabelMismatch);
+        assert!(
+            err.message.contains("leaves [\"RR_hip\""),
+            "{}",
+            err.message
+        );
+        let env = go2_env(
+            r#","optional":true,"axis_fill":[0.0,0.8,-1.5,0.0,0.8,-1.5,0.0,0.8,-1.5,0.0,0.8,-1.5]"#,
+        );
+        let adapter = do_resolve(&env, &model).expect("resolves");
+        let described = adapter.describe();
+        assert!(
+            described.contains("joint_pos select[3,4,5,0,1,2]")
+                && described.contains(
+                    "\"action/joint_pos\" <- model[0:6] select[3,4,5,0,1,2,-,-,-,-,-,-] (fill [RR_hip:0.0,RR_thigh:0.8,RR_calf:-1.5,RL_hip:0.0,RL_thigh:0.8,RL_calf:-1.5])"
+                ),
+            "got:\n{described}"
+        );
+        let notes = adapter.advisories();
+        assert!(
+            notes
+                .iter()
+                .any(|note| note.severity == AdvisorySeverity::Info
+                    && note.message.contains("drives 6 of 12 labels")
+                    && note.message.contains("RR_hip")),
+            "{notes:?}"
+        );
+        let action = adapter
+            .transform_action(&tensor(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]))
+            .expect("apply");
+        assert_eq!(
+            crate::apply::value::to_f32_vec(&action),
+            vec![4.0, 5.0, 6.0, 1.0, 2.0, 3.0, 0.0, 0.8, -1.5, 0.0, 0.8, -1.5]
+        );
+        // A scalar fill serves the same subset.
+        let env = go2_env(r#","optional":true,"fill":0.5"#);
+        let adapter = do_resolve(&env, &model).expect("resolves");
+        assert!(
+            adapter.describe().contains("(fill [RR_hip:0.5,"),
+            "{}",
+            adapter.describe()
+        );
+    }
+
+    #[test]
+    fn a_model_label_the_env_lacks_is_a_mismatch_unless_the_part_is_optional() {
+        let model = r#"{"input":{"obs":{"type":"state","components":[{"role":"proprio/joint_pos","labels":["FR_hip","FR_shin"]}]}},
+            "output":{"components":[{"role":"action/joint_pos","dim":12}]}}"#;
+        let err = do_resolve(&go2_env(""), model).expect_err("missing label");
+        assert_eq!(err.code, ErrorCode::LabelMismatch);
+        assert!(err.message.contains(r#"["FR_shin"]"#), "{}", err.message);
+        let optional = r#"{"input":{"obs":{"type":"state","components":[{"role":"proprio/joint_pos","labels":["FR_hip","FR_shin"],"optional":true}]}},
+            "output":{"components":[{"role":"action/joint_pos","dim":12}]}}"#;
+        let adapter = do_resolve(&go2_env(""), optional).expect("fills");
+        assert!(
+            adapter.describe().contains("zeros(2)"),
+            "{}",
+            adapter.describe()
+        );
+        // And the lint names the closest profile for the stray label, quietly.
+        assert!(
+            adapter
+                .advisories()
+                .iter()
+                .any(|note| note.message.contains("unknown_labels")
+                    && note.message.contains("unitree_go2")),
+            "{:?}",
+            adapter.advisories()
+        );
+    }
+
+    #[test]
+    fn a_per_axis_vector_must_match_the_resolved_width() {
+        let model = r#"{"input":{"obs":{"type":"state","components":[{"role":"proprio/joint_pos","dim":12,"axis_scale":[1.0,2.0]}]}},
+            "output":{"components":[{"role":"action/joint_pos","dim":12}]}}"#;
+        let err = do_resolve(&go2_env(""), model).expect_err("short vector");
+        assert_eq!(err.code, ErrorCode::DimMismatch);
+        assert!(
+            err.message
+                .contains("axis_scale has 2 values but the resolved width is 12"),
+            "{}",
+            err.message
+        );
+        let model = r#"{"input":{"obs":{"type":"state","components":[{"role":"proprio/joint_pos","dim":12}]}},
+            "output":{"components":[{"role":"action/joint_pos","dim":12,"axis_offset":[1.0]}]}}"#;
+        let err = do_resolve(&go2_env(""), model).expect_err("short vector");
+        assert_eq!(err.code, ErrorCode::DimMismatch);
+        assert!(
+            err.message.contains("the model's axis_offset has 1 values"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn env_labels_off_every_profile_draw_the_lint_at_join() {
+        let env = r#"{"observation":{"j":{"type":"state","role":"proprio/joint_pos","labels":["j0","j1"]}},
+            "action":{"components":[{"role":"action/joint_pos","dim":12}]}}"#;
+        let obs = r#"{"kind":"dict","dtype":"unspecified","keys":["j"],"children":[{"kind":"box","shape":[2],"dtype":"float32"}]}"#;
+        let model = r#"{"input":{"obs":{"type":"state","components":[{"role":"proprio/joint_pos","dim":2}]}},
+            "output":{"components":[{"role":"action/joint_pos","dim":12}]}}"#;
+        let tags: EnvTags = serde_json::from_str(env).unwrap();
+        let spec: ModelSpec = serde_json::from_str(model).unwrap();
+        let adapter = resolve(&tags, &space(obs), &space(GO2_ACT), &spec, false).expect("resolves");
+        let notes = adapter.advisories();
+        assert!(
+            notes
+                .iter()
+                .any(|note| note.severity == AdvisorySeverity::Info
+                    && note
+                        .message
+                        .starts_with("unknown_labels: role \"proprio/joint_pos\"")
+                    && !note.message.contains("closest")),
+            "{notes:?}"
+        );
+        assert!(!adapter.describe().contains("dropped:"));
     }
 }

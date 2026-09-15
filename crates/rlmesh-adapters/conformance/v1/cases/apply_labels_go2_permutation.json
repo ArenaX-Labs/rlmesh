@@ -1,0 +1,222 @@
+{
+  "action_space": {
+    "dtype": "float32",
+    "kind": "box",
+    "shape": [12]
+  },
+  "env_tags": {
+    "action": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 12,
+          "encoding": null,
+          "labels": [
+            "FR_hip",
+            "FR_thigh",
+            "FR_calf",
+            "FL_hip",
+            "FL_thigh",
+            "FL_calf",
+            "RR_hip",
+            "RR_thigh",
+            "RR_calf",
+            "RL_hip",
+            "RL_thigh",
+            "RL_calf"
+          ],
+          "range": null,
+          "role": "action/joint_pos"
+        }
+      ]
+    },
+    "observation": {
+      "joint_pos": {
+        "encoding": null,
+        "labels": [
+          "FR_hip",
+          "FR_thigh",
+          "FR_calf",
+          "FL_hip",
+          "FL_thigh",
+          "FL_calf",
+          "RR_hip",
+          "RR_thigh",
+          "RR_calf",
+          "RL_hip",
+          "RL_thigh",
+          "RL_calf"
+        ],
+        "range": null,
+        "role": "proprio/joint_pos",
+        "type": "state"
+      },
+      "joint_vel": {
+        "encoding": null,
+        "labels": [
+          "FR_hip",
+          "FR_thigh",
+          "FR_calf",
+          "FL_hip",
+          "FL_thigh",
+          "FL_calf",
+          "RR_hip",
+          "RR_thigh",
+          "RR_calf",
+          "RL_hip",
+          "RL_thigh",
+          "RL_calf"
+        ],
+        "range": null,
+        "role": "proprio/joint_vel",
+        "type": "state"
+      }
+    }
+  },
+  "expect": {
+    "action": {
+      "data": [
+        0.125, 1.0499999523162842, -1.25, 0.125, 1.0499999523162842, -1.25, 0.125,
+        1.0499999523162842, -1.25, 0.125, 1.0499999523162842, -1.25
+      ],
+      "dtype": "float32",
+      "kind": "array",
+      "shape": [12]
+    },
+    "atol": 1e-6,
+    "payload": {
+      "data": {
+        "obs": {
+          "data": [
+            3.0, 3.200000047683716, 6.5, 0.0, 0.19999998807907104, 3.5, 9.0, 9.199999809265137,
+            12.5, 6.0, 6.199999809265137, 9.5, 0.15000000596046448, 0.20000000298023224, 0.25, 0.0,
+            0.05000000074505806, 0.10000000149011612, 0.45000001788139343, 0.5, 0.550000011920929,
+            0.30000001192092896, 0.3499999940395355, 0.4000000059604645
+          ],
+          "dtype": "float32",
+          "kind": "array",
+          "shape": [24]
+        }
+      },
+      "kind": "map"
+    }
+  },
+  "kind": "apply",
+  "model_output": {
+    "data": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+    "dtype": "float32",
+    "kind": "array",
+    "shape": [12]
+  },
+  "model_spec": {
+    "input": {
+      "obs": {
+        "components": [
+          {
+            "axis_offset": [-0.0, -0.8, 1.5, -0.0, -0.8, 1.5, -0.0, -0.8, 1.5, -0.0, -0.8, 1.5],
+            "labels": [
+              "FL_hip",
+              "FL_thigh",
+              "FL_calf",
+              "FR_hip",
+              "FR_thigh",
+              "FR_calf",
+              "RL_hip",
+              "RL_thigh",
+              "RL_calf",
+              "RR_hip",
+              "RR_thigh",
+              "RR_calf"
+            ],
+            "role": "proprio/joint_pos"
+          },
+          {
+            "labels": [
+              "FL_hip",
+              "FL_thigh",
+              "FL_calf",
+              "FR_hip",
+              "FR_thigh",
+              "FR_calf",
+              "RL_hip",
+              "RL_thigh",
+              "RL_calf",
+              "RR_hip",
+              "RR_thigh",
+              "RR_calf"
+            ],
+            "role": "proprio/joint_vel",
+            "scale": 0.05
+          }
+        ],
+        "dtype": "float32",
+        "type": "state"
+      }
+    },
+    "output": {
+      "clip": null,
+      "components": [
+        {
+          "axis_offset": [0.0, 0.8, -1.5, 0.0, 0.8, -1.5, 0.0, 0.8, -1.5, 0.0, 0.8, -1.5],
+          "axis_scale": [
+            0.125, 0.25, 0.25, 0.125, 0.25, 0.25, 0.125, 0.25, 0.25, 0.125, 0.25, 0.25
+          ],
+          "binary": false,
+          "dim": 12,
+          "encoding": null,
+          "labels": [
+            "FL_hip",
+            "FL_thigh",
+            "FL_calf",
+            "FR_hip",
+            "FR_thigh",
+            "FR_calf",
+            "RL_hip",
+            "RL_thigh",
+            "RL_calf",
+            "RR_hip",
+            "RR_thigh",
+            "RR_calf"
+          ],
+          "range": null,
+          "role": "action/joint_pos"
+        }
+      ]
+    }
+  },
+  "observation": {
+    "data": {
+      "joint_pos": {
+        "data": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0],
+        "dtype": "float32",
+        "kind": "array",
+        "shape": [12]
+      },
+      "joint_vel": {
+        "data": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0],
+        "dtype": "float32",
+        "kind": "array",
+        "shape": [12]
+      }
+    },
+    "kind": "map"
+  },
+  "observation_space": {
+    "children": [
+      {
+        "dtype": "float32",
+        "kind": "box",
+        "shape": [12]
+      },
+      {
+        "dtype": "float32",
+        "kind": "box",
+        "shape": [12]
+      }
+    ],
+    "dtype": "unspecified",
+    "keys": ["joint_pos", "joint_vel"],
+    "kind": "dict"
+  }
+}

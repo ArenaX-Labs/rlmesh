@@ -1,0 +1,24 @@
+{
+  "kind": "label_policy",
+  "side": "env",
+  "policy": "strict",
+  "doc": {
+    "observation": {
+      "j": {
+        "type": "state",
+        "role": "proprio/joint_pos"
+      }
+    },
+    "action": {
+      "components": [
+        {
+          "role": "action/gripper",
+          "dim": 1
+        }
+      ]
+    }
+  },
+  "expect": {
+    "error_contains": "observation \"j\" declares joint role \"proprio/joint_pos\" without labels"
+  }
+}

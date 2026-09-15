@@ -44,6 +44,12 @@ pub enum ErrorCode {
     /// edit the spec — distinct from [`MissingRole`](Self::MissingRole), which
     /// asks the author to add a role.
     UnsupportedKind,
+    /// The two sides' axis labels cannot be aligned: the model names labels
+    /// and the env leaf declares none, or the model names a label the env
+    /// lacks, or a model subset would leave env axes undriven on an actuator
+    /// that is not `optional`. Structural, never a caution: a joint vector
+    /// bound on hope is the bug labels exist to catch.
+    LabelMismatch,
 }
 
 /// A model input or action component has no usable counterpart in the env

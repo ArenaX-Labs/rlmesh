@@ -25,11 +25,12 @@ use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString, PyT
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 use rlmesh_adapters::v1::{
     Advisory, ApplyError, CustomTransform, EncodingTransform, EnvTags, FrameBuffers, FramePolicy,
-    InputNode, ModelLeaf, ModelSpec, NoEncodings, NodePath, ObsPlan, PathSeg, ResolvedAdapter,
-    RolePolicy, SkipCustoms, SpaceView, Value, assemble_obs, build_describe_envelope, join,
-    observe_obs, reject_unframed_roles_env, reject_unframed_roles_model, reject_unknowns_env,
-    reject_unknowns_model, reject_unsanctioned_roles_env, reject_unsanctioned_roles_model, resolve,
-    roles,
+    InputNode, LabelPolicy, ModelLeaf, ModelSpec, NoEncodings, NodePath, ObsPlan, PathSeg,
+    ResolvedAdapter, RolePolicy, SkipCustoms, SpaceView, Value, assemble_obs,
+    build_describe_envelope, join, observe_obs, reject_unframed_roles_env,
+    reject_unframed_roles_model, reject_unknowns_env, reject_unknowns_model,
+    reject_unlabeled_roles_env, reject_unlabeled_roles_model, reject_unsanctioned_roles_env,
+    reject_unsanctioned_roles_model, resolve, roles,
 };
 use serde::de::DeserializeOwned;
 
@@ -204,6 +205,11 @@ mod stub_constants {
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "PARTS", Vec<String>);
     pyo3_stub_gen::module_variable!(
         "rlmesh._rlmesh",
+        "EMBODIMENTS",
+        Vec<(String, Vec<String>, Vec<String>)>
+    );
+    pyo3_stub_gen::module_variable!(
+        "rlmesh._rlmesh",
         "ROTATION_DIMS",
         std::collections::HashMap<String, u32>
     );
@@ -229,6 +235,20 @@ pub fn register_constants(m: &Bound<'_, PyModule>) -> PyResult<()> {
         .collect();
     m.add("IMAGE_LAYOUTS", layouts)?;
     m.add("PARTS", roles::parts::PARTS.to_vec())?;
+    // The shipped embodiment profiles as `(name, parts, joints)` rows; the
+    // Python `rlmesh.adapters.embodiments` module builds its constants from
+    // these, so the crate stays the single source of the label tuples.
+    let embodiments: Vec<(&str, Vec<&str>, Vec<&str>)> = roles::embodiments::PROFILES
+        .iter()
+        .map(|profile| {
+            (
+                profile.name,
+                profile.parts.to_vec(),
+                profile.joints.to_vec(),
+            )
+        })
+        .collect();
+    m.add("EMBODIMENTS", embodiments)?;
     m.add("RESAMPLES", rlmesh_adapters::v1::RESAMPLES.to_vec())?;
     m.add("CROP_MODES", rlmesh_adapters::v1::CROP_MODES.to_vec())?;
     m.add(
@@ -816,18 +836,19 @@ pub fn adapters_join_check(
     gen_stub_pyfunction(
         module = "rlmesh._rlmesh",
         python = r#"
-def adapters_spec_normalize(side: str, spec_json: str, allow_custom: bool, role_policy: str = "passthrough", require_frames: bool = False) -> str: ...
+def adapters_spec_normalize(side: str, spec_json: str, allow_custom: bool, role_policy: str = "passthrough", require_frames: bool = False, require_labels: bool = False) -> str: ...
 "#
     )
 )]
 #[pyfunction]
-#[pyo3(signature = (side, spec_json, allow_custom, role_policy = "passthrough", require_frames = false))]
+#[pyo3(signature = (side, spec_json, allow_custom, role_policy = "passthrough", require_frames = false, require_labels = false))]
 pub fn adapters_spec_normalize(
     side: &str,
     spec_json: &str,
     allow_custom: bool,
     role_policy: &str,
     require_frames: bool,
+    require_labels: bool,
 ) -> PyResult<String> {
     let role_gate = match role_policy {
         "passthrough" => None,
@@ -847,6 +868,13 @@ pub fn adapters_spec_normalize(
     } else {
         FramePolicy::Allow
     };
+    // The `spec-normalize --require-labels` tier: every joint-role leaf names
+    // its axes, from a shipped embodiment profile. Opt-in like the frame tier.
+    let label_gate = if require_labels {
+        LabelPolicy::Strict
+    } else {
+        LabelPolicy::Off
+    };
     match side {
         "env" => {
             let tags: EnvTags = de_spec("env tags", spec_json)?;
@@ -861,6 +889,8 @@ pub fn adapters_spec_normalize(
                 })?;
             }
             reject_unframed_roles_env(&tags, frame_gate)
+                .map_err(|message| PyValueError::new_err(format!("invalid env tags: {message}")))?;
+            reject_unlabeled_roles_env(&tags, label_gate)
                 .map_err(|message| PyValueError::new_err(format!("invalid env tags: {message}")))?;
             serde_json::to_string(&tags).map_err(|err| {
                 PyValueError::new_err(format!("could not serialize env tags: {err}"))
@@ -878,6 +908,9 @@ pub fn adapters_spec_normalize(
                 })?;
             }
             reject_unframed_roles_model(&spec, frame_gate).map_err(|message| {
+                PyValueError::new_err(format!("invalid model spec: {message}"))
+            })?;
+            reject_unlabeled_roles_model(&spec, label_gate).map_err(|message| {
                 PyValueError::new_err(format!("invalid model spec: {message}"))
             })?;
             // Defense-in-depth at the publish boundary. Today the live gate is

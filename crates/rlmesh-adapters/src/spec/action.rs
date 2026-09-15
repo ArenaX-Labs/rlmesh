@@ -44,6 +44,29 @@ pub struct Actuator {
         deserialize_with = "crate::spec::num::de_opt_number"
     )]
     pub scale: Option<f64>,
+    /// Added after `scale` and before `invert`: `value * scale + offset`, the
+    /// stand pose a joint target is expressed around. Omitted when unset.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::spec::num::de_opt_number"
+    )]
+    pub offset: Option<f64>,
+    /// The per-axis forms of `scale`/`offset`, one value per axis in this
+    /// actuator's own label order (its `dim` otherwise). A quantity is scalar
+    /// or per-axis, never both. Omitted when unset.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::spec::num::de_opt_numbers"
+    )]
+    pub axis_scale: Option<Vec<f64>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::spec::num::de_opt_numbers"
+    )]
+    pub axis_offset: Option<Vec<f64>>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub invert: bool,
     #[serde(
@@ -63,6 +86,16 @@ pub struct Actuator {
     /// (must stay 0.0; `reject` enforces this). Omitted when 0.0.
     #[serde(default, skip_serializing_if = "is_default_fill")]
     pub fill: f64,
+    /// The per-axis form of `fill` on an `optional`, labeled env actuator:
+    /// one value per label, taken by every axis a model's label subset leaves
+    /// uncovered, and by the whole actuator when no model output drives it.
+    /// Omitted when unset.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::spec::num::de_opt_numbers"
+    )]
+    pub axis_fill: Option<Vec<f64>>,
     /// On a *roled* actuator: the role is optional. If no model output declares
     /// it, the resolver fills the actuator's `dim` dims with `fill` instead of
     /// failing resolution -- the action-side mirror of a model input's `optional`
@@ -88,6 +121,12 @@ pub struct Actuator {
     /// checked. Omitted when unset. An opaque actuator may not carry one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub part: Option<String>,
+    /// The axis names this actuator drives, `dim` of them in this side's own
+    /// order. When both sides carry them the model's output is scattered onto
+    /// the env's axes by name. Omitted when unset; an opaque actuator may not
+    /// carry them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub labels: Option<Vec<String>>,
     /// Unrecognized additive fields, retained for round-trip and surfaced to the
     /// publish-door `reject_unknowns` guard. See the strict-v1 publish gate.
     #[serde(flatten)]
@@ -134,6 +173,42 @@ impl TryFrom<ActionWire> for Action {
             if !component.fill.is_finite() {
                 return Err(format!("actuator {:?} fill must be finite", component.role));
             }
+            let locus = format!("actuator {:?}", component.role);
+            for (name, scalar, axis) in [
+                (
+                    "scale",
+                    component.scale.is_some(),
+                    component.axis_scale.as_deref(),
+                ),
+                (
+                    "offset",
+                    component.offset.is_some(),
+                    component.axis_offset.as_deref(),
+                ),
+                (
+                    "fill",
+                    component.fill != 0.0,
+                    component.axis_fill.as_deref(),
+                ),
+            ] {
+                if scalar && axis.is_some() {
+                    return Err(format!(
+                        "{locus}: sets both {name} and axis_{name}; a quantity is a scalar \
+                         or a per-axis vector, not both"
+                    ));
+                }
+                crate::spec::labels::check_axis(axis, &format!("axis_{name}"), &locus)?;
+            }
+            if let Some(labels) = &component.labels {
+                crate::spec::labels::check_labels(labels, &locus)?;
+                if labels.len() != component.dim as usize {
+                    return Err(format!(
+                        "{locus}: declares dim {} but names {} labels; one label per axis",
+                        component.dim,
+                        labels.len()
+                    ));
+                }
+            }
             match &component.role {
                 Some(role) => {
                     if !seen.insert((role.as_str(), component.part.as_deref())) {
@@ -158,6 +233,24 @@ impl TryFrom<ActionWire> for Action {
                              its values from the model"
                         ));
                     }
+                    // A per-axis fill names the axes it fills, so it needs the
+                    // labels, and it only ever fires on an optional actuator.
+                    if let Some(axis_fill) = &component.axis_fill {
+                        if !component.optional || component.labels.is_none() {
+                            return Err(format!(
+                                "actuator {role:?}: axis_fill applies only to an optional, \
+                                 labeled actuator (set optional=true and labels=)"
+                            ));
+                        }
+                        if axis_fill.len() != component.dim as usize {
+                            return Err(format!(
+                                "actuator {role:?}: axis_fill has {} values but dim is {}; \
+                                 one fill per axis",
+                                axis_fill.len(),
+                                component.dim
+                            ));
+                        }
+                    }
                 }
                 // A role-less (opaque) actuator emits a constant, so the
                 // model-mapping fields are meaningless -- it carries only dim and
@@ -166,6 +259,10 @@ impl TryFrom<ActionWire> for Action {
                     if component.encoding.is_some()
                         || component.range.is_some()
                         || component.scale.is_some()
+                        || component.offset.is_some()
+                        || component.axis_scale.is_some()
+                        || component.axis_offset.is_some()
+                        || component.axis_fill.is_some()
                         || component.invert
                         || component.threshold.is_some()
                         || component.binary
@@ -174,11 +271,12 @@ impl TryFrom<ActionWire> for Action {
                         || component.frame.is_some()
                         || component.reference.is_some()
                         || component.part.is_some()
+                        || component.labels.is_some()
                     {
                         return Err("a role-less (opaque) actuator carries only dim and \
-                             fill; drop encoding/range/scale/invert/threshold/binary/clip/\
-                             optional/frame/reference/part (an opaque actuator is already \
-                             always filled)"
+                             fill; drop encoding/range/scale/offset/axis_scale/axis_offset/\
+                             axis_fill/invert/threshold/binary/clip/optional/frame/reference/\
+                             part/labels (an opaque actuator is already always filled)"
                             .to_owned());
                     }
                 }
@@ -358,6 +456,91 @@ mod opaque_actuator_contract {
         let bare: Action =
             serde_json::from_str(r#"{"components": [{"role": "g", "dim": 1}]}"#).unwrap();
         assert!(!serde_json::to_string(&bare).unwrap().contains("part"));
+    }
+
+    #[test]
+    fn labels_match_dim_and_are_barred_from_an_opaque_actuator() {
+        let ok: Action = serde_json::from_str(
+            r#"{"components": [{"role": "action/joint_pos", "dim": 2, "labels": ["FR_hip", "FR_thigh"]}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            ok.components[0].labels.as_deref(),
+            Some(&["FR_hip".to_owned(), "FR_thigh".to_owned()][..])
+        );
+        let json = serde_json::to_string(&ok).unwrap();
+        assert!(json.contains(r#""labels":["FR_hip","FR_thigh"]"#), "{json}");
+        for (doc, expect) in [
+            (
+                r#"{"components": [{"role": "a", "dim": 3, "labels": ["x", "y"]}]}"#,
+                "one label per axis",
+            ),
+            (
+                r#"{"components": [{"role": "a", "dim": 2, "labels": ["x", "x"]}]}"#,
+                "is repeated",
+            ),
+            (
+                r#"{"components": [{"dim": 1, "labels": ["x"]}]}"#,
+                "role-less",
+            ),
+        ] {
+            let err = serde_json::from_str::<Action>(doc).unwrap_err();
+            assert!(err.to_string().contains(expect), "{doc}: {err}");
+        }
+    }
+
+    #[test]
+    fn offset_and_the_per_axis_forms_serialize_only_when_set() {
+        let ok: Action = serde_json::from_str(
+            r#"{"components": [{"role": "a", "dim": 2, "offset": 0.8, "axis_scale": [0.125, 0.25]}]}"#,
+        )
+        .unwrap();
+        assert_eq!(ok.components[0].offset, Some(0.8));
+        assert_eq!(ok.components[0].axis_scale, Some(vec![0.125, 0.25]));
+        let json = serde_json::to_string(&ok).unwrap();
+        assert!(
+            json.contains(r#""offset":0.8,"axis_scale":[0.125,0.25]"#)
+                && !json.contains("axis_offset"),
+            "{json}"
+        );
+        for (doc, expect) in [
+            (
+                r#"{"components": [{"role": "a", "dim": 1, "scale": 2.0, "axis_scale": [1.0]}]}"#,
+                "both scale and axis_scale",
+            ),
+            (
+                r#"{"components": [{"role": "a", "dim": 1, "offset": 2.0, "axis_offset": [1.0]}]}"#,
+                "both offset and axis_offset",
+            ),
+            (
+                r#"{"components": [{"role": "a", "dim": 1, "optional": true, "fill": 0.5, "labels": ["x"], "axis_fill": [1.0]}]}"#,
+                "both fill and axis_fill",
+            ),
+            (
+                r#"{"components": [{"role": "a", "dim": 1, "labels": ["x"], "axis_fill": [1.0]}]}"#,
+                "optional, labeled",
+            ),
+            (
+                r#"{"components": [{"role": "a", "dim": 1, "optional": true, "axis_fill": [1.0]}]}"#,
+                "optional, labeled",
+            ),
+            (
+                r#"{"components": [{"role": "a", "dim": 2, "optional": true, "labels": ["x", "y"], "axis_fill": [1.0]}]}"#,
+                "one fill per axis",
+            ),
+            (
+                r#"{"components": [{"dim": 1, "offset": 1.0}]}"#,
+                "role-less",
+            ),
+        ] {
+            let err = serde_json::from_str::<Action>(doc).unwrap_err();
+            assert!(err.to_string().contains(expect), "{doc}: {err}");
+        }
+        let ok: Action = serde_json::from_str(
+            r#"{"components": [{"role": "a", "dim": 2, "optional": true, "labels": ["x", "y"], "axis_fill": [0.0, 0.8]}]}"#,
+        )
+        .expect("an optional labeled actuator takes a per-axis fill");
+        assert_eq!(ok.components[0].axis_fill, Some(vec![0.0, 0.8]));
     }
 
     #[test]

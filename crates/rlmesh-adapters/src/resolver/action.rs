@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use super::state::part_suffix;
+use super::state::{check_axis_width, part_suffix, positions};
 use super::{Indexed, LeafKey, Result, bind, check_geometry, err, index_by_key};
 use crate::advisory::Advisory;
 use crate::error::ErrorCode;
@@ -28,9 +28,100 @@ fn check_role_dim_law(role: &str, dim: u32) -> Result<()> {
     Ok(())
 }
 
+/// The scatter a model label tuple implies against an env actuator: `None`
+/// when either side names none or the orders agree; `Some` per env axis with
+/// the model index that drives it, or `None` for an axis a model subset
+/// leaves to the env's fill. The subset case needs the env actuator
+/// `optional`, since the env then commands those axes itself.
+fn label_scatter(
+    role: &str,
+    env: &Actuator,
+    model: &Actuator,
+    advisories: &mut Vec<Advisory>,
+) -> Result<Option<Vec<Option<u32>>>> {
+    let Some(model_labels) = &model.labels else {
+        return Ok(None);
+    };
+    let Some(env_labels) = &env.labels else {
+        return Err(err(
+            ErrorCode::LabelMismatch,
+            format!(
+                "action role {}: the model names labels {:?} but the env actuator declares \
+                 none; label the env actuator (labels=) so the axes can be aligned",
+                quoted(role),
+                model_labels
+            ),
+        ));
+    };
+    if let Err(missing) = positions(model_labels, env_labels) {
+        return Err(err(
+            ErrorCode::LabelMismatch,
+            format!(
+                "action role {}: the model names labels {:?} that the env actuator lacks; \
+                 the env declares {:?}",
+                quoted(role),
+                missing,
+                env_labels
+            ),
+        ));
+    }
+    let scatter: Vec<Option<u32>> = env_labels
+        .iter()
+        .map(|label| {
+            model_labels
+                .iter()
+                .position(|have| have == label)
+                .map(|index| index as u32)
+        })
+        .collect();
+    let uncovered: Vec<&str> = env_labels
+        .iter()
+        .zip(&scatter)
+        .filter(|(_, slot)| slot.is_none())
+        .map(|(label, _)| label.as_str())
+        .collect();
+    if !uncovered.is_empty() {
+        if !env.optional {
+            return Err(err(
+                ErrorCode::LabelMismatch,
+                format!(
+                    "action role {}: the model drives {} of the env actuator's {} labels and \
+                     leaves {:?} undriven; mark the env actuator optional (with a fill) to \
+                     hold them, or output every label",
+                    quoted(role),
+                    model_labels.len(),
+                    env_labels.len(),
+                    uncovered
+                ),
+            ));
+        }
+        advisories.push(Advisory::info(format!(
+            "action role {}: the model drives {} of {} labels; {:?} take the env actuator's fill",
+            quoted(role),
+            model_labels.len(),
+            env_labels.len(),
+            uncovered
+        )));
+    }
+    let identity = scatter
+        .iter()
+        .enumerate()
+        .all(|(env_index, slot)| *slot == Some(env_index as u32));
+    Ok((!identity).then_some(scatter))
+}
+
+/// One fill per env axis: the declared `axis_fill`, else the scalar `fill`
+/// repeated across `dim`.
+fn axis_fill(env: &Actuator) -> Vec<f64> {
+    env.axis_fill
+        .clone()
+        .unwrap_or_else(|| vec![env.fill; env.dim as usize])
+}
+
 /// Validate that a model/env action component pairing is convertible. `role` is
-/// the matched (always present) role both sides share.
-fn check_action_dims(model: &Actuator, env: &Actuator, role: &str) -> Result<()> {
+/// the matched (always present) role both sides share. A label subset
+/// (`subset`) legitimately narrows the model's width below the env's.
+fn check_action_dims(model: &Actuator, env: &Actuator, role: &str, subset: bool) -> Result<()> {
     check_role_dim_law(role, model.dim)?;
     // A custom action encoding shadows to its `base` for the structural checks;
     // the host-side arm (`to_base`) is never imported or run here. Validate that
@@ -97,7 +188,7 @@ fn check_action_dims(model: &Actuator, env: &Actuator, role: &str) -> Result<()>
             ),
         ));
     }
-    if model.dim != env.dim {
+    if model.dim != env.dim && !subset {
         return Err(err(
             ErrorCode::DimMismatch,
             format!(
@@ -163,11 +254,21 @@ pub(super) fn plan_action(
                 src_range: None,
                 dst_range: None,
                 model_scale: None,
+                model_offset: None,
+                model_axis_scale: None,
+                model_axis_offset: None,
                 model_invert: false,
                 model_threshold: None,
                 scale: None,
+                offset: None,
+                axis_scale: None,
+                axis_offset: None,
                 invert: false,
                 threshold: None,
+                scatter: None,
+                axis_fill: None,
+                labels: None,
+                model_labels: None,
                 binarize: false,
                 clip: None,
                 frame: None,
@@ -226,11 +327,22 @@ pub(super) fn plan_action(
                     src_range: None,
                     dst_range: None,
                     model_scale: None,
+                    model_offset: None,
+                    model_axis_scale: None,
+                    model_axis_offset: None,
                     model_invert: false,
                     model_threshold: None,
                     scale: None,
+                    offset: None,
+                    axis_scale: None,
+                    axis_offset: None,
                     invert: false,
                     threshold: None,
+                    scatter: None,
+                    // The whole-actuator fallback: every axis at its own fill.
+                    axis_fill: env_component.axis_fill.clone(),
+                    labels: env_component.labels.clone(),
+                    model_labels: None,
                     binarize: false,
                     clip: None,
                     frame: None,
@@ -251,7 +363,38 @@ pub(super) fn plan_action(
             ));
         };
         let (start, model_component) = *bound.feature;
-        check_action_dims(model_component, env_component, role)?;
+        let scatter = label_scatter(role, env_component, model_component, advisories)?;
+        let subset = scatter
+            .as_ref()
+            .is_some_and(|scatter| scatter.iter().any(Option::is_none));
+        check_action_dims(model_component, env_component, role, subset)?;
+        // Each side's per-axis vector runs in that side's own label order, so
+        // it must be exactly that side's width.
+        let locus = format!("action role {}", quoted(role));
+        for (name, axis, width) in [
+            (
+                "the model's axis_scale",
+                model_component.axis_scale.as_deref(),
+                model_component.dim,
+            ),
+            (
+                "the model's axis_offset",
+                model_component.axis_offset.as_deref(),
+                model_component.dim,
+            ),
+            (
+                "the env's axis_scale",
+                env_component.axis_scale.as_deref(),
+                env_component.dim,
+            ),
+            (
+                "the env's axis_offset",
+                env_component.axis_offset.as_deref(),
+                env_component.dim,
+            ),
+        ] {
+            check_axis_width(axis, name, Some(width), &locus)?;
+        }
         // clip is an env-side clamp to the env actuator's range; it has no meaning
         // on the model output (whose range is a mapping source, not a final bound).
         if model_component.clip {
@@ -335,11 +478,26 @@ pub(super) fn plan_action(
             // env), then env-side. A model that emits the env's convention leaves
             // its side unset; a shared env declares its quirk once on its side.
             model_scale: model_component.scale,
+            model_offset: model_component.offset,
+            model_axis_scale: model_component.axis_scale.clone(),
+            model_axis_offset: model_component.axis_offset.clone(),
             model_invert: model_component.invert,
             model_threshold: model_component.threshold,
             scale: env_component.scale,
+            offset: env_component.offset,
+            axis_scale: env_component.axis_scale.clone(),
+            axis_offset: env_component.axis_offset.clone(),
             invert: env_component.invert,
             threshold: env_component.threshold,
+            axis_fill: subset.then(|| axis_fill(env_component)),
+            scatter,
+            labels: env_component.labels.clone(),
+            // With no scatter the model writes the env's axes in the env's
+            // order, so the env's names apply to the model's values too.
+            model_labels: model_component
+                .labels
+                .clone()
+                .or_else(|| env_component.labels.clone()),
             binarize,
             clip,
             frame,
@@ -369,6 +527,10 @@ mod tests {
             range: None,
             binary: false,
             scale: None,
+            offset: None,
+            axis_scale: None,
+            axis_offset: None,
+            axis_fill: None,
             invert: false,
             threshold: None,
             clip: false,
@@ -377,6 +539,7 @@ mod tests {
             unknown: Default::default(),
             frame: None,
             part: None,
+            labels: None,
             reference: None,
         }
     }
@@ -389,6 +552,10 @@ mod tests {
             range: None,
             binary: false,
             scale: None,
+            offset: None,
+            axis_scale: None,
+            axis_offset: None,
+            axis_fill: None,
             invert: false,
             threshold: None,
             clip: false,
@@ -397,6 +564,7 @@ mod tests {
             unknown: Default::default(),
             frame: None,
             part: None,
+            labels: None,
             reference: None,
         }
     }

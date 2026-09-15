@@ -34,6 +34,7 @@ __all__ = [
     "EEF_POS_2",
     "EEF_ROT",
     "EEF_ROT_2",
+    "EMBODIMENTS",
     "ENV_BRANCH_METADATA_KEY",
     "ENV_METADATA_KEY",
     "ENV_RESET_OPTIONS_KEY",
@@ -116,6 +117,7 @@ EEF_POS: builtins.str
 EEF_POS_2: builtins.str
 EEF_ROT: builtins.str
 EEF_ROT_2: builtins.str
+EMBODIMENTS: builtins.list[tuple[builtins.str, builtins.list[builtins.str], builtins.list[builtins.str]]]
 ENV_BRANCH_METADATA_KEY: builtins.str
 ENV_METADATA_KEY: builtins.str
 ENV_RESET_OPTIONS_KEY: builtins.str
@@ -597,7 +599,7 @@ def adapters_join_check(env_tags_json: str, observation_space: object, action_sp
 
 def adapters_resolve(env_tags_json: str, observation_space: object, action_space: object, model_spec_json: str) -> AdapterPlan: ...
 
-def adapters_spec_normalize(side: str, spec_json: str, allow_custom: bool, role_policy: str = 'passthrough', require_frames: bool = False) -> str: ...
+def adapters_spec_normalize(side: str, spec_json: str, allow_custom: bool, role_policy: str = 'passthrough', require_frames: bool = False, require_labels: bool = False) -> str: ...
 
 def box_space_spec(low: float, high: float, shape: list[int], dtype: str | None = None) -> SpaceSpec: ...
 

@@ -1,0 +1,124 @@
+{
+  "action_space": {
+    "dtype": "float32",
+    "kind": "box",
+    "shape": [12]
+  },
+  "env_tags": {
+    "action": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 12,
+          "encoding": null,
+          "labels": [
+            "FR_hip",
+            "FR_thigh",
+            "FR_calf",
+            "FL_hip",
+            "FL_thigh",
+            "FL_calf",
+            "RR_hip",
+            "RR_thigh",
+            "RR_calf",
+            "RL_hip",
+            "RL_thigh",
+            "RL_calf"
+          ],
+          "range": null,
+          "role": "action/joint_pos"
+        }
+      ]
+    },
+    "observation": {
+      "joint_pos": {
+        "encoding": null,
+        "labels": [
+          "FR_hip",
+          "FR_thigh",
+          "FR_calf",
+          "FL_hip",
+          "FL_thigh",
+          "FL_calf",
+          "RR_hip",
+          "RR_thigh",
+          "RR_calf",
+          "RL_hip",
+          "RL_thigh",
+          "RL_calf"
+        ],
+        "range": null,
+        "role": "proprio/joint_pos",
+        "type": "state"
+      },
+      "joint_vel": {
+        "encoding": null,
+        "labels": [
+          "FR_hip",
+          "FR_thigh",
+          "FR_calf",
+          "FL_hip",
+          "FL_thigh",
+          "FL_calf",
+          "RR_hip",
+          "RR_thigh",
+          "RR_calf",
+          "RL_hip",
+          "RL_thigh",
+          "RL_calf"
+        ],
+        "range": null,
+        "role": "proprio/joint_vel",
+        "type": "state"
+      }
+    }
+  },
+  "expect": {
+    "error_contains": "[\"FR_shin\"]"
+  },
+  "kind": "resolve",
+  "model_spec": {
+    "input": {
+      "obs": {
+        "components": [
+          {
+            "labels": ["FR_hip", "FR_shin"],
+            "role": "proprio/joint_pos"
+          }
+        ],
+        "dtype": "float32",
+        "type": "state"
+      }
+    },
+    "output": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 12,
+          "encoding": null,
+          "range": null,
+          "role": "action/joint_pos"
+        }
+      ]
+    }
+  },
+  "observation_space": {
+    "children": [
+      {
+        "dtype": "float32",
+        "kind": "box",
+        "shape": [12]
+      },
+      {
+        "dtype": "float32",
+        "kind": "box",
+        "shape": [12]
+      }
+    ],
+    "dtype": "unspecified",
+    "keys": ["joint_pos", "joint_vel"],
+    "kind": "dict"
+  }
+}

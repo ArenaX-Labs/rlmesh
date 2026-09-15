@@ -4,6 +4,7 @@ use rlmesh_spaces::Tensor;
 
 use super::geometry::convert_rotation;
 use super::lookup::{map_range, numeric_vector};
+use super::state::apply_affine;
 use super::value::{self, Value};
 use crate::error::ApplyError;
 use crate::plans::ActionPlan;
@@ -15,21 +16,24 @@ fn binary_snap(value: f32) -> f32 {
     if value >= 0.0 { 1.0 } else { -1.0 }
 }
 
-/// Apply one side's scalar corrections in place, in the order scale, invert,
-/// threshold. Both the model side and the env side run this (model first), so a
-/// model can declare its own output convention instead of hardcoding the env's.
+/// Apply one side's corrections in place, in the order scale, offset, invert,
+/// threshold (scale and offset each scalar or per-axis). Both the model side
+/// and the env side run this (model first), so a model can declare its own
+/// output convention instead of hardcoding the env's.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one call per side listing that side's six correction fields in apply order"
+)]
 fn apply_scalar_corrections(
     piece: &mut [f32],
     scale: Option<f64>,
+    axis_scale: Option<&[f64]>,
+    offset: Option<f64>,
+    axis_offset: Option<&[f64]>,
     invert: bool,
     threshold: Option<f64>,
 ) {
-    if let Some(scale) = scale {
-        let scale = scale as f32;
-        for entry in piece.iter_mut() {
-            *entry *= scale;
-        }
-    }
+    apply_affine(piece, scale, axis_scale, offset, axis_offset);
     if invert {
         for entry in piece.iter_mut() {
             *entry = -*entry;
@@ -56,9 +60,13 @@ pub fn transform_action(plan: &ActionPlan, raw_action: &Value) -> Result<Tensor,
     let mut pieces: Vec<f32> = Vec::new();
     for segment in &plan.segments {
         if let Some((width, value)) = segment.fill {
-            // Opaque (role-less) actuator: emit the constant for each dim and
-            // read nothing from the model.
-            pieces.extend(std::iter::repeat_n(value as f32, width as usize));
+            // Opaque (role-less) actuator, or an optional role no model output
+            // drives: emit the constant for each dim (per axis when the env
+            // declared `axis_fill`) and read nothing from the model.
+            match &segment.axis_fill {
+                Some(axis) => pieces.extend(axis.iter().map(|value| *value as f32)),
+                None => pieces.extend(std::iter::repeat_n(value as f32, width as usize)),
+            }
             continue;
         }
         let mut piece: Vec<f32> = action[segment.start as usize..segment.stop as usize].to_vec();
@@ -70,16 +78,39 @@ pub fn transform_action(plan: &ActionPlan, raw_action: &Value) -> Result<Tensor,
         if let (Some(src_range), Some(dst_range)) = (segment.src_range, segment.dst_range) {
             map_range(&mut piece, src_range, dst_range)?;
         }
-        // Scalar corrections after the declared formats are bridged: model-side
-        // first (the model's own output convention), then env-side, each in the
-        // order scale, invert, threshold; the binary snap follows.
+        // Corrections after the declared formats are bridged: model-side first
+        // (the model's own output convention, in the model's own axis order),
+        // then the scatter onto the env's axes, then env-side, each in the
+        // order scale, offset, invert, threshold; the binary snap follows.
         apply_scalar_corrections(
             &mut piece,
             segment.model_scale,
+            segment.model_axis_scale.as_deref(),
+            segment.model_offset,
+            segment.model_axis_offset.as_deref(),
             segment.model_invert,
             segment.model_threshold,
         );
-        apply_scalar_corrections(&mut piece, segment.scale, segment.invert, segment.threshold);
+        if let Some(scatter) = &segment.scatter {
+            let fill = segment.axis_fill.as_deref().unwrap_or(&[]);
+            piece = scatter
+                .iter()
+                .enumerate()
+                .map(|(env_index, slot)| match slot {
+                    Some(model_index) => piece[*model_index as usize],
+                    None => fill[env_index] as f32,
+                })
+                .collect();
+        }
+        apply_scalar_corrections(
+            &mut piece,
+            segment.scale,
+            segment.axis_scale.as_deref(),
+            segment.offset,
+            segment.axis_offset.as_deref(),
+            segment.invert,
+            segment.threshold,
+        );
         if segment.binarize {
             for entry in &mut piece {
                 // TODO: verify intended binary-gripper behavior at raw 0.0.
@@ -134,11 +165,21 @@ mod tests {
                 src_range: None,
                 dst_range: None,
                 model_scale: None,
+                model_offset: None,
+                model_axis_scale: None,
+                model_axis_offset: None,
                 model_invert: false,
                 model_threshold: None,
                 scale,
+                offset: None,
+                axis_scale: None,
+                axis_offset: None,
                 invert,
                 threshold,
+                scatter: None,
+                axis_fill: None,
+                labels: None,
+                model_labels: None,
                 binarize,
                 clip: None,
                 fill: None,
@@ -166,11 +207,21 @@ mod tests {
                     src_range: None,
                     dst_range: None,
                     model_scale: None,
+                    model_offset: None,
+                    model_axis_scale: None,
+                    model_axis_offset: None,
                     model_invert: false,
                     model_threshold: None,
                     scale: None,
+                    offset: None,
+                    axis_scale: None,
+                    axis_offset: None,
                     invert: false,
                     threshold: None,
+                    scatter: None,
+                    axis_fill: None,
+                    labels: None,
+                    model_labels: None,
                     binarize: false,
                     clip: Some((-1.0, 1.0)),
                     fill: None,
@@ -187,11 +238,21 @@ mod tests {
                     src_range: None,
                     dst_range: None,
                     model_scale: None,
+                    model_offset: None,
+                    model_axis_scale: None,
+                    model_axis_offset: None,
                     model_invert: false,
                     model_threshold: None,
                     scale: None,
+                    offset: None,
+                    axis_scale: None,
+                    axis_offset: None,
                     invert: false,
                     threshold: None,
+                    scatter: None,
+                    axis_fill: None,
+                    labels: None,
+                    model_labels: None,
                     binarize: false,
                     clip: Some((-f64::consts::FRAC_PI_2, f64::consts::FRAC_PI_2)),
                     fill: None,
@@ -228,11 +289,21 @@ mod tests {
                     src_range: None,
                     dst_range: None,
                     model_scale: None,
+                    model_offset: None,
+                    model_axis_scale: None,
+                    model_axis_offset: None,
                     model_invert: false,
                     model_threshold: None,
                     scale: None,
+                    offset: None,
+                    axis_scale: None,
+                    axis_offset: None,
                     invert: false,
                     threshold: None,
+                    scatter: None,
+                    axis_fill: None,
+                    labels: None,
+                    model_labels: None,
                     binarize: false,
                     clip: None,
                     fill: None,
@@ -249,11 +320,21 @@ mod tests {
                     src_range: None,
                     dst_range: None,
                     model_scale: None,
+                    model_offset: None,
+                    model_axis_scale: None,
+                    model_axis_offset: None,
                     model_invert: false,
                     model_threshold: None,
                     scale: None,
+                    offset: None,
+                    axis_scale: None,
+                    axis_offset: None,
                     invert: false,
                     threshold: None,
+                    scatter: None,
+                    axis_fill: None,
+                    labels: None,
+                    model_labels: None,
                     binarize: false,
                     clip: None,
                     fill: Some((3, 0.5)),
@@ -284,11 +365,21 @@ mod tests {
                 src_range: None,
                 dst_range: None,
                 model_scale: Some(2.0),
+                model_offset: None,
+                model_axis_scale: None,
+                model_axis_offset: None,
                 model_invert: true,
                 model_threshold: None,
                 scale: None,
+                offset: None,
+                axis_scale: None,
+                axis_offset: None,
                 invert: true,
                 threshold: None,
+                scatter: None,
+                axis_fill: None,
+                labels: None,
+                model_labels: None,
                 binarize: false,
                 clip: None,
                 fill: None,

@@ -1,0 +1,50 @@
+{
+  "kind": "serialization",
+  "side": "env",
+  "doc": {
+    "observation": {
+      "joint_pos": {
+        "type": "state",
+        "role": "proprio/joint_pos",
+        "encoding": null,
+        "range": null,
+        "labels": ["FR_hip", "FR_thigh"]
+      },
+      "flat": {
+        "type": "split",
+        "fields": [
+          {
+            "role": "proprio/joint_vel",
+            "dim": 2,
+            "encoding": null,
+            "range": null,
+            "labels": ["FR_hip", "FR_thigh"]
+          },
+          {
+            "role": null,
+            "dim": 1,
+            "encoding": null,
+            "range": null
+          }
+        ]
+      }
+    },
+    "action": {
+      "clip": null,
+      "components": [
+        {
+          "role": "action/joint_pos",
+          "dim": 2,
+          "encoding": null,
+          "range": null,
+          "binary": false,
+          "labels": ["FR_hip", "FR_thigh"],
+          "optional": true,
+          "axis_fill": [0.0, 0.8],
+          "axis_scale": [0.125, 0.25],
+          "offset": 0.5
+        }
+      ]
+    }
+  }
+}

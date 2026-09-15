@@ -26,6 +26,7 @@ from typing import Any, TypeAlias, cast
 from ..constants import ENV_METADATA_KEY
 from ._codec import (
     check_accept_set,
+    check_labels,
     hashable_node,
     normalize_spec,
     one_or_many,
@@ -84,6 +85,11 @@ class StateTag:
             across a body (``"left_arm"``, ``"right_arm"``, ...). An identity
             key the resolver matches on; see :class:`ImageTag`. Keyword-only
             and omitted from the wire when unset.
+        labels: The axis names of this entry in the order the env emits them,
+            one per element of the space leaf (checked at ``join``); write them
+            from a shipped profile (``embodiments.GO2.joints``). A model that
+            names the same labels in another order is gathered by name.
+            Keyword-only and omitted from the wire when unset.
     """
 
     role: str
@@ -91,10 +97,14 @@ class StateTag:
     range: tuple[float, float] | None = None
     frame: Frame | None = field(default=None, kw_only=True)
     part: str | None = field(default=None, kw_only=True)
+    labels: Sequence[str] | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "encoding", one_or_many(self.encoding))
         check_accept_set("StateTag", self.role, self.encoding)
+        object.__setattr__(
+            self, "labels", check_labels("StateTag", self.role, self.labels)
+        )
 
 
 @dataclass(frozen=True)
@@ -132,6 +142,8 @@ class Field:
             :attr:`StateTag.frame`. A role-less skip may not carry one.
         part: The body part this field belongs to; see :attr:`StateTag.part`.
             A role-less skip may not carry one.
+        labels: The axis names of this field, ``dim`` of them; see
+            :attr:`StateTag.labels`. A role-less skip may not carry them.
     """
 
     role: str | None = None
@@ -140,6 +152,7 @@ class Field:
     range: tuple[float, float] | None = None
     frame: Frame | None = field(default=None, kw_only=True)
     part: str | None = field(default=None, kw_only=True)
+    labels: Sequence[str] | None = field(default=None, kw_only=True)
     # The `dim = 0` default only satisfies dataclass field ordering (the optional
     # `role` precedes it); 0 is never a valid width, so it is rejected at
     # construction below (matching the Rust Field codec's `dim >= 1` guard).
@@ -150,6 +163,14 @@ class Field:
             raise ValueError(f"Field {self.role!r}: dim must be >= 1, got {self.dim}")
         object.__setattr__(self, "encoding", one_or_many(self.encoding))
         check_accept_set("Field", self.role, self.encoding)
+        object.__setattr__(
+            self, "labels", check_labels("Field", self.role, self.labels)
+        )
+        if self.labels is not None and len(self.labels) != self.dim:
+            raise ValueError(
+                f"Field {self.role!r}: dim {self.dim} disagrees with the "
+                f"{len(self.labels)} labels; one label per element"
+            )
 
 
 @dataclass(frozen=True, init=False)
@@ -208,6 +229,8 @@ def _field_to_dict(field: Field) -> dict[str, Any]:
         out["frame"] = field.frame
     if field.part is not None:
         out["part"] = field.part
+    if field.labels is not None:
+        out["labels"] = list(field.labels)
     return out
 
 
@@ -220,6 +243,7 @@ def _field_from_dict(item: Mapping[str, Any]) -> Field:
         range=to_pair(item.get("range")),
         frame=item.get("frame"),
         part=item.get("part"),
+        labels=item.get("labels"),
     )
 
 
@@ -246,6 +270,8 @@ def _leaf_to_dict(tag: ObsLeaf) -> dict[str, Any]:
             state["frame"] = tag.frame
         if tag.part is not None:
             state["part"] = tag.part
+        if tag.labels is not None:
+            state["labels"] = list(tag.labels)
         return state
     if isinstance(tag, Split):
         return {
@@ -292,6 +318,7 @@ def _leaf_from_dict(item: Mapping[str, Any]) -> ObsLeaf:
             range=to_pair(item.get("range")),
             frame=item.get("frame"),
             part=item.get("part"),
+            labels=item.get("labels"),
         )
     if kind == "split":
         return Split(*(_field_from_dict(field) for field in item["fields"]))

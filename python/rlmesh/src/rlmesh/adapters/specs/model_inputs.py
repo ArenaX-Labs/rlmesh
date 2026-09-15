@@ -12,7 +12,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import InitVar, dataclass, field
 from typing import Any, Literal, TypeAlias
 
-from ._codec import check_accept_set, one_or_many
+from ._codec import axis_or_scalar, check_accept_set, check_labels, one_or_many
 from .custom_encoding import CustomEncoding
 from .vocabularies import (
     ChannelOrder,
@@ -358,8 +358,8 @@ class State:
     feature. Use :class:`Concat` to pack several roles into one tensor. A
     ``State`` is also a valid :class:`Concat` part (its part fields -- ``role``,
     ``encoding``, ``dim``, ``index``, ``optional``, ``range``, ``fill``,
-    ``post_rotate``, ``scale``, ``offset``, ``frame``, ``part`` -- are taken; its
-    container fields must stay default when used as a part).
+    ``post_rotate``, ``scale``, ``offset``, ``frame``, ``part``, ``labels`` -- are
+    taken; its container fields must stay default when used as a part).
 
     There is no ``key`` -- placement in the input tree *is* the payload position.
 
@@ -388,9 +388,14 @@ class State:
             rotation (``R_out = R_in @ R(post_rotate)``) before it is re-encoded
             into ``encoding``. Needs a rotation ``encoding``; not combinable
             with a ``CustomEncoding``.
-        scale: Model-side multiplier applied after the range map.
+        scale: Model-side multiplier applied after the range map: one float for
+            every axis, or a sequence with one value per axis in this part's
+            own ``labels`` order (its resolved width otherwise), serialized as
+            ``axis_scale``.
         offset: Model-side addend applied after ``scale`` (``value * scale +
-            offset``) -- e.g. a ``1 - 2g`` gripper is ``scale=-2, offset=1``.
+            offset``) -- e.g. a ``1 - 2g`` gripper is ``scale=-2, offset=1``, a
+            stand pose is ``offset=tuple(-q for q in DEFAULT_POSE)``. A float or
+            a per-axis sequence like ``scale``.
         frame: Coordinate frame the checkpoint was trained to read this part in,
             when the role is an absolute pose (``proprio/eef_*``). Keyword-only
             and omitted from the wire when unset. A frame the env contradicts
@@ -403,6 +408,13 @@ class State:
             only leaf of the role under any part (with an ``info``) and fails
             when there are several, naming them. Keyword-only and omitted from
             the wire when unset.
+        labels: The axis names this part reads, in the order the checkpoint
+            was trained on (``embodiments.GO2.joints``, or a subset). Fixes the
+            width. Against an env leaf that labels its axes the values are
+            gathered by name, so a differing order is a permutation and a
+            subset a selection; an env leaf that declares no labels is a
+            resolve error. Keyword-only and omitted from the wire when unset;
+            not combinable with ``index``.
         pad_to: Zero-pad the resulting vector to this length. Padding is the
             last step: every part is converted, ranged and scaled, the parts are
             concatenated in order, and only then is the result padded.
@@ -421,10 +433,11 @@ class State:
     range: tuple[float, float] | None = None
     fill: float = field(default=0.0, kw_only=True)
     post_rotate: Rotation | None = field(default=None, kw_only=True)
-    scale: float | None = field(default=None, kw_only=True)
-    offset: float | None = field(default=None, kw_only=True)
+    scale: float | Sequence[float] | None = field(default=None, kw_only=True)
+    offset: float | Sequence[float] | None = field(default=None, kw_only=True)
     frame: Frame | None = field(default=None, kw_only=True)
     part: str | None = field(default=None, kw_only=True)
+    labels: Sequence[str] | None = field(default=None, kw_only=True)
     pad_to: int | None = None
     dtype: str = "float32"
     reshape: tuple[int, ...] | None = None
@@ -459,6 +472,26 @@ class State:
                 )
         object.__setattr__(self, "encoding", one_or_many(self.encoding))
         check_accept_set("State", self.role, self.encoding)
+        for name in ("scale", "offset"):
+            object.__setattr__(
+                self,
+                name,
+                axis_or_scalar("State", self.role, name, getattr(self, name)),
+            )
+        object.__setattr__(
+            self, "labels", check_labels("State", self.role, self.labels)
+        )
+        if self.labels is not None:
+            if self.index is not None:
+                raise ValueError(
+                    f"State {self.role!r}: set labels or index, not both (labels name "
+                    "every axis the part reads; to pick one, name just that label)"
+                )
+            if self.dim is not None and self.dim != len(self.labels):
+                raise ValueError(
+                    f"State {self.role!r}: dim {self.dim} disagrees with the "
+                    f"{len(self.labels)} labels; labels fix the width, so drop dim"
+                )
 
 
 # A part of a :class:`Concat`: a bare role string, a :class:`State` whose part

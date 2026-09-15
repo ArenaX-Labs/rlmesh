@@ -34,4 +34,8 @@ pub struct EnvState {
     /// The coordinate frame the env declares this feature's values in, lifted
     /// verbatim from the `StateTag`/`Field` that tagged it.
     pub frame: Option<FrameRef>,
+    /// The axis names in the env's own order, one per element of `dim`,
+    /// lifted from the `StateTag`/`Field` that tagged it (width-checked at
+    /// `join`).
+    pub labels: Option<Vec<String>>,
 }

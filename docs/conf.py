@@ -140,6 +140,15 @@ def _install_native_docs_stub() -> None:
         "left_leg",
         "right_leg",
     ]
+    native.EMBODIMENTS = [
+        (
+            "unitree_go2",
+            ["base"],
+            [f"{leg}_{joint}" for leg in ("FR", "FL", "RR", "RL") for joint in ("hip", "thigh", "calf")],
+        ),
+        ("unitree_g1_29dof", ["left_leg", "right_leg", "torso", "left_arm", "right_arm", "head"], []),
+        ("franka_panda", [], [f"panda_joint{i}" for i in range(1, 8)]),
+    ]
     native.AdapterPlan = _native_type("AdapterPlan")
     for name in ("adapters_resolve", "adapters_join_check"):
         setattr(native, name, _native_unavailable)

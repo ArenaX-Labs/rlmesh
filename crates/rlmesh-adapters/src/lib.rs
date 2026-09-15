@@ -62,13 +62,14 @@ pub mod v1 {
     pub use crate::spec::{
         Action, ActionEncoding, Actuator, Attr, CHANNEL_ORDERS, CROP_MODES, ConcatPart, Custom,
         CustomEncoding, EnvFeature, EnvFeatures, EnvImage, EnvState, EnvTags, EnvText, FRAMES,
-        Field, FrameLaw, FramePolicy, FrameRef, Image, ImageLayout, ImageTag, InputNode, ModelLeaf,
-        ModelSpec, Normalize, ObsLeaf, ObsNode, REFERENCES, ReferenceLaw, RolePolicy,
-        RotationEncoding, RotationLiteral, SplitLayout, StackPad, State, StateContainer,
-        StateEncoding, StateTag, Text, TextContainer, TextTag, UnknownFeature,
+        Field, FrameLaw, FramePolicy, FrameRef, Image, ImageLayout, ImageTag, InputNode,
+        LabelPolicy, ModelLeaf, ModelSpec, Normalize, ObsLeaf, ObsNode, REFERENCES, ReferenceLaw,
+        RolePolicy, RotationEncoding, RotationLiteral, SplitLayout, StackPad, State,
+        StateContainer, StateEncoding, StateTag, Text, TextContainer, TextTag, UnknownFeature,
         reject_bare_fields_env, reject_bare_fields_model, reject_unframed_roles_env,
         reject_unframed_roles_model, reject_unknowns_env, reject_unknowns_model,
-        reject_unsanctioned_roles_env, reject_unsanctioned_roles_model, render_requests,
+        reject_unlabeled_roles_env, reject_unlabeled_roles_model, reject_unsanctioned_roles_env,
+        reject_unsanctioned_roles_model, render_requests,
     };
     pub use crate::stateful::{
         EncodingTransform, FrameBuffers, MAX_EXECUTION_HORIZON, NoEncodings, apply_actions,

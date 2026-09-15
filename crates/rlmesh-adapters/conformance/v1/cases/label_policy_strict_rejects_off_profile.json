@@ -1,0 +1,20 @@
+{
+  "kind": "label_policy",
+  "side": "env",
+  "policy": "strict",
+  "doc": {
+    "observation": {
+      "g": {
+        "type": "state",
+        "role": "proprio/gripper",
+        "labels": ["FR_hip", "FR_shin"]
+      }
+    },
+    "action": {
+      "components": []
+    }
+  },
+  "expect": {
+    "error_contains": "match no shipped embodiment profile; the closest is \"unitree_go2\" (1 of 2 labels shared)"
+  }
+}

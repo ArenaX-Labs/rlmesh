@@ -149,6 +149,40 @@ def hashable_node(node: Any) -> Any:
     return node
 
 
+def axis_or_scalar(what: str, role: str | None, name: str, value: Any) -> Any:
+    """Normalize a ``float | Sequence[float]`` field.
+
+    A scalar stays a float; a sequence becomes a tuple of floats (the per-axis
+    form, serialized under the ``axis_<name>`` key). ``None`` passes through.
+    """
+    if value is None or isinstance(value, (int, float)):
+        return value
+    try:
+        if isinstance(value, (str, bytes)):
+            raise TypeError
+        values = tuple(float(v) for v in value)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"{what} {role!r}: {name} must be a number or a sequence of numbers, "
+            f"got {value!r}"
+        ) from None
+    if not values:
+        raise ValueError(f"{what} {role!r}: {name} must carry at least one value")
+    return values
+
+
+def check_labels(what: str, role: str | None, labels: Any) -> tuple[str, ...] | None:
+    """Normalize a ``labels`` tuple: at least one, none repeated."""
+    if labels is None:
+        return None
+    names = tuple(str(label) for label in labels)
+    if not names:
+        raise ValueError(f"{what} {role!r}: labels must name at least one axis")
+    if len(set(names)) != len(names):
+        raise ValueError(f"{what} {role!r}: labels must not repeat an axis name")
+    return names
+
+
 def to_pair(value: Any) -> tuple[float, float] | None:
     """Convert a canonical ``[low, high]`` list to a ``(low, high)`` tuple.
 

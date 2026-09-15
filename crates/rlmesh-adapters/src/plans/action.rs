@@ -17,13 +17,30 @@ pub struct ActionSegment {
     /// after the format bridge and *before* the env-side corrections, in the order
     /// scale, invert, threshold. Unset for a model that emits the env's convention.
     pub model_scale: Option<f64>,
+    pub model_offset: Option<f64>,
+    pub model_axis_scale: Option<Vec<f64>>,
+    pub model_axis_offset: Option<Vec<f64>>,
     pub model_invert: bool,
     pub model_threshold: Option<f64>,
     /// Env-side scalar corrections, applied after the model-side ones in the order
-    /// scale, invert, threshold, `binarize`, then `clip`.
+    /// scale, offset, invert, threshold, `binarize`, then `clip`.
     pub scale: Option<f64>,
+    pub offset: Option<f64>,
+    pub axis_scale: Option<Vec<f64>>,
+    pub axis_offset: Option<Vec<f64>>,
     pub invert: bool,
     pub threshold: Option<f64>,
+    /// Per env axis, the model-slice index that drives it, or `None` for an
+    /// axis the model's label subset leaves uncovered (filled from
+    /// `axis_fill`). `None` overall when the model's order is the env's.
+    pub scatter: Option<Vec<Option<u32>>>,
+    /// One fill per env axis: the env's `axis_fill`, or its scalar `fill`
+    /// repeated. Read for uncovered scatter slots and for a whole-actuator
+    /// fallback segment.
+    pub axis_fill: Option<Vec<f64>>,
+    /// The env actuator's labels and the model output's, for `describe`.
+    pub labels: Option<Vec<String>>,
+    pub model_labels: Option<Vec<String>>,
     pub binarize: bool,
     /// Env-side per-actuator clamp bounds (the actuator's `range`), applied last.
     /// `None` means no per-component clamp (the global `ActionPlan.clip` still runs).

@@ -52,6 +52,14 @@ pub enum JoinError {
     StateLayoutWidthOverflow { key: String },
     #[error("state layout for {key:?} declares role {role:?} more than once")]
     DuplicateLayoutRole { key: String, role: String },
+    #[error(
+        "state {key:?} names {labels} labels but the space width is {width}; one label per element"
+    )]
+    LabelWidthMismatch {
+        key: String,
+        labels: usize,
+        width: u32,
+    },
     /// The role/part identity itself is malformed: a kind prefix this core does
     /// not define, or a legacy `_2` role that also names a part. See
     /// [`check_role`](crate::roles::registry::check_role).
@@ -152,15 +160,20 @@ pub fn join(
         })
         .collect();
     for feature in &observation {
-        let (role, part) = match feature {
-            EnvFeature::Image(image) => (&image.role, image.part.as_deref()),
-            EnvFeature::State(state) => (&state.role, state.part.as_deref()),
-            EnvFeature::Text(text) => (&text.role, None),
+        let (role, part, labels) = match feature {
+            EnvFeature::Image(image) => (&image.role, image.part.as_deref(), None),
+            EnvFeature::State(state) => {
+                (&state.role, state.part.as_deref(), state.labels.as_deref())
+            }
+            EnvFeature::Text(text) => (&text.role, None, None),
         };
         if let Some(note) = role_registry_advisory(role) {
             advisories.push(note);
         }
         if let Some(note) = part.and_then(part_registry_advisory) {
+            advisories.push(note);
+        }
+        if let Some(note) = labels.and_then(|labels| labels_profile_advisory(role, labels)) {
             advisories.push(note);
         }
     }
@@ -170,6 +183,13 @@ pub fn join(
                 advisories.push(note);
             }
             if let Some(note) = component.part.as_deref().and_then(part_registry_advisory) {
+                advisories.push(note);
+            }
+            if let Some(note) = component
+                .labels
+                .as_deref()
+                .and_then(|labels| labels_profile_advisory(role, labels))
+            {
                 advisories.push(note);
             }
         }
@@ -209,6 +229,30 @@ fn part_registry_advisory(part: &str) -> Option<Advisory> {
          agree on its exact string. Prefer a registered part ({:?}), or mark it \
          intentionally non-standard with an `x/` prefix",
         crate::roles::parts::PARTS
+    )))
+}
+
+/// One advisory if `labels` match no shipped embodiment profile as a set (a
+/// subset is fine: a model may name fewer joints than a body has). The label
+/// twin of the role nudge: labels bind on exact strings, so a private
+/// spelling matches only itself. Never a resolve rule; the strict publish
+/// tier refuses what this nudges.
+pub(crate) fn labels_profile_advisory(role: &str, labels: &[String]) -> Option<Advisory> {
+    if crate::roles::embodiments::matching_profile(labels).is_some() {
+        return None;
+    }
+    let hint = match crate::roles::embodiments::closest_profile(labels) {
+        Some((profile, overlap)) => format!(
+            "; the closest is {:?} ({overlap} of {} labels shared)",
+            profile.name,
+            labels.len()
+        ),
+        None => String::new(),
+    };
+    Some(Advisory::info(format!(
+        "unknown_labels: role {role:?} names labels that match no shipped embodiment profile{hint}. \
+         Labels bind only when the env and model agree on their exact strings; prefer a \
+         profile's joints (rlmesh.adapters.embodiments)"
     )))
 }
 
@@ -365,6 +409,17 @@ fn join_feature(
             }
             check_role_dim_law(&state.role, width, &path)?;
             check_role_identity(&state.role, state.part.as_deref(), &path)?;
+            // A `Field` pins its labels to `dim` at the codec; a whole-leaf tag
+            // learns its width only here.
+            if let Some(labels) = &state.labels
+                && labels.len() != width as usize
+            {
+                return Err(JoinError::LabelWidthMismatch {
+                    key: path,
+                    labels: labels.len(),
+                    width,
+                });
+            }
             let range = reconcile_range(uniform_finite_range(leaf), state.range, &path)?;
             Ok(vec![EnvFeature::State(EnvState {
                 source: source.clone(),
@@ -375,6 +430,7 @@ fn join_feature(
                 encoding: state.encoding.clone(),
                 range,
                 frame: state.frame.clone(),
+                labels: state.labels.clone(),
             })])
         }
         ObsLeaf::Split(layout) => join_split(source, layout, leaf),
@@ -463,6 +519,7 @@ fn join_split(
                 encoding: field.encoding.clone(),
                 range,
                 frame: field.frame.clone(),
+                labels: field.labels.clone(),
             }));
         }
         offset += field.dim;
@@ -713,6 +770,10 @@ mod tests {
             encoding: encoding.map(crate::spec::ActionEncoding::Native),
             range: None,
             scale: None,
+            offset: None,
+            axis_scale: None,
+            axis_offset: None,
+            axis_fill: None,
             invert: false,
             threshold: None,
             binary: false,
@@ -722,6 +783,7 @@ mod tests {
             unknown: Default::default(),
             frame: None,
             part: None,
+            labels: None,
             reference: None,
         }
     }
@@ -783,6 +845,7 @@ mod tests {
                 unknown: Default::default(),
                 frame: None,
                 part: None,
+                labels: None,
             })),
         );
         observation.insert(
@@ -888,6 +951,7 @@ mod tests {
                 unknown: Default::default(),
                 frame: None,
                 part: None,
+                labels: None,
             })),
         );
         let mut root = BTreeMap::new();
@@ -927,6 +991,7 @@ mod tests {
                     unknown: Default::default(),
                     frame: None,
                     part: None,
+                    labels: None,
                 })),
                 ObsNode::Leaf(ObsLeaf::Text(TextTag {
                     role: "instruction".to_owned(),
@@ -964,6 +1029,7 @@ mod tests {
                     unknown: Default::default(),
                     frame: None,
                     part: None,
+                    labels: None,
                 })),
                 ObsNode::Leaf(ObsLeaf::State(StateTag {
                     role: "b".to_owned(),
@@ -972,6 +1038,7 @@ mod tests {
                     unknown: Default::default(),
                     frame: None,
                     part: None,
+                    labels: None,
                 })),
             ]),
             action: action_layout(vec![]),
@@ -1000,6 +1067,7 @@ mod tests {
                     unknown: Default::default(),
                     frame: None,
                     part: None,
+                    labels: None,
                 }),
             ),
             action: action_layout(vec![]),
@@ -1025,6 +1093,7 @@ mod tests {
                 unknown: Default::default(),
                 frame: None,
                 part: None,
+                labels: None,
             })),
             action: action_layout(vec![]),
         };
@@ -1090,6 +1159,7 @@ mod tests {
                         unknown: Default::default(),
                         frame: None,
                         part: None,
+                        labels: None,
                     },
                     Field {
                         role: Some("b".to_owned()),
@@ -1099,6 +1169,7 @@ mod tests {
                         unknown: Default::default(),
                         frame: None,
                         part: None,
+                        labels: None,
                     },
                 ],
             }),
@@ -1200,6 +1271,7 @@ mod tests {
                 unknown: Default::default(),
                 frame: None,
                 part: None,
+                labels: None,
             }),
         );
         assert!(matches!(
@@ -1222,6 +1294,7 @@ mod tests {
                 unknown: Default::default(),
                 frame: None,
                 part: None,
+                labels: None,
             })
         };
         assert!(matches!(
@@ -1258,6 +1331,7 @@ mod tests {
                 unknown: Default::default(),
                 frame: None,
                 part: None,
+                labels: None,
             }),
         )
         .expect("join");
@@ -1276,6 +1350,7 @@ mod tests {
             unknown: Default::default(),
             frame: None,
             part: None,
+            labels: None,
         }
     }
 

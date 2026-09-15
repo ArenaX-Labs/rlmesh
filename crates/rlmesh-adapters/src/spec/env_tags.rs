@@ -66,6 +66,12 @@ pub struct StateTag {
     /// The body part this feature belongs to; see [`ImageTag::part`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub part: Option<String>,
+    /// The axis names of this feature in the order the env emits them, one
+    /// per element of the space leaf (checked at `join`). A model that names
+    /// the same labels in another order is gathered by name. Omitted when
+    /// unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub labels: Option<Vec<String>>,
     /// Unrecognized additive fields, retained for round-trip (see [`ImageTag`]).
     #[serde(flatten)]
     pub unknown: BTreeMap<String, serde_json::Value>,
@@ -96,6 +102,8 @@ struct FieldWire {
     frame: Option<FrameRef>,
     #[serde(default)]
     part: Option<String>,
+    #[serde(default)]
+    labels: Option<Vec<String>>,
     /// Unrecognized additive fields, captured instead of hard-erroring so a
     /// newer writer's field survives an older reader; the publish gate rejects
     /// a bare one. See [`ImageTag`].
@@ -114,12 +122,24 @@ impl TryFrom<FieldWire> for Field {
             && (wire.encoding.is_some()
                 || wire.range.is_some()
                 || wire.frame.is_some()
-                || wire.part.is_some())
+                || wire.part.is_some()
+                || wire.labels.is_some())
         {
             return Err(
-                "a role-less field (a skip) cannot carry an encoding, range, frame or part"
+                "a role-less field (a skip) cannot carry an encoding, range, frame, part or labels"
                     .to_owned(),
             );
+        }
+        if let Some(labels) = &wire.labels {
+            let locus = format!("state field {:?}", wire.role);
+            crate::spec::labels::check_labels(labels, &locus)?;
+            if labels.len() != wire.dim as usize {
+                return Err(format!(
+                    "{locus}: declares dim {} but names {} labels; one label per element",
+                    wire.dim,
+                    labels.len()
+                ));
+            }
         }
         Ok(Field {
             role: wire.role,
@@ -128,6 +148,7 @@ impl TryFrom<FieldWire> for Field {
             range: wire.range,
             frame: wire.frame,
             part: wire.part,
+            labels: wire.labels,
             unknown: wire.unknown,
         })
     }
@@ -159,6 +180,10 @@ pub struct Field {
     /// role-less skip may not carry one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub part: Option<String>,
+    /// The axis names of this field, `dim` of them; see [`StateTag::labels`].
+    /// A role-less skip may not carry them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub labels: Option<Vec<String>>,
     /// Unrecognized additive fields, retained for round-trip (see [`ImageTag`]).
     #[serde(flatten)]
     pub unknown: BTreeMap<String, serde_json::Value>,
@@ -455,6 +480,40 @@ mod state_field_wire_tests {
                 "{doc} -> {json}"
             );
         }
+    }
+
+    #[test]
+    fn labels_are_optional_match_dim_and_are_barred_from_a_skip() {
+        let field: Field =
+            serde_json::from_str(r#"{"role": "x", "dim": 2, "labels": ["a", "b"]}"#).unwrap();
+        assert_eq!(field.labels.as_ref().map(Vec::len), Some(2));
+        assert!(
+            serde_json::to_string(&field)
+                .unwrap()
+                .contains(r#""labels":["a","b"]"#)
+        );
+        let bare: Field = serde_json::from_str(r#"{"role": "x", "dim": 2}"#).unwrap();
+        assert!(!serde_json::to_string(&bare).unwrap().contains("labels"));
+        for (doc, expect) in [
+            (
+                r#"{"role": "x", "dim": 3, "labels": ["a", "b"]}"#,
+                "one label per element",
+            ),
+            (
+                r#"{"role": "x", "dim": 2, "labels": ["a", "a"]}"#,
+                "is repeated",
+            ),
+            (r#"{"dim": 1, "labels": ["a"]}"#, "role-less"),
+        ] {
+            let err = serde_json::from_str::<Field>(doc).unwrap_err();
+            assert!(err.to_string().contains(expect), "{doc}: {err}");
+        }
+        let tag: super::ObsLeaf = serde_json::from_str(
+            r#"{"type": "state", "role": "proprio/joint_pos", "labels": ["FR_hip"]}"#,
+        )
+        .unwrap();
+        let json = serde_json::to_string(&tag).unwrap();
+        assert!(json.contains(r#""labels":["FR_hip"]"#), "{json}");
     }
 
     #[test]

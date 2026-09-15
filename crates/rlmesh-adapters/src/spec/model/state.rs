@@ -23,7 +23,8 @@ fn is_default_fill(fill: &f64) -> bool {
 /// A part deserializes from **either** a bare JSON string (a role, sugar for a
 /// part carrying only that role) **or** a JSON object with the full field set
 /// (`role`, `encoding`, `dim`, `index`, `optional`, `range`, `fill`,
-/// `post_rotate`, `scale`, `offset`, `frame`, `part`). On the wire a role-only part round-trips
+/// `post_rotate`, `scale`, `offset`, `axis_scale`, `axis_offset`, `frame`,
+/// `part`, `labels`). On the wire a role-only part round-trips
 /// back to a bare string; any other part to an object.
 ///
 /// A part with **no** `role` is a constant: it reads nothing from the env and
@@ -69,6 +70,13 @@ pub struct ConcatPart {
     pub scale: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offset: Option<f64>,
+    /// The per-axis forms of `scale`/`offset`, one value per axis in this
+    /// part's own label order (the resolved width otherwise). A quantity is
+    /// scalar or per-axis, never both. Omitted when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub axis_scale: Option<Vec<f64>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub axis_offset: Option<Vec<f64>>,
     /// The coordinate frame the checkpoint was trained to read this part in,
     /// when the role is an absolute pose. Omitted when unset, so every
     /// pre-`frame` spec is byte-identical.
@@ -80,6 +88,12 @@ pub struct ConcatPart {
     /// under any part. Omitted when unset; a constant part may not carry one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub part: Option<String>,
+    /// The axis names this part reads, in the order the checkpoint was
+    /// trained on. Fixes `dim` (their count); gathered from the env leaf's
+    /// labels by name, so a differing order is a permutation and a subset a
+    /// selection. Omitted when unset; a constant part may not carry them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub labels: Option<Vec<String>>,
     /// Unrecognized additive fields, retained for round-trip and surfaced to the
     /// publish-door `reject_unknowns` guard. See the strict-v1 publish gate.
     #[serde(flatten)]
@@ -110,10 +124,16 @@ struct ConcatPartWire {
     scale: Option<f64>,
     #[serde(default, deserialize_with = "crate::spec::num::de_opt_number")]
     offset: Option<f64>,
+    #[serde(default, deserialize_with = "crate::spec::num::de_opt_numbers")]
+    axis_scale: Option<Vec<f64>>,
+    #[serde(default, deserialize_with = "crate::spec::num::de_opt_numbers")]
+    axis_offset: Option<Vec<f64>>,
     #[serde(default)]
     frame: Option<FrameRef>,
     #[serde(default)]
     part: Option<String>,
+    #[serde(default)]
+    labels: Option<Vec<String>>,
     // Captured instead of hard-erroring so a newer writer's field survives an
     // older reader; the publish gate rejects a bare one.
     #[serde(flatten)]
@@ -136,6 +156,41 @@ impl TryFrom<ConcatPartWire> for ConcatPart {
         }
         if !wire.fill.is_finite() {
             return Err(format!("state part {:?} fill must be finite", wire.role));
+        }
+        let locus = format!("state part {:?}", wire.role);
+        // One quantity, one form: a scalar and a per-axis vector for the same
+        // affine would need a precedence rule nobody declared.
+        for (name, scalar, axis) in [
+            ("scale", wire.scale.is_some(), wire.axis_scale.as_deref()),
+            ("offset", wire.offset.is_some(), wire.axis_offset.as_deref()),
+        ] {
+            if scalar && axis.is_some() {
+                return Err(format!(
+                    "{locus}: sets both {name} and axis_{name}; a quantity is a scalar or a \
+                     per-axis vector, not both"
+                ));
+            }
+            crate::spec::labels::check_axis(axis, &format!("axis_{name}"), &locus)?;
+        }
+        if let Some(labels) = &wire.labels {
+            crate::spec::labels::check_labels(labels, &locus)?;
+            // Labels fix the part's width by naming every axis; an index picks
+            // one element, which the labels would then contradict.
+            if wire.index.is_some() {
+                return Err(format!(
+                    "{locus}: sets both labels and index; labels name every axis the part \
+                     reads, so select one by naming just that label"
+                ));
+            }
+            if let Some(dim) = wire.dim
+                && dim as usize != labels.len()
+            {
+                return Err(format!(
+                    "{locus}: declares dim {dim} but names {} labels; labels fix the width, \
+                     so drop dim or make them agree",
+                    labels.len()
+                ));
+            }
         }
         match &wire.role {
             Some(role) => {
@@ -185,12 +240,15 @@ impl TryFrom<ConcatPartWire> for ConcatPart {
                     || wire.post_rotate.is_some()
                     || wire.scale.is_some()
                     || wire.offset.is_some()
+                    || wire.axis_scale.is_some()
+                    || wire.axis_offset.is_some()
                     || wire.frame.is_some()
                     || wire.part.is_some()
+                    || wire.labels.is_some()
                 {
                     return Err("a constant (role-less) state part carries only dim and \
                          fill; drop encoding/index/range/optional/post_rotate/scale/offset/\
-                         frame/part"
+                         axis_scale/axis_offset/frame/part/labels"
                         .to_owned());
                 }
             }
@@ -206,8 +264,11 @@ impl TryFrom<ConcatPartWire> for ConcatPart {
             post_rotate: wire.post_rotate,
             scale: wire.scale,
             offset: wire.offset,
+            axis_scale: wire.axis_scale,
+            axis_offset: wire.axis_offset,
             frame: wire.frame,
             part: wire.part,
+            labels: wire.labels,
             unknown: wire.unknown,
         })
     }
@@ -236,8 +297,11 @@ impl<'de> Deserialize<'de> for ConcatPart {
                     post_rotate: None,
                     scale: None,
                     offset: None,
+                    axis_scale: None,
+                    axis_offset: None,
                     frame: None,
                     part: None,
+                    labels: None,
                     unknown: BTreeMap::new(),
                 })
             }
@@ -268,8 +332,11 @@ fn serialize_concat_part<S: Serializer>(
         && part.post_rotate.is_none()
         && part.scale.is_none()
         && part.offset.is_none()
+        && part.axis_scale.is_none()
+        && part.axis_offset.is_none()
         && part.frame.is_none()
         && part.part.is_none()
+        && part.labels.is_none()
         && part.unknown.is_empty();
     if let (true, Some(role)) = (role_only, &part.role) {
         serializer.serialize_str(role)
@@ -530,6 +597,93 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("only dim and"), "got: {err}");
+    }
+
+    #[test]
+    fn labels_fix_dim_and_refuse_index_duplicates_and_a_constant() {
+        let state: State = serde_json::from_str(
+            r#"{"components": [{"role": "proprio/joint_pos", "labels": ["FR_hip", "FR_thigh"]}]}"#,
+        )
+        .unwrap();
+        // Labels fix the width at resolve; `dim` stays as authored (unset), so
+        // the spec serializes exactly as written.
+        assert_eq!(state.components[0].dim, None);
+        let json = serde_json::to_string(&state).unwrap();
+        assert!(
+            json.contains(r#"[{"role":"proprio/joint_pos","labels":["FR_hip","FR_thigh"]}]"#),
+            "got: {json}"
+        );
+        let ok: State = serde_json::from_str(
+            r#"{"components": [{"role": "r", "dim": 2, "labels": ["a", "b"]}]}"#,
+        )
+        .expect("an agreeing dim parses");
+        assert_eq!(ok.components[0].dim, Some(2));
+        for (doc, expect) in [
+            (
+                r#"{"components": [{"role": "r", "dim": 3, "labels": ["a", "b"]}]}"#,
+                "labels fix the width",
+            ),
+            (
+                r#"{"components": [{"role": "r", "index": 0, "labels": ["a", "b"]}]}"#,
+                "both labels and index",
+            ),
+            (
+                r#"{"components": [{"role": "r", "labels": ["a", "a"]}]}"#,
+                "is repeated",
+            ),
+            (
+                r#"{"components": [{"role": "r", "labels": []}]}"#,
+                "at least one axis",
+            ),
+            (
+                r#"{"components": ["r", {"dim": 1, "labels": ["a"]}]}"#,
+                "only dim and",
+            ),
+        ] {
+            let err = serde_json::from_str::<State>(doc).unwrap_err();
+            assert!(err.to_string().contains(expect), "{doc}: {err}");
+        }
+    }
+
+    #[test]
+    fn per_axis_affine_is_a_vector_key_and_never_doubles_the_scalar() {
+        let state: State = serde_json::from_str(
+            r#"{"components": [{"role": "r", "axis_scale": [0.5, 1], "axis_offset": [0.0, -1.5]}]}"#,
+        )
+        .unwrap();
+        assert_eq!(state.components[0].axis_scale, Some(vec![0.5, 1.0]));
+        assert_eq!(state.components[0].axis_offset, Some(vec![0.0, -1.5]));
+        assert_eq!(state.components[0].scale, None);
+        let json = serde_json::to_string(&state).unwrap();
+        assert!(
+            json.contains(r#""axis_scale":[0.5,1.0],"axis_offset":[0.0,-1.5]"#),
+            "got: {json}"
+        );
+        for (doc, expect) in [
+            (
+                r#"{"components": [{"role": "r", "scale": 2.0, "axis_scale": [1.0]}]}"#,
+                "both scale and axis_scale",
+            ),
+            (
+                r#"{"components": [{"role": "r", "offset": 2.0, "axis_offset": [1.0]}]}"#,
+                "both offset and axis_offset",
+            ),
+            (
+                r#"{"components": [{"role": "r", "axis_offset": []}]}"#,
+                "at least one value",
+            ),
+            (
+                r#"{"components": [{"role": "r", "axis_scale": ["x"]}]}"#,
+                "a number",
+            ),
+            (
+                r#"{"components": ["r", {"dim": 1, "axis_scale": [1.0]}]}"#,
+                "only dim and",
+            ),
+        ] {
+            let err = serde_json::from_str::<State>(doc).unwrap_err();
+            assert!(err.to_string().contains(expect), "{doc}: {err}");
+        }
     }
 
     #[test]

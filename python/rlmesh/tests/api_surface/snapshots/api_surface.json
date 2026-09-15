@@ -1195,6 +1195,9 @@
       "EEF_ROT_2",
       "ENV_BRANCH_METADATA_KEY",
       "ENV_METADATA_KEY",
+      "FRANKA_PANDA",
+      "G1_29DOF",
+      "GO2",
       "GRIPPER_POS",
       "GRIPPER_POS_2",
       "HEAD",
@@ -1224,6 +1227,7 @@
       "Constant",
       "Custom",
       "CustomEncoding",
+      "EmbodimentProfile",
       "EnvTags",
       "Field",
       "FitMode",
@@ -1365,7 +1369,7 @@
           },
           "fill": {
             "kind": "attribute",
-            "signature": "fill: float"
+            "signature": "fill: float | Sequence[float]"
           },
           "frame": {
             "kind": "attribute",
@@ -1374,6 +1378,14 @@
           "invert": {
             "kind": "attribute",
             "signature": "invert: bool"
+          },
+          "labels": {
+            "kind": "attribute",
+            "signature": "labels: Sequence[str] | None"
+          },
+          "offset": {
+            "kind": "attribute",
+            "signature": "offset: float | Sequence[float] | None"
           },
           "optional": {
             "kind": "attribute",
@@ -1397,14 +1409,14 @@
           },
           "scale": {
             "kind": "attribute",
-            "signature": "scale: float | None"
+            "signature": "scale: float | Sequence[float] | None"
           },
           "threshold": {
             "kind": "attribute",
             "signature": "threshold: float | None"
           }
         },
-        "signature": "Actuator(role: str | None = None, dim: int = 0, encoding: RotationEncoding | CustomEncoding | None = None, range: tuple[float, float] | None = None, binary: bool = False, scale: float | None = None, invert: bool = False, threshold: float | None = None, clip: bool = False, fill: float = 0.0, optional: bool = False, *, frame: Frame | None = None, reference: Reference | None = None, part: str | None = None)",
+        "signature": "Actuator(role: str | None = None, dim: int = 0, encoding: RotationEncoding | CustomEncoding | None = None, range: tuple[float, float] | None = None, binary: bool = False, scale: float | Sequence[float] | None = None, invert: bool = False, threshold: float | None = None, clip: bool = False, fill: float | Sequence[float] = 0.0, optional: bool = False, *, frame: Frame | None = None, reference: Reference | None = None, part: str | None = None, offset: float | Sequence[float] | None = None, labels: Sequence[str] | None = None)",
         "stability": "Stable"
       },
       "Adapter": {
@@ -1638,6 +1650,25 @@
         "signature": "ENV_METADATA_KEY = str",
         "stability": "Stable"
       },
+      "EmbodimentProfile": {
+        "kind": "class",
+        "members": {
+          "joints": {
+            "kind": "attribute",
+            "signature": "joints: tuple[str, ...]"
+          },
+          "name": {
+            "kind": "attribute",
+            "signature": "name: str"
+          },
+          "parts": {
+            "kind": "attribute",
+            "signature": "parts: tuple[str, ...]"
+          }
+        },
+        "signature": "EmbodimentProfile(name: str, parts: tuple[str, ...], joints: tuple[str, ...])",
+        "stability": "Stable"
+      },
       "EnvTags": {
         "kind": "class",
         "members": {
@@ -1681,6 +1712,11 @@
         "signature": "EnvTags(observation: ObsNode, action: Action)",
         "stability": "Stable"
       },
+      "FRANKA_PANDA": {
+        "kind": "type alias",
+        "signature": "FRANKA_PANDA = EmbodimentProfile",
+        "stability": "Stable"
+      },
       "Field": {
         "kind": "class",
         "members": {
@@ -1696,6 +1732,10 @@
             "kind": "attribute",
             "signature": "frame: Frame | None"
           },
+          "labels": {
+            "kind": "attribute",
+            "signature": "labels: Sequence[str] | None"
+          },
           "part": {
             "kind": "attribute",
             "signature": "part: str | None"
@@ -1709,7 +1749,7 @@
             "signature": "role: str | None"
           }
         },
-        "signature": "Field(role: str | None = None, dim: int = 0, encoding: RotationEncoding | Sequence[RotationEncoding] | None = None, range: tuple[float, float] | None = None, *, frame: Frame | None = None, part: str | None = None)",
+        "signature": "Field(role: str | None = None, dim: int = 0, encoding: RotationEncoding | Sequence[RotationEncoding] | None = None, range: tuple[float, float] | None = None, *, frame: Frame | None = None, part: str | None = None, labels: Sequence[str] | None = None)",
         "stability": "Stable"
       },
       "FitMode": {
@@ -1720,6 +1760,16 @@
       "Frame": {
         "kind": "type alias",
         "signature": "Frame = Literal['world', 'robot_base']",
+        "stability": "Stable"
+      },
+      "G1_29DOF": {
+        "kind": "type alias",
+        "signature": "G1_29DOF = EmbodimentProfile",
+        "stability": "Stable"
+      },
+      "GO2": {
+        "kind": "type alias",
+        "signature": "GO2 = EmbodimentProfile",
         "stability": "Stable"
       },
       "GRIPPER_POS": {
@@ -2112,9 +2162,13 @@
             "kind": "attribute",
             "signature": "index: int | None"
           },
+          "labels": {
+            "kind": "attribute",
+            "signature": "labels: Sequence[str] | None"
+          },
           "offset": {
             "kind": "attribute",
-            "signature": "offset: float | None"
+            "signature": "offset: float | Sequence[float] | None"
           },
           "optional": {
             "kind": "attribute",
@@ -2146,10 +2200,10 @@
           },
           "scale": {
             "kind": "attribute",
-            "signature": "scale: float | None"
+            "signature": "scale: float | Sequence[float] | None"
           }
         },
-        "signature": "State(role: str, encoding: RotationEncoding | Sequence[RotationEncoding] | CustomEncoding | None = None, dim: int | None = None, index: int | None = None, optional: bool = False, range: tuple[float, float] | None = None, pad_to: int | None = None, dtype: str = 'float32', reshape: tuple[int, ...] | None = None, container: Literal['array', 'list'] = 'array', *, fill: float = 0.0, post_rotate: Rotation | None = None, scale: float | None = None, offset: float | None = None, frame: Frame | None = None, part: str | None = None)",
+        "signature": "State(role: str, encoding: RotationEncoding | Sequence[RotationEncoding] | CustomEncoding | None = None, dim: int | None = None, index: int | None = None, optional: bool = False, range: tuple[float, float] | None = None, pad_to: int | None = None, dtype: str = 'float32', reshape: tuple[int, ...] | None = None, container: Literal['array', 'list'] = 'array', *, fill: float = 0.0, post_rotate: Rotation | None = None, scale: float | Sequence[float] | None = None, offset: float | Sequence[float] | None = None, frame: Frame | None = None, part: str | None = None, labels: Sequence[str] | None = None)",
         "stability": "Stable"
       },
       "StateTag": {
@@ -2162,6 +2216,10 @@
           "frame": {
             "kind": "attribute",
             "signature": "frame: Frame | None"
+          },
+          "labels": {
+            "kind": "attribute",
+            "signature": "labels: Sequence[str] | None"
           },
           "part": {
             "kind": "attribute",
@@ -2176,7 +2234,7 @@
             "signature": "role: str"
           }
         },
-        "signature": "StateTag(role: str, encoding: RotationEncoding | Sequence[RotationEncoding] | None = None, range: tuple[float, float] | None = None, *, frame: Frame | None = None, part: str | None = None)",
+        "signature": "StateTag(role: str, encoding: RotationEncoding | Sequence[RotationEncoding] | None = None, range: tuple[float, float] | None = None, *, frame: Frame | None = None, part: str | None = None, labels: Sequence[str] | None = None)",
         "stability": "Stable"
       },
       "TORSO": {

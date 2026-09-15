@@ -8,7 +8,7 @@ operates on already-valid canonical data.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, cast
 
 from ._codec import encoding_from_wire, encoding_to_wire, to_pair
 from .action import Action, Actuator
@@ -38,18 +38,22 @@ def _actuator_to_dict(component: Actuator) -> dict[str, Any]:
     out["encoding"] = encoding_to_wire(component.encoding)
     out["range"] = list(component.range) if component.range else None
     out["binary"] = component.binary
-    # scale/invert/threshold/clip/fill are additive: emit only when set, so
-    # layouts that do not use them serialize byte-identically to before.
-    if component.scale is not None:
-        out["scale"] = component.scale
+    # scale/offset/invert/threshold/clip/fill are additive: emit only when set,
+    # so layouts that do not use them serialize byte-identically to before. A
+    # per-axis sequence goes under its own `axis_*` key; the scalar key never
+    # changes type.
+    for name in ("scale", "offset", "fill"):
+        value = getattr(component, name)
+        if isinstance(value, tuple):
+            out[f"axis_{name}"] = list(cast("tuple[float, ...]", value))
+        elif value is not None and (name != "fill" or value != 0.0):
+            out[name] = value
     if component.invert:
         out["invert"] = True
     if component.threshold is not None:
         out["threshold"] = component.threshold
     if component.clip:
         out["clip"] = True
-    if component.fill != 0.0:
-        out["fill"] = component.fill
     if component.optional:
         out["optional"] = True
     if component.frame is not None:
@@ -58,6 +62,8 @@ def _actuator_to_dict(component: Actuator) -> dict[str, Any]:
         out["reference"] = component.reference
     if component.part is not None:
         out["part"] = component.part
+    if component.labels is not None:
+        out["labels"] = list(component.labels)
     return out
 
 
@@ -69,15 +75,17 @@ def action_from_dict(data: Mapping[str, Any]) -> Action:
             dim=int(item["dim"]),
             encoding=encoding_from_wire(item.get("encoding")),
             range=to_pair(item.get("range")),
-            scale=item.get("scale"),
+            scale=item.get("axis_scale", item.get("scale")),
+            offset=item.get("axis_offset", item.get("offset")),
             invert=bool(item.get("invert", False)),
             threshold=item.get("threshold"),
             binary=bool(item.get("binary", False)),
             clip=bool(item.get("clip", False)),
-            fill=float(item.get("fill", 0.0)),
+            fill=item.get("axis_fill", float(item.get("fill", 0.0))),
             optional=bool(item.get("optional", False)),
             frame=item.get("frame"),
             reference=item.get("reference"),
+            labels=item.get("labels"),
             part=item.get("part"),
         )
         for item in data["components"]

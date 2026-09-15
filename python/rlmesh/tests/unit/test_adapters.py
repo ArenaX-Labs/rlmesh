@@ -4459,3 +4459,274 @@ def test_an_ad_hoc_part_nudges_and_the_strict_gate_refuses_it() -> None:
         adapt.EnvTags(
             observation={"l": adapt.StateTag("audio/mic")}, action=LIBERO_ACTION
         ).to_dict()
+
+
+# ---------------------------------------------------------------------------
+# Labels, per-axis affine and embodiment profiles (PR-2 of the adapter expansion)
+# ---------------------------------------------------------------------------
+
+GO2_SDK = adapt.GO2.joints
+GO2_ISAAC = tuple(GO2_SDK[i] for i in (3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8))
+GO2_DEFAULT_POSE = (0.0, 0.8, -1.5) * 4
+GO2_ACTION_SCALE = (0.125, 0.25, 0.25) * 4
+
+
+def _go2_env(*, optional: bool = False, fill: float | tuple[float, ...] = 0.0) -> Env:
+    return Env(
+        adapt.EnvTags(
+            observation={
+                "joint_pos": adapt.StateTag(adapt.JOINT_POS, labels=GO2_SDK),
+                "joint_vel": adapt.StateTag(adapt.JOINT_VEL, labels=GO2_SDK),
+            },
+            action=adapt.Action(
+                adapt.Actuator(
+                    adapt.ACTION_JOINT_POS,
+                    dim=12,
+                    labels=GO2_SDK,
+                    optional=optional,
+                    fill=fill,
+                )
+            ),
+        ),
+        obs_space=gym.spaces.Dict({"joint_pos": box(12), "joint_vel": box(12)}),
+        action_space=box(12),
+    )
+
+
+def _go2_model(labels: tuple[str, ...] | None) -> adapt.ModelSpec:
+    # Labels fix the width, so a labeled part declares no dim.
+    dim = None if labels else 12
+    return adapt.ModelSpec(
+        input={
+            "obs": adapt.Concat(
+                adapt.State(
+                    adapt.JOINT_POS,
+                    dim=dim,
+                    labels=labels,
+                    offset=tuple(-q for q in GO2_DEFAULT_POSE),
+                ),
+                adapt.State(adapt.JOINT_VEL, dim=dim, labels=labels, scale=0.05),
+            )
+        },
+        output=adapt.Action(
+            adapt.Actuator(
+                adapt.ACTION_JOINT_POS,
+                dim=12,
+                scale=GO2_ACTION_SCALE,
+                offset=GO2_DEFAULT_POSE,
+                labels=labels,
+            )
+        ),
+    )
+
+
+def test_embodiment_profiles_mirror_the_rust_rows() -> None:
+    from rlmesh.adapters import embodiments
+
+    assert embodiments.GO2 is adapt.GO2
+    assert adapt.GO2.name == "unitree_go2"
+    assert adapt.GO2.joints[:3] == ("FR_hip", "FR_thigh", "FR_calf")
+    assert adapt.GO2.joints[3] == "FL_hip" and len(adapt.GO2.joints) == 12
+    assert adapt.GO2.parts == ("base",)
+    assert len(adapt.G1_29DOF.joints) == 29 and adapt.G1_29DOF.joints[12] == "waist_yaw"
+    assert adapt.G1_29DOF.parts == (
+        "left_leg",
+        "right_leg",
+        "torso",
+        "left_arm",
+        "right_arm",
+        "head",
+    )
+    assert adapt.FRANKA_PANDA.joints == tuple(f"panda_joint{i}" for i in range(1, 8))
+    assert [profile.name for profile in embodiments.PROFILES] == [
+        "unitree_go2",
+        "unitree_g1_29dof",
+        "franka_panda",
+    ]
+    assert isinstance(adapt.GO2, adapt.EmbodimentProfile)
+
+
+def test_labels_and_per_axis_affine_round_trip_only_when_set() -> None:
+    tags = _go2_env(optional=True, fill=GO2_DEFAULT_POSE).tags
+    doc = tags.to_dict()
+    assert doc["observation"]["joint_pos"]["labels"] == list(GO2_SDK)
+    actuator = doc["action"]["components"][0]
+    assert actuator["axis_fill"] == list(GO2_DEFAULT_POSE) and "fill" not in actuator
+    assert adapt.EnvTags.from_dict(doc) == tags
+    assert "labels" not in LIBERO_ENV.tags.to_dict()["observation"]["robot0_eef_pos"]
+
+    spec = _go2_model(GO2_ISAAC)
+    doc = spec.to_dict()
+    part = doc["input"]["obs"]["components"][0]
+    assert part["labels"] == list(GO2_ISAAC) and "dim" not in part
+    assert (
+        part["axis_offset"] == [-q for q in GO2_DEFAULT_POSE] and "offset" not in part
+    )
+    out = doc["output"]["components"][0]
+    assert out["axis_scale"] == list(GO2_ACTION_SCALE)
+    assert out["axis_offset"] == list(GO2_DEFAULT_POSE)
+    assert "scale" not in out and "offset" not in out
+    assert adapt.ModelSpec.from_dict(doc) == spec
+    # The scalar keys keep their type: a scalar offset on an actuator is `offset`.
+    scalar = adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, offset=0.5))
+    assert (
+        adapt.ModelSpec(
+            input={"t": adapt.Text(adapt.INSTRUCTION)}, output=scalar
+        ).to_dict()["output"]["components"][0]["offset"]
+        == 0.5
+    )
+    # Keyword-only, like `part`.
+    with pytest.raises(TypeError):
+        adapt.StateTag(adapt.JOINT_POS, None, None, None, None, GO2_SDK)  # type: ignore[misc]
+
+
+def test_label_and_axis_codec_rules_fail_at_construction() -> None:
+    with pytest.raises(ValueError, match="labels or index"):
+        adapt.State(adapt.JOINT_POS, index=0, labels=("a", "b"))
+    with pytest.raises(ValueError, match="labels fix the width"):
+        adapt.State(adapt.JOINT_POS, dim=3, labels=("a", "b"))
+    with pytest.raises(ValueError, match="not repeat"):
+        adapt.State(adapt.JOINT_POS, labels=("a", "a"))
+    with pytest.raises(ValueError, match="one label per axis"):
+        adapt.Actuator(adapt.ACTION_JOINT_POS, dim=3, labels=("a", "b"))
+    with pytest.raises(ValueError, match="one label per element"):
+        adapt.Field(adapt.JOINT_POS, 3, labels=("a", "b"))
+    with pytest.raises(ValueError, match="optional, labeled"):
+        adapt.Actuator(adapt.ACTION_JOINT_POS, dim=2, fill=(0.0, 1.0))
+    with pytest.raises(ValueError, match="one fill per axis"):
+        adapt.Actuator(
+            adapt.ACTION_JOINT_POS, dim=2, optional=True, labels=("a", "b"), fill=(1.0,)
+        )
+    with pytest.raises(ValueError, match="role-less"):
+        adapt.Actuator(dim=2, fill=(0.0, 1.0))
+    with pytest.raises(ValueError, match="sequence of numbers"):
+        adapt.State(adapt.JOINT_POS, scale="x")  # type: ignore[arg-type]
+
+
+def test_go2_isaac_model_resolves_to_the_permutation_on_both_sides() -> None:
+    env = _go2_env()
+    adapter = resolve(env, _go2_model(GO2_ISAAC))
+    text = adapter.explain()
+    assert (
+        "joint_pos perm[3,4,5,0,1,2,9,10,11,6,7,8] (+[FL_hip:-0.0,FL_thigh:-0.8,"
+        in text
+    )
+    assert "joint_vel perm[3,4,5,0,1,2,9,10,11,6,7,8] (*0.05)" in text
+    assert text.endswith("perm[3,4,5,0,1,2,9,10,11,6,7,8]")
+    assert adapter.advisories() == []
+    sdk = np.arange(12, dtype=np.float32)
+    obs = adapter.transform_obs({"joint_pos": sdk, "joint_vel": sdk})["obs"]
+    perm = [3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8]
+    np.testing.assert_allclose(
+        obs[:12], sdk[perm] - np.array(GO2_DEFAULT_POSE, dtype=np.float32), atol=1e-6
+    )
+    np.testing.assert_allclose(obs[12:], sdk[perm] * 0.05, atol=1e-6)
+    action = adapter.transform_action(np.ones(12, dtype=np.float32))
+    np.testing.assert_allclose(
+        action, np.array(GO2_ACTION_SCALE) + np.array(GO2_DEFAULT_POSE), atol=1e-6
+    )
+    # An SDK-order model is the identity, and prints the env's names on its
+    # per-axis values.
+    identity = resolve(env, _go2_model(GO2_SDK)).explain()
+    assert "perm" not in identity and "joint_pos[:12] (+[FR_hip:-0.0," in identity
+
+
+def test_model_only_labels_are_a_resolve_error_and_env_only_are_silent() -> None:
+    unlabeled = Env(
+        adapt.EnvTags(
+            observation={
+                "joint_pos": adapt.StateTag(adapt.JOINT_POS),
+                "joint_vel": adapt.StateTag(adapt.JOINT_VEL),
+            },
+            action=adapt.Action(adapt.Actuator(adapt.ACTION_JOINT_POS, dim=12)),
+        ),
+        obs_space=gym.spaces.Dict({"joint_pos": box(12), "joint_vel": box(12)}),
+        action_space=box(12),
+    )
+    with pytest.raises(adapt.AdapterResolutionError, match="declares none"):
+        resolve(unlabeled, _go2_model(GO2_SDK))
+    adapter = resolve(_go2_env(), _go2_model(None))
+    assert adapter.advisories() == []
+    assert "(model *[FR_hip:0.125," in adapter.explain()
+
+
+def test_a_label_subset_selects_and_scatters_onto_an_optional_actuator() -> None:
+    front = GO2_ISAAC[:6]
+    spec = adapt.ModelSpec(
+        input={"obs": adapt.State(adapt.JOINT_POS, labels=front)},
+        output=adapt.Action(
+            adapt.Actuator(adapt.ACTION_JOINT_POS, dim=6, labels=front)
+        ),
+    )
+    with pytest.raises(adapt.AdapterResolutionError, match="undriven"):
+        resolve(_go2_env(), spec)
+    adapter = resolve(_go2_env(optional=True, fill=GO2_DEFAULT_POSE), spec)
+    text = adapter.explain()
+    assert "joint_pos select[3,4,5,0,1,2]" in text
+    assert (
+        "model[0:6] select[3,4,5,0,1,2,-,-,-,-,-,-] (fill [RR_hip:0.0,RR_thigh:0.8,"
+        in text
+    )
+    assert any(
+        note.severity == "info" and "drives 6 of 12 labels" in note.message
+        for note in adapter.advisories()
+    )
+    action = adapter.transform_action(np.arange(1, 7, dtype=np.float32))
+    np.testing.assert_allclose(
+        action, [4, 5, 6, 1, 2, 3, 0.0, 0.8, -1.5, 0.0, 0.8, -1.5], atol=1e-6
+    )
+    with pytest.raises(adapt.AdapterResolutionError, match="FR_shin"):
+        resolve(
+            _go2_env(),
+            adapt.ModelSpec(
+                input={
+                    "obs": adapt.State(adapt.JOINT_POS, labels=("FR_hip", "FR_shin"))
+                },
+                output=spec.output,
+            ),
+        )
+
+
+def test_per_axis_vector_width_is_a_resolve_error() -> None:
+    spec = adapt.ModelSpec(
+        input={"obs": adapt.State(adapt.JOINT_POS, dim=12, scale=(1.0, 2.0))},
+        output=adapt.Action(adapt.Actuator(adapt.ACTION_JOINT_POS, dim=12)),
+    )
+    with pytest.raises(adapt.AdapterResolutionError, match="axis_scale has 2 values"):
+        resolve(_go2_env(), spec)
+
+
+def test_unknown_labels_nudge_and_the_require_labels_gate() -> None:
+    import json
+
+    from rlmesh._rlmesh import adapters_join_check, adapters_spec_normalize
+
+    stray = adapt.EnvTags(
+        observation={
+            "j": adapt.StateTag(adapt.JOINT_POS, labels=("FR_hip", "FR_shin"))
+        },
+        action=LIBERO_ACTION,
+    )
+    notes = adapters_join_check(
+        json.dumps(stray.to_dict()), gym.spaces.Dict({"j": box(2)}), box(7)
+    )
+    assert any(
+        "unknown_labels" in note.message and "unitree_go2" in note.message
+        for note in notes
+    )
+    doc = json.dumps(stray.to_dict())
+    adapters_spec_normalize("env", doc, True)
+    with pytest.raises(ValueError, match="match no shipped embodiment profile"):
+        adapters_spec_normalize("env", doc, True, "passthrough", False, True)
+    bare = json.dumps(
+        adapt.EnvTags(
+            observation={"j": adapt.StateTag(adapt.JOINT_POS)}, action=LIBERO_ACTION
+        ).to_dict()
+    )
+    adapters_spec_normalize("env", bare, True)
+    with pytest.raises(ValueError, match="without labels"):
+        adapters_spec_normalize("env", bare, True, "passthrough", False, True)
+    good = json.dumps(_go2_env().tags.to_dict())
+    adapters_spec_normalize("env", good, True, "strict", False, True)
+    model = json.dumps(_go2_model(GO2_ISAAC).to_dict())
+    adapters_spec_normalize("model", model, True, "strict", False, True)

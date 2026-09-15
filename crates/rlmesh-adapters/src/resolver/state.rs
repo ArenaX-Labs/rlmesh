@@ -15,6 +15,9 @@ fn fill_width(component: &ConcatPart, role: &str, at: &str) -> Result<u32> {
     if component.index.is_some() {
         return Ok(1);
     }
+    if let Some(labels) = &component.labels {
+        return Ok(labels.len() as u32);
+    }
     if let Some(dim) = component.dim {
         return Ok(dim);
     }
@@ -49,8 +52,16 @@ fn folded_fill(component: &ConcatPart) -> f64 {
     component.fill * component.scale.unwrap_or(1.0) + component.offset.unwrap_or(0.0)
 }
 
-/// A piece with no env source: `dim` copies of `fill`.
-fn fill_piece(width: u32, fill: f64, absent_role: bool, part: Option<String>) -> StatePiece {
+/// A piece with no env source: `dim` copies of `fill`. The scalar affine is
+/// folded into `fill` by the caller; a per-axis one rides along unfolded and
+/// applies per element.
+fn fill_piece(
+    width: u32,
+    fill: f64,
+    absent_role: bool,
+    part: Option<String>,
+    component: &ConcatPart,
+) -> StatePiece {
     StatePiece {
         source: NodePath::root(),
         src_offset: None,
@@ -64,11 +75,102 @@ fn fill_piece(width: u32, fill: f64, absent_role: bool, part: Option<String>) ->
         dst_range: None,
         scale: None,
         offset: None,
+        axis_scale: component.axis_scale.clone(),
+        axis_offset: component.axis_offset.clone(),
+        gather: None,
+        labels: component.labels.clone(),
+        src_labels: None,
         fill: Some(fill),
         absent_role,
         frame: None,
         part,
         width: Some(width),
+    }
+}
+
+/// A per-axis vector must name exactly one value per resolved axis.
+pub(super) fn check_axis_width(
+    values: Option<&[f64]>,
+    name: &str,
+    width: Option<u32>,
+    locus: &str,
+) -> Result<()> {
+    if let (Some(values), Some(width)) = (values, width)
+        && values.len() != width as usize
+    {
+        return Err(err(
+            ErrorCode::DimMismatch,
+            format!(
+                "{locus}: {name} has {} values but the resolved width is {width}",
+                values.len()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Where each of `wanted` sits in `available`, or the labels `available`
+/// lacks. Shared by the observation gather and the action scatter.
+pub(super) fn positions(
+    wanted: &[String],
+    available: &[String],
+) -> std::result::Result<Vec<u32>, Vec<String>> {
+    let mut missing = Vec::new();
+    let mut found = Vec::with_capacity(wanted.len());
+    for label in wanted {
+        match available.iter().position(|have| have == label) {
+            Some(index) => found.push(index as u32),
+            None => missing.push(label.clone()),
+        }
+    }
+    if missing.is_empty() {
+        Ok(found)
+    } else {
+        Err(missing)
+    }
+}
+
+/// The gather a model label tuple implies against an env leaf: `None` when
+/// the model names none, the env's own order (identity), or a
+/// [`LabelMismatch`](ErrorCode::LabelMismatch) when the env declares no
+/// labels or lacks one the model names. A labeled model against an unlabeled
+/// env is an error, not a caution: identity-on-hope is the bug.
+fn label_gather(
+    role: &str,
+    env: Option<&[String]>,
+    model: Option<&[String]>,
+    at: &str,
+) -> Result<Option<Vec<u32>>> {
+    let Some(model) = model else {
+        return Ok(None);
+    };
+    let Some(env) = env else {
+        return Err(err(
+            ErrorCode::LabelMismatch,
+            format!(
+                "model input {at}: state role {} names labels {:?} but the env leaf declares \
+                 none; label the env leaf (labels=) so the axes can be aligned",
+                quoted(role),
+                model
+            ),
+        ));
+    };
+    match positions(model, env) {
+        Ok(gather) => {
+            let identity =
+                gather.len() == env.len() && gather.iter().enumerate().all(|(i, &j)| i as u32 == j);
+            Ok((!identity).then_some(gather))
+        }
+        Err(missing) => Err(err(
+            ErrorCode::LabelMismatch,
+            format!(
+                "model input {at}: state role {} names labels {:?} that the env leaf lacks; \
+                 the env declares {:?}",
+                quoted(role),
+                missing,
+                env
+            ),
+        )),
     }
 }
 
@@ -151,7 +253,7 @@ pub(super) fn plan_state(
             let width = component
                 .dim
                 .expect("a constant part is codec-checked for dim");
-            pieces.push(fill_piece(width, component.fill, false, None));
+            pieces.push(fill_piece(width, component.fill, false, None, component));
             continue;
         };
         // A custom encoding resolves structurally to its `base` here and the
@@ -173,6 +275,7 @@ pub(super) fn plan_state(
                 ),
             ));
         }
+        let locus = format!("model input {at}: state role {}", quoted(role));
         let bound = bind(
             states_by_role,
             role,
@@ -189,11 +292,18 @@ pub(super) fn plan_state(
             super::reject_referenced_unknown(role, &placement, unknown_roles)?;
             if component.optional {
                 let width = fill_width(component, role, &at)?;
+                for (name, axis) in [
+                    ("axis_scale", component.axis_scale.as_deref()),
+                    ("axis_offset", component.axis_offset.as_deref()),
+                ] {
+                    check_axis_width(axis, name, Some(width), &locus)?;
+                }
                 pieces.push(fill_piece(
                     width,
                     folded_fill(component),
                     true,
                     component.part.clone(),
+                    component,
                 ));
                 continue;
             }
@@ -208,6 +318,29 @@ pub(super) fn plan_state(
             ));
         };
         let env_state: &EnvState = bound.feature;
+        // Align the axes by name before anything else reads them. A model
+        // that names a label the env lacks fills when optional (a named
+        // axis, like a named part, never rebinds), else it is a mismatch.
+        let gather = match label_gather(
+            role,
+            env_state.labels.as_deref(),
+            component.labels.as_deref(),
+            &at,
+        ) {
+            Ok(gather) => gather,
+            Err(_) if component.optional && env_state.labels.is_some() => {
+                let width = fill_width(component, role, &at)?;
+                pieces.push(fill_piece(
+                    width,
+                    folded_fill(component),
+                    true,
+                    bound.part.clone(),
+                    component,
+                ));
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         // A custom encoding shadows to its `base` for the structural
         // negotiation; the host-side arm is never imported or run here (only a
         // trusted in-process resolve does). Validate the obs-side invariants the
@@ -286,6 +419,10 @@ pub(super) fn plan_state(
         );
         let source_width = if converts {
             dst_encoding.map(|encoding| encoding.dims())
+        } else if let Some(labels) = &component.labels {
+            // Labels fix the width: the gather (or the identical order) yields
+            // exactly one element per named axis.
+            Some(labels.len() as u32)
         } else {
             env_state.dim
         };
@@ -324,6 +461,20 @@ pub(super) fn plan_state(
             (_, Some(dim)) => Some(dim),
             (None, None) => source_width,
         };
+        for (name, axis) in [
+            ("axis_scale", component.axis_scale.as_deref()),
+            ("axis_offset", component.axis_offset.as_deref()),
+        ] {
+            check_axis_width(axis, name, width, &locus)?;
+        }
+        // The output axis names: the model's when it declared them (the
+        // gather put the values in that order), else the env's, which the
+        // identity read preserves.
+        let labels = component
+            .labels
+            .clone()
+            .or_else(|| env_state.labels.clone())
+            .filter(|labels| width.is_none_or(|width| labels.len() == width as usize));
         pieces.push(StatePiece {
             source: env_state.source.clone(),
             src_offset: env_state.slice_offset,
@@ -335,12 +486,20 @@ pub(super) fn plan_state(
             src_encoding,
             dst_encoding,
             post_rotate: component.post_rotate.clone(),
-            dim: component.dim,
+            // Labels fix the width the way a declared `dim` does.
+            dim: component
+                .dim
+                .or_else(|| component.labels.as_ref().map(|labels| labels.len() as u32)),
             index: component.index,
             src_range: env_state.range,
             dst_range: component.range,
             scale: component.scale,
             offset: component.offset,
+            axis_scale: component.axis_scale.clone(),
+            axis_offset: component.axis_offset.clone(),
+            gather,
+            labels,
+            src_labels: env_state.labels.clone(),
             fill: None,
             absent_role: false,
             frame,

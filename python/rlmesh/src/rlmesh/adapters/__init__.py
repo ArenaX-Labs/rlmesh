@@ -97,6 +97,7 @@ from .constants import (
     RIGHT_LEG,
     TORSO,
 )
+from .embodiments import FRANKA_PANDA, G1_29DOF, GO2, EmbodimentProfile
 from .resolver import AdapterResolutionError, resolve, resolve_from_contract
 from .specs import (
     ROTATION_DIMS,
@@ -158,6 +159,9 @@ __all__ = [
     "EEF_ROT_2",
     "ENV_BRANCH_METADATA_KEY",
     "ENV_METADATA_KEY",
+    "FRANKA_PANDA",
+    "G1_29DOF",
+    "GO2",
     "GRIPPER_POS",
     "GRIPPER_POS_2",
     "HEAD",
@@ -187,6 +191,7 @@ __all__ = [
     "Constant",
     "Custom",
     "CustomEncoding",
+    "EmbodimentProfile",
     "EnvTags",
     "Field",
     "FitMode",

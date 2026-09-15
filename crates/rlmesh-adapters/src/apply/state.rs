@@ -60,6 +60,40 @@ fn list_value(tensor: &Tensor) -> Vec<Value> {
         .collect()
 }
 
+/// `value * scale + offset` per element, either side per-axis. The per-axis
+/// widths were checked at resolve; a runtime value of another width already
+/// failed the piece-width assertion before this runs.
+pub(super) fn apply_affine(
+    value: &mut [f32],
+    scale: Option<f64>,
+    axis_scale: Option<&[f64]>,
+    offset: Option<f64>,
+    axis_offset: Option<&[f64]>,
+) {
+    if let Some(scale) = scale {
+        let scale = scale as f32;
+        for entry in value.iter_mut() {
+            *entry *= scale;
+        }
+    }
+    if let Some(axis) = axis_scale {
+        for (entry, scale) in value.iter_mut().zip(axis) {
+            *entry *= *scale as f32;
+        }
+    }
+    if let Some(offset) = offset {
+        let offset = offset as f32;
+        for entry in value.iter_mut() {
+            *entry += offset;
+        }
+    }
+    if let Some(axis) = axis_offset {
+        for (entry, offset) in value.iter_mut().zip(axis) {
+            *entry += *offset as f32;
+        }
+    }
+}
+
 /// Produce one model state input from a raw observation.
 pub(super) fn apply_state(
     plan: &StatePlan,
@@ -68,10 +102,17 @@ pub(super) fn apply_state(
     let mut state: Vec<f32> = Vec::new();
     for piece in &plan.pieces {
         if let Some(fill) = piece.fill {
-            state.extend(std::iter::repeat_n(
-                fill as f32,
-                piece.dim.unwrap_or(0) as usize,
-            ));
+            let mut value = vec![fill as f32; piece.dim.unwrap_or(0) as usize];
+            // The scalar affine was folded into `fill` at resolve; a per-axis
+            // one has no scalar to fold into and applies here.
+            apply_affine(
+                &mut value,
+                None,
+                piece.axis_scale.as_deref(),
+                None,
+                piece.axis_offset.as_deref(),
+            );
+            state.extend(value);
             continue;
         }
         let mut value = numeric_vector(resolve_in_obs(raw_obs, &piece.source)?)?;
@@ -96,6 +137,24 @@ pub(super) fn apply_state(
             }
             value = value[start..end].to_vec();
         }
+        // Gather the named axes into the model's order (a permutation or a
+        // selection). The env leaf's width was label-checked at join, so an
+        // index past the runtime value is an env contract violation.
+        if let Some(gather) = &piece.gather {
+            let mut gathered = Vec::with_capacity(gather.len());
+            for &index in gather {
+                let Some(entry) = value.get(index as usize) else {
+                    return Err(ApplyError::new(format!(
+                        "state piece '{}' gathers axis {index} but the runtime observation \
+                         has only {} elements",
+                        piece.source,
+                        value.len()
+                    )));
+                };
+                gathered.push(*entry);
+            }
+            value = gathered;
+        }
         if let (Some(src), Some(dst)) = (piece.src_encoding, piece.dst_encoding)
             && (src != dst || piece.post_rotate.is_some())
         {
@@ -115,20 +174,11 @@ pub(super) fn apply_state(
         {
             map_range(&mut value, src, dst)?;
         }
-        // The model-side affine sits after the range map: `range` bridges two
-        // declared scales, `scale`/`offset` is the model's own convention
-        // (e.g. RoboTwin's `1 - 2g` gripper).
-        if piece.scale.is_some() || piece.offset.is_some() {
-            let scale = piece.scale.unwrap_or(1.0) as f32;
-            let offset = piece.offset.unwrap_or(0.0) as f32;
-            for entry in &mut value {
-                *entry = *entry * scale + offset;
-            }
-        }
         // The resolved widths are the state's layout: a host-side custom
         // encoding slices itself out of the assembled vector by them. A runtime
         // value of another width would shift every later piece, so say so here
-        // instead of handing the model a quietly re-laid-out state.
+        // instead of handing the model a quietly re-laid-out state (and
+        // before a per-axis affine is zipped against it).
         if let Some(width) = piece.width
             && value.len() != width as usize
         {
@@ -139,6 +189,16 @@ pub(super) fn apply_state(
                 value.len()
             )));
         }
+        // The model-side affine sits after the range map: `range` bridges two
+        // declared scales, `scale`/`offset` is the model's own convention
+        // (e.g. RoboTwin's `1 - 2g` gripper, a per-joint stand pose).
+        apply_affine(
+            &mut value,
+            piece.scale,
+            piece.axis_scale.as_deref(),
+            piece.offset,
+            piece.axis_offset.as_deref(),
+        );
         state.extend(value);
     }
     if let Some(pad_to) = plan.pad_to {
@@ -191,6 +251,11 @@ mod tests {
                 dst_range: Some((-1.0, 1.0)),
                 scale: None,
                 offset: None,
+                axis_scale: None,
+                axis_offset: None,
+                gather: None,
+                labels: None,
+                src_labels: None,
                 fill: None,
                 absent_role: false,
                 width: Some(3),
@@ -246,6 +311,11 @@ mod tests {
                 dst_range: None,
                 scale: None,
                 offset: None,
+                axis_scale: None,
+                axis_offset: None,
+                gather: None,
+                labels: None,
+                src_labels: None,
                 fill: None,
                 absent_role: false,
                 width: Some(1),

@@ -184,6 +184,18 @@ pub(crate) fn de_opt_number<'de, D: Deserializer<'de>>(
         .map(|number| number.map(|Number(value)| value))
 }
 
+/// Deserialize an optional list of numbers (`Option<Vec<f64>>`): the per-axis
+/// `axis_scale` / `axis_offset` / `axis_fill` vectors. Each element goes
+/// through [`Number`] so a wrong-typed entry reads `a number`; the list's
+/// length is checked against the leaf's resolved width by the resolver, not
+/// here (a `ConcatPart` learns its width only at resolve).
+pub(crate) fn de_opt_numbers<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Vec<f64>>, D::Error> {
+    let raw = Option::<Vec<Number>>::deserialize(deserializer)?;
+    Ok(raw.map(|numbers| numbers.into_iter().map(|Number(value)| value).collect()))
+}
+
 /// Upper bound on each axis of a declared render size (the image `render`
 /// assertion). A camera dial the platform binds from an untrusted spec, so the
 /// ceiling is a sane display resolution rather than the shared [`MAX_DIM`].

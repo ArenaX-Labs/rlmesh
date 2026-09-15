@@ -34,6 +34,18 @@ pub struct StatePiece {
     /// Model-side affine applied after the range map: `value * scale + offset`.
     pub scale: Option<f64>,
     pub offset: Option<f64>,
+    /// The per-axis forms, one value per output axis (in `labels` order when
+    /// labels exist). Exclusive with the scalar of the same name.
+    pub axis_scale: Option<Vec<f64>>,
+    pub axis_offset: Option<Vec<f64>>,
+    /// Source indices to gather, in output order, when both sides carry labels
+    /// and the model's order or subset differs from the env's. `None` reads
+    /// the source as is (no labels, or an identical order).
+    pub gather: Option<Vec<u32>>,
+    /// The output axis names (the model's labels when it declared them, else
+    /// the env's), and the env leaf's own labels, for `describe`.
+    pub labels: Option<Vec<String>>,
+    pub src_labels: Option<Vec<String>>,
     /// The constant this piece contributes instead of reading the env, with
     /// `scale`/`offset` already folded in. `None` means a real env source.
     pub fill: Option<f64>,

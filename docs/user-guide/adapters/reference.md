@@ -71,6 +71,70 @@ The action side follows the same table with the env actuator as the one looking:
 
 **The `_2` roles.** The ten second-arm roles that predate parts (`EEF_POS_2`, `EEF_ROT_2`, `GRIPPER_POS_2`, `ACTION_DELTA_POS_2`, `ACTION_DELTA_ROT_2`, `ACTION_GRIPPER_2`, `ACTION_EEF_POS_2`, `ACTION_EEF_ROT_2`, `ACTION_JOINT_POS_2`, `IMAGE_WRIST_2`) are the legacy spelling of the base role under `part=ARM_2`, and the resolver folds them before it matches: a model written against `EEF_POS_2` binds an environment that declares `StateTag(EEF_POS, part=ARM_2)`, and a model that names `part=ARM_2` binds a `_2` environment. `arm_2` means "the second arm", not a side, so a fresh bimanual environment that wants to serve shipped `_2` models names its second arm `ARM_2`; one that names `LEFT_ARM`/`RIGHT_ARM` cannot, and the error says so. A `_2` role may not also carry a part, and no further `_N` role will ever be added. Prefer `part=` for new specs; the `_2` constants remain for the environments and models that already use them.
 
+### Labels
+
+A joint vector is only a list of numbers until something says which joint each one is. A Unitree Go2 reports its twelve joints in SDK motor order (`FR, FL, RR, RL` x `hip, thigh, calf`); Isaac Lab and legged_gym read the same robot in `FL, FR, RL, RR` order, so a checkpoint trained there emits and expects a different permutation, and every deploy script in the wild carries `[3,4,5,0,1,2,9,10,11,6,7,8]` by hand. `labels` puts that fact on the leaf instead. It is a keyword-only tuple of axis names on `StateTag`, `Field`, `Actuator`, and a `State`/`Concat` part, one per element in that side's own order, and the resolver aligns the two sides **by name**: a differing order is a permutation, a subset is a selection, and the permutation is derived, never typed.
+
+```python
+import rlmesh.adapters as adapt
+from rlmesh.adapters import embodiments
+
+SDK = embodiments.GO2.joints                      # FR_hip, FR_thigh, FR_calf, FL_hip, ...
+ISAAC = tuple(SDK[i] for i in (3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8))   # FL, FR, RL, RR
+
+tags = adapt.EnvTags(                              # the robot, SDK order on every backend
+    observation={
+        "joint_pos": adapt.StateTag(adapt.JOINT_POS, labels=SDK),
+        "joint_vel": adapt.StateTag(adapt.JOINT_VEL, labels=SDK),
+    },
+    action=adapt.Action(adapt.Actuator(adapt.ACTION_JOINT_POS, dim=12, labels=SDK)),
+)
+spec = adapt.ModelSpec(                            # a checkpoint trained in Isaac order
+    input={"obs": adapt.Concat(
+        adapt.State(adapt.JOINT_POS, labels=ISAAC, offset=tuple(-q for q in (0.0, 0.8, -1.5) * 4)),
+        adapt.State(adapt.JOINT_VEL, labels=ISAAC, scale=0.05),
+    )},
+    output=adapt.Action(adapt.Actuator(
+        adapt.ACTION_JOINT_POS, dim=12, labels=ISAAC,
+        scale=(0.125, 0.25, 0.25) * 4, offset=(0.0, 0.8, -1.5) * 4,
+    )),
+)
+```
+
+`explain()` on that pairing prints `joint_pos perm[3,4,5,0,1,2,9,10,11,6,7,8]` on both joint parts and the inverse scatter on the actuator; a checkpoint that lists `SDK` instead resolves to the identity and prints `joint_pos[:12]`. Labels fix a part's width (the tuple's length), so a labeled part declares no `dim` and cannot carry `index`. Label spelling is `<part>_<joint>` snake case as the vendor SDK and Isaac Lab name the joints; write the tuple from a shipped profile (below) rather than by hand. A label repeated within one leaf is refused at construction. The resolve rules, per leaf:
+
+| Env says | Model says             | Outcome                                                                                                                                     |
+| -------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| nothing  | nothing                | the env's order, as today                                                                                                                   |
+| labels   | nothing                | silence: the model reads the env's order, and the env's names annotate any per-axis value it declares                                       |
+| nothing  | labels                 | **resolve error** (`LabelMismatch`): a labeled model bound on hope is the bug labels exist to catch; label the env leaf                     |
+| labels   | the same set           | gathered by name into the model's order; `explain()` prints `perm[..]` when the order differs, nothing when it is the identity              |
+| labels   | a subset (observation) | the named axes, in the model's order; `explain()` prints `select[..]`                                                                       |
+| labels   | a subset (action)      | scatters onto the named axes; the rest take the env actuator's `fill` **only if it is `optional`** (with an `info` naming them), else error |
+| labels   | a name the env lacks   | **resolve error** (`LabelMismatch`) naming it; an `optional` observation part fills instead                                                 |
+
+The action side is the mirror of the observation side: the model's output is scattered onto the env actuator's axes by name, after the model's own `scale`/`offset` (in the model's order) and before the env's. A width that disagrees with a label count is refused where the width is known: at construction for `Field` and `Actuator` (`dim`), at `join` for a `StateTag` (the space width), and at resolve for a per-axis vector. Labels are verbatim strings with no alias table, so a Go2 model against a Spot environment is a `LabelMismatch`, which is the truthful outcome.
+
+A humanoid with more joints than a checkpoint drives is the subset case end to end. A 29-DoF G1 environment declares `StateTag(JOINT_POS, labels=G1)` and `Actuator(ACTION_JOINT_POS, dim=29, labels=G1, optional=True, fill=STAND_POSE)`; a legs-and-waist checkpoint names its fifteen labels, reads fifteen of twenty-nine on the observation side, and on the action side drives those fifteen while the fourteen arm joints hold the stand pose, with an `info` listing them.
+
+### Per-axis scale, offset and fill
+
+`scale` and `offset` on a `State` part and an `Actuator` take either one float for every axis or a sequence with one value per axis, in the declaring side's own `labels` order (its resolved width when it carries none). A sequence serializes under its own wire key (`axis_scale`, `axis_offset`), so the scalar key never changes type and a spec that uses only scalars is byte-identical to before; declaring both forms for one quantity is a construction error. The Go2 example above is the common case: a per-joint action scale (hips halved) and a stand pose added to every target, and a stand pose subtracted from every observed angle. A per-axis vector whose length differs from the resolved width is a resolve error (`DimMismatch`). Setting `range` alongside an affine keeps the same `info` it always did.
+
+`Actuator` gains a scalar `offset` alongside `scale` (`value * scale + offset`, added before `invert` and `threshold`); like the others it can be declared on either side. `fill` on an env actuator that is `optional` and carries `labels` may be a per-axis sequence too (`axis_fill` on the wire, one value per label): it is what each axis a model's label subset leaves undriven is held at, and what the whole actuator emits when no model output drives it. `explain()` prints every per-axis value as `label:value` when the axes have names, `*[FR_hip:0.125,FR_thigh:0.25,...]`, so the pairing shows which joint gets which number.
+
+### Embodiment profiles
+
+The label tuples ship as data so nobody retypes twelve joint names: `rlmesh.adapters.embodiments` carries one `EmbodimentProfile` (`.name`, `.parts`, `.joints`) per body, defined once in the native crate.
+
+| Profile                    | `.name`            | `.joints`                                                                                                                                                  |
+| -------------------------- | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `embodiments.GO2`          | `unitree_go2`      | 12, SDK motor order: `FR_hip, FR_thigh, FR_calf, FL_hip, ..., RR_..., RL_...`                                                                              |
+| `embodiments.G1_29DOF`     | `unitree_g1_29dof` | 29: `left_hip_pitch` .. `left_ankle_roll`, `right_*` x6, `waist_yaw`, `waist_roll`, `waist_pitch`, `left_shoulder_pitch` .. `left_wrist_yaw`, `right_*` x7 |
+| `embodiments.FRANKA_PANDA` | `franka_panda`     | 7: `panda_joint1` .. `panda_joint7`                                                                                                                        |
+
+An environment writes `labels=embodiments.GO2.joints`; a model writes the same tuple, a subset, or a reordering. Profiles are data, not a resolver input: the resolver never consults them, two sides agree on label strings or they do not. What consults them is the **label lint**: a tuple whose set matches no shipped profile (subsets allowed, order ignored) draws the same non-fatal `info` an ad-hoc role does, `unknown_labels`, naming the closest profile by overlap, and the managed `--require-labels` tier refuses it. A profile grows the way a role does, when a real environment and model pair needs it.
+
 ## Vocabularies
 
 Rotation encodings are a closed set (a remote client must resolve a spec with no code). Each has a fixed native width:
@@ -126,7 +190,7 @@ action:
   "action/delta_eef_pos" <- model[0:3]~target
 ```
 
-At the managed publish boundary the `--require-frames` tier turns the optionality off: every role the registry says owes an attribute must declare one. Locally, and by default, declaring nothing stays legal.
+At the managed publish boundary the `--require-frames` tier turns the optionality off: every role the registry says owes an attribute must declare one. Its twin, `--require-labels`, requires `labels` on every numeric leaf that carries a joint role (`proprio/joint_pos`, `proprio/joint_vel`, `action/joint_pos`, `action/joint_vel`) and requires every label tuple to match a shipped [embodiment profile](#embodiment-profiles). Locally, and by default, declaring nothing stays legal.
 
 Normalization is one overloaded field, `normalize`: `False` (off, the default), `True` (the conventional `[0, 1]`), or a `(low, high)` pair (e.g. `(-1.0, 1.0)`) to map into a specific range. One field, so an on/off flag can never disagree with a range, and `False` is an authoritative off-switch.
 
@@ -178,13 +242,14 @@ Nesting is real `dict` nesting that mirrors a nested `Dict` space (`{"agent": {"
 
 {class}`~rlmesh.adapters.StateTag`: one numeric proprioception leaf.
 
-| Field                   | Default | What it declares                                                  | When to use                          |
-| ----------------------- | ------- | ----------------------------------------------------------------- | ------------------------------------ |
-| `role` (1st positional) | --      | the state role to match                                           | always                               |
-| `encoding`              | `None`  | rotation encoding (single, or a native-first preference sequence) | the role is a rotation               |
-| `range`                 | `None`  | `(low, high)` bounds where the space is unbounded                 | the space leaves this leaf unbounded |
-| `frame` (keyword-only)  | `None`  | the coordinate frame these values are expressed in                | the role is an absolute pose         |
-| `part` (keyword-only)   | `None`  | the body part this entry belongs to (see [Parts](#parts))         | the role repeats across the body     |
+| Field                   | Default | What it declares                                                           | When to use                          |
+| ----------------------- | ------- | -------------------------------------------------------------------------- | ------------------------------------ |
+| `role` (1st positional) | --      | the state role to match                                                    | always                               |
+| `encoding`              | `None`  | rotation encoding (single, or a native-first preference sequence)          | the role is a rotation               |
+| `range`                 | `None`  | `(low, high)` bounds where the space is unbounded                          | the space leaves this leaf unbounded |
+| `frame` (keyword-only)  | `None`  | the coordinate frame these values are expressed in                         | the role is an absolute pose         |
+| `part` (keyword-only)   | `None`  | the body part this entry belongs to (see [Parts](#parts))                  | the role repeats across the body     |
+| `labels` (keyword-only) | `None`  | the axis names in the env's order, one per element (see [Labels](#labels)) | a joint vector                       |
 
 `range` only supplies bounds the space lacks. If the space declares finite bounds that disagree with it, resolution errors rather than silently overriding them.
 
@@ -218,8 +283,9 @@ adapt.EnvTags(
 | `range`                 | `None`             | `(low, high)` where the space is unbounded        | the slice is unbounded in the space |
 | `frame` (keyword-only)  | `None`             | the coordinate frame this slice is expressed in   | the role is an absolute pose        |
 | `part` (keyword-only)   | `None`             | the body part this slice belongs to               | the role repeats across the body    |
+| `labels` (keyword-only) | `None`             | the axis names of this slice, `dim` of them       | a joint vector                      |
 
-A `role=None` field advances the offset without producing a feature; use it to step over indices the model never reads. A skip carries no encoding, range, frame or part.
+A `role=None` field advances the offset without producing a feature; use it to step over indices the model never reads. A skip carries no encoding, range, frame, part or labels.
 
 ## The model side
 
@@ -322,32 +388,33 @@ Perturbations that speak in pixels (a shift in `dx`/`dy`, say) are scaled by the
 
 {class}`~rlmesh.adapters.State`: the single-part numeric input. Every field:
 
-| Field                   | Default     | What it does                                                        | When to use                                    |
-| ----------------------- | ----------- | ------------------------------------------------------------------- | ---------------------------------------------- |
-| `role` (1st positional) | --          | match an env state feature                                          | always                                         |
-| `encoding`              | `None`      | rotation encoding: single, preference sequence, or `CustomEncoding` | the part is a rotation                         |
-| `dim`                   | `None`      | keep the leading N elements                                         | truncate the source                            |
-| `index`                 | `None`      | select one element after conversion                                 | pick a single scalar                           |
-| `optional`              | `False`     | zero-fill when the env lacks the role                               | the role may be absent                         |
-| `range`                 | `None`      | `(low, high)` the model wants; affinely maps from the env range     | model and env disagree on scale                |
-| `fill`                  | `0.0`       | value contributed when `optional` and the env lacks the role        | a non-zero stand-in (needs `optional`)         |
-| `post_rotate`           | `None`      | a fixed `Rotation` right-multiplied onto the env's rotation         | the checkpoint was trained in an offset frame  |
-| `scale`                 | `None`      | multiply by this after the range map                                | the model's own units                          |
-| `offset`                | `None`      | add this after `scale` (`value * scale + offset`)                   | e.g. a `1 - 2g` gripper (`scale=-2, offset=1`) |
-| `frame` (keyword-only)  | `None`      | the coordinate frame the checkpoint was trained to read             | the part is an absolute pose                   |
-| `part` (keyword-only)   | `None`      | the body part this part reads (see [Parts](#parts))                 | the env has the role on several parts          |
-| `pad_to`                | `None`      | zero-pad the result to this length                                  | fixed-width input                              |
-| `dtype`                 | `"float32"` | NumPy dtype of the result                                           | non-default dtype                              |
-| `reshape`               | `None`      | target shape for the result                                         | the model wants a specific shape               |
-| `container`             | `"array"`   | emit a NumPy array or a plain `list`                                | the model wants a list                         |
+| Field                   | Default     | What it does                                                              | When to use                                             |
+| ----------------------- | ----------- | ------------------------------------------------------------------------- | ------------------------------------------------------- |
+| `role` (1st positional) | --          | match an env state feature                                                | always                                                  |
+| `encoding`              | `None`      | rotation encoding: single, preference sequence, or `CustomEncoding`       | the part is a rotation                                  |
+| `dim`                   | `None`      | keep the leading N elements                                               | truncate the source                                     |
+| `index`                 | `None`      | select one element after conversion                                       | pick a single scalar                                    |
+| `optional`              | `False`     | zero-fill when the env lacks the role                                     | the role may be absent                                  |
+| `range`                 | `None`      | `(low, high)` the model wants; affinely maps from the env range           | model and env disagree on scale                         |
+| `fill`                  | `0.0`       | value contributed when `optional` and the env lacks the role              | a non-zero stand-in (needs `optional`)                  |
+| `post_rotate`           | `None`      | a fixed `Rotation` right-multiplied onto the env's rotation               | the checkpoint was trained in an offset frame           |
+| `scale`                 | `None`      | multiply by this after the range map; a float, or one value per axis      | the model's own units                                   |
+| `offset`                | `None`      | add this after `scale` (`value * scale + offset`); float or per-axis      | a `1 - 2g` gripper (`scale=-2, offset=1`), a stand pose |
+| `frame` (keyword-only)  | `None`      | the coordinate frame the checkpoint was trained to read                   | the part is an absolute pose                            |
+| `part` (keyword-only)   | `None`      | the body part this part reads (see [Parts](#parts))                       | the env has the role on several parts                   |
+| `labels` (keyword-only) | `None`      | the axis names this part reads, in training order (see [Labels](#labels)) | a joint vector; fixes the width                         |
+| `pad_to`                | `None`      | zero-pad the result to this length                                        | fixed-width input                                       |
+| `dtype`                 | `"float32"` | NumPy dtype of the result                                                 | non-default dtype                                       |
+| `reshape`               | `None`      | target shape for the result                                               | the model wants a specific shape                        |
+| `container`             | `"array"`   | emit a NumPy array or a plain `list`                                      | the model wants a list                                  |
 
-`dim` and `index` are mutually exclusive (`dim` keeps the leading N, `index` selects one). When `optional` is set the fill width must be known without an env feature, so set one of `index`, `dim`, or `encoding`. `range` is a no-op when the env has no source range to map from; it does not clamp on its own.
+`dim` and `index` are mutually exclusive (`dim` keeps the leading N, `index` selects one), and `labels` fixes the width itself (no `dim`, no `index`). When `optional` is set the fill width must be known without an env feature, so set one of `index`, `dim`, `labels`, or `encoding`. `range` is a no-op when the env has no source range to map from; it does not clamp on its own.
 
-The steps run in a fixed order: slice the env feature, convert the rotation (with `post_rotate` right-multiplied onto it), apply `index`/`dim`, map `range`, then apply `scale`/`offset`. Padding is last of all -- the parts are concatenated in order and only then is the result zero-padded to `pad_to`, so `pad_to` never interacts with a part's own transforms. Setting both `range` and `scale`/`offset` on one part is legal (the affine applies to the range map's result) and raises an `info` advisory, since two rescalings on one value is usually a mistake.
+The steps run in a fixed order: slice the env feature, gather by `labels`, convert the rotation (with `post_rotate` right-multiplied onto it), apply `index`/`dim`, map `range`, then apply `scale`/`offset` (scalar or per-axis). Padding is last of all -- the parts are concatenated in order and only then is the result zero-padded to `pad_to`, so `pad_to` never interacts with a part's own transforms. Setting both `range` and `scale`/`offset` on one part is legal (the affine applies to the range map's result) and raises an `info` advisory, since two rescalings on one value is usually a mistake.
 
 `post_rotate` takes a {class}`~rlmesh.adapters.Rotation`, built from a 3x3 matrix with `Rotation.from_matrix(rows)` (stored as `rot6d`, so the round-trip is exact). It needs a rotation `encoding` and cannot combine with a `CustomEncoding`; the matrix must already be a rotation (orthonormal, `|det - 1| <= 1e-4`).
 
-A `State` is also a valid `Concat` part: its part fields (`role`, `encoding`, `dim`, `index`, `optional`, `range`, `fill`, `post_rotate`, `scale`, `offset`, `frame`, `part`) are taken, and its container fields (`pad_to`, `dtype`, `reshape`, `container`) must stay default when used as a part.
+A `State` is also a valid `Concat` part: its part fields (`role`, `encoding`, `dim`, `index`, `optional`, `range`, `fill`, `post_rotate`, `scale`, `offset`, `frame`, `part`, `labels`) are taken, and its container fields (`pad_to`, `dtype`, `reshape`, `container`) must stay default when used as a part.
 
 ### Concat
 
@@ -393,28 +460,31 @@ Tokenization stays in the model; `Text` delivers the raw string.
 
 {class}`~rlmesh.adapters.Actuator`: one contiguous slice of the action vector:
 
-| Field                   | Default       | What it does                                              | When to use                            |
-| ----------------------- | ------------- | --------------------------------------------------------- | -------------------------------------- |
-| `role` (1st positional) | `None`        | match the actuator across sides; `None` = opaque (below)  | usually                                |
-| `dim`                   | -- (required) | dimensions this component occupies                        | always                                 |
-| `encoding`              | `None`        | rotation encoding (or a `CustomEncoding`)                 | the component is a rotation            |
-| `range`                 | `None`        | `(low, high)` of the component values                     | declare/convert the value range        |
-| `binary`                | `False`       | the component is a binary decision (snap after range map) | a gripper open/close                   |
-| `scale`                 | `None`        | multiply the model value                                  | env actuator is scaled                 |
-| `invert`                | `False`       | negate the model value (explicit `scale=-1`)              | gripper sign correction                |
-| `threshold`             | `None`        | subtract to recenter the decision boundary                | shift a `binary` split off zero        |
-| `clip`                  | `False`       | clamp the mapped value to `range` (requires `range`)      | per-dim safety on a mixed-range action |
-| `fill`                  | `0.0`         | constant per dim of an opaque (role-less) actuator        | env-required dims no model reads       |
-| `frame` (keyword-only)  | `None`        | coordinate frame of an **absolute** pose command          | `action/eef_*`                         |
-| `reference` (kw-only)   | `None`        | pose a **delta** is integrated against                    | `action/delta_eef_*`                   |
-| `part` (kw-only)        | `None`        | the body part this actuator drives (see [Parts](#parts))  | one `action/joint_pos` per arm         |
+| Field                   | Default       | What it does                                                                                        | When to use                                      |
+| ----------------------- | ------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| `role` (1st positional) | `None`        | match the actuator across sides; `None` = opaque (below)                                            | usually                                          |
+| `dim`                   | -- (required) | dimensions this component occupies                                                                  | always                                           |
+| `encoding`              | `None`        | rotation encoding (or a `CustomEncoding`)                                                           | the component is a rotation                      |
+| `range`                 | `None`        | `(low, high)` of the component values                                                               | declare/convert the value range                  |
+| `binary`                | `False`       | the component is a binary decision (snap after range map)                                           | a gripper open/close                             |
+| `scale`                 | `None`        | multiply the model value; a float, or one value per axis                                            | env actuator is scaled, a per-joint action scale |
+| `offset` (kw-only)      | `None`        | add after `scale`; a float, or one value per axis                                                   | a stand pose a joint target sits around          |
+| `invert`                | `False`       | negate the model value (explicit `scale=-1`)                                                        | gripper sign correction                          |
+| `threshold`             | `None`        | subtract to recenter the decision boundary                                                          | shift a `binary` split off zero                  |
+| `clip`                  | `False`       | clamp the mapped value to `range` (requires `range`)                                                | per-dim safety on a mixed-range action           |
+| `fill`                  | `0.0`         | constant per dim of an opaque or `optional` actuator; per-axis on a labeled `optional` env actuator | env-required dims no model reads; a held pose    |
+| `frame` (keyword-only)  | `None`        | coordinate frame of an **absolute** pose command                                                    | `action/eef_*`                                   |
+| `reference` (kw-only)   | `None`        | pose a **delta** is integrated against                                                              | `action/delta_eef_*`                             |
+| `part` (kw-only)        | `None`        | the body part this actuator drives (see [Parts](#parts))                                            | one `action/joint_pos` per arm                   |
+| `labels` (kw-only)      | `None`        | the axis names this actuator drives, `dim` of them (see [Labels](#labels))                          | a joint vector                                   |
 
-`scale`, `invert`, and `threshold` declare a side's actuator convention. They can be set on **either side** and compose as literal transforms applied **after** the declared formats (rotation, range) are bridged, **model-side first** (the model's own output convention), then **env-side** (the env's):
+`scale`, `offset`, `invert`, and `threshold` declare a side's actuator convention. They can be set on **either side** and compose as literal transforms applied **after** the declared formats (rotation, range) are bridged, **model-side first** (the model's own output convention, in the model's own axis order), then the scatter by `labels`, then **env-side** (the env's):
 
 ```{mermaid}
 flowchart LR
-  a["rotation / range bridged"] --> b["model: scale → invert → threshold"]
-  b --> c["env: scale → invert → threshold"]
+  a["rotation / range bridged"] --> b["model: scale → offset → invert → threshold"]
+  b --> s["scatter by labels (axis_fill)"]
+  s --> c["env: scale → offset → invert → threshold"]
   c --> d["binary"]
   d --> e["clip"]
 ```
@@ -429,25 +499,27 @@ A **role-less actuator** (`Actuator(dim=N, fill=...)` with no `role`) is _opaque
 
 Each conversion the resolver can perform falls into one of four policies. **Silent** is always applied when declared; **opt-in** is off until you set the flag; **advisory-warn** succeeds but logs data loss; **resolve-error** fails resolution.
 
-| Conversion                             | Policy        | Trigger                                                                             |
-| -------------------------------------- | ------------- | ----------------------------------------------------------------------------------- |
-| Image resize (target ≤ env resolution) | SILENT        | a smaller `size`/`height`/`width`                                                   |
-| Layout transpose (`hwc` ↔ `chw`)       | SILENT        | model `layout` differs from the env's                                               |
-| Normalize                              | SILENT        | `normalize` set (`True` or a `(low, high)` range)                                   |
-| dtype cast                             | SILENT        | model `dtype` differs from the env's                                                |
-| Rotation encoding conversion           | SILENT        | model encoding differs (both known)                                                 |
-| Range map (affine)                     | SILENT        | model `range` set and env range known                                               |
-| `binary` + `threshold` snap            | SILENT        | declared on the actuator                                                            |
-| `fit` (aspect-changing resize)         | OPT-IN        | aspect mismatch; **absent `fit` → resolve error**                                   |
-| `allow_upscale`                        | OPT-IN        | target > env resolution; **absent → resolve error**                                 |
-| `channels` declared                    | OPT-IN        | declaring it turns a channel-count mismatch into a resolve error (silent otherwise) |
-| `optional` / `fill`                    | OPT-IN        | env lacks the camera/role; **absent → resolve error**                               |
-| `crop` / `crop_area`                   | SILENT        | declared; the box is a stated part of the model's preprocessing                     |
-| `channel_order="bgr"`                  | SILENT        | declared; **a non-3-channel camera → resolve error**                                |
-| `jpeg_quality`                         | SILENT        | declared; **a non-3-channel camera → resolve error**                                |
-| Crop                                   | ADVISORY-WARN | `fit="crop"` chosen (pixels discarded)                                              |
-| Pad                                    | ADVISORY-WARN | `fit="pad"` chosen (border added)                                                   |
-| Zero-filled camera / state             | ADVISORY-WARN | an `optional` part filled because the env lacks the role                            |
+| Conversion                             | Policy        | Trigger                                                                              |
+| -------------------------------------- | ------------- | ------------------------------------------------------------------------------------ |
+| Image resize (target ≤ env resolution) | SILENT        | a smaller `size`/`height`/`width`                                                    |
+| Layout transpose (`hwc` ↔ `chw`)       | SILENT        | model `layout` differs from the env's                                                |
+| Normalize                              | SILENT        | `normalize` set (`True` or a `(low, high)` range)                                    |
+| dtype cast                             | SILENT        | model `dtype` differs from the env's                                                 |
+| Rotation encoding conversion           | SILENT        | model encoding differs (both known)                                                  |
+| Range map (affine)                     | SILENT        | model `range` set and env range known                                                |
+| Gather / scatter by `labels`           | SILENT        | both sides name their axes; a differing order is a permutation, a subset a selection |
+| Per-axis `scale` / `offset` / `fill`   | SILENT        | declared as a sequence; **a length other than the resolved width → resolve error**   |
+| `binary` + `threshold` snap            | SILENT        | declared on the actuator                                                             |
+| `fit` (aspect-changing resize)         | OPT-IN        | aspect mismatch; **absent `fit` → resolve error**                                    |
+| `allow_upscale`                        | OPT-IN        | target > env resolution; **absent → resolve error**                                  |
+| `channels` declared                    | OPT-IN        | declaring it turns a channel-count mismatch into a resolve error (silent otherwise)  |
+| `optional` / `fill`                    | OPT-IN        | env lacks the camera/role; **absent → resolve error**                                |
+| `crop` / `crop_area`                   | SILENT        | declared; the box is a stated part of the model's preprocessing                      |
+| `channel_order="bgr"`                  | SILENT        | declared; **a non-3-channel camera → resolve error**                                 |
+| `jpeg_quality`                         | SILENT        | declared; **a non-3-channel camera → resolve error**                                 |
+| Crop                                   | ADVISORY-WARN | `fit="crop"` chosen (pixels discarded)                                               |
+| Pad                                    | ADVISORY-WARN | `fit="pad"` chosen (border added)                                                    |
+| Zero-filled camera / state             | ADVISORY-WARN | an `optional` part filled because the env lacks the role                             |
 
 ### Two axes: parsing and resolve
 
@@ -507,31 +579,34 @@ carries each replayed step's observation to the model as history rows on the nex
 
 Find the row that matches your environment, then tag it:
 
-| My environment looks like...              | Tag it...                                       |
-| ----------------------------------------- | ----------------------------------------------- |
-| `Dict` of cameras + proprio + instruction | a `dict` of `ImageTag` / `StateTag` / `TextTag` |
-| one flat `Box` with fixed index ranges    | a bare `Split(Field(...), ...)`                 |
-| a `Tuple` of sub-spaces                   | a Python `tuple` of leaves                      |
-| an upside-down camera                     | `ImageTag(role, upside_down=True)`              |
-| quaternion proprioception                 | `StateTag(EEF_ROT, encoding="quat_xyzw")`       |
-| two arms                                  | the role with `part=LEFT_ARM` / `RIGHT_ARM`     |
-| a camera on the head                      | `ImageTag(IMAGE_PRIMARY, part=HEAD)`            |
+| My environment looks like...              | Tag it...                                            |
+| ----------------------------------------- | ---------------------------------------------------- |
+| `Dict` of cameras + proprio + instruction | a `dict` of `ImageTag` / `StateTag` / `TextTag`      |
+| one flat `Box` with fixed index ranges    | a bare `Split(Field(...), ...)`                      |
+| a `Tuple` of sub-spaces                   | a Python `tuple` of leaves                           |
+| an upside-down camera                     | `ImageTag(role, upside_down=True)`                   |
+| quaternion proprioception                 | `StateTag(EEF_ROT, encoding="quat_xyzw")`            |
+| two arms                                  | the role with `part=LEFT_ARM` / `RIGHT_ARM`          |
+| a camera on the head                      | `ImageTag(IMAGE_PRIMARY, part=HEAD)`                 |
+| a joint vector in the robot's own order   | `StateTag(JOINT_POS, labels=embodiments.GO2.joints)` |
 
 Find the row that matches your model, then spec it:
 
-| My model wants...                    | Spec it...                                                       |
-| ------------------------------------ | ---------------------------------------------------------------- |
-| a resized, normalized image          | `Image(IMAGE_PRIMARY, size=256, normalize=True)`                 |
-| channels-first                       | `Image(IMAGE_PRIMARY, size=256, layout="chw")`                   |
-| stacked frames                       | `Image(IMAGE_PRIMARY, size=256, stack=4)`                        |
-| every second frame of the last seven | `Image(IMAGE_PRIMARY, size=256, stack=4, stride=2)`              |
-| a 90% center crop before the resize  | `Image(IMAGE_PRIMARY, size=224, crop_area=0.9)`                  |
-| a BGR-trained model                  | `Image(IMAGE_PRIMARY, size=224, channel_order="bgr")`            |
-| a model trained on stored JPEGs      | `Image(IMAGE_PRIMARY, size=224, jpeg_quality=95)`                |
-| concatenated proprio with a rotation | `Concat(EEF_POS, State(EEF_ROT, encoding="rot6d"), GRIPPER_POS)` |
-| a binary gripper command             | `Actuator(ACTION_GRIPPER, dim=1, binary=True)`                   |
-| an optional second camera            | `Image(IMAGE_WRIST, size=256, channels=3, optional=True)`        |
-| an instruction string                | `Text(INSTRUCTION)`                                              |
+| My model wants...                         | Spec it...                                                                  |
+| ----------------------------------------- | --------------------------------------------------------------------------- |
+| a resized, normalized image               | `Image(IMAGE_PRIMARY, size=256, normalize=True)`                            |
+| channels-first                            | `Image(IMAGE_PRIMARY, size=256, layout="chw")`                              |
+| stacked frames                            | `Image(IMAGE_PRIMARY, size=256, stack=4)`                                   |
+| every second frame of the last seven      | `Image(IMAGE_PRIMARY, size=256, stack=4, stride=2)`                         |
+| a 90% center crop before the resize       | `Image(IMAGE_PRIMARY, size=224, crop_area=0.9)`                             |
+| a BGR-trained model                       | `Image(IMAGE_PRIMARY, size=224, channel_order="bgr")`                       |
+| a model trained on stored JPEGs           | `Image(IMAGE_PRIMARY, size=224, jpeg_quality=95)`                           |
+| concatenated proprio with a rotation      | `Concat(EEF_POS, State(EEF_ROT, encoding="rot6d"), GRIPPER_POS)`            |
+| joints in the checkpoint's training order | `State(JOINT_POS, labels=ISAAC, offset=NEG_STAND_POSE)`                     |
+| a per-joint action scale and stand pose   | `Actuator(ACTION_JOINT_POS, dim=12, labels=..., scale=(...), offset=(...))` |
+| a binary gripper command                  | `Actuator(ACTION_GRIPPER, dim=1, binary=True)`                              |
+| an optional second camera                 | `Image(IMAGE_WRIST, size=256, channels=3, optional=True)`                   |
+| an instruction string                     | `Text(INSTRUCTION)`                                                         |
 
 ### Common pitfalls
 
@@ -546,9 +621,9 @@ Find the row that matches your model, then spec it:
 
 ## Errors and `explain()`
 
-Resolution raises {exc}`~rlmesh.adapters.AdapterResolutionError` when a spec cannot be bridged to the spaces: a required role with no `optional`/zero-fill, a declared channel mismatch, an upscale without `allow_upscale`, an aspect mismatch without `fit`, an unsupported `resample`/`dtype`, an impossible encoding conversion, a bare unknown field on a known kind, or a join-time class/width/encoding/range disagreement between a tag and its space. The message names the offending leaf and what it expected.
+Resolution raises {exc}`~rlmesh.adapters.AdapterResolutionError` when a spec cannot be bridged to the spaces: a required role with no `optional`/zero-fill, a declared channel mismatch, an upscale without `allow_upscale`, an aspect mismatch without `fit`, an unsupported `resample`/`dtype`, an impossible encoding conversion, a bare unknown field on a known kind, a label the other side lacks or a labeled model against an unlabeled env (`LabelMismatch`), or a join-time class/width/encoding/range disagreement between a tag and its space. The message names the offending leaf and what it expected.
 
-Once resolution succeeds, call `adapter.explain()` to print the exact transforms the resolver chose (each resize, layout transpose, encoding conversion, range map, key remap, slice, and clip) before you run a single step. It is the fastest way to confirm the bridge is what you intended.
+Once resolution succeeds, call `adapter.explain()` to print the exact transforms the resolver chose (each resize, layout transpose, encoding conversion, range map, key remap, slice, label permutation, per-axis value, and clip) before you run a single step. It is the fastest way to confirm the bridge is what you intended.
 
 ```python
 adapter = adapt.resolve(tags, env.observation_space, env.action_space, spec)

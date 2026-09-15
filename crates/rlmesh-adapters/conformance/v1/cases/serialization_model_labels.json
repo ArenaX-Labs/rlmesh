@@ -1,0 +1,40 @@
+{
+  "kind": "serialization",
+  "side": "model",
+  "doc": {
+    "input": {
+      "obs": {
+        "type": "state",
+        "components": [
+          {
+            "role": "proprio/joint_pos",
+            "labels": ["FL_hip", "FR_hip"],
+            "axis_offset": [-0.1, 0.1]
+          },
+          {
+            "role": "proprio/joint_vel",
+            "dim": 2,
+            "axis_scale": [0.05, 0.05]
+          },
+          "proprio/gripper"
+        ],
+        "dtype": "float32"
+      }
+    },
+    "output": {
+      "clip": null,
+      "components": [
+        {
+          "role": "action/joint_pos",
+          "dim": 2,
+          "encoding": null,
+          "range": null,
+          "binary": false,
+          "labels": ["FL_hip", "FR_hip"],
+          "axis_scale": [0.125, 0.125],
+          "offset": 0.8
+        }
+      ]
+    }
+  }
+}

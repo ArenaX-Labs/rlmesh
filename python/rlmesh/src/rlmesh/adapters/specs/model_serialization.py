@@ -185,6 +185,7 @@ def _part_to_dict(part: State | Constant) -> Any:
         and part.offset is None
         and part.frame is None
         and part.part is None
+        and part.labels is None
     )
     if role_only:
         return part.role
@@ -206,14 +207,20 @@ def _part_to_dict(part: State | Constant) -> Any:
             "encoding": part.post_rotate.encoding,
             "value": list(part.post_rotate.value),
         }
-    if part.scale is not None:
-        out["scale"] = part.scale
-    if part.offset is not None:
-        out["offset"] = part.offset
+    # A per-axis sequence goes under its own `axis_*` key; the scalar key
+    # never changes type.
+    for name in ("scale", "offset"):
+        value = getattr(part, name)
+        if isinstance(value, tuple):
+            out[f"axis_{name}"] = list(cast("tuple[float, ...]", value))
+        elif value is not None:
+            out[name] = value
     if part.frame is not None:
         out["frame"] = part.frame
     if part.part is not None:
         out["part"] = part.part
+    if part.labels is not None:
+        out["labels"] = list(part.labels)
     return out
 
 
@@ -314,10 +321,11 @@ def _part_from_dict(item: object) -> ConcatPart:
             encoding=post_rotate["encoding"],
             value=tuple(float(value) for value in post_rotate["value"]),
         ),
-        scale=part.get("scale"),
-        offset=part.get("offset"),
+        scale=part.get("axis_scale", part.get("scale")),
+        offset=part.get("axis_offset", part.get("offset")),
         frame=part.get("frame"),
         part=part.get("part"),
+        labels=part.get("labels"),
     )
 
 
@@ -395,6 +403,7 @@ def model_leaf_from_dict(data: Mapping[str, Any]) -> ModelLeaf:
                 offset=base.offset,
                 frame=base.frame,
                 part=base.part,
+                labels=base.labels,
                 pad_to=pad_to,
                 dtype=dtype,
                 reshape=reshape_t,
