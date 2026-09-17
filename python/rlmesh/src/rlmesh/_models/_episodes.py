@@ -8,28 +8,37 @@ instead of once per model image.
 
 Entries are dropped at the episode-end edge (:meth:`EpisodeStore.end`, driven by
 the explicit ``ResetAdapter`` on the served path and by the session's episode
-boundary locally). A run that never signals an end still cannot grow without
-bound: past :data:`EPISODE_STATE_CAPACITY` the least-recently-used entry is
-evicted through the *same* end callback, so a model that mirrors the store
-elsewhere gets the drop edge either way, and warns.
+boundary locally). Live state is never evicted: a run that never signals an end
+still cannot grow without bound, because past the capacity a NEW episode's
+predict fails explicitly instead of silently dropping another episode's state.
 """
 
 from __future__ import annotations
 
-import warnings
-from collections import OrderedDict
+import os
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ..types import PredictContext
 
-EPISODE_STATE_CAPACITY = 4096
-"""Live episodes a model tracks before the least-recently-used one is evicted.
+EPISODE_STATE_CAPACITY = 65_536
+"""Live episodes a model tracks before a NEW episode is refused.
 
-Comfortably above the env workers any one model server admits at once, so a real
-eviction means episode ends are being missed, not that the fleet is large.
+A ceiling, not an eviction threshold: an entry only leaves at its end edge. Far
+above the lanes any one model server legitimately admits at once, so reaching
+it means episode ends are not arriving; a deployment that really runs more
+concurrent context-aware episodes raises :data:`EPISODE_STATE_CAPACITY_ENV`.
 """
+
+EPISODE_STATE_CAPACITY_ENV = "RLMESH_EPISODE_CAPACITY"
+"""Env var overriding :data:`EPISODE_STATE_CAPACITY` for one model process."""
+
+
+def episode_capacity() -> int:
+    """The live-episode ceiling: the env override when set, else the default."""
+    raw = os.environ.get(EPISODE_STATE_CAPACITY_ENV, "").strip()
+    return max(1, int(raw)) if raw.isdigit() else EPISODE_STATE_CAPACITY
 
 
 def _native_predict_seed(episode_seed: int, predict_index: int) -> int:
@@ -61,11 +70,13 @@ class EpisodeStore:
         self,
         on_end: Callable[[str], None] | None = None,
         *,
-        capacity: int = EPISODE_STATE_CAPACITY,
+        capacity: int | None = None,
     ) -> None:
         self._on_end = on_end
-        self._capacity = max(1, int(capacity))
-        self._episodes: OrderedDict[str, _Episode] = OrderedDict()
+        self._capacity = (
+            episode_capacity() if capacity is None else max(1, int(capacity))
+        )
+        self._episodes: dict[str, _Episode] = {}
 
     def __len__(self) -> int:
         return len(self._episodes)
@@ -80,7 +91,9 @@ class EpisodeStore:
         ``state`` dict -- the model's free slot, alive until the episode ends.
 
         A row with no identity (an anonymous spec-less lane) gets a throwaway
-        context that is never stored: there is nothing to key it by.
+        context that is never stored: there is nothing to key it by. A new
+        episode past the capacity is refused (``RuntimeError``) rather than
+        admitted at another live episode's expense.
         """
         episode_id = str(raw.get("episode_id") or "") if raw is not None else ""
         seed = raw.get("episode_seed") if raw is not None else None
@@ -94,10 +107,15 @@ class EpisodeStore:
             }
         episode = self._episodes.get(episode_id)
         if episode is None:
+            if len(self._episodes) >= self._capacity:
+                raise RuntimeError(
+                    f"model already tracks {self._capacity} live episodes; refusing "
+                    f"episode {episode_id} rather than evicting another episode's "
+                    "live state. Either episode ends are not reaching this model, "
+                    "or the deployment runs more concurrent episodes than "
+                    f"{EPISODE_STATE_CAPACITY_ENV} allows"
+                )
             episode = self._episodes[episode_id] = _Episode(seed)
-            self._evict_overflow()
-        else:
-            self._episodes.move_to_end(episode_id)
         index = episode.index
         episode.index += 1
         return {
@@ -117,16 +135,3 @@ class EpisodeStore:
         self._episodes.pop(episode_id, None)
         if self._on_end is not None:
             self._on_end(episode_id)
-
-    def _evict_overflow(self) -> None:
-        while len(self._episodes) > self._capacity:
-            evicted, _ = self._episodes.popitem(last=False)
-            if self._on_end is not None:
-                self._on_end(evicted)
-            warnings.warn(
-                f"tracking more than {self._capacity} live episodes; evicted "
-                f"episode {evicted} and fired its end hook. Episode ends are "
-                "probably not reaching this model.",
-                RuntimeWarning,
-                stacklevel=4,
-            )

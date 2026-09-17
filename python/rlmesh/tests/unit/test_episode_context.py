@@ -7,7 +7,7 @@ from typing import Any, cast
 import numpy as np
 import pytest
 import rlmesh
-from rlmesh._models._episodes import EpisodeStore
+from rlmesh._models._episodes import EPISODE_STATE_CAPACITY, EpisodeStore
 from rlmesh._models.base import accepts_episode_id
 from rlmesh.numpy import Model
 
@@ -76,32 +76,53 @@ def test_store_end_drops_the_entry_and_fires_the_hook() -> None:
     assert store.context(raw("a"))["state"] == {}
 
 
-def test_store_eviction_fires_the_same_end_hook_and_warns() -> None:
+def test_store_keeps_every_live_episode_past_the_old_eviction_cap() -> None:
+    # F17: 4,800 live episodes revisited in order. Every one keeps its state and
+    # its ordinal, and no end hook fires for an episode that never ended.
+    ended: list[str] = []
+    store = EpisodeStore(ended.append)
+    ids = [f"live-{i}" for i in range(4800)]
+
+    for episode_id in ids:
+        store.context(raw(episode_id, seed=None))["state"]["sentinel"] = True
+    second = [store.context(raw(episode_id, seed=None)) for episode_id in ids]
+
+    assert all(context["state"].get("sentinel") for context in second)
+    assert all(context["predict_index"] == 1 for context in second)
+    assert ended == []
+    assert len(store) == 4800
+    # An explicit end still releases exactly that episode.
+    store.end("live-7")
+    assert ended == ["live-7"]
+    assert len(store) == 4799
+
+
+def test_store_refuses_a_new_episode_at_capacity_instead_of_evicting() -> None:
     ended: list[str] = []
     store = EpisodeStore(ended.append, capacity=2)
 
-    store.context(raw("a"))
+    store.context(raw("a"))["state"]["plan"] = 1
     store.context(raw("b"))
-    with pytest.warns(RuntimeWarning, match="live episodes"):
+    with pytest.raises(RuntimeError, match="RLMESH_EPISODE_CAPACITY"):
         store.context(raw("c"))
 
-    # The least-recently-used episode is dropped through the end edge, so a model
-    # that mirrors the store elsewhere is told either way.
-    assert ended == ["a"]
-    assert len(store) == 2
+    # The live episodes are untouched: no end hook, state and ordinal intact.
+    assert ended == []
+    revisit = store.context(raw("a"))
+    assert revisit["state"] == {"plan": 1}
+    assert revisit["predict_index"] == 1
+    # Ending one makes room again.
+    store.end("a")
+    assert store.context(raw("c"))["predict_index"] == 0
 
 
-def test_store_eviction_is_least_recently_used() -> None:
-    ended: list[str] = []
-    store = EpisodeStore(ended.append, capacity=2)
-
-    store.context(raw("a"))
-    store.context(raw("b"))
-    store.context(raw("a"))  # touch a
-    with pytest.warns(RuntimeWarning):
-        store.context(raw("c"))
-
-    assert ended == ["b"]
+def test_store_capacity_reads_the_env_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RLMESH_EPISODE_CAPACITY", "3")
+    assert EpisodeStore()._capacity == 3
+    monkeypatch.setenv("RLMESH_EPISODE_CAPACITY", "not a number")
+    assert EpisodeStore()._capacity == EPISODE_STATE_CAPACITY
 
 
 # ------------------------------------------------------------------- arity sniff

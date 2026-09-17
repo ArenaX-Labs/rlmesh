@@ -38,17 +38,25 @@ struct RouteEntry {
     buffers: FrameBuffers,
     /// This route's slot in the shared held-state cells (see [`HeldCells`]).
     held: Arc<HeldCells>,
+    /// Bytes one lane's frame windows hold once full (`Σ span × frame_bytes`);
+    /// `0` for a route with no stacked input.
+    lane_bytes: u64,
+    /// The endpoint-wide frame-window budget this route's lanes are admitted
+    /// against (see [`FRAME_HISTORY_LIMIT_ENV`]).
+    history_limit: u64,
 }
 
 impl RouteEntry {
     /// Publish this route's held frame-stack state to its lock-free cells.
     fn publish_held(&self) {
-        self.held
-            .episodes
-            .store(self.buffers.episodes() as u64, Ordering::Relaxed);
+        let episodes = self.buffers.episodes() as u64;
+        self.held.episodes.store(episodes, Ordering::Relaxed);
         self.held
             .bytes
             .store(self.buffers.state_bytes(), Ordering::Relaxed);
+        self.held
+            .projected
+            .store(episodes.saturating_mul(self.lane_bytes), Ordering::Relaxed);
     }
 }
 
@@ -59,6 +67,10 @@ impl RouteEntry {
 struct HeldCells {
     episodes: AtomicU64,
     bytes: AtomicU64,
+    /// What the held episodes' windows hold once full (`episodes × lane_bytes`):
+    /// the admission guard sums this rather than `bytes`, so a window still
+    /// filling is charged what it will reach, not what it has so far.
+    projected: AtomicU64,
 }
 
 /// One resolved route in the map: its state (under the per-route lock) and the
@@ -94,6 +106,9 @@ pub struct AdaptedModelHandler {
     /// dispatches lanes concatenated ACROSS routes, so a per-route flag could
     /// not name the offender anyway — and one line per process is the point.
     short_chunk_warned: Arc<AtomicBool>,
+    /// The endpoint-wide frame-window budget (see [`FRAME_HISTORY_LIMIT_ENV`]),
+    /// read once here so every route is admitted against the same number.
+    history_limit: u64,
 }
 
 impl AdaptedModelHandler {
@@ -108,6 +123,7 @@ impl AdaptedModelHandler {
             spec_less_horizons: Arc::new(Mutex::new(HashMap::new())),
             adapter_ns: Arc::new(AtomicU64::new(0)),
             short_chunk_warned: Arc::new(AtomicBool::new(false)),
+            history_limit: frame_history_limit(),
         }
     }
 
@@ -214,7 +230,9 @@ fn assemble_route_inputs(
     entry: &mut RouteEntry,
     observation: &ModelObservation,
     adapter_ns: &AtomicU64,
+    routes: &Routes,
 ) -> Result<Vec<Value>> {
+    admit_fresh_lanes(entry, &observation.route.episodes, routes)?;
     let started = Instant::now();
     let result = assemble_route_inputs_inner(entry, observation);
     adapter_ns.fetch_add(rlmesh_proto::elapsed_ns(started), Ordering::Relaxed);
@@ -337,28 +355,87 @@ fn ingest_history(
     Ok(())
 }
 
-/// Env var naming the most bytes one route's frame windows may project to hold
-/// across its lanes (`num_envs × Σ span × frame_bytes`); default 2 GiB.
+/// Env var naming the most bytes this endpoint's frame windows may project to
+/// hold across every route's live lanes (`Σ lanes × Σ span × frame_bytes`);
+/// default 2 GiB. Checked twice: per route at resolve, for the lanes the
+/// contract names, and per fresh lane at predict, against the endpoint total.
 const FRAME_HISTORY_LIMIT_ENV: &str = "RLMESH_FRAME_HISTORY_LIMIT_BYTES";
 const FRAME_HISTORY_LIMIT_DEFAULT: u64 = 2 << 30;
 
-/// Refuse at configure a stacked route whose windows would outgrow the budget,
-/// instead of finding out from `held.bytes` once the lanes are live.
-fn check_history_budget(num_envs: u32, windows: &[HistoryWindow]) -> Result<()> {
-    let limit = std::env::var(FRAME_HISTORY_LIMIT_ENV)
+fn frame_history_limit() -> u64 {
+    std::env::var(FRAME_HISTORY_LIMIT_ENV)
         .ok()
         .and_then(|value| value.trim().parse::<u64>().ok())
-        .unwrap_or(FRAME_HISTORY_LIMIT_DEFAULT);
-    let per_lane: u64 = windows
+        .unwrap_or(FRAME_HISTORY_LIMIT_DEFAULT)
+}
+
+/// Bytes one lane's windows hold once full.
+fn lane_window_bytes(windows: &[HistoryWindow]) -> u64 {
+    windows
         .iter()
         .map(|window| u64::from(window.span).saturating_mul(window.frame_bytes))
-        .sum();
+        .sum()
+}
+
+/// Refuse at configure a stacked route whose windows would outgrow the budget
+/// on their own, instead of finding out from `held.bytes` once the lanes are
+/// live. Per-route validation only: the served resolve names no lanes (this
+/// checks one), so the endpoint total is enforced where lanes are real, in
+/// [`admit_fresh_lanes`].
+fn check_history_budget(num_envs: u32, windows: &[HistoryWindow], limit: u64) -> Result<()> {
+    let per_lane = lane_window_bytes(windows);
     let projected = per_lane.saturating_mul(u64::from(num_envs));
     if projected > limit {
         return Err(Error::model(format!(
             "frame windows would hold {projected} bytes across {num_envs} lane(s) ({per_lane} per \
              lane), above the {limit}-byte budget: shrink stack/size, or raise \
              {FRAME_HISTORY_LIMIT_ENV}"
+        )));
+    }
+    Ok(())
+}
+
+/// Refuse a predict that would open frame windows for episodes this route does
+/// not hold yet when the endpoint's projected windows (every route's held
+/// episodes at their full size, plus these) would outgrow the budget. Runs
+/// under the route's entry lock before anything is seeded, so a refused
+/// request leaves no state behind; a route with no stacked input is never
+/// charged.
+///
+/// ponytail: the other routes' cells are a snapshot, so two routes admitting
+/// fresh lanes at the same instant can each pass by up to one request's
+/// windows; a strict reservation would need a cross-route lock.
+fn admit_fresh_lanes(entry: &RouteEntry, episodes: &[EpisodeInfo], routes: &Routes) -> Result<()> {
+    if entry.lane_bytes == 0 {
+        return Ok(());
+    }
+    let fresh = episodes
+        .iter()
+        .filter(|episode| {
+            !episode.episode_id.is_empty() && !entry.buffers.holds(&episode.episode_id)
+        })
+        .count() as u64;
+    if fresh == 0 {
+        return Ok(());
+    }
+    let endpoint: u64 = routes
+        .lock()
+        .expect("routes map poisoned")
+        .values()
+        .map(|slot| slot.held.projected.load(Ordering::Relaxed))
+        .sum();
+    let others = endpoint.saturating_sub(entry.held.projected.load(Ordering::Relaxed));
+    let route = (entry.buffers.episodes() as u64)
+        .saturating_add(fresh)
+        .saturating_mul(entry.lane_bytes);
+    let projected = others.saturating_add(route);
+    if projected > entry.history_limit {
+        return Err(Error::model(format!(
+            "frame windows would hold {projected} bytes across this endpoint's live lanes \
+             ({fresh} new on this route at {} per lane, {others} projected by other routes), \
+             above the {}-byte budget: run fewer lanes or routes per model endpoint, shrink \
+             stack/size, or raise {FRAME_HISTORY_LIMIT_ENV}",
+            entry.lane_bytes, entry.history_limit
         )));
     }
     Ok(())
@@ -651,11 +728,12 @@ fn predict_route(
     observation: ModelObservation,
     adapter_ns: &AtomicU64,
     short_chunk_warned: &AtomicBool,
+    routes: &Routes,
 ) -> Result<PredictFrames> {
     let num_envs = observation.num_envs;
     let (inputs, config) = {
         let mut guard = entry.lock().expect("route entry poisoned");
-        let inputs = assemble_route_inputs(&mut guard, &observation, adapter_ns)?;
+        let inputs = assemble_route_inputs(&mut guard, &observation, adapter_ns, routes)?;
         (inputs, Arc::clone(&guard.config))
     };
     let lane_raw_steps = dispatch_route_corners(
@@ -711,6 +789,7 @@ fn predict_grouped_fused(
     predict: &Arc<dyn PredictFn>,
     adapter_ns: &AtomicU64,
     short_chunk_warned: &AtomicBool,
+    routes: &Routes,
 ) -> Vec<Result<PredictFrames>> {
     struct Prepared {
         index: usize,
@@ -732,7 +811,7 @@ fn predict_grouped_fused(
                 let num_envs = observation.num_envs;
                 let assembled = {
                     let mut guard = entry.lock().expect("route entry poisoned");
-                    assemble_route_inputs(&mut guard, &observation, adapter_ns)
+                    assemble_route_inputs(&mut guard, &observation, adapter_ns, routes)
                         .map(|inputs| (inputs, Arc::clone(&guard.config)))
                 };
                 match assembled {
@@ -887,6 +966,7 @@ impl ModelHandler for AdaptedModelHandler {
         // chunk frames); a spec-less route takes the preserved batched raw path
         // (chunked through the model's chunk corner when a horizon was pinned).
         let short_chunk_warned = Arc::clone(&self.short_chunk_warned);
+        let routes = Arc::clone(&self.routes);
         tokio::task::spawn_blocking(move || match entry {
             Some(entry) => predict_route(
                 &entry,
@@ -894,6 +974,7 @@ impl ModelHandler for AdaptedModelHandler {
                 observation,
                 &adapter_ns,
                 &short_chunk_warned,
+                &routes,
             ),
             None => predict.predict_spec_less_chunked(observation, spec_less_horizon),
         })
@@ -930,6 +1011,7 @@ impl ModelHandler for AdaptedModelHandler {
         let adapter_ns = Arc::clone(&self.adapter_ns);
         let group_count = observations.len();
         let short_chunk_warned = Arc::clone(&self.short_chunk_warned);
+        let routes = Arc::clone(&self.routes);
         tokio::task::spawn_blocking(move || {
             predict_grouped_fused(
                 lanes,
@@ -937,6 +1019,7 @@ impl ModelHandler for AdaptedModelHandler {
                 &predict,
                 &adapter_ns,
                 &short_chunk_warned,
+                &routes,
             )
         })
         .await
@@ -969,6 +1052,7 @@ impl ModelHandler for AdaptedModelHandler {
             routes: Arc::clone(&self.routes),
             predict: Arc::clone(&self.predict),
             spec_less_horizons: Arc::clone(&self.spec_less_horizons),
+            history_limit: self.history_limit,
         }))
     }
 
@@ -1008,8 +1092,19 @@ impl ModelHandler for AdaptedModelHandler {
 
     async fn on_close(&mut self) -> Result<()> {
         // Drop every route's per-episode state as the authoritative shutdown sweep.
-        for slot in self.routes.lock().expect("routes map poisoned").values() {
-            let mut guard = slot.entry.lock().expect("route entry poisoned");
+        // Snapshot the entries and release the map lock first: admission reads
+        // the map from UNDER an entry lock, so holding the map across an entry
+        // lock here would invert the order and wedge a close that races a
+        // predict whose future was dropped mid-assembly.
+        let entries: Vec<Arc<Mutex<RouteEntry>>> = self
+            .routes
+            .lock()
+            .expect("routes map poisoned")
+            .values()
+            .map(|slot| Arc::clone(&slot.entry))
+            .collect();
+        for entry in entries {
+            let mut guard = entry.lock().expect("route entry poisoned");
             guard.buffers.clear();
             guard.publish_held();
         }
@@ -1073,6 +1168,7 @@ struct AdaptedRouteSetup {
     routes: Routes,
     predict: Arc<dyn PredictFn>,
     spec_less_horizons: SpecLessHorizons,
+    history_limit: u64,
 }
 
 #[async_trait]
@@ -1151,10 +1247,15 @@ impl ModelRouteSetup for AdaptedRouteSetup {
         // that did not would leave the window holding decision points only, so
         // refuse.
         let history_keys = config.adapter.history_keys();
+        let lane_bytes = lane_window_bytes(&config.adapter.history_windows());
         if !history_keys.is_empty() {
+            // Per-route: the lanes the contract names (one on the served path,
+            // which carries none). The endpoint total is admitted per fresh
+            // lane at predict, where the lane count is real.
             check_history_budget(
                 env_contract.num_envs.max(1),
                 &config.adapter.history_windows(),
+                self.history_limit,
             )?;
             if options.delivers_history {
                 config.delivers_history = true;
@@ -1181,6 +1282,8 @@ impl ModelRouteSetup for AdaptedRouteSetup {
             config: Arc::new(config),
             buffers: FrameBuffers::new(),
             held: Arc::clone(&held),
+            lane_bytes,
+            history_limit: self.history_limit,
         }));
         self.routes
             .lock()
@@ -3154,10 +3257,119 @@ mod fused_route_tests {
             span: 4,
             frame_bytes,
         };
-        check_history_budget(8, &[window(224 * 224 * 3)]).expect("a few MiB per lane");
-        let refused = check_history_budget(8, &[window(1 << 30)])
+        let limit = FRAME_HISTORY_LIMIT_DEFAULT;
+        check_history_budget(8, &[window(224 * 224 * 3)], limit).expect("a few MiB per lane");
+        let refused = check_history_budget(8, &[window(1 << 30)], limit)
             .unwrap_err()
             .to_string();
         assert!(refused.contains(FRAME_HISTORY_LIMIT_ENV), "{refused}");
+    }
+
+    /// A predict for `env_id` at `step` carrying one frame per lane, each lane
+    /// its own episode.
+    fn cam_predict_lanes(env_id: &str, episode_ids: &[&str], step: i64) -> ModelObservation {
+        let lanes: Vec<SpaceValue> = episode_ids
+            .iter()
+            .map(|_| {
+                SpaceValue::Dict(BTreeMap::from([(
+                    "cam".to_string(),
+                    SpaceValue::Box(
+                        Tensor::from_vec(vec![step as u8; 3], vec![1, 1, 3], DType::Uint8).unwrap(),
+                    ),
+                )]))
+            })
+            .collect();
+        ModelObservation {
+            observation: Some(
+                rlmesh_grpc::wire::encode_batched_partial_values(&lanes, &cam_obs_space())
+                    .unwrap()
+                    .leaves,
+            ),
+            route: ModelRouteContext {
+                env_id: env_id.to_string(),
+                episodes: episode_ids
+                    .iter()
+                    .map(|id| EpisodeInfo {
+                        episode_id: id.to_string(),
+                        seed: None,
+                    })
+                    .collect(),
+                ..Default::default()
+            },
+            num_envs: episode_ids.len(),
+            env_contract: Some(cam_contract(env_id)),
+            history: Vec::new(),
+            step: Some(step),
+        }
+    }
+
+    #[tokio::test]
+    async fn fresh_lanes_are_admitted_against_the_endpoint_window_budget() {
+        // The 1x1x3 uint8 camera stacked 3 deep: 9 bytes per lane once full.
+        // Budget two lanes' worth for the whole endpoint.
+        const LANE_BYTES: u64 = 9;
+        let recorder = Arc::new(WindowRecorder {
+            stacks: Mutex::new(Vec::new()),
+        });
+        let mut handler = AdaptedModelHandler::new(
+            recorder as Arc<dyn PredictFn>,
+            Some(Arc::new(StackResolver) as Arc<dyn RouteResolver>),
+        );
+        handler.history_limit = 2 * LANE_BYTES;
+        let setup = handler.route_setup().expect("resolver-backed");
+        for env_id in ["env-a", "env-b"] {
+            // Each route fits on its own: the served resolve sees one lane.
+            setup
+                .resolve_adapter(
+                    env_id,
+                    &cam_contract(env_id),
+                    ResolveOptions {
+                        execution_horizon: 1,
+                        delivers_history: true,
+                    },
+                )
+                .await
+                .expect("one lane fits");
+        }
+        assert_eq!(
+            handler.entry("env-a").unwrap().lock().unwrap().lane_bytes,
+            LANE_BYTES
+        );
+
+        // Many lanes at once: the multiplier is the real lane count, not the
+        // resolve-time placeholder, and a refusal seeds nothing.
+        let refused = handler
+            .predict(cam_predict_lanes("env-a", &["a1", "a2", "a3"], 0))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains(FRAME_HISTORY_LIMIT_ENV), "{refused}");
+        assert_eq!(handler.held_state(), Some(HeldState::default()));
+
+        // Two lanes fill the budget (their windows are charged at full size
+        // from the first frame), and revisiting held lanes is never charged.
+        for step in 0..2 {
+            handler
+                .predict(cam_predict_lanes("env-a", &["a1", "a2"], step))
+                .await
+                .expect("two lanes fit");
+        }
+        // A second route that fits on its own is refused against the total.
+        let refused = handler
+            .predict(cam_predict_lanes("env-b", &["b1"], 0))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("other routes"), "{refused}");
+
+        // An ended episode gives its window back.
+        handler
+            .reset_adapter("env-a", vec!["a2".to_string()])
+            .await
+            .unwrap();
+        handler
+            .predict(cam_predict_lanes("env-b", &["b1"], 0))
+            .await
+            .expect("room again after an episode ends");
     }
 }

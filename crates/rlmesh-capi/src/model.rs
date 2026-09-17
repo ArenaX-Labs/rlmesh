@@ -63,10 +63,11 @@ pub struct RlmeshEpisode {
     pub predict_seed: i64,
 }
 
-/// Live episodes a model tracks before the least-recently-used one is evicted
-/// (the SDK's `EPISODE_STATE_CAPACITY`). Comfortably above the env workers any
-/// one model server admits at once, so a real eviction means episode ends are
-/// being missed, not that the fleet is large.
+/// Live episodes a model tracks before the least-recently-used one is evicted.
+/// Comfortably above the env workers any one model server admits at once, so a
+/// real eviction means episode ends are being missed, not that the fleet is
+/// large. (The Python SDK's store no longer evicts at its own ceiling — it
+/// refuses the new episode instead; this one still evicts.)
 const EPISODE_STORE_CAPACITY: usize = 4096;
 
 /// One held episode's bookkeeping: the env it belongs to (so an env-wide

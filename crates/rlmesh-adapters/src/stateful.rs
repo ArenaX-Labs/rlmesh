@@ -126,6 +126,13 @@ impl FrameBuffers {
         self.inner.len()
     }
 
+    /// Whether `episode_id` already holds buffers here (its next frame does
+    /// not open a new window).
+    #[must_use]
+    pub fn holds(&self, episode_id: &str) -> bool {
+        self.inner.contains_key(episode_id)
+    }
+
     /// Total bytes held across every episode's frame and action windows.
     #[must_use]
     pub fn state_bytes(&self) -> u64 {

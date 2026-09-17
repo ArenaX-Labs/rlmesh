@@ -68,10 +68,12 @@ episodes.
 
 `predict_index`, `predict_seed`, and `state` come from the model's own bounded
 episode store. Entries are dropped at the episode-end edge (the same edge that
-fires `reset`). If ends never arrive, the store still cannot grow without bound:
-past 4096 live episodes the least-recently-used entry is evicted **through the
-same end hook** — so a model that mirrors the store elsewhere is told either
-way — and a `RuntimeWarning` is raised.
+fires `reset`) and never otherwise: a live episode's state is not evicted to
+make room. If ends never arrive, the store still cannot grow without bound:
+past 65,536 live episodes a **new** episode's predict fails with a
+`RuntimeError` naming the ceiling. A deployment that legitimately runs more
+concurrent context-aware episodes than that raises it with
+`RLMESH_EPISODE_CAPACITY`.
 
 `rlmesh.predict_seed(episode_seed, predict_index)` is the mixing law itself
 (FNV-1a, masked to 32 bits), exported so a sampler can build its own generator.
