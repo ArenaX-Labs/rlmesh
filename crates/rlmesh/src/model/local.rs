@@ -304,6 +304,12 @@ where
         self.wants_history
     }
 
+    /// `predict_group` below is one fused forward, so the driver batches the
+    /// lanes waiting on it rather than predicting each on its own.
+    fn fuses_predicts(&self) -> bool {
+        true
+    }
+
     async fn predict(
         &self,
         request: PredictRequest,

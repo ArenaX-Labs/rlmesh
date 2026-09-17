@@ -9,6 +9,9 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use futures::channel::{mpsc, oneshot};
+use futures::future::Shared;
+use futures::{FutureExt, StreamExt};
 use prost::bytes::Bytes;
 use rlmesh_proto::core::v1::{EnvContract, EnvSpec};
 use rlmesh_proto::env::v1::{
@@ -1028,6 +1031,13 @@ struct TestModel {
     // stamp it.
     endpoint_total_ns: Option<u64>,
     phases: EndpointPhases,
+    // Holds the `gate_at`th predict to arrive (0-based) until the gate opens;
+    // every other predict returns at once.
+    gate: Option<Shared<oneshot::Receiver<()>>>,
+    gate_at: usize,
+    arrived: Arc<AtomicUsize>,
+    // One `()` per predict as it arrives, ahead of any delay or gate.
+    arrivals: Option<mpsc::UnboundedSender<()>>,
 }
 
 #[async_trait]
@@ -1036,6 +1046,14 @@ impl RuntimeModel for TestModel {
         &self,
         request: PredictRequest,
     ) -> Result<RuntimeModelPrediction, RuntimeError> {
+        if let Some(arrivals) = &self.arrivals {
+            let _ = arrivals.unbounded_send(());
+        }
+        if let Some(gate) = &self.gate
+            && self.arrived.fetch_add(1, Ordering::SeqCst) == self.gate_at
+        {
+            let _ = gate.clone().await;
+        }
         if let Some(delay) = self.predict_delay {
             tokio::time::sleep(delay).await;
         }
@@ -1110,6 +1128,8 @@ impl RuntimeModel for TestModel {
             .expect("reset_adapter recorder lock poisoned")
             .push(request.episode_ids);
         if self.reset_adapter_hangs {
+            // The call is on the record; now ignore any deadline entirely,
+            // like an evict RPC on a hung connection.
             std::future::pending::<()>().await;
         }
         Ok(())
@@ -2566,6 +2586,101 @@ fn lane_spec(num_envs: usize, max_episodes: u64, seeds: Vec<i64>) -> RuntimeSess
         subset_step: true,
         ..vector_spec(num_envs, max_episodes)
     }
+}
+
+#[tokio::test]
+async fn an_abandoned_predict_at_route_end_sends_no_evict() {
+    // One lane, a two-frame chunk with lead 1, so the episode's last step runs
+    // from replay while the prefetch is in flight: that prefetch is gated for
+    // good, and the ended episode's eviction is held behind it. Cancelling
+    // leaves the driver draining a predict that never lands, and the endpoint
+    // that just missed the close deadline must get no evict -- the RPC carries
+    // no deadline of its own, so sending it would hang shutdown forever.
+    let (_open, gate) = oneshot::channel();
+    let model = TestModel {
+        replay_frames: 1,
+        gate: Some(gate.shared()),
+        gate_at: 1,
+        reset_adapter_hangs: true,
+        ..TestModel::default()
+    };
+    let env = TestEnv {
+        terminal_after: 2,
+        ..Default::default()
+    };
+    let hooks = Arc::new(RecordingHooks::default());
+    let mut spec = one_episode_spec();
+    spec.limits.service_close_timeout = Duration::from_millis(50);
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    let run = RuntimeDriver::new(spec, env, model.clone(), hooks.clone())
+        .with_prefetch(1)
+        .run_with_cancellation(cancellation.clone());
+    let cancel = async {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while hooks
+                .completed_seeds
+                .lock()
+                .expect("completed seed recorder lock poisoned")
+                .is_empty()
+            {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("the episode never completed");
+        cancellation.cancel();
+    };
+    let (result, ()) =
+        tokio::time::timeout(Duration::from_secs(5), async { tokio::join!(run, cancel) })
+            .await
+            .expect("driver hung in shutdown on an evict after an abandoned predict");
+    assert!(result.is_err(), "the run was cancelled");
+    assert!(
+        model
+            .reset_adapters
+            .lock()
+            .expect("reset_adapter recorder lock poisoned")
+            .is_empty(),
+        "no evict goes to an endpoint whose predict missed the close deadline"
+    );
+}
+
+#[tokio::test]
+async fn a_gated_lane_predict_never_holds_a_sibling_lane() {
+    // Two lanes on one endpoint, two-step episodes, a budget of four. The
+    // first predict to arrive is held at a gate; the sibling lane must keep
+    // stepping and predicting behind it rather than wait at a grouped
+    // barrier, and the run still scores every budgeted slot once the gate
+    // opens.
+    let (open, gate) = oneshot::channel();
+    let (arrivals, mut arrived) = mpsc::unbounded();
+    let model = TestModel {
+        gate: Some(gate.shared()),
+        arrivals: Some(arrivals),
+        ..TestModel::default()
+    };
+    let env = LaneTestEnv::new(vec![(2, Duration::ZERO), (2, Duration::ZERO)]);
+    let run = RuntimeDriver::new(
+        lane_spec(2, 4, (100..106).collect()),
+        env,
+        model,
+        Arc::new(RecordingHooks::default()),
+    )
+    .run();
+    let sibling = async {
+        // One predict is gated; the sibling lane lands two more (its next
+        // step's, then its next episode's) while it is held.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            for _ in 0..3 {
+                arrived.next().await.expect("model dropped");
+            }
+        })
+        .await
+        .expect("the sibling lane's predicts stalled behind the gated one");
+        open.send(()).expect("gated predict dropped");
+    };
+    let (report, ()) = tokio::join!(run, sibling);
+    assert_eq!(report.unwrap().total_episodes, 4);
 }
 
 #[tokio::test]

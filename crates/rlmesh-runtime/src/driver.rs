@@ -5,7 +5,9 @@
 //! the whole vector otherwise. Every group is its own `reset -> predict ->
 //! step` episode loop, advanced as its own ops complete, so a slow step or
 //! reset in one group never stalls another. Groups waiting for a prediction
-//! are batched into one grouped predict by the [`PredictScheduler`].
+//! are planned by the [`PredictScheduler`]: a model that fuses predicts gets
+//! the plan as one grouped predict, any other gets one predict per group, and
+//! every result is applied as it lands while later groups go out behind it.
 //!
 //! Records per-op telemetry and fans every state change out to the session's
 //! [`RuntimeHooks`](crate::hooks::RuntimeHooks).
@@ -18,6 +20,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use futures::stream::{FuturesUnordered, StreamExt};
 use prost::{Message, bytes::Bytes};
 use rlmesh_proto::EndpointPhases;
 use rlmesh_proto::core::v1::AutoresetMode;
@@ -134,12 +137,22 @@ pub trait RuntimeModel: Send + Sync {
     /// Predict for several groups at once, one result per request in order.
     /// The default runs the predicts concurrently, which is enough for a
     /// transport that coalesces concurrent predicts itself; an implementation
-    /// that can fuse them into one forward pass overrides this.
+    /// that can fuse them into one forward pass overrides this and says so
+    /// with [`fuses_predicts`](Self::fuses_predicts).
     async fn predict_group(
         &self,
         requests: Vec<PredictRequest>,
     ) -> Vec<Result<RuntimeModelPrediction, RuntimeError>> {
         futures::future::join_all(requests.into_iter().map(|request| self.predict(request))).await
+    }
+
+    /// Whether `predict_group` fuses its requests into one forward pass. The
+    /// driver then keeps one grouped predict in flight and batches the groups
+    /// that become ready behind it into the next. Default `false`: the driver
+    /// puts one predict per group in flight, together, and applies each as it
+    /// lands, so a lane never waits behind the slowest predict of a batch.
+    fn fuses_predicts(&self) -> bool {
+        false
     }
 
     /// Whether the model's route negotiated observation history at resolve
@@ -173,9 +186,10 @@ pub trait RuntimeModel: Send + Sync {
     }
 }
 
-/// Decides which groups waiting for a prediction go into the next grouped
-/// predict. Consulted whenever the model is free and at least one group is
-/// waiting; `busy` is how many groups are still stepping or resetting. An
+/// Decides which groups waiting for a prediction go out next (as one grouped
+/// predict for a model that fuses them, one predict each otherwise). Consulted
+/// whenever at least one group is waiting and the model can take more; `busy`
+/// is how many groups are still stepping or resetting. An
 /// empty plan waits for the next event (a step or reset completing) — the
 /// driver forces a full plan when nothing else is in flight, so a scheduler
 /// cannot stall the route.
@@ -264,8 +278,11 @@ pub struct RuntimeDriver<E, M> {
     spec: RuntimeSessionSpec,
     /// The env session handle; cloned once per group.
     env: E,
-    /// The model handle; `None` while a grouped predict task owns it.
-    model: Option<M>,
+    /// The model handle, shared into every predict in flight.
+    // ponytail: never `None` any more (the handle is shared, not lent); the
+    // `Option` stays so the eviction and release paths read unchanged.
+    // Collapse to `Arc<M>` when they are next reworked.
+    model: Option<Arc<M>>,
     /// Async-inference mode: with this many replay frames (or fewer) left, a
     /// group asks for its next chunk while the current one still executes.
     /// The chunk is conditioned on an observation up to `prefetch_lead` steps
@@ -283,9 +300,14 @@ pub struct RuntimeDriver<E, M> {
     /// hot path clones an `Arc` instead of deep-copying the spec each step.
     action_space: Arc<rlmesh_proto::spaces::v1::SpaceSpec>,
     observation_space: Arc<rlmesh_proto::spaces::v1::SpaceSpec>,
-    /// Episode ids whose adapter state must be evicted once the model handle
-    /// is back from a grouped predict (evictions never wait on a predict).
+    /// Episode ids whose adapter state is evicted on the next loop turn
+    /// (evictions never wait on a predict).
     pending_evictions: Vec<String>,
+    /// `(group, episode id)` evictions queued while that group had a predict
+    /// in flight under the id; each joins `pending_evictions` once that
+    /// predict lands, so the model never sees an evict before the last predict
+    /// under the id.
+    held_evictions: Vec<(usize, String)>,
     /// The session set a non-default `trial_index_base` for an env whose
     /// contract does not declare the reset option, so the ordinal was withheld
     /// from `ResetRequest.options`. Latched so the warning fires once per
@@ -402,14 +424,13 @@ enum EnvOutcome<E> {
     },
 }
 
-/// The grouped predict in flight. Not spawned: it owns the model handle for
-/// its duration and is polled by the route loop, so a borrowed model handle
-/// (the local runner's) needs no `'static` lifetime.
-type PredictFuture<'m, M> = Pin<Box<dyn Future<Output = PredictOutcome<M>> + Send + 'm>>;
+/// One predict in flight. Not spawned: it shares the model handle for its
+/// duration and is polled by the route loop, so a borrowed model handle (the
+/// local runner's) needs no `'static` lifetime.
+type PredictFuture<'m> = Pin<Box<dyn Future<Output = PredictOutcome> + Send + 'm>>;
 
-/// A finished grouped predict, handed back with the model handle.
-struct PredictOutcome<M> {
-    model: M,
+/// A finished predict, one result per request it carried.
+struct PredictOutcome {
     /// `(group, expected context, request bytes)` per request, in order.
     requests: Vec<(usize, Option<AdapterContext>, u64)>,
     rpc: Duration,
@@ -425,7 +446,7 @@ where
         Self {
             spec,
             env,
-            model: Some(model),
+            model: Some(Arc::new(model)),
             prefetch_lead: 0,
             deliver_history: false,
             scheduler: Box::new(EagerScheduler),
@@ -435,6 +456,7 @@ where
             action_space: Arc::default(),
             observation_space: Arc::default(),
             pending_evictions: Vec::new(),
+            held_evictions: Vec::new(),
             trial_options_warned: AtomicBool::new(false),
             vector_replay_warned: false,
         }
@@ -676,7 +698,10 @@ where
     ) -> Result<RuntimeReport, RuntimeError> {
         self.cancellation_reason = reason.into();
         self.spec.validate().map_err(RuntimeError::InvalidSpec)?;
-        self.deliver_history = self.model.as_ref().is_some_and(RuntimeModel::wants_history);
+        self.deliver_history = self
+            .model
+            .as_ref()
+            .is_some_and(|model| model.wants_history());
         // validate() confirmed both spaces are present; cache them as shared
         // Arcs so per-step hook events clone a pointer, not the whole spec.
         self.action_space = Arc::new(self.spec.action_space_validated().clone());
@@ -700,38 +725,52 @@ where
             )
         });
         let mut env_ops: JoinSet<EnvOutcome<E>> = JoinSet::new();
-        let mut predict: Option<PredictFuture<'_, M>> = None;
+        let mut predicts: FuturesUnordered<PredictFuture<'_>> = FuturesUnordered::new();
         let result = self
             .run_loop(
                 &mut state,
                 &cancellation,
                 &telemetry,
                 &mut env_ops,
-                &mut predict,
+                &mut predicts,
             )
             .await;
-        // Whatever ended the loop, get the model handle back from a grouped
-        // predict still in flight so the route can release it; a hung predict
-        // is abandoned after the close timeout.
+        // Whatever ended the loop, let the predicts still in flight land
+        // before the route releases the model; a hung predict is abandoned
+        // after the close timeout.
         env_ops.abort_all();
-        if let Some(inflight) = predict.take() {
-            match tokio::time::timeout(self.spec.limits.service_close_timeout, inflight).await {
-                Ok(outcome) => self.model = Some(outcome.model),
-                Err(_) => tracing::warn!(
-                    "grouped predict still in flight at route end; model release skipped"
-                ),
+        let mut abandoned = false;
+        if !predicts.is_empty() {
+            let drain = async { while predicts.next().await.is_some() {} };
+            if tokio::time::timeout(self.spec.limits.service_close_timeout, drain)
+                .await
+                .is_err()
+            {
+                abandoned = true;
+                tracing::warn!("predict still in flight at route end; abandoned");
             }
         }
+        drop(predicts);
         // A route ending mid-episode (a failure, a cancellation, a sibling
         // lane cut by the episode budget) still has episodes the model has
         // predicted on and never heard the end of; its per-episode state (a
         // Python model's episode store) ends through the same hook a completed
         // episode's does, so end them here, once, before the release. Together
-        // with the evictions queued while the model was busy, they go out on
-        // the shutdown budget, cancelled or not: the release follows either way.
-        self.pending_evictions.extend(state.end_live_episodes());
-        self.flush_evictions(&mut state, None, self.spec.limits.service_close_timeout)
-            .await;
+        // with the evictions held behind those predicts and any queued since
+        // the last loop turn, they go out on the shutdown budget, cancelled or
+        // not — but never to an endpoint that just missed the close deadline:
+        // it is provably hung, so the flush would only burn its own deadline,
+        // and the deadline-bounded release below frees that state anyway.
+        if abandoned {
+            self.pending_evictions.clear();
+            self.held_evictions.clear();
+        } else {
+            self.pending_evictions
+                .extend(self.held_evictions.drain(..).map(|(_, id)| id));
+            self.pending_evictions.extend(state.end_live_episodes());
+            self.flush_evictions(&mut state, None, self.spec.limits.service_close_timeout)
+                .await;
+        }
         // Stop the ticker (it only emits Window snapshots, so it cannot contend
         // this Session push), then deliver the durable session total exactly once
         // on every exit path.
@@ -799,7 +838,7 @@ where
         cancellation: &CancellationToken,
         telemetry: &Arc<Mutex<Aggregator>>,
         env_ops: &mut JoinSet<EnvOutcome<E>>,
-        predict: &mut Option<PredictFuture<'m, M>>,
+        predicts: &mut FuturesUnordered<PredictFuture<'m>>,
     ) -> Result<&'static str, RuntimeError>
     where
         M: 'm,
@@ -826,7 +865,7 @@ where
             }
             if groups.iter().all(|group| group.phase == EnvPhase::Idle)
                 && env_ops.is_empty()
-                && predict.is_none()
+                && predicts.is_empty()
             {
                 return Ok("completed requested episodes");
             }
@@ -841,9 +880,9 @@ where
             // With nothing else in flight, a waiting group must be predicted now
             // or the route would sit forever; the scheduler's plan is advisory
             // only while something else can wake the loop.
-            let force = env_ops.is_empty() && predict.is_none();
-            self.dispatch_predict(&mut groups, state, predict, force);
-            if env_ops.is_empty() && predict.is_none() {
+            let force = env_ops.is_empty() && predicts.is_empty();
+            self.dispatch_predict(&mut groups, state, predicts, force);
+            if env_ops.is_empty() && predicts.is_empty() {
                 // Nothing in flight and no group could be advanced: a live group
                 // with neither a frame nor an observation, which the transitions
                 // above never produce.
@@ -864,13 +903,7 @@ where
                     self.on_env_outcome(outcome, &mut groups, state, env_ops, telemetry)
                         .await?;
                 }
-                outcome = async {
-                    match predict.as_mut() {
-                        Some(inflight) => inflight.as_mut().await,
-                        None => std::future::pending().await,
-                    }
-                }, if predict.is_some() => {
-                    *predict = None;
+                Some(outcome) = predicts.next(), if !predicts.is_empty() => {
                     self.on_predict_outcome(outcome, &mut groups, state, telemetry)?;
                 }
             }
@@ -1066,18 +1099,25 @@ where
         Ok(())
     }
 
-    /// Batch the groups waiting for a prediction into one grouped predict,
-    /// per the scheduler, and put it in flight with the model handle.
+    /// Put the groups waiting for a prediction in flight, per the scheduler:
+    /// a model that fuses predicts takes the plan as one grouped predict and
+    /// the next forms behind it; any other takes one predict per group, in
+    /// flight together, each landing on its own.
     fn dispatch_predict<'m>(
         &mut self,
         groups: &mut [Group<E>],
         state: &mut RouteState,
-        predict: &mut Option<PredictFuture<'m, M>>,
+        predicts: &mut FuturesUnordered<PredictFuture<'m>>,
         force: bool,
     ) where
         M: 'm,
     {
-        if predict.is_some() || self.model.is_none() {
+        let fuses = self
+            .model
+            .as_ref()
+            .expect("model handle set for the session")
+            .fuses_predicts();
+        if fuses && !predicts.is_empty() {
             return;
         }
         let waiting: Vec<usize> = groups
@@ -1098,6 +1138,26 @@ where
             }
             chosen = waiting;
         }
+        if fuses {
+            predicts.push(self.predict_for(groups, state, chosen));
+        } else {
+            for gid in chosen {
+                predicts.push(self.predict_for(groups, state, vec![gid]));
+            }
+        }
+    }
+
+    /// One predict call carrying the `chosen` groups' requests, sharing the
+    /// model handle for its duration.
+    fn predict_for<'m>(
+        &mut self,
+        groups: &mut [Group<E>],
+        state: &mut RouteState,
+        chosen: Vec<usize>,
+    ) -> PredictFuture<'m>
+    where
+        M: 'm,
+    {
         let mut requests = Vec::with_capacity(chosen.len());
         let mut metas = Vec::with_capacity(chosen.len());
         let mut step = 0;
@@ -1121,32 +1181,35 @@ where
             step,
             timeout,
         );
-        let model = self.model.take().expect("model handle checked above");
-        *predict = Some(Box::pin(async move {
+        let model = Arc::clone(
+            self.model
+                .as_ref()
+                .expect("model handle set for the session"),
+        );
+        Box::pin(async move {
             let started = Instant::now();
             let result = match tokio::time::timeout(timeout, model.predict_group(requests)).await {
                 Ok(results) => Ok(results),
                 Err(_) => Err(timeout_error),
             };
             PredictOutcome {
-                model,
                 requests: metas,
                 rpc: started.elapsed(),
                 result,
             }
-        }));
+        })
     }
 
-    /// Apply a finished grouped predict: every group in it gets its frames,
-    /// or has them discarded if its episode ended in the meantime.
+    /// Apply a finished predict: every group in it gets its frames, or has
+    /// them discarded if its episode ended in the meantime, and the evictions
+    /// held behind it go out.
     fn on_predict_outcome(
         &mut self,
-        outcome: PredictOutcome<M>,
+        outcome: PredictOutcome,
         groups: &mut [Group<E>],
         state: &RouteState,
         telemetry: &Arc<Mutex<Aggregator>>,
     ) -> Result<(), RuntimeError> {
-        self.model = Some(outcome.model);
         let results = outcome.result?;
         if results.len() != outcome.requests.len() {
             return Err(RuntimeError::Protocol(format!(
@@ -1244,6 +1307,11 @@ where
                 }
                 other => other,
             };
+            self.pending_evictions.extend(
+                self.held_evictions
+                    .extract_if(.., |(held, _)| *held == gid)
+                    .map(|(_, id)| id),
+            );
         }
         Ok(())
     }
@@ -1403,7 +1471,7 @@ where
             let pending_roll = std::mem::take(&mut groups[gid].pending_roll);
             // The ended ids leave their slots now, so this is when the model
             // drops them (see `queue_evictions` for why not at completion).
-            self.queue_evictions(state, pending_roll.keys().copied());
+            self.queue_evictions(gid, &groups[gid], state, pending_roll.keys().copied());
             let roll_ids = episode_ids_with_roll(state.episode_ids_at(&positions), &pending_roll);
             let rolling: Vec<Option<u64>> = groups[gid]
                 .lanes
@@ -1431,7 +1499,12 @@ where
         // both wait for the roll at t+1.
         if self.driver_owns_resets() {
             self.fan_out_completions(completions).await;
-            self.queue_evictions(state, completed_episodes.iter().map(|c| c.env_index));
+            self.queue_evictions(
+                gid,
+                &groups[gid],
+                state,
+                completed_episodes.iter().map(|c| c.env_index),
+            );
         } else {
             groups[gid].pending_completed.extend(completions);
         }
@@ -1489,7 +1562,7 @@ where
             let completions = std::mem::take(&mut groups[gid].pending_completed);
             self.fan_out_completions(completions).await;
             let pending_roll = std::mem::take(&mut groups[gid].pending_roll);
-            self.queue_evictions(state, pending_roll.keys().copied());
+            self.queue_evictions(gid, &groups[gid], state, pending_roll.keys().copied());
             groups[gid].phase = EnvPhase::Idle;
             groups[gid].predict = PredictState::None;
             return Ok(());
@@ -1862,10 +1935,23 @@ where
     /// so the eviction waits for the roll at t+1, just before the slot moves
     /// on. Either way the model sees its `on_episode_end` after the last
     /// predict under that id and never a predict after it. Sent by
-    /// [`flush_evictions`](Self::flush_evictions) once the model handle is free.
-    fn queue_evictions(&mut self, state: &mut RouteState, env_indices: impl Iterator<Item = u32>) {
-        self.pending_evictions
-            .extend(env_indices.filter_map(|env_index| state.end_episode_at(env_index)));
+    /// [`flush_evictions`](Self::flush_evictions) on the next loop turn — or,
+    /// while the group still has a predict in flight (a prefetch conditioned
+    /// on the ended id), held until that predict lands. Each id is ended on
+    /// the slot once, so the teardown sweep does not end it again.
+    fn queue_evictions(
+        &mut self,
+        gid: usize,
+        group: &Group<E>,
+        state: &mut RouteState,
+        env_indices: impl Iterator<Item = u32>,
+    ) {
+        let ids = env_indices.filter_map(|env_index| state.end_episode_at(env_index));
+        if matches!(group.predict, PredictState::InFlight { .. }) {
+            self.held_evictions.extend(ids.map(|id| (gid, id)));
+        } else {
+            self.pending_evictions.extend(ids);
+        }
     }
 
     /// Best-effort GC (R2): a failure is logged and the route keeps moving — a
