@@ -247,6 +247,10 @@ const SRC_PREDICT: Source = Source {
     op: "model.predict",
     component: "model",
 };
+const SRC_RESET_ADAPTER: Source = Source {
+    op: "model.reset_adapter",
+    component: "model",
+};
 const SRC_STEP: Source = Source {
     op: "env.step",
     component: "env",
@@ -768,8 +772,13 @@ where
             self.pending_evictions
                 .extend(self.held_evictions.drain(..).map(|(_, id)| id));
             self.pending_evictions.extend(state.end_live_episodes());
-            self.flush_evictions(&mut state, None, self.spec.limits.service_close_timeout)
-                .await;
+            self.flush_evictions(
+                &mut state,
+                &telemetry,
+                None,
+                self.spec.limits.service_close_timeout,
+            )
+            .await;
         }
         // Stop the ticker (it only emits Window snapshots, so it cannot contend
         // this Session push), then deliver the durable session total exactly once
@@ -871,6 +880,7 @@ where
             }
             self.flush_evictions(
                 state,
+                telemetry,
                 Some(cancellation),
                 self.spec.limits.model_predict_timeout,
             )
@@ -1963,6 +1973,7 @@ where
     async fn flush_evictions(
         &mut self,
         state: &mut RouteState,
+        telemetry: &Mutex<Aggregator>,
         cancellation: Option<&CancellationToken>,
         deadline: Duration,
     ) {
@@ -1981,14 +1992,28 @@ where
                 None => std::future::pending().await,
             }
         };
+        // The eviction's wall time is a telemetry row of its own: an
+        // answered RPC (ok or failed) records `rpc.total` under
+        // `model.reset_adapter` next to `model.predict`, so a model that
+        // serializes its evictions behind its forwards shows up in the
+        // windows instead of only in the inter-episode gap.
+        let started = Instant::now();
         tokio::select! {
             biased;
             () = cancelled => {
                 tracing::warn!(episodes, "model reset_adapter (evict) abandoned: route cancelled");
             }
             result = tokio::time::timeout(deadline, model.reset_adapter(request)) => match result {
-                Ok(Ok(())) => {}
-                Ok(Err(err)) => tracing::warn!("model reset_adapter (evict) failed: {err}"),
+                Ok(result) => {
+                    lock_agg(telemetry).record(Sample::dur(
+                        SRC_RESET_ADAPTER,
+                        metrics::RPC_TOTAL,
+                        started.elapsed(),
+                    ));
+                    if let Err(err) = result {
+                        tracing::warn!("model reset_adapter (evict) failed: {err}");
+                    }
+                }
                 Err(_) => tracing::warn!(
                     episodes,
                     timeout_ms = deadline.as_millis(),
