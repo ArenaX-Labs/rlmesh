@@ -426,14 +426,20 @@ where
         &self,
         request: ResetAdapterRequest,
     ) -> std::result::Result<(), RuntimeError> {
-        // Route the driver's explicit episode-end GC to the handler's evict hook.
+        // Route the driver's explicit episode-end GC to the route setup's
+        // eviction and then the handler's own hook, as the served path does.
         let env_id = request
             .context
             .map(|context| context.env_id)
             .unwrap_or_default();
-        self.handler
-            .lock()
-            .await
+        let mut handler = self.handler.lock().await;
+        if let Some(route_setup) = handler.route_setup() {
+            route_setup
+                .reset_adapter(&env_id, &request.episode_ids)
+                .await
+                .map_err(model_rpc)?;
+        }
+        handler
             .reset_adapter(&env_id, request.episode_ids)
             .await
             .map_err(model_rpc)

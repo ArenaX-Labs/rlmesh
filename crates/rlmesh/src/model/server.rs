@@ -472,11 +472,22 @@ pub(super) async fn handle_model_request<H: ModelHandler + 'static>(
                 .map(|context| context.env_id.clone());
             match env_id.filter(|env_id| !env_id.is_empty()) {
                 Some(env_id) => {
-                    let result = handler
-                        .lock()
-                        .await
-                        .reset_adapter(&env_id, request.episode_ids)
-                        .await;
+                    // Route-local cleanup first, off the handler lock — a forward
+                    // in flight on another route does not gate it — then the
+                    // handler's own hook under the lock, serialized with forwards.
+                    let result = async {
+                        if let Some(route_setup) = route_setup.as_deref() {
+                            route_setup
+                                .reset_adapter(&env_id, &request.episode_ids)
+                                .await?;
+                        }
+                        handler
+                            .lock()
+                            .await
+                            .reset_adapter(&env_id, request.episode_ids)
+                            .await
+                    }
+                    .await;
                     match result {
                         Ok(()) => Some(join_response::Kind::ResetAdapter(ResetAdapterResponse {})),
                         Err(error) => Some(model_error_from_error(&error)),
@@ -716,9 +727,10 @@ struct PreparedPredict {
 /// Resolve a predict's adapter config — everything up to (but not including) the
 /// handler `predict` call. No lifecycle hooks run here anymore (R2): per-episode
 /// state is lazy-seeded on first predict and evicted via `reset_adapter`, so
-/// there is no position-diff and no shared active-episodes map. The handler lock
-/// is held by the caller across prepare + predict for per-handler ordering.
-async fn prepare_predict_locked(
+/// there is no position-diff and no shared active-episodes map. It touches only
+/// the route table (its own lock), so the caller runs it before taking the
+/// handler lock: a forward in flight on another route does not gate the decode.
+async fn prepare_predict(
     request: PredictRequest,
     route_configs: &Arc<Mutex<HashMap<String, ModelRouteConfig>>>,
 ) -> Result<PreparedPredict> {
@@ -809,11 +821,14 @@ async fn handle_predict<H: ModelHandler + 'static>(
     // reports what it waited and worked, not a blank.
     let mut phases = EndpointPhases::default();
     let result = async {
-        let mut handler = handler.lock().await;
+        // Decode and encode run off the handler lock: the lock covers only the
+        // forward (plus its accounting), so a forward in flight on another
+        // route gates neither this request's decode nor its encode. Stamp the
+        // pre-handler wait up front so a request that never reaches the handler
+        // still reports it; the handler-lock branch below refines it.
         phases.queue_ns = elapsed_ns(arrived_at);
-
         let decode_started = Instant::now();
-        let prepared = prepare_predict_locked(request, &route_configs).await?;
+        let prepared = prepare_predict(request, &route_configs).await?;
         let PreparedPredict {
             observation,
             action_space,
@@ -822,16 +837,21 @@ async fn handle_predict<H: ModelHandler + 'static>(
         } = prepared;
         phases.decode_ns = elapsed_ns(decode_started);
 
-        let call_started = Instant::now();
-        let frames = handler.predict_chunked(observation).await;
-        phases.user_ns = elapsed_ns(call_started);
-        // Drain the adapter share even for a failed forward, or its time leaks
-        // into the next request's `adapter_ns`.
-        phases.adapter_ns = handler.take_adapter_ns();
-        let held = handler.held_state();
-        phases.held_episodes = held.map(|held| held.episodes.min(u64::from(u32::MAX)) as u32);
-        phases.held_state_bytes = held.map(|held| held.bytes);
-        let frames = frames?;
+        let frames = {
+            let mut handler = handler.lock().await;
+            // Everything waited before the handler ran, less the decode work.
+            phases.queue_ns = elapsed_ns(arrived_at).saturating_sub(phases.decode_ns);
+            let call_started = Instant::now();
+            let frames = handler.predict_chunked(observation).await;
+            phases.user_ns = elapsed_ns(call_started);
+            // Drain the adapter share even for a failed forward, or its time leaks
+            // into the next request's `adapter_ns`.
+            phases.adapter_ns = handler.take_adapter_ns();
+            let held = handler.held_state();
+            phases.held_episodes = held.map(|held| held.episodes.min(u64::from(u32::MAX)) as u32);
+            phases.held_state_bytes = held.map(|held| held.bytes);
+            frames?
+        };
 
         let encode_started = Instant::now();
         let response = finish_predict(frames, num_envs, &action_space, route)?;
@@ -846,13 +866,13 @@ async fn handle_predict<H: ModelHandler + 'static>(
 }
 
 /// Process a control-plane-grouped predict: one request carrying N groups, each
-/// already routed to its own configured route. Every group's lifecycle/decode
-/// runs under one handler-lock acquisition (atomic w.r.t. other predicts); the
-/// prepared observations are handed to [`ModelHandler::predict_grouped`] in one
-/// batch (the fusion seam — the default fans out sequentially), then each
-/// group's actions are encoded against its OWN route's action space. A group
-/// that fails to prepare or predict reports its own error in `results[i]` and
-/// never sinks the others.
+/// already routed to its own configured route. Every group's decode runs off
+/// the handler lock; the prepared observations are handed to
+/// [`ModelHandler::predict_grouped`] in one batch under it (the fusion seam —
+/// the default fans out sequentially, atomic w.r.t. other predicts), then each
+/// group's actions are encoded against its OWN route's action space, again off
+/// the lock. A group that fails to prepare or predict reports its own error in
+/// `results[i]` and never sinks the others.
 async fn handle_grouped_predict<H: ModelHandler + 'static>(
     request: GroupedPredictRequest,
     handler: Arc<Mutex<H>>,
@@ -870,17 +890,14 @@ async fn handle_grouped_predict<H: ModelHandler + 'static>(
         },
     }
 
-    let mut handler = handler.lock().await;
-    let queue_ns = elapsed_ns(arrived_at);
-
     let decode_started = Instant::now();
-    // Prepare every group under the lock (per-env adapter lookup). A group whose
-    // env adapter is unresolved (or otherwise fails to prepare) records its own
-    // error and is excluded from the batched predict.
+    // Prepare every group (per-env adapter lookup). A group whose env adapter is
+    // unresolved (or otherwise fails to prepare) records its own error and is
+    // excluded from the batched predict.
     let mut batch: Vec<ModelObservation> = Vec::with_capacity(request.groups.len());
     let mut finishers: Vec<Finisher> = Vec::with_capacity(request.groups.len());
     for group in request.groups {
-        match prepare_predict_locked(group, &route_configs).await {
+        match prepare_predict(group, &route_configs).await {
             Ok(prepared) => {
                 let PreparedPredict {
                     observation,
@@ -904,11 +921,15 @@ async fn handle_grouped_predict<H: ModelHandler + 'static>(
     // One batched predict over the prepared observations. The default
     // `predict_grouped` runs them sequentially; a fusing handler overrides it to
     // run a single forward pass. Results align 1:1 and in order with `batch`.
+    let mut handler = handler.lock().await;
+    // Everything waited before the handler ran, less the decode work.
+    let queue_ns = elapsed_ns(arrived_at).saturating_sub(decode_ns);
     let call_started = Instant::now();
     let mut frames = handler.predict_grouped(batch).await.into_iter();
     let user_ns = elapsed_ns(call_started);
     let adapter_ns = handler.take_adapter_ns();
     let held = handler.held_state();
+    drop(handler);
 
     let encode_started = Instant::now();
     let results = finishers

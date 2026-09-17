@@ -36,8 +36,12 @@ use crate::{Error, Result};
 struct RouteEntry {
     config: Arc<RouteConfig>,
     buffers: FrameBuffers,
-    /// This route's slot in the shared held-state cells (see [`HeldCells`]).
-    held: Arc<HeldCells>,
+    /// The endpoint-wide held-state total this route publishes into (see
+    /// [`HeldCells`]).
+    total: Arc<HeldCells>,
+    /// What this route last published into `total`, so a publish (or the drop
+    /// of a released route) applies only the difference.
+    published: HeldTotals,
     /// Bytes one lane's frame windows hold once full (`Σ span × frame_bytes`);
     /// `0` for a route with no stacked input.
     lane_bytes: u64,
@@ -47,43 +51,76 @@ struct RouteEntry {
 }
 
 impl RouteEntry {
-    /// Publish this route's held frame-stack state to its lock-free cells.
-    fn publish_held(&self) {
+    /// Publish this route's held frame-stack state into the endpoint total, as
+    /// the delta against its previous publish.
+    fn publish_held(&mut self) {
         let episodes = self.buffers.episodes() as u64;
-        self.held.episodes.store(episodes, Ordering::Relaxed);
-        self.held
-            .bytes
-            .store(self.buffers.state_bytes(), Ordering::Relaxed);
-        self.held
-            .projected
-            .store(episodes.saturating_mul(self.lane_bytes), Ordering::Relaxed);
+        let now = HeldTotals {
+            episodes,
+            bytes: self.buffers.state_bytes(),
+            projected: episodes.saturating_mul(self.lane_bytes),
+        };
+        // One wrapping add per cell: a shrink adds the two's complement of the
+        // drop, so a concurrent read never sees the total dip below the other
+        // routes' share.
+        self.total.episodes.fetch_add(
+            now.episodes.wrapping_sub(self.published.episodes),
+            Ordering::Relaxed,
+        );
+        self.total.bytes.fetch_add(
+            now.bytes.wrapping_sub(self.published.bytes),
+            Ordering::Relaxed,
+        );
+        self.total.projected.fetch_add(
+            now.projected.wrapping_sub(self.published.projected),
+            Ordering::Relaxed,
+        );
+        self.published = now;
     }
 }
 
-/// Lock-free cells a route publishes its held frame-stack state into (from
-/// under its entry lock), so the endpoint total sums without touching entry
-/// locks that may be held across a model forward.
+impl Drop for RouteEntry {
+    /// A released (or re-resolved) route takes its share back out of the total.
+    fn drop(&mut self) {
+        self.total
+            .episodes
+            .fetch_sub(self.published.episodes, Ordering::Relaxed);
+        self.total
+            .bytes
+            .fetch_sub(self.published.bytes, Ordering::Relaxed);
+        self.total
+            .projected
+            .fetch_sub(self.published.projected, Ordering::Relaxed);
+    }
+}
+
+/// One route's last publish into the endpoint total: the [`HeldState`] pair
+/// plus the projected full-window bytes the admission guard charges.
+#[derive(Clone, Copy, Default)]
+struct HeldTotals {
+    episodes: u64,
+    bytes: u64,
+    projected: u64,
+}
+
+/// The endpoint-wide held frame-stack total, kept by per-route deltas published
+/// from under each entry lock, so `held_state` reads it in O(1) without the
+/// routes map or any entry lock that may be held across a model forward.
 #[derive(Default)]
 struct HeldCells {
     episodes: AtomicU64,
     bytes: AtomicU64,
-    /// What the held episodes' windows hold once full (`episodes × lane_bytes`):
-    /// the admission guard sums this rather than `bytes`, so a window still
-    /// filling is charged what it will reach, not what it has so far.
+    /// What every route's held episodes' windows hold once full
+    /// (`Σ episodes × lane_bytes`): the admission guard reads this rather than
+    /// `bytes`, so a window still filling is charged what it will reach, not
+    /// what it has so far.
     projected: AtomicU64,
-}
-
-/// One resolved route in the map: its state (under the per-route lock) and the
-/// held-state cells published from inside that lock, readable without it.
-struct RouteSlot {
-    entry: Arc<Mutex<RouteEntry>>,
-    held: Arc<HeldCells>,
 }
 
 /// `route_key -> route state`. The outer lock is held only to look up/insert a
 /// route; the per-route [`Mutex`] is what predict holds across its (blocking)
 /// per-lane loop, so configuring one route never blocks predict on another.
-type Routes = Arc<Mutex<HashMap<String, RouteSlot>>>;
+type Routes = Arc<Mutex<HashMap<String, Arc<Mutex<RouteEntry>>>>>;
 
 /// `env_id -> execution horizon` for SPEC-LESS routes (no [`RouteEntry`]): the
 /// horizon is pinned at `ResolveAdapter` like a spec'd route's, but there is no
@@ -97,6 +134,8 @@ pub struct AdaptedModelHandler {
     resolver: Option<Arc<dyn RouteResolver>>,
     routes: Routes,
     spec_less_horizons: SpecLessHorizons,
+    /// The held-state total every route publishes into (see [`HeldCells`]).
+    held: Arc<HeldCells>,
     /// Adapter time (obs assembly + action apply) accumulated by the current
     /// predict-family call, drained per request via `take_adapter_ns`. Shared
     /// (`Arc`) because the work runs on `spawn_blocking` threads.
@@ -121,6 +160,7 @@ impl AdaptedModelHandler {
             resolver,
             routes: Arc::new(Mutex::new(HashMap::new())),
             spec_less_horizons: Arc::new(Mutex::new(HashMap::new())),
+            held: Arc::new(HeldCells::default()),
             adapter_ns: Arc::new(AtomicU64::new(0)),
             short_chunk_warned: Arc::new(AtomicBool::new(false)),
             history_limit: frame_history_limit(),
@@ -133,7 +173,7 @@ impl AdaptedModelHandler {
             .lock()
             .expect("routes map poisoned")
             .get(env_id)
-            .map(|slot| Arc::clone(&slot.entry))
+            .cloned()
     }
 
     /// The horizon pinned for a spec-less route (1 = no chunking / never pinned).
@@ -230,9 +270,8 @@ fn assemble_route_inputs(
     entry: &mut RouteEntry,
     observation: &ModelObservation,
     adapter_ns: &AtomicU64,
-    routes: &Routes,
 ) -> Result<Vec<Value>> {
-    admit_fresh_lanes(entry, &observation.route.episodes, routes)?;
+    admit_fresh_lanes(entry, &observation.route.episodes)?;
     let started = Instant::now();
     let result = assemble_route_inputs_inner(entry, observation);
     adapter_ns.fetch_add(rlmesh_proto::elapsed_ns(started), Ordering::Relaxed);
@@ -400,12 +439,13 @@ fn check_history_budget(num_envs: u32, windows: &[HistoryWindow], limit: u64) ->
 /// episodes at their full size, plus these) would outgrow the budget. Runs
 /// under the route's entry lock before anything is seeded, so a refused
 /// request leaves no state behind; a route with no stacked input is never
-/// charged.
+/// charged. Reads the endpoint total the routes publish into, so it takes no
+/// other lock.
 ///
-/// ponytail: the other routes' cells are a snapshot, so two routes admitting
+/// ponytail: the other routes' share is a snapshot, so two routes admitting
 /// fresh lanes at the same instant can each pass by up to one request's
 /// windows; a strict reservation would need a cross-route lock.
-fn admit_fresh_lanes(entry: &RouteEntry, episodes: &[EpisodeInfo], routes: &Routes) -> Result<()> {
+fn admit_fresh_lanes(entry: &RouteEntry, episodes: &[EpisodeInfo]) -> Result<()> {
     if entry.lane_bytes == 0 {
         return Ok(());
     }
@@ -418,13 +458,8 @@ fn admit_fresh_lanes(entry: &RouteEntry, episodes: &[EpisodeInfo], routes: &Rout
     if fresh == 0 {
         return Ok(());
     }
-    let endpoint: u64 = routes
-        .lock()
-        .expect("routes map poisoned")
-        .values()
-        .map(|slot| slot.held.projected.load(Ordering::Relaxed))
-        .sum();
-    let others = endpoint.saturating_sub(entry.held.projected.load(Ordering::Relaxed));
+    let endpoint = entry.total.projected.load(Ordering::Relaxed);
+    let others = endpoint.saturating_sub(entry.published.projected);
     let route = (entry.buffers.episodes() as u64)
         .saturating_add(fresh)
         .saturating_mul(entry.lane_bytes);
@@ -728,12 +763,11 @@ fn predict_route(
     observation: ModelObservation,
     adapter_ns: &AtomicU64,
     short_chunk_warned: &AtomicBool,
-    routes: &Routes,
 ) -> Result<PredictFrames> {
     let num_envs = observation.num_envs;
     let (inputs, config) = {
         let mut guard = entry.lock().expect("route entry poisoned");
-        let inputs = assemble_route_inputs(&mut guard, &observation, adapter_ns, routes)?;
+        let inputs = assemble_route_inputs(&mut guard, &observation, adapter_ns)?;
         (inputs, Arc::clone(&guard.config))
     };
     let lane_raw_steps = dispatch_route_corners(
@@ -789,7 +823,6 @@ fn predict_grouped_fused(
     predict: &Arc<dyn PredictFn>,
     adapter_ns: &AtomicU64,
     short_chunk_warned: &AtomicBool,
-    routes: &Routes,
 ) -> Vec<Result<PredictFrames>> {
     struct Prepared {
         index: usize,
@@ -811,7 +844,7 @@ fn predict_grouped_fused(
                 let num_envs = observation.num_envs;
                 let assembled = {
                     let mut guard = entry.lock().expect("route entry poisoned");
-                    assemble_route_inputs(&mut guard, &observation, adapter_ns, routes)
+                    assemble_route_inputs(&mut guard, &observation, adapter_ns)
                         .map(|inputs| (inputs, Arc::clone(&guard.config)))
                 };
                 match assembled {
@@ -966,7 +999,6 @@ impl ModelHandler for AdaptedModelHandler {
         // chunk frames); a spec-less route takes the preserved batched raw path
         // (chunked through the model's chunk corner when a horizon was pinned).
         let short_chunk_warned = Arc::clone(&self.short_chunk_warned);
-        let routes = Arc::clone(&self.routes);
         tokio::task::spawn_blocking(move || match entry {
             Some(entry) => predict_route(
                 &entry,
@@ -974,7 +1006,6 @@ impl ModelHandler for AdaptedModelHandler {
                 observation,
                 &adapter_ns,
                 &short_chunk_warned,
-                &routes,
             ),
             None => predict.predict_spec_less_chunked(observation, spec_less_horizon),
         })
@@ -1011,7 +1042,6 @@ impl ModelHandler for AdaptedModelHandler {
         let adapter_ns = Arc::clone(&self.adapter_ns);
         let group_count = observations.len();
         let short_chunk_warned = Arc::clone(&self.short_chunk_warned);
-        let routes = Arc::clone(&self.routes);
         tokio::task::spawn_blocking(move || {
             predict_grouped_fused(
                 lanes,
@@ -1019,7 +1049,6 @@ impl ModelHandler for AdaptedModelHandler {
                 &predict,
                 &adapter_ns,
                 &short_chunk_warned,
-                &routes,
             )
         })
         .await
@@ -1036,13 +1065,10 @@ impl ModelHandler for AdaptedModelHandler {
     }
 
     fn held_state(&self) -> Option<HeldState> {
-        let routes = self.routes.lock().expect("routes map poisoned");
-        let mut held = HeldState::default();
-        for slot in routes.values() {
-            held.episodes += slot.held.episodes.load(Ordering::Relaxed);
-            held.bytes += slot.held.bytes.load(Ordering::Relaxed);
-        }
-        Some(held)
+        Some(HeldState {
+            episodes: self.held.episodes.load(Ordering::Relaxed),
+            bytes: self.held.bytes.load(Ordering::Relaxed),
+        })
     }
 
     fn route_setup(&self) -> Option<Arc<dyn ModelRouteSetup>> {
@@ -1052,26 +1078,17 @@ impl ModelHandler for AdaptedModelHandler {
             routes: Arc::clone(&self.routes),
             predict: Arc::clone(&self.predict),
             spec_less_horizons: Arc::clone(&self.spec_less_horizons),
+            held: Arc::clone(&self.held),
             history_limit: self.history_limit,
         }))
     }
 
-    async fn reset_adapter(&mut self, env_id: &str, episode_ids: Vec<String>) -> Result<()> {
-        // Explicit GC (R2): evict the ended episodes' frame buffers on this env's
-        // adapter. Buffers are lazy-seeded on each episode's first predict (via
-        // `assemble_obs`), so there is no seed step and no position-diffing. Empty
-        // `episode_ids` evicts ALL of this env's episode state.
-        if let Some(entry) = self.entry(env_id) {
-            let mut guard = entry.lock().expect("route entry poisoned");
-            if episode_ids.is_empty() {
-                guard.buffers.clear();
-            } else {
-                for episode_id in &episode_ids {
-                    guard.buffers.evict(episode_id);
-                }
-            }
-            guard.publish_held();
-        }
+    async fn reset_adapter(&mut self, _env_id: &str, episode_ids: Vec<String>) -> Result<()> {
+        // The frame buffers were already evicted off the predict lock by
+        // `AdaptedRouteSetup::reset_adapter`. What is left is the model's own
+        // hook, which shares the model's state with its forwards and so stays
+        // serialized behind them here.
+        //
         // Surface the episode-end edge to the model's own hook (one call per
         // ended episode), e.g. to reset a single-env model's recurrent state. An
         // empty `episode_ids` is an evict-ALL/teardown, not an episode end, so it
@@ -1092,16 +1109,15 @@ impl ModelHandler for AdaptedModelHandler {
 
     async fn on_close(&mut self) -> Result<()> {
         // Drop every route's per-episode state as the authoritative shutdown sweep.
-        // Snapshot the entries and release the map lock first: admission reads
-        // the map from UNDER an entry lock, so holding the map across an entry
-        // lock here would invert the order and wedge a close that races a
-        // predict whose future was dropped mid-assembly.
+        // Snapshot the entries and release the map lock first: an entry lock
+        // may be held across a blocking forward, and the map lock must stay
+        // free for the route lookups (reset/release) racing this close.
         let entries: Vec<Arc<Mutex<RouteEntry>>> = self
             .routes
             .lock()
             .expect("routes map poisoned")
             .values()
-            .map(|slot| Arc::clone(&slot.entry))
+            .cloned()
             .collect();
         for entry in entries {
             let mut guard = entry.lock().expect("route entry poisoned");
@@ -1168,6 +1184,7 @@ struct AdaptedRouteSetup {
     routes: Routes,
     predict: Arc<dyn PredictFn>,
     spec_less_horizons: SpecLessHorizons,
+    held: Arc<HeldCells>,
     history_limit: u64,
 }
 
@@ -1277,19 +1294,48 @@ impl ModelRouteSetup for AdaptedRouteSetup {
                 )));
             }
         }
-        let held = Arc::new(HeldCells::default());
         let entry = Arc::new(Mutex::new(RouteEntry {
             config: Arc::new(config),
             buffers: FrameBuffers::new(),
-            held: Arc::clone(&held),
+            total: Arc::clone(&self.held),
+            published: HeldTotals::default(),
             lane_bytes,
             history_limit: self.history_limit,
         }));
+        // Re-resolving a live route drops the old entry, which takes its
+        // published share back out of the total.
         self.routes
             .lock()
             .expect("routes map poisoned")
-            .insert(env_id.to_string(), RouteSlot { entry, held });
+            .insert(env_id.to_string(), entry);
         Ok(needs)
+    }
+
+    async fn reset_adapter(&self, env_id: &str, episode_ids: &[String]) -> Result<()> {
+        // Explicit GC (R2): evict the ended episodes' frame buffers on this env's
+        // adapter. Buffers are lazy-seeded on each episode's first predict (via
+        // `assemble_obs`), so there is no seed step and no position-diffing. Empty
+        // `episode_ids` evicts ALL of this env's episode state. Route-local, so
+        // it runs off the predict lock: the entry lock is the only serialization
+        // it needs, and per-env ordering keeps it clear of this env's predicts.
+        let entry = self
+            .routes
+            .lock()
+            .expect("routes map poisoned")
+            .get(env_id)
+            .cloned();
+        if let Some(entry) = entry {
+            let mut guard = entry.lock().expect("route entry poisoned");
+            if episode_ids.is_empty() {
+                guard.buffers.clear();
+            } else {
+                for episode_id in episode_ids {
+                    guard.buffers.evict(episode_id);
+                }
+            }
+            guard.publish_held();
+        }
+        Ok(())
     }
 
     async fn release_adapter(&self, env_id: &str) -> Result<()> {
@@ -2861,6 +2907,65 @@ mod fused_route_tests {
         );
     }
 
+    #[tokio::test]
+    async fn held_state_is_an_endpoint_total_kept_by_route_deltas() {
+        // Two stacked routes, each holding one episode's window.
+        let (mut handler, _, _) = stacked_handler("env-a", true, 1).await.unwrap();
+        let setup = handler.route_setup().expect("resolver-backed route setup");
+        setup
+            .resolve_adapter(
+                "env-b",
+                &cam_contract("env-b"),
+                ResolveOptions {
+                    execution_horizon: 1,
+                    delivers_history: true,
+                },
+            )
+            .await
+            .unwrap();
+        handler
+            .predict(cam_predict("env-a", "ep-a", Some(0), 1, &[]))
+            .await
+            .unwrap();
+        handler
+            .predict(cam_predict("env-b", "ep-b", Some(0), 2, &[]))
+            .await
+            .unwrap();
+        let both = handler
+            .held_state()
+            .expect("the engine accounts held state");
+        assert_eq!(both.episodes, 2);
+        assert!(both.bytes > 0, "{both:?}");
+
+        // The total answers without the roster: read it from another thread
+        // while this one holds the routes map lock.
+        let handler = Arc::new(handler);
+        let roster = handler.routes.lock().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let reader = Arc::clone(&handler);
+        std::thread::spawn(move || tx.send(reader.held_state()));
+        let read = rx
+            .recv_timeout(std::time::Duration::from_millis(50))
+            .expect("held_state must not take the routes map lock");
+        drop(roster);
+        assert_eq!(read, Some(both));
+
+        // Evicting one route's episode, then releasing the other route, each
+        // take exactly their share back out of the total.
+        setup
+            .reset_adapter("env-a", &["ep-a".to_string()])
+            .await
+            .unwrap();
+        let one = handler.held_state().unwrap();
+        assert_eq!(one.episodes, 1);
+        assert!(
+            one.bytes > 0 && one.bytes < both.bytes,
+            "{one:?} vs {both:?}"
+        );
+        setup.release_adapter("env-b").await.unwrap();
+        assert_eq!(handler.held_state().unwrap(), HeldState::default());
+    }
+
     // ---- previous action (a route reading back its own executed frames) ----
 
     const PREVIOUS_ENV_TAGS: &str = r#"{
@@ -3362,9 +3467,10 @@ mod fused_route_tests {
             .to_string();
         assert!(refused.contains("other routes"), "{refused}");
 
-        // An ended episode gives its window back.
-        handler
-            .reset_adapter("env-a", vec!["a2".to_string()])
+        // An ended episode gives its window back (the route setup evicts the
+        // window; the handler's reset is only the model's episode-end hook).
+        setup
+            .reset_adapter("env-a", &["a2".to_string()])
             .await
             .unwrap();
         handler

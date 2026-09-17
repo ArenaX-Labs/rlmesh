@@ -29,6 +29,17 @@ pub trait ModelRouteSetup: Send + Sync {
         options: ResolveOptions,
     ) -> Result<RouteNeeds>;
 
+    /// Drop the route-local per-episode adapter state (an engine's episode-keyed
+    /// frame windows) for `env_id`'s ended `episode_ids` at `ResetAdapter` —
+    /// empty means all of the env's. Runs **off** the predict lock, before
+    /// [`ModelHandler::reset_adapter`] fires the model's own hook under it, so
+    /// a forward in flight on another env does not gate the cleanup. Per-env
+    /// ordering still holds: this never overlaps a predict on the same env.
+    /// Defaults to a no-op.
+    async fn reset_adapter(&self, _env_id: &str, _episode_ids: &[String]) -> Result<()> {
+        Ok(())
+    }
+
     /// Tear down the adapter cached for `env_id` at `ReleaseAdapter`, so a
     /// long-lived server does not retain per-env state for every session it ever
     /// served. Defaults to a no-op.
@@ -236,6 +247,11 @@ pub trait ModelHandler: Send {
     /// `reset_adapter` only leaks memory — it can never alias a new episode — so
     /// a stateful policy lazy-seeds per-episode state on first `predict` and
     /// evicts it here, with no position-diffing.
+    ///
+    /// This runs under the predict lock, so it is the place for a hook that
+    /// must not overlap a forward. State a [`ModelRouteSetup`] owns per route
+    /// is dropped through [`ModelRouteSetup::reset_adapter`] instead, off the
+    /// lock and before this fires.
     async fn reset_adapter(&mut self, _env_id: &str, _episode_ids: Vec<String>) -> Result<()> {
         Ok(())
     }

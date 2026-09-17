@@ -7,8 +7,8 @@ use async_trait::async_trait;
 use rlmesh_proto::model::v1::{
     AdapterContext, CloseParticipantRequest, EpisodeInfo, GroupedPredictRequest,
     GroupedPredictResponse, GroupedPredictResult, JoinRequest, PredictRequest,
-    ReleaseAdapterRequest, ResolveAdapterRequest, grouped_predict_result, join_request,
-    join_response,
+    ReleaseAdapterRequest, ResetAdapterRequest, ResolveAdapterRequest, grouped_predict_result,
+    join_request, join_response,
 };
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, mpsc};
@@ -705,11 +705,16 @@ async fn grouped_predict_isolates_a_single_group_failure() {
     );
 }
 
-/// A `ModelRouteSetup` that records which envs it was asked to release, so a
-/// teardown test can assert `release_adapter` fired for exactly the right envs.
+/// `(env_id, episode_ids)` per recorded `reset_adapter` call.
+type ResetLog = Arc<Mutex<Vec<(String, Vec<String>)>>>;
+
+/// A `ModelRouteSetup` that records which envs it was asked to release and which
+/// episodes to evict, so a lifecycle test can assert `release_adapter` /
+/// `reset_adapter` fired for exactly the right envs.
 #[derive(Clone, Default)]
 struct ReleaseRecordingSetup {
     released: Arc<Mutex<Vec<String>>>,
+    evicted: ResetLog,
 }
 
 #[async_trait]
@@ -723,10 +728,124 @@ impl ModelRouteSetup for ReleaseRecordingSetup {
         Ok(Default::default())
     }
 
+    async fn reset_adapter(&self, env_id: &str, episode_ids: &[String]) -> Result<()> {
+        self.evicted
+            .lock()
+            .await
+            .push((env_id.to_string(), episode_ids.to_vec()));
+        Ok(())
+    }
+
     async fn release_adapter(&self, env_id: &str) -> Result<()> {
         self.released.lock().await.push(env_id.to_string());
         Ok(())
     }
+}
+
+/// A handler that records its `reset_adapter` calls: the served path's hook
+/// that runs under the handler lock.
+#[derive(Clone, Default)]
+struct EndRecordingHandler {
+    ended: ResetLog,
+}
+
+#[async_trait]
+impl ModelHandler for EndRecordingHandler {
+    async fn predict(&mut self, _observation: ModelObservation) -> Result<Vec<spaces::SpaceValue>> {
+        Ok(Vec::new())
+    }
+
+    async fn reset_adapter(&mut self, env_id: &str, episode_ids: Vec<String>) -> Result<()> {
+        self.ended
+            .lock()
+            .await
+            .push((env_id.to_string(), episode_ids));
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn reset_adapter_evicts_route_state_without_the_handler_lock() {
+    // Route A's forward holds the handler lock (the test holds it in its place).
+    // A ResetAdapter on route B still completes its route-local eviction through
+    // the route setup, and a predict's decode does not need the lock either;
+    // only the handler's own episode-end hook waits for the forward to finish.
+    let evicted = Arc::new(Mutex::new(Vec::new()));
+    let route_setup: Arc<dyn ModelRouteSetup> = Arc::new(ReleaseRecordingSetup {
+        evicted: Arc::clone(&evicted),
+        ..Default::default()
+    });
+    let ended = Arc::new(Mutex::new(Vec::new()));
+    let handler = Arc::new(Mutex::new(EndRecordingHandler {
+        ended: Arc::clone(&ended),
+    }));
+    let route_configs = Arc::new(Mutex::new(HashMap::new()));
+    let request = |request: JoinRequest| {
+        handle_model_request(
+            request,
+            Arc::clone(&handler),
+            Some(Arc::clone(&route_setup)),
+            Arc::clone(&route_configs),
+            Admission::now(),
+        )
+    };
+
+    let forward = handler.lock().await;
+    let mut reset = Box::pin(request(JoinRequest {
+        kind: Some(join_request::Kind::ResetAdapter(ResetAdapterRequest {
+            context: Some(AdapterContext {
+                session_id: "session".to_string(),
+                env_id: "env-b".to_string(),
+                request_id: "reset-b".to_string(),
+            }),
+            episode_ids: vec!["ep-1".to_string()],
+        })),
+        request_id: "reset-b".to_string(),
+    }));
+    // The reset parks on the lock; a short real-time bound is the only wait.
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), &mut reset)
+            .await
+            .is_err(),
+        "the handler's episode-end hook stays serialized behind the forward"
+    );
+    assert_eq!(
+        *evicted.lock().await,
+        vec![("env-b".to_string(), vec!["ep-1".to_string()])],
+        "route-local eviction must not wait for the forward"
+    );
+    assert!(ended.lock().await.is_empty());
+
+    // A predict decodes (and here fails, unresolved) before touching the lock.
+    let predict = request(predict_join_request("env-c", "predict-c", false));
+    let response = tokio::time::timeout(Duration::from_millis(50), predict)
+        .await
+        .expect("decode must not wait for the handler lock");
+    assert!(
+        response.queue_ns.is_some(),
+        "a request that never reached the handler still reports what it waited"
+    );
+    match response.kind {
+        Some(join_response::Kind::Error(error)) => {
+            assert!(
+                error.message.contains("was not resolved"),
+                "{}",
+                error.message
+            );
+        }
+        other => panic!("expected the unresolved-route error, got {other:?}"),
+    }
+
+    drop(forward);
+    let response = reset.await;
+    assert!(matches!(
+        response.kind,
+        Some(join_response::Kind::ResetAdapter(_))
+    ));
+    assert_eq!(
+        *ended.lock().await,
+        vec![("env-b".to_string(), vec!["ep-1".to_string()])]
+    );
 }
 
 #[tokio::test]
@@ -736,6 +855,7 @@ async fn served_model_release_adapter_tears_down_only_its_env() {
     let released = Arc::new(Mutex::new(Vec::new()));
     let route_setup: Arc<dyn ModelRouteSetup> = Arc::new(ReleaseRecordingSetup {
         released: Arc::clone(&released),
+        ..Default::default()
     });
     let route_configs = Arc::new(Mutex::new(HashMap::from([
         (
@@ -793,6 +913,7 @@ async fn served_model_close_releases_every_adapter() {
     let released = Arc::new(Mutex::new(Vec::new()));
     let route_setup: Arc<dyn ModelRouteSetup> = Arc::new(ReleaseRecordingSetup {
         released: Arc::clone(&released),
+        ..Default::default()
     });
     let route_configs = Arc::new(Mutex::new(HashMap::from([
         (
