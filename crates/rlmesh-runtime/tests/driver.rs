@@ -589,6 +589,123 @@ async fn shutdown_enforces_service_close_timeout_on_hung_model() {
 }
 
 #[tokio::test]
+async fn hung_eviction_yields_to_cancellation() {
+    use tokio_util::sync::CancellationToken;
+
+    // The first episode's eviction goes out at the top of the next loop
+    // iteration (the second episode's reset is in flight) and never returns.
+    // Cancelling the route must interrupt that await: the run ends as
+    // cancelled and still releases the model, instead of sitting on the
+    // eviction until the model answers.
+    let env = TestEnv::default();
+    let model = TestModel {
+        reset_adapter_hangs: true,
+        ..Default::default()
+    };
+    let mut spec = one_episode_spec();
+    spec.max_episodes = Some(2);
+    let cancellation = CancellationToken::new();
+    // Bounded so a driver that never evicts at all fails this test instead of
+    // spinning here forever.
+    let cancel_once_evicting = tokio::time::timeout(Duration::from_secs(5), async {
+        while model
+            .reset_adapters
+            .lock()
+            .expect("reset_adapter recorder lock poisoned")
+            .is_empty()
+        {
+            tokio::task::yield_now().await;
+        }
+        cancellation.cancel();
+    });
+    let (result, _) = tokio::join!(
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            RuntimeDriver::new(
+                spec,
+                env,
+                model.clone(),
+                Arc::new(RecordingHooks::default()),
+            )
+            .run_with_cancellation(cancellation.clone()),
+        ),
+        cancel_once_evicting,
+    );
+    let error = result
+        .expect("cancellation must interrupt the hung eviction")
+        .unwrap_err();
+
+    assert!(
+        matches!(error, RuntimeError::RouteCancelled { .. }),
+        "expected RouteCancelled, got {error:?}"
+    );
+    // The abandoned eviction is the only one attempted (the model never
+    // predicted on the second episode, so teardown has nothing to end), and
+    // the release still went out after it.
+    assert_eq!(
+        model
+            .reset_adapters
+            .lock()
+            .expect("reset_adapter recorder lock poisoned")
+            .len(),
+        1
+    );
+    assert!(model.closed.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn failed_route_ends_its_live_episode_before_release() {
+    // Episode 1 runs two steps and completes; episode 2's first predict fails
+    // the route. The model has predicted on episode 2 and must hear its end
+    // before the release (a context-aware model keeps per-episode state until
+    // then), and episode 1, already evicted at completion, is not ended twice.
+    let env = TestEnv {
+        terminal_after: 2,
+        ..Default::default()
+    };
+    let model = TestModel {
+        fail_predict_at: Some(3),
+        ..Default::default()
+    };
+    let mut spec = one_episode_spec();
+    spec.max_episodes = Some(2);
+
+    let error = RuntimeDriver::new(
+        spec,
+        env,
+        model.clone(),
+        Arc::new(RecordingHooks::default()),
+    )
+    .run()
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(error, RuntimeError::ModelRpc { .. }),
+        "expected the failed predict, got {error:?}"
+    );
+
+    let lifecycle = model
+        .lifecycle
+        .lock()
+        .expect("lifecycle lock poisoned")
+        .clone();
+    let first = lifecycle[0].1.clone();
+    let second = lifecycle[3].1.clone();
+    assert_ne!(first, second);
+    assert_eq!(
+        lifecycle,
+        [
+            ("predict", first.clone()),
+            ("predict", first.clone()),
+            ("evict", first),
+            ("predict", second.clone()),
+            ("evict", second),
+        ]
+    );
+    assert!(model.closed.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
 async fn peer_reported_phases_land_in_the_session_snapshot() {
     let env = TestEnv {
         endpoint_total_ns: Some(9_000_000),
@@ -901,6 +1018,12 @@ struct TestModel {
     // Simulates a release_adapter impl that blocks (e.g. an RPC on a hung
     // connection) without honoring the supplied timeout.
     release_adapter_hangs: bool,
+    // Simulates a reset_adapter (evict) RPC the model never answers: the call
+    // is recorded, then pends forever.
+    reset_adapter_hangs: bool,
+    // The 1-based predict call that fails with a fatal model RPC error (after
+    // its lifecycle entry is recorded), failing the route mid-episode.
+    fail_predict_at: Option<usize>,
     // What this model claims to have spent on each predict, as a peer would
     // stamp it.
     endpoint_total_ns: Option<u64>,
@@ -916,7 +1039,7 @@ impl RuntimeModel for TestModel {
         if let Some(delay) = self.predict_delay {
             tokio::time::sleep(delay).await;
         }
-        self.predicts.fetch_add(1, Ordering::SeqCst);
+        let call = self.predicts.fetch_add(1, Ordering::SeqCst) + 1;
         self.lifecycle
             .lock()
             .expect("lifecycle lock poisoned")
@@ -928,6 +1051,9 @@ impl RuntimeModel for TestModel {
                     .map(|e| e.episode_id.clone())
                     .collect(),
             ));
+        if self.fail_predict_at == Some(call) {
+            return Err(RuntimeError::model_rpc("model-1", FakeTransportError));
+        }
         let first_byte = |value: Option<&SpaceValue>| {
             value
                 .and_then(|value| value.leaves.first())
@@ -983,6 +1109,9 @@ impl RuntimeModel for TestModel {
             .lock()
             .expect("reset_adapter recorder lock poisoned")
             .push(request.episode_ids);
+        if self.reset_adapter_hangs {
+            std::future::pending::<()>().await;
+        }
         Ok(())
     }
 
@@ -1508,11 +1637,25 @@ async fn chunking_does_not_break_autoreset_eviction() {
         .flatten()
         .cloned()
         .collect();
+    // Every episode the model predicted on is evicted exactly once: each
+    // completed episode at its end, and the lane the budget cut mid-episode at
+    // teardown, so nothing is left behind in the model.
+    let predicted: std::collections::HashSet<String> = model
+        .lifecycle
+        .lock()
+        .expect("lifecycle lock poisoned")
+        .iter()
+        .filter(|(kind, _)| *kind == "predict")
+        .flat_map(|(_, ids)| ids.iter().cloned())
+        .collect();
+    let distinct: std::collections::HashSet<String> = evicted.iter().cloned().collect();
     assert_eq!(
-        evicted.len() as i64,
-        report.total_episodes,
-        "one eviction per completed episode, even under chunking"
+        evicted.len(),
+        distinct.len(),
+        "an episode evicted twice: {evicted:?}"
     );
+    assert_eq!(distinct, predicted, "one eviction per predicted episode");
+    assert!(evicted.len() as i64 >= report.total_episodes);
     for id in &evicted {
         assert_eq!(id.len(), 36, "evicted a UUID id, got {id:?}");
         assert_eq!(id.as_bytes()[14], b'7', "UUIDv7 version nibble: {id:?}");
@@ -1559,8 +1702,67 @@ async fn next_step_autoreset_never_predicts_on_an_evicted_episode() {
             }
         }
     }
-    // Every ended episode was evicted, so nothing is left behind in the model.
-    assert_eq!(evicted.len() as i64, report.total_episodes);
+    // Every episode the model predicted on was evicted — the completed ones at
+    // their end, the lane the budget cut mid-episode at teardown — so nothing
+    // is left behind in the model.
+    let predicted: std::collections::HashSet<String> = lifecycle
+        .iter()
+        .filter(|(kind, _)| *kind == "predict")
+        .flat_map(|(_, ids)| ids.iter().cloned())
+        .collect();
+    assert_eq!(evicted, predicted);
+    assert!(evicted.len() as i64 >= report.total_episodes);
+}
+
+#[tokio::test]
+async fn autoreset_roll_keeps_a_sibling_lane_evictable_at_teardown() {
+    // NEXT_STEP × lockstep vector, lanes of 2, 3 and 7 steps, budget 2. The
+    // lane-0 roll and the lane-1 completion that spends the budget land on the
+    // same step, so lane 2's episode is live at teardown and its last predict
+    // was before that roll. It must still be ended on the model: a roll must
+    // not clear a sibling lane's model-side episode state.
+    let env = VectorTestEnv::new(vec![2, 3, 7]);
+    let model = TestModel::default();
+    let report = RuntimeDriver::new(
+        vector_spec(3, 2),
+        env.clone(),
+        model.clone(),
+        Arc::new(RecordingHooks::default()),
+    )
+    .run()
+    .await
+    .unwrap();
+    assert_eq!(report.total_episodes, 2);
+
+    let lifecycle = model
+        .lifecycle
+        .lock()
+        .expect("lifecycle lock poisoned")
+        .clone();
+    let predicted: std::collections::HashSet<String> = lifecycle
+        .iter()
+        .filter(|(kind, _)| *kind == "predict")
+        .flat_map(|(_, ids)| ids.iter().cloned())
+        .filter(|id| !id.is_empty())
+        .collect();
+    let evicted: Vec<String> = model
+        .reset_adapters
+        .lock()
+        .expect("reset_adapter recorder lock poisoned")
+        .iter()
+        .flatten()
+        .cloned()
+        .collect();
+    let distinct: std::collections::HashSet<String> = evicted.iter().cloned().collect();
+    assert_eq!(
+        evicted.len(),
+        distinct.len(),
+        "an episode evicted twice: {evicted:?}"
+    );
+    assert_eq!(
+        distinct, predicted,
+        "every predicted episode ends on the model exactly once; lifecycle: {lifecycle:?}"
+    );
 }
 
 #[tokio::test]

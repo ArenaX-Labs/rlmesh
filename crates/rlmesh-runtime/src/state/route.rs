@@ -353,6 +353,47 @@ impl RouteState {
         self.seed_by_episode.get(episode_id).copied()
     }
 
+    /// End the episode at `env_index` on the model side: its id, once, for the
+    /// ResetAdapter that drops the model's state under it. `None` for an empty
+    /// lane or an episode already ended.
+    pub(crate) fn end_episode_at(&mut self, env_index: u32) -> Option<String> {
+        let position = self.slot_position(env_index)?;
+        let episode = self.slots.get_mut(position)?.episode.as_mut()?;
+        if episode.ended {
+            return None;
+        }
+        episode.ended = true;
+        Some(episode.episode_id.clone())
+    }
+
+    /// End every episode the model has predicted on and not yet been told the
+    /// end of — the route's live episodes at teardown. Each id comes out once.
+    pub(crate) fn end_live_episodes(&mut self) -> Vec<String> {
+        self.slots
+            .iter_mut()
+            .filter_map(|slot| slot.episode.as_mut())
+            .filter(|episode| episode.predicted && !episode.ended)
+            .map(|episode| {
+                episode.ended = true;
+                episode.episode_id.clone()
+            })
+            .collect()
+    }
+
+    /// A predict is going out for the lanes at `positions`: the model will hold
+    /// state under their episodes' ids, so their ends must reach it.
+    pub(crate) fn mark_predicted(&mut self, positions: &[usize]) {
+        for &position in positions {
+            if let Some(episode) = self
+                .slots
+                .get_mut(position)
+                .and_then(|slot| slot.episode.as_mut())
+            {
+                episode.predicted = true;
+            }
+        }
+    }
+
     pub(crate) fn predict_request_at(
         &mut self,
         positions: &[usize],
@@ -437,6 +478,15 @@ impl RouteState {
                 self.seed_by_episode.remove(&previous_id);
                 self.trial_by_episode.remove(&previous_id);
             }
+            // A sync that leaves a lane's id alone (the siblings of an
+            // autoreset roll) leaves its episode live on the model too, so its
+            // model-side lifecycle flags carry over; only a new id starts fresh.
+            let (predicted, ended) = match slot.episode.as_ref() {
+                Some(previous) if previous.episode_id == episode_id => {
+                    (previous.predicted, previous.ended)
+                }
+                _ => (false, false),
+            };
             slot.episode = if episode_id.is_empty() {
                 None
             } else {
@@ -446,6 +496,8 @@ impl RouteState {
                     episode_record_id,
                     episode_index: record.map_or(0, |record| record.index),
                     started_from_auto_reset,
+                    predicted,
+                    ended,
                 })
             };
             // `reset_steps` force-resets every lane of the group (a driver-owned

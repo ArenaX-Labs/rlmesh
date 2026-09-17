@@ -722,8 +722,16 @@ where
                 ),
             }
         }
-        // Evictions queued while the model was busy go out before release.
-        self.flush_evictions(&mut state).await;
+        // A route ending mid-episode (a failure, a cancellation, a sibling
+        // lane cut by the episode budget) still has episodes the model has
+        // predicted on and never heard the end of; its per-episode state (a
+        // Python model's episode store) ends through the same hook a completed
+        // episode's does, so end them here, once, before the release. Together
+        // with the evictions queued while the model was busy, they go out on
+        // the shutdown budget, cancelled or not: the release follows either way.
+        self.pending_evictions.extend(state.end_live_episodes());
+        self.flush_evictions(&mut state, None, self.spec.limits.service_close_timeout)
+            .await;
         // Stop the ticker (it only emits Window snapshots, so it cannot contend
         // this Session push), then deliver the durable session total exactly once
         // on every exit path.
@@ -822,7 +830,12 @@ where
             {
                 return Ok("completed requested episodes");
             }
-            self.flush_evictions(state).await;
+            self.flush_evictions(
+                state,
+                Some(cancellation),
+                self.spec.limits.model_predict_timeout,
+            )
+            .await;
             self.dispatch_steps(&mut groups, state, env_ops, telemetry)
                 .await?;
             // With nothing else in flight, a waiting group must be predicted now
@@ -1058,7 +1071,7 @@ where
     fn dispatch_predict<'m>(
         &mut self,
         groups: &mut [Group<E>],
-        state: &RouteState,
+        state: &mut RouteState,
         predict: &mut Option<PredictFuture<'m, M>>,
         force: bool,
     ) where
@@ -1096,6 +1109,7 @@ where
                 unreachable!("only waiting groups are planned")
             };
             step = step.max(state.snapshot_at(&groups[gid].positions).step);
+            state.mark_predicted(&groups[gid].positions);
             metas.push((gid, msg.context.clone(), msg.encoded_len() as u64));
             requests.push(msg);
         }
@@ -1849,25 +1863,23 @@ where
     /// on. Either way the model sees its `on_episode_end` after the last
     /// predict under that id and never a predict after it. Sent by
     /// [`flush_evictions`](Self::flush_evictions) once the model handle is free.
-    fn queue_evictions(&mut self, state: &RouteState, env_indices: impl Iterator<Item = u32>) {
-        let all_positions: Vec<usize> = (0..self.spec.num_envs.max(1)).collect();
-        let slot_ids = state.episode_ids_at(&all_positions);
-        self.pending_evictions.extend(
-            env_indices
-                .filter_map(|env_index| {
-                    state
-                        .slot_position(env_index)
-                        .and_then(|position| slot_ids.get(position))
-                        .cloned()
-                })
-                .filter(|id| !id.is_empty()),
-        );
+    fn queue_evictions(&mut self, state: &mut RouteState, env_indices: impl Iterator<Item = u32>) {
+        self.pending_evictions
+            .extend(env_indices.filter_map(|env_index| state.end_episode_at(env_index)));
     }
 
     /// Best-effort GC (R2): a failure is logged and the route keeps moving — a
     /// missed evict only leaks model memory, never corrupts state (ids never
-    /// repeat).
-    async fn flush_evictions(&mut self, state: &mut RouteState) {
+    /// repeat). Bounded by `deadline` and by the route's cancellation, so a
+    /// model that keeps its stream open but never answers cannot hold the
+    /// route (or its teardown) on an eviction; the abandoned ids are dropped,
+    /// not retried — the model ends whatever it still holds at release.
+    async fn flush_evictions(
+        &mut self,
+        state: &mut RouteState,
+        cancellation: Option<&CancellationToken>,
+        deadline: Duration,
+    ) {
         if self.pending_evictions.is_empty() {
             return;
         }
@@ -1875,9 +1887,28 @@ where
             return;
         };
         let episode_ids = std::mem::take(&mut self.pending_evictions);
+        let episodes = episode_ids.len();
         let request = state.reset_adapter_request(episode_ids);
-        if let Err(err) = model.reset_adapter(request).await {
-            tracing::warn!("model reset_adapter (evict) failed: {err}");
+        let cancelled = async {
+            match cancellation {
+                Some(cancellation) => cancellation.cancelled().await,
+                None => std::future::pending().await,
+            }
+        };
+        tokio::select! {
+            biased;
+            () = cancelled => {
+                tracing::warn!(episodes, "model reset_adapter (evict) abandoned: route cancelled");
+            }
+            result = tokio::time::timeout(deadline, model.reset_adapter(request)) => match result {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => tracing::warn!("model reset_adapter (evict) failed: {err}"),
+                Err(_) => tracing::warn!(
+                    episodes,
+                    timeout_ms = deadline.as_millis(),
+                    "model reset_adapter (evict) timed out; abandoning"
+                ),
+            }
         }
     }
 

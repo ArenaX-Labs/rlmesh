@@ -9,6 +9,12 @@ pub(crate) struct EpisodeState {
     pub(crate) episode_record_id: String,
     pub(crate) episode_index: i64,
     pub(crate) started_from_auto_reset: bool,
+    /// A predict request has carried this episode: the model holds (or will
+    /// hold) state under its id, so its end must reach the model.
+    pub(crate) predicted: bool,
+    /// The episode's end has been queued for the model (ResetAdapter), so it
+    /// is not ended again at route teardown.
+    pub(crate) ended: bool,
 }
 
 #[derive(Debug, Clone)]
