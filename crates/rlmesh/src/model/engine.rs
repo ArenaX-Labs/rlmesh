@@ -7,12 +7,13 @@
 //! language) binding constructs `AdaptedModelHandler::new(predict, resolver)`
 //! and serves it; a pure-Rust model does the same with no host runtime.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use async_trait::async_trait;
+use rayon::prelude::*;
 use rlmesh_adapters::v1::{
     FrameBuffers, HistoryWindow, MAX_EXECUTION_HORIZON, ObsPlan, Value, apply_actions,
     assemble_obs, observe_obs, space_value_to_obs_map, split_chunk,
@@ -796,6 +797,34 @@ enum GroupLane {
     Routed { entry: Arc<Mutex<RouteEntry>> },
 }
 
+/// Whether a grouped request's spec'd groups may assemble and finish on the
+/// rayon pool: every routed group names a distinct route (so no two threads
+/// contend one entry lock in undefined order) and no route's plan runs a
+/// Python custom transform (which would take the GIL from the pool).
+fn assembles_in_parallel(lanes: &[GroupLane]) -> bool {
+    let mut seen: HashSet<*const Mutex<RouteEntry>> = HashSet::new();
+    let mut routed = 0usize;
+    for lane in lanes {
+        if let GroupLane::Routed { entry } = lane {
+            routed += 1;
+            if !seen.insert(Arc::as_ptr(entry)) {
+                return false;
+            }
+            let guard = entry.lock().expect("route entry poisoned");
+            if guard
+                .config
+                .adapter
+                .obs_plans
+                .iter()
+                .any(|plan| matches!(plan, ObsPlan::Custom(_)))
+            {
+                return false;
+            }
+        }
+    }
+    routed > 1
+}
+
 /// The fused grouped predict (the batched forward across routes), run on a
 /// blocking worker thread.
 ///
@@ -833,35 +862,86 @@ fn predict_grouped_fused(
         num_envs: usize,
     }
 
-    let mut results: Vec<Option<Result<PredictFrames>>> = Vec::with_capacity(observations.len());
+    // A spec'd group's assembly is host work under its own route entry lock,
+    // independent of every other group's, so the groups assemble in parallel
+    // (indexed, so results keep request order) — unless two groups name the
+    // same route (their buffer mutations would then interleave in no defined
+    // order; the runtime never groups one route twice) or a plan runs Python
+    // (a custom transform takes the GIL, which serialises the pool anyway).
+    // A spec-less group calls the model itself and stays on this thread.
+    enum Staged {
+        SpecLess {
+            observation: ModelObservation,
+            horizon: u32,
+        },
+        Routed {
+            assembled: Result<(Vec<Value>, Arc<RouteConfig>)>,
+            episodes: Vec<EpisodeInfo>,
+            entry: Arc<Mutex<RouteEntry>>,
+            num_envs: usize,
+        },
+    }
+    let parallel = assembles_in_parallel(&lanes);
+    let stage = |(lane, observation): (GroupLane, ModelObservation)| match lane {
+        GroupLane::SpecLess { horizon } => Staged::SpecLess {
+            observation,
+            horizon,
+        },
+        GroupLane::Routed { entry } => {
+            let num_envs = observation.num_envs;
+            let assembled = {
+                let mut guard = entry.lock().expect("route entry poisoned");
+                assemble_route_inputs(&mut guard, &observation, adapter_ns)
+                    .map(|inputs| (inputs, Arc::clone(&guard.config)))
+            };
+            Staged::Routed {
+                assembled,
+                episodes: observation.route.episodes,
+                entry,
+                num_envs,
+            }
+        }
+    };
+    let staged: Vec<Staged> = if parallel {
+        lanes
+            .into_par_iter()
+            .zip(observations.into_par_iter())
+            .map(stage)
+            .collect()
+    } else {
+        lanes.into_iter().zip(observations).map(stage).collect()
+    };
+
+    let mut results: Vec<Option<Result<PredictFrames>>> = Vec::with_capacity(staged.len());
     let mut prepared: Vec<Prepared> = Vec::new();
-    for (index, (lane, observation)) in lanes.into_iter().zip(observations).enumerate() {
-        match lane {
-            GroupLane::SpecLess { horizon } => results.push(Some(
+    for (index, staged) in staged.into_iter().enumerate() {
+        match staged {
+            Staged::SpecLess {
+                observation,
+                horizon,
+            } => results.push(Some(
                 predict.predict_spec_less_chunked(observation, horizon),
             )),
-            GroupLane::Routed { entry } => {
-                let num_envs = observation.num_envs;
-                let assembled = {
-                    let mut guard = entry.lock().expect("route entry poisoned");
-                    assemble_route_inputs(&mut guard, &observation, adapter_ns)
-                        .map(|inputs| (inputs, Arc::clone(&guard.config)))
-                };
-                match assembled {
-                    Ok((inputs, config)) => {
-                        results.push(None);
-                        prepared.push(Prepared {
-                            index,
-                            inputs,
-                            episodes: observation.route.episodes,
-                            entry,
-                            config,
-                            num_envs,
-                        });
-                    }
-                    Err(error) => results.push(Some(Err(error))),
-                }
+            Staged::Routed {
+                assembled: Ok((inputs, config)),
+                episodes,
+                entry,
+                num_envs,
+            } => {
+                results.push(None);
+                prepared.push(Prepared {
+                    index,
+                    inputs,
+                    episodes,
+                    entry,
+                    config,
+                    num_envs,
+                });
             }
+            Staged::Routed {
+                assembled: Err(error),
+                ..
+            } => results.push(Some(Err(error))),
         }
     }
 
@@ -918,17 +998,34 @@ fn predict_grouped_fused(
             };
             match fused_result {
                 Ok(all_frames) => {
+                    // Split the fused chunk per group in order, then apply each
+                    // group's action frames under its own entry lock — in
+                    // parallel under the same conditions as assembly.
                     let mut frames = all_frames.into_iter();
-                    for group in fused {
-                        let group_frames: Vec<Vec<Value>> =
-                            frames.by_ref().take(group.lane_count).collect();
-                        results[group.index] = Some(finish_route_frames(
+                    let split: Vec<(FusedGroup, Vec<Vec<Value>>)> = fused
+                        .into_iter()
+                        .map(|group| {
+                            let group_frames = frames.by_ref().take(group.lane_count).collect();
+                            (group, group_frames)
+                        })
+                        .collect();
+                    let finish = |(group, group_frames): (FusedGroup, Vec<Vec<Value>>)| {
+                        let result = finish_route_frames(
                             &group.entry,
                             group_frames,
                             &group.episodes,
                             group.num_envs,
                             adapter_ns,
-                        ));
+                        );
+                        (group.index, result)
+                    };
+                    let finished: Vec<(usize, Result<PredictFrames>)> = if parallel {
+                        split.into_par_iter().map(finish).collect()
+                    } else {
+                        split.into_iter().map(finish).collect()
+                    };
+                    for (index, result) in finished {
+                        results[index] = Some(result);
                     }
                 }
                 Err(error) => {
@@ -2280,6 +2377,48 @@ mod fused_route_tests {
     /// route's entry guard across the whole call, so a request repeating one
     /// env_id re-locked the same mutex on one thread and hung forever. Locks are
     /// now short-lived; a duplicate route must simply serve twice.
+    /// A wide fused batch — one route per lane, the fleet shape — assembles and
+    /// finishes its groups on the rayon pool; every result must still land at
+    /// its own group's index with its own lane's state, across the chunked and
+    /// un-chunked corners.
+    #[tokio::test]
+    async fn wide_grouped_predict_keeps_every_group_in_request_order() {
+        for chunk in [false, true] {
+            let echo = EchoModel::new(chunk, false);
+            let names: Vec<String> = (0..48).map(|i| format!("env-{i}")).collect();
+            let specs: Vec<(&str, u32)> = names.iter().map(|n| (n.as_str(), 1)).collect();
+            let horizon = if chunk { 3 } else { 1 };
+            let (mut handler, contracts) =
+                spec_handler(Arc::clone(&echo) as Arc<dyn PredictFn>, &specs, horizon).await;
+            for round in 0..5 {
+                let offset = 100.0 * round as f32;
+                let observations = (0..48)
+                    .map(|i| grouped_obs(&names[i], &[offset + i as f32], &contracts[i]))
+                    .collect();
+                let results = handler.predict_grouped(observations).await;
+                assert_eq!(results.len(), 48);
+                for (i, result) in results.iter().enumerate() {
+                    let frames = result.as_ref().expect("every group serves");
+                    let state = offset + i as f32;
+                    assert_eq!(frames.actions, vec![box_f32(state)], "group {i}");
+                    if chunk {
+                        assert_eq!(frames.replay.len(), 2, "group {i} replays horizon-1 frames");
+                        for (k, frame) in frames.replay.iter().enumerate() {
+                            assert_eq!(
+                                frame,
+                                &vec![box_f32((f64::from(state) + 0.125 * (k + 1) as f64) as f32)]
+                            );
+                        }
+                    }
+                }
+            }
+            assert!(
+                echo.batch_calls.load(Ordering::SeqCst) + echo.chunk_calls.load(Ordering::SeqCst)
+                    > 0
+            );
+        }
+    }
+
     #[tokio::test]
     async fn grouped_predict_with_duplicate_env_completes() {
         let echo = EchoModel::new(false, false);

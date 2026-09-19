@@ -28,6 +28,7 @@ rlmesh-grpc = { workspace = true }
 rlmesh-proto = { workspace = true }
 rlmesh-runtime = { workspace = true }
 futures = { workspace = true }
+rayon = { workspace = true }
 tonic = { workspace = true }
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "sync", "time"] }
 tokio-util.workspace = true

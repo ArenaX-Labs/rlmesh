@@ -14,7 +14,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
-use rlmesh_spaces::{DType, Tensor};
+use rlmesh_spaces::{DType, Tensor, dtype_size};
 
 use super::lookup::resolve_in_obs;
 use super::value::{self, Value};
@@ -90,9 +90,43 @@ fn finalize_image(image: Tensor, plan: &ImagePlan) -> Result<Value, ApplyError> 
     } else {
         image
     };
+    if let Some(image) = finalize_camera_chw(&image, plan) {
+        return Ok(Value::Tensor(add_lead_dims(image, plan.lead_dims)));
+    }
     let image = finalize_dtype(&image, &plan.dtype, plan.normalize)?;
     let image = to_layout(&image, ImageLayout::Hwc, plan.dst_layout)?;
     Ok(Value::Tensor(add_lead_dims(image, plan.lead_dims)))
+}
+
+/// The camera fast path: a uint8 HWC frame going to a normalized float32 CHW
+/// tensor, which is what every vision policy asks for. One pass reads each
+/// source byte once and writes its f32 straight to the transposed offset, so
+/// neither the HWC float staging tensor nor the transpose index vector exists.
+/// Byte-identical to `finalize_dtype` + `to_layout` (same f32 expression, see
+/// there); `None` hands any other plan to the generic tail.
+fn finalize_camera_chw(image: &Tensor, plan: &ImagePlan) -> Option<Tensor> {
+    let (low, high) = plan.normalize?;
+    if image.dtype() != DType::Uint8
+        || plan.dtype != "float32"
+        || plan.dst_layout != ImageLayout::Chw
+        || image.shape().len() != 3
+    {
+        return None;
+    }
+    let (low, high) = (low as f32, high as f32);
+    let table: [f32; 256] = std::array::from_fn(|v| low + (v as f32 / 255.0) * (high - low));
+    let shape = value::shape_usize(image);
+    let (height, width, channels) = (shape[0], shape[1], shape[2]);
+    let plane = height * width;
+    let bytes = image.to_contiguous_bytes();
+    let mut out = vec![0f32; bytes.len()];
+    for (pixel, px) in bytes.chunks_exact(channels.max(1)).enumerate() {
+        for (channel, &v) in px.iter().enumerate() {
+            out[channel * plane + pixel] = table[v as usize];
+        }
+    }
+    let shape = value::shape_i64(&[channels, height, width]);
+    Some(value::tensor_from_f32(shape, &out))
 }
 
 /// Synthesize the model input for an optional image the env did not provide: a
@@ -178,15 +212,17 @@ fn image_dims(tensor: &Tensor) -> Result<(usize, usize, usize), ApplyError> {
 /// `resolver/image.rs`). Don't "fix" this into a vertical flip — that would
 /// silently mirror every frame left-right for everyone relying on rot180.
 pub fn flip_180(tensor: &Tensor) -> Result<Tensor, ApplyError> {
-    let (height, width, channels) = image_dims(tensor)?;
-    let mut indices = Vec::with_capacity(tensor.numel());
-    for row in 0..height {
-        for col in 0..width {
-            let src = ((height - 1 - row) * width + (width - 1 - col)) * channels;
-            indices.extend(src..src + channels);
-        }
+    let (_, _, channels) = image_dims(tensor)?;
+    // rot180 of an HWC frame is the pixel sequence reversed, one pixel =
+    // `channels` elements: a single reversed pass, no index vector.
+    let pixel = channels.max(1) * dtype_size(tensor.dtype());
+    let bytes = tensor.to_contiguous_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    for px in bytes.chunks_exact(pixel).rev() {
+        out.extend_from_slice(px);
     }
-    Ok(value::gather(tensor, &indices, tensor.shape().to_vec()))
+    Tensor::from_vec(out, tensor.shape().to_vec(), tensor.dtype())
+        .map_err(|err| ApplyError::new(err.to_string()))
 }
 
 /// Swap the red and blue channels of an HWC image (`channel_order = "bgr"`).
@@ -277,32 +313,39 @@ pub fn to_layout(
     if source == target {
         return Ok(tensor.clone());
     }
-    let mut indices = Vec::with_capacity(tensor.numel());
+    // A typed transpose: walk the destination in order and copy one
+    // `itemsize`-byte element per step, no index vector.
+    let size = dtype_size(tensor.dtype());
+    let bytes = tensor.to_contiguous_bytes();
+    let mut out = vec![0u8; bytes.len()];
     let shape = match target {
         ImageLayout::Chw => {
             let (height, width, channels) = image_dims(tensor)?;
+            let plane = height * width;
             for channel in 0..channels {
-                for row in 0..height {
-                    for col in 0..width {
-                        indices.push((row * width + col) * channels + channel);
-                    }
+                for pixel in 0..plane {
+                    let src = (pixel * channels + channel) * size;
+                    let dst = (channel * plane + pixel) * size;
+                    out[dst..dst + size].copy_from_slice(&bytes[src..src + size]);
                 }
             }
             vec![channels, height, width]
         }
         ImageLayout::Hwc => {
             let (channels, height, width) = image_dims(tensor)?;
-            for row in 0..height {
-                for col in 0..width {
-                    for channel in 0..channels {
-                        indices.push(channel * height * width + row * width + col);
-                    }
+            let plane = height * width;
+            for pixel in 0..plane {
+                for channel in 0..channels {
+                    let src = (channel * plane + pixel) * size;
+                    let dst = (pixel * channels + channel) * size;
+                    out[dst..dst + size].copy_from_slice(&bytes[src..src + size]);
                 }
             }
             vec![height, width, channels]
         }
     };
-    Ok(value::gather(tensor, &indices, value::shape_i64(&shape)))
+    Tensor::from_vec(out, value::shape_i64(&shape), tensor.dtype())
+        .map_err(|err| ApplyError::new(err.to_string()))
 }
 
 fn finish_pixels(blended: Vec<f64>, shape: Vec<usize>) -> Tensor {
@@ -718,6 +761,9 @@ fn crop_center(tensor: &Tensor, height: usize, width: usize) -> Result<Tensor, A
 /// the source must fit within the target (the contain-scale guarantees it).
 fn pad_center(tensor: &Tensor, height: usize, width: usize) -> Result<Tensor, ApplyError> {
     let (src_height, src_width, channels) = image_dims(tensor)?;
+    if src_height == height && src_width == width {
+        return Ok(tensor.clone());
+    }
     let off_row = (height - src_height) / 2;
     let off_col = (width - src_width) / 2;
     let data = value::u8_pixels(tensor)?;
@@ -748,6 +794,22 @@ pub fn finalize_dtype(
     })?;
     if let Some((low, high)) = normalize {
         let (low, high) = (low as f32, high as f32);
+        if tensor.dtype() == DType::Uint8 && target == DType::Float32 {
+            // The camera case (uint8 in, float32 out): one table lookup per
+            // element, written straight as little-endian f32. The table holds
+            // exactly `low + (v / 255) * (high - low)` in f32, which is what the
+            // generic path computes before widening to f64 and narrowing back,
+            // so the bytes are identical to it.
+            let table: [[u8; 4]; 256] =
+                std::array::from_fn(|v| (low + (v as f32 / 255.0) * (high - low)).to_le_bytes());
+            let bytes = tensor.to_contiguous_bytes();
+            let mut out = Vec::with_capacity(bytes.len() * 4);
+            for &v in bytes.iter() {
+                out.extend_from_slice(&table[v as usize]);
+            }
+            return Tensor::from_vec(out, tensor.shape().to_vec(), target)
+                .map_err(|err| ApplyError::new(err.to_string()));
+        }
         // Fuse normalize + cast: scale in f32 (the exact arithmetic of the old
         // Float32 staging tensor), widen to f64, and encode straight to the
         // target dtype — skipping the intermediate float32 tensor and its
@@ -777,6 +839,223 @@ pub fn add_lead_dims(tensor: Tensor, count: u32) -> Tensor {
 mod tests {
     use super::*;
     use image::ImageEncoder;
+
+    /// The generic element-by-element implementations the typed kernels
+    /// replaced, kept only to prove the kernels are byte-identical to them.
+    mod generic {
+        use super::*;
+
+        pub fn flip_180(tensor: &Tensor) -> Tensor {
+            let (height, width, channels) = image_dims(tensor).unwrap();
+            let mut indices = Vec::with_capacity(tensor.numel());
+            for row in 0..height {
+                for col in 0..width {
+                    let src = ((height - 1 - row) * width + (width - 1 - col)) * channels;
+                    indices.extend(src..src + channels);
+                }
+            }
+            value::gather(tensor, &indices, tensor.shape().to_vec())
+        }
+
+        pub fn to_layout(tensor: &Tensor, target: ImageLayout) -> Tensor {
+            let mut indices = Vec::with_capacity(tensor.numel());
+            let shape = match target {
+                ImageLayout::Chw => {
+                    let (height, width, channels) = image_dims(tensor).unwrap();
+                    for channel in 0..channels {
+                        for row in 0..height {
+                            for col in 0..width {
+                                indices.push((row * width + col) * channels + channel);
+                            }
+                        }
+                    }
+                    vec![channels, height, width]
+                }
+                ImageLayout::Hwc => {
+                    let (channels, height, width) = image_dims(tensor).unwrap();
+                    for row in 0..height {
+                        for col in 0..width {
+                            for channel in 0..channels {
+                                indices.push(channel * height * width + row * width + col);
+                            }
+                        }
+                    }
+                    vec![height, width, channels]
+                }
+            };
+            value::gather(tensor, &indices, value::shape_i64(&shape))
+        }
+
+        pub fn normalize_f32(tensor: &Tensor, (low, high): (f64, f64)) -> Tensor {
+            let (low, high) = (low as f32, high as f32);
+            let scaled: Vec<f64> = value::to_f32_vec(tensor)
+                .into_iter()
+                .map(|value| f64::from(low + (value / 255.0) * (high - low)))
+                .collect();
+            value::encode_f64_to(scaled, tensor.shape().to_vec(), DType::Float32).unwrap()
+        }
+    }
+
+    /// Deterministic pseudo-random uint8 HWC frame (xorshift), so the
+    /// equivalence checks cover arbitrary pixel values, not gradients.
+    fn noise_frame(height: usize, width: usize, channels: usize, seed: u32) -> Tensor {
+        let mut state = seed | 1;
+        let data: Vec<u8> = (0..height * width * channels)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                (state & 0xff) as u8
+            })
+            .collect();
+        value::tensor_from_u8(value::shape_i64(&[height, width, channels]), data)
+    }
+
+    #[test]
+    fn typed_kernels_match_the_generic_implementations_byte_for_byte() {
+        let mut seed = 7;
+        for &(height, width) in &[(1, 1), (2, 3), (7, 5), (64, 64), (256, 256)] {
+            for &channels in &[1usize, 3, 4] {
+                seed += 1;
+                let frame = noise_frame(height, width, channels, seed);
+                assert_eq!(flip_180(&frame).unwrap(), generic::flip_180(&frame));
+                for &range in &[(0.0, 1.0), (-1.0, 1.0), (0.0, 255.0)] {
+                    let typed = finalize_dtype(&frame, "float32", Some(range)).unwrap();
+                    assert_eq!(typed, generic::normalize_f32(&frame, range), "{range:?}");
+                    // the float image is what the layout transpose sees in practice
+                    let chw = to_layout(&typed, ImageLayout::Hwc, ImageLayout::Chw).unwrap();
+                    assert_eq!(chw, generic::to_layout(&typed, ImageLayout::Chw));
+                    assert_eq!(
+                        to_layout(&chw, ImageLayout::Chw, ImageLayout::Hwc).unwrap(),
+                        typed
+                    );
+                }
+                let chw_u8 = to_layout(&frame, ImageLayout::Hwc, ImageLayout::Chw).unwrap();
+                assert_eq!(chw_u8, generic::to_layout(&frame, ImageLayout::Chw));
+            }
+        }
+    }
+
+    /// `cargo test -p rlmesh-adapters camera_pipeline_timing -- --ignored --nocapture`:
+    /// ms per 256x256x3 camera frame through flip + normalize + chw, typed
+    /// kernels against the generic implementations they replaced.
+    #[test]
+    #[ignore = "timing, not correctness: run with --release --nocapture"]
+    #[allow(clippy::print_stdout, reason = "the point of the test is the report")]
+    fn camera_pipeline_timing() {
+        let frame = noise_frame(256, 256, 3, 11);
+        let reps = 20;
+        let typed = std::time::Instant::now();
+        for _ in 0..reps {
+            let f = flip_180(&frame).unwrap();
+            let n = finalize_dtype(&f, "float32", Some((0.0, 1.0))).unwrap();
+            let _ = to_layout(&n, ImageLayout::Hwc, ImageLayout::Chw).unwrap();
+        }
+        let typed = typed.elapsed().as_secs_f64() * 1e3 / reps as f64;
+        let plan_like = |img: &Tensor| {
+            let (low, high) = (0.0f32, 1.0f32);
+            let table: [f32; 256] =
+                std::array::from_fn(|v| low + (v as f32 / 255.0) * (high - low));
+            let bytes = img.to_contiguous_bytes();
+            let plane = 256 * 256;
+            let mut out = vec![0f32; bytes.len()];
+            for (pixel, px) in bytes.chunks_exact(3).enumerate() {
+                for (channel, &v) in px.iter().enumerate() {
+                    out[channel * plane + pixel] = table[v as usize];
+                }
+            }
+            value::tensor_from_f32(vec![3, 256, 256], &out)
+        };
+        let fused = std::time::Instant::now();
+        for _ in 0..reps {
+            let f = flip_180(&frame).unwrap();
+            let _ = plan_like(&f);
+        }
+        let fused = fused.elapsed().as_secs_f64() * 1e3 / reps as f64;
+        let generic = std::time::Instant::now();
+        for _ in 0..reps {
+            let f = generic::flip_180(&frame);
+            let n = generic::normalize_f32(&f, (0.0, 1.0));
+            let _ = generic::to_layout(&n, ImageLayout::Chw);
+        }
+        let generic = generic.elapsed().as_secs_f64() * 1e3 / reps as f64;
+        println!(
+            "camera frame flip+normalize+chw: fused {fused:.3} ms, typed {typed:.3} ms, generic {generic:.3} ms"
+        );
+    }
+
+    /// The whole camera plan (flip + pad-to-same-size + normalize + chw) through
+    /// `apply_image` — the fused fast path — against the generic kernels composed
+    /// by hand, with and without the fast path's eligibility (hwc output, swap_rb).
+    #[test]
+    fn the_camera_plan_matches_the_generic_kernels_end_to_end() {
+        let camera_plan = |dst_layout: ImageLayout, swap_rb: bool| ImagePlan {
+            placement: crate::path::NodePath::root().push_key("image"),
+            source: crate::path::NodePath::root().push_key("cam"),
+            src_layout: ImageLayout::Hwc,
+            dst_layout,
+            flip: true,
+            size: Some((256, 256)),
+            fit: FitMode::Pad,
+            resample: "bilinear_aa".to_owned(),
+            dtype: "float32".to_owned(),
+            normalize: Some((0.0, 1.0)),
+            lead_dims: 0,
+            src_range: None,
+            stack: 1,
+            zero_fill: None,
+            fill: 0,
+            crop: None,
+            jpeg_quality: None,
+            swap_rb,
+            render: None,
+            offsets: None,
+            stack_pad: crate::spec::StackPad::First,
+            frame_bytes: 0,
+            role_rebound: None,
+            part: None,
+        };
+        let frame = noise_frame(256, 256, 3, 23);
+        let obs =
+            std::collections::BTreeMap::from([("cam".to_owned(), Value::Tensor(frame.clone()))]);
+        for (dst_layout, swap_rb) in [
+            (ImageLayout::Chw, false),
+            (ImageLayout::Chw, true),
+            (ImageLayout::Hwc, false),
+        ] {
+            let plan = camera_plan(dst_layout, swap_rb);
+            let Value::Tensor(fast) = apply_image(&plan, &obs).expect("camera plan applies") else {
+                panic!("expected a tensor")
+            };
+            let mut expected = generic::flip_180(&frame);
+            if swap_rb {
+                expected = swap_rb_generic(&expected);
+            }
+            let expected = generic::normalize_f32(&expected, (0.0, 1.0));
+            let expected = match dst_layout {
+                ImageLayout::Chw => generic::to_layout(&expected, ImageLayout::Chw),
+                ImageLayout::Hwc => expected,
+            };
+            assert_eq!(fast, expected, "{dst_layout:?} swap_rb={swap_rb}");
+        }
+    }
+
+    fn swap_rb_generic(tensor: &Tensor) -> Tensor {
+        let bytes = tensor.to_contiguous_bytes();
+        let mut out = bytes.to_vec();
+        for px in out.chunks_exact_mut(3) {
+            px.swap(0, 2);
+        }
+        value::tensor_from_u8(tensor.shape().to_vec(), out)
+    }
+
+    #[test]
+    fn pad_to_the_same_size_is_the_frame_itself() {
+        let frame = noise_frame(9, 11, 3, 3);
+        assert_eq!(pad_center(&frame, 9, 11).unwrap(), frame);
+        let padded = pad_center(&frame, 12, 12).unwrap();
+        assert_eq!(padded.shape(), &[12, 12, 3]);
+    }
 
     #[test]
     fn decode_scales_unit_float_images_instead_of_truncating() {

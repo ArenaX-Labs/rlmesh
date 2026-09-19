@@ -2766,6 +2766,7 @@ version = "0.1.0-rc.11"
 dependencies = [
  "async-trait",
  "futures",
+ "rayon",
  "rlmesh-adapters",
  "rlmesh-grpc",
  "rlmesh-proto",
