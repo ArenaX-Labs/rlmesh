@@ -62,6 +62,15 @@ The first release. RLMesh connects models to environments across process, depend
 - A `lane_skew_ns` scalar on the env response and a matching `lane.skew` metric, for a vector env that times its own lanes: its slowest lane minus its median lane, one series no matter how many lanes it runs, so one pathologically slow lane can show up in p95/p99 instead of merely blurring the `env.step` aggregate. No in-tree env stamps it yet (the built-in Gymnasium vectorization hands the lane loop to Gymnasium), so the series stays empty until a lane-timing env does; a Rust `VectorEnv` can compute it with `rlmesh::env::lane_skew_ns` over a scratch buffer of per-lane durations.
 - Async inference in the Rust runtime driver: `RuntimeDriver::with_prefetch(model, lead)` predicts the next action chunk on a second model handle while the current chunk's replay frames execute, firing when `lead` frames remain. The prefetched chunk is conditioned on an observation up to `lead` steps stale, so runs reflect deployment-realistic async timing and are not comparable to the synchronous predict-then-step loop; a chunk prefetched across an episode boundary is discarded. On a route that negotiated observation history the prefetched request carries the rows buffered so far and predicts from an observation of its own, so every env step still reaches the model exactly once. Opt-in: `RuntimeDriver::with_prefetch(lead)` in Rust, `prefetch_lead=` on `Model.run()` and `rlmesh.run()` in Python (the session loop and a served handle refuse a non-zero lead rather than faking it).
 - Negotiated workflow editions content-pinned to the sealed `2026.06` edition spec, exact-match `rlmesh-wire-v1` protocol generation, and a per-lane `NEXT_STEP` autoreset contract for vector environments.
+- Image adapters run as typed kernels: the 180° rotation, the uint8 to float32 normalisation, the HWC to CHW transpose, and a pad to the frame's own size no longer pass through the dtype-generic scalar codec, and a camera plan that ends in a normalised float32 CHW tensor (the shape every vision policy asks for) runs as one fused pass from the raw bytes. Output is byte-identical to the previous path; a 256×256×3 frame costs about a sixth of what it did.
+- A fused grouped predict assembles its groups' inputs and applies their returned action chunks in parallel, one route per thread, when every group names a distinct route and no plan runs a Python custom transform (otherwise it stays sequential); results keep request order and the per-route entry locks still guard each route's buffers. The `predict.adapter` share of a served model's handler time, which was serial for every lane of a batch, shrinks accordingly.
+
+## [0.1.0-rc.12] - 2026-09-19
+
+### Changed
+
+- Image adapters run as typed kernels: the 180° rotation, the uint8 to float32 normalisation, the HWC to CHW transpose, and a pad to the frame's own size no longer pass through the dtype-generic scalar codec, and a camera plan that ends in a normalised float32 CHW tensor (the shape every vision policy asks for) runs as one fused pass from the raw bytes. Output is byte-identical to the previous path; a 256×256×3 frame costs about a sixth of what it did.
+- A fused grouped predict assembles its groups' inputs and applies their returned action chunks in parallel, one route per thread, when every group names a distinct route and no plan runs a Python custom transform (otherwise it stays sequential); results keep request order and the per-route entry locks still guard each route's buffers. The `predict.adapter` share of a served model's handler time, which was serial for every lane of a batch, shrinks accordingly.
 
 ## [0.1.0-rc.11] - 2026-09-17
 
@@ -213,6 +222,7 @@ The first release. RLMesh connects models to environments across process, depend
 - Batched and chunked prediction now works in local `run()` evals. `run()` drives the same native runtime loop as a served model, so `predict_batch`, `predict_chunk`, and `predict_chunk_batch` activate locally instead of only on the served wire path.
 
 [0.1.0]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.1.0
+[0.1.0-rc.12]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.1.0-rc.12
 [0.1.0-rc.11]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.1.0-rc.11
 [0.1.0-rc.10]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.1.0-rc.10
 [0.1.0-rc.9]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.1.0-rc.9
