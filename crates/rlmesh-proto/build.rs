@@ -12,9 +12,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "cargo:rerun-if-changed={}",
         repo_root.join("rlmesh.toml").display()
     );
-    let git_dir = repo_root.join(".git");
-    if git_dir.exists() {
-        println!("cargo:rerun-if-changed={}", git_dir.join("HEAD").display());
+    // `.git` is a file, not a directory, in a worktree checkout, so `.git/HEAD`
+    // does not exist there and watching it would rerun this script on every
+    // build. Ask git where HEAD actually lives and watch only a real path, and
+    // only when this is the rlmesh checkout (see `workflow_cohort`).
+    if repo_root.join("rlmesh.toml").exists()
+        && let Some(head) = git_output(repo_root, &["rev-parse", "--git-path", "HEAD"])
+    {
+        let head = repo_root.join(head);
+        if head.exists() {
+            println!("cargo:rerun-if-changed={}", head.display());
+        }
     }
 
     let base = workflow_edition_base(repo_root);
@@ -101,6 +109,18 @@ fn workflow_cohort(repo_root: &Path, version: &str) -> WorkflowCohort {
         return WorkflowCohort {
             name: release_cohort_name(version),
             source: "release".to_string(),
+            dev_token: None,
+        };
+    }
+
+    // A published crate ships build.rs but not the repo's rlmesh.toml. Without
+    // this guard, git discovery walks up from the registry/vendor directory into
+    // whatever repo happens to contain the consumer's build tree and stamps a dev
+    // cohort from *their* commit, which no released peer can negotiate with.
+    if !repo_root.join("rlmesh.toml").exists() {
+        return WorkflowCohort {
+            name: release_cohort_name(version),
+            source: "package".to_string(),
             dev_token: None,
         };
     }

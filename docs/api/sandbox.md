@@ -35,6 +35,18 @@ Sandbox APIs are experimental. A sandbox session owns a Docker-backed environmen
    :show-inheritance:
 ```
 
+## Native Sessions
+
+The top-level sandbox classes keep RLMesh-native values; their call surface is the base session above, and the backend classes below decode tensor leaves instead.
+
+```{eval-rst}
+.. autoclass:: rlmesh.SandboxEnv
+```
+
+```{eval-rst}
+.. autoclass:: rlmesh.SandboxVectorEnv
+```
+
 ## Backend Sessions
 
 Concrete sandbox classes inherit the base session behavior and only choose the remote client used inside the owned sandbox session.

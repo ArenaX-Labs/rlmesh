@@ -9,7 +9,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::mpsc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tokio::sync::oneshot;
 
@@ -41,9 +41,18 @@ struct Envelope {
     enqueued: Instant,
 }
 
-/// One lane: its actor thread's mailbox.
+/// How long [`LaneEnv::drop`] waits, across all lanes, for the lane threads to
+/// finish dropping their envs. Matches the server's teardown grace: a lane that
+/// outlasts it is leaked so that shutdown stays bounded.
+const LANE_JOIN_GRACE: Duration = Duration::from_secs(5);
+
+/// How often that wait re-checks a lane thread.
+const LANE_JOIN_POLL: Duration = Duration::from_millis(1);
+
+/// One lane: its actor thread's mailbox and the thread itself.
 struct LaneActor {
     tx: mpsc::Sender<Envelope>,
+    thread: std::thread::JoinHandle<()>,
 }
 
 /// N scalar environments served as the lanes of one vector endpoint.
@@ -157,10 +166,40 @@ impl LaneEnv {
     }
 }
 
+impl Drop for LaneEnv {
+    fn drop(&mut self) {
+        // A lane thread owns its env, so the endpoint should not outlive its
+        // threads: dropping the mailbox ends the actor loop, and the join is
+        // what guarantees the env is fully dropped before this returns. For an
+        // env whose drop runs foreign code (a Python env dropped after the
+        // interpreter has finalized) an unjoined lane thread is a crash.
+        //
+        // Every mailbox closes first, so the lanes wind down concurrently and
+        // share one deadline. The wait is bounded because teardown is bounded:
+        // a lane still inside a wedged user `close()` is left to the OS rather
+        // than hanging shutdown (and process exit) on it forever.
+        let (senders, threads): (Vec<_>, Vec<_>) = self
+            .lanes
+            .drain(..)
+            .map(|LaneActor { tx, thread }| (tx, thread))
+            .unzip();
+        drop(senders);
+        let deadline = Instant::now() + LANE_JOIN_GRACE;
+        for thread in threads {
+            while !thread.is_finished() && Instant::now() < deadline {
+                std::thread::sleep(LANE_JOIN_POLL);
+            }
+            if thread.is_finished() {
+                let _ = thread.join();
+            }
+        }
+    }
+}
+
 impl LaneActor {
     fn spawn<E: Env + 'static>(index: usize, mut env: E) -> Self {
         let (tx, rx) = mpsc::channel::<Envelope>();
-        std::thread::Builder::new()
+        let thread = std::thread::Builder::new()
             .name(format!("rlmesh-lane-{index}"))
             .spawn(move || {
                 let runtime = tokio::runtime::Builder::new_current_thread()
@@ -201,7 +240,7 @@ impl LaneActor {
                 // Mailbox closed: the LaneEnv is gone, drop the env with the thread.
             })
             .expect("spawn lane thread");
-        Self { tx }
+        Self { tx, thread }
     }
 
     fn send(&self, job: Job, lane: usize) -> Result<(), spaces::EnvRuntimeError> {
@@ -297,6 +336,14 @@ mod tests {
         env_contract: spaces::EnvContract,
         delay: Duration,
         threads: std::sync::Arc<std::sync::Mutex<Vec<std::thread::ThreadId>>>,
+        /// How long this env's drop blocks: a stand-in for a wedged `close()`.
+        drop_block: Duration,
+    }
+
+    impl Drop for SleepyEnv {
+        fn drop(&mut self) {
+            std::thread::sleep(self.drop_block);
+        }
     }
 
     impl SleepyEnv {
@@ -327,6 +374,7 @@ mod tests {
                 env_contract,
                 delay,
                 threads,
+                drop_block: Duration::ZERO,
             }
         }
 
@@ -423,6 +471,48 @@ mod tests {
         );
     }
 
+    #[test]
+    fn dropping_the_endpoint_joins_the_lane_threads_that_own_the_envs() {
+        // Each env lives on its lane thread, so the endpoint's drop has to wait
+        // for those threads: a lane still dropping its env after the endpoint
+        // is gone is what aborts the interpreter when the env is a Python one.
+        // The env holds `threads`, so a strong count back down to 1 proves the
+        // lane thread finished dropping it before drop() returned.
+        let threads = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let envs = (0..2)
+            .map(|_| SleepyEnv::new(Duration::ZERO, std::sync::Arc::clone(&threads)))
+            .collect();
+        let lanes = LaneEnv::new(envs).expect("matching lanes");
+
+        drop(lanes);
+
+        assert_eq!(
+            std::sync::Arc::strong_count(&threads),
+            1,
+            "lane threads must be joined (and their envs dropped) by LaneEnv::drop"
+        );
+    }
+
+    #[test]
+    fn dropping_the_endpoint_gives_up_on_a_wedged_lane_instead_of_hanging() {
+        // The join above is bounded: a lane stuck in a user `close()` that never
+        // returns must not hold the endpoint's drop -- and with it the server's
+        // shutdown and process exit -- open forever. Give up on it instead.
+        let threads = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut wedged = SleepyEnv::new(Duration::ZERO, std::sync::Arc::clone(&threads));
+        wedged.drop_block = Duration::from_secs(600);
+        let lanes = LaneEnv::new(vec![wedged]).expect("one lane");
+
+        let started = Instant::now();
+        drop(lanes);
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < LANE_JOIN_GRACE * 2,
+            "LaneEnv::drop must give up on a wedged lane after the grace, took {elapsed:?}"
+        );
+    }
+
     #[tokio::test]
     async fn lanes_step_concurrently_on_their_own_threads_over_one_join_stream() {
         // Wide enough that even a slow runner's overhead cannot make two
@@ -450,7 +540,10 @@ mod tests {
         let mut client = rlmesh_grpc::EnvClient::connect(&address).await.unwrap();
         let handshake = client.handshake().await.unwrap();
         assert_eq!(handshake.num_envs, 2);
-        assert!(has_capability(&handshake.capabilities, "subset_step"));
+        assert!(has_capability(
+            &handshake.capabilities,
+            rlmesh_proto::capabilities::ENV_SUBSET_STEP,
+        ));
         let contract =
             rlmesh_grpc::wire::env_contract_from_proto(handshake.env_contract.clone()).unwrap();
         let action_space = contract.action_space.unwrap();

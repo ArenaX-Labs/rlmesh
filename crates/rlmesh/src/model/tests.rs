@@ -2325,3 +2325,115 @@ async fn grouped_predict_carries_chunk_replay_frames() {
         );
     }
 }
+
+/// `ServeOptions::token` documents itself as the auth knob for an endpoint, so a
+/// model bound with the token set only there must reject an untokened client:
+/// `bind_async` resolves the effective token from both `ServeModelOptions::token`
+/// and the nested `ServeOptions::token`.
+#[tokio::test]
+async fn model_serve_options_token_is_enforced_by_the_server() {
+    let predicts = Arc::new(AtomicUsize::new(0));
+    let bound = ModelWorker::new(SmokeModel {
+        predicts: Arc::clone(&predicts),
+        closes: Arc::new(AtomicUsize::new(0)),
+    })
+    .bind_async(
+        ServeModelOptions::new(BindAddress::Tcp {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+        })
+        // Only the nested ServeOptions carries the token; ServeModelOptions::token
+        // stays empty.
+        .serve_options(ServeOptions {
+            allow_remote_shutdown: true,
+            token: Some("serve-options-token".to_string()),
+            ..ServeOptions::default()
+        }),
+    )
+    .await
+    .unwrap();
+    let (port, server) = spawn_bound_server(bound);
+    let address = format!("tcp://127.0.0.1:{port}");
+    let env_contract = SmokeEnv::new().env_contract;
+
+    let error = crate::RemoteModel::connect(&address, env_contract.clone())
+        .await
+        .err()
+        .expect("an untokened client must be rejected when ServeOptions sets a token");
+    assert!(
+        error.to_string().contains("invalid route token"),
+        "expected an unauthenticated rejection, got {error}"
+    );
+
+    // The same token lets a client in, and its predict reaches the handler.
+    let mut model =
+        crate::RemoteModel::connect_with_token(&address, "serve-options-token", env_contract)
+            .await
+            .unwrap();
+    model.reset(None);
+    model
+        .predict(spaces::SpaceValue::Box(
+            spaces::Tensor::from_vec(vec![5u8], vec![1], spaces::DType::Uint8).unwrap(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(predicts.load(Ordering::SeqCst), 1);
+    drop(model);
+
+    let mut shutdown_client = rlmesh_grpc::ModelClient::connect(&address, "serve-options-token")
+        .await
+        .unwrap();
+    shutdown_client.handshake().await.unwrap();
+    assert!(shutdown_client.shutdown("done").await.unwrap().accepted);
+    shutdown_and_join(server).await;
+}
+
+/// `RunLocalOptions::token` is the only way an in-process run can reach a
+/// token-protected env server, so the env client must be built with it.
+#[tokio::test]
+async fn run_local_options_token_reaches_a_token_protected_env() {
+    let bound = crate::EnvServer::new(SmokeEnv::new())
+        .bind_with_options(
+            BindAddress::Tcp {
+                host: "127.0.0.1".to_string(),
+                port: 0,
+            },
+            ServeOptions {
+                token: Some("env-token".to_string()),
+                ..ServeOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+    let address = bound.local_addr().to_string();
+    let server = tokio::spawn(async move { bound.serve().await });
+
+    let untokened = ModelWorker::new(SmokeModel {
+        predicts: Arc::new(AtomicUsize::new(0)),
+        closes: Arc::new(AtomicUsize::new(0)),
+    })
+    .run_local_async(RunLocalOptions::parse(&address).unwrap().for_episodes(1))
+    .await
+    .expect_err("a token-protected env must reject an untokened run_local");
+    assert!(
+        untokened.to_string().contains("invalid env token"),
+        "expected an unauthenticated rejection, got {untokened}"
+    );
+
+    let predicts = Arc::new(AtomicUsize::new(0));
+    ModelWorker::new(SmokeModel {
+        predicts: Arc::clone(&predicts),
+        closes: Arc::new(AtomicUsize::new(0)),
+    })
+    .run_local_async(
+        RunLocalOptions::parse(&address)
+            .unwrap()
+            .token("env-token")
+            .for_episodes(1),
+    )
+    .await
+    .unwrap();
+    assert!(predicts.load(Ordering::SeqCst) > 0);
+
+    server.abort();
+}

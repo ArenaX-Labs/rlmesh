@@ -446,8 +446,11 @@ def test_colliding_camera_names_get_distinct_paths(tmp_path: Path) -> None:
     rec.close()
 
 
-def test_env_video_eager_copy_survives_overwrite(tmp_path: Path) -> None:
+def test_env_video_eager_copy_survives_overwrite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """An env reusing one output path per episode must not clobber earlier ones."""
+    monkeypatch.chdir(tmp_path)
     src = tmp_path / "rollout.mp4"
     rec = Recorder()
     hooks = rec.capture(model="m", env="e", task="t")
@@ -738,6 +741,45 @@ def test_unreadable_env_video_path_warns(tmp_path: Path) -> None:
     with pytest.warns(UserWarning, match="not a readable local file"):
         hooks.on_episode_end(_episode(0, reward=1.0, success=True))
     assert rec.workloads[0].episodes[0].media == ()
+
+
+@pytest.mark.parametrize("escape", ["absolute", "traversal", "symlink", "nul"])
+def test_env_video_outside_the_run_directory_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, escape: str
+) -> None:
+    """A peer-supplied path that leaves the run directory is never copied.
+
+    ``video_keys`` reads the path out of a remote env's step info, so an env that
+    names ``~/.ssh/id_rsa`` (directly, via ``..``, or through a symlink it drops in
+    the run directory) must not get that file copied into the exported bundle. The
+    ``nul`` case covers a path the OS refuses outright: it must be skipped like any
+    other unusable path, not raised out of ``on_episode_end``.
+    """
+    outside = tmp_path / "secret.mp4"
+    outside.write_bytes(b"secret")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    monkeypatch.chdir(run_dir)
+    if escape == "absolute":
+        source = str(outside)
+    elif escape == "traversal":
+        source = "../secret.mp4"
+    elif escape == "nul":
+        source = "a\x00b.mp4"
+    else:
+        (run_dir / "link.mp4").symlink_to(outside)
+        source = "link.mp4"
+
+    rec = Recorder()
+    hooks = rec.capture(model="m", env="e", task="t")
+    hooks.on_episode_start(episode=0, seed=0)
+    hooks.on_step(_step_event(info={"video_artifact_path": source}))
+    with pytest.warns(UserWarning, match="not a readable local file"):
+        hooks.on_episode_end(_episode(0, reward=1.0, success=True))
+    assert rec.workloads[0].episodes[0].media == ()
+    out = rec.export(tmp_path / "bundle")
+    assert not any(p.read_bytes() == b"secret" for p in out.rglob("*.mp4"))
+    rec.close()
 
 
 def test_on_run_start_prefers_explicit_session() -> None:

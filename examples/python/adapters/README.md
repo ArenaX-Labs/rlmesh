@@ -14,6 +14,6 @@ It runs one process:
 3. `MODEL_SPEC` declares a checkpoint that wants a 224x224 image, a flat `rot6d` proprio list, and a 10-dim `rot6d` action — conventions that do not match the env.
 4. `Model(predict, spec=MODEL_SPEC).run(client)` resolves the adapter from the env's contract and runs an episode. `predict` only ever sees the model's own format; the env only ever sees its own.
 
-The script first prints `resolve_from_contract(...).describe()`, the exact transformations chosen: the image is resized, `quat_xyzw -> rot6d` is applied to the rotation, the instruction key is remapped (`goal -> task`), and on the way back the 10-dim `rot6d` action is converted `rot6d -> axis_angle`, sliced, and clipped into the env's 7-dim action.
+The script first prints `resolve_from_contract(...).explain()`, the exact transformations chosen: the image is resized, `quat_xyzw -> rot6d` is applied to the rotation, the instruction key is remapped (`goal -> task`), and on the way back the 10-dim `rot6d` action is converted `rot6d -> axis_angle`, sliced, and clipped into the env's 7-dim action.
 
 See [`../vla_adapters`](../vla_adapters) for the multi-model, multi-env project layout, the custom-adapter escape hatches, and offline dry runs.

@@ -298,7 +298,7 @@ fn space_spec_from_gym_space(py: Python<'_>, space: &Bound<'_, PyAny>) -> PyResu
     gen_stub_pyfunction(
         module = "rlmesh._rlmesh",
         python = r#"
-def box_space_spec(low: float, high: float, shape: list[int], dtype: str | None = None) -> SpaceSpec: ...
+def box_space_spec(low: int | float, high: int | float, shape: list[int], dtype: str | None = None) -> SpaceSpec: ...
 "#
     )
 )]
@@ -306,25 +306,52 @@ def box_space_spec(low: float, high: float, shape: list[int], dtype: str | None 
 #[pyo3(signature = (low, high, shape, dtype=None))]
 fn box_space_spec(
     py: Python<'_>,
-    low: f64,
-    high: f64,
+    low: &Bound<'_, PyAny>,
+    high: &Bound<'_, PyAny>,
     shape: Vec<i64>,
     dtype: Option<&str>,
 ) -> PyResult<Py<PyAny>> {
     let dtype = parse_dtype(dtype, DType::Float32)?;
+    let (low_f, high_f) = (low.extract::<f64>()?, high.extract::<f64>()?);
     // A fully open range is unbounded regardless of dtype.
-    let builder = if low == f64::NEG_INFINITY && high == f64::INFINITY {
+    let builder = if low_f == f64::NEG_INFINITY && high_f == f64::INFINITY {
         BoxSpaceBuilder::unbounded(shape)
-    } else if is_integral_dtype(dtype) && low.is_finite() && high.is_finite() {
-        // Integer/boolean dtypes with finite bounds carry exact dtype-typed
-        // bounds; the f64 args are truncated into the integer domain.
-        BoxSpaceBuilder::int_scalar(low as i64, high as i64, shape)
+    } else if is_integral_dtype(dtype) && low_f.is_finite() && high_f.is_finite() {
+        // Integer/boolean dtypes with finite bounds carry dtype-typed bytes.
+        match exact_int_bounds(low, high) {
+            Some(IntBounds::Signed(low, high)) => BoxSpaceBuilder::int_scalar(low, high, shape),
+            Some(IntBounds::Unsigned(low, high)) => BoxSpaceBuilder::uint_scalar(low, high, shape),
+            // Float-form bounds on an integer dtype: truncated into the
+            // integer domain as before.
+            None => BoxSpaceBuilder::int_scalar(low_f as i64, high_f as i64, shape),
+        }
     } else {
         // Float dtypes, and half-open integer ranges, keep the double-based
         // uniform form (an infinite side reads as unbounded at containment).
-        BoxSpaceBuilder::scalar(low, high, shape)
+        BoxSpaceBuilder::scalar(low_f, high_f, shape)
     };
     space_spec_to_pyobject(py, builder.dtype(dtype).build())
+}
+
+/// Exact 64-bit bounds, kept out of `f64`.
+enum IntBounds {
+    Signed(i64, i64),
+    Unsigned(u64, u64),
+}
+
+/// Read a bound pair as exact integers, when both sides are Python integers
+/// that fit 64 bits. Going through `f64` would round anything above 2^53 and
+/// saturate a `uint64` bound at `i64::MAX`, so the typed builders take the
+/// integers raw; a bound that is not an integer (or does not fit) reports
+/// `None` and keeps the double path.
+fn exact_int_bounds(low: &Bound<'_, PyAny>, high: &Bound<'_, PyAny>) -> Option<IntBounds> {
+    if let (Ok(low), Ok(high)) = (low.extract::<i64>(), high.extract::<i64>()) {
+        return Some(IntBounds::Signed(low, high));
+    }
+    match (low.extract::<u64>(), high.extract::<u64>()) {
+        (Ok(low), Ok(high)) => Some(IntBounds::Unsigned(low, high)),
+        _ => None,
+    }
 }
 
 /// Integer/boolean dtypes whose Box bounds are stored as dtype-typed bytes.

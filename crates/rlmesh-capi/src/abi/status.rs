@@ -71,13 +71,13 @@ impl From<rlmesh::Error> for CapiError {
 }
 
 thread_local! {
-    static LAST_ERROR: RefCell<Option<(CString, bool)>> = const { RefCell::new(None) };
+    static LAST_ERROR: RefCell<Option<(CString, bool, RlmeshStatus)>> = const { RefCell::new(None) };
 }
 
-pub(crate) fn store_last_error(message: &str, recoverable: bool) {
+pub(crate) fn store_last_error(message: &str, recoverable: bool, status: RlmeshStatus) {
     let safe: Vec<u8> = message.bytes().filter(|&b| b != 0).collect();
     let cstr = CString::new(safe).unwrap_or_default();
-    LAST_ERROR.with(|slot| *slot.borrow_mut() = Some((cstr, recoverable)));
+    LAST_ERROR.with(|slot| *slot.borrow_mut() = Some((cstr, recoverable, status)));
 }
 
 /// Called before invoking a callback so a decline that does not set an error
@@ -91,13 +91,13 @@ pub(crate) fn last_error_message() -> String {
     LAST_ERROR.with(|slot| {
         slot.borrow()
             .as_ref()
-            .map(|(cstr, _)| cstr.to_string_lossy().into_owned())
+            .map(|(cstr, _, _)| cstr.to_string_lossy().into_owned())
             .unwrap_or_default()
     })
 }
 
 pub(crate) fn last_error_recoverable() -> bool {
-    LAST_ERROR.with(|slot| slot.borrow().as_ref().is_some_and(|(_, r)| *r))
+    LAST_ERROR.with(|slot| slot.borrow().as_ref().is_some_and(|(_, r, _)| *r))
 }
 
 fn panic_message(payload: Box<dyn Any + Send>) -> String {
@@ -117,11 +117,11 @@ where
     match catch_unwind(AssertUnwindSafe(f)) {
         Ok(Ok(())) => RlmeshStatus::Ok,
         Ok(Err(err)) => {
-            store_last_error(&err.message, err.recoverable);
+            store_last_error(&err.message, err.recoverable, err.status);
             err.status
         }
         Err(payload) => {
-            store_last_error(&panic_message(payload), false);
+            store_last_error(&panic_message(payload), false, RlmeshStatus::Panic);
             RlmeshStatus::Panic
         }
     }
@@ -134,11 +134,11 @@ where
     match catch_unwind(AssertUnwindSafe(f)) {
         Ok(Ok(ptr)) => ptr,
         Ok(Err(err)) => {
-            store_last_error(&err.message, err.recoverable);
+            store_last_error(&err.message, err.recoverable, err.status);
             std::ptr::null_mut()
         }
         Err(payload) => {
-            store_last_error(&panic_message(payload), false);
+            store_last_error(&panic_message(payload), false, RlmeshStatus::Panic);
             std::ptr::null_mut()
         }
     }
@@ -153,7 +153,7 @@ where
     match catch_unwind(AssertUnwindSafe(f)) {
         Ok(value) => value,
         Err(payload) => {
-            store_last_error(&panic_message(payload), false);
+            store_last_error(&panic_message(payload), false, RlmeshStatus::Panic);
             default
         }
     }
@@ -164,8 +164,21 @@ where
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_last_error_message() -> *const c_char {
     LAST_ERROR.with(|slot| match &*slot.borrow() {
-        Some((cstr, _)) => cstr.as_ptr(),
+        Some((cstr, _, _)) => cstr.as_ptr(),
         None => std::ptr::null(),
+    })
+}
+
+/// The status the most recent failing call on this thread recorded — the code a
+/// status-returning call would have returned. This is the only status channel
+/// the pointer-returning exports have (they report failure as NULL).
+/// `RLMESH_OK` when no error is recorded.
+#[unsafe(no_mangle)]
+pub extern "C" fn rlmesh_last_error_status() -> RlmeshStatus {
+    LAST_ERROR.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .map_or(RlmeshStatus::Ok, |&(_, _, status)| status)
     })
 }
 

@@ -1107,7 +1107,10 @@ class ModelBase(Generic[ObsT, ActT]):
         return RunResult(
             episodes=tuple(
                 EpisodeResult(
-                    index=episode["index"],
+                    # The runtime reports 1-based slot ordinals; EpisodeResult.index
+                    # is 0-based, matching Session.run, the hooks, and
+                    # trial == trial_index_base + index.
+                    index=episode["index"] - 1,
                     seed=episode["seed"],
                     trial=episode["trial"],
                     steps=episode["steps"],

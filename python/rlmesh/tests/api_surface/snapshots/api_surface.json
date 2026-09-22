@@ -8,10 +8,13 @@
       "RANDOM_SAMPLE",
       "EnvFactory",
       "EnvServer",
+      "EnvironmentException",
       "EpisodeResult",
       "Model",
       "Param",
       "ParamSpec",
+      "ProtocolException",
+      "RLMeshException",
       "Reader",
       "Recorder",
       "RemoteEnv",
@@ -138,6 +141,10 @@
           }
         },
         "signature": "EnvServer(env: EnvLike[Any, Any] | VectorServerEnvLike | Sequence[EnvLike[Any, Any]], address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, options: ServeOptions | None = None, tags: EnvTags | None = None, framework: str | ValueBridge | None = None, device: object | None = None)",
+        "stability": "Stable"
+      },
+      "EnvironmentException": {
+        "kind": "class",
         "stability": "Stable"
       },
       "EpisodeResult": {
@@ -313,9 +320,17 @@
         "signature": "ParamSpec(*params: Param, extra: ExtraPolicy = 'forbid')",
         "stability": "Experimental"
       },
+      "ProtocolException": {
+        "kind": "class",
+        "stability": "Stable"
+      },
       "RANDOM_SAMPLE": {
         "kind": "type alias",
         "signature": "RANDOM_SAMPLE = _RandomSample()",
+        "stability": "Stable"
+      },
+      "RLMeshException": {
+        "kind": "class",
         "stability": "Stable"
       },
       "Reader": {
@@ -611,7 +626,7 @@
           }
         },
         "signature": "SandboxBuild(base_image: str | None = None, rlmesh_package: str | PathLike[str] | None = None, packages: Sequence[str] | None = None, imports: Sequence[str] | None = None, trust_remote_code: bool = False, allow_unpinned_hf: bool = False, build_memory: str | None = None)",
-        "stability": "Stable"
+        "stability": "Experimental"
       },
       "SandboxEnv": {
         "kind": "class",
@@ -682,7 +697,7 @@
           }
         },
         "signature": "SandboxEnv(source: str, /, *, build: SandboxBuild | None = None, runtime: SandboxRuntime | None = None, connect_timeout_seconds: float = SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS, **params: object) -> None",
-        "stability": "Stable"
+        "stability": "Experimental"
       },
       "SandboxModel": {
         "kind": "class",
@@ -709,7 +724,7 @@
           }
         },
         "signature": "SandboxModel(source: object, /, *, runtime: SandboxRuntime | None = None, **params: object)",
-        "stability": "Stable"
+        "stability": "Experimental"
       },
       "SandboxRuntime": {
         "kind": "class",
@@ -732,7 +747,7 @@
           }
         },
         "signature": "SandboxRuntime(gpus: str | int | None = None, devices: Sequence[str] | None = None, volumes: Sequence[str] | None = None, user: str | int | None = None)",
-        "stability": "Stable"
+        "stability": "Experimental"
       },
       "SandboxVectorEnv": {
         "kind": "class",
@@ -815,7 +830,7 @@
           }
         },
         "signature": "SandboxVectorEnv(source: str, /, num_envs: int, *, vectorization_mode: str | None = None, build: SandboxBuild | None = None, runtime: SandboxRuntime | None = None, connect_timeout_seconds: float = SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS, **params: object) -> None",
-        "stability": "Stable"
+        "stability": "Experimental"
       },
       "ServeOptions": {
         "kind": "class",
@@ -1072,7 +1087,7 @@
           }
         },
         "signature": "Vector(dim: int, unit: bool = False)",
-        "stability": "Stable"
+        "stability": "Experimental"
       },
       "View": {
         "kind": "class",
@@ -3261,7 +3276,7 @@
           }
         },
         "signature": "SandboxBuild(base_image: str | None = None, rlmesh_package: str | PathLike[str] | None = None, packages: Sequence[str] | None = None, imports: Sequence[str] | None = None, trust_remote_code: bool = False, allow_unpinned_hf: bool = False, build_memory: str | None = None)",
-        "stability": "Stable"
+        "stability": "Experimental"
       },
       "SandboxEnv": {
         "kind": "class",
@@ -3355,7 +3370,7 @@
           }
         },
         "signature": "SandboxInfo(requested_source: str, resolved_source: str, address: str, container_id: str)",
-        "stability": "Stable"
+        "stability": "Experimental"
       },
       "SandboxModel": {
         "kind": "class",
@@ -3382,7 +3397,7 @@
           }
         },
         "signature": "SandboxModel(source: object, /, *, runtime: SandboxRuntime | None = None, **params: object)",
-        "stability": "Stable"
+        "stability": "Experimental"
       },
       "SandboxRuntime": {
         "kind": "class",
@@ -3405,7 +3420,7 @@
           }
         },
         "signature": "SandboxRuntime(gpus: str | int | None = None, devices: Sequence[str] | None = None, volumes: Sequence[str] | None = None, user: str | int | None = None)",
-        "stability": "Stable"
+        "stability": "Experimental"
       },
       "SandboxVectorEnv": {
         "kind": "class",

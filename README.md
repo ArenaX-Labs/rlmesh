@@ -60,7 +60,7 @@ while not (terminated or truncated):
 env.close()
 ```
 
-For runnable files and exact commands, see [`examples/python`](examples/python). Start with the quickstart, then try sandbox examples for Docker-backed environments or the optional MuJoCo and Pygame examples for heavier dependency stacks.
+For runnable files and exact commands, see [`examples/python`](examples/python). Start with the quickstart, then try the adapters example for tag-driven IO, the sandbox example for Docker-backed environments, or `byo_container` for hand-written env and model images.
 
 ## Building the Rust SDK
 

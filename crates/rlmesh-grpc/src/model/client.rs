@@ -178,13 +178,14 @@ impl ModelClient {
             })?;
 
         // `compatible` is the server's verdict on protocol generation (plain
-        // equality — a wrong generation is a hard, full-restart break) and edition
-        // mutuality. The client trusts it; there is no echoed server generation to
-        // re-verify.
+        // equality — a wrong generation is a hard, full-restart break). Edition
+        // selection happens later, at the runtime floor. The client trusts it;
+        // there is no echoed server generation to re-verify.
         if !response.compatible {
-            return Err(
-                ProtocolError::HandshakeFailed(response.error_message.unwrap_or_default()).into(),
-            );
+            return Err(ProtocolError::HandshakeFailed(handshake_rejection_reason(
+                response.error_message,
+            ))
+            .into());
         }
         self.server_supported_editions = response.supported_workflow_editions;
         self.server_capabilities = response.capabilities;
@@ -597,6 +598,25 @@ impl ModelClient {
     }
 }
 
+/// The reason to surface for a peer that answered `compatible = false`.
+///
+/// `error_message` is optional on the wire, so a peer that rejects the
+/// handshake without filling it in would otherwise surface as a handshake
+/// failure with an empty reason. The fallback names what this build speaks, so
+/// the user can compare it against the peer.
+fn handshake_rejection_reason(error_message: Option<String>) -> String {
+    error_message
+        .filter(|message| !message.trim().is_empty())
+        .unwrap_or_else(|| {
+            format!(
+                "peer rejected the handshake without a reason; this build speaks protocol \
+                 generation {} and workflow editions [{}]",
+                rlmesh_proto::PROTOCOL_GENERATION,
+                rlmesh_proto::supported_workflow_editions().join(", ")
+            )
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -877,5 +897,23 @@ mod tests {
 
         let result = send.await.unwrap();
         assert!(result.is_err(), "a closed stream must fail the waiter");
+    }
+
+    #[test]
+    fn handshake_rejection_reason_names_this_build_when_the_peer_gives_none() {
+        assert_eq!(
+            handshake_rejection_reason(Some("bad generation".into())),
+            "bad generation"
+        );
+        let fallback = handshake_rejection_reason(None);
+        assert_eq!(handshake_rejection_reason(Some("  ".into())), fallback);
+        assert!(
+            fallback.contains(rlmesh_proto::PROTOCOL_GENERATION),
+            "{fallback}"
+        );
+        assert!(
+            fallback.contains(rlmesh_proto::CURRENT_WORKFLOW_EDITION),
+            "{fallback}"
+        );
     }
 }

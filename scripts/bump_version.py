@@ -24,6 +24,10 @@ SEMVER = re.compile(r"^\d+\.\d+\.\d+(-(?:alpha|beta|rc)\.\d+)?$")
 SEMVER_PARTS = re.compile(
     r"^\d+\.\d+\.\d+(?:-(?P<channel>alpha|beta|rc)\.\d+)?$"
 )
+# Docs that name past versions as history, not as the current release: the
+# changelog and the policy pages that record which release sealed the wire
+# generation and the workflow edition. A bump must not rewrite those sentences.
+HISTORY_DOCS = {"docs/changelog.md", "docs/compatibility.md", "docs/versioning.md"}
 WORKFLOW_EDITION_BLOCK = re.compile(
     r'^\[workflow\.editions\."(?P<edition>[^"]+)"\]\n.*?(?=^\[[^\]]+\]|\Z)',
     re.DOTALL | re.MULTILINE,
@@ -182,14 +186,14 @@ def current_version() -> str:
 
 def prose_version_files(root: Path) -> list[Path]:
     """Prose whose literal version mentions track the current release: docs
-    (except the changelog and the version-stamped edition specs) plus example
+    (except the history docs and the version-stamped edition specs) plus example
     READMEs. The top-level README is version-neutral by design; crate READMEs
     carry precise Cargo install snippets bumped separately.
     """
     files = [
         md
         for md in sorted((root / "docs").rglob("*.md"))
-        if md.relative_to(root).as_posix() != "docs/changelog.md"
+        if md.relative_to(root).as_posix() not in HISTORY_DOCS
         and not md.relative_to(root).as_posix().startswith("docs/editions/")
     ]
     files += sorted((root / "examples").rglob("README.md"))
@@ -266,6 +270,11 @@ def selfcheck() -> None:
     assert _release_status("0.1.0") == "stable"
     assert SEMVER.match("0.2.0") and SEMVER.match("1.0.0-rc.1")
     assert not SEMVER.match("0.1") and not SEMVER.match("0.1.0b3")
+
+    prose = {path.relative_to(ROOT).as_posix() for path in prose_version_files(ROOT)}
+    assert not (prose & HISTORY_DOCS), sorted(prose & HISTORY_DOCS)
+    assert not any(name.startswith("docs/editions/") for name in prose)
+    assert "docs/installation.md" in prose
 
     sealed_manifest = """[release]
 status = "stable"

@@ -12,10 +12,13 @@ def test_root_namespace_is_small() -> None:
         "RANDOM_SAMPLE",
         "EnvFactory",
         "EnvServer",
+        "EnvironmentException",
         "EpisodeResult",
         "Model",
         "Param",
         "ParamSpec",
+        "ProtocolException",
+        "RLMeshException",
         "Reader",
         "Recorder",
         "RemoteEnv",
@@ -78,6 +81,25 @@ def test_root_namespace_is_small() -> None:
         "SpaceLike",
     ):
         assert not hasattr(rlmesh, name)
+
+
+def test_lazy_exports_are_discoverable() -> None:
+    """describe/describe_json load lazily, so dir() must still complete them."""
+    import rlmesh
+
+    listing = dir(rlmesh)
+    assert "describe" in listing
+    assert "describe_json" in listing
+
+
+def test_exception_family_is_public() -> None:
+    """The exception family is importable from rlmesh, not just rlmesh._rlmesh."""
+    import rlmesh
+    from rlmesh import _rlmesh
+
+    assert rlmesh.RLMeshException is _rlmesh.RLMeshException
+    assert issubclass(rlmesh.EnvironmentException, rlmesh.RLMeshException)
+    assert issubclass(rlmesh.ProtocolException, rlmesh.RLMeshException)
 
 
 def test_spaces_namespace_contains_space_family() -> None:

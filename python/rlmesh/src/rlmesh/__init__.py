@@ -13,9 +13,9 @@ if _sys.byteorder != "little":
 
 from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
 from importlib.metadata import version as _package_version
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING as _TYPE_CHECKING
 
-if TYPE_CHECKING:
+if _TYPE_CHECKING:
     from ._describe import describe as describe
     from ._describe import describe_json as describe_json
 
@@ -56,6 +56,9 @@ from ._rlmesh import (
     DESCRIBE_METADATA_KEY,
     DESCRIBE_SCHEMA_VERSION,
     ENV_RESET_OPTIONS_KEY,
+    EnvironmentException,
+    ProtocolException,
+    RLMeshException,
     ServeOptions,
     Tensor,
     predict_seed,
@@ -93,6 +96,12 @@ def __getattr__(name: str) -> object:
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
+# __getattr__ alone leaves the lazy names out of dir(), so a REPL or IDE never
+# completes them; __all__ is the public list, globals() the eagerly bound one.
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))
+
+
 __all__ = [
     "DESCRIBE_METADATA_KEY",
     "DESCRIBE_SCHEMA_VERSION",
@@ -101,10 +110,13 @@ __all__ = [
     "RANDOM_SAMPLE",
     "EnvFactory",
     "EnvServer",
+    "EnvironmentException",
     "EpisodeResult",
     "Model",
     "Param",
     "ParamSpec",
+    "ProtocolException",
+    "RLMeshException",
     "Reader",
     "Recorder",
     "RemoteEnv",

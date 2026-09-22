@@ -680,3 +680,48 @@ def test_tree_set_preserves_tuple_payloads() -> None:
     out = tree_set(("keep", {"instr": "x"}), (1, "instr"), "do the task")
     assert out == ("keep", {"instr": "do the task"})
     assert isinstance(out, tuple)
+
+
+class _ScalarActionEnv:
+    """A local env with a scalar (Discrete) action space, recording what it got."""
+
+    def __init__(self) -> None:
+        from rlmesh import spaces
+
+        self.observation_space = spaces.Discrete(1)
+        self.action_space = spaces.Discrete(2)
+        self.actions: list[object] = []
+
+    def reset(
+        self, *, seed: object = None, options: object = None
+    ) -> tuple[int, dict[str, object]]:
+        self.actions = []
+        return 0, {}
+
+    def step(self, action: object) -> tuple[int, float, bool, bool, dict[str, object]]:
+        self.actions.append(action)
+        return 0, 1.0, len(self.actions) >= 8, False, {}
+
+    def close(self) -> None:
+        pass
+
+
+def test_numpy_chunk_runs_over_a_scalar_action_space() -> None:
+    # A chunk corner returning a 1-D numpy chunk unstacks into rank-0 rows; a
+    # Discrete space takes numbers, so those rows must arrive as scalars rather
+    # than rank-0 tensors (which used to raise "must be real number" at
+    # execution_horizon >= 2).
+    import numpy as np
+
+    class _NumpyChunky:
+        def predict(self, observation: object) -> int:
+            return 0
+
+        def predict_chunk(self, observation: object, execution_horizon: int = 1) -> Any:
+            return np.zeros(execution_horizon, dtype=np.int64)
+
+    env = _ScalarActionEnv()
+    result = rlmesh.run(_NumpyChunky(), env, max_episodes=1, execution_horizon=4)
+    assert result.num_episodes == 1
+    assert len(env.actions) == 8
+    assert all(isinstance(action, int) for action in env.actions)

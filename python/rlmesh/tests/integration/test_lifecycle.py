@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import threading
 import time
 from collections.abc import Callable
 from types import SimpleNamespace
@@ -54,6 +55,20 @@ class SlowStepEnv(TinyEnv):
 
     def step(self, action: object):
         time.sleep(self._step_delay)
+        return super().step(action)
+
+
+class BlockingStepEnv(TinyEnv):
+    """Env whose step() signals that it started, then blocks until released."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def step(self, action: object):
+        self.entered.set()
+        self.release.wait(10.0)
         return super().step(action)
 
 
@@ -587,6 +602,53 @@ def test_client_constructor_default_timeout_applies() -> None:
                 client.step(0)
         finally:
             client.close()
+    finally:
+        server.shutdown()
+
+
+def test_close_is_best_effort_when_the_peer_is_already_gone() -> None:
+    """A dead peer must not turn close() into the error a `with` block reports."""
+    import rlmesh
+
+    server = env_server(TinyEnv())
+    server.start()
+    remote = connect_with_retry(rlmesh.RemoteEnv, server.address)
+    remote.reset(seed=0)
+    server.shutdown()
+
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        try:
+            remote.step(0)
+        except ConnectionError:
+            break
+        time.sleep(0.05)
+    else:
+        pytest.fail("the client never noticed the shut-down server")
+
+    remote.close()  # best-effort: detaches locally instead of raising
+
+
+def test_concurrent_client_calls_name_the_single_caller_rule() -> None:
+    """A second caller gets a named error, not pyo3's raw "Already borrowed"."""
+    import rlmesh
+
+    env = BlockingStepEnv()
+    server = env_server(env)
+    server.start()
+    try:
+        remote = connect_with_retry(rlmesh.RemoteEnv, server.address)
+        remote.reset(seed=0)
+        worker = threading.Thread(target=lambda: remote.step(0))
+        worker.start()
+        try:
+            assert env.entered.wait(5.0), "the background step never reached the env"
+            with pytest.raises(RuntimeError, match="one caller at a time"):
+                remote.step(1)
+        finally:
+            env.release.set()
+            worker.join(10.0)
+        remote.close()
     finally:
         server.shutdown()
 

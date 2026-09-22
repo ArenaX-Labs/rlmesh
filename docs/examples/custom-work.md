@@ -55,7 +55,8 @@ def predict(observation):
 
 
 model = Model(predict)
-model.run("127.0.0.1:5555", max_episodes=1)
+result = model.run("127.0.0.1:5555", max_episodes=1)
+print(f"episodes={result.num_episodes} mean_reward={result.mean_reward:.2f}")
 ```
 
 Run it against the server:

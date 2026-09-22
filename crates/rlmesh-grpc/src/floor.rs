@@ -22,7 +22,7 @@ use crate::error::{Error as GrpcError, ProtocolError};
 /// runs, safely, at the floor). Errs when the three share no edition — the caller
 /// must fail before opening any Join stream. The returned
 /// [`SessionFloor::selected_workflow_edition`] is what the runtime pins onto the
-/// model's `ResolveAdapter` and the env's `ConfigureEnv`.
+/// model's `ResolveAdapter` (and may also pin onto the env's `ConfigureEnv`).
 pub fn env_floor(
     env_offer: &SessionOffer,
     model_offer: &SessionOffer,

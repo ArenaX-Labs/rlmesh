@@ -49,17 +49,19 @@ message StepRequest {
   rlmesh.spaces.v1.SpaceValue action = 1;
   // Per-call deadline in milliseconds; 0 means no timeout. Always non-negative.
   uint64 timeout_ms = 2;
-  // Reserved for future subset stepping. Empty means full-width N, which is the
-  // only behavior today. Non-empty is rejected with UNSUPPORTED until subset
-  // stepping lands. When honored, batched `action` elements and these indices
-  // are aligned by position (length == len(env_indices)). Lane indices are
-  // non-negative array offsets.
+  // Subset stepping. Empty means full-width N. When non-empty, step only these
+  // lanes; the batched `action` elements and these indices align by position
+  // (length == len(env_indices)). Honored by an env advertising the
+  // `subset_step` handshake capability; an env that does not advertise it
+  // rejects a non-empty list with UNSUPPORTED. Lane indices are non-negative
+  // array offsets.
   repeated uint32 env_indices = 3;
-  // Authoritative per-lane episode ids the runtime minted (UUIDv7), full-width
-  // (one per lane). Flow DOWN for logging/correlation only — under NEXT_STEP the
-  // env tags a fresh autoreset roll with this lane's id, but never mints. The
-  // runtime stays authoritative and keys lifecycle by env_index, not by any id
-  // the env echoes back.
+  // Authoritative per-lane episode ids the runtime minted (UUIDv7), aligned to
+  // the lanes this step covers: full-width for a whole step, or aligned to
+  // `env_indices` for a subset step. Flow DOWN for logging/correlation only —
+  // under NEXT_STEP the env tags a fresh autoreset roll with this lane's id,
+  // but never mints. The runtime stays authoritative and keys lifecycle by
+  // env_index, not by any id the env echoes back.
   repeated string episode_ids = 4;
 }
 
@@ -76,11 +78,14 @@ message CloseEnvsRequest {
   string reason = 1;
 }
 
-// Pin the env to the runtime-selected workflow edition. A standard, required
-// part of the env Join protocol: the runtime sends it as the FIRST Join message
-// (before the first reset), mirroring the model's edition pin on
-// ResolveAdapterRequest. While a single edition exists the floor is always
-// CURRENT, so the pin is a no-op today.
+// Pin the env to the runtime-selected workflow edition. Optional: a runtime MAY
+// send it as the first Join message (before the first reset), mirroring the
+// model's edition pin on ResolveAdapterRequest — that model-side pin is the
+// load-bearing one. An env MUST NOT require it and MUST accept Reset as the
+// first Join message; an env that receives no ConfigureEnv runs at the edition
+// it declared at the handshake, which the runtime's floor never exceeds. While a
+// single edition exists the floor is always CURRENT, so the pin is a no-op
+// today.
 message ConfigureEnvRequest {
   string selected_workflow_edition = 1;
 }
@@ -93,8 +98,8 @@ message JoinRequest {
     StepRequest step = 2;
     RenderRequest render = 3;
     CloseEnvsRequest close = 4;
-    // Edition pin, sent first as the standard bind step (before reset). Tag 5 is
-    // the sibling request_id scalar, so 6 is the first free arm.
+    // Optional edition pin; when sent, it precedes the first reset. Tag 5 is the
+    // sibling request_id scalar, so 6 is the first free arm.
     ConfigureEnvRequest configure = 6;
   }
 
@@ -115,8 +120,9 @@ message StepResponse {
   bytes truncated_mask = 4;
   rlmesh.spaces.v1.MetaMap infos = 5;
   repeated EpisodeMetadata completed_episodes = 6;
-  // Reserved for future partial-width responses. Empty means full-width N. When
-  // non-empty, only the k advanced lanes are returned; per-lane fields
+  // Partial-width responses. Empty means full-width N. When non-empty, this
+  // echoes the lanes the request named and only those k advanced lanes are
+  // returned; per-lane fields
   // (`observation` elements, `rewards`, `terminated_mask`, `truncated_mask`)
   // have length len(env_indices) and align by position. `completed_episodes` is
   // not positional: it is a sparse list of lanes that completed this step, and
@@ -161,7 +167,8 @@ enum EnvErrorCode {
   ENV_ERROR_CODE_NOT_READY = 3;
   ENV_ERROR_CODE_BUSY = 4;
   // The request is well-formed but names a feature this peer does not
-  // support yet (subset stepping, partial reset, multi-lane render).
+  // support (for example subset stepping or partial reset on an env that does
+  // not advertise `subset_step`, or multi-lane render).
   ENV_ERROR_CODE_UNSUPPORTED = 5;
   ENV_ERROR_CODE_INTERNAL = 10;
   ENV_ERROR_CODE_CRASHED = 11;

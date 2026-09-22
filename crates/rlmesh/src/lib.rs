@@ -34,6 +34,14 @@
 //! failure your [`ModelHandler`] raised). Both carry an `is_recoverable` flag
 //! surfaced by [`Error::is_recoverable`].
 //!
+//! # Implementing the traits
+//!
+//! [`Env`], [`VectorEnv`], and [`ModelHandler`] are `async-trait` traits, so
+//! every impl carries `#[rlmesh::async_trait]`: this crate re-exports the macro
+//! as [`async_trait`](macro@async_trait) (also in the [`prelude`]), already at
+//! the version the traits were desugared with, so nothing beyond `rlmesh` needs
+//! to be in your `Cargo.toml`.
+//!
 //! # Example: serve an environment
 //!
 //! ```no_run
@@ -45,7 +53,7 @@
 //!     contract: EnvContract,
 //! }
 //!
-//! #[async_trait::async_trait]
+//! #[rlmesh::async_trait]
 //! impl Env for MyEnv {
 //!     fn observation_space(&self) -> &SpaceSpec { &self.observation_space }
 //!     fn action_space(&self) -> &SpaceSpec { &self.action_space }
@@ -89,7 +97,7 @@
 //!
 //! struct MyModel;
 //!
-//! #[async_trait::async_trait]
+//! #[rlmesh::async_trait]
 //! impl ModelHandler for MyModel {
 //!     async fn predict(&mut self, _obs: ModelObservation)
 //!         -> rlmesh::Result<Vec<SpaceValue>>
@@ -120,7 +128,10 @@ pub mod prelude;
 pub mod serve_options;
 pub mod spaces;
 
+#[cfg(unix)]
+pub use address::remove_stale_socket;
 pub use address::{BindAddress, ConnectAddress};
+pub use async_trait::async_trait;
 pub use env::{
     BoundEnvServer, CloseRequest, CloseResult, EndpointPhases, Env, EnvServer, EpisodeMetadata,
     RemoteEnv, RemoteVectorEnv, RenderRequest, RenderResult, ResetRequest, ResetResult,

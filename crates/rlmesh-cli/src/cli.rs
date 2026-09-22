@@ -103,6 +103,7 @@ pub enum OrgCommand {
     /// Make an organization the profile's active one (identity-provider
     /// organization id, org_...).
     Switch {
+        /// Organization id (org_...).
         id: String,
         #[command(flatten)]
         profile: ProfileArgs,
@@ -131,9 +132,15 @@ pub enum ProfileCommand {
     /// List profiles, marking the default and each profile's sign-in state.
     List(ProfileListArgs),
     /// Set the default profile used when --profile/RLMESH_PROFILE is absent.
-    Use { name: String },
+    Use {
+        /// Profile name to make the default.
+        name: String,
+    },
     /// Delete a profile: its stored credential and its config entry.
-    Remove { name: String },
+    Remove {
+        /// Profile name to delete.
+        name: String,
+    },
 }
 
 /// Flags for `rlmesh profile list`.
@@ -203,6 +210,7 @@ pub struct EvalListArgs {
     /// Case-insensitive substring match on the evaluation name.
     #[arg(long)]
     pub q: Option<String>,
+    /// Maximum evaluations to return.
     #[arg(long, default_value_t = 25)]
     pub limit: u32,
     #[command(flatten)]

@@ -272,12 +272,12 @@ dir = "{{ config_root }}"
 file = "scripts/test-cxx-pkg.sh"
 
 [tasks."test:rust"]
-description = "Run Rust workspace tests"
-run = "cargo test --workspace --all-targets"
+description = "Run Rust workspace tests and doctests"
+run = ["cargo test --workspace --all-targets", "cargo test --workspace --doc"]
 
 [tasks."test:python"]
-description = "Run Python unit, integration, and conformance tests"
-run = "uv run pytest python/rlmesh/tests/unit python/rlmesh/tests/integration python/rlmesh/tests/conformance -q"
+description = "Run Python unit, integration, and conformance tests plus the authoring-import guard"
+run = "uv run pytest python/rlmesh/tests/unit python/rlmesh/tests/integration python/rlmesh/tests/conformance python/rlmesh/tests/test_no_authoring_import.py -q"
 
 [tasks."test:python:unit"]
 description = "Run Python unit tests"

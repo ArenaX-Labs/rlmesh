@@ -70,6 +70,15 @@ pub mod capabilities {
     /// producer to consecutive `step`s. Advisory: a runtime that never offers
     /// history sees no wire difference.
     pub const MODEL_OBSERVATION_HISTORY_V1: &str = "rlmesh.model.observation_history.v1";
+
+    /// A served env endpoint steps and resets lanes individually: a `Reset` or
+    /// `Step` naming `env_indices` is honored (and answered partial-width)
+    /// instead of rejected with `UNSUPPORTED`, and lane-scoped requests on one
+    /// Join stream may be processed concurrently, answered in completion order.
+    ///
+    /// The wire spelling is the bare `subset_step` shipped peers send, so it
+    /// carries no `rlmesh.*` prefix. See `docs/editions/2026.06.md`.
+    pub const ENV_SUBSET_STEP: &str = "subset_step";
 }
 
 /// Whether the given protocol generation is the one this build speaks. Plain
@@ -106,7 +115,8 @@ pub fn edition_sort_key(edition: &str) -> (&str, bool, &str) {
 /// Returns the highest edition both peers support, ordered by
 /// [`edition_sort_key`] (newest date, then exact moving cohort over sealed
 /// fallback, then a deterministic suffix tiebreak). `None` means there is no
-/// mutual edition and the handshake must report `compatible = false`. Only
+/// mutual edition; the caller fails the session at the runtime floor (the
+/// handshake itself only decides protocol generation). Only
 /// explicitly supported editions are eligible. Unknown editions in the offer are
 /// ignored, never accepted on the assumption they are compatible.
 pub fn negotiate_workflow_edition(offered: &[String]) -> Option<&'static str> {
@@ -274,6 +284,20 @@ pub fn supported_workflow_editions() -> Vec<String> {
 }
 
 /// Return a handshake capability map for the given capability names.
+///
+/// # Value grammar
+///
+/// A handshake capability map is keyed by capability name; the value is the
+/// literal string `"true"` and nothing else is defined by this protocol
+/// generation. Every RLMesh emitter goes through this function, so every value
+/// RLMesh puts on the wire is `"true"`, and [`has_capability`] is the matching
+/// reader: a key whose value is anything else — `"1"`, `"yes"`, `"TRUE"`, or
+/// the empty string — reads as NOT advertised, exactly like an absent key. A
+/// third-party peer that wants a capability honored must therefore send
+/// `"true"` verbatim.
+///
+/// Capabilities are advisory, so this strictness is safe in both directions:
+/// the worst case of an unrecognized value is the feature staying off.
 pub fn capability_map(names: &[&str]) -> HashMap<String, String> {
     names
         .iter()
@@ -282,6 +306,12 @@ pub fn capability_map(names: &[&str]) -> HashMap<String, String> {
 }
 
 /// Whether a peer's handshake capability map advertises the named capability.
+///
+/// Present means the key is mapped to the literal `"true"` (see
+/// [`capability_map`] for the value grammar). An absent key, an empty value, or
+/// any other value is read as absent — never as present — so an advisory
+/// feature a peer spelled differently stays off rather than being negotiated on
+/// a guess.
 pub fn has_capability(map: &HashMap<String, String>, name: &str) -> bool {
     map.get(name).is_some_and(|value| value == "true")
 }
@@ -847,6 +877,21 @@ mod tests {
             capabilities::MODEL_CONCURRENT_PREDICT_V1
         ));
         assert!(!has_capability(&map, "rlmesh.not.advertised.v1"));
+        // The documented value grammar: emitters write the literal "true", and
+        // any other spelling reads as absent rather than as a guessed "on".
+        assert_eq!(map[capabilities::MODEL_CONCURRENT_PREDICT_V1], "true");
+        for value in ["1", "yes", "TRUE", ""] {
+            let odd =
+                std::collections::HashMap::from([("rlmesh.odd.v1".to_string(), value.to_string())]);
+            assert!(!has_capability(&odd, "rlmesh.odd.v1"), "{value:?}");
+        }
+    }
+
+    #[test]
+    fn env_subset_step_keeps_its_shipped_wire_spelling() {
+        // Peers built against 0.1.0 advertise the bare `subset_step` key; the
+        // constant renames the site, never the string on the wire.
+        assert_eq!(super::capabilities::ENV_SUBSET_STEP, "subset_step");
     }
 
     #[test]

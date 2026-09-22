@@ -4,8 +4,10 @@ This is the ``session().run(hooks=...)`` tie-in. It observes the Python-driven e
 loop and, per episode, records the outcome plus any media the env exposes -- per-step
 image frames read through the session's own reader and streamed straight into a native
 AV1 writer (one frame in memory at a time), and/or an env-produced video file whose
-path the env leaves in the step ``info``. Pure Rust ``.run()`` never surfaces per-step
-observations, so frame capture needs this path; env-video capture works there too.
+path the env leaves in the step ``info`` (that path comes from the env, which may be
+remote, so it is copied only when it names a regular file inside the run directory).
+Pure Rust ``.run()`` never surfaces per-step observations, so frame capture needs this
+path; env-video capture works there too.
 
 All capture is best-effort: a camera that fails to read or encode is warned once and
 dropped, and the episode's outcome is still recorded -- capture never aborts the run.
@@ -13,6 +15,7 @@ dropped, and the episode's outcome is still recorded -- capture never aborts the
 
 from __future__ import annotations
 
+import os
 import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -40,6 +43,30 @@ class _Cam:
     writer: PyVideoWriter
     staged: str
     rel: str
+
+
+def _local_video_path(source: str) -> str | None:
+    """The env-supplied video path, if it is a real file inside the run directory.
+
+    ``video_keys`` reads a path out of a (possibly remote, possibly untrusted) env's
+    step ``info``, and the recorder copies that file verbatim into the exported
+    bundle -- so an env could otherwise name any file the eval process can read.
+    The path is resolved against the run directory and accepted only if it stays
+    inside it and names a regular file: an absolute path elsewhere, a ``..``
+    escape, a symlink pointing out, and a directory or device are all refused.
+    A path the OS itself rejects (an embedded NUL) and a run directory that has
+    gone away are refused the same way, never raised out of the calling hook.
+    """
+    if not source:
+        return None
+    try:
+        root = os.path.realpath(os.getcwd())
+        resolved = os.path.realpath(os.path.join(root, source))
+        if os.path.commonpath((root, resolved)) != root:
+            return None
+        return resolved if os.path.isfile(resolved) else None
+    except (OSError, ValueError):
+        return None
 
 
 def _warn(message: str) -> None:
@@ -225,19 +252,24 @@ class CaptureHooks(RunHooks):
             except Exception as exc:
                 _warn(f"recorder: dropping video for {camera!r}: {exc}")
         if self._video_path is not None:
+            source = _local_video_path(self._video_path)
             try:
-                ref = self._stager.carry_file(
-                    prefix=self._prefix,
-                    episode_index=index,
-                    camera=DEFAULT_CAMERA,
-                    source=self._video_path,
+                ref = (
+                    None
+                    if source is None
+                    else self._stager.carry_file(
+                        prefix=self._prefix,
+                        episode_index=index,
+                        camera=DEFAULT_CAMERA,
+                        source=source,
+                    )
                 )
                 if ref is not None:
                     media.append(ref)
                 else:
                     _warn(
-                        f"recorder: env video {self._video_path!r} is not a "
-                        "readable local file; skipping"
+                        f"recorder: env video {self._video_path!r} is not a readable "
+                        "local file under the run directory; skipping"
                     )
             except Exception as exc:
                 _warn(f"recorder: dropping env video: {exc}")

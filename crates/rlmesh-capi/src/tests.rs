@@ -591,6 +591,36 @@ fn last_error_reports_an_unrecoverable_capi_failure() {
 }
 
 #[test]
+fn last_error_status_carries_the_code_a_null_return_cannot() {
+    // A pointer-returning export has no status channel, so the slot is the only
+    // place its code lands -- and it is the real one, not a stand-in for
+    // "something was wrong with the value".
+    assert!(unsafe { rlmesh_value_text(std::ptr::null(), 1) }.is_null());
+    assert_eq!(
+        crate::abi::status::rlmesh_last_error_status(),
+        RlmeshStatus::InvalidArgument
+    );
+    // A status-returning export records the same code it returns.
+    let text = unsafe { rlmesh_value_text(c"x".as_ptr(), 1) };
+    let mut out = 0i64;
+    assert_eq!(
+        unsafe { rlmesh_value_as_discrete(text, &mut out) },
+        RlmeshStatus::InvalidValue
+    );
+    assert_eq!(
+        crate::abi::status::rlmesh_last_error_status(),
+        RlmeshStatus::InvalidValue
+    );
+    unsafe { rlmesh_value_free(text) };
+    // Nothing recorded reads as OK rather than a stale failure.
+    crate::abi::status::clear_last_error();
+    assert_eq!(
+        crate::abi::status::rlmesh_last_error_status(),
+        RlmeshStatus::Ok
+    );
+}
+
+#[test]
 fn package_version_accessors_match_the_crate() {
     let parse = |value: &str| value.parse::<u32>().expect("numeric version component");
     assert_eq!(
@@ -663,6 +693,25 @@ fn box_bounds_broadcast_uniform_and_report_per_element() {
         unsafe { rlmesh_space_box_bounds(spec_ptr(&discrete), 0, &mut low, &mut high) },
         RlmeshStatus::InvalidValue
     );
+
+    // Either out-param may be skipped, as the header says; a failure writes
+    // through neither.
+    let (mut low, mut high) = (7.0, 7.0);
+    assert_eq!(
+        unsafe { rlmesh_space_box_bounds(spec_ptr(&uniform), 0, std::ptr::null_mut(), &mut high) },
+        RlmeshStatus::Ok
+    );
+    assert_eq!(
+        unsafe { rlmesh_space_box_bounds(spec_ptr(&uniform), 0, &mut low, std::ptr::null_mut()) },
+        RlmeshStatus::Ok
+    );
+    assert_eq!((low, high), (-1.0, 1.0));
+    let (mut low, mut high) = (7.0, 7.0);
+    assert_eq!(
+        unsafe { rlmesh_space_box_bounds(spec_ptr(&uniform), 2, &mut low, &mut high) },
+        RlmeshStatus::InvalidArgument
+    );
+    assert_eq!((low, high), (7.0, 7.0), "a failed call writes nothing");
 }
 
 #[test]

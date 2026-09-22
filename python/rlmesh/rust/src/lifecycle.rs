@@ -81,5 +81,7 @@ fn duration(name: &str, value: f64) -> PyResult<Duration> {
             "{name} must be positive"
         )));
     }
-    Ok(Duration::from_secs_f64(value))
+    Duration::try_from_secs_f64(value).map_err(|_| {
+        pyo3::exceptions::PyValueError::new_err(format!("{name} must be a positive finite float"))
+    })
 }

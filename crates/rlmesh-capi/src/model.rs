@@ -8,6 +8,8 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -224,7 +226,9 @@ pub unsafe extern "C" fn rlmesh_callback_set_error(message: *const c_char, recov
             .to_string_lossy()
             .into_owned()
     };
-    crate::abi::status::store_last_error(&message, recoverable);
+    // A callback failure surfaces as `Error::Model`, so record the status the
+    // outermost export would map it to (the callback has no status channel).
+    crate::abi::status::store_last_error(&message, recoverable, RlmeshStatus::Model);
 }
 
 /// A `*mut c_void` the C author guarantees is safe to use from a tokio worker
@@ -252,16 +256,37 @@ struct CModelHandler {
     user_data: UserData,
     /// Per-episode predict ordinals, keyed by episode id (see [`EpisodeStore`]).
     episodes: EpisodeStore,
+    /// Ordering + once-only seam for the C `on_close` (see [`CloseGate`]).
+    close: Arc<CloseGate>,
+}
+
+/// Keeps the C `on_close` to one call, ordered after any predict still inside
+/// the C callback. `rlmesh_model_serve`'s cancel arm shares one gate with the
+/// handler the server owns: cancelling drops the server future, so its own
+/// close path never runs, while the connection tasks tonic spawned can still be
+/// in a callback.
+#[derive(Default)]
+struct CloseGate {
+    /// Held for the length of a predict and of the close hook.
+    busy: tokio::sync::Mutex<()>,
+    fired: AtomicBool,
 }
 
 impl CModelHandler {
     /// A handler over `model`'s vtable. The vtable is `Copy` (the capi took its
     /// own copy at `rlmesh_model_new`), so this is free.
     fn new(model: &RlmeshModel) -> Self {
+        Self::with_close_gate(model, Arc::default())
+    }
+
+    /// [`CModelHandler::new`] sharing `close` with another handler over the same
+    /// model, so only one of them runs the C `on_close`.
+    fn with_close_gate(model: &RlmeshModel, close: Arc<CloseGate>) -> Self {
         Self {
             vtable: model.vtable,
             user_data: model.user_data,
             episodes: EpisodeStore::with_capacity(EPISODE_STORE_CAPACITY),
+            close,
         }
     }
 }
@@ -287,6 +312,10 @@ impl ModelHandler for CModelHandler {
         let Some(predict) = self.vtable.predict else {
             return Err(Error::model("model vtable has no predict function"));
         };
+        // Held for the whole call: the close hook takes the same gate, so a C
+        // `on_close` never runs beside a predict still inside the C callback.
+        let gate = Arc::clone(&self.close);
+        let _busy = gate.busy.lock().await;
         let user_data = self.user_data;
         let num_envs = observation.num_envs;
         // The C side reads `episodes[i]` for every row it is handed and writes
@@ -453,6 +482,11 @@ impl ModelHandler for CModelHandler {
     }
 
     async fn on_close(&mut self) -> rlmesh::Result<()> {
+        let gate = Arc::clone(&self.close);
+        let _busy = gate.busy.lock().await;
+        if gate.fired.swap(true, Ordering::SeqCst) {
+            return Ok(());
+        }
         let Some(callback) = self.vtable.on_close else {
             return Ok(());
         };
@@ -777,11 +811,13 @@ pub unsafe extern "C" fn rlmesh_model_serve(
         let bind = BindAddress::parse(address)
             .map_err(|err| CapiError::invalid_arg(format!("invalid bind address: {err}")))?;
         let model_options = serve_model_options(bind, options)?;
-        let handler = CModelHandler::new(model);
         // The cancel arm drops the server future, which skips the close hook the
-        // normal shutdown path runs -- so fire it here instead, once, on the
-        // branch that won.
-        let mut closer = CModelHandler::new(model);
+        // normal shutdown path runs -- so fire it here instead, through the gate
+        // the served handler shares: once, and after any in-flight predict has
+        // left the C callback.
+        let close = Arc::<CloseGate>::default();
+        let handler = CModelHandler::with_close_gate(model, Arc::clone(&close));
+        let mut closer = CModelHandler::with_close_gate(model, close);
         let cancel = model.cancel.clone();
         model
             .runtime
@@ -918,6 +954,10 @@ mod tests {
         episode_ends: AtomicUsize,
         null_episode_ids: AtomicUsize,
         null_observations: AtomicUsize,
+        /// Predicts currently inside the C callback.
+        in_predict: AtomicUsize,
+        /// Times `counting_close` ran while one was.
+        closes_during_predict: AtomicUsize,
         /// Every episode row handed to `counting_predict`, in call order.
         rows: std::sync::Mutex<Vec<SeenEpisode>>,
         /// Every non-NULL id handed to `counting_episode_end`, in call order.
@@ -1002,9 +1042,28 @@ mod tests {
     }
 
     unsafe extern "C" fn counting_close(user_data: *mut c_void) {
-        unsafe { Counters::of(user_data) }
-            .closes
-            .fetch_add(1, Ordering::SeqCst);
+        let counters = unsafe { Counters::of(user_data) };
+        if counters.in_predict.load(Ordering::SeqCst) != 0 {
+            counters
+                .closes_during_predict
+                .fetch_add(1, Ordering::SeqCst);
+        }
+        counters.closes.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// `counting_predict` that stays inside the C callback long enough for a
+    /// concurrent `rlmesh_model_cancel` to land mid-predict.
+    unsafe extern "C" fn slow_counting_predict(
+        user_data: *mut c_void,
+        obs: *const RlmeshObservation,
+        out: *mut *mut RlmeshValue,
+    ) -> c_int {
+        let counters = unsafe { Counters::of(user_data) };
+        counters.in_predict.fetch_add(1, Ordering::SeqCst);
+        let code = unsafe { counting_predict(user_data, obs, out) };
+        std::thread::sleep(Duration::from_millis(300));
+        counters.in_predict.fetch_sub(1, Ordering::SeqCst);
+        code
     }
 
     /// Echo policy: action = observation (Discrete), so the round trip is checkable.
@@ -1081,6 +1140,7 @@ mod tests {
             },
             user_data: UserData(std::ptr::null_mut()),
             episodes: EpisodeStore::with_capacity(EPISODE_STORE_CAPACITY),
+            close: Arc::default(),
         }
     }
 
@@ -1089,6 +1149,7 @@ mod tests {
             vtable: counting_vtable(),
             user_data: UserData(counters.user_data()),
             episodes: EpisodeStore::with_capacity(EPISODE_STORE_CAPACITY),
+            close: Arc::default(),
         }
     }
 
@@ -1823,6 +1884,86 @@ mod tests {
         unsafe { rlmesh_model_cancel(model) };
         assert_eq!(server.join().expect("serve thread"), RlmeshStatus::Ok);
         assert_eq!(counters.closes.load(Ordering::SeqCst), 1);
+        unsafe { rlmesh_model_free(model) };
+    }
+
+    #[test]
+    fn cancel_mid_predict_closes_once_after_the_callback_returns() {
+        // Cancelling a serve drops the server future, so the C `on_close` is
+        // fired by the cancel arm -- it must still wait for the predict the C
+        // side is inside (a connection task tonic spawned, not the dropped
+        // future) and must not run a second time.
+        let port = reserve_port();
+        let address = format!("tcp://127.0.0.1:{port}");
+        let counters = Counters::default();
+        let vtable = RlmeshModelVtable {
+            predict: Some(slow_counting_predict),
+            ..counting_vtable()
+        };
+        let model = new_model(&vtable, counters.user_data());
+        let bind = CString::new(address.clone()).expect("bind cstr");
+        let options = serve_options(false);
+        let args = ServeArgs {
+            model,
+            bind: bind.as_ptr(),
+            options: std::ptr::from_ref(&options),
+        };
+        let server = std::thread::spawn(move || {
+            let args = args;
+            unsafe { rlmesh_model_serve(args.model, args.bind, args.options) }
+        });
+
+        // A client that keeps one predict in flight while this thread cancels.
+        let client_address = address.clone();
+        let client = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Runtime::new().expect("client runtime");
+            runtime.block_on(async move {
+                rlmesh_grpc::ModelClient::connect_with_retry(
+                    &client_address,
+                    "",
+                    &connect_options(),
+                )
+                .await
+                .expect("server is up");
+                let env_contract =
+                    SmokeEnv::new(Arc::new(std::sync::Mutex::new(ResetLog::default())))
+                        .env_contract
+                        .clone();
+                let mut remote = rlmesh::RemoteModel::connect(&client_address, env_contract)
+                    .await
+                    .expect("remote model");
+                remote.reset(None);
+                // The server goes away mid-call, so the predict itself may fail.
+                let _ = remote.predict(u8_box(3)).await;
+            });
+        });
+
+        // Cancel only once the C callback is really running.
+        for _ in 0..1_000 {
+            if counters.in_predict.load(Ordering::SeqCst) != 0 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            counters.in_predict.load(Ordering::SeqCst),
+            1,
+            "the C predict callback never started"
+        );
+        unsafe { rlmesh_model_cancel(model) };
+
+        assert_eq!(server.join().expect("serve thread"), RlmeshStatus::Ok);
+        client.join().expect("client thread");
+        assert_eq!(
+            counters.closes.load(Ordering::SeqCst),
+            1,
+            "on_close ran exactly once"
+        );
+        assert_eq!(
+            counters.closes_during_predict.load(Ordering::SeqCst),
+            0,
+            "on_close waited for the in-flight predict"
+        );
         unsafe { rlmesh_model_free(model) };
     }
 }

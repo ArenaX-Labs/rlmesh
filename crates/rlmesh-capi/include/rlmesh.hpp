@@ -5,6 +5,9 @@
 //   * A capi call reports failure by status (or a NULL return) and has ALREADY
 //     recorded the detail on this thread. `Error::from_last(status)` snapshots
 //     it; the wrapper never invents a message for a call that already failed.
+//     The pointer-returning capi calls behind the `Value` constructors report
+//     failure as a NULL return; their code comes from `rlmesh_last_error_status`,
+//     so `code()` is exact there too.
 //   * Every fallible wrapper call returns `Result<T>` (`Status` == `Result<void>`).
 //     Check it (`if (!r) ... r.error()`), `*r` / `r->` to use the value, or
 //     `RLMESH_TRY(expr)` to propagate. `value()` / `unwrap()` abort on an error
@@ -341,7 +344,8 @@ class ValueRef {
     return ValueRef(child);
   }
 
-  /// Every (key, child) of a Dict, in sorted key order.
+  /// Every (key, child) of a Dict, in sorted key order — NOT the declaration
+  /// order `SpaceRef::items()` walks. Pair a value child with its space by key.
   Result<std::vector<std::pair<std::string_view, ValueRef>>> items() const {
     auto count = size();
     if (!count) return count.error();
@@ -448,14 +452,18 @@ class Value {
   }
 
  private:
+  /// The capi's constructors return NULL, not a status, so the code comes from
+  /// the thread-local slot the failing call just wrote.
   static Result<Value> adopt(RlmeshValue* ptr) {
-    if (ptr == nullptr) return Error::from_last(RLMESH_ERR_INVALID_VALUE);
+    if (ptr == nullptr) return Error::from_last(rlmesh_last_error_status());
     return Value(ptr);
   }
 
-  /// Free the children a failed composite constructor left with us.
+  /// Free the children a failed composite constructor left with us. Snapshot
+  /// the error first — the last-error slot is only good until the next capi
+  /// call.
   static Error disown(const std::vector<RlmeshValue*>& children) {
-    Error error = Error::from_last(RLMESH_ERR_INVALID_VALUE);
+    Error error = Error::from_last(rlmesh_last_error_status());
     for (RlmeshValue* child : children) rlmesh_value_free(child);
     return error;
   }
@@ -610,7 +618,8 @@ class SpaceRef {
     return SpaceRef(child);
   }
 
-  /// Every (key, child) of a Dict space, in declaration order.
+  /// Every (key, child) of a Dict space, in declaration order (the order the
+  /// wire encodes the dict's leaves in) — NOT the sorted order `ValueRef` uses.
   Result<std::vector<std::pair<std::string_view, SpaceRef>>> items() const {
     auto count = size();
     if (!count) return count.error();

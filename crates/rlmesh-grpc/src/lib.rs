@@ -27,10 +27,25 @@ pub mod model;
 pub mod states;
 pub mod wire;
 
-/// gRPC encode/decode limit used by RLMesh clients and servers.
+/// gRPC encode/decode limit used by RLMesh clients and servers: 256 MiB.
 ///
 /// The tonic default is 4 MiB. RLMesh raises it so vectorized observations such
 /// as 64 float32 Atari frames fit without tripping transport limits.
+///
+/// It is applied in BOTH directions (encoding and decoding) on every RLMesh env
+/// and model client and server, so the Python SDK inherits it too. It is a build
+/// constant, not a serve option: there is no knob that raises it, and a
+/// conforming third-party peer on this wire generation should accept encoded
+/// messages at least this large.
+///
+/// The bound is one encoded protobuf message — one `StepResponse`, one
+/// `PredictRequest`, one grouped predict batch — not a stream or a run, so it
+/// binds on the widest single step (`num_envs` times one observation's encoded
+/// bytes). An oversized message never reaches the peer's handler: the sender
+/// fails its own encode and a receiver aborts its decode, both with the gRPC
+/// status `OUT_OF_RANGE` and a `message length too large` detail naming the
+/// found length and this limit, which surfaces as a transport error rather than
+/// an env or model error.
 pub const MAX_MESSAGE_SIZE: usize = 256 * 1024 * 1024;
 
 /// Configure endpoint timeouts and keepalives.

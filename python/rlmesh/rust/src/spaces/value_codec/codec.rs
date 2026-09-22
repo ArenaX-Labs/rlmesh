@@ -171,7 +171,8 @@ fn py_any_to_space_value_unchecked(
             })?,
         ),
         Some(SpaceKind::Discrete(_)) => {
-            let normalized = normalize_space_value_input(value)?;
+            let unwrapped = scalar_from_native_tensor(value)?;
+            let normalized = normalize_space_value_input(unwrapped.as_ref().unwrap_or(value))?;
             let value = if let Ok(flag) = normalized.extract::<bool>() {
                 i64::from(flag)
             } else if let Ok(number) = normalized.extract::<i64>() {
@@ -669,6 +670,29 @@ fn element_count(shape: &[usize]) -> usize {
     }
 }
 
+/// Demote a single-element native tensor to a plain Python scalar.
+///
+/// A chunk corner over a scalar space unstacks its 1-D chunk into rank-0
+/// `Tensor` rows, and the scalar leaves take numbers, not tensors. Returns
+/// `None` for anything that is not a one-element tensor.
+fn scalar_from_native_tensor<'py>(
+    value: &Bound<'py, PyAny>,
+) -> PyResult<Option<Bound<'py, PyAny>>> {
+    let Some(tensor) = extract_tensor(value)? else {
+        return Ok(None);
+    };
+    if tensor.inner.numel() != 1 {
+        return Ok(None);
+    }
+    let bytes = tensor.inner.to_contiguous_bytes().into_owned();
+    let dtype = tensor.inner.dtype();
+    drop(tensor);
+    match decode_scalars(&bytes, dtype)?.first() {
+        Some(scalar) => Ok(Some(scalar_to_bound(value.py(), scalar)?)),
+        None => Ok(None),
+    }
+}
+
 fn scalar_to_bound<'py>(py: Python<'py>, scalar: &Scalar) -> PyResult<Bound<'py, PyAny>> {
     Ok(scalar_to_object(py, scalar)?.bind(py).clone())
 }
@@ -985,8 +1009,8 @@ mod tests {
     };
     use super::{py_any_to_space_value_with_backend, space_value_to_py_with_backend};
     use pyo3::types::PyDictMethods;
-    use rlmesh_spaces::MetaValue;
     use rlmesh_spaces::spaces::{DictSpaceBuilder, DiscreteBuilder, TextBuilder};
+    use rlmesh_spaces::{DType, MetaValue};
 
     #[test]
     fn metadata_roundtrips_without_protobuf() {
@@ -1058,6 +1082,21 @@ class AutoresetMode:
                 err.to_string().contains("must be an integer"),
                 "unexpected error: {err}"
             );
+        });
+    }
+
+    #[test]
+    fn discrete_accepts_a_rank_zero_native_tensor() {
+        // One unstacked row of a 1-D action chunk: rank-0, one element.
+        Python::attach(|py| {
+            let space = DiscreteBuilder::new(3).build().unwrap();
+            let tensor = Tensor::from_slice(&2i64.to_le_bytes(), &[], DType::Int64).unwrap();
+            let value = wrap_native_tensor(py, tensor).unwrap();
+
+            let encoded =
+                py_any_to_space_value_with_backend(py, &value, &space, ValueBackend::Native)
+                    .unwrap();
+            assert_eq!(encoded, rlmesh_spaces::SpaceValue::Discrete(2));
         });
     }
 

@@ -209,40 +209,47 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             binding = {}
 
-    if args.env:
-        # num_envs / vectorization_mode / framework / device are serve controls
-        # (their own env vars / flags), not env make() kwargs; a binding key of any
-        # of those names would otherwise collide with serve_env's explicit args as
-        # an opaque "multiple values" TypeError. Point the operator at the right
-        # knob instead.
-        control_collisions = {
-            "num_envs",
-            "vectorization_mode",
-            "framework",
-            "device",
-        } & binding.keys()
-        if control_collisions:
-            parser.error(
-                f"{', '.join(sorted(control_collisions))} control serving, not "
-                "env construction; set RLMESH_NUM_ENVS / RLMESH_VECTORIZATION_MODE "
-                "/ --framework / --device instead of passing them in "
-                "RLMESH_MAKE_KWARGS / --kwargs-json"
+    try:
+        if args.env:
+            # num_envs / vectorization_mode / framework / device are serve controls
+            # (their own env vars / flags), not env make() kwargs; a binding key of any
+            # of those names would otherwise collide with serve_env's explicit args as
+            # an opaque "multiple values" TypeError. Point the operator at the right
+            # knob instead.
+            control_collisions = {
+                "num_envs",
+                "vectorization_mode",
+                "framework",
+                "device",
+            } & binding.keys()
+            if control_collisions:
+                parser.error(
+                    f"{', '.join(sorted(control_collisions))} control serving, not "
+                    "env construction; set RLMESH_NUM_ENVS / RLMESH_VECTORIZATION_MODE "
+                    "/ --framework / --device instead of passing them in "
+                    "RLMESH_MAKE_KWARGS / --kwargs-json"
+                )
+            env = resolve_entrypoint(args.env, label="env entrypoint")
+            _mark("imports")
+            serve_env(
+                env,
+                args.address,
+                num_envs=num_envs,
+                vectorization_mode=vectorization_mode,
+                framework=args.framework,
+                device=args.device,
+                **binding,
             )
-        env = resolve_entrypoint(args.env, label="env entrypoint")
-        _mark("imports")
-        serve_env(
-            env,
-            args.address,
-            num_envs=num_envs,
-            vectorization_mode=vectorization_mode,
-            framework=args.framework,
-            device=args.device,
-            **binding,
-        )
-    else:
-        model = resolve_entrypoint(args.model, label="model entrypoint")
-        _mark("imports")
-        serve_model(model, args.address, binding=binding)
+        else:
+            model = resolve_entrypoint(args.model, label="model entrypoint")
+            _mark("imports")
+            serve_model(model, args.address, binding=binding)
+    except KeyboardInterrupt:
+        # Ctrl-C is how an operator stops a served container: the serve loop has
+        # already drained and closed by the time the interrupt surfaces here, so
+        # report the conventional interrupted-by-SIGINT status instead of a
+        # traceback. Not 0: an interrupt during startup served nothing.
+        return 130
     return 0
 
 

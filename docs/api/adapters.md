@@ -211,17 +211,18 @@ A pair override replaces the adapter for one specific (model, environment) pairi
 
 ## Vocabulary
 
-Semantic roles are an open vocabulary of wire strings matched verbatim between independently authored tags and specs. The well-known conventions that ship with RLMesh are re-exported from the package (single-sourced from the native crate): the domain-agnostic roles `IMAGE_PRIMARY`, `IMAGE_SECONDARY`, `INSTRUCTION`, `JOINT_POS`, `JOINT_VEL`; the arm-manipulation observation roles `IMAGE_WRIST`, `EEF_POS`, `EEF_ROT`, `GRIPPER_POS`; and the action roles `ACTION_DELTA_POS`, `ACTION_DELTA_ROT`, `ACTION_GRIPPER`. Bimanual `_2` variants exist for the per-arm roles `EEF_POS`, `EEF_ROT`, `GRIPPER_POS`, `ACTION_DELTA_POS`, `ACTION_DELTA_ROT`, and `ACTION_GRIPPER`.
+Semantic roles are an open vocabulary of wire strings matched verbatim between independently authored tags and specs. The well-known conventions that ship with RLMesh are re-exported from the package (single-sourced from the native crate): the core roles `IMAGE_PRIMARY`, `IMAGE_SECONDARY`, `IMAGE_WRIST`, `INSTRUCTION`, `JOINT_POS`, `JOINT_VEL`, `ACTION_JOINT_POS`, `ACTION_JOINT_VEL`; the manipulation roles `EEF_POS`, `EEF_ROT`, `GRIPPER_POS`, `EEF_WRENCH`, `ACTION_DELTA_POS`, `ACTION_DELTA_ROT`, `ACTION_GRIPPER`, `ACTION_EEF_POS`, `ACTION_EEF_ROT`; and the body roles `BASE_ANG_VEL`, `BASE_ROT`, `COMMAND_BASE_VEL`. Ten legacy second-arm `_2` variants (`EEF_POS_2`, `EEF_ROT_2`, `GRIPPER_POS_2`, `IMAGE_WRIST_2`, `ACTION_DELTA_POS_2`, `ACTION_DELTA_ROT_2`, `ACTION_GRIPPER_2`, `ACTION_EEF_POS_2`, `ACTION_EEF_ROT_2`, `ACTION_JOINT_POS_2`) fold onto the base role under `part=ARM_2`. The full registry, with wire strings and widths, is in {doc}`../user-guide/adapters/reference`.
 
 Rotation widths follow the declared encoding. `rlmesh.adapters.ROTATION_DIMS` maps each encoding to its dimension count:
 
-| Encoding         | Dims | Convention                                             |
-| ---------------- | ---- | ------------------------------------------------------ |
-| `quat_xyzw`      | 4    | quaternion, scalar-last                                |
-| `quat_wxyz`      | 4    | quaternion, scalar-first                               |
-| `axis_angle`     | 3    | rotation vector                                        |
-| `rot6d`          | 6    | first two columns of the rotation matrix, concatenated |
-| `rot6d_rowmajor` | 6    | same two columns flattened row-major                   |
-| `euler_xyz`      | 3    | roll-pitch-yaw, extrinsic XYZ                          |
+| Encoding         | Dims | Convention                                                 |
+| ---------------- | ---- | ---------------------------------------------------------- |
+| `quat_xyzw`      | 4    | quaternion, scalar-last                                    |
+| `quat_wxyz`      | 4    | quaternion, scalar-first                                   |
+| `axis_angle`     | 3    | rotation vector                                            |
+| `rot6d`          | 6    | first two columns of the rotation matrix, concatenated     |
+| `rot6d_rowmajor` | 6    | same two columns flattened row-major                       |
+| `euler_xyz`      | 3    | roll-pitch-yaw, extrinsic XYZ                              |
+| `gravity_xyz`    | 3    | projected gravity, an observation-side sink for `BASE_ROT` |
 
 `rot6d` is the standard 6D rotation; `rot6d_rowmajor` exists for checkpoints trained on the row-major interleaving. See {doc}`../user-guide/adapters` for when to add an encoding versus reach for a custom encoding.

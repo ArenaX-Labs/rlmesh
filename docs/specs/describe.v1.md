@@ -87,6 +87,9 @@ _format_ is shared.
   are the **default branch's**. For a vectorized env it carries `single_*` spaces
   plus `num_envs`.
 - `env_spec.observation_space` / `action_space` are the `SpaceSpec` JSON form.
+  The envelope is strict JSON, so a non-finite number anywhere in it is `null`:
+  a `null` in a Box `low`/`high` means unbounded on that edge (`-inf` under
+  `low`, `+inf` under `high`).
 - `env_contracts` appears **only** for a factory that declares contract
   discriminants, so an envelope emitted for a single-contract env is byte-identical
   to one emitted before the field existed. It is self-describing: `discriminants`
@@ -98,7 +101,8 @@ _format_ is shared.
 
 ### Model (`kind: "model"`)
 
-Same wrapper; drops `env_spec`/`env_tags`, adds `model_spec`:
+Same wrapper; drops `env_spec`/`env_tags`, adds `model_spec`, `corners`, and
+`native_chunk`:
 
 ```text
 {
@@ -106,11 +110,27 @@ Same wrapper; drops `env_spec`/`env_tags`, adds `model_spec`:
   "kind": "model",
   "target": { ... },
   "model_spec": { "input": { ... }, "output": { ... } } | null,
+  "corners": ["predict", "predict_chunk_batch"],
+  "native_chunk": 30,
   "params": { ... },
   "variants": { ... },
   "runtime": { ... }
 }
 ```
+
+- `corners` lists the predict corners the model class actually defines, drawn
+  from the closed set `["predict", "predict_chunk", "predict_batch",
+"predict_chunk_batch"]` and reported in that order (general -> specific). It is
+  **introspected, not declared**, so a packaging claim like `supportsBatching` can
+  be checked against the code that ships. Omitted when the producer resolved no
+  corner at all (a duck-typed callable it could not introspect); an empty list is
+  never emitted.
+- `native_chunk` is the model's own declaration of its chunk length K: how many
+  per-step actions one chunk-corner call returns. Omitted for the elastic
+  (undeclared) contract, in which the runtime takes the `min(len, h)` prefix of
+  whatever comes back. It is an integer (`bool` is not accepted), read off the
+  class, so a K a model only sets while loading its weights is deliberately
+  invisible here -- describe runs without weights.
 
 ## Best-effort / error badges
 
@@ -125,6 +145,8 @@ produces a useful artifact with `env_spec: {"error": ...}`.
 
 - `kind` is a closed enum (`"env"` | `"model"`); anything else is rejected.
 - Env-only fields (`env_spec`, `env_tags`, `env_contracts`) never appear on a
-  `model` envelope, and `model_spec` never appears on an `env` envelope.
+  `model` envelope, and the model-only fields (`model_spec`, `corners`,
+  `native_chunk`) never appear on an `env` envelope. The builder rejects a
+  misplaced field by name rather than dropping it.
 - Unknown top-level fields are rejected (the key set is part of the contract).
 - `generated_at`, if present, must be RFC-3339.

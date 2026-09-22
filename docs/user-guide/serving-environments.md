@@ -20,7 +20,7 @@ print(server.address)
 server.wait()
 ```
 
-`start()` runs the server on a background thread. `wait(timeout=None)` blocks until it stops and returns `True`, or returns `False` if the timeout elapses first. `shutdown()` stops a running server, and `EnvServer` is a context manager that shuts down on exit.
+`start()` runs the server on a background thread. `wait(timeout=None)` blocks until it stops and returns `True`, or returns `False` if the timeout elapses first; Ctrl-C interrupts it with `KeyboardInterrupt`, so put `wait()` in a `try` / `finally: server.shutdown()` (or use the context manager) to drain and close the environment on the way out. `shutdown()` stops a running server, and `EnvServer` is a context manager that shuts down on exit. A background server is shut down and joined for you if the process exits while it is still running, but that teardown is bounded and best-effort -- shut it down yourself so the drain and `env.close()` run when you expect them to. Unlike the blocking `serve()`, a background server installs no SIGINT/SIGTERM handler of its own; install one if the process needs a graceful `SIGTERM`.
 
 ## Environment shape
 
@@ -67,7 +67,7 @@ print(contract.action_space.kind)
 print(contract.num_envs)
 ```
 
-`server.spec` is an alias for `server.env_contract`. See {doc}`../api/contracts` for the contract fields.
+See {doc}`../api/contracts` for the contract fields.
 
 ## Action framework and device
 
@@ -97,6 +97,16 @@ rlmesh.EnvServer(env, path="/tmp/rlmesh-env.sock")
 ```
 
 With no address at all, the server binds `tcp://127.0.0.1:0` and picks a free port; read `server.address` for the resolved one. Unix sockets are not available on Windows.
+
+## Exposure and authentication
+
+The RLMesh transport is plaintext gRPC. There is no TLS on any serve or connect path, and an endpoint is unauthenticated unless a bearer token is configured. A token can be set from Rust (`rlmesh::ServeOptions.token`) and from C (`RlmeshServeOptions.token`); the Python `ServeOptions` has no token field today, so a Python-served endpoint accepts every client that can reach it.
+
+Treat reachability as the access control:
+
+- Bind `127.0.0.1` (the default) or a `unix://` socket when the client is on the same host.
+- Reach a remote peer over a tunnel, VPN, or service mesh rather than by widening the bind address.
+- Use `0.0.0.0` only inside a container whose port is published to a trusted network — for example `docker run -p 127.0.0.1:50051:50051`, which keeps the published port on the host loopback.
 
 ## Startup and readiness
 

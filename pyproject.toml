@@ -13,6 +13,7 @@ dev = [
   "ruff==0.14.9",
   "pytest==8.4.2",
   "pillow",
+  "opencv-python-headless==5.0.0.93",
   "rlmesh[gymnasium,numpy,torch,jax]",
   "rlmesh-api-surface",
   "rlmesh-system",

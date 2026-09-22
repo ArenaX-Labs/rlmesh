@@ -194,15 +194,12 @@ fn construct_server(
 
             #[cfg(unix)]
             {
-                if socket_path.exists() {
-                    std::fs::remove_file(&socket_path).map_err(|e| {
-                        PyErr::new::<pyo3::exceptions::PyConnectionError, _>(format!(
-                            "failed to remove stale unix socket '{}': {}",
-                            socket_path.display(),
-                            e
-                        ))
-                    })?;
-                }
+                // Unlink only a socket we can prove is dead: a live socket is
+                // refused and a non-socket file is left for `bind` to reject,
+                // matching the Rust facade's bind path exactly.
+                rlmesh::remove_stale_socket(&socket_path).map_err(|e| {
+                    PyErr::new::<pyo3::exceptions::PyConnectionError, _>(e.to_string())
+                })?;
 
                 // UnixListener registration requires an entered Tokio runtime.
                 let listener = {
@@ -419,8 +416,23 @@ fn spawn_signal_shutdown(shutdown: ShutdownTrigger) {
 }
 
 impl Drop for PyEnvServer {
+    // pyo3::ffi::Py_IsInitialized is a read-only probe of the interpreter state;
+    // the workspace otherwise denies `unsafe_code`.
+    #[allow(unsafe_code)]
     fn drop(&mut self) {
         self.shutdown.trigger("drop");
+
+        // During Py_FinalizeEx, Py_IsInitialized() is already 0 and the cleanup
+        // below would take pyo3's AttachError::NotInitialized path, re-running
+        // Py_InitializeEx from inside a destructor and aborting the process
+        // (Py_IsFinalizing is not exported under abi3-py311). The process is
+        // exiting, so the env's close() hook cannot legally run anyway; the
+        // listener and runtime are reclaimed by the remaining field drops.
+        // EnvServer's finalizer (rlmesh._server) is what shuts a live server
+        // down early enough for close() to still run.
+        if unsafe { pyo3::ffi::Py_IsInitialized() } == 0 {
+            return;
+        }
 
         if let Ok(mut state) = self.state.lock() {
             let previous = std::mem::replace(&mut *state, ServerState::Stopped);
@@ -486,16 +498,23 @@ fn wait_background_server(
             return Ok(true);
         }
 
-        if let Some(timeout) = timeout {
-            let elapsed = start.elapsed();
-            if elapsed >= timeout {
-                return Ok(false);
+        let nap = match timeout {
+            Some(timeout) => {
+                let elapsed = start.elapsed();
+                if elapsed >= timeout {
+                    return Ok(false);
+                }
+                (timeout - elapsed).min(Duration::from_millis(10))
             }
-
-            std::thread::sleep((timeout - elapsed).min(Duration::from_millis(10)));
-        } else {
-            std::thread::sleep(Duration::from_millis(10));
-        }
+            None => Duration::from_millis(10),
+        };
+        std::thread::sleep(nap);
+        // No Python bytecode runs while wait() holds the GIL released, so poll
+        // for a pending signal each iteration (as the client's blocking calls
+        // do) or Ctrl-C is discarded and wait() can never be interrupted. The
+        // state stays RunningBackground, so the caller's shutdown() still
+        // drains and closes the env.
+        Python::attach(|py| py.check_signals())?;
     }
 }
 

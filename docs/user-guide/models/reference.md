@@ -260,6 +260,8 @@ The serve env vars match the environment serve CLI:
 | `RLMESH_FRAMEWORK`   | `torch` / `jax` / `numpy`.                                                                   |
 | `RLMESH_DEVICE`      | Device for the incoming action of a torch/jax env (env-side, torch/jax only), e.g. `cuda:0`. |
 
+The transport is plaintext gRPC and an endpoint is unauthenticated unless a bearer token is configured, so bind `0.0.0.0` only where the port is published to a trusted network. See [Exposure and authentication](../serving-environments.md#exposure-and-authentication).
+
 Connect to a served model in one of two ways:
 
 - `rlmesh.RemoteModel(address)`: un-managed; you started the server yourself.

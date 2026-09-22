@@ -94,6 +94,104 @@ fn episode_metadata() -> env::v1::EpisodeMetadata {
     }
 }
 
+fn peer_info() -> core::v1::PeerInfo {
+    let mut framework_versions = std::collections::HashMap::new();
+    framework_versions.insert("numpy".to_string(), "1.26".to_string());
+    let mut extra = std::collections::HashMap::new();
+    extra.insert("k".to_string(), "v".to_string());
+    core::v1::PeerInfo {
+        component: "rlmesh-model".to_string(),
+        package_version: "0.1.0".to_string(),
+        language: "rust".to_string(),
+        language_version: "1.88.0".to_string(),
+        os: "linux".to_string(),
+        os_version: "6.1".to_string(),
+        arch: "x86_64".to_string(),
+        framework_versions,
+        extra,
+    }
+}
+
+fn handshake_capabilities() -> std::collections::HashMap<String, String> {
+    let mut capabilities = std::collections::HashMap::new();
+    capabilities.insert(
+        "rlmesh.model.concurrent_predict.v1".to_string(),
+        "true".to_string(),
+    );
+    capabilities
+}
+
+fn core_handshake_response() -> core::v1::HandshakeResponse {
+    core::v1::HandshakeResponse {
+        compatible: true,
+        peer_info: Some(peer_info()),
+        capabilities: handshake_capabilities(),
+        supported_workflow_editions: vec!["2026.06".to_string()],
+        error_message: Some("ok".to_string()),
+    }
+}
+
+fn env_spec() -> core::v1::EnvSpec {
+    core::v1::EnvSpec {
+        id: "env-spec-1".to_string(),
+        action_space: Some(box_space_spec()),
+        observation_space: Some(box_space_spec()),
+        metadata: Some(meta_map()),
+    }
+}
+
+fn env_contract() -> core::v1::EnvContract {
+    core::v1::EnvContract {
+        spec: Some(env_spec()),
+        num_envs: 4,
+        render_mode: "rgb_array".to_string(),
+        autoreset_mode: core::v1::AutoresetMode::NextStep as i32,
+    }
+}
+
+fn predict_response() -> model::v1::PredictResponse {
+    model::v1::PredictResponse {
+        context: Some(adapter_context()),
+        actions: vec![space_value()],
+    }
+}
+
+fn model_error() -> model::v1::ModelError {
+    model::v1::ModelError {
+        code: model::v1::ModelErrorCode::Unsupported as i32,
+        message: "grouped predict is unsupported".to_string(),
+        is_recoverable: true,
+        debug_info: "group 1".to_string(),
+    }
+}
+
+/// `predict_request` with the history/step tags the elided-by-default golden
+/// cannot pin: a route that negotiated observation history sends both.
+fn predict_request_with_history() -> model::v1::PredictRequest {
+    model::v1::PredictRequest {
+        history: vec![model::v1::ObservationHistoryFrame {
+            observation: Some(space_value()),
+            episode_info: vec![model::v1::EpisodeInfo {
+                episode_id: "ep-1".to_string(),
+                seed: Some(7),
+            }],
+            step: 8,
+        }],
+        step: Some(9),
+        ..predict_request()
+    }
+}
+
+/// A `SpaceSpec` whose shape and dtype are both non-default, so every arm's
+/// golden pins the envelope tags alongside the arm's own.
+fn spec_with(spec: spaces::v1::space_spec::Spec) -> spaces::v1::SpaceSpec {
+    spaces::v1::SpaceSpec {
+        shape: vec![2, 3],
+        dtype: spaces::v1::DataType::Int64 as i32,
+        spec: Some(spec),
+    }
+}
+
 /// Hand-checkable anchor: `leaves` is field 1 wire-type LEN, so every leaf is
 /// tag byte 0x0A = (1 << 3) | 2 followed by its length and raw bytes.
 #[test]
@@ -134,12 +232,7 @@ fn model_resolve_adapter_request_bytes_are_frozen() {
     let message = model::v1::ResolveAdapterRequest {
         context: Some(adapter_context()),
         delivers_history: false,
-        env_spec: Some(core::v1::EnvSpec {
-            id: "env-spec-1".to_string(),
-            action_space: Some(box_space_spec()),
-            observation_space: Some(box_space_spec()),
-            metadata: Some(meta_map()),
-        }),
+        env_spec: Some(env_spec()),
         selected_workflow_edition: "2026.06".to_string(),
         execution_horizon: 4,
     };
@@ -201,12 +294,7 @@ fn model_join_request_bytes_are_frozen() {
 #[test]
 fn model_join_response_bytes_are_frozen() {
     let message = model::v1::JoinResponse {
-        kind: Some(model::v1::join_response::Kind::Predict(
-            model::v1::PredictResponse {
-                context: Some(adapter_context()),
-                actions: vec![space_value()],
-            },
-        )),
+        kind: Some(model::v1::join_response::Kind::Predict(predict_response())),
         request_id: "req-1".to_string(),
         endpoint_total_ns: Some(1234),
         ..Default::default()
@@ -286,29 +374,10 @@ fn env_join_request_bytes_are_frozen() {
 
 #[test]
 fn core_handshake_request_bytes_are_frozen() {
-    let mut frameworks = std::collections::HashMap::new();
-    frameworks.insert("numpy".to_string(), "1.26".to_string());
-    let mut extra = std::collections::HashMap::new();
-    extra.insert("k".to_string(), "v".to_string());
-    let mut capabilities = std::collections::HashMap::new();
-    capabilities.insert(
-        "rlmesh.model.concurrent_predict.v1".to_string(),
-        "true".to_string(),
-    );
     let message = core::v1::HandshakeRequest {
         protocol_generation: "rlmesh-wire-v1".to_string(),
-        peer_info: Some(core::v1::PeerInfo {
-            component: "rlmesh-model".to_string(),
-            package_version: "0.1.0".to_string(),
-            language: "rust".to_string(),
-            language_version: "1.88.0".to_string(),
-            os: "linux".to_string(),
-            os_version: "6.1".to_string(),
-            arch: "x86_64".to_string(),
-            framework_versions: frameworks,
-            extra,
-        }),
-        capabilities,
+        peer_info: Some(peer_info()),
+        capabilities: handshake_capabilities(),
         supported_workflow_editions: vec!["2026.06".to_string()],
     };
     assert_frozen(
@@ -323,6 +392,266 @@ fn core_handshake_request_bytes_are_frozen() {
             114, 108, 109, 101, 115, 104, 46, 109, 111, 100, 101, 108, 46, 99, 111, 110, 99, 117,
             114, 114, 101, 110, 116, 95, 112, 114, 101, 100, 105, 99, 116, 46, 118, 49, 18, 4, 116,
             114, 117, 101, 34, 7, 50, 48, 50, 54, 46, 48, 54,
+        ],
+    );
+}
+
+#[test]
+fn core_handshake_response_bytes_are_frozen() {
+    assert_frozen(
+        "core.v1.HandshakeResponse",
+        core_handshake_response().encode_to_vec(),
+        &[
+            8, 1, 18, 78, 10, 12, 114, 108, 109, 101, 115, 104, 45, 109, 111, 100, 101, 108, 18, 5,
+            48, 46, 49, 46, 48, 26, 4, 114, 117, 115, 116, 34, 6, 49, 46, 56, 56, 46, 48, 42, 5,
+            108, 105, 110, 117, 120, 50, 3, 54, 46, 49, 58, 6, 120, 56, 54, 95, 54, 52, 66, 13, 10,
+            5, 110, 117, 109, 112, 121, 18, 4, 49, 46, 50, 54, 122, 6, 10, 1, 107, 18, 1, 118, 26,
+            42, 10, 34, 114, 108, 109, 101, 115, 104, 46, 109, 111, 100, 101, 108, 46, 99, 111,
+            110, 99, 117, 114, 114, 101, 110, 116, 95, 112, 114, 101, 100, 105, 99, 116, 46, 118,
+            49, 18, 4, 116, 114, 117, 101, 34, 7, 50, 48, 50, 54, 46, 48, 54, 42, 2, 111, 107,
+        ],
+    );
+}
+
+#[test]
+fn core_env_contract_bytes_are_frozen() {
+    assert_frozen(
+        "core.v1.EnvContract",
+        env_contract().encode_to_vec(),
+        &[
+            10, 71, 10, 10, 101, 110, 118, 45, 115, 112, 101, 99, 45, 49, 18, 22, 10, 2, 2, 3, 16,
+            11, 82, 14, 18, 12, 10, 4, 0, 0, 128, 191, 18, 4, 0, 0, 128, 63, 26, 22, 10, 2, 2, 3,
+            16, 11, 82, 14, 18, 12, 10, 4, 0, 0, 128, 191, 18, 4, 0, 0, 128, 63, 34, 9, 10, 7, 10,
+            1, 107, 18, 2, 8, 7, 16, 4, 26, 9, 114, 103, 98, 95, 97, 114, 114, 97, 121, 32, 1,
+        ],
+    );
+}
+
+#[test]
+fn env_handshake_response_bytes_are_frozen() {
+    let message = env::v1::HandshakeResponse {
+        base: Some(core_handshake_response()),
+        env_contract: Some(env_contract()),
+    };
+    assert_frozen(
+        "env.v1.HandshakeResponse",
+        message.encode_to_vec(),
+        &[
+            10, 139, 1, 8, 1, 18, 78, 10, 12, 114, 108, 109, 101, 115, 104, 45, 109, 111, 100, 101,
+            108, 18, 5, 48, 46, 49, 46, 48, 26, 4, 114, 117, 115, 116, 34, 6, 49, 46, 56, 56, 46,
+            48, 42, 5, 108, 105, 110, 117, 120, 50, 3, 54, 46, 49, 58, 6, 120, 56, 54, 95, 54, 52,
+            66, 13, 10, 5, 110, 117, 109, 112, 121, 18, 4, 49, 46, 50, 54, 122, 6, 10, 1, 107, 18,
+            1, 118, 26, 42, 10, 34, 114, 108, 109, 101, 115, 104, 46, 109, 111, 100, 101, 108, 46,
+            99, 111, 110, 99, 117, 114, 114, 101, 110, 116, 95, 112, 114, 101, 100, 105, 99, 116,
+            46, 118, 49, 18, 4, 116, 114, 117, 101, 34, 7, 50, 48, 50, 54, 46, 48, 54, 42, 2, 111,
+            107, 18, 88, 10, 71, 10, 10, 101, 110, 118, 45, 115, 112, 101, 99, 45, 49, 18, 22, 10,
+            2, 2, 3, 16, 11, 82, 14, 18, 12, 10, 4, 0, 0, 128, 191, 18, 4, 0, 0, 128, 63, 26, 22,
+            10, 2, 2, 3, 16, 11, 82, 14, 18, 12, 10, 4, 0, 0, 128, 191, 18, 4, 0, 0, 128, 63, 34,
+            9, 10, 7, 10, 1, 107, 18, 2, 8, 7, 16, 4, 26, 9, 114, 103, 98, 95, 97, 114, 114, 97,
+            121, 32, 1,
+        ],
+    );
+}
+
+#[test]
+fn env_reset_request_bytes_are_frozen() {
+    let message = env::v1::ResetRequest {
+        seeds: vec![7, 8],
+        options: Some(meta_map()),
+        timeout_ms: 250,
+        env_indices: vec![1],
+        episode_ids: vec!["ep-1".to_string()],
+    };
+    assert_frozen(
+        "env.v1.ResetRequest",
+        message.encode_to_vec(),
+        &[
+            10, 2, 7, 8, 18, 9, 10, 7, 10, 1, 107, 18, 2, 8, 7, 24, 250, 1, 34, 1, 1, 42, 4, 101,
+            112, 45, 49,
+        ],
+    );
+}
+
+#[test]
+fn env_reset_response_bytes_are_frozen() {
+    let message = env::v1::ResetResponse {
+        observation: Some(space_value()),
+        infos: Some(meta_map()),
+    };
+    assert_frozen(
+        "env.v1.ResetResponse",
+        message.encode_to_vec(),
+        &[
+            10, 9, 10, 3, 1, 2, 3, 10, 2, 4, 5, 18, 9, 10, 7, 10, 1, 107, 18, 2, 8, 7,
+        ],
+    );
+}
+
+#[test]
+fn env_render_response_bytes_are_frozen() {
+    let message = env::v1::RenderResponse {
+        frame: Some(vec![1, 2, 3]),
+        format: env::v1::RenderFormat::Png as i32,
+    };
+    assert_frozen(
+        "env.v1.RenderResponse",
+        message.encode_to_vec(),
+        &[10, 3, 1, 2, 3, 16, 1],
+    );
+}
+
+/// The error arm plus every timing scalar the envelope carries: the arm tag and
+/// the six `optional` scalars are the fields a renumber would silently move.
+#[test]
+fn env_join_response_error_bytes_are_frozen() {
+    let message = env::v1::JoinResponse {
+        kind: Some(env::v1::join_response::Kind::Error(env::v1::EnvError {
+            code: env::v1::EnvErrorCode::Unsupported as i32,
+            message: "subset step is unsupported".to_string(),
+            is_recoverable: true,
+            debug_info: "lane 1".to_string(),
+            interrupted_episodes: vec![episode_metadata()],
+        })),
+        request_id: "req-1".to_string(),
+        endpoint_total_ns: Some(1234),
+        decode_ns: Some(11),
+        user_ns: Some(12),
+        encode_ns: Some(13),
+        lane_skew_ns: Some(14),
+        queue_ns: Some(15),
+    };
+    assert_frozen(
+        "env.v1.JoinResponse (error)",
+        message.encode_to_vec(),
+        &[
+            82, 84, 8, 5, 18, 26, 115, 117, 98, 115, 101, 116, 32, 115, 116, 101, 112, 32, 105,
+            115, 32, 117, 110, 115, 117, 112, 112, 111, 114, 116, 101, 100, 24, 1, 34, 6, 108, 97,
+            110, 101, 32, 49, 42, 42, 10, 4, 101, 112, 45, 49, 16, 7, 24, 3, 32, 42, 41, 0, 0, 0,
+            0, 0, 0, 244, 63, 48, 1, 56, 1, 64, 232, 7, 72, 208, 15, 82, 9, 10, 7, 10, 1, 107, 18,
+            2, 8, 7, 42, 5, 114, 101, 113, 45, 49, 48, 210, 9, 88, 11, 96, 12, 104, 13, 112, 14,
+            120, 15,
+        ],
+    );
+}
+
+#[test]
+fn model_model_error_bytes_are_frozen() {
+    assert_frozen(
+        "model.v1.ModelError",
+        model_error().encode_to_vec(),
+        &[
+            8, 5, 18, 30, 103, 114, 111, 117, 112, 101, 100, 32, 112, 114, 101, 100, 105, 99, 116,
+            32, 105, 115, 32, 117, 110, 115, 117, 112, 112, 111, 114, 116, 101, 100, 24, 1, 34, 7,
+            103, 114, 111, 117, 112, 32, 49,
+        ],
+    );
+}
+
+#[test]
+fn model_grouped_predict_request_bytes_are_frozen() {
+    let message = model::v1::GroupedPredictRequest {
+        groups: vec![predict_request_with_history()],
+    };
+    assert_frozen(
+        "model.v1.GroupedPredictRequest",
+        message.encode_to_vec(),
+        &[
+            10, 80, 10, 22, 10, 6, 115, 101, 115, 115, 45, 49, 18, 5, 101, 110, 118, 45, 49, 26, 5,
+            114, 101, 113, 45, 49, 18, 9, 10, 3, 1, 2, 3, 10, 2, 4, 5, 26, 8, 10, 4, 101, 112, 45,
+            49, 16, 7, 26, 6, 10, 4, 101, 112, 45, 50, 34, 23, 10, 9, 10, 3, 1, 2, 3, 10, 2, 4, 5,
+            18, 8, 10, 4, 101, 112, 45, 49, 16, 7, 24, 8, 40, 9,
+        ],
+    );
+}
+
+/// Both `GroupedPredictResult` arms in one response: a failing group reports its
+/// own error in place, so the error arm is as load-bearing as the answer arm.
+#[test]
+fn model_grouped_predict_response_bytes_are_frozen() {
+    let message = model::v1::GroupedPredictResponse {
+        results: vec![
+            model::v1::GroupedPredictResult {
+                outcome: Some(model::v1::grouped_predict_result::Outcome::Response(
+                    predict_response(),
+                )),
+            },
+            model::v1::GroupedPredictResult {
+                outcome: Some(model::v1::grouped_predict_result::Outcome::Error(
+                    model_error(),
+                )),
+            },
+        ],
+    };
+    assert_frozen(
+        "model.v1.GroupedPredictResponse",
+        message.encode_to_vec(),
+        &[
+            10, 37, 10, 35, 10, 22, 10, 6, 115, 101, 115, 115, 45, 49, 18, 5, 101, 110, 118, 45,
+            49, 26, 5, 114, 101, 113, 45, 49, 18, 9, 10, 3, 1, 2, 3, 10, 2, 4, 5, 10, 47, 18, 45,
+            8, 5, 18, 30, 103, 114, 111, 117, 112, 101, 100, 32, 112, 114, 101, 100, 105, 99, 116,
+            32, 105, 115, 32, 117, 110, 115, 117, 112, 112, 111, 114, 116, 101, 100, 24, 1, 34, 7,
+            103, 114, 111, 117, 112, 32, 49,
+        ],
+    );
+}
+
+/// The six `SpaceSpec` arms the Box golden above does not reach. Every space a
+/// peer can describe rides one of these tags.
+#[test]
+fn spaces_space_spec_remaining_arms_are_frozen() {
+    use spaces::v1::space_spec::Spec;
+
+    assert_frozen(
+        "spaces.v1.SpaceSpec (discrete)",
+        spec_with(Spec::Discrete(spaces::v1::DiscreteSpec { n: 4, start: -1 })).encode_to_vec(),
+        &[
+            10, 2, 2, 3, 16, 9, 90, 13, 8, 4, 16, 255, 255, 255, 255, 255, 255, 255, 255, 255, 1,
+        ],
+    );
+    assert_frozen(
+        "spaces.v1.SpaceSpec (multi_binary)",
+        spec_with(Spec::MultiBinary(spaces::v1::MultiBinarySpec {})).encode_to_vec(),
+        &[10, 2, 2, 3, 16, 9, 98, 0],
+    );
+    assert_frozen(
+        "spaces.v1.SpaceSpec (multi_discrete)",
+        spec_with(Spec::MultiDiscrete(spaces::v1::MultiDiscreteSpec {
+            nvec: vec![2, 3],
+        }))
+        .encode_to_vec(),
+        &[10, 2, 2, 3, 16, 9, 106, 4, 10, 2, 2, 3],
+    );
+    assert_frozen(
+        "spaces.v1.SpaceSpec (text)",
+        spec_with(Spec::Text(spaces::v1::TextSpec {
+            min_length: 1,
+            max_length: 8,
+            charset: "ab".to_string(),
+        }))
+        .encode_to_vec(),
+        &[10, 2, 2, 3, 16, 9, 114, 8, 8, 1, 16, 8, 26, 2, 97, 98],
+    );
+    assert_frozen(
+        "spaces.v1.SpaceSpec (dict)",
+        spec_with(Spec::Dict(spaces::v1::DictSpec {
+            keys: vec!["a".to_string()],
+            spaces: vec![box_space_spec()],
+        }))
+        .encode_to_vec(),
+        &[
+            10, 2, 2, 3, 16, 9, 162, 1, 27, 10, 1, 97, 18, 22, 10, 2, 2, 3, 16, 11, 82, 14, 18, 12,
+            10, 4, 0, 0, 128, 191, 18, 4, 0, 0, 128, 63,
+        ],
+    );
+    assert_frozen(
+        "spaces.v1.SpaceSpec (tuple)",
+        spec_with(Spec::Tuple(spaces::v1::TupleSpec {
+            spaces: vec![box_space_spec()],
+        }))
+        .encode_to_vec(),
+        &[
+            10, 2, 2, 3, 16, 9, 170, 1, 24, 10, 22, 10, 2, 2, 3, 16, 11, 82, 14, 18, 12, 10, 4, 0,
+            0, 128, 191, 18, 4, 0, 0, 128, 63,
         ],
     );
 }

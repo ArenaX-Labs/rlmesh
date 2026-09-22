@@ -47,7 +47,7 @@ impl CounterEnv {
     }
 }
 
-#[async_trait::async_trait]
+#[rlmesh::async_trait]
 impl Env for CounterEnv {
     fn observation_space(&self) -> &SpaceSpec {
         &self.observation_space

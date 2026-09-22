@@ -2841,3 +2841,301 @@ fn a_multi_lane_reset_sends_the_trial_ordinals_as_a_list_in_lane_order() {
         })),
     );
 }
+
+// ---------------------------------------------------------------------------
+// The episode ledger under a runtime-side truncation: the runtime owns episode
+// ids (R1), so a peer-reported completion naming a superseded id is an echo.
+// ---------------------------------------------------------------------------
+
+/// A single-lane env that never terminates on its own and mimics the env
+/// server's interrupted-episode buffer: a reset arriving while an episode is
+/// still active buffers that episode, and the NEXT `StepResponse` reports it in
+/// `completed_episodes`. Every runtime-side truncation resets mid-episode, so
+/// every truncated episode comes back as a stale echo one step later.
+#[derive(Clone, Default)]
+struct EchoingEnv {
+    inner: Arc<Mutex<EchoingEnvState>>,
+}
+
+#[derive(Default)]
+struct EchoingEnvState {
+    resets: usize,
+    steps: usize,
+    step_in_episode: i64,
+    current_id: String,
+    interrupted: Vec<EpisodeMetadata>,
+}
+
+#[async_trait]
+impl RuntimeEnv for EchoingEnv {
+    async fn reset(&mut self, request: ResetRequest) -> Result<RuntimeEnvReset, RuntimeError> {
+        let mut state = self.inner.lock().expect("echoing env lock poisoned");
+        if state.step_in_episode > 0 {
+            let interrupted = EpisodeMetadata {
+                episode_id: state.current_id.clone(),
+                env_index: 0,
+                step_count: state.step_in_episode,
+                cumulative_reward: state.step_in_episode as f64,
+                truncated: true,
+                ..Default::default()
+            };
+            state.interrupted.push(interrupted);
+        }
+        state.resets += 1;
+        state.step_in_episode = 0;
+        state.current_id = request.episode_ids.first().cloned().unwrap_or_default();
+        Ok(RuntimeEnvReset {
+            response: ResetResponse {
+                observation: Some(leaves_value(payload([0]))),
+                infos: None,
+            },
+            endpoint_total_ns: None,
+            phases: EndpointPhases::default(),
+        })
+    }
+
+    async fn step(&mut self, _request: StepRequest) -> Result<RuntimeEnvStep, RuntimeError> {
+        let mut state = self.inner.lock().expect("echoing env lock poisoned");
+        state.steps += 1;
+        state.step_in_episode += 1;
+        let completed_episodes = std::mem::take(&mut state.interrupted);
+        Ok(RuntimeEnvStep {
+            response: StepResponse {
+                observation: Some(leaves_value(payload([0]))),
+                rewards: vec![1.0],
+                terminated_mask: vec![0],
+                truncated_mask: vec![0],
+                infos: None,
+                completed_episodes,
+                env_indices: vec![],
+            },
+            endpoint_total_ns: None,
+            phases: EndpointPhases::default(),
+        })
+    }
+
+    async fn close(&mut self, _timeout: Duration) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn a_runtime_truncated_episode_is_not_double_counted_when_the_env_echoes_it() {
+    // max_episode_steps=4 over 3 episodes on an env that never terminates. The
+    // driver truncates and resets mid-episode, so the env buffers each
+    // interrupted episode and reports it one step into the NEXT episode. Trusting
+    // that echo counted every episode twice, evicted the live episode's adapter
+    // state, and reset the fresh episode after a single step -- so the run
+    // degenerated into 1-step episodes.
+    let env = EchoingEnv::default();
+    let hooks = Arc::new(RecordingHooks::default());
+    let spec = RuntimeSessionSpec {
+        max_episodes: Some(3),
+        max_episode_steps: Some(4),
+        ..one_episode_spec()
+    };
+    let report = RuntimeDriver::new(spec, env.clone(), TestModel::default(), hooks.clone())
+        .run()
+        .await
+        .unwrap();
+
+    let state = env.inner.lock().expect("echoing env lock poisoned");
+    assert_eq!(state.steps, 12, "3 episodes of exactly max_episode_steps=4");
+    assert_eq!(
+        state.resets, 3,
+        "one reset per episode, cold start included"
+    );
+    drop(state);
+
+    assert_eq!(
+        report.total_episodes, 3,
+        "an echoed id must not count again"
+    );
+    assert_eq!(report.total_steps, 12);
+    assert_eq!(report.episodes.len(), 3, "one summary per episode");
+    assert_eq!(
+        report
+            .episodes
+            .iter()
+            .map(|episode| episode.step_count)
+            .collect::<Vec<_>>(),
+        vec![4, 4, 4],
+        "every episode runs the full cap, not one step"
+    );
+    assert!(
+        report.episodes.iter().all(|episode| episode.truncated),
+        "the runtime truncated every one of them"
+    );
+    assert_eq!(
+        report
+            .episodes
+            .iter()
+            .map(|episode| episode.episode_index)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3],
+        "distinct, contiguous completion indices"
+    );
+    let completed = hooks.completed_ids();
+    assert_eq!(completed.len(), 3);
+    assert_eq!(
+        completed
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        3,
+        "three distinct episode ids completed: {completed:?}"
+    );
+}
+
+/// A lane-capable env under NEXT_STEP autoreset: every op names exactly one
+/// lane, each lane ends its episode on a fixed cadence and rolls itself on the
+/// following step. No driver reset ever runs after the cold start, so the
+/// route's episode budget is the only thing that can end the run.
+#[derive(Clone)]
+struct NextStepLaneEnv {
+    inner: Arc<Mutex<NextStepLaneState>>,
+    length: usize,
+}
+
+struct NextStepLaneState {
+    resets: usize,
+    step: Vec<usize>,
+    ids: Vec<String>,
+    pending_autoreset: Vec<bool>,
+}
+
+impl NextStepLaneEnv {
+    fn new(num_envs: usize, length: usize) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(NextStepLaneState {
+                resets: 0,
+                step: vec![0; num_envs],
+                ids: vec![String::new(); num_envs],
+                pending_autoreset: vec![false; num_envs],
+            })),
+            length,
+        }
+    }
+}
+
+#[async_trait]
+impl RuntimeEnv for NextStepLaneEnv {
+    async fn reset(&mut self, request: ResetRequest) -> Result<RuntimeEnvReset, RuntimeError> {
+        assert_eq!(request.env_indices.len(), 1, "lane resets name one lane");
+        let lane = request.env_indices[0] as usize;
+        let mut state = self.inner.lock().expect("lane env lock poisoned");
+        state.resets += 1;
+        state.step[lane] = 0;
+        state.pending_autoreset[lane] = false;
+        state.ids[lane] = request.episode_ids.first().cloned().unwrap_or_default();
+        Ok(RuntimeEnvReset {
+            response: ResetResponse {
+                observation: Some(leaves_value(payload([0]))),
+                infos: None,
+            },
+            endpoint_total_ns: None,
+            phases: EndpointPhases::default(),
+        })
+    }
+
+    async fn step(&mut self, request: StepRequest) -> Result<RuntimeEnvStep, RuntimeError> {
+        assert_eq!(request.env_indices.len(), 1, "lane steps name one lane");
+        let lane = request.env_indices[0] as usize;
+        let mut state = self.inner.lock().expect("lane env lock poisoned");
+        if state.pending_autoreset[lane] {
+            // t+1: the env rolls this lane itself and returns the new episode's
+            // reset observation, adopting the id the runtime pushed down.
+            state.pending_autoreset[lane] = false;
+            state.step[lane] = 0;
+            state.ids[lane] = request.episode_ids.first().cloned().unwrap_or_default();
+            return Ok(RuntimeEnvStep {
+                response: StepResponse {
+                    observation: Some(leaves_value(payload([0]))),
+                    rewards: vec![0.0],
+                    terminated_mask: vec![0],
+                    truncated_mask: vec![0],
+                    infos: None,
+                    completed_episodes: Vec::new(),
+                    env_indices: vec![lane as u32],
+                },
+                endpoint_total_ns: None,
+                phases: EndpointPhases::default(),
+            });
+        }
+        state.step[lane] += 1;
+        let done = state.step[lane] >= self.length;
+        let completed_episodes = done
+            .then(|| EpisodeMetadata {
+                episode_id: state.ids[lane].clone(),
+                env_index: lane as u32,
+                step_count: state.step[lane] as i64,
+                cumulative_reward: state.step[lane] as f64,
+                terminated: true,
+                ..Default::default()
+            })
+            .into_iter()
+            .collect();
+        state.pending_autoreset[lane] = done;
+        Ok(RuntimeEnvStep {
+            response: StepResponse {
+                observation: Some(leaves_value(payload([0]))),
+                rewards: vec![1.0],
+                terminated_mask: vec![u8::from(done)],
+                truncated_mask: vec![0],
+                infos: None,
+                completed_episodes,
+                env_indices: vec![lane as u32],
+            },
+            endpoint_total_ns: None,
+            phases: EndpointPhases::default(),
+        })
+    }
+
+    async fn close(&mut self, _timeout: Duration) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn a_next_step_lane_session_stops_at_the_episode_budget() {
+    // A lane group's budget is normally the slot counter, claimed at reset -- but
+    // under NEXT_STEP the env owns the rolls and no reset ever runs, so nothing
+    // checked `max_episodes` and the run never terminated.
+    let num_envs = 2;
+    let budget = 4;
+    let env = NextStepLaneEnv::new(num_envs, 2);
+    let hooks = Arc::new(RecordingHooks::default());
+    let spec = RuntimeSessionSpec {
+        subset_step: true,
+        ..vector_spec(num_envs, budget)
+    };
+    let report = tokio::time::timeout(
+        Duration::from_secs(10),
+        RuntimeDriver::new(spec, env.clone(), TestModel::default(), hooks.clone()).run(),
+    )
+    .await
+    .expect("a lane session under NEXT_STEP must stop at its episode budget")
+    .unwrap();
+
+    assert_eq!(
+        env.inner.lock().expect("lane env lock poisoned").resets,
+        num_envs,
+        "one cold-start reset per lane, and never again under NEXT_STEP"
+    );
+    assert!(
+        (budget as i64..=budget as i64 + num_envs as i64).contains(&report.total_episodes),
+        "the budget bounds the run (one lane may overshoot by the episode it \
+         was already finishing), got {}",
+        report.total_episodes
+    );
+    assert_eq!(report.episodes.len() as i64, report.total_episodes);
+    let completed = hooks.completed_ids();
+    assert_eq!(
+        completed
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        completed.len(),
+        "every completion names a distinct episode id: {completed:?}"
+    );
+}

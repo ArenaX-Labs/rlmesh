@@ -30,6 +30,14 @@ Concrete backend model classes inherit `ModelBase` and only change value convers
 
 See {doc}`backends` for backend helpers.
 
+### Native Model
+
+```{eval-rst}
+.. autoclass:: rlmesh.Model
+   :members:
+   :inherited-members:
+```
+
 ## Served and Sandboxed Models
 
 A model does not have to run in your process. `RemoteModel` dials a policy that is already served on an endpoint; `SandboxModel` runs a prebuilt `image://` tag in its own container. Both bind to an environment through {func}`~rlmesh.session` and expose the same {class}`~rlmesh.Session` drive loop.

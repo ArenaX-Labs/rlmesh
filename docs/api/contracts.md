@@ -17,12 +17,9 @@ Immutable description of an environment endpoint.
 `EnvContract` is returned by:
 
 - `EnvServer.env_contract`
-- `EnvServer.spec`
 - `RemoteEnv.env_contract`
-- `RemoteEnv.spec`
 - `RemoteVectorEnv.env_contract`
-- `RemoteVectorEnv.spec`
-- sandbox session `env_contract` and `spec` properties
+- sandbox session `env_contract` property
 
 The server builds the contract when it wraps the Python environment. For Gymnasium environments, `id` comes from `env.spec.id` when available and falls back to `"UnknownEnv-v1"`. Spaces are parsed from `observation_space` and `action_space` for single environments, or from `single_observation_space` and `single_action_space` for vector environments.
 
@@ -80,6 +77,8 @@ Native options controlling endpoint lifecycle behavior.
 | `idle_timeout_seconds`  | `float \| None` | Optional idle timeout before the server exits.            |
 | `drain_timeout_seconds` | `float \| None` | Optional grace period for in-flight work during shutdown. |
 | `close_timeout_seconds` | `float \| None` | Optional timeout for closing the wrapped environment.     |
+
+On the Python `EnvServer`, `None` is not unbounded for the two shutdown timeouts: both fall back to a 5-second grace and shutdown raises when it is exceeded, so a slow env teardown has to set `close_timeout_seconds` explicitly. Authentication is not a `ServeOptions` field in Python: the bearer token that gates an endpoint is reachable only from Rust (`rlmesh::ServeOptions.token`) and C (`RlmeshServeOptions.token`). See {doc}`../user-guide/serving-environments` for the exposure story.
 
 The constructor is keyword-only. Pass the result to `EnvServer(..., options=options)` or to a model-serving API that accepts serve options.
 

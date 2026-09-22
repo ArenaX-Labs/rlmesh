@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Run framework tests against declared dependency floors (py3.10, numpy 1.22, torch 1.11, jax 0.4.24)"
+#MISE description="Run framework tests against declared dependency floors (py3.10, numpy 1.22, torch 1.13.1, jax 0.4.24)"
 #MISE dir="{{ config_root }}"
 #USAGE flag "--rebuild" help="Rebuild the cp310 wheel even when one exists in dist/"
 #USAGE flag "--perf" help="Also run the tensor-conversion benchmarks and compare against the local perf baseline (warn-only)"

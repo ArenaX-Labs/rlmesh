@@ -136,6 +136,21 @@ impl RouteState {
             .position(|slot| slot.env_index == env_index)
     }
 
+    /// The episode id the slot at `env_index` currently holds, if any. The
+    /// runtime mints and owns episode ids (R1), so this is the authority a
+    /// peer-reported completion is checked against.
+    pub(crate) fn episode_id_at(&self, env_index: u32) -> Option<&str> {
+        let position = self.slot_position(env_index)?;
+        Some(
+            self.slots
+                .get(position)?
+                .episode
+                .as_ref()?
+                .episode_id
+                .as_str(),
+        )
+    }
+
     /// Claim the next `count` consecutive episode slots. `bounded` refuses the
     /// claim (returning `None`, claiming nothing) once any of them would fall
     /// past `max_episodes`; unbounded always claims.

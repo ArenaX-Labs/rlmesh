@@ -85,7 +85,7 @@ TAGS = adapt.EnvTags(
 
 Field widths must sum to the leaf width; offsets are implied by order. Every model still matches purely by role, so the same model spec resolves against this env and a dict env with no change. The fixed indices live on the env side, where they belong.
 
-`envs/metaworld.py` is the runnable version. It is mixed rather than fully flat: a `Split` tags a flat `proprio` leaf inside a `Dict` that also carries the cameras the VLA specs need, so the same `smolvla`/`act`/`xvla` specs pair with it. Run `uv run eval.py --env metaworld` and read `describe()` — each field prints the slice it reads, e.g. `proprio[3:7] (quat_xyzw->rot6d_rowmajor)` for X-VLA.
+`envs/metaworld.py` is the runnable version. It is mixed rather than fully flat: a `Split` tags a flat `proprio` leaf inside a `Dict` that also carries the cameras the VLA specs need, so the same `smolvla`/`act`/`xvla` specs pair with it. Run `uv run eval.py --env metaworld` and read `explain()` — each field prints the slice it reads, e.g. `proprio[3:7] (quat_xyzw->rot6d_rowmajor)` for X-VLA.
 
 ## When the built-in vocabulary is not enough
 

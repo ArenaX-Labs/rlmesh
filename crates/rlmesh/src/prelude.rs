@@ -8,6 +8,7 @@
 //! [`crate::Result`] is not included. [`Env`] and [`VectorEnv`] methods use the
 //! two-argument `std::result::Result<_, EnvRuntimeError>` form.
 
+pub use crate::async_trait;
 pub use crate::spaces::BinaryPayload;
 pub use crate::{
     BindAddress, BoundEnvServer, BoundModelServer, CloseRequest, CloseResult, ConnectAddress, Env,

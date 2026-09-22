@@ -19,7 +19,7 @@ use rlmesh::spaces::SpaceValue;
 /// for any discrete env without hand-packing bytes.
 struct ConstantModel;
 
-#[async_trait::async_trait]
+#[rlmesh::async_trait]
 impl ModelHandler for ConstantModel {
     async fn predict(&mut self, obs: ModelObservation) -> rlmesh::Result<Vec<SpaceValue>> {
         Ok((0..obs.num_envs).map(|_| SpaceValue::Discrete(0)).collect())

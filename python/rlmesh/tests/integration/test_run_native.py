@@ -332,9 +332,14 @@ def test_run_max_episode_steps_truncates_via_the_runtime() -> None:
         raise
 
     assert result.num_episodes == 2
+    assert len(result.episodes) == 2
     assert all(e.steps == 4 for e in result.episodes)
     assert all(e.truncated and not e.terminated for e in result.episodes)
     assert all(e.reward == 4.0 for e in result.episodes)
+    # A truncation echoed back by the env must not be counted twice or cut the
+    # next episode short: two distinct episodes, each driven for all four steps.
+    assert [e.index for e in result.episodes] == [0, 1]
+    assert len(env.seen_seeds) == 2
 
 
 def test_run_on_a_driven_handle_explains_the_session_conflict() -> None:

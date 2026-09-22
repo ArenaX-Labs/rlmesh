@@ -216,6 +216,47 @@ def test_env_spec_error_badge_keeps_envelope_total() -> None:
     assert env["kind"] == "env" and "params" in env and "runtime" in env
 
 
+class _HalfBoundedEnv:
+    """CartPole-shaped elementwise bounds plus a one-sided uniform Box."""
+
+    def __init__(self) -> None:
+        import gymnasium as gym
+        import numpy as np
+
+        self.observation_space = gym.spaces.Dict(
+            {
+                "cart": gym.spaces.Box(
+                    np.array([-4.8, -np.inf, -0.4189, -np.inf], np.float32),
+                    np.array([4.8, np.inf, 0.4189, np.inf], np.float32),
+                    dtype=np.float32,
+                ),
+                "positive": gym.spaces.Box(0.0, np.inf, (2,), np.float32),
+            }
+        )
+        self.action_space = gym.spaces.Box(-1.0, 1.0, (1,), np.float32)
+
+
+class _HalfBoundedFactory(rlmesh.EnvFactory):
+    def make(self, **kwargs: Any) -> Any:
+        return _HalfBoundedEnv()
+
+
+def test_partially_infinite_box_bounds_serialize_as_null() -> None:
+    # A non-finite edge is JSON null ("unbounded on this edge"), not a crash:
+    # json.dumps(allow_nan=False) would reject a literal Infinity.
+    env = rlmesh.describe(_HalfBoundedFactory)
+    spaces = env["env_spec"]["observation_space"]["details"]["spaces"]
+    cart = spaces["cart"]["details"]
+    assert cart["bounds_kind"] == "elementwise"
+    assert cart["low"] == [-4.800000190734863, None, -0.4189000129699707, None]
+    assert cart["high"] == [4.800000190734863, None, 0.4189000129699707, None]
+    positive = spaces["positive"]["details"]
+    assert positive["bounds_kind"] == "uniform"
+    assert positive["low"] == 0.0 and positive["high"] is None
+    # and the artifact is still the byte-stable Rust-normalized string.
+    assert "Infinity" not in rlmesh.describe_json(_HalfBoundedFactory)
+
+
 def test_model_envelope_omits_spaces() -> None:
     model = rlmesh.describe(_TinyModel)
     assert model["kind"] == "model"

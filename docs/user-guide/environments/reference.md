@@ -303,12 +303,12 @@ Use `rlmesh.describe_json(...)` when you need the exact byte-stable string (for 
 
 ## The serve CLI
 
-`python -m rlmesh.serve --env pkg.module:Factory` runs the factory with no hand-written loop. The target may be an {class}`~rlmesh.EnvFactory`, a bare make-env callable, or a gym id. It is the entrypoint a container uses.
+`python -m rlmesh.serve --env pkg.module:Factory` runs the factory with no hand-written loop. The target may be an {class}`~rlmesh.EnvFactory` or a bare make-env callable, always in `module:callable` form. It is the entrypoint a container uses. For a bare gym id, use the lower-level `python -m rlmesh._cli.serve_env --env CartPole-v1` (see {doc}`/user-guide/serving-environments`).
 
 | Flag            | Env var                     | Meaning                                                                                                                                            |
 | --------------- | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `--address`     | `RLMESH_ADDRESS`            | Bind address (default `0.0.0.0:50051`).                                                                                                            |
-| `--framework`   | `RLMESH_FRAMEWORK`          | `torch` / `jax` / `numpy`. An `EnvFactory` pins it on the class; needed only for a classless `--env` (a make-callable or gym id).                  |
+| `--framework`   | `RLMESH_FRAMEWORK`          | `torch` / `jax` / `numpy`. An `EnvFactory` pins it on the class; needed only for a classless `--env` (a make-callable or env class).               |
 | `--device`      | `RLMESH_DEVICE`             | Device for the incoming action (torch/jax only), e.g. `cuda:0`. Ignored for numpy and the default backend.                                         |
 | `--kwargs-json` | `RLMESH_MAKE_KWARGS`        | JSON object bound to `make(**binding)`: the variation to serve. Absent serves `make()`'s defaults. Validated against `params` before construction. |
 | --              | `RLMESH_NUM_ENVS`           | Serve that many lanes: `make()` runs once per lane and the endpoint steps them independently. Tags and framework carry through.                    |

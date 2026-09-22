@@ -67,9 +67,11 @@ A model that reads its own last command (`adapt.Previous(adapt.ACTION_JOINT_POS)
 
 ## Payload encoding
 
-The adapter encodes only the observation keys the plan actually reads. An env that returns extra keys, or one unencodable key, does not pay for them and does not abort a step over them. This is automatic; there is no flag, and `describe()` shows which keys the plan touches (see {doc}`troubleshooting`).
+The adapter encodes only the observation keys the plan actually reads. An env that returns extra keys, or one unencodable key, does not pay for them and does not abort a step over them. This is automatic; there is no flag, and `explain()` shows which keys the plan touches (see {doc}`troubleshooting`).
 
 Values travel as framework-neutral bytes directed by the spec, so the env's framework and the model's framework are independent and neither forces a conversion on the other. The smaller you make the model's declared input (a single primary camera instead of three, a target resolution the policy needs rather than the camera's native one), the less there is to encode and move. That is a spec decision, made once.
+
+One encoded message is capped at 256 MiB. RLMesh raises tonic's 4 MiB default to that on every env and model client and server, in both directions, and the Python SDK inherits it; the cap is a build constant, not a `ServeOptions` knob. It bounds a single protobuf message (one step response, one predict request, one grouped predict batch), not a stream or a run, so it binds on the widest single step: `num_envs` times one observation's encoded bytes. An oversized message never reaches the peer's handler -- the sender fails its own encode and a receiver aborts its decode, both reporting the gRPC status `OUT_OF_RANGE` with a `message length too large` detail naming the found length and the limit, which surfaces as a transport error rather than an env or model error. If you hit it, step fewer lanes at once or shrink the declared observation (a smaller dtype, one camera, a lower target resolution); there is no setting that raises it.
 
 ## Device and framework placement
 
@@ -112,14 +114,13 @@ so RLMesh rejects it. Serve scalar, or have a natively batched env return
 
 Some things that look tunable are fixed, automatic, or not exposed in the Python API. Knowing which is which saves you looking for a setting that is not there.
 
-| Looks like a knob                                 | Reality                                                                                                                      |
-| ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| Per-step request timeout                          | Exists on the native client but not exposed through `RemoteEnv` / `RemoteVectorEnv` or `run`/`session`. Bound it at the env. |
-| Connect timeout on the high-level client          | The native client accepts one; the public `RemoteEnv` does not pass it through today.                                        |
-| Client-side retry / reconnect                     | Not done for you. A dropped session raises; re-dial a fresh client (see {doc}`troubleshooting`).                             |
-| `predict_concurrency` (server pipelining)         | Present in the Rust serve options but not in the Python `ServeOptions` constructor.                                          |
-| Adapter conversions (resize, normalize, encoding) | Correctness transforms the resolver chooses, not performance dials. Shrink the spec to do less work.                         |
-| Frame-stack depth                                 | A model capability set by `stack=N`, sized by the model's needs, not a tuning parameter.                                     |
+| Looks like a knob                                 | Reality                                                                                                       |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| Per-step request timeout inside `run` / `session` | Not a loop-level knob. Pass `request_timeout_seconds=` to `RemoteEnv` / `RemoteVectorEnv` to bound each call. |
+| Client-side retry / reconnect                     | Not done for you. A dropped session raises; re-dial a fresh client (see {doc}`troubleshooting`).              |
+| `predict_concurrency` (server pipelining)         | Present in the Rust serve options but not in the Python `ServeOptions` constructor.                           |
+| Adapter conversions (resize, normalize, encoding) | Correctness transforms the resolver chooses, not performance dials. Shrink the spec to do less work.          |
+| Frame-stack depth                                 | A model capability set by `stack=N`, sized by the model's needs, not a tuning parameter.                      |
 
 The lifecycle options that `ServeOptions` does expose, `idle_timeout_seconds`, `drain_timeout_seconds`, `close_timeout_seconds`, and `allow_remote_shutdown`, control shutdown behavior rather than throughput; they belong to the session lifecycle covered below.
 
@@ -131,10 +132,10 @@ A short eval is one `run` call that returns a {class}`~rlmesh.RunResult`. A long
 
 A long run should wait for the endpoint to be serving rather than racing its startup. RLMesh exposes two machine-readable signals for this, both documented in full under {doc}`serving-environments`:
 
-- The standard `grpc.health.v1` health service. The overall server health (the empty `""` service name) reports `SERVING` once the listener accepts connections. Probe it with any health client before you dial.
-- The env-serve CLI's `--ready-fd`, which writes the resolved bind address once the server is up. Useful when the bind port is `0` and you need the chosen port back.
+- The standard `grpc.health.v1` health service, registered by the Rust serve paths. The overall server health (the empty `""` service name) reports `SERVING` once the listener accepts connections. Probe it with any health client before you dial. The Python `rlmesh.EnvServer` wrapper does not register it yet.
+- The env-serve CLI's `--ready-fd`, which writes the resolved bind address once the server is up. This is the readiness signal for a Python-served env, and it also covers the case where the bind port is `0` and you need the chosen port back.
 
-The public Python clients connect once when you construct them; they do not poll a not-yet-bound endpoint for you. Gate your run on the health signal, then dial.
+The public Python clients connect once when you construct them; they do not poll a not-yet-bound endpoint for you. Gate your run on whichever signal your serve path provides, then dial.
 
 ## Startup phases
 
@@ -235,11 +236,11 @@ rlmesh.EnvServer(env, "0.0.0.0:5555", options=options).serve()
 Each field controls one part of the lifecycle:
 
 - `idle_timeout_seconds` stops the server after that much inactivity. The window arms when the server starts and every request resets it, so an active eval keeps the server alive and an abandoned one shuts itself down. `None` (the default) never times out.
-- `drain_timeout_seconds` bounds how long shutdown waits for in-flight requests to finish. `None` waits indefinitely.
-- `close_timeout_seconds` bounds how long the env's close hook may take on shutdown. `None` waits indefinitely.
+- `drain_timeout_seconds` bounds how long shutdown waits for in-flight requests to finish. On the Python `EnvServer`, `None` falls back to a 5-second grace and shutdown raises when it is exceeded.
+- `close_timeout_seconds` bounds how long the env's close hook may take on shutdown. `None` falls back to the same 5-second grace on the Python `EnvServer`, so a slow env teardown has to set this explicitly.
 - `allow_remote_shutdown` decides whether a client `shutdown` RPC is honored. Off by default, so a connected peer cannot stop your server.
 
-The defaults are conservative: no idle shutdown, unbounded drain and close, remote shutdown off. Set them when a server outlives a single run.
+The defaults are conservative: no idle shutdown, a 5-second drain and close grace on the Python server, remote shutdown off. Set them when a server outlives a single run.
 
 ## Where next
 

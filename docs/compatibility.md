@@ -59,21 +59,21 @@ The floor harness runs via `mise run test:python:floors`, which builds a `cp310`
 `rlmesh.Tensor` is a validated transport container with DLPack and buffer-protocol edges. It is not an ndarray. Compute, slicing, and broadcasting belong to the frameworks; RLMesh moves bytes and metadata between them and the wire.
 
 - Zero-copy is asymmetric: exporting (`memoryview`, `__dlpack__`, framework views) is zero-copy; importing (constructing `Tensor`, `Tensor.from_dlpack`) currently always copies. Zero-copy import is planned.
-- Integer precision: Box bounds carry dtype-typed bytes for integer/boolean dtypes (a single scalar for uniform bounds, one per element otherwise, little-endian in the space's dtype), and containment compares in the dtype's native domain, so `int64`/`uint64` bounds and values are exact to the full range (including `i64::MIN`, `i64::MAX`, and `u64::MAX`). Float dtypes keep the `double`-based bounds. The legacy scalar-list wire encoding still stores integers in a signed 64-bit slot, so `uint64` values above 2^63 wrap on that path (the raw byte encoding used by modern clients is exact).
+- Integer precision: Box bounds carry dtype-typed bytes for integer/boolean dtypes (a single scalar for uniform bounds, one per element otherwise, little-endian in the space's dtype), and containment compares in the dtype's native domain, so `int64`/`uint64` bounds and values are exact to the full range (including `i64::MIN`, `i64::MAX`, and `u64::MAX`). Float dtypes keep the `double`-based bounds. `Scalar`, the dtype-independent decode view in `rlmesh-spaces`, has no unsigned variant, so a `uint64` element above 2^63 is carried through it as the wrapped `i64` bit pattern and reinterpreted by `Scalar::as_u64`; the wire bytes themselves are exact.
 - Mutation: in-place preprocessing on a decoded observation never corrupts the wire buffer. NumPy and Torch decode to owned, writable copies; JAX decodes to an immutable array. The explicit zero-copy views (`from_dlpack`, the buffer protocol, `torch.as_tensor(copy=False)`) are read-only; NumPy enforces this, Torch does not (see the Torch backend page).
 
 ## Workflow Editions
 
-Workflow semantics are governed by a negotiated workflow edition. Each base edition names a behavioral contract documented in {doc}`editions/index`; prerelease and local builds append exact cohort suffixes. The handshake selects the highest edition supported by both peers. Editions change only on deliberate semantic redesigns; new features and new APIs do not mint editions. The `2026.06` edition sealed at 0.1.0.
+Workflow semantics are governed by a negotiated workflow edition. Each base edition names a behavioral contract documented in {doc}`editions/index`; prerelease and local builds append exact cohort suffixes. The handshake only declares editions; the runtime selects the highest edition mutual across the env, the model, and the runtime itself. Editions change only on deliberate semantic redesigns; new features and new APIs do not mint editions. The `2026.06` edition sealed at 0.1.0.
 
 ## Versioning and forward-compatibility roadmap
 
-Today, peers must run the same release. Forward-compatibility guarantees become binding only once the code enforces them and a cross-version path is proven. The planned work, with target windows:
+Today, peers must run the same release. Forward-compatibility guarantees become binding only once the code enforces them and a cross-version path is proven. The planned work, in order:
 
 - **v0.1.0.** First stable release. Seals the `2026.06` workflow edition, freezing its spec checksum, and freezes the `rlmesh-wire-v1` protocol generation.
-- **Hardening, around July 2026.** A cross-version test harness and a shared compatibility helper, stricter protocol checks, and the workflow edition made load-bearing in the runtime. This enables edition-driven behavior and a cross-version path once a second edition exists.
-- **Forward tolerance, around late July 2026.** Edition retention guarantees, a dtype negotiation floor, and adapter forward-tolerance.
-- **Second edition, around August 2026.** Mint a second workflow edition to exercise negotiation against a real semantic change.
+- **Hardening, targeted for 0.2.** A cross-version test harness and a shared compatibility helper, stricter protocol checks, and the workflow edition made load-bearing in the runtime. This enables edition-driven behavior and a cross-version path once a second edition exists.
+- **Forward tolerance, after hardening.** Edition retention guarantees, a dtype negotiation floor, and adapter forward-tolerance.
+- **Second edition, when a real semantic change requires one.** Mint a second workflow edition to exercise negotiation against a real semantic change.
 - **Rust facade API, near term.** Stabilize the `rlmesh` facade crate and the CLI commands once they settle; the other crates stay internal with no stability promise.
 - **v1.0, date not set.** Forward-compatibility guarantees become binding: newer runtimes accept older stable clients, and sealed editions are never pruned. Gated on the hardening above and a proven cross-version path.
 
@@ -96,4 +96,4 @@ Core feature releases move together. Patch releases may be artifact-specific whe
 python scripts/check_rlmesh_policy.py
 ```
 
-`mise run check` includes `mise run policy:check`, `mise run protocol:baseline-verify` (live protos byte-identical to the frozen generation baseline), and `mise run protocol:breaking` (`buf breaking` against the same baseline, so a wire-incompatible edit within `rlmesh-wire-v1` fails CI even after a baseline re-snapshot).
+`mise run check` includes `mise run policy:check`, `mise run protocol:baseline-verify` (live protos byte-identical to the frozen generation baseline), and `mise run protocol:breaking` (`buf breaking` against the same committed baseline, so a wire-incompatible edit within `rlmesh-wire-v1` fails CI unless the baseline is deliberately re-snapshotted, which re-baselines the comparison). The baseline is only re-snapshotted for comment-level edits and at a generation mint, so a real wire break is caught by the byte goldens in `crates/rlmesh-proto/tests/wire_golden.rs` and by review of any baseline diff.

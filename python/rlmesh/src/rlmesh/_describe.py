@@ -46,6 +46,7 @@ from __future__ import annotations
 import argparse
 import inspect
 import json
+import math
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any, cast
@@ -96,8 +97,27 @@ def describe_json(
     # a string rather than crashing the artifact; allow_nan=False matches the Rust
     # codec's RFC-8259 strictness (NaN/Infinity are rejected, not silently passed).
     return describe_envelope_normalize(
-        kind, json.dumps(pieces, allow_nan=False, default=repr), generated_at
+        kind, json.dumps(_finite(pieces), allow_nan=False, default=repr), generated_at
     )
+
+
+def _finite(value: object) -> object:
+    """Map non-finite floats to ``None`` so the envelope stays serializable.
+
+    A half-bounded Box (CartPole's ``low``/``high``) carries ``inf`` leaves, and
+    ``allow_nan=False`` would reject them. ``null`` is serde_json's own rendering
+    of a non-finite ``f64``, so the Rust normalizer round-trips it unchanged; in a
+    Box edge it reads as "unbounded on this edge".
+    """
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {
+            key: _finite(item) for key, item in cast("dict[Any, Any]", value).items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_finite(item) for item in cast("list[Any]", value)]
+    return value
 
 
 def _gather(

@@ -27,8 +27,10 @@ Build the image and run it, then dial it with `rlmesh.RemoteEnv`:
 
 ```bash
 docker build -t my-env:latest examples/python/byo_container/env
-docker run --rm -p 50051:50051 my-env:latest
+docker run --rm -p 127.0.0.1:50051:50051 my-env:latest
 ```
+
+The endpoint is plaintext gRPC and unauthenticated, so the published port is pinned to the host loopback here; see [Exposure and authentication](../user-guide/serving-environments.md#exposure-and-authentication) before publishing it wider.
 
 ```python
 import rlmesh

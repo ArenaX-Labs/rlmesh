@@ -210,3 +210,39 @@ def test_require_float_rejects_nan_keeps_inf() -> None:
     assert require_float("-inf", "low") == float("-inf")
     with pytest.raises(ValueError, match="NaN"):
         require_float("nan", "low")
+
+
+def test_box_integer_bounds_are_exact_to_the_full_64_bit_range() -> None:
+    from rlmesh import spaces
+
+    # An exact Python int must not round-trip through a double: float() would
+    # round anything above 2**53 and saturate a uint64 bound at i64::MAX, which
+    # is the full-range exactness docs/compatibility.md promises.
+    assert spaces.Box(0, 2**64 - 1, shape=[1], dtype="uint64").high == [2**64 - 1]
+    int64 = spaces.Box(-(2**63), 2**63 - 1, shape=[1], dtype="int64")
+    assert int64.low == [-(2**63)]
+    assert int64.high == [2**63 - 1]
+    assert spaces.Box(0, 2**53 + 1, shape=[1], dtype="int64").high == [2**53 + 1]
+
+
+def test_box_float_bounds_are_unchanged() -> None:
+    from rlmesh import spaces
+
+    # Floats keep the double path, including a float-form bound on an integer
+    # dtype (truncated into the integer domain) and the fully open range.
+    box = spaces.Box(-1.5, 1.5, shape=[2], dtype="float32")
+    assert box.bounds_kind == "uniform"
+    assert box.low == -1.5
+    assert box.high == 1.5
+    assert spaces.Box(0.0, 10.0, shape=[1], dtype="int64").high == [10]
+    unbounded = spaces.Box(float("-inf"), float("inf"), shape=[1], dtype="float32")
+    assert unbounded.bounds_kind == "unbounded"
+    assert spaces.Box("-inf", 1.0, shape=[1], dtype="float32").low == float("-inf")
+
+
+def test_box_rejects_nan_bounds() -> None:
+    from rlmesh import spaces
+
+    for low, high in ((float("nan"), 1.0), (0.0, float("nan"))):
+        with pytest.raises(ValueError, match="NaN"):
+            spaces.Box(low, high, shape=[1], dtype="float32")

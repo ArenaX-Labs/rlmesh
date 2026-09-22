@@ -20,15 +20,24 @@ use crate::{ConnectAddress, Error, Result, spaces};
 /// hand-written loop steps a [`RemoteEnv`](crate::RemoteEnv) and a `RemoteModel`
 /// in lockstep:
 ///
-/// ```ignore
-/// let mut obs = env.reset(reset_req).await?.observations.remove(0);
+/// ```no_run
+/// use rlmesh::prelude::*;
+///
+/// # async fn drive(mut env: RemoteEnv, mut model: rlmesh::RemoteModel) -> rlmesh::Result<()> {
+/// let mut obs = env
+///     .reset(ResetRequest::default())
+///     .await?
+///     .observation
+///     .expect("env returned an observation");
 /// model.reset(None);
 /// loop {
 ///     let action = model.predict(obs).await?;
-///     let step = env.step(StepRequest { actions: vec![action], ..Default::default() }).await?;
-///     if step.terminated[0] || step.truncated[0] { break; }
-///     obs = step.observations.into_iter().next().unwrap();
+///     let step = env.step(StepRequest { action: Some(action), ..Default::default() }).await?;
+///     if step.terminated || step.truncated { break; }
+///     obs = step.observation.expect("env returned an observation");
 /// }
+/// # Ok(())
+/// # }
 /// ```
 ///
 /// Use this when your code owns the loop; to hand the loop to rlmesh instead,

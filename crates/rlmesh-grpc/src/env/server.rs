@@ -248,7 +248,7 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
         // `subset_step`: the runtime may keep one step/reset per lane in
         // flight on the Join stream (see Environment::supports_lanes).
         let capabilities: &[&str] = if env.supports_lanes() {
-            &["subset_step"]
+            &[rlmesh_proto::capabilities::ENV_SUBSET_STEP]
         } else {
             &[]
         };
@@ -492,19 +492,25 @@ async fn handle_env_request<E: Environment>(
             // length-mismatched lanes. Validate before touching the env or the
             // tracker: silently deduping/truncating would start phantom or
             // misaligned episodes (seeds are positionally aligned to lanes).
-            let result = match validate_partial_reset(
-                partial,
-                &env_indices,
-                &seeds,
-                &pushed_ids,
-                num_envs,
-            ) {
-                Err(message) => Err(EnvError::new(
-                    crate::error::EnvErrorCode::InvalidAction,
-                    message,
-                )),
-                Ok(()) => {
-                    run_env_op_with_deadline(env.reset(reset_req), timeout_ms, "env.reset").await
+            let result = if partial && !supports_lanes {
+                // A partial reset needs a lane endpoint: fail loud rather than
+                // silently treat it as a full-width reset.
+                tracing::error!("ResetRequest.env_indices set but this env does not step lanes");
+                Err(EnvError::new(
+                    crate::error::EnvErrorCode::Unsupported,
+                    "partial reset (ResetRequest.env_indices) is not supported by this \
+                     environment",
+                ))
+            } else {
+                match validate_partial_reset(partial, &env_indices, &seeds, &pushed_ids, num_envs) {
+                    Err(message) => Err(EnvError::new(
+                        crate::error::EnvErrorCode::InvalidAction,
+                        message,
+                    )),
+                    Ok(()) => {
+                        run_env_op_with_deadline(env.reset(reset_req), timeout_ms, "env.reset")
+                            .await
+                    }
                 }
             };
 
@@ -1859,7 +1865,7 @@ mod tests {
             join_request, join_response,
         };
 
-        // num_envs == 2.
+        // num_envs == 2; this env steps lanes, so a partial reset is admissible.
         let env = Arc::new(terminating_env(rlmesh_spaces::AutoresetMode::Disabled));
         let tracker = Arc::new(Mutex::new(super::super::episode::EpisodeTracker::new()));
 
@@ -1893,7 +1899,7 @@ mod tests {
 
         // Out of range: lane 2 does not exist for num_envs == 2.
         expect_invalid(
-            super::handle_env_request(reset(vec![2], vec![]), env.clone(), tracker.clone(), false)
+            super::handle_env_request(reset(vec![2], vec![]), env.clone(), tracker.clone(), true)
                 .await,
             "out of range",
         );
@@ -1903,7 +1909,7 @@ mod tests {
                 reset(vec![0, 0], vec![]),
                 env.clone(),
                 tracker.clone(),
-                false,
+                true,
             )
             .await,
             "duplicate",
@@ -1914,7 +1920,7 @@ mod tests {
                 reset(vec![0, 1], vec![7]),
                 env.clone(),
                 tracker.clone(),
-                false,
+                true,
             )
             .await,
             "seeds length",
@@ -1925,6 +1931,47 @@ mod tests {
             tracker.active_episode_id(0).is_none() && tracker.active_episode_id(1).is_none(),
             "a rejected partial reset must not start any episode"
         );
+    }
+    #[tokio::test]
+    async fn partial_reset_needs_a_lane_endpoint() {
+        // An env that does not advertise `subset_step` refuses a partial reset
+        // with UNSUPPORTED instead of quietly running it as a full-width reset,
+        // mirroring the Step arm and the 2026.06 edition text.
+        use std::sync::Arc;
+        use tokio::sync::Mutex;
+
+        use rlmesh_proto::env::v1::{
+            EnvErrorCode as ProtoEnvErrorCode, JoinRequest, ResetRequest as ProtoResetRequest,
+            join_request, join_response,
+        };
+
+        let env = Arc::new(terminating_env(rlmesh_spaces::AutoresetMode::Disabled));
+        let tracker = Arc::new(Mutex::new(super::super::episode::EpisodeTracker::new()));
+        let resp = super::handle_env_request(
+            JoinRequest {
+                kind: Some(join_request::Kind::Reset(ProtoResetRequest {
+                    env_indices: vec![0],
+                    ..Default::default()
+                })),
+                request_id: "partial".to_string(),
+            },
+            env,
+            tracker,
+            false,
+        )
+        .await;
+        match resp.kind {
+            Some(join_response::Kind::Error(e)) => {
+                assert_eq!(
+                    e.code,
+                    ProtoEnvErrorCode::Unsupported as i32,
+                    "{}",
+                    e.message
+                );
+                assert!(e.message.contains("partial reset"), "{}", e.message);
+            }
+            other => panic!("expected UNSUPPORTED, got {other:?}"),
+        }
     }
 
     #[tokio::test]

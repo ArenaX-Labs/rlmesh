@@ -17,10 +17,11 @@ pip install rlmesh
 pip install "rlmesh[numpy]"
 pip install "rlmesh[gymnasium]"
 pip install "rlmesh[torch]"
+pip install "rlmesh[jax]"
 pip install "rlmesh[hf]"
 ```
 
-Pick `gymnasium` when serving a Gymnasium environment, or `gym` for a legacy classic-Gym stack. `torch` decodes client-side values as Torch tensors; `numpy` decodes them as arrays. `hf` adds host-side, container-less resolution of `hf://` model weights and EnvHub sources; in a sandbox the container fetches them for you. See {doc}`user-guide/backends` for how the backend extras change value decoding.
+Pick `gymnasium` when serving a Gymnasium environment, or `gym` for a legacy classic-Gym stack. `torch` decodes client-side values as Torch tensors; `jax` decodes them as JAX arrays; `numpy` decodes them as arrays. `hf` adds host-side, container-less resolution of `hf://` model weights and EnvHub sources; in a sandbox the container fetches them for you. See {doc}`user-guide/backends` for how the backend extras change value decoding.
 
 ## Repository Examples
 
@@ -31,4 +32,4 @@ mise install
 mise run setup
 ```
 
-Then run examples with `uv run`. Sandbox examples need Docker access. Optional example folders keep their own lockfiles and environments, so heavier dependencies stay out of the root development environment.
+Then run examples with `uv run`. Sandbox examples need Docker access. The in-repository examples share this environment; heavier demos that need their own lockfile live in the separate `rlmesh-examples` repository.

@@ -70,6 +70,12 @@ typedef enum RlmeshStatus {
 RLMESH_API const char* rlmesh_last_error_message(void);
 RLMESH_API int rlmesh_last_error_is_recoverable(void);
 
+/* The status that same call recorded — RLMESH_OK when none is. Redundant after
+ * a status-returning call (it returned the same code); it is the only status
+ * channel the pointer-returning calls have, since they report failure by
+ * returning NULL. */
+RLMESH_API RlmeshStatus rlmesh_last_error_status(void);
+
 /* ---- dtype + tensor ----------------------------------------------------- */
 
 /* DLPack (code, bits, lanes): code is DLDataTypeCode (int=0, uint=1, float=2,
@@ -187,7 +193,10 @@ RLMESH_API const RlmeshValue* rlmesh_value_tuple_get(const RlmeshValue* value, s
 RLMESH_API const RlmeshValue* rlmesh_value_dict_get(const RlmeshValue* value, const char* key);
 /* The `index`-th dict key in sorted order: `*out_len` UTF-8 bytes, NOT
  * NUL-terminated, valid while `value` lives. Pair with rlmesh_value_len to
- * iterate a dict (its keys are otherwise undiscoverable from C). */
+ * iterate a dict (its keys are otherwise undiscoverable from C).
+ * NOTE: a dict VALUE indexes in sorted key order, a dict SPACE in declaration
+ * order (rlmesh_space_dict_key) — the two can disagree, so match a value child
+ * to its space by KEY (rlmesh_space_dict_get), never by index. */
 RLMESH_API RlmeshStatus rlmesh_value_dict_key(const RlmeshValue* value, size_t index,
                                               const char** out_ptr, size_t* out_len);
 /* The `index`-th dict child, in the SAME sorted-key order as
@@ -236,8 +245,10 @@ RLMESH_API RlmeshStatus rlmesh_space_len(const RlmeshSpaceSpec* spec, size_t* ou
 RLMESH_API const RlmeshSpaceSpec* rlmesh_space_tuple_get(const RlmeshSpaceSpec* spec, size_t index);
 RLMESH_API const RlmeshSpaceSpec* rlmesh_space_dict_get(const RlmeshSpaceSpec* spec,
                                                         const char* key);
-/* The `index`-th dict key (declaration order, parallel to the children):
- * `*out_len` UTF-8 bytes, NOT NUL-terminated, valid while `spec` lives. */
+/* The `index`-th dict key (declaration order, parallel to the children, and the
+ * order the wire encodes the dict's leaves in): `*out_len` UTF-8 bytes, NOT
+ * NUL-terminated, valid while `spec` lives. This is NOT the sorted order
+ * rlmesh_value_dict_key uses — pair a space child with a value child by key. */
 RLMESH_API RlmeshStatus rlmesh_space_dict_key(const RlmeshSpaceSpec* spec, size_t index,
                                               const char** out_ptr, size_t* out_len);
 /* The `index`-th dict child, in the SAME declaration order as
@@ -273,7 +284,10 @@ RLMESH_API RlmeshStatus rlmesh_space_copy_nvec(const RlmeshSpaceSpec* spec, int6
 /* ---- bytes -------------------------------------------------------------- */
 
 /* An owned buffer produced by the capi (its `cap` lets the capi reclaim the
- * allocation). Free with rlmesh_bytes_free. */
+ * allocation). Free with rlmesh_bytes_free. An EMPTY buffer is normalized to
+ * `{NULL, 0, 0}` — `data` is never a non-NULL zero-length pointer, so a
+ * consumer may branch on `data` as well as on `len` — and rlmesh_bytes_free
+ * accepts that form. */
 typedef struct RlmeshBytes {
   uint8_t* data;
   size_t len;
@@ -454,7 +468,8 @@ RLMESH_API RlmeshStatus rlmesh_model_serve(RlmeshModel* model, const char* bind_
  * immediately and the blocked call unwinds shortly after. NULL is a no-op.
  *
  * Cancellation is terminal for the handle: a cancelled model refuses further
- * runs. A cancelled serve returns RLMESH_OK after running on_close; a cancelled
+ * runs. A cancelled serve returns RLMESH_OK after running on_close -- once, and
+ * only after any predict still inside the C callback has returned; a cancelled
  * run_local (this one, or any later one on the handle) returns
  * RLMESH_ERR_CANCELLED, since it has no report to give. */
 RLMESH_API void rlmesh_model_cancel(RlmeshModel* model);

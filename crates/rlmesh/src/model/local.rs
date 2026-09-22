@@ -34,13 +34,19 @@ pub(super) async fn run_local<H>(
 where
     H: ModelHandler + 'static,
 {
-    let mut env = rlmesh_grpc::EnvClient::connect(&options.env_address.to_string())
-        .await
-        .map_err(Error::from)?;
+    let mut env = rlmesh_grpc::EnvClient::connect_with_token(
+        &options.env_address.to_string(),
+        &options.token,
+    )
+    .await
+    .map_err(Error::from)?;
     let handshake = env.handshake().await.map_err(Error::from)?;
     // A lane endpoint steps/resets lanes individually, so a num_envs > 1
     // session can run driver-owned (DISABLED) resets lane by lane.
-    let subset_step = rlmesh_proto::has_capability(&handshake.capabilities, "subset_step");
+    let subset_step = rlmesh_proto::has_capability(
+        &handshake.capabilities,
+        rlmesh_proto::capabilities::ENV_SUBSET_STEP,
+    );
     let env_contract = env_contract_from_proto(handshake.env_contract)
         .map_err(|err| Error::Internal(format!("invalid spaces spec from env: {err}")))?;
     // The handler returns typed actions the runtime encodes against this space;

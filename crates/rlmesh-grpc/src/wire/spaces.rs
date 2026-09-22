@@ -249,8 +249,9 @@ fn space_kind_from_proto(
 /// The native type has FOUR bound variants but the wire has only TWO arms
 /// (`Uniform`/`Elementwise`), both carrying raw little-endian dtype bytes:
 /// - `Uniform`/`Elementwise` hold `f64` and are encoded into the dtype's byte
-///   width here (`encode_float_bound`), losing nothing for float dtypes and
-///   round-tripping integer dtypes whose float-form bound is representable
+///   width here (`encode_float_bound`), quantizing to the dtype's precision
+///   (`f16`/`f32` bounds round to nearest, as values do) and round-tripping
+///   integer dtypes whose float-form bound is representable
 ///   (out-of-range/fractional bounds are rejected at construction in
 ///   `rlmesh-spaces`, so they never reach this point).
 /// - `TypedUniform`/`TypedElementwise` already hold exact dtype bytes and pass
@@ -345,7 +346,7 @@ fn box_bounds_from_proto(
 fn encode_float_bound(value: f64, dtype: native::DType) -> Vec<u8> {
     use native::DType;
     match dtype {
-        DType::Float16 => half::f16::from_f64(value).to_le_bytes().to_vec(),
+        DType::Float16 => native::f64_to_f16_bits(value).to_le_bytes().to_vec(),
         DType::Float32 => (value as f32).to_le_bytes().to_vec(),
         DType::Float64 | DType::Unspecified => value.to_le_bytes().to_vec(),
         DType::Bool => vec![u8::from(value != 0.0)],
@@ -610,10 +611,46 @@ mod tests {
                 }),
                 vec![2],
             ),
+            box_spec(
+                native::DType::Float16,
+                native::BoxBounds::Uniform(native::UniformBounds {
+                    low: -1.0,
+                    high: 1.0,
+                }),
+                vec![3],
+            ),
         ];
         for spec in cases {
             assert_eq!(roundtrip(&spec), spec, "roundtrip mismatch for {spec:?}");
         }
+    }
+
+    #[test]
+    fn float16_box_bound_rounds_directly_from_f64() {
+        // The f16 bound encoding must round f64 -> f16 directly, the way values
+        // do (`rlmesh_spaces::f64_to_f16_bits`). 1.0 + 2^-11 + 2^-25 sits just
+        // above the midpoint between 0x3C00 and 0x3C01, so a correct direct
+        // rounding yields 0x3C01; an f32 intermediate (`half::f16::from_f64` on
+        // x86 F16C) double-rounds to the even 0x3C00. Pinning the bytes keeps
+        // the sealed wire host-independent.
+        let sentinel = 1.0 + 2.0f64.powi(-11) + 2.0f64.powi(-25);
+        let spec = box_spec(
+            native::DType::Float16,
+            native::BoxBounds::Uniform(native::UniformBounds {
+                low: -sentinel,
+                high: sentinel,
+            }),
+            vec![1],
+        );
+        let proto::space_spec::Spec::Box(b) = space_spec_to_proto(&spec).spec.expect("box spec")
+        else {
+            panic!("expected Box");
+        };
+        let proto::box_spec::Bounds::Uniform(bounds) = b.bounds.expect("bounds") else {
+            panic!("expected uniform bounds");
+        };
+        assert_eq!(bounds.high, vec![0x01, 0x3C]);
+        assert_eq!(bounds.low, vec![0x01, 0xBC]);
     }
 
     #[test]

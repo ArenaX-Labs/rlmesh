@@ -332,7 +332,7 @@ impl RuntimeSessionSpec {
 /// per-episode results on the report.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EpisodeSummary {
-    /// 0-based completion index within the session.
+    /// 1-based slot ordinal within the session, in completion order.
     pub episode_index: i64,
     /// The vector lane the episode ran on (0 for a single env).
     pub env_index: i32,

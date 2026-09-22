@@ -114,12 +114,15 @@ int main(int argc, char** argv) {
   printf("connecting to %s ...\n", address);
   RlmeshRunReport report = {0};
   RlmeshStatus status = rlmesh_model_run_local(model, address, &options, &report);
-  rlmesh_model_free(model);
-
   if (status != RLMESH_OK) {
+    /* Read the message BEFORE the next capi call on this thread -- including
+     * rlmesh_model_free -- which invalidates it. */
     fprintf(stderr, "run failed: %s\n", rlmesh_last_error_message());
+    rlmesh_model_free(model);
     return 1;
   }
+  rlmesh_model_free(model);
+
   printf("run report: episodes=%lld steps=%lld reward=%.1f mean=%.1f\n",
          (long long)report.total_episodes, (long long)report.total_steps, report.total_reward,
          report.mean_reward);

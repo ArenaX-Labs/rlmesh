@@ -30,7 +30,6 @@ It also exposes the contract and spaces the server reported, so you can shape ac
 
 ```python
 print(env.env_contract)
-print(env.spec)               # alias for env_contract
 print(env.observation_space)
 print(env.action_space)
 print(env.address)            # resolved endpoint address
@@ -86,6 +85,12 @@ RemoteEnv(path="/tmp/rlmesh-env.sock")
 
 `address` and the helpers are mutually exclusive, and unix sockets are unavailable on Windows.
 
+Two optional keyword arguments bound the two waits: `connect_timeout_seconds=` bounds the dial and handshake at construction, and `request_timeout_seconds=` bounds each `reset`, `step`, and `render` call. Both default to `None`, which waits as long as the endpoint takes.
+
+```python
+RemoteEnv("127.0.0.1:5555", connect_timeout_seconds=5.0, request_timeout_seconds=30.0)
+```
+
 ## Connection lifecycle
 
 The connection has three stages: dial-and-handshake at construction, the `reset`/`step` exchange, and teardown.
@@ -111,9 +116,10 @@ Two teardown paths exist, and they differ in what they affect:
 A wrong-arity connection fails at construction with `ValueError`, after the client has already closed its dial, so there is nothing to clean up. An unreachable or refused endpoint surfaces as a transport error from the same construction call.
 
 ```{note}
-The remote clients do not reconnect on their own, and the public constructors do
-not expose connect or per-call timeouts. A dropped endpoint surfaces as a
-transport error on the next call; rebuild the client to reconnect. The
+The remote clients do not reconnect on their own. A dropped endpoint surfaces
+as a transport error on the next call; rebuild the client to reconnect. Pass
+`connect_timeout_seconds=` to bound the dial and `request_timeout_seconds=` to
+bound each call, so a wedged endpoint raises instead of blocking forever. The
 {doc}`sandbox sessions <sandbox>`, which own the server process, set a connect
 timeout internally because they retry while their container boots.
 ```

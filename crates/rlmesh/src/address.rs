@@ -135,7 +135,7 @@ impl FromStr for BindAddress {
 /// unlinking a socket still in use. Non-socket files are left for `bind` to
 /// reject.
 #[cfg(unix)]
-pub(crate) fn remove_stale_socket(path: &std::path::Path) -> Result<()> {
+pub fn remove_stale_socket(path: &std::path::Path) -> Result<()> {
     use std::io::ErrorKind;
     use std::os::unix::fs::FileTypeExt;
 

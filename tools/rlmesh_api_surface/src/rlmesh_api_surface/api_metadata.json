@@ -175,6 +175,34 @@
       "stability": "Experimental",
       "description": "A factory's or model's declared construction-parameter surface."
     },
+    "rlmesh.Vector": {
+      "stability": "Experimental",
+      "description": "Declared vector-valued construction parameter shape."
+    },
+    "rlmesh.SandboxBuild": {
+      "stability": "Experimental"
+    },
+    "rlmesh.SandboxEnv": {
+      "stability": "Experimental"
+    },
+    "rlmesh.SandboxModel": {
+      "stability": "Experimental"
+    },
+    "rlmesh.SandboxRuntime": {
+      "stability": "Experimental"
+    },
+    "rlmesh.SandboxVectorEnv": {
+      "stability": "Experimental"
+    },
+    "rlmesh.RLMeshException": {
+      "description": "Base class for every exception RLMesh raises."
+    },
+    "rlmesh.EnvironmentException": {
+      "description": "Raised when an environment endpoint fails a reset, step, or render."
+    },
+    "rlmesh.ProtocolException": {
+      "description": "Reserved for protocol-level faults; not raised in 0.1.0."
+    },
     "rlmesh.ServeOptions": {
       "description": "Server lifecycle options."
     },
@@ -200,7 +228,7 @@
       "description": "Installed RLMesh package version."
     },
     "rlmesh.__build__": {
-      "description": "Commit-stamped build identity (workflow edition) of the native core, distinguishing two builds that share a package version."
+      "description": "Workflow edition of the native core: the sealed `YYYY.MM` name on a release build, a cohort-suffixed name (`YYYY.MM-<prerelease>` / `YYYY.MM-dev.<git>`) on prerelease and source builds."
     },
     "rlmesh.spaces": {
       "description": "Space wrappers and Gymnasium conversion helpers."
@@ -211,9 +239,21 @@
     "rlmesh.numpy.NumpyValue": {
       "description": "Primitive, NumPy array, or nested RLMesh-compatible value."
     },
+    "rlmesh.numpy.SandboxBuild": {
+      "stability": "Experimental"
+    },
     "rlmesh.numpy.SandboxEnv": {
       "stability": "Experimental",
       "description": "NumPy-backed owned sandbox session for one environment."
+    },
+    "rlmesh.numpy.SandboxInfo": {
+      "stability": "Experimental"
+    },
+    "rlmesh.numpy.SandboxModel": {
+      "stability": "Experimental"
+    },
+    "rlmesh.numpy.SandboxRuntime": {
+      "stability": "Experimental"
     },
     "rlmesh.numpy.SandboxVectorEnv": {
       "stability": "Experimental",

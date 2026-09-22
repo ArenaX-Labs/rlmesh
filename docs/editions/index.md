@@ -1,6 +1,6 @@
 # Workflow Editions
 
-A workflow edition is a named behavioral contract for RLMesh workflow semantics. The base edition (`YYYY.MM`) identifies one spec document in this section; prerelease and local builds append a cohort suffix so moving builds fail closed unless both sides are from the same cohort. Exactly one edition governs a session, chosen during handshake.
+A workflow edition is a named behavioral contract for RLMesh workflow semantics. The base edition (`YYYY.MM`) identifies one spec document in this section; prerelease and local builds append a cohort suffix so moving builds fail closed unless both sides are from the same cohort. Exactly one edition governs a session, reconciled by the runtime after the handshake.
 
 ```{note}
 The bare `2026.06` edition sealed at 0.1.0. Prerelease and local builds use exact cohort suffixes (for example `2026.06-dev.<git>`) so moving builds fail closed rather than guess they are compatible.
@@ -10,9 +10,9 @@ Editions answer a different question than the protocol generation. The protocol 
 
 ## Negotiation
 
-The client sends every edition it can operate under in `HandshakeRequest.supported_workflow_editions`. The server intersects that offer with its own supported set and selects the highest mutual edition. A matching suffixed cohort wins over its sealed fallback; if prerelease cohorts differ, peers can only interoperate through a sealed edition that both sides explicitly advertise. The selection is returned in `HandshakeResponse.selected_workflow_edition`. The runtime currently supports a single edition and refuses any other; making the selected edition drive runtime behavior is on the roadmap (see {doc}`../compatibility`).
+The client **declares** every edition it can operate under in `HandshakeRequest.supported_workflow_editions`, and the server replies with its own supported set in `HandshakeResponse.supported_workflow_editions`. The handshake decides only protocol-generation compatibility; it selects no edition, and there is no `HandshakeResponse.selected_workflow_edition` field. The runtime is the sole edition authority because only it sees every participant: after the handshake it takes the floor across env, model, and runtime (`negotiate_session_floor`, reached through `env_floor`) and pins that edition on `ResolveAdapterRequest.selected_workflow_edition` — and, when a runtime sends one, `ConfigureEnvRequest.selected_workflow_edition`. A matching suffixed cohort wins over its sealed fallback; if prerelease cohorts differ, peers can only interoperate through a sealed edition that both sides explicitly advertise. The runtime currently supports a single edition and refuses any other; making the selected edition drive runtime behavior is on the roadmap (see {doc}`../compatibility`).
 
-- An empty intersection means `compatible = false`. The response lists the server's supported editions for diagnostics, but there is no second round trip because the client's offer was already complete.
+- An empty intersection does not set `compatible = false`, which reflects protocol generation alone: such a peer handshakes successfully and the session then fails at the runtime's floor, with a diagnostic naming what each tier (env, model, runtime) offered. The response lists the server's supported editions for that diagnostic, but there is no second round trip because the client's offer was already complete.
 - Servers accept only editions they explicitly support. A server never accepts an unknown edition on the assumption that it is probably compatible; forward compatibility lives in the client's offer set, not in server leniency.
 
 ## Edition vs. Capability vs. Bug Fix

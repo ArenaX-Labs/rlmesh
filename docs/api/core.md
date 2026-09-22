@@ -21,6 +21,8 @@ The top-level client and model classes are dependency-free wrappers around RLMes
 | `rlmesh.SandboxModel`     | Run a model policy in its own container (experimental).               |
 | `rlmesh.ServeOptions`     | Native serve lifecycle options.                                       |
 | `rlmesh.Tensor`           | Native tensor value used by dependency-free clients.                  |
+| `rlmesh.Recorder`         | Accumulate run results and export a portable bundle.                  |
+| `rlmesh.RLMeshException`  | Base class for every exception RLMesh raises.                         |
 | `rlmesh.adapters`         | Observation/action adapters and contract-based resolution.            |
 | `rlmesh.spaces`           | Space wrappers and Gymnasium conversion helpers.                      |
 | `rlmesh.types`            | Structural protocols and value aliases.                               |
@@ -83,6 +85,45 @@ Two module-level sentinels change what `run` and `session` do:
 
 - `rlmesh.NO_ADAPTER`: pass as a model's `spec` to explicitly skip adapter resolution; the model handles raw env observations and actions itself.
 - `rlmesh.RANDOM_SAMPLE`: pass as the model to `rlmesh.run` / `rlmesh.session` to sample the env's action space each step, a random baseline with no spec or adapter involved.
+
+## Recording
+
+{class}`~rlmesh.Recorder` accumulates the results of one or more runs and exports them as one portable `rlmesh.result.v1` bundle. {class}`~rlmesh.Reader` is the role-addressed read over an env's observations that {meth}`~rlmesh.Session.reader` returns, and {class}`~rlmesh.TelemetryRow` is one aggregated metric series from a run.
+
+```{eval-rst}
+.. autoclass:: rlmesh.Recorder
+   :members:
+```
+
+```{eval-rst}
+.. autoclass:: rlmesh.Reader
+   :members:
+   :special-members: __call__
+```
+
+```{eval-rst}
+.. autoclass:: rlmesh.TelemetryRow
+   :members:
+```
+
+## Exceptions
+
+RLMesh exposes its own exception family from the top-level package. `RLMeshException` is the base and subclasses `RuntimeError`, so one `except rlmesh.RLMeshException` catches every RLMesh failure. Transport faults, timeouts, and bad arguments map to the standard `ConnectionError`, `TimeoutError`, and `ValueError` instead. See {doc}`../user-guide/troubleshooting` for the failure map.
+
+```{py:exception} rlmesh.RLMeshException
+
+Base class for every exception RLMesh raises. Subclasses `RuntimeError`.
+```
+
+```{py:exception} rlmesh.EnvironmentException
+
+Raised when an environment endpoint fails a reset, step, or render. Subclasses `RLMeshException`.
+```
+
+```{py:exception} rlmesh.ProtocolException
+
+Reserved for protocol-level faults; not raised in 0.1.0. Subclasses `RLMeshException`.
+```
 
 ## Environment Authoring
 

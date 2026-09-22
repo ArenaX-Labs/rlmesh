@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyBool, PyBytes, PyDict, PyList, PyTuple};
+use pyo3::types::{PyAny, PyBool, PyBytes, PyDict, PyInt, PyList, PyTuple};
 use rlmesh_spaces::{MetaMap, MetaValue};
 
 use super::normalization::normalize_metadata_value;
@@ -64,6 +64,15 @@ fn py_any_to_meta_value(value: &Bound<'_, PyAny>) -> PyResult<MetaValue> {
     }
     if let Ok(number) = normalized.extract::<i64>() {
         return Ok(MetaValue::Int(number));
+    }
+    // An integer that does not fit `i64` must not slide into the float branch:
+    // that would silently round it (metadata `Int` is int64 on the wire).
+    if normalized.is_instance_of::<PyInt>() {
+        return Err(pyo3::exceptions::PyOverflowError::new_err(format!(
+            "metadata integer {normalized} does not fit int64; RLMesh metadata \
+             integers must be in [-2**63, 2**63) -- store a larger value as a \
+             string instead"
+        )));
     }
     if let Ok(number) = normalized.extract::<f64>() {
         return Ok(MetaValue::Float(number));
@@ -155,6 +164,35 @@ mod tests {
             let blob = roundtrip.get_item("blob").unwrap().unwrap();
             let blob = blob.cast::<PyBytes>().unwrap();
             assert_eq!(blob.as_bytes(), &[0, 1, 255]);
+        });
+    }
+
+    #[test]
+    fn meta_rejects_integers_wider_than_int64() {
+        Python::attach(|py| {
+            // 2^63 and -(2^63 + 1) are Python ints the wire's int64 cannot
+            // carry; they must raise, not fall through to the float branch and
+            // silently round.
+            for source in [
+                pyo3::ffi::c_str!("{'n': 2**63}"),
+                pyo3::ffi::c_str!("{'n': -(2**63) - 1}"),
+            ] {
+                let value = py.eval(source, None, None).unwrap();
+                let error = py_any_to_meta_map(&value).unwrap_err();
+                assert!(error.is_instance_of::<pyo3::exceptions::PyOverflowError>(py));
+                assert!(error.to_string().contains("does not fit int64"));
+            }
+            // The int64 edges still convert.
+            let value = py
+                .eval(
+                    pyo3::ffi::c_str!("{'lo': -(2**63), 'hi': 2**63 - 1}"),
+                    None,
+                    None,
+                )
+                .unwrap();
+            let native = py_any_to_meta_map(&value).unwrap();
+            assert_eq!(native.get("lo"), Some(&MetaValue::Int(i64::MIN)));
+            assert_eq!(native.get("hi"), Some(&MetaValue::Int(i64::MAX)));
         });
     }
 }

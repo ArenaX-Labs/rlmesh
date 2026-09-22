@@ -9,8 +9,11 @@ package rlmesh.core.v1;
 // - workflow editions: behavior versioning. Peers advertise
 //   `supported_workflow_editions`; the runtime picks the highest edition
 //   mutual across env, model, AND runtime (the 3-way floor, since the
-//   relaying runtime drops fields it does not know) and pins both sides.
-// - `capabilities`: advisory optional features; absence is always safe.
+//   relaying runtime drops fields it does not know) and pins the model route on
+//   ResolveAdapterRequest (it MAY also pin the env on ConfigureEnvRequest).
+// - `capabilities`: advisory optional features; absence is always safe. A
+//   feature is advertised by mapping its name to the literal value "true";
+//   any other value reads as absent (reserved for a future value grammar).
 // The handshake decides exactly one thing: generation compatibility.
 message PeerInfo {
   string component = 1;

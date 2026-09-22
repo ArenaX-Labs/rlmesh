@@ -1016,8 +1016,11 @@ where
             // roll (a lane in `pending_roll`), substitute the freshly minted id so
             // the env tags its rolled episode with our id; the slot itself rolls to
             // the same id after the step.
-            let episode_ids =
-                episode_ids_with_roll(state.episode_ids_at(&group.positions), &group.pending_roll);
+            let episode_ids = episode_ids_with_roll(
+                state.episode_ids_at(&group.positions),
+                &group.lanes,
+                &group.pending_roll,
+            );
             let request = StepRequest {
                 action: action_event.action.map(leaves_value),
                 timeout_ms: self.spec.limits.env_step_timeout_ms().max(0) as u64,
@@ -1421,6 +1424,26 @@ where
             }
         );
 
+        // The runtime mints and owns episode ids (R1): a peer-reported completion
+        // naming an id this slot has already moved past is a stale echo (the env
+        // server's interrupted-episode buffer replaying an episode the runtime
+        // already truncated at its cap). Drop it before it is counted, evicted,
+        // or used to trigger a reset. Filtered here, ahead of the roll below,
+        // so the check reads the slot the env stepped.
+        let mut completed_episodes: Vec<EpisodeMetadata> = Vec::new();
+        for metadata in &response.completed_episodes {
+            if state.episode_id_at(metadata.env_index) == Some(metadata.episode_id.as_str()) {
+                completed_episodes.push(metadata.clone());
+            } else {
+                tracing::debug!(
+                    env_index = metadata.env_index,
+                    episode_id = %metadata.episode_id,
+                    "dropping a stale env-reported episode completion: the lane has moved past \
+                     this id"
+                );
+            }
+        }
+
         // Apply any NEXT_STEP autoreset roll the env just performed with the ids
         // we pushed down: roll our own slots to the same ids, each on a fresh
         // route-global slot. The env never mints — the runtime is authoritative.
@@ -1433,7 +1456,11 @@ where
             // The ended ids leave their slots now, so this is when the model
             // drops them (see `queue_evictions` for why not at completion).
             self.queue_evictions(gid, &groups[gid], state, pending_roll.keys().copied());
-            let roll_ids = episode_ids_with_roll(state.episode_ids_at(&positions), &pending_roll);
+            let roll_ids = episode_ids_with_roll(
+                state.episode_ids_at(&positions),
+                &groups[gid].lanes,
+                &pending_roll,
+            );
             let rolling: Vec<Option<u64>> = groups[gid]
                 .lanes
                 .iter()
@@ -1449,8 +1476,9 @@ where
             self.invoke_started_episodes(state, &context, started).await;
         }
 
-        let capped = self.capped_completions(state, &positions, &response.completed_episodes);
-        let mut completed_episodes = response.completed_episodes.clone();
+        // Cap off the FILTERED list: `capped_completions` skips lanes already in
+        // the list it is given, so a stale echo there would suppress a genuine cap.
+        let capped = self.capped_completions(state, &positions, &completed_episodes);
         completed_episodes.extend(capped);
         let completions = self.complete_episodes(state, &context, &completed_episodes);
         // Tell the model to evict the ended episodes' state (best-effort GC;
@@ -1507,10 +1535,12 @@ where
             }
         }
 
-        // The whole-vector group runs until the route's episode budget is spent
-        // (the env keeps rolling under NEXT_STEP; those extra episodes are not
-        // scored). A lane group's budget is the slot counter, checked at reset.
-        if !lane_group
+        // A group runs until the route's episode budget is spent (the env keeps
+        // rolling under NEXT_STEP; those extra episodes are not scored). The one
+        // exception is a lane group whose resets the DRIVER owns: that budget is
+        // the slot counter, checked at reset by `claim_slots`. Under NEXT_STEP no
+        // reset runs, so a lane group is bounded here or it never stops.
+        if (!lane_group || !self.driver_owns_resets())
             && self
                 .spec
                 .max_episodes
@@ -2124,9 +2154,22 @@ fn mint_episode_ids(count: usize) -> Vec<String> {
 /// in. Lanes not rolling keep their current id; a rolling lane takes its freshly
 /// minted next id. Used for both the env down-push and our own slot roll so they
 /// stay byte-identical. `ids[i]` is lane `i`'s id (a whole-vector group).
-fn episode_ids_with_roll(mut ids: Vec<String>, pending_roll: &HashMap<u32, String>) -> Vec<String> {
+/// `ids` is aligned to `lanes` (the group's own lanes, in order), while
+/// `pending_roll` is keyed by the route-global `env_index`, so a roll is placed
+/// at the lane's POSITION in the group — a lane group's single id is at 0
+/// whatever its lane number, and a whole-vector group's positions already equal
+/// its lane numbers.
+fn episode_ids_with_roll(
+    mut ids: Vec<String>,
+    lanes: &[u32],
+    pending_roll: &HashMap<u32, String>,
+) -> Vec<String> {
     for (env_index, new_id) in pending_roll {
-        if let Some(slot) = ids.get_mut(*env_index as usize) {
+        if let Some(slot) = lanes
+            .iter()
+            .position(|lane| lane == env_index)
+            .and_then(|position| ids.get_mut(position))
+        {
             *slot = new_id.clone();
         }
     }

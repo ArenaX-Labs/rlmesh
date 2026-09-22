@@ -29,7 +29,7 @@ The changelog is hand-written. `git-cliff` is gone.
 
 1. `mise run changelog:draft` appends draft bullets under `## [Unreleased]` in `CHANGELOG.md`, one per user-facing commit since the last `v*` tag, each marked `<!-- DRAFT -->`.
 2. Rewrite each bullet in your own words, drop internal-only changes, and group them under the Keep a Changelog sections. **Delete every `<!-- DRAFT -->` marker** — the release driver refuses to ship while any remain.
-3. Rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD`, add a fresh empty `## [Unreleased]` above it, and update the compare links at the bottom.
+3. Rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD`, add a fresh empty `## [Unreleased]` above it, and add the `[X.Y.Z]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/vX.Y.Z` link reference at the bottom.
 
 A breaking change to a stable symbol gets a `### Breaking` entry with a before/after migration note (see {doc}`versioning`).
 

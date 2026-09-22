@@ -234,7 +234,8 @@ pub unsafe extern "C" fn rlmesh_space_dict_key(
 /// Write the `index`-th element's inclusive bounds of a `Box` space to
 /// `out_low`/`out_high` (row-major order; a uniform bound broadcasts, an
 /// undeclared bound is -inf/+inf). `index` must be below the shape's element
-/// count.
+/// count. Either out-pointer may be NULL to skip it; on failure neither is
+/// written.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_space_box_bounds(
     spec: *const RlmeshSpaceSpec,
@@ -256,8 +257,9 @@ pub unsafe extern "C" fn rlmesh_space_box_bounds(
             return Err(CapiError::invalid_arg("bounds index out of range"));
         }
         let (low, high) = bounds_at(box_spec.bounds.as_ref(), spec.dtype, index);
-        write_out(out_low, low)?;
-        write_out(out_high, high)
+        write_opt(out_low, low);
+        write_opt(out_high, high);
+        Ok(())
     })
 }
 

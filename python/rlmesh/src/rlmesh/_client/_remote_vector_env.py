@@ -22,6 +22,9 @@ class RemoteVectorEnvBase(RemoteClientBase[ValueT, ActionT]):
     value bridge. User code should normally instantiate those concrete
     backends instead of this base class.
 
+    A client owns one wire session and is not thread-safe: it serves one
+    caller at a time, so dial one client per thread.
+
     Args:
         address: Endpoint address such as ``"tcp://127.0.0.1:5555"``.
         host: TCP host helper used when ``address`` is omitted.

@@ -276,6 +276,19 @@ def test_native_run_walks_the_ordinals_from_the_base() -> None:
         _run_native(env, max_episodes=1, trial_index_base=-1)
 
 
+def test_native_run_reports_zero_based_episode_indices() -> None:
+    # The runtime mints 1-based slot ordinals; EpisodeResult.index is 0-based on
+    # every path (Session.run and the hooks included), so `trial` stays
+    # `trial_index_base + index`.
+    env = _TrialFactory().make()
+    result = _run_native(env, seeds=range(3), trial_index_base=7)
+
+    assert [episode.index for episode in result.episodes] == [0, 1, 2]
+    assert [episode.trial for episode in result.episodes] == [
+        7 + episode.index for episode in result.episodes
+    ]
+
+
 def test_native_run_never_sends_the_key_to_an_undeclared_env() -> None:
     env = _PlainFactory().make()
     result = _run_native(env, max_episodes=2)

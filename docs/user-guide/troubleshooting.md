@@ -2,7 +2,7 @@
 
 Most of what can go wrong in an eval surfaces at one of two seams: adapter resolution (a model spec that does not line up with an env's tags and spaces) or the transport (a remote env or served model that is unreachable, slow, or fails mid-episode). RLMesh reports each as a distinct exception so you can tell a wiring mistake from a runtime fault and recover the right way.
 
-The first half of this page maps the exceptions {func}`~rlmesh.adapters.resolve`, `serve`, `predict`, and the eval loop ({func}`~rlmesh.run` / {func}`~rlmesh.session`) raise, what causes each, and how a run behaves when a connection drops or a model crashes part-way through an episode. The second half covers the inspection tools for a misaligned adapter that resolves cleanly but behaves wrong: `describe()`, the `read` / `reader` path, the live viewer, and join advisories.
+The first half of this page maps the exceptions {func}`~rlmesh.adapters.resolve`, `serve`, `predict`, and the eval loop ({func}`~rlmesh.run` / {func}`~rlmesh.session`) raise, what causes each, and how a run behaves when a connection drops or a model crashes part-way through an episode. The second half covers the inspection tools for a misaligned adapter that resolves cleanly but behaves wrong: `explain()`, the `read` / `reader` path, the live viewer, and join advisories.
 
 ## The exception families
 
@@ -13,8 +13,8 @@ Resolution failures raise {exc}`~rlmesh.adapters.AdapterResolutionError`, a subc
 Runtime failures come from the native core and reach Python through a small exception hierarchy plus a few standard built-ins. The native module defines `RLMeshException` (a subclass of `RuntimeError`) as the base, with `ProtocolException` and `EnvironmentException` beneath it. An environment that reports a fault while serving a request raises `EnvironmentException`. Transport faults, timeouts, and bad arguments map to the standard `ConnectionError`, `TimeoutError`, and `ValueError` instead, so ordinary `except` clauses catch them without importing anything RLMesh-specific.
 
 ```{note}
-`RLMeshException`, `ProtocolException`, and `EnvironmentException` live in the
-native module (`rlmesh._rlmesh`). `EnvironmentException` is the one the env path
+`RLMeshException`, `ProtocolException`, and `EnvironmentException` are exported
+from the top-level `rlmesh` package. `EnvironmentException` is the one the env path
 raises today; `ProtocolException` is reserved for protocol-level faults, and the
 current boundary surfaces generation/handshake mismatches as `RuntimeError`
 rather than that type. Catch `RLMeshException` to cover the whole family at once.
@@ -92,11 +92,13 @@ A transport fault during an established run is reported as `ConnectionError`, no
 A served model handler that raises becomes a `RuntimeError` carrying the handler's message. The env stays up, so you can fix the model and re-dial without restarting the env server.
 
 ```{caution}
-Per-step request timeouts and connect timeouts exist on the native client but are
-not exposed through `RemoteEnv` / `RemoteVectorEnv` or the `run`/`session` loop
-today. A step against an env that hangs will block. Bound it at the env: serve
-with `ServeOptions(idle_timeout_seconds=...)` so an idle server stops on its own,
-and supervise the process. See {doc}`performance` for the session lifecycle.
+A step against an env that hangs blocks until it answers. Bound it on the
+client: `RemoteEnv` / `RemoteVectorEnv` take `request_timeout_seconds=`, which
+caps each reset/step/render, and `connect_timeout_seconds=`, which caps the dial.
+The `run`/`session` loop exposes neither, so build the client yourself when a run
+has to fail fast. `ServeOptions(idle_timeout_seconds=...)` is not a remedy here:
+it bounds idleness, not a slow call. See {doc}`performance` for the session
+lifecycle.
 ```
 
 ## Recovering cleanly
@@ -113,7 +115,7 @@ except adapt.AdapterResolutionError as exc:
     raise SystemExit(f"adapter mismatch, fix the spec or tags: {exc}")
 except (ConnectionError, TimeoutError) as exc:
     ...  # re-dial a fresh client and retry the run
-except rlmesh._rlmesh.EnvironmentException as exc:
+except rlmesh.EnvironmentException as exc:
     ...  # the env reported a fault; reset or restart it
 ```
 
@@ -136,13 +138,13 @@ adapter = adapt.resolve(tags, env.observation_space, env.action_space, spec)
 print(adapter.explain())
 ```
 
-For the manipulation pair in {doc}`adapters`, the output shows the primary image resized, the rotation going `quat_xyzw -> rot6d`, the instruction key remapped (`goal -> task`), and the model's 6-D action rotation converted back to the env's 3-D `axis_angle` and clipped. If a transform you expected is missing, or one you did not intend is present, the spec and the tags disagree about that leaf. When the spec uses a {class}`~rlmesh.adapters.CustomEncoding`, `describe()` also lists the host-side repack arms under a `host-side encodings:` section.
+For the manipulation pair in {doc}`adapters`, the output shows the primary image resized, the rotation going `quat_xyzw -> rot6d`, the instruction key remapped (`goal -> task`), and the model's 6-D action rotation converted back to the env's 3-D `axis_angle` and clipped. If a transform you expected is missing, or one you did not intend is present, the spec and the tags disagree about that leaf. When the spec uses a {class}`~rlmesh.adapters.CustomEncoding`, `explain()` also lists the host-side repack arms under a `host-side encodings:` section.
 
 On the served path, the same description is available from the resolved adapter the model server builds, and from the contract a client receives. The point is the same either way: read the description, not the success rate.
 
 ### Inspect observations by role
 
-`describe()` tells you the plan. The `read` / `reader` API tells you the values. Both give a read-only, role-addressed view of a raw observation through the same adapter pipeline a model uses, so they are encoding-agnostic across envs and never mutate the observation.
+`explain()` tells you the plan. The `read` / `reader` API tells you the values. Both give a read-only, role-addressed view of a raw observation through the same adapter pipeline a model uses, so they are encoding-agnostic across envs and never mutate the observation.
 
 `sess.reader(*items)` resolves once and returns a callable mapping a raw observation to a `{role: value}` dict:
 
@@ -229,16 +231,16 @@ lists exactly which conversions warn versus error.
 
 These mirror the resolver pitfalls in {doc}`adapters/reference`, framed for debugging a run that resolved cleanly but behaves wrong.
 
-| Symptom                                     | Cause                                          | Confirm it                                                         | Fix                                                    |
-| ------------------------------------------- | ---------------------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------ |
-| Image looks scrambled or rotated 90°        | HWC vs CHW layout mismatch                     | `read` the role bare, then as `Image(role, layout="hwc")`, compare | set `layout` on the model `Image` to what it wants     |
-| Wrong channel count slips through           | RGB vs grayscale never declared                | check `read(obs, Image(role)).shape[-1]`                           | set `channels` on the `Image` to make a mismatch error |
-| Policy acts as if the arm is mis-oriented   | `quat_xyzw` vs `quat_wxyz`, or wrong base      | `read` the rotation role bare to see the env's packing             | match the env's exact `encoding` on the model side     |
-| Proprio values out of the expected range    | scale mismatch between env and model           | `read` the role as a `State` leaf and inspect the magnitudes       | set `range` on the model side to map it                |
-| A camera frame is all black                 | env lacks the role, filled by `optional`       | `adapter.advisories()` lists the zero-filled camera                | provide the camera, or accept the fill deliberately    |
-| Image edges or aspect look cropped          | `fit="crop"` chose to discard pixels           | `adapter.advisories()` lists the crop                              | use `fit="pad"`, or match the target aspect            |
-| `describe()` omits a transform you expected | the spec and tags disagree on that leaf's role | read `describe()` line by line against your spec                   | align the role/encoding on whichever side is wrong     |
-| Read raises `AdapterResolutionError`        | the env publishes no adapter tags              | check `env.metadata` for the env-tags key                          | serve with `tags=` or {func}`~rlmesh.adapters.tag`     |
+| Symptom                                    | Cause                                          | Confirm it                                                         | Fix                                                    |
+| ------------------------------------------ | ---------------------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------ |
+| Image looks scrambled or rotated 90°       | HWC vs CHW layout mismatch                     | `read` the role bare, then as `Image(role, layout="hwc")`, compare | set `layout` on the model `Image` to what it wants     |
+| Wrong channel count slips through          | RGB vs grayscale never declared                | check `read(obs, Image(role)).shape[-1]`                           | set `channels` on the `Image` to make a mismatch error |
+| Policy acts as if the arm is mis-oriented  | `quat_xyzw` vs `quat_wxyz`, or wrong base      | `read` the rotation role bare to see the env's packing             | match the env's exact `encoding` on the model side     |
+| Proprio values out of the expected range   | scale mismatch between env and model           | `read` the role as a `State` leaf and inspect the magnitudes       | set `range` on the model side to map it                |
+| A camera frame is all black                | env lacks the role, filled by `optional`       | `adapter.advisories()` lists the zero-filled camera                | provide the camera, or accept the fill deliberately    |
+| Image edges or aspect look cropped         | `fit="crop"` chose to discard pixels           | `adapter.advisories()` lists the crop                              | use `fit="pad"`, or match the target aspect            |
+| `explain()` omits a transform you expected | the spec and tags disagree on that leaf's role | read `explain()` line by line against your spec                    | align the role/encoding on whichever side is wrong     |
+| Read raises `AdapterResolutionError`       | the env publishes no adapter tags              | check `env.metadata` for the env-tags key                          | serve with `tags=` or {func}`~rlmesh.adapters.tag`     |
 
 ## Where next
 

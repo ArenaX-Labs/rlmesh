@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import weakref
 from collections.abc import Sequence
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, cast
@@ -44,6 +45,24 @@ def _is_vector_env(env: object) -> bool:
         or hasattr(env, "single_observation_space")
         or hasattr(env, "single_action_space")
     )
+
+
+#: Seconds a finalizer waits for a still-running server to stop. The serve loop
+#: bounds its own drain and close at 5 s each, so this only has to outlast them.
+_FINALIZE_JOIN_SECONDS = 15.0
+
+
+def _stop_server(server: PyEnvServer | PyVectorEnvServer) -> None:
+    """Stop a server whose wrapper died without an explicit ``shutdown()``.
+
+    Registered with :func:`weakref.finalize`, which runs pending finalizers from
+    its own ``atexit`` hook -- i.e. while the interpreter is still alive. Both
+    calls matter: ``shutdown()`` triggers the drain and ``env.close()``, and
+    ``wait()`` joins the serve and lane threads, so no thread is left calling
+    into a finalizing interpreter (which kills the process with a signal).
+    """
+    server.shutdown()
+    server.wait(_FINALIZE_JOIN_SECONDS)
 
 
 #: Env var the platform sets to the contract branch it expects this env to serve,
@@ -248,6 +267,10 @@ class EnvServer:
             options=options,
             native_values=native_values,
         )
+        # A server still running when CPython finalizes is fatal: its serve and
+        # lane threads call into the interpreter as it tears down. Stop it from
+        # a finalizer (detached by an explicit shutdown()) instead.
+        self._finalizer = weakref.finalize(self, _stop_server, self._server)
 
     @property
     def address(self) -> str:
@@ -280,6 +303,7 @@ class EnvServer:
 
     def shutdown(self) -> None:
         """Stop the server if it is running."""
+        self._finalizer.detach()
         self._server.shutdown()
 
     def __repr__(self) -> str:

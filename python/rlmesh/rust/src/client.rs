@@ -24,6 +24,20 @@ use crate::types::{space_value_size, to_py_err};
 /// Interval for polling Python signals during blocked RPCs.
 pub(crate) const SIGNAL_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
+/// Bound on the best-effort teardown Close when the client carries no default
+/// request timeout. Without it, a `close()` behind an in-flight server step
+/// (the Ctrl-C path) waits out the whole step before detaching.
+const DEFAULT_CLOSE_GRACE: Duration = Duration::from_secs(5);
+
+/// pyo3 answers a re-entrant `&mut self` call with a bare
+/// `RuntimeError: Already borrowed`; say what actually happened instead.
+fn single_caller_error(class: &str) -> PyErr {
+    pyo3::exceptions::PyRuntimeError::new_err(format!(
+        "{class} is already in a call on another thread: an RLMesh client owns one wire session \
+         and serves one caller at a time -- dial one client per thread"
+    ))
+}
+
 /// Process-wide Tokio runtime shared by Python env clients.
 fn shared_runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
@@ -245,22 +259,24 @@ impl ClientCore {
     }
 
     fn close_rpc(&mut self, py: Python<'_>) -> PyResult<()> {
-        let result = self.run_rpc(py, self.default_timeout, |client| Box::pin(client.close()));
+        // Teardown always terminates: without a client default, fall back to a
+        // short grace period rather than blocking on the peer indefinitely.
+        let close_timeout = self.default_timeout.or(Some(DEFAULT_CLOSE_GRACE));
+        let result = self.run_rpc(py, close_timeout, |client| Box::pin(client.close()));
         match result {
             Ok(_) => {}
             // Teardown is best-effort: when the graceful Close cannot complete
-            // within the client's default timeout (e.g. the server is still
-            // draining a slow step), detach locally instead of raising out of
-            // what is almost always a `finally` block. Dropping the stream
-            // releases the server's session slot.
+            // -- the server is still draining a slow step, or the peer is
+            // already gone -- detach locally instead of raising out of what is
+            // almost always a `finally` block. Dropping the stream releases the
+            // server's session slot. Genuine protocol/env errors still raise.
             Err(err)
                 if Python::attach(|py| {
                     err.is_instance_of::<pyo3::exceptions::PyTimeoutError>(py)
+                        || err.is_instance_of::<pyo3::exceptions::PyConnectionError>(py)
                 }) =>
             {
-                tracing::warn!(
-                    "close timed out behind an in-flight server operation;                      detaching the session locally"
-                );
+                tracing::debug!("close did not complete ({err}); detaching the session locally");
                 self.client.detach();
             }
             Err(err) => return Err(err),
@@ -289,7 +305,7 @@ enum RpcOutcome<T> {
 /// the `$extra` methods that differ (reset/step, plus `num_envs` on the vector
 /// facade).
 macro_rules! client_class {
-    ($Class:ident, $role:literal, { $($extra:tt)* }) => {
+    ($Class:ident, $role:literal, $public:literal, { $($extra:tt)* }) => {
         #[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
         #[pyclass(module = "rlmesh._rlmesh")]
         pub struct $Class {
@@ -342,15 +358,16 @@ macro_rules! client_class {
 
             #[pyo3(signature = (env_index=0, *, timeout_seconds=None))]
             fn render(
-                &mut self,
+                slf: &Bound<'_, Self>,
                 py: Python<'_>,
                 env_index: usize,
                 timeout_seconds: Option<f64>,
             ) -> PyResult<Py<PyAny>> {
-                let _span = self.core.span("render");
-                let timeout = self.core.resolve_timeout(timeout_seconds)?;
+                let mut this = Self::lock(slf)?;
+                let _span = this.core.span("render");
+                let timeout = this.core.resolve_timeout(timeout_seconds)?;
                 let frame =
-                    self.core
+                    this.core
                         .render_message(py, env_index, "client.render.rpc", timeout)?;
                 match frame {
                     Some(frame) => Ok(decode_render_frame(py, &frame)?.into_any().unbind()),
@@ -358,18 +375,27 @@ macro_rules! client_class {
                 }
             }
 
-            fn close(&mut self, py: Python<'_>) -> PyResult<()> {
-                let _span = self.core.span("close");
-                self.core.close_rpc(py)
+            fn close(slf: &Bound<'_, Self>, py: Python<'_>) -> PyResult<()> {
+                let mut this = Self::lock(slf)?;
+                let _span = this.core.span("close");
+                this.core.close_rpc(py)
             }
 
             #[pyo3(signature = (reason="owner shutdown"))]
-            fn shutdown(&mut self, py: Python<'_>, reason: &str) -> PyResult<bool> {
-                let _span = self.core.span("shutdown");
-                self.core.shutdown_rpc(py, reason.to_string())
+            fn shutdown(slf: &Bound<'_, Self>, py: Python<'_>, reason: &str) -> PyResult<bool> {
+                let mut this = Self::lock(slf)?;
+                let _span = this.core.span("shutdown");
+                this.core.shutdown_rpc(py, reason.to_string())
             }
 
             $($extra)*
+        }
+
+        impl $Class {
+            /// Borrow the client for one call, or report the single-caller rule.
+            fn lock<'py>(slf: &Bound<'py, Self>) -> PyResult<PyRefMut<'py, Self>> {
+                slf.try_borrow_mut().map_err(|_| single_caller_error($public))
+            }
         }
 
         impl Drop for $Class {
@@ -380,33 +406,34 @@ macro_rules! client_class {
     };
 }
 
-client_class!(PyEnvClient, "env_client", {
+client_class!(PyEnvClient, "env_client", "RemoteEnv", {
     #[pyo3(signature = (seeds=None, options=None, *, timeout_seconds=None))]
     fn reset(
-        &mut self,
+        slf: &Bound<'_, Self>,
         py: Python<'_>,
         seeds: Option<Vec<i64>>,
         options: Option<Py<PyAny>>,
         timeout_seconds: Option<f64>,
     ) -> PyResult<Py<PyAny>> {
-        let _span = self.core.span("reset");
-        let total_guard = self.core.profiler.start("client.reset.total");
-        let timeout = self.core.resolve_timeout(timeout_seconds)?;
+        let mut this = Self::lock(slf)?;
+        let _span = this.core.span("reset");
+        let total_guard = this.core.profiler.start("client.reset.total");
+        let timeout = this.core.resolve_timeout(timeout_seconds)?;
 
         let options = decode_options(py, options)?;
         let options_bytes = options.as_ref().map(|value| value.len()).unwrap_or(0);
 
-        let rpc_guard = self.core.profiler.start("client.reset.rpc");
-        let result = self
+        let rpc_guard = this.core.profiler.start("client.reset.rpc");
+        let result = this
             .core
             .reset_rpc(py, seeds.unwrap_or_default(), options, timeout)?;
         let observation = result.observations.first().cloned();
-        let obs_bytes_len = self.core.measure(observation.as_ref());
+        let obs_bytes_len = this.core.measure(observation.as_ref());
         let info_bytes_len = result.info.as_ref().map(|info| info.len()).unwrap_or(0);
         let _ = rpc_guard.finish(obs_bytes_len + info_bytes_len);
 
         let obs = match observation.as_ref() {
-            Some(value) => space_value_to_py_neutral(py, value, &self.core.observation_space)?,
+            Some(value) => space_value_to_py_neutral(py, value, &this.core.observation_space)?,
             None => py.None().bind(py).clone(),
         };
         let info = info_to_pydict(py, result.info.as_ref())?;
@@ -421,35 +448,36 @@ client_class!(PyEnvClient, "env_client", {
 
     #[pyo3(signature = (actions, *, timeout_seconds=None))]
     fn step(
-        &mut self,
+        slf: &Bound<'_, Self>,
         py: Python<'_>,
         actions: Py<PyAny>,
         timeout_seconds: Option<f64>,
     ) -> PyResult<Py<PyAny>> {
-        let _span = self.core.span("step");
-        let total_guard = self.core.profiler.start("client.step.total");
-        let timeout = self.core.resolve_timeout(timeout_seconds)?;
+        let mut this = Self::lock(slf)?;
+        let _span = this.core.span("step");
+        let total_guard = this.core.profiler.start("client.step.total");
+        let timeout = this.core.resolve_timeout(timeout_seconds)?;
 
         let action = py_any_to_space_value_with_backend(
             py,
             actions.bind(py),
-            &self.core.action_space,
+            &this.core.action_space,
             ValueBackend::Native,
         )?;
-        let action_bytes_len = self.core.measure(Some(&action));
+        let action_bytes_len = this.core.measure(Some(&action));
 
-        let rpc_guard = self.core.profiler.start("client.step.rpc");
-        let result = self.core.step_rpc(py, vec![action], timeout)?;
+        let rpc_guard = this.core.profiler.start("client.step.rpc");
+        let result = this.core.step_rpc(py, vec![action], timeout)?;
         let observation = result.observations.first().cloned();
         let reward = result.rewards.first().copied().unwrap_or_default();
         let terminated = result.terminated.first().copied().unwrap_or_default();
         let truncated = result.truncated.first().copied().unwrap_or_default();
-        let obs_bytes_len = self.core.measure(observation.as_ref());
+        let obs_bytes_len = this.core.measure(observation.as_ref());
         let info_bytes_len = result.info.as_ref().map(|info| info.len()).unwrap_or(0);
         let _ = rpc_guard.finish(action_bytes_len + obs_bytes_len + info_bytes_len);
 
         let obs = match observation.as_ref() {
-            Some(value) => space_value_to_py_neutral(py, value, &self.core.observation_space)?,
+            Some(value) => space_value_to_py_neutral(py, value, &this.core.observation_space)?,
             None => py.None().bind(py).clone(),
         };
         let info = info_to_pydict(py, result.info.as_ref())?;
@@ -475,31 +503,32 @@ client_class!(PyEnvClient, "env_client", {
     }
 });
 
-client_class!(PyVectorEnvClient, "vector_env_client", {
+client_class!(PyVectorEnvClient, "vector_env_client", "RemoteVectorEnv", {
     fn num_envs(&self) -> usize {
         self.core.num_envs
     }
 
     #[pyo3(signature = (seeds=None, options=None, *, timeout_seconds=None))]
     fn reset(
-        &mut self,
+        slf: &Bound<'_, Self>,
         py: Python<'_>,
         seeds: Option<Vec<i64>>,
         options: Option<Py<PyAny>>,
         timeout_seconds: Option<f64>,
     ) -> PyResult<Py<PyAny>> {
-        let _span = self.core.span("reset");
-        let timeout = self.core.resolve_timeout(timeout_seconds)?;
+        let mut this = Self::lock(slf)?;
+        let _span = this.core.span("reset");
+        let timeout = this.core.resolve_timeout(timeout_seconds)?;
         let options = decode_options(py, options)?;
 
-        let result = self
+        let result = this
             .core
             .reset_rpc(py, seeds.unwrap_or_default(), options, timeout)?;
 
         let obs = batched_space_values_to_py_neutral(
             py,
             &result.observations,
-            &self.core.observation_space,
+            &this.core.observation_space,
         )?;
         let info = info_to_pydict(py, result.info.as_ref())?;
         if !info.contains("episode_ids")? {
@@ -512,27 +541,28 @@ client_class!(PyVectorEnvClient, "vector_env_client", {
 
     #[pyo3(signature = (actions, *, timeout_seconds=None))]
     fn step(
-        &mut self,
+        slf: &Bound<'_, Self>,
         py: Python<'_>,
         actions: Py<PyAny>,
         timeout_seconds: Option<f64>,
     ) -> PyResult<Py<PyAny>> {
-        let _span = self.core.span("step");
-        let timeout = self.core.resolve_timeout(timeout_seconds)?;
+        let mut this = Self::lock(slf)?;
+        let _span = this.core.span("step");
+        let timeout = this.core.resolve_timeout(timeout_seconds)?;
         let batched_actions = py_any_to_batched_space_values_with_backend(
             py,
             actions.bind(py),
-            &self.core.action_space,
-            self.core.num_envs,
+            &this.core.action_space,
+            this.core.num_envs,
             ValueBackend::Native,
         )?;
 
-        let result = self.core.step_rpc(py, batched_actions, timeout)?;
+        let result = this.core.step_rpc(py, batched_actions, timeout)?;
 
         let obs = batched_space_values_to_py_neutral(
             py,
             &result.observations,
-            &self.core.observation_space,
+            &this.core.observation_space,
         )?;
         let rewards = vector_f64_to_py(py, &result.rewards)?;
         let terminated = vector_bool_to_py(py, &result.terminated)?;

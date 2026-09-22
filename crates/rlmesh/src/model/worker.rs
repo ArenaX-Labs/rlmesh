@@ -37,6 +37,9 @@ impl<H> ModelWorker<H> {
 pub struct RunLocalOptions {
     /// Address of the environment server to connect to.
     pub env_address: ConnectAddress,
+    /// Bearer token sent on every request to that environment server;
+    /// empty/`""` connects unauthenticated.
+    pub token: String,
     /// Stop after this many episodes; `None` runs until the env ends.
     pub max_episodes: Option<u64>,
     /// Base seed threaded into the runtime session for deterministic env
@@ -78,6 +81,7 @@ impl RunLocalOptions {
     pub fn new(env_address: ConnectAddress) -> Self {
         Self {
             env_address,
+            token: String::new(),
             max_episodes: None,
             base_seed: None,
             episode_seeds: Vec::new(),
@@ -93,6 +97,13 @@ impl RunLocalOptions {
     /// Parse a string env address (e.g. `"tcp://host:50051"`).
     pub fn parse(env_address: &str) -> Result<Self> {
         Ok(Self::new(ConnectAddress::parse(env_address)?))
+    }
+
+    /// Send `token` on the `authorization` header of every env request (empty
+    /// connects unauthenticated).
+    pub fn token(mut self, token: impl Into<String>) -> Self {
+        self.token = token.into();
+        self
     }
 
     /// Stop after `max_episodes` episodes.
@@ -170,6 +181,9 @@ pub struct ServeModelOptions {
     /// Address to bind the model server to.
     pub address: BindAddress,
     /// Bearer token required on requests; empty/`""` disables auth.
+    ///
+    /// A non-empty [`ServeOptions::token`](crate::ServeOptions::token) in
+    /// `serve` takes precedence over this field; either one alone arms auth.
     pub token: String,
     /// Transport serve options (idle/drain/close timeouts, remote shutdown).
     pub serve: ServeOptions,
@@ -191,6 +205,9 @@ impl ServeModelOptions {
     }
 
     /// Require `token` on the `authorization` header (empty disables auth).
+    ///
+    /// A non-empty [`ServeOptions::token`](crate::ServeOptions::token) set
+    /// through [`serve_options`](Self::serve_options) wins over this one.
     pub fn token(mut self, token: impl Into<String>) -> Self {
         self.token = token.into();
         self
@@ -215,6 +232,12 @@ impl<H: ModelHandler + 'static> ModelWorker<H> {
     /// Drives the model/env loop on a private Tokio runtime until the env ends
     /// (or `options.max_episodes` episodes complete). Returns the session's
     /// [`RuntimeReport`].
+    ///
+    /// # Panics
+    ///
+    /// This is a blocking entrypoint: it builds its own Tokio runtime, so
+    /// calling it from inside one panics. From async code call
+    /// [`run_local_async`](ModelWorker::run_local_async) instead.
     pub fn run_local(self, options: impl Into<RunLocalOptions>) -> Result<RuntimeReport> {
         let runtime = tokio::runtime::Runtime::new()
             .map_err(|err| Error::Internal(format!("failed to create tokio runtime: {err}")))?;
@@ -246,6 +269,13 @@ impl<H: ModelHandler + 'static> ModelWorker<H> {
     }
 
     /// Serve the handler as a model endpoint (blocking).
+    ///
+    /// # Panics
+    ///
+    /// This is a blocking entrypoint: it builds its own Tokio runtime, so
+    /// calling it from inside one panics. From async code call
+    /// [`serve_async`](ModelWorker::serve_async) (or
+    /// [`bind_async`](ModelWorker::bind_async)) instead.
     pub fn serve(self, options: impl Into<ServeModelOptions>) -> Result<()> {
         let runtime = tokio::runtime::Runtime::new()
             .map_err(|err| Error::Internal(format!("failed to create tokio runtime: {err}")))?;
@@ -262,15 +292,25 @@ impl<H: ModelHandler + 'static> ModelWorker<H> {
     /// The returned [`BoundModelServer`] exposes its resolved address via
     /// [`BoundModelServer::local_addr`] (e.g. the OS-assigned port for TCP port
     /// 0) before [`BoundModelServer::serve`] is awaited.
+    ///
+    /// The bearer token is taken from `options.serve.token` when it is set and
+    /// non-empty, otherwise from `options.token`, so auth configured either way
+    /// is enforced.
     pub async fn bind_async(
         self,
         options: impl Into<ServeModelOptions>,
     ) -> Result<BoundModelServer> {
         let options = options.into();
+        let effective_token = options
+            .serve
+            .token
+            .clone()
+            .filter(|token| !token.is_empty())
+            .unwrap_or_else(|| options.token.clone());
         server::bind_model_with_options(
             self.handler,
             options.address,
-            &options.token,
+            &effective_token,
             options.serve,
         )
         .await

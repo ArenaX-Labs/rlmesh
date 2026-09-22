@@ -26,6 +26,10 @@ pub struct ServeOptions {
     ///
     /// `None` (or an empty string) **disables authentication**: the endpoint
     /// accepts every request without a token. Set this to require a token.
+    ///
+    /// The model server also reads
+    /// [`ServeModelOptions::token`](crate::ServeModelOptions::token); a
+    /// non-empty value here wins over that field.
     pub token: Option<String>,
     /// Maximum number of model Join-stream requests a served model processes
     /// concurrently per connection (pipelined predict). `None` applies the

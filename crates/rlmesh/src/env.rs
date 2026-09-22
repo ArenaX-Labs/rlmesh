@@ -1,4 +1,9 @@
 //! Environment traits, requests, the [`EnvServer`], and remote clients.
+//!
+//! [`LaneEnv`] is the multi-lane building block underneath the servers: it
+//! hosts N scalar [`Env`]s as the lanes of one `num_envs = N` endpoint, one
+//! actor thread each. [`EnvServer`] already wraps your env in one, so reach for
+//! it directly only when you drive the lanes yourself.
 
 mod client;
 mod lanes;

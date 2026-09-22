@@ -23,20 +23,42 @@ else:
 
 @final
 class RemoteEnv(RemoteEnvBase[Value, Value]):
+    """Dependency-free client for one remote environment endpoint.
+
+    Observations and actions stay RLMesh-native values; see
+    :class:`rlmesh.numpy.RemoteEnv` for NumPy leaves.
+    """
+
     _bridge: ClassVar[ValueBridge] = identity_bridge
 
 
 @final
 class RemoteModel(RemoteModelBase[Value, Value]):
+    """Dependency-free client for a model already served on an endpoint.
+
+    Bind it to an environment with :func:`rlmesh.run` or :func:`rlmesh.session`.
+    """
+
     _bridge: ClassVar[ValueBridge] = identity_bridge
 
 
 @final
 class RemoteVectorEnv(RemoteVectorEnvBase[Value, Value]):
+    """Dependency-free client for a remote vector-environment endpoint.
+
+    Observations and actions stay RLMesh-native values; see
+    :class:`rlmesh.numpy.RemoteVectorEnv` for NumPy leaves.
+    """
+
     _bridge: ClassVar[ValueBridge] = identity_bridge
 
 
 class Model(ModelBase[_ObsT, _ActT]):
+    """Dependency-free model over RLMesh-native values.
+
+    Wrap a prediction function, or subclass it and implement one predict corner.
+    """
+
     _bridge: ClassVar[ValueBridge] = identity_bridge
     # Without this, run(address) falls back to the numpy RemoteEnv (forcing the
     # optional numpy dep and decoding observations as ndarrays instead of Values).
@@ -45,11 +67,23 @@ class Model(ModelBase[_ObsT, _ActT]):
 
 @final
 class SandboxEnv(SandboxEnvBase[Value, Value]):
+    """Owned Docker-backed session for one environment (experimental).
+
+    Builds or pulls the image, connects a :class:`RemoteEnv`, and stops the
+    container on close.
+    """
+
     _bridge: ClassVar[ValueBridge] = identity_bridge
 
 
 @final
 class SandboxVectorEnv(SandboxVectorEnvBase[Value, Value]):
+    """Owned Docker-backed session for a vector environment (experimental).
+
+    Builds or pulls the image, connects a :class:`RemoteVectorEnv`, and stops
+    the container on close.
+    """
+
     _bridge: ClassVar[ValueBridge] = identity_bridge
 
 
