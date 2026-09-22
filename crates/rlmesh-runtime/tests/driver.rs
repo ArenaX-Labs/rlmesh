@@ -2782,3 +2782,62 @@ async fn lane_sessions_idle_surplus_lanes_when_the_budget_is_smaller() {
         2
     );
 }
+
+#[tokio::test]
+async fn the_driver_sends_the_shared_reset_options_encoding_on_the_wire() {
+    // The literal encoding, not a restatement of the fn the driver calls: a
+    // single-lane reset carries the bare integer and a multi-lane reset the
+    // list in lane order, so the managed prober can be held to the same bytes.
+    let env = TestEnv::default();
+    let hooks = Arc::new(RecordingHooks::default());
+    let mut spec = trial_spec(2, &["trial_index"]);
+    spec.trial_index_base = Some(41);
+
+    RuntimeDriver::new(spec, env.clone(), TestModel::default(), hooks)
+        .run()
+        .await
+        .unwrap();
+
+    let options = env.reset_options.lock().unwrap().clone();
+    let trials = options
+        .iter()
+        .map(|options| {
+            options
+                .as_ref()
+                .expect("a declaring env receives options")
+                .entries
+                .get("trial_index")
+                .and_then(|value| value.kind.clone())
+                .expect("trial_index")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        trials,
+        vec![meta_value::Kind::Integer(41), meta_value::Kind::Integer(42),],
+        "a single-lane reset sends the bare integer",
+    );
+}
+
+#[test]
+fn a_multi_lane_reset_sends_the_trial_ordinals_as_a_list_in_lane_order() {
+    let mut spec = trial_spec(1, &["trial_index"]);
+    declare_reset_options(&mut spec, &["trial_index"]);
+
+    let options = rlmesh_runtime::reset_options_for(&spec.env_contract, &[41, 42])
+        .expect("a declaring env receives options");
+
+    assert_eq!(
+        options
+            .entries
+            .get("trial_index")
+            .and_then(|v| v.kind.clone()),
+        Some(meta_value::Kind::List(rlmesh_proto::spaces::v1::MetaList {
+            items: [41, 42]
+                .into_iter()
+                .map(|trial| MetaValue {
+                    kind: Some(meta_value::Kind::Integer(trial)),
+                })
+                .collect(),
+        })),
+    );
+}

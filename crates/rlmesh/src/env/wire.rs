@@ -474,11 +474,18 @@ impl Environment for WireLaneAdapter {
         let timeout_ms = i64::try_from(req.timeout_ms).unwrap_or(i64::MAX);
         let decode_ns = elapsed_ns(decode_started);
 
+        // Each scalar lane gets its own slice of a per-lane option list, so a
+        // list that does not cover the lanes fails the whole reset here rather
+        // than per lane.
+        let lane_options = (0..lanes.len())
+            .map(|pos| lane_reset_options(options.as_ref(), pos, lanes.len()))
+            .collect::<Result<Vec<_>, EnvError>>()?;
+
         let call_started = Instant::now();
         let results = futures::future::join_all(lanes.iter().enumerate().map(|(pos, &lane)| {
             let request = spaces::request::ResetRequest {
                 seed: req.seeds.get(pos).copied(),
-                options: options.clone(),
+                options: lane_options[pos].clone(),
                 timeout_ms,
             };
             self.lanes.reset(lane, request)
@@ -716,11 +723,52 @@ fn protocol_error_to_env_error(error: impl ToString) -> EnvError {
     EnvError::new(EnvErrorCode::Internal, error.to_string())
 }
 
+/// The reset options lane `pos` of a `lanes`-wide fan-out receives.
+///
+/// The runtime sends the reserved `trial_index` option as a list in lane order
+/// when a reset restarts several lanes (see
+/// [`rlmesh_runtime::reset_options_for`]), but each lane here is a scalar env
+/// that gets its own `reset`: handing it the whole list leaves
+/// `rlmesh.trial_index(options)` unable to read an ordinal. Narrow the list to
+/// this lane's element; every other key rides through unchanged. A list that
+/// does not cover the lanes it was sent for is a malformed request, not a lane
+/// to silently leave unsequenced.
+fn lane_reset_options(
+    options: Option<&spaces::MetaMap>,
+    pos: usize,
+    lanes: usize,
+) -> Result<Option<spaces::MetaMap>, EnvError> {
+    let Some(options) = options else {
+        return Ok(None);
+    };
+    let Some(spaces::MetaValue::List(trials)) = options.get(rlmesh_runtime::TRIAL_INDEX_OPTION)
+    else {
+        return Ok(Some(options.clone()));
+    };
+    let Some(trial) = trials.get(pos) else {
+        return Err(EnvError::new(
+            EnvErrorCode::InvalidAction,
+            format!(
+                "reset option `{}` is a list of {} entries but this reset covers {lanes} lanes; \
+                 send one ordinal per lane, in lane order",
+                rlmesh_runtime::TRIAL_INDEX_OPTION,
+                trials.len(),
+            ),
+        ));
+    };
+    let mut sliced = options.clone();
+    sliced.insert(
+        rlmesh_runtime::TRIAL_INDEX_OPTION.to_string(),
+        trial.clone(),
+    );
+    Ok(Some(sliced))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     use crate::{BindAddress, Result, ServeOptions};
@@ -1383,5 +1431,218 @@ mod tests {
             .unwrap();
         assert!(client.shutdown("done").await.unwrap());
         shutdown_and_join(server).await;
+    }
+    /// One lane of a [`WireLaneAdapter`] that records the reset options it saw.
+    struct RecordingLane {
+        obs_space: spaces::SpaceSpec,
+        action_space: spaces::SpaceSpec,
+        env_contract: spaces::EnvContract,
+        seen: Arc<Mutex<Vec<Option<spaces::MetaMap>>>>,
+    }
+
+    impl RecordingLane {
+        fn new(seen: Arc<Mutex<Vec<Option<spaces::MetaMap>>>>) -> Self {
+            let obs_space = spaces::spaces::BoxSpaceBuilder::scalar(-1.0, 1.0, vec![2])
+                .dtype(spaces::DType::Float32)
+                .build()
+                .unwrap();
+            let action_space = spaces::spaces::DiscreteBuilder::new(3).build().unwrap();
+            let env_contract = spaces::EnvContract {
+                id: "RecordingLane-v1".to_string(),
+                autoreset_mode: Default::default(),
+                observation_space: Some(obs_space.clone()),
+                action_space: Some(action_space.clone()),
+                metadata: None,
+                render_mode: String::new(),
+                num_envs: 1,
+            };
+            Self {
+                obs_space,
+                action_space,
+                env_contract,
+                seen,
+            }
+        }
+
+        fn observation() -> spaces::SpaceValue {
+            spaces::SpaceValue::Box(
+                spaces::Tensor::from_vec(vec![0; 8], vec![2], spaces::DType::Float32).unwrap(),
+            )
+        }
+    }
+
+    #[async_trait]
+    impl super::super::Env for RecordingLane {
+        fn observation_space(&self) -> &spaces::SpaceSpec {
+            &self.obs_space
+        }
+
+        fn action_space(&self) -> &spaces::SpaceSpec {
+            &self.action_space
+        }
+
+        fn env_contract(&self) -> &spaces::EnvContract {
+            &self.env_contract
+        }
+
+        async fn reset(
+            &mut self,
+            req: spaces::request::ResetRequest,
+        ) -> std::result::Result<spaces::request::ResetResult, spaces::EnvRuntimeError> {
+            self.seen.lock().unwrap().push(req.options);
+            Ok(spaces::request::ResetResult {
+                observation: Some(Self::observation()),
+                info: None,
+                episode_id: None,
+            })
+        }
+
+        async fn step(
+            &mut self,
+            _req: spaces::request::StepRequest,
+        ) -> std::result::Result<spaces::request::StepResult, spaces::EnvRuntimeError> {
+            Ok(spaces::request::StepResult {
+                observation: Some(Self::observation()),
+                ..Default::default()
+            })
+        }
+
+        async fn render(
+            &mut self,
+            _req: RenderRequest,
+        ) -> std::result::Result<RenderResult, spaces::EnvRuntimeError> {
+            Ok(RenderResult { frame: None })
+        }
+
+        async fn close(
+            &mut self,
+            _req: spaces::CloseRequest,
+        ) -> std::result::Result<spaces::request::CloseResult, spaces::EnvRuntimeError> {
+            Ok(spaces::request::CloseResult)
+        }
+    }
+
+    fn trial_list(trials: &[i64]) -> spaces::MetaMap {
+        [(
+            rlmesh_runtime::TRIAL_INDEX_OPTION.to_string(),
+            spaces::MetaValue::List(trials.iter().copied().map(spaces::MetaValue::Int).collect()),
+        )]
+        .into_iter()
+        .collect()
+    }
+
+    #[test]
+    fn lane_reset_options_narrows_the_trial_list_to_one_lane() {
+        let mut options = trial_list(&[7, 8, 9]);
+        options.insert("other".to_string(), spaces::MetaValue::Bool(true));
+
+        for (pos, expected) in [(0, 7), (1, 8), (2, 9)] {
+            let sliced = lane_reset_options(Some(&options), pos, 3).unwrap().unwrap();
+            assert_eq!(
+                sliced.get(rlmesh_runtime::TRIAL_INDEX_OPTION),
+                Some(&spaces::MetaValue::Int(expected)),
+            );
+            // Every other key rides through untouched.
+            assert_eq!(
+                sliced.get("other"),
+                Some(&spaces::MetaValue::Bool(true)),
+                "only trial_index is sliced",
+            );
+        }
+
+        // A bare integer (the single-lane encoding) and a map without the key
+        // are both passed on as they are.
+        let scalar: spaces::MetaMap = [(
+            rlmesh_runtime::TRIAL_INDEX_OPTION.to_string(),
+            spaces::MetaValue::Int(4),
+        )]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            lane_reset_options(Some(&scalar), 0, 1).unwrap(),
+            Some(scalar.clone()),
+        );
+        assert_eq!(lane_reset_options(None, 0, 1).unwrap(), None);
+    }
+
+    #[test]
+    fn a_trial_list_shorter_than_the_lanes_is_rejected() {
+        let error = lane_reset_options(Some(&trial_list(&[7])), 1, 2).unwrap_err();
+
+        assert_eq!(error.code, EnvErrorCode::InvalidAction);
+        assert!(
+            error.message.contains("list of 1 entries") && error.message.contains("covers 2 lanes"),
+            "the error must name both lengths, got {}",
+            error.message,
+        );
+    }
+
+    #[tokio::test]
+    async fn a_lane_reset_fails_loud_on_a_short_trial_list() {
+        let seen: Arc<Mutex<Vec<Option<spaces::MetaMap>>>> = Arc::new(Mutex::new(Vec::new()));
+        let adapter = WireLaneAdapter::new(vec![
+            RecordingLane::new(seen.clone()),
+            RecordingLane::new(seen.clone()),
+        ])
+        .unwrap();
+
+        let error = adapter
+            .reset(ProtoResetRequest {
+                seeds: vec![1, 2],
+                options: Some(meta_map_to_proto(&trial_list(&[10]))),
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.code, EnvErrorCode::InvalidAction);
+        // Rejected before any lane ran, so no lane reset on a half-read option.
+        assert!(seen.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn lane_fan_out_gives_each_lane_its_own_trial_index() {
+        // The runtime sends a multi-lane reset one list in lane order; each
+        // scalar lane must see its own integer, the way `rlmesh.trial_index()`
+        // reads it.
+        let seen: Arc<Mutex<Vec<Option<spaces::MetaMap>>>> = Arc::new(Mutex::new(Vec::new()));
+        let adapter = WireLaneAdapter::new(vec![
+            RecordingLane::new(seen.clone()),
+            RecordingLane::new(seen.clone()),
+            RecordingLane::new(seen.clone()),
+        ])
+        .unwrap();
+
+        adapter
+            .reset(ProtoResetRequest {
+                seeds: vec![1, 2, 3],
+                options: Some(meta_map_to_proto(&trial_list(&[10, 11, 12]))),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let mut trials = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|options| {
+                options
+                    .as_ref()
+                    .and_then(|options| options.get(rlmesh_runtime::TRIAL_INDEX_OPTION).cloned())
+            })
+            .collect::<Vec<_>>();
+        trials.sort_by_key(|trial| match trial {
+            Some(spaces::MetaValue::Int(value)) => *value,
+            other => panic!("expected an integer trial_index, got {other:?}"),
+        });
+        assert_eq!(
+            trials,
+            vec![
+                Some(spaces::MetaValue::Int(10)),
+                Some(spaces::MetaValue::Int(11)),
+                Some(spaces::MetaValue::Int(12)),
+            ],
+        );
     }
 }

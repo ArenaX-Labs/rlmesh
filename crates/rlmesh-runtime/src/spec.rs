@@ -4,7 +4,8 @@ use std::sync::LazyLock;
 use std::time::Duration;
 
 use rlmesh_proto::core::v1::{AutoresetMode, EnvContract};
-use rlmesh_proto::spaces::v1::SpaceSpec;
+use rlmesh_proto::spaces::v1::meta_value::Kind as MetaKind;
+use rlmesh_proto::spaces::v1::{MetaList, MetaMap, MetaValue, SpaceSpec};
 use serde::{Deserialize, Serialize};
 
 /// Empty fallback returned by the internal `*_validated` accessors only on the
@@ -18,6 +19,69 @@ static EMPTY_SPACE_SPEC: LazyLock<SpaceSpec> = LazyLock::new(SpaceSpec::default)
 /// env that forwards `options` blindly into a third-party `reset` never receives
 /// one it cannot interpret. Mirrored in Python as `rlmesh.ENV_RESET_OPTIONS_KEY`.
 pub const ENV_RESET_OPTIONS_KEY: &str = "rlmesh.env.v1.reset_options";
+
+/// The reserved reset option carrying the ordinal of the episode a reset
+/// starts. Declared by an env under [`ENV_RESET_OPTIONS_KEY`]; read in Python
+/// as `rlmesh.trial_index(options)`.
+pub const TRIAL_INDEX_OPTION: &str = "trial_index";
+
+/// Whether `contract` named `key` in its metadata under
+/// [`ENV_RESET_OPTIONS_KEY`], as either a list of strings or a bare string.
+///
+/// The declaration gate for every reserved `ResetRequest.options` key: an env
+/// that forwards `options` blindly into a third-party `reset` must never
+/// receive a reserved key it cannot interpret.
+pub fn declares_reset_option(contract: &EnvContract, key: &str) -> bool {
+    let Some(declared) = contract
+        .spec
+        .as_ref()
+        .and_then(|spec| spec.metadata.as_ref())
+        .and_then(|metadata| metadata.entries.get(ENV_RESET_OPTIONS_KEY))
+        .and_then(|declared| declared.kind.as_ref())
+    else {
+        return false;
+    };
+    match declared {
+        MetaKind::List(list) => list.items.iter().any(
+            |item| matches!(item.kind.as_ref(), Some(MetaKind::Text(declared)) if declared == key),
+        ),
+        MetaKind::Text(declared) => declared == key,
+        _ => false,
+    }
+}
+
+/// The `ResetRequest.options` map delivering `trials` under
+/// [`TRIAL_INDEX_OPTION`], or `None` when there are no trials or the env never
+/// declared the key.
+///
+/// A single lane sends the bare integer; a multi-lane reset sends the list, in
+/// the same lane order as `seeds` and `episode_ids`.
+pub fn reset_options_for(contract: &EnvContract, trials: &[u64]) -> Option<MetaMap> {
+    if trials.is_empty() || !declares_reset_option(contract, TRIAL_INDEX_OPTION) {
+        return None;
+    }
+    let value = if trials.len() == 1 {
+        MetaValue {
+            kind: Some(MetaKind::Integer(trials[0] as i64)),
+        }
+    } else {
+        MetaValue {
+            kind: Some(MetaKind::List(MetaList {
+                items: trials
+                    .iter()
+                    .map(|trial| MetaValue {
+                        kind: Some(MetaKind::Integer(*trial as i64)),
+                    })
+                    .collect(),
+            })),
+        }
+    };
+    Some(MetaMap {
+        entries: [(TRIAL_INDEX_OPTION.to_string(), value)]
+            .into_iter()
+            .collect(),
+    })
+}
 
 /// Everything one route needs to run: its identity, the negotiated env
 /// contract, and the per-op limits. [`validate`](Self::validate) gates a spec
@@ -468,7 +532,10 @@ mod tests {
     use rlmesh_proto::spaces::v1::SpaceSpec;
     use serde_json::json;
 
-    use super::{RuntimeLimits, RuntimeSessionSpec};
+    use super::{
+        ENV_RESET_OPTIONS_KEY, MetaKind, MetaList, MetaMap, MetaValue, RuntimeLimits,
+        RuntimeSessionSpec, TRIAL_INDEX_OPTION, declares_reset_option, reset_options_for,
+    };
 
     fn valid_spec() -> RuntimeSessionSpec {
         RuntimeSessionSpec {
@@ -658,5 +725,93 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("envConnectTimeout"));
+    }
+
+    /// An env contract whose metadata declares `reset_options = declared`.
+    fn contract_declaring(declared: MetaValue) -> EnvContract {
+        EnvContract {
+            spec: Some(EnvSpec {
+                metadata: Some(MetaMap {
+                    entries: [(ENV_RESET_OPTIONS_KEY.to_string(), declared)].into(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn text(value: &str) -> MetaValue {
+        MetaValue {
+            kind: Some(MetaKind::Text(value.to_string())),
+        }
+    }
+
+    fn list(items: Vec<MetaValue>) -> MetaValue {
+        MetaValue {
+            kind: Some(MetaKind::List(MetaList { items })),
+        }
+    }
+
+    fn trial_option(options: &MetaMap) -> Option<&MetaKind> {
+        options.entries.get(TRIAL_INDEX_OPTION)?.kind.as_ref()
+    }
+
+    #[test]
+    fn declares_reset_option_reads_a_list_or_a_bare_string() {
+        assert!(declares_reset_option(
+            &contract_declaring(list(vec![text("other"), text(TRIAL_INDEX_OPTION)])),
+            TRIAL_INDEX_OPTION,
+        ));
+        assert!(declares_reset_option(
+            &contract_declaring(text(TRIAL_INDEX_OPTION)),
+            TRIAL_INDEX_OPTION,
+        ));
+        assert!(!declares_reset_option(
+            &contract_declaring(list(vec![text("other")])),
+            TRIAL_INDEX_OPTION,
+        ));
+        assert!(!declares_reset_option(
+            &contract_declaring(MetaValue {
+                kind: Some(MetaKind::Integer(1)),
+            }),
+            TRIAL_INDEX_OPTION,
+        ));
+        assert!(!declares_reset_option(
+            &EnvContract::default(),
+            TRIAL_INDEX_OPTION,
+        ));
+    }
+
+    #[test]
+    fn reset_options_for_sends_an_integer_per_lane_and_a_list_for_many() {
+        let contract = contract_declaring(list(vec![text(TRIAL_INDEX_OPTION)]));
+
+        let single = reset_options_for(&contract, &[7]).expect("single-lane options");
+        assert_eq!(trial_option(&single), Some(&MetaKind::Integer(7)));
+
+        let many = reset_options_for(&contract, &[7, 8, 9]).expect("multi-lane options");
+        assert_eq!(
+            trial_option(&many),
+            Some(&MetaKind::List(MetaList {
+                items: [7, 8, 9]
+                    .into_iter()
+                    .map(|trial| MetaValue {
+                        kind: Some(MetaKind::Integer(trial)),
+                    })
+                    .collect(),
+            })),
+        );
+    }
+
+    #[test]
+    fn reset_options_for_withholds_without_trials_or_a_declaration() {
+        let contract = contract_declaring(list(vec![text(TRIAL_INDEX_OPTION)]));
+
+        assert_eq!(reset_options_for(&contract, &[]), None);
+        assert_eq!(
+            reset_options_for(&contract_declaring(list(vec![text("other")])), &[7]),
+            None,
+        );
+        assert_eq!(reset_options_for(&EnvContract::default(), &[7]), None);
     }
 }

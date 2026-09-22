@@ -31,8 +31,7 @@ use rlmesh_proto::model::v1::{
     AdapterContext, ObservationHistoryFrame, PredictRequest, PredictResponse,
     ReleaseAdapterRequest, ResetAdapterRequest,
 };
-use rlmesh_proto::spaces::v1::meta_value::Kind as MetaKind;
-use rlmesh_proto::spaces::v1::{MetaList, MetaMap, MetaValue, SpaceValue};
+use rlmesh_proto::spaces::v1::{MetaMap, SpaceValue};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
@@ -41,7 +40,9 @@ use crate::hooks::{
     ObservationEmittedEvent, RuntimeEnvContext, RuntimeHooks, SessionEndedEvent,
     SessionFailedEvent, SessionStartedEvent, StepCompletedEvent, TelemetrySnapshotEvent,
 };
-use crate::spec::{ENV_RESET_OPTIONS_KEY, RuntimeReport, RuntimeSessionSpec};
+use crate::spec::{
+    ENV_RESET_OPTIONS_KEY, RuntimeReport, RuntimeSessionSpec, TRIAL_INDEX_OPTION, reset_options_for,
+};
 use crate::state::{RequestPhase, RouteSnapshot, RouteState, StartedEpisode};
 use crate::telemetry::{Aggregator, Horizon, Sample, Source, metrics};
 
@@ -218,11 +219,6 @@ const DEFAULT_CANCELLATION_REASON: &str = "cancelled by caller";
 /// `_MAX_STEPS_PER_EPISODE` so the two loops bound episodes identically.
 /// Inactive under `NEXT_STEP` autoreset (the env owns lane resets there).
 const DEFAULT_MAX_EPISODE_STEPS: i64 = 100_000;
-
-/// The one reserved `ResetRequest.options` key this edition defines: the 0-based
-/// trial ordinal of the episode a reset starts. An env opts into receiving it by
-/// naming it under [`ENV_RESET_OPTIONS_KEY`] in its contract metadata.
-const TRIAL_INDEX_OPTION: &str = "trial_index";
 
 /// The env-reported task outcome from an episode's final-step info: Gymnasium's
 /// `is_success` (preferred), `success`, or `task_success`, `None` when absent. Numeric
@@ -493,67 +489,22 @@ where
     /// multi-lane reset sends the list, in the same lane order as `seeds` and
     /// `episode_ids`.
     fn trial_options(&self, trials: &[u64]) -> Option<MetaMap> {
-        if trials.is_empty() {
-            return None;
+        let options = reset_options_for(&self.spec.env_contract, trials);
+        if options.is_none()
+            && !trials.is_empty()
+            && self.spec.trial_index_base() != 0
+            && !self.trial_options_warned.swap(true, Ordering::Relaxed)
+        {
+            tracing::warn!(
+                env_id = %self.spec.env_id,
+                key = ENV_RESET_OPTIONS_KEY,
+                option = TRIAL_INDEX_OPTION,
+                "trial_index_base is set but the env contract declares no such reset \
+                 option; the ordinal is recorded on the episode events and summaries \
+                 but not delivered to the env",
+            );
         }
-        if !self.env_declares_trial_index() {
-            if self.spec.trial_index_base() != 0
-                && !self.trial_options_warned.swap(true, Ordering::Relaxed)
-            {
-                tracing::warn!(
-                    env_id = %self.spec.env_id,
-                    key = ENV_RESET_OPTIONS_KEY,
-                    option = TRIAL_INDEX_OPTION,
-                    "trial_index_base is set but the env contract declares no such reset \
-                     option; the ordinal is recorded on the episode events and summaries \
-                     but not delivered to the env",
-                );
-            }
-            return None;
-        }
-        let value = if trials.len() == 1 {
-            MetaValue {
-                kind: Some(MetaKind::Integer(trials[0] as i64)),
-            }
-        } else {
-            MetaValue {
-                kind: Some(MetaKind::List(MetaList {
-                    items: trials
-                        .iter()
-                        .map(|trial| MetaValue {
-                            kind: Some(MetaKind::Integer(*trial as i64)),
-                        })
-                        .collect(),
-                })),
-            }
-        };
-        Some(MetaMap {
-            entries: [(TRIAL_INDEX_OPTION.to_string(), value)]
-                .into_iter()
-                .collect(),
-        })
-    }
-
-    /// Whether the connected env named `trial_index` in its contract metadata.
-    fn env_declares_trial_index(&self) -> bool {
-        let Some(declared) = self
-            .spec
-            .env_contract
-            .spec
-            .as_ref()
-            .and_then(|spec| spec.metadata.as_ref())
-            .and_then(|metadata| metadata.entries.get(ENV_RESET_OPTIONS_KEY))
-            .and_then(|declared| declared.kind.as_ref())
-        else {
-            return false;
-        };
-        match declared {
-            MetaKind::List(list) => list.items.iter().any(|item| {
-                matches!(item.kind.as_ref(), Some(MetaKind::Text(key)) if key == TRIAL_INDEX_OPTION)
-            }),
-            MetaKind::Text(key) => key == TRIAL_INDEX_OPTION,
-            _ => false,
-        }
+        options
     }
 
     /// Enable async inference: a group asks for its next action chunk while
