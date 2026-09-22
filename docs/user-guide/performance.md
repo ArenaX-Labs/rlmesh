@@ -161,7 +161,7 @@ result = model.run(env, seeds=range(50))              # 50 seeded episodes
 baseline = rlmesh.run(rlmesh.RANDOM_SAMPLE, env, max_episodes=10)
 ```
 
-Each episode is an {class}`~rlmesh.EpisodeResult` carrying `index`, `seed`, `steps`, `reward`, `terminated`, `truncated`, and `success`. The `success` field is the env-reported task outcome from the final step's `info` (Gymnasium's `is_success` / `success` key), or `None` when the env emits none. {attr}`RunResult.success_rate <rlmesh.RunResult.success_rate>` prefers that signal and falls back to `terminated` only when it is absent, so a time-limit env should report success through `info` rather than rely on the fallback.
+Each episode is an {class}`~rlmesh.EpisodeResult` carrying `index`, `seed`, `steps`, `reward`, `terminated`, `truncated`, and `success`. The `success` field is the env-reported task outcome from the final step's `info` (Gymnasium's `is_success` / `success`, or `task_success`), or `None` when the env emits none. {attr}`RunResult.success_rate <rlmesh.RunResult.success_rate>` prefers that signal and falls back to `terminated` only when it is absent, so a time-limit env should report success through `info` rather than rely on the fallback.
 
 ```{caution}
 A non-terminating env is bounded: the loop caps each episode at 100,000 steps and

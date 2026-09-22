@@ -825,6 +825,19 @@ fn assembles_in_parallel(lanes: &[GroupLane]) -> bool {
     routed > 1
 }
 
+/// Runs a parallel adapter section and charges `adapter_ns` its wall time.
+/// The per-lane kernels still stamp their own spans, into `scratch`, which is
+/// dropped: on the rayon pool those spans overlap, and summing them reported
+/// thread time (about 2.5x the wall at 32 lanes) as the endpoint's `adapter`
+/// phase, which is meant to be the time the request spent in adapter work.
+fn charge_wall<T>(adapter_ns: &AtomicU64, section: impl FnOnce(&AtomicU64) -> T) -> T {
+    let scratch = AtomicU64::new(0);
+    let started = Instant::now();
+    let out = section(&scratch);
+    adapter_ns.fetch_add(rlmesh_proto::elapsed_ns(started), Ordering::Relaxed);
+    out
+}
+
 /// The fused grouped predict (the batched forward across routes), run on a
 /// blocking worker thread.
 ///
@@ -882,34 +895,41 @@ fn predict_grouped_fused(
         },
     }
     let parallel = assembles_in_parallel(&lanes);
-    let stage = |(lane, observation): (GroupLane, ModelObservation)| match lane {
-        GroupLane::SpecLess { horizon } => Staged::SpecLess {
-            observation,
-            horizon,
-        },
-        GroupLane::Routed { entry } => {
-            let num_envs = observation.num_envs;
-            let assembled = {
-                let mut guard = entry.lock().expect("route entry poisoned");
-                assemble_route_inputs(&mut guard, &observation, adapter_ns)
-                    .map(|inputs| (inputs, Arc::clone(&guard.config)))
-            };
-            Staged::Routed {
-                assembled,
-                episodes: observation.route.episodes,
-                entry,
-                num_envs,
+    let stage =
+        |(lane, observation): (GroupLane, ModelObservation), adapter_ns: &AtomicU64| match lane {
+            GroupLane::SpecLess { horizon } => Staged::SpecLess {
+                observation,
+                horizon,
+            },
+            GroupLane::Routed { entry } => {
+                let num_envs = observation.num_envs;
+                let assembled = {
+                    let mut guard = entry.lock().expect("route entry poisoned");
+                    assemble_route_inputs(&mut guard, &observation, adapter_ns)
+                        .map(|inputs| (inputs, Arc::clone(&guard.config)))
+                };
+                Staged::Routed {
+                    assembled,
+                    episodes: observation.route.episodes,
+                    entry,
+                    num_envs,
+                }
             }
-        }
-    };
+        };
     let staged: Vec<Staged> = if parallel {
-        lanes
-            .into_par_iter()
-            .zip(observations.into_par_iter())
-            .map(stage)
-            .collect()
+        charge_wall(adapter_ns, |ns| {
+            lanes
+                .into_par_iter()
+                .zip(observations.into_par_iter())
+                .map(|pair| stage(pair, ns))
+                .collect()
+        })
     } else {
-        lanes.into_iter().zip(observations).map(stage).collect()
+        lanes
+            .into_iter()
+            .zip(observations)
+            .map(|pair| stage(pair, adapter_ns))
+            .collect()
     };
 
     let mut results: Vec<Option<Result<PredictFrames>>> = Vec::with_capacity(staged.len());
@@ -1009,7 +1029,8 @@ fn predict_grouped_fused(
                             (group, group_frames)
                         })
                         .collect();
-                    let finish = |(group, group_frames): (FusedGroup, Vec<Vec<Value>>)| {
+                    let finish = |(group, group_frames): (FusedGroup, Vec<Vec<Value>>),
+                                  adapter_ns: &AtomicU64| {
                         let result = finish_route_frames(
                             &group.entry,
                             group_frames,
@@ -1020,9 +1041,14 @@ fn predict_grouped_fused(
                         (group.index, result)
                     };
                     let finished: Vec<(usize, Result<PredictFrames>)> = if parallel {
-                        split.into_par_iter().map(finish).collect()
+                        charge_wall(adapter_ns, |ns| {
+                            split.into_par_iter().map(|pair| finish(pair, ns)).collect()
+                        })
                     } else {
-                        split.into_iter().map(finish).collect()
+                        split
+                            .into_iter()
+                            .map(|pair| finish(pair, adapter_ns))
+                            .collect()
                     };
                     for (index, result) in finished {
                         results[index] = Some(result);
@@ -2415,6 +2441,179 @@ mod fused_route_tests {
             assert!(
                 echo.batch_calls.load(Ordering::SeqCst) + echo.chunk_calls.load(Ordering::SeqCst)
                     > 0
+            );
+        }
+    }
+
+    /// The camera route (the SmolVLA-on-LIBERO shape): one 256x256x3 uint8 frame
+    /// tagged upside-down, consumed as normalised float32 CHW, plus a gripper state.
+    const IMAGE_ENV_TAGS: &str = r#"{
+        "observation": {"cam": {"type": "image", "role": "image/primary", "upside_down": true},
+                        "state": {"type": "state", "role": "proprio/gripper"}},
+        "action": {"components": [{"role": "action/gripper", "dim": 1, "range": [0.0, 10.0]}]}
+    }"#;
+    const IMAGE_MODEL_SPEC: &str = r#"{
+        "input": {"cam": {"type": "image", "role": "image/primary", "height": 256, "width": 256, "fit": "pad",
+                          "layout": "chw", "dtype": "float32", "normalize": true},
+                  "state": {"type": "state", "container": "list", "dtype": "float32",
+                            "components": [{"role": "proprio/gripper", "dim": 1}]}},
+        "output": {"components": [{"role": "action/gripper", "dim": 1, "range": [0.0, 10.0]}]}
+    }"#;
+
+    struct ImageTagResolver;
+
+    #[async_trait]
+    impl RouteResolver for ImageTagResolver {
+        async fn resolve(
+            &self,
+            _route_key: &str,
+            env_contract: &EnvContract,
+        ) -> Result<Option<RouteConfig>> {
+            let tags: EnvTags = serde_json::from_str(IMAGE_ENV_TAGS).expect("image env tags parse");
+            let spec: ModelSpec =
+                serde_json::from_str(IMAGE_MODEL_SPEC).expect("image model spec parse");
+            let obs = env_contract
+                .observation_space
+                .clone()
+                .expect("contract obs space");
+            let action = env_contract
+                .action_space
+                .clone()
+                .expect("contract action space");
+            let adapter = resolve(
+                &tags,
+                &SpaceView::from(&obs),
+                &SpaceView::from(&action),
+                &spec,
+                true,
+            )
+            .map_err(|err| Error::model(err.message))?;
+            Ok(Some(RouteConfig::new(
+                adapter,
+                obs,
+                action,
+                Box::new(NoCustoms),
+                Box::new(NoEncodings),
+            )))
+        }
+    }
+
+    fn image_obs_space() -> spaces::SpaceSpec {
+        spaces::spaces::DictSpaceBuilder::new()
+            .insert(
+                "cam",
+                spaces::spaces::BoxSpaceBuilder::scalar(0.0, 255.0, vec![256, 256, 3])
+                    .dtype(DType::Uint8)
+                    .build()
+                    .unwrap(),
+            )
+            .insert(
+                "state",
+                spaces::spaces::BoxSpaceBuilder::scalar(0.0, 10.0, vec![1])
+                    .dtype(DType::Float32)
+                    .build()
+                    .unwrap(),
+            )
+            .build()
+            .unwrap()
+    }
+
+    fn image_contract(env_id: &str) -> spaces::EnvContract {
+        spaces::EnvContract {
+            id: env_id.to_string(),
+            observation_space: Some(image_obs_space()),
+            action_space: Some(action_space()),
+            metadata: None,
+            render_mode: String::new(),
+            num_envs: 1,
+            autoreset_mode: Default::default(),
+        }
+    }
+
+    fn grouped_image_obs(env_id: &str, seed: u32, value: f32) -> ModelObservation {
+        let mut state = seed | 1;
+        let pixels: Vec<u8> = (0..256 * 256 * 3)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                (state & 0xff) as u8
+            })
+            .collect();
+        let lane = SpaceValue::Dict(BTreeMap::from([
+            (
+                "cam".to_string(),
+                SpaceValue::Box(Tensor::from_vec(pixels, vec![256, 256, 3], DType::Uint8).unwrap()),
+            ),
+            ("state".to_string(), box_f32(value)),
+        ]));
+        let wire =
+            rlmesh_grpc::wire::encode_batched_partial_values(&[lane], &image_obs_space()).unwrap();
+        ModelObservation {
+            history: Vec::new(),
+            step: None,
+            observation: Some(wire.leaves),
+            route: ModelRouteContext {
+                session_id: "session-1".to_string(),
+                request_id: format!("req-{env_id}-{seed}"),
+                env_id: env_id.to_string(),
+                episodes: vec![EpisodeInfo {
+                    episode_id: format!("ep-{env_id}"),
+                    seed: None,
+                }],
+            },
+            num_envs: 1,
+            env_contract: Some(Arc::new(image_contract(env_id))),
+        }
+    }
+
+    /// `cargo test -p rlmesh --release camera_grouped_predict_timing -- --ignored --nocapture`
+    /// (and again with `RAYON_NUM_THREADS=1`): wall time of one fused grouped predict
+    /// over 32 camera routes and the adapter span it reports, so the lane fan-out's
+    /// gain is a number rather than a projection.
+    #[tokio::test]
+    #[ignore = "timing, not correctness: run with --release --nocapture"]
+    #[allow(clippy::print_stdout, reason = "the point of the test is the report")]
+    async fn camera_grouped_predict_timing() {
+        let echo = EchoModel::new(true, false);
+        let handler_predict = Arc::clone(&echo) as Arc<dyn PredictFn>;
+        let mut handler =
+            AdaptedModelHandler::new(handler_predict, Some(Arc::new(ImageTagResolver)));
+        let setup = handler.route_setup().expect("resolver-backed route setup");
+        let names: Vec<String> = (0..32).map(|i| format!("cam-{i}")).collect();
+        for name in &names {
+            setup
+                .resolve_adapter(
+                    name,
+                    &image_contract(name),
+                    ResolveOptions {
+                        execution_horizon: 10,
+                        delivers_history: false,
+                    },
+                )
+                .await
+                .expect("camera route resolves");
+        }
+        let threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(0);
+        let pool = rayon::current_num_threads();
+        for round in 0..6 {
+            let observations: Vec<ModelObservation> = (0..32)
+                .map(|i| grouped_image_obs(&names[i], 1000 * round + i as u32 + 1, i as f32))
+                .collect();
+            let started = std::time::Instant::now();
+            let results = handler.predict_grouped(observations).await;
+            let wall = started.elapsed();
+            let adapter = handler.take_adapter_ns();
+            assert!(
+                results.iter().all(Result::is_ok),
+                "every camera group serves"
+            );
+            println!(
+                "round {round}: 32 camera groups in {:.1} ms wall, adapter span {:.1} ms (available_parallelism {threads}, rayon pool {pool})",
+                wall.as_secs_f64() * 1e3,
+                adapter as f64 / 1e6
             );
         }
     }

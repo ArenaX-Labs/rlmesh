@@ -225,13 +225,13 @@ const DEFAULT_MAX_EPISODE_STEPS: i64 = 100_000;
 const TRIAL_INDEX_OPTION: &str = "trial_index";
 
 /// The env-reported task outcome from an episode's final-step info: Gymnasium's
-/// `is_success` (preferred) or `success` key, `None` when absent. Numeric
+/// `is_success` (preferred), `success`, or `task_success`, `None` when absent. Numeric
 /// values coerce by truthiness (`1`/`1.0` → true), matching the Python
 /// Session's `bool(info[key])` so the two loops report identical success.
 fn success_from_final_info(final_info: Option<&rlmesh_proto::spaces::v1::MetaMap>) -> Option<bool> {
     use rlmesh_proto::spaces::v1::meta_value::Kind;
     let entries = &final_info?.entries;
-    ["is_success", "success"]
+    ["is_success", "success", "task_success"]
         .iter()
         .find_map(|key| match entries.get(*key)?.kind.as_ref()? {
             Kind::Bool(value) => Some(*value),
@@ -1917,6 +1917,7 @@ where
                 truncated: completed.truncated,
                 duration_ms: (completed.end_timestamp_ns - completed.start_timestamp_ns).max(0)
                     / 1_000_000,
+                success: success_from_final_info(completed.final_info.as_ref()),
                 final_info: completed.final_info.clone(),
                 seed,
                 trial_index,

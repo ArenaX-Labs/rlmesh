@@ -368,6 +368,14 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
                         .await
                 };
 
+                // A non-recoverable error ends the stream after it is delivered
+                // (#6). The tracker is left consistent, so a client stepping past
+                // a NEXT_STEP lane-contract violation only got the same error
+                // again; closing makes the failure final on the wire too.
+                let fatal = matches!(
+                    res.kind,
+                    Some(join_response::Kind::Error(ref error)) if !error.is_recoverable
+                );
                 let send_result = tx.send(Ok(res)).await;
 
                 if send_result.is_err() {
@@ -377,13 +385,10 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
                     break;
                 }
 
-                // TODO(#6): a non-recoverable `Kind::Error` (e.g. a NEXT_STEP
-                // lane-contract violation from handle_env_request) is delivered to
-                // the client but does not end the stream. Only a send failure or
-                // a Close breaks this loop, so a lenient client can keep stepping.
-                // Tracker state stays consistent, so this is a transport-policy
-                // decision deferred to its own change.
-                if close_after {
+                if close_after || fatal {
+                    if fatal {
+                        tracing::error!("closing env join stream after a non-recoverable error");
+                    }
                     break;
                 }
             }
@@ -548,7 +553,19 @@ async fn handle_env_request<E: Environment>(
             let num_envs = env.num_envs();
             let autoreset_mode = env.env_contract().autoreset_mode;
 
-            if subset && !supports_lanes {
+            if autoreset_mode == AutoresetMode::SameStep {
+                // The runtime rejects SAME_STEP at spec validation and the Python
+                // env derivation, but a directly constructed server would fall
+                // through to the DISABLED/Idle tracker path below and never roll
+                // the autoreset episode (#6): refuse it here instead.
+                Some(join_response::Kind::Error(env_error_to_proto(
+                    EnvError::new(
+                        crate::error::EnvErrorCode::Unsupported,
+                        "SAME_STEP autoreset is not supported by the runtime; serve the \
+                         environment with NEXT_STEP or DISABLED autoreset",
+                    ),
+                )))
+            } else if subset && !supports_lanes {
                 // Subset stepping needs a lane endpoint: fail loud rather than
                 // silently treat it as a full-width step.
                 tracing::error!("StepRequest.env_indices set but this env does not step lanes");
@@ -591,12 +608,8 @@ async fn handle_env_request<E: Environment>(
                             ok.env_indices = env_indices;
                         }
                         let mut tracker = episode_tracker.lock().await;
-                        // TODO(#6): SameStep falls through to the DISABLED/Idle
-                        // path here (next_step is only true for NextStep) and is
-                        // silently mishandled. It is rejected upstream at spec /
-                        // Python validation today, so it cannot reach a
-                        // runtime-driven server; add an explicit guard (or real
-                        // SameStep support) here once that contract is defined.
+                        // SAME_STEP was refused above, so this is NEXT_STEP or
+                        // DISABLED.
                         let next_step = autoreset_mode == AutoresetMode::NextStep;
 
                         // Validate the per-lane NEXT_STEP lane lifecycle BEFORE
@@ -1273,6 +1286,39 @@ mod tests {
         }
     }
 
+    /// A SAME_STEP env reaching the server directly is refused on its first
+    /// step instead of running as a DISABLED env that never rolls (#6).
+    #[tokio::test]
+    async fn same_step_autoreset_is_refused_on_step() {
+        use std::sync::Arc;
+        use tokio::sync::Mutex;
+
+        use rlmesh_proto::env::v1::{JoinRequest, join_request, join_response};
+
+        let env = Arc::new(ScriptedVectorEnv::new(
+            1,
+            rlmesh_spaces::AutoresetMode::SameStep,
+            vec![StepResponse::default()],
+        ));
+        let tracker = Arc::new(Mutex::new(super::super::episode::EpisodeTracker::new()));
+        let request = JoinRequest {
+            kind: Some(join_request::Kind::Step(StepRequest::default())),
+            request_id: "step".to_string(),
+        };
+        let response = super::handle_env_request(request, env.clone(), tracker, false).await;
+        assert!(matches!(
+            response.kind,
+            Some(join_response::Kind::Error(ref e))
+                if e.code == rlmesh_proto::env::v1::EnvErrorCode::Unsupported as i32
+                    && e.message.contains("SAME_STEP")
+        ));
+        assert_eq!(
+            env.steps.lock().unwrap().len(),
+            1,
+            "the env must not have been stepped"
+        );
+    }
+
     #[tokio::test]
     async fn timed_out_step_drains_before_next_request_runs() {
         use std::sync::Arc;
@@ -1331,6 +1377,99 @@ mod tests {
             "two env.step calls overlapped against the same environment"
         );
         assert_eq!(completed.load(Ordering::SeqCst), 2);
+    }
+
+    /// A non-recoverable error (a NEXT_STEP env that stays terminal instead of
+    /// delivering the autoreset observation) is delivered and then ends the
+    /// join stream, so a lenient client cannot keep stepping (#6).
+    #[tokio::test]
+    async fn join_stream_closes_after_a_non_recoverable_error() {
+        use rlmesh_proto::env::v1::env_service_client::EnvServiceClient;
+        use rlmesh_proto::env::v1::env_service_server::EnvServiceServer;
+        use rlmesh_proto::env::v1::{
+            JoinRequest, ResetRequest as ProtoResetRequest, join_request, join_response,
+        };
+        use tokio::sync::oneshot;
+        use tokio_stream::StreamExt;
+        use tokio_stream::wrappers::ReceiverStream;
+
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let env = ScriptedVectorEnv::new(
+            1,
+            rlmesh_spaces::AutoresetMode::NextStep,
+            vec![
+                step_resp(vec![1.0], vec![1], vec![0]),
+                step_resp(vec![0.0], vec![1], vec![0]),
+            ],
+        );
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(EnvServiceServer::new(GrpcEnvServer::new(env)))
+                .serve_with_shutdown(addr, async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+        let endpoint = format!("http://{addr}");
+        let mut client = loop {
+            match EnvServiceClient::connect(endpoint.clone()).await {
+                Ok(client) => break client,
+                Err(_) if !server.is_finished() => {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                Err(error) => panic!("test server did not start: {error}"),
+            }
+        };
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<JoinRequest>(4);
+        let mut stream = client
+            .join(ReceiverStream::new(rx))
+            .await
+            .expect("join accepted")
+            .into_inner();
+        let step = |id: &str| JoinRequest {
+            kind: Some(join_request::Kind::Step(StepRequest::default())),
+            request_id: id.to_string(),
+        };
+        tx.send(JoinRequest {
+            kind: Some(join_request::Kind::Reset(ProtoResetRequest::default())),
+            request_id: "r".to_string(),
+        })
+        .await
+        .unwrap();
+        tx.send(step("s1")).await.unwrap();
+        tx.send(step("s2")).await.unwrap();
+        tx.send(step("s3")).await.unwrap();
+
+        let _reset = stream.next().await.expect("reset reply").unwrap();
+        let _s1 = stream.next().await.expect("s1 reply").unwrap();
+        let s2 = stream.next().await.expect("s2 reply").unwrap();
+        match s2.kind {
+            Some(join_response::Kind::Error(error)) => assert!(
+                !error.is_recoverable
+                    && error
+                        .message
+                        .contains("terminal step where its autoreset observation was expected"),
+                "expected the sticky-terminal error, got: {}",
+                error.message
+            ),
+            other => panic!("expected an error reply to s2, got {other:?}"),
+        }
+        // The server closed the stream after the fatal reply: s3 is never served.
+        let after = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+            .await
+            .expect("stream should end, not hang");
+        assert!(
+            after.is_none(),
+            "stream stayed open after a fatal error: {after:?}"
+        );
+
+        drop(tx);
+        let _ = shutdown_tx.send(());
+        let _ = server.await;
     }
 
     #[tokio::test]

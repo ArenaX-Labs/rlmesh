@@ -287,7 +287,8 @@ pub struct EpisodeSummary {
     pub truncated: bool,
     pub duration_ms: i64,
     /// Env-reported task outcome from the final step's info (Gymnasium's
-    /// `is_success` / `success` key); `None` when the env emits no such signal.
+    /// `is_success` / `success`, or `task_success`); `None` when the env emits
+    /// no such signal.
     pub success: Option<bool>,
 }
 
