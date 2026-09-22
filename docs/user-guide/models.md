@@ -75,16 +75,16 @@ class MyPolicy(rlmesh.torch.Model):
 
 A model has four lifecycle seams. They fire identically on the local `run` / `session` loop and the served wire path, so a model behaves the same whether you drive it in-process or dial it over a socket.
 
-| Seam                          | When it fires         | What to do in it                                                      |
-| ----------------------------- | --------------------- | --------------------------------------------------------------------- |
-| `load(**binding)`             | once, at construction | Load weights into `self`; keep heavy imports here, not at module top. |
-| `reset([episode_id])`         | when an episode ends  | Clear per-episode state (RNN hidden state, chunk replay).             |
-| `close()`                     | at the end of a run   | Release resources.                                                    |
-| `on_episode_end` / `on_close` | constructor callbacks | The same edges for a wrapped callable that cannot override methods.   |
+| Seam                           | When it fires         | What to do in it                                                      |
+| ------------------------------ | --------------------- | --------------------------------------------------------------------- |
+| `load(**binding)`              | once, at construction | Load weights into `self`; keep heavy imports here, not at module top. |
+| `on_episode_end([episode_id])` | when an episode ends  | Clear per-episode state (RNN hidden state, chunk replay).             |
+| `close()`                      | at the end of a run   | Release resources.                                                    |
+| `on_episode_end` / `on_close`  | constructor callbacks | The same edges for a wrapped callable that cannot override methods.   |
 
-There is no episode-_begin_ hook. Per-episode state is lazy-seeded on the first `predict`, so a stateful model clears its state at episode _end_ via `reset()` (a subclass's `reset()` is wired to the `on_episode_end` edge).
+There is no episode-_begin_ hook. Per-episode state is lazy-seeded on the first `predict`, so a stateful model clears its state at episode _end_ via `on_episode_end()`, the one per-episode boundary both the local loop and the served path signal.
 
-One served model fans several environments in, so episodes interleave and `reset` fires once per episode that ends, naming it: declare `def reset(self, episode_id="")` when you keep state keyed by id. `def reset(self)` stays valid when you do not.
+One served model fans several environments in, so episodes interleave and `on_episode_end` fires once per episode that ends, naming it: declare `def on_episode_end(self, episode_id="")` when you keep state keyed by id. `def on_episode_end(self)` stays valid when you do not.
 
 For torch and jax models, set `self.device` inside `load()` when you move your weights onto it. That is the one source of truth: RLMesh moves every observation tensor leaf onto `self.device` before `predict`, so you never call `.to(device)` yourself.
 
@@ -161,7 +161,7 @@ class SmolVLA(rlmesh.torch.Model):
         self.device = "cuda"
         self.policy = SmolVLAPolicy.from_pretrained("org/smolvla").to(self.device)
 
-    def reset(self):
+    def on_episode_end(self):
         self.policy.reset()
 
     def predict_chunk_batch(self, observations):
@@ -237,7 +237,7 @@ result = model.run(env, seeds=range(10))
 print(result.mean_reward, result.success_rate)
 ```
 
-`run` returns a {class}`~rlmesh.RunResult` with `.episodes`, `.mean_reward`, and `.success_rate`. `env` may be a local env, an {class}`~rlmesh.EnvFactory`, a `RemoteEnv`, or a bare address string the loop dials. The module-level `rlmesh.run(model, env, ...)` and `rlmesh.session(model, env, ...)` accept a bare predict callable, a `Model` subclass or instance, or a served handle.
+`run` returns a {class}`~rlmesh.RunResult` with `.episodes`, `.mean_reward`, and `.success_rate`. `env` may be a local env, an {class}`~rlmesh.EnvFactory`, a `RemoteEnv`, or a bare address string the loop dials. The module-level `rlmesh.run(model, env, ...)` and `rlmesh.session(model, env, ...)` accept a `Model` subclass or instance, or a served handle; wrap a bare predict callable in the framework `Model` it expects first (`rlmesh.numpy.Model(fn)`).
 
 The full `run` / `session` / `read` story (seeds, instruction injection, the execution horizon end to end, and reading canonical roles off an observation) is in {doc}`evaluation`.
 

@@ -26,11 +26,12 @@ RANDOM_SAMPLE = _RandomSample()
 class CoercedModel(NamedTuple):
     """A model source normalized to its predict corners, spec, and lifecycle hooks.
 
-    ``on_episode_end`` carries a duck-typed policy's ``reset()``, wired to the
-    episode-END edge: the only per-episode boundary both the local loop and the
-    served wire path signal, so a stateful policy clears its state identically
-    either way. It is called with the ended episode's id when its signature takes
-    one (``reset(self, episode_id)``), and with nothing when it does not. The
+    ``on_episode_end`` carries a duck-typed policy object's ``reset()`` (the
+    convention third-party policies follow), wired to the episode-END edge: the
+    only per-episode boundary both the local loop and the served wire path
+    signal, so a stateful policy clears its state identically either way. It is
+    called with the ended episode's id when its signature takes one
+    (``reset(self, episode_id)``), and with nothing when it does not. The
     three optional corners (``predict_chunk`` / ``predict_batch`` /
     ``predict_chunk_batch``) are picked up from a duck-typed policy when it
     defines them, so they feed the same corner synthesis a ``Model`` subclass's do.

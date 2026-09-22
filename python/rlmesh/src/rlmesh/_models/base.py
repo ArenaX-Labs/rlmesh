@@ -49,7 +49,7 @@ def _served_handle(model: object) -> bool:
     """Whether ``model`` is a served handle (``RemoteModel`` / ``SandboxModel``).
 
     A served handle binds itself via its own ``.session``; a local
-    :class:`ModelBase` (or a class / bare callable) is normalized through
+    :class:`ModelBase` (or a subclass class) is normalized through
     :func:`as_model` instead.
     """
     return (
@@ -83,9 +83,10 @@ def accepts_context(fn: Corner, base_arity: int) -> bool:
 def accepts_episode_id(callback: LifecycleCallback) -> bool:
     """Whether an episode-end hook wants the ended episode's id.
 
-    ``Model.reset(self, episode_id="")`` is the full form; ``reset(self)`` stays a
-    valid override (and a bare ``on_episode_end=lambda: ...`` stays valid too), so
-    the id is passed only when the callback has somewhere to put it.
+    ``Model.on_episode_end(self, episode_id="")`` is the full form;
+    ``on_episode_end(self)`` stays a valid override (and a bare
+    ``on_episode_end=lambda: ...`` stays valid too), so the id is passed only when
+    the callback has somewhere to put it.
     """
     try:
         params = list(inspect.signature(callback).parameters.values())
@@ -430,7 +431,7 @@ class ModelBase(Generic[ObsT, ActT]):
 
     * **Wrap** a predict callable -- ``Model(lambda obs: ...)``.
     * **Subclass** ``Model`` and override ``predict`` (and optionally ``load`` for
-      weight loading, ``reset``/``close`` lifecycle hooks, and the ``spec`` class
+      weight loading, ``on_episode_end``/``close`` lifecycle hooks, and the ``spec`` class
       attribute), then instantiate it -- ``class P(Model): ...`` then ``P()``.
 
     ``run(env, seeds=...)`` drives the model against an env and returns a typed
@@ -446,10 +447,10 @@ class ModelBase(Generic[ObsT, ActT]):
             model. Pass :data:`rlmesh.NO_ADAPTER` to explicitly skip adapter
             resolution. Overrides the ``spec`` class attribute when both are set.
         on_episode_end / on_close: Optional lifecycle callbacks (they override a
-            subclass's ``reset``/``close`` methods, and a wrapped policy's). There is
-            no episode-*begin* hook: per-episode state is lazy-seeded on first
-            predict, so a stateful model clears its state at episode *end* via
-            ``on_episode_end`` (a subclass's ``reset()`` is wired here). This fires
+            subclass's ``on_episode_end``/``close`` methods, and a wrapped policy's
+            ``reset``/``close``). There is no episode-*begin* hook: per-episode
+            state is lazy-seeded on first predict, so a stateful model clears its
+            state at episode *end* via ``on_episode_end``. This fires
             identically on the local ``run(env)``/``session`` loop and the served
             wire path (driven there by the explicit ``ResetAdapter``), so local and
             served behave the same.
@@ -569,7 +570,7 @@ class ModelBase(Generic[ObsT, ActT]):
         self._bridge.ensure_available()
 
         # A Model subclass overrides at least one predict corner (plus optionally
-        # load/reset/close/spec); the corners it leaves out are derived below, so
+        # load/on_episode_end/close/spec); the corners it leaves out are derived below, so
         # overriding predict_chunk_batch alone is enough. A wrapped callable
         # supplies a single predict.
         def _overridden(method_name: str) -> Corner | None:
@@ -586,9 +587,7 @@ class ModelBase(Generic[ObsT, ActT]):
             if not _suppress_autoload.get():
                 self.load()
             resolved_spec = spec if spec is not None else type(self).spec
-            # A subclass's reset() is wired to the episode-END edge (on_episode_end),
-            # the only per-episode boundary both local and served paths signal.
-            coerced_on_episode_end: LifecycleCallback | None = self.reset
+            coerced_on_episode_end: LifecycleCallback | None = self.on_episode_end
             coerced_on_close: LifecycleCallback | None = self.close
             policy: object = self
             raw_predict: Corner | None = corners["predict"]
@@ -812,12 +811,14 @@ class ModelBase(Generic[ObsT, ActT]):
             "predict_chunk() (per lane) or predict_batch()."
         )
 
-    def reset(self, episode_id: str = "") -> None:
+    def on_episode_end(self, episode_id: str = "") -> None:
         """Optional: called when an episode ends (no-op by default).
 
-        ``episode_id`` is the episode that just ended -- declare it when the model
-        keeps state keyed by id (several episodes interleave through one served
-        model); ``def reset(self)`` remains a valid override when it does not.
+        The only per-episode boundary both the local loop and the served wire path
+        signal, so a stateful model clears its state here. ``episode_id`` is the
+        episode that just ended -- declare it when the model keeps state keyed by
+        id (several episodes interleave through one served model);
+        ``def on_episode_end(self)`` remains a valid override when it does not.
         """
 
     def close(self) -> None:
@@ -995,13 +996,10 @@ class ModelBase(Generic[ObsT, ActT]):
         max_episodes: int | None = None,
         max_episode_steps: int | None = None,
         max_episode_seconds: float | None = None,
-        hooks: RunHooks | None = None,
-        instruction: str | None = None,
         close_env: bool = False,
         trust_entrypoints: bool | None = None,
         execution_horizon: int = 1,
         prefetch_lead: int = 0,
-        view: ViewArg = None,
         trial_index_base: int = 0,
         workflow_edition: str | None = None,
     ) -> RunResult:
@@ -1064,25 +1062,10 @@ class ModelBase(Generic[ObsT, ActT]):
         neither side can run is refused before any episode starts, naming what
         each tier wants and can do.
 
-        The Session-only knobs -- ``hooks``, ``instruction``, ``view`` -- are
-        not part of this loop; use :meth:`session` and
-        :meth:`Session.run <rlmesh.Session.run>` for step-level observation,
-        instruction override, or a live viewer.
+        This loop has no observer seam: for step-level callbacks (``hooks``), a
+        per-step instruction override, or a live viewer, drive the episodes with
+        :meth:`session` and :meth:`Session.run <rlmesh.Session.run>` instead.
         """
-        rejected = [
-            name
-            for name, given in (
-                ("hooks", hooks is not None),
-                ("instruction", instruction is not None),
-                ("view", view is not None),
-            )
-            if given
-        ]
-        if rejected:
-            raise ValueError(
-                f"run() drives the native runtime loop, which does not support "
-                f"{', '.join(rejected)}; use session().run(...) for these."
-            )
         if execution_horizon < 1:
             raise ValueError(f"execution_horizon must be >= 1, got {execution_horizon}")
         if prefetch_lead < 0:
@@ -1413,17 +1396,21 @@ def as_model(model: object) -> ModelBase[Any, Any]:
     """Normalize a model source to a built :class:`ModelBase` instance.
 
     A ``Model`` instance is used as-is; a ``Model`` subclass *class* is instantiated
-    once; a bare predict callable (or duck-typed policy object) is wrapped in the NumPy
-    framework ``Model``. (Served ``RemoteModel`` / ``SandboxModel`` handles bind via
+    once. Anything else is refused: the library never picks a framework for a bare
+    predict callable or policy object, so the caller wraps it in the ``Model`` whose
+    arrays it expects. (Served ``RemoteModel`` / ``SandboxModel`` handles bind via
     their own ``.session`` and never reach here.)
     """
     if isinstance(model, ModelBase):
         return cast("ModelBase[Any, Any]", model)
     if isinstance(model, type) and issubclass(model, ModelBase):
         return cast("ModelBase[Any, Any]", model())
-    from ..numpy import Model
-
-    return Model(cast(object, model))
+    raise TypeError(
+        "rlmesh.run() / rlmesh.session() take a Model; wrap a predict callable or "
+        "policy object in the framework Model whose arrays it expects -- "
+        "rlmesh.numpy.Model(fn), rlmesh.torch.Model(fn), rlmesh.jax.Model(fn) -- or "
+        "rlmesh.Model(fn) for raw RLMesh values."
+    )
 
 
 @overload
@@ -1450,18 +1437,6 @@ def session(
     view: ViewArg = None,
     workflow_edition: str | None = None,
 ) -> Session[Any, Any]: ...
-@overload
-def session(
-    model: PredictFn[ObsT, ActT],
-    env: LocalEnvTarget,
-    *,
-    instruction: str | None = None,
-    close_env: bool = False,
-    trust_entrypoints: bool | None = None,
-    execution_horizon: int = 1,
-    view: ViewArg = None,
-    workflow_edition: str | None = None,
-) -> Session[ObsT, ActT]: ...
 @overload
 def session(
     model: object,
@@ -1504,10 +1479,13 @@ def session(
     ``workflow_edition`` declares the contract for this call and takes precedence
     over the environment variable, class declaration, and project manifest.
 
-    Typing: a :class:`Model` instance or an annotated predict callable flows its
-    observation/action types onto the returned ``Session`` (``predict``/``step``
-    are typed accordingly); a class source, duck-typed policy, or served handle
-    yields ``Session[Any, Any]``.
+    ``model`` is a :class:`Model` instance or subclass class, a served handle, or
+    :data:`rlmesh.RANDOM_SAMPLE`; a bare predict callable or policy object is
+    refused -- wrap it in the framework ``Model`` whose arrays it expects
+    (``rlmesh.numpy.Model(fn)``), the library never picks one. Typing: a
+    :class:`Model` instance flows its observation/action types onto the returned
+    ``Session`` (``predict``/``step`` are typed accordingly); a class source or
+    served handle yields ``Session[Any, Any]``.
     """
     from .._editions import resolve_workflow_edition
     from ._adapter_mode import NO_ADAPTER
@@ -1536,7 +1514,7 @@ def session(
             workflow_edition=resolve_workflow_edition(call=workflow_edition),
         )
     # A handle that knows how to bind itself -- Model, RemoteModel, SandboxModel -- has
-    # its own ``.session``; anything else (a callable / subclass class) is normalized.
+    # its own ``.session``; a subclass class is instantiated, anything else refused.
     binder = getattr(model, "session", None)
     if callable(binder) and not isinstance(model, type):
         return cast(
@@ -1586,17 +1564,20 @@ def run(
 ) -> RunResult:
     """Drive ``model`` against ``env`` to completion and return a :class:`RunResult`.
 
-    A *local* model (a :class:`Model` instance, subclass class, or bare predict
-    callable) runs on :meth:`Model.run`'s native runtime loop -- single or
-    vectorized env, batched predict corners, runtime-enforced seeds/caps; see
-    its docstring for the parameter surface (``hooks`` / ``instruction`` /
-    ``view`` are :func:`rlmesh.session`-only). ``prefetch_lead`` (> 0) is the
-    native loop's async inference: the next chunk is predicted while that many
-    replay frames of the current one remain, from an observation up to
-    ``prefetch_lead`` steps stale, so the result is not comparable to a
-    synchronous run. A served :class:`RemoteModel` / :class:`SandboxModel`
-    (and the :data:`rlmesh.RANDOM_SAMPLE` baseline) runs through its own
-    session loop, which supports every parameter except ``prefetch_lead``.
+    A *local* model (a :class:`Model` instance or subclass class) runs on
+    :meth:`Model.run`'s native runtime loop -- single or vectorized env, batched
+    predict corners, runtime-enforced seeds/caps; see its docstring for the
+    parameter surface. A bare predict callable or policy object is refused: wrap
+    it in the framework ``Model`` whose arrays it expects
+    (``rlmesh.numpy.Model(fn)``), the library never picks one. ``prefetch_lead``
+    (> 0) is the native loop's async inference: the next chunk is predicted
+    while that many replay frames of the current one remain, from an observation
+    up to ``prefetch_lead`` steps stale, so the result is not comparable to a
+    synchronous run. A served :class:`RemoteModel` / :class:`SandboxModel` (and
+    the :data:`rlmesh.RANDOM_SAMPLE` baseline) runs through its own session
+    loop, which supports every parameter except ``prefetch_lead``; ``hooks``,
+    ``instruction`` and ``view`` are that loop's alone -- a local model takes
+    them on :meth:`Model.session` / :meth:`Session.run <rlmesh.Session.run>`.
 
     ``workflow_edition`` declares the contract for this call with the same
     precedence as :func:`rlmesh.session`.
@@ -1604,19 +1585,26 @@ def run(
     from ._eval import RANDOM_SAMPLE
 
     if model is not RANDOM_SAMPLE and not _served_handle(model):
+        for name, given in (
+            ("hooks", hooks is not None),
+            ("instruction", instruction is not None),
+            ("view", view is not None),
+        ):
+            if given:
+                raise TypeError(
+                    f"{name} is a session() option for a local model: use "
+                    "model.session(env, ...).run(...) for it."
+                )
         return as_model(model).run(
             cast("LocalEnvTarget", env),
             seeds=seeds,
             max_episodes=max_episodes,
             max_episode_steps=max_episode_steps,
             max_episode_seconds=max_episode_seconds,
-            hooks=hooks,
-            instruction=instruction,
             close_env=close_env,
             trust_entrypoints=trust_entrypoints,
             execution_horizon=execution_horizon,
             prefetch_lead=prefetch_lead,
-            view=view,
             workflow_edition=workflow_edition,
             trial_index_base=trial_index_base,
         )

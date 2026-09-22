@@ -84,23 +84,13 @@ def _episode_success(info: Mapping[str, Any]) -> bool | None:
     """Read an env-reported task outcome from a step ``info`` (Gymnasium convention).
 
     Returns the ``is_success`` / ``success`` flag when the env emits one, else
-    ``None`` -- callers then fall back to ``terminated``.
+    ``None``: the outcome is unknown, never inferred from ``terminated``.
     """
     # Mirrors `EditionDefaults::success_info_keys` in crates/rlmesh-proto; keep in sync.
     for key in ("is_success", "success", "task_success"):
         if key in info:
             return bool(info[key])
     return None
-
-
-def episode_succeeded(*, success: bool | None, terminated: bool) -> bool:
-    """The SDK success doctrine, as a bare function.
-
-    Single source for :attr:`EpisodeResult.succeeded` and the recorder's
-    :class:`~rlmesh.recorder.schema.EpisodeRecord`, which snapshots the same
-    fields into a bundle document and must count success identically.
-    """
-    return terminated if success is None else success
 
 
 @dataclass(frozen=True)
@@ -119,7 +109,8 @@ class EpisodeResult:
         success: The env-reported task outcome from the final step's ``info``
             (Gymnasium's ``is_success`` / ``success`` key), or ``None`` when the
             env emits no such signal. Distinct from ``terminated`` (which only
-            says the episode reached a terminal state, not whether it succeeded).
+            says the episode reached a terminal state, not how it ended); an
+            unknown outcome is never inferred from it.
         duration_s: Wall time from reset-return to episode end, in seconds.
         predict_ms: Mean per-step wall time of ``predict``, in milliseconds.
         step_ms: Mean per-step wall time of the env ``step`` round trip, in
@@ -143,18 +134,6 @@ class EpisodeResult:
     predict_ms: float = 0.0
     step_ms: float = 0.0
     trial: int | None = None
-
-    @property
-    def succeeded(self) -> bool:
-        """Whether this episode counts as a success.
-
-        The single success doctrine: the env-reported :attr:`success` signal
-        when present, falling back to :attr:`terminated` for an env that emits
-        none. :attr:`RunResult.success_rate` and the recorder's exported
-        ``successRate`` both count episodes through this property, so an SDK
-        metric and an uploaded metric always agree.
-        """
-        return episode_succeeded(success=self.success, terminated=self.terminated)
 
 
 @dataclass(frozen=True)
@@ -235,29 +214,19 @@ class RunResult:
         return sum(e.reward for e in self.episodes) / len(self.episodes)
 
     @property
-    def success_rate(self) -> float:
-        """Fraction of episodes that succeeded.
+    def success_rate(self) -> float | None:
+        """Fraction of episodes the env reported as a success, or ``None``.
 
-        Prefers the env-reported task outcome (Gymnasium ``info["is_success"]`` /
-        ``["success"]``, captured per episode in :attr:`EpisodeResult.success`).
-        For an env that emits no such signal, falls back to ``terminated`` for
-        that episode -- so a time-limit env whose success *is* the truncation
-        cap should report success via ``info`` rather than rely on this. When
-        *no* episode in the run reported a signal, warns once: the whole rate is
-        then the terminal-state fallback, a different definition of success.
+        Counts the env-reported task outcome only (Gymnasium ``info["is_success"]``
+        / ``["success"]``, captured per episode in :attr:`EpisodeResult.success`).
+        ``None`` when the run is empty or any episode lacks that signal: an
+        unknown outcome is never inferred from ``terminated``. Read
+        :attr:`EpisodeResult.terminated` yourself if a terminal state is the
+        metric you want.
         """
-        if not self.episodes:
-            return 0.0
-        if all(e.success is None for e in self.episodes):
-            warnings.warn(
-                "no episode reported a task-outcome signal (Gymnasium "
-                "info['is_success'] / info['success']); success_rate fell back "
-                "to `terminated`, counting any terminal state as a success. Have "
-                "the env emit success through step info to measure it directly.",
-                stacklevel=2,
-            )
-        succeeded = sum(1 for e in self.episodes if e.succeeded)
-        return succeeded / len(self.episodes)
+        if not self.episodes or any(e.success is None for e in self.episodes):
+            return None
+        return sum(1 for e in self.episodes if e.success) / len(self.episodes)
 
     def format_telemetry(self) -> str:
         """The :attr:`telemetry` rows as an aligned text table.
@@ -800,16 +769,15 @@ class Session(Generic[ObsT, ActT]):
     def _view_outcome(self) -> str:
         """The viewer HUD's outcome label for the current step.
 
-        Prefers the env-reported task result (:func:`_episode_success` over the last
-        step's ``info``); only when the env emits no such signal does it fall back to
-        ``terminated`` -- matching :attr:`RunResult.success_rate`, and never reading a
-        plain terminal state as a success.
+        The env-reported task result (:func:`_episode_success` over the last step's
+        ``info``); an env that emits none shows how the episode ended, never an
+        inferred success -- matching :attr:`RunResult.success_rate`.
         """
         if not (self._terminated or self._truncated):
             return ""
         success = _episode_success(self._last_info)
         if success is None:
-            success = self._terminated
+            return "done" if self._terminated else "timeout"
         if success:
             return "success"
         return "failure" if self._terminated else "timeout"
@@ -820,7 +788,7 @@ class Session(Generic[ObsT, ActT]):
         The episode boundary on the local drive path: an open episode ends when the
         next reset() begins, or when the session closes. This fires the same
         `on_episode_end` the served path drives via `ResetAdapter`, so a stateful
-        local model (a subclass/duck-typed policy's `reset()` is wired here) clears
+        local model (a subclass's `on_episode_end()` / a policy object's `reset()` is wired here) clears
         its per-episode state identically whether driven by hand or via `run()`. For
         a served model `_on_episode_end` is None (the remote engine owns the hook),
         so this is a no-op there. Idempotent: safe to call from both reset() and

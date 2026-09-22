@@ -12,6 +12,7 @@ from typing import Any, ClassVar, cast
 
 import pytest
 import rlmesh
+import rlmesh.numpy
 from rlmesh._authoring import EnvFactory
 from rlmesh._bootstrap.loaders import (
     construct_authored_env,
@@ -141,7 +142,9 @@ def test_duck_policy_predict_chunk_is_picked_up_and_actually_chunks() -> None:
     coerced = coerce_model(_ChunkPolicy, spec=None)
     assert coerced.predict_chunk is not None
 
-    result = rlmesh.run(_ChunkPolicy(), _SixStepEnv(), execution_horizon=3)
+    result = rlmesh.run(
+        rlmesh.numpy.Model(_ChunkPolicy()), _SixStepEnv(), execution_horizon=3
+    )
     assert result.total_steps == 6
     assert calls["chunk"] == 2  # re-planned every 3 steps
     assert calls["predict"] == 0  # the chunk corner drove the whole episode

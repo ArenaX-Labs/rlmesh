@@ -68,7 +68,7 @@ episodes.
 
 `predict_index`, `predict_seed`, and `state` come from the model's own bounded
 episode store. Entries are dropped at the episode-end edge (the same edge that
-fires `reset`) and never otherwise: a live episode's state is not evicted to
+fires `on_episode_end`) and never otherwise: a live episode's state is not evicted to
 make room. If ends never arrive, the store still cannot grow without bound:
 past 65,536 live episodes a **new** episode's predict fails with a
 `RuntimeError` naming the ceiling. A deployment that legitimately runs more
@@ -191,7 +191,7 @@ Real checkpoints rarely speak the spec's keys and shapes directly. The seams abo
 | Quirk                                | Handling                                                                                                                           |
 | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
 | Compute device                       | Set `self.device` in `load()`; requires a torch/jax `Model`. RLMesh moves obs leaves onto it before `predict`.                     |
-| Stateful policy (RNN, chunk replay)  | Implement `reset()`; it fires at each episode boundary, local and served.                                                          |
+| Stateful policy (RNN, chunk replay)  | Implement `on_episode_end()`; it fires at each episode boundary, local and served.                                                 |
 | Policy expects different keys        | Write an `_obs()` helper mapping spec keys to the policy's dict (the SmolVLA pattern, below).                                      |
 | Normalization stats                  | Load them in `load()` alongside the weights.                                                                                       |
 | Native chunk longer than the horizon | Return the whole native chunk -- the runtime executes its prefix. Declare `native_chunk = K` so a bad horizon is refused up front. |
@@ -215,16 +215,16 @@ Tokenization stays in the model on purpose. `Text` delivers the instruction as a
 
 The four lifecycle seams fire identically on the local loop and the served path.
 
-| Seam                          | Default | When it fires                                                                | Notes                                                                                                                                   |
-| ----------------------------- | ------- | ---------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `load(**binding)`             | no-op   | once, during construction (subclass mode), before the native worker is built | Keep heavy imports here. On the served path the eager auto-load is suppressed and `load(**binding)` runs once with the resolved params. |
-| `reset([episode_id])`         | no-op   | when an episode ends                                                         | Wired to the `on_episode_end` edge, once per ended episode, naming it. Declare `episode_id` only if you key state by it.                |
-| `close()`                     | no-op   | at the end of a run                                                          | Wired to the `on_close` edge.                                                                                                           |
-| `on_episode_end` / `on_close` | none    | constructor callbacks                                                        | Override a subclass's `reset` / `close` (and a wrapped callable's), the only edges for a callable that cannot define methods.           |
+| Seam                           | Default | When it fires                                                                | Notes                                                                                                                                                  |
+| ------------------------------ | ------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `load(**binding)`              | no-op   | once, during construction (subclass mode), before the native worker is built | Keep heavy imports here. On the served path the eager auto-load is suppressed and `load(**binding)` runs once with the resolved params.                |
+| `on_episode_end([episode_id])` | no-op   | when an episode ends                                                         | Once per ended episode, naming it. Declare `episode_id` only if you key state by it.                                                                   |
+| `close()`                      | no-op   | at the end of a run                                                          | Wired to the `on_close` edge.                                                                                                                          |
+| `on_episode_end` / `on_close`  | none    | constructor callbacks                                                        | Override a subclass's `on_episode_end` / `close` (and a wrapped policy's `reset` / `close`), the only edges for a callable that cannot define methods. |
 
 There is no episode-_begin_ hook. Per-episode state is lazy-seeded on the first `predict`, so a stateful model clears its state at episode _end_.
 
-The served path drives the edge from the explicit `ResetAdapter` op, which names every id that ended, so `reset` fires once per id. Locally the session mints an id per `reset()` and fires the same hook at the next reset (and at close). Either way the model's episode store drops that episode's entry first.
+The served path drives the edge from the explicit `ResetAdapter` op, which names every id that ended, so `on_episode_end` fires once per id. Locally the session mints an id per `reset()` and fires the same hook at the next reset (and at close). Either way the model's episode store drops that episode's entry first.
 
 Other construction inputs:
 
@@ -284,20 +284,20 @@ Find the row that matches your policy, then build it.
 | a batched VLA with an action head            | a `rlmesh.torch.Model` with `predict_chunk_batch`       |
 | an ACT / diffusion / flow chunker            | a `Model` subclass with `predict_chunk`                 |
 | a checkpoint whose keys differ from the spec | the same, plus an `_obs()` remap helper                 |
-| stateful across steps (RNN, ensembling)      | the same, plus `reset()`                                |
+| stateful across steps (RNN, ensembling)      | the same, plus `on_episode_end()`                       |
 | GPU-resident                                 | a torch/jax `Model` that sets `self.device` in `load()` |
 
 ### Common pitfalls
 
-| Symptom                                       | Cause                                      | Fix                                                    |
-| --------------------------------------------- | ------------------------------------------ | ------------------------------------------------------ |
-| `TypeError` on construction for a chunk model | chunk-only on the native `rlmesh.Model`    | define `predict()`, or use a numpy/torch/jax backend   |
-| `execution_horizon` seems ignored             | the model has no chunk corner              | implement `predict_chunk` or `predict_chunk_batch`     |
-| `native_chunk=K but ... returned N frames`    | the chunk corner slices its own output     | return the whole native chunk, or drop the declaration |
-| Batch corner gets a list, not a fused obs     | the model is the native `rlmesh.Model`     | use a numpy/torch/jax backend for true fusion          |
-| `ValueError` on `device=`                     | `device` set on a numpy/native model       | use a torch/jax `Model`, or drop `device`              |
-| Obs not on the GPU                            | `device` set somewhere other than `load()` | set `self.device` in `load()`, the one source of truth |
-| Stateful policy leaks across episodes         | per-episode state never cleared            | implement `reset()` (wired to the episode boundary)    |
+| Symptom                                       | Cause                                      | Fix                                                          |
+| --------------------------------------------- | ------------------------------------------ | ------------------------------------------------------------ |
+| `TypeError` on construction for a chunk model | chunk-only on the native `rlmesh.Model`    | define `predict()`, or use a numpy/torch/jax backend         |
+| `execution_horizon` seems ignored             | the model has no chunk corner              | implement `predict_chunk` or `predict_chunk_batch`           |
+| `native_chunk=K but ... returned N frames`    | the chunk corner slices its own output     | return the whole native chunk, or drop the declaration       |
+| Batch corner gets a list, not a fused obs     | the model is the native `rlmesh.Model`     | use a numpy/torch/jax backend for true fusion                |
+| `ValueError` on `device=`                     | `device` set on a numpy/native model       | use a torch/jax `Model`, or drop `device`                    |
+| Obs not on the GPU                            | `device` set somewhere other than `load()` | set `self.device` in `load()`, the one source of truth       |
+| Stateful policy leaks across episodes         | per-episode state never cleared            | implement `on_episode_end()` (fires at the episode boundary) |
 
 ## Where next
 

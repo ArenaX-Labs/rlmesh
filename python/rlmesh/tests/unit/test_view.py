@@ -167,7 +167,7 @@ def test_view_outcome_prefers_info_over_terminated() -> None:
     assert sess._view_outcome() == "success"
 
     sess._last_info = {}
-    assert sess._view_outcome() == "success"
+    assert sess._view_outcome() == "done"  # terminal, outcome unknown: never "success"
 
     sess._terminated = False
     sess._truncated = True

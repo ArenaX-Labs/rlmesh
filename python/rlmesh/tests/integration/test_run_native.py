@@ -1,10 +1,11 @@
-"""The unified native ``Model.run``: seeds, caps, and Session-only rejections.
+"""The unified native ``Model.run``: seeds, caps, and the honest signature.
 
 ``run()`` drives every env shape through the native runtime loop. These pin
 the Session-parity features the runtime enforces itself: explicit per-episode
 seeds (``episode_seeds``, echoed on the ``RunResult``), the step cap
-(runtime-truncated episodes), and the loud rejection of the Session-only
-knobs (``hooks`` / ``instruction`` / ``view``).
+(runtime-truncated episodes), and that the Session-only knobs (``hooks`` /
+``instruction`` / ``view``) are not ``Model.run`` parameters at all -- the
+module-level ``rlmesh.run`` refuses them for a local model.
 """
 
 from __future__ import annotations
@@ -363,11 +364,16 @@ def test_run_on_a_driven_handle_explains_the_session_conflict() -> None:
         server.shutdown()
 
 
-def test_run_rejects_session_only_knobs() -> None:
-    with pytest.raises(ValueError, match=r"session\(\)\.run"):
-        _model().run(CountEnv(), hooks=rlmesh.RunHooks())
-    with pytest.raises(ValueError, match=r"session\(\)\.run"):
-        _model().run(CountEnv(), instruction="pick up the cube")
+def test_session_only_knobs_are_not_run_parameters() -> None:
+    import inspect
+
+    params = inspect.signature(rlmesh.Model.run).parameters
+    assert not {"hooks", "instruction", "view"} & params.keys()
+    for knob in ({"hooks": rlmesh.RunHooks()}, {"instruction": "pick up the cube"}):
+        with pytest.raises(TypeError, match=r"session\(\) option"):
+            rlmesh.run(_model(), CountEnv(), **knob)
+    with pytest.raises(TypeError, match=r"session\(\) option"):
+        rlmesh.run(_model(), CountEnv(), view="terminal")
 
 
 def test_session_served_env_context_carries_stable_episode_identity() -> None:

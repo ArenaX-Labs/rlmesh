@@ -147,7 +147,7 @@ The public Python clients connect once when you construct them; they do not poll
 
 ```python
 result = model.run(env, seeds=range(100))
-print(result.num_episodes, result.total_steps, f"{result.success_rate:.0%}")
+print(result.num_episodes, result.total_steps, result.success_rate)
 ```
 
 The count follows three rules:
@@ -162,7 +162,7 @@ result = model.run(env, seeds=range(50))              # 50 seeded episodes
 baseline = rlmesh.run(rlmesh.RANDOM_SAMPLE, env, max_episodes=10)
 ```
 
-Each episode is an {class}`~rlmesh.EpisodeResult` carrying `index`, `seed`, `steps`, `reward`, `terminated`, `truncated`, and `success`. The `success` field is the env-reported task outcome from the final step's `info` (Gymnasium's `is_success` / `success`, or `task_success`), or `None` when the env emits none. {attr}`RunResult.success_rate <rlmesh.RunResult.success_rate>` prefers that signal and falls back to `terminated` only when it is absent, so a time-limit env should report success through `info` rather than rely on the fallback.
+Each episode is an {class}`~rlmesh.EpisodeResult` carrying `index`, `seed`, `steps`, `reward`, `terminated`, `truncated`, and `success`. The `success` field is the env-reported task outcome from the final step's `info` (Gymnasium's `is_success` / `success`, or `task_success`), or `None` when the env emits none. {attr}`RunResult.success_rate <rlmesh.RunResult.success_rate>` counts that signal only and is `None` when any episode lacks it, so an env that has a notion of success should report it through `info`; a terminal state is never inferred to be one.
 
 ```{caution}
 A non-terminating env is bounded: the loop caps each episode at 100,000 steps and

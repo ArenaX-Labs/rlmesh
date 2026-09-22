@@ -177,7 +177,7 @@ def test_served_model_fires_on_episode_end_once_per_episode_id() -> None:
             _ = observation, context
             return 1
 
-        def reset(self, episode_id: str = "") -> None:
+        def on_episode_end(self, episode_id: str = "") -> None:
             ended.append(episode_id)
 
     env_server = _serve_env(ThreeStepEnv())

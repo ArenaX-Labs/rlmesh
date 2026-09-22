@@ -29,7 +29,7 @@ flowchart LR
 
 ```python
 result = model.run(env, seeds=range(100))
-print(f"{result.success_rate:.0%} success, mean reward {result.mean_reward:.2f}")
+print(result.success_rate, f"mean reward {result.mean_reward:.2f}")
 ```
 
 `env` may be a local Gymnasium-style env, an {class}`~rlmesh.EnvFactory` (built and tag-stamped, then driven locally), a remote handle such as a `RemoteEnv`, or a bare address string the loop dials:
@@ -38,12 +38,13 @@ print(f"{result.success_rate:.0%} success, mean reward {result.mean_reward:.2f}"
 result = model.run("tcp://127.0.0.1:5555", seeds=range(100))
 ```
 
-The module-level {func}`~rlmesh.run` is the same loop over an explicit `(model, env)` pair. Its `model` argument is the flexible one: a bare predict callable, a {class}`~rlmesh.Model` subclass class or instance, or a served `RemoteModel` / `SandboxModel` handle. Pass `rlmesh.RANDOM_SAMPLE` for a baseline that samples the action space and ignores observations:
+The module-level {func}`~rlmesh.run` is the same loop over an explicit `(model, env)` pair. Its `model` argument is a {class}`~rlmesh.Model` subclass class or instance, or a served `RemoteModel` / `SandboxModel` handle. A bare predict function is not accepted as-is: wrap it in the framework `Model` whose arrays it expects, because the library never picks one for you. Pass `rlmesh.RANDOM_SAMPLE` for a baseline that samples the action space and ignores observations:
 
 ```python
 import rlmesh
+import rlmesh.numpy
 
-result = rlmesh.run(my_policy_fn, env, seeds=range(10))   # any obs -> action callable
+result = rlmesh.run(rlmesh.numpy.Model(my_policy_fn), env, seeds=range(10))  # arrays in
 baseline = rlmesh.run(rlmesh.RANDOM_SAMPLE, env, max_episodes=10)
 ```
 
@@ -60,7 +61,7 @@ baseline = rlmesh.run(rlmesh.RANDOM_SAMPLE, env, max_episodes=10)
 
 With neither `seeds` nor `max_episodes`, `run()` does a single episode. `execution_horizon` is accepted by both the bound methods (`model.run` / `model.session`) and the module-level {func}`~rlmesh.run` / {func}`~rlmesh.session`, which forwards it through.
 
-`run()` drives the native runtime loop -- the same engine that drives a served model -- so a vectorized env (`num_envs > 1`) runs through the identical call, with all lanes batched into each predict (the batch corners in {doc}`models`). The step-level knobs live on the session loop instead: `instruction=` (per-step text override) and `view=` are {func}`~rlmesh.session` parameters and `hooks=` is a {meth}`Session.run <rlmesh.Session.run>` parameter; `run()` rejects all three with a pointer there.
+`run()` drives the native runtime loop -- the same engine that drives a served model -- so a vectorized env (`num_envs > 1`) runs through the identical call, with all lanes batched into each predict (the batch corners in {doc}`models`). The step-level knobs live on the session loop instead: `instruction=` (per-step text override) and `view=` are {func}`~rlmesh.session` parameters and `hooks=` is a {meth}`Session.run <rlmesh.Session.run>` parameter. `model.run(...)` does not take them; the module-level `rlmesh.run` forwards them only for a served handle or `RANDOM_SAMPLE`, which run on the session loop, and refuses them for a local model.
 
 ### Declare a workflow edition
 
@@ -89,13 +90,13 @@ with model.session(env) as sess:
 
 {class}`~rlmesh.RunResult` is immutable and aggregates its episodes:
 
-| Member          | Type                        | Meaning                                         |
-| --------------- | --------------------------- | ----------------------------------------------- |
-| `.episodes`     | `tuple[EpisodeResult, ...]` | One {class}`~rlmesh.EpisodeResult` per episode. |
-| `.mean_reward`  | `float`                     | Mean total reward across episodes.              |
-| `.success_rate` | `float`                     | Fraction of episodes that succeeded.            |
-| `.num_episodes` | `int`                       | Episode count.                                  |
-| `.total_steps`  | `int`                       | Summed steps across episodes.                   |
+| Member          | Type                        | Meaning                                                                                     |
+| --------------- | --------------------------- | ------------------------------------------------------------------------------------------- |
+| `.episodes`     | `tuple[EpisodeResult, ...]` | One {class}`~rlmesh.EpisodeResult` per episode.                                             |
+| `.mean_reward`  | `float`                     | Mean total reward across episodes.                                                          |
+| `.success_rate` | `float \| None`             | Fraction of episodes the env reported as a success; `None` if any episode lacks the signal. |
+| `.num_episodes` | `int`                       | Episode count.                                                                              |
+| `.total_steps`  | `int`                       | Summed steps across episodes.                                                               |
 
 Each {class}`~rlmesh.EpisodeResult` carries `index`, `seed`, `steps`, `reward`, `terminated`, `truncated`, and `success`:
 
@@ -105,7 +106,7 @@ for ep in result.episodes:
 ```
 
 ```{caution}
-`success_rate` prefers the env's own task outcome: Gymnasium's `info["is_success"]` or `info["success"]`, captured per episode as the `success` field on {class}`~rlmesh.EpisodeResult`. When the env emits no such flag it falls back to `terminated` for that episode. A time-limit env whose success *is* the truncation cap should report it through `info`, because a plain terminal state is not read as success.
+`success_rate` counts only the env's own task outcome: Gymnasium's `info["is_success"]` or `info["success"]`, captured per episode as the `success` field on {class}`~rlmesh.EpisodeResult`. It is `None` when the run is empty or any episode lacks that flag; a terminal state is never read as success. If a terminal state *is* the metric you want, count `terminated` over `result.episodes` yourself, or have the env report success through `info`.
 ```
 
 `.advisories` holds each distinct `rlmesh.adapters.Advisory` the runtime raised while relaying data between the env and the model. A `"caution"` means the runtime converted data for a peer that could not read it as sent, so the model may not have seen exactly what the env produced. The open-source runtime never converts: it refuses a payload a peer cannot decode, so this tuple is empty.
@@ -156,7 +157,7 @@ finally:
 
 The context-manager form above is the idiomatic one; the explicit `try/finally` is the same thing written out when you cannot wrap the whole loop in a `with`. The module-level {func}`~rlmesh.session` accepts the same flexible `model` argument as {func}`~rlmesh.run`, including `rlmesh.RANDOM_SAMPLE`.
 
-`on_episode_end` fires at every episode boundary (the next `reset()`, or `close()` for the last episode), so a stateful model clears its per-episode state identically whether you drive by hand or call `run()`. {meth}`Session.run <rlmesh.Session.run>` pumps whole episodes through these same primitives and is exactly what `model.run(...)` calls under the hood.
+`on_episode_end` fires at every episode boundary (the next `reset()`, or `close()` for the last episode), so a stateful model clears its per-episode state identically whether you drive by hand or call `run()`. {meth}`Session.run <rlmesh.Session.run>` pumps whole episodes through these same primitives; `model.run(...)` drives the same episodes on the native runtime loop.
 
 ## `read` and `reader`: inspect observations by role
 

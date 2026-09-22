@@ -352,9 +352,9 @@ def _resolve_model(
 
     A ``Model`` subclass *class* is instantiated once (its ``load()`` runs); an
     existing ``Model`` instance is used as-is (it already built its worker); anything
-    else (a bare predict callable or a duck-typed policy object) is wrapped in a
-    framework ``Model``. Delegates to the shared :func:`rlmesh._models.base.as_model`
-    normalizer so the serve path and the run path agree on what a model source is.
+    else (a bare predict callable or a duck-typed policy object) is served as a NumPy
+    framework ``Model``: the documented default for a policy image, where the
+    library's ``run`` / ``session`` refuse to pick a framework for the caller.
 
     With a non-empty ``binding`` the model is built on the bootstrap-authoritative
     path: the eager auto-load is suppressed, the binding is resolved against the
@@ -362,7 +362,7 @@ def _resolve_model(
     require a :class:`rlmesh.Model` subclass *class* entrypoint -- the documented
     authoring path -- so there is no double-construction of a wrapped policy.
     """
-    from rlmesh._models.base import ModelBase, as_model
+    from rlmesh._models.base import ModelBase
 
     if isinstance(model_source, type) and issubclass(model_source, ModelBase):
         # Always resolve a Model subclass through the authored path -- even with no
@@ -382,7 +382,11 @@ def _resolve_model(
             "model construction params (--kwargs-json / RLMESH_MAKE_KWARGS) "
             "require a rlmesh.Model subclass entrypoint (module:Class)"
         )
-    return as_model(cast("object", model_source))
+    if isinstance(model_source, ModelBase):
+        return cast("ModelBase[Any, Any]", model_source)
+    from rlmesh.numpy import Model as NumpyModel
+
+    return NumpyModel(cast("object", model_source))
 
 
 def serve_env(

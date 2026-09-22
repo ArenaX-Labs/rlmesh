@@ -62,8 +62,8 @@ class EpisodeStore:
     """Bounded per-episode state, keyed by ``episode_id``.
 
     ``on_end`` is the model's own episode-end hook (a ``Model`` subclass's
-    ``reset``, or the ``on_episode_end=`` callback), already normalized to take
-    the ended episode's id.
+    ``on_episode_end``, a policy object's ``reset``, or the ``on_episode_end=``
+    callback), already normalized to take the ended episode's id.
     """
 
     def __init__(

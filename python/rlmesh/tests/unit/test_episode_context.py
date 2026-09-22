@@ -135,14 +135,14 @@ def test_accepts_episode_id_reads_the_hook_signature() -> None:
     assert not accepts_episode_id(lambda *, keyword=None: None)
 
 
-def test_zero_argument_reset_still_fires() -> None:
+def test_zero_argument_on_episode_end_still_fires() -> None:
     calls: list[int] = []
 
     class Policy(Model):
         def predict(self, observation: Any) -> Any:
             return 0
 
-        def reset(self) -> None:
+        def on_episode_end(self) -> None:
             calls.append(1)
 
     Policy()._on_episode_end("ep-1")
@@ -150,14 +150,14 @@ def test_zero_argument_reset_still_fires() -> None:
     assert calls == [1]
 
 
-def test_reset_taking_an_episode_id_receives_it() -> None:
+def test_on_episode_end_taking_an_episode_id_receives_it() -> None:
     ended: list[str] = []
 
     class Policy(Model):
         def predict(self, observation: Any) -> Any:
             return 0
 
-        def reset(self, episode_id: str = "") -> None:
+        def on_episode_end(self, episode_id: str = "") -> None:
             ended.append(episode_id)
 
     Policy()._on_episode_end("ep-1")
@@ -171,7 +171,7 @@ def test_episode_end_drops_the_store_entry_for_that_episode() -> None:
             context["state"]["seen"] = context["predict_index"]
             return 0
 
-        def reset(self, episode_id: str = "") -> None:
+        def on_episode_end(self, episode_id: str = "") -> None:
             pass
 
     model = Policy()

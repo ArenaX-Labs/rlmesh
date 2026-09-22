@@ -11,6 +11,7 @@ from typing import Any, cast
 
 import pytest
 import rlmesh
+import rlmesh.numpy
 from rlmesh._models._view import ViewerDriver
 
 
@@ -42,8 +43,12 @@ def test_run_drives_a_model_against_a_local_env() -> None:
     assert result.mean_reward == 1.0  # one step, reward 1.0, then terminates
 
 
-def test_run_accepts_a_bare_callable() -> None:
-    result = rlmesh.run(lambda obs: 0, _TinyEnv())
+def test_run_refuses_a_bare_callable_and_takes_a_framework_model() -> None:
+    with pytest.raises(TypeError, match=r"take a Model.*rlmesh\.numpy\.Model"):
+        rlmesh.run(lambda obs: 0, _TinyEnv())
+    with pytest.raises(TypeError, match="take a Model"):
+        rlmesh.session(lambda obs: 0, _TinyEnv())
+    result = rlmesh.run(rlmesh.numpy.Model(lambda obs: 0), _TinyEnv())
     assert result.num_episodes == 1
 
 
@@ -216,8 +221,10 @@ def test_one_shot_run_still_closes_everything() -> None:
 def test_as_model_rejects_a_non_model_source() -> None:
     from rlmesh._models.base import as_model
 
-    with pytest.raises(TypeError, match="predict callable or a policy object"):
+    with pytest.raises(TypeError, match="take a Model"):
         as_model(object())
+    with pytest.raises(TypeError, match="take a Model"):
+        as_model(lambda obs: 0)
 
 
 # ---------------------------------------------------------------------------
@@ -663,7 +670,9 @@ def test_hud_chunk_length_tracks_the_actual_chunk_not_the_horizon() -> None:
         def predict_chunk(self, observation: object) -> list[int]:
             return [0, 1, 2, 3]
 
-    sess = rlmesh.session(_Chunky(), _ForeverEnv(), execution_horizon=8)
+    sess = rlmesh.session(
+        rlmesh.numpy.Model(_Chunky()), _ForeverEnv(), execution_horizon=8
+    )
     obs, _ = sess.reset()
     positions: list[tuple[int, int]] = []
     for _step in range(5):
@@ -721,7 +730,9 @@ def test_numpy_chunk_runs_over_a_scalar_action_space() -> None:
             return np.zeros(execution_horizon, dtype=np.int64)
 
     env = _ScalarActionEnv()
-    result = rlmesh.run(_NumpyChunky(), env, max_episodes=1, execution_horizon=4)
+    result = rlmesh.run(
+        rlmesh.numpy.Model(_NumpyChunky()), env, max_episodes=1, execution_horizon=4
+    )
     assert result.num_episodes == 1
     assert len(env.actions) == 8
     assert all(isinstance(action, int) for action in env.actions)

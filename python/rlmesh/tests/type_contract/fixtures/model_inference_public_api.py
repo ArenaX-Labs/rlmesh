@@ -75,7 +75,8 @@ def _session_types(model: rlmesh_numpy.Model[Obs, Act], policy: ChunkedPolicy) -
     assert_type(model.session("127.0.0.1:5555"), rlmesh.Session[Obs, Act])
     assert_type(rlmesh.session(model, "127.0.0.1:5555"), rlmesh.Session[Obs, Act])
     assert_type(
-        rlmesh.session(typed_predict, "127.0.0.1:5555"), rlmesh.Session[Obs, Act]
+        rlmesh.session(rlmesh_numpy.Model(typed_predict), "127.0.0.1:5555"),
+        rlmesh.Session[Obs, Act],
     )
     assert_type(
         rlmesh.session(rlmesh.RANDOM_SAMPLE, "127.0.0.1:5555"),

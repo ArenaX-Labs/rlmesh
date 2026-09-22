@@ -10,10 +10,10 @@ def test_episode_success_reads_gymnasium_info_keys() -> None:
 
     assert _episode_success({"is_success": True}) is True
     assert _episode_success({"success": False}) is False
-    assert _episode_success({}) is None  # no signal -> caller falls back
+    assert _episode_success({}) is None  # no signal -> unknown, never inferred
 
 
-def test_success_rate_prefers_info_success_then_falls_back_to_terminated() -> None:
+def test_success_rate_counts_only_the_env_reported_outcome() -> None:
     from rlmesh import RunResult
     from rlmesh._models._eval import EpisodeResult
 
@@ -22,23 +22,23 @@ def test_success_rate_prefers_info_success_then_falls_back_to_terminated() -> No
         EpisodeResult(0, None, 5, 1.0, terminated=True, truncated=False, success=False),
         # truncated but the env reported success
         EpisodeResult(1, None, 5, 1.0, terminated=False, truncated=True, success=True),
-        # no success signal -> falls back to terminated (True)
-        EpisodeResult(2, None, 5, 1.0, terminated=True, truncated=False),
     )
-    # info-success: ep0 False, ep1 True; fallback: ep2 True -> 2 of 3.
-    assert RunResult(episodes).success_rate == pytest.approx(2 / 3)
+    assert RunResult(episodes).success_rate == pytest.approx(0.5)
 
 
-def test_success_rate_warns_when_env_never_reports_success() -> None:
+def test_success_rate_is_none_when_any_episode_lacks_a_signal() -> None:
     from rlmesh import RunResult
     from rlmesh._models._eval import EpisodeResult
 
-    episodes = (
-        EpisodeResult(0, None, 5, 1.0, terminated=True, truncated=False),
-        EpisodeResult(1, None, 5, 0.0, terminated=False, truncated=True),
+    reported = EpisodeResult(
+        0, None, 5, 1.0, terminated=True, truncated=False, success=True
     )
-    with pytest.warns(UserWarning, match="no episode reported a task-outcome"):
-        assert RunResult(episodes).success_rate == pytest.approx(0.5)
+    # terminated, but the env never said whether that was a success
+    unknown = EpisodeResult(1, None, 5, 1.0, terminated=True, truncated=False)
+    assert RunResult((reported, unknown)).success_rate is None
+    assert RunResult((unknown,)).success_rate is None
+    assert RunResult(()).success_rate is None
+    assert RunResult((reported,)).success_rate == 1.0
 
 
 def test_connect_uses_an_env_like_object_directly() -> None:

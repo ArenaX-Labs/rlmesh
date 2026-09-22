@@ -110,18 +110,6 @@ class EpisodeRecord:
             media=media,
         )
 
-    @property
-    def succeeded(self) -> bool:
-        """Whether this episode counts as a success, by the SDK doctrine.
-
-        Delegates to the same function behind
-        :attr:`rlmesh.EpisodeResult.succeeded`, so an SDK metric and an
-        uploaded ``successRate`` cannot drift apart.
-        """
-        from .._models._eval import episode_succeeded
-
-        return episode_succeeded(success=self.success, terminated=self.terminated)
-
     def to_dict(self) -> dict[str, Any]:
         """JSON-native episode record (SDK vocabulary; media only when present)."""
         out: dict[str, Any] = {
@@ -167,12 +155,17 @@ class WorkloadRecord:
         return sum(e.reward for e in counted) / len(counted)
 
     @property
-    def success_rate(self) -> float:
-        """Fraction of metric-counted episodes that succeeded (``0.0`` when none)."""
+    def success_rate(self) -> float | None:
+        """Fraction of metric-counted episodes the env reported as a success.
+
+        ``None`` when no episode counts or any counted episode lacks the
+        env-reported outcome, the same rule as :attr:`rlmesh.RunResult.success_rate`,
+        so an SDK metric and an uploaded ``successRate`` cannot drift apart.
+        """
         counted = self._metric_episodes()
-        if not counted:
-            return 0.0
-        return sum(1 for e in counted if e.succeeded) / len(counted)
+        if not counted or any(e.success is None for e in counted):
+            return None
+        return sum(1 for e in counted if e.success) / len(counted)
 
     @property
     def total_steps(self) -> int:

@@ -124,15 +124,22 @@ def test_included_in_metrics_excludes_from_aggregates() -> None:
     )
     wl = rec.workloads[0]
     assert wl.total_steps == 3
-    assert wl.mean_reward == 0.0 and wl.success_rate == 0.0
+    assert wl.mean_reward == 0.0 and wl.success_rate is None
     assert wl.episodes[0].included_in_metrics is False
 
 
-def test_success_rate_falls_back_to_terminated_when_unreported() -> None:
-    """success=None falls back to terminated; terminated False -> not a success."""
+def test_success_rate_is_none_when_an_episode_has_no_reported_outcome() -> None:
+    """success=None is unknown, not a failure: the exported successRate is null."""
     rec = Recorder()
-    rec.add(_run(_episode(0, reward=1.0, success=None)), model="m", env="e")
-    assert rec.workloads[0].success_rate == 0.0
+    rec.add(
+        _run(
+            _episode(0, reward=1.0, success=True), _episode(1, reward=1.0, success=None)
+        ),
+        model="m",
+        env="e",
+    )
+    assert rec.workloads[0].success_rate is None
+    assert rec.workloads[0].to_dict()["metrics"]["successRate"] is None
 
 
 def test_export_folder(tmp_path: Path) -> None:
