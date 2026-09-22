@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import time
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, cast
@@ -65,12 +66,16 @@ def startup_marks() -> dict[str, str]:
     return marks
 
 
-def _stamp_startup(kind: str, address: str) -> None:
-    """Mark the listen point, put the marks on the handshake, print them."""
+def _stamp_startup(kind: str, address: str, target: object) -> None:
+    """Mark the listen point, put the marks and the describe on the handshake, print them."""
     from ._peer_info import register_python_peer_info
+    from ._rlmesh import DESCRIBE_METADATA_KEY
 
     _mark("listen")
-    register_python_peer_info(extra=startup_marks())
+    extra = startup_marks()
+    if describe := _handshake_describe(target, kind):
+        extra[DESCRIBE_METADATA_KEY] = describe
+    register_python_peer_info(extra=extra)
     phases = ", ".join(
         f"{phase} {ms / 1000:.1f}s"
         for phase, ms in (
@@ -79,6 +84,28 @@ def _stamp_startup(kind: str, address: str) -> None:
         + list(_marks.items())
     )
     print(f"RLMesh serving {kind} on {address} (startup: {phases})", flush=True)
+
+
+def _handshake_describe(target: object, kind: str) -> str | None:
+    """The served target's describe envelope, for ``PeerInfo.extra``.
+
+    The managed platform reads it off the handshake when an image carries no
+    describe label, so a plain ``python -m rlmesh.serve`` image is enough to
+    probe. Best-effort: a target ``describe()`` cannot cover still serves,
+    without the envelope, and says so once on stderr.
+    """
+    from ._describe import describe_json
+
+    try:
+        return describe_json(target, kind=kind)
+    except Exception as exc:
+        print(
+            f"RLMesh could not describe the served {kind} ({exc}); the handshake "
+            "carries no describe envelope",
+            file=sys.stderr,
+            flush=True,
+        )
+        return None
 
 
 if TYPE_CHECKING:
@@ -305,7 +332,7 @@ def serve_model(
 
     model = _resolve_model(model_source, binding)
     _mark("model")
-    _stamp_startup("model", address)
+    _stamp_startup("model", address, model)
     # `--workflow-edition` is the ServeOptions rung of the precedence chain;
     # the surfaces above it (the env var) and below it (the model class, the
     # project manifest) are resolved here, once.
@@ -466,7 +493,7 @@ def serve_env(
         ),
     )
     _mark("env")
-    _stamp_startup("env", server.address)
+    _stamp_startup("env", server.address, env_source)
     server.serve()
 
 
