@@ -54,6 +54,7 @@ impl Style {
             CredentialStatus::SignedIn => self.green("● signed in"),
             CredentialStatus::Incomplete => self.yellow("◐ incomplete"),
             CredentialStatus::SignedOut => self.muted("○ signed out"),
+            CredentialStatus::ApiKey => self.green("● api key"),
         }
     }
 

@@ -19,12 +19,21 @@ rlmesh login
 # Inspect the current session (exits nonzero unless signed in and verified)
 rlmesh whoami
 
+# A fresh access token for scripts
+curl -H "Authorization: Bearer $(rlmesh token)" https://api.rlmesh.dev/v1/evaluations
+
 # Register the rlmesh credential helper for the platform registry
 rlmesh registry login
 
-# List and switch between platform profiles
+# List and switch between platform profiles and organizations
 rlmesh profile list
 rlmesh profile use <name>
+rlmesh org list
+rlmesh org switch <org_id>
+
+# Submit and watch evaluations
+rlmesh eval submit request.json --wait
+rlmesh eval list --status running
 
 # Inspect the installed CLI distribution
 rlmesh version
@@ -33,6 +42,8 @@ rlmesh version
 Run `rlmesh --help` or `rlmesh <command> --help` for the complete command reference.
 
 `rlmesh registry login` registers the bundled `docker-credential-rlmesh` helper for the platform's registry host, so docker requests a fresh short-lived token from the CLI on every pull and push instead of storing a static password.
+
+The access token is reused until it nears expiry and refreshed under a per-profile lock, so scripts and parallel docker pushes never race for the single-use refresh token. `RLMESH_API_KEY` (with `RLMESH_PLATFORM_URL`) drives `token`, `eval`, and `whoami` without a browser sign-in. The [CLI reference](https://docs.rlmesh.dev/reference/cli/) lists every command, the files the CLI keeps, and what a platform must serve.
 
 ## Status
 

@@ -35,9 +35,35 @@ pub(crate) fn require_trusted_endpoint(url: &str, what: &str) -> Result<()> {
     if is_https || is_local_http {
         return Ok(());
     }
+    bail!("the {what} ({value}) is not https; refusing to send credentials to it")
+}
+
+/// Refuses a refresh when the platform's advertised token endpoint has
+/// moved to another host since sign-in: the stored refresh token only ever
+/// goes where the sign-in that minted it sent it.
+pub(crate) fn require_pinned_host(pinned: &str, advertised: &str, what: &str) -> Result<()> {
+    if host_of(pinned) == host_of(advertised) {
+        return Ok(());
+    }
     bail!(
-        "the platform advertised a non-https {what} ({value}); refusing to send credentials to it"
+        "the platform now advertises a {what} on {} (signed in against {}); \
+         refusing to send the stored session there",
+        host_of(advertised).unwrap_or_else(|| advertised.to_owned()),
+        host_of(pinned).unwrap_or_else(|| pinned.to_owned()),
     )
+}
+
+/// The lowercase host of a URL (or bare authority), without port, userinfo,
+/// path, or scheme.
+pub(crate) fn host_of(url: &str) -> Option<String> {
+    let value = url.trim();
+    let rest = value.split_once("://").map_or(value, |(_, rest)| rest);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let authority = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, authority)| authority);
+    let host = extract_host(authority).to_ascii_lowercase();
+    (!host.is_empty()).then_some(host)
 }
 
 fn has_http_scheme(value: &str) -> bool {
@@ -183,6 +209,36 @@ mod tests {
                 .count(),
             300
         );
+    }
+
+    #[test]
+    fn host_of_strips_scheme_port_userinfo_and_path() {
+        assert_eq!(
+            host_of("https://user@ID.example.com:8443/token?x=1").as_deref(),
+            Some("id.example.com")
+        );
+        assert_eq!(host_of("localhost:3000").as_deref(), Some("localhost"));
+        assert_eq!(host_of("http://[::1]:3000/t").as_deref(), Some("::1"));
+        assert_eq!(host_of("https://"), None);
+    }
+
+    #[test]
+    fn pinned_host_allows_path_changes_but_not_host_changes() {
+        assert!(
+            require_pinned_host(
+                "https://id.example.com/v1/token",
+                "https://id.example.com:443/v2/token",
+                "token endpoint"
+            )
+            .is_ok()
+        );
+        let error = require_pinned_host(
+            "https://id.example.com/token",
+            "https://evil.example.net/token",
+            "token endpoint",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("evil.example.net"), "{error}");
     }
 
     #[test]

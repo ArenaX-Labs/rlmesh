@@ -64,6 +64,19 @@ The first release. RLMesh connects models to environments across process, depend
 - Negotiated workflow editions content-pinned to the sealed `2026.06` edition spec, exact-match `rlmesh-wire-v1` protocol generation, and a per-lane `NEXT_STEP` autoreset contract for vector environments.
 - Image adapters run as typed kernels: the 180° rotation, the uint8 to float32 normalisation, the HWC to CHW transpose, and a pad to the frame's own size no longer pass through the dtype-generic scalar codec, and a camera plan that ends in a normalised float32 CHW tensor (the shape every vision policy asks for) runs as one fused pass from the raw bytes. Output is byte-identical to the previous path; a 256×256×3 frame costs about a sixth of what it did.
 - A fused grouped predict assembles its groups' inputs and applies their returned action chunks in parallel, one route per thread, when every group names a distinct route and no plan runs a Python custom transform (otherwise it stays sequential); results keep request order and the per-route entry locks still guard each route's buffers. The `predict.adapter` share of a served model's handler time, which was serial for every lane of a batch, shrinks accordingly.
+- `rlmesh whoami --json`, `rlmesh org list --json`, and `rlmesh profile list --json` for scripts, and `expiresAt` on `rlmesh token --json`, so nothing has to scrape the human output.
+- `RLMESH_API_KEY` (with `RLMESH_PLATFORM_URL`) drives `rlmesh token`, `rlmesh eval`, and `rlmesh whoami` without a browser sign-in, matching `rlmesh.platform.Client`; `RLMESH_CONFIG_DIR`, `RLMESH_DATA_DIR`, and `RLMESH_KEYCHAIN=off` confine the CLI's files and keep the OS keychain out, for CI runners and containers.
+- `rlmesh logout` asks the platform to end the session (`DELETE /v1/me/session`) before deleting the local credential, so the refresh token stops working server-side too; a platform without the route still signs out locally.
+- A CLI reference page covering every command, exit code, environment variable, file, JSON output, and the contract a platform must serve to be driven by the CLI.
+
+### Changed
+
+- The CLI reuses its access token until a minute before the `exp` claim and refreshes only then, under a per-profile lock that re-reads the credential store after acquiring it, so `rlmesh token`, `rlmesh eval`, and every docker pull cost no identity-provider round trip and concurrent commands rotate the single-use refresh token once. A request the platform still rejects is retried once after a forced refresh.
+- The CLI has no built-in identity provider: a platform whose `/v1/info` does not advertise `deviceAuthorizationEndpoint` and `tokenEndpoint` cannot be signed in to, the platform URL itself must be https (loopback excepted), and the token endpoint's host is pinned per profile at sign-in so a later `/v1/info` cannot redirect a stored refresh token. Identity (email, display name, organization) now comes from the platform's `/v1/me`, never from provider-specific fields on the token response; `rlmesh login` reports a platform that cannot confirm the identity instead of hiding it.
+
+### Fixed
+
+- `rlmesh org switch` failed for every organization the platform had linked: the CLI compared the platform's public organization id against the identity provider's id and reported that the switch had not taken. The CLI now keys organizations by the provider id everywhere (`org list`, `org switch`, `whoami`, the cached identity).
 
 ## [0.1.0-rc.12] - 2026-09-19
 

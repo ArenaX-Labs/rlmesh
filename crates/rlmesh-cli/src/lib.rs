@@ -6,6 +6,8 @@ mod platform;
 mod profile;
 mod registry;
 mod render;
+mod session;
+mod settings;
 mod viewtest;
 
 use std::ffi::{OsStr, OsString};
@@ -17,8 +19,32 @@ use clap::{ColorChoice, CommandFactory, FromArgMatches};
 use cli::{Cli, Command};
 use config::ProfileStore;
 use render::{Style, write_error, write_heading, write_key_value};
+pub use settings::Settings;
 
+/// Runs the CLI with settings taken from the environment.
 pub async fn run_cli(
+    argv: Vec<OsString>,
+    stdout: &mut impl Write,
+    stderr: &mut impl Write,
+    stdout_is_terminal: bool,
+    stderr_is_terminal: bool,
+) -> Result<i32> {
+    run_cli_in(
+        Settings::from_env(),
+        argv,
+        stdout,
+        stderr,
+        stdout_is_terminal,
+        stderr_is_terminal,
+    )
+    .await
+}
+
+/// Runs the CLI with explicit settings (file locations, keychain use, API
+/// key), so a test or an embedder can confine it without touching the
+/// process environment.
+pub async fn run_cli_in(
+    settings: Settings,
     argv: Vec<OsString>,
     stdout: &mut impl Write,
     stderr: &mut impl Write,
@@ -45,7 +71,7 @@ pub async fn run_cli(
 
     let mut profiles = match &cli.command {
         Command::Version | Command::Viewtest(_) => None,
-        _ => match ProfileStore::load() {
+        _ => match ProfileStore::load(&settings) {
             Ok(profiles) => Some(profiles),
             Err(error) => {
                 write_error(stderr, stderr_style, &error)?;
@@ -62,7 +88,9 @@ pub async fn run_cli(
                 .map(|()| 0)
         }
         Command::Logout(args) => {
-            auth::logout(profile_store(&mut profiles), &args, stdout, stdout_style).map(|()| 0)
+            auth::logout(profile_store(&mut profiles), &args, stdout, stdout_style)
+                .await
+                .map(|()| 0)
         }
         Command::Whoami(args) => {
             auth::whoami(profile_store(&mut profiles), &args, stdout, stdout_style).await
@@ -78,8 +106,8 @@ pub async fn run_cli(
             }
         },
         Command::Profile(args) => match args.command {
-            cli::ProfileCommand::List => {
-                profile::profile_list(profile_store(&mut profiles), stdout, stdout_style)
+            cli::ProfileCommand::List(args) => {
+                profile::profile_list(profile_store(&mut profiles), &args, stdout, stdout_style)
                     .map(|()| 0)
             }
             cli::ProfileCommand::Use { name } => {

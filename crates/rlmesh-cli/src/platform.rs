@@ -1,63 +1,147 @@
-use crate::auth::refresh_session;
 use crate::cli::{EvalIdArgs, EvalListArgs, EvalSubmitArgs, ProfileArgs, TokenArgs};
-use crate::config::ProfileStore;
-use crate::helpers::{expect_json, http_client};
+use crate::config::{ProfileStore, ResolvedProfile};
+use crate::helpers::{expect_json, get_json, http_client};
 use crate::render::Style;
+use crate::session::{Refresh, ensure_fresh_session, rfc3339_utc};
 
 use anyhow::{Context, Result, bail};
+use reqwest::{Method, StatusCode};
 use serde_json::{Value, json};
 use std::io::{Read, Write};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 const WAIT_POLL: Duration = Duration::from_secs(10);
 const TERMINAL: [&str; 3] = ["completed", "failed", "cancelled"];
 
-/// A signed-in platform: the profile's base URL plus a freshly refreshed
-/// access token.
-pub(crate) struct Platform {
+/// A signed-in platform: the profile's base URL plus an access token that
+/// is fresh for at least the next minute. A request the platform rejects as
+/// unauthorized is retried once with a forcibly refreshed token.
+pub(crate) struct Platform<'a> {
     client: reqwest::Client,
     url: String,
+    auth: Auth<'a>,
     token: String,
+    expires_at: Option<SystemTime>,
 }
 
-impl Platform {
-    pub(crate) async fn connect(profiles: &mut ProfileStore, args: &ProfileArgs) -> Result<Self> {
+enum Auth<'a> {
+    Session {
+        profiles: &'a mut ProfileStore,
+        profile: Box<ResolvedProfile>,
+    },
+    /// `RLMESH_API_KEY`: a static bearer credential, nothing to refresh.
+    ApiKey,
+}
+
+impl<'a> Platform<'a> {
+    pub(crate) async fn connect(
+        profiles: &'a mut ProfileStore,
+        args: &ProfileArgs,
+    ) -> Result<Self> {
+        if let Some((api_key, platform_url)) = profiles.api_key() {
+            return Self::with_api_key(api_key, platform_url);
+        }
         let profile = profiles.resolve(args.profile.as_deref());
-        let client = http_client()?;
-        let session = refresh_session(&client, profiles, &profile).await?;
+        Self::connect_profile(profiles, profile).await
+    }
+
+    pub(crate) fn with_api_key(api_key: &str, platform_url: &str) -> Result<Self> {
         Ok(Self {
-            client,
-            url: profile.platform_url.unwrap_or_default(),
-            token: session.credentials.access_token,
+            client: http_client()?,
+            url: platform_url.to_owned(),
+            auth: Auth::ApiKey,
+            token: api_key.to_owned(),
+            expires_at: None,
         })
     }
 
-    async fn get(&self, path: &str, query: &[(&str, String)]) -> Result<Value> {
-        let response = self
-            .client
-            .get(format!("{}{path}", self.url))
-            .query(query)
-            .bearer_auth(&self.token)
-            .send()
-            .await
-            .with_context(|| format!("GET {path}: could not reach {}", self.url))?;
-        expect_json(response, &format!("GET {path}")).await
+    pub(crate) async fn connect_profile(
+        profiles: &'a mut ProfileStore,
+        profile: ResolvedProfile,
+    ) -> Result<Self> {
+        let client = http_client()?;
+        let session = ensure_fresh_session(&client, profiles, &profile, Refresh::IfStale).await?;
+        Ok(Self {
+            client,
+            url: profile.platform_url.clone().unwrap_or_default(),
+            auth: Auth::Session {
+                profiles,
+                profile: Box::new(profile),
+            },
+            token: session.credentials.access_token,
+            expires_at: session.expires_at,
+        })
     }
 
-    async fn post(&self, path: &str, body: &Value) -> Result<Value> {
-        let response = self
+    pub(crate) async fn get(&mut self, path: &str, query: &[(&str, String)]) -> Result<Value> {
+        self.request(Method::GET, path, query, None).await
+    }
+
+    pub(crate) async fn post(&mut self, path: &str, body: &Value) -> Result<Value> {
+        self.request(Method::POST, path, &[], Some(body)).await
+    }
+
+    async fn request(
+        &mut self,
+        method: Method,
+        path: &str,
+        query: &[(&str, String)],
+        body: Option<&Value>,
+    ) -> Result<Value> {
+        let mut response = self.send(method.clone(), path, query, body).await?;
+        if response.status() == StatusCode::UNAUTHORIZED && self.refresh_forced().await? {
+            response = self.send(method.clone(), path, query, body).await?;
+        }
+        expect_json(response, &format!("{method} {path}")).await
+    }
+
+    async fn send(
+        &self,
+        method: Method,
+        path: &str,
+        query: &[(&str, String)],
+        body: Option<&Value>,
+    ) -> Result<reqwest::Response> {
+        let mut request = self
             .client
-            .post(format!("{}{path}", self.url))
-            .bearer_auth(&self.token)
-            .json(body)
+            .request(method.clone(), format!("{}{path}", self.url))
+            .query(query)
+            .bearer_auth(&self.token);
+        if let Some(body) = body {
+            request = request.json(body);
+        }
+        request
             .send()
             .await
-            .with_context(|| format!("POST {path}: could not reach {}", self.url))?;
-        expect_json(response, &format!("POST {path}")).await
+            .with_context(|| format!("{method} {path}: could not reach {}", self.url))
+    }
+
+    /// Rotates the session after the platform rejected the current token;
+    /// false when the credential cannot be refreshed at all.
+    async fn refresh_forced(&mut self) -> Result<bool> {
+        match &mut self.auth {
+            Auth::Session { profiles, profile } => {
+                let session =
+                    ensure_fresh_session(&self.client, profiles, profile, Refresh::Force).await?;
+                self.token = session.credentials.access_token;
+                self.expires_at = session.expires_at;
+                Ok(true)
+            }
+            Auth::ApiKey => Ok(false),
+        }
     }
 
     async fn dashboard_url(&self) -> Option<String> {
-        let info: Value = self.get("/v1/info", &[]).await.ok()?;
+        // Discovery is unauthenticated; never send the bearer where the
+        // contract does not ask for it.
+        let info: Value = get_json(
+            &self.client,
+            &format!("{}/v1/info", self.url),
+            None,
+            "fetching platform info",
+        )
+        .await
+        .ok()?;
         info["urls"]["dashboard"].as_str().map(str::to_owned)
     }
 }
@@ -72,7 +156,11 @@ pub async fn token(
         writeln!(
             stdout,
             "{}",
-            json!({"platform": platform.url, "token": platform.token})
+            json!({
+                "platform": platform.url,
+                "token": platform.token,
+                "expiresAt": platform.expires_at.map(rfc3339_utc),
+            })
         )?;
     } else {
         writeln!(stdout, "{}", platform.token)?;
@@ -87,7 +175,7 @@ pub async fn submit(
     style: Style,
 ) -> Result<i32> {
     let request = read_request(&args.request)?;
-    let platform = Platform::connect(profiles, &args.profile).await?;
+    let mut platform = Platform::connect(profiles, &args.profile).await?;
 
     if args.preview {
         let preview = platform.post("/v1/evaluation-previews", &request).await?;
@@ -124,7 +212,7 @@ pub async fn submit(
         write_warnings(stdout, style, &command)?;
     }
     if args.wait {
-        return wait_for(&platform, id, stdout, style).await;
+        return wait_for(&mut platform, id, stdout, style).await;
     }
     Ok(0)
 }
@@ -135,7 +223,7 @@ pub async fn list(
     stdout: &mut impl Write,
     style: Style,
 ) -> Result<()> {
-    let platform = Platform::connect(profiles, &args.profile).await?;
+    let mut platform = Platform::connect(profiles, &args.profile).await?;
     let mut query = vec![("limit", args.limit.to_string())];
     if let Some(status) = &args.status {
         query.push(("status", status.clone()));
@@ -194,7 +282,7 @@ pub async fn get(
     args: &EvalIdArgs,
     stdout: &mut impl Write,
 ) -> Result<()> {
-    let platform = Platform::connect(profiles, &args.profile).await?;
+    let mut platform = Platform::connect(profiles, &args.profile).await?;
     let evaluation = platform
         .get(&format!("/v1/evaluations/{}", args.id), &[])
         .await?;
@@ -208,8 +296,8 @@ pub async fn wait(
     stdout: &mut impl Write,
     style: Style,
 ) -> Result<i32> {
-    let platform = Platform::connect(profiles, &args.profile).await?;
-    wait_for(&platform, &args.id, stdout, style).await
+    let mut platform = Platform::connect(profiles, &args.profile).await?;
+    wait_for(&mut platform, &args.id, stdout, style).await
 }
 
 pub async fn cancel(
@@ -218,7 +306,7 @@ pub async fn cancel(
     stdout: &mut impl Write,
     style: Style,
 ) -> Result<()> {
-    let platform = Platform::connect(profiles, &args.profile).await?;
+    let mut platform = Platform::connect(profiles, &args.profile).await?;
     let command = platform
         .post(
             &format!("/v1/evaluations/{}/cancellations", args.id),
@@ -238,7 +326,7 @@ pub async fn cancel(
 }
 
 async fn wait_for(
-    platform: &Platform,
+    platform: &mut Platform<'_>,
     id: &str,
     stdout: &mut impl Write,
     style: Style,

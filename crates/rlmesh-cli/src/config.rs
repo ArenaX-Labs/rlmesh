@@ -1,4 +1,5 @@
 use crate::helpers::normalize_base_url;
+use crate::settings::Settings;
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
@@ -20,6 +21,11 @@ pub struct Profile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub registry_host: Option<String>,
 
+    /// The token endpoint the profile signed in against; refreshes refuse
+    /// to send the stored session to another host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_endpoint: Option<String>,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<Identity>,
 }
@@ -34,8 +40,8 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn load() -> Result<Self> {
-        let path = config_path()?;
+    pub fn load(settings: &Settings) -> Result<Self> {
+        let path = config_path(settings)?;
         match fs::read_to_string(&path) {
             Ok(text) => {
                 toml::from_str(&text).with_context(|| format!("parsing config {}", path.display()))
@@ -61,10 +67,9 @@ impl Config {
         Ok(())
     }
 
-    pub fn save(&self) -> Result<()> {
-        let path = config_path()?;
+    fn save_to(&self, path: &Path) -> Result<()> {
         let text = toml::to_string_pretty(self).context("serializing config")?;
-        write_private(&path, text.as_bytes())
+        write_private(path, text.as_bytes())
             .with_context(|| format!("writing config {}", path.display()))
     }
 
@@ -85,8 +90,9 @@ impl Config {
 pub struct Identity {
     pub user_id: String,
     pub email: String,
-    pub first_name: String,
-    pub last_name: String,
+    pub display_name: String,
+    /// The identity provider's organization id (the `providerId` the
+    /// platform reports and the id the refresh grant switches on).
     pub organization_id: String,
     pub organization_name: String,
 }
@@ -117,9 +123,21 @@ pub enum CredentialStatus {
     SignedOut,
     Incomplete,
     SignedIn,
+    /// `RLMESH_API_KEY` is set; no profile session is involved.
+    ApiKey,
 }
 
 impl CredentialStatus {
+    /// The stable machine-readable name used by `--json` outputs.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::SignedOut => "signed_out",
+            Self::Incomplete => "incomplete",
+            Self::SignedIn => "signed_in",
+            Self::ApiKey => "api_key",
+        }
+    }
+
     fn from_credentials(credentials: Option<&Credentials>) -> Self {
         let Some(credentials) = credentials else {
             return Self::SignedOut;
@@ -139,6 +157,7 @@ impl CredentialStatus {
 pub struct ResolvedProfile {
     pub name: String,
     pub platform_url: Option<String>,
+    pub token_endpoint: Option<String>,
     pub identity: Option<Identity>,
     pub is_default: bool,
 }
@@ -161,19 +180,43 @@ impl ResolvedProfile {
 
 pub struct ProfileStore {
     config: Config,
+    config_path: PathBuf,
     credentials: CredentialsStore,
+    api_key: Option<(String, String)>,
 }
 
 impl ProfileStore {
-    pub fn load() -> Result<Self> {
+    pub fn load(settings: &Settings) -> Result<Self> {
         Ok(Self {
-            config: Config::load()?,
-            credentials: CredentialsStore::load()?,
+            config: Config::load(settings)?,
+            config_path: config_path(settings)?,
+            credentials: CredentialsStore::load(settings)?,
+            api_key: settings.api_key.as_ref().map(|key| {
+                (
+                    key.clone(),
+                    settings
+                        .platform_url
+                        .clone()
+                        .unwrap_or_else(|| DEFAULT_PLATFORM_URL.to_owned()),
+                )
+            }),
         })
     }
 
     pub fn config(&self) -> &Config {
         &self.config
+    }
+
+    /// The API key and platform URL from the environment, when set. Commands
+    /// that talk to the platform use these instead of a profile session.
+    pub fn api_key(&self) -> Option<(&str, &str)> {
+        self.api_key
+            .as_ref()
+            .map(|(key, platform)| (key.as_str(), platform.as_str()))
+    }
+
+    fn save_config(&self) -> Result<()> {
+        self.config.save_to(&self.config_path)
     }
 
     pub fn resolve(&self, profile_override: Option<&str>) -> ResolvedProfile {
@@ -184,6 +227,7 @@ impl ProfileStore {
             platform_url: profile
                 .and_then(|profile| profile.platform_url.as_deref())
                 .map(normalize_base_url),
+            token_endpoint: profile.and_then(|profile| profile.token_endpoint.clone()),
             identity: profile.and_then(|profile| profile.identity.clone()),
             is_default: self.config.is_effective_default(&name),
             name,
@@ -224,6 +268,28 @@ impl ProfileStore {
         self.credentials.get(profile)
     }
 
+    /// Re-reads the credential store, bypassing this process's cache, so a
+    /// rotation done by another process is seen.
+    pub fn reload_credentials(&mut self, profile: &str) -> Result<Option<Credentials>> {
+        self.credentials.reload(profile)
+    }
+
+    /// The per-profile lock file that serializes session refreshes across
+    /// processes; lives next to the credential file.
+    pub fn lock_path(&self, profile: &str) -> PathBuf {
+        let name: String = profile
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        self.credentials.file.with_file_name(format!("{name}.lock"))
+    }
+
     pub fn record_login(
         &mut self,
         profile: &ResolvedProfile,
@@ -240,13 +306,17 @@ impl ProfileStore {
             .entry(profile.name.clone())
             .or_default();
         configured_profile.platform_url = Some(platform_url);
-        configured_profile.identity = identity;
+        configured_profile.token_endpoint = profile.token_endpoint.clone();
+        // A re-login whose /v1/me failed keeps the identity it had.
+        if let Some(identity) = identity {
+            configured_profile.identity = Some(identity);
+        }
 
         if self.config.default_profile.is_none() {
             self.config.default_profile = Some(profile.name.clone());
         }
 
-        self.config.save()?;
+        self.save_config()?;
         self.credentials.save(&profile.name, credentials)
     }
 
@@ -256,7 +326,7 @@ impl ProfileStore {
 
     pub fn set_registry_host(&mut self, profile: &str, host: &str) -> Result<()> {
         self.config.set_registry_host(profile, host)?;
-        self.config.save()
+        self.save_config()
     }
 
     pub fn resolve_registry(&self, host: &str) -> Option<ResolvedProfile> {
@@ -281,7 +351,7 @@ impl ProfileStore {
             .get_mut(profile)
             .with_context(|| format!("no profile named {profile:?}"))?;
         configured_profile.identity = Some(identity);
-        self.config.save()
+        self.save_config()
     }
 
     pub fn logout(&mut self, profile: &str) -> Result<bool> {
@@ -294,7 +364,7 @@ impl ProfileStore {
         }
 
         self.config.default_profile = Some(name.to_owned());
-        self.config.save()
+        self.save_config()
     }
 
     pub fn remove(&mut self, name: &str) -> Result<(bool, bool)> {
@@ -307,7 +377,7 @@ impl ProfileStore {
             self.config.default_profile = None;
         }
         if profile_removed {
-            self.config.save()?;
+            self.save_config()?;
         }
 
         Ok((profile_removed || credentials_removed, default_cleared))
@@ -316,19 +386,27 @@ impl ProfileStore {
 
 pub struct CredentialsStore {
     file: PathBuf,
+    keychain: bool,
     cached_credentials: BTreeMap<String, Credentials>,
 }
 
 impl CredentialsStore {
-    fn load() -> Result<Self> {
+    fn load(settings: &Settings) -> Result<Self> {
         Ok(Self {
-            file: credentials_path()?,
+            file: credentials_path(settings)?,
+            keychain: settings.keychain,
             cached_credentials: BTreeMap::new(),
         })
     }
 
+    fn keychain_entry(&self, profile: &str) -> Option<keyring::Entry> {
+        self.keychain
+            .then(|| keyring::Entry::new(APP_NAME, profile).ok())
+            .flatten()
+    }
+
     fn save(&mut self, profile: &str, credentials: &Credentials) -> Result<CredentialStorage> {
-        if let Ok(entry) = keyring::Entry::new(APP_NAME, profile) {
+        if let Some(entry) = self.keychain_entry(profile) {
             let payload = serde_json::to_string(credentials).context("serializing credentials")?;
             if entry.set_password(&payload).is_ok() {
                 self.remove_file_credentials(profile)?;
@@ -346,6 +424,11 @@ impl CredentialsStore {
         Ok(CredentialStorage::File(self.file.clone()))
     }
 
+    fn reload(&mut self, profile: &str) -> Result<Option<Credentials>> {
+        self.cached_credentials.remove(profile);
+        self.get(profile)
+    }
+
     fn get(&mut self, profile: &str) -> Result<Option<Credentials>> {
         if let Some(credentials) = self.cached_credentials.get(profile) {
             return Ok(Some(credentials.clone()));
@@ -357,7 +440,7 @@ impl CredentialsStore {
         // (an older CLI's schema) reads as signed out rather than failing
         // every profile-touching command; other keychain failures (locked
         // keychain, denied prompt) fall through to the file.
-        if let Ok(entry) = keyring::Entry::new(APP_NAME, profile)
+        if let Some(entry) = self.keychain_entry(profile)
             && let Ok(payload) = entry.get_password()
         {
             let credentials = serde_json::from_str::<Credentials>(&payload).ok();
@@ -381,13 +464,13 @@ impl CredentialsStore {
     fn delete(&mut self, profile: &str) -> Result<bool> {
         self.cached_credentials.remove(profile);
 
-        let (keychain_removed, keychain_error) = match keyring::Entry::new(APP_NAME, profile) {
-            Ok(entry) => match entry.delete_credential() {
+        let (keychain_removed, keychain_error) = match self.keychain_entry(profile) {
+            Some(entry) => match entry.delete_credential() {
                 Ok(()) => (true, None),
                 Err(keyring::Error::NoEntry) => (false, None),
                 Err(err) => (false, Some(anyhow!(err))),
             },
-            Err(_) => (false, None),
+            None => (false, None),
         };
 
         let file_removed = self.remove_file_credentials(profile)?;
@@ -450,25 +533,28 @@ impl CredentialsStore {
     }
 }
 
-fn config_path() -> Result<PathBuf> {
-    let dir = dirs::config_dir()
-        .map(|path| path.join(APP_NAME))
-        .context("cannot locate the user config directory")?;
-
+fn config_path(settings: &Settings) -> Result<PathBuf> {
+    let dir = match &settings.config_dir {
+        Some(dir) => dir.clone(),
+        None => dirs::config_dir()
+            .map(|path| path.join(APP_NAME))
+            .context("cannot locate the user config directory")?,
+    };
     Ok(dir.join("config.toml"))
 }
 
-fn credentials_path() -> Result<PathBuf> {
-    let dir = dirs::data_local_dir()
-        .map(|path| path.join(APP_NAME))
-        .context("cannot locate the local data directory")?;
-
+fn credentials_path(settings: &Settings) -> Result<PathBuf> {
+    let dir = match &settings.data_dir {
+        Some(dir) => dir.clone(),
+        None => dirs::data_local_dir()
+            .map(|path| path.join(APP_NAME))
+            .context("cannot locate the local data directory")?,
+    };
     Ok(dir.join("credentials.json"))
 }
 
-fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
-    let dir = path.parent().context("file has no parent directory")?;
-
+/// Creates `dir` (and parents) owner-only.
+pub(crate) fn ensure_private_dir(dir: &Path) -> Result<()> {
     fs::create_dir_all(dir)
         .with_context(|| format!("creating config directory {}", dir.display()))?;
 
@@ -478,6 +564,12 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
         fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
             .with_context(|| format!("securing config directory {}", dir.display()))?;
     }
+    Ok(())
+}
+
+fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
+    let dir = path.parent().context("file has no parent directory")?;
+    ensure_private_dir(dir)?;
 
     let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
 
@@ -520,10 +612,13 @@ mod tests {
     fn store_with(config: Config) -> ProfileStore {
         ProfileStore {
             config,
+            config_path: PathBuf::new(),
             credentials: CredentialsStore {
                 file: PathBuf::new(),
+                keychain: false,
                 cached_credentials: BTreeMap::new(),
             },
+            api_key: None,
         }
     }
 
@@ -587,6 +682,7 @@ mod tests {
         let _ = fs::remove_dir_all(&directory);
         let store = CredentialsStore {
             file: directory.join("credentials.json"),
+            keychain: false,
             cached_credentials: BTreeMap::new(),
         };
 
@@ -629,11 +725,11 @@ mod tests {
                 Profile {
                     platform_url: Some(DEFAULT_PLATFORM_URL.to_owned()),
                     registry_host: None,
+                    token_endpoint: Some("https://id.example.com/token".to_owned()),
                     identity: Some(Identity {
                         user_id: "user_123".to_owned(),
                         email: "dev@example.com".to_owned(),
-                        first_name: "Dev".to_owned(),
-                        last_name: "User".to_owned(),
+                        display_name: "Dev User".to_owned(),
                         organization_id: "org_123".to_owned(),
                         organization_name: "Dev Org".to_owned(),
                     }),

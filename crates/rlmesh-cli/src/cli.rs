@@ -22,7 +22,7 @@ pub enum Command {
     Logout(ProfileArgs),
     /// Show the active profile, its platform, and sign-in state (exits
     /// nonzero unless signed in with a verified session).
-    Whoami(ProfileArgs),
+    Whoami(WhoamiArgs),
     /// Authenticate container tooling with the platform's image registry.
     Registry(RegistryArgs),
     /// Manage named platform profiles.
@@ -44,6 +44,16 @@ pub struct ProfileArgs {
     /// Profile name (defaults to the configured default profile).
     #[arg(long, value_name = "NAME", env = "RLMESH_PROFILE")]
     pub profile: Option<String>,
+}
+
+/// Flags for `rlmesh whoami`.
+#[derive(Args, Debug)]
+pub struct WhoamiArgs {
+    #[command(flatten)]
+    pub profile: ProfileArgs,
+    /// Print `{"profile","platform","status","verified","identity","error"}` instead of text.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Flags for `rlmesh login`.
@@ -89,13 +99,24 @@ pub struct OrgArgs {
 #[derive(Subcommand, Debug)]
 pub enum OrgCommand {
     /// List the organizations the signed-in user belongs to.
-    List(ProfileArgs),
-    /// Make an organization the profile's active one (WorkOS org id, org_...).
+    List(OrgListArgs),
+    /// Make an organization the profile's active one (identity-provider
+    /// organization id, org_...).
     Switch {
         id: String,
         #[command(flatten)]
         profile: ProfileArgs,
     },
+}
+
+/// Flags for `rlmesh org list`.
+#[derive(Args, Debug)]
+pub struct OrgListArgs {
+    #[command(flatten)]
+    pub profile: ProfileArgs,
+    /// Print the platform's organizations array as JSON.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Named-profile management subcommands.
@@ -108,11 +129,19 @@ pub struct ProfileCommandArgs {
 #[derive(Subcommand, Debug)]
 pub enum ProfileCommand {
     /// List profiles, marking the default and each profile's sign-in state.
-    List,
+    List(ProfileListArgs),
     /// Set the default profile used when --profile/RLMESH_PROFILE is absent.
     Use { name: String },
     /// Delete a profile: its stored credential and its config entry.
     Remove { name: String },
+}
+
+/// Flags for `rlmesh profile list`.
+#[derive(Args, Debug)]
+pub struct ProfileListArgs {
+    /// Print `[{"name","platform","status","default"}]` instead of a table.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Flags for `rlmesh token`.

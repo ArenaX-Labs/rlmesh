@@ -94,6 +94,7 @@ user-guide/performance
 :maxdepth: 2
 
 api/index
+reference/cli
 compatibility
 editions/index
 specs/describe.v1

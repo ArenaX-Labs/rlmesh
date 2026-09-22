@@ -1,8 +1,9 @@
-use crate::auth::refresh_session;
 use crate::cli::{CredentialHelperArgs, ProfileArgs};
 use crate::config::{Identity, ProfileStore};
-use crate::helpers::{get_json, http_client};
+use crate::helpers::http_client;
+use crate::platform::Platform;
 use crate::render::{Style, write_heading, write_key_value};
+use crate::session::{Refresh, ensure_fresh_session};
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
@@ -41,21 +42,16 @@ pub async fn registry_login(
     write_key_value(stdout, style, "Profile", &profile.name)?;
     write_key_value(stdout, style, "Platform", platform)?;
     writeln!(stdout)?;
-    writeln!(stdout, "{} Refreshing session…", style.muted("◌"))?;
+    writeln!(stdout, "{} Checking session…", style.muted("◌"))?;
     stdout.flush()?;
 
-    let client = http_client()?;
-    let session = refresh_session(&client, profiles, &profile).await?;
+    let mut connection = Platform::connect_profile(profiles, profile.clone()).await?;
 
     writeln!(stdout, "{} Looking up registry…", style.muted("◌"))?;
     stdout.flush()?;
-    let info: RegistryInfo = get_json(
-        &client,
-        &format!("{platform}/v1/registry/info"),
-        Some(&session.credentials.access_token),
-        "fetching registry info",
-    )
-    .await?;
+    let info: RegistryInfo =
+        serde_json::from_value(connection.get("/v1/registry/info", &[]).await?)
+            .context("parsing registry info")?;
 
     let host = registry_host_key(&info.host);
     profiles.set_registry_host(&profile.name, &host)?;
@@ -141,7 +137,7 @@ async fn credential_get(
     let client = http_client()?;
     // docker surfaces the helper's stdout as the failure reason, so errors
     // are reported there instead of propagating to stderr.
-    let session = match refresh_session(&client, profiles, &profile).await {
+    let session = match ensure_fresh_session(&client, profiles, &profile, Refresh::IfStale).await {
         Ok(session) => session,
         Err(error) => {
             writeln!(stdout, "{error:#}")?;
@@ -151,7 +147,7 @@ async fn credential_get(
 
     let response = HelperCredentials {
         server_url: server_url.to_owned(),
-        username: registry_username(session.identity.as_ref()),
+        username: registry_username(profile.identity.as_ref()),
         secret: session.credentials.access_token,
     };
     writeln!(

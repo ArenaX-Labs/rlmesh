@@ -1,6 +1,6 @@
 # Submit Evaluations to a Platform
 
-A managed RLMesh platform runs evaluations for you: it schedules model servers and environment workers on a cluster, records every episode, and keeps the results. This page covers driving one from the CLI and from Python. Both use the session that `rlmesh login` stores, so nothing here takes an API key.
+A managed RLMesh platform runs evaluations for you: it schedules model servers and environment workers on a cluster, records every episode, and keeps the results. This page covers driving one from the CLI and from Python. Both use the session that `rlmesh login` stores, or `RLMESH_API_KEY` where a browser sign-in is not an option; the {doc}`CLI reference <../reference/cli>` lists every command, the files the CLI keeps, and what a platform must serve.
 
 ```
 rlmesh login                      # once; opens the browser device flow
@@ -79,4 +79,4 @@ for evaluation in client.evaluations(tags={"experiment": "fleet"}, status="compl
 
 {func}`~rlmesh.platform.scenario_tasks` expands a scenario group into one task each. Its `workers` argument fills the request's `workers` field, which asks the platform to split a task's episodes across that many environment workers without changing which episodes run. `client.get(path, **query)` and `client.post(path, body)` reach any other `/v1` route.
 
-Set `RLMESH_API_KEY` (and optionally `RLMESH_PLATFORM_URL`) to run without a signed-in CLI, for example in CI.
+Set `RLMESH_API_KEY` (and optionally `RLMESH_PLATFORM_URL`) to run without a signed-in CLI, for example in CI; `rlmesh token`, `rlmesh eval`, and `rlmesh whoami` honor the same variables.
