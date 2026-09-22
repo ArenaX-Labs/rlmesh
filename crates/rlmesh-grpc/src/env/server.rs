@@ -1552,6 +1552,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn join_and_shutdown_enforce_the_bearer_token() {
+        use crate::lifecycle::{ServeOptions, ShutdownTrigger};
+        use rlmesh_proto::env::v1::env_service_client::EnvServiceClient;
+        use rlmesh_proto::env::v1::env_service_server::EnvServiceServer;
+        use rlmesh_proto::env::v1::{JoinRequest, ShutdownRequest};
+        use tokio::sync::oneshot;
+        use tokio_stream::wrappers::ReceiverStream;
+
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let options = ServeOptions {
+            token: Some("secret-token".to_string()),
+            ..Default::default()
+        };
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(EnvServiceServer::new(GrpcEnvServer::new_with_options(
+                    ScriptedVectorEnv::handshake_only(),
+                    ShutdownTrigger::new(),
+                    options,
+                    None,
+                )))
+                .serve_with_shutdown(addr, async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+
+        let endpoint = format!("http://{addr}");
+        let mut client = loop {
+            match EnvServiceClient::connect(endpoint.clone()).await {
+                Ok(client) => break client,
+                Err(_) if !server.is_finished() => {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                Err(error) => panic!("test server did not start: {error}"),
+            }
+        };
+
+        // Join and Shutdown are token-gated on their own, not only Handshake:
+        // a client that skips the handshake must still be refused.
+        let (_tx, rx) = tokio::sync::mpsc::channel::<JoinRequest>(1);
+        let err = client
+            .join(ReceiverStream::new(rx))
+            .await
+            .expect_err("join without token must be rejected");
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
+
+        let err = client
+            .shutdown(Request::new(ShutdownRequest::default()))
+            .await
+            .expect_err("shutdown without token must be rejected");
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
+
+        // The same join with the token is admitted.
+        let (_tx, rx) = tokio::sync::mpsc::channel::<JoinRequest>(1);
+        let mut ok = Request::new(ReceiverStream::new(rx));
+        ok.metadata_mut()
+            .insert("authorization", "secret-token".parse().unwrap());
+        client.join(ok).await.expect("join with token is admitted");
+
+        let _ = shutdown_tx.send(());
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server).await;
+    }
+
+    #[tokio::test]
     async fn handshake_reports_protocol_edition_and_capabilities() {
         let server = GrpcEnvServer::new(ScriptedVectorEnv::handshake_only());
 

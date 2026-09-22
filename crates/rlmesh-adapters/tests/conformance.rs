@@ -609,7 +609,9 @@ fn conformance_vectors() {
         }
         ran += 1;
     }
-    assert!(ran >= 13, "expected at least 13 vectors, ran {ran}");
+    // Pinned to the committed vector count: a deleted vector must fail here,
+    // not vanish green. Bump when vectors are added.
+    assert!(ran >= 129, "expected at least 129 vectors, ran {ran}");
 }
 
 /// The `zeros(n)` / `, pad to N` wording predates constant parts and fills, and

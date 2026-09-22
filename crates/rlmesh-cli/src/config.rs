@@ -622,6 +622,29 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn write_private_keeps_credentials_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("rlmesh-cli-private-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let path = dir.join("nested").join("credentials.json");
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+
+        write_private(&path, b"{}").unwrap();
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(mode(path.parent().unwrap()), 0o700);
+        assert_eq!(fs::read(&path).unwrap(), b"{}");
+
+        // Rewriting in place keeps the file owner-only.
+        write_private(&path, b"{\"rotated\":true}").unwrap();
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(fs::read(&path).unwrap(), b"{\"rotated\":true}");
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn profile_resolution_applies_overrides_and_defaults() {
         let config = Config {

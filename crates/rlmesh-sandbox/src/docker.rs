@@ -1124,8 +1124,13 @@ mod tests {
         assert_eq!(args.first().map(String::as_str), Some("run"));
         assert!(args.iter().any(|arg| arg == "-d"));
         assert!(!args.iter().any(|arg| arg == "--rm"));
-        assert!(args.iter().any(|arg| arg == "--cap-drop"));
-        assert!(args.iter().any(|arg| arg == "no-new-privileges"));
+        // Flag/value pairs, not loose membership: `--cap-drop` followed by
+        // anything other than `ALL` would still contain both tokens.
+        assert!(args.windows(2).any(|pair| pair == ["--cap-drop", "ALL"]));
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--security-opt", "no-new-privileges"])
+        );
         assert!(args.iter().any(|arg| arg == "rlmesh-sandbox-test"));
     }
 

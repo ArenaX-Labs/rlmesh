@@ -2237,6 +2237,59 @@ async fn prefetch_discards_the_stale_chunk_across_episode_boundaries() {
     );
 }
 
+#[tokio::test]
+async fn a_leftover_chunk_frame_never_crosses_an_episode_boundary() {
+    // One-step episodes with a chunk of 3: every predict leaves two buffered
+    // frames behind when its episode ends. Each new episode must re-plan from
+    // its own reset observation rather than replay them, so the model sees
+    // exactly one predict per episode, each carrying the reset observation
+    // (byte 1) and no step number (no history was negotiated).
+    let env = TestEnv {
+        terminal_after: 1,
+        ..Default::default()
+    };
+    let model = TestModel {
+        replay_frames: 2,
+        ..Default::default()
+    };
+    let hooks = Arc::new(RecordingHooks::default());
+    let mut spec = one_episode_spec();
+    spec.max_episodes = Some(3);
+
+    let report = RuntimeDriver::new(spec, env, model.clone(), hooks)
+        .run()
+        .await
+        .unwrap();
+
+    assert_eq!(report.total_episodes, 3);
+    assert_eq!(report.total_steps, 3);
+    let ledger = model.ledger.lock().expect("ledger poisoned").clone();
+    assert_eq!(ledger, vec![(vec![], (-1, 1)); 3]);
+}
+
+#[tokio::test]
+async fn a_leftover_chunk_frame_never_crosses_a_next_step_autoreset() {
+    // Same invariant when the ENV owns the reset (NEXT_STEP): the driver never
+    // issues a reset after the cold start, so the reset-path discard cannot
+    // save it — the episode-completion path must drop the buffered frames.
+    // Single lane, one-step episodes, chunk of 3.
+    let env = VectorTestEnv::new(vec![1]);
+    let model = TestModel {
+        replay_frames: 2,
+        ..Default::default()
+    };
+    let hooks = Arc::new(RecordingHooks::default());
+
+    let report = RuntimeDriver::new(vector_spec(1, 3), env, model.clone(), hooks)
+        .run()
+        .await
+        .unwrap();
+
+    assert_eq!(report.total_episodes, 3);
+    let predicts = model.predicts.load(Ordering::SeqCst);
+    assert_eq!(predicts, 3, "one fresh plan per episode, got {predicts}");
+}
+
 /// A spec for `episodes` back-to-back single-lane episodes whose env declares
 /// `reset_options = declared`.
 fn trial_spec(episodes: u64, declared: &[&str]) -> RuntimeSessionSpec {
