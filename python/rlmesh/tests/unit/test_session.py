@@ -725,3 +725,23 @@ def test_numpy_chunk_runs_over_a_scalar_action_space() -> None:
     assert result.num_episodes == 1
     assert len(env.actions) == 8
     assert all(isinstance(action, int) for action in env.actions)
+
+
+@pytest.mark.parametrize(
+    ("info", "expected"),
+    [
+        ({"is_success": 0, "success": True}, False),
+        ({"success": 1}, True),
+        ({"task_success": 1.0}, True),
+        ({"task_success": 0}, False),
+        ({"other": True}, None),
+    ],
+)
+def test_episode_success_reads_the_same_keys_as_the_runtime(
+    info: dict[str, Any], expected: bool | None
+) -> None:
+    """The Python loop and the Rust runtime must agree on which final-step
+    info keys carry the task outcome (is_success, success, task_success)."""
+    from rlmesh._models._eval import _episode_success
+
+    assert _episode_success(info) is expected

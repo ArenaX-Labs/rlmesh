@@ -83,7 +83,8 @@ def _episode_success(info: Mapping[str, Any]) -> bool | None:
     Returns the ``is_success`` / ``success`` flag when the env emits one, else
     ``None`` -- callers then fall back to ``terminated``.
     """
-    for key in ("is_success", "success"):
+    # Mirrors `EditionDefaults::success_info_keys` in crates/rlmesh-proto; keep in sync.
+    for key in ("is_success", "success", "task_success"):
         if key in info:
             return bool(info[key])
     return None
