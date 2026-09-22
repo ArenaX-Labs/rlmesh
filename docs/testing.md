@@ -92,6 +92,20 @@ Clean system-test environments, logs, and reports:
 mise run test:system:clean
 ```
 
+## Cross-Version Matrix
+
+The cross-version matrix runs this tree against the last published release, on every pull request and on pushes to `main`:
+
+```bash
+mise run test:crossver
+```
+
+The old side of every cell is the PyPI wheel pinned by exact version and sha256 in `tests/system/crossver.lock`; the new side is a wheel built from this tree with `RLMESH_RELEASE_BUILD=1`, which stamps the same workflow-edition cohort the published wheel advertises (a plain dev build stamps `2026.06-dev.<sha>` and is refused at the edition floor by design). `tests/system/crossver.py` drives the cells: old and new env servers against old and new runtimes, old and new served models against the other side's runtime, both same-version controls, and two forged refusals (a ConfigureEnv pin naming an edition no build implements, and a `rlmesh-wire-v2` handshake). Each of the six real cells asserts that the cross-version Join reproduces `tests/system/traces/counter-entrypoint.json`, and — measured on the server it runs against, by a raw wire probe rather than by the runtime's own client — that server's `HandshakeResponse.compatible` flag and its declared WANT (this tree's servers declare the current edition; the published wheel declares none). The edition column is the runtime's real `ResolveAdapter` pin on the model cells and its real `ConfigureEnv` pin on the env cells this tree's runtime drives (read off this tree's env server log, or proven by the trace when the published wheel serves the env, since a refused pin aborts before Reset); the published wheel's runtime sends no pin, so its env cells fall back to the two builds' CAN intersection acked through a forged `ConfigureEnv`. The two refusal cells assert the refusal message instead; the results table prints the same legend.
+
+Cells 7 and 8 select _between_ two editions, so they print as pending until a second edition is sealed; they are listed in the results table rather than skipped silently.
+
+Set `RLMESH_CROSSVER_WHEEL_DIR` to a directory holding the pinned wheel to resolve it from there instead of PyPI; the install still goes through the lock file's hashes, so a look-alike wheel (this tree's own build carries the same version) fails.
+
 ## Release Check
 
 The local release gate combines static checks, tests, package verification, wheel builds, and installed-artifact validation:

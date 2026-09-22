@@ -67,6 +67,21 @@ pub struct ServeOptions {
     /// preserved regardless of the cap; this only bounds how many decode/encode
     /// and handler critical sections may overlap. Ignored by the env server.
     pub predict_concurrency: Option<usize>,
+    /// WANT: the workflow edition this served peer declares on every handshake
+    /// response — the sticky declaration its author wrote down, not a ceiling
+    /// this build picked. `None` (the default) declares nothing of its own, and
+    /// the response carries [`rlmesh_proto::CURRENT_WORKFLOW_EDITION`], which is
+    /// this build's `max(can)` and therefore caps no runtime.
+    ///
+    /// Must name an edition this build *offers*, as
+    /// [`rlmesh_proto::parse_declared_edition`] accepts: a sealed release offers
+    /// its bare `YYYY.MM` base, a prerelease build only its cohort spelling. The
+    /// surfaces that take this from a user (the Python `ServeOptions`, the
+    /// `--workflow-edition` flag, the C API's `RlmeshServeOptions`) refuse such a
+    /// value where it is typed; a value set directly on this struct is only
+    /// trimmed here and is refused at negotiation instead, by the refusal that
+    /// names every tier's WANT and CAN.
+    pub workflow_edition: Option<String>,
 }
 
 /// Default per-connection concurrency cap for pipelined model predict requests.
@@ -260,6 +275,7 @@ mod tests {
                 close_timeout: None,
                 token: None,
                 predict_concurrency: None,
+                workflow_edition: None,
             }
         );
     }

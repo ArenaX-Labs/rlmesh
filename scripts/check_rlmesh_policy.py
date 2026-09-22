@@ -8,8 +8,10 @@ import ast
 import hashlib
 import json
 import re
+import subprocess
 import sys
 from dataclasses import dataclass
+from itertools import chain
 from pathlib import Path
 from typing import Any
 
@@ -27,16 +29,20 @@ RUST_SEMVER_RE = re.compile(
 )
 STABLE_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 STR_CONST_RE = re.compile(r'pub const (?P<name>[A-Z0-9_]+): &str =\s*"(?P<value>[^"]+)";')
-STR_SLICE_CONST_RE = re.compile(
-    r"pub const (?P<name>[A-Z0-9_]+): &\[&str\]\s*=\s*&\[(?P<values>[^\]]*)\];",
-    re.DOTALL,
-)
 PY_STR_CONST_RE = re.compile(r'(?P<name>[A-Z0-9_]+)\s*=\s*"(?P<value>[^"]+)"')
 INT_CONST_RE = re.compile(r"(?P<name>[A-Z0-9_]+)\s*=\s*(?P<value>\d+)")
 # A proto package path: `rlmesh.<pkg>.vN`. The generation token must NOT match
 # this shape (it is an opaque handshake value, not a package namespace).
 PACKAGE_PATH_TOKEN_RE = re.compile(r"^rlmesh\.[a-z]+\.v\d+$")
 PROTO_PACKAGE_RE = re.compile(r"^\s*package\s+(?P<package>[A-Za-z0-9_.]+)\s*;", re.MULTILINE)
+PROTO_BLOCK_RE = re.compile(r"^(?P<kind>message|enum|oneof)\s+(?P<name>\w+)\s*\{")
+# An enum value (`NAME = 1;`) or a field/oneof arm (`Type name = 1;`), with any
+# label words and an optional `[option]` block; `reserved` lines never match.
+PROTO_ENTRY_RE = re.compile(r"^(?:[\w.]+(?:<[^>]*>)?\s+)*\w+\s*=\s*\d+\s*(?:\[.*\])?\s*;")
+MAX_MESSAGE_SIZE_RE = re.compile(r"pub const MAX_MESSAGE_SIZE: usize = (?P<expr>[^;]+);")
+# Oneofs whose new arm an old peer cannot refuse: `MetaValue.kind` reads as null
+# and `SpaceSpec.spec` as an unset spec, so their arm counts stay manifest-pinned.
+FROZEN_ONEOFS = ("rlmesh.spaces.v1.MetaValue.kind", "rlmesh.spaces.v1.SpaceSpec.spec")
 # Workflow edition name shapes. A SEALED edition is the bare `YYYY.MM` base; an
 # official PROVISIONAL prerelease edition appends the full Rust SemVer
 # prerelease cohort (`YYYY.MM-X.Y.Z-{alpha,beta,rc}.N`). Local dev cohorts are
@@ -62,6 +68,33 @@ def _split_edition_name(name: str) -> tuple[str, str | None]:
     """
     base, sep, suffix = name.partition("-")
     return (base, suffix if sep else None)
+
+
+def _edition_sort_key(name: str) -> tuple[str, bool, str]:
+    """Ordering key for a workflow edition name, mirroring ``edition_sort_key``.
+
+    Base date first (zero-padded ``YYYY.MM``, so lexicographic is chronological),
+    then a suffixed cohort above its bare base, then the suffix itself as a
+    deterministic tiebreak.
+    """
+    base, suffix = _split_edition_name(name)
+    return (base, suffix is not None, suffix or "")
+
+
+def _current_edition_not_highest(current_edition: str, supported: list[str]) -> str | None:
+    """The error when ``current_edition`` does not sort highest among ``supported``.
+
+    A build declares ``current_edition`` as its WANT and offers ``supported`` as
+    its CAN set, so a retained edition sorting above the current one could never
+    be selected and would make this build's own offer cap its peers.
+    """
+    highest = max(supported, key=_edition_sort_key, default=current_edition)
+    if _edition_sort_key(highest) > _edition_sort_key(current_edition):
+        return (
+            f"[workflow].current_edition is {current_edition!r}, but retained edition "
+            f"{highest!r} sorts above it; current_edition must be the highest supported"
+        )
+    return None
 
 
 def _canonical_spec_sha256(spec_path: Path) -> str:
@@ -113,7 +146,16 @@ def main(argv: list[str] | None = None) -> int:
         default="rlmesh.toml",
         help="RLMesh project policy manifest to validate",
     )
+    parser.add_argument(
+        "--selfcheck",
+        action="store_true",
+        help="run this checker's own unit tests instead of validating the manifest",
+    )
     args = parser.parse_args(argv)
+
+    if args.selfcheck:
+        selfcheck()
+        return 0
 
     repo_root = Path(__file__).resolve().parents[1]
     manifest_path = (repo_root / args.manifest).resolve()
@@ -123,6 +165,162 @@ def main(argv: list[str] | None = None) -> int:
             print(f"rlmesh policy error: {error}", file=sys.stderr)
         return 1
     return 0
+
+
+def selfcheck() -> None:
+    """Unit tests for the manifest-vs-generated-list rules (mirrors bump_version.py)."""
+    lib = 'const L: &str = env!("RLMESH_SUPPORTED_WORKFLOW_EDITIONS");'
+    build = "supported_editions -> cargo:rustc-env=RLMESH_SUPPORTED_WORKFLOW_EDITIONS"
+    rc1 = "2026.09-0.2.0-rc.1"
+
+    # The generated list is the current cohort first, then every retained edition.
+    assert _generated_supported_editions(rc1, [rc1, "2026.06"]) == [rc1, "2026.06"]
+    assert _generated_supported_editions("2026.06", ["2026.06"]) == ["2026.06"]
+    assert not _check_generated_supported_editions(rc1, [rc1, "2026.06"], lib, build)
+    # A hand-written Rust literal is no longer the source of the list.
+    assert _check_generated_supported_editions(rc1, [rc1], "&[CURRENT]", build)
+    # build.rs must be the generator.
+    assert _check_generated_supported_editions(rc1, [rc1], lib, "fn main() {}")
+    # current_edition missing from the manifest's retained set: the generated
+    # list then carries an edition rlmesh.toml does not retain.
+    assert _check_generated_supported_editions(rc1, ["2026.06"], lib, build)
+    # A repeat would be offered twice on the wire.
+    assert _check_generated_supported_editions(rc1, [rc1, "2026.06", "2026.06"], lib, build)
+
+    # The crate's edition file is current_edition first, then the other retained
+    # editions; a crates.io build takes its base edition from that first line.
+    retained = [rc1, "2026.06"]
+    assert not _check_packaged_supported_editions(f"{rc1}\n2026.06\n", rc1, retained)
+    assert not _check_packaged_supported_editions(
+        f"{rc1}\n2026.06\n", rc1, ["2026.06", rc1]
+    )
+    assert _check_packaged_supported_editions(f"{rc1}\n", rc1, retained)
+    assert "must start with" in _check_packaged_supported_editions(
+        f"2026.06\n{rc1}\n", rc1, retained
+    )[0]
+    assert "must start with" in _check_packaged_supported_editions("", rc1, retained)[0]
+
+    previous = """[workflow]
+supported_editions = ["2026.09-0.2.0-rc.1", "2026.06"]
+
+[workflow.editions."2026.06"]
+status = "sealed"
+sealed_in = "0.1.0"
+
+[workflow.editions."2026.09-0.2.0-rc.1"]
+status = "provisional"
+"""
+    assert _sealed_editions(previous) == {"2026.06"}
+    assert not _dropped_sealed_editions(previous, ["2026.09", "2026.06"])
+    assert _dropped_sealed_editions(previous, ["2026.09"]) == ["2026.06"]
+    # A provisional cohort may be retired; only sealed editions are sticky.
+    assert not _dropped_sealed_editions(previous, ["2026.06"])
+
+    # build.rs scans the manifest without a TOML parser: its reading of the
+    # retained list must equal tomllib's for both array spellings, or the build
+    # would silently offer fewer editions than the manifest retains.
+    single = 'supported_editions = ["2026.09-0.2.0-rc.1", "2026.06"]\n'
+    multi = (
+        "supported_editions = [\n"
+        '  "2026.09-0.2.0-rc.1", # the moving cohort\n'
+        '  "2026.06",\n'
+        "]\n"
+    )
+    for spelling in (single, multi):
+        text = "[workflow]\n" + spelling
+        parsed = tomllib.loads(text)["workflow"]["supported_editions"]
+        assert _scan_manifest_string_list(text, "supported_editions") == parsed
+    assert _scan_manifest_string_list("[workflow]\n" + single, "current_edition") == []
+
+    # current_edition is this build's WANT, so nothing it retains may sort above
+    # it — same ordering rlmesh-proto's `edition_sort_key` applies.
+    assert _current_edition_not_highest(rc1, [rc1, "2026.06"]) is None
+    assert _current_edition_not_highest("2026.06", ["2026.06"]) is None
+    assert _current_edition_not_highest("2026.06", [rc1, "2026.06"]) is not None
+    # A suffixed cohort sorts above its own bare base, either way round.
+    cohort = "2026.06-0.2.0-rc.1"
+    assert _current_edition_not_highest("2026.06", ["2026.06", cohort]) is not None
+    assert _current_edition_not_highest(cohort, [cohort, "2026.06"]) is None
+
+    # The proto line scan: nested enums are qualified by their message, comments
+    # and map/labelled fields are not entries, a service block nests nothing.
+    sample = """syntax = "proto3";
+package rlmesh.t.v1;
+// enum Ghost { A = 0; }
+message Outer {
+  oneof kind {
+    int64 integer = 1; // a = 9;
+    Inner inner = 2 [deprecated = true];
+  }
+  enum Mode {
+    MODE_UNSPECIFIED = 0;
+    MODE_ON = 1;
+  }
+  map<string, Outer> entries = 3;
+  optional uint64 total_ns = 4;
+  reserved 5;
+}
+message Empty {}
+enum Top {
+  TOP_UNSPECIFIED = 0;
+  TOP_A = 1;
+  TOP_B = 10;
+}
+service S {
+  rpc Call(Outer) returns (stream Empty) {}
+}
+"""
+    enums, oneofs = _scan_proto_vocabulary(sample)
+    assert enums == {"rlmesh.t.v1.Outer.Mode": 2, "rlmesh.t.v1.Top": 3}
+    assert oneofs == {"rlmesh.t.v1.Outer.kind": 2}
+
+    frozen = {name: 1 for name in FROZEN_ONEOFS}
+    wire: dict[str, Any] = {
+        "max_message_bytes": 256 * 1024 * 1024,
+        "enums": {"rlmesh.t.v1.Outer.Mode": 2, "rlmesh.t.v1.Top": 3},
+        "oneofs": {"rlmesh.t.v1.Outer.kind": 2, **frozen},
+    }
+    live_oneofs = {**oneofs, **frozen}
+    assert not _check_wire_vocabulary(wire, enums, live_oneofs)
+    # A new enum value, a new enum, a stale entry, and a new oneof arm each need
+    # the manifest edited in the same change.
+    grown = {**enums, "rlmesh.t.v1.Top": 4}
+    assert _check_wire_vocabulary(wire, grown, live_oneofs) == [
+        '[wire.enums]."rlmesh.t.v1.Top" is 3, the proto declares 4 values; a new '
+        "value is a wire-v1 vocabulary change: record the count here in the same "
+        "change and emit it only when the target leg's edition covers it "
+        '(docs/editions/index.md, "Additive-forever rules")'
+    ]
+    assert _check_wire_vocabulary(wire, {**enums, "rlmesh.t.v1.New": 1}, live_oneofs)
+    assert _check_wire_vocabulary(wire, {"rlmesh.t.v1.Top": 3}, live_oneofs)
+    assert _check_wire_vocabulary(wire, enums, {**live_oneofs, "rlmesh.t.v1.Outer.kind": 3})
+    # An error-code enum names the silent fold in its message.
+    fold = _check_wire_vocabulary(
+        {**wire, "enums": {**wire["enums"], "rlmesh.t.v1.EnvErrorCode": 2}},
+        {**enums, "rlmesh.t.v1.EnvErrorCode": 3},
+        live_oneofs,
+    )
+    assert len(fold) == 1 and "folds an unknown value to UNSPECIFIED" in fold[0]
+    # The frozen oneofs must stay recorded even if the manifest is trimmed.
+    assert _check_wire_vocabulary(
+        {**wire, "oneofs": {"rlmesh.t.v1.Outer.kind": 2}}, enums, live_oneofs
+    ) == [f'[wire.oneofs] must record "{name}"' for name in FROZEN_ONEOFS]
+    # A listed oneof only the manifest knows is stale, and a type error is named.
+    assert _check_wire_vocabulary(wire, enums, frozen)
+    assert _check_wire_vocabulary({**wire, "enums": []}, enums, live_oneofs)
+
+    # The gRPC cap: the Rust constant expression must equal the pinned bytes.
+    lib = "pub const MAX_MESSAGE_SIZE: usize = 256 * 1024 * 1024;"
+    assert _int_expr("256 * 1024 * 1024") == 268435456
+    assert _int_expr("1 + 2") == 3
+    assert _int_expr("1 << 20") is None
+    assert not _check_message_cap(wire, lib)
+    assert _check_message_cap({**wire, "max_message_bytes": 4 * 1024 * 1024}, lib)
+    assert _check_message_cap(wire, "pub const MAX_MESSAGE_SIZE: usize = 1 << 28;")
+    assert _check_message_cap(wire, "")
+    assert _check_message_cap({**wire, "max_message_bytes": "256 MiB"}, lib)
+
+    print("policy self-check passed")
 
 
 def validate_rlmesh_policy(*, repo_root: Path, manifest_path: Path) -> list[str]:
@@ -170,6 +368,12 @@ def validate_rlmesh_policy(*, repo_root: Path, manifest_path: Path) -> list[str]
     errors.extend(_validate_release_crate_order(repo_root, artifacts))
     errors.extend(_validate_protocol_and_workflow(repo_root, protocol))
     errors.extend(_validate_workflow_editions(repo_root, workflow, release, workspace_version))
+    errors.extend(
+        _validate_generated_supported_editions(repo_root, manifest_path, workflow)
+    )
+    errors.extend(_validate_packaged_supported_editions(repo_root, workflow))
+    errors.extend(_validate_sealed_edition_retention(repo_root, manifest_path, workflow))
+    errors.extend(_validate_wire(repo_root, _required_table(manifest, "wire", errors)))
     errors.extend(_validate_adapters(repo_root))
     errors.extend(_validate_python_public_modules(repo_root))
     errors.extend(
@@ -390,10 +594,6 @@ def _validate_protocol_and_workflow(repo_root: Path, protocol: dict[str, Any]) -
         errors.append(
             f"{source}: CURRENT_WORKFLOW_EDITION must come from build-time cohort env"
         )
-    if "&[CURRENT_WORKFLOW_EDITION]" not in source_text:
-        errors.append(
-            f"{source}: SUPPORTED_WORKFLOW_EDITIONS must include CURRENT_WORKFLOW_EDITION"
-        )
 
     # Guard the protocol-generation token's *shape*. The token is an opaque
     # handshake value, not a proto package path: it must not look like a
@@ -480,6 +680,11 @@ def _validate_workflow_editions(
         supported = []
     elif current_edition and current_edition not in supported:
         errors.append("[workflow].supported_editions must include [workflow].current_edition")
+
+    if current_edition and supported:
+        not_highest = _current_edition_not_highest(current_edition, supported)
+        if not_highest is not None:
+            errors.append(not_highest)
 
     for edition in supported if isinstance(supported, list) else []:
         if edition not in editions:
@@ -597,25 +802,396 @@ def _validate_workflow_editions(
     return errors
 
 
-def _rust_str_slice_const(
-    source_text: str, name: str, constants: dict[str, str]
-) -> list[str] | None:
-    for match in STR_SLICE_CONST_RE.finditer(source_text):
-        if match.group("name") != name:
+def _scan_manifest_string_list(text: str, key: str) -> list[str]:
+    """Mirror of ``manifest_string_list`` in ``crates/rlmesh-proto/build_manifest.rs``.
+
+    The build script reads ``rlmesh.toml`` with a line scan rather than a TOML
+    parser, so its reading of an array must agree with ``tomllib`` on every
+    spelling the manifest may carry — single-line or spread over lines, with
+    comments and trailing commas. ``selfcheck`` asserts that agreement; keep the
+    two implementations in step.
+    """
+    prefix = f"{key} = ["
+    lines = iter(line.strip() for line in text.splitlines())
+    for line in lines:
+        if line.startswith(prefix):
+            first = line[len(prefix) :]
+            break
+    else:
+        return []
+
+    items = ""
+    for line in chain([first], lines):
+        line = line.split("#", 1)[0]
+        head, closer, _ = line.partition("]")
+        items += head
+        if closer:
+            break
+        # A line break separates two entries exactly as a comma does.
+        items += ","
+
+    values: list[str] = []
+    for item in items.split(","):
+        item = item.strip()
+        if not item.startswith('"'):
             continue
-        values: list[str] = []
-        for raw_item in match.group("values").split(","):
-            item = raw_item.strip()
-            if not item:
+        value, quote, _ = item[1:].partition('"')
+        if quote:
+            values.append(value)
+    return values
+
+
+def _generated_supported_editions(current_edition: str, supported: list[str]) -> list[str]:
+    """The list ``build.rs`` generates: this build's cohort first, then the rest.
+
+    Mirrors ``supported_workflow_editions`` in ``crates/rlmesh-proto/build.rs``. A
+    source build spells its own cohort into the first slot and drops the manifest's
+    ``current_edition`` from the tail; the release spelling used here is the list a
+    published build offers.
+    """
+    return [current_edition] + [e for e in supported if e != current_edition]
+
+
+def _check_generated_supported_editions(
+    current_edition: str, supported: list[str], lib_text: str, build_text: str
+) -> list[str]:
+    errors: list[str] = []
+    if 'env!("RLMESH_SUPPORTED_WORKFLOW_EDITIONS")' not in lib_text:
+        errors.append(
+            "SUPPORTED_WORKFLOW_EDITIONS must be generated from the build-time "
+            "RLMESH_SUPPORTED_WORKFLOW_EDITIONS env, not written as a literal"
+        )
+    if not (
+        "RLMESH_SUPPORTED_WORKFLOW_EDITIONS" in build_text
+        and "supported_editions" in build_text
+    ):
+        errors.append(
+            "build.rs must emit RLMESH_SUPPORTED_WORKFLOW_EDITIONS from "
+            "rlmesh.toml's [workflow].supported_editions"
+        )
+
+    generated = _generated_supported_editions(current_edition, supported)
+    if len(set(generated)) != len(generated):
+        errors.append(f"generated SUPPORTED_WORKFLOW_EDITIONS {generated} repeats an edition")
+    if set(generated) != set(supported):
+        errors.append(
+            f"generated SUPPORTED_WORKFLOW_EDITIONS {generated} does not match "
+            f"[workflow].supported_editions {supported}"
+        )
+    return errors
+
+
+def _validate_generated_supported_editions(
+    repo_root: Path, manifest_path: Path, workflow: dict[str, Any]
+) -> list[str]:
+    """``SUPPORTED_WORKFLOW_EDITIONS`` is generated, and generated losslessly.
+
+    Both the offer and the accept read that one list, so it must be the manifest's
+    retained set — generated by ``build.rs`` — rather than a hand-maintained Rust
+    literal free to drift from it. ``build.rs`` has no TOML parser, so this also
+    checks that its scan of THIS manifest sees the same array tomllib does: a
+    spelling it cannot read would silently shrink the offer while every rule
+    below (all reading tomllib) stayed green.
+    """
+    current_edition = workflow.get("current_edition")
+    supported = workflow.get("supported_editions")
+    if not isinstance(current_edition, str) or not isinstance(supported, list):
+        return []
+    if not all(isinstance(edition, str) for edition in supported):
+        return []
+    scanned = _scan_manifest_string_list(
+        manifest_path.read_text(encoding="utf-8"), "supported_editions"
+    )
+    if scanned != supported:
+        return [
+            f"{manifest_path.name}: build.rs reads [workflow].supported_editions as "
+            f"{scanned}, the manifest declares {supported}; write the array so the "
+            "build script's scan reads it (see crates/rlmesh-proto/build_manifest.rs)"
+        ]
+    lib = repo_root / "crates/rlmesh-proto/src/lib.rs"
+    build = repo_root / "crates/rlmesh-proto/build.rs"
+    return [
+        f"{lib.relative_to(repo_root)}: {error}"
+        for error in _check_generated_supported_editions(
+            current_edition,
+            supported,
+            lib.read_text(encoding="utf-8"),
+            build.read_text(encoding="utf-8"),
+        )
+    ]
+
+
+PACKAGED_SUPPORTED_EDITIONS = "crates/rlmesh-proto/supported_editions.txt"
+
+
+def _check_packaged_supported_editions(
+    text: str, current_edition: str, supported: list[str]
+) -> list[str]:
+    packaged = [line.strip() for line in text.splitlines() if line.strip()]
+    fix = "run `python scripts/bump_version.py --sync-editions`"
+    if packaged[:1] != [current_edition]:
+        return [
+            f"{PACKAGED_SUPPORTED_EDITIONS} must start with [workflow].current_edition "
+            f"{current_edition!r}, its first line is {packaged[:1]}; {fix}"
+        ]
+    expected = _generated_supported_editions(current_edition, supported)
+    if packaged == expected:
+        return []
+    return [f"{PACKAGED_SUPPORTED_EDITIONS} lists {packaged}, expected {expected}; {fix}"]
+
+
+def _validate_packaged_supported_editions(
+    repo_root: Path, workflow: dict[str, Any]
+) -> list[str]:
+    """The crate's edition file is ``current_edition`` then the other retained editions.
+
+    Every build reads it, and a published crate (no ``rlmesh.toml``) also takes
+    its base edition from the first line; ``build.rs`` refuses a source build
+    whose file disagrees with the manifest.
+    """
+    current_edition = workflow.get("current_edition")
+    supported = workflow.get("supported_editions")
+    if not isinstance(current_edition, str) or not isinstance(supported, list):
+        return []
+    path = repo_root / PACKAGED_SUPPORTED_EDITIONS
+    if not path.is_file():
+        return [f"{PACKAGED_SUPPORTED_EDITIONS} is missing"]
+    return _check_packaged_supported_editions(
+        path.read_text(encoding="utf-8"), current_edition, supported
+    )
+
+
+def _sealed_editions(manifest_text: str) -> set[str]:
+    """Editions marked ``status = "sealed"`` in a manifest's ``[workflow.editions]``."""
+    manifest = tomllib.loads(manifest_text)
+    workflow = manifest.get("workflow")
+    editions = workflow.get("editions") if isinstance(workflow, dict) else None
+    if not isinstance(editions, dict):
+        return set()
+    return {
+        name
+        for name, entry in editions.items()
+        if isinstance(entry, dict) and entry.get("status") == "sealed"
+    }
+
+
+def _dropped_sealed_editions(previous_manifest_text: str, supported: list[str]) -> list[str]:
+    return sorted(_sealed_editions(previous_manifest_text) - set(supported))
+
+
+def _validate_sealed_edition_retention(
+    repo_root: Path, manifest_path: Path, workflow: dict[str, Any]
+) -> list[str]:
+    """No edition sealed by the previous release may leave ``supported_editions``.
+
+    A sealed edition is retained forever: a peer pinned to it must keep finding it in
+    every later build's offer. The intra-manifest rule in ``_validate_workflow_editions``
+    only sees editions this manifest still declares, so deleting a whole
+    ``[workflow.editions."…"]`` table slips past it — this compares against the previous
+    release tag instead. Skipped when there is no tag yet (or no git).
+    """
+    supported = workflow.get("supported_editions")
+    if not isinstance(supported, list) or not all(
+        isinstance(edition, str) for edition in supported
+    ):
+        return []
+    tag = _last_release_tag(repo_root)
+    if tag is None:
+        return []
+    try:
+        tracked = manifest_path.relative_to(repo_root).as_posix()
+    except ValueError:
+        # A manifest from outside the repo has no history to compare against.
+        return []
+    previous = _git_output(repo_root, ["show", f"{tag}:{tracked}"])
+    if previous is None:
+        return []
+    return [
+        f"[workflow].supported_editions dropped sealed edition {edition!r}, retained in "
+        f"{tag}; sealed editions are kept forever"
+        for edition in _dropped_sealed_editions(previous, supported)
+    ]
+
+
+def _validate_wire(repo_root: Path, wire: dict[str, Any]) -> list[str]:
+    """The additive-forever shapes of ``rlmesh-wire-v1`` match ``[wire]``.
+
+    The message cap, every enum's value count, and the frozen oneofs' arm counts
+    are pinned in the manifest so none of them changes without a deliberate edit
+    in the same change. The manifest edit is the paperwork; emitting the new
+    value only to a peer whose edition covers it is the house rule the gate
+    cannot see (``docs/editions/index.md``).
+    """
+    enums: dict[str, int] = {}
+    oneofs: dict[str, int] = {}
+    proto_root = repo_root / "crates/rlmesh-proto/proto"
+    for proto_file in sorted(proto_root.rglob("*.proto")):
+        file_enums, file_oneofs = _scan_proto_vocabulary(
+            proto_file.read_text(encoding="utf-8")
+        )
+        enums.update(file_enums)
+        oneofs.update(file_oneofs)
+    lib = repo_root / "crates/rlmesh-grpc/src/lib.rs"
+    return _check_wire_vocabulary(wire, enums, oneofs) + [
+        f"{lib.relative_to(repo_root)}: {error}"
+        for error in _check_message_cap(wire, lib.read_text(encoding="utf-8"))
+    ]
+
+
+def _scan_proto_vocabulary(text: str) -> tuple[dict[str, int], dict[str, int]]:
+    """Enum value counts and oneof arm counts of one proto file, package-qualified.
+
+    A line scan, like ``build_manifest.rs``: comments are stripped, each ``{``
+    opens a block and each ``}`` closes one, and an entry line counts toward the
+    innermost enum or oneof. Keys are ``<package>.<Message...>.<name>``.
+    """
+    package = ""
+    stack: list[tuple[str, str]] = []
+    enums: dict[str, int] = {}
+    oneofs: dict[str, int] = {}
+    for raw in text.splitlines():
+        line = raw.split("//", 1)[0].strip()
+        if not line:
+            continue
+        if declared := PROTO_PACKAGE_RE.match(line):
+            package = declared.group("package")
+        if opened := PROTO_BLOCK_RE.match(line):
+            kind, name = opened.group("kind"), opened.group("name")
+            stack.append((kind, name))
+            path = ".".join([package, *(n for _, n in stack if n)])
+            if kind == "enum":
+                enums[path] = 0
+            elif kind == "oneof":
+                oneofs[path] = 0
+        elif "{" in line:
+            stack.append(("block", ""))
+        elif stack and PROTO_ENTRY_RE.match(line):
+            kind = stack[-1][0]
+            path = ".".join([package, *(n for _, n in stack if n)])
+            if kind == "enum":
+                enums[path] += 1
+            elif kind == "oneof":
+                oneofs[path] += 1
+        for _ in range(line.count("}")):
+            if stack:
+                stack.pop()
+    return enums, oneofs
+
+
+def _check_wire_vocabulary(
+    wire: dict[str, Any], enums: dict[str, int], oneofs: dict[str, int]
+) -> list[str]:
+    errors: list[str] = []
+    recorded_enums = wire.get("enums")
+    if not isinstance(recorded_enums, dict):
+        errors.append("[wire.enums] must be a table of `\"<package>.<Enum>\" = <value count>`")
+        recorded_enums = {}
+    recorded_oneofs = wire.get("oneofs")
+    if not isinstance(recorded_oneofs, dict):
+        errors.append(
+            "[wire.oneofs] must be a table of `\"<package>.<Message>.<oneof>\" = <arm count>`"
+        )
+        recorded_oneofs = {}
+    for name in FROZEN_ONEOFS:
+        if name not in recorded_oneofs:
+            errors.append(f'[wire.oneofs] must record "{name}"')
+
+    for table, live, noun in (
+        ("enums", enums, "value"),
+        ("oneofs", oneofs, "arm"),
+    ):
+        recorded = recorded_enums if table == "enums" else recorded_oneofs
+        for name in sorted(recorded.keys() - live.keys()):
+            errors.append(
+                f'[wire.{table}]."{name}" names no {table[:-1]} under crates/rlmesh-proto/proto'
+            )
+        for name, count in sorted(live.items()):
+            if name not in recorded:
+                if table == "enums":
+                    errors.append(
+                        f'[wire.enums] has no entry for proto enum "{name}" ({count} '
+                        "values); every wire-v1 enum's vocabulary is pinned: record it"
+                    )
                 continue
-            if item in constants:
-                values.append(constants[item])
-            elif item.startswith('"') and item.endswith('"'):
-                values.append(item[1:-1])
-            else:
+            pinned = recorded[name]
+            if not isinstance(pinned, int):
+                errors.append(f'[wire.{table}]."{name}" must be an integer {noun} count')
+            elif pinned != count:
+                errors.append(
+                    f'[wire.{table}]."{name}" is {pinned}, the proto declares {count} '
+                    f"{noun}s; a new {noun} is a wire-v1 vocabulary change: record the "
+                    "count here in the same change and emit it only when the target "
+                    "leg's edition covers it (docs/editions/index.md, "
+                    '"Additive-forever rules")'
+                    + (
+                        "; a 0.1.0 peer folds an unknown value to UNSPECIFIED, so a new "
+                        "code must never carry error semantics an old peer needs"
+                        if name.endswith("ErrorCode")
+                        else ""
+                    )
+                )
+    return errors
+
+
+def _check_message_cap(wire: dict[str, Any], lib_text: str) -> list[str]:
+    pinned = wire.get("max_message_bytes")
+    if not isinstance(pinned, int):
+        return ["[wire].max_message_bytes must be an integer byte count"]
+    match = MAX_MESSAGE_SIZE_RE.search(lib_text)
+    if match is None:
+        return ["MAX_MESSAGE_SIZE constant not found"]
+    actual = _int_expr(match.group("expr"))
+    if actual is None:
+        return [
+            f"MAX_MESSAGE_SIZE expression {match.group('expr').strip()!r} is not a "
+            "sum or product of integer literals; policy:check cannot pin it"
+        ]
+    if actual != pinned:
+        return [
+            f"MAX_MESSAGE_SIZE is {actual} bytes, rlmesh.toml [wire].max_message_bytes "
+            f"pins {pinned}; the gRPC message cap is part of the rlmesh-wire-v1 "
+            "contract, so change both deliberately in the same change"
+        ]
+    return []
+
+
+def _int_expr(expr: str) -> int | None:
+    """Value of a Rust integer expression made of literals, ``*`` and ``+``."""
+
+    def value(node: ast.expr) -> int | None:
+        if isinstance(node, ast.Constant) and type(node.value) is int:
+            return node.value
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult | ast.Add):
+            left, right = value(node.left), value(node.right)
+            if left is None or right is None:
                 return None
-        return values
-    return None
+            return left * right if isinstance(node.op, ast.Mult) else left + right
+        return None
+
+    try:
+        return value(ast.parse(expr.strip(), mode="eval").body)
+    except SyntaxError:
+        return None
+
+
+def _git_output(repo_root: Path, args: list[str]) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout if result.returncode == 0 else None
+
+
+def _last_release_tag(repo_root: Path) -> str | None:
+    tag = _git_output(repo_root, ["describe", "--tags", "--abbrev=0", "--match", "v*"])
+    return (tag.strip() or None) if tag is not None else None
 
 
 def _validate_api_surface(

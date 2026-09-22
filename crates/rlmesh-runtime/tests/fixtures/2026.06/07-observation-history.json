@@ -1,0 +1,266 @@
+{
+  "across_a_reset": {
+    "each_step_once_and_contiguous": true,
+    "episodes_in_ledger": 2,
+    "report": {
+      "episodes": [
+        {
+          "cumulative_reward": 3.0,
+          "env_index": 0,
+          "episode_index": 1,
+          "seed": null,
+          "step_count": 3,
+          "success": null,
+          "terminated": true,
+          "trial_index": 0,
+          "truncated": false
+        },
+        {
+          "cumulative_reward": 3.0,
+          "env_index": 0,
+          "episode_index": 2,
+          "seed": null,
+          "step_count": 3,
+          "success": null,
+          "terminated": true,
+          "trial_index": 1,
+          "truncated": false
+        }
+      ],
+      "total_episodes": 2,
+      "total_steps": 6
+    }
+  },
+  "prefetch_leads": [
+    {
+      "delivered_steps": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8
+      ],
+      "ledger": [
+        {
+          "history": [],
+          "own": [
+            0,
+            1
+          ]
+        },
+        {
+          "history": [
+            [
+              1,
+              1
+            ],
+            [
+              2,
+              2
+            ],
+            [
+              3,
+              3
+            ]
+          ],
+          "own": [
+            4,
+            4
+          ]
+        },
+        {
+          "history": [
+            [
+              5,
+              5
+            ],
+            [
+              6,
+              6
+            ],
+            [
+              7,
+              7
+            ]
+          ],
+          "own": [
+            8,
+            8
+          ]
+        }
+      ],
+      "predicts": 3,
+      "prefetch_lead": 0,
+      "report": {
+        "episodes": [
+          {
+            "cumulative_reward": 9.0,
+            "env_index": 0,
+            "episode_index": 1,
+            "seed": null,
+            "step_count": 9,
+            "success": null,
+            "terminated": true,
+            "trial_index": 0,
+            "truncated": false
+          }
+        ],
+        "total_episodes": 1,
+        "total_steps": 9
+      }
+    },
+    {
+      "delivered_steps": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "ledger": [
+        {
+          "history": [],
+          "own": [
+            0,
+            1
+          ]
+        },
+        {
+          "history": [
+            [
+              1,
+              1
+            ]
+          ],
+          "own": [
+            2,
+            2
+          ]
+        },
+        {
+          "history": [
+            [
+              3,
+              3
+            ],
+            [
+              4,
+              4
+            ],
+            [
+              5,
+              5
+            ]
+          ],
+          "own": [
+            6,
+            6
+          ]
+        }
+      ],
+      "predicts": 3,
+      "prefetch_lead": 1,
+      "report": {
+        "episodes": [
+          {
+            "cumulative_reward": 9.0,
+            "env_index": 0,
+            "episode_index": 1,
+            "seed": null,
+            "step_count": 9,
+            "success": null,
+            "terminated": true,
+            "trial_index": 0,
+            "truncated": false
+          }
+        ],
+        "total_episodes": 1,
+        "total_steps": 9
+      }
+    },
+    {
+      "delivered_steps": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "ledger": [
+        {
+          "history": [],
+          "own": [
+            0,
+            1
+          ]
+        },
+        {
+          "history": [],
+          "own": [
+            1,
+            1
+          ]
+        },
+        {
+          "history": [
+            [
+              2,
+              2
+            ],
+            [
+              3,
+              3
+            ],
+            [
+              4,
+              4
+            ]
+          ],
+          "own": [
+            5,
+            5
+          ]
+        }
+      ],
+      "predicts": 3,
+      "prefetch_lead": 2,
+      "report": {
+        "episodes": [
+          {
+            "cumulative_reward": 9.0,
+            "env_index": 0,
+            "episode_index": 1,
+            "seed": null,
+            "step_count": 9,
+            "success": null,
+            "terminated": true,
+            "trial_index": 0,
+            "truncated": false
+          }
+        ],
+        "total_episodes": 1,
+        "total_steps": 9
+      }
+    }
+  ],
+  "without_history": {
+    "predicts": 3,
+    "rows_per_predict": [
+      0,
+      0,
+      0
+    ],
+    "step_per_predict": [
+      -1,
+      -1,
+      -1
+    ]
+  }
+}

@@ -41,6 +41,7 @@ class _OkClient:
         *,
         connect_timeout_seconds: float | None = None,
         request_timeout_seconds: float | None = None,
+        workflow_edition: str | None = None,
     ) -> None:
         self._address = address
 
@@ -84,6 +85,7 @@ def test_sandbox_cleanup_runs_on_keyboard_interrupt(
             *,
             connect_timeout_seconds: float,
             request_timeout_seconds: float | None = None,
+            workflow_edition: str | None = None,
         ) -> None:
             captured["address"] = address
             captured["connect_timeout_seconds"] = connect_timeout_seconds
@@ -117,6 +119,7 @@ def test_sandbox_cleanup_runs_on_remote_attach_exception(
             *,
             connect_timeout_seconds: float,
             request_timeout_seconds: float | None = None,
+            workflow_edition: str | None = None,
         ) -> None:
             _ = address, connect_timeout_seconds, request_timeout_seconds
             raise RuntimeError("attach failed")
@@ -451,6 +454,7 @@ def test_attach_caps_retry_timeout_at_remaining_deadline(
             *,
             connect_timeout_seconds: float | None = None,
             request_timeout_seconds: float | None = None,
+            workflow_edition: str | None = None,
         ) -> None:
             assert connect_timeout_seconds is not None
             timeouts.append(connect_timeout_seconds)
@@ -528,6 +532,7 @@ def test_sandbox_vector_env_default_mode_is_auto(
             *,
             connect_timeout_seconds: float | None = None,
             request_timeout_seconds: float | None = None,
+            workflow_edition: str | None = None,
         ) -> None:
             self._address = address
 

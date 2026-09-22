@@ -1332,6 +1332,103 @@ async fn model_bind_resolves_port_zero_before_serving() {
     assert_eq!(closes.load(Ordering::SeqCst), 1);
 }
 
+/// A declaration no peer can honor is refused at the env handshake, before any
+/// Join stream opens, and the message names both sides' WANT and CAN.
+///
+/// The declaration is set on the bare `ServeOptions` field, which takes no
+/// validation (the user-facing surfaces refuse such a value where it is typed),
+/// so this is the path that MUST end in a clean negotiation refusal. `2020.01`
+/// is below every edition any build offers, which makes the test independent of
+/// whether this build is sealed or a prerelease cohort.
+#[tokio::test]
+async fn a_declared_edition_no_peer_can_run_is_refused_at_the_env_handshake() {
+    let bound = crate::EnvServer::new(SmokeEnv::new())
+        .bind_with_options(
+            BindAddress::Tcp {
+                host: "127.0.0.1".to_string(),
+                port: 0,
+            },
+            ServeOptions {
+                workflow_edition: Some("2020.01".to_string()),
+                ..ServeOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+    let address = bound.local_addr().to_string();
+    let server = tokio::spawn(async move { bound.serve().await });
+
+    let connect =
+        crate::RemoteVectorEnv::connect_to(ConnectAddress::parse(&address).unwrap()).await;
+    server.abort();
+    let Err(error) = connect else {
+        panic!("the env declares an edition this build cannot run")
+    };
+    let error = error.to_string();
+
+    assert!(
+        error.contains("no mutual workflow edition with the env"),
+        "{error}"
+    );
+    for half in [
+        "env wants \"2020.01\"",
+        "runtime wants",
+        rlmesh_proto::CURRENT_WORKFLOW_EDITION,
+    ] {
+        assert!(error.contains(half), "expected {half:?} in: {error}");
+    }
+}
+
+/// The three-tier form of the same refusal: a served MODEL declaring an edition
+/// no peer can run fails the session floor before any route is configured, and
+/// the message names every tier.
+#[tokio::test]
+async fn a_declared_edition_no_peer_can_run_is_refused_at_the_session_floor() {
+    let predicts = Arc::new(AtomicUsize::new(0));
+    let closes = Arc::new(AtomicUsize::new(0));
+    let bound = ModelWorker::new(SmokeModel {
+        predicts: Arc::clone(&predicts),
+        closes: Arc::clone(&closes),
+    })
+    .bind_async(
+        ServeModelOptions::new(BindAddress::Tcp {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+        })
+        .serve_options(ServeOptions {
+            workflow_edition: Some("2020.01".to_string()),
+            ..ServeOptions::default()
+        }),
+    )
+    .await
+    .unwrap();
+    let (port, server) = spawn_bound_server(bound);
+
+    let connect = crate::RemoteModel::connect(
+        &format!("tcp://127.0.0.1:{port}"),
+        SmokeEnv::new().env_contract,
+    )
+    .await;
+    server.abort();
+    let Err(error) = connect else {
+        panic!("the model declares an edition no tier can run")
+    };
+    let error = error.to_string();
+
+    assert!(
+        error.contains("no mutual workflow edition across env, model, and runtime"),
+        "{error}"
+    );
+    for half in ["env ", "model wants \"2020.01\"", "runtime "] {
+        assert!(error.contains(half), "expected {half:?} in: {error}");
+    }
+    assert_eq!(
+        predicts.load(Ordering::SeqCst),
+        0,
+        "the refusal must precede any predict"
+    );
+}
+
 #[tokio::test]
 async fn remote_model_connects_resets_and_predicts() {
     // The public RemoteModel mirrors RemoteEnv: connect to a served policy,
@@ -2436,4 +2533,239 @@ async fn run_local_options_token_reaches_a_token_protected_env() {
     assert!(predicts.load(Ordering::SeqCst) > 0);
 
     server.abort();
+}
+
+/// A wire-level served model whose handshake advertises exactly `capabilities`,
+/// recording the `delivers_history` flag it is offered at resolve and the history
+/// row count on each predict. Every predict answers two action frames so the
+/// client replays one step between real predicts.
+#[derive(Clone)]
+struct CapabilityProbeModel {
+    capabilities: HashMap<String, String>,
+    offered_history: Arc<Mutex<Option<bool>>>,
+    history_rows: Arc<Mutex<Vec<usize>>>,
+}
+
+#[tonic::async_trait]
+impl rlmesh_proto::model::v1::model_service_server::ModelService for CapabilityProbeModel {
+    async fn handshake(
+        &self,
+        _request: tonic::Request<rlmesh_proto::model::v1::HandshakeRequest>,
+    ) -> std::result::Result<
+        tonic::Response<rlmesh_proto::model::v1::HandshakeResponse>,
+        tonic::Status,
+    > {
+        Ok(tonic::Response::new(
+            rlmesh_proto::model::v1::HandshakeResponse {
+                base: Some(rlmesh_proto::core::v1::HandshakeResponse {
+                    compatible: true,
+                    peer_info: None,
+                    capabilities: self.capabilities.clone(),
+                    supported_workflow_editions: rlmesh_proto::supported_workflow_editions(),
+                    error_message: None,
+                    preferred_workflow_edition: String::new(),
+                }),
+            },
+        ))
+    }
+
+    type JoinStream = tokio_stream::wrappers::ReceiverStream<
+        std::result::Result<rlmesh_proto::model::v1::JoinResponse, tonic::Status>,
+    >;
+
+    async fn join(
+        &self,
+        request: tonic::Request<tonic::Streaming<JoinRequest>>,
+    ) -> std::result::Result<tonic::Response<Self::JoinStream>, tonic::Status> {
+        use rlmesh_proto::model::v1::{
+            JoinResponse, ObservationHistoryNeeds, PredictResponse, ReleaseAdapterResponse,
+            ResetAdapterResponse, ResolveAdapterResponse,
+        };
+        use tokio_stream::StreamExt;
+
+        let mut requests = request.into_inner();
+        let probe = self.clone();
+        let (tx, rx) = mpsc::channel(8);
+        let frame = rlmesh_grpc::wire::encode_batched_partial_values(
+            &[smoke_box_action()],
+            &SmokeEnv::new().action_space,
+        )
+        .unwrap();
+        tokio::spawn(async move {
+            while let Some(Ok(request)) = requests.next().await {
+                let kind = match request.kind {
+                    Some(join_request::Kind::ResolveAdapter(resolve)) => {
+                        *probe.offered_history.lock().await = Some(resolve.delivers_history);
+                        join_response::Kind::ResolveAdapter(ResolveAdapterResponse {
+                            native_chunk: None,
+                            history: resolve.delivers_history.then(|| ObservationHistoryNeeds {
+                                keys: vec!["observation".to_string()],
+                                prunable: false,
+                            }),
+                        })
+                    }
+                    Some(join_request::Kind::Predict(predict)) => {
+                        probe.history_rows.lock().await.push(predict.history.len());
+                        join_response::Kind::Predict(PredictResponse {
+                            context: predict.context,
+                            actions: vec![frame.clone(), frame.clone()],
+                        })
+                    }
+                    Some(join_request::Kind::ResetAdapter(_)) => {
+                        join_response::Kind::ResetAdapter(ResetAdapterResponse {})
+                    }
+                    Some(join_request::Kind::ReleaseAdapter(_)) => {
+                        join_response::Kind::ReleaseAdapter(ReleaseAdapterResponse {})
+                    }
+                    _ => break,
+                };
+                let response = JoinResponse {
+                    request_id: request.request_id,
+                    kind: Some(kind),
+                    ..Default::default()
+                };
+                if tx.send(Ok(response)).await.is_err() {
+                    break;
+                }
+            }
+        });
+        Ok(tonic::Response::new(
+            tokio_stream::wrappers::ReceiverStream::new(rx),
+        ))
+    }
+
+    async fn shutdown(
+        &self,
+        _request: tonic::Request<rlmesh_proto::model::v1::ShutdownRequest>,
+    ) -> std::result::Result<
+        tonic::Response<rlmesh_proto::model::v1::ShutdownResponse>,
+        tonic::Status,
+    > {
+        Err(tonic::Status::unimplemented("probe model has no shutdown"))
+    }
+}
+
+/// Drive a chunking `RemoteModel` through three steps against a probe model
+/// advertising `capabilities`: resolve, a real predict, a replayed step, and a
+/// second real predict (which carries the replayed step's history row when the
+/// route negotiated history).
+async fn probe_history_offer(capabilities: &[&str]) -> (Option<bool>, Vec<usize>) {
+    let probe = CapabilityProbeModel {
+        capabilities: rlmesh_proto::capability_map(capabilities),
+        offered_history: Arc::new(Mutex::new(None)),
+        history_rows: Arc::new(Mutex::new(Vec::new())),
+    };
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let address = format!("tcp://{}", listener.local_addr().unwrap());
+    let service = probe.clone();
+    let server = tokio::spawn(async move {
+        tonic::transport::Server::builder()
+            .add_service(
+                rlmesh_proto::model::v1::model_service_server::ModelServiceServer::new(service),
+            )
+            .serve_with_incoming(TcpListenerStream::new(listener))
+            .await
+            .unwrap()
+    });
+
+    let mut model = crate::RemoteModel::connect(&address, SmokeEnv::new().env_contract)
+        .await
+        .unwrap();
+    model.set_execution_horizon(2);
+    model.reset(None);
+    let observe = || {
+        spaces::SpaceValue::Box(
+            spaces::Tensor::from_vec(vec![5], vec![1], spaces::DType::Uint8).unwrap(),
+        )
+    };
+    for _ in 0..3 {
+        model.predict(observe()).await.unwrap();
+    }
+    model.close().await.unwrap();
+    drop(model);
+    server.abort();
+
+    let offered = *probe.offered_history.lock().await;
+    let rows = probe.history_rows.lock().await.clone();
+    (offered, rows)
+}
+
+/// Paired-capability rule: `delivers_history` is offered only to a served model
+/// that advertised `rlmesh.model.observation_history.v1`; one that omits it is
+/// offered nothing and never receives history rows, even across a replayed step.
+#[tokio::test]
+async fn remote_model_offers_history_only_to_a_model_that_advertises_it() {
+    let (offered, rows) = probe_history_offer(&[]).await;
+    assert_eq!(offered, Some(false));
+    assert_eq!(rows, vec![0, 0], "no history rows without the capability");
+
+    let (offered, rows) =
+        probe_history_offer(&[rlmesh_proto::capabilities::MODEL_OBSERVATION_HISTORY_V1]).await;
+    assert_eq!(offered, Some(true));
+    assert_eq!(
+        rows,
+        vec![0, 1],
+        "the replayed step rides the next predict as a history row"
+    );
+}
+
+/// A served run learns both legs' ceilings at their handshakes, and against this
+/// build's own servers they are exactly this build's: its edition, every wire-v1
+/// dtype, the capabilities it advertises, and the wire message cap.
+#[tokio::test]
+async fn served_legs_learn_this_builds_ceilings() {
+    use rlmesh_proto::capabilities::{
+        ENV_SUBSET_STEP, MODEL_CONCURRENT_PREDICT_V1, MODEL_OBSERVATION_HISTORY_V1,
+    };
+    use rlmesh_runtime::PeerCeiling;
+
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let env_address = format!("tcp://{}", listener.local_addr().unwrap());
+    let env_server = tokio::spawn(async move {
+        tonic::transport::Server::builder()
+            .add_service(rlmesh_grpc::env::env_service(
+                crate::env::WireLaneAdapter::new(vec![SmokeEnv::new()]).unwrap(),
+            ))
+            .serve_with_incoming(TcpListenerStream::new(listener))
+            .await
+            .unwrap()
+    });
+    let mut env = rlmesh_grpc::EnvClient::connect(&env_address).await.unwrap();
+    let env_ceiling = super::local::env_ceiling(&env.handshake().await.unwrap());
+
+    let bound = ModelWorker::new(SmokeModel {
+        predicts: Arc::new(AtomicUsize::new(0)),
+        closes: Arc::new(AtomicUsize::new(0)),
+    })
+    .bind_async(ServeModelOptions::new(BindAddress::Tcp {
+        host: "127.0.0.1".to_string(),
+        port: 0,
+    }))
+    .await
+    .unwrap();
+    let (port, model_server) = spawn_bound_server(bound);
+    let model = crate::RemoteModel::connect(
+        &format!("tcp://127.0.0.1:{port}"),
+        SmokeEnv::new().env_contract,
+    )
+    .await
+    .unwrap();
+    let model_ceiling = model.ceiling().clone();
+    drop(model);
+    model_server.abort();
+    env_server.abort();
+
+    let this_build = |capabilities: &[&str]| {
+        PeerCeiling::wire_v1(
+            rlmesh_proto::Edition::current(),
+            rlmesh_proto::capability_map(capabilities),
+            rlmesh_grpc::MAX_MESSAGE_SIZE,
+        )
+    };
+    assert_eq!(env_ceiling, this_build(&[ENV_SUBSET_STEP]));
+    assert_eq!(
+        model_ceiling,
+        this_build(&[MODEL_CONCURRENT_PREDICT_V1, MODEL_OBSERVATION_HISTORY_V1])
+    );
+    assert_eq!(env_ceiling.dtypes.len(), spaces::DType::ALL.len());
 }

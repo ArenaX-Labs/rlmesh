@@ -146,10 +146,11 @@ pub use model::{
     ResolveOptions, RouteConfig, RouteNeeds, RouteResolver, RunLocalOptions, ServeModelOptions,
     predict_seed,
 };
+pub use rlmesh_proto::{CURRENT_WORKFLOW_EDITION, parse_declared_edition};
 #[doc(no_inline)]
 pub use rlmesh_runtime::telemetry;
 #[doc(no_inline)]
-pub use rlmesh_runtime::{ENV_RESET_OPTIONS_KEY, RuntimeReport, TRIAL_INDEX_OPTION};
+pub use rlmesh_runtime::{ENV_RESET_OPTIONS_KEY, PeerCeiling, RuntimeReport, TRIAL_INDEX_OPTION};
 pub use serve_options::ServeOptions;
 pub use spaces::{EnvContract, EnvRuntimeError, RenderFrame, SpaceSpec, SpaceValue};
 pub use tokio_util::sync::CancellationToken;

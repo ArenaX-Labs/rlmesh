@@ -40,6 +40,9 @@ pub struct RemoteVectorEnv {
     /// down so the env tags its episodes, rolls a lane's id when it completes
     /// (NEXT_STEP autoreset), and surfaces them as `info["episode_ids"]`.
     episode_ids: Vec<String>,
+    /// The edition this leg negotiated at the handshake, in the spelling both
+    /// sides agreed on.
+    selected_workflow_edition: String,
 }
 
 impl RemoteVectorEnv {
@@ -69,10 +72,33 @@ impl RemoteVectorEnv {
         Self::connect_to_with_token(address, "").await
     }
 
+    /// Connect, declaring the workflow edition this side is authored against
+    /// (the runtime tier's WANT on the env leg).
+    ///
+    /// `declared` caps the env-leg negotiation at that edition; `None` declares
+    /// nothing and is exactly [`connect_to`](Self::connect_to). A pin the env
+    /// cannot run is refused at the handshake, naming both sides' sets.
+    pub async fn connect_declaring(
+        address: ConnectAddress,
+        token: &str,
+        declared: Option<&str>,
+    ) -> Result<Self> {
+        Self::connect_inner(address, token, declared).await
+    }
+
     async fn connect_to_with_token(address: ConnectAddress, token: &str) -> Result<Self> {
+        Self::connect_inner(address, token, None).await
+    }
+
+    async fn connect_inner(
+        address: ConnectAddress,
+        token: &str,
+        declared: Option<&str>,
+    ) -> Result<Self> {
         let mut inner = rlmesh_grpc::EnvClient::connect_with_token(&address.to_string(), token)
             .await
             .map_err(Error::from)?;
+        inner.declare_workflow_edition(declared.map(str::to_string));
         let handshake = inner.handshake().await.map_err(Error::from)?;
         let session_offer = handshake.session_offer();
         let env_contract = rlmesh_grpc::wire::env_contract_from_proto(handshake.env_contract)
@@ -101,7 +127,26 @@ impl RemoteVectorEnv {
             session_offer,
             env_id: crate::mint_id(),
             episode_ids: vec![String::new(); handshake.num_envs],
+            selected_workflow_edition: handshake.selected_workflow_edition,
         })
+    }
+
+    /// The workflow edition this connection negotiated with the env: the highest
+    /// edition both sides can drive, at or below whatever either declared.
+    ///
+    /// The exact wire spelling (e.g. `2026.06-0.1.0-rc.12`), not the bare base —
+    /// that is what was agreed and what a pin has to name.
+    pub fn selected_workflow_edition(&self) -> &str {
+        &self.selected_workflow_edition
+    }
+
+    /// Pin the env to the session edition a model leg settled on (the three-way
+    /// floor, in its exact spelling), replacing this connection's own selection
+    /// as the first Join message. Call before the first reset.
+    pub fn pin_workflow_edition(&mut self, selected_workflow_edition: &str) {
+        self.selected_workflow_edition = selected_workflow_edition.trim().to_string();
+        self.inner
+            .pin_workflow_edition(self.selected_workflow_edition.clone());
     }
 
     /// This connection's container id (UUIDv7), a stable correlation identity for
@@ -412,6 +457,12 @@ impl RemoteEnv {
     /// The env's negotiation offer captured at handshake.
     pub fn session_offer(&self) -> &rlmesh_proto::SessionOffer {
         self.inner.session_offer()
+    }
+
+    /// Pin the env to the session edition a model leg settled on; see
+    /// [`RemoteVectorEnv::pin_workflow_edition`].
+    pub fn pin_workflow_edition(&mut self, selected_workflow_edition: &str) {
+        self.inner.pin_workflow_edition(selected_workflow_edition);
     }
 
     /// Tear down the session locally without waiting for a Close round-trip.

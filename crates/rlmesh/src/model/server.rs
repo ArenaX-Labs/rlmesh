@@ -21,8 +21,8 @@ use rlmesh_proto::model::v1::{
     model_service_server::{ModelService as ModelServiceTrait, ModelServiceServer},
 };
 use rlmesh_proto::{
-    EndpointPhases, capabilities, capability_map, elapsed_ns, evaluate_handshake,
-    generation_mismatch_message, peer_info, supported_workflow_editions,
+    Edition, EndpointPhases, capabilities, capability_map, declared_workflow_edition, elapsed_ns,
+    evaluate_handshake, generation_mismatch_message, peer_info, supported_workflow_editions,
 };
 use tokio::sync::{Mutex, mpsc};
 use tokio_stream::StreamExt;
@@ -137,6 +137,10 @@ struct ServedModelServer<H> {
     activity_tx: Option<mpsc::UnboundedSender<IdleActivity>>,
     shutdown: rlmesh_grpc::lifecycle::ShutdownTrigger,
     serve_options: ServeOptions,
+    /// WANT: the edition this model declares on every handshake response, taken
+    /// from [`ServeOptions::workflow_edition`]. `None` declares this build's
+    /// current edition, which is `max(can)` here and so caps no runtime.
+    declared_workflow_edition: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -154,7 +158,26 @@ pub(super) struct ModelRouteConfig {
 /// and pairwise, so neither is part of the env floor.
 #[derive(Debug, Clone)]
 pub(super) struct RouteFloor {
+    /// The pin resolved to the arm whose semantics the route runs under: what a
+    /// guard or an edition-governed default branches on. Displays as the bare
+    /// `YYYY.MM` base that keys `docs/editions/<base>.md`.
+    pub(super) edition: Edition,
+    /// The pin exactly as the runtime spelled it (e.g. `2026.06-0.1.0-rc.12`).
+    /// Kept alongside [`edition`](Self::edition) because that one displays only
+    /// the base: telemetry has to name the cohort that was actually negotiated,
+    /// which is the spelling the peers agreed on.
     pub(super) selected_workflow_edition: String,
+}
+
+/// The WANT this served model declares, from its [`ServeOptions`]: the explicit
+/// pin, trimmed, with a blank value read as no declaration.
+fn declared_workflow_edition_of(serve_options: &ServeOptions) -> Option<String> {
+    serve_options
+        .workflow_edition
+        .as_deref()
+        .map(str::trim)
+        .filter(|edition| !edition.is_empty())
+        .map(str::to_string)
 }
 
 fn model_service<H>(
@@ -168,6 +191,7 @@ fn model_service<H>(
 where
     H: ModelHandler + 'static,
 {
+    let declared_workflow_edition = declared_workflow_edition_of(&serve_options);
     ModelServiceServer::new(ServedModelServer {
         handler,
         route_setup,
@@ -176,6 +200,7 @@ where
         activity_tx,
         shutdown,
         serve_options,
+        declared_workflow_edition,
     })
     .max_decoding_message_size(rlmesh_grpc::MAX_MESSAGE_SIZE)
     .max_encoding_message_size(rlmesh_grpc::MAX_MESSAGE_SIZE)
@@ -214,6 +239,10 @@ where
                     capabilities::MODEL_OBSERVATION_HISTORY_V1,
                 ]),
                 supported_workflow_editions: supported_workflow_editions(),
+                preferred_workflow_edition: declared_workflow_edition(
+                    self.declared_workflow_edition.as_deref(),
+                )
+                .to_string(),
             }),
         }))
     }
@@ -615,20 +644,19 @@ async fn handle_resolve_adapter(
         }
         None
     } else {
-        let floor = RouteFloor {
-            selected_workflow_edition: request.selected_workflow_edition,
-        };
         // Minimal enforcement: the pinned edition is authoritative over this
         // model's own handshake. Reject an env the runtime pinned to an edition
         // this build cannot drive, instead of silently running the wrong semantics.
         // (With a single edition this never fires; the path exists so the edition
         // is honored, not merely logged, once a second edition lands.)
-        if let Err(error) = enforce_route_floor(&floor) {
-            return Some(model_error(error));
-        }
+        let floor = match route_floor(request.selected_workflow_edition) {
+            Ok(floor) => floor,
+            Err(error) => return Some(model_error(error)),
+        };
         tracing::debug!(
             env_id = %env_id,
             selected_workflow_edition = %floor.selected_workflow_edition,
+            workflow_edition_base = %floor.edition,
             "model adapter pinned to runtime-selected edition"
         );
         Some(floor)
@@ -690,25 +718,32 @@ async fn handle_resolve_adapter(
     ))
 }
 
-/// Honor the runtime-pinned workflow edition: the runtime selects it (the floor —
-/// highest mutual across env, model, and runtime) and it is authoritative, so an
-/// edition this model build cannot drive is a hard configuration error, not a
-/// silently-downgraded run. Generation is not checked here — it was already gated
-/// by equality at the handshake.
+/// Resolve the runtime's edition pin into this route's typed floor, honoring it:
+/// the runtime selects the pin (the floor — highest mutual across env, model, and
+/// runtime) and it is authoritative, so an edition this model build cannot drive
+/// is a hard configuration error, not a silently-downgraded run. The wire name is
+/// parsed here, once, and everything downstream carries the typed edition.
+/// Generation is not checked here — it was already gated by equality at the
+/// handshake.
 ///
 /// Checks **membership** in the support window, not equality with `CURRENT`: the
 /// floor is deliberately allowed to land on a supported older edition (a graceful
 /// downgrade), so equality would reject a route this build can actually drive.
-fn enforce_route_floor(floor: &RouteFloor) -> std::result::Result<(), String> {
-    if !rlmesh_proto::is_supported_edition(&floor.selected_workflow_edition) {
-        return Err(format!(
-            "runtime pinned this route to workflow edition {:?}, which this model build does \
-             not implement (implements {:?})",
-            floor.selected_workflow_edition,
-            rlmesh_proto::SUPPORTED_WORKFLOW_EDITIONS,
-        ));
-    }
-    Ok(())
+fn route_floor(pinned: String) -> std::result::Result<RouteFloor, String> {
+    let edition = Edition::parse(&pinned)
+        .ok()
+        .filter(|edition| rlmesh_proto::is_retained_edition(*edition))
+        .ok_or_else(|| {
+            format!(
+                "runtime pinned this route to workflow edition {pinned:?}, which this model build \
+                 does not implement (implements {:?})",
+                rlmesh_proto::SUPPORTED_WORKFLOW_EDITIONS,
+            )
+        })?;
+    Ok(RouteFloor {
+        edition,
+        selected_workflow_edition: pinned,
+    })
 }
 
 /// Everything a single predict needs once its route is resolved and its
@@ -1268,6 +1303,7 @@ mod tests {
             activity_tx: None,
             shutdown: rlmesh_grpc::lifecycle::ShutdownTrigger::new(),
             serve_options: ServeOptions::default(),
+            declared_workflow_edition: None,
         }
     }
 
@@ -1281,6 +1317,7 @@ mod tests {
                     .iter()
                     .map(|edition| edition.to_string())
                     .collect(),
+                preferred_workflow_edition: String::new(),
             }),
         }
     }
@@ -1289,16 +1326,21 @@ mod tests {
     /// equality with `CURRENT_WORKFLOW_EDITION`: a supported edition passes and
     /// an unimplemented one is refused as a hard configuration error.
     #[test]
-    fn enforce_route_floor_refuses_an_unimplemented_edition() {
-        let supported = RouteFloor {
-            selected_workflow_edition: CURRENT_WORKFLOW_EDITION.to_string(),
-        };
-        assert_eq!(enforce_route_floor(&supported), Ok(()));
+    fn route_floor_refuses_an_unimplemented_edition() {
+        let supported =
+            route_floor(CURRENT_WORKFLOW_EDITION.to_string()).expect("the build's own edition");
+        assert_eq!(
+            supported.edition,
+            Edition::parse(CURRENT_WORKFLOW_EDITION).expect("the current edition parses")
+        );
+        // The exact negotiated spelling survives for telemetry; the typed value
+        // displays only its bare base.
+        assert_eq!(
+            supported.selected_workflow_edition,
+            CURRENT_WORKFLOW_EDITION
+        );
 
-        let unimplemented = RouteFloor {
-            selected_workflow_edition: "2099.01".to_string(),
-        };
-        let error = enforce_route_floor(&unimplemented).expect_err("must refuse");
+        let error = route_floor("2099.01".to_string()).expect_err("must refuse");
         assert!(
             error.contains("2099.01") && error.contains("does not implement"),
             "expected the membership-refusal error, got: {error}"
@@ -1321,6 +1363,52 @@ mod tests {
 
             let base = response.base.expect("handshake response includes base");
             assert!(base.compatible, "offer {offer:?} must be accepted");
+            assert_eq!(
+                base.supported_workflow_editions,
+                supported_workflow_editions()
+            );
+            // WANT alongside CAN: a model with no explicit pin declares this
+            // build's current edition, which is `max(can)` here and so caps no
+            // runtime — the model-side mirror of the env server's handshake.
+            assert_eq!(base.preferred_workflow_edition, CURRENT_WORKFLOW_EDITION);
+        }
+    }
+
+    /// `ServeOptions.workflow_edition` is the model's sticky declaration: it is
+    /// what the handshake response carries as this peer's WANT, so a runtime
+    /// caps the session there instead of at the model's `max(can)`.
+    #[tokio::test]
+    async fn serve_options_workflow_edition_is_the_declared_want() {
+        for (declared, expected) in [
+            // Padded, and deliberately a spelling this build need not offer: the
+            // bare field takes no validation, so this pins that the response
+            // carries it verbatim (trimmed) instead of falling back to CURRENT.
+            (Some("  2026.06  "), "2026.06"),
+            (Some("   "), CURRENT_WORKFLOW_EDITION),
+            (None, CURRENT_WORKFLOW_EDITION),
+        ] {
+            let serve_options = ServeOptions {
+                workflow_edition: declared.map(str::to_string),
+                ..ServeOptions::default()
+            };
+            let declared_workflow_edition = declared_workflow_edition_of(&serve_options);
+            let server = ServedModelServer {
+                serve_options,
+                declared_workflow_edition,
+                ..test_server()
+            };
+
+            let response = ModelServiceTrait::handshake(
+                &server,
+                Request::new(handshake_request(&[CURRENT_WORKFLOW_EDITION])),
+            )
+            .await
+            .unwrap()
+            .into_inner();
+
+            let base = response.base.expect("handshake response includes base");
+            assert_eq!(base.preferred_workflow_edition, expected);
+            // CAN is untouched by the declaration: a pin narrows the WANT only.
             assert_eq!(
                 base.supported_workflow_editions,
                 supported_workflow_editions()

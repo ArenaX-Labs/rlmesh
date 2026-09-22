@@ -7,11 +7,13 @@ pub(crate) mod status;
 /// ONLY on a binary-incompatible change: a `repr(C)` layout change or
 /// enum-discriminant reorder, an `extern "C"` signature retype, or removing a
 /// symbol. Appending a field to a `struct_size`-guarded vtable (the model.rs
-/// pattern) is NOT a break and must not bump this. A consumer gates on it via the
-/// header's
+/// pattern) is NOT a break and must not bump this — but `RlmeshServeOptions`
+/// carries no `struct_size`, so growing IT is a layout change and does bump this
+/// (generation 4 added `RlmeshServeOptions.workflow_edition`). A consumer gates
+/// on it via the header's
 /// `RLMESH_ABI_VERSION` macro + `rlmesh_abi_check()`; the versioned SONAME
 /// (`librlmesh_capi.so.N`) makes the loader enforce the same generation.
-pub const RLMESH_ABI_VERSION: u32 = 3;
+pub const RLMESH_ABI_VERSION: u32 = 4;
 
 /// The linked library's ABI generation (see [`RLMESH_ABI_VERSION`]). A consumer
 /// compares this against the `RLMESH_ABI_VERSION` macro it compiled against.

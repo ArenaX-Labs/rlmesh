@@ -1,0 +1,76 @@
+{
+  "budgeted_slots": {
+    "env_closes": 1,
+    "lanes_used": [
+      0,
+      1,
+      2
+    ],
+    "model_closed": true,
+    "reset_seeds": [
+      100,
+      101,
+      102,
+      103,
+      104,
+      105,
+      106
+    ],
+    "slot_seed_steps": [
+      [
+        1,
+        100,
+        2
+      ],
+      [
+        2,
+        101,
+        5
+      ],
+      [
+        3,
+        102,
+        1
+      ],
+      [
+        4,
+        103,
+        1
+      ],
+      [
+        5,
+        104,
+        1
+      ],
+      [
+        6,
+        105,
+        1
+      ],
+      [
+        7,
+        106,
+        1
+      ]
+    ],
+    "total_episodes": 7
+  },
+  "surplus_lanes_idle": {
+    "env_resets": 2,
+    "events_per_completed_episode": [
+      [
+        "started",
+        "observation",
+        "step",
+        "completed"
+      ],
+      [
+        "started",
+        "observation",
+        "step",
+        "completed"
+      ]
+    ],
+    "total_episodes": 2
+  }
+}

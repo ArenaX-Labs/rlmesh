@@ -273,8 +273,10 @@ def test_env_recipe_serve_prepares_makes_and_serves(
             tags: object = None,
             framework: object = None,
             device: object = None,
+            options: object = None,
         ) -> None:
-            _ = framework, device  # accepted (neutral server), not asserted here
+            # Accepted (neutral server), not asserted here.
+            _ = framework, device, options
             self.address = address
             seen.update(env=env, address=address, tags=tags)
 
@@ -314,6 +316,7 @@ def test_env_factory_serve_separates_serving_options_from_make_kwargs(
         "vectorization_mode": None,
         "framework": "numpy",
         "device": None,
+        "workflow_edition": None,
         "task_id": 7,
     }
 

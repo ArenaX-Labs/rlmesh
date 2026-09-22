@@ -3,11 +3,12 @@ use std::sync::Arc;
 use rlmesh_grpc::wire::{
     decode_batched_partial_values, encode_batched_partial_values, env_spec_to_proto,
 };
+use rlmesh_proto::SessionOffer;
 use rlmesh_proto::model::v1::{
     AdapterContext, EpisodeInfo, ObservationHistoryFrame, PredictRequest, ReleaseAdapterRequest,
     ResetAdapterRequest, ResolveAdapterRequest,
 };
-use rlmesh_proto::{SessionOffer, supported_workflow_editions};
+use rlmesh_runtime::PeerCeiling;
 use uuid::Uuid;
 
 use crate::{ConnectAddress, Error, Result, spaces};
@@ -82,6 +83,8 @@ pub struct RemoteModel {
     /// model, AND this runtime all support. Sent to the model in `ResolveAdapter`
     /// as AUTHORITATIVE over its own (pairwise) handshake result.
     selected_workflow_edition: String,
+    /// What the served model can decode, learned at its handshake.
+    ceiling: PeerCeiling,
     /// The served route asked for observation history at resolve: every replayed
     /// step's observation is then carried as a history row on the next real
     /// predict, so the model-side frame windows see every step.
@@ -140,13 +143,31 @@ impl RemoteModel {
         token: &str,
         env_contract: spaces::EnvContract,
     ) -> Result<Self> {
-        // No explicit env offer: take the runtime's own supported window as the
-        // env offer. With a single-edition build the mutual is unaffected; the
-        // fail-fast machinery still runs.
-        let env_offer = SessionOffer {
-            editions: supported_workflow_editions(),
-        };
+        // No explicit env offer: take the runtime's own offer (its retained list
+        // plus the edition it declares) as the env offer. With a single-edition
+        // build the mutual is unaffected; the fail-fast machinery still runs.
+        let env_offer = SessionOffer::this_build(None);
         Self::connect_with_env_offer(address, token, env_contract, env_offer).await
+    }
+
+    /// Connect and reconcile the floor with an explicit runtime-tier
+    /// declaration — the `workflow_edition` pin the caller was handed.
+    ///
+    /// Same as [`connect_with_env_offer`](Self::connect_with_env_offer), except
+    /// that `declared` is the edition THIS runtime declares (its WANT): the
+    /// session then runs there even when the env and the model could both go
+    /// higher. `None` declares nothing, which is exactly
+    /// [`connect_with_env_offer`](Self::connect_with_env_offer). A pin no peer
+    /// can run is refused before any route is configured, naming every tier's
+    /// WANT and CAN.
+    pub async fn connect_declaring(
+        address: &str,
+        token: &str,
+        env_contract: spaces::EnvContract,
+        env_offer: SessionOffer,
+        declared: Option<&str>,
+    ) -> Result<Self> {
+        Self::connect_inner(address, token, env_contract, env_offer, declared).await
     }
 
     /// Connect to a model server and reconcile the **route workflow edition**
@@ -170,6 +191,16 @@ impl RemoteModel {
         env_contract: spaces::EnvContract,
         env_offer: SessionOffer,
     ) -> Result<Self> {
+        Self::connect_inner(address, token, env_contract, env_offer, None).await
+    }
+
+    async fn connect_inner(
+        address: &str,
+        token: &str,
+        env_contract: spaces::EnvContract,
+        env_offer: SessionOffer,
+        declared: Option<&str>,
+    ) -> Result<Self> {
         let address = ConnectAddress::parse(address)?;
         let observation_space = Arc::new(
             env_contract
@@ -191,6 +222,7 @@ impl RemoteModel {
         let mut inner = rlmesh_grpc::ModelClient::connect(&address.to_string(), token)
             .await
             .map_err(Error::from)?;
+        inner.declare_workflow_edition(declared.map(str::to_string));
         inner.handshake().await.map_err(Error::from)?;
         let model_offer = inner.model_session_offer();
 
@@ -199,9 +231,16 @@ impl RemoteModel {
         // the three share no edition (before any Join/ResolveAdapter is sent). The
         // helper lives in rlmesh-grpc so the production runtime computes the same
         // floor; here the facade just consumes it.
-        let selected_workflow_edition = rlmesh_grpc::env_floor(&env_offer, &model_offer)
+        let selected_workflow_edition = rlmesh_grpc::env_floor(&env_offer, &model_offer, declared)
             .map_err(Error::from)?
             .selected_workflow_edition;
+        let session_edition = rlmesh_proto::parse_retained_edition(&selected_workflow_edition)
+            .map_err(Error::Internal)?;
+        let ceiling = PeerCeiling::wire_v1(
+            PeerCeiling::highest_shared_edition(&model_offer.editions).unwrap_or(session_edition),
+            inner.server_capabilities().clone(),
+            rlmesh_grpc::MAX_MESSAGE_SIZE,
+        );
 
         Ok(Self {
             inner,
@@ -221,6 +260,7 @@ impl RemoteModel {
             seed: None,
             pending_end: Vec::new(),
             selected_workflow_edition,
+            ceiling,
         })
     }
 
@@ -238,6 +278,13 @@ impl RemoteModel {
     /// The workflow edition this session runs at (the floor across env, model, and runtime).
     pub fn selected_workflow_edition(&self) -> &str {
         &self.selected_workflow_edition
+    }
+
+    /// What the served model can decode: the `model_ceiling` a
+    /// [`RuntimeSessionSpec`](rlmesh_runtime::RuntimeSessionSpec) relaying to
+    /// it carries.
+    pub fn ceiling(&self) -> &PeerCeiling {
+        &self.ceiling
     }
 
     /// The env (adapter) routing key this client uses with the model — a UUIDv7
@@ -457,8 +504,9 @@ impl RemoteModel {
                 // [`set_execution_horizon`](Self::set_execution_horizon)). 1 = no chunking.
                 execution_horizon: self.execution_horizon,
                 // This client replays chunk frames itself, so it can carry every
-                // replayed step's observation as a history row.
-                delivers_history: true,
+                // replayed step's observation as a history row; offered only to
+                // a served model that advertised it ingests them.
+                delivers_history: self.inner.server_ingests_history(),
             })
             .await
             .map_err(Error::from)?;

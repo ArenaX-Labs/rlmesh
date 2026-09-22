@@ -5,8 +5,8 @@ use prost::bytes::Bytes;
 
 use super::{
     ActionReceivedEvent, EnvConnectedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, LogEvent,
-    ModelConnectedEvent, ObservationEmittedEvent, SessionEndedEvent, SessionFailedEvent,
-    SessionStartedEvent, StepCompletedEvent, TelemetrySnapshotEvent,
+    ModelConnectedEvent, ObservationEmittedEvent, RelayAdvisoryEvent, SessionEndedEvent,
+    SessionFailedEvent, SessionStartedEvent, StepCompletedEvent, TelemetrySnapshotEvent,
 };
 
 /// Error returned by a [`RuntimeHooks`] callback.
@@ -107,6 +107,11 @@ pub trait RuntimeHooks: Send + Sync {
     }
 
     async fn log(&self, _event: LogEvent) -> Result<(), HookError> {
+        Ok(())
+    }
+
+    /// Best-effort; see [`RelayAdvisoryEvent`].
+    async fn relay_advisory(&self, _event: RelayAdvisoryEvent) -> Result<(), HookError> {
         Ok(())
     }
 }

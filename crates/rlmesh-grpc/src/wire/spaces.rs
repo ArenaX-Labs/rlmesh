@@ -426,7 +426,7 @@ pub(crate) fn meta_value_to_proto(value: &native::MetaValue) -> proto::MetaValue
 
 pub(crate) fn meta_value_from_proto(value: proto::MetaValue) -> native::MetaValue {
     match value.kind {
-        None => native::MetaValue::Null,
+        None | Some(MetaKind::Null(_)) => native::MetaValue::Null,
         Some(MetaKind::Bool(value)) => native::MetaValue::Bool(value),
         Some(MetaKind::Integer(value)) => native::MetaValue::Int(value),
         Some(MetaKind::Number(value)) => native::MetaValue::Float(value),
@@ -783,6 +783,15 @@ mod tests {
             meta_roundtrip(native::MetaValue::Float(2.0)),
             native::MetaValue::Float(_)
         ));
+    }
+
+    #[test]
+    fn meta_explicit_null_arm_decodes_to_null_and_null_encodes_unset() {
+        let explicit = proto::MetaValue {
+            kind: Some(MetaKind::Null(proto::MetaNull {})),
+        };
+        assert_eq!(meta_value_from_proto(explicit), native::MetaValue::Null);
+        assert_eq!(meta_value_to_proto(&native::MetaValue::Null).kind, None);
     }
 
     #[test]

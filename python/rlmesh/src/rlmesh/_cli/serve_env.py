@@ -45,6 +45,7 @@ class ServeArgs:
     verbose: bool
     kwargs: dict[str, Any] | None = None
     ready_fd: int | None = None
+    workflow_edition: str | None = None
 
 
 def write_ready_fd(fd: int, address: str) -> None:
@@ -116,6 +117,16 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
             "readiness without grepping stdout."
         ),
     )
+    _ = parser.add_argument(
+        "--workflow-edition",
+        help=(
+            "Workflow edition this endpoint declares -- the semantics it was "
+            "authored against, kept until you bump it. Defaults to "
+            "RLMESH_WORKFLOW_EDITION, then the entrypoint class's "
+            "workflow_edition, then [tool.rlmesh] workflow_edition. Paste what "
+            "rlmesh.current_workflow_edition() reports."
+        ),
+    )
     _ = parser.add_argument("--verbose", action="store_true", help="Verbose output")
 
 
@@ -144,6 +155,7 @@ def serve_from_args(args: ServeArgs) -> int:
     """
     try:
         from rlmesh import EnvServer
+        from rlmesh._editions import serve_options_declaring
 
         if args.transport == "unix" and os.name == "nt":
             raise ValueError(
@@ -167,6 +179,16 @@ def serve_from_args(args: ServeArgs) -> int:
             )
 
         served_num_envs = _served_num_envs(env, fallback=args.num_envs)
+        # The served env declares an edition on every handshake: --workflow-edition
+        # if given, else the process / class / project declaration.
+        options = serve_options_declaring(
+            option=args.workflow_edition,
+            # The entrypoint's factory is gone by now (it returned the env), so
+            # only an env class that declares the edition on itself is visible
+            # here; RLMESH_WORKFLOW_EDITION / [tool.rlmesh] / --workflow-edition
+            # cover the rest.
+            declared=getattr(type(env), "workflow_edition", None),
+        )
         # EnvServer auto-detects the vectorized shape from the env, so there is one
         # construction path for both scalar and vector envs.
         if args.transport == "unix":
@@ -175,11 +197,11 @@ def serve_from_args(args: ServeArgs) -> int:
                 source_name = args.env if args.env is not None else args.entrypoint
                 assert source_name is not None
                 path = _default_unix_socket_path(source_name)
-            server = EnvServer(env, path=path, transport="unix")
+            server = EnvServer(env, path=path, transport="unix", options=options)
         elif args.address is None:
-            server = EnvServer(env)
+            server = EnvServer(env, options=options)
         else:
-            server = EnvServer(env, args.address)
+            server = EnvServer(env, args.address, options=options)
 
         if args.entrypoint is not None:
             print(f"✓ Environment entrypoint: {args.entrypoint}")
@@ -274,6 +296,7 @@ def serve_args_from_namespace(args: argparse.Namespace) -> ServeArgs:
         verbose=args.verbose,
         kwargs=args.kwargs_json,
         ready_fd=args.ready_fd,
+        workflow_edition=args.workflow_edition,
     )
 
 

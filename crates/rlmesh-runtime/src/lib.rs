@@ -18,14 +18,16 @@ pub use driver::{
 };
 pub use hooks::{
     ActionReceivedEvent, EnvConnectedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, HookError,
-    LogEvent, LogLevel, ModelConnectedEvent, NoopRuntimeHooks, ObservationEmittedEvent,
+    Leg, LogEvent, LogLevel, ModelConnectedEvent, NoopRuntimeHooks, ObservationEmittedEvent,
+    PayloadFacts, RefusingRelayPolicy, RelayAdvisoryEvent, RelayDecision, RelayPolicy,
     RuntimeEnvContext, RuntimeHooks, SessionEndedEvent, SessionFailedEvent, SessionStartedEvent,
     StepCompletedEvent, TelemetrySnapshotEvent,
 };
 pub use rlmesh_proto::EndpointPhases;
+pub use rlmesh_spaces::{Advisory, AdvisorySeverity, DType};
 pub use spec::{
-    ENV_RESET_OPTIONS_KEY, RuntimeLimits, RuntimeReport, RuntimeSessionSpec, TRIAL_INDEX_OPTION,
-    declares_reset_option, reset_options_for,
+    ENV_RESET_OPTIONS_KEY, PeerCeiling, RuntimeLimits, RuntimeReport, RuntimeSessionSpec,
+    TRIAL_INDEX_OPTION, declares_reset_option, reset_options_for,
 };
 
 /// Protocol types used by the runtime public API.

@@ -10,6 +10,7 @@ from types import TracebackType
 from typing import TYPE_CHECKING, Any, cast
 
 from ._client import Transport, normalize_bind_address
+from ._editions import serve_options_declaring
 from ._load_native import load_native
 from ._value_conversion import resolve_bridge
 from .specs import EnvContract
@@ -118,7 +119,10 @@ class EnvServer:
         path: Unix socket path helper used when ``address`` is omitted.
         transport: Explicit transport selector.
         options: Optional serve lifecycle options controlling remote shutdown,
-            idle shutdown, drain timeout, and close timeout.
+            idle shutdown, drain timeout, close timeout, and the workflow
+            edition this endpoint declares (see :doc:`/editions/index`). An
+            edition set here is declared verbatim; options without one take
+            ``RLMESH_WORKFLOW_EDITION``, then ``[tool.rlmesh]``.
         tags: Optional adapter env tags
             (:class:`rlmesh.adapters.EnvTags`) to publish for this env.
             They are validated against the env's spaces and merged into its
@@ -261,6 +265,14 @@ class EnvServer:
             transport=transport,
         )
         server_cls = load_native("PyVectorEnvServer" if is_vector else "PyEnvServer")
+        if options is None or options.workflow_edition is None:
+            # A served env declares an edition like any other participant.
+            # There is no class here to read one off -- the env is an object --
+            # so this picks up the process and project surfaces. Options that
+            # already carry a declaration are the caller's resolved answer
+            # (`serve_env`, the loopback server `run()` stands up) and are
+            # adopted verbatim.
+            options = serve_options_declaring(options)
         self._server: PyEnvServer | PyVectorEnvServer = server_cls(
             env=env,
             address=normalized_address,

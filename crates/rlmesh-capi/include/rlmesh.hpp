@@ -916,6 +916,13 @@ struct ServeOptions {
   std::chrono::milliseconds drain_timeout{0};
   std::chrono::milliseconds close_timeout{0};
   size_t predict_concurrency = 0;
+  /// Workflow edition this server declares (its WANT); empty declares none.
+  /// Write the bare YYYY.MM base you authored against: it names the contract
+  /// and selects whichever spelling of it both sides offer (a dev build's
+  /// cohort included). A cohort spelling pins to that exact build. A value that
+  /// admits nothing this build offers fails serve() with
+  /// RLMESH_ERR_INVALID_ARGUMENT.
+  std::string workflow_edition;
 };
 
 /// A model worker: bind a predict policy, then drive it against an environment
@@ -1021,6 +1028,8 @@ class Model {
     raw.drain_timeout_ms = static_cast<uint64_t>(options.drain_timeout.count());
     raw.close_timeout_ms = static_cast<uint64_t>(options.close_timeout.count());
     raw.predict_concurrency = options.predict_concurrency;
+    raw.workflow_edition =
+        options.workflow_edition.empty() ? nullptr : options.workflow_edition.c_str();
     RlmeshStatus status = rlmesh_model_serve(model_, address.c_str(), &raw);
     if (status != RLMESH_OK) return Error::from_last(status);
     return ok();

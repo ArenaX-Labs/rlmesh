@@ -475,6 +475,15 @@ class ModelBase(Generic[ObsT, ActT]):
     #: (see :mod:`rlmesh.params`). Advisory today: a dashboard reads it via
     #: ``rlmesh.describe``; binding it into ``load`` is gated on the served-load seam.
     params: ClassVar[ParamSpec | None] = None
+    #: The workflow edition this model was authored against -- a sticky
+    #: declaration, the source-resident analogue of NixOS's ``stateVersion``:
+    #: write it once and upgrading rlmesh cannot change how this model behaves.
+    #: Paste the value :func:`rlmesh.current_workflow_edition` reports. ``None``
+    #: (the default) declares nothing and floats to this build's newest edition,
+    #: which is reported once per process. Overridden by
+    #: ``RLMESH_WORKFLOW_EDITION`` and by an explicit ``run``/``session``
+    #: keyword; see :doc:`the precedence table </editions/index>`.
+    workflow_edition: ClassVar[str | None] = None
     #: Compute device for model inputs (torch/jax only). Set it in :meth:`load`
     #: alongside moving your weights -- one source of truth -- and rlmesh moves every
     #: obs tensor leaf onto it before :meth:`predict`, so you never call ``.to(device)``
@@ -994,6 +1003,7 @@ class ModelBase(Generic[ObsT, ActT]):
         prefetch_lead: int = 0,
         view: ViewArg = None,
         trial_index_base: int = 0,
+        workflow_edition: str | None = None,
     ) -> RunResult:
         """Drive this model against an env on the native runtime loop.
 
@@ -1046,6 +1056,14 @@ class ModelBase(Generic[ObsT, ActT]):
         be attributed to the model forward, the env step, serialization, or
         queueing without a profiler.
 
+        ``workflow_edition`` pins the semantics this run is evaluated under --
+        the runtime's own declaration, above every other surface. It defaults to
+        ``RLMESH_WORKFLOW_EDITION``, then :attr:`workflow_edition` on this model,
+        then ``[tool.rlmesh] workflow_edition``; declaring none floats the run to
+        this build's newest edition (reported once per process). An edition
+        neither side can run is refused before any episode starts, naming what
+        each tier wants and can do.
+
         The Session-only knobs -- ``hooks``, ``instruction``, ``view`` -- are
         not part of this loop; use :meth:`session` and
         :meth:`Session.run <rlmesh.Session.run>` for step-level observation,
@@ -1071,6 +1089,7 @@ class ModelBase(Generic[ObsT, ActT]):
             raise ValueError(f"prefetch_lead must be >= 0, got {prefetch_lead}")
         if trial_index_base < 0:
             raise ValueError(f"trial_index_base must be >= 0, got {trial_index_base}")
+        declared_edition = self._declared_workflow_edition(workflow_edition)
         self._require_device_support()
         if execution_horizon > 1 and self._raw_predict_chunk is None:
             warnings.warn(
@@ -1099,6 +1118,7 @@ class ModelBase(Generic[ObsT, ActT]):
                 execution_horizon=execution_horizon,
                 prefetch_lead=prefetch_lead,
                 trial_index_base=trial_index_base,
+                workflow_edition=declared_edition,
             )
         finally:
             self._trust_entrypoints = previous_trust
@@ -1125,6 +1145,7 @@ class ModelBase(Generic[ObsT, ActT]):
                 for episode in report["episodes"]
             ),
             telemetry=tuple(TelemetryRow(**row) for row in report["telemetry"]),
+            advisories=tuple(report["advisories"]),
         )
 
     def _run_native(
@@ -1139,6 +1160,7 @@ class ModelBase(Generic[ObsT, ActT]):
         execution_horizon: int,
         prefetch_lead: int = 0,
         trial_index_base: int = 0,
+        workflow_edition: str | None = None,
     ) -> dict[str, Any]:
         """Normalize the env target, drive the native loop, return the report.
 
@@ -1188,7 +1210,20 @@ class ModelBase(Generic[ObsT, ActT]):
                     local_contract(env_obj),
                     trust_entrypoints=self._trust_entrypoints,
                 )
-            server = EnvServer(cast("VectorServerEnvLike", env_obj), "127.0.0.1:0")
+            from .._load_native import load_native
+
+            # The loopback server is part of THIS call, so it takes the run's
+            # already-resolved declaration verbatim instead of re-resolving and
+            # possibly landing on a different edition than the runtime tier.
+            server = EnvServer(
+                cast("VectorServerEnvLike", env_obj),
+                "127.0.0.1:0",
+                options=(
+                    load_native("ServeOptions")(workflow_edition=workflow_edition)
+                    if workflow_edition is not None
+                    else None
+                ),
+            )
             server.start()
             address = server.address
         try:
@@ -1202,6 +1237,7 @@ class ModelBase(Generic[ObsT, ActT]):
                 max_episode_seconds=max_episode_seconds,
                 close_env=close_env and kind == "address",
                 trial_index_base=trial_index_base,
+                workflow_edition=workflow_edition,
             )
         except (RuntimeError, ConnectionError) as error:
             if "active Join session" in str(error):
@@ -1234,6 +1270,7 @@ class ModelBase(Generic[ObsT, ActT]):
         trust_entrypoints: bool | None = None,
         execution_horizon: int = 1,
         view: ViewArg = None,
+        workflow_edition: str | None = None,
     ) -> Session[ObsT, ActT]:
         """Bind this model to an env and return a :class:`Session` to drive by hand.
 
@@ -1245,9 +1282,13 @@ class ModelBase(Generic[ObsT, ActT]):
         remote-env handle, or an address string (see :meth:`run`).
         ``execution_horizon`` (> 1) executes that many actions per predicted chunk, one
         per env step, when this model defines :meth:`predict_chunk` (see :meth:`run`).
+        ``workflow_edition`` declares the semantics this session runs under, with
+        the same precedence as :meth:`run`; it reaches the wire only for a dialed
+        address (a local env object negotiates nothing).
         """
         from ._eval import Session
 
+        declared_edition = self._declared_workflow_edition(workflow_edition)
         self._require_device_support()
         if execution_horizon > 1 and self._raw_predict_chunk is None:
             warnings.warn(
@@ -1275,6 +1316,7 @@ class ModelBase(Generic[ObsT, ActT]):
             execution_horizon=execution_horizon,
             native_chunk=self._native_chunk(),
             view=view,
+            workflow_edition=declared_edition,
         )
 
     def serve(
@@ -1288,9 +1330,18 @@ class ModelBase(Generic[ObsT, ActT]):
         A spec'd model resolves its adapter per env from the env contract the
         ``resolve_adapter`` handshake delivers, then applies it around predict; a
         spec-less / ``NO_ADAPTER`` model serves its own predict directly.
+
+        The endpoint declares a workflow edition on every handshake: ``options``'
+        own ``workflow_edition`` if it sets one, else the resolved declaration
+        (``RLMESH_WORKFLOW_EDITION``, :attr:`workflow_edition`, ``[tool.rlmesh]``).
         """
+        from .._editions import serve_options_declaring
+
         self._require_device_support()
-        self._install_worker().serve(address, options)
+        self._install_worker().serve(
+            address,
+            serve_options_declaring(options, declared=type(self).workflow_edition),
+        )
 
     def _run_local(
         self, env_address: str, *, execution_horizon: int = 1, prefetch_lead: int = 0
@@ -1322,6 +1373,7 @@ class ModelBase(Generic[ObsT, ActT]):
         close_env: bool = False,
         trial_index_base: int = 0,
         prefetch_lead: int = 0,
+        workflow_edition: str | None = None,
     ) -> dict[str, Any]:
         """Native worker loop against a remote env for a fixed episode count.
 
@@ -1340,7 +1392,18 @@ class ModelBase(Generic[ObsT, ActT]):
             close_env,
             trial_index_base,
             prefetch_lead,
+            workflow_edition,
         )
+
+    def _declared_workflow_edition(self, call: str | None) -> str | None:
+        """This model's declaration for one run or session.
+
+        The explicit call keyword, else the process / class / project surfaces
+        (see :mod:`rlmesh._editions`).
+        """
+        from .._editions import resolve_workflow_edition
+
+        return resolve_workflow_edition(call=call, declared=type(self).workflow_edition)
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}()"

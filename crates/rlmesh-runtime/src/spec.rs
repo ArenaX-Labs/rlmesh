@@ -1,11 +1,14 @@
 //! The runtime session spec, its limits, and the report a finished run returns.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 use std::time::Duration;
 
 use rlmesh_proto::core::v1::{AutoresetMode, EnvContract};
 use rlmesh_proto::spaces::v1::meta_value::Kind as MetaKind;
 use rlmesh_proto::spaces::v1::{MetaList, MetaMap, MetaValue, SpaceSpec};
+use rlmesh_proto::{Edition, EditionDefaults};
+use rlmesh_spaces::{Advisory, DType};
 use serde::{Deserialize, Serialize};
 
 /// Empty fallback returned by the internal `*_validated` accessors only on the
@@ -23,6 +26,10 @@ pub const ENV_RESET_OPTIONS_KEY: &str = "rlmesh.env.v1.reset_options";
 /// The reserved reset option carrying the ordinal of the episode a reset
 /// starts. Declared by an env under [`ENV_RESET_OPTIONS_KEY`]; read in Python
 /// as `rlmesh.trial_index(options)`.
+///
+/// The env-side spelling of the key. The driver never reads it: a session takes
+/// its trial-index key from [`EditionDefaults::trial_index_option_key`], so the
+/// edition governs what goes on the wire.
 pub const TRIAL_INDEX_OPTION: &str = "trial_index";
 
 /// Whether `contract` named `key` in its metadata under
@@ -50,14 +57,20 @@ pub fn declares_reset_option(contract: &EnvContract, key: &str) -> bool {
     }
 }
 
-/// The `ResetRequest.options` map delivering `trials` under
-/// [`TRIAL_INDEX_OPTION`], or `None` when there are no trials or the env never
+/// The `ResetRequest.options` map delivering `trials` under `option_key` — the
+/// trial-index key the session's edition governs
+/// ([`EditionDefaults::trial_index_option_key`], mirrored for env-side callers by
+/// [`TRIAL_INDEX_OPTION`]) — or `None` when there are no trials or the env never
 /// declared the key.
 ///
 /// A single lane sends the bare integer; a multi-lane reset sends the list, in
 /// the same lane order as `seeds` and `episode_ids`.
-pub fn reset_options_for(contract: &EnvContract, trials: &[u64]) -> Option<MetaMap> {
-    if trials.is_empty() || !declares_reset_option(contract, TRIAL_INDEX_OPTION) {
+pub fn reset_options_for(
+    contract: &EnvContract,
+    option_key: &str,
+    trials: &[u64],
+) -> Option<MetaMap> {
+    if trials.is_empty() || !declares_reset_option(contract, option_key) {
         return None;
     }
     let value = if trials.len() == 1 {
@@ -77,10 +90,54 @@ pub fn reset_options_for(contract: &EnvContract, trials: &[u64]) -> Option<MetaM
         }
     };
     Some(MetaMap {
-        entries: [(TRIAL_INDEX_OPTION.to_string(), value)]
-            .into_iter()
-            .collect(),
+        entries: [(option_key.to_string(), value)].into_iter().collect(),
     })
+}
+
+/// What one served peer can decode, learned at its handshake. The driver checks
+/// every payload it relays against the target leg's ceiling through the
+/// session's [`RelayPolicy`](crate::RelayPolicy), not against the session
+/// edition alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerCeiling {
+    /// The highest edition this peer and this build both implement, which may
+    /// exceed the session edition
+    /// ([`workflow_edition`](RuntimeSessionSpec::workflow_edition)).
+    pub edition: Edition,
+    pub dtypes: HashSet<DType>,
+    /// What the peer advertised; query with [`rlmesh_proto::has_capability`].
+    pub capabilities: HashMap<String, String>,
+    /// The largest message the peer accepts, in bytes.
+    pub max_message_size: usize,
+}
+
+impl PeerCeiling {
+    /// The highest edition this build retains among a peer's advertised
+    /// `supported` names, or `None` when they share none.
+    pub fn highest_shared_edition(supported: &[String]) -> Option<Edition> {
+        supported
+            .iter()
+            .filter(|name| rlmesh_proto::parse_retained_edition(name).is_ok())
+            .max_by(|a, b| {
+                rlmesh_proto::edition_sort_key(a).cmp(&rlmesh_proto::edition_sort_key(b))
+            })
+            .and_then(|name| rlmesh_proto::parse_retained_edition(name).ok())
+    }
+
+    /// A wire-v1 peer's ceiling. Wire-v1 advertises no dtype set, so a peer
+    /// decodes every dtype the wire defines.
+    pub fn wire_v1(
+        edition: Edition,
+        capabilities: HashMap<String, String>,
+        max_message_size: usize,
+    ) -> Self {
+        Self {
+            edition,
+            dtypes: DType::ALL.into_iter().collect(),
+            capabilities,
+            max_message_size,
+        }
+    }
 }
 
 /// Everything one route needs to run: its identity, the negotiated env
@@ -99,9 +156,13 @@ pub struct RuntimeSessionSpec {
     pub env_id: String,
     pub env_component_id: String,
     pub model_component_id: String,
-    /// Workflow edition negotiated at the env handshake. The runtime refuses an
-    /// edition it was not built to drive (see [`RuntimeSessionSpec::validate`]).
-    pub workflow_edition: String,
+    /// Workflow edition negotiated at the env handshake, already resolved to the
+    /// typed arm whose semantics this session runs under. Wire names are parsed
+    /// once, where they arrive, by
+    /// [`rlmesh_proto::parse_retained_edition`] — that is where the runtime
+    /// refuses an edition it was not built to drive, so a name outside the
+    /// retained list never reaches this field.
+    pub workflow_edition: Edition,
     pub env_contract: EnvContract,
     pub num_envs: usize,
     pub base_seed: Option<i64>,
@@ -140,6 +201,10 @@ pub struct RuntimeSessionSpec {
     /// in lockstep, and episode seeds/indices come from a route-global slot
     /// counter so the scored set is fixed by the budget alone.
     pub subset_step: bool,
+    /// The served env's ceiling; `None` when the env runs in-process.
+    pub env_ceiling: Option<PeerCeiling>,
+    /// The served model's ceiling; `None` when the model runs in-process.
+    pub model_ceiling: Option<PeerCeiling>,
 }
 
 impl RuntimeSessionSpec {
@@ -182,11 +247,12 @@ impl RuntimeSessionSpec {
                 "runtime max_episode_seconds must be greater than zero when set".to_string(),
             );
         }
-        let driver_owns_resets = matches!(
-            rlmesh_proto::core::v1::AutoresetMode::try_from(self.env_contract.autoreset_mode),
-            Ok(rlmesh_proto::core::v1::AutoresetMode::Disabled)
-                | Ok(rlmesh_proto::core::v1::AutoresetMode::Unspecified)
-        );
+        let driver_owns_resets = AutoresetMode::try_from(self.env_contract.autoreset_mode)
+            .is_ok_and(|mode| {
+                self.edition_defaults()
+                    .driver_owned_reset_modes
+                    .contains(&mode)
+            });
         if !driver_owns_resets {
             if !self.episode_seeds.is_empty() {
                 return Err(
@@ -213,17 +279,13 @@ impl RuntimeSessionSpec {
                 );
             }
         }
-        // The runtime drives one of the editions it was built for; a session
-        // negotiated under an edition outside the support window is refused rather
-        // than run under semantics it never agreed to. Membership, not equality
-        // with CURRENT: a supported older edition (a graceful downgrade) is valid.
-        if !rlmesh_proto::is_supported_edition(&self.workflow_edition) {
-            return Err(format!(
-                "runtime cannot drive workflow edition {:?}; this build implements {:?}",
-                self.workflow_edition,
-                rlmesh_proto::SUPPORTED_WORKFLOW_EDITIONS
-            ));
-        }
+        // The runtime drives one of the editions it was built for. Wire names are
+        // already refused at the parse boundary, so this re-checks the typed value
+        // for the one route that skips it: every field here is public, so a caller
+        // can name an arm this build implements but no longer retains. Same
+        // authority, same wording — membership, not equality with CURRENT, since a
+        // retained older edition (a graceful downgrade) is a valid session floor.
+        rlmesh_proto::parse_retained_edition(self.workflow_edition.base())?;
         // An autoreset mode this build does not understand (e.g. a newer peer's
         // mode) must fail loudly at session setup, never silently fold to
         // DISABLED and change lifecycle semantics.
@@ -267,6 +329,13 @@ impl RuntimeSessionSpec {
             );
         }
         Ok(())
+    }
+
+    /// The edition-governed defaults this session runs under. Every value the
+    /// driver would otherwise hardcode comes from here, so a future edition
+    /// changes a table row instead of a code path.
+    pub fn edition_defaults(&self) -> &'static EditionDefaults {
+        rlmesh_proto::defaults(self.workflow_edition)
     }
 
     pub fn env_context(&self) -> crate::hooks::RuntimeEnvContext {
@@ -369,6 +438,8 @@ pub struct RuntimeReport {
     /// Session-total telemetry aggregate (per-op latency/percentiles/bytes) —
     /// the durable pull counterpart to the live `RuntimeHooks::on_telemetry` push.
     pub telemetry: crate::telemetry::Snapshot,
+    /// Each distinct advisory the relay policy raised, in first-raised order.
+    pub advisories: Vec<Advisory>,
 }
 
 /// Per-op timeouts and the telemetry window for one session. Serialized with
@@ -543,7 +614,10 @@ mod tests {
             env_id: "env-id".to_string(),
             env_component_id: "env".to_string(),
             model_component_id: "model".to_string(),
-            workflow_edition: rlmesh_proto::CURRENT_WORKFLOW_EDITION.to_string(),
+            workflow_edition: rlmesh_proto::parse_retained_edition(
+                rlmesh_proto::CURRENT_WORKFLOW_EDITION,
+            )
+            .expect("this build drives its own edition"),
             env_contract: EnvContract {
                 spec: Some(EnvSpec {
                     observation_space: Some(SpaceSpec::default()),
@@ -563,6 +637,8 @@ mod tests {
             close_env_on_end: true,
             subset_step: false,
             limits: RuntimeLimits::default(),
+            env_ceiling: None,
+            model_ceiling: None,
         }
     }
 
@@ -604,18 +680,52 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_an_edition_the_runtime_cannot_drive() {
-        let mut spec = valid_spec();
-        spec.workflow_edition = "2099.01".to_string();
-        let error = spec.validate().unwrap_err();
+    fn a_ceiling_edition_is_the_highest_one_both_sides_implement() {
+        let names = |names: &[&str]| {
+            names
+                .iter()
+                .map(|name| name.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            super::PeerCeiling::highest_shared_edition(&names(&[
+                "2099.01",
+                rlmesh_proto::CURRENT_WORKFLOW_EDITION,
+            ])),
+            Some(rlmesh_proto::Edition::current())
+        );
+        assert_eq!(
+            super::PeerCeiling::highest_shared_edition(&names(&["2099.01"])),
+            None
+        );
+    }
+
+    /// The spec carries a typed edition, so a made-up name is refused one step
+    /// earlier — at the shared parse boundary the env client and every other
+    /// string-carrying caller go through — naming the arrived string and the
+    /// retained list. That refusal is what an operator actually sees.
+    #[test]
+    fn an_edition_the_runtime_cannot_drive_is_refused_by_name() {
+        let error = rlmesh_proto::parse_retained_edition("2099.01")
+            .expect_err("an unimplemented edition is refused");
         assert!(
-            error.contains("2099.01") && error.contains("cannot drive"),
-            "expected an edition-refusal error, got: {error}"
+            error.contains("2099.01")
+                && error.contains("cannot drive")
+                && error.contains(rlmesh_proto::CURRENT_WORKFLOW_EDITION),
+            "expected an edition-refusal error naming the retained list, got: {error}"
         );
 
-        // The edition the build implements is accepted.
-        spec.workflow_edition = rlmesh_proto::CURRENT_WORKFLOW_EDITION.to_string();
-        assert!(spec.validate().is_ok());
+        // The edition the build implements is accepted, by base name and by this
+        // build's cohort spelling of it, and validates.
+        let mut spec = valid_spec();
+        for name in [
+            rlmesh_proto::CURRENT_WORKFLOW_EDITION,
+            rlmesh_proto::WORKFLOW_EDITION_BASE,
+        ] {
+            spec.workflow_edition = rlmesh_proto::parse_retained_edition(name)
+                .unwrap_or_else(|error| panic!("{name} must parse: {error}"));
+            assert!(spec.validate().is_ok());
+        }
     }
 
     #[test]
@@ -786,10 +896,12 @@ mod tests {
     fn reset_options_for_sends_an_integer_per_lane_and_a_list_for_many() {
         let contract = contract_declaring(list(vec![text(TRIAL_INDEX_OPTION)]));
 
-        let single = reset_options_for(&contract, &[7]).expect("single-lane options");
+        let single =
+            reset_options_for(&contract, TRIAL_INDEX_OPTION, &[7]).expect("single-lane options");
         assert_eq!(trial_option(&single), Some(&MetaKind::Integer(7)));
 
-        let many = reset_options_for(&contract, &[7, 8, 9]).expect("multi-lane options");
+        let many = reset_options_for(&contract, TRIAL_INDEX_OPTION, &[7, 8, 9])
+            .expect("multi-lane options");
         assert_eq!(
             trial_option(&many),
             Some(&MetaKind::List(MetaList {
@@ -807,11 +919,18 @@ mod tests {
     fn reset_options_for_withholds_without_trials_or_a_declaration() {
         let contract = contract_declaring(list(vec![text(TRIAL_INDEX_OPTION)]));
 
-        assert_eq!(reset_options_for(&contract, &[]), None);
+        assert_eq!(reset_options_for(&contract, TRIAL_INDEX_OPTION, &[]), None);
         assert_eq!(
-            reset_options_for(&contract_declaring(list(vec![text("other")])), &[7]),
+            reset_options_for(
+                &contract_declaring(list(vec![text("other")])),
+                TRIAL_INDEX_OPTION,
+                &[7]
+            ),
             None,
         );
-        assert_eq!(reset_options_for(&EnvContract::default(), &[7]), None);
+        assert_eq!(
+            reset_options_for(&EnvContract::default(), TRIAL_INDEX_OPTION, &[7]),
+            None
+        );
     }
 }

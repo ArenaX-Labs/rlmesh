@@ -125,7 +125,9 @@ pub struct ActionReceivedEvent {
     pub step: i64,
     pub env_index: i32,
     /// Shared so the per-step, per-hook event fan-out clones an `Arc` pointer
-    /// rather than deep-copying the action space spec on every step.
+    /// rather than deep-copying the action space spec on every step. Types
+    /// `action`: when the relay policy converted it into a new layout, this is
+    /// the converted space and `raw_action` keeps the contract's.
     pub action_space: Arc<SpaceSpec>,
     /// Opaque per-leaf wire bytes; the relay is content-blind (§13).
     ///
@@ -163,7 +165,9 @@ pub struct ObservationEmittedEvent {
     pub is_reset: bool,
     pub num_envs: u32,
     /// Shared so the per-step, per-hook event fan-out clones an `Arc` pointer
-    /// rather than deep-copying the observation space spec on every step.
+    /// rather than deep-copying the observation space spec on every step. Types
+    /// `observation`: when the relay policy converted it into a new layout, this
+    /// is the converted space and `raw_observation` keeps the contract's.
     pub observation_space: Arc<SpaceSpec>,
     /// Opaque per-leaf wire bytes; the relay is content-blind (§13).
     ///
@@ -177,6 +181,16 @@ pub struct ObservationEmittedEvent {
     /// The env's reset infos when `is_reset`; step infos ride on
     /// `StepCompletedEvent` instead.
     pub infos: Option<MetaMap>,
+}
+
+/// A relay policy converted a payload for a peer that could not decode it as
+/// sent. Delivered once per distinct advisory, which the report also carries.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RelayAdvisoryEvent {
+    pub session_id: String,
+    pub route: RuntimeEnvContext,
+    pub leg: super::Leg,
+    pub advisory: rlmesh_spaces::Advisory,
 }
 
 /// A live telemetry snapshot tagged with the route/session it belongs to.

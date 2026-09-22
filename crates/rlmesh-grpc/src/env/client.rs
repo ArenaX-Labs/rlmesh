@@ -16,11 +16,13 @@ use rlmesh_proto::core::v1::{
     EnvContract, ShutdownRequest as CoreShutdownRequest, ShutdownResponse as CoreShutdownResponse,
 };
 use rlmesh_proto::env::v1::{
-    CloseEnvsResponse, HandshakeRequest, HandshakeResponse, JoinRequest, JoinResponse,
-    RenderRequest, RenderResponse, ResetRequest, ResetResponse, ShutdownRequest, StepRequest,
-    StepResponse, env_service_client::EnvServiceClient, join_request, join_response,
+    CloseEnvsResponse, ConfigureEnvRequest, HandshakeRequest, HandshakeResponse, JoinRequest,
+    JoinResponse, RenderRequest, RenderResponse, ResetRequest, ResetResponse, ShutdownRequest,
+    StepRequest, StepResponse, env_service_client::EnvServiceClient, join_request, join_response,
 };
-use rlmesh_proto::{EndpointPhases, negotiate_workflow_edition, supported_workflow_editions};
+use rlmesh_proto::{
+    Edition, EndpointPhases, SessionOffer, negotiate_workflow_edition, parse_retained_edition,
+};
 
 use crate::error::{ClientError, Error as GrpcError, ProtocolError, TransportError};
 use crate::helpers::address::parse_env_connect_target;
@@ -41,23 +43,35 @@ pub struct EnvHandshake {
     pub num_envs: usize,
     /// The workflow edition this (co-located) client selected with the env — the
     /// highest edition both support.
-    pub workflow_edition: String,
-    /// The editions the env advertised, for the three-way session floor.
+    pub workflow_edition: Edition,
+    /// The exact wire spelling that selection was made under (e.g.
+    /// `2026.06-0.1.0-rc.12`), kept alongside the typed value because the two are
+    /// not interchangeable on the wire: [`workflow_edition`](Self::workflow_edition)
+    /// drives logic and displays its bare base, while an env accepts only the
+    /// cohort spelling it offered. This is what goes back on
+    /// `ConfigureEnvRequest.selected_workflow_edition`, and what telemetry names.
+    pub selected_workflow_edition: String,
+    /// CAN: the editions the env advertised, for the three-way session floor.
     pub supported_workflow_editions: Vec<String>,
+    /// WANT: the edition the env declared, or `None` when it declared none (an
+    /// empty wire value — every peer built before the field existed). Negotiation
+    /// reads an undeclared WANT as `max(supported_workflow_editions)`.
+    pub preferred_workflow_edition: Option<String>,
     /// Optional features the server advertised (advisory; query with
     /// [`rlmesh_proto::has_capability`]).
     pub capabilities: std::collections::HashMap<String, String>,
 }
 
 impl EnvHandshake {
-    /// The env's bind-time offer: the workflow editions it supports. Generation
-    /// is gated by equality at the handshake (carried by `base.compatible`), so it
-    /// is not part of the offer. Capabilities are read pairwise from
-    /// [`capabilities`](Self::capabilities), not negotiated. Feeds
+    /// The env's bind-time offer: the editions it CAN drive plus the one it
+    /// declared (WANT). Generation is gated by equality at the handshake (carried
+    /// by `base.compatible`), so it is not part of the offer. Capabilities are read
+    /// pairwise from [`capabilities`](Self::capabilities), not negotiated. Feeds
     /// [`rlmesh_proto::negotiate_session_floor`] as the env's offer.
-    pub fn session_offer(&self) -> rlmesh_proto::SessionOffer {
-        rlmesh_proto::SessionOffer {
+    pub fn session_offer(&self) -> SessionOffer {
+        SessionOffer {
             editions: self.supported_workflow_editions.clone(),
+            preferred: self.preferred_workflow_edition.clone(),
         }
     }
 }
@@ -85,6 +99,11 @@ pub struct EnvClient {
     last_endpoint_total_ns: Option<u64>,
     /// The peer's split of that duration, cleared by the read.
     last_phases: EndpointPhases,
+    /// WANT: the workflow edition the RUNTIME declares on this leg, set by
+    /// [`declare_workflow_edition`](Self::declare_workflow_edition) before
+    /// [`handshake`](Self::handshake). `None` declares this build's current
+    /// edition, which is its `max(can)` and therefore caps no env.
+    declared_workflow_edition: Option<String>,
 }
 
 /// The per-session state behind every clone of an [`EnvClient`].
@@ -98,6 +117,10 @@ struct Shared {
     open_lock: tokio::sync::Mutex<()>,
     /// Counter for generating unique request IDs across all clones.
     request_counter: AtomicU64,
+    /// The exact edition spelling the Join stream opens with (its first message,
+    /// `ConfigureEnvRequest`): the env-leg selection from the handshake, or the
+    /// session floor a model leg lowered it to. Empty until the handshake.
+    pinned_workflow_edition: std::sync::Mutex<String>,
 }
 
 /// The Join bidi stream: where requests go, and who is waiting for a reply.
@@ -114,7 +137,22 @@ impl Shared {
             stream: std::sync::Mutex::new(stream),
             open_lock: tokio::sync::Mutex::new(()),
             request_counter: AtomicU64::new(0),
+            pinned_workflow_edition: std::sync::Mutex::new(String::new()),
         }
+    }
+
+    fn pinned_workflow_edition(&self) -> String {
+        self.pinned_workflow_edition
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    fn set_pinned_workflow_edition(&self, edition: String) {
+        *self
+            .pinned_workflow_edition
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = edition;
     }
 
     fn state(&self) -> ClientState {
@@ -205,6 +243,7 @@ impl EnvClient {
             shared: Arc::new(Shared::new(ClientState::Connected, None)),
             last_endpoint_total_ns: None,
             last_phases: EndpointPhases::default(),
+            declared_workflow_edition: None,
         })
     }
 
@@ -240,6 +279,18 @@ impl EnvClient {
     /// The peer's split of that duration; all-zero for a peer that reports none.
     pub fn take_last_phases(&mut self) -> EndpointPhases {
         std::mem::take(&mut self.last_phases)
+    }
+
+    /// Declare the workflow edition the runtime brings to this leg (its WANT),
+    /// or `None` to declare nothing. Must be set before
+    /// [`handshake`](Self::handshake): it is what the request carries and what
+    /// the env-leg negotiation caps the session at. Any cohort spelling of a
+    /// retained base is accepted; an edition this build cannot drive is refused
+    /// by the negotiation, naming both sets.
+    pub fn declare_workflow_edition(&mut self, declared: Option<String>) {
+        self.declared_workflow_edition = declared
+            .map(|edition| edition.trim().to_string())
+            .filter(|edition| !edition.is_empty());
     }
 
     /// Perform the handshake RPC. The Join bidi stream (the env's exclusive
@@ -290,21 +341,33 @@ impl EnvClient {
         // env (`env ∩ self` — the co-located floor for the in-process/run_local
         // path). No mutual edition fails here with an all-tiers diagnostic, rather
         // than yielding an empty string that trips the runtime spec validate later.
-        let workflow_edition = negotiate_workflow_edition(&base.supported_workflow_editions)
-            .ok_or_else(|| {
+        let env_offer = SessionOffer {
+            editions: base.supported_workflow_editions,
+            preferred: Some(base.preferred_workflow_edition.trim().to_string())
+                .filter(|want| !want.is_empty()),
+        };
+        let runtime_offer = SessionOffer::this_build(self.declared_workflow_edition.as_deref());
+        let selected =
+            negotiate_workflow_edition(&env_offer, &runtime_offer).map_err(|refusal| {
                 ProtocolError::HandshakeFailed(format!(
-                    "no mutual workflow edition with the env: env offered [{}], this runtime \
-                     supports [{}]",
-                    base.supported_workflow_editions.join(", "),
-                    supported_workflow_editions().join(", ")
+                    "no mutual workflow edition with the env: {refusal}"
                 ))
-            })?
-            .to_string();
+            })?;
+        // The wire carries a name; the session carries the typed edition. This is
+        // the runtime's one parse of an env-leg edition, and it goes through the
+        // same retained-list boundary every other caller uses — `selected` came
+        // from this build's own retained list, so a failure here means that list
+        // names an edition this build cannot actually drive.
+        let workflow_edition =
+            parse_retained_edition(&selected).map_err(ProtocolError::HandshakeFailed)?;
+        self.shared.set_pinned_workflow_edition(selected.clone());
         let handshake = EnvHandshake {
             env_contract,
             num_envs,
             workflow_edition,
-            supported_workflow_editions: base.supported_workflow_editions,
+            selected_workflow_edition: selected,
+            supported_workflow_editions: env_offer.editions,
+            preferred_workflow_edition: env_offer.preferred,
             capabilities: base.capabilities,
         };
         self.shared.set_state(ClientState::Ready);
@@ -312,9 +375,27 @@ impl EnvClient {
         Ok(handshake)
     }
 
+    /// Pin the env to the session edition: the exact spelling the Join stream
+    /// opens with, sent as its first message and acked before the first reset.
+    ///
+    /// The handshake sets it to the env-leg selection
+    /// ([`EnvHandshake::selected_workflow_edition`]); a session with a model leg
+    /// calls this with the three-way floor ([`crate::env_floor`]) before its
+    /// first operation, so both legs are pinned to the same value. A pin the env
+    /// cannot run is refused when the stream opens, naming the pin and the env's
+    /// editions, and no reset is sent.
+    pub fn pin_workflow_edition(&mut self, selected_workflow_edition: String) {
+        self.shared
+            .set_pinned_workflow_edition(selected_workflow_edition.trim().to_string());
+    }
+
     async fn send_handshake(&mut self) -> Result<HandshakeResponse, GrpcError> {
         let req = HandshakeRequest {
-            base: Some(rlmesh_proto::core_handshake_request("rlmesh-env", &[])),
+            base: Some(rlmesh_proto::core_handshake_request(
+                "rlmesh-env",
+                &[],
+                self.declared_workflow_edition.as_deref(),
+            )),
         };
 
         Ok(self
@@ -518,11 +599,14 @@ impl EnvClient {
     /// session slot (the server admits one Join at a time), so it is acquired
     /// lazily on the first streaming operation rather than at handshake;
     /// an idle connected client must not lock other clients out of the env.
+    /// Its first message pins the env to the session edition; the stream is
+    /// not handed out until the env acks that, and a refusal releases it.
     async fn ensure_join_stream(&mut self) -> Result<(), GrpcError> {
         if self.shared.stream().is_some() {
             return Ok(());
         }
-        let _opening = self.shared.open_lock.lock().await;
+        let shared = Arc::clone(&self.shared);
+        let _opening = shared.open_lock.lock().await;
         if self.shared.stream().is_some() {
             return Ok(());
         }
@@ -538,7 +622,40 @@ impl EnvClient {
         let pending = new_pending();
         spawn_response_pump(response.into_inner(), pending.clone());
         self.shared.set_stream(Some(JoinStream { tx, pending }));
+        if let Err(error) = self.configure_session_edition().await {
+            self.shared.set_stream(None);
+            return Err(error);
+        }
         Ok(())
+    }
+
+    async fn configure_session_edition(&mut self) -> Result<(), GrpcError> {
+        let selected_workflow_edition = self.shared.pinned_workflow_edition();
+        if selected_workflow_edition.is_empty() {
+            return Ok(());
+        }
+        let env_req = JoinRequest {
+            kind: Some(join_request::Kind::Configure(ConfigureEnvRequest {
+                selected_workflow_edition: selected_workflow_edition.clone(),
+            })),
+            request_id: self.next_request_id(),
+        };
+        let res = self.send_on_stream(env_req).await?;
+        match res.kind {
+            Some(join_response::Kind::Configure(_)) => {
+                tracing::debug!(
+                    selected_workflow_edition = %selected_workflow_edition,
+                    "env pinned to session edition"
+                );
+                Ok(())
+            }
+            Some(join_response::Kind::Error(e)) => Err(proto_error_to_env_error(e).into()),
+            _ => Err(ProtocolError::UnexpectedMessage {
+                expected: "ConfigureEnvResponse".to_string(),
+                actual: format!("{:?}", res.kind),
+            }
+            .into()),
+        }
     }
 
     /// Wrap a message in a `tonic::Request`, attaching the `authorization`
@@ -692,7 +809,7 @@ mod tests {
         ShutdownResponse as CoreShutdownResponse,
     };
     use rlmesh_proto::env::v1::env_service_server::{EnvService, EnvServiceServer};
-    use rlmesh_proto::env::v1::{ShutdownResponse, StepResponse};
+    use rlmesh_proto::env::v1::{ConfigureEnvResponse, ShutdownResponse, StepResponse};
     use rlmesh_proto::spaces::v1::SpaceSpec;
     use rlmesh_proto::supported_workflow_editions;
     use tokio::sync::oneshot;
@@ -703,8 +820,10 @@ mod tests {
     use rlmesh_spaces::{EnvContract as SpaceEnvContract, SpaceSpec as NativeSpaceSpec};
 
     /// A no-op single-lane env used by the integration-style server tests below.
+    /// It records the edition pins and resets it receives, in order.
     struct PlainEnv {
         contract: SpaceEnvContract,
+        events: Arc<std::sync::Mutex<Vec<String>>>,
     }
 
     impl PlainEnv {
@@ -720,7 +839,12 @@ mod tests {
                     render_mode: String::new(),
                     num_envs: 1,
                 },
+                events: Arc::default(),
             }
+        }
+
+        fn record(&self, event: String) {
+            self.events.lock().unwrap().push(event);
         }
     }
 
@@ -738,10 +862,14 @@ mod tests {
         fn env_contract(&self) -> &SpaceEnvContract {
             &self.contract
         }
+        fn pin_workflow_edition(&self, edition: Edition) {
+            self.record(format!("pin:{edition}"));
+        }
         async fn reset(
             &self,
             _req: ResetRequest,
         ) -> std::result::Result<(ResetResponse, EndpointPhases), crate::error::EnvError> {
+            self.record("reset".to_string());
             Ok((ResetResponse::default(), EndpointPhases::default()))
         }
         async fn step(
@@ -813,6 +941,7 @@ mod tests {
             )),
             last_endpoint_total_ns: None,
             last_phases: EndpointPhases::default(),
+            declared_workflow_edition: None,
         };
         (client, request_rx, pending)
     }
@@ -944,6 +1073,7 @@ mod tests {
             shared: Arc::new(Shared::new(ClientState::Ready, None)),
             last_endpoint_total_ns: None,
             last_phases: EndpointPhases::default(),
+            declared_workflow_edition: None,
         };
 
         let response = client.close().await.unwrap();
@@ -1023,11 +1153,27 @@ mod tests {
         let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server).await;
     }
 
-    #[derive(Default)]
-    struct RejectJoinService;
+    /// A fake env service: the handshake offers this build's editions; Join
+    /// either fails to open (`rejecting`) or acks every request in order and
+    /// records what it saw (`recording`).
+    struct FakeEnvService {
+        recorded: Option<Arc<std::sync::Mutex<Vec<JoinRequest>>>>,
+    }
+
+    impl FakeEnvService {
+        fn rejecting() -> Self {
+            Self { recorded: None }
+        }
+
+        fn recording(recorded: Arc<std::sync::Mutex<Vec<JoinRequest>>>) -> Self {
+            Self {
+                recorded: Some(recorded),
+            }
+        }
+    }
 
     #[async_trait::async_trait]
-    impl EnvService for RejectJoinService {
+    impl EnvService for FakeEnvService {
         async fn handshake(
             &self,
             _request: Request<HandshakeRequest>,
@@ -1054,9 +1200,39 @@ mod tests {
 
         async fn join(
             &self,
-            _request: Request<tonic::Streaming<JoinRequest>>,
+            request: Request<tonic::Streaming<JoinRequest>>,
         ) -> std::result::Result<Response<Self::JoinStream>, Status> {
-            Err(Status::unavailable("join unavailable"))
+            let Some(recorded) = self.recorded.clone() else {
+                return Err(Status::unavailable("join unavailable"));
+            };
+            let mut incoming = request.into_inner();
+            let (tx, rx) = mpsc::channel(8);
+            tokio::spawn(async move {
+                while let Ok(Some(req)) = incoming.message().await {
+                    let kind = match &req.kind {
+                        Some(join_request::Kind::Configure(_)) => {
+                            join_response::Kind::Configure(ConfigureEnvResponse::default())
+                        }
+                        Some(join_request::Kind::Reset(_)) => {
+                            join_response::Kind::Reset(ResetResponse::default())
+                        }
+                        Some(join_request::Kind::Step(_)) => {
+                            join_response::Kind::Step(StepResponse::default())
+                        }
+                        _ => join_response::Kind::Close(CloseEnvsResponse::default()),
+                    };
+                    let response = JoinResponse {
+                        request_id: req.request_id.clone(),
+                        kind: Some(kind),
+                        ..Default::default()
+                    };
+                    recorded.lock().unwrap().push(req);
+                    if tx.send(Ok(response)).await.is_err() {
+                        break;
+                    }
+                }
+            });
+            Ok(Response::new(ReceiverStream::new(rx)))
         }
 
         async fn shutdown(
@@ -1121,8 +1297,85 @@ mod tests {
         let mut authed = EnvClient::connect_with_token(&address, "s3cret")
             .await
             .unwrap();
-        authed.handshake().await.expect("authorized handshake");
+        let handshake = authed.handshake().await.expect("authorized handshake");
         assert_eq!(authed.state(), ClientState::Ready);
+        // The env's WANT rides back next to its CAN list and reaches the offer
+        // the three-way floor is computed from.
+        assert_eq!(
+            handshake.preferred_workflow_edition.as_deref(),
+            Some(rlmesh_proto::CURRENT_WORKFLOW_EDITION)
+        );
+        assert_eq!(
+            handshake.session_offer(),
+            rlmesh_proto::SessionOffer::this_build(None)
+        );
+
+        let _ = shutdown_tx.send(());
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server).await;
+    }
+
+    /// A declared pin that admits no mutual edition is refused at the
+    /// handshake, before any Join stream opens, naming every tier's WANT and
+    /// CAN. With one retained edition no value passes the user-facing
+    /// construction guards yet refuses here, so the pin is set on the bare
+    /// `ServeOptions` struct, which only trims.
+    #[tokio::test]
+    async fn a_declared_pin_with_no_mutual_edition_is_refused_before_join() {
+        use crate::env::server::GrpcEnvServer;
+        use crate::lifecycle::{ServeOptions, ShutdownTrigger};
+        use rlmesh_proto::env::v1::env_service_server::EnvServiceServer;
+
+        let stale_base = "2025.01";
+        let options = ServeOptions {
+            workflow_edition: Some(format!(" {stale_base} ")),
+            ..Default::default()
+        };
+        let service = EnvServiceServer::new(GrpcEnvServer::new_with_options(
+            PlainEnv::new("pinned-env"),
+            ShutdownTrigger::new(),
+            options,
+            None,
+        ));
+
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(service)
+                .serve_with_shutdown(addr, async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+
+        let address = format!("tcp://{addr}");
+        let connect_options =
+            crate::connect::ConnectOptions::with_deadline(std::time::Duration::from_secs(5))
+                .backoff(std::time::Duration::from_millis(10));
+        let mut client = EnvClient::connect_with_retry(&address, "", &connect_options)
+            .await
+            .expect("test server did not start");
+        let err = client.handshake().await.unwrap_err();
+        let message = err.to_string();
+        let can = format!("{:?}", supported_workflow_editions());
+        for expected in [
+            "no mutual workflow edition with the env",
+            &format!("env wants {stale_base:?} and can {can}"),
+            &format!(
+                "runtime wants {:?} and can {can}",
+                rlmesh_proto::CURRENT_WORKFLOW_EDITION
+            ),
+        ] {
+            assert!(
+                message.contains(expected),
+                "missing {expected:?} in: {message}"
+            );
+        }
+        assert_ne!(client.state(), ClientState::Ready);
+        assert!(client.shared.stream().is_none(), "no Join stream may open");
 
         let _ = shutdown_tx.send(());
         let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server).await;
@@ -1137,7 +1390,7 @@ mod tests {
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let server = tokio::spawn(async move {
             tonic::transport::Server::builder()
-                .add_service(EnvServiceServer::new(RejectJoinService))
+                .add_service(EnvServiceServer::new(FakeEnvService::rejecting()))
                 .serve_with_shutdown(addr, async {
                     let _ = shutdown_rx.await;
                 })
@@ -1174,6 +1427,140 @@ mod tests {
             .unwrap()
             .unwrap()
             .unwrap();
+    }
+
+    /// Serve `service` on a free port until the returned sender drops.
+    fn serve(service: impl EnvService) -> (String, oneshot::Sender<()>) {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(EnvServiceServer::new(service))
+                .serve_with_shutdown(addr, async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+        (format!("tcp://{addr}"), shutdown_tx)
+    }
+
+    async fn ready_client(address: &str) -> (EnvClient, EnvHandshake) {
+        let connect_options =
+            crate::connect::ConnectOptions::with_deadline(std::time::Duration::from_secs(5))
+                .backoff(std::time::Duration::from_millis(10));
+        let mut client = EnvClient::connect_with_retry(address, "", &connect_options)
+            .await
+            .expect("test server did not start");
+        let handshake = client.handshake().await.expect("handshake");
+        (client, handshake)
+    }
+
+    fn recorded_kinds(recorded: &std::sync::Mutex<Vec<JoinRequest>>) -> Vec<join_request::Kind> {
+        recorded
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|req| req.kind.clone())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn join_opens_with_the_env_leg_pin_then_reset() {
+        let recorded = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (address, _server) = serve(FakeEnvService::recording(Arc::clone(&recorded)));
+        let (mut client, handshake) = ready_client(&address).await;
+
+        client
+            .reset(ResetRequest::default())
+            .await
+            .expect("reset after the pin ack");
+        assert_eq!(
+            recorded_kinds(&recorded),
+            vec![
+                join_request::Kind::Configure(ConfigureEnvRequest {
+                    selected_workflow_edition: handshake.selected_workflow_edition.clone(),
+                }),
+                join_request::Kind::Reset(ResetRequest::default()),
+            ]
+        );
+
+        // The pin rides the stream open, not every operation.
+        client.step(StepRequest::default()).await.expect("step");
+        assert_eq!(recorded_kinds(&recorded).len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_session_floor_pin_replaces_the_env_leg_pin_verbatim() {
+        // A model leg lowers the session to the three-way floor; the env is
+        // pinned to that exact spelling (the bare base here, which is not the
+        // cohort spelling the handshake selected on a prerelease build).
+        let recorded = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (address, _server) = serve(FakeEnvService::recording(Arc::clone(&recorded)));
+        let (mut client, handshake) = ready_client(&address).await;
+        let floor = handshake.workflow_edition.base();
+
+        client.pin_workflow_edition(format!(" {floor} "));
+        client.reset(ResetRequest::default()).await.expect("reset");
+        assert_eq!(
+            recorded_kinds(&recorded).first(),
+            Some(&join_request::Kind::Configure(ConfigureEnvRequest {
+                selected_workflow_edition: floor.to_string(),
+            }))
+        );
+    }
+
+    #[tokio::test]
+    async fn the_served_env_is_pinned_before_its_first_reset() {
+        use crate::env::server::GrpcEnvServer;
+
+        let env = PlainEnv::new("pinned-env");
+        let events = Arc::clone(&env.events);
+        let (address, _server) = serve(GrpcEnvServer::new(env));
+        let (mut client, handshake) = ready_client(&address).await;
+
+        client.reset(ResetRequest::default()).await.expect("reset");
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec![
+                format!("pin:{}", handshake.workflow_edition),
+                "reset".to_string()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_pin_sends_no_reset_and_names_both_sides() {
+        use crate::env::server::GrpcEnvServer;
+
+        let env = PlainEnv::new("pinned-env");
+        let events = Arc::clone(&env.events);
+        let (address, _server) = serve(GrpcEnvServer::new(env));
+        let (mut client, _) = ready_client(&address).await;
+
+        client.pin_workflow_edition("2099.01".to_string());
+        let error = client
+            .reset(ResetRequest::default())
+            .await
+            .expect_err("the env cannot run 2099.01");
+        let message = error.to_string();
+        for expected in ["2099.01", &format!("{:?}", supported_workflow_editions())] {
+            assert!(
+                message.contains(expected),
+                "missing {expected:?} in: {message}"
+            );
+        }
+        let seen = events.lock().unwrap().clone();
+        assert!(
+            seen.is_empty(),
+            "a refused pin must reach the env as neither pin nor reset: {seen:?}"
+        );
+        assert!(
+            client.shared.stream().is_none(),
+            "the refused Join is released"
+        );
+        assert_eq!(client.state(), ClientState::Ready);
     }
 
     #[test]

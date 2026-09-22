@@ -1,6 +1,7 @@
 """RLMesh Python SDK."""
 
 import sys as _sys
+import warnings as _warnings
 
 # The wire value encoding is little-endian and numpy/torch `frombuffer` are
 # native-endian (torch/dlpack admit no byte-order override), so a big-endian host
@@ -27,6 +28,7 @@ from . import spaces as spaces
 from . import specs as specs
 from . import types as types
 from ._authoring import EnvFactory, trial_index
+from ._editions import current_workflow_edition
 from ._metadata import sanitize_metadata
 from ._models import (
     NO_ADAPTER,
@@ -56,11 +58,13 @@ from ._rlmesh import (
     DESCRIBE_METADATA_KEY,
     DESCRIBE_SCHEMA_VERSION,
     ENV_RESET_OPTIONS_KEY,
+    BuildInfo,
     EnvironmentException,
     ProtocolException,
     RLMeshException,
     ServeOptions,
     Tensor,
+    build_info,
     predict_seed,
 )
 from ._sandbox import SandboxBuild, SandboxRuntime
@@ -74,7 +78,11 @@ try:
 except _PackageNotFoundError:
     __version__ = str(getattr(_rlmesh, "__version__", "0+unknown"))
 
-__build__ = str(getattr(_rlmesh, "__build__", "unknown"))
+# Deprecated alias for build_info().workflow_edition, removed in 0.2. Bound
+# lazily below so the read, not the import, warns; declared here so type
+# checkers still see it.
+if _TYPE_CHECKING:
+    __build__ = build_info().workflow_edition
 
 __doc__ = _rlmesh.__doc__
 
@@ -93,6 +101,14 @@ def __getattr__(name: str) -> object:
         from . import _describe
 
         return getattr(_describe, name)
+    if name == "__build__":
+        _warnings.warn(
+            "rlmesh.__build__ is deprecated and will be removed in 0.2; "
+            "use rlmesh.build_info().workflow_edition",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return build_info().workflow_edition
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -108,6 +124,7 @@ __all__ = [
     "ENV_RESET_OPTIONS_KEY",
     "NO_ADAPTER",
     "RANDOM_SAMPLE",
+    "BuildInfo",
     "EnvFactory",
     "EnvServer",
     "EnvironmentException",
@@ -140,6 +157,8 @@ __all__ = [
     "__build__",
     "__version__",
     "adapters",
+    "build_info",
+    "current_workflow_edition",
     "describe",
     "describe_json",
     "params",

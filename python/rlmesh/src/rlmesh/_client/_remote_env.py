@@ -40,6 +40,7 @@ class RemoteEnvBase(RemoteClientBase[ValueT, ActionT]):
         address: str,
         connect_timeout_seconds: float | None,
         request_timeout_seconds: float | None,
+        workflow_edition: str | None,
     ) -> Any:
         from .._load_native import load_native
 
@@ -47,6 +48,7 @@ class RemoteEnvBase(RemoteClientBase[ValueT, ActionT]):
             address,
             connect_timeout_seconds=connect_timeout_seconds,
             request_timeout_seconds=request_timeout_seconds,
+            workflow_edition=workflow_edition,
         )
 
     def _post_handshake(self) -> None:

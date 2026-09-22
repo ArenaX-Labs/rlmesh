@@ -1,0 +1,20 @@
+{
+  "env_steps": 100000,
+  "report": {
+    "episodes": [
+      {
+        "cumulative_reward": 100000.0,
+        "env_index": 0,
+        "episode_index": 1,
+        "seed": null,
+        "step_count": 100000,
+        "success": null,
+        "terminated": false,
+        "trial_index": 0,
+        "truncated": true
+      }
+    ],
+    "total_episodes": 1,
+    "total_steps": 100000
+  }
+}

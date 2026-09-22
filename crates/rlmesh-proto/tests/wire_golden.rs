@@ -121,6 +121,16 @@ fn handshake_capabilities() -> std::collections::HashMap<String, String> {
     capabilities
 }
 
+fn core_handshake_request() -> core::v1::HandshakeRequest {
+    core::v1::HandshakeRequest {
+        protocol_generation: "rlmesh-wire-v1".to_string(),
+        peer_info: Some(peer_info()),
+        capabilities: handshake_capabilities(),
+        supported_workflow_editions: vec!["2026.06".to_string()],
+        preferred_workflow_edition: String::new(),
+    }
+}
+
 fn core_handshake_response() -> core::v1::HandshakeResponse {
     core::v1::HandshakeResponse {
         compatible: true,
@@ -128,6 +138,7 @@ fn core_handshake_response() -> core::v1::HandshakeResponse {
         capabilities: handshake_capabilities(),
         supported_workflow_editions: vec!["2026.06".to_string()],
         error_message: Some("ok".to_string()),
+        preferred_workflow_edition: String::new(),
     }
 }
 
@@ -372,17 +383,13 @@ fn env_join_request_bytes_are_frozen() {
     );
 }
 
+/// An undeclared WANT (`preferred_workflow_edition` empty) must leave the
+/// 0.1.0 bytes untouched — that is the proof the field is additive.
 #[test]
 fn core_handshake_request_bytes_are_frozen() {
-    let message = core::v1::HandshakeRequest {
-        protocol_generation: "rlmesh-wire-v1".to_string(),
-        peer_info: Some(peer_info()),
-        capabilities: handshake_capabilities(),
-        supported_workflow_editions: vec!["2026.06".to_string()],
-    };
     assert_frozen(
         "core.v1.HandshakeRequest",
-        message.encode_to_vec(),
+        core_handshake_request().encode_to_vec(),
         &[
             10, 14, 114, 108, 109, 101, 115, 104, 45, 119, 105, 114, 101, 45, 118, 49, 18, 78, 10,
             12, 114, 108, 109, 101, 115, 104, 45, 109, 111, 100, 101, 108, 18, 5, 48, 46, 49, 46,
@@ -396,6 +403,7 @@ fn core_handshake_request_bytes_are_frozen() {
     );
 }
 
+/// Same additive proof as the request: an empty WANT changes no bytes.
 #[test]
 fn core_handshake_response_bytes_are_frozen() {
     assert_frozen(
@@ -409,6 +417,50 @@ fn core_handshake_response_bytes_are_frozen() {
             42, 10, 34, 114, 108, 109, 101, 115, 104, 46, 109, 111, 100, 101, 108, 46, 99, 111,
             110, 99, 117, 114, 114, 101, 110, 116, 95, 112, 114, 101, 100, 105, 99, 116, 46, 118,
             49, 18, 4, 116, 114, 117, 101, 34, 7, 50, 48, 50, 54, 46, 48, 54, 42, 2, 111, 107,
+        ],
+    );
+}
+
+#[test]
+fn core_handshake_request_preferred_edition_bytes_are_frozen() {
+    let message = core::v1::HandshakeRequest {
+        preferred_workflow_edition: "2026.06".to_string(),
+        ..core_handshake_request()
+    };
+    assert_frozen(
+        "core.v1.HandshakeRequest (WANT declared)",
+        message.encode_to_vec(),
+        &[
+            10, 14, 114, 108, 109, 101, 115, 104, 45, 119, 105, 114, 101, 45, 118, 49, 18, 78, 10,
+            12, 114, 108, 109, 101, 115, 104, 45, 109, 111, 100, 101, 108, 18, 5, 48, 46, 49, 46,
+            48, 26, 4, 114, 117, 115, 116, 34, 6, 49, 46, 56, 56, 46, 48, 42, 5, 108, 105, 110,
+            117, 120, 50, 3, 54, 46, 49, 58, 6, 120, 56, 54, 95, 54, 52, 66, 13, 10, 5, 110, 117,
+            109, 112, 121, 18, 4, 49, 46, 50, 54, 122, 6, 10, 1, 107, 18, 1, 118, 26, 42, 10, 34,
+            114, 108, 109, 101, 115, 104, 46, 109, 111, 100, 101, 108, 46, 99, 111, 110, 99, 117,
+            114, 114, 101, 110, 116, 95, 112, 114, 101, 100, 105, 99, 116, 46, 118, 49, 18, 4, 116,
+            114, 117, 101, 34, 7, 50, 48, 50, 54, 46, 48, 54, 42, 7, 50, 48, 50, 54, 46, 48, 54,
+        ],
+    );
+}
+
+#[test]
+fn core_handshake_response_preferred_edition_bytes_are_frozen() {
+    let message = core::v1::HandshakeResponse {
+        preferred_workflow_edition: "2026.06".to_string(),
+        ..core_handshake_response()
+    };
+    assert_frozen(
+        "core.v1.HandshakeResponse (WANT declared)",
+        message.encode_to_vec(),
+        &[
+            8, 1, 18, 78, 10, 12, 114, 108, 109, 101, 115, 104, 45, 109, 111, 100, 101, 108, 18, 5,
+            48, 46, 49, 46, 48, 26, 4, 114, 117, 115, 116, 34, 6, 49, 46, 56, 56, 46, 48, 42, 5,
+            108, 105, 110, 117, 120, 50, 3, 54, 46, 49, 58, 6, 120, 56, 54, 95, 54, 52, 66, 13, 10,
+            5, 110, 117, 109, 112, 121, 18, 4, 49, 46, 50, 54, 122, 6, 10, 1, 107, 18, 1, 118, 26,
+            42, 10, 34, 114, 108, 109, 101, 115, 104, 46, 109, 111, 100, 101, 108, 46, 99, 111,
+            110, 99, 117, 114, 114, 101, 110, 116, 95, 112, 114, 101, 100, 105, 99, 116, 46, 118,
+            49, 18, 4, 116, 114, 117, 101, 34, 7, 50, 48, 50, 54, 46, 48, 54, 42, 2, 111, 107, 50,
+            7, 50, 48, 50, 54, 46, 48, 54,
         ],
     );
 }
@@ -653,5 +705,24 @@ fn spaces_space_spec_remaining_arms_are_frozen() {
             10, 2, 2, 3, 16, 9, 170, 1, 24, 10, 22, 10, 2, 2, 3, 16, 11, 82, 14, 18, 12, 10, 4, 0,
             0, 128, 191, 18, 4, 0, 0, 128, 63,
         ],
+    );
+}
+
+/// The explicit `MetaValue.null` arm (tag 8, LEN) is held for a future edition.
+/// 2026.06 still encodes a native null as an unset `kind`, i.e. zero bytes.
+#[test]
+fn spaces_meta_value_null_arms_are_frozen() {
+    assert_frozen(
+        "spaces.v1.MetaValue (null)",
+        spaces::v1::MetaValue {
+            kind: Some(spaces::v1::meta_value::Kind::Null(spaces::v1::MetaNull {})),
+        }
+        .encode_to_vec(),
+        &[66, 0],
+    );
+    assert_frozen(
+        "spaces.v1.MetaValue (unset kind)",
+        spaces::v1::MetaValue { kind: None }.encode_to_vec(),
+        &[],
     );
 }

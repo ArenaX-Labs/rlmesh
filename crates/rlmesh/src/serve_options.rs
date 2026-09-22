@@ -37,6 +37,27 @@ pub struct ServeOptions {
     /// only bounds how many decode/encode and handler critical sections overlap.
     /// Has no effect on the environment server.
     pub predict_concurrency: Option<usize>,
+    /// The workflow edition this served peer **declares** — the sticky
+    /// statement of what it was authored against, kept until its author bumps
+    /// it. It rides every handshake response as the peer's WANT, so a runtime
+    /// runs the session at this edition even when both builds could go higher.
+    ///
+    /// `None` (the default) declares nothing: the response carries this build's
+    /// current edition, which is its own `max(can)` and therefore caps no
+    /// runtime — byte-identical to a build without this field.
+    ///
+    /// Declare the bare `YYYY.MM` base this peer was authored against
+    /// (`rlmesh_proto::WORKFLOW_EDITION_BASE` on the build you author on): it
+    /// names the contract and selects whichever spelling of it both sides offer,
+    /// a dev build's `YYYY.MM-dev.<git>` included. A cohort spelling pins to that
+    /// exact moving build instead. Either must admit an edition this build offers
+    /// ([`rlmesh_proto::parse_declared_edition`]); the surfaces that take this
+    /// from a user — the Python `ServeOptions`, `--workflow-edition`, the C API's
+    /// `RlmeshServeOptions` — refuse any other value where it is typed, while a
+    /// value set directly on this bare `pub` struct is only trimmed here and is
+    /// refused at negotiation instead, by the refusal naming every tier's WANT
+    /// and CAN.
+    pub workflow_edition: Option<String>,
 }
 
 impl From<ServeOptions> for rlmesh_grpc::ServeOptions {
@@ -48,6 +69,10 @@ impl From<ServeOptions> for rlmesh_grpc::ServeOptions {
             close_timeout: value.close_timeout,
             token: value.token.filter(|token| !token.is_empty()),
             predict_concurrency: value.predict_concurrency,
+            workflow_edition: value
+                .workflow_edition
+                .map(|edition| edition.trim().to_string())
+                .filter(|edition| !edition.is_empty()),
         }
     }
 }
@@ -67,6 +92,7 @@ mod tests {
                 close_timeout: None,
                 token: None,
                 predict_concurrency: None,
+                workflow_edition: None,
             }
         );
     }
@@ -80,6 +106,7 @@ mod tests {
             close_timeout: Some(Duration::from_secs(3)),
             token: Some("s3cret".to_string()),
             predict_concurrency: Some(8),
+            workflow_edition: Some(rlmesh_proto::CURRENT_WORKFLOW_EDITION.to_string()),
         };
         let grpc_options = rlmesh_grpc::ServeOptions::from(options.clone());
         assert_eq!(
@@ -93,6 +120,35 @@ mod tests {
         assert_eq!(
             grpc_options.predict_concurrency,
             options.predict_concurrency
+        );
+        assert_eq!(
+            grpc_options.workflow_edition.as_deref(),
+            Some(rlmesh_proto::CURRENT_WORKFLOW_EDITION)
+        );
+    }
+
+    #[test]
+    fn blank_workflow_edition_declares_nothing_after_conversion() {
+        let options = ServeOptions {
+            workflow_edition: Some("   ".to_string()),
+            ..ServeOptions::default()
+        };
+        let grpc_options = rlmesh_grpc::ServeOptions::from(options);
+        assert_eq!(grpc_options.workflow_edition, None);
+    }
+
+    /// The user-facing surfaces normalize before they get here; this bare field
+    /// does not, so the conversion is where a padded value is trimmed.
+    #[test]
+    fn padded_workflow_edition_is_trimmed_after_conversion() {
+        let options = ServeOptions {
+            workflow_edition: Some(format!("  {}  ", rlmesh_proto::CURRENT_WORKFLOW_EDITION)),
+            ..ServeOptions::default()
+        };
+        let grpc_options = rlmesh_grpc::ServeOptions::from(options);
+        assert_eq!(
+            grpc_options.workflow_edition.as_deref(),
+            Some(rlmesh_proto::CURRENT_WORKFLOW_EDITION)
         );
     }
 

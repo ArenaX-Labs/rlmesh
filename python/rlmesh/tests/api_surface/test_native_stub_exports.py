@@ -5,6 +5,7 @@ import importlib
 from pathlib import Path
 
 EXPECTED_NATIVE_EXPORTS = [
+    "BuildInfo",
     "EnvContract",
     "EnvironmentException",
     "ProtocolException",
@@ -19,6 +20,7 @@ EXPECTED_NATIVE_EXPORTS = [
     "SpaceSpec",
     "Tensor",
     "box_space_spec",
+    "build_info",
     "dict_space_spec",
     "discrete_space_spec",
     "multi_binary_space_spec",

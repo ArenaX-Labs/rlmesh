@@ -35,9 +35,6 @@ use crate::spaces::{
 use crate::telemetry::ProfileCollector;
 use crate::types::space_value_size as native_value_size;
 
-/// Reserved info-map key carrying value-conformance warnings (2026.06 edition).
-const CONFORMANCE_WARNING_KEY: &str = "rlmesh.conformance.warning";
-
 /// One value-conformance warning surfaced in the info map.
 struct ConformanceWarning {
     kind: String,
@@ -78,8 +75,13 @@ fn inject_conformance_warnings(info: &mut Option<MetaMap>, warnings: Vec<Conform
             ]))
         })
         .collect();
+    // The runtime's edition pin lands on the wire adapter wrapping this env
+    // (`Environment::pin_workflow_edition`) and does not cross the facade
+    // traits; this inner layer keys off the build's own edition.
     info.get_or_insert_with(BTreeMap::new).insert(
-        CONFORMANCE_WARNING_KEY.to_string(),
+        rlmesh_proto::defaults(rlmesh_proto::Edition::current())
+            .conformance_warning_info_key
+            .to_string(),
         MetaValue::List(entries),
     );
 }

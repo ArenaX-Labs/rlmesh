@@ -1,3 +1,20 @@
 [profile]
-description = "Reserved for explicit local-wheel cross-version compatibility scenarios."
-environments = []
+description = "Cross-version matrix: this tree's release wheel against the pinned published one."
+environments = ["crossver-py311"]
+
+# The new side of every cell. The matrix builds its own second venv for the
+# published fixture wheel (tests/system/crossver.lock); grpcio is here for the
+# raw wire probe, which forges handshake fields no released client can send.
+[environments.crossver-py311]
+tier = "compatibility"
+python = "3.11"
+dependencies = ["numpy", "grpcio"]
+scenarios = ["crossver-matrix"]
+timeout_seconds = 1800
+env = { RLMESH_CROSSVER_COMMAND = "python3 tests/system/crossver.py" }
+
+[scenarios.crossver-matrix]
+kind = "external"
+description = "Old/new env and model legs, the two controls, and the two forged refusals."
+command_env = "RLMESH_CROSSVER_COMMAND"
+timeout_seconds = 1800

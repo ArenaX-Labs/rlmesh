@@ -98,6 +98,10 @@ rlmesh.EnvServer(env, path="/tmp/rlmesh-env.sock")
 
 With no address at all, the server binds `tcp://127.0.0.1:0` and picks a free port; read `server.address` for the resolved one. Unix sockets are not available on Windows.
 
+## Declare a workflow edition
+
+A served env declares the workflow semantics it was authored against, and keeps them across rlmesh upgrades. Set `workflow_edition` on your {class}`~rlmesh.EnvFactory` (or pass `--workflow-edition` / `ServeOptions(workflow_edition=...)` to override it for one endpoint), and the declaration rides every handshake so a connecting runtime runs the session there. Declaring nothing lets the endpoint float to whatever edition its rlmesh build is newest on, and warns once per process. The full precedence table is in {doc}`../editions/index`.
+
 ## Exposure and authentication
 
 The RLMesh transport is plaintext gRPC. There is no TLS on any serve or connect path, and an endpoint is unauthenticated unless a bearer token is configured. A token can be set from Rust (`rlmesh::ServeOptions.token`) and from C (`RlmeshServeOptions.token`); the Python `ServeOptions` has no token field today, so a Python-served endpoint accepts every client that can reach it.

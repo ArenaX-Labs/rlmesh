@@ -67,6 +67,7 @@ impl ClientCore {
         address: &str,
         connect_timeout_seconds: Option<f64>,
         request_timeout_seconds: Option<f64>,
+        workflow_edition: Option<String>,
     ) -> PyResult<Self> {
         init_tracing(role);
         let profiler = ProfileCollector::new(role);
@@ -80,9 +81,17 @@ impl ClientCore {
 
         let connect_address = ConnectAddress::parse(address).map_err(to_py_err)?;
         let default_timeout = optional_timeout(request_timeout_seconds, "request_timeout_seconds")?;
+        let declared = crate::lifecycle::checked_workflow_edition(workflow_edition)?;
 
         let client = Python::attach(|py| {
-            py.detach(|| connect_remote_env(runtime, connect_address, connect_timeout_seconds))
+            py.detach(|| {
+                connect_remote_env(
+                    runtime,
+                    connect_address,
+                    connect_timeout_seconds,
+                    declared.as_deref(),
+                )
+            })
         })?;
 
         let normalized_address = client.address().to_string();
@@ -315,11 +324,12 @@ macro_rules! client_class {
         #[pymethods]
         impl $Class {
             #[new]
-            #[pyo3(signature = (address, *, connect_timeout_seconds=None, request_timeout_seconds=None))]
+            #[pyo3(signature = (address, *, connect_timeout_seconds=None, request_timeout_seconds=None, workflow_edition=None))]
             fn new(
                 address: &str,
                 connect_timeout_seconds: Option<f64>,
                 request_timeout_seconds: Option<f64>,
+                workflow_edition: Option<String>,
             ) -> PyResult<Self> {
                 Ok(Self {
                     core: ClientCore::connect(
@@ -327,6 +337,7 @@ macro_rules! client_class {
                         address,
                         connect_timeout_seconds,
                         request_timeout_seconds,
+                        workflow_edition,
                     )?,
                 })
             }
@@ -339,6 +350,34 @@ macro_rules! client_class {
             /// identity, distinct from the human env name on the contract.
             fn env_id(&self) -> String {
                 self.core.client.env_id().to_string()
+            }
+
+            /// The workflow edition this connection negotiated with the env.
+            fn selected_workflow_edition(&self) -> String {
+                self.core.client.selected_workflow_edition().to_string()
+            }
+
+            /// The env's handshake offer, `(CAN, WANT)`: the editions it
+            /// advertised and the one it declared (`None` when it declared
+            /// none). A served-model session hands this to `PyModelClient` so
+            /// the three-way floor sees the env's real offer.
+            fn session_offer(&self) -> (Vec<String>, Option<String>) {
+                let offer = self.core.client.session_offer();
+                (offer.editions.clone(), offer.preferred.clone())
+            }
+
+            /// Pin the env to the session edition a served-model session
+            /// settled on (its three-way floor), sent as the first Join
+            /// message. Call before the first reset.
+            fn pin_workflow_edition(
+                slf: &Bound<'_, Self>,
+                selected_workflow_edition: &str,
+            ) -> PyResult<()> {
+                let mut this = Self::lock(slf)?;
+                this.core
+                    .client
+                    .pin_workflow_edition(selected_workflow_edition);
+                Ok(())
             }
 
             fn handshake(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
@@ -595,9 +634,12 @@ submit! {
     gen_methods_from_python! {
         r#"
 class PyEnvClient:
-    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None) -> None: ...
+    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None: ...
     def address(self) -> str: ...
     def env_id(self) -> str: ...
+    def selected_workflow_edition(self) -> str: ...
+    def session_offer(self) -> tuple[list[str], str | None]: ...
+    def pin_workflow_edition(self, selected_workflow_edition: str) -> None: ...
     def handshake(self) -> EnvContract: ...
     def observation_space(self) -> Space: ...
     def action_space(self) -> Space: ...
@@ -615,9 +657,12 @@ submit! {
     gen_methods_from_python! {
         r#"
 class PyVectorEnvClient:
-    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None) -> None: ...
+    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None: ...
     def address(self) -> str: ...
     def env_id(self) -> str: ...
+    def selected_workflow_edition(self) -> str: ...
+    def session_offer(self) -> tuple[list[str], str | None]: ...
+    def pin_workflow_edition(self, selected_workflow_edition: str) -> None: ...
     def handshake(self) -> EnvContract: ...
     def observation_space(self) -> Space: ...
     def action_space(self) -> Space: ...
@@ -635,9 +680,10 @@ fn connect_remote_env(
     runtime: &tokio::runtime::Runtime,
     address: ConnectAddress,
     connect_timeout_seconds: Option<f64>,
+    declared: Option<&str>,
 ) -> PyResult<RemoteVectorEnv> {
     let timeout = optional_timeout(connect_timeout_seconds, "connect_timeout_seconds")?;
-    let connect = RemoteVectorEnv::connect_to(address);
+    let connect = RemoteVectorEnv::connect_declaring(address, "", declared);
     match timeout {
         Some(timeout) => runtime
             .block_on(async { tokio::time::timeout(timeout, connect).await })

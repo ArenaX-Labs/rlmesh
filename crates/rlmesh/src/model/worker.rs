@@ -74,6 +74,16 @@ pub struct RunLocalOptions {
     /// across an episode boundary is discarded. 0 = synchronous (predict only
     /// when no frame is left to play).
     pub prefetch_lead: u32,
+    /// The workflow edition this run **declares** (its WANT): the runtime tier's
+    /// explicit pin, so the session runs at this edition even when this build
+    /// and the env could both go higher. `None` (the default) declares nothing
+    /// and wants this build's current edition, which is its own `max(can)` and
+    /// therefore caps no env.
+    ///
+    /// Any cohort spelling of an edition this build retains is accepted; a pin
+    /// no peer can run is refused by the env-leg negotiation before any Join
+    /// stream opens, naming every tier's WANT and CAN.
+    pub workflow_edition: Option<String>,
 }
 
 impl RunLocalOptions {
@@ -91,6 +101,7 @@ impl RunLocalOptions {
             close_env: false,
             execution_horizon: 1,
             prefetch_lead: 0,
+            workflow_edition: None,
         }
     }
 
@@ -164,6 +175,13 @@ impl RunLocalOptions {
     /// Ask the env to close when the run ends.
     pub fn close_env(mut self, close_env: bool) -> Self {
         self.close_env = close_env;
+        self
+    }
+
+    /// Declare the workflow edition this run is authored against (the runtime
+    /// tier's WANT). See [`RunLocalOptions::workflow_edition`].
+    pub fn workflow_edition(mut self, workflow_edition: impl Into<String>) -> Self {
+        self.workflow_edition = Some(workflow_edition.into());
         self
     }
 }

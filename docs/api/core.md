@@ -179,6 +179,22 @@ The authoring surface declares an environment before anything is built: a factor
 .. autodata:: rlmesh.ENV_RESET_OPTIONS_KEY
 ```
 
+## Build identity
+
+`rlmesh.build_info()` returns a frozen `BuildInfo` describing the native core you have installed: the package version it was built as, the wire protocol generation it speaks, and the workflow edition it advertises. Print it when filing a bug or checking what a peer will negotiate against.
+
+| Field                   | Meaning                                                                                                                                                 |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `version`               | The `rlmesh` package version the native core was built as.                                                                                              |
+| `protocol_generation`   | The wire protocol generation, `rlmesh-wire-v1`.                                                                                                         |
+| `workflow_edition`      | The exact edition spelling this build advertises: the sealed `YYYY.MM` name on a release, `YYYY.MM-<cohort>` on a prerelease or source build.           |
+| `workflow_edition_base` | The sealed `YYYY.MM` base, the same on every build of the edition; what `rlmesh.current_workflow_edition()` returns.                                    |
+| `build_cohort`          | `stable` on a sealed release, the prerelease version on a prerelease, `dev.<git>` on a source build.                                                    |
+| `build_source`          | Where the cohort came from: `release`, `package`, or `git`.                                                                                             |
+| `git`                   | The short commit sha a source build was stamped from, suffixed `.dirty.<fingerprint>` when the tree had uncommitted changes; `None` on any other build. |
+
+`rlmesh.__build__` is a deprecated alias for `build_info().workflow_edition`: reading it emits a `DeprecationWarning`, and it is removed in 0.2.
+
 ## Types
 
 The `rlmesh.types` module defines the structural protocols that {py:class}`~rlmesh.EnvServer` accepts and the shared value aliases used by dependency-free clients. The protocols are structural, so any object with the right methods satisfies them; you do not subclass anything. Use them to type-annotate an environment or a value, or to check what `EnvServer` expects. For authoring an environment against these protocols see {doc}`../user-guide/environments`.

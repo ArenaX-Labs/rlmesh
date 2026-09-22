@@ -1,7 +1,12 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const DEFAULT_WORKFLOW_EDITION_BASE: &str = "2026.06";
+#[path = "build_manifest.rs"]
+mod manifest;
+
+use manifest::manifest_string_list;
+
+const RETAINED_EDITIONS_FILE: &str = "supported_editions.txt";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR")?);
@@ -11,6 +16,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "cargo:rerun-if-changed={}",
         repo_root.join("rlmesh.toml").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        root.join(RETAINED_EDITIONS_FILE).display()
     );
     // `.git` is a file, not a directory, in a worktree checkout, so `.git/HEAD`
     // does not exist there and watching it would rerun this script on every
@@ -25,7 +34,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let base = workflow_edition_base(repo_root);
+    let retained = match retained_workflow_editions(&root, repo_root) {
+        Ok(retained) => retained,
+        Err(message) => {
+            println!("cargo::error={message}");
+            return Ok(());
+        }
+    };
+    let base = workflow_edition_base(repo_root, &retained[0]);
     let version = std::env::var("CARGO_PKG_VERSION")?;
     let cohort = workflow_cohort(repo_root, &version);
     let current_edition = if let Some(dev) = cohort.dev_token {
@@ -38,10 +54,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("cargo:rustc-env=RLMESH_WORKFLOW_EDITION_BASE={base}");
     println!("cargo:rustc-env=RLMESH_CURRENT_WORKFLOW_EDITION={current_edition}");
+    println!(
+        "cargo:rustc-env=RLMESH_SUPPORTED_WORKFLOW_EDITIONS={}",
+        supported_workflow_editions(retained, &current_edition).join(",")
+    );
     println!("cargo:rustc-env=RLMESH_BUILD_COHORT={}", cohort.name);
     println!("cargo:rustc-env=RLMESH_BUILD_SOURCE={}", cohort.source);
 
     let spec = root.join("proto");
+    // prost-build emits no rerun-if-changed for its inputs; watch the tree.
+    println!("cargo:rerun-if-changed={}", spec.display());
     tonic_prost_build::configure()
         .enum_attribute(
             "rlmesh.model.v1.JoinRequest.kind",
@@ -80,19 +102,73 @@ struct WorkflowCohort {
     dev_token: Option<String>,
 }
 
-fn workflow_edition_base(repo_root: &Path) -> String {
+/// The manifest's `base_edition`, else the base of the packaged current edition
+/// (a published crate ships no `rlmesh.toml`).
+fn workflow_edition_base(repo_root: &Path, packaged_current: &str) -> String {
     if let Ok(base) = std::env::var("RLMESH_WORKFLOW_EDITION_BASE")
         && !base.trim().is_empty()
     {
         return base;
     }
 
-    let manifest = repo_root.join("rlmesh.toml");
-    let Ok(text) = std::fs::read_to_string(manifest) else {
-        return DEFAULT_WORKFLOW_EDITION_BASE.to_string();
-    };
-    manifest_string_value(&text, "base_edition")
-        .unwrap_or_else(|| DEFAULT_WORKFLOW_EDITION_BASE.to_string())
+    std::fs::read_to_string(repo_root.join("rlmesh.toml"))
+        .ok()
+        .and_then(|text| manifest_string_value(&text, "base_edition"))
+        .or_else(|| packaged_current.split('-').next().map(String::from))
+        .unwrap_or_default()
+}
+
+/// The crate's `supported_editions.txt`: the official current edition on the
+/// first line, then every other retained edition (sealed ones under their bare
+/// `YYYY.MM` names), one per line. Every build reads it; a repo build also
+/// requires it to be `rlmesh.toml`'s `[workflow]` list in that order.
+fn retained_workflow_editions(root: &Path, repo_root: &Path) -> Result<Vec<String>, String> {
+    let retained_path = root.join(RETAINED_EDITIONS_FILE);
+    let retained: Vec<String> = std::fs::read_to_string(&retained_path)
+        .map_err(|err| format!("cannot read {}: {err}", retained_path.display()))?
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(String::from)
+        .collect();
+    if retained.is_empty() {
+        return Err(format!("{} lists no editions", retained_path.display()));
+    }
+    if let Ok(text) = std::fs::read_to_string(repo_root.join("rlmesh.toml")) {
+        let current = manifest_string_value(&text, "current_edition");
+        let declared: Vec<String> = current
+            .iter()
+            .cloned()
+            .chain(
+                manifest_string_list(&text, "supported_editions")
+                    .into_iter()
+                    .filter(|edition| Some(edition) != current.as_ref()),
+            )
+            .collect();
+        if declared != retained {
+            return Err(format!(
+                "crates/rlmesh-proto/{RETAINED_EDITIONS_FILE} lists {retained:?} but \
+                 rlmesh.toml [workflow] current_edition then supported_editions is \
+                 {declared:?}; run `python scripts/bump_version.py --sync-editions`"
+            ));
+        }
+    }
+    Ok(retained)
+}
+
+/// Workflow editions this build offers, `current_edition` first, then the
+/// retained editions. The official current edition (the file's first line) is
+/// dropped from the tail: this build's cohort already leads the list, and a dev
+/// or recohorted build must not claim the official release cohort.
+fn supported_workflow_editions(retained: Vec<String>, current_edition: &str) -> Vec<String> {
+    let mut editions = vec![current_edition.to_string()];
+    editions.extend(
+        retained
+            .into_iter()
+            .skip(1)
+            .filter(|edition| edition != current_edition),
+    );
+    editions
 }
 
 fn manifest_string_value(text: &str, key: &str) -> Option<String> {

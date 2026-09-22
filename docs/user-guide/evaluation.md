@@ -56,10 +56,15 @@ baseline = rlmesh.run(rlmesh.RANDOM_SAMPLE, env, max_episodes=10)
 | `execution_horizon` | `1`     | Actions executed per predicted chunk; only engages on a chunk corner (see [below](#execution-horizon-end-to-end)). |
 | `close_env`         | `False` | Shut the env down when the run finishes (opt-in).                                                                  |
 | `trial_index_base`  | `0`     | First trial ordinal; episode `i` walks `trial_index_base + i` (see [trial ordinals](#trial-ordinals)).             |
+| `workflow_edition`  | `None`  | Workflow edition this run is evaluated under (see [below](#declare-a-workflow-edition)).                           |
 
 With neither `seeds` nor `max_episodes`, `run()` does a single episode. `execution_horizon` is accepted by both the bound methods (`model.run` / `model.session`) and the module-level {func}`~rlmesh.run` / {func}`~rlmesh.session`, which forwards it through.
 
 `run()` drives the native runtime loop -- the same engine that drives a served model -- so a vectorized env (`num_envs > 1`) runs through the identical call, with all lanes batched into each predict (the batch corners in {doc}`models`). The step-level knobs live on the session loop instead: `instruction=` (per-step text override) and `view=` are {func}`~rlmesh.session` parameters and `hooks=` is a {meth}`Session.run <rlmesh.Session.run>` parameter; `run()` rejects all three with a pointer there.
+
+### Declare a workflow edition
+
+`workflow_edition=` pins the semantics a run or session is evaluated under — the runtime's own declaration, above every other surface. Without it the run takes `RLMESH_WORKFLOW_EDITION`, then the model class's `workflow_edition`, then `[tool.rlmesh] workflow_edition`; with nothing declared anywhere it floats to this build's newest edition and says so once. An edition no participant can run is refused before the first episode, naming what each tier wants and can do. The precedence table and what to paste is in {doc}`../editions/index`.
 
 ### Trial ordinals
 
@@ -102,6 +107,8 @@ for ep in result.episodes:
 ```{caution}
 `success_rate` prefers the env's own task outcome: Gymnasium's `info["is_success"]` or `info["success"]`, captured per episode as the `success` field on {class}`~rlmesh.EpisodeResult`. When the env emits no such flag it falls back to `terminated` for that episode. A time-limit env whose success *is* the truncation cap should report it through `info`, because a plain terminal state is not read as success.
 ```
+
+`.advisories` holds each distinct `rlmesh.adapters.Advisory` the runtime raised while relaying data between the env and the model. A `"caution"` means the runtime converted data for a peer that could not read it as sent, so the model may not have seen exactly what the env produced. The open-source runtime never converts: it refuses a payload a peer cannot decode, so this tuple is empty.
 
 ## `session()`: manual, step-by-step control
 

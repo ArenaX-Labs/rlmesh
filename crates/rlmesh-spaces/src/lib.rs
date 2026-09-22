@@ -21,6 +21,7 @@
 
 pub mod errors;
 
+pub mod advisory;
 mod display;
 pub mod dtype;
 pub mod meta;
@@ -32,6 +33,7 @@ pub mod spaces;
 pub mod tensor;
 pub mod types;
 
+pub use advisory::{Advisory, AdvisorySeverity};
 pub use dtype::{DType, dtype_size};
 pub use meta::{MetaMap, MetaValue};
 pub use render::{BinaryPayload, RenderFrame, RenderRequest, RenderResult};

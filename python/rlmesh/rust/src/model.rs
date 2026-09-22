@@ -435,11 +435,18 @@ fn call_batched(
 }
 
 /// The in-process run's report as a Python dict: `episodes` (the per-episode
-/// summaries) and `telemetry` (the session metric aggregate).
+/// summaries), `telemetry` (the session metric aggregate), and `advisories`
+/// (the relay's `Advisory` objects).
 fn report_to_py(py: Python<'_>, report: &rlmesh::RuntimeReport) -> PyResult<Py<PyAny>> {
     let out = pyo3::types::PyDict::new(py);
     out.set_item("episodes", report_episodes_to_py(py, report)?)?;
     out.set_item("telemetry", report_telemetry_to_py(py, report)?)?;
+    let advisories = report
+        .advisories
+        .iter()
+        .map(|advisory| crate::adapters::PyAdvisory::from(advisory.clone()))
+        .collect::<Vec<_>>();
+    out.set_item("advisories", advisories)?;
     Ok(out.into_any().unbind())
 }
 
@@ -712,13 +719,14 @@ impl PyModel {
         })
     }
 
-    #[pyo3(signature = (env_address, execution_horizon=1, prefetch_lead=0))]
+    #[pyo3(signature = (env_address, execution_horizon=1, prefetch_lead=0, workflow_edition=None))]
     fn run_local(
         &self,
         py: Python<'_>,
         env_address: &str,
         execution_horizon: u32,
         prefetch_lead: u32,
+        workflow_edition: Option<String>,
     ) -> PyResult<Py<PyAny>> {
         let run_span = tracing::info_span!("rlmesh.model.run_local", env_address = env_address);
         let _run_enter = run_span.enter();
@@ -726,9 +734,10 @@ impl PyModel {
 
         let env_address = ConnectAddress::parse(env_address).map_err(to_py_err)?;
         let handler = self.build_handler();
-        let options = RunLocalOptions::new(env_address)
+        let mut options = RunLocalOptions::new(env_address)
             .execution_horizon(execution_horizon)
             .prefetch_lead(prefetch_lead);
+        options.workflow_edition = crate::lifecycle::checked_workflow_edition(workflow_edition)?;
 
         let report = run_local_blocking(py, handler, options)?;
 
@@ -737,7 +746,7 @@ impl PyModel {
         report_to_py(py, &report)
     }
 
-    #[pyo3(signature = (env_address, max_episodes, execution_horizon=1, seeds=None, max_episode_steps=None, max_episode_seconds=None, close_env=false, trial_index_base=None, prefetch_lead=0))]
+    #[pyo3(signature = (env_address, max_episodes, execution_horizon=1, seeds=None, max_episode_steps=None, max_episode_seconds=None, close_env=false, trial_index_base=None, prefetch_lead=0, workflow_edition=None))]
     #[allow(clippy::too_many_arguments)]
     fn run_local_for_episodes(
         &self,
@@ -751,6 +760,7 @@ impl PyModel {
         close_env: bool,
         trial_index_base: Option<u64>,
         prefetch_lead: u32,
+        workflow_edition: Option<String>,
     ) -> PyResult<Py<PyAny>> {
         let run_span = tracing::info_span!(
             "rlmesh.model.run_local_for_episodes",
@@ -768,6 +778,7 @@ impl PyModel {
             .prefetch_lead(prefetch_lead)
             .episode_seeds(seeds.unwrap_or_default())
             .close_env(close_env);
+        options.workflow_edition = crate::lifecycle::checked_workflow_edition(workflow_edition)?;
         if let Some(cap) = max_episode_steps {
             options = options.max_episode_steps(cap);
         }
@@ -824,8 +835,8 @@ import typing
 
 class PyModel:
     def __init__(self, predict_fn: collections.abc.Callable[[Value], Value], configure_fn: collections.abc.Callable[[EnvContract], object] | None = None, on_episode_end: collections.abc.Callable[[str], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None, predict_chunk_fn: collections.abc.Callable[[Value, int], Value] | None = None, predict_batch_fn: collections.abc.Callable[[list[Value], list[dict[str, typing.Any]]], list[Value]] | None = None, predict_chunk_batch_fn: collections.abc.Callable[[list[Value], int, list[dict[str, typing.Any]]], list[Value]] | None = None, allow_fusion: bool = True, native_chunk: int | None = None) -> None: ...
-    def run_local(self, env_address: str, execution_horizon: int = 1, prefetch_lead: int = 0) -> dict[str, typing.Any]: ...
-    def run_local_for_episodes(self, env_address: str, max_episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trial_index_base: int | None = None, prefetch_lead: int = 0) -> dict[str, typing.Any]: ...
+    def run_local(self, env_address: str, execution_horizon: int = 1, prefetch_lead: int = 0, workflow_edition: str | None = None) -> dict[str, typing.Any]: ...
+    def run_local_for_episodes(self, env_address: str, max_episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trial_index_base: int | None = None, prefetch_lead: int = 0, workflow_edition: str | None = None) -> dict[str, typing.Any]: ...
     def serve(self, address: str, options: ServeOptions | None = None) -> None: ...
 "#
     }
@@ -836,9 +847,10 @@ submit! {
     gen_methods_from_python! {
         r#"
 class PyModelClient:
-    def __init__(self, address: str, env_contract: EnvContract, execution_horizon: int = 1, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None) -> None: ...
+    def __init__(self, address: str, env_contract: EnvContract, execution_horizon: int = 1, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, env_offer: tuple[list[str], str | None] | None = None) -> None: ...
     def address(self) -> str: ...
     def env_id(self) -> str: ...
+    def selected_workflow_edition(self) -> str: ...
     def observation_space(self) -> Space: ...
     def action_space(self) -> Space: ...
     def reset(self, seed: int | None = None) -> None: ...
@@ -871,7 +883,8 @@ pub struct PyModelClient {
 #[pymethods]
 impl PyModelClient {
     #[new]
-    #[pyo3(signature = (address, env_contract, execution_horizon=1, *, connect_timeout_seconds=None, request_timeout_seconds=None))]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (address, env_contract, execution_horizon=1, *, connect_timeout_seconds=None, request_timeout_seconds=None, workflow_edition=None, env_offer=None))]
     fn new(
         py: Python<'_>,
         address: &str,
@@ -879,6 +892,8 @@ impl PyModelClient {
         execution_horizon: u32,
         connect_timeout_seconds: Option<f64>,
         request_timeout_seconds: Option<f64>,
+        workflow_edition: Option<String>,
+        env_offer: Option<(Vec<String>, Option<String>)>,
     ) -> PyResult<Self> {
         init_tracing("model_client");
         let contract = native_env_contract_from_py(env_contract)?;
@@ -892,10 +907,28 @@ impl PyModelClient {
             crate::client::optional_timeout(connect_timeout_seconds, "connect_timeout_seconds")?;
         let default_timeout =
             crate::client::optional_timeout(request_timeout_seconds, "request_timeout_seconds")?;
+        let declared = crate::lifecycle::checked_workflow_edition(workflow_edition)?;
+        // The env's handshake offer as the Python session captured it. Without
+        // one the env tier stands in as this build, UNDECLARED: it must not
+        // inherit `declared`, the runtime tier's WANT, or a refusal would print
+        // a WANT the env never sent.
+        let env_offer = match env_offer {
+            Some((editions, preferred)) => rlmesh_proto::SessionOffer {
+                editions,
+                preferred,
+            },
+            None => rlmesh_proto::SessionOffer::new(rlmesh_proto::SUPPORTED_WORKFLOW_EDITIONS),
+        };
         let runtime = model_runtime();
         let address = address.to_string();
         let mut inner = py.detach(|| {
-            let connect = RemoteModel::connect(&address, contract);
+            let connect = RemoteModel::connect_declaring(
+                &address,
+                "",
+                contract,
+                env_offer,
+                declared.as_deref(),
+            );
             match connect_timeout {
                 Some(timeout) => {
                     match runtime.block_on(async { tokio::time::timeout(timeout, connect).await }) {
@@ -931,6 +964,12 @@ impl PyModelClient {
     /// minted at connect.
     fn env_id(&self) -> String {
         self.inner.env_id().to_string()
+    }
+
+    /// The workflow edition this session settled on: the floor across the env,
+    /// the model, and this runtime.
+    fn selected_workflow_edition(&self) -> String {
+        self.inner.selected_workflow_edition().to_string()
     }
 
     fn observation_space(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {

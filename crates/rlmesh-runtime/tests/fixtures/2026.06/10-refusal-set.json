@@ -1,0 +1,6 @@
+{
+  "edition_outside_the_retained_list": "invalid runtime session spec: runtime cannot drive workflow edition \"2020.01\"; this build implements",
+  "lockstep_vector_without_next_step": "invalid runtime session spec: vectorized runtime sessions (num_envs > 1) require NEXT_STEP autoreset",
+  "same_step_autoreset": "invalid runtime session spec: SAME_STEP autoreset is reserved but not yet supported by the runtime; ",
+  "unknown_autoreset_mode": "invalid runtime session spec: unknown autoreset mode 99 on the wire; this build supports UNSPECIFIED"
+}

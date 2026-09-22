@@ -241,6 +241,10 @@ print(result.mean_reward, result.success_rate)
 
 The full `run` / `session` / `read` story (seeds, instruction injection, the execution horizon end to end, and reading canonical roles off an observation) is in {doc}`evaluation`.
 
+## Declare a workflow edition
+
+A model declares the workflow semantics it was authored against, the same way an env does: set `workflow_edition` on the class, paste what `rlmesh.current_workflow_edition()` reports, and upgrading rlmesh cannot change how the model behaves. The declaration rides the handshake of a served model and the runtime tier of `run()` / `session()`, both of which also take a per-call `workflow_edition=` override. See {doc}`../editions/index`.
+
 ## Build into a container
 
 A model ships as a container image that serves the policy on an endpoint. Write a `Dockerfile` and a small entrypoint, or skip the entrypoint with the lazy serve path.

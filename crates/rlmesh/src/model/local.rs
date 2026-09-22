@@ -8,8 +8,8 @@ use rlmesh_grpc::wire::{
 use rlmesh_proto::model::v1::{PredictRequest, ResetAdapterRequest};
 use rlmesh_proto::{EndpointPhases, elapsed_ns};
 use rlmesh_runtime::{
-    NoopRuntimeHooks, RuntimeDriver, RuntimeEnv, RuntimeEnvReset, RuntimeEnvStep, RuntimeError,
-    RuntimeModel, RuntimeModelPrediction, RuntimeReport, RuntimeSessionSpec,
+    NoopRuntimeHooks, PeerCeiling, RuntimeDriver, RuntimeEnv, RuntimeEnvReset, RuntimeEnvStep,
+    RuntimeError, RuntimeModel, RuntimeModelPrediction, RuntimeReport, RuntimeSessionSpec,
 };
 
 use super::handler::{ModelHandler, PredictFrames};
@@ -40,7 +40,11 @@ where
     )
     .await
     .map_err(Error::from)?;
+    // The runtime tier's WANT rides this leg's handshake and caps the env-leg
+    // negotiation, so it has to be declared before the handshake goes out.
+    env.declare_workflow_edition(options.workflow_edition.clone());
     let handshake = env.handshake().await.map_err(Error::from)?;
+    let env_ceiling = env_ceiling(&handshake);
     // A lane endpoint steps/resets lanes individually, so a num_envs > 1
     // session can run driver-owned (DISABLED) resets lane by lane.
     let subset_step = rlmesh_proto::has_capability(
@@ -77,7 +81,9 @@ where
 
     // The driver delivers every replayed step as a history row, so a stacked
     // adapter's window advances on every step at any horizon; the route answers
-    // whether it needs that, and the driver only buffers rows when it does.
+    // whether it needs that, and the driver only buffers rows when it does. The
+    // handler is in-process (this build's engine), so unlike the served path
+    // there is no peer capability to gate the offer on.
     let mut wants_history = false;
     if let Some(route_setup) = handler.route_setup() {
         let needs = route_setup
@@ -113,6 +119,8 @@ where
         // with a batched corner).
         subset_step,
         limits: Default::default(),
+        env_ceiling: Some(env_ceiling),
+        model_ceiling: None,
     };
     let env = EnvClientRuntimeEnv::new(env);
     let model = ModelHandlerRuntimeModel::new(handler, env_contract).with_history(wants_history);
@@ -121,6 +129,16 @@ where
         .run_with_cancellation_reason(cancellation, "interrupted by the host (signal)")
         .await
         .map_err(run_error)
+}
+
+/// What the served env on the other end of `handshake` can decode.
+pub(super) fn env_ceiling(handshake: &rlmesh_grpc::EnvHandshake) -> PeerCeiling {
+    PeerCeiling::wire_v1(
+        PeerCeiling::highest_shared_edition(&handshake.supported_workflow_editions)
+            .unwrap_or(handshake.workflow_edition),
+        handshake.capabilities.clone(),
+        rlmesh_grpc::MAX_MESSAGE_SIZE,
+    )
 }
 
 /// Wrap a facade [`Error`] as a driver model-RPC failure, keeping its

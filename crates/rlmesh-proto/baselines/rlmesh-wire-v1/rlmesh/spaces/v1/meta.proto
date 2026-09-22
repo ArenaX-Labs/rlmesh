@@ -11,8 +11,14 @@ message MetaValue {
     bytes bytes = 5;
     MetaList list = 6;
     MetaMap map = 7;
+    // Explicit null, held for a future edition that may reject an unset
+    // `kind`. 2026.06 emitters encode null as an unset `kind`; decoders
+    // accept both.
+    MetaNull null = 8;
   }
 }
+
+message MetaNull {}
 
 message MetaList {
   repeated MetaValue items = 1;

@@ -20,7 +20,6 @@
 //! defaults), and a later breaking change bumps the key to v2. The [`v1`] facade
 //! is only a stable import path; the implementation sits flat at the crate root.
 
-mod advisory;
 mod apply;
 mod describe;
 mod envelope;
@@ -35,6 +34,8 @@ pub mod roles;
 mod space_view;
 mod spec;
 mod stateful;
+
+use rlmesh_spaces::advisory;
 
 /// Version 1 of the adapter spec format and resolution semantics.
 pub mod v1 {

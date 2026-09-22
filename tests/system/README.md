@@ -6,6 +6,7 @@ System tests validate installed RLMesh Python wheels in clean `uv` environments.
 
 - `profiles/*.toml`: profile, environment, dependency, and scenario definitions.
 - `traces/`: committed deterministic trace baselines.
+- `crossver.py` + `crossver.lock`: the cross-version matrix and the published wheel it pins (see the Cross-Version Matrix section in `docs/testing.md`).
 
 The private env/model fixture package installed into each clean venv lives in `tools/rlmesh_system_fixtures`.
 

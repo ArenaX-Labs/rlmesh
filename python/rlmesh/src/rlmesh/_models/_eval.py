@@ -40,7 +40,7 @@ from ._view import ViewerDriver, resolve_view
 from .base import accepts_context
 
 if TYPE_CHECKING:
-    from rlmesh._rlmesh import PyModelClient
+    from rlmesh._rlmesh import Advisory, PyModelClient
 
     from .._value_conversion import ValueBridge
     from ..adapters import ObservationRoles
@@ -56,7 +56,10 @@ __all__ = [
     "resolve_adapter",
 ]
 
-# bound the loop so a non-terminating env cannot hang it forever.
+# Bound the loop so a non-terminating env cannot hang it forever. The twin of the
+# native `EditionDefaults::default_max_episode_steps` row (`rlmesh-proto`
+# `lib.rs`), which bounds the Rust driver's episodes the same way; the two loops
+# must agree, so an edition that changes that row changes this constant with it.
 _MAX_STEPS_PER_EPISODE = 100_000
 
 # The execution-horizon ceiling, the twin of the native `MAX_EXECUTION_HORIZON`
@@ -207,6 +210,12 @@ class RunResult:
     #: per measured series. Populated by :meth:`Model.run`'s native loop;
     #: empty on the :meth:`Session.run` path.
     telemetry: tuple[TelemetryRow, ...] = ()
+    #: Each distinct :class:`~rlmesh.adapters.Advisory` the runtime raised while
+    #: relaying payloads between the env and the model; a ``"caution"`` marks
+    #: data it converted for a peer that could not decode it as sent. Empty
+    #: unless a relay policy converted something, which the open-source runtime
+    #: never does.
+    advisories: tuple[Advisory, ...] = ()
 
     @property
     def num_episodes(self) -> int:
@@ -559,6 +568,7 @@ class Session(Generic[ObsT, ActT]):
     _episode_open: bool
     _read_cache: dict[Any, Reader]
     _view_driver: ViewerDriver | None
+    _workflow_edition: str | None
 
     def __init__(self) -> None:
         raise TypeError(
@@ -587,6 +597,7 @@ class Session(Generic[ObsT, ActT]):
         owner: Any = None,
         device: object | None = None,
         view: object = None,
+        workflow_edition: str | None = None,
     ) -> Session[Any, Any]:
         """Build and populate a session (two modes: local predict+spec, or served model_client).
 
@@ -622,6 +633,7 @@ class Session(Generic[ObsT, ActT]):
         self._instruction = instruction
         self._close_env = close_env
         self._model_client = model_client
+        self._workflow_edition = workflow_edition
         self._owner = owner
         self._device = device
         self._closed = False
@@ -695,11 +707,19 @@ class Session(Generic[ObsT, ActT]):
         self._require_open()
         if self._connected:
             return
-        client, contract, owns = connect_env(self._env, self._remote_env_cls)
+        client, contract, owns = connect_env(
+            self._env, self._remote_env_cls, self._workflow_edition
+        )
         reject_vector_env(contract)
         self._client = client
         self._contract = contract
         self._owns_client = owns
+        # A served-model session runs at the three-way floor; the env leg is
+        # pinned to it (its first Join message) so both legs name one edition.
+        if self._model_client is not None:
+            pin = getattr(client, "_pin_workflow_edition", None)
+            if callable(pin):
+                pin(self._model_client.selected_workflow_edition())
         # A served model resolves its adapter server-side (from the contract sent at
         # bind); only a local model resolves it here, client-side.
         if self._model_client is None:
@@ -723,6 +743,27 @@ class Session(Generic[ObsT, ActT]):
             # before the first reset() already replays the right chunk length.
             self._replay = self._new_replay()
         self._connected = True
+
+    @property
+    def selected_workflow_edition(self) -> str:
+        """The workflow edition this session runs at, in the spelling the peers agreed on.
+
+        On a served model it is the floor across the env, the model, and this
+        runtime, settled when the session was opened; on a local model the env
+        leg is the whole negotiation, so it is what that connection settled on.
+        Named apart from the ``workflow_edition`` *declaration* surfaces: this
+        is what was agreed, not what this side asked for.
+        """
+        if self._model_client is not None:
+            return self._model_client.selected_workflow_edition()
+        self._ensure_connected()
+        selected = getattr(self._client, "selected_workflow_edition", None)
+        if selected is None:
+            raise RuntimeError(
+                "a local env negotiates no workflow edition: it runs in this "
+                "process at rlmesh.current_workflow_edition()"
+            )
+        return cast("str", selected() if callable(selected) else selected)
 
     @property
     def done(self) -> bool:

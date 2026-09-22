@@ -78,14 +78,14 @@ message CloseEnvsRequest {
   string reason = 1;
 }
 
-// Pin the env to the runtime-selected workflow edition. Optional: a runtime MAY
-// send it as the first Join message (before the first reset), mirroring the
-// model's edition pin on ResolveAdapterRequest — that model-side pin is the
-// load-bearing one. An env MUST NOT require it and MUST accept Reset as the
-// first Join message; an env that receives no ConfigureEnv runs at the edition
-// it declared at the handshake, which the runtime's floor never exceeds. While a
-// single edition exists the floor is always CURRENT, so the pin is a no-op
-// today.
+// Pin the env to the runtime-selected workflow edition (the session floor, in
+// the exact spelling the env offered). The runtime sends it as the first Join
+// message and waits for the ack before the first Reset, mirroring the model's
+// pin on ResolveAdapterRequest; an env that cannot run the pin refuses it with
+// a non-recoverable error naming the pin and its own editions, and no Reset
+// follows. An env MUST NOT require it and MUST still accept a session that
+// starts with Reset: a runtime built before the pin existed sends none, and
+// the env then runs at its own current edition.
 message ConfigureEnvRequest {
   string selected_workflow_edition = 1;
 }

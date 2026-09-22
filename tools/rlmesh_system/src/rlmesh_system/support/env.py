@@ -150,6 +150,10 @@ def prepare_installed_wheel_environment(
 
     run_env = command_env.copy()
     run_env.update(spec.env)
+    # An external scenario shells out to a command that may need this venv's
+    # interpreter (the cross-version matrix drives it as one of two peers), and
+    # the command string in the profile cannot name a path that only exists now.
+    run_env["RLMESH_SYSTEM_PYTHON"] = str(python)
     return InstalledEnvironment(python=python, env=run_env, logs=logs)
 
 

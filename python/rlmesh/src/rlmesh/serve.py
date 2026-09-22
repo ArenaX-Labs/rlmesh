@@ -167,6 +167,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--workflow-edition",
+        default=None,
+        help=(
+            "Workflow edition this served peer declares -- the semantics it was "
+            "authored against, kept until you bump it. Defaults to "
+            "RLMESH_WORKFLOW_EDITION, then the entrypoint class's "
+            "workflow_edition, then [tool.rlmesh] workflow_edition. Paste what "
+            "rlmesh.current_workflow_edition() reports."
+        ),
+    )
+    parser.add_argument(
         "--kwargs-json",
         type=_json_object,
         help=(
@@ -221,13 +232,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "vectorization_mode",
                 "framework",
                 "device",
+                "workflow_edition",
             } & binding.keys()
             if control_collisions:
                 parser.error(
                     f"{', '.join(sorted(control_collisions))} control serving, not "
                     "env construction; set RLMESH_NUM_ENVS / RLMESH_VECTORIZATION_MODE "
-                    "/ --framework / --device instead of passing them in "
-                    "RLMESH_MAKE_KWARGS / --kwargs-json"
+                    "/ --framework / --device / --workflow-edition instead of passing "
+                    "them in RLMESH_MAKE_KWARGS / --kwargs-json"
                 )
             env = resolve_entrypoint(args.env, label="env entrypoint")
             _mark("imports")
@@ -238,12 +250,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 vectorization_mode=vectorization_mode,
                 framework=args.framework,
                 device=args.device,
+                workflow_edition=args.workflow_edition,
                 **binding,
             )
         else:
             model = resolve_entrypoint(args.model, label="model entrypoint")
             _mark("imports")
-            serve_model(model, args.address, binding=binding)
+            serve_model(
+                model,
+                args.address,
+                binding=binding,
+                workflow_edition=args.workflow_edition,
+            )
     except KeyboardInterrupt:
         # Ctrl-C is how an operator stops a served container: the serve loop has
         # already drained and closed by the time the interrupt surfaces here, so
@@ -269,6 +287,7 @@ def serve_model(
     address: str,
     *,
     binding: dict[str, Any] | None = None,
+    workflow_edition: str | None = None,
 ) -> None:
     """Host a model on ``address`` (blocking).
 
@@ -282,10 +301,21 @@ def serve_model(
     model is resolved and loaded, before the blocking serve, with the startup
     phase marks (see :func:`startup_marks`), which also ride the handshake.
     """
+    from ._editions import serve_options_declaring
+
     model = _resolve_model(model_source, binding)
     _mark("model")
     _stamp_startup("model", address)
-    model.serve(address)
+    # `--workflow-edition` is the ServeOptions rung of the precedence chain;
+    # the surfaces above it (the env var) and below it (the model class, the
+    # project manifest) are resolved here, once.
+    model.serve(
+        address,
+        options=serve_options_declaring(
+            option=workflow_edition,
+            declared=getattr(type(model), "workflow_edition", None),
+        ),
+    )
 
 
 def _resolve_model(
@@ -337,6 +367,7 @@ def serve_env(
     vectorization_mode: str | None = None,
     framework: str | None = None,
     device: object | None = None,
+    workflow_edition: str | None = None,
     **make_kwargs: object,
 ) -> None:
     """Host an environment on ``address`` (blocking).
@@ -352,7 +383,10 @@ def serve_env(
     seam; for an :class:`EnvFactory` it defaults to the factory's pinned framework
     (``rlmesh.torch.EnvFactory`` etc.), so a classless make-callable / gym-id /
     hf source is the only case that needs it passed explicitly. ``device`` places
-    the incoming action (torch/jax only). Heavy imports stay inside this call so
+    the incoming action (torch/jax only). ``workflow_edition`` declares the
+    semantics this endpoint was authored against, above the source's own
+    :attr:`EnvFactory.workflow_edition <rlmesh.EnvFactory.workflow_edition>` and
+    below ``RLMESH_WORKFLOW_EDITION``. Heavy imports stay inside this call so
     importing the authoring base stays cheap. A one-line serving status is
     printed once the server has bound its address, before the blocking serve.
     """
@@ -418,12 +452,18 @@ def serve_env(
             )
         else:
             env = make_env(**make_kwargs)
+    from ._editions import serve_options_declaring
+
     server = EnvServer(
         env,
         address,
         tags=cast("Any", tags),
         framework=env_framework,
         device=_gate_device(device, env_framework),
+        options=serve_options_declaring(
+            option=workflow_edition,
+            declared=getattr(env_source, "workflow_edition", None),
+        ),
     )
     _mark("env")
     _stamp_startup("env", server.address)

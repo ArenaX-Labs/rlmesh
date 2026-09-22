@@ -239,6 +239,10 @@ rlmesh::Status drive(const std::string& address) {
   serve_options.drain_timeout = std::chrono::milliseconds(500);
   serve_options.close_timeout = std::chrono::seconds(5);
   serve_options.predict_concurrency = 4;
+  // The edition this model was authored against: the bare base, kept until its
+  // author deliberately moves it (it selects a source build's own
+  // "2026.06-dev.<git>" spelling as readily as the sealed name).
+  serve_options.workflow_edition = "2026.06";
 
   rlmesh::Model moved = std::move(*model);
   moved.cancel();

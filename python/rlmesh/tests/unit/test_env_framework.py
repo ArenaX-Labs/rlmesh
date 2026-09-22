@@ -271,6 +271,7 @@ def test_serve_env_normalizes_framework_for_guards(
             tags: object = None,
             framework: object = None,
             device: object = None,
+            options: object = None,
         ) -> None:
             captured["framework"], captured["device"] = framework, device
             self.address = address

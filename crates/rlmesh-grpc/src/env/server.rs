@@ -26,8 +26,8 @@ use rlmesh_proto::env::v1::{
     join_response,
 };
 use rlmesh_proto::{
-    capability_map, evaluate_handshake, generation_mismatch_message, peer_info,
-    supported_workflow_editions,
+    capability_map, declared_workflow_edition, evaluate_handshake, generation_mismatch_message,
+    peer_info, supported_workflow_editions,
 };
 
 use super::env_error_to_proto;
@@ -105,6 +105,10 @@ pub struct GrpcEnvServer<E: Environment> {
     /// every other client's episodes. We therefore admit only one Join stream at
     /// a time and reject the rest until the active one ends.
     join_active: Arc<std::sync::atomic::AtomicBool>,
+    /// WANT: the edition this env declares on every handshake response, taken
+    /// from [`ServeOptions::workflow_edition`]. `None` declares this build's
+    /// current edition, which is `max(can)` here and so caps no runtime.
+    declared_workflow_edition: Option<String>,
 }
 
 /// RAII guard that releases the single-Join-stream slot when dropped.
@@ -147,6 +151,12 @@ impl<E: Environment> GrpcEnvServer<E> {
             std::env::var_os(crate::lifecycle::ALLOW_REMOTE_SHUTDOWN_ENV),
         );
         let token = serve_options.token.clone().unwrap_or_default();
+        let declared_workflow_edition = serve_options
+            .workflow_edition
+            .as_deref()
+            .map(str::trim)
+            .filter(|edition| !edition.is_empty())
+            .map(str::to_string);
         Self {
             env,
             episode_tracker: Arc::new(Mutex::new(EpisodeTracker::new())),
@@ -155,6 +165,7 @@ impl<E: Environment> GrpcEnvServer<E> {
             token,
             activity_tx,
             join_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            declared_workflow_edition,
         }
     }
 
@@ -260,6 +271,10 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
                 .then(|| generation_mismatch_message(&req.protocol_generation)),
             capabilities: capability_map(capabilities),
             supported_workflow_editions: supported_workflow_editions(),
+            preferred_workflow_edition: declared_workflow_edition(
+                self.declared_workflow_edition.as_deref(),
+            )
+            .to_string(),
         };
 
         Ok(Response::new(HandshakeResponse {
@@ -317,6 +332,7 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
             // lane ops drain, so a serial op always observes quiescent lanes and
             // a Close reports final tracker state.
             let mut inflight: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
+            let mut first_request = true;
             while let Some(req_result) = req_stream.next().await {
                 let req = match req_result {
                     Ok(req) => req,
@@ -325,6 +341,15 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
                         break;
                     }
                 };
+
+                // The first message settles the session edition: the runtime's
+                // ConfigureEnv pin (the Configure arm), or, for a runtime that sends
+                // none, this build's current edition.
+                if std::mem::take(&mut first_request)
+                    && !matches!(req.kind, Some(join_request::Kind::Configure(_)))
+                {
+                    env.pin_workflow_edition(rlmesh_proto::Edition::current());
+                }
 
                 if supports_lanes && is_lane_scoped(&req) {
                     let env = env.clone();
@@ -682,26 +707,37 @@ async fn handle_env_request<E: Environment>(
             }))
         }
         Some(join_request::Kind::Configure(configure_req)) => {
-            // Pin the env to the runtime-selected workflow edition (the standard bind
-            // step, sent first). Reject one this build cannot drive (membership in
-            // the support window), mirroring the model's enforce_route_floor; honor
-            // it as a no-op while a single edition exists (the floor is always
-            // CURRENT). An empty pin is a legacy/unset runtime — accepted as a no-op.
-            let edition = configure_req.selected_workflow_edition;
-            if !edition.is_empty() && !rlmesh_proto::is_supported_edition(&edition) {
-                Some(join_response::Kind::Error(ProtoEnvError {
+            // The runtime's edition pin, its first Join message: any cohort spelling
+            // of a retained base is accepted (the parse boundary), mirroring the
+            // model's enforce_route_floor. An empty pin is an unset runtime and
+            // settles the session at this build's current edition.
+            let pin = configure_req.selected_workflow_edition;
+            let edition = if pin.is_empty() {
+                Ok(rlmesh_proto::Edition::current())
+            } else {
+                rlmesh_proto::parse_retained_edition(&pin)
+            };
+            match edition {
+                Ok(edition) => {
+                    env.pin_workflow_edition(edition);
+                    tracing::info!(
+                        selected_workflow_edition = %pin,
+                        workflow_edition_base = %edition,
+                        "env pinned to runtime-selected edition"
+                    );
+                    Some(join_response::Kind::Configure(ConfigureEnvResponse {}))
+                }
+                Err(_) => Some(join_response::Kind::Error(ProtoEnvError {
                     code: ProtoEnvErrorCode::InvalidAction as i32,
                     message: format!(
-                        "runtime pinned this env to workflow edition {edition:?}, which this env \
+                        "runtime pinned this env to workflow edition {pin:?}, which this env \
                          build does not implement (implements {:?})",
                         rlmesh_proto::SUPPORTED_WORKFLOW_EDITIONS
                     ),
                     is_recoverable: false,
                     debug_info: String::new(),
                     interrupted_episodes: vec![],
-                }))
-            } else {
-                Some(join_response::Kind::Configure(ConfigureEnvResponse {}))
+                })),
             }
         }
         None => Some(join_response::Kind::Error(ProtoEnvError {
@@ -1183,6 +1219,8 @@ mod tests {
         /// A lockstep env serializes its own ops (as the wire adapter does for
         /// a real one); the server itself holds no lock.
         op_lock: tokio::sync::Mutex<()>,
+        /// The edition pins and resets it received, in order.
+        events: std::sync::Mutex<Vec<String>>,
     }
 
     impl ScriptedVectorEnv {
@@ -1196,7 +1234,12 @@ mod tests {
                 steps: std::sync::Mutex::new(steps.into()),
                 probe: None,
                 op_lock: tokio::sync::Mutex::new(()),
+                events: std::sync::Mutex::new(Vec::new()),
             }
+        }
+
+        fn take_events(&self) -> Vec<String> {
+            std::mem::take(&mut *self.events.lock().unwrap())
         }
 
         /// A handshake-only env: 1 lane, no scripted steps.
@@ -1230,10 +1273,14 @@ mod tests {
         fn env_contract(&self) -> &SpaceEnvContract {
             &self.contract
         }
+        fn pin_workflow_edition(&self, edition: rlmesh_proto::Edition) {
+            self.events.lock().unwrap().push(format!("pin:{edition}"));
+        }
         async fn reset(
             &self,
             _req: ResetRequest,
         ) -> Result<(ResetResponse, EndpointPhases), EnvError> {
+            self.events.lock().unwrap().push("reset".to_string());
             Ok((ResetResponse::default(), EndpointPhases::default()))
         }
         async fn step(
@@ -1288,6 +1335,7 @@ mod tests {
                     .iter()
                     .map(|edition| edition.to_string())
                     .collect(),
+                preferred_workflow_edition: String::new(),
             }),
         }
     }
@@ -1642,11 +1690,89 @@ mod tests {
             base.supported_workflow_editions,
             supported_workflow_editions()
         );
+        // WANT alongside CAN: an env with no explicit pin declares this build's
+        // current edition, which is `max(can)` here and so caps no runtime.
+        assert_eq!(base.preferred_workflow_edition, CURRENT_WORKFLOW_EDITION);
         // PeerInfo is populated both directions; the response names the env.
         assert_eq!(base.peer_info.as_ref().unwrap().component, "rlmesh-env");
         // The env advertises no capabilities; the map is the pairwise channel,
         // but there is no behavior-bearing env capability to declare.
         assert!(base.capabilities.is_empty());
+    }
+
+    /// `ServeOptions.workflow_edition` is the env's sticky declaration: it is
+    /// what the handshake response carries as this peer's WANT, so a runtime
+    /// caps the session there instead of at the env's `max(can)`.
+    #[tokio::test]
+    async fn serve_options_workflow_edition_is_the_declared_want() {
+        use crate::lifecycle::{ServeOptions, ShutdownTrigger};
+        use std::sync::Arc;
+
+        let server = GrpcEnvServer::from_shared(
+            Arc::new(ScriptedVectorEnv::handshake_only()),
+            ShutdownTrigger::new(),
+            ServeOptions {
+                // Padded, and deliberately a spelling this build need not offer:
+                // the bare field takes no validation, so this pins that the
+                // response carries it verbatim, trimmed.
+                workflow_edition: Some("  2026.06  ".to_string()),
+                ..ServeOptions::default()
+            },
+            None,
+        );
+
+        let response = EnvService::handshake(
+            &server,
+            Request::new(handshake_request(
+                PROTOCOL_GENERATION,
+                &[CURRENT_WORKFLOW_EDITION],
+            )),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+
+        let base = response.base.unwrap();
+        assert_eq!(base.preferred_workflow_edition, "2026.06");
+        // CAN is untouched by the declaration: a pin narrows the WANT only.
+        assert_eq!(
+            base.supported_workflow_editions,
+            supported_workflow_editions()
+        );
+    }
+
+    /// A blank declaration is no declaration: the response is byte-identical to
+    /// one from a build without the field.
+    #[tokio::test]
+    async fn blank_serve_options_workflow_edition_declares_nothing() {
+        use crate::lifecycle::{ServeOptions, ShutdownTrigger};
+        use std::sync::Arc;
+
+        let server = GrpcEnvServer::from_shared(
+            Arc::new(ScriptedVectorEnv::handshake_only()),
+            ShutdownTrigger::new(),
+            ServeOptions {
+                workflow_edition: Some("  ".to_string()),
+                ..ServeOptions::default()
+            },
+            None,
+        );
+
+        let response = EnvService::handshake(
+            &server,
+            Request::new(handshake_request(
+                PROTOCOL_GENERATION,
+                &[CURRENT_WORKFLOW_EDITION],
+            )),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+
+        assert_eq!(
+            response.base.unwrap().preferred_workflow_edition,
+            CURRENT_WORKFLOW_EDITION
+        );
     }
 
     #[tokio::test]
@@ -1778,10 +1904,16 @@ mod tests {
     async fn configure_env_pins_edition_and_rejects_unsupported() {
         use std::sync::Arc;
 
+        use futures::StreamExt;
+        use rlmesh_proto::env::v1::env_service_client::EnvServiceClient;
+        use rlmesh_proto::env::v1::env_service_server::EnvServiceServer;
         use rlmesh_proto::env::v1::{
             ConfigureEnvRequest, JoinRequest, join_request, join_response,
         };
         use tokio::sync::Mutex;
+        use tokio_stream::wrappers::ReceiverStream;
+
+        use crate::lifecycle::{ServeOptions, ShutdownTrigger};
 
         let env = Arc::new(terminating_env(rlmesh_spaces::AutoresetMode::Disabled));
         let tracker = Arc::new(Mutex::new(super::super::episode::EpisodeTracker::new()));
@@ -1792,8 +1924,10 @@ mod tests {
             request_id: "configure".to_string(),
         };
 
-        // The current edition (the only one in the window) is accepted; an empty
-        // pin (legacy/unset runtime) is accepted as a no-op.
+        // The current edition (the only one in the window) is accepted and
+        // recorded on the env; an empty pin (an unset runtime) settles the
+        // session at this build's current edition.
+        let current = rlmesh_proto::Edition::current();
         for pin in [rlmesh_proto::CURRENT_WORKFLOW_EDITION, ""] {
             let ok = super::handle_env_request(configure(pin), env.clone(), tracker.clone(), false)
                 .await;
@@ -1801,13 +1935,97 @@ mod tests {
                 matches!(ok.kind, Some(join_response::Kind::Configure(_))),
                 "pin {pin:?} should be accepted"
             );
+            assert_eq!(env.take_events(), vec![format!("pin:{current}")]);
         }
 
-        // An edition this build cannot drive is rejected.
+        // An edition this build cannot drive is rejected, naming the pin and
+        // this build's editions, and never reaches the env.
         let bad =
             super::handle_env_request(configure("2099.01"), env.clone(), tracker.clone(), false)
                 .await;
-        assert!(matches!(bad.kind, Some(join_response::Kind::Error(_))));
+        match bad.kind {
+            Some(join_response::Kind::Error(error)) => {
+                assert!(!error.is_recoverable);
+                for expected in [
+                    "\"2099.01\"",
+                    &format!("{:?}", rlmesh_proto::SUPPORTED_WORKFLOW_EDITIONS),
+                ] {
+                    assert!(
+                        error.message.contains(expected),
+                        "missing {expected:?} in: {}",
+                        error.message
+                    );
+                }
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        assert!(env.take_events().is_empty());
+
+        // Over the wire, this build's client pins the env before its first
+        // reset; a runtime built before the pin existed opens with Reset and
+        // the session settles at this build's current edition instead.
+        let serve = |env: Arc<ScriptedVectorEnv>| {
+            let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let addr = listener.local_addr().unwrap();
+            drop(listener);
+            let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+            tokio::spawn(async move {
+                tonic::transport::Server::builder()
+                    .add_service(EnvServiceServer::new(GrpcEnvServer::from_shared(
+                        env,
+                        ShutdownTrigger::new(),
+                        ServeOptions::default(),
+                        None,
+                    )))
+                    .serve_with_shutdown(addr, async {
+                        let _ = shutdown_rx.await;
+                    })
+                    .await
+            });
+            (addr, shutdown_tx)
+        };
+
+        let (addr, _pinning_server) = serve(env.clone());
+        let connect_options =
+            crate::connect::ConnectOptions::with_deadline(std::time::Duration::from_secs(5))
+                .backoff(std::time::Duration::from_millis(10));
+        let mut client =
+            crate::EnvClient::connect_with_retry(&format!("tcp://{addr}"), "", &connect_options)
+                .await
+                .expect("test server did not start");
+        client.handshake().await.expect("handshake");
+        client.reset(ResetRequest::default()).await.expect("reset");
+        assert_eq!(
+            env.take_events(),
+            vec![format!("pin:{current}"), "reset".to_string()]
+        );
+
+        let (addr, _unpinned_server) = serve(env.clone());
+        let endpoint = format!("http://{addr}");
+        let mut old_runtime = loop {
+            match EnvServiceClient::connect(endpoint.clone()).await {
+                Ok(client) => break client,
+                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+            }
+        };
+        let (tx, rx) = tokio::sync::mpsc::channel::<JoinRequest>(4);
+        let mut stream = old_runtime
+            .join(ReceiverStream::new(rx))
+            .await
+            .expect("join accepted")
+            .into_inner();
+        tx.send(JoinRequest {
+            kind: Some(join_request::Kind::Reset(ResetRequest::default())),
+            request_id: "reset".to_string(),
+        })
+        .await
+        .unwrap();
+        let reply = stream.next().await.expect("reset reply").unwrap();
+        assert!(matches!(reply.kind, Some(join_response::Kind::Reset(_))));
+        assert_eq!(
+            env.take_events(),
+            vec![format!("pin:{current}"), "reset".to_string()]
+        );
     }
 
     /// A 2-lane vector env whose first step terminates lane 0 and whose later

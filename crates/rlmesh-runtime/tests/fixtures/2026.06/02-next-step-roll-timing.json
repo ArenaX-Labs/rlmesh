@@ -1,0 +1,646 @@
+{
+  "budget_ends_a_roll": {
+    "hook_events": [
+      {
+        "episodes": [
+          "ep-1"
+        ],
+        "event": "started"
+      },
+      {
+        "episodes": [
+          "ep-2"
+        ],
+        "event": "started"
+      },
+      {
+        "episodes": [
+          "ep-1",
+          "ep-2"
+        ],
+        "event": "observation"
+      },
+      {
+        "episodes": [
+          "ep-1"
+        ],
+        "event": "step"
+      },
+      {
+        "episodes": [
+          "ep-1",
+          "ep-2"
+        ],
+        "event": "observation"
+      },
+      {
+        "episodes": [
+          "ep-1"
+        ],
+        "event": "step"
+      },
+      {
+        "episodes": [
+          "ep-1"
+        ],
+        "event": "completed"
+      },
+      {
+        "episodes": [
+          "ep-3"
+        ],
+        "event": "started"
+      },
+      {
+        "episodes": [
+          "ep-3",
+          "ep-2"
+        ],
+        "event": "observation"
+      },
+      {
+        "episodes": [
+          "ep-3"
+        ],
+        "event": "step"
+      },
+      {
+        "episodes": [
+          "ep-3",
+          "ep-2"
+        ],
+        "event": "observation"
+      },
+      {
+        "episodes": [
+          "ep-3"
+        ],
+        "event": "step"
+      },
+      {
+        "episodes": [
+          "ep-3"
+        ],
+        "event": "completed"
+      },
+      {
+        "episodes": [
+          "ep-2"
+        ],
+        "event": "completed"
+      },
+      {
+        "episodes": [
+          "ep-4"
+        ],
+        "event": "started"
+      },
+      {
+        "episodes": [
+          "ep-5"
+        ],
+        "event": "started"
+      },
+      {
+        "episodes": [
+          "ep-4",
+          "ep-5"
+        ],
+        "event": "observation"
+      },
+      {
+        "episodes": [
+          "ep-4"
+        ],
+        "event": "step"
+      },
+      {
+        "episodes": [
+          "ep-4"
+        ],
+        "event": "completed"
+      }
+    ],
+    "model_lifecycle": [
+      {
+        "call": "predict",
+        "episodes": [
+          "ep-1",
+          "ep-2"
+        ]
+      },
+      {
+        "call": "predict",
+        "episodes": [
+          "ep-1",
+          "ep-2"
+        ]
+      },
+      {
+        "call": "evict",
+        "episodes": [
+          "ep-1"
+        ]
+      },
+      {
+        "call": "predict",
+        "episodes": [
+          "ep-3",
+          "ep-2"
+        ]
+      },
+      {
+        "call": "predict",
+        "episodes": [
+          "ep-3",
+          "ep-2"
+        ]
+      },
+      {
+        "call": "evict",
+        "episodes": [
+          "ep-2",
+          "ep-3"
+        ]
+      },
+      {
+        "call": "predict",
+        "episodes": [
+          "ep-4",
+          "ep-5"
+        ]
+      },
+      {
+        "call": "evict",
+        "episodes": [
+          "ep-4",
+          "ep-5"
+        ]
+      }
+    ],
+    "report": {
+      "episodes": [
+        {
+          "cumulative_reward": 1.0,
+          "env_index": 0,
+          "episode_index": 1,
+          "seed": null,
+          "step_count": 1,
+          "success": false,
+          "terminated": true,
+          "trial_index": null,
+          "truncated": false
+        },
+        {
+          "cumulative_reward": 1.0,
+          "env_index": 0,
+          "episode_index": 3,
+          "seed": null,
+          "step_count": 1,
+          "success": false,
+          "terminated": true,
+          "trial_index": null,
+          "truncated": false
+        },
+        {
+          "cumulative_reward": 3.0,
+          "env_index": 1,
+          "episode_index": 2,
+          "seed": null,
+          "step_count": 3,
+          "success": null,
+          "terminated": true,
+          "trial_index": null,
+          "truncated": false
+        },
+        {
+          "cumulative_reward": 1.0,
+          "env_index": 0,
+          "episode_index": 4,
+          "seed": null,
+          "step_count": 1,
+          "success": false,
+          "terminated": true,
+          "trial_index": null,
+          "truncated": false
+        }
+      ],
+      "total_episodes": 4,
+      "total_steps": 5
+    }
+  },
+  "four_lanes": {
+    "env_resets": 1,
+    "hook_events": [
+      {
+        "episodes": [
+          "ep-1"
+        ],
+        "event": "started"
+      },
+      {
+        "episodes": [
+          "ep-2"
+        ],
+        "event": "started"
+      },
+      {
+        "episodes": [
+          "ep-3"
+        ],
+        "event": "started"
+      },
+      {
+        "episodes": [
+          "ep-4"
+        ],
+        "event": "started"
+      },
+      {
+        "episodes": [
+          "ep-1",
+          "ep-2",
+          "ep-3",
+          "ep-4"
+        ],
+        "event": "observation"
+      },
+      {
+        "episodes": [
+          "ep-1"
+        ],
+        "event": "step"
+      },
+      {
+        "episodes": [
+          "ep-1",
+          "ep-2",
+          "ep-3",
+          "ep-4"
+        ],
+        "event": "observation"
+      },
+      {
+        "episodes": [
+          "ep-1"
+        ],
+        "event": "step"
+      },
+      {
+        "episodes": [
+          "ep-1",
+          "ep-2",
+          "ep-3",
+          "ep-4"
+        ],
+        "event": "observation"
+      },
+      {
+        "episodes": [
+          "ep-1"
+        ],
+        "event": "step"
+      },
+      {
+        "episodes": [
+          "ep-1"
+        ],
+        "event": "completed"
+      },
+      {
+        "episodes": [
+          "ep-3"
+        ],
+        "event": "completed"
+      },
+      {
+        "episodes": [
+          "ep-5"
+        ],
+        "event": "started"
+      },
+      {
+        "episodes": [
+          "ep-6"
+        ],
+        "event": "started"
+      },
+      {
+        "episodes": [
+          "ep-5",
+          "ep-2",
+          "ep-6",
+          "ep-4"
+        ],
+        "event": "observation"
+      },
+      {
+        "episodes": [
+          "ep-5"
+        ],
+        "event": "step"
+      },
+      {
+        "episodes": [
+          "ep-2"
+        ],
+        "event": "completed"
+      },
+      {
+        "episodes": [
+          "ep-7"
+        ],
+        "event": "started"
+      },
+      {
+        "episodes": [
+          "ep-5",
+          "ep-7",
+          "ep-6",
+          "ep-4"
+        ],
+        "event": "observation"
+      },
+      {
+        "episodes": [
+          "ep-5"
+        ],
+        "event": "step"
+      },
+      {
+        "episodes": [
+          "ep-4"
+        ],
+        "event": "completed"
+      },
+      {
+        "episodes": [
+          "ep-8"
+        ],
+        "event": "started"
+      },
+      {
+        "episodes": [
+          "ep-5",
+          "ep-7",
+          "ep-6",
+          "ep-8"
+        ],
+        "event": "observation"
+      },
+      {
+        "episodes": [
+          "ep-5"
+        ],
+        "event": "step"
+      },
+      {
+        "episodes": [
+          "ep-5"
+        ],
+        "event": "completed"
+      },
+      {
+        "episodes": [
+          "ep-6"
+        ],
+        "event": "completed"
+      },
+      {
+        "episodes": [
+          "ep-9"
+        ],
+        "event": "started"
+      },
+      {
+        "episodes": [
+          "ep-10"
+        ],
+        "event": "started"
+      },
+      {
+        "episodes": [
+          "ep-9",
+          "ep-7",
+          "ep-10",
+          "ep-8"
+        ],
+        "event": "observation"
+      },
+      {
+        "episodes": [
+          "ep-9"
+        ],
+        "event": "step"
+      },
+      {
+        "episodes": [
+          "ep-9",
+          "ep-7",
+          "ep-10",
+          "ep-8"
+        ],
+        "event": "observation"
+      },
+      {
+        "episodes": [
+          "ep-9"
+        ],
+        "event": "step"
+      },
+      {
+        "episodes": [
+          "ep-7"
+        ],
+        "event": "completed"
+      },
+      {
+        "episodes": [
+          "ep-11"
+        ],
+        "event": "started"
+      },
+      {
+        "episodes": [
+          "ep-9"
+        ],
+        "event": "completed"
+      },
+      {
+        "episodes": [
+          "ep-10"
+        ],
+        "event": "completed"
+      }
+    ],
+    "predicts": 8,
+    "report": {
+      "episodes": [
+        {
+          "cumulative_reward": 2.0,
+          "env_index": 0,
+          "episode_index": 1,
+          "seed": null,
+          "step_count": 2,
+          "success": false,
+          "terminated": true,
+          "trial_index": null,
+          "truncated": false
+        },
+        {
+          "cumulative_reward": 2.0,
+          "env_index": 2,
+          "episode_index": 3,
+          "seed": null,
+          "step_count": 2,
+          "success": null,
+          "terminated": true,
+          "trial_index": null,
+          "truncated": false
+        },
+        {
+          "cumulative_reward": 3.0,
+          "env_index": 1,
+          "episode_index": 2,
+          "seed": null,
+          "step_count": 3,
+          "success": null,
+          "terminated": true,
+          "trial_index": null,
+          "truncated": false
+        },
+        {
+          "cumulative_reward": 4.0,
+          "env_index": 3,
+          "episode_index": 4,
+          "seed": null,
+          "step_count": 4,
+          "success": null,
+          "terminated": true,
+          "trial_index": null,
+          "truncated": false
+        },
+        {
+          "cumulative_reward": 2.0,
+          "env_index": 0,
+          "episode_index": 5,
+          "seed": null,
+          "step_count": 2,
+          "success": false,
+          "terminated": true,
+          "trial_index": null,
+          "truncated": false
+        },
+        {
+          "cumulative_reward": 2.0,
+          "env_index": 2,
+          "episode_index": 6,
+          "seed": null,
+          "step_count": 2,
+          "success": null,
+          "terminated": true,
+          "trial_index": null,
+          "truncated": false
+        },
+        {
+          "cumulative_reward": 3.0,
+          "env_index": 1,
+          "episode_index": 7,
+          "seed": null,
+          "step_count": 3,
+          "success": null,
+          "terminated": true,
+          "trial_index": null,
+          "truncated": false
+        },
+        {
+          "cumulative_reward": 2.0,
+          "env_index": 0,
+          "episode_index": 9,
+          "seed": null,
+          "step_count": 2,
+          "success": false,
+          "terminated": true,
+          "trial_index": null,
+          "truncated": false
+        },
+        {
+          "cumulative_reward": 2.0,
+          "env_index": 2,
+          "episode_index": 10,
+          "seed": null,
+          "step_count": 2,
+          "success": null,
+          "terminated": true,
+          "trial_index": null,
+          "truncated": false
+        }
+      ],
+      "total_episodes": 9,
+      "total_steps": 8
+    }
+  },
+  "simultaneous_roll": {
+    "observations": [
+      {
+        "episodes": [
+          "ep-1",
+          "ep-2"
+        ],
+        "infos": null,
+        "observation": [
+          0
+        ],
+        "raw_observation": [
+          0
+        ]
+      },
+      {
+        "episodes": [
+          "ep-1",
+          "ep-2"
+        ],
+        "infos": null,
+        "observation": [
+          0
+        ],
+        "raw_observation": [
+          0
+        ]
+      },
+      {
+        "episodes": [
+          "ep-3",
+          "ep-4"
+        ],
+        "infos": [
+          [
+            "phase",
+            "roll"
+          ]
+        ],
+        "observation": [
+          0
+        ],
+        "raw_observation": [
+          0
+        ]
+      }
+    ],
+    "step_infos": [
+      [
+        [
+          "phase",
+          "step"
+        ]
+      ],
+      null,
+      [
+        [
+          "phase",
+          "step"
+        ]
+      ]
+    ]
+  }
+}

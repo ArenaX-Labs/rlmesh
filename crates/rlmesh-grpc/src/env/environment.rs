@@ -1,6 +1,7 @@
 //! Environment trait for environments served over RLMesh gRPC.
 
 use async_trait::async_trait;
+use rlmesh_proto::Edition;
 pub use rlmesh_proto::env::v1::{
     CloseEnvsResponse, RenderRequest, RenderResponse, ResetRequest, ResetResponse, StepRequest,
     StepResponse,
@@ -41,6 +42,13 @@ pub trait Environment: Send + Sync {
     fn supports_lanes(&self) -> bool {
         false
     }
+
+    /// The workflow edition a Join session runs at, recorded once the session
+    /// settles it: the runtime's `ConfigureEnv` pin (its first Join message), or
+    /// this build's current edition when the session opens with `Reset` instead
+    /// (a runtime built before the pin existed sends none). Branch every
+    /// edition-governed env-side default on it. Default: nothing to branch.
+    fn pin_workflow_edition(&self, _edition: Edition) {}
 
     /// Reset the whole vector (empty `env_indices`) or just the named lanes.
     /// A reset naming lanes replies only those lanes, positionally.

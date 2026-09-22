@@ -11,7 +11,7 @@ RLMesh is pre-1.0 (`0.x`). "Stable" means the surface we intend to keep and will
 Stable workflows include documented public APIs, supported CLI flows, and supported remote environment/model interactions.
 
 - Imports, signatures, and documented behavior follow the version contract: a breaking change to a stable symbol ships in a minor release with a migration note in the {doc}`changelog`.
-- Peers must currently run the same release. Cross-version acceptance, where newer runtimes keep accepting older stable clients and packages, is on the roadmap below, not a guarantee today.
+- A participant authored against a sealed workflow edition keeps working with later releases of the other participants, and the session runs at its declared edition. What that covers today, and what it does not yet, is under [Workflow Editions](#workflow-editions) below.
 - New features may require newer packages or capabilities, but older stable workflows either keep working or fail clearly.
 
 ## Preview and Experimental
@@ -21,18 +21,11 @@ Preview APIs are intended to become stable but may still change with migration n
 Torch and JAX backends and sandbox helpers are experimental. The `MultiBinary`, `MultiDiscrete`, `Text`, and `Tuple` space wrappers are also experimental; see {doc}`gymnasium` for the per-space stability labels, which track the API surface policy in `api_metadata.json`.
 
 ```{warning}
-The dtype values `int8/16` and `uint16/32/64` are not negotiated. A peer from an
-earlier release fails with a decode error naming the unknown dtype when it meets an environment
-that uses them, so run both ends on the same release. An edition-gated dtype negotiation floor is
-on the roadmap below.
+The dtype values `int8/16` and `uint16/32/64` are not negotiated. A peer from an earlier release fails with a decode error naming the unknown dtype when it meets an environment that uses them: a clean refusal at the decoding peer, not a conversion. A per-leg dtype ceiling that refuses on the sending side instead is on the roadmap below.
 ```
 
 ```{warning}
-The `rlmesh-wire-v1` protocol generation stabilized at 0.1.0, and the supported-generation window
-holds that single generation. A future incompatible wire change mints a new generation rather than
-mutating v1; a cross-version generation window is on the roadmap below. Prerelease and local builds
-carry exact cohort suffixes, so mismatched moving builds fail loudly instead of guessing they are
-compatible.
+The `rlmesh-wire-v1` protocol generation stabilized at 0.1.0, and the supported-generation window holds that single generation. A future incompatible wire change mints a new generation rather than mutating v1, and it would live only in the runtime (see [The runtime is the interpreter](#the-runtime-is-the-interpreter)). Prerelease and local builds carry exact cohort suffixes, so mismatched moving builds fail loudly instead of guessing they are compatible.
 ```
 
 ## Rust crates
@@ -64,18 +57,52 @@ The floor harness runs via `mise run test:python:floors`, which builds a `cp310`
 
 ## Workflow Editions
 
-Workflow semantics are governed by a negotiated workflow edition. Each base edition names a behavioral contract documented in {doc}`editions/index`; prerelease and local builds append exact cohort suffixes. The handshake only declares editions; the runtime selects the highest edition mutual across the env, the model, and the runtime itself. Editions change only on deliberate semantic redesigns; new features and new APIs do not mint editions. The `2026.06` edition sealed at 0.1.0.
+Workflow semantics are governed by a negotiated workflow edition. Each base edition names a behavioral contract documented in {doc}`editions/index`; prerelease and local builds append exact cohort suffixes. Editions change only on deliberate semantic redesigns; new features and new APIs do not mint editions. The `2026.06` edition sealed at 0.1.0.
+
+An edition is a sticky declaration in a participant's source, not a version: it records the contract an env or model was authored against, and upgrading the rlmesh package never moves it. How to declare one, and which surface wins when several are set, is in {doc}`editions/index`.
+
+### The guarantee
+
+A participant authored against a sealed edition keeps working with any later participant, as long as the later one does not require something the older one cannot express. The session runs at the older participant's declared edition. A genuinely new type the old side never knew is a clean refusal, not a silent conversion.
+
+### How the session edition is chosen
+
+Every participant brings two things to its handshake. `supported_workflow_editions` is what it **can** run: the retained list of editions its build implements. `preferred_workflow_edition` is what it **wants**: the one edition it declares. The runtime is the only participant that sees every other one, so it alone selects, and the rule is the highest edition every participant can run that no participant's declaration excludes (`negotiate_session_floor` in `rlmesh-proto`). A participant that declares nothing is read as wanting the newest edition it can run, which is what every build made before the field existed means, so the rule is a no-op against a 0.1.0 peer. A declaration is a ceiling, not an exact demand: a bare `YYYY.MM` admits every cohort of that base and anything older, so `2026.06` works unchanged on a dev or prerelease build whose only offer is `2026.06-<cohort>`, and a declaration above what another participant can run never lifts the session past that participant. A declaration that carries a cohort suffix pins to that exact moving build. The runtime is itself a participant, so it can hold a session below what env and model could run together; when it does, it logs whether its build or its own declaration was the cause. When no edition satisfies everyone, the session is refused before any Join stream opens, with a message naming what each tier (env, model, runtime) wants and can run. The chosen edition is then pinned on both legs: `ResolveAdapterRequest.selected_workflow_edition` to the model, and `ConfigureEnvRequest.selected_workflow_edition` as the env's first Join message.
+
+### The runtime is the interpreter
+
+Env and model never talk to each other; each talks only to the runtime, which decodes and rebuilds every message it relays. So one edition governs the whole session, and the runtime reads every edition-governed default (the step bound, the reserved reset option, which autoreset modes it owns, the success info keys, the conformance-warning key) from a per-edition table keyed by that one value, never from a string compare. Ceilings, by contrast, are per leg: what the runtime may emit toward the env is bounded by what the env's build can decode, and likewise for the model, so a type one leg cannot express is refused on that leg alone. That per-leg ceiling is the decided design, not yet a populated structure: nothing in this tree emits a type a 0.1.0 peer cannot decode, so there is nothing for it to refuse yet (see the roadmap).
+
+The same shape fixes what a future `rlmesh-wire-v2` would look like: a runtime-only dual stack. The runtime registers both generations and speaks v1 to a v1 leg and v2 to a v2 leg. A served env or model never needs both, and a generation bump never partitions a fleet.
+
+### What is part of the contract
+
+- **The 256 MiB message cap.** One encoded message on any env or model leg, in either direction, is bounded by `rlmesh_grpc::MAX_MESSAGE_SIZE`; an oversized message fails at the sender's encode or the receiver's decode with the gRPC status `OUT_OF_RANGE`. It is a fixed constant of `rlmesh-wire-v1`, not a knob, and no later release lowers it (details in {doc}`user-guide/performance`).
+- **Sealed editions are never dropped.** `rlmesh.toml` lists the retained editions, the `rlmesh-proto` crate ships a copy of that list, and every build generates its offer from it at build time. `mise run policy:check` fails if the generated list and the manifest disagree, if a sealed edition leaves the list, or if the list lost an edition the last release tag's manifest had sealed.
+- **The wire grows additively.** Field tags are never removed or renumbered within `rlmesh-wire-v1` (`mise run protocol:breaking`). A new dtype, `AutoresetMode`, or `SpaceSpec` arm is a new type an old peer refuses rather than decodes wrongly (the two exceptions, error codes and `MetaValue` kinds, are listed under "Not yet guaranteed"), and an emitter may only send it toward a leg that can decode it; the emitter-side rules are in {doc}`editions/index`.
+
+### The machine proof
+
+`mise run test:crossver` builds a release-cohort wheel from this tree and runs it against the published wheel pinned in `tests/system/crossver.lock`: old and new env servers against old and new runtimes, old and new served models against the other side's runtime, both same-version controls, and two forged refusals (a pin of an edition no build implements, and a `rlmesh-wire-v2` handshake). Each real cell must reproduce the committed trace and report the server's handshake result and the session edition. It runs as its own CI job; `docs/testing.md` describes the cells.
+
+### Not yet guaranteed
+
+- Only one edition exists. Negotiation, pinning, and the defaults table are exercised, but no session has run at an edition other than the participants' newest, so edition-driven behavior divergence is untested until a second edition is minted.
+- The OSS runtime refuses; it does not convert. A dtype, enum value, or space arm the target leg cannot decode is a decode error at that peer today, not a re-encoding on its behalf. Two unknown-value paths still fold instead of refusing: an unknown env or model error code reads as `UNSPECIFIED`, and a `MetaValue` with an unknown arm reads as `null`, so an emitter must not put new semantics on either.
+- The per-leg ceiling is not populated, so a refusal happens at the decoding peer rather than at the sending runtime.
+- These promises become binding at 1.0. Until then the cross-version matrix is what holds them, and it covers exactly the cells listed above.
 
 ## Versioning and forward-compatibility roadmap
 
-Today, peers must run the same release. Forward-compatibility guarantees become binding only once the code enforces them and a cross-version path is proven. The planned work, in order:
+Forward-compatibility guarantees become binding only once the code enforces them and a cross-version path is proven. Where that stands, by release:
 
 - **v0.1.0.** First stable release. Seals the `2026.06` workflow edition, freezing its spec checksum, and freezes the `rlmesh-wire-v1` protocol generation.
-- **Hardening, targeted for 0.2.** A cross-version test harness and a shared compatibility helper, stricter protocol checks, and the workflow edition made load-bearing in the runtime. This enables edition-driven behavior and a cross-version path once a second edition exists.
-- **Forward tolerance, after hardening.** Edition retention guarantees, a dtype negotiation floor, and adapter forward-tolerance.
-- **Second edition, when a real semantic change requires one.** Mint a second workflow edition to exercise negotiation against a real semantic change.
+- **Shipped in 0.2.** The workflow edition made load-bearing: a typed edition and per-edition defaults table in the runtime; WANT/CAN negotiation over `preferred_workflow_edition`; declaration surfaces with a base-level ceiling; the `ConfigureEnv` pin on the env leg; the retained edition list generated from `rlmesh.toml` and gated by `policy:check`; the cross-version matrix in CI; `rlmesh.build_info()`; a reserved `MetaValue.null` arm.
+- **Second edition, when a real semantic change requires one.** Mint a second workflow edition and exercise negotiation and the defaults table against a real semantic change.
+- **Per-leg ceilings and the relay seam.** Record each leg's decodable dtypes, capabilities, and message cap at its handshake and refuse on the sending side. Re-encoding for an older leg is a seam the managed platform fills; the OSS default stays a clean refusal.
+- **`rlmesh init`.** A scaffolder that writes the edition declaration into a new project, so declaring is the default rather than a step to remember.
 - **Rust facade API, near term.** Stabilize the `rlmesh` facade crate and the CLI commands once they settle; the other crates stay internal with no stability promise.
-- **v1.0, date not set.** Forward-compatibility guarantees become binding: newer runtimes accept older stable clients, and sealed editions are never pruned. Gated on the hardening above and a proven cross-version path.
+- **v1.0, date not set.** Forward-compatibility guarantees become binding: newer runtimes accept older stable clients, and sealed editions are never pruned. Gated on the above and the proven cross-version path.
 
 ## Value conformance
 

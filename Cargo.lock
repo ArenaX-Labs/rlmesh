@@ -2909,6 +2909,7 @@ dependencies = [
  "futures",
  "prost",
  "rlmesh-proto",
+ "rlmesh-spaces",
  "serde",
  "serde_json",
  "thiserror",

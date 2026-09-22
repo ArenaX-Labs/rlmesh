@@ -31,7 +31,7 @@ extern "C" {
  * repr(C) layout/enum-discriminant change, an extern "C" signature retype, or a
  * symbol removal). Decoupled from the package semver below, which can't express
  * an ABI break. Appending a struct_size-guarded vtable field is NOT a break. */
-#define RLMESH_ABI_VERSION 3
+#define RLMESH_ABI_VERSION 4
 
 RLMESH_API uint32_t rlmesh_abi_version(void);
 
@@ -447,12 +447,13 @@ RLMESH_API RlmeshStatus rlmesh_model_run_local(RlmeshModel* model, const char* e
  * remote shutdown, no timeouts — serves until the process is killed). A 0 timeout
  * / concurrency means "unset". */
 typedef struct RlmeshServeOptions {
-  const char* token;          /* NULL/"" disables auth */
-  bool allow_remote_shutdown; /* honor a client-issued shutdown request */
-  uint64_t idle_timeout_ms;   /* 0 = never idle-shutdown */
-  uint64_t drain_timeout_ms;  /* 0 = unset */
-  uint64_t close_timeout_ms;  /* 0 = unset */
-  size_t predict_concurrency; /* 0 = default */
+  const char* token;            /* NULL/"" disables auth */
+  bool allow_remote_shutdown;   /* honor a client-issued shutdown request */
+  uint64_t idle_timeout_ms;     /* 0 = never idle-shutdown */
+  uint64_t drain_timeout_ms;    /* 0 = unset */
+  uint64_t close_timeout_ms;    /* 0 = unset */
+  size_t predict_concurrency;   /* 0 = default */
+  const char* workflow_edition; /* workflow edition this server declares; NULL/"" = none */
 } RlmeshServeOptions;
 
 /* Serve the model as a ModelService endpoint at `bind_address` (tcp://host:port

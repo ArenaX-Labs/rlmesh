@@ -36,6 +36,7 @@ def test_profiles_keep_system_surface_explicit() -> None:
     assert set(spec.environments) == {
         "basic-py310",
         "basic-py311",
+        "crossver-py311",
         "gymnasium-py311",
         "mujoco-py311",
         "perf-jax-py311",
@@ -45,7 +46,8 @@ def test_profiles_keep_system_surface_explicit() -> None:
     }
     assert spec.scenarios["counter-entrypoint"].kind == "trace"
     assert spec.scenarios["tensor-numpy-view"].kind == "artifact"
-    assert spec.profiles["compatibility"].environments == ()
+    assert spec.profiles["compatibility"].environments == ("crossver-py311",)
+    assert spec.scenarios["crossver-matrix"].kind == "external"
 
 
 def test_select_environments_defaults_to_basic() -> None:

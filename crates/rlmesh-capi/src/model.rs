@@ -763,6 +763,13 @@ pub struct RlmeshServeOptions {
     pub close_timeout_ms: u64,
     /// Max concurrent predicts (0 = default).
     pub predict_concurrency: usize,
+    /// Workflow edition this served model declares (its WANT), NULL or "" to
+    /// declare none. The bare `YYYY.MM` base names the contract and selects
+    /// whichever spelling of it both sides offer (a dev build's cohort
+    /// included); a cohort spelling pins to that exact build. A value that
+    /// admits nothing this build offers fails the serve call with
+    /// `RLMESH_ERR_INVALID_ARGUMENT`.
+    pub workflow_edition: *const c_char,
 }
 
 fn serve_model_options(
@@ -777,6 +784,21 @@ fn serve_model_options(
         model_options = model_options.token(cstr_to_str(options.token)?);
     }
     let ms = |value: u64| (value != 0).then(|| Duration::from_millis(value));
+    let workflow_edition = if options.workflow_edition.is_null() {
+        None
+    } else {
+        let declared = cstr_to_str(options.workflow_edition)?.trim();
+        if declared.is_empty() {
+            None
+        } else {
+            // Refuse a name this build cannot run a session at where the host
+            // typed it, naming the value and the editions it offers, rather than
+            // letting it fail later as a negotiation refusal on the first
+            // connection.
+            rlmesh::parse_declared_edition(declared).map_err(CapiError::invalid_arg)?;
+            Some(declared.to_string())
+        }
+    };
     model_options = model_options.serve_options(ServeOptions {
         allow_remote_shutdown: options.allow_remote_shutdown,
         idle_timeout: ms(options.idle_timeout_ms),
@@ -784,6 +806,7 @@ fn serve_model_options(
         close_timeout: ms(options.close_timeout_ms),
         predict_concurrency: (options.predict_concurrency != 0)
             .then_some(options.predict_concurrency),
+        workflow_edition,
         ..ServeOptions::default()
     });
     Ok(model_options)
@@ -1765,6 +1788,56 @@ mod tests {
         assert_eq!(rlmesh_last_error_is_recoverable(), 1);
     }
 
+    /// `RlmeshServeOptions.workflow_edition` is the served model's sticky
+    /// declaration: it reaches `ServeOptions`, NULL/"" declares nothing, and a
+    /// name this build cannot drive is refused where the host typed it, naming
+    /// both the value and the retained list.
+    #[test]
+    fn serve_options_carry_the_declared_workflow_edition() {
+        let bind = || BindAddress::parse("tcp://127.0.0.1:0").expect("bind address");
+
+        // This build's own edition: the value `rlmesh` reports and the one
+        // a host is told to paste. A bare sealed base is NOT interchangeable with
+        // it on a prerelease build, which is why the literal is not hardcoded.
+        let current = rlmesh::CURRENT_WORKFLOW_EDITION;
+        let declared = CString::new(current).expect("edition cstr");
+        let options = RlmeshServeOptions {
+            workflow_edition: declared.as_ptr(),
+            ..serve_options(false)
+        };
+        let Ok(resolved) = serve_model_options(bind(), std::ptr::from_ref(&options)) else {
+            panic!("{current} must resolve: {}", last_error_message())
+        };
+        assert_eq!(resolved.serve.workflow_edition.as_deref(), Some(current));
+
+        for blank in [std::ptr::null(), c"".as_ptr(), c"   ".as_ptr()] {
+            let options = RlmeshServeOptions {
+                workflow_edition: blank,
+                ..serve_options(false)
+            };
+            let Ok(resolved) = serve_model_options(bind(), std::ptr::from_ref(&options)) else {
+                panic!("a blank edition must declare nothing")
+            };
+            assert_eq!(resolved.serve.workflow_edition, None);
+        }
+
+        let unknown = CString::new("2099.01").expect("edition cstr");
+        let options = RlmeshServeOptions {
+            workflow_edition: unknown.as_ptr(),
+            ..serve_options(false)
+        };
+        let Err(error) = serve_model_options(bind(), std::ptr::from_ref(&options)) else {
+            panic!("2099.01 is not a retained edition and must be refused")
+        };
+        assert_eq!(error.status, RlmeshStatus::InvalidArgument);
+        assert!(error.message.contains("2099.01"), "{}", error.message);
+        assert!(
+            error.message.contains(rlmesh::CURRENT_WORKFLOW_EDITION),
+            "{}",
+            error.message
+        );
+    }
+
     /// Hand a raw model/args tuple to a serve thread. The test joins it before
     /// dropping anything it points at.
     struct ServeArgs {
@@ -1791,6 +1864,7 @@ mod tests {
             drain_timeout_ms: 0,
             close_timeout_ms: 0,
             predict_concurrency: 0,
+            workflow_edition: std::ptr::null(),
         }
     }
 

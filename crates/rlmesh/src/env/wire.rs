@@ -10,6 +10,7 @@ use rlmesh_grpc::wire::{
     decode_batched_partial_values, encode_batched_partial_values, meta_map_from_proto,
     meta_map_to_proto, render_result_to_proto,
 };
+use rlmesh_proto::Edition;
 
 use super::lanes::{LaneEnv, batch_infos, fold_phases};
 use super::types::{
@@ -22,9 +23,6 @@ use rlmesh_proto::{EndpointPhases, elapsed_ns};
 use rlmesh_spaces::spaces::{PolicyOutcome, ValidationPolicy};
 use std::collections::{BTreeMap, HashSet};
 use std::time::Instant;
-
-/// Reserved info-map key carrying value-conformance warnings (2026.06 edition).
-const CONFORMANCE_WARNING_KEY: &str = "rlmesh.conformance.warning";
 
 /// One value-conformance warning surfaced in the info map.
 struct ConformanceWarning {
@@ -46,8 +44,10 @@ fn validation_policy_from_env() -> ValidationPolicy {
     }
 }
 
-/// Merge conformance warnings into an info map under the reserved key.
+/// Merge conformance warnings into an info map under the session edition's
+/// reserved key.
 fn inject_conformance_warnings(
+    edition: Edition,
     info: &mut Option<spaces::MetaMap>,
     warnings: Vec<ConformanceWarning>,
 ) {
@@ -68,7 +68,9 @@ fn inject_conformance_warnings(
         })
         .collect();
     info.get_or_insert_with(BTreeMap::new).insert(
-        CONFORMANCE_WARNING_KEY.to_string(),
+        rlmesh_proto::defaults(edition)
+            .conformance_warning_info_key
+            .to_string(),
         spaces::MetaValue::List(entries),
     );
 }
@@ -82,6 +84,9 @@ struct Conformance {
     /// `(kind, path)` already reported this session. Behind a lock because
     /// lane ops run concurrently through `&self`.
     warned: std::sync::Mutex<HashSet<(String, String)>>,
+    /// The edition the current session runs at (see
+    /// [`Environment::pin_workflow_edition`]); the warning key is its promise.
+    edition: std::sync::Mutex<Edition>,
 }
 
 impl Conformance {
@@ -89,7 +94,22 @@ impl Conformance {
         Self {
             policy: validation_policy_from_env(),
             warned: std::sync::Mutex::new(HashSet::new()),
+            edition: std::sync::Mutex::new(Edition::current()),
         }
+    }
+
+    fn pin(&self, edition: Edition) {
+        *self
+            .edition
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = edition;
+    }
+
+    fn edition(&self) -> Edition {
+        *self
+            .edition
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn enforce(
@@ -162,7 +182,7 @@ fn encode_step_response(
         "observation",
         &mut warnings,
     )?;
-    inject_conformance_warnings(&mut result.info, warnings);
+    inject_conformance_warnings(conformance.edition(), &mut result.info, warnings);
     let observations = encode_batched_partial_values(&result.observations, observation_space)
         .map_err(protocol_error_to_env_error)?;
     Ok(ProtoStepResponse {
@@ -195,7 +215,7 @@ fn encode_reset_response(
         "observation",
         &mut warnings,
     )?;
-    inject_conformance_warnings(&mut result.info, warnings);
+    inject_conformance_warnings(conformance.edition(), &mut result.info, warnings);
     let observations = encode_batched_partial_values(&result.observations, observation_space)
         .map_err(protocol_error_to_env_error)?;
     Ok(ProtoResetResponse {
@@ -253,6 +273,10 @@ impl<E: VectorEnv> WireEnvAdapter<E> {
 impl<E: VectorEnv> Environment for WireEnvAdapter<E> {
     fn observation_space(&self) -> &spaces::SpaceSpec {
         &self.observation_space
+    }
+
+    fn pin_workflow_edition(&self, edition: Edition) {
+        self.conformance.pin(edition);
     }
 
     fn action_space(&self) -> &spaces::SpaceSpec {
@@ -462,6 +486,10 @@ impl Environment for WireLaneAdapter {
 
     fn supports_lanes(&self) -> bool {
         true
+    }
+
+    fn pin_workflow_edition(&self, edition: Edition) {
+        self.conformance.pin(edition);
     }
 
     async fn reset(
@@ -967,6 +995,35 @@ mod tests {
         assert!(phases.user_ns >= 1_000_000 - 300);
         assert!(phases.decode_ns > 100);
         assert!(phases.encode_ns > 200);
+    }
+
+    #[test]
+    fn conformance_warnings_land_under_the_pinned_editions_key() {
+        let conformance = Conformance {
+            policy: ValidationPolicy::Warn,
+            warned: Default::default(),
+            edition: std::sync::Mutex::new(Edition::current()),
+        };
+        conformance.pin(Edition::E2026_06);
+        let env = DummyEnv::new();
+        let out_of_range = spaces::SpaceValue::Box(
+            spaces::Tensor::from_vec(
+                5.0f32.to_le_bytes().repeat(2),
+                vec![2],
+                spaces::DType::Float32,
+            )
+            .unwrap(),
+        );
+        let mut warnings = Vec::new();
+        conformance
+            .enforce(&env.obs_space, &out_of_range, "observation", &mut warnings)
+            .expect("a range deviation warns under the warn policy");
+        let mut info = None;
+        inject_conformance_warnings(conformance.edition(), &mut info, warnings);
+        assert!(
+            info.unwrap().contains_key("rlmesh.conformance.warning"),
+            "2026.06 reports conformance warnings under its reserved key"
+        );
     }
 
     /// Reserve an ephemeral TCP port and free it, so a server can rebind it.

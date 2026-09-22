@@ -28,6 +28,7 @@ def _capture_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         vectorization_mode: str | None = None,
         framework: object = None,
         device: object = None,
+        workflow_edition: str | None = None,
         **binding: object,
     ) -> None:
         captured["env"] = env
@@ -36,6 +37,7 @@ def _capture_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         captured["vectorization_mode"] = vectorization_mode
         captured["framework"] = framework
         captured["device"] = device
+        captured["workflow_edition"] = workflow_edition
         captured["binding"] = binding
 
     monkeypatch.setattr(serve, "serve_env", fake_serve_env)
@@ -84,9 +86,14 @@ def test_model_binding_is_forwarded(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(serve, "resolve_entrypoint", lambda *a, **k: object())
 
     def fake_serve_model(
-        model: object, address: str, *, binding: object = None
+        model: object,
+        address: str,
+        *,
+        binding: object = None,
+        workflow_edition: str | None = None,
     ) -> None:
         captured["binding"] = binding
+        captured["workflow_edition"] = workflow_edition
 
     monkeypatch.setattr(serve, "serve_model", fake_serve_model)
     code = serve.main(["pkg:Model", "--kwargs-json", '{"checkpoint": "x"}'])
@@ -160,9 +167,11 @@ def test_serve_env_serves_factory_lanes_and_keeps_tags(
             tags: object = None,
             framework: object = None,
             device: object = None,
+            options: object = None,
         ) -> None:
             captured["env"], captured["tags"] = env, tags
             captured["framework"], captured["device"] = framework, device
+            captured["options"] = options
             self.address = address
 
         def serve(self) -> None: ...

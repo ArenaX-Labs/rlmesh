@@ -131,7 +131,7 @@ fn test_session_spec() -> RuntimeSessionSpec {
         env_id: "test-env".to_string(),
         env_component_id: "env".to_string(),
         model_component_id: "model".to_string(),
-        workflow_edition: rlmesh_proto::CURRENT_WORKFLOW_EDITION.to_string(),
+        workflow_edition: rlmesh_proto::Edition::E2026_06,
         env_contract: Default::default(),
         num_envs: 1,
         episode_seeds: Vec::new(),
@@ -143,5 +143,7 @@ fn test_session_spec() -> RuntimeSessionSpec {
         close_env_on_end: true,
         subset_step: false,
         limits: RuntimeLimits::default(),
+        env_ceiling: None,
+        model_ceiling: None,
     }
 }

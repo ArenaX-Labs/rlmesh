@@ -1,0 +1,25 @@
+# Published-wheel fixture for the cross-version matrix (tests/system/crossver.py).
+#
+# This pin is the "old" side of every matrix cell: a real, immutable artifact
+# from PyPI, never a rebuild of this tree. Installed with
+# `uv pip install --require-hashes --no-deps`, so a tampered or re-uploaded
+# wheel fails the install instead of the assertion.
+#
+# The version is repointed once, to 0.1.0, when that tag ships; after that it
+# never changes -- the whole point is that a sealed release stays the fixture
+# forever. Keep it in step with FIXTURE_VERSION in tests/system/crossver.py.
+rlmesh==0.1.0rc12 \
+    --hash=sha256:73d8ceb25f68f77c778ab6979bdf74ee03d084f52ea4e997a25f3ef0f683c6f3 \
+    --hash=sha256:52d64a8a4584dae10b7e040787b259ac3d835b90eb950066a3c04b5ccd40d41a \
+    --hash=sha256:d1851589e12f6e81ee524ebb82c1011f21335e9f72e21548371cdd70ac877b98 \
+    --hash=sha256:f428a381b610d03878c9af759c7e87591d7c3937f19d601d055a9ea537d4e688 \
+    --hash=sha256:fee94fd02eebbffab0c9341c0732afabb1c359323b01f3206823ce0e4002af3f \
+    --hash=sha256:625bf4bf4191f802ed0915b1ea77c5ce18863c0943f6622145a90485712fc32c \
+    --hash=sha256:d4358ee6a4fb03f3f09f40995365ed5a5913a8ae7a418e95c9350afdc5d757ff \
+    --hash=sha256:aa6feecf76a97e107c253aa8abad9a4cb06602436de7d62fe6dd2acc266397f5 \
+    --hash=sha256:4037941ab41669f155bb96d000534edeae53ad20ac8bf9743beeaa49cecbd877 \
+    --hash=sha256:369f0bd0b9cf9f35e0108c5c3bc02a2095f9e348f8955da9a2eb405a67371dca \
+    --hash=sha256:d0c66e6119e706050e3fca530596df4e85c3cf98dafeb6d50594a14060cfde60 \
+    --hash=sha256:1f40e5d02132705bcb79778f0045d6f63895b49bdf2ee2b8c69f392d25e41810 \
+    --hash=sha256:1e1b6b03da716d34f3892e7db86afa07f5ae193c25b577626a7e94ba3e1c03a7 \
+    --hash=sha256:085c47ec1f91ecdddf2b6afbee9ddd797b103bc5d8a73f2c78e55bb53f5f249d

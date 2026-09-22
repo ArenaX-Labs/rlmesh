@@ -14,6 +14,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, ClassVar, Generic, Literal, TypeVar, cast
 
+from .._editions import resolve_workflow_edition
 from .._value_conversion import ValueBridge
 from ..spaces import Space, space_from_spec
 from ..specs import EnvContract, SpaceSpec
@@ -47,6 +48,7 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
         transport: Transport | None = None,
         connect_timeout_seconds: float | None = None,
         request_timeout_seconds: float | None = None,
+        workflow_edition: str | None = None,
     ) -> None:
         self._initialize(
             address,
@@ -56,6 +58,7 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
             transport=transport,
             connect_timeout_seconds=connect_timeout_seconds,
             request_timeout_seconds=request_timeout_seconds,
+            workflow_edition=workflow_edition,
         )
 
     def _initialize(
@@ -68,8 +71,13 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
         transport: Transport | None = None,
         connect_timeout_seconds: float | None,
         request_timeout_seconds: float | None = None,
+        workflow_edition: str | None = None,
     ) -> None:
         self._bridge.ensure_available()
+        # This client is the runtime tier of its session, so it declares an
+        # edition like any other participant: the explicit keyword, else the
+        # process / project surfaces (see :mod:`rlmesh._editions`).
+        workflow_edition = resolve_workflow_edition(call=workflow_edition)
         normalized_address = normalize_connect_address(
             address,
             host=host,
@@ -79,7 +87,10 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
         )
         try:
             self._client = self._make_client(
-                normalized_address, connect_timeout_seconds, request_timeout_seconds
+                normalized_address,
+                connect_timeout_seconds,
+                request_timeout_seconds,
+                workflow_edition,
             )
         except ConnectionError as exc:
             raise ConnectionError(
@@ -111,6 +122,7 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
         address: str,
         connect_timeout_seconds: float | None,
         request_timeout_seconds: float | None,
+        workflow_edition: str | None,
     ) -> Any:
         """Build and return the native client. Overridden per arity."""
         raise NotImplementedError
@@ -136,6 +148,26 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
         (`env_contract.id`).
         """
         return self._client.env_id()
+
+    @property
+    def selected_workflow_edition(self) -> str:
+        """The workflow edition this connection negotiated with the env.
+
+        The highest edition both sides can drive, at or below whatever either
+        declared, in the exact spelling they agreed on -- so a prerelease build
+        reports its cohort, not the bare sealed base. Named apart from the
+        ``workflow_edition`` *declaration* surfaces on purpose: this is what was
+        agreed, not what this side asked for.
+        """
+        return cast("str", self._client.selected_workflow_edition())
+
+    def _session_offer(self) -> tuple[list[str], str | None]:
+        """The env's handshake offer ``(CAN, WANT)``, for a served-model session's floor."""
+        return cast("tuple[list[str], str | None]", self._client.session_offer())
+
+    def _pin_workflow_edition(self, selected_workflow_edition: str) -> None:
+        """Pin the env to a served-model session's floor before its first reset."""
+        self._client.pin_workflow_edition(selected_workflow_edition)
 
     @property
     def env_contract(self) -> EnvContract:

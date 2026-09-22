@@ -125,7 +125,7 @@ def test_vector_client_rejects_scalar_endpoint(
     from rlmesh._native import RemoteVectorEnv
 
     fake = _FakeNativeClient(num_envs=1)
-    monkeypatch.setattr(RemoteVectorEnv, "_make_client", lambda self, a, c, r: fake)
+    monkeypatch.setattr(RemoteVectorEnv, "_make_client", lambda self, a, c, r, e: fake)
 
     with pytest.raises(ValueError, match="Use RemoteEnv instead"):
         RemoteVectorEnv("127.0.0.1:5555")
@@ -140,7 +140,7 @@ def test_handshake_failure_closes_client_and_names_handshake(
     from rlmesh._native import RemoteEnv
 
     fake = _FakeNativeClient(handshake_error=ConnectionError("boom"))
-    monkeypatch.setattr(RemoteEnv, "_make_client", lambda self, a, c, r: fake)
+    monkeypatch.setattr(RemoteEnv, "_make_client", lambda self, a, c, r, e: fake)
 
     with pytest.raises(ConnectionError, match="handshake failed") as excinfo:
         RemoteEnv("127.0.0.1:5555")
@@ -148,7 +148,7 @@ def test_handshake_failure_closes_client_and_names_handshake(
     assert fake.closed is True
 
     fake_other = _FakeNativeClient(handshake_error=RuntimeError("proto"))
-    monkeypatch.setattr(RemoteEnv, "_make_client", lambda self, a, c, r: fake_other)
+    monkeypatch.setattr(RemoteEnv, "_make_client", lambda self, a, c, r, e: fake_other)
     with pytest.raises(RuntimeError, match="proto"):
         RemoteEnv("127.0.0.1:5555")
     assert fake_other.closed is True
@@ -164,7 +164,11 @@ def test_client_timeouts_pass_through_to_native(
     captured: dict[str, Any] = {}
 
     def fake_make(
-        self: Any, address: str, connect: float | None, request: float | None
+        self: Any,
+        address: str,
+        connect: float | None,
+        request: float | None,
+        workflow_edition: str | None,
     ) -> Any:
         captured["connect"], captured["request"] = connect, request
         return _FakeNativeClient(num_envs=3)

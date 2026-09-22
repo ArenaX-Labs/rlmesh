@@ -46,6 +46,10 @@ pub mod wire;
 /// status `OUT_OF_RANGE` and a `message length too large` detail naming the
 /// found length and this limit, which surfaces as a transport error rather than
 /// an env or model error.
+///
+/// The cap is part of the `rlmesh-wire-v1` contract: `rlmesh.toml`
+/// `[wire].max_message_bytes` pins this value and `policy:check` fails when the
+/// two differ, so a change is made deliberately in both places.
 pub const MAX_MESSAGE_SIZE: usize = 256 * 1024 * 1024;
 
 /// Configure endpoint timeouts and keepalives.

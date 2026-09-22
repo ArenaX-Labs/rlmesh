@@ -17,6 +17,31 @@ spec = "docs/editions/2026.06.md"
 # to v1), gated by plain equality at the handshake.
 current_generation = "rlmesh-wire-v1"
 
+[wire]
+# The additive-forever contract of rlmesh-wire-v1, pinned by policy:check. A
+# number here changes only in the same change as the constant, enum value, or
+# oneof arm it counts, and a new value or arm is emitted only when the target
+# leg's edition covers it: docs/editions/index.md, "Additive-forever rules".
+max_message_bytes = 268_435_456 # 256 MiB, rlmesh_grpc::MAX_MESSAGE_SIZE
+
+[wire.enums]
+# Value count of every enum under crates/rlmesh-proto/proto. A 0.1.0 peer folds
+# an unknown *ErrorCode to UNSPECIFIED silently, so those two vocabularies are
+# frozen for wire-v1; the others are decode errors on an old peer, except
+# RenderFormat, whose unknown value drops the frame.
+"rlmesh.core.v1.AutoresetMode" = 4
+"rlmesh.env.v1.EnvErrorCode" = 10
+"rlmesh.env.v1.RenderFormat" = 2
+"rlmesh.model.v1.ModelErrorCode" = 8
+"rlmesh.spaces.v1.DataType" = 13
+
+[wire.oneofs]
+# Arm counts pinned by name: an unknown MetaValue.kind arm reads as null on a
+# 0.1.0 peer (silently), an unknown SpaceSpec.spec arm as an unset spec (a
+# decode error).
+"rlmesh.spaces.v1.MetaValue.kind" = 8
+"rlmesh.spaces.v1.SpaceSpec.spec" = 7
+
 [api_surface]
 stability_policy = "stable-labels"
 

@@ -508,8 +508,11 @@ def _address_run_calls(*, close_env: bool) -> tuple[Any, list[str]]:
     class FakeRemoteEnv:
         env_contract = None
 
-        def __init__(self, address: str) -> None:
+        def __init__(
+            self, address: str, *, workflow_edition: str | None = None
+        ) -> None:
             self.address = address
+            self.workflow_edition = workflow_edition
 
         def reset(self, seed: object = None) -> tuple[object, dict[str, object]]:
             return 0, {}

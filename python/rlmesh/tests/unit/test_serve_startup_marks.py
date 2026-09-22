@@ -36,8 +36,9 @@ def test_serving_a_model_stamps_the_handshake_and_prints_the_phases(
     )
 
     class Served:
-        def serve(self, address: str) -> None:
+        def serve(self, address: str, *, options: object = None) -> None:
             self.address = address
+            self.options = options
 
     served = Served()
     monkeypatch.setattr(serve, "_resolve_model", lambda source, binding: served)

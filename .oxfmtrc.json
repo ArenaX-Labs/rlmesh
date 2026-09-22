@@ -8,6 +8,7 @@
     "**/dist/**",
     "**/*.proto",
     "site/*",
-    "**/tests/api_surface/snapshots/**"
+    "**/tests/api_surface/snapshots/**",
+    "**/tests/fixtures/2026.06/**"
   ]
 }

@@ -203,7 +203,11 @@ class SandboxModel:
                 "trust_entrypoints= applies to local model entrypoints and is "
                 "not supported on a SandboxModel session; remove it"
             )
-        from .._client._remote_model import env_contract_of, remote_session
+        from .._client._remote_model import (
+            env_contract_of,
+            env_session_offer,
+            remote_session,
+        )
         from .._load_native import load_native
 
         # Only tear down on failure if THIS call started the container; a handle the
@@ -213,11 +217,17 @@ class SandboxModel:
         self.serve()
         try:
             contract = env_contract_of(env)
+            # This handle is the runtime tier of the session it opens, so the
+            # model leg carries this process's / project's declaration.
+            from .._editions import resolve_workflow_edition
+
             client = self._dial_with_retry(
                 load_native("PyModelClient"),
                 contract,
                 connect_timeout_seconds,
                 execution_horizon,
+                resolve_workflow_edition(),
+                env_session_offer(env),
             )
             # Hand ownership (and so container teardown on session close) only to a
             # session that actually started the container. A caller-managed handle
@@ -247,6 +257,8 @@ class SandboxModel:
         contract: EnvContract,
         connect_timeout_seconds: float,
         execution_horizon: int = 1,
+        workflow_edition: str | None = None,
+        env_offer: tuple[list[str], str | None] | None = None,
     ) -> PyModelClient:
         """Dial the serving container, retrying while it is still starting.
 
@@ -265,6 +277,8 @@ class SandboxModel:
                     contract,
                     execution_horizon=execution_horizon,
                     connect_timeout_seconds=max(deadline - time.monotonic(), 0.1),
+                    workflow_edition=workflow_edition,
+                    env_offer=env_offer,
                 )
             except _TRANSIENT_DIAL_ERRORS as exc:  # the container may still be starting
                 last_error = exc

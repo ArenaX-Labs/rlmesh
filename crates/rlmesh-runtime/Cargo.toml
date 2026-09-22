@@ -19,6 +19,7 @@ default = []
 
 [dependencies]
 rlmesh-proto = { workspace = true }
+rlmesh-spaces = { workspace = true }
 
 async-trait = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "time"] }

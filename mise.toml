@@ -231,7 +231,7 @@ run = "cargo run --manifest-path python/rlmesh/rust/Cargo.toml --features stub-g
 # ──────────────────────────────────────────────
 [tasks."policy:check"]
 description = "Check rlmesh.toml, artifact versions, and compatibility constants"
-run = "python scripts/check_rlmesh_policy.py"
+run = ["python scripts/check_rlmesh_policy.py --selfcheck", "python scripts/check_rlmesh_policy.py"]
 
 [tasks."protocol:baseline-regen"]
 description = "Re-snapshot the frozen proto baseline for the current protocol generation"
@@ -340,6 +340,20 @@ run = [
 [tasks."perf:check"]
 description = "Re-run the perf profile and fail on drift against the local baseline"
 run = "uv run rlmesh-system run --profile perf --kind artifact --baseline target/python-validation/perf-baseline.json --fail-on-regression"
+
+[tasks."test:crossver"]
+# Deliberately not in `test`'s depends: it builds release wheels and two venvs,
+# and it has its own CI job. `release:check` runs it, on its own, in order.
+description = "Run the cross-version matrix: this tree's release wheel against the pinned published one"
+# RLMESH_RELEASE_BUILD=1 puts the local wheel in the published wheel's edition
+# cohort; a plain dev build stamps 2026.06-dev.<sha> and is refused at the
+# edition floor by design, which would make every cell fail for the wrong reason.
+env = { RLMESH_RELEASE_BUILD = "1" }
+run = [
+  "mise run build:python:local",
+  "uv run rlmesh-system run --profile compatibility",
+  "cat target/python-validation/crossver/matrix.txt",
+]
 
 [tasks."test:system:clean"]
 description = "Remove installed-artifact system venvs, logs, and reports"
@@ -455,6 +469,7 @@ run = [
   "mise run release:artifacts:licenses",
   "mise run test:system:heavy",
   "mise run test:python:floors",
+  "mise run test:crossver",
 ]
 
 # ──────────────────────────────────────────────

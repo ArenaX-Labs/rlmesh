@@ -68,7 +68,11 @@ def classify_env_target(target: object) -> tuple[str, Any]:
     )
 
 
-def connect_env(target: object, remote_env_cls: type | None) -> tuple[Any, Any, bool]:
+def connect_env(
+    target: object,
+    remote_env_cls: type | None,
+    workflow_edition: str | None = None,
+) -> tuple[Any, Any, bool]:
     """Resolve a session target to ``(client, contract, owns_client)``.
 
     ``target`` is an address string, a live env (local object or remote handle), an
@@ -78,10 +82,14 @@ def connect_env(target: object, remote_env_cls: type | None) -> tuple[Any, Any, 
     a synthesized contract (tags ride in ``env.metadata`` via ``tag()`` /
     ``EnvFactory.make``); a factory is built and driven locally -- no serving
     needed to resolve a spec'd adapter.
+
+    ``workflow_edition`` is this side's declaration, carried onto the handshake
+    of a dialed address. The other kinds negotiate nothing (a local env or an
+    already-connected handle), so it does not apply there.
     """
     kind, payload = classify_env_target(target)
     if kind == "address":
-        client = _remote_env(payload, remote_env_cls)
+        client = _remote_env(payload, remote_env_cls, workflow_edition)
         return client, client.env_contract, True
     if kind == "handle":
         return payload, payload.env_contract, False
@@ -159,12 +167,14 @@ def factory_env(factory: object) -> Any:
     return construct_authored_env(factory)
 
 
-def _remote_env(address: str, remote_env_cls: type | None) -> Any:
+def _remote_env(
+    address: str, remote_env_cls: type | None, workflow_edition: str | None = None
+) -> Any:
     if remote_env_cls is None:
         from ..numpy import RemoteEnv
 
         remote_env_cls = RemoteEnv
-    return remote_env_cls(address)
+    return remote_env_cls(address, workflow_edition=workflow_edition)
 
 
 def adapter_env_bridge(client: Any) -> ValueBridge:

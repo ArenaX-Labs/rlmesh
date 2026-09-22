@@ -28,6 +28,7 @@ __all__ = [
     "BASE",
     "BASE_ANG_VEL",
     "BASE_ROT",
+    "BuildInfo",
     "CHANNEL_ORDERS",
     "COMMAND_BASE_VEL",
     "CROP_MODES",
@@ -81,6 +82,8 @@ __all__ = [
     "adapters_resolve",
     "adapters_spec_normalize",
     "box_space_spec",
+    "build_info",
+    "current_workflow_edition",
     "describe_envelope_normalize",
     "dict_space_spec",
     "discrete_space_spec",
@@ -94,6 +97,7 @@ __all__ = [
     "space_spec_from_gym_space",
     "text_space_spec",
     "tuple_space_spec",
+    "validate_workflow_edition",
 ]
 
 PrimitiveValue: TypeAlias = None | bool | int | float | str | bytes
@@ -292,6 +296,59 @@ class Advisory:
     def __repr__(self) -> builtins.str: ...
 
 @typing.final
+class BuildInfo:
+    r"""
+    The identity of this build of the native core: package version, protocol
+    generation, the workflow edition it advertises, and how that edition was
+    spelled. Every field is fixed at compile time.
+    """
+    @property
+    def version(self) -> builtins.str:
+        r"""
+        The `rlmesh` package version the native core was built as.
+        """
+    @property
+    def protocol_generation(self) -> builtins.str:
+        r"""
+        The wire protocol generation this build speaks (`rlmesh-wire-v1`).
+        """
+    @property
+    def workflow_edition(self) -> builtins.str:
+        r"""
+        The exact workflow edition spelling this build advertises: the sealed
+        `YYYY.MM` base on a release, `YYYY.MM-<cohort>` on a prerelease or
+        source build.
+        """
+    @property
+    def workflow_edition_base(self) -> builtins.str:
+        r"""
+        The sealed `YYYY.MM` base of `workflow_edition`, the same on every build
+        of the edition; what `current_workflow_edition()` returns.
+        """
+    @property
+    def build_cohort(self) -> builtins.str:
+        r"""
+        The cohort that spells `workflow_edition`: `stable` on a sealed release,
+        the prerelease version (`0.1.0-rc.12`) on a prerelease, `dev.<git>` on a
+        source build.
+        """
+    @property
+    def build_source(self) -> builtins.str:
+        r"""
+        Where the cohort came from: `release` (a release build), `package` (a
+        published crate or a checkout without git), or `git` (a source build
+        stamped from its commit).
+        """
+    @property
+    def git(self) -> typing.Optional[builtins.str]:
+        r"""
+        The git state a source build was stamped from — the short commit sha,
+        suffixed `.dirty.<fingerprint>` when the tree had uncommitted changes —
+        or `None` when the build was not stamped from git.
+        """
+    def __repr__(self) -> builtins.str: ...
+
+@typing.final
 class EnvContract:
     @property
     def id(self) -> builtins.str: ...
@@ -314,9 +371,12 @@ class EnvContract:
 
 @typing.final
 class PyEnvClient:
-    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None) -> None: ...
+    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None: ...
     def address(self) -> str: ...
     def env_id(self) -> str: ...
+    def selected_workflow_edition(self) -> str: ...
+    def session_offer(self) -> tuple[list[str], str | None]: ...
+    def pin_workflow_edition(self, selected_workflow_edition: str) -> None: ...
     def handshake(self) -> EnvContract: ...
     def observation_space(self) -> Space: ...
     def action_space(self) -> Space: ...
@@ -374,8 +434,8 @@ class PyEnvServer:
 @typing.final
 class PyModel:
     def __init__(self, predict_fn: collections.abc.Callable[[Value], Value], configure_fn: collections.abc.Callable[[EnvContract], object] | None = None, on_episode_end: collections.abc.Callable[[str], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None, predict_chunk_fn: collections.abc.Callable[[Value, int], Value] | None = None, predict_batch_fn: collections.abc.Callable[[list[Value], list[dict[str, typing.Any]]], list[Value]] | None = None, predict_chunk_batch_fn: collections.abc.Callable[[list[Value], int, list[dict[str, typing.Any]]], list[Value]] | None = None, allow_fusion: bool = True, native_chunk: int | None = None) -> None: ...
-    def run_local(self, env_address: str, execution_horizon: int = 1, prefetch_lead: int = 0) -> dict[str, typing.Any]: ...
-    def run_local_for_episodes(self, env_address: str, max_episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trial_index_base: int | None = None, prefetch_lead: int = 0) -> dict[str, typing.Any]: ...
+    def run_local(self, env_address: str, execution_horizon: int = 1, prefetch_lead: int = 0, workflow_edition: str | None = None) -> dict[str, typing.Any]: ...
+    def run_local_for_episodes(self, env_address: str, max_episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trial_index_base: int | None = None, prefetch_lead: int = 0, workflow_edition: str | None = None) -> dict[str, typing.Any]: ...
     def serve(self, address: str, options: ServeOptions | None = None) -> None: ...
 
 @typing.final
@@ -385,9 +445,10 @@ class PyModelClient:
     `PyEnvClient`. Bound to one env contract (one route) for its lifetime; the
     Python layer creates one per `rlmesh.session(model, env)`.
     """
-    def __init__(self, address: str, env_contract: EnvContract, execution_horizon: int = 1, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None) -> None: ...
+    def __init__(self, address: str, env_contract: EnvContract, execution_horizon: int = 1, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, env_offer: tuple[list[str], str | None] | None = None) -> None: ...
     def address(self) -> str: ...
     def env_id(self) -> str: ...
+    def selected_workflow_edition(self) -> str: ...
     def observation_space(self) -> Space: ...
     def action_space(self) -> Space: ...
     def reset(self, seed: int | None = None) -> None: ...
@@ -396,9 +457,12 @@ class PyModelClient:
 
 @typing.final
 class PyVectorEnvClient:
-    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None) -> None: ...
+    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None: ...
     def address(self) -> str: ...
     def env_id(self) -> str: ...
+    def selected_workflow_edition(self) -> str: ...
+    def session_offer(self) -> tuple[list[str], str | None]: ...
+    def pin_workflow_edition(self, selected_workflow_edition: str) -> None: ...
     def handshake(self) -> EnvContract: ...
     def observation_space(self) -> Space: ...
     def action_space(self) -> Space: ...
@@ -512,7 +576,9 @@ class ServeOptions:
     def drain_timeout_seconds(self) -> typing.Optional[builtins.float]: ...
     @property
     def close_timeout_seconds(self) -> typing.Optional[builtins.float]: ...
-    def __new__(cls, *, allow_remote_shutdown: builtins.bool = ..., idle_timeout_seconds: typing.Optional[builtins.float] = None, drain_timeout_seconds: typing.Optional[builtins.float] = None, close_timeout_seconds: typing.Optional[builtins.float] = None) -> ServeOptions: ...
+    @property
+    def workflow_edition(self) -> typing.Optional[builtins.str]: ...
+    def __new__(cls, *, allow_remote_shutdown: builtins.bool = ..., idle_timeout_seconds: typing.Optional[builtins.float] = None, drain_timeout_seconds: typing.Optional[builtins.float] = None, close_timeout_seconds: typing.Optional[builtins.float] = None, workflow_edition: typing.Optional[builtins.str] = None) -> ServeOptions: ...
 
 @typing.final
 class Space:
@@ -617,6 +683,25 @@ def adapters_spec_normalize(side: str, spec_json: str, allow_custom: bool, role_
 
 def box_space_spec(low: int | float, high: int | float, shape: list[int], dtype: str | None = None) -> SpaceSpec: ...
 
+def build_info() -> BuildInfo:
+    r"""
+    This build's identity: the package version, the protocol generation, and
+    the workflow edition it advertises with the cohort behind that spelling.
+    """
+
+def current_workflow_edition() -> builtins.str:
+    r"""
+    The bare `YYYY.MM` workflow edition this build runs at — the value to paste
+    into a declaration, on every build.
+    
+    A declaration names the contract a participant was authored against, and a
+    bare base selects whichever spelling of that base both sides offer: the
+    sealed name on a release, this build's cohort (`YYYY.MM-<cohort>`, what
+    `rlmesh.build_info().workflow_edition` reports) on a prerelease or local
+    build. That cohort spelling is also accepted as a declaration, pinning to
+    that exact moving build.
+    """
+
 def describe_envelope_normalize(kind: str, pieces_json: str, generated_at: str | None = None) -> str: ...
 
 def dict_space_spec(entries: dict[str, object]) -> SpaceSpec: ...
@@ -642,4 +727,16 @@ def space_spec_from_gym_space(space: object) -> SpaceSpec: ...
 def text_space_spec(max_length: int, min_length: int = 1, charset: str | None = None) -> SpaceSpec: ...
 
 def tuple_space_spec(spaces: list[object]) -> SpaceSpec: ...
+
+def validate_workflow_edition(edition: builtins.str) -> builtins.str:
+    r"""
+    Refuse a declared workflow edition this build cannot run a session at, naming
+    the value and the editions it offers; return it trimmed otherwise.
+    
+    The single Python-side boundary for a declared edition: every surface that
+    takes one from a user (`ServeOptions`, `--workflow-edition`, `run`/`session`,
+    `RLMESH_WORKFLOW_EDITION`, a class declaration, `[tool.rlmesh]`) resolves
+    through it, so a name that cannot work is refused where it is typed rather
+    than as a negotiation failure on the first connection.
+    """
 

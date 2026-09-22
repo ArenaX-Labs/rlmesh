@@ -6,11 +6,16 @@ package rlmesh.core.v1;
 // - `protocol_generation`: byte-contract identity (e.g. "rlmesh-wire-v1"),
 //   matched by EXACT equality. A mismatch means the peers cannot exchange
 //   bytes at all; there is no negotiation on this axis.
-// - workflow editions: behavior versioning. Peers advertise
-//   `supported_workflow_editions`; the runtime picks the highest edition
-//   mutual across env, model, AND runtime (the 3-way floor, since the
-//   relaying runtime drops fields it does not know) and pins the model route on
-//   ResolveAdapterRequest (it MAY also pin the env on ConfigureEnvRequest).
+// - workflow editions: behavior versioning, carried as two sets per peer.
+//   CAN (`supported_workflow_editions`) is every edition a build implements;
+//   WANT (`preferred_workflow_edition`) is the single edition the participant
+//   was authored against. The runtime picks the highest edition present in
+//   every CAN set that is also at or below the lowest WANT across env, model,
+//   AND runtime (the 3-way floor, since the relaying runtime drops fields it
+//   does not know) and pins the model route on ResolveAdapterRequest (it MAY
+//   also pin the env on ConfigureEnvRequest). A peer that sends no WANT is
+//   treated as wanting the highest edition it supports, so an undeclared peer
+//   negotiates exactly as it did before the field existed.
 // - `capabilities`: advisory optional features; absence is always safe. A
 //   feature is advertised by mapping its name to the literal value "true";
 //   any other value reads as absent (reserved for a future value grammar).
@@ -33,6 +38,11 @@ message HandshakeRequest {
   PeerInfo peer_info = 2;
   map<string, string> capabilities = 3;
   repeated string supported_workflow_editions = 4;
+  // WANT: the edition this participant was authored against. It is a sticky
+  // declaration, not a ceiling on the build: upgrading the rlmesh package must
+  // not change it. Empty means undeclared, and an undeclared peer is treated as
+  // wanting the highest edition it supports.
+  string preferred_workflow_edition = 5;
 }
 
 message HandshakeResponse {
@@ -41,6 +51,11 @@ message HandshakeResponse {
   map<string, string> capabilities = 3;
   repeated string supported_workflow_editions = 4;
   optional string error_message = 5;
+  // WANT: the edition this participant was authored against. It is a sticky
+  // declaration, not a ceiling on the build: upgrading the rlmesh package must
+  // not change it. Empty means undeclared, and an undeclared peer is treated as
+  // wanting the highest edition it supports.
+  string preferred_workflow_edition = 6;
 }
 
 message ShutdownRequest {

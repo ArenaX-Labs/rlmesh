@@ -212,6 +212,15 @@
     "rlmesh.predict_seed": {
       "description": "Per-predict sampling seed mixed from an episode's reset seed and its re-plan ordinal."
     },
+    "rlmesh.current_workflow_edition": {
+      "description": "The bare YYYY.MM workflow edition this build runs at, on every build of it: the value to paste into a workflow_edition declaration. It names the contract and selects whichever spelling both sides offer, a prerelease or source build's cohort included."
+    },
+    "rlmesh.build_info": {
+      "description": "This build's identity: package version, protocol generation, the workflow edition it advertises with its sealed base, and the cohort and git state behind that spelling."
+    },
+    "rlmesh.BuildInfo": {
+      "description": "Immutable build identity returned by build_info(): version, protocol_generation, workflow_edition, workflow_edition_base, build_cohort, build_source, and git."
+    },
     "rlmesh.trial_index": {
       "description": "Read the reserved trial_index reset option an env declared, from a reset's options mapping."
     },
@@ -228,7 +237,7 @@
       "description": "Installed RLMesh package version."
     },
     "rlmesh.__build__": {
-      "description": "Workflow edition of the native core: the sealed `YYYY.MM` name on a release build, a cohort-suffixed name (`YYYY.MM-<prerelease>` / `YYYY.MM-dev.<git>`) on prerelease and source builds."
+      "description": "Deprecated alias for build_info().workflow_edition; removed in 0.2. Reading it emits a DeprecationWarning."
     },
     "rlmesh.spaces": {
       "description": "Space wrappers and Gymnasium conversion helpers."

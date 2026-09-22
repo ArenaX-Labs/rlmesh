@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -31,18 +31,18 @@ use rlmesh_proto::model::v1::{
     AdapterContext, ObservationHistoryFrame, PredictRequest, PredictResponse,
     ReleaseAdapterRequest, ResetAdapterRequest,
 };
-use rlmesh_proto::spaces::v1::{MetaMap, SpaceValue};
+use rlmesh_proto::spaces::v1::{MetaMap, SpaceSpec, SpaceValue, TupleSpec, space_spec};
+use rlmesh_spaces::Advisory;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use crate::hooks::{
-    ActionReceivedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, LogEvent, LogLevel,
-    ObservationEmittedEvent, RuntimeEnvContext, RuntimeHooks, SessionEndedEvent,
-    SessionFailedEvent, SessionStartedEvent, StepCompletedEvent, TelemetrySnapshotEvent,
+    ActionReceivedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, Leg, LogEvent, LogLevel,
+    ObservationEmittedEvent, PayloadFacts, RefusingRelayPolicy, RelayAdvisoryEvent, RelayDecision,
+    RelayPolicy, RuntimeEnvContext, RuntimeHooks, SessionEndedEvent, SessionFailedEvent,
+    SessionStartedEvent, StepCompletedEvent, TelemetrySnapshotEvent,
 };
-use crate::spec::{
-    ENV_RESET_OPTIONS_KEY, RuntimeReport, RuntimeSessionSpec, TRIAL_INDEX_OPTION, reset_options_for,
-};
+use crate::spec::{ENV_RESET_OPTIONS_KEY, RuntimeReport, RuntimeSessionSpec, reset_options_for};
 use crate::state::{RequestPhase, RouteSnapshot, RouteState, StartedEpisode};
 use crate::telemetry::{Aggregator, Horizon, Sample, Source, metrics};
 
@@ -212,23 +212,19 @@ impl PredictScheduler for EagerScheduler {
 /// one via [`RuntimeDriver::run_with_cancellation_reason`].
 const DEFAULT_CANCELLATION_REASON: &str = "cancelled by caller";
 
-/// Built-in per-episode step bound applied when the spec sets no explicit
-/// `max_episode_steps` and the driver owns resets (autoreset `DISABLED`): a
-/// broken termination condition surfaces as a truncation at this bound instead
-/// of hanging the run forever. Mirrors the Python Session loop's
-/// `_MAX_STEPS_PER_EPISODE` so the two loops bound episodes identically.
-/// Inactive under `NEXT_STEP` autoreset (the env owns lane resets there).
-const DEFAULT_MAX_EPISODE_STEPS: i64 = 100_000;
-
-/// The env-reported task outcome from an episode's final-step info: Gymnasium's
-/// `is_success` (preferred), `success`, or `task_success`, `None` when absent. Numeric
-/// values coerce by truthiness (`1`/`1.0` → true), matching the Python
-/// Session's `bool(info[key])` so the two loops report identical success.
-fn success_from_final_info(final_info: Option<&rlmesh_proto::spaces::v1::MetaMap>) -> Option<bool> {
+/// The env-reported task outcome from an episode's final-step info, read under
+/// the `keys` the session's edition governs
+/// ([`EditionDefaults::success_info_keys`](rlmesh_proto::EditionDefaults::success_info_keys)),
+/// in priority order; `None` when none of them is present. Numeric values coerce
+/// by truthiness (`1`/`1.0` → true), matching the Python Session's
+/// `bool(info[key])` so the two loops report identical success.
+fn success_from_final_info(
+    keys: &[&str],
+    final_info: Option<&rlmesh_proto::spaces::v1::MetaMap>,
+) -> Option<bool> {
     use rlmesh_proto::spaces::v1::meta_value::Kind;
     let entries = &final_info?.entries;
-    ["is_success", "success", "task_success"]
-        .iter()
+    keys.iter()
         .find_map(|key| match entries.get(*key)?.kind.as_ref()? {
             Kind::Bool(value) => Some(*value),
             Kind::Integer(value) => Some(*value != 0),
@@ -294,6 +290,9 @@ pub struct RuntimeDriver<E, M> {
     deliver_history: bool,
     scheduler: Box<dyn PredictScheduler>,
     hooks: Arc<dyn RuntimeHooks>,
+    relay_policy: Arc<dyn RelayPolicy>,
+    /// Each distinct advisory the relay policy raised, for the report.
+    advisories: Mutex<Vec<Advisory>>,
     cancellation_reason: String,
     /// Action/observation space specs shared into every per-step hook event.
     /// Populated once after [`validate`](RuntimeSessionSpec::validate) so the
@@ -451,6 +450,8 @@ where
             deliver_history: false,
             scheduler: Box::new(EagerScheduler),
             hooks,
+            relay_policy: Arc::new(RefusingRelayPolicy),
+            advisories: Mutex::new(Vec::new()),
             cancellation_reason: DEFAULT_CANCELLATION_REASON.to_string(),
             // Filled from the validated spec at run time; default until then.
             action_space: Arc::default(),
@@ -489,7 +490,8 @@ where
     /// multi-lane reset sends the list, in the same lane order as `seeds` and
     /// `episode_ids`.
     fn trial_options(&self, trials: &[u64]) -> Option<MetaMap> {
-        let options = reset_options_for(&self.spec.env_contract, trials);
+        let option_key = self.spec.edition_defaults().trial_index_option_key;
+        let options = reset_options_for(&self.spec.env_contract, option_key, trials);
         if options.is_none()
             && !trials.is_empty()
             && self.spec.trial_index_base() != 0
@@ -498,7 +500,7 @@ where
             tracing::warn!(
                 env_id = %self.spec.env_id,
                 key = ENV_RESET_OPTIONS_KEY,
-                option = TRIAL_INDEX_OPTION,
+                option = option_key,
                 "trial_index_base is set but the env contract declares no such reset \
                  option; the ordinal is recorded on the episode events and summaries \
                  but not delivered to the env",
@@ -523,6 +525,12 @@ where
         self
     }
 
+    /// Replace the relay policy (default: [`RefusingRelayPolicy`]).
+    pub fn with_relay_policy(mut self, relay_policy: Arc<dyn RelayPolicy>) -> Self {
+        self.relay_policy = relay_policy;
+        self
+    }
+
     /// Per-lane autoreset convention declared by the served env's contract.
     /// `UNSPECIFIED` is treated as `DISABLED` (explicit reset only).
     fn autoreset_mode(&self) -> AutoresetMode {
@@ -533,11 +541,13 @@ where
             .unwrap_or(AutoresetMode::Disabled)
     }
 
+    /// Whether this session's edition puts lane restarts on the runtime (it
+    /// issues the `Reset`s) rather than on the env (which rolls its own lanes).
     fn driver_owns_resets(&self) -> bool {
-        matches!(
-            self.autoreset_mode(),
-            AutoresetMode::Disabled | AutoresetMode::Unspecified
-        )
+        self.spec
+            .edition_defaults()
+            .driver_owned_reset_modes
+            .contains(&self.autoreset_mode())
     }
 
     /// The route's groups: one per lane for a lane endpoint, else the whole
@@ -768,6 +778,11 @@ where
                     total_episodes: state.total_episodes(),
                     episodes: state.take_episode_summaries(),
                     telemetry: final_snapshot,
+                    advisories: std::mem::take(
+                        self.advisories
+                            .get_mut()
+                            .unwrap_or_else(PoisonError::into_inner),
+                    ),
                 })
             }
             Err(error) => {
@@ -812,6 +827,7 @@ where
                 env_id: self.spec.env_id.clone(),
             }
         );
+        self.relay_contract(state).await?;
 
         let mut groups = self.groups();
         let group_count = groups.len();
@@ -1006,9 +1022,13 @@ where
                 action: Some(model_action.clone()),
                 raw_action: Some(model_action),
             };
-            action_event.action = self
-                .invoke_transform_action(telemetry, action_event.clone())
+            let (action, relayed_space) = self
+                .invoke_transform_action(telemetry, &action_event)
                 .await?;
+            action_event.action = action;
+            if let Some(space) = relayed_space {
+                action_event.action_space = space;
+            }
             fan_out_event!(self, action_received, action_event.clone());
 
             let group = &mut groups[gid];
@@ -1613,10 +1633,12 @@ where
             infos,
             groups[gid].width(),
         );
-        let transformed = self
-            .invoke_transform_observation(telemetry, event.clone())
-            .await?;
+        let (transformed, relayed_space) =
+            self.invoke_transform_observation(telemetry, &event).await?;
         event.observation = transformed.clone();
+        if let Some(space) = relayed_space {
+            event.observation_space = space;
+        }
         msg.observation = transformed.map(leaves_value);
         // Emit the transformed observation actually sent to the model, for
         // both step and reset observations, so hooks always see the same
@@ -1807,7 +1829,7 @@ where
     ) -> Vec<EpisodeMetadata> {
         let step_cap = self.spec.max_episode_steps.or_else(|| {
             self.driver_owns_resets()
-                .then_some(DEFAULT_MAX_EPISODE_STEPS)
+                .then_some(self.spec.edition_defaults().default_max_episode_steps)
         });
         let time_cap = self.spec.max_episode_seconds;
         if step_cap.is_none() && time_cap.is_none() {
@@ -1882,7 +1904,10 @@ where
                     truncated: completed.truncated,
                     duration_ms: (completed.end_timestamp_ns - completed.start_timestamp_ns).max(0)
                         / 1_000_000,
-                    success: success_from_final_info(completed.final_info.as_ref()),
+                    success: success_from_final_info(
+                        self.spec.edition_defaults().success_info_keys,
+                        completed.final_info.as_ref(),
+                    ),
                 });
             }
             events.push(EpisodeCompletedEvent {
@@ -1898,7 +1923,10 @@ where
                 truncated: completed.truncated,
                 duration_ms: (completed.end_timestamp_ns - completed.start_timestamp_ns).max(0)
                     / 1_000_000,
-                success: success_from_final_info(completed.final_info.as_ref()),
+                success: success_from_final_info(
+                    self.spec.edition_defaults().success_info_keys,
+                    completed.final_info.as_ref(),
+                ),
                 final_info: completed.final_info.clone(),
                 seed,
                 trial_index,
@@ -2005,20 +2033,31 @@ where
         }
     }
 
+    /// The action the env receives: `transform_action`'s result, then the
+    /// relay policy's.
     async fn invoke_transform_action(
         &self,
         telemetry: &Mutex<Aggregator>,
-        event: ActionReceivedEvent,
-    ) -> Result<Option<Vec<Bytes>>, RuntimeError> {
+        event: &ActionReceivedEvent,
+    ) -> Result<Relayed, RuntimeError> {
         let started = Instant::now();
-        let result = self.hooks.transform_action(event).await;
+        let result = self.hooks.transform_action(event.clone()).await;
         lock_agg(telemetry).record(Sample::dur(
             SRC_TRANSFORM_ACTION,
             metrics::RPC_TOTAL,
             started.elapsed(),
         ));
         match result {
-            Ok(action) => Ok(action),
+            Ok(action) => {
+                self.relay(
+                    Leg::ModelToEnv,
+                    &event.session_id,
+                    &event.route,
+                    &self.action_space,
+                    action,
+                )
+                .await
+            }
             Err(err) => {
                 tracing::warn!("runtime hook transform_action failed: {err}");
                 Err(RuntimeError::Hook(err))
@@ -2026,25 +2065,144 @@ where
         }
     }
 
+    /// The observation the model receives: `transform_observation`'s result,
+    /// then the relay policy's.
     async fn invoke_transform_observation(
         &self,
         telemetry: &Mutex<Aggregator>,
-        event: ObservationEmittedEvent,
-    ) -> Result<Option<Vec<Bytes>>, RuntimeError> {
+        event: &ObservationEmittedEvent,
+    ) -> Result<Relayed, RuntimeError> {
         let started = Instant::now();
-        let result = self.hooks.transform_observation(event).await;
+        let result = self.hooks.transform_observation(event.clone()).await;
         lock_agg(telemetry).record(Sample::dur(
             SRC_TRANSFORM_OBS,
             metrics::RPC_TOTAL,
             started.elapsed(),
         ));
         match result {
-            Ok(observation) => Ok(observation),
+            Ok(observation) => {
+                self.relay(
+                    Leg::EnvToModel,
+                    &event.session_id,
+                    &event.route,
+                    &self.observation_space,
+                    observation,
+                )
+                .await
+            }
             Err(err) => {
                 tracing::warn!("runtime hook transform_observation failed: {err}");
                 Err(RuntimeError::Hook(err))
             }
         }
+    }
+
+    /// The target leg's ceiling, `None` when that peer runs in-process.
+    fn ceiling(&self, leg: Leg) -> Option<&crate::spec::PeerCeiling> {
+        match leg {
+            Leg::EnvToModel => self.spec.model_ceiling.as_ref(),
+            Leg::ModelToEnv => self.spec.env_ceiling.as_ref(),
+        }
+    }
+
+    /// Checks the env contract against the model's ceiling before any leaf
+    /// flows; a converting policy's advisory is recorded, its leaves unused.
+    async fn relay_contract(&self, state: &RouteState) -> Result<(), RuntimeError> {
+        let Some(ceiling) = self.ceiling(Leg::EnvToModel) else {
+            return Ok(());
+        };
+        let contract_spaces = SpaceSpec {
+            spec: Some(space_spec::Spec::Tuple(TupleSpec {
+                spaces: vec![
+                    SpaceSpec::clone(&self.observation_space),
+                    SpaceSpec::clone(&self.action_space),
+                ],
+            })),
+            ..Default::default()
+        };
+        let payload = PayloadFacts {
+            byte_len: self.spec.env_contract.encoded_len(),
+            ..PayloadFacts::new(Arc::new(contract_spaces), Vec::new())
+        };
+        match self
+            .relay_policy
+            .reconcile(Leg::EnvToModel, ceiling, &payload)
+        {
+            RelayDecision::Forward => Ok(()),
+            RelayDecision::Convert { advisory, .. } => {
+                self.raise_advisory(
+                    state.session_id(),
+                    &state.env_context(),
+                    Leg::EnvToModel,
+                    advisory,
+                )
+                .await;
+                Ok(())
+            }
+            RelayDecision::Refuse(reason) => {
+                Err(relay_refused(Leg::EnvToModel, "contract", reason))
+            }
+        }
+    }
+
+    /// Hands a payload bound for a served peer to the relay policy.
+    async fn relay(
+        &self,
+        leg: Leg,
+        session_id: &str,
+        route: &RuntimeEnvContext,
+        space: &Arc<SpaceSpec>,
+        leaves: Option<Vec<Bytes>>,
+    ) -> Result<Relayed, RuntimeError> {
+        let Some(ceiling) = self.ceiling(leg) else {
+            return Ok((leaves, None));
+        };
+        let Some(leaves) = leaves else {
+            return Ok((None, None));
+        };
+        let payload = PayloadFacts::new(Arc::clone(space), leaves);
+        match self.relay_policy.reconcile(leg, ceiling, &payload) {
+            RelayDecision::Forward => Ok((Some(payload.leaves), None)),
+            RelayDecision::Convert {
+                leaves,
+                space,
+                advisory,
+            } => {
+                self.raise_advisory(session_id, route, leg, advisory).await;
+                Ok((Some(leaves), space))
+            }
+            RelayDecision::Refuse(reason) => Err(relay_refused(leg, "payload", reason)),
+        }
+    }
+
+    /// Records `advisory` once per session and streams it to the hooks.
+    async fn raise_advisory(
+        &self,
+        session_id: &str,
+        route: &RuntimeEnvContext,
+        leg: Leg,
+        advisory: Advisory,
+    ) {
+        {
+            let mut advisories = self
+                .advisories
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if advisories.contains(&advisory) {
+                return;
+            }
+            advisories.push(advisory.clone());
+        }
+        fan_out_event!(
+            self,
+            relay_advisory,
+            RelayAdvisoryEvent {
+                session_id: session_id.to_string(),
+                route: route.clone(),
+                leg,
+                advisory,
+            }
+        );
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2075,6 +2233,17 @@ where
             infos,
         }
     }
+}
+
+/// The leaves a peer receives, and the space typing them when a relay policy
+/// converted their layout.
+type Relayed = (Option<Vec<Bytes>>, Option<Arc<SpaceSpec>>);
+
+fn relay_refused(leg: Leg, what: &str, reason: String) -> RuntimeError {
+    RuntimeError::Protocol(format!(
+        "the runtime cannot relay this {what} to the {}: {reason}",
+        leg.target()
+    ))
 }
 
 /// The per-lane reset seed, derived purely from reproducible inputs: the user's

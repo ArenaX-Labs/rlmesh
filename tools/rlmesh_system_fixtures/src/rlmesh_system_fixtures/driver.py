@@ -19,7 +19,13 @@ def main() -> int:
     trace_parser.add_argument(
         "--client", choices=["native", "numpy", "torch"], required=True
     )
-    trace_parser.add_argument("--model", required=True)
+    trace_parser.add_argument(
+        "--model", help="Registered fixture model to run in-process"
+    )
+    trace_parser.add_argument(
+        "--model-address",
+        help="Drive the loop through a model served at this address instead of --model",
+    )
     trace_parser.add_argument("--seed", type=int)
     trace_parser.add_argument("--steps", type=int, required=True)
     trace_parser.add_argument("--output", type=Path, required=True)
@@ -31,8 +37,14 @@ def main() -> int:
 
 
 def run_trace(args: argparse.Namespace) -> int:
+    if (args.model is None) == (args.model_address is None):
+        raise SystemExit("pass exactly one of --model and --model-address")
     remote = remote_env(args.client, args.address)
-    model = resolve_model(args.model)
+    # A served model drives the same loop through its session, so the
+    # cross-version matrix's model leg records the one trace shape too.
+    session = model_session(args.model_address, remote) if args.model_address else None
+    loop = remote if session is None else session
+    model = resolve_model(args.model) if session is None else session.predict
     trace: dict[str, Any] = {
         "schema_version": 1,
         "scenario": args.scenario,
@@ -41,14 +53,14 @@ def run_trace(args: argparse.Namespace) -> int:
         "steps": [],
     }
     try:
-        observation, info = remote.reset(seed=args.seed)
+        observation, info = loop.reset(seed=args.seed)
         trace["reset"] = {
             "observation": fingerprint(observation),
             "info": canonical_info(info),
         }
         for index in range(args.steps):
             action = model(observation)
-            observation, reward, terminated, truncated, info = remote.step(action)
+            observation, reward, terminated, truncated, info = loop.step(action)
             trace["steps"].append(
                 {
                     "index": index,
@@ -62,14 +74,23 @@ def run_trace(args: argparse.Namespace) -> int:
             )
             if terminated or truncated:
                 break
-        remote.shutdown(f"fixture trace {args.scenario} complete")
+        if session is None:
+            remote.shutdown(f"fixture trace {args.scenario} complete")
     finally:
+        if session is not None:
+            session.close()
         remote.close()
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(trace, indent=2, sort_keys=True) + "\n")
     print(f"trace={args.output}")
     return 0
+
+
+def model_session(address: str, remote: Any) -> Any:
+    import rlmesh
+
+    return rlmesh.RemoteModel(address).session(remote)
 
 
 def remote_env(client: str, address: str) -> Any:

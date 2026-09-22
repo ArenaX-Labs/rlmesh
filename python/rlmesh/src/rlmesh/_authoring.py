@@ -70,6 +70,16 @@ class EnvFactory(ABC):
     #: the 0-based ordinal of the episode being started (see
     #: :func:`rlmesh.trial_index`); ``()`` (the default) receives none.
     reset_options: ClassVar[tuple[str, ...]] = ()
+    #: The workflow edition this env was authored against -- a sticky
+    #: declaration, the source-resident analogue of NixOS's ``stateVersion``:
+    #: write it once and upgrading rlmesh cannot change how this env behaves.
+    #: Paste the value :func:`rlmesh.current_workflow_edition` reports. ``None``
+    #: (the default) declares nothing and floats to this build's newest edition,
+    #: which is reported once per process. Overridden by
+    #: ``RLMESH_WORKFLOW_EDITION`` and by ``--workflow-edition`` /
+    #: ``ServeOptions(workflow_edition=...)``; see :doc:`the precedence table
+    #: </editions/index>`.
+    workflow_edition: ClassVar[str | None] = None
     #: Framework bridge pinned by a framework-specific subclass
     #: (``rlmesh.torch.EnvFactory`` / ``rlmesh.jax.EnvFactory``); ``serve_env``
     #: reads it to type the served env's obs/action seam. ``None`` serves numpy.
@@ -173,6 +183,7 @@ class EnvFactory(ABC):
         vectorization_mode: str | None = None,
         framework: str | None = None,
         device: object | None = None,
+        workflow_edition: str | None = None,
         **make_kwargs: Any,
     ) -> None:
         """Host this env on ``address`` (blocking): ``prepare()`` + ``make(**make_kwargs)``, publish ``tags``.
@@ -180,7 +191,9 @@ class EnvFactory(ABC):
         The named keywords are *serving* options, forwarded to
         :func:`rlmesh.serve.serve_env` (``num_envs > 1`` fans ``make`` out into a
         vector env; ``framework``/``device`` type and place the served obs/action
-        seam); every other keyword goes to ``make``. Naming them here keeps a make
+        seam; ``workflow_edition`` overrides this class's
+        :attr:`workflow_edition` declaration for this endpoint); every other
+        keyword goes to ``make``. Naming them here keeps a make
         kwarg from silently binding to a serving option -- a ``make`` parameter that
         shares a serving option's name cannot ride through ``serve``.
         """
@@ -193,6 +206,7 @@ class EnvFactory(ABC):
             vectorization_mode=vectorization_mode,
             framework=framework,
             device=device,
+            workflow_edition=workflow_edition,
             **make_kwargs,
         )
 

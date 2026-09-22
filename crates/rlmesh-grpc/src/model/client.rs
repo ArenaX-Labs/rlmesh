@@ -65,9 +65,18 @@ pub struct ModelClient {
     /// cleared by the read.
     last_phases: EndpointPhases,
     server_capabilities: HashMap<String, String>,
-    /// The model's offered workflow editions, learned at handshake. Feeds the
-    /// three-way session-floor reconciliation.
+    /// CAN: the model's offered workflow editions, learned at handshake. Feeds
+    /// the three-way session-floor reconciliation.
     server_supported_editions: Vec<String>,
+    /// WANT: the edition the model declared, or `None` when it declared none (an
+    /// empty wire value — every peer built before the field existed). Negotiation
+    /// reads an undeclared WANT as `max(server_supported_editions)`.
+    server_preferred_edition: Option<String>,
+    /// WANT: the workflow edition the RUNTIME declares on this leg, set by
+    /// [`declare_workflow_edition`](Self::declare_workflow_edition) before
+    /// [`handshake`](Self::handshake). `None` declares this build's current
+    /// edition, which is its `max(can)` and therefore caps no model.
+    declared_workflow_edition: Option<String>,
 }
 
 impl ModelClient {
@@ -98,6 +107,8 @@ impl ModelClient {
             last_phases: EndpointPhases::default(),
             server_capabilities: HashMap::new(),
             server_supported_editions: Vec::new(),
+            server_preferred_edition: None,
+            declared_workflow_edition: None,
         })
     }
 
@@ -142,15 +153,44 @@ impl ModelClient {
         )
     }
 
-    /// The model's bind-time offer learned at handshake: the workflow editions it
-    /// supports. The runtime (client to both the env and the model) feeds this
-    /// into [`rlmesh_proto::negotiate_session_floor`] to pick the workflow edition.
-    /// Empty before [`handshake`](Self::handshake) completes. Capabilities are read
-    /// pairwise (see [`server_pipelines_predict`](Self::server_pipelines_predict)), not here.
+    /// Whether the server advertised that it ingests observation history
+    /// (`rlmesh.model.observation_history.v1`). The emitter checks this before
+    /// offering `delivers_history` at resolve: a peer that did not advertise it
+    /// is never sent history rows.
+    pub fn server_ingests_history(&self) -> bool {
+        rlmesh_proto::has_capability(
+            &self.server_capabilities,
+            capabilities::MODEL_OBSERVATION_HISTORY_V1,
+        )
+    }
+
+    /// The capabilities the server advertised at handshake; empty before it.
+    pub fn server_capabilities(&self) -> &HashMap<String, String> {
+        &self.server_capabilities
+    }
+
+    /// The model's bind-time offer learned at handshake: the editions it CAN
+    /// drive plus the one it declared (WANT). The runtime (client to both the env
+    /// and the model) feeds this into [`rlmesh_proto::negotiate_session_floor`] to
+    /// pick the workflow edition. Empty before [`handshake`](Self::handshake)
+    /// completes. Capabilities are read pairwise (see
+    /// [`server_pipelines_predict`](Self::server_pipelines_predict)), not here.
     pub fn model_session_offer(&self) -> rlmesh_proto::SessionOffer {
         rlmesh_proto::SessionOffer {
             editions: self.server_supported_editions.clone(),
+            preferred: self.server_preferred_edition.clone(),
         }
+    }
+
+    /// Declare the workflow edition the runtime brings to this leg (its WANT),
+    /// or `None` to declare nothing. Must be set before
+    /// [`handshake`](Self::handshake): it is what the request carries. The
+    /// session floor is reconciled separately, by
+    /// [`env_floor`](crate::env_floor), which takes the same declaration.
+    pub fn declare_workflow_edition(&mut self, declared: Option<String>) {
+        self.declared_workflow_edition = declared
+            .map(|edition| edition.trim().to_string())
+            .filter(|edition| !edition.is_empty());
     }
 
     /// Perform the handshake and open the Join stream, leaving the client ready
@@ -161,7 +201,11 @@ impl ModelClient {
         }
 
         let request = self.authorized_request(rlmesh_proto::model::v1::HandshakeRequest {
-            base: Some(rlmesh_proto::core_handshake_request("rlmesh-model", &[])),
+            base: Some(rlmesh_proto::core_handshake_request(
+                "rlmesh-model",
+                &[],
+                self.declared_workflow_edition.as_deref(),
+            )),
         })?;
 
         let response = self
@@ -188,6 +232,9 @@ impl ModelClient {
             .into());
         }
         self.server_supported_editions = response.supported_workflow_editions;
+        self.server_preferred_edition =
+            Some(response.preferred_workflow_edition.trim().to_string())
+                .filter(|want| !want.is_empty());
         self.server_capabilities = response.capabilities;
 
         self.setup_join_stream().await?;
@@ -643,6 +690,8 @@ mod tests {
             last_phases: EndpointPhases::default(),
             server_capabilities: HashMap::new(),
             server_supported_editions: Vec::new(),
+            server_preferred_edition: None,
+            declared_workflow_edition: None,
         };
         (client, request_rx, pending)
     }
@@ -897,6 +946,22 @@ mod tests {
 
         let result = send.await.unwrap();
         assert!(result.is_err(), "a closed stream must fail the waiter");
+    }
+
+    /// The model's WANT learned at handshake rides next to its CAN list into the
+    /// offer the three-way floor is computed from — the model-side mirror of the
+    /// env client's `session_offer`.
+    #[tokio::test]
+    async fn server_preferred_edition_reaches_the_session_offer() {
+        let (mut client, _requests, _pending) = ready_client();
+        assert_eq!(client.model_session_offer().preferred, None);
+
+        client.server_supported_editions = rlmesh_proto::supported_workflow_editions();
+        client.server_preferred_edition = Some(rlmesh_proto::CURRENT_WORKFLOW_EDITION.to_string());
+        assert_eq!(
+            client.model_session_offer(),
+            rlmesh_proto::SessionOffer::this_build(None)
+        );
     }
 
     #[test]

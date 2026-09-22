@@ -59,6 +59,34 @@ jobs:
         if: always()
         run: uv cache prune --ci
 
+  cross-version:
+    name: Cross-Version Matrix
+    runs-on: depot-ubuntu-24.04-4
+    env:
+      UV_CACHE_DIR: /tmp/.uv-cache
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup toolchain
+        uses: ./.github/actions/setup
+        with:
+          python: "true"
+          rust-components: "true"
+
+      # Builds a release-cohort wheel and runs it against the published wheel
+      # pinned in tests/system/crossver.lock. Its own job, not part of `test`:
+      # a break here is a break in the compatibility promise, not a nightly.
+      - name: Cross-version matrix
+        run: mise run --skip-tools test:crossver
+
+      - name: Minimize uv cache
+        if: always()
+        run: uv cache prune --ci
+
   package:
     name: Rust Package Verification
     runs-on: depot-ubuntu-24.04-4

@@ -9,6 +9,7 @@ loudly if any version-bearing spot is missed.
 Usage:
     python scripts/bump_version.py X.Y.Z[-{alpha,beta,rc}.N]
     python scripts/bump_version.py --check   # run self-tests, change nothing
+    python scripts/bump_version.py --sync-editions   # copy the retained editions into rlmesh-proto
 """
 
 from __future__ import annotations
@@ -19,6 +20,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import tomllib
+
 ROOT = Path(__file__).resolve().parents[1]
 SEMVER = re.compile(r"^\d+\.\d+\.\d+(-(?:alpha|beta|rc)\.\d+)?$")
 SEMVER_PARTS = re.compile(
@@ -28,6 +31,7 @@ SEMVER_PARTS = re.compile(
 # changelog and the policy pages that record which release sealed the wire
 # generation and the workflow edition. A bump must not rewrite those sentences.
 HISTORY_DOCS = {"docs/changelog.md", "docs/compatibility.md", "docs/versioning.md"}
+PACKAGED_SUPPORTED_EDITIONS = ROOT / "crates/rlmesh-proto/supported_editions.txt"
 WORKFLOW_EDITION_BLOCK = re.compile(
     r'^\[workflow\.editions\."(?P<edition>[^"]+)"\]\n.*?(?=^\[[^\]]+\]|\Z)',
     re.DOTALL | re.MULTILINE,
@@ -174,6 +178,23 @@ def _update_workflow_manifest(text: str, version: str) -> str:
     return _replace_workflow_edition_block(text, old_match, block)
 
 
+def sync_packaged_supported_editions() -> None:
+    """Write rlmesh.toml's current edition, then its other retained editions, into
+    the file rlmesh-proto ships.
+
+    A crate built from crates.io has no rlmesh.toml, so its build script reads its
+    offer and, from the first line, its base edition from this file instead.
+    """
+    workflow = tomllib.loads((ROOT / "rlmesh.toml").read_text())["workflow"]
+    current = workflow["current_edition"]
+    editions = [current]
+    editions.extend(e for e in workflow["supported_editions"] if e != current)
+    PACKAGED_SUPPORTED_EDITIONS.write_text(
+        "".join(f"{edition}\n" for edition in editions)
+    )
+    print(f"  {PACKAGED_SUPPORTED_EDITIONS.relative_to(ROOT)}")
+
+
 def current_version() -> str:
     text = (ROOT / "Cargo.toml").read_text()
     m = re.search(
@@ -238,6 +259,7 @@ def bump(old: str, new: str) -> None:
     )
     text = _update_workflow_manifest(text, new)
     rlmesh_toml.write_text(text)
+    sync_packaged_supported_editions()
 
     # Crate README install snippets: cargo dependency + `cargo install --version`.
     for readme in sorted((ROOT / "crates").glob("*/README.md")):
@@ -324,6 +346,9 @@ def main() -> None:
     arg = sys.argv[1]
     if arg == "--check":
         selfcheck()
+        return
+    if arg == "--sync-editions":
+        sync_packaged_supported_editions()
         return
     if not SEMVER.match(arg):
         sys.exit(f"not a SemVer version: {arg!r} (expected X.Y.Z or X.Y.Z-beta.N)")

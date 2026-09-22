@@ -110,8 +110,13 @@ class RemoteModelBase(Generic[ObsT, ActT]):
                 "trust_entrypoints= applies to local model sources; it is not "
                 "supported for RemoteModel sessions"
             )
+        from .._editions import resolve_workflow_edition
         from .._load_native import load_native
 
+        # This handle is the runtime tier of the session it opens, so the model
+        # leg carries the same declaration the env leg would: the process and
+        # project surfaces (there is no class to read one off here).
+        workflow_edition = resolve_workflow_edition()
         try:
             client = load_native("PyModelClient")(
                 self._address,
@@ -119,6 +124,8 @@ class RemoteModelBase(Generic[ObsT, ActT]):
                 execution_horizon,
                 connect_timeout_seconds=self._connect_timeout_seconds,
                 request_timeout_seconds=self._request_timeout_seconds,
+                workflow_edition=workflow_edition,
+                env_offer=env_session_offer(env),
             )
         except ConnectionError as exc:
             raise ConnectionError(
@@ -140,6 +147,19 @@ def env_contract_of(env: object) -> EnvContract:
             f"(e.g. RemoteEnv or SandboxEnv); got {type(env).__name__}"
         )
     return cast("EnvContract", contract)
+
+
+def env_session_offer(env: object) -> tuple[list[str], str | None] | None:
+    """The env's handshake offer ``(CAN, WANT)``, when ``env`` is a dialed handle.
+
+    A served-model session is the runtime tier of a three-way floor; handing the
+    model client the env's real offer keeps a refusal honest about what the env
+    actually declared. ``None`` when the handle exposes no handshake.
+    """
+    offer = getattr(env, "_session_offer", None)
+    if not callable(offer):
+        return None
+    return cast("tuple[list[str], str | None]", offer())
 
 
 def remote_session(
@@ -176,5 +196,6 @@ __all__ = [
     "ObsT",
     "RemoteModelBase",
     "env_contract_of",
+    "env_session_offer",
     "remote_session",
 ]
