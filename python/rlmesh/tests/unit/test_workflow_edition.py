@@ -95,6 +95,37 @@ def test_current_workflow_edition_is_the_bare_base_on_every_build() -> None:
     assert resolve_workflow_edition(call=edition) == edition
 
 
+def test_undeclared_public_session_preserves_a_legacy_binder() -> None:
+    sentinel = object()
+
+    class LegacyHandle:
+        def session(
+            self,
+            env: object,
+            *,
+            instruction: str | None,
+            close_env: bool,
+            trust_entrypoints: bool | None,
+            execution_horizon: int,
+            view: object,
+        ) -> object:
+            return sentinel
+
+    assert rlmesh.session(LegacyHandle(), "tcp://127.0.0.1:1") is sentinel
+
+
+def test_sandbox_refuses_an_invalid_call_pin_before_starting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected_serve(self: object) -> None:
+        pytest.fail("invalid edition started a container")
+
+    monkeypatch.setattr(rlmesh.SandboxModel, "serve", unexpected_serve)
+    handle = rlmesh.SandboxModel("image://unused:latest")
+    with pytest.raises(ValueError, match=UNKNOWN_EDITION):
+        rlmesh.session(handle, "tcp://127.0.0.1:1", workflow_edition=UNKNOWN_EDITION)
+
+
 class TestPrecedence:
     """Each rung of the A.5 table, and that the rung above it wins."""
 
@@ -286,6 +317,17 @@ class TestPyprojectScan:
 
 class TestServeOptionsDeclaring:
     """The declaration reaches the serve options a served peer hands the server."""
+
+    def test_empty_environment_clears_an_existing_option_pin(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(WORKFLOW_EDITION_ENV_VAR, "")
+        given = ServeOptions(workflow_edition=EDITION, idle_timeout_seconds=2.5)
+        options = serve_options_declaring(given)
+        assert options is not None
+        assert options.workflow_edition is None
+        assert options.idle_timeout_seconds == 2.5
+        assert given.workflow_edition == EDITION
 
     def test_stamps_the_resolved_declaration_onto_fresh_options(self) -> None:
         options = serve_options_declaring(declared=EDITION)

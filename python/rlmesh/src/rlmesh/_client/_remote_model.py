@@ -84,6 +84,7 @@ class RemoteModelBase(Generic[ObsT, ActT]):
         trust_entrypoints: bool | None = None,
         execution_horizon: int = 1,
         view: ViewArg = None,
+        workflow_edition: str | None = None,
     ) -> Session[Any, Any]:
         """Bind this served policy to ``env`` and return a :class:`rlmesh.Session`.
 
@@ -99,6 +100,11 @@ class RemoteModelBase(Generic[ObsT, ActT]):
         of it one action per step open-loop (skipping the RPC), re-planning every
         ``execution_horizon`` steps. The model must define ``predict_chunk``;
         otherwise it re-plans every step.
+
+        ``workflow_edition`` declares this runtime's edition for the session,
+        ahead of the process and project declarations. It also overrides the
+        runtime declaration used to connect the env handle; the env server's
+        own declaration still constrains the session floor.
         """
         if instruction is not None:
             raise ValueError(
@@ -114,9 +120,9 @@ class RemoteModelBase(Generic[ObsT, ActT]):
         from .._load_native import load_native
 
         # This handle is the runtime tier of the session it opens, so the model
-        # leg carries the same declaration the env leg would: the process and
-        # project surfaces (there is no class to read one off here).
-        workflow_edition = resolve_workflow_edition()
+        # leg carries the call, process, or project declaration. The env's
+        # own offer still constrains the three-way floor.
+        workflow_edition = resolve_workflow_edition(call=workflow_edition)
         try:
             client = load_native("PyModelClient")(
                 self._address,

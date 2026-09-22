@@ -1,15 +1,17 @@
 [release]
-status = "rc"
+status = "stable"
 package_family = "0.1"
 
 [workflow]
 base_edition = "2026.06"
-current_edition = "2026.06-0.1.0-rc.12"
-supported_editions = ["2026.06-0.1.0-rc.12"]
+current_edition = "2026.06"
+supported_editions = ["2026.06"]
 
-[workflow.editions."2026.06-0.1.0-rc.12"]
-status = "provisional"
+[workflow.editions."2026.06"]
+status = "sealed"
 spec = "docs/editions/2026.06.md"
+sealed_in = "0.1.0"
+spec_sha256 = "a3dcf2195f6b35819c91192396e94a445c039278d99e20db81fa2a2fe43664a2"
 
 [protocol]
 # Single generation, equality-only: there is no support window, so no
@@ -58,7 +60,7 @@ id = "pypi:rlmesh"
 ecosystem = "pypi"
 name = "rlmesh"
 manifest = "python/rlmesh/pyproject.toml"
-version = "0.1.0rc12"
+version = "0.1.0"
 role = "core"
 publish = true
 
@@ -67,7 +69,7 @@ id = "cargo:rlmesh"
 ecosystem = "cargo"
 name = "rlmesh"
 manifest = "crates/rlmesh/Cargo.toml"
-version = "0.1.0-rc.12"
+version = "0.1.0"
 role = "core"
 publish = true
 
@@ -76,7 +78,7 @@ id = "cargo:rlmesh-adapters"
 ecosystem = "cargo"
 name = "rlmesh-adapters"
 manifest = "crates/rlmesh-adapters/Cargo.toml"
-version = "0.1.0-rc.12"
+version = "0.1.0"
 role = "core"
 publish = true
 
@@ -85,7 +87,7 @@ id = "cargo:rlmesh-cli"
 ecosystem = "cargo"
 name = "rlmesh-cli"
 manifest = "crates/rlmesh-cli/Cargo.toml"
-version = "0.1.0-rc.12"
+version = "0.1.0"
 role = "core"
 publish = true
 
@@ -94,7 +96,7 @@ id = "cargo:rlmesh-grpc"
 ecosystem = "cargo"
 name = "rlmesh-grpc"
 manifest = "crates/rlmesh-grpc/Cargo.toml"
-version = "0.1.0-rc.12"
+version = "0.1.0"
 role = "core"
 publish = true
 
@@ -103,7 +105,7 @@ id = "cargo:rlmesh-proto"
 ecosystem = "cargo"
 name = "rlmesh-proto"
 manifest = "crates/rlmesh-proto/Cargo.toml"
-version = "0.1.0-rc.12"
+version = "0.1.0"
 role = "core"
 publish = true
 
@@ -112,7 +114,7 @@ id = "cargo:rlmesh-runtime"
 ecosystem = "cargo"
 name = "rlmesh-runtime"
 manifest = "crates/rlmesh-runtime/Cargo.toml"
-version = "0.1.0-rc.12"
+version = "0.1.0"
 role = "core"
 publish = true
 
@@ -121,7 +123,7 @@ id = "cargo:rlmesh-sandbox"
 ecosystem = "cargo"
 name = "rlmesh-sandbox"
 manifest = "crates/rlmesh-sandbox/Cargo.toml"
-version = "0.1.0-rc.12"
+version = "0.1.0"
 role = "core"
 publish = true
 
@@ -130,7 +132,7 @@ id = "cargo:rlmesh-spaces"
 ecosystem = "cargo"
 name = "rlmesh-spaces"
 manifest = "crates/rlmesh-spaces/Cargo.toml"
-version = "0.1.0-rc.12"
+version = "0.1.0"
 role = "core"
 publish = true
 
@@ -139,6 +141,6 @@ id = "cargo:rlmesh-viewer"
 ecosystem = "cargo"
 name = "rlmesh-viewer"
 manifest = "crates/rlmesh-viewer/Cargo.toml"
-version = "0.1.0-rc.12"
+version = "0.1.0"
 role = "core"
 publish = true

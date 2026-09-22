@@ -1436,6 +1436,7 @@ def session(
     trust_entrypoints: bool | None = None,
     execution_horizon: int = 1,
     view: ViewArg = None,
+    workflow_edition: str | None = None,
 ) -> Session[ObsT, ActT]: ...
 @overload
 def session(
@@ -1447,6 +1448,7 @@ def session(
     trust_entrypoints: bool | None = None,
     execution_horizon: int = 1,
     view: ViewArg = None,
+    workflow_edition: str | None = None,
 ) -> Session[Any, Any]: ...
 @overload
 def session(
@@ -1458,6 +1460,7 @@ def session(
     trust_entrypoints: bool | None = None,
     execution_horizon: int = 1,
     view: ViewArg = None,
+    workflow_edition: str | None = None,
 ) -> Session[ObsT, ActT]: ...
 @overload
 def session(
@@ -1469,6 +1472,7 @@ def session(
     trust_entrypoints: bool | None = None,
     execution_horizon: int = 1,
     view: ViewArg = None,
+    workflow_edition: str | None = None,
 ) -> Session[Any, Any]: ...
 def session(
     model: object,
@@ -1479,6 +1483,7 @@ def session(
     trust_entrypoints: bool | None = None,
     execution_horizon: int = 1,
     view: ViewArg = None,
+    workflow_edition: str | None = None,
 ) -> Session[Any, Any]:
     """Bind a model to an env and return a :class:`Session` to drive by hand or via run().
 
@@ -1496,11 +1501,15 @@ def session(
     Pass :data:`rlmesh.RANDOM_SAMPLE` as ``model`` for a random baseline: each step
     samples the env's action space, no spec or adapter involved.
 
+    ``workflow_edition`` declares the contract for this call and takes precedence
+    over the environment variable, class declaration, and project manifest.
+
     Typing: a :class:`Model` instance or an annotated predict callable flows its
     observation/action types onto the returned ``Session`` (``predict``/``step``
     are typed accordingly); a class source, duck-typed policy, or served handle
     yields ``Session[Any, Any]``.
     """
+    from .._editions import resolve_workflow_edition
     from ._adapter_mode import NO_ADAPTER
     from ._eval import RANDOM_SAMPLE, Session
 
@@ -1524,6 +1533,7 @@ def session(
             trust_entrypoints=bool(trust_entrypoints),
             execution_horizon=execution_horizon,
             view=view,
+            workflow_edition=resolve_workflow_edition(call=workflow_edition),
         )
     # A handle that knows how to bind itself -- Model, RemoteModel, SandboxModel -- has
     # its own ``.session``; anything else (a callable / subclass class) is normalized.
@@ -1538,6 +1548,11 @@ def session(
                 trust_entrypoints=trust_entrypoints,
                 execution_horizon=execution_horizon,
                 view=view,
+                **(
+                    {"workflow_edition": workflow_edition}
+                    if workflow_edition is not None
+                    else {}
+                ),
             ),
         )
     return as_model(model).session(
@@ -1547,6 +1562,7 @@ def session(
         trust_entrypoints=trust_entrypoints,
         execution_horizon=execution_horizon,
         view=view,
+        workflow_edition=workflow_edition,
     )
 
 
@@ -1565,6 +1581,7 @@ def run(
     execution_horizon: int = 1,
     prefetch_lead: int = 0,
     view: ViewArg = None,
+    workflow_edition: str | None = None,
     trial_index_base: int = 0,
 ) -> RunResult:
     """Drive ``model`` against ``env`` to completion and return a :class:`RunResult`.
@@ -1580,6 +1597,9 @@ def run(
     synchronous run. A served :class:`RemoteModel` / :class:`SandboxModel`
     (and the :data:`rlmesh.RANDOM_SAMPLE` baseline) runs through its own
     session loop, which supports every parameter except ``prefetch_lead``.
+
+    ``workflow_edition`` declares the contract for this call with the same
+    precedence as :func:`rlmesh.session`.
     """
     from ._eval import RANDOM_SAMPLE
 
@@ -1597,6 +1617,7 @@ def run(
             execution_horizon=execution_horizon,
             prefetch_lead=prefetch_lead,
             view=view,
+            workflow_edition=workflow_edition,
             trial_index_base=trial_index_base,
         )
     if prefetch_lead != 0:
@@ -1613,6 +1634,7 @@ def run(
         trust_entrypoints=trust_entrypoints,
         execution_horizon=execution_horizon,
         view=view,
+        workflow_edition=workflow_edition,
     )
     try:
         return sess.run(

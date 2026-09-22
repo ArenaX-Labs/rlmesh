@@ -500,7 +500,7 @@
           },
           "session": {
             "kind": "function",
-            "signature": "session(env: EnvTarget, *, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, view: ViewArg = None) -> Session[Any, Any]"
+            "signature": "session(env: EnvTarget, *, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, view: ViewArg = None, workflow_edition: str | None = None) -> Session[Any, Any]"
           }
         },
         "signature": "RemoteModel(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None) -> None",
@@ -777,7 +777,7 @@
           },
           "session": {
             "kind": "function",
-            "signature": "session(env: EnvTarget, *, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, connect_timeout_seconds: float = 30.0, view: ViewArg = None)"
+            "signature": "session(env: EnvTarget, *, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, connect_timeout_seconds: float = 30.0, view: ViewArg = None, workflow_edition: str | None = None)"
           },
           "shutdown": {
             "kind": "function",
@@ -1238,7 +1238,7 @@
       },
       "run": {
         "kind": "function",
-        "signature": "run(model: object, env: EnvTarget, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: RunHooks | None = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, prefetch_lead: int = 0, view: ViewArg = None, trial_index_base: int = 0)",
+        "signature": "run(model: object, env: EnvTarget, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: RunHooks | None = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, prefetch_lead: int = 0, view: ViewArg = None, workflow_edition: str | None = None, trial_index_base: int = 0)",
         "stability": "Stable"
       },
       "sanitize_metadata": {
@@ -1248,7 +1248,7 @@
       },
       "session": {
         "kind": "function",
-        "signature": "session(model: object, env: EnvTarget, *, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, view: ViewArg = None)",
+        "signature": "session(model: object, env: EnvTarget, *, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, view: ViewArg = None, workflow_edition: str | None = None)",
         "stability": "Stable"
       },
       "spaces": {
@@ -2678,7 +2678,7 @@
           },
           "session": {
             "kind": "function",
-            "signature": "session(env: EnvTarget, *, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, view: ViewArg = None) -> Session[Any, Any]"
+            "signature": "session(env: EnvTarget, *, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, view: ViewArg = None, workflow_edition: str | None = None) -> Session[Any, Any]"
           }
         },
         "signature": "RemoteModel(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None) -> None",
@@ -2913,7 +2913,7 @@
           },
           "session": {
             "kind": "function",
-            "signature": "session(env: EnvTarget, *, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, connect_timeout_seconds: float = 30.0, view: ViewArg = None) -> Session[Any, Any]"
+            "signature": "session(env: EnvTarget, *, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, connect_timeout_seconds: float = 30.0, view: ViewArg = None, workflow_edition: str | None = None) -> Session[Any, Any]"
           },
           "shutdown": {
             "kind": "function",
@@ -3281,7 +3281,7 @@
           },
           "session": {
             "kind": "function",
-            "signature": "session(env: EnvTarget, *, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, view: ViewArg = None) -> Session[Any, Any]"
+            "signature": "session(env: EnvTarget, *, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, view: ViewArg = None, workflow_edition: str | None = None) -> Session[Any, Any]"
           }
         },
         "signature": "RemoteModel(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None) -> None",
@@ -3516,7 +3516,7 @@
           },
           "session": {
             "kind": "function",
-            "signature": "session(env: EnvTarget, *, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, connect_timeout_seconds: float = 30.0, view: ViewArg = None) -> Session[Any, Any]"
+            "signature": "session(env: EnvTarget, *, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, connect_timeout_seconds: float = 30.0, view: ViewArg = None, workflow_edition: str | None = None) -> Session[Any, Any]"
           },
           "shutdown": {
             "kind": "function",
@@ -4571,7 +4571,7 @@
           },
           "session": {
             "kind": "function",
-            "signature": "session(env: EnvTarget, *, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, view: ViewArg = None) -> Session[Any, Any]"
+            "signature": "session(env: EnvTarget, *, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, view: ViewArg = None, workflow_edition: str | None = None) -> Session[Any, Any]"
           }
         },
         "signature": "RemoteModel(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None) -> None",
@@ -4806,7 +4806,7 @@
           },
           "session": {
             "kind": "function",
-            "signature": "session(env: EnvTarget, *, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, connect_timeout_seconds: float = 30.0, view: ViewArg = None) -> Session[Any, Any]"
+            "signature": "session(env: EnvTarget, *, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, connect_timeout_seconds: float = 30.0, view: ViewArg = None, workflow_edition: str | None = None) -> Session[Any, Any]"
           },
           "shutdown": {
             "kind": "function",

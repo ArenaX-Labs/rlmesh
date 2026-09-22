@@ -22,7 +22,9 @@ import argparse
 import filecmp
 import re
 import shutil
+import subprocess
 import sys
+import tempfile
 import tomllib
 from pathlib import Path
 
@@ -64,9 +66,7 @@ def regen(root: Path) -> int:
         shutil.rmtree(base)
     base.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(live, base)
-    print(
-        f"baseline re-snapshotted: {base.relative_to(root)} (generation {gen!r})"
-    )
+    print(f"baseline re-snapshotted: {base.relative_to(root)} (generation {gen!r})")
     return 0
 
 
@@ -92,8 +92,7 @@ def verify(root: Path) -> int:
         errors.append(f"live proto tree missing: {live}")
     if not base.is_dir():
         errors.append(
-            f"baseline tree missing: {base} "
-            "(run `mise run protocol:baseline-regen`)"
+            f"baseline tree missing: {base} (run `mise run protocol:baseline-regen`)"
         )
     if not errors:
         # filecmp.dircmp uses a shallow (os.stat) compare by default; force a
@@ -136,6 +135,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("regen", help="re-snapshot the baseline (idempotent)")
     sub.add_parser("verify", help="verify baseline == live and no `reserved`")
+    sub.add_parser("breaking", help="check wire compatibility against the release tag")
     args = parser.parse_args(argv)
 
     root = _repo_root()
@@ -143,8 +143,61 @@ def main(argv: list[str] | None = None) -> int:
         return regen(root)
     if args.command == "verify":
         return verify(root)
+    if args.command == "breaking":
+        return breaking(root)
     parser.error(f"unknown command {args.command!r}")
     return 2
+
+
+def breaking(root: Path) -> int:
+    tag = "v0.1.0"
+    exists = (
+        subprocess.run(
+            ["git", "rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}"],
+            cwd=root,
+            capture_output=True,
+            check=False,
+        ).returncode
+        == 0
+    )
+    if not exists:
+        version = tomllib.loads((root / "Cargo.toml").read_text())["workspace"][
+            "package"
+        ]["version"]
+        if version not in {"0.1.0-rc.12", "0.1.0"}:
+            raise SystemExit(
+                "v0.1.0 tag is required; fetch release tags before checking compatibility"
+            )
+        # Bootstrap the seal before its tag exists; later releases must use v0.1.0.
+        tag = "v0.1.0-rc.12"
+        print(f"v0.1.0 tag absent: bootstrapping against {tag}", file=sys.stderr)
+    prefix = "crates/rlmesh-proto/proto"
+    try:
+        paths = subprocess.check_output(
+            ["git", "ls-tree", "-r", "--name-only", tag, "--", prefix],
+            cwd=root,
+            text=True,
+        ).splitlines()
+    except subprocess.CalledProcessError as error:
+        raise SystemExit(
+            f"cannot read {tag}; fetch release tags before checking compatibility"
+        ) from error
+    if not paths:
+        raise SystemExit(f"{tag} has no protocol tree")
+    with tempfile.TemporaryDirectory(prefix="rlmesh-wire-") as temporary:
+        baseline = Path(temporary)
+        for name in paths:
+            target = baseline / Path(name).relative_to(prefix)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(
+                subprocess.check_output(["git", "show", f"{tag}:{name}"], cwd=root)
+            )
+        print(f"checking wire compatibility against {tag}", flush=True)
+        return subprocess.run(
+            ["buf", "breaking", str(root / prefix), "--against", str(baseline)],
+            cwd=root,
+            check=False,
+        ).returncode
 
 
 if __name__ == "__main__":

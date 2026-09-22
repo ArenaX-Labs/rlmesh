@@ -168,6 +168,7 @@ class SandboxModel:
         execution_horizon: int = 1,
         connect_timeout_seconds: float = 30.0,
         view: ViewArg = None,
+        workflow_edition: str | None = None,
     ) -> Session[Any, Any]:
         """Serve this model and bind it to ``env``, returning a neutral :class:`rlmesh.Session`.
 
@@ -208,7 +209,10 @@ class SandboxModel:
             env_session_offer,
             remote_session,
         )
+        from .._editions import resolve_workflow_edition
         from .._load_native import load_native
+
+        workflow_edition = resolve_workflow_edition(call=workflow_edition)
 
         # Only tear down on failure if THIS call started the container; a handle the
         # caller is managing (context manager / reuse) must survive a failed bind
@@ -217,16 +221,12 @@ class SandboxModel:
         self.serve()
         try:
             contract = env_contract_of(env)
-            # This handle is the runtime tier of the session it opens, so the
-            # model leg carries this process's / project's declaration.
-            from .._editions import resolve_workflow_edition
-
             client = self._dial_with_retry(
                 load_native("PyModelClient"),
                 contract,
                 connect_timeout_seconds,
                 execution_horizon,
-                resolve_workflow_edition(),
+                workflow_edition,
                 env_session_offer(env),
             )
             # Hand ownership (and so container teardown on session close) only to a

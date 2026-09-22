@@ -1,38 +1,18 @@
 #!/usr/bin/env python3
-"""Cross-version compatibility matrix: the pinned published wheel vs this tree.
+"""Cross-version compatibility matrix against an immutable published wheel.
 
-The "old" side of every cell is the immutable PyPI artifact pinned in
-``tests/system/crossver.lock``; the "new" side is a release-cohort wheel built
-from this tree (``RLMESH_RELEASE_BUILD=1``, so it stamps the edition the
-published wheel advertises and the two land in one cohort).
+Release builds use the edition recorded in rlmesh.toml. Before 0.1.0 is
+published, the fixture is rc.12: shared-cohort builds must reproduce the trace,
+while a sealed build must refuse that provisional cohort with both editions
+named. Once published, 0.1.0 becomes the permanent fixture, and every mixed
+cell must complete at its retained edition.
 
-What the six real cells assert:
-
-* the **trace**: a Join across the two builds completes and reproduces the
-  committed ``traces/counter-entrypoint.json``. This is the cross-version
-  evidence -- the only assertion both builds take part in.
-* the **server's handshake**, measured by the raw wire probe below: its
-  ``compatible`` flag and its WANT (``preferred_workflow_edition`` -- this
-  tree's servers declare the current edition, the published wheel declares
-  nothing, which is the undeclared-peer case the negotiation must tolerate).
-  The probe offers the runtime's CAN set but is not the runtime's own client,
-  so these two columns characterise the *server* of a cell, not the pair.
-* the **edition**. On the model leg this is the real pin: the runtime's
-  ``ResolveAdapterRequest`` edition, read from the served model's
-  ``model adapter pinned to runtime-selected edition`` log line, so it is
-  negotiated between the two builds. On the env leg this tree's runtime pins
-  the env with ``ConfigureEnv`` as its first Join message: cell 4 reads that
-  pin from this tree's env server ``env pinned to runtime-selected edition``
-  log line, and cell 1 (the published wheel serves the env and logs no pin)
-  relies on the trace, since a refused pin aborts the session before Reset.
-  The published wheel's runtime sends no pin, so cells 2-3 fall back to the
-  two builds' CAN intersection, confirmed by pinning that same edition through
-  the probe's ``ConfigureEnv`` and requiring an ack.
-
-Cells 9 and 10 are forged refusals: they assert the refusal message, not a
-trace or an edition.
-
-Run it through ``mise run test:crossver``.
+The two controls always run at their own build's edition. Successful cells
+check the server's handshake, the runtime's edition pin, and the committed
+counter trace. The rc.12 runtime predates ConfigureEnv, so its env cells use a
+probe pin and the CAN intersection. The stable runtime sends the real pin.
+Cells 9 and 10 require explicit refusals of an unknown edition and generation.
+Run through ``mise run test:crossver``.
 """
 
 from __future__ import annotations
@@ -100,14 +80,11 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 # What the table's columns are evidence of, printed under it.
 LEGEND = (
-    "compatible: the server's own HandshakeResponse flag, read off the wire by the raw probe;",
-    "            the probe carries the runtime's CAN but is not its client, so it rates the server.",
-    "edition:    cells 5-6, the runtime's real ResolveAdapter pin; cells 1 and 4, the runtime's real",
-    "            ConfigureEnv pin -- read off this tree's env server log in cell 4, proven by the",
-    "            trace in cell 1 (the old server logs no pin; a refused pin aborts before Reset);",
-    "            cells 2-3, the old runtime sends no pin, so the two builds' CAN intersection, acked",
-    "            by a forged ConfigureEnv.",
-    "trace:      the cross-version Join against tests/system/traces/counter-entrypoint.json.",
+    "compatible: the server's generation verdict from the raw handshake probe.",
+    "edition:    the runtime's ConfigureEnv or ResolveAdapter pin; rc.12 env runtimes",
+    "            send no pin, so those cells check the shared edition with a probe pin.",
+    "trace:      the committed counter trace, or an expected prerelease-cohort refusal.",
+    "            A refusal must come from the real runtime and name both editions.",
 )
 
 
@@ -326,7 +303,11 @@ def assert_lock_pins_fixture() -> None:
 
 def read_build(python: Path, label: str) -> tuple[str, str]:
     """The installed package version and the edition its native build stamps."""
-    code = "import rlmesh; print(rlmesh.__version__); print(rlmesh.__build__)"
+    code = (
+        "import rlmesh; print(rlmesh.__version__); "
+        "print(rlmesh.build_info().workflow_edition "
+        "if hasattr(rlmesh, 'build_info') else rlmesh.__build__)"
+    )
     result = subprocess.run(
         [str(python), "-c", code], capture_output=True, text=True, check=False
     )
@@ -484,7 +465,7 @@ def env_leg_cell(
     name: str,
     env_python: Path,
     client_python: Path,
-    client_edition: str,
+    client_editions: list[str],
     server_want: str,
     env_logs_pin: bool,
     runtime_pins: bool,
@@ -492,6 +473,7 @@ def env_leg_cell(
     env: dict[str, str],
     new_python: Path,
     expected: str,
+    refusal: tuple[str, str] | None = None,
 ) -> Cell:
     """One env-leg cell.
 
@@ -518,8 +500,8 @@ def env_leg_cell(
             env,
             address=address,
             peer="env",
-            can=[client_edition],
-            configure=None if runtime_pins else expected,
+            can=client_editions,
+            configure=None if runtime_pins or refusal else expected,
             log=f"{slug}-probe",
         )
         handshake = wire["handshake"]
@@ -530,18 +512,29 @@ def env_leg_cell(
             )
         assert_want(name, "env", handshake, server_want)
         served = list(handshake["supported_workflow_editions"])
-        negotiated = sorted(set(served) & {client_edition})
-        if negotiated != [expected]:
+        negotiated = sorted(set(served) & set(client_editions))
+        if (refusal is not None and negotiated) or (
+            refusal is None and expected not in negotiated
+        ):
             raise AssertionError(
-                f"{name}: env CAN {served} and runtime CAN [{client_edition!r}] share "
+                f"{name}: env CAN {served} and runtime CAN {client_editions} share "
                 f"{negotiated or 'nothing'}, expected [{expected!r}]"
             )
-        if not runtime_pins and not wire["configure"]["accepted"]:
+        if refusal is None and not runtime_pins and not wire["configure"]["accepted"]:
             raise AssertionError(
                 f"{name}: env refused a pin of {expected!r}: {wire['configure']['message']}"
             )
 
         trace_path = TRACES / f"{slug}.trace.json"
+        if refusal is not None:
+            detail = assert_runtime_refusal(
+                harness,
+                trace_command(client_python, scenario, address, trace_path),
+                env=env,
+                log=f"{slug}-driver",
+                editions=refusal,
+            )
+            return Cell(number, name, compatible, None, "refused", "pass", detail)
         harness.run(
             trace_command(client_python, scenario, address, trace_path),
             env=env,
@@ -564,6 +557,36 @@ def env_leg_cell(
                 f"[{expected!r}] from {source}; see {env_log}"
             )
     return Cell(number, name, compatible, expected, trace, "pass", "")
+
+
+def assert_runtime_refusal(
+    harness: Harness,
+    command: list[str],
+    *,
+    env: dict[str, str],
+    log: str,
+    editions: tuple[str, str],
+) -> str:
+    from rlmesh_system.support.command import CommandError
+
+    try:
+        harness.run(
+            command, env=env, label="verify cohort refusal", log=log, timeout=300.0
+        )
+    except CommandError as error:
+        if error.returncode <= 0 or error.returncode == 124:
+            raise
+        for line in error.output.splitlines():
+            if "no mutual workflow edition" in line and all(
+                edition in line for edition in editions
+            ):
+                return line.strip()
+        raise AssertionError(
+            f"expected edition refusal naming {editions}; see {error.log_path}"
+        ) from error
+    raise AssertionError(
+        f"incompatible cohorts {editions} unexpectedly completed a trace"
+    )
 
 
 def assert_want(name: str, peer: str, handshake: dict[str, Any], expected: str) -> None:
@@ -619,12 +642,13 @@ def model_leg_cell(
     model_python: Path,
     runtime_python: Path,
     env_python: Path,
-    client_edition: str,
+    client_editions: list[str],
     server_want: str,
     scenario: ScenarioSpec,
     env: dict[str, str],
     new_python: Path,
     expected: str,
+    refusal: tuple[str, str] | None = None,
 ) -> Cell:
     slug = f"cell{number}"
     server, env_address = start_env_server(
@@ -656,7 +680,7 @@ def model_leg_cell(
             env,
             address=model_address,
             peer="model",
-            can=[client_edition],
+            can=client_editions,
             log=f"{slug}-probe",
         )["handshake"]
         compatible = bool(handshake["compatible"])
@@ -667,6 +691,21 @@ def model_leg_cell(
         assert_want(name, "model", handshake, server_want)
 
         trace_path = TRACES / f"{slug}.trace.json"
+        if refusal is not None:
+            detail = assert_runtime_refusal(
+                harness,
+                trace_command(
+                    runtime_python,
+                    scenario,
+                    env_address,
+                    trace_path,
+                    model_address=model_address,
+                ),
+                env=env,
+                log=f"{slug}-driver",
+                editions=refusal,
+            )
+            return Cell(number, name, compatible, None, "refused", "pass", detail)
         harness.run(
             trace_command(
                 runtime_python,
@@ -770,6 +809,7 @@ def run_matrix(args: argparse.Namespace) -> int:
     env.setdefault("UV_CACHE_DIR", str(WORK_DIR / "uv-cache"))
     env.setdefault("RUST_LOG", "warn")
     env["PYTHONUNBUFFERED"] = "1"
+    env["RLMESH_WORKFLOW_EDITION"] = ""
     TRACES.mkdir(parents=True, exist_ok=True)
 
     harness = Harness(verbose=args.verbose)
@@ -777,8 +817,8 @@ def run_matrix(args: argparse.Namespace) -> int:
     if new_build != expected:
         raise SystemExit(
             f"the new wheel stamps edition {new_build!r}, not rlmesh.toml's "
-            f"{expected!r}: build it with RLMESH_RELEASE_BUILD=1 so it lands in "
-            "the published wheel's cohort (`mise run test:crossver`)"
+            f"{expected!r}: build it with RLMESH_RELEASE_BUILD=1 to use the "
+            "manifest's edition (`mise run test:crossver`)"
         )
 
     old_python = prepare_old_venv(new_python, env, harness)
@@ -791,16 +831,21 @@ def run_matrix(args: argparse.Namespace) -> int:
     print(f"new: rlmesh {new_version} edition {new_build}")
     print(f"old: rlmesh {old_version} edition {old_build} (pinned by {LOCK_PATH.name})")
 
-    # A server's WANT is its own declared edition: this tree declares the
-    # current one, the published wheel declares nothing at all -- the
-    # undeclared-peer case the negotiation has to tolerate (plan section A.2).
-    old_want = ""
-    shared = {
-        "scenario": scenario,
-        "env": env,
-        "new_python": new_python,
-        "expected": expected,
-    }
+    # Only the provisional fixture may legitimately have no shared edition.
+    # Once 0.1.0 is the fixture, losing its sealed edition is always a failure.
+    new_editions = list(
+        tomllib.loads((ROOT / "rlmesh.toml").read_text())["workflow"][
+            "supported_editions"
+        ]
+    )
+    old_is_prerelease = FIXTURE_VERSION == "0.1.0rc12"
+    old_want = "" if old_is_prerelease else old_build
+    refusal = (
+        (old_build, new_build)
+        if old_is_prerelease and old_build not in new_editions
+        else None
+    )
+    shared = {"scenario": scenario, "env": env, "new_python": new_python}
     cells = [
         env_leg_cell(
             harness,
@@ -808,10 +853,11 @@ def run_matrix(args: argparse.Namespace) -> int:
             name="control: old env server + old runtime",
             env_python=old_python,
             client_python=old_python,
-            client_edition=old_build,
+            client_editions=[old_build],
             server_want=old_want,
-            env_logs_pin=False,
-            runtime_pins=False,
+            env_logs_pin=not old_is_prerelease,
+            runtime_pins=not old_is_prerelease,
+            expected=old_build,
             **shared,
         ),
         env_leg_cell(
@@ -820,10 +866,11 @@ def run_matrix(args: argparse.Namespace) -> int:
             name="control: new env server + new runtime",
             env_python=new_python,
             client_python=new_python,
-            client_edition=new_build,
-            server_want=expected,
+            client_editions=new_editions,
+            server_want=new_build,
             env_logs_pin=True,
             runtime_pins=True,
+            expected=new_build,
             **shared,
         ),
         env_leg_cell(
@@ -832,10 +879,12 @@ def run_matrix(args: argparse.Namespace) -> int:
             name="old env server + new runtime",
             env_python=old_python,
             client_python=new_python,
-            client_edition=new_build,
+            client_editions=new_editions,
             server_want=old_want,
-            env_logs_pin=False,
+            env_logs_pin=not old_is_prerelease,
             runtime_pins=True,
+            expected=old_build,
+            refusal=refusal,
             **shared,
         ),
         env_leg_cell(
@@ -844,10 +893,12 @@ def run_matrix(args: argparse.Namespace) -> int:
             name="new env server + old runtime",
             env_python=new_python,
             client_python=old_python,
-            client_edition=old_build,
-            server_want=expected,
+            client_editions=[old_build],
+            server_want=new_build,
             env_logs_pin=True,
-            runtime_pins=False,
+            runtime_pins=not old_is_prerelease,
+            expected=old_build,
+            refusal=refusal,
             **shared,
         ),
         model_leg_cell(
@@ -857,8 +908,10 @@ def run_matrix(args: argparse.Namespace) -> int:
             model_python=old_python,
             runtime_python=new_python,
             env_python=new_python,
-            client_edition=new_build,
+            client_editions=new_editions,
             server_want=old_want,
+            expected=old_build,
+            refusal=refusal,
             **shared,
         ),
         model_leg_cell(
@@ -868,17 +921,19 @@ def run_matrix(args: argparse.Namespace) -> int:
             model_python=new_python,
             runtime_python=old_python,
             env_python=old_python,
-            client_edition=old_build,
-            server_want=expected,
+            client_editions=[old_build],
+            server_want=new_build,
+            expected=old_build,
+            refusal=refusal,
             **shared,
         ),
     ]
 
     new_pin, new_generation = refusals(
-        harness, python=new_python, build="new", **shared
+        harness, python=new_python, build="new", expected=new_build, **shared
     )
     old_pin, old_generation = refusals(
-        harness, python=old_python, build="old", **shared
+        harness, python=old_python, build="old", expected=old_build, **shared
     )
     cells += [
         Cell(

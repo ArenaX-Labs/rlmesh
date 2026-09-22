@@ -72,8 +72,9 @@ def undeclared(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 
 
 @pytest.fixture
-def served_env(declared_edition: str) -> Iterator[str]:
+def served_env(declared_edition: str, monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
     """An env server that declares ``declared_edition`` on every handshake."""
+    monkeypatch.delenv(WORKFLOW_EDITION_ENV_VAR, raising=False)
     server = rlmesh.EnvServer(
         CountEnv(),
         "127.0.0.1:0",
@@ -93,8 +94,9 @@ def model() -> Any:
 
 
 @pytest.fixture
-def served_model(declared_edition: str) -> str:
+def served_model(declared_edition: str, monkeypatch: pytest.MonkeyPatch) -> str:
     """A model endpoint declaring ``declared_edition``, on a background thread."""
+    monkeypatch.delenv(WORKFLOW_EDITION_ENV_VAR, raising=False)
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         address = f"127.0.0.1:{probe.getsockname()[1]}"
@@ -108,14 +110,18 @@ def served_model(declared_edition: str) -> str:
     return address
 
 
-def connect_model_with_retry(address: str, env: Any) -> Any:
+def connect_model_with_retry(
+    address: str, env: Any, workflow_edition: str | None = None
+) -> Any:
     import rlmesh
 
     deadline = time.monotonic() + 5.0
     last_error: BaseException | None = None
     while time.monotonic() < deadline:
         try:
-            return rlmesh.RemoteModel(address).session(env)
+            return rlmesh.session(
+                rlmesh.RemoteModel(address), env, workflow_edition=workflow_edition
+            )
         except ConnectionError as exc:  # the server may still be binding
             last_error = exc
             time.sleep(0.05)
@@ -134,9 +140,10 @@ def test_a_served_model_session_declares_on_the_model_leg(
     monkeypatch.setenv(WORKFLOW_EDITION_ENV_VAR, declared_edition)
     from rlmesh.numpy import RemoteEnv
 
-    env = RemoteEnv(served_env)
+    env = RemoteEnv(served_env, workflow_edition=declared_edition)
     try:
-        session = connect_model_with_retry(served_model, env)
+        assert env._session_offer()[1] == declared_edition
+        session = connect_model_with_retry(served_model, env, declared_edition)
         try:
             assert session.selected_workflow_edition == COHORT
             assert (
@@ -150,6 +157,26 @@ def test_a_served_model_session_declares_on_the_model_leg(
             session.close()
     finally:
         env.close()
+
+
+@pytest.mark.parametrize("random_baseline", [False, True])
+def test_public_wrappers_forward_the_call_pin(
+    served_env: str,
+    declared_edition: str,
+    monkeypatch: pytest.MonkeyPatch,
+    random_baseline: bool,
+) -> None:
+    monkeypatch.setenv(WORKFLOW_EDITION_ENV_VAR, UNKNOWN_EDITION)
+    policy = rlmesh.RANDOM_SAMPLE if random_baseline else model()
+    with rlmesh.session(
+        policy, served_env, workflow_edition=declared_edition
+    ) as session:
+        session.reset()
+        assert session.selected_workflow_edition == COHORT
+    result = rlmesh.run(
+        policy, served_env, max_episodes=1, workflow_edition=declared_edition
+    )
+    assert len(result.episodes) == 1
 
 
 def test_a_served_model_session_refuses_an_edition_this_build_cannot_drive(

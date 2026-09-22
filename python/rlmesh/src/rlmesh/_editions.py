@@ -233,13 +233,13 @@ def serve_options_declaring(
     resolved and that the server must adopt verbatim (the loopback env server
     ``run(workflow_edition=...)`` stands up is part of that one call, so it
     cannot be allowed to re-resolve to a different edition). The resolved winner
-    is stamped onto a copy of ``options``; ``None`` leaves them exactly as they
-    came, which is what a build without this field would send.
+    is stamped onto a copy of ``options``; resolving to ``None`` clears any
+    lower-priority declaration already carried by the options.
     """
     if option is None and options is not None:
         option = options.workflow_edition
     resolved = resolve_workflow_edition(call=call, option=option, declared=declared)
-    if resolved is None or (
+    if (resolved is None and options is None) or (
         options is not None and resolved == options.workflow_edition
     ):
         return options
