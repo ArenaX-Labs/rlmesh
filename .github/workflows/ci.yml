@@ -36,8 +36,11 @@ jobs:
       - name: Static checks
         run: mise run --skip-tools check
 
-      - name: Unit, integration, and conformance tests
-        run: mise run --skip-tools test
+      # Same entrypoint as local `mise run test:ci`: Rust, Python, C/C++ (zig),
+      # API surface, examples, system harness, and the installed-wheel system
+      # profile against a wheel built from this checkout.
+      - name: Tests
+        run: mise run --skip-tools test:ci
 
       # `test` runs the C/C++ bindings under zig (libc++); re-run under clang and gcc.
       - name: C/C++ bindings under clang and gcc
@@ -45,17 +48,12 @@ jobs:
           CC=clang CXX=clang++ mise run --skip-tools test:cxx
           CC=gcc CXX=g++ mise run --skip-tools test:cxx
 
-      - name: Python API surface tests
-        run: mise run --skip-tools test:python:api-surface
-
-      - name: Python example programs
-        run: mise run --skip-tools test:python:examples
-
-      - name: System harness tests
-        run: mise run --skip-tools test:system:harness
-
       - name: Docs build
         run: mise run --skip-tools docs:build
+
+      - name: Remove system-test venvs before the Rust cache walks target/
+        if: always()
+        run: mise run --skip-tools test:system:clean
 
       - name: Minimize uv cache
         if: always()

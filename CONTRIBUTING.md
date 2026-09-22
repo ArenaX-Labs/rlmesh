@@ -50,7 +50,7 @@ Run these before opening a pull request:
 
 ```bash
 mise run check
-mise run test
+mise run test:ci
 mise run release:check
 ```
 

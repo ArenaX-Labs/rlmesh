@@ -23,6 +23,23 @@ mise run test:python:unit
 mise run test:python:integration
 ```
 
+Rerun a task whenever a file changes:
+
+```bash
+mise watch test:rust
+mise watch test:python:unit
+```
+
+## CI Parity
+
+`test:ci` is the single test entrypoint CI runs after `check`. It runs `test`, the API surface tests, the example programs, the system harness tests, then builds a local wheel and runs the installed-artifact system profile against it:
+
+```bash
+mise run test:ci
+```
+
+If `check` and `test:ci` pass locally, the CI fast job passes (it additionally rebuilds the C/C++ smoke under clang and gcc and builds the docs). On push, CI also runs `release:rust:package` and `test:cxx:pkg` in a separate package job.
+
 ## API Surface Tests
 
 The Python API surface tests check exported symbols, native stub exports, and the stable API surface snapshot:

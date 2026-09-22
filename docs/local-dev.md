@@ -54,7 +54,13 @@ Run the default test set:
 mise run test
 ```
 
-For faster iteration, run focused tasks:
+Run exactly what CI tests (adds the API surface, examples, system harness, and an installed-wheel system profile):
+
+```bash
+mise run test:ci
+```
+
+For faster iteration, run focused tasks, or `mise watch <task>` to rerun one on every file change:
 
 ```bash
 mise run fmt:check
@@ -64,6 +70,8 @@ mise run test:rust
 mise run test:python:unit
 mise run test:python:integration
 ```
+
+On `uv run`, uv rebuilds the native extension when Rust sources change; the git hooks installed by `setup:hooks` rebuild it on checkout and merge. See {doc}`testing` for the full test layering.
 
 ## Build
 

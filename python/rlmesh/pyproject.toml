@@ -84,4 +84,6 @@ cache-keys = [
   { file = "rust/**/*.rs" },
   { file = "../../crates/**/Cargo.toml" },
   { file = "../../crates/**/*.rs" },
+  { file = "../../crates/**/*.proto" },
+  { file = "../../Cargo.lock" },
 ]

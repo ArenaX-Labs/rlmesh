@@ -29,6 +29,9 @@ cmake = "4.3"
 prek = "0.4"
 fnox = "1.25"
 
+# `mise watch <task>` (e.g. `mise watch test:rust`) reruns a task on file change.
+watchexec = "2.7.3"
+
 [settings]
 python.uv_venv_auto = "create|source"
 task.run_auto_install = false
@@ -265,6 +268,18 @@ depends = [
 description = "Run Rust tests, Python unit/integration tests, and the C/C++ binding smoke + e2e"
 depends = ["test:rust", "test:python", "test:cxx"]
 
+# The single test entrypoint CI runs after `check`; run it locally for CI parity.
+[tasks."test:ci"]
+description = "Everything CI tests: test + API surface + examples + system harness + installed-wheel system profile against a freshly built local wheel"
+run = [
+  "mise run test",
+  "mise run test:python:api-surface",
+  "mise run test:python:examples",
+  "mise run test:system:harness",
+  "mise run build:python:local",
+  "mise run test:system",
+]
+
 # Sibling of the test:cxx file task; test/cxx is itself a file, so this is a referenced script.
 [tasks."test:cxx:pkg"]
 description = "Build the C/C++ package, then build the C++ smoke against the INSTALLED package (pkg-config + find_package) and run it end-to-end vs a live env"
@@ -354,14 +369,6 @@ run = [
 ]
 
 # ──────────────────────────────────────────────
-# Build
-# ──────────────────────────────────────────────
-[tasks."develop"]
-description = "Build python bindings for local development"
-dir = "{{ config_root }}/python/rlmesh"
-run = "maturin develop"
-
-# ──────────────────────────────────────────────
 # Release wheels
 # ──────────────────────────────────────────────
 # Full release matrix contains 14 wheels total, built by CI on tag push
@@ -442,15 +449,10 @@ description = "Run the local release gate without publishing"
 env = { RLMESH_RELEASE_BUILD = "1" }
 run = [
   "mise run check",
-  "mise run test",
-  "mise run test:python:api-surface",
-  "mise run test:python:examples",
-  "mise run test:system:harness",
+  "mise run test:ci",
   "mise run docs:build",
   "mise run release:rust:package",
-  "mise run build:python",
   "mise run release:artifacts:licenses",
-  "mise run test:system",
   "mise run test:system:heavy",
   "mise run test:python:floors",
 ]
