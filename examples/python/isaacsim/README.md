@@ -22,13 +22,13 @@ python examples/python/isaacsim/run_local.py   # scripted policy against every l
 
 ## Coming from Isaac Lab
 
-| In Isaac Lab | Here |
-|---|---|
-| The env is always batched, even at `num_envs=1` | Same. Write one batched env; RLMesh serves one lane as a scalar env and N lanes in lockstep. |
+| In Isaac Lab                                                                         | Here                                                                                                                                         |
+| ------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| The env is always batched, even at `num_envs=1`                                      | Same. Write one batched env; RLMesh serves one lane as a scalar env and N lanes in lockstep.                                                 |
 | Finished envs reset inside `step()` (`SAME_STEP`); the terminal frame is in `extras` | Hold the reset for the lane's next step (`NEXT_STEP`) and return the real terminal frame, as `step()` does here. RLMesh refuses `SAME_STEP`. |
-| The policy gets a batch of observations | `predict()` gets one lane's observation. Override `predict_batch()` for one batched forward pass. |
-| `AppLauncher` starts the app in your script | `prepare()` starts it; `make()` builds the scene. |
-| Torch tensors on the GPU | Return numpy, or subclass `rlmesh.torch.EnvFactory` to serve torch values without converting. |
+| The policy gets a batch of observations                                              | `predict()` gets one lane's observation. Override `predict_batch()` for one batched forward pass.                                            |
+| `AppLauncher` starts the app in your script                                          | `prepare()` starts it; `make()` builds the scene.                                                                                            |
+| Torch tensors on the GPU                                                             | Return numpy, or subclass `rlmesh.torch.EnvFactory` to serve torch values without converting.                                                |
 
 ## Run on RLMesh Managed
 
