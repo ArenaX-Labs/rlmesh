@@ -26,10 +26,10 @@ use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pyme
 use rlmesh_adapters::v1::{
     Advisory, ApplyError, CustomTransform, EncodingTransform, EnvTags, FrameBuffers, FramePolicy,
     InputNode, ModelLeaf, ModelSpec, NoEncodings, NodePath, ObsPlan, PathSeg, ResolvedAdapter,
-    RolePolicy, SkipCustoms, SpaceView, Value, assemble_obs, build_describe_envelope, join,
-    observe_obs, record_action, reject_unframed_roles_env, reject_unframed_roles_model,
-    reject_unknowns_env, reject_unknowns_model, reject_unsanctioned_roles_env,
-    reject_unsanctioned_roles_model, resolve, roles,
+    RolePolicy, SkipCustoms, SpaceView, SpaceViewKind, Value, assemble_obs,
+    build_describe_envelope, join, observe_obs, record_action, reject_unframed_roles_env,
+    reject_unframed_roles_model, reject_unknowns_env, reject_unknowns_model,
+    reject_unsanctioned_roles_env, reject_unsanctioned_roles_model, resolve, roles,
 };
 use serde::de::DeserializeOwned;
 
@@ -788,7 +788,8 @@ pub fn adapters_resolve(
 /// Runs only the native `join` step that [`adapters_resolve`] performs
 /// internally -- no model side. This surfaces tag/space mismatches at
 /// authoring time (e.g. from `rlmesh.adapters.tag`) before any model is
-/// paired against the env.
+/// paired against the env. A space may also be given as its describe-envelope
+/// dict, which is how `rlmesh check` joins a label it cannot rebuild spaces from.
 #[cfg_attr(
     feature = "stub-gen",
     gen_stub_pyfunction(
@@ -809,8 +810,8 @@ pub fn adapters_join_check(
     // see a typo or unbuildable kind now, not relay it to a peer.
     reject_unknowns_env(&tags)
         .map_err(|message| PyValueError::new_err(format!("invalid env tags: {message}")))?;
-    let obs_view = SpaceView::from(&crate::spaces::parse_space(observation_space)?);
-    let action_view = SpaceView::from(&crate::spaces::parse_space(action_space)?);
+    let obs_view = join_space_view(observation_space)?;
+    let action_view = join_space_view(action_space)?;
     // Hard tag/space disagreements still raise; non-fatal hints (e.g. a layout
     // that looks mis-declared) come back so the author sees them at `tag()` time.
     let features = join(&tags, &obs_view, &action_view)
@@ -820,6 +821,74 @@ pub fn adapters_join_check(
         .into_iter()
         .map(PyAdvisory::from)
         .collect())
+}
+
+fn join_space_view(space: &Bound<'_, PyAny>) -> PyResult<SpaceView> {
+    match space.cast::<PyDict>() {
+        Ok(envelope) => envelope_space_view(envelope),
+        Err(_) => Ok(SpaceView::from(&crate::spaces::parse_space(space)?)),
+    }
+}
+
+/// The [`SpaceView`] of a describe-envelope space (`{kind, shape, dtype, details}`).
+fn envelope_space_view(space: &Bound<'_, PyDict>) -> PyResult<SpaceView> {
+    let required = |key: &str| {
+        space
+            .get_item(key)?
+            .ok_or_else(|| PyValueError::new_err(format!("envelope space is missing {key:?}")))
+    };
+    let kind_name: String = required("kind")?.extract()?;
+    let kind = match kind_name.as_str() {
+        "box" => SpaceViewKind::Box,
+        "discrete" => SpaceViewKind::Discrete,
+        "multi_binary" => SpaceViewKind::MultiBinary,
+        "multi_discrete" => SpaceViewKind::MultiDiscrete,
+        "text" => SpaceViewKind::Text,
+        "dict" => SpaceViewKind::Dict,
+        "tuple" => SpaceViewKind::Tuple,
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "unknown envelope space kind {other:?}"
+            )));
+        }
+    };
+    let details = match space.get_item("details")? {
+        Some(details) if !details.is_none() => details.cast_into::<PyDict>()?,
+        _ => PyDict::new(space.py()),
+    };
+    let bound = |key: &str| -> PyResult<Option<Vec<f64>>> {
+        match details.get_item(key)? {
+            Some(value) if kind == SpaceViewKind::Box && !value.is_none() => {
+                match value.extract::<f64>() {
+                    Ok(uniform) => Ok(Some(vec![uniform])),
+                    Err(_) => value.extract().map(Some),
+                }
+            }
+            _ => Ok(None),
+        }
+    };
+    let (mut keys, mut children) = (Vec::new(), Vec::new());
+    if let Some(spaces) = details.get_item("spaces")? {
+        if let Ok(entries) = spaces.cast::<PyDict>() {
+            for (key, child) in entries.iter() {
+                keys.push(key.extract()?);
+                children.push(envelope_space_view(&child.cast_into()?)?);
+            }
+        } else {
+            for child in spaces.try_iter()? {
+                children.push(envelope_space_view(&child?.cast_into()?)?);
+            }
+        }
+    }
+    Ok(SpaceView {
+        kind,
+        shape: required("shape")?.extract()?,
+        dtype: required("dtype")?.extract()?,
+        low: bound("low")?,
+        high: bound("high")?,
+        keys,
+        children,
+    })
 }
 
 /// Validate and canonicalize a spec's JSON through the Rust serde codec.
