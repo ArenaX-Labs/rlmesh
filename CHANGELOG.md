@@ -11,7 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - A blocking `EnvServer.serve()` (what `python -m rlmesh.serve` runs) keeps the env on the calling thread: `reset`/`step`/`render`/`close` run on the thread that built the env, usually the main thread, for a scalar env and for a lockstep vector env alike, while the gRPC server runs on a helper thread. Simulators that only work from the thread that created them, such as Isaac Sim, need no thread-hopping wrapper. Ctrl-C drains and closes the env first and then raises `KeyboardInterrupt` from `serve()`, never inside an env call; a second Ctrl-C interrupts an env call that will not return (Python code; a call stuck inside a native library cannot be preempted). A background `start()` is unchanged.
 - A vectorized env with `num_envs == 1` now serves as the scalar env it is instead of failing with `VectorEnvServer requires num_envs >= 2`. Each value loses its batch axis (lane 0 of the observation and of the `info` under gymnasium's `key`/`_key` convention), actions gain one, and the runtime owns resets, so per-episode `seeds`, `trial_index` and `max_episode_steps` apply. A batched simulator configured with one lane, such as Isaac Lab at `num_envs=1`, needs no scalar rewrite. A one-lane env with `SAME_STEP` autoreset is refused, because its terminal observation is already the next episode's first.
 
-## [0.1.0-rc.13] - 2026-09-23
+## [0.1.0-rc.14] - 2026-09-23
 
 RLMesh connects models to environments across process, dependency, and machine boundaries with a Gymnasium-style API. This release seals the `2026.06` behavioral contract and commits to retaining `rlmesh-wire-v1`. Declare the edition a model or environment was authored against to keep its behavior across package upgrades. The runtime selects a shared edition and refuses interactions a peer cannot express; see the compatibility policy for the contract and its current test coverage.
 
@@ -277,7 +277,7 @@ RLMesh connects models to environments across process, dependency, and machine b
 
 - Batched and chunked prediction now works in local `run()` evals. `run()` drives the same native runtime loop as a served model, so `predict_batch`, `predict_chunk`, and `predict_chunk_batch` activate locally instead of only on the served wire path.
 
-[0.1.0-rc.13]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.1.0-rc.13
+[0.1.0-rc.14]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.1.0-rc.14
 [0.1.0-rc.12]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.1.0-rc.12
 [0.1.0-rc.11]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.1.0-rc.11
 [0.1.0-rc.10]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.1.0-rc.10
