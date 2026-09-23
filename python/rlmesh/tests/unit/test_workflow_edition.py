@@ -208,10 +208,14 @@ class TestRefusal:
     def test_a_cohort_below_everything_this_build_offers_is_refused(self) -> None:
         # A stale prerelease cohort of this base admits nothing a newer build
         # offers, so declaring it would refuse every session; it is refused
-        # where it is typed, naming the base to declare instead. A sealed
-        # release offers the bare base, which any cohort of it admits.
+        # where it is typed, naming the base to declare instead. A build that
+        # offers the bare base (a sealed release, or a prerelease cut from the
+        # sealed tree) accepts it, since any cohort of the base admits the base.
         stale = f"{EDITION}-0.0.0"
-        if COHORT == EDITION:
+        with pytest.raises(ValueError) as unknown:
+            _ = resolve_workflow_edition(call=UNKNOWN_EDITION)
+        offers = str(unknown.value).split("implements", 1)[1]
+        if f'"{EDITION}"' in offers:
             assert resolve_workflow_edition(call=stale) == stale
             return
         with pytest.raises(ValueError, match=EDITION) as refusal:
