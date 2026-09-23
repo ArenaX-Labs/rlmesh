@@ -415,20 +415,19 @@ class State:
             not declare draws a caution. Keyword-only and omitted from the wire
             when unset.
         part: The body part this part reads, when the role repeats across a
-            body (``"left_arm"``, ``"right_arm"``, ...): an identity key the
-            resolver matches on. Naming one binds only that env leaf (a missing
-            one fills if ``optional``, else fails); naming none binds the env's
-            only leaf of the role under any part (with an ``info``) and fails
-            when there are several, naming them. Keyword-only and omitted from
-            the wire when unset.
+            body (``LEFT_ARM``, ``RIGHT_ARM``, or any identifier both sides
+            agree on): an identity key the resolver matches on. Naming one
+            binds only that env leaf (a missing one fills if ``optional``, else
+            fails); naming none binds the env's only leaf of the role under any
+            part (with an ``info``) and fails when there are several, naming
+            them. Keyword-only and omitted from the wire when unset.
         labels: The axis names this part reads, in the order the checkpoint
-            was trained on (``embodiments.GO2.joints``, or a subset). Fixes the
-            width. Against an env leaf that labels its axes the values are
-            gathered by name, so a differing order is a permutation and a
-            subset a selection; an env leaf that declares no labels is a
-            resolve error. Keyword-only and omitted from the wire when unset;
-            not combinable with ``index``. On an action-source part the
-            names select from the actuator's labels.
+            was trained on. Fixes the width. The env leaf must label its axes
+            with the same set; the values are gathered by name, so a differing
+            order is a permutation, and a label either side lacks (or an env
+            leaf with no labels) is a resolve error. Keyword-only and omitted
+            from the wire when unset; not combinable with ``index``. On an
+            action-source part the names reorder the actuator's labels.
         source: Where the value comes from: ``"observation"`` (the default,
             an env state feature matched by role) or ``"action"`` (the
             model's own output actuator of the same ``role`` and ``part``,
@@ -543,7 +542,7 @@ class State:
             if self.index is not None:
                 raise ValueError(
                     f"State {self.role!r}: set labels or index, not both (labels name "
-                    "every axis the part reads; to pick one, name just that label)"
+                    "every axis of the leaf, so drop one of them)"
                 )
             if self.dim is not None and self.dim != len(self.labels):
                 raise ValueError(

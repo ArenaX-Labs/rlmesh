@@ -836,7 +836,11 @@ def test_run_feeds_a_previous_action_part_the_frame_executed_the_step_before() -
     import rlmesh.adapters as adapt
     from rlmesh.numpy import Model
 
-    sdk = adapt.GO2.joints
+    sdk = tuple(
+        f"{leg}_{joint}_joint"
+        for leg in ("FR", "FL", "RR", "RL")
+        for joint in ("hip", "thigh", "calf")
+    )
     default_pose = (0.0, 0.8, -1.5) * 4
 
     class Go2Env:

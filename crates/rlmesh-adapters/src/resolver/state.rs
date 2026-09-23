@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use super::action::ModelOutputs;
-use super::{Indexed, LeafKey, Result, bind, check_geometry, check_provenance, err};
+use super::{LeafKey, Result, bind, check_geometry, check_provenance, err};
 use crate::advisory::Advisory;
 use crate::error::ErrorCode;
 use crate::fmt::{quoted, quoted_accept_set, quoted_encoding, quoted_leaf_keys};
@@ -80,7 +80,6 @@ fn fill_piece(
         axis_offset: component.axis_offset.clone(),
         gather: None,
         labels: component.labels.clone(),
-        src_labels: None,
         fill: Some(fill),
         absent_role,
         previous: None,
@@ -94,7 +93,7 @@ fn fill_piece(
 /// An action-source part reads the spec's own output actuator of the same
 /// `(role, part)`: the raw slice of the action the model executed at the
 /// previous step, in model order, or `fill` before the episode's first one.
-/// The width is the actuator's; `labels` select from the actuator's labels.
+/// The width is the actuator's; `labels` reorder the actuator's labels.
 fn previous_action_piece(
     component: &ConcatPart,
     role: &str,
@@ -132,10 +131,7 @@ fn previous_action_piece(
         at,
         "actuator",
     )?;
-    let width = component
-        .labels
-        .as_ref()
-        .map_or(actuator.dim, |labels| labels.len() as u32);
+    let width = actuator.dim;
     if let Some(dim) = component.dim
         && dim != width
     {
@@ -165,7 +161,6 @@ fn previous_action_piece(
         axis_offset: None,
         gather,
         labels: component.labels.clone().or_else(|| actuator.labels.clone()),
-        src_labels: actuator.labels.clone(),
         fill: Some(component.fill),
         absent_role: false,
         previous: Some(PreviousAction {
@@ -201,34 +196,67 @@ pub(super) fn check_axis_width(
     Ok(())
 }
 
-/// Where each of `wanted` sits in `available`, or the labels `available`
-/// lacks. Shared by the observation gather and the action scatter.
-pub(super) fn positions(
+/// Labels one side names that the other lacks.
+pub(super) struct LabelSetDiff {
+    pub wanted_only: Vec<String>,
+    pub available_only: Vec<String>,
+}
+
+impl LabelSetDiff {
+    /// Which side lacks which labels, naming only a side that lacks some.
+    pub(super) fn describe(&self, wanted: &str, available: &str) -> String {
+        let mut sides = Vec::new();
+        if !self.wanted_only.is_empty() {
+            sides.push(format!("the {available} lacks {:?}", self.wanted_only));
+        }
+        if !self.available_only.is_empty() {
+            sides.push(format!("the {wanted} lacks {:?}", self.available_only));
+        }
+        sides.join(" and ")
+    }
+}
+
+/// Where each of `wanted` sits in `available`, when the two name the same
+/// set: `None` for the same order, else the permutation. Shared by the
+/// observation gather and the action scatter; both tuples are duplicate-free
+/// (the codec checks), so equal sets mean equal lengths.
+pub(super) fn label_permutation(
     wanted: &[String],
     available: &[String],
-) -> std::result::Result<Vec<u32>, Vec<String>> {
-    let mut missing = Vec::new();
-    let mut found = Vec::with_capacity(wanted.len());
-    for label in wanted {
-        match available.iter().position(|have| have == label) {
-            Some(index) => found.push(index as u32),
-            None => missing.push(label.clone()),
-        }
+) -> std::result::Result<Option<Vec<u32>>, LabelSetDiff> {
+    let not_in = |labels: &[String], other: &[String]| -> Vec<String> {
+        labels
+            .iter()
+            .filter(|label| !other.contains(label))
+            .cloned()
+            .collect()
+    };
+    let diff = LabelSetDiff {
+        wanted_only: not_in(wanted, available),
+        available_only: not_in(available, wanted),
+    };
+    if !diff.wanted_only.is_empty() || !diff.available_only.is_empty() {
+        return Err(diff);
     }
-    if missing.is_empty() {
-        Ok(found)
-    } else {
-        Err(missing)
-    }
+    let permutation: Vec<u32> = wanted
+        .iter()
+        .map(|label| {
+            available
+                .iter()
+                .position(|have| have == label)
+                .expect("same set") as u32
+        })
+        .collect();
+    let identity = permutation.iter().enumerate().all(|(i, &j)| i as u32 == j);
+    Ok((!identity).then_some(permutation))
 }
 
 /// The gather a model label tuple implies against the leaf it reads (an env
 /// leaf, or the model's own actuator for an action-source part; `offerer`
-/// names which): `None` when the model names none, the offerer's own order
-/// (identity), or a [`LabelMismatch`](ErrorCode::LabelMismatch) when the
-/// offerer declares no labels or lacks one the model names. A labeled model
-/// against an unlabeled leaf is an error, not a caution: identity-on-hope is
-/// the bug.
+/// names which): `None` when the model names none or the same order, else
+/// the permutation into the model's order. The two tuples must name the same
+/// set; a labeled model against an unlabeled leaf, or a label either side
+/// lacks, is a [`LabelMismatch`](ErrorCode::LabelMismatch).
 fn label_gather(
     role: &str,
     env: Option<&[String]>,
@@ -250,23 +278,18 @@ fn label_gather(
             ),
         ));
     };
-    match positions(model, env) {
-        Ok(gather) => {
-            let identity =
-                gather.len() == env.len() && gather.iter().enumerate().all(|(i, &j)| i as u32 == j);
-            Ok((!identity).then_some(gather))
-        }
-        Err(missing) => Err(err(
+    label_permutation(model, env).map_err(|diff| {
+        err(
             ErrorCode::LabelMismatch,
             format!(
-                "model input {at}: state role {} names labels {:?} that the {offerer} lacks; \
-                 the {offerer} declares {:?}",
+                "model input {at}: state role {} names labels {:?} but {}; the two must \
+                 name the same set",
                 quoted(role),
-                missing,
-                env
+                model,
+                diff.describe("model input", offerer),
             ),
-        )),
-    }
+        )
+    })
 }
 
 /// Choose the (source, destination) rotation encodings for a state piece.
@@ -350,7 +373,7 @@ fn select_state_encoding(
 pub(super) fn plan_state(
     model_input: &State,
     placement: NodePath,
-    states_by_role: &BTreeMap<LeafKey, Indexed<&EnvState>>,
+    states_by_role: &BTreeMap<LeafKey, &EnvState>,
     outputs: &ModelOutputs<'_>,
     unknown_roles: &BTreeMap<String, String>,
     advisories: &mut Vec<Advisory>,
@@ -438,30 +461,14 @@ pub(super) fn plan_state(
             ));
         };
         let env_state: &EnvState = bound.feature;
-        // Align the axes by name before anything else reads them. A model
-        // that names a label the env lacks fills when optional (a named
-        // axis, like a named part, never rebinds), else it is a mismatch.
-        let gather = match label_gather(
+        // Align the axes by name before anything else reads them.
+        let gather = label_gather(
             role,
             env_state.labels.as_deref(),
             component.labels.as_deref(),
             &at,
             "env leaf",
-        ) {
-            Ok(gather) => gather,
-            Err(_) if component.optional && env_state.labels.is_some() => {
-                let width = fill_width(component, role, &at)?;
-                pieces.push(fill_piece(
-                    width,
-                    folded_fill(component),
-                    true,
-                    bound.part.clone(),
-                    component,
-                ));
-                continue;
-            }
-            Err(error) => return Err(error),
-        };
+        )?;
         // A custom encoding shadows to its `base` for the structural
         // negotiation; the host-side arm is never imported or run here (only a
         // trusted in-process resolve does). Validate the obs-side invariants the
@@ -563,8 +570,7 @@ pub(super) fn plan_state(
         let source_width = if converts {
             dst_encoding.map(|encoding| encoding.dims())
         } else if let Some(labels) = &component.labels {
-            // Labels fix the width: the gather (or the identical order) yields
-            // exactly one element per named axis.
+            // The same set as the env's labels, so the env width.
             Some(labels.len() as u32)
         } else {
             env_state.dim
@@ -611,8 +617,7 @@ pub(super) fn plan_state(
             check_axis_width(axis, name, width, &locus)?;
         }
         // The output axis names: the model's when it declared them (the
-        // gather put the values in that order), else the env's, which the
-        // identity read preserves.
+        // gather put the values in that order), else the env's.
         let labels = component
             .labels
             .clone()
@@ -642,7 +647,6 @@ pub(super) fn plan_state(
             axis_offset: component.axis_offset.clone(),
             gather,
             labels,
-            src_labels: env_state.labels.clone(),
             fill: None,
             absent_role: false,
             previous: None,

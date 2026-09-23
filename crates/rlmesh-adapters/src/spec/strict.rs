@@ -33,8 +33,8 @@ use super::model::{InputNode, ModelLeaf, ModelSpec};
 
 /// Reject any bare unknown field **or** unknown leaf kind in an env spec (the
 /// PUBLISH gate: an author's own core must understand every kind and bare field).
-/// The role identity rules (a closed kind prefix, no part on a legacy `_2`
-/// role) are part of the same door: they hold under every role policy.
+/// The closed role kinds are part of the same door: they hold under every
+/// role policy.
 pub fn reject_unknowns_env(tags: &EnvTags) -> Result<(), String> {
     walk_obs(&tags.observation, &NodePath::root(), true)?;
     reject_action(&tags.action)?;
@@ -62,9 +62,8 @@ pub fn reject_bare_fields_model(spec: &ModelSpec) -> Result<(), String> {
     reject_action(&spec.output)
 }
 
-/// The publish-gate policy for ad-hoc (unregistered) roles and parts, from
-/// most to least permissive. A part is governed by the same tier as a role:
-/// it is the same kind of vocabulary, grown the same way.
+/// The publish-gate policy for ad-hoc (unregistered) roles, from most to
+/// least permissive. A part is never subject to it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RolePolicy {
     /// Every role passes -- the open vocabulary (an authoring nudge only). The
@@ -87,28 +86,12 @@ impl RolePolicy {
             RolePolicy::Forbid => crate::roles::registry::is_known_role(role),
         }
     }
-
-    /// Whether `part` is allowed under this policy (the same tiers as a role).
-    fn allows_part(self, part: &str) -> bool {
-        match self {
-            RolePolicy::Passthrough => true,
-            RolePolicy::Strict => crate::roles::parts::is_sanctioned_part(part),
-            RolePolicy::Forbid => crate::roles::parts::is_known_part(part),
-        }
-    }
 }
 
-/// Reject one `(role, part)` that `policy` disallows, or whose identity is
-/// malformed under any policy (an unknown kind prefix, a part on a legacy
-/// `_2` role).
-fn reject_role(
-    role: &str,
-    part: Option<&str>,
-    locus: &str,
-    policy: RolePolicy,
-) -> Result<(), String> {
-    crate::roles::registry::check_role(role, part)
-        .map_err(|reason| format!("{locus}: {reason}"))?;
+/// Reject a role that `policy` disallows, or whose kind prefix is unknown
+/// under any policy.
+fn reject_role(role: &str, locus: &str, policy: RolePolicy) -> Result<(), String> {
+    crate::roles::registry::check_role(role).map_err(|reason| format!("{locus}: {reason}"))?;
     if !policy.allows(role) {
         let hint = if policy == RolePolicy::Forbid {
             "use a blessed role (this gate forbids every unregistered role, including the `x/` escape)"
@@ -117,18 +100,6 @@ fn reject_role(
         };
         return Err(format!(
             "{locus} declares unregistered role {role:?}; {hint}"
-        ));
-    }
-    if let Some(part) = part
-        && !policy.allows_part(part)
-    {
-        let hint = if policy == RolePolicy::Forbid {
-            "use a registered part (this gate forbids every unregistered part, including the `x/` escape)"
-        } else {
-            "use a registered part, or the `x/` escape namespace for an intentionally non-standard one"
-        };
-        return Err(format!(
-            "{locus} declares unregistered part {part:?} on role {role:?}; {hint}"
         ));
     }
     Ok(())
@@ -163,14 +134,14 @@ fn walk_obs_roles(node: &ObsNode, path: &NodePath, policy: RolePolicy) -> Result
 fn obs_leaf_roles(leaf: &ObsLeaf, path: &NodePath, policy: RolePolicy) -> Result<(), String> {
     let locus = format!("observation {:?}", path.to_string());
     match leaf {
-        ObsLeaf::Image(tag) => reject_role(&tag.role, tag.part.as_deref(), &locus, policy),
-        ObsLeaf::State(tag) => reject_role(&tag.role, tag.part.as_deref(), &locus, policy),
-        ObsLeaf::Text(tag) => reject_role(&tag.role, None, &locus, policy),
+        ObsLeaf::Image(tag) => reject_role(&tag.role, &locus, policy),
+        ObsLeaf::State(tag) => reject_role(&tag.role, &locus, policy),
+        ObsLeaf::Text(tag) => reject_role(&tag.role, &locus, policy),
         ObsLeaf::Split(layout) => layout
             .fields
             .iter()
             .try_for_each(|field| match &field.role {
-                Some(role) => reject_role(role, field.part.as_deref(), &locus, policy),
+                Some(role) => reject_role(role, &locus, policy),
                 None => Ok(()),
             }),
         ObsLeaf::Unknown { .. } => Ok(()),
@@ -192,19 +163,15 @@ fn walk_input_roles(node: &InputNode, path: &NodePath, policy: RolePolicy) -> Re
 fn model_leaf_roles(leaf: &ModelLeaf, path: &NodePath, policy: RolePolicy) -> Result<(), String> {
     let locus = format!("model input {:?}", path.to_string());
     match leaf {
-        ModelLeaf::Image(input) => reject_role(&input.role, input.part.as_deref(), &locus, policy),
+        ModelLeaf::Image(input) => reject_role(&input.role, &locus, policy),
         // A role-less part is a declared constant, not a role claim: there is
         // nothing for the role tier to sanction.
         ModelLeaf::State(input) => input
             .components
             .iter()
-            .filter_map(|part| {
-                part.role
-                    .as_deref()
-                    .map(|role| (role, part.part.as_deref()))
-            })
-            .try_for_each(|(role, part)| reject_role(role, part, &locus, policy)),
-        ModelLeaf::Text(input) => reject_role(&input.role, None, &locus, policy),
+            .filter_map(|part| part.role.as_deref())
+            .try_for_each(|role| reject_role(role, &locus, policy)),
+        ModelLeaf::Text(input) => reject_role(&input.role, &locus, policy),
         ModelLeaf::Custom(_) | ModelLeaf::Unknown { .. } => Ok(()),
     }
 }
@@ -212,12 +179,7 @@ fn model_leaf_roles(leaf: &ModelLeaf, path: &NodePath, policy: RolePolicy) -> Re
 fn reject_action_roles(action: &Action, policy: RolePolicy) -> Result<(), String> {
     for (index, actuator) in action.components.iter().enumerate() {
         if let Some(role) = &actuator.role {
-            reject_role(
-                role,
-                actuator.part.as_deref(),
-                &format!("action component[{index}]"),
-                policy,
-            )?;
+            reject_role(role, &format!("action component[{index}]"), policy)?;
         }
     }
     Ok(())
@@ -342,155 +304,6 @@ fn reject_unframed_action(action: &Action) -> Result<(), String> {
         let locus = format!("action component[{index}]");
         require_attr(role, Attr::Frame, actuator.frame.as_ref(), &locus)?;
         require_attr(role, Attr::Reference, actuator.reference.as_ref(), &locus)?;
-    }
-    Ok(())
-}
-
-/// The publish-gate policy for axis `labels`, the twin of [`FramePolicy`].
-///
-/// Opt-in, because an unlabeled joint vector is legal v1 and every
-/// pre-`labels` spec would fail the strict tier. Computed from the registry
-/// (a joint role is `DimLaw::Variable` by construction), no new column.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum LabelPolicy {
-    /// Labels are checked for agreement at resolve when both sides declare
-    /// them; an absent tuple is fine, and an off-profile tuple only draws the
-    /// authoring nudge -- the v1 default.
-    Off,
-    /// Every numeric leaf carrying a joint role must name its axes, and every
-    /// label tuple must match a shipped embodiment profile as a set. The
-    /// managed opt-in (`spec-normalize --require-labels`).
-    Strict,
-}
-
-/// The registered roles whose leaves owe `labels` under [`LabelPolicy::Strict`]:
-/// the joint vectors, whose width and order are the embodiment's. Matched on
-/// the canonical role, so the legacy `action/joint_pos_2` owes them too.
-const LABELED_ROLES: [&str; 4] = [
-    crate::roles::core::JOINT_POS,
-    crate::roles::core::JOINT_VEL,
-    crate::roles::core::ACTION_JOINT_POS,
-    crate::roles::core::ACTION_JOINT_VEL,
-];
-
-/// Whether `role` (or its canonical alias) is a joint vector, the only kind of
-/// leaf whose labels are checked against the shipped embodiment profiles. Any
-/// other labeled leaf (the six axes of a wrench, say) names its own axes and is
-/// never held to a profile.
-pub(crate) fn is_labeled_role(role: &str) -> bool {
-    let (canonical, _) = crate::roles::registry::canonical(role, None);
-    LABELED_ROLES.contains(&canonical)
-}
-
-/// Reject any joint-role leaf in an env spec that omits `labels`, and any
-/// label tuple that matches no shipped profile.
-pub fn reject_unlabeled_roles_env(tags: &EnvTags, policy: LabelPolicy) -> Result<(), String> {
-    if policy == LabelPolicy::Off {
-        return Ok(());
-    }
-    walk_obs_labels(&tags.observation, &NodePath::root())?;
-    reject_unlabeled_action(&tags.action)
-}
-
-/// Reject any joint-role leaf in a model spec that omits `labels`, and any
-/// label tuple that matches no shipped profile.
-pub fn reject_unlabeled_roles_model(spec: &ModelSpec, policy: LabelPolicy) -> Result<(), String> {
-    if policy == LabelPolicy::Off {
-        return Ok(());
-    }
-    walk_input_labels(&spec.input, &NodePath::root())?;
-    reject_unlabeled_action(&spec.output)
-}
-
-/// Reject one leaf: a joint role with no labels, or labels off every profile.
-fn require_labels(role: &str, labels: Option<&[String]>, locus: &str) -> Result<(), String> {
-    let joint = is_labeled_role(role);
-    match labels {
-        None if joint => Err(format!(
-            "{locus} declares joint role {role:?} without labels; this gate requires one label \
-             per axis (write them from a shipped profile: rlmesh.adapters.embodiments)"
-        )),
-        None => Ok(()),
-        Some(_) if !joint => Ok(()),
-        Some(labels) => {
-            if crate::roles::embodiments::matching_profile(labels).is_some() {
-                return Ok(());
-            }
-            let hint = match crate::roles::embodiments::closest_profile(labels) {
-                Some((profile, overlap)) => format!(
-                    "; the closest is {:?} ({overlap} of {} labels shared)",
-                    profile.name,
-                    labels.len()
-                ),
-                None => String::new(),
-            };
-            Err(format!(
-                "{locus} declares role {role:?} with labels that match no shipped embodiment \
-                 profile{hint}; this gate requires a profile's joints (rlmesh.adapters.embodiments)"
-            ))
-        }
-    }
-}
-
-fn walk_obs_labels(node: &ObsNode, path: &NodePath) -> Result<(), String> {
-    match node {
-        ObsNode::Leaf(leaf) => {
-            let locus = format!("observation {:?}", path.to_string());
-            match leaf {
-                ObsLeaf::State(tag) => require_labels(&tag.role, tag.labels.as_deref(), &locus),
-                ObsLeaf::Split(layout) => {
-                    layout
-                        .fields
-                        .iter()
-                        .try_for_each(|field| match &field.role {
-                            Some(role) => require_labels(role, field.labels.as_deref(), &locus),
-                            None => Ok(()),
-                        })
-                }
-                _ => Ok(()),
-            }
-        }
-        ObsNode::Dict(map) => map
-            .iter()
-            .try_for_each(|(key, child)| walk_obs_labels(child, &path.push_key(key.clone()))),
-        ObsNode::Tuple(items) => items
-            .iter()
-            .enumerate()
-            .try_for_each(|(index, child)| walk_obs_labels(child, &path.push_index(index))),
-    }
-}
-
-fn walk_input_labels(node: &InputNode, path: &NodePath) -> Result<(), String> {
-    match node {
-        InputNode::Leaf(ModelLeaf::State(input)) => {
-            let locus = format!("model input {:?}", path.to_string());
-            input
-                .components
-                .iter()
-                .try_for_each(|part| match &part.role {
-                    Some(role) => require_labels(role, part.labels.as_deref(), &locus),
-                    None => Ok(()),
-                })
-        }
-        InputNode::Leaf(_) => Ok(()),
-        InputNode::Dict(map) => map
-            .iter()
-            .try_for_each(|(key, child)| walk_input_labels(child, &path.push_key(key.clone()))),
-        InputNode::Tuple(items) => items
-            .iter()
-            .enumerate()
-            .try_for_each(|(index, child)| walk_input_labels(child, &path.push_index(index))),
-    }
-}
-
-fn reject_unlabeled_action(action: &Action) -> Result<(), String> {
-    for (index, actuator) in action.components.iter().enumerate() {
-        let Some(role) = &actuator.role else { continue };
-        require_labels(
-            role,
-            actuator.labels.as_deref(),
-            &format!("action component[{index}]"),
-        )?;
     }
     Ok(())
 }
@@ -801,80 +614,6 @@ mod tests {
     }
 
     #[test]
-    fn require_labels_rejects_unlabeled_joint_roles_and_off_profile_tuples() {
-        use super::{LabelPolicy, reject_unlabeled_roles_env, reject_unlabeled_roles_model};
-
-        // A joint vector with no labels: legal by default, refused under Strict;
-        // a gripper owes none.
-        let bare: EnvTags = serde_json::from_str(
-            r#"{"observation": {"j": {"type": "state", "role": "proprio/joint_pos"},
-                    "g": {"type": "state", "role": "proprio/gripper"}},
-                "action": {"components": [{"role": "action/gripper", "dim": 1}]}}"#,
-        )
-        .unwrap();
-        assert!(reject_unlabeled_roles_env(&bare, LabelPolicy::Off).is_ok());
-        let err = reject_unlabeled_roles_env(&bare, LabelPolicy::Strict).unwrap_err();
-        assert!(
-            err.contains(r#""j" declares joint role "proprio/joint_pos" without labels"#),
-            "got: {err}"
-        );
-
-        // Labels from a shipped profile pass, in any order and as a subset.
-        let labeled: EnvTags = serde_json::from_str(
-            r#"{"observation": {"j": {"type": "state", "role": "proprio/joint_pos",
-                    "labels": ["FL_hip_joint", "FR_hip_joint"]}},
-                "action": {"components": [{"role": "action/joint_pos_2", "dim": 2,
-                    "labels": ["panda_joint1", "panda_joint2"]}]}}"#,
-        )
-        .unwrap();
-        assert!(reject_unlabeled_roles_env(&labeled, LabelPolicy::Strict).is_ok());
-
-        // Off-profile labels on a joint role are the lint's rejection, naming
-        // the closest; a labeled leaf of any other role names its own axes and
-        // is never held to a profile.
-        let axes: EnvTags = serde_json::from_str(
-            r#"{"observation": {"w": {"type": "state", "role": "proprio/eef_wrench",
-                    "frame": "tool", "labels": ["fx", "fy", "fz", "tx", "ty", "tz"]}},
-                "action": {"components": [{"role": "action/gripper", "dim": 1}]}}"#,
-        )
-        .unwrap();
-        assert!(reject_unlabeled_roles_env(&axes, LabelPolicy::Strict).is_ok());
-        let stray: EnvTags = serde_json::from_str(
-            r#"{"observation": {"g": {"type": "state", "role": "proprio/joint_pos",
-                    "labels": ["FR_hip_joint", "FR_shin"]}},
-                "action": {"components": [{"role": "action/gripper", "dim": 1}]}}"#,
-        )
-        .unwrap();
-        let err = reject_unlabeled_roles_env(&stray, LabelPolicy::Strict).unwrap_err();
-        assert!(
-            err.contains("match no shipped embodiment profile")
-                && err.contains(r#"closest is "unitree_go2" (1 of 2 labels shared)"#),
-            "got: {err}"
-        );
-
-        // The model side walks state parts (the legacy alias owes labels too)
-        // and its own action layout.
-        let model: ModelSpec = serde_json::from_str(
-            r#"{"input": {"type": "state", "components": [{"role": "proprio/joint_vel", "dim": 12}]},
-                "output": {"components": [{"role": "action/joint_pos_2", "dim": 7}]}}"#,
-        )
-        .unwrap();
-        assert!(reject_unlabeled_roles_model(&model, LabelPolicy::Off).is_ok());
-        let err = reject_unlabeled_roles_model(&model, LabelPolicy::Strict).unwrap_err();
-        assert!(err.contains("proprio/joint_vel"), "got: {err}");
-        let model: ModelSpec = serde_json::from_str(
-            r#"{"input": {"type": "text", "role": "text/instruction"},
-                "output": {"components": [{"role": "action/joint_pos_2", "dim": 7}]}}"#,
-        )
-        .unwrap();
-        let err = reject_unlabeled_roles_model(&model, LabelPolicy::Strict).unwrap_err();
-        assert!(
-            err.contains(r#"action component[0] declares joint role "action/joint_pos_2""#),
-            "got: {err}"
-        );
-    }
-
-    #[test]
     fn strict_allows_escape_and_opaque_but_forbid_rejects_escape() {
         use super::{RolePolicy, reject_unsanctioned_roles_env, reject_unsanctioned_roles_model};
 
@@ -913,41 +652,25 @@ mod tests {
     }
 
     #[test]
-    fn parts_follow_the_role_tiers_and_kinds_hold_at_the_publish_door() {
+    fn parts_are_never_tiered_and_kinds_hold_at_the_publish_door() {
         use super::{RolePolicy, reject_unsanctioned_roles_env, reject_unsanctioned_roles_model};
 
-        // A registered part passes every tier; an ad-hoc one is nudged only,
-        // Strict refuses it, and `x/` is the escape Strict allows and Forbid does not.
-        let registered: EnvTags = serde_json::from_str(
-            r#"{"observation": {"l": {"type": "state", "role": "proprio/eef_pos", "part": "left_arm"}},
-                "action": {"components": [{"role": "action/gripper", "dim": 1, "part": "left_arm"}]}}"#,
-        )
-        .unwrap();
-        assert!(reject_unsanctioned_roles_env(&registered, RolePolicy::Forbid).is_ok());
-
-        let ad_hoc: EnvTags = serde_json::from_str(
+        // A part is any identifier: even the absolute tier never refuses one.
+        let custom: EnvTags = serde_json::from_str(
             r#"{"observation": {"l": {"type": "state", "role": "proprio/eef_pos", "part": "franka"}},
-                "action": {"components": []}}"#,
+                "action": {"components": [{"role": "action/gripper", "dim": 1, "part": "tail"}]}}"#,
         )
         .unwrap();
-        assert!(reject_unsanctioned_roles_env(&ad_hoc, RolePolicy::Passthrough).is_ok());
-        let err = reject_unsanctioned_roles_env(&ad_hoc, RolePolicy::Strict).unwrap_err();
-        assert!(
-            err.contains(r#"unregistered part "franka" on role "proprio/eef_pos""#),
-            "{err}"
-        );
-
-        let escaped: ModelSpec = serde_json::from_str(
+        assert!(reject_unsanctioned_roles_env(&custom, RolePolicy::Forbid).is_ok());
+        let custom: ModelSpec = serde_json::from_str(
             r#"{"input": {"type": "state", "components": [{"role": "proprio/eef_pos", "part": "x/tail"}]},
-                "output": {"components": [{"role": "action/gripper", "dim": 1, "part": "x/tail"}]}}"#,
+                "output": {"components": [{"role": "action/gripper", "dim": 1, "part": "tail"}]}}"#,
         )
         .unwrap();
-        assert!(reject_unsanctioned_roles_model(&escaped, RolePolicy::Strict).is_ok());
-        let err = reject_unsanctioned_roles_model(&escaped, RolePolicy::Forbid).unwrap_err();
-        assert!(err.contains("including the `x/` escape"), "{err}");
+        assert!(reject_unsanctioned_roles_model(&custom, RolePolicy::Forbid).is_ok());
 
-        // The identity rules are not a tier: an unknown kind prefix and a part
-        // on a legacy `_2` role fail the publish door under every policy.
+        // The kind rule is not a tier: an unknown kind prefix fails the
+        // publish door under every policy.
         let bad_kind: EnvTags = serde_json::from_str(
             r#"{"observation": {"l": {"type": "state", "role": "audio/mic"}},
                 "action": {"components": []}}"#,
@@ -955,14 +678,7 @@ mod tests {
         .unwrap();
         let err = reject_unknowns_env(&bad_kind).unwrap_err();
         assert!(err.contains("kind this core does not define"), "{err}");
-        let aliased: ModelSpec = serde_json::from_str(
-            r#"{"input": {"type": "text", "role": "text/instruction"},
-                "output": {"components": [{"role": "action/gripper_2", "dim": 1, "part": "left_arm"}]}}"#,
-        )
-        .unwrap();
-        let err = reject_unknowns_model(&aliased).unwrap_err();
-        assert!(err.contains("legacy spelling"), "{err}");
-        // The READ taint stays tolerant of both (resolve is where they fail).
+        // The READ taint stays tolerant of it (resolve is where it fails).
         assert!(reject_bare_fields_env(&bad_kind).is_ok());
     }
 }

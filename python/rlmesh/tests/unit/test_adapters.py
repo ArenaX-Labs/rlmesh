@@ -413,9 +413,14 @@ XVLA = adapt.ModelSpec(
             # and the Isaac_vla bridge client).
             adapt.State(adapt.EEF_ROT, encoding="rot6d_rowmajor"),
             adapt.State(adapt.GRIPPER_POS, dim=1),
-            adapt.State(adapt.EEF_POS_2, dim=3, optional=True),
-            adapt.State(adapt.EEF_ROT_2, encoding="rot6d_rowmajor", optional=True),
-            adapt.State(adapt.GRIPPER_POS_2, dim=1, optional=True),
+            adapt.State(adapt.EEF_POS, part=adapt.RIGHT_ARM, dim=3, optional=True),
+            adapt.State(
+                adapt.EEF_ROT,
+                part=adapt.RIGHT_ARM,
+                encoding="rot6d_rowmajor",
+                optional=True,
+            ),
+            adapt.State(adapt.GRIPPER_POS, part=adapt.RIGHT_ARM, dim=1, optional=True),
             pad_to=20,
             container="list",
         ),
@@ -425,9 +430,16 @@ XVLA = adapt.ModelSpec(
         adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
         adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=6, encoding="rot6d_rowmajor"),
         adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
-        adapt.Actuator(adapt.ACTION_DELTA_POS_2, dim=3),
-        adapt.Actuator(adapt.ACTION_DELTA_ROT_2, dim=6, encoding="rot6d_rowmajor"),
-        adapt.Actuator(adapt.ACTION_GRIPPER_2, dim=1, range=(-1.0, 1.0)),
+        adapt.Actuator(adapt.ACTION_DELTA_POS, part=adapt.RIGHT_ARM, dim=3),
+        adapt.Actuator(
+            adapt.ACTION_DELTA_ROT,
+            part=adapt.RIGHT_ARM,
+            dim=6,
+            encoding="rot6d_rowmajor",
+        ),
+        adapt.Actuator(
+            adapt.ACTION_GRIPPER, part=adapt.RIGHT_ARM, dim=1, range=(-1.0, 1.0)
+        ),
     ),
 )
 
@@ -472,20 +484,29 @@ BIMANUAL_ENV = Env(
             "robot0_eef_pos": adapt.StateTag(role=adapt.EEF_POS),
             "robot0_eef_quat": adapt.StateTag(role=adapt.EEF_ROT, encoding="quat_xyzw"),
             "robot0_gripper_qpos": adapt.StateTag(role=adapt.GRIPPER_POS),
-            "robot1_eef_pos": adapt.StateTag(role=adapt.EEF_POS_2),
+            "robot1_eef_pos": adapt.StateTag(role=adapt.EEF_POS, part=adapt.RIGHT_ARM),
             "robot1_eef_quat": adapt.StateTag(
-                role=adapt.EEF_ROT_2, encoding="quat_xyzw"
+                role=adapt.EEF_ROT, part=adapt.RIGHT_ARM, encoding="quat_xyzw"
             ),
-            "robot1_gripper_qpos": adapt.StateTag(role=adapt.GRIPPER_POS_2),
+            "robot1_gripper_qpos": adapt.StateTag(
+                role=adapt.GRIPPER_POS, part=adapt.RIGHT_ARM
+            ),
             "instruction": adapt.TextTag(role=adapt.INSTRUCTION),
         },
         action=adapt.Action(
             adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
             adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
             adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
-            adapt.Actuator(adapt.ACTION_DELTA_POS_2, dim=3),
-            adapt.Actuator(adapt.ACTION_DELTA_ROT_2, dim=3, encoding="axis_angle"),
-            adapt.Actuator(adapt.ACTION_GRIPPER_2, dim=1, range=(-1.0, 1.0)),
+            adapt.Actuator(adapt.ACTION_DELTA_POS, part=adapt.RIGHT_ARM, dim=3),
+            adapt.Actuator(
+                adapt.ACTION_DELTA_ROT,
+                part=adapt.RIGHT_ARM,
+                dim=3,
+                encoding="axis_angle",
+            ),
+            adapt.Actuator(
+                adapt.ACTION_GRIPPER, part=adapt.RIGHT_ARM, dim=1, range=(-1.0, 1.0)
+            ),
             clip=(-1.0, 1.0),
         ),
     ),
@@ -612,7 +633,6 @@ def test_role_constants_match_rust_crate():
     assert list(constants.PARTS) == [
         constants.LEFT_ARM,
         constants.RIGHT_ARM,
-        constants.ARM_2,
         constants.HEAD,
         constants.TORSO,
         constants.BASE,
@@ -2434,19 +2454,25 @@ BIMANUAL_EEF_ENV = Env(
                 adapt.Field(adapt.EEF_ROT, 4, encoding="quat_wxyz"),
             ),
             "right_endpose": adapt.Split(
-                adapt.Field(adapt.EEF_POS_2, 3),
-                adapt.Field(adapt.EEF_ROT_2, 4, encoding="quat_wxyz"),
+                adapt.Field(adapt.EEF_POS, 3, part=adapt.RIGHT_ARM),
+                adapt.Field(
+                    adapt.EEF_ROT, 4, encoding="quat_wxyz", part=adapt.RIGHT_ARM
+                ),
             ),
             "left_gripper": adapt.StateTag(role=adapt.GRIPPER_POS),
-            "right_gripper": adapt.StateTag(role=adapt.GRIPPER_POS_2),
+            "right_gripper": adapt.StateTag(
+                role=adapt.GRIPPER_POS, part=adapt.RIGHT_ARM
+            ),
         },
         action=adapt.Action(
             adapt.Actuator(adapt.ACTION_EEF_POS, dim=3),
             adapt.Actuator(adapt.ACTION_EEF_ROT, dim=4, encoding="quat_wxyz"),
             adapt.Actuator(adapt.ACTION_GRIPPER, dim=1),
-            adapt.Actuator(adapt.ACTION_EEF_POS_2, dim=3),
-            adapt.Actuator(adapt.ACTION_EEF_ROT_2, dim=4, encoding="quat_wxyz"),
-            adapt.Actuator(adapt.ACTION_GRIPPER_2, dim=1),
+            adapt.Actuator(adapt.ACTION_EEF_POS, part=adapt.RIGHT_ARM, dim=3),
+            adapt.Actuator(
+                adapt.ACTION_EEF_ROT, part=adapt.RIGHT_ARM, dim=4, encoding="quat_wxyz"
+            ),
+            adapt.Actuator(adapt.ACTION_GRIPPER, part=adapt.RIGHT_ARM, dim=1),
         ),
     ),
     obs_space=gym.spaces.Dict(
@@ -2480,9 +2506,11 @@ def _bimanual_proprio(encoding: Any) -> adapt.ModelSpec:
                 adapt.State(adapt.EEF_POS, dim=3),
                 adapt.State(adapt.EEF_ROT, dim=6, encoding=encoding),
                 adapt.State(adapt.GRIPPER_POS, dim=1),
-                adapt.State(adapt.EEF_POS_2, dim=3),
-                adapt.State(adapt.EEF_ROT_2, dim=6, encoding=encoding),
-                adapt.State(adapt.GRIPPER_POS_2, dim=1),
+                adapt.State(adapt.EEF_POS, part=adapt.RIGHT_ARM, dim=3),
+                adapt.State(
+                    adapt.EEF_ROT, part=adapt.RIGHT_ARM, dim=6, encoding=encoding
+                ),
+                adapt.State(adapt.GRIPPER_POS, part=adapt.RIGHT_ARM, dim=1),
                 container="array",
             )
         },
@@ -2490,9 +2518,11 @@ def _bimanual_proprio(encoding: Any) -> adapt.ModelSpec:
             adapt.Actuator(adapt.ACTION_EEF_POS, dim=3),
             adapt.Actuator(adapt.ACTION_EEF_ROT, dim=6, encoding=encoding),
             adapt.Actuator(adapt.ACTION_GRIPPER, dim=1),
-            adapt.Actuator(adapt.ACTION_EEF_POS_2, dim=3),
-            adapt.Actuator(adapt.ACTION_EEF_ROT_2, dim=6, encoding=encoding),
-            adapt.Actuator(adapt.ACTION_GRIPPER_2, dim=1),
+            adapt.Actuator(adapt.ACTION_EEF_POS, part=adapt.RIGHT_ARM, dim=3),
+            adapt.Actuator(
+                adapt.ACTION_EEF_ROT, part=adapt.RIGHT_ARM, dim=6, encoding=encoding
+            ),
+            adapt.Actuator(adapt.ACTION_GRIPPER, part=adapt.RIGHT_ARM, dim=1),
         ),
     )
 
@@ -3713,13 +3743,13 @@ JOINT_BIMANUAL_ENV = Env(
         observation={
             "head": adapt.ImageTag(role=adapt.IMAGE_PRIMARY),
             "left_wrist": adapt.ImageTag(role=adapt.IMAGE_WRIST),
-            "right_wrist": adapt.ImageTag(role=adapt.IMAGE_WRIST_2),
+            "right_wrist": adapt.ImageTag(role=adapt.IMAGE_WRIST, part=adapt.RIGHT_ARM),
         },
         action=adapt.Action(
             adapt.Actuator(adapt.ACTION_JOINT_POS, dim=6),
             adapt.Actuator(adapt.ACTION_GRIPPER, dim=1),
-            adapt.Actuator(adapt.ACTION_JOINT_POS_2, dim=6),
-            adapt.Actuator(adapt.ACTION_GRIPPER_2, dim=1),
+            adapt.Actuator(adapt.ACTION_JOINT_POS, part=adapt.RIGHT_ARM, dim=6),
+            adapt.Actuator(adapt.ACTION_GRIPPER, part=adapt.RIGHT_ARM, dim=1),
         ),
     ),
     obs_space=gym.spaces.Dict(
@@ -3733,18 +3763,20 @@ JOINT_BIMANUAL_ENV = Env(
 )
 
 # The model emits both arms' joints first and both grippers last; the env
-# interleaves them arm by arm. Only the `_2` roles can express the difference.
+# interleaves them arm by arm. Only the right arm's part can express the difference.
 JOINT_BIMANUAL_MODEL = adapt.ModelSpec(
     input={
         "image": adapt.Image(role=adapt.IMAGE_PRIMARY, height=64, width=64),
         "wrist": adapt.Image(role=adapt.IMAGE_WRIST, height=64, width=64),
-        "wrist_2": adapt.Image(role=adapt.IMAGE_WRIST_2, height=64, width=64),
+        "wrist_2": adapt.Image(
+            role=adapt.IMAGE_WRIST, part=adapt.RIGHT_ARM, height=64, width=64
+        ),
     },
     output=adapt.Action(
         adapt.Actuator(adapt.ACTION_JOINT_POS, dim=6),
-        adapt.Actuator(adapt.ACTION_JOINT_POS_2, dim=6),
+        adapt.Actuator(adapt.ACTION_JOINT_POS, part=adapt.RIGHT_ARM, dim=6),
         adapt.Actuator(adapt.ACTION_GRIPPER, dim=1),
-        adapt.Actuator(adapt.ACTION_GRIPPER_2, dim=1),
+        adapt.Actuator(adapt.ACTION_GRIPPER, part=adapt.RIGHT_ARM, dim=1),
     ),
 )
 
@@ -3952,7 +3984,7 @@ def test_constant_part_is_not_reported_as_a_zero_filled_role():
         input={
             "state": adapt.Concat(
                 adapt.EEF_POS,
-                adapt.State(adapt.EEF_POS_2, dim=2, optional=True),
+                adapt.State(adapt.EEF_POS, part=adapt.RIGHT_ARM, dim=2, optional=True),
             )
         },
         output=XVLA.output,
@@ -3980,13 +4012,14 @@ def test_state_of_only_constants_is_refused():
 
 def test_non_zero_fill_needs_optional_and_folds_scale_and_offset():
     with pytest.raises(ValueError, match="only to an optional part"):
-        adapt.State(adapt.EEF_POS_2, dim=1, fill=1.0)
+        adapt.State(adapt.EEF_POS, part=adapt.RIGHT_ARM, dim=1, fill=1.0)
     spec = adapt.ModelSpec(
         input={
             "state": adapt.Concat(
                 adapt.EEF_POS,
                 adapt.State(
-                    adapt.EEF_POS_2,
+                    adapt.EEF_POS,
+                    part=adapt.RIGHT_ARM,
                     dim=2,
                     optional=True,
                     fill=0.5,
@@ -4451,44 +4484,85 @@ def test_parts_resolve_by_identity_and_show_in_the_summary() -> None:
                 output=spec.output,
             ),
         )
-    # A v1 `_2` model binds an env that names its second arm `arm_2`.
-    env_arm_2 = Env(
-        tags=adapt.EnvTags(
-            observation={"r": adapt.StateTag(adapt.EEF_POS, part=adapt.ARM_2)},
-            action=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER_2, dim=1)),
-        ),
-        obs_space=gym.spaces.Dict({"r": box(3)}),
-        action_space=box(1),
-    )
-    legacy = adapt.ModelSpec(
-        input={"state": adapt.State(adapt.EEF_POS_2, dim=3)},
+
+
+def test_two_arms_bind_by_explicit_part() -> None:
+    env = _two_arm_env()
+    spec = adapt.ModelSpec(
+        input={
+            "state": adapt.Concat(
+                adapt.State(adapt.EEF_POS, part=adapt.LEFT_ARM),
+                adapt.State(adapt.EEF_POS, part=adapt.RIGHT_ARM),
+            )
+        },
         output=adapt.Action(
-            adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, part=adapt.ARM_2)
+            adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, part=adapt.RIGHT_ARM),
+            adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, part=adapt.LEFT_ARM),
         ),
     )
-    adapter = resolve(env_arm_2, legacy)
+    adapter = resolve(env, spec)
     assert adapter.advisories() == []
-    assert "r[:3]#arm_2" in adapter.explain()
+    state = adapter.transform_obs(
+        {
+            "l": np.array([1.0, 2.0, 3.0], np.float32),
+            "r": np.array([4.0, 5.0, 6.0], np.float32),
+        }
+    )["state"]
+    np.testing.assert_array_equal(state, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+    # Model order is (right, left); the env's is (left, right).
+    np.testing.assert_array_equal(
+        adapter.transform_action(np.array([0.25, -0.75], np.float32)), [-0.75, 0.25]
+    )
+    # A named part never binds the env's part-less leaf of the same role.
+    with pytest.raises(adapt.AdapterResolutionError, match="right_arm"):
+        resolve(
+            LIBERO_ENV,
+            adapt.ModelSpec(
+                input={
+                    "state": adapt.State(adapt.EEF_POS, dim=3, part=adapt.RIGHT_ARM)
+                },
+                output=XVLA.output,
+            ),
+        )
 
 
-def test_an_ad_hoc_part_nudges_and_the_strict_gate_refuses_it() -> None:
+def test_a_custom_part_and_custom_joint_names_resolve_with_no_advisory() -> None:
     import json
 
-    from rlmesh._rlmesh import adapters_spec_normalize
+    from rlmesh._rlmesh import adapters_join_check, adapters_spec_normalize
 
-    tags = adapt.EnvTags(
-        observation={"l": adapt.StateTag(adapt.EEF_POS, part="franka")},
-        action=LIBERO_ACTION,
+    joints = ("tail_yaw", "tail_pitch")
+    env = Env(
+        adapt.EnvTags(
+            observation={
+                "tail": adapt.StateTag(adapt.JOINT_POS, part="tail", labels=joints)
+            },
+            action=adapt.Action(
+                adapt.Actuator(
+                    adapt.ACTION_JOINT_POS, dim=2, part="tail", labels=joints
+                )
+            ),
+        ),
+        obs_space=gym.spaces.Dict({"tail": box(2)}),
+        action_space=box(2),
     )
-    doc = json.dumps(tags.to_dict())
-    adapters_spec_normalize("env", doc, True, "passthrough", False)
-    with pytest.raises(ValueError, match='unregistered part "franka"'):
-        adapters_spec_normalize("env", doc, True, "strict", False)
-    escaped = adapt.EnvTags(
-        observation={"l": adapt.StateTag(adapt.EEF_POS, part="x/franka")},
-        action=LIBERO_ACTION,
+    spec = adapt.ModelSpec(
+        input={"q": adapt.State(adapt.JOINT_POS, part="tail", labels=joints[::-1])},
+        output=adapt.Action(
+            adapt.Actuator(adapt.ACTION_JOINT_POS, dim=2, part="tail", labels=joints)
+        ),
     )
-    adapters_spec_normalize("env", json.dumps(escaped.to_dict()), True, "strict", False)
+    adapter = resolve(env, spec)
+    assert adapter.advisories() == []
+    np.testing.assert_array_equal(
+        adapter.transform_obs({"tail": np.array([1.0, 2.0], np.float32)})["q"],
+        [2.0, 1.0],
+    )
+    tags_json = json.dumps(env.tags.to_dict())
+    assert adapters_join_check(tags_json, env.obs_space, env.action_space) == []
+    # The strict publish tier never rejects a part.
+    adapters_spec_normalize("env", tags_json, True, "strict", False)
+    adapters_spec_normalize("model", json.dumps(spec.to_dict()), True, "strict", False)
     # The kind prefix is closed at the publish door under every policy.
     with pytest.raises(ValueError, match="kind this core does not define"):
         adapt.EnvTags(
@@ -4497,16 +4571,20 @@ def test_an_ad_hoc_part_nudges_and_the_strict_gate_refuses_it() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Labels, per-axis affine and embodiment profiles (PR-2 of the adapter expansion)
+# Labels and per-axis affine (PR-2 of the adapter expansion)
 # ---------------------------------------------------------------------------
 
-GO2_SDK = adapt.GO2.joints
+GO2_SDK = tuple(
+    f"{leg}_{joint}_joint"
+    for leg in ("FR", "FL", "RR", "RL")
+    for joint in ("hip", "thigh", "calf")
+)
 GO2_ISAAC = tuple(GO2_SDK[i] for i in (3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8))
 GO2_DEFAULT_POSE = (0.0, 0.8, -1.5) * 4
 GO2_ACTION_SCALE = (0.125, 0.25, 0.25) * 4
 
 
-def _go2_env(*, optional: bool = False, fill: float | tuple[float, ...] = 0.0) -> Env:
+def _go2_env(*, optional: bool = False, fill: float = 0.0) -> Env:
     return Env(
         adapt.EnvTags(
             observation={
@@ -4555,51 +4633,12 @@ def _go2_model(labels: tuple[str, ...] | None) -> adapt.ModelSpec:
     )
 
 
-def test_embodiment_profiles_mirror_the_rust_rows() -> None:
-    from rlmesh.adapters import embodiments
-
-    assert embodiments.GO2 is adapt.GO2
-    assert adapt.GO2.name == "unitree_go2"
-    assert adapt.GO2.joints[:3] == ("FR_hip_joint", "FR_thigh_joint", "FR_calf_joint")
-    assert adapt.GO2.joints[3] == "FL_hip_joint" and len(adapt.GO2.joints) == 12
-    assert adapt.GO2.parts == ("base",)
-    assert (
-        len(adapt.G1_29DOF.joints) == 29
-        and adapt.G1_29DOF.joints[12] == "waist_yaw_joint"
-    )
-    assert adapt.G1_29DOF.parts == (
-        "left_leg",
-        "right_leg",
-        "torso",
-        "left_arm",
-        "right_arm",
-        "head",
-    )
-    assert adapt.FRANKA_PANDA.joints == tuple(f"panda_joint{i}" for i in range(1, 8))
-    assert adapt.UR5E.joints == (
-        "shoulder_pan_joint",
-        "shoulder_lift_joint",
-        "elbow_joint",
-        "wrist_1_joint",
-        "wrist_2_joint",
-        "wrist_3_joint",
-    )
-    assert adapt.UR5E.parts == ()
-    assert [profile.name for profile in embodiments.PROFILES] == [
-        "unitree_go2",
-        "unitree_g1_29dof",
-        "franka_panda",
-        "ur5e",
-    ]
-    assert isinstance(adapt.GO2, adapt.EmbodimentProfile)
-
-
 def test_labels_and_per_axis_affine_round_trip_only_when_set() -> None:
-    tags = _go2_env(optional=True, fill=GO2_DEFAULT_POSE).tags
+    tags = _go2_env(optional=True, fill=0.5).tags
     doc = tags.to_dict()
     assert doc["observation"]["joint_pos"]["labels"] == list(GO2_SDK)
     actuator = doc["action"]["components"][0]
-    assert actuator["axis_fill"] == list(GO2_DEFAULT_POSE) and "fill" not in actuator
+    assert actuator["fill"] == 0.5 and "axis_fill" not in actuator
     assert adapt.EnvTags.from_dict(doc) == tags
     assert "labels" not in LIBERO_ENV.tags.to_dict()["observation"]["robot0_eef_pos"]
 
@@ -4635,18 +4674,21 @@ def test_label_and_axis_codec_rules_fail_at_construction() -> None:
         adapt.State(adapt.JOINT_POS, dim=3, labels=("a", "b"))
     with pytest.raises(ValueError, match="not repeat"):
         adapt.State(adapt.JOINT_POS, labels=("a", "a"))
+    with pytest.raises(ValueError, match="at least one axis"):
+        adapt.StateTag(adapt.JOINT_POS, labels=())
     with pytest.raises(ValueError, match="one label per axis"):
         adapt.Actuator(adapt.ACTION_JOINT_POS, dim=3, labels=("a", "b"))
     with pytest.raises(ValueError, match="one label per element"):
         adapt.Field(adapt.JOINT_POS, 3, labels=("a", "b"))
-    with pytest.raises(ValueError, match="optional, labeled"):
-        adapt.Actuator(adapt.ACTION_JOINT_POS, dim=2, fill=(0.0, 1.0))
-    with pytest.raises(ValueError, match="one fill per axis"):
+    # Fill is one value for every axis; there is no per-axis form.
+    with pytest.raises(ValueError, match="single number"):
         adapt.Actuator(
-            adapt.ACTION_JOINT_POS, dim=2, optional=True, labels=("a", "b"), fill=(1.0,)
+            adapt.ACTION_JOINT_POS,
+            dim=2,
+            optional=True,
+            labels=("a", "b"),
+            fill=(0.0, 1.0),  # type: ignore[arg-type]
         )
-    with pytest.raises(ValueError, match="role-less"):
-        adapt.Actuator(dim=2, fill=(0.0, 1.0))
     with pytest.raises(ValueError, match="sequence of numbers"):
         adapt.State(adapt.JOINT_POS, scale="x")  # type: ignore[arg-type]
 
@@ -4698,41 +4740,104 @@ def test_model_only_labels_are_a_resolve_error_and_env_only_are_silent() -> None
     assert "(model *[FR_hip_joint:0.125," in adapter.explain()
 
 
-def test_a_label_subset_selects_and_scatters_onto_an_optional_actuator() -> None:
-    front = GO2_ISAAC[:6]
+def test_a_three_cycle_reorders_observation_and_action_in_opposite_directions() -> None:
+    env_axes = ("waist", "shoulder", "elbow")
+    model_axes = ("shoulder", "elbow", "waist")
+    env = Env(
+        adapt.EnvTags(
+            observation={"q": adapt.StateTag(adapt.JOINT_POS, labels=env_axes)},
+            action=adapt.Action(
+                adapt.Actuator(adapt.ACTION_JOINT_POS, dim=3, labels=env_axes)
+            ),
+        ),
+        obs_space=gym.spaces.Dict({"q": box(3)}),
+        action_space=box(3),
+    )
     spec = adapt.ModelSpec(
-        input={"obs": adapt.State(adapt.JOINT_POS, labels=front)},
+        input={"state": adapt.State(adapt.JOINT_POS, labels=model_axes)},
         output=adapt.Action(
-            adapt.Actuator(adapt.ACTION_JOINT_POS, dim=6, labels=front)
+            adapt.Actuator(adapt.ACTION_JOINT_POS, dim=3, labels=model_axes)
         ),
     )
-    with pytest.raises(adapt.AdapterResolutionError, match="undriven"):
-        resolve(_go2_env(), spec)
-    adapter = resolve(_go2_env(optional=True, fill=GO2_DEFAULT_POSE), spec)
-    text = adapter.explain()
-    assert "joint_pos select[3,4,5,0,1,2]" in text
-    assert (
-        "model[0:6] select[3,4,5,0,1,2,-,-,-,-,-,-] (fill [RR_hip_joint:0.0,RR_thigh_joint:0.8,"
-        in text
+    adapter = resolve(env, spec)
+    assert "q perm[1,2,0]" in adapter.explain()
+    assert "model[0:3] perm[2,0,1]" in adapter.explain()
+    # waist=1, shoulder=2, elbow=3 reads as (shoulder, elbow, waist).
+    np.testing.assert_array_equal(
+        adapter.transform_obs({"q": np.array([1.0, 2.0, 3.0], np.float32)})["state"],
+        [2.0, 3.0, 1.0],
     )
-    assert any(
-        note.severity == "info" and "drives 6 of 12 labels" in note.message
-        for note in adapter.advisories()
+    # shoulder=10, elbow=20, waist=30 writes as (waist, shoulder, elbow).
+    np.testing.assert_array_equal(
+        adapter.transform_action(np.array([10.0, 20.0, 30.0], np.float32)),
+        [30.0, 10.0, 20.0],
     )
-    action = adapter.transform_action(np.arange(1, 7, dtype=np.float32))
-    np.testing.assert_allclose(
-        action, [4, 5, 6, 1, 2, 3, 0.0, 0.8, -1.5, 0.0, 0.8, -1.5], atol=1e-6
-    )
+
+
+def test_labels_naming_a_different_set_are_a_label_mismatch() -> None:
+    # A model that lacks one of the env's labels cannot drop an axis.
+    front = GO2_ISAAC[:6]
+    with pytest.raises(adapt.AdapterResolutionError, match="the model input lacks"):
+        resolve(
+            _go2_env(),
+            adapt.ModelSpec(
+                input={"obs": adapt.State(adapt.JOINT_POS, labels=front)},
+                output=_go2_model(None).output,
+            ),
+        )
+    with pytest.raises(adapt.AdapterResolutionError, match="lacks"):
+        resolve(
+            _go2_env(optional=True),
+            adapt.ModelSpec(
+                input={"obs": adapt.State(adapt.JOINT_POS, dim=12)},
+                output=adapt.Action(
+                    adapt.Actuator(adapt.ACTION_JOINT_POS, dim=6, labels=front)
+                ),
+            ),
+        )
+    # A label the env lacks is named in the error.
     with pytest.raises(adapt.AdapterResolutionError, match="FR_shin"):
         resolve(
             _go2_env(),
             adapt.ModelSpec(
                 input={
                     "obs": adapt.State(
-                        adapt.JOINT_POS, labels=("FR_hip_joint", "FR_shin")
+                        adapt.JOINT_POS, labels=(*GO2_SDK[:11], "FR_shin")
                     )
                 },
-                output=spec.output,
+                output=_go2_model(None).output,
+            ),
+        )
+    # Optional means the leaf may be absent, not that its axes may disagree.
+    with pytest.raises(adapt.AdapterResolutionError, match="the model input lacks"):
+        resolve(
+            _go2_env(),
+            adapt.ModelSpec(
+                input={
+                    "obs": adapt.State(adapt.JOINT_POS, labels=front, optional=True)
+                },
+                output=_go2_model(None).output,
+            ),
+        )
+
+
+def test_env_labels_must_match_the_space_leaf_width() -> None:
+    env = Env(
+        adapt.EnvTags(
+            observation={"q": adapt.StateTag(adapt.JOINT_POS, labels=("a", "b"))},
+            action=adapt.Action(adapt.Actuator(adapt.ACTION_JOINT_POS, dim=3)),
+        ),
+        obs_space=gym.spaces.Dict({"q": box(3)}),
+        action_space=box(3),
+    )
+    with pytest.raises(
+        adapt.AdapterResolutionError, match="names 2 labels but the space width is 3"
+    ):
+        resolve(
+            env,
+            adapt.ModelSpec(
+                input={"state": adapt.State(adapt.JOINT_POS, dim=3)},
+                output=adapt.Action(adapt.Actuator(adapt.ACTION_JOINT_POS, dim=3)),
             ),
         )
 
@@ -4744,42 +4849,6 @@ def test_per_axis_vector_width_is_a_resolve_error() -> None:
     )
     with pytest.raises(adapt.AdapterResolutionError, match="axis_scale has 2 values"):
         resolve(_go2_env(), spec)
-
-
-def test_unknown_labels_nudge_and_the_require_labels_gate() -> None:
-    import json
-
-    from rlmesh._rlmesh import adapters_join_check, adapters_spec_normalize
-
-    stray = adapt.EnvTags(
-        observation={
-            "j": adapt.StateTag(adapt.JOINT_POS, labels=("FR_hip_joint", "FR_shin"))
-        },
-        action=LIBERO_ACTION,
-    )
-    notes = adapters_join_check(
-        json.dumps(stray.to_dict()), gym.spaces.Dict({"j": box(2)}), box(7)
-    )
-    assert any(
-        "unknown_labels" in note.message and "unitree_go2" in note.message
-        for note in notes
-    )
-    doc = json.dumps(stray.to_dict())
-    adapters_spec_normalize("env", doc, True)
-    with pytest.raises(ValueError, match="match no shipped embodiment profile"):
-        adapters_spec_normalize("env", doc, True, "passthrough", False, True)
-    bare = json.dumps(
-        adapt.EnvTags(
-            observation={"j": adapt.StateTag(adapt.JOINT_POS)}, action=LIBERO_ACTION
-        ).to_dict()
-    )
-    adapters_spec_normalize("env", bare, True)
-    with pytest.raises(ValueError, match="without labels"):
-        adapters_spec_normalize("env", bare, True, "passthrough", False, True)
-    good = json.dumps(_go2_env().tags.to_dict())
-    adapters_spec_normalize("env", good, True, "strict", False, True)
-    model = json.dumps(_go2_model(GO2_ISAAC).to_dict())
-    adapters_spec_normalize("model", model, True, "strict", False, True)
 
 
 # ---------------------------------------------------------------------------
@@ -4885,11 +4954,10 @@ def test_body_role_constants_mirror_the_rust_rows() -> None:
     assert adapt.ROTATION_DIMS["gravity_xyz"] == 3
 
 
-def test_wrench_binds_in_the_tool_frame_and_selects_its_own_axes() -> None:
+def test_wrench_binds_in_the_tool_frame_and_reorders_its_own_axes() -> None:
     # The UR5e cell: a wrist F/T sensor reads the wrench in `tool`, the
     # controller estimates one in `robot_base`; a model pins the sensed one and
-    # gathers two axes by label. The axes are the wrench's own, never a joint
-    # profile's, so the strict label tier has nothing to say about them.
+    # reads its axes torque-first by label.
     assert adapt.EEF_WRENCH == "proprio/eef_wrench"
     axes = ("fx", "fy", "fz", "tx", "ty", "tz")
     env = Env(
@@ -4911,13 +4979,16 @@ def test_wrench_binds_in_the_tool_frame_and_selects_its_own_axes() -> None:
     spec = adapt.ModelSpec(
         input={
             "obs": adapt.State(
-                adapt.EEF_WRENCH, frame="tool", provenance="sensed", labels=("fz", "tx")
+                adapt.EEF_WRENCH,
+                frame="tool",
+                provenance="sensed",
+                labels=axes[3:] + axes[:3],
             )
         },
         output=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1)),
     )
     adapter = resolve(env, spec)
-    assert "wrench select[2,3]@tool#sensed" in adapter.explain()
+    assert "wrench perm[3,4,5,0,1,2]@tool#sensed" in adapter.explain()
     payload = adapter.transform_obs(
         {
             "wrench": np.arange(1.0, 7.0, dtype=np.float32),
@@ -4925,7 +4996,7 @@ def test_wrench_binds_in_the_tool_frame_and_selects_its_own_axes() -> None:
         }
     )
     np.testing.assert_array_equal(
-        payload["obs"], np.array([3.0, 4.0], dtype=np.float32)
+        payload["obs"], np.array([4.0, 5.0, 6.0, 1.0, 2.0, 3.0], dtype=np.float32)
     )
 
     with pytest.raises(
@@ -5233,26 +5304,29 @@ def test_the_previous_action_completes_the_go2_observation_at_45_wide() -> None:
     np.testing.assert_array_equal(adapter.transform_obs(raw)["obs"][33:], np.zeros(12))
 
 
-def test_a_previous_action_part_selects_by_label_and_needs_its_actuator() -> None:
+def test_a_previous_action_part_reorders_by_label_and_needs_its_actuator() -> None:
     env = _go2_body_env()
-    front = GO2_ISAAC[:6]
     adapter = resolve(
         env,
         _go2_full_model(
-            adapt.State(adapt.ACTION_JOINT_POS, source="action", labels=front, fill=0.5)
+            adapt.State(
+                adapt.ACTION_JOINT_POS, source="action", labels=GO2_ISAAC, fill=0.5
+            )
         ),
     )
     assert (
-        "previous action/joint_pos select[3,4,5,0,1,2] (fill 0.5)" in adapter.explain()
+        "previous action/joint_pos perm[3,4,5,0,1,2,9,10,11,6,7,8] (fill 0.5)"
+        in adapter.explain()
     )
     raw = _go2_raw()
     adapter.reset()
     np.testing.assert_array_equal(
-        adapter.transform_obs(raw)["obs"][33:], np.full(6, 0.5)
+        adapter.transform_obs(raw)["obs"][33:], np.full(12, 0.5)
     )
     adapter.transform_action(np.arange(12, dtype=np.float32))
     np.testing.assert_array_equal(
-        adapter.transform_obs(raw)["obs"][33:], [3.0, 4.0, 5.0, 0.0, 1.0, 2.0]
+        adapter.transform_obs(raw)["obs"][33:],
+        [3.0, 4.0, 5.0, 0.0, 1.0, 2.0, 9.0, 10.0, 11.0, 6.0, 7.0, 8.0],
     )
     with pytest.raises(adapt.AdapterResolutionError, match="no actuator emits"):
         resolve(env, _go2_full_model(adapt.Previous(adapt.ACTION_GRIPPER)))
@@ -5263,7 +5337,7 @@ def test_a_previous_action_part_selects_by_label_and_needs_its_actuator() -> Non
                 adapt.State(
                     adapt.ACTION_JOINT_POS,
                     source="action",
-                    labels=("FR_hip_joint", "FR_shin"),
+                    labels=(*GO2_SDK[:11], "FR_shin"),
                 )
             ),
         )

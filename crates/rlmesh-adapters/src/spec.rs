@@ -32,7 +32,7 @@ mod custom_encoding;
 mod env;
 mod env_tags;
 mod frames;
-mod labels;
+pub(crate) mod labels;
 mod layouts;
 mod leaf_codec;
 mod model;
@@ -58,8 +58,7 @@ pub use model::{
 pub use rotation_literal::RotationLiteral;
 pub use rotations::RotationEncoding;
 pub use strict::{
-    FramePolicy, LabelPolicy, RolePolicy, reject_bare_fields_env, reject_bare_fields_model,
+    FramePolicy, RolePolicy, reject_bare_fields_env, reject_bare_fields_model,
     reject_unframed_roles_env, reject_unframed_roles_model, reject_unknowns_env,
-    reject_unknowns_model, reject_unlabeled_roles_env, reject_unlabeled_roles_model,
-    reject_unsanctioned_roles_env, reject_unsanctioned_roles_model,
+    reject_unknowns_model, reject_unsanctioned_roles_env, reject_unsanctioned_roles_model,
 };

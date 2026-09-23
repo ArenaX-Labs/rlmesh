@@ -74,28 +74,32 @@
           "dim": 6,
           "encoding": null,
           "range": null,
-          "role": "action/joint_pos"
+          "role": "action/joint_pos",
+          "part": "left_arm"
         },
         {
           "binary": false,
           "dim": 1,
           "encoding": null,
           "range": null,
-          "role": "action/gripper"
+          "role": "action/gripper",
+          "part": "left_arm"
         },
         {
           "binary": false,
           "dim": 6,
           "encoding": null,
           "range": null,
-          "role": "action/joint_pos_2"
+          "role": "action/joint_pos",
+          "part": "right_arm"
         },
         {
           "binary": false,
           "dim": 1,
           "encoding": null,
           "range": null,
-          "role": "action/gripper_2"
+          "role": "action/gripper",
+          "part": "right_arm"
         }
       ]
     }

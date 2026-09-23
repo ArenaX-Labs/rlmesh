@@ -45,10 +45,9 @@ pub enum ErrorCode {
     /// asks the author to add a role.
     UnsupportedKind,
     /// The two sides' axis labels cannot be aligned: the model names labels
-    /// and the env leaf declares none, or the model names a label the env
-    /// lacks, or a model subset would leave env axes undriven on an actuator
-    /// that is not `optional`. Structural, never a caution: a joint vector
-    /// bound on hope is the bug labels exist to catch.
+    /// and the other side declares none, or the two tuples do not name the
+    /// same set. Structural, never a caution: a joint vector bound on hope
+    /// is the bug labels exist to catch.
     LabelMismatch,
     /// The two sides disagree about where a state leaf's numbers come from
     /// (`sensed`, `estimated`, `privileged`), or one of them declares a value

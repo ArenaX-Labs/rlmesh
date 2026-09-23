@@ -5,8 +5,7 @@ model specs agree. The two domains below are the registry of well-known
 conventions that ship with RLMesh:
 
 - Domain-agnostic roles (cameras, instruction text, joints).
-- Arm manipulation roles (end-effector pose, gripper, the six-axis wrench,
-  and the bimanual ``_2`` convention).
+- Arm manipulation roles (end-effector pose, gripper, the six-axis wrench).
 - Body roles (the floating base: gyro, orientation, and the velocity command
   under the ``command/`` kind). Projected gravity is not a role but the
   ``gravity_xyz`` encoding of ``BASE_ROT``; the base linear velocity is
@@ -27,10 +26,9 @@ supplies it. Rotation widths follow the declared encoding (see
 ``ROTATION_DIMS``); other widths vary by embodiment, which is what
 ``dim``/``index`` selection on components is for.
 
-Bimanual convention: the first (or only) arm uses the unsuffixed roles; the
-second arm uses the ``_2`` variants. Single-arm envs simply never declare
-``_2`` roles, so model components targeting them resolve to zero fill
-(observations) or dropped output dims (actions). By convention
+Multiple arms: a role repeats under a ``part`` (see :mod:`.parts`), so a second
+arm is ``EEF_POS`` under ``part=RIGHT_ARM``. When an env has two leaves of one
+role, a model must name the part it wants. By convention
 ``eef_pos``/``delta_eef_pos`` are 3-D Cartesian; gripper widths vary by
 embodiment.
 
@@ -40,32 +38,22 @@ this module re-exports them through the native bindings.
 
 from ..._rlmesh import (
     ACTION_DELTA_POS,
-    ACTION_DELTA_POS_2,
     ACTION_DELTA_ROT,
-    ACTION_DELTA_ROT_2,
     ACTION_EEF_POS,
-    ACTION_EEF_POS_2,
     ACTION_EEF_ROT,
-    ACTION_EEF_ROT_2,
     ACTION_GRIPPER,
-    ACTION_GRIPPER_2,
     ACTION_JOINT_POS,
-    ACTION_JOINT_POS_2,
     ACTION_JOINT_VEL,
     BASE_ANG_VEL,
     BASE_ROT,
     COMMAND_BASE_VEL,
     EEF_POS,
-    EEF_POS_2,
     EEF_ROT,
-    EEF_ROT_2,
     EEF_WRENCH,
     GRIPPER_POS,
-    GRIPPER_POS_2,
     IMAGE_PRIMARY,
     IMAGE_SECONDARY,
     IMAGE_WRIST,
-    IMAGE_WRIST_2,
     INSTRUCTION,
     JOINT_POS,
     JOINT_VEL,
@@ -73,32 +61,22 @@ from ..._rlmesh import (
 
 __all__ = [
     "ACTION_DELTA_POS",
-    "ACTION_DELTA_POS_2",
     "ACTION_DELTA_ROT",
-    "ACTION_DELTA_ROT_2",
     "ACTION_EEF_POS",
-    "ACTION_EEF_POS_2",
     "ACTION_EEF_ROT",
-    "ACTION_EEF_ROT_2",
     "ACTION_GRIPPER",
-    "ACTION_GRIPPER_2",
     "ACTION_JOINT_POS",
-    "ACTION_JOINT_POS_2",
     "ACTION_JOINT_VEL",
     "BASE_ANG_VEL",
     "BASE_ROT",
     "COMMAND_BASE_VEL",
     "EEF_POS",
-    "EEF_POS_2",
     "EEF_ROT",
-    "EEF_ROT_2",
     "EEF_WRENCH",
     "GRIPPER_POS",
-    "GRIPPER_POS_2",
     "IMAGE_PRIMARY",
     "IMAGE_SECONDARY",
     "IMAGE_WRIST",
-    "IMAGE_WRIST_2",
     "INSTRUCTION",
     "JOINT_POS",
     "JOINT_VEL",

@@ -4,6 +4,20 @@ All notable changes to RLMesh are documented here. This changelog tracks the `rl
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Removed
+
+- The ten second-arm roles (`EEF_POS_2`, `EEF_ROT_2`, `GRIPPER_POS_2`, `IMAGE_WRIST_2`, `ACTION_JOINT_POS_2`, `ACTION_DELTA_POS_2`, `ACTION_DELTA_ROT_2`, `ACTION_GRIPPER_2`, `ACTION_EEF_POS_2`, `ACTION_EEF_ROT_2`), the alias that bound them to `part="arm_2"`, and `ARM_2`. A second arm is the base role under `part=RIGHT_ARM` (`adapt.Field(adapt.EEF_POS, part=adapt.RIGHT_ARM, dim=3)`), the first carries `part=LEFT_ARM` when the env publishes both, and a model reading one of two same-role leaves must name a part. A spec that still spells a `_2` role is an unregistered role: it draws the ad-hoc nudge, the strict tier rejects it, and it binds nothing.
+- The parts registry: the registered/ad-hoc/`x/` tiers, the authoring nudge on an unfamiliar part, and the strict publish tier's rejection of one. A part is any identifier the env and the model agree on exactly; `adapt.PARTS` shrinks to the seven suggested spellings.
+- `rlmesh.adapters.embodiments` (`EmbodimentProfile`, `GO2`, `G1_29DOF`, `FRANKA_PANDA`, `UR5E`), the `unknown_labels` advisory, and the `require_labels` publish tier (`adapters_spec_normalize(require_labels=)`, `--require-labels`). Labels are the env's own joint names written from its configuration; nothing checks them against a catalog of robots.
+- Label subsets and partial action control, with `axis_fill`: a model that named fewer labels than the env no longer selects an observation subset or drives part of an `optional` actuator. `Actuator.fill` is a single number again, and a spec carrying `axis_fill` is rejected as an unrecognized field.
+
+### Changed
+
+- `labels=` aligns two sides by name only when they name the same set: a different order resolves to a permutation (`explain()` prints `perm[...]`; `select[...]` is gone), and a label either side lacks is a `LabelMismatch` naming the labels and the side missing them, also on an `optional` model part (optional means the leaf may be absent, not that its axes may disagree). A whole-leaf `StateTag` with a repeated label is refused at join, as a `Field` or `Actuator` already was. Per-axis `scale`/`offset` (`axis_scale`/`axis_offset`) are unchanged.
+- The `vla_adapters` example's X-VLA spec is a single-arm spec: it pads the state to the checkpoint's 20 dims and no longer claims to serve a bimanual env unchanged.
+
 ## [0.1.0-rc.15] - 2026-09-23
 
 RLMesh connects models to environments across process, dependency, and machine boundaries with a Gymnasium-style API. This release seals the `2026.06` behavioral contract and commits to retaining `rlmesh-wire-v1`. Declare the edition a model or environment was authored against to keep its behavior across package upgrades. The runtime selects a shared edition and refuses interactions a peer cannot express; see the compatibility policy for the contract and its current test coverage.

@@ -86,16 +86,6 @@ pub struct Actuator {
     /// (must stay 0.0; `reject` enforces this). Omitted when 0.0.
     #[serde(default, skip_serializing_if = "is_default_fill")]
     pub fill: f64,
-    /// The per-axis form of `fill` on an `optional`, labeled env actuator:
-    /// one value per label, taken by every axis a model's label subset leaves
-    /// uncovered, and by the whole actuator when no model output drives it.
-    /// Omitted when unset.
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "crate::spec::num::de_opt_numbers"
-    )]
-    pub axis_fill: Option<Vec<f64>>,
     /// On a *roled* actuator: the role is optional. If no model output declares
     /// it, the resolver fills the actuator's `dim` dims with `fill` instead of
     /// failing resolution -- the action-side mirror of a model input's `optional`
@@ -124,8 +114,8 @@ pub struct Actuator {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub part: Option<String>,
     /// The axis names this actuator drives, `dim` of them in this side's own
-    /// order. When both sides carry them the model's output is scattered onto
-    /// the env's axes by name. Omitted when unset; an opaque actuator may not
+    /// order. When both sides carry them they must name the same set, and the
+    /// model's output is permuted onto the env's axes by name. Omitted when unset; an opaque actuator may not
     /// carry them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub labels: Option<Vec<String>>,
@@ -199,11 +189,6 @@ impl TryFrom<ActionWire> for Action {
                     component.offset.is_some(),
                     component.axis_offset.as_deref(),
                 ),
-                (
-                    "fill",
-                    component.fill != 0.0,
-                    component.axis_fill.as_deref(),
-                ),
             ] {
                 if scalar && axis.is_some() {
                     return Err(format!(
@@ -247,24 +232,6 @@ impl TryFrom<ActionWire> for Action {
                              its values from the model"
                         ));
                     }
-                    // A per-axis fill names the axes it fills, so it needs the
-                    // labels, and it only ever fires on an optional actuator.
-                    if let Some(axis_fill) = &component.axis_fill {
-                        if !component.optional || component.labels.is_none() {
-                            return Err(format!(
-                                "actuator {role:?}: axis_fill applies only to an optional, \
-                                 labeled actuator (set optional=true and labels=)"
-                            ));
-                        }
-                        if axis_fill.len() != component.dim as usize {
-                            return Err(format!(
-                                "actuator {role:?}: axis_fill has {} values but dim is {}; \
-                                 one fill per axis",
-                                axis_fill.len(),
-                                component.dim
-                            ));
-                        }
-                    }
                 }
                 // A role-less (opaque) actuator emits a constant, so the
                 // model-mapping fields are meaningless -- it carries only dim and
@@ -276,7 +243,6 @@ impl TryFrom<ActionWire> for Action {
                         || component.offset.is_some()
                         || component.axis_scale.is_some()
                         || component.axis_offset.is_some()
-                        || component.axis_fill.is_some()
                         || component.invert
                         || component.threshold.is_some()
                         || component.binary
@@ -289,8 +255,7 @@ impl TryFrom<ActionWire> for Action {
                     {
                         return Err("a role-less (opaque) actuator carries only dim and \
                              fill; drop encoding/range/scale/offset/axis_scale/axis_offset/\
-                             axis_fill/invert/threshold/binary/clip/optional/frame/reference/\
-                             part/labels (an opaque actuator is already always filled)"
+                             invert/threshold/binary/clip/optional/frame/reference/part/labels (an opaque actuator is already always filled)"
                             .to_owned());
                     }
                 }
@@ -530,22 +495,6 @@ mod opaque_actuator_contract {
                 "both offset and axis_offset",
             ),
             (
-                r#"{"components": [{"role": "a", "dim": 1, "optional": true, "fill": 0.5, "labels": ["x"], "axis_fill": [1.0]}]}"#,
-                "both fill and axis_fill",
-            ),
-            (
-                r#"{"components": [{"role": "a", "dim": 1, "labels": ["x"], "axis_fill": [1.0]}]}"#,
-                "optional, labeled",
-            ),
-            (
-                r#"{"components": [{"role": "a", "dim": 1, "optional": true, "axis_fill": [1.0]}]}"#,
-                "optional, labeled",
-            ),
-            (
-                r#"{"components": [{"role": "a", "dim": 2, "optional": true, "labels": ["x", "y"], "axis_fill": [1.0]}]}"#,
-                "one fill per axis",
-            ),
-            (
                 r#"{"components": [{"dim": 1, "offset": 1.0}]}"#,
                 "role-less",
             ),
@@ -553,11 +502,6 @@ mod opaque_actuator_contract {
             let err = serde_json::from_str::<Action>(doc).unwrap_err();
             assert!(err.to_string().contains(expect), "{doc}: {err}");
         }
-        let ok: Action = serde_json::from_str(
-            r#"{"components": [{"role": "a", "dim": 2, "optional": true, "labels": ["x", "y"], "axis_fill": [0.0, 0.8]}]}"#,
-        )
-        .expect("an optional labeled actuator takes a per-axis fill");
-        assert_eq!(ok.components[0].axis_fill, Some(vec![0.0, 0.8]));
     }
 
     #[test]

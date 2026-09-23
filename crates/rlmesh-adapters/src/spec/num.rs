@@ -185,7 +185,7 @@ pub(crate) fn de_opt_number<'de, D: Deserializer<'de>>(
 }
 
 /// Deserialize an optional list of numbers (`Option<Vec<f64>>`): the per-axis
-/// `axis_scale` / `axis_offset` / `axis_fill` vectors. Each element goes
+/// `axis_scale` / `axis_offset` vectors. Each element goes
 /// through [`Number`] so a wrong-typed entry reads `a number`; the list's
 /// length is checked against the leaf's resolved width by the resolver, not
 /// here (a `ConcatPart` learns its width only at resolve).

@@ -5,14 +5,12 @@ X-VLA wants 256x256 images, rot6d proprio in a 20-dim state, and it emits a
 action rotations use ``rot6d_rowmajor``, the row-major flattening of the
 matrix's first two columns (``m[:, :2].reshape(6)``) that this checkpoint was
 trained on, distinct from the standard column-concatenated ``rot6d``. The
-20-dim layout is a unified single/bimanual convention: dims 1-10 are the first
-arm, dims 11-20 the second. Rather than hardcoding dims 11-20 as zero padding
-(which would bake in a single-arm assumption), the spec declares their real
-meaning -- second-arm components, ``optional`` on the state side -- and the
-resolver derives the per-env behavior: against a single-arm env the
-second-arm proprio resolves to zero fill and the second-arm action dims are
-dropped; against a bimanual env declaring the ``_2`` roles, the same spec
-consumes and emits them for real.
+checkpoint's 20-dim layout is a unified single/bimanual convention: dims 1-10
+are the first arm, dims 11-20 the second. This example pairs with single-arm
+envs only, so the spec declares the first arm and pads the state to 20
+(``pad_to``); a bimanual pairing is a different spec that names both arms
+(``part=adapt.LEFT_ARM`` / ``part=adapt.RIGHT_ARM``) against an env that
+publishes them under the same parts.
 """
 
 from __future__ import annotations
@@ -30,9 +28,6 @@ SPEC = adapt.ModelSpec(
             adapt.State(adapt.EEF_POS, dim=3),
             adapt.State(adapt.EEF_ROT, encoding="rot6d_rowmajor"),
             adapt.State(adapt.GRIPPER_POS, dim=1),
-            adapt.State(adapt.EEF_POS_2, dim=3, optional=True),
-            adapt.State(adapt.EEF_ROT_2, encoding="rot6d_rowmajor", optional=True),
-            adapt.State(adapt.GRIPPER_POS_2, dim=1, optional=True),
             pad_to=20,
             container="list",
         ),
@@ -42,9 +37,6 @@ SPEC = adapt.ModelSpec(
         adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
         adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=6, encoding="rot6d_rowmajor"),
         adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
-        adapt.Actuator(adapt.ACTION_DELTA_POS_2, dim=3),
-        adapt.Actuator(adapt.ACTION_DELTA_ROT_2, dim=6, encoding="rot6d_rowmajor"),
-        adapt.Actuator(adapt.ACTION_GRIPPER_2, dim=1, range=(-1.0, 1.0)),
     ),
 )
 

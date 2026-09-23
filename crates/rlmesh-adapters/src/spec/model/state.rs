@@ -120,9 +120,9 @@ pub struct ConcatPart {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub part: Option<String>,
     /// The axis names this part reads, in the order the checkpoint was
-    /// trained on. Fixes `dim` (their count); gathered from the env leaf's
-    /// labels by name, so a differing order is a permutation and a subset a
-    /// selection. Omitted when unset; a constant part may not carry them.
+    /// trained on. Fixes `dim` (their count); must name the same set as the
+    /// env leaf's labels, and a differing order is a permutation. Omitted when
+    /// unset; a constant part may not carry them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub labels: Option<Vec<String>>,
     /// Unrecognized additive fields, retained for round-trip and surfaced to the
@@ -243,8 +243,8 @@ impl TryFrom<ConcatPartWire> for ConcatPart {
             // one element, which the labels would then contradict.
             if wire.index.is_some() {
                 return Err(format!(
-                    "{locus}: sets both labels and index; labels name every axis the part \
-                     reads, so select one by naming just that label"
+                    "{locus}: sets both labels and index; labels name every axis of the \
+                     leaf, so drop one of them"
                 ));
             }
             if let Some(dim) = wire.dim

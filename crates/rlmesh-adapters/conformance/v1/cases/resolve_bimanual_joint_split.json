@@ -12,6 +12,7 @@
           "binary": false,
           "dim": 6,
           "encoding": null,
+          "part": "left_arm",
           "range": null,
           "role": "action/joint_pos"
         },
@@ -19,6 +20,7 @@
           "binary": false,
           "dim": 1,
           "encoding": null,
+          "part": "left_arm",
           "range": null,
           "role": "action/gripper"
         },
@@ -26,15 +28,17 @@
           "binary": false,
           "dim": 6,
           "encoding": null,
+          "part": "right_arm",
           "range": null,
-          "role": "action/joint_pos_2"
+          "role": "action/joint_pos"
         },
         {
           "binary": false,
           "dim": 1,
           "encoding": null,
+          "part": "right_arm",
           "range": null,
-          "role": "action/gripper_2"
+          "role": "action/gripper"
         }
       ]
     },
@@ -47,20 +51,22 @@
       },
       "wrist_left": {
         "layout": "hwc",
+        "part": "left_arm",
         "role": "image/wrist",
         "type": "image",
         "upside_down": false
       },
       "wrist_right": {
         "layout": "hwc",
-        "role": "image/wrist_2",
+        "part": "right_arm",
+        "role": "image/wrist",
         "type": "image",
         "upside_down": false
       }
     }
   },
   "expect": {
-    "describe": "observation:\n  \"image\" <- image \"head\" (uint8)\n  \"wrist\" <- image \"wrist_left\" (uint8)\n  \"wrist_2\" <- image \"wrist_right\" (uint8)\naction:\n  \"action/joint_pos\" <- model[0:6]\n  \"action/gripper\" <- model[12:13]\n  \"action/joint_pos_2\" <- model[6:12]\n  \"action/gripper_2\" <- model[13:14]",
+    "describe": "observation:\n  \"image\" <- image \"head\" (uint8)\n  \"wrist\" <- image \"wrist_left\"#left_arm (uint8)\n  \"wrist_2\" <- image \"wrist_right\"#right_arm (uint8)\naction:\n  \"action/joint_pos\" <- model[0:6]#left_arm\n  \"action/gripper\" <- model[12:13]#left_arm\n  \"action/joint_pos\" <- model[6:12]#right_arm\n  \"action/gripper\" <- model[13:14]#right_arm",
     "ok": true
   },
   "kind": "resolve",
@@ -84,6 +90,7 @@
         "layout": "hwc",
         "lead_dims": 0,
         "normalize": false,
+        "part": "left_arm",
         "resample": "bilinear",
         "role": "image/wrist",
         "type": "image",
@@ -96,8 +103,9 @@
         "layout": "hwc",
         "lead_dims": 0,
         "normalize": false,
+        "part": "right_arm",
         "resample": "bilinear",
-        "role": "image/wrist_2",
+        "role": "image/wrist",
         "type": "image",
         "upside_down": false,
         "width": null
@@ -110,6 +118,7 @@
           "binary": false,
           "dim": 6,
           "encoding": null,
+          "part": "left_arm",
           "range": null,
           "role": "action/joint_pos"
         },
@@ -117,13 +126,15 @@
           "binary": false,
           "dim": 6,
           "encoding": null,
+          "part": "right_arm",
           "range": null,
-          "role": "action/joint_pos_2"
+          "role": "action/joint_pos"
         },
         {
           "binary": false,
           "dim": 1,
           "encoding": null,
+          "part": "left_arm",
           "range": null,
           "role": "action/gripper"
         },
@@ -131,8 +142,9 @@
           "binary": false,
           "dim": 1,
           "encoding": null,
+          "part": "right_arm",
           "range": null,
-          "role": "action/gripper_2"
+          "role": "action/gripper"
         }
       ]
     }

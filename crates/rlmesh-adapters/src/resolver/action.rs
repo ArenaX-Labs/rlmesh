@@ -2,8 +2,8 @@
 
 use std::collections::BTreeMap;
 
-use super::state::{check_axis_width, part_suffix, positions};
-use super::{Indexed, LeafKey, Result, bind, check_geometry, err, index_by_key};
+use super::state::{check_axis_width, label_permutation, part_suffix};
+use super::{LeafKey, Result, bind, check_geometry, err, index_by_key};
 use crate::advisory::Advisory;
 use crate::error::ErrorCode;
 use crate::fmt::{quoted, quoted_encoding, quoted_leaf_keys};
@@ -28,17 +28,10 @@ fn check_role_dim_law(role: &str, dim: u32) -> Result<()> {
     Ok(())
 }
 
-/// The scatter a model label tuple implies against an env actuator: `None`
-/// when either side names none or the orders agree; `Some` per env axis with
-/// the model index that drives it, or `None` for an axis a model subset
-/// leaves to the env's fill. The subset case needs the env actuator
-/// `optional`, since the env then commands those axes itself.
-fn label_scatter(
-    role: &str,
-    env: &Actuator,
-    model: &Actuator,
-    advisories: &mut Vec<Advisory>,
-) -> Result<Option<Vec<Option<u32>>>> {
+/// The scatter a model label tuple implies against an env actuator: per env
+/// axis, the model index that drives it. `None` when the model names no
+/// labels or the orders agree. The two tuples must name the same set.
+fn label_scatter(role: &str, env: &Actuator, model: &Actuator) -> Result<Option<Vec<u32>>> {
     let Some(model_labels) = &model.labels else {
         return Ok(None);
     };
@@ -53,75 +46,23 @@ fn label_scatter(
             ),
         ));
     };
-    if let Err(missing) = positions(model_labels, env_labels) {
-        return Err(err(
+    label_permutation(env_labels, model_labels).map_err(|diff| {
+        err(
             ErrorCode::LabelMismatch,
             format!(
-                "action role {}: the model names labels {:?} that the env actuator lacks; \
-                 the env declares {:?}",
+                "action role {}: the model names labels {:?} but {}; the two must name the \
+                 same set",
                 quoted(role),
-                missing,
-                env_labels
+                model_labels,
+                diff.describe("env actuator", "model"),
             ),
-        ));
-    }
-    let scatter: Vec<Option<u32>> = env_labels
-        .iter()
-        .map(|label| {
-            model_labels
-                .iter()
-                .position(|have| have == label)
-                .map(|index| index as u32)
-        })
-        .collect();
-    let uncovered: Vec<&str> = env_labels
-        .iter()
-        .zip(&scatter)
-        .filter(|(_, slot)| slot.is_none())
-        .map(|(label, _)| label.as_str())
-        .collect();
-    if !uncovered.is_empty() {
-        if !env.optional {
-            return Err(err(
-                ErrorCode::LabelMismatch,
-                format!(
-                    "action role {}: the model drives {} of the env actuator's {} labels and \
-                     leaves {:?} undriven; mark the env actuator optional (with a fill) to \
-                     hold them, or output every label",
-                    quoted(role),
-                    model_labels.len(),
-                    env_labels.len(),
-                    uncovered
-                ),
-            ));
-        }
-        advisories.push(Advisory::info(format!(
-            "action role {}: the model drives {} of {} labels; {:?} take the env actuator's fill",
-            quoted(role),
-            model_labels.len(),
-            env_labels.len(),
-            uncovered
-        )));
-    }
-    let identity = scatter
-        .iter()
-        .enumerate()
-        .all(|(env_index, slot)| *slot == Some(env_index as u32));
-    Ok((!identity).then_some(scatter))
-}
-
-/// One fill per env axis: the declared `axis_fill`, else the scalar `fill`
-/// repeated across `dim`.
-fn axis_fill(env: &Actuator) -> Vec<f64> {
-    env.axis_fill
-        .clone()
-        .unwrap_or_else(|| vec![env.fill; env.dim as usize])
+        )
+    })
 }
 
 /// Validate that a model/env action component pairing is convertible. `role` is
-/// the matched (always present) role both sides share. A label subset
-/// (`subset`) legitimately narrows the model's width below the env's.
-fn check_action_dims(model: &Actuator, env: &Actuator, role: &str, subset: bool) -> Result<()> {
+/// the matched (always present) role both sides share.
+fn check_action_dims(model: &Actuator, env: &Actuator, role: &str) -> Result<()> {
     check_role_dim_law(role, model.dim)?;
     // A custom action encoding shadows to its `base` for the structural checks;
     // the host-side arm (`to_base`) is never imported or run here. Validate that
@@ -202,7 +143,7 @@ fn check_action_dims(model: &Actuator, env: &Actuator, role: &str, subset: bool)
             ),
         ));
     }
-    if model.dim != env.dim && !subset {
+    if model.dim != env.dim {
         return Err(err(
             ErrorCode::DimMismatch,
             format!(
@@ -230,7 +171,7 @@ type PlacedOutput<'a> = (
 /// planner (the env actuator seeks the output that drives it) and the state
 /// planner (an action-source part seeks the output it reads back).
 pub(super) struct ModelOutputs<'a> {
-    pub by_key: BTreeMap<LeafKey, Indexed<(u32, &'a Actuator)>>,
+    pub by_key: BTreeMap<LeafKey, (u32, &'a Actuator)>,
     pub in_dim: u32,
 }
 
@@ -305,7 +246,6 @@ pub(super) fn plan_action(
                 invert: false,
                 threshold: None,
                 scatter: None,
-                axis_fill: None,
                 labels: None,
                 model_labels: None,
                 binarize: false,
@@ -317,11 +257,7 @@ pub(super) fn plan_action(
             });
             continue;
         };
-        let env_key = {
-            let (role, part) =
-                crate::roles::registry::canonical(role, env_component.part.as_deref());
-            (role.to_owned(), part.map(str::to_owned), None)
-        };
+        let env_key: LeafKey = (role.clone(), env_component.part.clone(), None);
         if seen_env.insert(env_key.clone(), ()).is_some() {
             // Mirror the model-side dedup above (and the env-side StateLayout
             // role check): a role repeated in the env layout would resolve
@@ -379,8 +315,6 @@ pub(super) fn plan_action(
                     invert: false,
                     threshold: None,
                     scatter: None,
-                    // The whole-actuator fallback: every axis at its own fill.
-                    axis_fill: env_component.axis_fill.clone(),
                     labels: env_component.labels.clone(),
                     model_labels: None,
                     binarize: false,
@@ -403,11 +337,8 @@ pub(super) fn plan_action(
             ));
         };
         let (start, model_component) = *bound.feature;
-        let scatter = label_scatter(role, env_component, model_component, advisories)?;
-        let subset = scatter
-            .as_ref()
-            .is_some_and(|scatter| scatter.iter().any(Option::is_none));
-        check_action_dims(model_component, env_component, role, subset)?;
+        let scatter = label_scatter(role, env_component, model_component)?;
+        check_action_dims(model_component, env_component, role)?;
         // Each side's per-axis vector runs in that side's own label order, so
         // it must be exactly that side's width.
         let locus = format!("action role {}", quoted(role));
@@ -529,7 +460,6 @@ pub(super) fn plan_action(
             axis_offset: env_component.axis_offset.clone(),
             invert: env_component.invert,
             threshold: env_component.threshold,
-            axis_fill: subset.then(|| axis_fill(env_component)),
             scatter,
             labels: env_component.labels.clone(),
             // With no scatter the model writes the env's axes in the env's
@@ -580,7 +510,6 @@ mod tests {
             offset: None,
             axis_scale: None,
             axis_offset: None,
-            axis_fill: None,
             invert: false,
             threshold: None,
             clip: false,
@@ -605,7 +534,6 @@ mod tests {
             offset: None,
             axis_scale: None,
             axis_offset: None,
-            axis_fill: None,
             invert: false,
             threshold: None,
             clip: false,

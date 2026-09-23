@@ -1,0 +1,111 @@
+{
+  "action_space": {
+    "dtype": "float32",
+    "kind": "box",
+    "shape": [3]
+  },
+  "doc": "A three-cycle whose inverse differs, with a model-side per-axis scale that differs per axis: the gather reorders the env's (waist, shoulder, elbow) into the model's (shoulder, elbow, waist) before the model's scale applies, and the action scale applies in model order before the scatter back. An implementation that inverts either permutation, or applies the vectors in env order, fails here.",
+  "env_tags": {
+    "action": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "labels": ["waist", "shoulder", "elbow"],
+          "range": null,
+          "role": "action/joint_pos"
+        }
+      ]
+    },
+    "observation": {
+      "q": {
+        "encoding": null,
+        "labels": ["waist", "shoulder", "elbow"],
+        "range": null,
+        "role": "proprio/joint_pos",
+        "type": "state"
+      }
+    }
+  },
+  "expect": {
+    "action": {
+      "data": [100.0, 1.0, 10.0],
+      "dtype": "float32",
+      "kind": "array",
+      "shape": [3]
+    },
+    "atol": 1e-6,
+    "payload": {
+      "data": {
+        "state": {
+          "data": [2.0, 30.0, 100.0],
+          "dtype": "float32",
+          "kind": "array",
+          "shape": [3]
+        }
+      },
+      "kind": "map"
+    }
+  },
+  "kind": "apply",
+  "model_output": {
+    "data": [1.0, 1.0, 1.0],
+    "dtype": "float32",
+    "kind": "array",
+    "shape": [3]
+  },
+  "model_spec": {
+    "input": {
+      "state": {
+        "components": [
+          {
+            "axis_scale": [1.0, 10.0, 100.0],
+            "labels": ["shoulder", "elbow", "waist"],
+            "role": "proprio/joint_pos"
+          }
+        ],
+        "dtype": "float32",
+        "type": "state"
+      }
+    },
+    "output": {
+      "clip": null,
+      "components": [
+        {
+          "axis_scale": [1.0, 10.0, 100.0],
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "labels": ["shoulder", "elbow", "waist"],
+          "range": null,
+          "role": "action/joint_pos"
+        }
+      ]
+    }
+  },
+  "observation": {
+    "data": {
+      "q": {
+        "data": [1.0, 2.0, 3.0],
+        "dtype": "float32",
+        "kind": "array",
+        "shape": [3]
+      }
+    },
+    "kind": "map"
+  },
+  "observation_space": {
+    "children": [
+      {
+        "dtype": "float32",
+        "kind": "box",
+        "shape": [3]
+      }
+    ],
+    "dtype": "unspecified",
+    "keys": ["q"],
+    "kind": "dict"
+  }
+}

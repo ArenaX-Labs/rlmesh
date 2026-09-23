@@ -394,7 +394,7 @@ mod tests {
         // first.
         let requests = render_requests(&spec(
             r#"{
-                "zzz": {"type": "image", "role": "image/wrist_2", "render": [240, 320]},
+                "zzz": {"type": "image", "role": "image/secondary", "render": [240, 320]},
                 "obs": [
                     {"type": "image", "role": "image/primary", "render": 448},
                     {"type": "image", "role": "image/wrist"},
@@ -408,7 +408,7 @@ mod tests {
             vec![
                 ("image/primary".to_owned(), (448, 448)),
                 ("image/wrist".to_owned(), (480, 480)),
-                ("image/wrist_2".to_owned(), (240, 320)),
+                ("image/secondary".to_owned(), (240, 320)),
             ]
         );
         // Stable: the same spec always walks the same way.
@@ -416,7 +416,7 @@ mod tests {
             requests,
             render_requests(&spec(
                 r#"{
-                "zzz": {"type": "image", "role": "image/wrist_2", "render": [240, 320]},
+                "zzz": {"type": "image", "role": "image/secondary", "render": [240, 320]},
                 "obs": [
                     {"type": "image", "role": "image/primary", "render": 448},
                     {"type": "image", "role": "image/wrist"},

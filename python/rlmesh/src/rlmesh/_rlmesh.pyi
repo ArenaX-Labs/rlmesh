@@ -10,19 +10,12 @@ __all__ = [
     "ProtocolException",
     "EnvironmentException",
     "ACTION_DELTA_POS",
-    "ACTION_DELTA_POS_2",
     "ACTION_DELTA_ROT",
-    "ACTION_DELTA_ROT_2",
     "ACTION_EEF_POS",
-    "ACTION_EEF_POS_2",
     "ACTION_EEF_ROT",
-    "ACTION_EEF_ROT_2",
     "ACTION_GRIPPER",
-    "ACTION_GRIPPER_2",
     "ACTION_JOINT_POS",
-    "ACTION_JOINT_POS_2",
     "ACTION_JOINT_VEL",
-    "ARM_2",
     "AdapterPlan",
     "Advisory",
     "BASE",
@@ -35,23 +28,18 @@ __all__ = [
     "DESCRIBE_METADATA_KEY",
     "DESCRIBE_SCHEMA_VERSION",
     "EEF_POS",
-    "EEF_POS_2",
     "EEF_ROT",
-    "EEF_ROT_2",
     "EEF_WRENCH",
-    "EMBODIMENTS",
     "ENV_BRANCH_METADATA_KEY",
     "ENV_METADATA_KEY",
     "ENV_RESET_OPTIONS_KEY",
     "EnvContract",
     "GRIPPER_POS",
-    "GRIPPER_POS_2",
     "HEAD",
     "IMAGE_LAYOUTS",
     "IMAGE_PRIMARY",
     "IMAGE_SECONDARY",
     "IMAGE_WRIST",
-    "IMAGE_WRIST_2",
     "INSTRUCTION",
     "JOINT_POS",
     "JOINT_VEL",
@@ -103,19 +91,12 @@ __all__ = [
 PrimitiveValue: TypeAlias = None | bool | int | float | str | bytes
 Value: TypeAlias = PrimitiveValue | Tensor | list["Value"] | tuple["Value", ...] | dict[str, "Value"]
 ACTION_DELTA_POS: builtins.str
-ACTION_DELTA_POS_2: builtins.str
 ACTION_DELTA_ROT: builtins.str
-ACTION_DELTA_ROT_2: builtins.str
 ACTION_EEF_POS: builtins.str
-ACTION_EEF_POS_2: builtins.str
 ACTION_EEF_ROT: builtins.str
-ACTION_EEF_ROT_2: builtins.str
 ACTION_GRIPPER: builtins.str
-ACTION_GRIPPER_2: builtins.str
 ACTION_JOINT_POS: builtins.str
-ACTION_JOINT_POS_2: builtins.str
 ACTION_JOINT_VEL: builtins.str
-ARM_2: builtins.str
 BASE: builtins.str
 BASE_ANG_VEL: builtins.str
 BASE_ROT: builtins.str
@@ -125,22 +106,17 @@ CROP_MODES: builtins.list[builtins.str]
 DESCRIBE_METADATA_KEY: builtins.str
 DESCRIBE_SCHEMA_VERSION: builtins.int
 EEF_POS: builtins.str
-EEF_POS_2: builtins.str
 EEF_ROT: builtins.str
-EEF_ROT_2: builtins.str
 EEF_WRENCH: builtins.str
-EMBODIMENTS: builtins.list[tuple[builtins.str, builtins.list[builtins.str], builtins.list[builtins.str]]]
 ENV_BRANCH_METADATA_KEY: builtins.str
 ENV_METADATA_KEY: builtins.str
 ENV_RESET_OPTIONS_KEY: builtins.str
 GRIPPER_POS: builtins.str
-GRIPPER_POS_2: builtins.str
 HEAD: builtins.str
 IMAGE_LAYOUTS: builtins.list[builtins.str]
 IMAGE_PRIMARY: builtins.str
 IMAGE_SECONDARY: builtins.str
 IMAGE_WRIST: builtins.str
-IMAGE_WRIST_2: builtins.str
 INSTRUCTION: builtins.str
 JOINT_POS: builtins.str
 JOINT_VEL: builtins.str
@@ -689,7 +665,7 @@ def adapters_join_check(env_tags_json: str, observation_space: object, action_sp
 
 def adapters_resolve(env_tags_json: str, observation_space: object, action_space: object, model_spec_json: str) -> AdapterPlan: ...
 
-def adapters_spec_normalize(side: str, spec_json: str, allow_custom: bool, role_policy: str = 'passthrough', require_frames: bool = False, require_labels: bool = False) -> str: ...
+def adapters_spec_normalize(side: str, spec_json: str, allow_custom: bool, role_policy: str = 'passthrough', require_frames: bool = False) -> str: ...
 
 def box_space_spec(low: int | float, high: int | float, shape: list[int], dtype: str | None = None) -> SpaceSpec: ...
 

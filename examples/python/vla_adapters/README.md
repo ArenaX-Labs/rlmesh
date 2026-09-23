@@ -15,7 +15,7 @@ vla_adapters/
 │   ├── act.py            # ACT-style chunking: stateful custom adapter (AdapterBase)
 │   ├── geovla.py         # GeoVLA's input payload + action layout
 │   ├── smolvla.py        # SmolVLA's input payload + action layout
-│   └── xvla.py           # X-VLA: rot6d proprio, 20-dim single/bimanual EE6D action
+│   └── xvla.py           # X-VLA: rot6d proprio, 20-dim padded state, EE6D action
 └── envs/
     ├── __init__.py       # ENVS registry (one line per environment)
     ├── libero.py         # two cameras, xyzw quat, one obs key per quantity
@@ -42,10 +42,10 @@ uv run python -m vla_adapters.eval --model xvla --env simpler-bridge  # a single
 Each run starts by printing `adapter.explain()` — the exact transformations the resolver chose for that pairing, e.g. for `xvla` on `libero`:
 
 - `agentview_image`/`robot0_eye_in_hand_image` are resized to 256x256,
-- `robot0_eef_quat` is converted `quat_xyzw -> rot6d_rowmajor`, and the second-arm proprio components resolve to zero fill because this env declares no `_2` roles (the spec marks them `optional`),
-- the 20-dim EE6D action is sliced, `rot6d_rowmajor -> axis_angle` converted, and the second-arm dims are dropped because the env does not consume them.
+- `robot0_eef_quat` is converted `quat_xyzw -> rot6d_rowmajor` and the state is padded to the checkpoint's 20 dims,
+- the 10-dim EE6D action is `rot6d_rowmajor -> axis_angle` converted.
 
-X-VLA's spec never hardcodes zero padding for dims 11-20: it declares them as second-arm components, and the padding/dropping above is _derived_ from the env at resolve time. A bimanual env declaring the `_2` roles would consume those same dims for real, with no model change.
+X-VLA's checkpoint layout is a unified single/bimanual convention (dims 11-20 are a second arm). This example is a single-arm spec; a bimanual pairing names both arms with `part=` on the model and the env.
 
 Against a live endpoint, pass `--address`. Serve the env with its tags published (`rlmesh.EnvServer(env, tags=TAGS)`); the harness then resolves the adapter straight from the handshake — for a plain pairing it just hands `Model(spec=...)` the env and the adapter is built from the contract:
 

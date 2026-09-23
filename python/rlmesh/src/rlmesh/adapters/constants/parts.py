@@ -1,20 +1,16 @@
-"""The parts vocabulary: the physical places a role can repeat at.
+"""Suggested spellings for ``part``: the place on the body a role repeats at.
 
 A ``part`` is an identity key on a leaf (``StateTag``, ``ImageTag``, ``Field``,
-``Actuator``, ``Image``, ``State``), not a per-robot name: ``LEFT_ARM`` is
-where a second ``EEF_POS`` lives, never "the Franka". Like roles, parts are an
-open vocabulary matched verbatim; the constants below are the registered ones,
-grown the way roles are (when a real env and model pair needs the slot). Any
-other part draws an authoring nudge and the managed strict tier rejects it,
-unless written under the ``x/`` escape prefix. ``ARM_2`` is the part the legacy
-``_2`` roles spell (``EEF_POS_2`` is ``EEF_POS`` under ``part=ARM_2``).
+``Actuator``, ``Image``, ``State``): any identifier both sides agree on, matched
+verbatim. Two arms are ``EEF_POS`` under ``part=LEFT_ARM`` and under
+``part=RIGHT_ARM``. The constants below are conventions, not a registry: a part
+outside them resolves the same way and draws no advisory.
 
 Values are defined once, in the ``rlmesh-adapters`` crate (``roles/parts.rs``);
 this module re-exports them through the native bindings.
 """
 
 from ..._rlmesh import (
-    ARM_2,
     BASE,
     HEAD,
     LEFT_ARM,
@@ -26,7 +22,6 @@ from ..._rlmesh import (
 )
 
 __all__ = [
-    "ARM_2",
     "BASE",
     "HEAD",
     "LEFT_ARM",

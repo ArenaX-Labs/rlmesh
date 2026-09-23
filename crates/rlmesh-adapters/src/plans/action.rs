@@ -30,14 +30,9 @@ pub struct ActionSegment {
     pub axis_offset: Option<Vec<f64>>,
     pub invert: bool,
     pub threshold: Option<f64>,
-    /// Per env axis, the model-slice index that drives it, or `None` for an
-    /// axis the model's label subset leaves uncovered (filled from
-    /// `axis_fill`). `None` overall when the model's order is the env's.
-    pub scatter: Option<Vec<Option<u32>>>,
-    /// One fill per env axis: the env's `axis_fill`, or its scalar `fill`
-    /// repeated. Read for uncovered scatter slots and for a whole-actuator
-    /// fallback segment.
-    pub axis_fill: Option<Vec<f64>>,
+    /// Per env axis, the model-slice index that drives it: a permutation.
+    /// `None` when the model's order is the env's.
+    pub scatter: Option<Vec<u32>>,
     /// The env actuator's labels and the model output's, for `describe`.
     pub labels: Option<Vec<String>>,
     pub model_labels: Option<Vec<String>>,

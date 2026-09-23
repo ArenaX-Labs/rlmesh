@@ -40,7 +40,6 @@
           "binary": false,
           "labels": ["FR_hip_joint", "FR_thigh_joint"],
           "optional": true,
-          "axis_fill": [0.0, 0.8],
           "axis_scale": [0.125, 0.25],
           "offset": 0.5
         }

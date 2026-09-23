@@ -120,7 +120,8 @@
           {
             "dim": 3,
             "optional": true,
-            "role": "proprio/eef_pos_2"
+            "part": "right_arm",
+            "role": "proprio/eef_pos"
           }
         ],
         "dtype": "float32",

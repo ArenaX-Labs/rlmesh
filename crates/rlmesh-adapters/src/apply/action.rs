@@ -61,12 +61,9 @@ pub fn transform_action(plan: &ActionPlan, raw_action: &Value) -> Result<Tensor,
     for segment in &plan.segments {
         if let Some((width, value)) = segment.fill {
             // Opaque (role-less) actuator, or an optional role no model output
-            // drives: emit the constant for each dim (per axis when the env
-            // declared `axis_fill`) and read nothing from the model.
-            match &segment.axis_fill {
-                Some(axis) => pieces.extend(axis.iter().map(|value| *value as f32)),
-                None => pieces.extend(std::iter::repeat_n(value as f32, width as usize)),
-            }
+            // drives: emit the constant for each dim and read nothing from the
+            // model.
+            pieces.extend(std::iter::repeat_n(value as f32, width as usize));
             continue;
         }
         let mut piece: Vec<f32> = action[segment.start as usize..segment.stop as usize].to_vec();
@@ -94,7 +91,7 @@ pub fn transform_action(plan: &ActionPlan, raw_action: &Value) -> Result<Tensor,
         if let Some(scatter) = &segment.scatter {
             piece = scatter
                 .iter()
-                .map(|slot| slot.map_or(0.0, |model_index| piece[model_index as usize]))
+                .map(|&model_index| piece[model_index as usize])
                 .collect();
         }
         apply_scalar_corrections(
@@ -123,15 +120,6 @@ pub fn transform_action(plan: &ActionPlan, raw_action: &Value) -> Result<Tensor,
             let (low, high) = (low as f32, high as f32);
             for entry in &mut piece {
                 *entry = entry.clamp(low, high);
-            }
-        }
-        // Undriven subset axes hold their fill as a final value, exactly as the
-        // whole-actuator fallback does: no env corrections, snap or clamp.
-        if let (Some(scatter), Some(fill)) = (&segment.scatter, &segment.axis_fill) {
-            for ((entry, slot), fill) in piece.iter_mut().zip(scatter).zip(fill) {
-                if slot.is_none() {
-                    *entry = *fill as f32;
-                }
             }
         }
         pieces.extend(piece);
@@ -183,7 +171,6 @@ mod tests {
                 invert,
                 threshold,
                 scatter: None,
-                axis_fill: None,
                 labels: None,
                 model_labels: None,
                 binarize,
@@ -225,7 +212,6 @@ mod tests {
                     invert: false,
                     threshold: None,
                     scatter: None,
-                    axis_fill: None,
                     labels: None,
                     model_labels: None,
                     binarize: false,
@@ -256,7 +242,6 @@ mod tests {
                     invert: false,
                     threshold: None,
                     scatter: None,
-                    axis_fill: None,
                     labels: None,
                     model_labels: None,
                     binarize: false,
@@ -307,7 +292,6 @@ mod tests {
                     invert: false,
                     threshold: None,
                     scatter: None,
-                    axis_fill: None,
                     labels: None,
                     model_labels: None,
                     binarize: false,
@@ -338,7 +322,6 @@ mod tests {
                     invert: false,
                     threshold: None,
                     scatter: None,
-                    axis_fill: None,
                     labels: None,
                     model_labels: None,
                     binarize: false,
@@ -383,7 +366,6 @@ mod tests {
                 invert: true,
                 threshold: None,
                 scatter: None,
-                axis_fill: None,
                 labels: None,
                 model_labels: None,
                 binarize: false,
@@ -442,28 +424,24 @@ mod tests {
     }
 
     #[test]
-    fn undriven_subset_axes_hold_their_fill_like_the_whole_fallback() {
-        // Env joints [a, b], fill [10, 20], env scale 2 offset 3; the model
-        // drives only `a`.
-        let mut subset = one_segment(Some(2.0), false, None, false);
-        let segment = &mut subset.segments[0];
-        segment.offset = Some(3.0);
-        segment.scatter = Some(vec![Some(0), None]);
-        segment.axis_fill = Some(vec![10.0, 20.0]);
+    fn a_scatter_permutes_the_model_piece_between_the_two_sides_corrections() {
+        // Model [a, b, c] with model scale 2; env axis e reads model[scatter[e]],
+        // then env offset 1.
+        let mut plan = one_segment(None, false, None, false);
+        plan.in_dim = 3;
+        let segment = &mut plan.segments[0];
+        segment.stop = 3;
+        segment.model_scale = Some(2.0);
+        segment.offset = Some(1.0);
+        segment.scatter = Some(vec![2, 0, 1]);
+        let raw = Value::List(vec![
+            Value::Number(1.0),
+            Value::Number(2.0),
+            Value::Number(3.0),
+        ]);
         assert_eq!(
-            to_f32_vec(&transform_action(&subset, &Value::List(vec![Value::Number(1.0)])).unwrap()),
-            vec![5.0, 20.0]
-        );
-
-        let mut whole = one_segment(Some(2.0), false, None, false);
-        let segment = &mut whole.segments[0];
-        segment.offset = Some(3.0);
-        segment.fill = Some((2, 10.0));
-        segment.axis_fill = Some(vec![10.0, 20.0]);
-        whole.in_dim = 0;
-        assert_eq!(
-            to_f32_vec(&transform_action(&whole, &Value::List(vec![])).unwrap()),
-            vec![10.0, 20.0]
+            to_f32_vec(&transform_action(&plan, &raw).unwrap()),
+            vec![7.0, 3.0, 5.0]
         );
     }
 

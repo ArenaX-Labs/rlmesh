@@ -1,0 +1,75 @@
+{
+  "action_space": {
+    "dtype": "float32",
+    "kind": "box",
+    "shape": [3]
+  },
+  "env_tags": {
+    "action": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "labels": ["waist", "shoulder", "elbow"],
+          "range": null,
+          "role": "action/joint_pos"
+        }
+      ]
+    },
+    "observation": {
+      "q": {
+        "encoding": null,
+        "labels": ["waist", "shoulder", "elbow"],
+        "range": null,
+        "role": "proprio/joint_pos",
+        "type": "state"
+      }
+    }
+  },
+  "expect": {
+    "describe": "observation:\n  \"state\" <- concat(q perm[1,2,0])\naction:\n  \"action/joint_pos\" <- model[0:3] perm[2,0,1]",
+    "ok": true
+  },
+  "kind": "resolve",
+  "model_spec": {
+    "input": {
+      "state": {
+        "components": [
+          {
+            "labels": ["shoulder", "elbow", "waist"],
+            "role": "proprio/joint_pos"
+          }
+        ],
+        "dtype": "float32",
+        "type": "state"
+      }
+    },
+    "output": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "labels": ["shoulder", "elbow", "waist"],
+          "range": null,
+          "role": "action/joint_pos"
+        }
+      ]
+    }
+  },
+  "observation_space": {
+    "children": [
+      {
+        "dtype": "float32",
+        "kind": "box",
+        "shape": [3]
+      }
+    ],
+    "dtype": "unspecified",
+    "keys": ["q"],
+    "kind": "dict"
+  }
+}

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from typing import cast
 
 from ._codec import axis_or_scalar, check_labels
 from .custom_encoding import CustomEncoding
@@ -25,10 +26,6 @@ class Actuator:
         fill: Constant emitted for each dim of an opaque (role-less) actuator,
             and the fallback for an ``optional`` roled actuator. Defaults to
             ``0.0``; inert (must stay ``0.0``) on a roled, non-optional actuator.
-            On an ``optional`` env actuator that carries ``labels`` it may be a
-            sequence with one value per axis (serialized as ``axis_fill``): the
-            value each axis a model's label subset leaves undriven is held at,
-            and the whole-actuator fallback when no model output drives it.
         optional: On a roled actuator, make the role optional -- if no model
             output declares it, fill the actuator's ``dim`` dims with ``fill``
             instead of failing resolution (the action-side mirror of a model
@@ -74,23 +71,21 @@ class Actuator:
             ``frame`` says which axes it is expressed in. Declare both unless
             the controller fixes the frame.
         part: The body part this actuator drives, when the role repeats across
-            a body (``"left_arm"``, ``"right_arm"``, ...): an identity key the
-            resolver matches on, never a value it checks. Keyword-only and
-            omitted from the wire when unset; an opaque actuator may not carry
-            one.
+            a body (``LEFT_ARM``, ``RIGHT_ARM``, or any identifier both sides
+            agree on): an identity key the resolver matches on, never a value it
+            checks. Keyword-only and omitted from the wire when unset; an opaque
+            actuator may not carry one.
         labels: The axis names this actuator drives, ``dim`` of them in this
-            side's own order (``embodiments.GO2.joints``). When both sides carry
-            them the model's output is scattered onto the env's axes by name:
-            equal sets in another order are a permutation; a model that names a
-            strict subset drives those axes and, if the env actuator is
-            ``optional``, the rest take its ``fill``. Keyword-only and omitted
-            from the wire when unset; an opaque actuator may not carry them.
+            side's own order. When a model names labels the env actuator must
+            name the same set; the model's output is then reordered onto the
+            env's axes by name. Keyword-only and omitted from the wire when
+            unset; an opaque actuator may not carry them.
 
     ``scale``, ``offset``, ``invert``, and ``threshold`` declare a side's actuator
     convention. They can be set on either side and compose as literal transforms
     applied after the declared formats (rotation, range) are bridged -- model-side
     first (the model's own output convention, in the model's own axis order),
-    then the scatter by labels, then env-side -- each in the order scale, offset,
+    then the reorder by labels, then env-side -- each in the order scale, offset,
     invert, threshold, then ``binary``. So an env declares its quirk once for every
     model to inherit, and a model whose output differs from a shared env it cannot
     edit declares the bridge on its own actuator (e.g. a gripper-sign flip as
@@ -107,7 +102,7 @@ class Actuator:
     invert: bool = False
     threshold: float | None = None
     clip: bool = False
-    fill: float | Sequence[float] = 0.0
+    fill: float = 0.0
     optional: bool = False
     frame: Frame | None = field(default=None, kw_only=True)
     reference: Reference | None = field(default=None, kw_only=True)
@@ -120,7 +115,12 @@ class Actuator:
             raise ValueError(
                 f"Actuator {self.role!r}: dim must be >= 1, got {self.dim}"
             )
-        for name in ("scale", "offset", "fill"):
+        fill = cast("object", self.fill)
+        if isinstance(fill, bool) or not isinstance(fill, (int, float)):
+            raise ValueError(
+                f"Actuator {self.role!r}: fill must be a single number, got {fill!r}"
+            )
+        for name in ("scale", "offset"):
             object.__setattr__(
                 self,
                 name,
@@ -144,10 +144,9 @@ class Actuator:
                 or self.reference is not None
                 or self.part is not None
                 or self.labels is not None
-                or isinstance(self.fill, tuple)
             ):
                 raise ValueError(
-                    "a role-less (opaque) Actuator carries only dim and a scalar fill; "
+                    "a role-less (opaque) Actuator carries only dim and fill; "
                     "drop encoding/range/scale/offset/invert/threshold/binary/clip/"
                     "optional/frame/reference/part/labels"
                 )
@@ -157,18 +156,7 @@ class Actuator:
                 f"Actuator {self.role!r}: dim {self.dim} disagrees with the "
                 f"{len(self.labels)} labels; one label per axis"
             )
-        if isinstance(self.fill, tuple):
-            if not self.optional or self.labels is None:
-                raise ValueError(
-                    f"Actuator {self.role!r}: a per-axis fill applies only to an "
-                    "optional, labeled actuator (set optional=True and labels=)"
-                )
-            if len(self.fill) != self.dim:
-                raise ValueError(
-                    f"Actuator {self.role!r}: fill has {len(self.fill)} values but "
-                    f"dim is {self.dim}; one fill per axis"
-                )
-        elif self.fill != 0.0 and not self.optional:
+        if self.fill != 0.0 and not self.optional:
             raise ValueError(
                 f"Actuator {self.role!r}: fill applies only to a role-less (opaque) "
                 "or optional actuator; a roled, non-optional actuator takes its "

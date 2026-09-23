@@ -74,8 +74,8 @@ pub struct StateTag {
     pub part: Option<String>,
     /// The axis names of this feature in the order the env emits them, one
     /// per element of the space leaf (checked at `join`). A model that names
-    /// the same labels in another order is gathered by name. Omitted when
-    /// unset.
+    /// labels must name this same set; another order is a permutation.
+    /// Omitted when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub labels: Option<Vec<String>>,
     /// Unrecognized additive fields, retained for round-trip (see [`ImageTag`]).

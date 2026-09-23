@@ -57,23 +57,33 @@
       },
       "state": {
         "components": [
-          "proprio/eef_pos",
+          {
+            "role": "proprio/eef_pos",
+            "part": "left_arm"
+          },
           {
             "encoding": "quat_wxyz",
-            "role": "proprio/eef_rot"
+            "role": "proprio/eef_rot",
+            "part": "left_arm"
           },
           {
             "dim": 1,
-            "role": "proprio/gripper"
+            "role": "proprio/gripper",
+            "part": "left_arm"
           },
-          "proprio/eef_pos_2",
+          {
+            "role": "proprio/eef_pos",
+            "part": "right_arm"
+          },
           {
             "encoding": "quat_wxyz",
-            "role": "proprio/eef_rot_2"
+            "role": "proprio/eef_rot",
+            "part": "right_arm"
           },
           {
             "dim": 1,
-            "role": "proprio/gripper_2"
+            "role": "proprio/gripper",
+            "part": "right_arm"
           }
         ],
         "dtype": "float32",
@@ -88,42 +98,48 @@
           "dim": 3,
           "encoding": null,
           "range": null,
-          "role": "action/eef_pos"
+          "role": "action/eef_pos",
+          "part": "left_arm"
         },
         {
           "binary": false,
           "dim": 4,
           "encoding": "quat_wxyz",
           "range": null,
-          "role": "action/eef_rot"
+          "role": "action/eef_rot",
+          "part": "left_arm"
         },
         {
           "binary": false,
           "dim": 1,
           "encoding": null,
           "range": null,
-          "role": "action/gripper"
+          "role": "action/gripper",
+          "part": "left_arm"
         },
         {
           "binary": false,
           "dim": 3,
           "encoding": null,
           "range": null,
-          "role": "action/eef_pos_2"
+          "role": "action/eef_pos",
+          "part": "right_arm"
         },
         {
           "binary": false,
           "dim": 4,
           "encoding": "quat_wxyz",
           "range": null,
-          "role": "action/eef_rot_2"
+          "role": "action/eef_rot",
+          "part": "right_arm"
         },
         {
           "binary": false,
           "dim": 1,
           "encoding": null,
           "range": null,
-          "role": "action/gripper_2"
+          "role": "action/gripper",
+          "part": "right_arm"
         }
       ]
     }

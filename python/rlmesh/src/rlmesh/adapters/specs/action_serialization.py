@@ -42,12 +42,14 @@ def _actuator_to_dict(component: Actuator) -> dict[str, Any]:
     # so layouts that do not use them serialize byte-identically to before. A
     # per-axis sequence goes under its own `axis_*` key; the scalar key never
     # changes type.
-    for name in ("scale", "offset", "fill"):
+    for name in ("scale", "offset"):
         value = getattr(component, name)
         if isinstance(value, tuple):
             out[f"axis_{name}"] = list(cast("tuple[float, ...]", value))
-        elif value is not None and (name != "fill" or value != 0.0):
+        elif value is not None:
             out[name] = value
+    if component.fill != 0.0:
+        out["fill"] = component.fill
     if component.invert:
         out["invert"] = True
     if component.threshold is not None:
@@ -81,7 +83,7 @@ def action_from_dict(data: Mapping[str, Any]) -> Action:
             threshold=item.get("threshold"),
             binary=bool(item.get("binary", False)),
             clip=bool(item.get("clip", False)),
-            fill=item.get("axis_fill", float(item.get("fill", 0.0))),
+            fill=float(item.get("fill", 0.0)),
             optional=bool(item.get("optional", False)),
             frame=item.get("frame"),
             reference=item.get("reference"),

@@ -60,11 +60,14 @@ pub enum JoinError {
         labels: usize,
         width: u32,
     },
-    /// The role/part identity itself is malformed: a kind prefix this core does
-    /// not define, or a legacy `_2` role that also names a part. See
+    /// The role names a kind prefix this core does not define. See
     /// [`check_role`](crate::roles::registry::check_role).
     #[error("{key:?}: {reason}")]
     InvalidRole { key: String, reason: String },
+    /// A whole-leaf tag's labels break the codec rule a `Field` is held to:
+    /// at least one, none repeated.
+    #[error("{key:?}: {reason}")]
+    InvalidLabels { key: String, reason: String },
     /// An observation tag under the `action/` kind: a command is an actuator's
     /// to carry, and a model reads its own previous command with
     /// `source="action"` (`Previous`), never from an env observation.
@@ -133,11 +136,10 @@ fn check_role_dim_law(role: &str, actual: u32, key: &str) -> Result<()> {
     Ok(())
 }
 
-/// Enforce the role identity rules at the env's authoring seam: the closed
-/// kind set and the alias-versus-part rule. Runs at `adapt.tag` and again at
-/// resolve, like every other join check.
-fn check_role_identity(role: &str, part: Option<&str>, key: &str) -> Result<()> {
-    crate::roles::registry::check_role(role, part).map_err(|reason| JoinError::InvalidRole {
+/// Enforce the closed kind set at the env's authoring seam. Runs at
+/// `adapt.tag` and again at resolve, like every other join check.
+fn check_role_identity(role: &str, key: &str) -> Result<()> {
+    crate::roles::registry::check_role(role).map_err(|reason| JoinError::InvalidRole {
         key: key.to_owned(),
         reason,
     })
@@ -181,41 +183,17 @@ pub fn join(
             _ => None,
         })
         .collect();
-    for feature in &observation {
-        let (role, part, labels) = match feature {
-            EnvFeature::Image(image) => (&image.role, image.part.as_deref(), None),
-            EnvFeature::State(state) => {
-                (&state.role, state.part.as_deref(), state.labels.as_deref())
-            }
-            EnvFeature::Text(text) => (&text.role, None, None),
-        };
-        if let Some(note) = role_registry_advisory(role) {
-            advisories.push(note);
-        }
-        if let Some(note) = part.and_then(part_registry_advisory) {
-            advisories.push(note);
-        }
-        if let Some(note) = labels.and_then(|labels| labels_profile_advisory(role, labels)) {
-            advisories.push(note);
-        }
-    }
-    for component in &action.components {
-        if let Some(role) = &component.role {
-            if let Some(note) = role_registry_advisory(role) {
-                advisories.push(note);
-            }
-            if let Some(note) = component.part.as_deref().and_then(part_registry_advisory) {
-                advisories.push(note);
-            }
-            if let Some(note) = component
-                .labels
-                .as_deref()
-                .and_then(|labels| labels_profile_advisory(role, labels))
-            {
-                advisories.push(note);
-            }
-        }
-    }
+    let observation_roles = observation.iter().map(|feature| match feature {
+        EnvFeature::Image(image) => &image.role,
+        EnvFeature::State(state) => &state.role,
+        EnvFeature::Text(text) => &text.role,
+    });
+    let action_roles = action.components.iter().filter_map(|c| c.role.as_ref());
+    advisories.extend(
+        observation_roles
+            .chain(action_roles)
+            .filter_map(|role| role_registry_advisory(role)),
+    );
     Ok(EnvFeatures {
         observation,
         action,
@@ -236,48 +214,6 @@ fn role_registry_advisory(role: &str) -> Option<Advisory> {
          model agree on its exact string. Prefer a blessed role, mark it intentionally \
          non-standard with an `x/` prefix, or -- for dims no model reads -- use a \
          role-less (opaque) actuator"
-    )))
-}
-
-/// One advisory if `part` is neither registered nor an `x/` escape -- the
-/// part-side twin of [`role_registry_advisory`]: a part is an identity key, so
-/// a private spelling matches only itself.
-fn part_registry_advisory(part: &str) -> Option<Advisory> {
-    if crate::roles::parts::is_sanctioned_part(part) {
-        return None;
-    }
-    Some(Advisory::info(format!(
-        "part {part:?} is not in the parts registry; it binds only when the env and model \
-         agree on its exact string. Prefer a registered part ({:?}), or mark it \
-         intentionally non-standard with an `x/` prefix",
-        crate::roles::parts::PARTS
-    )))
-}
-
-/// One advisory if `labels` on a joint role match no shipped embodiment profile
-/// as a set (a subset is fine: a model may name fewer joints than a body has).
-/// The label twin of the role nudge: labels bind on exact strings, so a private
-/// spelling matches only itself. Never a resolve rule; the strict publish tier
-/// refuses what this nudges. A labeled leaf of any other role (a wrench's six
-/// axes) names its own axes and is never held to a profile.
-pub(crate) fn labels_profile_advisory(role: &str, labels: &[String]) -> Option<Advisory> {
-    if !crate::spec::strict::is_labeled_role(role)
-        || crate::roles::embodiments::matching_profile(labels).is_some()
-    {
-        return None;
-    }
-    let hint = match crate::roles::embodiments::closest_profile(labels) {
-        Some((profile, overlap)) => format!(
-            "; the closest is {:?} ({overlap} of {} labels shared)",
-            profile.name,
-            labels.len()
-        ),
-        None => String::new(),
-    };
-    Some(Advisory::info(format!(
-        "unknown_labels: role {role:?} names labels that match no shipped embodiment profile{hint}. \
-         Labels bind only when the env and model agree on their exact strings; prefer a \
-         profile's joints (rlmesh.adapters.embodiments)"
     )))
 }
 
@@ -397,7 +333,7 @@ fn join_feature(
                     actual: describe_space(leaf),
                 });
             }
-            check_role_identity(&image.role, image.part.as_deref(), &path)?;
+            check_role_identity(&image.role, &path)?;
             check_observation_role(&image.role, &path)?;
             let (height, width, channels) = image_hwc(&leaf.shape, image.layout);
             Ok(vec![EnvFeature::Image(EnvImage {
@@ -434,18 +370,25 @@ fn join_feature(
                 });
             }
             check_role_dim_law(&state.role, width, &path)?;
-            check_role_identity(&state.role, state.part.as_deref(), &path)?;
+            check_role_identity(&state.role, &path)?;
             check_observation_role(&state.role, &path)?;
             // A `Field` pins its labels to `dim` at the codec; a whole-leaf tag
-            // learns its width only here.
-            if let Some(labels) = &state.labels
-                && labels.len() != width as usize
-            {
-                return Err(JoinError::LabelWidthMismatch {
-                    key: path,
-                    labels: labels.len(),
-                    width,
-                });
+            // learns its width only here, and the same-set rule needs them
+            // duplicate-free.
+            if let Some(labels) = &state.labels {
+                crate::spec::labels::check_labels(labels, &path).map_err(|reason| {
+                    JoinError::InvalidLabels {
+                        key: path.clone(),
+                        reason,
+                    }
+                })?;
+                if labels.len() != width as usize {
+                    return Err(JoinError::LabelWidthMismatch {
+                        key: path,
+                        labels: labels.len(),
+                        width,
+                    });
+                }
             }
             let range = reconcile_range(uniform_finite_range(leaf), state.range, &path)?;
             Ok(vec![EnvFeature::State(EnvState {
@@ -470,7 +413,7 @@ fn join_feature(
                     actual: describe_space(leaf),
                 });
             }
-            check_role_identity(&text.role, None, &path)?;
+            check_role_identity(&text.role, &path)?;
             check_observation_role(&text.role, &path)?;
             Ok(vec![EnvFeature::Text(EnvText {
                 source: source.clone(),
@@ -530,7 +473,7 @@ fn join_split(
                 });
             }
             check_role_dim_law(role, field.dim, &path)?;
-            check_role_identity(role, field.part.as_deref(), &path)?;
+            check_role_identity(role, &path)?;
             check_observation_role(role, &path)?;
             let key = (
                 role.as_str(),
@@ -692,7 +635,7 @@ fn resolve_action(action: &Action, action_space: &SpaceView) -> Result<Action> {
             });
         }
         check_role_dim_law(role, component.dim, role)?;
-        check_role_identity(role, component.part.as_deref(), role)?;
+        check_role_identity(role, role)?;
         let space_range = slice_uniform_finite_range(action_space, offset, component.dim);
         let range = reconcile_range(space_range, component.range, role)?;
         components.push(Actuator {
@@ -810,7 +753,6 @@ mod tests {
             offset: None,
             axis_scale: None,
             axis_offset: None,
-            axis_fill: None,
             invert: false,
             threshold: None,
             binary: false,
@@ -1332,6 +1274,41 @@ mod tests {
     }
 
     #[test]
+    fn labels_must_name_every_element_of_the_leaf() {
+        let joints = |labels: &[&str]| {
+            ObsLeaf::State(StateTag {
+                role: "proprio/joint_pos".to_owned(),
+                encoding: None,
+                range: None,
+                unknown: Default::default(),
+                frame: None,
+                provenance: None,
+                part: None,
+                labels: Some(labels.iter().map(|label| (*label).to_owned()).collect()),
+            })
+        };
+        assert!(matches!(
+            join_obs("q", box_view(vec![3], None, None), joints(&["a", "b"])),
+            Err(JoinError::LabelWidthMismatch {
+                labels: 2,
+                width: 3,
+                ..
+            })
+        ));
+        join_obs("q", box_view(vec![2], None, None), joints(&["a", "b"])).expect("joins");
+        // Same-set alignment needs each label once; a repeat would let a
+        // model's tuple pass as the same set while selecting fewer axes.
+        assert!(matches!(
+            join_obs("q", box_view(vec![3], None, None), joints(&["a", "a", "b"])),
+            Err(JoinError::InvalidLabels { .. })
+        ));
+        assert!(matches!(
+            join_obs("q", box_view(vec![0], None, None), joints(&[])),
+            Err(JoinError::InvalidLabels { .. })
+        ));
+    }
+
+    #[test]
     fn rejects_finite_range_disagreement_but_allows_unbounded_override() {
         let gripper = || {
             ObsLeaf::State(StateTag {
@@ -1564,8 +1541,8 @@ mod tests {
             Err(JoinError::DuplicateLayoutRole { role, .. }) if role == "proprio/eef_pos"
         ));
 
-        // The closed kind set holds at the env's authoring seam; an ad-hoc
-        // part draws the nudge an ad-hoc role does.
+        // The closed kind set holds at the env's authoring seam; a part is
+        // any identifier and draws no advisory.
         let mut odd = field(Some("audio/mic"), 3, None);
         odd.part = Some("franka".to_owned());
         assert!(matches!(
@@ -1573,15 +1550,11 @@ mod tests {
             Err(JoinError::InvalidRole { reason, .. }) if reason.contains("kind this core does not define")
         ));
         odd.role = Some("x/mic".to_owned());
-        let joined = join(&layout_tags(vec![odd, left]), &obs, &action).expect("x/ escapes");
-        assert_eq!(joined.advisories.len(), 1, "{:?}", joined.advisories);
-        assert!(
-            joined.advisories[0]
-                .message
-                .contains(r#"part "franka" is not in the parts registry"#),
-            "{}",
-            joined.advisories[0].message
-        );
+        let mut tail = field(Some("proprio/eef_pos"), 3, None);
+        tail.part = Some("tail".to_owned());
+        let obs = box_view(vec![9], None, None);
+        let joined = join(&layout_tags(vec![odd, left, tail]), &obs, &action).expect("joins");
+        assert!(joined.advisories.is_empty(), "{:?}", joined.advisories);
     }
 
     #[test]

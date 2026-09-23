@@ -50,14 +50,13 @@ pub struct StatePiece {
     /// labels exist). Exclusive with the scalar of the same name.
     pub axis_scale: Option<Vec<f64>>,
     pub axis_offset: Option<Vec<f64>>,
-    /// Source indices to gather, in output order, when both sides carry labels
-    /// and the model's order or subset differs from the env's. `None` reads
-    /// the source as is (no labels, or an identical order).
+    /// The permutation into the model's order (source index per output axis),
+    /// when both sides carry labels in different orders. `None` reads the
+    /// source as is (no labels, or an identical order).
     pub gather: Option<Vec<u32>>,
     /// The output axis names (the model's labels when it declared them, else
     /// the env's), and the env leaf's own labels, for `describe`.
     pub labels: Option<Vec<String>>,
-    pub src_labels: Option<Vec<String>>,
     /// The constant this piece contributes instead of reading the env, with
     /// `scale`/`offset` already folded in. `None` means a real env source.
     pub fill: Option<f64>,
@@ -66,7 +65,7 @@ pub struct StatePiece {
     pub absent_role: bool,
     /// The model output this piece reads instead of an env leaf, when the
     /// part's `source` is `action`; `fill` is then what it reads before the
-    /// episode's first action, and `gather` selects the actuator's axes by
+    /// episode's first action, and `gather` reorders the actuator's axes by
     /// label. `None` for an env-sourced or constant piece.
     pub previous: Option<PreviousAction>,
     /// The agreed coordinate frame this piece's values are in, when either side

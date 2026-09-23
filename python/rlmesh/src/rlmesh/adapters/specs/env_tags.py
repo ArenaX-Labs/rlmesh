@@ -89,13 +89,14 @@ class StateTag:
             declares one the env contradicts fails resolution. Keyword-only
             and omitted from the wire when unset.
         part: The body part this entry belongs to, when the role repeats
-            across a body (``"left_arm"``, ``"right_arm"``, ...). An identity
-            key the resolver matches on; see :class:`ImageTag`. Keyword-only
-            and omitted from the wire when unset.
+            across a body (``LEFT_ARM``, ``RIGHT_ARM``, or any identifier both
+            sides agree on). An identity key the resolver matches on; see
+            :class:`ImageTag`. Keyword-only and omitted from the wire when
+            unset.
         labels: The axis names of this entry in the order the env emits them,
-            one per element of the space leaf (checked at ``join``); write them
-            from a shipped profile (``embodiments.GO2.joints``). A model that
-            names the same labels in another order is gathered by name.
+            one per element of the space leaf (checked at ``join``). A model
+            that names labels must name this same set; another order is
+            gathered by name.
             Keyword-only and omitted from the wire when unset.
     """
 

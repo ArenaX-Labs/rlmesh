@@ -3,7 +3,7 @@
 //! A label tuple names the axes of a joint vector (`FR_hip_joint`, `FR_thigh_joint`, ...)
 //! so two sides that list the same names in different orders resolve to a
 //! permutation instead of a silent misalignment. Labels are plain strings on
-//! the wire; the shipped tuples live in [`embodiments`](crate::roles::embodiments).
+//! the wire; both sides must name the same set.
 
 /// The codec rules every labeled leaf shares: at least one label, none
 /// repeated. Width agreement is checked where the width is known (the codec

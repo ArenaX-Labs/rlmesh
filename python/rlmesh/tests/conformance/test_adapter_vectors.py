@@ -183,24 +183,6 @@ def test_vector(path: Path) -> None:
             assert expected in str(excinfo.value)
         return
 
-    if case["kind"] == "label_policy":
-        # The publish-gate label tier (`--require-labels`), through the same
-        # normalize door as the role tier.
-        expected = case["expect"].get("error_contains")
-        doc = json.dumps(case["doc"])
-        strict = case["policy"] == "strict"
-        if expected is None:
-            adapters_spec_normalize(
-                case["side"], doc, True, "passthrough", False, strict
-            )
-        else:
-            with pytest.raises(ValueError) as excinfo:
-                adapters_spec_normalize(
-                    case["side"], doc, True, "passthrough", False, strict
-                )
-            assert expected in str(excinfo.value)
-        return
-
     if case["kind"] == "apply_sequence":
         # A frame window only exists ACROSS steps: drive the whole sequence
         # through one adapter (its windows are episode state) and compare the

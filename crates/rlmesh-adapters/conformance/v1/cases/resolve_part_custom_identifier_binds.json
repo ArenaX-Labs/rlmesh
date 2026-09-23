@@ -10,31 +10,25 @@
       "components": [
         {
           "binary": false,
-          "dim": 1,
+          "dim": 2,
           "encoding": null,
+          "part": "tail",
           "range": null,
-          "role": "action/gripper"
-        },
-        {
-          "binary": false,
-          "dim": 1,
-          "encoding": null,
-          "part": "arm_2",
-          "range": null,
-          "role": "action/gripper"
+          "role": "action/joint_pos"
         }
       ]
     },
     "observation": {
-      "l": {
+      "head_imu": {
         "encoding": null,
+        "part": "head",
         "range": null,
         "role": "proprio/eef_pos",
         "type": "state"
       },
-      "r": {
+      "tail_tip": {
         "encoding": null,
-        "part": "arm_2",
+        "part": "tail",
         "range": null,
         "role": "proprio/eef_pos",
         "type": "state"
@@ -42,7 +36,7 @@
     }
   },
   "expect": {
-    "describe": "observation:\n  \"state\" <- concat(l[:3], r[:3]#arm_2)\naction:\n  \"action/gripper\" <- model[0:1]\n  \"action/gripper\" <- model[1:2]#arm_2",
+    "describe": "observation:\n  \"state\" <- concat(tail_tip[:3]#tail)\naction:\n  \"action/joint_pos\" <- model[0:2]#tail",
     "ok": true
   },
   "kind": "resolve",
@@ -52,11 +46,8 @@
         "components": [
           {
             "dim": 3,
+            "part": "tail",
             "role": "proprio/eef_pos"
-          },
-          {
-            "dim": 3,
-            "role": "proprio/eef_pos_2"
           }
         ],
         "dtype": "float32",
@@ -68,17 +59,11 @@
       "components": [
         {
           "binary": false,
-          "dim": 1,
+          "dim": 2,
           "encoding": null,
+          "part": "tail",
           "range": null,
-          "role": "action/gripper"
-        },
-        {
-          "binary": false,
-          "dim": 1,
-          "encoding": null,
-          "range": null,
-          "role": "action/gripper_2"
+          "role": "action/joint_pos"
         }
       ]
     }
@@ -97,7 +82,7 @@
       }
     ],
     "dtype": "unspecified",
-    "keys": ["l", "r"],
+    "keys": ["head_imu", "tail_tip"],
     "kind": "dict"
   }
 }

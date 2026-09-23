@@ -161,9 +161,9 @@ pub(super) fn apply_state(
             }
             value = value[start..end].to_vec();
         }
-        // Gather the named axes into the model's order (a permutation or a
-        // selection). The env leaf's width was label-checked at join, so an
-        // index past the runtime value is an env contract violation.
+        // Permute the named axes into the model's order. The env leaf's width
+        // was label-checked at join, so an index past the runtime value is an
+        // env contract violation.
         if let Some(gather) = &piece.gather {
             let mut gathered = Vec::with_capacity(gather.len());
             for &index in gather {
@@ -287,7 +287,6 @@ mod tests {
                 axis_offset: None,
                 gather: None,
                 labels: None,
-                src_labels: None,
                 fill: None,
                 absent_role: false,
                 previous: None,
@@ -350,7 +349,6 @@ mod tests {
                 axis_offset: None,
                 gather: None,
                 labels: None,
-                src_labels: None,
                 fill: None,
                 absent_role: false,
                 previous: None,

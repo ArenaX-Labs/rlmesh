@@ -25,11 +25,10 @@ use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString, PyT
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 use rlmesh_adapters::v1::{
     Advisory, ApplyError, CustomTransform, EncodingTransform, EnvTags, FrameBuffers, FramePolicy,
-    InputNode, LabelPolicy, ModelLeaf, ModelSpec, NoEncodings, NodePath, ObsPlan, PathSeg,
-    ResolvedAdapter, RolePolicy, SkipCustoms, SpaceView, Value, assemble_obs,
-    build_describe_envelope, join, observe_obs, record_action, reject_unframed_roles_env,
-    reject_unframed_roles_model, reject_unknowns_env, reject_unknowns_model,
-    reject_unlabeled_roles_env, reject_unlabeled_roles_model, reject_unsanctioned_roles_env,
+    InputNode, ModelLeaf, ModelSpec, NoEncodings, NodePath, ObsPlan, PathSeg, ResolvedAdapter,
+    RolePolicy, SkipCustoms, SpaceView, Value, assemble_obs, build_describe_envelope, join,
+    observe_obs, record_action, reject_unframed_roles_env, reject_unframed_roles_model,
+    reject_unknowns_env, reject_unknowns_model, reject_unsanctioned_roles_env,
     reject_unsanctioned_roles_model, resolve, roles,
 };
 use serde::de::DeserializeOwned;
@@ -120,38 +119,21 @@ const WIRE_CONSTANTS: &[(&str, &str)] = &[
     ("JOINT_VEL", roles::core::JOINT_VEL),
     ("ACTION_JOINT_POS", roles::core::ACTION_JOINT_POS),
     ("ACTION_JOINT_VEL", roles::core::ACTION_JOINT_VEL),
-    ("ACTION_JOINT_POS_2", roles::core::ACTION_JOINT_POS_2),
     ("IMAGE_WRIST", roles::manipulation::IMAGE_WRIST),
-    ("IMAGE_WRIST_2", roles::manipulation::IMAGE_WRIST_2),
     ("EEF_POS", roles::manipulation::EEF_POS),
     ("EEF_ROT", roles::manipulation::EEF_ROT),
     ("GRIPPER_POS", roles::manipulation::GRIPPER_POS),
     ("EEF_WRENCH", roles::manipulation::EEF_WRENCH),
-    ("EEF_POS_2", roles::manipulation::EEF_POS_2),
-    ("EEF_ROT_2", roles::manipulation::EEF_ROT_2),
-    ("GRIPPER_POS_2", roles::manipulation::GRIPPER_POS_2),
     ("ACTION_DELTA_POS", roles::manipulation::ACTION_DELTA_POS),
     ("ACTION_DELTA_ROT", roles::manipulation::ACTION_DELTA_ROT),
     ("ACTION_GRIPPER", roles::manipulation::ACTION_GRIPPER),
-    (
-        "ACTION_DELTA_POS_2",
-        roles::manipulation::ACTION_DELTA_POS_2,
-    ),
-    (
-        "ACTION_DELTA_ROT_2",
-        roles::manipulation::ACTION_DELTA_ROT_2,
-    ),
-    ("ACTION_GRIPPER_2", roles::manipulation::ACTION_GRIPPER_2),
     ("ACTION_EEF_POS", roles::manipulation::ACTION_EEF_POS),
     ("ACTION_EEF_ROT", roles::manipulation::ACTION_EEF_ROT),
-    ("ACTION_EEF_POS_2", roles::manipulation::ACTION_EEF_POS_2),
-    ("ACTION_EEF_ROT_2", roles::manipulation::ACTION_EEF_ROT_2),
     ("BASE_ANG_VEL", roles::body::BASE_ANG_VEL),
     ("BASE_ROT", roles::body::BASE_ROT),
     ("COMMAND_BASE_VEL", roles::body::COMMAND_BASE_VEL),
     ("LEFT_ARM", roles::parts::LEFT_ARM),
     ("RIGHT_ARM", roles::parts::RIGHT_ARM),
-    ("ARM_2", roles::parts::ARM_2),
     ("HEAD", roles::parts::HEAD),
     ("TORSO", roles::parts::TORSO),
     ("BASE", roles::parts::BASE),
@@ -179,43 +161,27 @@ mod stub_constants {
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "JOINT_VEL", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_JOINT_POS", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_JOINT_VEL", String);
-    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_JOINT_POS_2", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "IMAGE_WRIST", String);
-    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "IMAGE_WRIST_2", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "EEF_POS", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "EEF_ROT", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "GRIPPER_POS", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "EEF_WRENCH", String);
-    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "EEF_POS_2", String);
-    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "EEF_ROT_2", String);
-    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "GRIPPER_POS_2", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_DELTA_POS", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_DELTA_ROT", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_GRIPPER", String);
-    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_DELTA_POS_2", String);
-    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_DELTA_ROT_2", String);
-    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_GRIPPER_2", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_EEF_POS", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_EEF_ROT", String);
-    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_EEF_POS_2", String);
-    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_EEF_ROT_2", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "BASE_ANG_VEL", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "BASE_ROT", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "COMMAND_BASE_VEL", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "LEFT_ARM", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "RIGHT_ARM", String);
-    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ARM_2", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "HEAD", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "TORSO", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "BASE", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "LEFT_LEG", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "RIGHT_LEG", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "PARTS", Vec<String>);
-    pyo3_stub_gen::module_variable!(
-        "rlmesh._rlmesh",
-        "EMBODIMENTS",
-        Vec<(String, Vec<String>, Vec<String>)>
-    );
     pyo3_stub_gen::module_variable!(
         "rlmesh._rlmesh",
         "ROTATION_DIMS",
@@ -243,20 +209,6 @@ pub fn register_constants(m: &Bound<'_, PyModule>) -> PyResult<()> {
         .collect();
     m.add("IMAGE_LAYOUTS", layouts)?;
     m.add("PARTS", roles::parts::PARTS.to_vec())?;
-    // The shipped embodiment profiles as `(name, parts, joints)` rows; the
-    // Python `rlmesh.adapters.embodiments` module builds its constants from
-    // these, so the crate stays the single source of the label tuples.
-    let embodiments: Vec<(&str, Vec<&str>, Vec<&str>)> = roles::embodiments::PROFILES
-        .iter()
-        .map(|profile| {
-            (
-                profile.name,
-                profile.parts.to_vec(),
-                profile.joints.to_vec(),
-            )
-        })
-        .collect();
-    m.add("EMBODIMENTS", embodiments)?;
     m.add("RESAMPLES", rlmesh_adapters::v1::RESAMPLES.to_vec())?;
     m.add("CROP_MODES", rlmesh_adapters::v1::CROP_MODES.to_vec())?;
     m.add(
@@ -884,19 +836,18 @@ pub fn adapters_join_check(
     gen_stub_pyfunction(
         module = "rlmesh._rlmesh",
         python = r#"
-def adapters_spec_normalize(side: str, spec_json: str, allow_custom: bool, role_policy: str = "passthrough", require_frames: bool = False, require_labels: bool = False) -> str: ...
+def adapters_spec_normalize(side: str, spec_json: str, allow_custom: bool, role_policy: str = "passthrough", require_frames: bool = False) -> str: ...
 "#
     )
 )]
 #[pyfunction]
-#[pyo3(signature = (side, spec_json, allow_custom, role_policy = "passthrough", require_frames = false, require_labels = false))]
+#[pyo3(signature = (side, spec_json, allow_custom, role_policy = "passthrough", require_frames = false))]
 pub fn adapters_spec_normalize(
     side: &str,
     spec_json: &str,
     allow_custom: bool,
     role_policy: &str,
     require_frames: bool,
-    require_labels: bool,
 ) -> PyResult<String> {
     let role_gate = match role_policy {
         "passthrough" => None,
@@ -916,13 +867,6 @@ pub fn adapters_spec_normalize(
     } else {
         FramePolicy::Allow
     };
-    // The `spec-normalize --require-labels` tier: every joint-role leaf names
-    // its axes, from a shipped embodiment profile. Opt-in like the frame tier.
-    let label_gate = if require_labels {
-        LabelPolicy::Strict
-    } else {
-        LabelPolicy::Off
-    };
     match side {
         "env" => {
             let tags: EnvTags = de_spec("env tags", spec_json)?;
@@ -937,8 +881,6 @@ pub fn adapters_spec_normalize(
                 })?;
             }
             reject_unframed_roles_env(&tags, frame_gate)
-                .map_err(|message| PyValueError::new_err(format!("invalid env tags: {message}")))?;
-            reject_unlabeled_roles_env(&tags, label_gate)
                 .map_err(|message| PyValueError::new_err(format!("invalid env tags: {message}")))?;
             serde_json::to_string(&tags).map_err(|err| {
                 PyValueError::new_err(format!("could not serialize env tags: {err}"))
@@ -956,9 +898,6 @@ pub fn adapters_spec_normalize(
                 })?;
             }
             reject_unframed_roles_model(&spec, frame_gate).map_err(|message| {
-                PyValueError::new_err(format!("invalid model spec: {message}"))
-            })?;
-            reject_unlabeled_roles_model(&spec, label_gate).map_err(|message| {
                 PyValueError::new_err(format!("invalid model spec: {message}"))
             })?;
             // Defense-in-depth at the publish boundary. Today the live gate is

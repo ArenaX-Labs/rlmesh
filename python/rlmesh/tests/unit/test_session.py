@@ -898,6 +898,16 @@ def test_session_close_releases_the_env_when_episode_end_raises() -> None:
     assert closed == [1]
 
 
+_UR5E_JOINTS = (
+    "shoulder_pan_joint",
+    "shoulder_lift_joint",
+    "elbow_joint",
+    "wrist_1_joint",
+    "wrist_2_joint",
+    "wrist_3_joint",
+)
+
+
 @pytest.mark.parametrize(("shape", "dtype"), [((2, 3), "float32"), ((6,), "float64")])
 def test_adapted_session_and_run_hand_the_env_its_box_action(
     shape: tuple[int, ...], dtype: str
@@ -925,14 +935,14 @@ def test_adapted_session_and_run_hand_the_env_its_box_action(
             pass
 
     action = adapt.Action(
-        adapt.Actuator(adapt.ACTION_JOINT_POS, dim=6, labels=adapt.UR5E.joints)
+        adapt.Actuator(adapt.ACTION_JOINT_POS, dim=6, labels=_UR5E_JOINTS)
     )
     spec = adapt.ModelSpec(
-        input={"q": adapt.State(adapt.JOINT_POS, labels=adapt.UR5E.joints)},
+        input={"q": adapt.State(adapt.JOINT_POS, labels=_UR5E_JOINTS)},
         output=action,
     )
     tags = adapt.EnvTags(
-        observation={"q": adapt.StateTag(adapt.JOINT_POS, labels=adapt.UR5E.joints)},
+        observation={"q": adapt.StateTag(adapt.JOINT_POS, labels=_UR5E_JOINTS)},
         action=action,
     )
 
@@ -1008,14 +1018,14 @@ def test_adapted_session_refuses_an_action_the_env_int_box_cannot_hold(
             pass
 
     action = adapt.Action(
-        adapt.Actuator(adapt.ACTION_JOINT_POS, dim=6, labels=adapt.UR5E.joints)
+        adapt.Actuator(adapt.ACTION_JOINT_POS, dim=6, labels=_UR5E_JOINTS)
     )
     spec = adapt.ModelSpec(
-        input={"q": adapt.State(adapt.JOINT_POS, labels=adapt.UR5E.joints)},
+        input={"q": adapt.State(adapt.JOINT_POS, labels=_UR5E_JOINTS)},
         output=action,
     )
     tags = adapt.EnvTags(
-        observation={"q": adapt.StateTag(adapt.JOINT_POS, labels=adapt.UR5E.joints)},
+        observation={"q": adapt.StateTag(adapt.JOINT_POS, labels=_UR5E_JOINTS)},
         action=action,
     )
     model = rlmesh.numpy.Model(

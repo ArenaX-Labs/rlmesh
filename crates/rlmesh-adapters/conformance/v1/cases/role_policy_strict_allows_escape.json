@@ -5,7 +5,7 @@
     },
     "observation": {
       "cam": { "role": "image/primary", "type": "image" },
-      "right_wrist": { "role": "image/wrist_2", "type": "image" },
+      "right_wrist": { "part": "right_arm", "role": "image/wrist", "type": "image" },
       "telemetry": { "role": "x/battery", "type": "state" }
     }
   },

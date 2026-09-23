@@ -63,7 +63,7 @@
     }
   },
   "expect": {
-    "describe": "observation:\n  \"instruction\" <- text \"instruction\"\n  \"state\" <- concat(eef_pos[:3], eef_quat (quat_xyzw->rot6d) (post_rotate), const(1)=0.0, gripper[:1] (*-2.0 +1.0), fill(2)=0.5), pad to 16\naction:\n  \"action/delta_eef_pos\" <- model[0:3]\n  \"action/delta_eef_rot\" <- model[3:9] (rot6d->axis_angle)\n  \"action/gripper\" <- model[9:10]\n  clip to (-1.0, 1.0)",
+    "describe": "observation:\n  \"instruction\" <- text \"instruction\"\n  \"state\" <- concat(eef_pos[:3], eef_quat (quat_xyzw->rot6d) (post_rotate), const(1)=0.0, gripper[:1] (*-2.0 +1.0), fill(2)=0.5#right_arm), pad to 16\naction:\n  \"action/delta_eef_pos\" <- model[0:3]\n  \"action/delta_eef_rot\" <- model[3:9] (rot6d->axis_angle)\n  \"action/gripper\" <- model[9:10]\n  clip to (-1.0, 1.0)",
     "ok": true
   },
   "kind": "resolve",
@@ -102,7 +102,8 @@
             "dim": 2,
             "fill": 0.5,
             "optional": true,
-            "role": "proprio/eef_pos_2"
+            "part": "right_arm",
+            "role": "proprio/eef_pos"
           }
         ],
         "dtype": "float32",

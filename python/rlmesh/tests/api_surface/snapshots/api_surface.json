@@ -1317,40 +1317,26 @@
   "rlmesh.adapters": {
     "exports": [
       "ACTION_DELTA_POS",
-      "ACTION_DELTA_POS_2",
       "ACTION_DELTA_ROT",
-      "ACTION_DELTA_ROT_2",
       "ACTION_EEF_POS",
-      "ACTION_EEF_POS_2",
       "ACTION_EEF_ROT",
-      "ACTION_EEF_ROT_2",
       "ACTION_GRIPPER",
-      "ACTION_GRIPPER_2",
       "ACTION_JOINT_POS",
-      "ACTION_JOINT_POS_2",
       "ACTION_JOINT_VEL",
-      "ARM_2",
       "BASE",
       "BASE_ANG_VEL",
       "BASE_ROT",
       "COMMAND_BASE_VEL",
       "EEF_POS",
-      "EEF_POS_2",
       "EEF_ROT",
-      "EEF_ROT_2",
       "EEF_WRENCH",
       "ENV_BRANCH_METADATA_KEY",
       "ENV_METADATA_KEY",
-      "FRANKA_PANDA",
-      "G1_29DOF",
-      "GO2",
       "GRIPPER_POS",
-      "GRIPPER_POS_2",
       "HEAD",
       "IMAGE_PRIMARY",
       "IMAGE_SECONDARY",
       "IMAGE_WRIST",
-      "IMAGE_WRIST_2",
       "INSTRUCTION",
       "JOINT_POS",
       "JOINT_VEL",
@@ -1362,7 +1348,6 @@
       "RIGHT_LEG",
       "ROTATION_DIMS",
       "TORSO",
-      "UR5E",
       "Action",
       "Actuator",
       "Adapter",
@@ -1374,7 +1359,6 @@
       "Constant",
       "Custom",
       "CustomEncoding",
-      "EmbodimentProfile",
       "EnvTags",
       "Field",
       "FitMode",
@@ -1413,19 +1397,9 @@
         "signature": "ACTION_DELTA_POS = str",
         "stability": "Stable"
       },
-      "ACTION_DELTA_POS_2": {
-        "kind": "type alias",
-        "signature": "ACTION_DELTA_POS_2 = str",
-        "stability": "Stable"
-      },
       "ACTION_DELTA_ROT": {
         "kind": "type alias",
         "signature": "ACTION_DELTA_ROT = str",
-        "stability": "Stable"
-      },
-      "ACTION_DELTA_ROT_2": {
-        "kind": "type alias",
-        "signature": "ACTION_DELTA_ROT_2 = str",
         "stability": "Stable"
       },
       "ACTION_EEF_POS": {
@@ -1433,19 +1407,9 @@
         "signature": "ACTION_EEF_POS = str",
         "stability": "Stable"
       },
-      "ACTION_EEF_POS_2": {
-        "kind": "type alias",
-        "signature": "ACTION_EEF_POS_2 = str",
-        "stability": "Stable"
-      },
       "ACTION_EEF_ROT": {
         "kind": "type alias",
         "signature": "ACTION_EEF_ROT = str",
-        "stability": "Stable"
-      },
-      "ACTION_EEF_ROT_2": {
-        "kind": "type alias",
-        "signature": "ACTION_EEF_ROT_2 = str",
         "stability": "Stable"
       },
       "ACTION_GRIPPER": {
@@ -1453,29 +1417,14 @@
         "signature": "ACTION_GRIPPER = str",
         "stability": "Stable"
       },
-      "ACTION_GRIPPER_2": {
-        "kind": "type alias",
-        "signature": "ACTION_GRIPPER_2 = str",
-        "stability": "Stable"
-      },
       "ACTION_JOINT_POS": {
         "kind": "type alias",
         "signature": "ACTION_JOINT_POS = str",
         "stability": "Stable"
       },
-      "ACTION_JOINT_POS_2": {
-        "kind": "type alias",
-        "signature": "ACTION_JOINT_POS_2 = str",
-        "stability": "Stable"
-      },
       "ACTION_JOINT_VEL": {
         "kind": "type alias",
         "signature": "ACTION_JOINT_VEL = str",
-        "stability": "Stable"
-      },
-      "ARM_2": {
-        "kind": "type alias",
-        "signature": "ARM_2 = str",
         "stability": "Stable"
       },
       "Action": {
@@ -1518,7 +1467,7 @@
           },
           "fill": {
             "kind": "attribute",
-            "signature": "fill: float | Sequence[float]"
+            "signature": "fill: float"
           },
           "frame": {
             "kind": "attribute",
@@ -1565,7 +1514,7 @@
             "signature": "threshold: float | None"
           }
         },
-        "signature": "Actuator(role: str | None = None, dim: int = 0, encoding: RotationEncoding | CustomEncoding | None = None, range: tuple[float, float] | None = None, binary: bool = False, scale: float | Sequence[float] | None = None, invert: bool = False, threshold: float | None = None, clip: bool = False, fill: float | Sequence[float] = 0.0, optional: bool = False, *, frame: Frame | None = None, reference: Reference | None = None, part: str | None = None, offset: float | Sequence[float] | None = None, labels: Sequence[str] | None = None)",
+        "signature": "Actuator(role: str | None = None, dim: int = 0, encoding: RotationEncoding | CustomEncoding | None = None, range: tuple[float, float] | None = None, binary: bool = False, scale: float | Sequence[float] | None = None, invert: bool = False, threshold: float | None = None, clip: bool = False, fill: float = 0.0, optional: bool = False, *, frame: Frame | None = None, reference: Reference | None = None, part: str | None = None, offset: float | Sequence[float] | None = None, labels: Sequence[str] | None = None)",
         "stability": "Stable"
       },
       "Adapter": {
@@ -1793,19 +1742,9 @@
         "signature": "EEF_POS = str",
         "stability": "Stable"
       },
-      "EEF_POS_2": {
-        "kind": "type alias",
-        "signature": "EEF_POS_2 = str",
-        "stability": "Stable"
-      },
       "EEF_ROT": {
         "kind": "type alias",
         "signature": "EEF_ROT = str",
-        "stability": "Stable"
-      },
-      "EEF_ROT_2": {
-        "kind": "type alias",
-        "signature": "EEF_ROT_2 = str",
         "stability": "Stable"
       },
       "EEF_WRENCH": {
@@ -1821,25 +1760,6 @@
       "ENV_METADATA_KEY": {
         "kind": "type alias",
         "signature": "ENV_METADATA_KEY = str",
-        "stability": "Stable"
-      },
-      "EmbodimentProfile": {
-        "kind": "class",
-        "members": {
-          "joints": {
-            "kind": "attribute",
-            "signature": "joints: tuple[str, ...]"
-          },
-          "name": {
-            "kind": "attribute",
-            "signature": "name: str"
-          },
-          "parts": {
-            "kind": "attribute",
-            "signature": "parts: tuple[str, ...]"
-          }
-        },
-        "signature": "EmbodimentProfile(name: str, parts: tuple[str, ...], joints: tuple[str, ...])",
         "stability": "Stable"
       },
       "EnvTags": {
@@ -1883,11 +1803,6 @@
           }
         },
         "signature": "EnvTags(observation: ObsNode, action: Action)",
-        "stability": "Stable"
-      },
-      "FRANKA_PANDA": {
-        "kind": "type alias",
-        "signature": "FRANKA_PANDA = EmbodimentProfile",
         "stability": "Stable"
       },
       "Field": {
@@ -1939,24 +1854,9 @@
         "signature": "Frame = Literal['world', 'robot_base', 'tool']",
         "stability": "Stable"
       },
-      "G1_29DOF": {
-        "kind": "type alias",
-        "signature": "G1_29DOF = EmbodimentProfile",
-        "stability": "Stable"
-      },
-      "GO2": {
-        "kind": "type alias",
-        "signature": "GO2 = EmbodimentProfile",
-        "stability": "Stable"
-      },
       "GRIPPER_POS": {
         "kind": "type alias",
         "signature": "GRIPPER_POS = str",
-        "stability": "Stable"
-      },
-      "GRIPPER_POS_2": {
-        "kind": "type alias",
-        "signature": "GRIPPER_POS_2 = str",
         "stability": "Stable"
       },
       "HEAD": {
@@ -1977,11 +1877,6 @@
       "IMAGE_WRIST": {
         "kind": "type alias",
         "signature": "IMAGE_WRIST = str",
-        "stability": "Stable"
-      },
-      "IMAGE_WRIST_2": {
-        "kind": "type alias",
-        "signature": "IMAGE_WRIST_2 = str",
         "stability": "Stable"
       },
       "INSTRUCTION": {
@@ -2473,11 +2368,6 @@
           }
         },
         "signature": "TextTag(role: str)",
-        "stability": "Stable"
-      },
-      "UR5E": {
-        "kind": "type alias",
-        "signature": "UR5E = EmbodimentProfile",
         "stability": "Stable"
       },
       "resolve": {

@@ -15,9 +15,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use rlmesh_adapters::v1::{
-    EnvTags, FrameBuffers, LabelPolicy, ModelSpec, NoCustoms, NoEncodings, RolePolicy, SpaceView,
-    Value, assemble_obs, reject_unlabeled_roles_env, reject_unlabeled_roles_model,
-    reject_unsanctioned_roles_env, reject_unsanctioned_roles_model, resolve,
+    EnvTags, FrameBuffers, ModelSpec, NoCustoms, NoEncodings, RolePolicy, SpaceView, Value,
+    assemble_obs, reject_unsanctioned_roles_env, reject_unsanctioned_roles_model, resolve,
 };
 use rlmesh_spaces::scalar::{Scalar, decode_scalars, encode_scalars};
 use rlmesh_spaces::{DType, Tensor};
@@ -290,7 +289,7 @@ fn updated_case(name: &str, case: &Json) -> Json {
     let preserve_inputs = case["preserve_inputs"] == Json::Bool(true);
     let mut out = case.clone();
     match case["kind"].as_str().expect("case kind") {
-        "serialization" | "role_policy" | "label_policy" => {
+        "serialization" | "role_policy" => {
             unreachable!("{name}: frozen vectors are not rewritten in update mode")
         }
         "resolve" => {
@@ -514,36 +513,6 @@ fn verify_case(name: &str, case: &Json) {
                 ),
             }
         }
-        // The publish-gate label tier, the twin of `role_policy`: `policy` is
-        // `off` or `strict`. Frozen for the same reason.
-        "label_policy" => {
-            let policy = match case["policy"].as_str().expect("case policy") {
-                "off" => LabelPolicy::Off,
-                "strict" => LabelPolicy::Strict,
-                other => panic!("{name}: unknown label policy {other:?}"),
-            };
-            let doc = case["doc"].clone();
-            let outcome = if case["side"] == "env" {
-                let tags: EnvTags = serde_json::from_value(doc)
-                    .unwrap_or_else(|e| panic!("{name}: parse failed: {e}"));
-                reject_unlabeled_roles_env(&tags, policy)
-            } else {
-                let spec: ModelSpec = serde_json::from_value(doc)
-                    .unwrap_or_else(|e| panic!("{name}: parse failed: {e}"));
-                reject_unlabeled_roles_model(&spec, policy)
-            };
-            match (outcome, case["expect"]["error_contains"].as_str()) {
-                (Ok(()), None) => {}
-                (Ok(()), Some(expected)) => {
-                    panic!("{name}: expected rejection containing {expected:?}")
-                }
-                (Err(message), None) => panic!("{name}: unexpected rejection: {message}"),
-                (Err(message), Some(expected)) => assert!(
-                    message.contains(expected),
-                    "{name}: rejection {message:?} does not contain {expected:?}"
-                ),
-            }
-        }
         // A frame window only exists ACROSS steps, so this kind drives a sequence
         // of observations through the stateful assemble seam and pins the payload
         // each step produced. The `apply` kind stays single-shot.
@@ -589,12 +558,7 @@ fn conformance_vectors() {
         let case: Json = serde_json::from_str(&fs::read_to_string(&path).expect("readable case"))
             .expect("case parses as JSON");
 
-        if update
-            && !matches!(
-                case["kind"].as_str(),
-                Some("serialization" | "role_policy" | "label_policy")
-            )
-        {
+        if update && !matches!(case["kind"].as_str(), Some("serialization" | "role_policy")) {
             let rewritten = updated_case(&name, &case);
             let mut text = serde_json::to_string_pretty(&rewritten).expect("serializes");
             text.push('\n');
@@ -611,7 +575,7 @@ fn conformance_vectors() {
     }
     // Pinned to the committed vector count: a deleted vector must fail here,
     // not vanish green. Bump when vectors are added.
-    assert!(ran >= 129, "expected at least 129 vectors, ran {ran}");
+    assert!(ran >= 118, "expected at least 118 vectors, ran {ran}");
 }
 
 /// The `zeros(n)` / `, pad to N` wording predates constant parts and fills, and
@@ -627,7 +591,7 @@ fn existing_pad_and_zero_fill_text_is_unchanged() {
     assert_eq!(
         case["expect"]["describe"].as_str().expect("describe text"),
         "observation:\n  \"instruction\" <- text \"instruction\"\n  \"state\" <- \
-         concat(eef_pos[:3], eef_quat (quat_xyzw->rot6d), gripper[:1], zeros(3)), pad to 16\
+         concat(eef_pos[:3], eef_quat (quat_xyzw->rot6d), gripper[:1], zeros(3)#right_arm), pad to 16\
          \naction:\n  \"action/delta_eef_pos\" <- model[0:3]\n  \"action/delta_eef_rot\" <- \
          model[3:9] (rot6d->axis_angle)\n  \"action/gripper\" <- model[9:10]\n  clip to \
          (-1.0, 1.0)",

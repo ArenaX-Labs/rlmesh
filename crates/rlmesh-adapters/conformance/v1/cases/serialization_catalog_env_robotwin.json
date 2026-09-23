@@ -8,28 +8,32 @@
           "dim": 6,
           "encoding": null,
           "range": null,
-          "role": "action/joint_pos"
+          "role": "action/joint_pos",
+          "part": "left_arm"
         },
         {
           "binary": false,
           "dim": 1,
           "encoding": null,
           "range": null,
-          "role": "action/gripper"
+          "role": "action/gripper",
+          "part": "left_arm"
         },
         {
           "binary": false,
           "dim": 6,
           "encoding": null,
           "range": null,
-          "role": "action/joint_pos_2"
+          "role": "action/joint_pos",
+          "part": "right_arm"
         },
         {
           "binary": false,
           "dim": 1,
           "encoding": null,
           "range": null,
-          "role": "action/gripper_2"
+          "role": "action/gripper",
+          "part": "right_arm"
         }
       ]
     },
@@ -76,13 +80,15 @@
             "dim": 3,
             "encoding": null,
             "range": null,
-            "role": "proprio/eef_pos"
+            "role": "proprio/eef_pos",
+            "part": "left_arm"
           },
           {
             "dim": 4,
             "encoding": "quat_wxyz",
             "range": null,
-            "role": "proprio/eef_rot"
+            "role": "proprio/eef_rot",
+            "part": "left_arm"
           }
         ],
         "type": "split"
@@ -91,7 +97,8 @@
         "encoding": null,
         "range": null,
         "role": "proprio/gripper",
-        "type": "state"
+        "type": "state",
+        "part": "left_arm"
       },
       "right_endpose": {
         "fields": [
@@ -99,13 +106,15 @@
             "dim": 3,
             "encoding": null,
             "range": null,
-            "role": "proprio/eef_pos_2"
+            "role": "proprio/eef_pos",
+            "part": "right_arm"
           },
           {
             "dim": 4,
             "encoding": "quat_wxyz",
             "range": null,
-            "role": "proprio/eef_rot_2"
+            "role": "proprio/eef_rot",
+            "part": "right_arm"
           }
         ],
         "type": "split"
@@ -113,8 +122,9 @@
       "right_gripper": {
         "encoding": null,
         "range": null,
-        "role": "proprio/gripper_2",
-        "type": "state"
+        "role": "proprio/gripper",
+        "type": "state",
+        "part": "right_arm"
       }
     }
   },

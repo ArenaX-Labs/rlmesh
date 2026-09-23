@@ -13,9 +13,14 @@ One JSON file per case, dispatched on `kind`:
 - `resolve` — `env_spec` + `model_spec`, expecting either `{"ok": true, "describe": <exact text>}` or `{"error_contains": <substring>}`. Error cases pin _resolve-time_ failure: an implementation that defers the failure to apply time fails the case. An optional `advisories_contain` lists substrings each of which must appear in some `"<severity>: <message>"` advisory line — hand-curated like `error_contains` (update mode carries it through rather than rewriting it), so a case pins only the advisory it is about.
 - `serialization` — `side` (`env`|`model`) + `doc`: `from_dict(doc)` followed by `to_dict()` must reproduce `doc` exactly.
 - `role_policy` — `side` (`env`|`model`) + `policy` (`passthrough`|`strict`|`forbid`) + `doc`: the publish-gate role tier, expecting acceptance (`{}`) or `{"error_contains": <substring>}`. Frozen like `serialization` — the policy table _is_ the contract, so update mode never rewrites these.
-- `label_policy` — `side` (`env`|`model`) + `policy` (`off`|`strict`) + `doc`: the publish-gate label tier (`--require-labels`), expecting acceptance (`{}`) or `{"error_contains": <substring>}`. Frozen like `role_policy`.
 - `apply_sequence` — specs + `observations` (a list), expecting `payloads`: the model payload each step produced, driven through the _stateful_ assemble seam as one episode. The kind for anything that only exists across steps — today, frame history. Values use the same encoding and tolerance as `apply`; the action side is not exercised (it is stateless, and `apply` pins it).
 - `apply` — specs + `observation` + `model_output`, expecting the exact model payload and env action. Values are encoded as `{"kind": "array", dtype, shape, data}`, `{"kind": "list", data}`, `{"kind": "text", data}`, or `{"kind": "map", data}` (nested observations). Numeric comparison: exact dtype match, values within `atol` (default 1e-6).
+
+## Parts and labels
+
+A role that repeats on a body (two arms) carries a `part` on each leaf; the role name never repeats. A part is any identifier both sides agree on exactly, with no registry: an omitted part binds the offerer's only leaf of the role, several candidates require an explicit part, and a named part binds only its exact leaf (`resolve_bimanual_joint_split`, `resolve_part_custom_identifier_binds`).
+
+`labels` name a numeric leaf's axes. When the model names labels, the leaf it reads (or the env actuator it drives) must carry labels naming the same set: a different order resolves to a permutation (`resolve_labels_permutation_three_cycle`), and a label either side lacks is a `LabelMismatch` (`resolve_error_labels_model_lacks_one`). There are no subsets and no shipped label profiles.
 
 ## Updating (snapshot-style)
 

@@ -373,10 +373,12 @@ class _SpeccedModel(rlmesh.Model):
 _SpeccedModel.spec = _SpeccedModel._spec()
 
 
-def _tags(role: str = "action/joint_pos_2") -> dict[str, object]:
+def _tags(role: str = "action/joint_pos") -> dict[str, object]:
     return {
-        "observation": {"cam": {"type": "image", "role": "image/wrist_2"}},
-        "action": {"components": [{"role": role, "dim": 6}]},
+        "observation": {
+            "cam": {"type": "image", "role": "image/wrist", "part": "right_arm"}
+        },
+        "action": {"components": [{"role": role, "dim": 6, "part": "right_arm"}]},
     }
 
 
