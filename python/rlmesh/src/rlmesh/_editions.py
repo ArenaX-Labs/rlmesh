@@ -18,7 +18,11 @@ Precedence, highest first:
    class declaration (source-resident);
 5. ``[tool.rlmesh] workflow_edition`` in the project's ``pyproject.toml``
    (project-resident);
-6. nothing -- the peer floats to this build's newest edition and says so once.
+6. nothing -- the peer floats to this build's newest edition. A participant
+   with a home for the declaration (an authored ``EnvFactory``/``Model``
+   subclass, or anything served) says so once per process as a
+   :class:`WorkflowEditionWarning`; an ad hoc callable in a local run floats
+   quietly.
 
 An empty ``RLMESH_WORKFLOW_EDITION`` short-circuits the chain at rung 2: it
 declares nothing *deliberately*, so rungs 3-5 are not consulted and the float is
@@ -27,6 +31,7 @@ not reported.
 
 from __future__ import annotations
 
+import contextvars
 import inspect
 import os
 import warnings
@@ -38,7 +43,27 @@ from ._load_native import load_native
 if TYPE_CHECKING:
     from rlmesh._rlmesh import ServeOptions
 
-__all__ = ["current_workflow_edition", "resolve_workflow_edition"]
+__all__ = [
+    "WorkflowEditionWarning",
+    "current_workflow_edition",
+    "resolve_workflow_edition",
+]
+
+
+class WorkflowEditionWarning(UserWarning):
+    """An authored or served participant declared no workflow edition.
+
+    Filter it by category (``warnings.filterwarnings("ignore",
+    category=rlmesh.WorkflowEditionWarning)``) rather than by message.
+    """
+
+
+#: Set by a caller that already resolved this participant's declaration for
+#: the servers it stands up itself (the loopback env server in ``run``), so
+#: they do not nudge a second time on the caller's behalf.
+resolved_by_caller: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "rlmesh_editionresolved_by_caller", default=False
+)
 
 #: Process-wide declaration, above every in-code surface but a call keyword.
 #: Set it to the empty string to declare nothing *deliberately*: resolution stops
@@ -86,6 +111,7 @@ def resolve_workflow_edition(
     call: str | None = None,
     option: str | None = None,
     declared: str | None = None,
+    authored: bool = False,
 ) -> str | None:
     """The workflow edition this participant declares, or ``None`` when it declares none.
 
@@ -94,11 +120,15 @@ def resolve_workflow_edition(
         option: A served peer's ``ServeOptions`` / ``--workflow-edition`` value.
         declared: The class-level declaration (``EnvFactory.workflow_edition`` /
             ``Model.workflow_edition``).
+        authored: Whether this participant has a home for a declaration -- an
+            authored subclass, or a served peer. Only such a participant is
+            nudged when it floats; an ad hoc callable in a local run is not.
 
     Returns:
         The winning declaration, validated and trimmed, or ``None`` when no
         surface declares one -- in which case the peer floats to this build's
-        newest edition and a one-time warning says so. An empty
+        newest edition and, when ``authored``, a one-time
+        :class:`WorkflowEditionWarning` says so. An empty
         ``RLMESH_WORKFLOW_EDITION`` is the deliberate form of that: it ends
         resolution without consulting ``option`` / ``declared`` /
         ``pyproject.toml``, and without the warning.
@@ -120,7 +150,8 @@ def resolve_workflow_edition(
     project = _from_pyproject()
     if project is not None and project.strip():
         return validate_workflow_edition(project)
-    _warn_undeclared()
+    if authored and not resolved_by_caller.get():
+        _warn_undeclared()
     return None
 
 
@@ -208,13 +239,11 @@ def _warn_undeclared() -> None:
     stacklevel = _caller_stacklevel()
     edition = current_workflow_edition()
     warnings.warn(
-        f"no workflow edition declared; this participant floats to {edition!r}, "
-        "which changes as you upgrade rlmesh. Declare the edition you authored "
-        "against so upgrading cannot change your behavior: set "
-        f'workflow_edition = "{edition}" on your EnvFactory/Model class, or '
-        f'[tool.rlmesh] workflow_edition = "{edition}" in pyproject.toml. Set '
-        f"{WORKFLOW_EDITION_ENV_VAR} to an empty string to float deliberately "
-        "and silence this.",
+        f"no workflow edition declared: floating to {edition!r}, which moves when "
+        f'rlmesh upgrades. Pin it with workflow_edition = "{edition}" on the class '
+        f"or [tool.rlmesh] in pyproject.toml; {WORKFLOW_EDITION_ENV_VAR}='' floats "
+        "deliberately.",
+        WorkflowEditionWarning,
         stacklevel=stacklevel,
     )
 
@@ -225,6 +254,7 @@ def serve_options_declaring(
     call: str | None = None,
     option: str | None = None,
     declared: str | None = None,
+    authored: bool = True,
 ) -> ServeOptions | None:
     """Return ``options`` carrying this peer's resolved edition declaration.
 
@@ -238,7 +268,9 @@ def serve_options_declaring(
     """
     if option is None and options is not None:
         option = options.workflow_edition
-    resolved = resolve_workflow_edition(call=call, option=option, declared=declared)
+    resolved = resolve_workflow_edition(
+        call=call, option=option, declared=declared, authored=authored
+    )
     if (resolved is None and options is None) or (
         options is not None and resolved == options.workflow_edition
     ):

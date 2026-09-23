@@ -223,20 +223,19 @@ def test_a_cohort_declaration_pins_the_exact_build(served_env: str) -> None:
 
 
 def test_an_undeclared_client_still_negotiates_the_env_declaration(
-    served_env: str, undeclared: None
+    served_env: str, undeclared: None, recwarn: pytest.WarningsRecorder
 ) -> None:
     # The no-op case: with nothing pinned on this side the session lands on the
-    # same edition, so declaring changes nothing that was already working. The
-    # one-time float warning is attributed to this file, not to rlmesh's own.
+    # same edition, so declaring changes nothing that was already working. A
+    # client handle has no home for a declaration, so it floats quietly.
     from rlmesh.numpy import RemoteEnv
 
-    with pytest.warns(UserWarning, match="no workflow edition declared") as records:
-        client = RemoteEnv(served_env)
+    client = RemoteEnv(served_env)
     try:
         assert client.selected_workflow_edition == COHORT
     finally:
         client.close()
-    assert records[0].filename == __file__
+    assert [w for w in recwarn if "workflow edition" in str(w.message)] == []
 
 
 def test_a_pyproject_bare_base_declaration_runs_a_local_model(

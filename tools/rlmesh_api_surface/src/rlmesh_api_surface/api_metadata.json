@@ -212,6 +212,9 @@
     "rlmesh.predict_seed": {
       "description": "Per-predict sampling seed mixed from an episode's reset seed and its re-plan ordinal."
     },
+    "rlmesh.WorkflowEditionWarning": {
+      "description": "Warned once per process when an authored EnvFactory/Model subclass or a served participant declares no workflow edition and floats to this build's newest; filter it by category."
+    },
     "rlmesh.current_workflow_edition": {
       "description": "The bare YYYY.MM workflow edition this build runs at, on every build of it: the value to paste into a workflow_edition declaration. It names the contract and selects whichever spelling both sides offer, a prerelease or source build's cohort included."
     },

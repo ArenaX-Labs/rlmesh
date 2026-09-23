@@ -1335,24 +1335,31 @@ class ModelBase(Generic[ObsT, ActT]):
                         local_contract(env_obj),
                         trust_entrypoints=self._trust_entrypoints,
                     )
+                from .._editions import resolved_by_caller
                 from .._load_native import load_native
 
                 # The loopback server is part of THIS call, so it takes the run's
                 # already-resolved declaration verbatim instead of re-resolving and
                 # possibly landing on a different edition than the runtime tier.
-                server = EnvServer(
-                    cast("VectorServerEnvLike", env_obj),
-                    "127.0.0.1:0",
-                    framework=getattr(env_obj, "_bridge", None),
-                    options=(
-                        load_native("ServeOptions")(workflow_edition=workflow_edition)
-                        if workflow_edition is not None
-                        else None
-                    ),
-                    # The env is borrowed (or built above): its close() is this
-                    # call's decision, not the loopback server's.
-                    close_env_on_shutdown=False,
-                )
+                resolved = resolved_by_caller.set(True)
+                try:
+                    server = EnvServer(
+                        cast("VectorServerEnvLike", env_obj),
+                        "127.0.0.1:0",
+                        framework=getattr(env_obj, "_bridge", None),
+                        options=(
+                            load_native("ServeOptions")(
+                                workflow_edition=workflow_edition
+                            )
+                            if workflow_edition is not None
+                            else None
+                        ),
+                        # The env is borrowed (or built above): its close() is this
+                        # call's decision, not the loopback server's.
+                        close_env_on_shutdown=False,
+                    )
+                finally:
+                    resolved_by_caller.reset(resolved)
                 server.start()
                 address = server.address
                 if self._native_run is not None:
@@ -1542,7 +1549,12 @@ class ModelBase(Generic[ObsT, ActT]):
         """
         from .._editions import resolve_workflow_edition
 
-        return resolve_workflow_edition(call=call, declared=type(self).workflow_edition)
+        return resolve_workflow_edition(
+            call=call,
+            declared=type(self).workflow_edition,
+            # A subclass has a home for the declaration; a wrapped callable has none.
+            authored=self._policy is self,
+        )
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}()"

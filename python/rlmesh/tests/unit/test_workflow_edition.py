@@ -131,7 +131,7 @@ class TestPrecedence:
 
     def test_undeclared_resolves_to_nothing(self) -> None:
         with pytest.warns(UserWarning, match="no workflow edition declared"):
-            assert resolve_workflow_edition() is None
+            assert resolve_workflow_edition(authored=True) is None
 
     def test_pyproject_is_the_lowest_declaration(self, tmp_path: Path) -> None:
         write_pyproject(tmp_path, EDITION)
@@ -177,7 +177,10 @@ class TestPrecedence:
     @pytest.mark.parametrize("blank", ["", "   "])
     def test_a_blank_declaration_is_no_declaration(self, blank: str) -> None:
         with pytest.warns(UserWarning, match="no workflow edition declared"):
-            assert resolve_workflow_edition(call=blank, option=blank) is None
+            assert (
+                resolve_workflow_edition(call=blank, option=blank, authored=True)
+                is None
+            )
 
 
 class TestRefusal:
@@ -186,7 +189,7 @@ class TestRefusal:
     @pytest.mark.parametrize("surface", ["call", "option", "declared"])
     def test_unknown_edition_is_refused_at_construction(self, surface: str) -> None:
         with pytest.raises(ValueError, match=UNKNOWN_EDITION) as refusal:
-            _ = resolve_workflow_edition(**{surface: UNKNOWN_EDITION})
+            _ = resolve_workflow_edition(**{surface: UNKNOWN_EDITION})  # pyright: ignore[reportArgumentType]
         # The message names both halves of the mismatch: what was asked for and
         # what this build actually implements.
         assert current_workflow_edition() in str(refusal.value)
@@ -221,8 +224,8 @@ class TestOneTimeWarning:
     """The undeclared warning fires once per process, not once per call."""
 
     def test_warns_once(self, recwarn: pytest.WarningsRecorder) -> None:
-        assert resolve_workflow_edition() is None
-        assert resolve_workflow_edition() is None
+        assert resolve_workflow_edition(authored=True) is None
+        assert resolve_workflow_edition(authored=True) is None
         assert (
             len(
                 [w for w in recwarn if "no workflow edition declared" in str(w.message)]
@@ -231,18 +234,38 @@ class TestOneTimeWarning:
         )
 
     def test_names_the_edition_it_floated_to_and_how_to_declare(self) -> None:
-        with pytest.warns(UserWarning) as records:
-            _ = resolve_workflow_edition()
+        with pytest.warns(rlmesh.WorkflowEditionWarning) as records:
+            _ = resolve_workflow_edition(authored=True)
         message = str(records[0].message)
         assert current_workflow_edition() in message
         assert "workflow_edition" in message
         assert WORKFLOW_EDITION_ENV_VAR in message
+        assert len(message) < 240
+
+    def test_only_an_authored_participant_is_nudged(
+        self, recwarn: pytest.WarningsRecorder
+    ) -> None:
+        # An ad hoc callable has nowhere to write a declaration; a subclass does.
+        class Authored(rlmesh.Model[Any, Any]):
+            def predict(self, obs: Any) -> Any:
+                return obs
+
+        from rlmesh.numpy import Model as NumpyModel
+
+        env = _two_step_env()
+        NumpyModel(lambda obs: obs).run(env, episodes=1)
+        assert [w for w in recwarn if "workflow edition" in str(w.message)] == []
+        Authored().run(env, episodes=1)
+        nudges = [w for w in recwarn if "workflow edition" in str(w.message)]
+        assert len(nudges) == 1
+        assert nudges[0].category is rlmesh.WorkflowEditionWarning
+        assert Path(nudges[0].filename) == Path(__file__)
 
     def test_the_empty_env_var_floats_deliberately_and_stays_quiet(
         self, monkeypatch: pytest.MonkeyPatch, recwarn: pytest.WarningsRecorder
     ) -> None:
         monkeypatch.setenv(WORKFLOW_EDITION_ENV_VAR, "")
-        assert resolve_workflow_edition() is None
+        assert resolve_workflow_edition(authored=True) is None
         assert [
             w for w in recwarn if "no workflow edition declared" in str(w.message)
         ] == []

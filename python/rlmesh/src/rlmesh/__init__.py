@@ -28,7 +28,7 @@ from . import spaces as spaces
 from . import specs as specs
 from . import types as types
 from ._authoring import EnvFactory, trial_index
-from ._editions import current_workflow_edition
+from ._editions import WorkflowEditionWarning, current_workflow_edition
 from ._metadata import sanitize_metadata
 from ._models import (
     NO_ADAPTER,
@@ -156,6 +156,7 @@ __all__ = [
     "Variant",
     "Vector",
     "View",
+    "WorkflowEditionWarning",
     "__build__",
     "__version__",
     "adapters",

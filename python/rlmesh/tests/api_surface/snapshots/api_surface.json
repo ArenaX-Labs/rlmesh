@@ -37,6 +37,7 @@
       "Variant",
       "Vector",
       "View",
+      "WorkflowEditionWarning",
       "__build__",
       "__version__",
       "adapters",
@@ -1226,6 +1227,10 @@
           }
         },
         "signature": "View(backend: str = 'terminal', port: int = 8008, fps: int = 30, source: str | None = None, format: str = 'jpeg', quality: int = 75)",
+        "stability": "Stable"
+      },
+      "WorkflowEditionWarning": {
+        "kind": "class",
         "stability": "Stable"
       },
       "__build__": {
