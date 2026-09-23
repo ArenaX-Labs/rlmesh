@@ -203,9 +203,8 @@ class Action:
         components: Action actuators in vector order.
         clip: Optional ``(low, high)`` clip applied to the final vector.
 
-    Action chunking is no longer a spec knob: the execution horizon is chosen by the
-    runtime (``execution_horizon`` on ``ResolveAdapter``), and a chunked policy
-    declares a ``predict_chunk`` corner rather than an ``execute_horizon``.
+    The execution horizon is chosen by the runtime (``execution_horizon`` on
+    ``ResolveAdapter``), and a chunked policy implements ``predict_chunk``.
     """
 
     components: tuple[Actuator, ...]

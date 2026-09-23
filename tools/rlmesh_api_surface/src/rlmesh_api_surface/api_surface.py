@@ -718,12 +718,16 @@ def _render_docstring(docstring: griffe.Docstring) -> str:
             _extend_paragraph(lines, _clean_text(str(value)))
         elif kind in {"parameters", "other_parameters"}:
             _extend_items(lines, "Parameters", value)
+        elif kind == "attributes":
+            _extend_items(lines, "Attributes", value)
         elif kind == "returns":
             _extend_items(lines, "Returns", value)
         elif kind == "raises":
             _extend_items(lines, "Raises", value)
         elif kind == "warns":
             _extend_items(lines, "Warnings", value)
+        elif kind == "admonition":
+            _extend_paragraph(lines, _clean_text(value.description))
         elif kind == "examples":
             _extend_examples(lines, value)
         else:

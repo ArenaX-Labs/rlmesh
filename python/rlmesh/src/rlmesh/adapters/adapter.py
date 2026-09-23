@@ -221,10 +221,10 @@ class AdapterBase(ABC, Generic[ActionT]):
         bare array/leaf for a flat (non-Dict) env -- and returns an env-ready
         action, suitable for :class:`rlmesh.numpy.Model`.
 
-        Action chunking is no longer driven here: the execution horizon is a runtime
-        decision (``execution_horizon`` on ``ResolveAdapter``, owned by the runtime
-        driver) and the served engine emits the chunk. This direct wrapper applies
-        one action per step; in-process chunk replay lives in
+        The execution horizon is a runtime decision (``execution_horizon`` on
+        ``ResolveAdapter``, owned by the runtime driver) and the served engine
+        emits the chunk. This direct wrapper applies one action per step;
+        in-process chunk replay lives in
         :class:`rlmesh._models._chunk.ChunkReplay`, driven by ``run`` with a
         locally chosen horizon.
         """
@@ -242,7 +242,7 @@ class Adapter(AdapterBase[NumpyArray]):
 
     Declarative plans run in the native ``rlmesh-adapters`` core; custom
     inputs run their host-language transforms on the raw Python
-    observation, exactly as before.
+    observation.
     """
 
     def __init__(

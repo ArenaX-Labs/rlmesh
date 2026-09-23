@@ -405,7 +405,7 @@
       "description": "Body part for the right arm (right_arm)."
     },
     "rlmesh.adapters.ARM_2": {
-      "description": "Body part for the second arm when no side is meant (arm_2); the part the legacy _2 roles spell."
+      "description": "Body part for the second arm when no side is meant (arm_2); the part used by the _2 role constants."
     },
     "rlmesh.adapters.HEAD": {
       "description": "Body part for the head (head), e.g. a head-mounted camera."
