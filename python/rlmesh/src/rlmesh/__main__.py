@@ -13,6 +13,9 @@ from typing import cast
 from ._cli.main import find_repo_root
 
 _DISTRIBUTION_ENV = "RLMESH_CLI_DISTRIBUTION"
+#: The interpreter `rlmesh check` / `rlmesh describe` run `rlmesh._describe`
+#: in: this one, unless the caller already chose.
+_PYTHON_ENV = "RLMESH_PYTHON"
 
 
 def _load_extension_cli() -> Callable[[list[str]], int]:
@@ -44,6 +47,7 @@ def main(argv: list[str] | None = None) -> int:
         os.environ,
         "python-source" if repo_root is not None else "python-wheel",
     )
+    os.environ.setdefault(_PYTHON_ENV, sys.executable)
 
     try:
         run_cli = _load_extension_cli()

@@ -30,8 +30,16 @@ Emitted shape (env)::
         "env_contracts": {"discriminants", "branches"},   # only if tag_params
         "params": {"param_spec", "signature_tier"},
         "variants": {"catalog", "variations"[, "*_error"]},
-        "runtime": {...},               # PeerInfo: python/framework versions, os, arch
+        "runtime": {...},               # PeerInfo: python/framework versions, os, arch,
+                                        # plus the edition handshake (below)
     }
+
+``runtime`` carries what the served peer's handshake will advertise, under the
+handshake's own field names: ``protocol_generation`` (the wire generation),
+``supported_workflow_editions`` (every edition this build can drive, newest
+first) and ``preferred_workflow_edition`` (the edition the class declares, or
+this build's newest). A platform reads them to decide, before it runs the
+image, whether its runtime shares an edition with it.
 
 A model envelope drops ``env_spec``/``env_tags`` and carries ``model_spec``
 plus ``corners`` (the predict corners the class defines, e.g.
@@ -39,16 +47,25 @@ plus ``corners`` (the predict corners the class defines, e.g.
 support) instead. Every gathered piece is best-effort: a failure to build
 the env, read a spec, or run an enumeration becomes an ``"error"`` badge, never a
 crash -- the artifact is always emitted.
+
+The module doubles as the pre-push checker behind ``rlmesh check`` /
+``rlmesh check-image`` / ``rlmesh describe``: :func:`check_target` runs the
+class-level checks on a describe envelope and :func:`check_labels` the same
+checks on a built image's labels, both reporting into a :class:`CheckReport`.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import inspect
 import json
 import math
+import os
 import re
-from collections.abc import Callable, Iterable, Mapping, Sequence
+import sys
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import Any, cast
 
 from ._entrypoint import resolve_entrypoint
@@ -57,7 +74,14 @@ from ._variants import Variant
 from .params._resolve import describe as _describe_params
 from .params._resolve import resolve
 
-__all__ = ["describe", "describe_json", "main"]
+__all__ = [
+    "CheckReport",
+    "check_labels",
+    "check_target",
+    "describe",
+    "describe_json",
+    "main",
+]
 
 
 def describe(
@@ -85,6 +109,7 @@ def describe_json(
     kind: str | None = None,
     generated_at: str | None = None,
     served_env: object | None = None,
+    workflow_edition: str | None = None,
 ) -> str:
     """Like :func:`describe`, but return the canonical JSON string verbatim.
 
@@ -92,13 +117,19 @@ def describe_json(
     ``json.loads`` round-trip) when baking into OCI metadata. ``served_env`` is
     an env already built from ``obj`` (the one a server hosts): its spaces are
     read directly instead of constructing a second representative env.
+    ``workflow_edition`` is the declaration a server already resolved for the
+    peer it hosts (``--workflow-edition`` and the surfaces around it), which
+    the envelope's ``runtime.preferred_workflow_edition`` must match: pass the
+    resolved value, or ``""`` when the server resolved none, so the envelope
+    reports exactly what the handshake sends. ``None`` (the default, for a
+    class described on its own) resolves the class's declaration here.
     """
     entrypoint: str | None = None
     if isinstance(obj, str):
         entrypoint = obj
         obj = resolve_entrypoint(obj, label="describe entrypoint")
     kind, method = _kind_and_method(obj, kind)
-    pieces = _gather(obj, method, kind, entrypoint, served_env)
+    pieces = _gather(obj, method, kind, entrypoint, served_env, workflow_edition)
     # default=repr keeps describe total: an exotic catalog/param value renders as
     # a string rather than crashing the artifact; allow_nan=False matches the Rust
     # codec's RFC-8259 strictness (NaN/Infinity are rejected, not silently passed).
@@ -132,13 +163,14 @@ def _gather(
     kind: str,
     entrypoint: str | None,
     served_env: object | None = None,
+    workflow_edition: str | None = None,
 ) -> dict[str, Any]:
     """Assemble the per-language raw pieces; Rust owns the wrapper + serialization."""
     spec, target, enumerate_fn, catalog_fn = _resolve_target(obj, method)
     pieces: dict[str, Any] = {
         "target": _target(obj, entrypoint),
         "params": _describe_params(spec, target),
-        "runtime": dict(_collect_peer_info()),
+        "runtime": {**_collect_peer_info(), **_workflow_offer(obj, workflow_edition)},
     }
     variants = _variants(enumerate_fn, catalog_fn, spec, target)
     if variants:
@@ -379,7 +411,7 @@ def _env_spec(
         try:
             env, close = _build_env(obj, spec, target, catalog_fn, branch)
         except Exception as exc:
-            return {"error": str(exc)}
+            return _badge(exc)
     try:
         # Vector envs expose single_* (+ num_envs), not observation_space/action_space.
         if _is_vector_env(env):
@@ -393,9 +425,20 @@ def _env_spec(
             "action_space": _space_dict(env.action_space),
         }
     except Exception as exc:
-        return {"error": str(exc)}
+        return _badge(exc)
     finally:
         close()
+
+
+def _badge(exc: BaseException) -> dict[str, str]:
+    """An ``env_spec`` error badge: the message plus the exception's type name.
+
+    The type is what lets a pre-build check tell "this machine cannot build
+    it" (an ``ImportError`` for a simulator only the image has, a CUDA
+    error) from "it is broken" (a ``TypeError`` in ``make``); see
+    :func:`_needs_local_resources`.
+    """
+    return {"error": str(exc), "error_type": type(exc).__name__}
 
 
 def _is_vector_env(env: object) -> bool:
@@ -480,6 +523,49 @@ def _collect_peer_info() -> Mapping[str, Any]:
     from ._peer_info import collect_peer_info  # lazy
 
     return collect_peer_info()
+
+
+def _workflow_offer(obj: object, resolved: str | None = None) -> dict[str, Any]:
+    """The edition handshake a peer serving ``obj`` will send, by its wire names.
+
+    ``protocol_generation`` and ``supported_workflow_editions`` come from the
+    native build the same way the Rust handshake builder reads them (there is
+    no second list). ``preferred_workflow_edition`` is the declaration the
+    server hosting ``obj`` sends: ``resolved`` when a server already settled it
+    (``""`` when it settled on none), else what
+    :func:`rlmesh._editions.resolve_workflow_edition` settles on for the class
+    -- its ``workflow_edition`` declaration, ``RLMESH_WORKFLOW_EDITION``, or
+    ``[tool.rlmesh]`` -- and in either case this build's newest edition when
+    nothing is declared, exactly as the handshake spells it. A declaration
+    this build cannot run is not fatal here (describe stays total); it is
+    recorded as ``workflow_edition_error`` and ``rlmesh check`` fails on it.
+    """
+    from ._editions import resolve_workflow_edition
+    from ._load_native import load_native
+
+    info = load_native("build_info")()
+    cls = obj if isinstance(obj, type) else type(obj)
+    declared = getattr(cls, "workflow_edition", None)
+    offer: dict[str, Any] = {
+        "protocol_generation": str(info.protocol_generation),
+        "supported_workflow_editions": [
+            str(edition) for edition in info.supported_workflow_editions
+        ],
+    }
+    preferred: str | None
+    if resolved is not None:
+        preferred = resolved.strip() or None
+    else:
+        try:
+            preferred = resolve_workflow_edition(
+                declared=declared if isinstance(declared, str) else None,
+                authored=False,
+            )
+        except ValueError as exc:
+            offer["workflow_edition_error"] = str(exc)
+            preferred = None
+    offer["preferred_workflow_edition"] = preferred or str(info.workflow_edition)
+    return offer
 
 
 def _resolve_target(
@@ -626,7 +712,7 @@ def _as_callable(obj: object) -> Callable[..., object]:
     return obj
 
 
-# ---- image label check (--check) -------------------------------------------
+# ---- pre-push checks (rlmesh check / check-image) --------------------------
 
 #: OCI config labels the managed platform's probe reads off a pushed image.
 DESCRIBE_LABEL = "dev.rlmesh.describe"
@@ -636,71 +722,290 @@ PACKAGE_LABEL = "dev.rlmesh.package"
 #: (DNS label); mirror its pattern so the failure happens before the push.
 _CHECKPOINT_NAME = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
 
+#: Exception types that always mean the env is broken, never that this machine
+#: lacks something: a ``TypeError`` in ``make`` is a bug wherever it runs, and
+#: a generic ``FileNotFoundError`` is an asset the author forgot, not a driver.
+_NEVER_SOFTENED = frozenset(
+    {
+        "TypeError",
+        "KeyError",
+        "AttributeError",
+        "FileNotFoundError",
+        "NameError",
+        "IndexError",
+        "ValueError",
+        "AssertionError",
+        "NotImplementedError",
+        "SyntaxError",
+    }
+)
+#: Exception types that mean a dependency is present only in the image: a lazy
+#: simulator import inside ``make`` cannot be satisfied on the host.
+_SOFTENED_TYPES = frozenset({"ImportError", "ModuleNotFoundError"})
+#: Whole-word hints (so ``egl`` does not match ``illegal``) that an error came
+#: from a GPU, a driver, or a display this machine does not have.
+_RESOURCE_WORDS = re.compile(
+    r"\b(cuda|cudnn|nvrtc|nccl|gpu|nvidia|driver|display|egl|opengl|vulkan|x11|xcb|"
+    r"libgl|libcuda|no such device|shared object file)\b",
+    re.IGNORECASE,
+)
 
-def check_labels(
-    labels: Mapping[str, str] | None,
-) -> tuple[list[str], list[str]]:
-    """Validate an image's rlmesh labels the way the platform probe will.
 
-    Returns ``(failures, warnings)``: a failure means the push will land as
-    not-runnable (or with claims the platform rejects); a warning is a badge or
-    a claim the platform will trim.
+@dataclass
+class CheckReport:
+    """What a pre-push check found, in the buckets ``rlmesh check`` prints.
+
+    ``failed``: the push would land as not-runnable, or the platform would
+    reject a claim. ``warnings``: a claim the platform trims, or intent it
+    cannot see. ``not_checked``: what could not be decided here (describe
+    needed a GPU or assets this machine lacks, an older envelope without
+    editions) and who decides it instead. ``passed`` is informational. The
+    JSON form (``--json``) is ``{"failed", "warnings", "not_checked",
+    "passed"}``, each a list of strings.
     """
-    failures: list[str] = []
-    warnings: list[str] = []
+
+    failed: list[str] = field(default_factory=lambda: [])
+    warnings: list[str] = field(default_factory=lambda: [])
+    not_checked: list[str] = field(default_factory=lambda: [])
+    passed: list[str] = field(default_factory=lambda: [])
+
+    @property
+    def ok(self) -> bool:
+        """Whether nothing failed (warnings and unchecked items do not block)."""
+        return not self.failed
+
+    def to_dict(self) -> dict[str, list[str]]:
+        return {
+            "failed": list(self.failed),
+            "warnings": list(self.warnings),
+            "not_checked": list(self.not_checked),
+            "passed": list(self.passed),
+        }
+
+
+def check_target(target: object, *, kind: str | None = None) -> CheckReport:
+    """Check an env/model class the way the platform will, before it is built.
+
+    ``target`` is a ``"module:Class"`` entrypoint, a class, or an instance
+    (see :func:`describe`). Fails on: an env without ``tags``, a spec/tags
+    that does not resolve, a broken ``model_spec`` / ``env_tags``, an edition
+    declaration this build cannot run, or a target that does not import. Warns
+    on a model with no class-level ``spec`` (one set in ``load()`` serves fine
+    and rides the handshake, but a baked label will not carry it; the managed
+    probe cannot synthesize inputs without a ``ModelSpec``), on ad hoc roles a
+    curated publish gate would refuse, and on best-effort badges elsewhere in
+    the envelope (variants, non-default contract branches). ``not_checked``
+    when building the env for its spaces needed a GPU, a display, or assets
+    this machine lacks.
+    """
+    report = CheckReport()
+    try:
+        envelope = describe(target, kind=kind)
+    except Exception as exc:
+        report.failed.append(f"describe {target!r}: {exc}")
+        return report
+    _check_envelope(envelope, report, "", baked=False)
+    return report
+
+
+def check_labels(labels: Mapping[str, str] | None) -> CheckReport:
+    """Validate a built image's rlmesh labels the way the platform probe will.
+
+    A missing ``dev.rlmesh.describe`` label is a note, not a failure: the
+    platform reads describe off the ``rlmesh.serve`` handshake, so a plain
+    ``python -m rlmesh.serve`` image with no labels probes fine (run
+    :func:`check_target` on the class for the class-level checks). A present
+    label gets the same checks as :func:`check_target` with the platform's
+    verdicts for a baked envelope: an ``env_spec`` / ``model_spec`` error
+    badge fails (the platform fails it, whatever caused it), an ``env_tags``
+    badge warns. A ``dev.rlmesh.package`` label is checked for well-formed
+    checkpoints.
+    """
+    report = CheckReport()
     labels = labels or {}
 
     raw = labels.get(DESCRIBE_LABEL, "")
     if not raw:
-        failures.append(
-            f"no {DESCRIBE_LABEL} label: the image will be browsable but not "
-            "runnable. Bake one in (python -m rlmesh._describe at build time)."
+        report.not_checked.append(
+            f"no {DESCRIBE_LABEL} label: the platform reads describe off the "
+            "rlmesh.serve handshake instead; run `rlmesh check <module:Class>` "
+            "for the class-level checks"
         )
     else:
-        _check_describe(raw, failures, warnings)
+        _check_describe(raw, report)
 
     raw = labels.get(PACKAGE_LABEL, "")
     if raw:
-        _check_package(raw, failures, warnings)
-    return failures, warnings
+        _check_package(raw, report)
+    return report
 
 
-def _check_describe(raw: str, failures: list[str], warnings: list[str]) -> None:
+def _check_describe(raw: str, report: CheckReport) -> None:
     try:
         envelope = cast("dict[str, Any]", json.loads(raw))
     except ValueError:
-        failures.append(f"{DESCRIBE_LABEL} is not valid JSON")
+        report.failed.append(f"{DESCRIBE_LABEL} is not valid JSON")
         return
+    if not isinstance(cast("object", envelope), dict):
+        report.failed.append(f"{DESCRIBE_LABEL} must be a JSON object")
+        return
+    _check_envelope(envelope, report, f"{DESCRIBE_LABEL} ", baked=True)
+
+
+def _check_envelope(
+    envelope: Mapping[str, Any], report: CheckReport, where: str, *, baked: bool
+) -> None:
+    """The class-level checks, shared by a fresh envelope and a baked label.
+
+    ``where`` prefixes every message (the label name for a label check, empty
+    for a class check). ``baked`` selects the platform's verdict for an
+    ``env_spec`` badge: in a label it fails admission whatever caused it; on
+    a class checked before the build, a badge that only says this machine
+    lacks a GPU, a driver, or an in-image dependency is ``not_checked``.
+    """
     if envelope.get("schema_version") != 1:
-        failures.append(
-            f"{DESCRIBE_LABEL} schema_version "
-            f"{envelope.get('schema_version')!r} is not the supported version 1"
+        report.failed.append(
+            f"{where}schema_version {envelope.get('schema_version')!r} is not the "
+            "supported version 1"
         )
-    if envelope.get("kind") not in ("env", "model"):
-        failures.append(
-            f"{DESCRIBE_LABEL} kind {envelope.get('kind')!r} is not 'env' or 'model'"
-        )
+    kind = envelope.get("kind")
+    if kind not in ("env", "model"):
+        report.failed.append(f"{where}kind {kind!r} is not 'env' or 'model'")
+        return
+    target = envelope.get("target")
+    name = f"the {kind}"
+    if isinstance(target, Mapping):
+        target_map = cast("Mapping[str, object]", target)
+        name = str(target_map.get("entrypoint") or target_map.get("qualname") or name)
+
+    if kind == "model":
+        spec = envelope.get("model_spec")
+        if spec is None:
+            # A class-level read: a model that sets self.spec in load() (a VLA
+            # whose action dim comes from the checkpoint) serves fine and its
+            # handshake envelope carries the spec, so this is not a failure --
+            # but a label baked from the class will not carry it.
+            report.warnings.append(
+                f"{where}model_spec: {name} declares no class-level spec. Set in "
+                "load()? Fine for a label-less image (the handshake carries it); "
+                "a baked label will not carry it, and the managed probe cannot "
+                "synthesize inputs without a ModelSpec"
+            )
+        elif isinstance(spec, Mapping) and "error" in spec:
+            badge = cast("Mapping[str, object]", spec)["error"]
+            report.failed.append(f"{where}model_spec: {badge}")
+        else:
+            report.passed.append(f"{where}model_spec: declared")
+    else:
+        tags = envelope.get("env_tags")
+        if tags is None:
+            report.failed.append(
+                f"{where}env_tags: {name} declares no tags; the platform cannot "
+                "adapt a model to it without EnvTags (set `tags = EnvTags(...)` "
+                "on the class)"
+            )
+        elif isinstance(tags, Mapping) and "error" in tags:
+            # The platform warns on a tags badge (it can still read the spaces).
+            badge = cast("Mapping[str, object]", tags)["error"]
+            report.warnings.append(f"{where}env_tags: {badge}")
+        else:
+            report.passed.append(f"{where}env_tags: declared")
+        env_spec = envelope.get("env_spec")
+        if isinstance(env_spec, Mapping) and "error" in env_spec:
+            badge_map = cast("Mapping[str, object]", env_spec)
+            badge = str(badge_map["error"])
+            error_type = str(badge_map.get("error_type") or "")
+            if baked:
+                report.failed.append(
+                    f"{where}env_spec: {badge} (the platform fails a label that "
+                    "carries this badge; bake the label inside the image, where "
+                    "the env builds)"
+                )
+            elif _needs_local_resources(error_type, badge):
+                report.not_checked.append(
+                    f"{where}env_spec: could not build the env on this machine "
+                    f"({error_type}: {badge}); the platform probe builds it in the "
+                    "container. Do not bake a describe label from this machine: it "
+                    "would carry this badge and fail admission"
+                )
+            else:
+                report.failed.append(f"{where}env_spec: {error_type}: {badge}")
+        elif isinstance(env_spec, Mapping):
+            report.passed.append(f"{where}env_spec: spaces read")
+
     for path, badge in _describe_badges(envelope):
-        warnings.append(f"{DESCRIBE_LABEL} {path}: {badge}")
-    _check_roles(envelope, warnings)
+        if path in ("env_spec", "env_tags", "model_spec"):
+            continue  # reported above, with their own severity
+        report.warnings.append(f"{where}{path}: {badge}")
+    _check_specs(envelope, report, where)
+    _check_runtime(envelope, report, where)
 
 
-def _check_roles(envelope: Mapping[str, Any], warnings: list[str]) -> None:
-    """Warn about ad-hoc roles a curated publish gate would reject.
+def _needs_local_resources(error_type: str, message: str) -> bool:
+    """Whether an ``env_spec`` badge means "not buildable here", not "broken".
 
-    ``strict`` is the managed tier: registered roles pass, so does the ``x/``
-    escape namespace, and anything else is an accident waiting to resolve
-    against nothing. A warning here, not a failure -- the open vocabulary still
-    runs everywhere; it is the curated boundary that refuses it.
+    Decided by the exception type first (see :data:`_NEVER_SOFTENED` and
+    :data:`_SOFTENED_TYPES`), then by a CUDA-named type, then by whole-word
+    GPU/driver/display hints in the message. Only ``rlmesh check`` on a class
+    consults this; a badge baked into a label always fails, as it does on the
+    platform.
+    """
+    if error_type in _NEVER_SOFTENED:
+        return False
+    if error_type in _SOFTENED_TYPES or "cuda" in error_type.lower():
+        return True
+    return bool(_RESOURCE_WORDS.search(message)) or "/dev/nvidia" in message
+
+
+def _check_specs(envelope: Mapping[str, Any], report: CheckReport, where: str) -> None:
+    """A spec/tags that does not resolve fails; ad hoc roles only warn.
+
+    ``passthrough`` is the structural gate every tier shares: a spec it refuses
+    resolves nowhere. ``strict`` is the managed tier: registered roles pass, so
+    does the ``x/`` escape namespace, and anything else is an accident waiting
+    to resolve against nothing. A warning there, not a failure -- the open
+    vocabulary still runs everywhere; it is the curated boundary that refuses
+    it.
     """
     for side, key in (("env", "env_tags"), ("model", "model_spec")):
         spec = envelope.get(key)
         if not isinstance(spec, Mapping) or "error" in spec:
             continue
+        raw = json.dumps(spec)
         try:
-            adapters_spec_normalize(side, json.dumps(spec), True, "strict")
+            adapters_spec_normalize(side, raw, True, "passthrough")
         except ValueError as exc:
-            warnings.append(f"{DESCRIBE_LABEL} {key}: {exc}")
+            report.failed.append(f"{where}{key}: does not resolve: {exc}")
+            continue
+        try:
+            adapters_spec_normalize(side, raw, True, "strict")
+        except ValueError as exc:
+            report.warnings.append(f"{where}{key}: {exc}")
+
+
+def _check_runtime(
+    envelope: Mapping[str, Any], report: CheckReport, where: str
+) -> None:
+    """The edition handshake the envelope advertises (see :func:`_workflow_offer`)."""
+    raw = envelope.get("runtime")
+    runtime: Mapping[str, object] = (
+        cast("Mapping[str, object]", raw) if isinstance(raw, Mapping) else {}
+    )
+    if not runtime.get("supported_workflow_editions"):
+        report.not_checked.append(
+            f"{where}runtime: describe carries no workflow editions (built with an "
+            "older rlmesh); the runtime probe verifies the handshake"
+        )
+        return
+    error = runtime.get("workflow_edition_error")
+    if error:
+        report.failed.append(f"{where}runtime: workflow edition: {error}")
+        return
+    report.passed.append(
+        f"{where}runtime: {runtime.get('protocol_generation')}, declares "
+        f"{runtime.get('preferred_workflow_edition')} of "
+        f"{runtime.get('supported_workflow_editions')}"
+    )
 
 
 def _describe_badges(envelope: Mapping[str, Any]) -> list[tuple[str, str]]:
@@ -760,7 +1065,8 @@ def _describe_badges(envelope: Mapping[str, Any]) -> list[tuple[str, str]]:
     return out
 
 
-def _check_package(raw: str, failures: list[str], warnings: list[str]) -> None:
+def _check_package(raw: str, report: CheckReport) -> None:
+    failures, warnings = report.failed, report.warnings
     try:
         package = cast("dict[str, Any]", json.loads(raw))
     except ValueError:
@@ -821,32 +1127,112 @@ def _docker_labels(image: str) -> Mapping[str, str] | None:
     return cast("Mapping[str, str] | None", json.loads(result.stdout))
 
 
-def _run_check(image: str) -> int:
+def _read_labels(source: str) -> Mapping[str, str] | None:
+    """A labels JSON object from a file, or stdin for ``-``."""
+    text = sys.stdin.read() if source == "-" else open(source, encoding="utf-8").read()
+    labels = cast("object", json.loads(text or "null"))
+    if labels is None:
+        return None
+    if not isinstance(labels, dict):
+        raise ValueError("labels must be a JSON object of label -> value")
+    return {str(k): str(v) for k, v in cast("dict[object, object]", labels).items()}
+
+
+@contextlib.contextmanager
+def _stdout_to_stderr() -> Iterator[None]:
+    """Route everything written to stdout, Python's and C libraries', to stderr.
+
+    Describing runs the author's code: importing a simulator prints banners, a
+    ``make()`` may print, a C library writes to fd 1 directly. The envelope
+    (and the JSON report the ``rlmesh`` CLI parses) must be the only bytes on
+    stdout, so fd 1 is dup2'd onto fd 2 for the duration and ``sys.stdout`` is
+    pointed at ``sys.stderr`` (a replaced ``sys.stdout``, as under a test
+    harness, is not backed by fd 1), then both are restored before the payload
+    is written.
+    """
+    sys.stdout.flush()
     try:
-        labels = _docker_labels(image)
-    except RuntimeError as exc:
-        print(f"FAIL: {exc}")
-        return 1
-    failures, warnings = check_labels(labels)
-    for message in failures:
+        saved = os.dup(1)
+    except OSError:
+        saved = None  # no usable fd 1: the Python-level redirect still applies
+    with contextlib.redirect_stdout(sys.stderr):
+        if saved is not None:
+            os.dup2(2, 1)
+        try:
+            yield
+        finally:
+            sys.stderr.flush()
+            if saved is not None:
+                os.dup2(saved, 1)
+                os.close(saved)
+
+
+def _print_report(report: CheckReport, subject: str, as_json: bool) -> int:
+    """Print a report (one line per finding, or JSON) and return the exit code."""
+    if as_json:
+        print(json.dumps(report.to_dict()))
+        return 0 if report.ok else 1
+    for message in report.failed:
         print(f"FAIL: {message}")
-    for message in warnings:
+    for message in report.warnings:
         print(f"warn: {message}")
-    if not failures:
-        print(f"ok: {image} labels will probe as runnable")
-    return 1 if failures else 0
+    for message in report.not_checked:
+        print(f"not checked: {message}")
+    for message in report.passed:
+        print(f"ok: {message}")
+    summary = (
+        f"{len(report.failed)} failed, {len(report.warnings)} warnings, "
+        f"{len(report.not_checked)} not checked"
+    )
+    print(f"{'ok' if report.ok else 'FAIL'}: {subject}: {summary}")
+    return 0 if report.ok else 1
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Resolve ``--env``/``--model`` and print (or write) the metadata envelope."""
+    """Describe a class, or run the pre-push checks, from the command line.
+
+    Modes (exactly one): ``TARGET`` / ``--env`` / ``--model`` print the
+    envelope; ``--check IMAGE`` checks a built image's labels;
+    ``--check-labels FILE`` checks labels read from a JSON file (``-`` for
+    stdin); ``--check-entrypoint MODULE:CLASS`` checks a class. Checks exit 1
+    on a failure and print ``--json`` reports for the ``rlmesh`` CLI. Whatever
+    the author's code prints while being described goes to stderr; stdout
+    carries only the payload.
+    """
     parser = argparse.ArgumentParser(prog="python -m rlmesh._describe")
+    parser.add_argument(
+        "target",
+        nargs="?",
+        help="module:Class of an EnvFactory or Model to describe (kind detected)",
+    )
     parser.add_argument("--env", help="module:Class for an environment factory")
     parser.add_argument("--model", help="module:Class for a model")
+    parser.add_argument(
+        "--label",
+        action="store_true",
+        help="print `dev.rlmesh.describe=<envelope>` for `docker build --label`; "
+        "run it inside the image (the envelope's runtime block is this machine's)",
+    )
     parser.add_argument(
         "--check",
         metavar="IMAGE",
         help="validate a built image's rlmesh labels the way the platform probe "
         "will, before pushing",
+    )
+    parser.add_argument(
+        "--check-labels",
+        metavar="FILE",
+        help="validate labels read from a JSON object file ('-' for stdin)",
+    )
+    parser.add_argument(
+        "--check-entrypoint",
+        metavar="MODULE:CLASS",
+        help="check a class for packaging and contract mistakes before building",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="print a check report as JSON {failed, warnings, not_checked, passed}",
     )
     parser.add_argument(
         "--out", help="write the envelope to this file instead of stdout"
@@ -858,17 +1244,54 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    if args.check:
-        if args.env or args.model:
-            parser.error("--check takes an image, not --env/--model")
-        return _run_check(args.check)
+    checks = [
+        value
+        for value in (args.check, args.check_labels, args.check_entrypoint)
+        if value
+    ]
+    describes = [value for value in (args.target, args.env, args.model) if value]
+    if len(checks) + len(describes) != 1:
+        parser.error(
+            "provide exactly one of TARGET, --env, --model, --check, "
+            "--check-labels, or --check-entrypoint"
+        )
+    if checks:
+        if args.check_entrypoint:
+            with _stdout_to_stderr():
+                report = check_target(args.check_entrypoint)
+            return _print_report(report, args.check_entrypoint, args.json)
+        try:
+            labels = (
+                _docker_labels(args.check)
+                if args.check
+                else _read_labels(args.check_labels)
+            )
+        except (RuntimeError, ValueError, OSError) as exc:
+            if args.json:
+                print(json.dumps(CheckReport(failed=[str(exc)]).to_dict()))
+            else:
+                print(f"FAIL: {exc}")
+            return 1
+        return _print_report(
+            check_labels(labels), args.check or args.check_labels, args.json
+        )
 
-    if bool(args.env) == bool(args.model):
-        parser.error("provide exactly one of --env or --model")
-
-    target = args.env or args.model
-    kind = "env" if args.env else "model"
-    payload = describe_json(target, kind=kind, generated_at=args.generated_at)
+    target = args.target or args.env or args.model
+    kind = "env" if args.env else "model" if args.model else None
+    with _stdout_to_stderr():
+        payload = describe_json(target, kind=kind, generated_at=args.generated_at)
+    if args.label:
+        payload = f"{DESCRIBE_LABEL}={payload}"
+        runtime = cast("dict[str, Any]", json.loads(payload[len(DESCRIBE_LABEL) + 1 :]))
+        host = str(runtime.get("runtime", {}).get("os", ""))
+        if host and host != "linux":
+            print(
+                f"RLMesh: this label was generated on {host}; the platform fails a "
+                "label whose runtime.os is not linux. Run this inside the image "
+                "(docker run --rm --entrypoint rlmesh IMAGE describe ... --label).",
+                file=sys.stderr,
+                flush=True,
+            )
 
     if args.out:
         with open(args.out, "w", encoding="utf-8") as handle:

@@ -326,6 +326,14 @@ class BuildInfo:
         of the edition; what `current_workflow_edition()` returns.
         """
     @property
+    def supported_workflow_editions(self) -> builtins.list[builtins.str]:
+        r"""
+        Every workflow edition this build can drive a session at, newest first:
+        the retained list a served peer offers on `supported_workflow_editions`
+        in its handshake, so a describe envelope advertises exactly what the
+        handshake will.
+        """
+    @property
     def build_cohort(self) -> builtins.str:
         r"""
         The cohort that spells `workflow_edition`: `stable` on a sealed release,

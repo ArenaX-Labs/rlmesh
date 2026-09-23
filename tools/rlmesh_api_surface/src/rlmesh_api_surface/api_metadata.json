@@ -222,7 +222,7 @@
       "description": "This build's identity: package version, protocol generation, the workflow edition it advertises with its sealed base, and the cohort and git state behind that spelling."
     },
     "rlmesh.BuildInfo": {
-      "description": "Immutable build identity returned by build_info(): version, protocol_generation, workflow_edition, workflow_edition_base, build_cohort, build_source, and git."
+      "description": "Immutable build identity returned by build_info(): version, protocol_generation, workflow_edition, workflow_edition_base, supported_workflow_editions, build_cohort, build_source, and git."
     },
     "rlmesh.trial_index": {
       "description": "Read the reserved trial_index reset option an env declared, from a reset's options mapping."

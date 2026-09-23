@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -19,6 +20,7 @@ def test_python_entrypoint_marks_wheel_distribution_and_forwards(
         return 23
 
     monkeypatch.delenv("RLMESH_CLI_DISTRIBUTION", raising=False)
+    monkeypatch.delenv("RLMESH_PYTHON", raising=False)
     monkeypatch.setattr(cli_main, "find_repo_root", lambda: None)
     monkeypatch.setattr(cli_main, "_load_extension_cli", lambda: run_cli)
 
@@ -27,6 +29,8 @@ def test_python_entrypoint_marks_wheel_distribution_and_forwards(
         "argv": ["version"],
         "distribution": "python-wheel",
     }
+    # `rlmesh check` / `rlmesh describe` run rlmesh._describe in this interpreter.
+    assert os.environ["RLMESH_PYTHON"] == sys.executable
 
 
 def test_python_entrypoint_preserves_existing_distribution_marker(

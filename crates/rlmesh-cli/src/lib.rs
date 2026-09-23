@@ -1,7 +1,9 @@
 mod auth;
+mod check;
 mod cli;
 mod config;
 mod helpers;
+pub mod image_check;
 mod platform;
 mod profile;
 mod registry;
@@ -70,7 +72,11 @@ pub async fn run_cli_in(
     };
 
     let mut profiles = match &cli.command {
-        Command::Version | Command::Viewtest(_) => None,
+        Command::Version
+        | Command::Viewtest(_)
+        | Command::Check(_)
+        | Command::CheckImage(_)
+        | Command::Describe(_) => None,
         _ => match ProfileStore::load(&settings) {
             Ok(profiles) => Some(profiles),
             Err(error) => {
@@ -161,6 +167,9 @@ pub async fn run_cli_in(
                     .map(|()| 0)
             }
         },
+        Command::Check(args) => check::check_target(&args, stdout, stdout_style),
+        Command::CheckImage(args) => check::check_image(&args, stdout, stdout_style),
+        Command::Describe(args) => check::describe(&args, stdout, stderr),
         Command::Viewtest(args) => viewtest::run(&args, stderr).map(|_| 0),
     };
 
@@ -221,6 +230,12 @@ fn version(stdout: &mut impl Write, style: Style) -> Result<()> {
         "Edition",
         rlmesh_proto::CURRENT_WORKFLOW_EDITION,
     )?;
+    write_key_value(
+        stdout,
+        style,
+        "Editions",
+        &rlmesh_proto::supported_workflow_editions().join(", "),
+    )?;
     write_key_value(stdout, style, "Distribution", &cli_distribution())?;
     Ok(())
 }
@@ -276,6 +291,9 @@ mod tests {
         assert!(stdout.contains("whoami"));
         assert!(stdout.contains("token"));
         assert!(stdout.contains("eval"));
+        assert!(stdout.contains("check"));
+        assert!(stdout.contains("check-image"));
+        assert!(stdout.contains("describe"));
         assert!(!stdout.contains("viewer"));
 
         let mut command = cli::Cli::command();
@@ -296,6 +314,7 @@ mod tests {
         assert!(stderr.is_empty());
         assert!(stdout.contains(env!("CARGO_PKG_VERSION")));
         assert!(stdout.contains(rlmesh_proto::CURRENT_WORKFLOW_EDITION));
+        assert!(stdout.contains(&rlmesh_proto::supported_workflow_editions().join(", ")));
         assert!(stdout.contains("Distribution"));
         assert!(!stdout.contains('\x1b'));
     }

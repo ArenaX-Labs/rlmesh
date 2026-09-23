@@ -33,6 +33,15 @@ pub enum Command {
     Token(TokenArgs),
     /// Submit, list, watch, and cancel evaluations on the signed-in platform.
     Eval(EvalArgs),
+    /// Check an env or model class for packaging and contract mistakes before
+    /// building its image (runs the Python describe; exits 1 on a failure).
+    Check(CheckArgs),
+    /// Check a built image's config the way the platform's admission will,
+    /// before pushing (docker image inspect; exits 1 on a failure).
+    CheckImage(CheckImageArgs),
+    /// Print a class's describe envelope, or its `dev.rlmesh.describe` label
+    /// for a custom-entrypoint image build.
+    Describe(DescribeArgs),
     /// Smoke-test the terminal/HTTP renderer with synthetic frames (diagnostic).
     #[command(hide = true)]
     Viewtest(ViewtestArgs),
@@ -226,6 +235,55 @@ pub struct EvalIdArgs {
     pub id: String,
     #[command(flatten)]
     pub profile: ProfileArgs,
+}
+
+/// Flags for `rlmesh check`.
+#[derive(Args, Debug)]
+pub struct CheckArgs {
+    /// The class to check, as `module:Class` (an EnvFactory or Model subclass;
+    /// the kind is detected).
+    pub target: String,
+    /// Print the report as JSON: `{"failed","warnings","not_checked","passed"}`.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Flags for `rlmesh check-image`.
+#[derive(Args, Debug)]
+pub struct CheckImageArgs {
+    /// A local image reference (`name:tag` or id) that `docker image inspect` resolves.
+    pub image: String,
+    /// The workflow editions the target platform can drive, comma-separated;
+    /// the image's rlmesh must share one. Defaults to this CLI's own rlmesh.
+    #[arg(
+        long,
+        value_name = "LIST",
+        value_delimiter = ',',
+        conflicts_with = "platform_version"
+    )]
+    pub platform_editions: Vec<String>,
+    /// The rlmesh version the target platform runs. Only this CLI's own version
+    /// is known (each release retains its own edition list); any other version
+    /// reports the edition check as not checked, so pass --platform-editions
+    /// instead. `0.1.0rc13` and `0.1.0-rc.13` name the same build.
+    #[arg(long, value_name = "VERSION")]
+    pub platform_version: Option<String>,
+    /// Print the report as JSON: `{"failed","warnings","not_checked","passed"}`.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Flags for `rlmesh describe`.
+#[derive(Args, Debug)]
+pub struct DescribeArgs {
+    /// The class to describe, as `module:Class` (the kind is detected).
+    pub target: String,
+    /// Print `dev.rlmesh.describe=<envelope>`, ready for `docker build --label`.
+    /// Run it inside the built image (`docker run --rm --entrypoint rlmesh IMAGE
+    /// describe ... --label`): the envelope records the machine it ran on, and
+    /// the platform fails a label generated off linux.
+    #[arg(long)]
+    pub label: bool,
 }
 
 /// Flags for the hidden `viewtest` diagnostic.

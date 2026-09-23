@@ -75,6 +75,10 @@
             "kind": "property",
             "signature": "property protocol_generation: str"
           },
+          "supported_workflow_editions": {
+            "kind": "property",
+            "signature": "property supported_workflow_editions: list[str]"
+          },
           "version": {
             "kind": "property",
             "signature": "property version: str"
@@ -1264,7 +1268,7 @@
       },
       "describe_json": {
         "kind": "function",
-        "signature": "describe_json(obj: object, *, kind: str | None = None, generated_at: str | None = None, served_env: object | None = None) -> str",
+        "signature": "describe_json(obj: object, *, kind: str | None = None, generated_at: str | None = None, served_env: object | None = None, workflow_edition: str | None = None) -> str",
         "stability": "Stable"
       },
       "params": {

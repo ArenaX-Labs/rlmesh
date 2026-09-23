@@ -67,15 +67,26 @@ def startup_marks() -> dict[str, str]:
 
 
 def _stamp_startup(
-    kind: str, address: str, target: object, served_env: object | None = None
+    kind: str,
+    address: str,
+    target: object,
+    served_env: object | None = None,
+    *,
+    options: ServeOptions | None = None,
 ) -> None:
-    """Mark the listen point, put the marks and the describe on the handshake, print them."""
+    """Mark the listen point, put the marks and the describe on the handshake, print them.
+
+    ``options`` is what the server will serve with: its resolved
+    ``workflow_edition`` is what the handshake declares, so the envelope is
+    told the same value rather than re-resolving the class on its own.
+    """
     from ._peer_info import register_python_peer_info
     from ._rlmesh import DESCRIBE_METADATA_KEY
 
     _mark("listen")
     extra = startup_marks()
-    if describe := _handshake_describe(target, kind, served_env):
+    resolved = (options.workflow_edition if options is not None else None) or ""
+    if describe := _handshake_describe(target, kind, served_env, resolved):
         extra[DESCRIBE_METADATA_KEY] = describe
     register_python_peer_info(extra=extra)
     phases = ", ".join(
@@ -89,19 +100,23 @@ def _stamp_startup(
 
 
 def _handshake_describe(
-    target: object, kind: str, served_env: object | None = None
+    target: object, kind: str, served_env: object | None, workflow_edition: str
 ) -> str | None:
     """The served target's describe envelope, for ``PeerInfo.extra``.
 
     The managed platform reads it off the handshake when an image carries no
     describe label, so a plain ``python -m rlmesh.serve`` image is enough to
-    probe. Best-effort: a target ``describe()`` cannot cover still serves,
-    without the envelope, and says so once on stderr.
+    probe. ``workflow_edition`` is the declaration the server resolved (``""``
+    for none), so the envelope's ``runtime.preferred_workflow_edition`` is the
+    wire value. Best-effort: a target ``describe()`` cannot cover still
+    serves, without the envelope, and says so once on stderr.
     """
     from ._describe import describe_json
 
     try:
-        return describe_json(target, kind=kind, served_env=served_env)
+        return describe_json(
+            target, kind=kind, served_env=served_env, workflow_edition=workflow_edition
+        )
     except Exception as exc:
         print(
             f"RLMesh could not describe the served {kind} ({exc}); the handshake "
@@ -114,6 +129,7 @@ def _handshake_describe(
 
 if TYPE_CHECKING:
     from rlmesh._models.base import ModelBase
+    from rlmesh._rlmesh import ServeOptions
     from rlmesh._value_conversion import ValueBridge
     from rlmesh.types import EnvLike
 
@@ -336,16 +352,36 @@ def serve_model(
 
     model = _resolve_model(model_source, binding)
     _mark("model")
-    _stamp_startup("model", address, model)
+    _warn_without_spec(model)
     # `--workflow-edition` is the ServeOptions rung of the precedence chain;
     # the surfaces above it (the env var) and below it (the model class, the
-    # project manifest) are resolved here, once.
-    model.serve(
-        address,
-        options=serve_options_declaring(
-            option=workflow_edition,
-            declared=getattr(type(model), "workflow_edition", None),
-        ),
+    # project manifest) are resolved here, once, before the envelope is
+    # stamped so both report the same declaration.
+    options = serve_options_declaring(
+        option=workflow_edition,
+        declared=getattr(type(model), "workflow_edition", None),
+    )
+    _stamp_startup("model", address, model, options=options)
+    model.serve(address, options=options)
+
+
+def _warn_without_spec(model: object) -> None:
+    """Say once, on stderr, when the served model declares no ``ModelSpec``.
+
+    Serving still works (a spec-less model serves its own predict), but the
+    managed platform's probe cannot synthesize inputs for it, so the image lands
+    as not-runnable there. ``rlmesh check <module:Class>`` fails on the same
+    condition before the build.
+    """
+    from .adapters.specs import ModelSpec
+
+    if isinstance(getattr(model, "spec", None), ModelSpec):
+        return
+    print(
+        "RLMesh: the served model declares no spec; the managed probe cannot "
+        "synthesize inputs for it. Set `spec = ModelSpec(...)` on the class.",
+        file=sys.stderr,
+        flush=True,
     )
 
 
@@ -480,19 +516,20 @@ def serve_env(
             env = make_env(**make_kwargs)
     from ._editions import serve_options_declaring
 
+    options = serve_options_declaring(
+        option=workflow_edition,
+        declared=getattr(env_source, "workflow_edition", None),
+    )
     server = EnvServer(
         env,
         address,
         tags=cast("Any", tags),
         framework=env_framework,
         device=_gate_device(device, env_framework),
-        options=serve_options_declaring(
-            option=workflow_edition,
-            declared=getattr(env_source, "workflow_edition", None),
-        ),
+        options=options,
     )
     _mark("env")
-    _stamp_startup("env", server.address, env_source, env)
+    _stamp_startup("env", server.address, env_source, env, options=options)
     server.serve()
 
 

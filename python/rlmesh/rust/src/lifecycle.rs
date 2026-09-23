@@ -124,6 +124,15 @@ impl PyBuildInfo {
         rlmesh_proto::WORKFLOW_EDITION_BASE
     }
 
+    /// Every workflow edition this build can drive a session at, newest first:
+    /// the retained list a served peer offers on `supported_workflow_editions`
+    /// in its handshake, so a describe envelope advertises exactly what the
+    /// handshake will.
+    #[getter]
+    fn supported_workflow_editions(&self) -> Vec<String> {
+        rlmesh_proto::supported_workflow_editions()
+    }
+
     /// The cohort that spells `workflow_edition`: `stable` on a sealed release,
     /// the prerelease version (`0.1.0-rc.12`) on a prerelease, `dev.<git>` on a
     /// source build.

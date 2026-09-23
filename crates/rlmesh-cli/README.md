@@ -35,6 +35,16 @@ rlmesh org switch <org_id>
 rlmesh eval submit request.json --wait
 rlmesh eval list --status running
 
+# Catch packaging and contract mistakes before building and pushing an image
+rlmesh check my_pkg:Policy
+docker build -t my-model:latest .
+rlmesh check-image my-model:latest
+
+# Custom entrypoint (not `python -m rlmesh.serve`)? Bake the describe label
+# from inside the built image, never on the host: the envelope records the
+# machine it ran on, and the platform fails one generated off linux.
+docker build --label "$(docker run --rm --entrypoint rlmesh my-model:latest describe my_pkg:Policy --label)" -t my-model:latest .
+
 # Inspect the installed CLI distribution
 rlmesh version
 ```
@@ -42,6 +52,8 @@ rlmesh version
 Run `rlmesh --help` or `rlmesh <command> --help` for the complete command reference.
 
 `rlmesh registry login` registers the bundled `docker-credential-rlmesh` helper for the platform's registry host, so docker requests a fresh short-lived token from the CLI on every pull and push instead of storing a static password.
+
+`rlmesh check` runs the Python describe on a class and fails on what the platform would refuse (a model without a `spec`, an env without `tags`, a spec that does not resolve); `rlmesh check-image` reads `docker image inspect` and checks the serve command, the exposed port, the platform, the rlmesh labels, and whether the image's rlmesh shares a workflow edition with the target platform. Both print three buckets, failed, warnings, and not checked, and exit 1 only on a failure. `rlmesh describe --label` prints the `dev.rlmesh.describe` label for an image with a custom entrypoint, and is meant to run inside that image (`docker run --rm --entrypoint rlmesh IMAGE describe ... --label`), since the envelope carries the OS, architecture, package versions, editions, and env spaces of wherever it ran and the platform fails a label made on a Mac; a plain `python -m rlmesh.serve` image needs no label.
 
 The access token is reused until it nears expiry and refreshed under a per-profile lock, so scripts and parallel docker pushes never race for the single-use refresh token. `RLMESH_API_KEY` (with `RLMESH_PLATFORM_URL`) drives `token`, `eval`, and `whoami` without a browser sign-in. The [CLI reference](https://github.com/ArenaX-Labs/rlmesh/blob/main/docs/reference/cli.md) lists every command, the files the CLI keeps, and what a platform must serve.
 

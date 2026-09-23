@@ -212,6 +212,7 @@ def test_env_envelope_shape() -> None:
 def test_env_spec_error_badge_keeps_envelope_total() -> None:
     env = rlmesh.describe(_BrokenFactory)
     assert "cannot build off-GPU" in env["env_spec"]["error"]
+    assert env["env_spec"]["error_type"] == "RuntimeError"
     # the rest of the envelope still ships.
     assert env["kind"] == "env" and "params" in env and "runtime" in env
 
@@ -351,38 +352,76 @@ def test_importing_the_describe_module_path_no_longer_shadows_the_function() -> 
     assert callable(rlmesh.describe)
 
 
+class _SpeccedModel(rlmesh.Model):
+    """A model the managed probe can drive: it declares a ModelSpec."""
+
+    @staticmethod
+    def _spec() -> Any:
+        import rlmesh.adapters as adapt
+
+        return adapt.ModelSpec(
+            input=adapt.Text(role=adapt.INSTRUCTION),
+            output=adapt.Action(
+                adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0))
+            ),
+        )
+
+    def predict(self, observation: object) -> int:
+        return 0
+
+
+_SpeccedModel.spec = _SpeccedModel._spec()
+
+
+def _tags(role: str = "action/joint_pos_2") -> dict[str, object]:
+    return {
+        "observation": {"cam": {"type": "image", "role": "image/wrist_2"}},
+        "action": {"components": [{"role": role, "dim": 6}]},
+    }
+
+
 def _valid_describe(kind: str = "model") -> str:
+    """A label the platform accepts: a specced model, or a tagged env."""
+    if kind == "model":
+        return rlmesh.describe_json(_SpeccedModel)
     import json
 
-    return json.dumps({"schema_version": 1, "kind": kind})
+    return json.dumps({"schema_version": 1, "kind": "env", "env_tags": _tags()})
 
 
 def test_check_labels_flags_the_push_blockers() -> None:
     from rlmesh._describe import DESCRIBE_LABEL, PACKAGE_LABEL, check_labels
 
-    # No labels at all: browsable-but-inert on the platform.
-    failures, _ = check_labels(None)
-    assert any(DESCRIBE_LABEL in message for message in failures)
+    # No labels at all is a note, not a failure: the platform reads describe
+    # off the rlmesh.serve handshake.
+    report = check_labels(None)
+    assert report.ok and report.failed == []
+    assert any("handshake" in message for message in report.not_checked)
 
     # Valid describe alone passes.
-    failures, warnings = check_labels({DESCRIBE_LABEL: _valid_describe()})
-    assert failures == [] and warnings == []
+    report = check_labels({DESCRIBE_LABEL: _valid_describe()})
+    assert report.failed == [] and report.warnings == [], report
 
     # Broken JSON, wrong version, and unknown kind all fail.
-    assert check_labels({DESCRIBE_LABEL: "{nope"})[0]
-    assert check_labels({DESCRIBE_LABEL: '{"schema_version":2,"kind":"model"}'})[0]
-    assert check_labels({DESCRIBE_LABEL: '{"schema_version":1,"kind":"thing"}'})[0]
+    assert check_labels({DESCRIBE_LABEL: "{nope"}).failed
+    assert check_labels({DESCRIBE_LABEL: '{"schema_version":2,"kind":"model"}'}).failed
+    assert check_labels({DESCRIBE_LABEL: '{"schema_version":1,"kind":"thing"}'}).failed
+    # No class-level spec is a warning (load() may set it; a label will not
+    # carry it); an env without tags lands as not-runnable.
+    report = check_labels({DESCRIBE_LABEL: rlmesh.describe_json(_TinyModel)})
+    assert report.failed == [], report
+    assert any("no class-level spec" in m for m in report.warnings), report
+    report = check_labels({DESCRIBE_LABEL: '{"schema_version":1,"kind":"env"}'})
+    assert any("declares no tags" in message for message in report.failed), report
 
     # Package label: bad checkpoints fail (the platform would drop them).
     labels = {
         DESCRIBE_LABEL: _valid_describe(),
         PACKAGE_LABEL: '{"schemaVersion":1,"checkpoints":[{"name":"Bad_Name","uri":"hf://x"}]}',
     }
-    failures, _ = check_labels(labels)
-    assert any("DNS label" in message for message in failures)
+    assert any("DNS label" in message for message in check_labels(labels).failed)
     labels[PACKAGE_LABEL] = '{"schemaVersion":1,"checkpoints":[{"name":"ok"}]}'
-    failures, _ = check_labels(labels)
-    assert any("no uri" in message for message in failures)
+    assert any("no uri" in message for message in check_labels(labels).failed)
 
 
 def test_check_labels_surfaces_badges_and_soft_claims_as_warnings() -> None:
@@ -394,6 +433,7 @@ def test_check_labels_surfaces_badges_and_soft_claims_as_warnings() -> None:
         {
             "schema_version": 1,
             "kind": "env",
+            "env_tags": _tags(),
             "env_spec": {"error": "sapien needs a GPU"},
             "variants": {"catalog": [{"id": "a", "error": "unbuildable"}]},
         }
@@ -407,13 +447,26 @@ def test_check_labels_surfaces_badges_and_soft_claims_as_warnings() -> None:
             ],
         }
     )
-    failures, warnings = check_labels(
-        {DESCRIBE_LABEL: describe, PACKAGE_LABEL: package}
+    report = check_labels({DESCRIBE_LABEL: describe, PACKAGE_LABEL: package})
+    # A baked env_spec badge fails admission whatever caused it, GPU or not:
+    # the label was made on the wrong machine.
+    assert len(report.failed) == 1 and "env_spec" in report.failed[0], report
+    assert "bake the label inside the image" in report.failed[0]
+    assert not any("env_spec" in m for m in report.not_checked), report
+    assert any("catalog['a']" in message for message in report.warnings)
+    assert any("default checkpoints" in message for message in report.warnings)
+    # A tags badge is a warning, as on the platform.
+    describe = json.dumps(
+        {
+            "schema_version": 1,
+            "kind": "env",
+            "env_tags": {"error": "to_dict blew up"},
+            "env_spec": {"observation_space": {}, "action_space": {}},
+        }
     )
-    assert failures == []
-    assert any("env_spec" in message for message in warnings)
-    assert any("catalog['a']" in message for message in warnings)
-    assert any("default checkpoints" in message for message in warnings)
+    report = check_labels({DESCRIBE_LABEL: describe})
+    assert report.failed == [], report
+    assert any("env_tags: to_dict blew up" in m for m in report.warnings), report
 
 
 def test_check_labels_warns_about_ad_hoc_roles_but_not_blessed_or_escape() -> None:
@@ -428,26 +481,225 @@ def test_check_labels_warns_about_ad_hoc_roles_but_not_blessed_or_escape() -> No
             )
         }
 
-    blessed = {
-        "observation": {"cam": {"type": "image", "role": "image/wrist_2"}},
-        "action": {"components": [{"role": "action/joint_pos_2", "dim": 6}]},
-    }
-    assert check_labels(label(blessed)) == ([], [])
+    def verdict(tags: dict[str, object]) -> tuple[list[str], list[str]]:
+        report = check_labels(label(tags))
+        return report.failed, report.warnings
+
+    assert verdict(_tags()) == ([], [])
 
     # The `x/` escape is a deliberate opt-out; it is never nudged.
     escape = {
         "observation": {"cam": {"type": "state", "role": "x/battery"}},
         "action": {"components": []},
     }
-    assert check_labels(label(escape)) == ([], [])
+    assert verdict(escape) == ([], [])
 
     ad_hoc = {
         "observation": {"cam": {"type": "image", "role": "image/front"}},
         "action": {"components": []},
     }
-    failures, warnings = check_labels(label(ad_hoc))
+    failures, warnings = verdict(ad_hoc)
     assert failures == []
     assert any("image/front" in message for message in warnings), warnings
+
+    # Tags that do not resolve at all are a failure, not a nudge.
+    failures, _ = verdict({"observation": {"cam": {"type": "nope"}}, "action": 3})
+    assert any("does not resolve" in message for message in failures), failures
+
+
+# --- runtime: the edition handshake -------------------------------------------
+
+
+def test_runtime_carries_the_edition_handshake(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    from rlmesh._rlmesh import build_info
+
+    monkeypatch.delenv("RLMESH_WORKFLOW_EDITION", raising=False)
+    monkeypatch.chdir(tmp_path)  # no [tool.rlmesh] in reach
+    info = build_info()
+    runtime = rlmesh.describe(_TinyModel)["runtime"]
+    # Same names and values as the wire HandshakeRequest, from the native build.
+    assert runtime["protocol_generation"] == info.protocol_generation
+    assert runtime["supported_workflow_editions"] == list(
+        info.supported_workflow_editions
+    )
+    assert runtime["supported_workflow_editions"][0] == info.workflow_edition
+    # Undeclared floats to this build's newest edition, as serve declares it.
+    assert runtime["preferred_workflow_edition"] == info.workflow_edition
+    assert "workflow_edition_error" not in runtime
+
+    class Declared(_TinyModel):
+        workflow_edition = rlmesh.current_workflow_edition()
+
+    runtime = rlmesh.describe(Declared)["runtime"]
+    assert runtime["preferred_workflow_edition"] == rlmesh.current_workflow_edition()
+
+    class Impossible(_TinyModel):
+        workflow_edition = "1999.01"
+
+    runtime = rlmesh.describe(Impossible)["runtime"]
+    assert "1999.01" in runtime["workflow_edition_error"]
+    assert runtime["preferred_workflow_edition"] == info.workflow_edition
+    # The same envelope stays byte-stable across calls.
+    assert rlmesh.describe_json(Declared) == rlmesh.describe_json(Declared)
+
+
+# --- rlmesh check: the class-level checks ---------------------------------------
+
+
+class _UntaggedFactory(rlmesh.EnvFactory):
+    def make(self, **kwargs: Any) -> Any:
+        return _ArmEnv()
+
+
+class _CrashingFactory(rlmesh.EnvFactory):
+    def make(self, **kwargs: Any) -> Any:
+        raise RuntimeError("make() got an unexpected keyword argument")
+
+
+def test_check_target_buckets(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    from rlmesh._describe import check_target
+
+    monkeypatch.delenv("RLMESH_WORKFLOW_EDITION", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    report = check_target(_SpeccedModel)
+    assert report.ok and report.not_checked == [], report
+    assert any("model_spec" in m for m in report.passed)
+
+    report = check_target(_TinyModel)
+    assert report.ok, report
+    assert any("no class-level spec" in m for m in report.warnings), report
+
+    # The tagless env: the platform cannot adapt to it.
+    report = check_target(_UntaggedFactory)
+    assert any("declares no tags" in m for m in report.failed), report
+
+    # Needs a GPU to build: not checked here, named as such.
+    report = check_target(_BrokenFactory)
+    assert any(
+        "could not build the env on this machine" in m and "Do not bake" in m
+        for m in report.not_checked
+    ), report
+    assert not any("env_spec" in m for m in report.failed), report
+
+    # A construction bug is a failure.
+    report = check_target(_CrashingFactory)
+    assert any("env_spec: RuntimeError" in m for m in report.failed), report
+
+    # An edition this build cannot run fails where it was declared.
+    class Impossible(_SpeccedModel):
+        workflow_edition = "1999.01"
+
+    report = check_target(Impossible)
+    assert any("workflow edition" in m for m in report.failed), report
+
+    # A target that does not import fails, never raises.
+    report = check_target("no_such_module_xyz:Thing")
+    assert report.failed and "no_such_module_xyz" in report.failed[0]
+
+
+@pytest.mark.parametrize(
+    ("error_type", "message", "softened"),
+    [
+        ("ImportError", "No module named 'robosuite'", True),
+        ("ModuleNotFoundError", "No module named 'mujoco'", True),
+        ("RuntimeError", "cannot build off-GPU", True),
+        ("RuntimeError", "Found no NVIDIA driver on your system", True),
+        ("OutOfMemoryError", "CUDA out of memory", True),
+        ("CUDARuntimeError", "cudaErrorNoDevice", True),
+        ("OSError", "libEGL.so.1: cannot open shared object file", True),
+        ("RuntimeError", "illegal instruction", False),
+        ("TypeError", "make() got an unexpected keyword argument 'cuda'", False),
+        ("KeyError", "'gpu'", False),
+        ("AttributeError", "'NoneType' object has no attribute 'display'", False),
+        ("FileNotFoundError", "[Errno 2] No such file or directory: 'assets'", False),
+        ("ValueError", "unknown device", False),
+    ],
+)
+def test_env_spec_badges_are_classified_by_exception_type(
+    error_type: str, message: str, softened: bool
+) -> None:
+    from rlmesh._describe import _needs_local_resources
+
+    assert _needs_local_resources(error_type, message) is softened
+
+
+def test_cli_check_and_describe_modes(
+    tmp_path: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import json
+
+    from rlmesh._describe import DESCRIBE_LABEL, main
+
+    specced = f"{__name__}:_SpeccedModel"
+    tiny = f"{__name__}:_TinyModel"
+
+    # --check-entrypoint: exit 1 on a failure, 0 otherwise; --json is the report.
+    untagged = f"{__name__}:_UntaggedFactory"
+    assert main(["--check-entrypoint", untagged, "--json"]) == 1
+    report = json.loads(capsys.readouterr().out)
+    assert set(report) == {"failed", "warnings", "not_checked", "passed"}
+    assert any("declares no tags" in m for m in report["failed"])
+    assert main(["--check-entrypoint", tiny, "--json"]) == 0
+    assert any(
+        "no class-level spec" in m
+        for m in json.loads(capsys.readouterr().out)["warnings"]
+    )
+    assert main(["--check-entrypoint", specced]) == 0
+    out = capsys.readouterr().out
+    assert out.splitlines()[-1].startswith("ok: ") and "0 failed" in out
+
+    # TARGET [--label]: the envelope, or the docker build --label value.
+    assert main([specced]) == 0
+    envelope = capsys.readouterr().out
+    assert envelope == rlmesh.describe_json(specced) + "\n"
+    assert main([specced, "--label"]) == 0
+    assert capsys.readouterr().out == f"{DESCRIBE_LABEL}={envelope}"
+
+    # --check-labels FILE: the label check off a JSON object.
+    labels = tmp_path / "labels.json"
+    labels.write_text(json.dumps({DESCRIBE_LABEL: envelope.strip()}), encoding="utf-8")
+    assert main(["--check-labels", str(labels), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["failed"] == []
+    labels.write_text("null", encoding="utf-8")
+    assert main(["--check-labels", str(labels)]) == 0
+    assert "not checked: no dev.rlmesh.describe label" in capsys.readouterr().out
+
+    # Exactly one mode.
+    with pytest.raises(SystemExit):
+        main([specced, "--check-entrypoint", tiny])
+
+
+class _ChattyFactory(rlmesh.EnvFactory):
+    """Prints while being built, the way a simulator import or make() does."""
+
+    def make(self, **kwargs: Any) -> Any:
+        print("[robosuite] banner on stdout")
+        return _ArmEnv()
+
+
+def test_cli_keeps_author_stdout_off_the_payload(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import json
+
+    from rlmesh._describe import DESCRIBE_LABEL, main
+
+    target = f"{__name__}:_ChattyFactory"
+    expected = rlmesh.describe_json(target)
+    capsys.readouterr()  # the banner that direct call printed
+
+    assert main([target, "--label"]) == 0
+    out, err = capsys.readouterr()
+    assert out == f"{DESCRIBE_LABEL}={expected}\n"
+    assert "banner on stdout" in err
+
+    assert main(["--check-entrypoint", target, "--json"]) == 1  # no tags
+    out, err = capsys.readouterr()
+    assert set(json.loads(out)) == {"failed", "warnings", "not_checked", "passed"}
+    assert "banner on stdout" in err
 
 
 # --- env_contracts: the contract-branch table ---------------------------------
@@ -557,6 +809,7 @@ def test_check_labels_surfaces_a_non_default_branch_badge() -> None:
         {
             "schema_version": 1,
             "kind": "env",
+            "env_tags": _tags(),
             "env_contracts": {
                 "discriminants": ["action_type"],
                 "branches": [
@@ -570,10 +823,10 @@ def test_check_labels_surfaces_a_non_default_branch_badge() -> None:
             },
         }
     )
-    failures, warnings = check_labels({DESCRIBE_LABEL: describe})
-    assert failures == []
+    report = check_labels({DESCRIBE_LABEL: describe})
+    assert report.failed == []
     # Named by its own binding, so the operator knows which branch is blind.
     assert any(
         "env_contracts.branches[{'action_type': 'abs'}].env_spec" in w and "sapien" in w
-        for w in warnings
+        for w in report.warnings
     )

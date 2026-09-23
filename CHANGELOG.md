@@ -6,10 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `rlmesh check MODULE:CLASS`, `rlmesh check-image IMAGE`, and `rlmesh describe MODULE:CLASS [--label]`: pre-push checks that sort what they find into failed, warnings, and not checked, exiting 1 only on a failure. `check` runs the describe on a class and fails on a model without a `spec`, an env without `tags`, a spec that does not resolve, or an edition declaration the build cannot run, reporting an env that needs a GPU or assets to build as not checked; `check-image` reads `docker image inspect` and checks the `rlmesh.serve` command, `--env`, a baked `--address`, `EXPOSE 50051`, `linux/amd64`, the rlmesh labels, and whether the image's rlmesh shares a workflow edition with the target platform (`--platform-editions` / `--platform-version`), negotiated the way the runtime does; `describe --label` prints the `dev.rlmesh.describe` value for a custom-entrypoint image, to be run inside the built image (`docker run --rm --entrypoint rlmesh IMAGE describe ... --label`) since the envelope records the machine it ran on and a label generated off linux fails admission, which `check-image` reports too.
+- The describe envelope's `runtime` block advertises the edition handshake under the wire's names: `protocol_generation`, `supported_workflow_editions`, and `preferred_workflow_edition`, and `rlmesh.build_info().supported_workflow_editions` lists the editions a build can drive.
+- `python -m rlmesh.serve` warns at startup when the served model declares no `spec`: the managed probe cannot synthesize inputs for it.
+
 ### Changed
 
 - A blocking `EnvServer.serve()` (what `python -m rlmesh.serve` runs) keeps the env on the calling thread: `reset`/`step`/`render`/`close` run on the thread that built the env, usually the main thread, for a scalar env and for a lockstep vector env alike, while the gRPC server runs on a helper thread. Simulators that only work from the thread that created them, such as Isaac Sim, need no thread-hopping wrapper. Ctrl-C drains and closes the env first and then raises `KeyboardInterrupt` from `serve()`, never inside an env call; a second Ctrl-C interrupts an env call that will not return (Python code; a call stuck inside a native library cannot be preempted). A background `start()` is unchanged.
 - A vectorized env with `num_envs == 1` now serves as the scalar env it is instead of failing with `VectorEnvServer requires num_envs >= 2`. Each value loses its batch axis (lane 0 of the observation and of the `info` under gymnasium's `key`/`_key` convention), actions gain one, and the runtime owns resets, so per-episode `seeds`, `trial_index` and `max_episode_steps` apply. A batched simulator configured with one lane, such as Isaac Lab at `num_envs=1`, needs no scalar rewrite. A one-lane env with `SAME_STEP` autoreset is refused, because its terminal observation is already the next episode's first.
+- `python -m rlmesh._describe --check IMAGE` no longer fails an image for lacking a `dev.rlmesh.describe` label; the platform reads describe off the `rlmesh.serve` handshake, so the missing label is reported as not checked. A present label now gets the same class-level checks as `rlmesh check`.
 
 ## [0.1.0-rc.14] - 2026-09-23
 
