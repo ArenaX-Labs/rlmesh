@@ -38,7 +38,7 @@ dependencies = []
 [project.urls]
 Homepage = "https://rlmesh.dev"
 Repository = "https://github.com/ArenaX-Labs/rlmesh"
-Documentation = "https://docs.rlmesh.dev"
+Documentation = "https://rlmesh.dev/docs/"
 Issues = "https://github.com/ArenaX-Labs/rlmesh/issues"
 
 [project.optional-dependencies]

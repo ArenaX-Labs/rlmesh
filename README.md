@@ -4,7 +4,7 @@
 
 **Gymnasium-compatible infrastructure for model-environment evaluation.**
 
-[![CI](https://github.com/ArenaX-Labs/rlmesh/actions/workflows/ci.yml/badge.svg)](https://github.com/ArenaX-Labs/rlmesh/actions/workflows/ci.yml) [![PyPI](https://img.shields.io/pypi/v/rlmesh.svg)](https://pypi.org/project/rlmesh/) [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue.svg)](https://pypi.org/project/rlmesh/) [![crates.io](https://img.shields.io/crates/v/rlmesh.svg)](https://crates.io/crates/rlmesh) [![Docs](https://img.shields.io/badge/docs-rlmesh.dev-blue.svg)](https://docs.rlmesh.dev) [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+[![CI](https://github.com/ArenaX-Labs/rlmesh/actions/workflows/ci.yml/badge.svg)](https://github.com/ArenaX-Labs/rlmesh/actions/workflows/ci.yml) [![PyPI](https://img.shields.io/pypi/v/rlmesh.svg)](https://pypi.org/project/rlmesh/) [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue.svg)](https://pypi.org/project/rlmesh/) [![crates.io](https://img.shields.io/crates/v/rlmesh.svg)](https://crates.io/crates/rlmesh) [![Docs](https://img.shields.io/badge/docs-rlmesh.dev-blue.svg)](https://rlmesh.dev/docs/) [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
 </div>
 
@@ -14,7 +14,7 @@ RLMesh connects models to environments for evaluation. The Python SDK serves Gym
 
 RLMesh **0.1.0** freezes the `rlmesh-wire-v1` protocol generation and seals the `2026.06` workflow edition. The PyPI and crates.io badges above show the latest published version.
 
-RLMesh is released and pre-1.0 (`0.x`). The Python package is the supported surface; a minor release may change a stable API with a migration note, so pin a minor range for active projects. The `rlmesh` facade crate and the CLI commands are the Rust-side surfaces we intend to stabilize; the other crates are internal implementation detail with no stability promise. An env or model that declares the workflow edition it was authored against keeps working with later releases of the other participants; the session runs at that edition. See the [compatibility](https://docs.rlmesh.dev/compatibility/) and [versioning](https://docs.rlmesh.dev/versioning/) policies.
+RLMesh is released and pre-1.0 (`0.x`). The Python package is the supported surface; a minor release may change a stable API with a migration note, so pin a minor range for active projects. The `rlmesh` facade crate and the CLI commands are the Rust-side surfaces we intend to stabilize; the other crates are internal implementation detail with no stability promise. An env or model that declares the workflow edition it was authored against keeps working with later releases of the other participants; the session runs at that edition. See the [compatibility](https://rlmesh.dev/docs/releases/compatibility/) and [versioning](docs/versioning.md) policies.
 
 RLMesh is built around a language-neutral model-environment boundary. Python and Rust are supported today. Additional language bindings are future work, not part of the current public surface.
 
@@ -75,7 +75,7 @@ The gRPC crates generate their stubs from `.proto` files at build time. Building
 
 ## Resources
 
-- Documentation: https://docs.rlmesh.dev
+- Documentation: https://rlmesh.dev/docs/
 - Examples: [`examples/python`](examples/python)
 - Contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md)
 - Local development: [`docs/local-dev.md`](docs/local-dev.md)

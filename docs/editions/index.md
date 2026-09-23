@@ -2,15 +2,14 @@
 
 A workflow edition is a named behavioral contract for RLMesh workflow semantics. The base edition (`YYYY.MM`) identifies one spec document in this section; prerelease and local builds offer a cohort suffix so moving builds fail closed unless both sides are from the same cohort. Exactly one edition governs a session, reconciled by the runtime after the handshake.
 
-```{note}
-The bare `2026.06` edition sealed at 0.1.0. Prerelease and local builds use exact cohort suffixes (for example `2026.06-dev.<git>`) so moving builds fail closed rather than guess they are compatible.
-```
+> [!NOTE]
+> The bare `2026.06` edition sealed at 0.1.0. Prerelease and local builds use exact cohort suffixes (for example `2026.06-dev.<git>`) so moving builds fail closed rather than guess they are compatible.
 
 Editions answer a different question than the protocol generation. The protocol generation (`rlmesh-wire-v1`) names the wire shape: which services, messages, and fields exist. The edition names what a conforming interaction over that shape _means_: lifecycle, ordering, episode accounting, and error semantics.
 
 ## Negotiation
 
-The client **declares** every edition it can operate under in `HandshakeRequest.supported_workflow_editions`, and the one it wants in `preferred_workflow_edition`; the server replies with its own supported set in `HandshakeResponse.supported_workflow_editions` and its own declaration in `preferred_workflow_edition` (see [Declaring an Edition](#declaring-an-edition)). A peer that declares nothing is read as wanting the newest edition it supports, which is what every build made before the field existed means. A declaration is a ceiling, and its shape says what kind: a bare `YYYY.MM` base is a base-level ceiling that admits every cohort of that base (and anything older), so `2026.06` selects a dev build's `2026.06-dev.<git>` when that is what both sides offer; a declaration with a cohort suffix uses the full edition ordering as its ceiling. CAN membership still requires an exact spelling: differing provisional cohorts interoperate only through a sealed fallback both sides advertise. The handshake decides only protocol-generation compatibility; it selects no edition, and there is no `HandshakeResponse.selected_workflow_edition` field. The runtime is the sole edition authority because only it sees every participant: after the handshake it takes the floor across env, model, and runtime (`negotiate_session_floor`, reached through `env_floor`) and pins that edition on `ResolveAdapterRequest.selected_workflow_edition` and on `ConfigureEnvRequest.selected_workflow_edition`, the env's first Join message (an env must still accept a session that opens with `Reset`: a runtime built before the pin existed sends none). A matching suffixed cohort wins over its sealed fallback; if prerelease cohorts differ, peers can only interoperate through a sealed edition that both sides explicitly advertise. The runtime reads every edition-governed default from a per-edition table keyed by the selected edition and refuses a name it has no row for; the table has one row today (see {doc}`../compatibility` for what that does and does not yet prove).
+The client **declares** every edition it can operate under in `HandshakeRequest.supported_workflow_editions`, and the one it wants in `preferred_workflow_edition`; the server replies with its own supported set in `HandshakeResponse.supported_workflow_editions` and its own declaration in `preferred_workflow_edition` (see [Declaring an Edition](#declaring-an-edition)). A peer that declares nothing is read as wanting the newest edition it supports, which is what every build made before the field existed means. A declaration is a ceiling, and its shape says what kind: a bare `YYYY.MM` base is a base-level ceiling that admits every cohort of that base (and anything older), so `2026.06` selects a dev build's `2026.06-dev.<git>` when that is what both sides offer; a declaration with a cohort suffix uses the full edition ordering as its ceiling. CAN membership still requires an exact spelling: differing provisional cohorts interoperate only through a sealed fallback both sides advertise. The handshake decides only protocol-generation compatibility; it selects no edition, and there is no `HandshakeResponse.selected_workflow_edition` field. The runtime is the sole edition authority because only it sees every participant: after the handshake it takes the floor across env, model, and runtime (`negotiate_session_floor`, reached through `env_floor`) and pins that edition on `ResolveAdapterRequest.selected_workflow_edition` and on `ConfigureEnvRequest.selected_workflow_edition`, the env's first Join message (an env must still accept a session that opens with `Reset`: a runtime built before the pin existed sends none). A matching suffixed cohort wins over its sealed fallback; if prerelease cohorts differ, peers can only interoperate through a sealed edition that both sides explicitly advertise. The runtime reads every edition-governed default from a per-edition table keyed by the selected edition and refuses a name it has no row for; the table has one row today (see [compatibility](../compatibility.md) for what that does and does not yet prove).
 
 - An empty intersection does not set `compatible = false`, which reflects protocol generation alone: such a peer handshakes successfully and the session then fails at the runtime's floor, with a diagnostic naming what each tier (env, model, runtime) offered. The response lists the server's supported editions for that diagnostic, but there is no second round trip because the client's offer was already complete.
 - Servers accept only editions they explicitly support. A server never accepts an unknown edition on the assumption that it is probably compatible; forward compatibility lives in the client's offer set, not in server leniency.
@@ -64,7 +63,7 @@ Most development never touches the edition:
 
 An edition is **provisional** while no stable release has shipped it: prerelease builds use exact release-cohort names (`YYYY.MM-X.Y.Z-beta.N`), and local source builds use exact `dev.<git>` cohort names. This prevents accidental interoperability between moving builds that have not had stable-release scrutiny. The first stable release that ships an edition **seals** the bare `YYYY.MM` name permanently: the spec document becomes immutable (enforced by checksum), and any later semantic change mints a new edition.
 
-```{mermaid}
+```mermaid
 stateDiagram-v2
     [*] --> Provisional: prerelease / local cohort
     Provisional --> Sealed: first stable release seals the bare YYYY.MM name
@@ -75,7 +74,7 @@ stateDiagram-v2
 
 ## Support Window
 
-Sealing freezes an edition's spec by checksum. Every later release keeps offering and accepting a sealed edition, including betas for a later edition, and sealed editions are never pruned: `rlmesh.toml` is the retained list, the crates generate their offer from it, and `mise run policy:check` fails if a sealed edition leaves it or if the list lost an edition the last release tag had sealed. The wire-v1 and sealed-edition commitments apply from v0.1.0; broader API stabilization remains on the roadmap (see {doc}`../compatibility`). A provisional cohort, which no stable release has sealed, may change or be dropped and interoperates only with the same cohort unless both sides implement and advertise a sealed fallback.
+Sealing freezes an edition's spec by checksum. Every later release keeps offering and accepting a sealed edition, including betas for a later edition, and sealed editions are never pruned: `rlmesh.toml` is the retained list, the crates generate their offer from it, and `mise run policy:check` fails if a sealed edition leaves it or if the list lost an edition the last release tag had sealed. The wire-v1 and sealed-edition commitments apply from v0.1.0; broader API stabilization remains on the roadmap (see [compatibility](../compatibility.md)). A provisional cohort, which no stable release has sealed, may change or be dropped and interoperates only with the same cohort unless both sides implement and advertise a sealed fallback.
 
 ## Enforcement
 
@@ -87,8 +86,6 @@ Sealing freezes an edition's spec by checksum. Every later release keeps offerin
 
 The manifest edit is the paperwork; the house rule is on the emitter. A peer built before a value existed does not refuse every new shape cleanly: an unknown `DataType`, `AutoresetMode`, or `SpaceSpec` arm is a decode error, but an unknown `EnvErrorCode` or `ModelErrorCode` folds to `UNSPECIFIED`, and an unknown `MetaValue.kind` arm reads as `null`. So a new enum value, dtype, or oneof arm is emitted only when the target leg's edition (or an advertised capability) covers it; to any other peer the runtime refuses cleanly or converts, and never forwards the new shape. The two error-code vocabularies are frozen for wire-v1: error semantics never ride a new code.
 
-```{toctree}
-:maxdepth: 1
+## Editions
 
-2026.06
-```
+- [2026.06](2026.06.md) (sealed at 0.1.0)

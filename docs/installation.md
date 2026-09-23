@@ -6,7 +6,7 @@ Install the Python package:
 pip install "rlmesh[gymnasium,numpy]"
 ```
 
-RLMesh supports Python 3.10 and newer. Start with Gymnasium for environments and the NumPy backend for examples and notebooks, then follow the {doc}`quickstart`.
+RLMesh supports Python 3.10 and newer. Start with Gymnasium for environments and the NumPy backend for examples and notebooks, then follow the [quickstart](https://rlmesh.dev/docs/start/quickstart/).
 
 ## Optional Extras
 
@@ -21,7 +21,7 @@ pip install "rlmesh[jax]"
 pip install "rlmesh[hf]"
 ```
 
-Pick `gymnasium` when serving a Gymnasium environment, or `gym` for a legacy classic-Gym stack. `torch` decodes client-side values as Torch tensors; `jax` decodes them as JAX arrays; `numpy` decodes them as arrays. `hf` adds host-side, container-less resolution of `hf://` model weights and EnvHub sources; in a sandbox the container fetches them for you. See {doc}`user-guide/backends` for how the backend extras change value decoding.
+Pick `gymnasium` when serving a Gymnasium environment, or `gym` for a legacy classic-Gym stack. `torch` decodes client-side values as Torch tensors; `jax` decodes them as JAX arrays; `numpy` decodes them as arrays. `hf` adds host-side, container-less resolution of `hf://` model weights and EnvHub sources; in a sandbox the container fetches them for you. See [backends](https://rlmesh.dev/docs/guides/value-backends/) for how the backend extras change value decoding.
 
 ## Repository Examples
 

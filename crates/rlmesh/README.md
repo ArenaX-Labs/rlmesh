@@ -33,12 +33,12 @@ The boundary is language-neutral, so the same server also accepts the Python cli
 
 ## Status
 
-This is the Rust-side surface we intend to stabilize. It is not stable yet and carries no compatibility promise for now, but stabilizing it is a near-term goal. Until then, build on the `rlmesh` Python package; see the [compatibility policy](https://docs.rlmesh.dev/compatibility/).
+This is the Rust-side surface we intend to stabilize. It is not stable yet and carries no compatibility promise for now, but stabilizing it is a near-term goal. Until then, build on the `rlmesh` Python package; see the [compatibility policy](https://rlmesh.dev/docs/releases/compatibility/).
 
 ## Links
 
 - Project: https://github.com/ArenaX-Labs/rlmesh
-- Documentation: https://docs.rlmesh.dev
+- Documentation: https://rlmesh.dev/docs/
 - API docs: https://docs.rs/rlmesh
 - Python package: https://pypi.org/project/rlmesh/
 

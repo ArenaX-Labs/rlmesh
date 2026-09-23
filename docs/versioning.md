@@ -1,6 +1,6 @@
 # Versioning
 
-RLMesh follows [Semantic Versioning](https://semver.org). The project is pre-1.0, so the SemVer pre-release rule applies: a minor release (`0.x`) may contain breaking changes. Every breaking change to a stable surface is called out in the {doc}`changelog` under a Breaking heading, with a migration note.
+RLMesh follows [Semantic Versioning](https://semver.org). The project is pre-1.0, so the SemVer pre-release rule applies: a minor release (`0.x`) may contain breaking changes. Every breaking change to a stable surface is called out in the [changelog](../CHANGELOG.md) under a Breaking heading, with a migration note.
 
 ## What a version bump means
 
@@ -13,19 +13,19 @@ After `1.0`, RLMesh follows standard SemVer, with breaking changes only in a maj
 
 ## What the contract covers
 
-The version contract applies to the **Python package** (`rlmesh` on PyPI), and only to symbols labeled **Stable**. See {doc}`compatibility` for the full stability surface and what each label promises.
+The version contract applies to the **Python package** (`rlmesh` on PyPI), and only to symbols labeled **Stable**. See [compatibility](compatibility.md) for the full stability surface and what each label promises.
 
 - **Stable** is the surface we intend to keep and will change carefully, with a migration note. It is not frozen until 1.0.
 - **Experimental** may change or disappear at any time, without a migration note.
 
 ## The Rust crates are internal
 
-RLMesh publishes its Rust crates to crates.io so the Python extension can build. Most of them are internal implementation detail with no stability promise: their Rust API may change at any time and there is no plan to stabilize it. The exceptions are the `rlmesh` facade crate and the CLI commands, the Rust-side surfaces we intend to stabilize. Stabilizing the facade API is a near-term goal; see {doc}`compatibility` for the roadmap. Until it lands, build on the Python package.
+RLMesh publishes its Rust crates to crates.io so the Python extension can build. Most of them are internal implementation detail with no stability promise: their Rust API may change at any time and there is no plan to stabilize it. The exceptions are the `rlmesh` facade crate and the CLI commands, the Rust-side surfaces we intend to stabilize. Stabilizing the facade API is a near-term goal; see [compatibility](compatibility.md) for the roadmap. Until it lands, build on the Python package.
 
 ## Workflow editions and the version contract
 
-The package version and the workflow edition answer different questions. The version says which Python API a release ships and follows SemVer above; the edition says what a session means, is declared once in an env's or model's source, and stays put across upgrades. A minor release may mint a new edition when a real semantic change requires one (at most one per release), but every edition a stable release has sealed stays retained in every later version, so a declared participant keeps running at its edition after any upgrade, breaking minor included. The guarantee and its current limits are in {doc}`compatibility`; declaring an edition is in {doc}`editions/index`.
+The package version and the workflow edition answer different questions. The version says which Python API a release ships and follows SemVer above; the edition says what a session means, is declared once in an env's or model's source, and stays put across upgrades. A minor release may mint a new edition when a real semantic change requires one (at most one per release), but every edition a stable release has sealed stays retained in every later version, so a declared participant keeps running at its edition after any upgrade, breaking minor included. The guarantee and its current limits are in [compatibility](compatibility.md); declaring an edition is in [workflow editions](editions/index.md).
 
 ## How changes ship
 
-Every release records its user-facing changes in the {doc}`changelog`. A breaking change to a stable symbol is listed under a Breaking heading with a before-and-after migration note. The forward-compatibility details live in {doc}`compatibility`.
+Every release records its user-facing changes in the [changelog](../CHANGELOG.md). A breaking change to a stable symbol is listed under a Breaking heading with a before-and-after migration note. The forward-compatibility details live in [compatibility](compatibility.md).

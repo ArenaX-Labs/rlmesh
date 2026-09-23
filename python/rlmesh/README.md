@@ -58,7 +58,7 @@ env.close()
 ## Links
 
 - Homepage: https://rlmesh.dev
-- Documentation: https://docs.rlmesh.dev
+- Documentation: https://rlmesh.dev/docs/
 - Repository: https://github.com/ArenaX-Labs/rlmesh
 - Examples: https://github.com/ArenaX-Labs/rlmesh/tree/main/examples/python
 - Issues: https://github.com/ArenaX-Labs/rlmesh/issues

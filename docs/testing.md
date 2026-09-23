@@ -1,7 +1,3 @@
----
-orphan: true
----
-
 # Testing
 
 RLMesh uses a few test layers so local iteration stays fast while release checks still exercise packaged artifacts.

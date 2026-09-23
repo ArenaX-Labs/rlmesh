@@ -1,6 +1,6 @@
 # Release Process
 
-RLMesh is versioned, gated, and tagged from a maintainer's machine; pushing the tag hands off to CI (`.github/workflows/release.yml`), which builds the wheel matrix on Linux and macOS runners and publishes everything. SemVer is the source of truth (`Cargo.toml [workspace.package].version`); the PEP 440 spelling for PyPI is derived from it. The version contract is in {doc}`versioning`.
+RLMesh is versioned, gated, and tagged from a maintainer's machine; pushing the tag hands off to CI (`.github/workflows/release.yml`), which builds the wheel matrix on Linux and macOS runners and publishes everything. SemVer is the source of truth (`Cargo.toml [workspace.package].version`); the PEP 440 spelling for PyPI is derived from it. The version contract is in [versioning](versioning.md).
 
 The mechanical steps are scripted. You still own the changelog prose and the version number. The one irreversible action, pushing the tag, never runs without you asking.
 
@@ -31,7 +31,7 @@ The changelog is hand-written. `git-cliff` is gone.
 2. Rewrite each bullet in your own words, drop internal-only changes, and group them under the Keep a Changelog sections. **Delete every `<!-- DRAFT -->` marker** — the release driver refuses to ship while any remain.
 3. Rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD`, add a fresh empty `## [Unreleased]` above it, and add the `[X.Y.Z]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/vX.Y.Z` link reference at the bottom.
 
-A breaking change to a stable symbol gets a `### Breaking` entry with a before/after migration note (see {doc}`versioning`).
+A breaking change to a stable symbol gets a `### Breaking` entry with a before/after migration note (see [versioning](versioning.md)).
 
 ## Bump the version
 
@@ -41,7 +41,7 @@ A breaking change to a stable symbol gets a `### Breaking` entry with a before/a
 mise run bump X.Y.Z
 ```
 
-It rewrites every manifest and install snippet, updates the workflow cohort, runs `cargo update` and `uv lock`, then `policy:check` — the backstop that fails loudly if any version-bearing spot was missed. Prereleases use an exact provisional cohort (`YYYY.MM-X.Y.Z-beta.N`); a stable release seals the bare edition in `rlmesh.toml` with `sealed_in` and `spec_sha256`. See {doc}`editions/index`.
+It rewrites every manifest and install snippet, updates the workflow cohort, runs `cargo update` and `uv lock`, then `policy:check` — the backstop that fails loudly if any version-bearing spot was missed. Prereleases use an exact provisional cohort (`YYYY.MM-X.Y.Z-beta.N`); a stable release seals the bare edition in `rlmesh.toml` with `sealed_in` and `spec_sha256`. See [workflow editions](editions/index.md).
 
 ## Tag scheme
 

@@ -48,9 +48,6 @@ jobs:
           CC=clang CXX=clang++ mise run --skip-tools test:cxx
           CC=gcc CXX=g++ mise run --skip-tools test:cxx
 
-      - name: Docs build
-        run: mise run --skip-tools docs:build
-
       - name: Remove system-test venvs before the Rust cache walks target/
         if: always()
         run: mise run --skip-tools test:system:clean

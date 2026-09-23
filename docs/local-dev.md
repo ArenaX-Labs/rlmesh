@@ -1,7 +1,3 @@
----
-orphan: true
----
-
 # Local Development
 
 This page covers the maintainer workflow for the RLMesh repository.
@@ -71,7 +67,7 @@ mise run test:python:unit
 mise run test:python:integration
 ```
 
-On `uv run`, uv rebuilds the native extension when Rust sources change; the git hooks installed by `setup:hooks` rebuild it on checkout and merge. See {doc}`testing` for the full test layering.
+On `uv run`, uv rebuilds the native extension when Rust sources change; the git hooks installed by `setup:hooks` rebuild it on checkout and merge. See [testing](testing.md) for the full test layering.
 
 ## Build
 
@@ -96,21 +92,9 @@ Build the linux-glibc wheel pair consumed by container images (skips when the wh
 mise run build:python:docker
 ```
 
-## Site
+## Docs
 
-Build the site:
-
-```bash
-mise run docs:build
-```
-
-Serve it locally while editing:
-
-```bash
-mise run docs:serve
-```
-
-Both tasks write their output to `site/`.
+The user docs and the Python API reference are published at [rlmesh.dev/docs](https://rlmesh.dev/docs/) and built from the managed platform repo, which snapshots this package's API surface (`rlmesh-api-surface docs-api-surface`) on each release. This `docs/` directory keeps the maintainer docs and the specs the tooling reads: the workflow editions, compatibility and versioning policy, and the describe envelope.
 
 ## Release Gate
 
@@ -120,4 +104,4 @@ Before publishing a release from a local machine, run:
 mise run release:check
 ```
 
-Publishing stays manual. See {doc}`release` for the maintainer release process.
+Publishing stays manual. See [release](release.md) for the maintainer release process.

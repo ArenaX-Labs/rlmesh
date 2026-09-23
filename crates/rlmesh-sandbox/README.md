@@ -7,7 +7,7 @@ This crate is an internal component of `rlmesh`. The Rust API exposed here is un
 ## Links
 
 - Project: https://github.com/ArenaX-Labs/rlmesh
-- Documentation: https://docs.rlmesh.dev
+- Documentation: https://rlmesh.dev/docs/
 - API docs: https://docs.rs/rlmesh-sandbox
 - Higher-level SDK: https://crates.io/crates/rlmesh
 

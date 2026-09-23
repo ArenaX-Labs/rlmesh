@@ -1,16 +1,15 @@
 # Compatibility
 
-RLMesh documents compatibility at the workflow level rather than freezing every internal type. The project is released and pre-1.0: the stability labels below describe the support level today. See {doc}`versioning` for the version contract.
+RLMesh documents compatibility at the workflow level rather than freezing every internal type. The project is released and pre-1.0: the stability labels below describe the support level today. See [versioning](versioning.md) for the version contract.
 
-```{note}
-RLMesh is pre-1.0 (`0.x`). "Stable" means the surface we intend to keep and will change carefully, with a migration note in the {doc}`changelog`, not an API frozen until 1.0. "Experimental" may change or disappear. A `0.x` minor release may break a stable API, so pin a minor range for active projects.
-```
+> [!NOTE]
+> RLMesh is pre-1.0 (`0.x`). "Stable" means the surface we intend to keep and will change carefully, with a migration note in the [changelog](../CHANGELOG.md), not an API frozen until 1.0. "Experimental" may change or disappear. A `0.x` minor release may break a stable API, so pin a minor range for active projects.
 
 ## Stable
 
 Stable workflows include documented public APIs, supported CLI flows, and supported remote environment/model interactions.
 
-- Imports, signatures, and documented behavior follow the version contract: a breaking change to a stable symbol ships in a minor release with a migration note in the {doc}`changelog`.
+- Imports, signatures, and documented behavior follow the version contract: a breaking change to a stable symbol ships in a minor release with a migration note in the [changelog](../CHANGELOG.md).
 - A participant authored against a sealed workflow edition keeps working with later releases of the other participants, and the session runs at its declared edition. What that covers today, and what it does not yet, is under [Workflow Editions](#workflow-editions) below.
 - New features may require newer packages or capabilities, but older stable workflows either keep working or fail clearly.
 
@@ -18,19 +17,17 @@ Stable workflows include documented public APIs, supported CLI flows, and suppor
 
 Preview APIs are intended to become stable but may still change with migration notes. Experimental APIs may change or disappear. Preview is reserved for the intended-stable-but-still-moving case and is currently unused; today's labels are only Stable and Experimental.
 
-Torch and JAX backends and sandbox helpers are experimental. The `MultiBinary`, `MultiDiscrete`, `Text`, and `Tuple` space wrappers are also experimental; see {doc}`gymnasium` for the per-space stability labels, which track the API surface policy in `api_metadata.json`.
+Torch and JAX backends and sandbox helpers are experimental. The `MultiBinary`, `MultiDiscrete`, `Text`, and `Tuple` space wrappers are also experimental; see [gymnasium](https://rlmesh.dev/docs/start/gymnasium/) for the per-space stability labels, which track the API surface policy in `api_metadata.json`.
 
-```{warning}
-The dtype values `int8/16` and `uint16/32/64` are not negotiated. A peer from an earlier release fails with a decode error naming the unknown dtype when it meets an environment that uses them: a clean refusal at the decoding peer, not a conversion. A per-leg dtype ceiling that refuses on the sending side instead is on the roadmap below.
-```
+> [!WARNING]
+> The dtype values `int8/16` and `uint16/32/64` are not negotiated. A peer from an earlier release fails with a decode error naming the unknown dtype when it meets an environment that uses them: a clean refusal at the decoding peer, not a conversion. A per-leg dtype ceiling that refuses on the sending side instead is on the roadmap below.
 
-```{warning}
-The `rlmesh-wire-v1` protocol generation stabilized at 0.1.0, and the supported-generation window holds that single generation. A future incompatible wire change mints a new generation rather than mutating v1, and it would live only in the runtime (see [The runtime is the interpreter](#the-runtime-is-the-interpreter)). Prerelease and local builds carry exact cohort suffixes, so mismatched moving builds fail loudly instead of guessing they are compatible.
-```
+> [!WARNING]
+> The `rlmesh-wire-v1` protocol generation stabilized at 0.1.0, and the supported-generation window holds that single generation. A future incompatible wire change mints a new generation rather than mutating v1, and it would live only in the runtime (see [The runtime is the interpreter](#the-runtime-is-the-interpreter)). Prerelease and local builds carry exact cohort suffixes, so mismatched moving builds fail loudly instead of guessing they are compatible.
 
 ## Rust crates
 
-Most Rust crates are internal implementation detail with no stability promise: they are published to crates.io so the Python extension can build, but their Rust API may change at any time and there is no plan to stabilize it. The exceptions are the `rlmesh` facade crate and the CLI commands, the Rust-side surfaces we intend to stabilize. Stabilizing the facade API is a near-term goal (see the roadmap below); until then, build on the Python package. Every crate declares `rust-version = "1.96"`, the toolchain CI builds and tests with. See {doc}`versioning`.
+Most Rust crates are internal implementation detail with no stability promise: they are published to crates.io so the Python extension can build, but their Rust API may change at any time and there is no plan to stabilize it. The exceptions are the `rlmesh` facade crate and the CLI commands, the Rust-side surfaces we intend to stabilize. Stabilizing the facade API is a near-term goal (see the roadmap below); until then, build on the Python package. Every crate declares `rust-version = "1.96"`, the toolchain CI builds and tests with. See [versioning](versioning.md).
 
 ## Framework Version Floors
 
@@ -57,9 +54,9 @@ The floor harness runs via `mise run test:python:floors`, which builds a `cp310`
 
 ## Workflow Editions
 
-Workflow semantics are governed by a negotiated workflow edition. Each base edition names a behavioral contract documented in {doc}`editions/index`; prerelease and local builds append exact cohort suffixes. Editions change only on deliberate semantic redesigns; new features and new APIs do not mint editions. The `2026.06` edition sealed at 0.1.0.
+Workflow semantics are governed by a negotiated workflow edition. Each base edition names a behavioral contract documented in [workflow editions](editions/index.md); prerelease and local builds append exact cohort suffixes. Editions change only on deliberate semantic redesigns; new features and new APIs do not mint editions. The `2026.06` edition sealed at 0.1.0.
 
-An edition is a sticky declaration in a participant's source, not a version: it records the contract an env or model was authored against, and upgrading the rlmesh package never moves it. How to declare one, and which surface wins when several are set, is in {doc}`editions/index`.
+An edition is a sticky declaration in a participant's source, not a version: it records the contract an env or model was authored against, and upgrading the rlmesh package never moves it. How to declare one, and which surface wins when several are set, is in [workflow editions](editions/index.md).
 
 ### The guarantee
 
@@ -77,9 +74,9 @@ The same shape fixes what a future `rlmesh-wire-v2` would look like: a runtime-o
 
 ### What is part of the contract
 
-- **The 256 MiB message cap.** One encoded message on any env or model leg, in either direction, is bounded by `rlmesh_grpc::MAX_MESSAGE_SIZE`; an oversized message fails at the sender's encode or the receiver's decode with the gRPC status `OUT_OF_RANGE`. It is a fixed constant of `rlmesh-wire-v1`, not a knob, and no later release lowers it (details in {doc}`user-guide/performance`).
+- **The 256 MiB message cap.** One encoded message on any env or model leg, in either direction, is bounded by `rlmesh_grpc::MAX_MESSAGE_SIZE`; an oversized message fails at the sender's encode or the receiver's decode with the gRPC status `OUT_OF_RANGE`. It is a fixed constant of `rlmesh-wire-v1`, not a knob, and no later release lowers it (details in [performance](https://rlmesh.dev/docs/guides/performance/)).
 - **Sealed editions are never dropped.** `rlmesh.toml` lists the retained editions, the `rlmesh-proto` crate ships a copy of that list, and every build generates its offer from it at build time. `mise run policy:check` fails if the generated list and the manifest disagree, if a sealed edition leaves the list, or if the list lost an edition the last release tag's manifest had sealed.
-- **The wire grows additively.** Field tags are never removed or renumbered within `rlmesh-wire-v1` (`mise run protocol:breaking`). A new dtype, `AutoresetMode`, or `SpaceSpec` arm is a new type an old peer refuses rather than decodes wrongly (the two exceptions, error codes and `MetaValue` kinds, are listed under "Not yet guaranteed"), and an emitter may only send it toward a leg that can decode it; the emitter-side rules are in {doc}`editions/index`.
+- **The wire grows additively.** Field tags are never removed or renumbered within `rlmesh-wire-v1` (`mise run protocol:breaking`). A new dtype, `AutoresetMode`, or `SpaceSpec` arm is a new type an old peer refuses rather than decodes wrongly (the two exceptions, error codes and `MetaValue` kinds, are listed under "Not yet guaranteed"), and an emitter may only send it toward a leg that can decode it; the emitter-side rules are in [workflow editions](editions/index.md).
 
 ### The machine proof
 
@@ -106,10 +103,10 @@ The wire and behavioral contracts are sealed at v0.1.0. Further work extends the
 
 ## Value conformance
 
-The `2026.06` edition defines how observation and action values are checked against their declared spaces (full contract: {doc}`editions/2026.06`). Two points matter in practice:
+The `2026.06` edition defines how observation and action values are checked against their declared spaces (full contract: [2026.06](editions/2026.06.md)). Two points matter in practice:
 
 - **Out-of-bounds values warn; they do not fail.** A `Box` value outside its bounds, or a `Text` value outside its charset or length, is delivered and reported once in the `reset`/`step` info map under the `rlmesh.conformance.warning` key. This keeps the many Gymnasium environments whose values drift past their declared bounds usable out of the box. Set `RLMESH_VALIDATION_POLICY=strict` to reject such values instead, or `off` to skip the checks. Structural problems (wrong shape, dtype, arity, or domain, a missing key) and `NaN` are always rejected, regardless of the policy.
-- **Dtypes are coerced, not passed through.** A value is always converted to its declared dtype before transport, so a peer reading the negotiated space never sees a per-message dtype. This is a deliberate difference from Gymnasium, which warns but forwards the mismatched dtype (see {doc}`gymnasium`). A float supplied for an integer dtype is rejected unless every element is exactly integral.
+- **Dtypes are coerced, not passed through.** A value is always converted to its declared dtype before transport, so a peer reading the negotiated space never sees a per-message dtype. This is a deliberate difference from Gymnasium, which warns but forwards the mismatched dtype (see [gymnasium](https://rlmesh.dev/docs/start/gymnasium/)). A float supplied for an integer dtype is rejected unless every element is exactly integral.
 
 ## Artifact Versions
 

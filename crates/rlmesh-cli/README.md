@@ -43,16 +43,16 @@ Run `rlmesh --help` or `rlmesh <command> --help` for the complete command refere
 
 `rlmesh registry login` registers the bundled `docker-credential-rlmesh` helper for the platform's registry host, so docker requests a fresh short-lived token from the CLI on every pull and push instead of storing a static password.
 
-The access token is reused until it nears expiry and refreshed under a per-profile lock, so scripts and parallel docker pushes never race for the single-use refresh token. `RLMESH_API_KEY` (with `RLMESH_PLATFORM_URL`) drives `token`, `eval`, and `whoami` without a browser sign-in. The [CLI reference](https://docs.rlmesh.dev/reference/cli/) lists every command, the files the CLI keeps, and what a platform must serve.
+The access token is reused until it nears expiry and refreshed under a per-profile lock, so scripts and parallel docker pushes never race for the single-use refresh token. `RLMESH_API_KEY` (with `RLMESH_PLATFORM_URL`) drives `token`, `eval`, and `whoami` without a browser sign-in. The [CLI reference](https://github.com/ArenaX-Labs/rlmesh/blob/main/docs/reference/cli.md) lists every command, the files the CLI keeps, and what a platform must serve.
 
 ## Status
 
-The crate's Rust API is internal, with no stability promise. The CLI command surface is in beta. See the [compatibility policy](https://docs.rlmesh.dev/compatibility/).
+The crate's Rust API is internal, with no stability promise. The CLI command surface is in beta. See the [compatibility policy](https://rlmesh.dev/docs/releases/compatibility/).
 
 ## Links
 
 - Project: https://github.com/ArenaX-Labs/rlmesh
-- Documentation: https://docs.rlmesh.dev
+- Documentation: https://rlmesh.dev/docs/
 - API docs: https://docs.rs/rlmesh-cli
 
 ## License

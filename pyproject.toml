@@ -19,14 +19,6 @@ dev = [
   "rlmesh-system",
   "rlmesh-system-fixtures",
 ]
-docs = [
-  "furo",
-  "myst-parser",
-  "sphinx",
-  "sphinx-autobuild",
-  "sphinx-copybutton",
-  "sphinxcontrib-mermaid",
-]
 
 [tool.basedpyright]
 include = [
