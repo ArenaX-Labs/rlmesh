@@ -116,10 +116,40 @@ pub struct PyEnvironment {
     /// framework bridge owns the conversion (see `rlmesh._server._BridgedEnv`),
     /// so Rust hands/keeps native Tensor leaves and never touches numpy/torch.
     value_backend: ValueBackend,
-    /// Run Python calls inline on the calling thread instead of a pooled
-    /// blocking thread. A lane actor sets this so a lane's env always executes
-    /// on its own OS thread (what OSMesa/Vulkan contexts expect).
-    pinned: bool,
+    dispatch: Dispatch,
+}
+
+/// A Python call queued for the foreground thread (see [`Dispatch::Foreground`]).
+pub type ForegroundJob = Box<dyn FnOnce() + Send>;
+
+/// Where an env's Python calls run.
+#[derive(Clone)]
+pub enum Dispatch {
+    /// Tokio's blocking pool: any thread, so a call may hop between threads.
+    Pool,
+    /// Inline on the calling thread. A lane actor sets this so a lane's env
+    /// always executes on its own OS thread (what OSMesa/Vulkan contexts expect).
+    Pinned,
+    /// Queued to the thread running [`run_foreground`]: the thread that built
+    /// the env (the Python main thread under a blocking `serve()`), for a
+    /// simulator that only works from the thread that created it.
+    Foreground(std::sync::mpsc::Sender<ForegroundJob>),
+}
+
+/// How often the foreground loop yields to `on_idle` while no call is queued:
+/// the Python signal poll, so Ctrl-C reaches an otherwise idle main thread.
+const FOREGROUND_IDLE_POLL: Duration = Duration::from_millis(100);
+
+/// Run queued foreground calls on the current thread until every sender is
+/// gone (the env dropped with the endpoint), calling `on_idle` between waits.
+pub fn run_foreground(jobs: std::sync::mpsc::Receiver<ForegroundJob>, mut on_idle: impl FnMut()) {
+    loop {
+        match jobs.recv_timeout(FOREGROUND_IDLE_POLL) {
+            Ok(job) => job(),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => on_idle(),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+        }
+    }
 }
 
 pub struct PySingleEnv(PyEnvironment);
@@ -135,6 +165,15 @@ pub enum PyServerEnv {
 }
 
 impl PyServerEnv {
+    /// Route the env's Python calls (lane 0's, for lanes) through `jobs`.
+    pub fn dispatch_foreground(&mut self, jobs: std::sync::mpsc::Sender<ForegroundJob>) {
+        let env = match self {
+            PyServerEnv::Lanes(lanes) => &mut lanes[0].0,
+            PyServerEnv::Vector(env) => &mut env.0,
+        };
+        env.dispatch = Dispatch::Foreground(jobs);
+    }
+
     pub fn env_contract(&self) -> &EnvContract {
         match self {
             PyServerEnv::Lanes(lanes) => &lanes[0].0.env_contract,
@@ -255,7 +294,7 @@ impl PyEnvironment {
                 env_contract,
                 num_envs,
                 uses_vector_api,
-                pinned: false,
+                dispatch: Dispatch::Pool,
                 profiler,
                 last_phases: EndpointPhases::default(),
                 policy: validation_policy_from_env(),
@@ -331,7 +370,7 @@ pub fn build_lane_server_env(envs: Vec<Py<PyAny>>, native_values: bool) -> PyRes
     let mut lanes: Vec<PySingleEnv> = Vec::with_capacity(envs.len());
     for env in envs {
         let mut env = PyEnvironment::new(env, native_values)?;
-        env.pinned = true;
+        env.dispatch = Dispatch::Pinned;
         if !env.uses_single_env_api() {
             return Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
                 "EnvServer serves scalar environments (one per lane). Use VectorEnvServer for \
@@ -376,24 +415,32 @@ fn env_error_to_runtime_error(error: EnvError) -> EnvRuntimeError {
     }
 }
 
-/// Run `work` on a blocking thread under the GIL, mapping a join panic or a
-/// `PyErr` through `into_err`. Wraps the `spawn_blocking` + `Python::attach` +
-/// double `map_err` boilerplate every reset/step/render/close body shares.
-async fn spawn_py<T, E, W, M>(pinned: bool, phase: &str, work: W, into_err: M) -> Result<T, E>
+/// Run `work` under the GIL where `dispatch` says, mapping a lost reply or a
+/// `PyErr` through `into_err`. Wraps the boilerplate every
+/// reset/step/render/close body shares.
+async fn spawn_py<T, E, W, M>(dispatch: Dispatch, phase: &str, work: W, into_err: M) -> Result<T, E>
 where
     T: Send + 'static,
     W: FnOnce(Python<'_>) -> PyResult<T> + Send + 'static,
     M: Fn(String) -> E,
 {
-    if pinned {
-        // The caller is a lane actor on its own thread: run the Python call
-        // right here so the env never hops threads.
-        return Python::attach(work).map_err(|e: PyErr| into_err(format!("{phase} failed: {e}")));
-    }
-    tokio::task::spawn_blocking(move || Python::attach(work))
-        .await
-        .map_err(|e| into_err(format!("{phase} task panicked: {e}")))?
-        .map_err(|e: PyErr| into_err(format!("{phase} failed: {e}")))
+    let result = match dispatch {
+        Dispatch::Pinned => Python::attach(work),
+        Dispatch::Pool => tokio::task::spawn_blocking(move || Python::attach(work))
+            .await
+            .map_err(|e| into_err(format!("{phase} task panicked: {e}")))?,
+        Dispatch::Foreground(jobs) => {
+            let (reply, replied) = tokio::sync::oneshot::channel();
+            jobs.send(Box::new(move || {
+                let _ = reply.send(Python::attach(work));
+            }))
+            .map_err(|_| into_err(format!("{phase}: the serving thread has stopped")))?;
+            replied
+                .await
+                .map_err(|_| into_err(format!("{phase}: the serving thread has stopped")))?
+        }
+    };
+    result.map_err(|e: PyErr| into_err(format!("{phase} failed: {e}")))
 }
 
 /// Reset `options` reached an env whose `reset` takes no such parameter; latched
@@ -470,7 +517,7 @@ impl PyEnvironment {
         let value_backend = self.value_backend;
 
         let (observation, mut info, phases) = spawn_py(
-            self.pinned,
+            self.dispatch.clone(),
             "reset",
             move |py| {
                 let env_ref = env.bind(py);
@@ -560,7 +607,7 @@ impl PyEnvironment {
         let value_backend = self.value_backend;
 
         let (observation, reward, terminated, truncated, mut info, phases) = spawn_py(
-            self.pinned,
+            self.dispatch.clone(),
             "step",
             move |py| {
                 let env_ref = env.bind(py);
@@ -653,7 +700,7 @@ impl PyEnvironment {
         let profiler = Arc::clone(&self.profiler);
 
         let (result, phases) = spawn_py(
-            self.pinned,
+            self.dispatch.clone(),
             "render",
             move |py| {
                 let env_ref = env.bind(py);
@@ -699,7 +746,7 @@ impl PyEnvironment {
         let profiler = Arc::clone(&self.profiler);
 
         spawn_py(
-            self.pinned,
+            self.dispatch.clone(),
             "close",
             move |py| {
                 let env_ref = env.bind(py);
@@ -732,7 +779,7 @@ impl PyEnvironment {
         let value_backend = self.value_backend;
 
         let (observations, mut info, obs_bytes, phases) = spawn_py(
-            self.pinned,
+            self.dispatch.clone(),
             "reset",
             move |py| {
                 let env_ref = env.bind(py);
@@ -847,7 +894,7 @@ impl PyEnvironment {
             obs_bytes,
             phases,
         ) = spawn_py(
-            self.pinned,
+            self.dispatch.clone(),
             "step",
             move |py| {
                 let env_ref = env.bind(py);
@@ -947,7 +994,7 @@ impl PyEnvironment {
         let profiler = Arc::clone(&self.profiler);
 
         let (result, phases) = spawn_py(
-            self.pinned,
+            self.dispatch.clone(),
             "render",
             move |py| {
                 let env_ref = env.bind(py);
@@ -992,7 +1039,7 @@ impl PyEnvironment {
         let profiler = Arc::clone(&self.profiler);
 
         spawn_py(
-            self.pinned,
+            self.dispatch.clone(),
             "close",
             move |py| {
                 let env_ref = env.bind(py);

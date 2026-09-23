@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import signal
+import threading
 import weakref
 from collections.abc import Sequence
 from types import TracebackType
@@ -301,8 +303,35 @@ class EnvServer:
         return self._server.env_contract
 
     def serve(self) -> None:
-        """Start serving the environment (blocking)."""
-        self._server.serve()
+        """Start serving the environment (blocking).
+
+        The env keeps this thread: every ``reset``/``step``/``render``/``close``
+        runs here, so an env built on the main thread (a simulator that only
+        works from the thread that created it) is driven from it. On the main
+        thread, Ctrl-C asks the server to stop, which drains and closes the env,
+        and :class:`KeyboardInterrupt` is raised here afterwards rather than
+        inside an env call; a second Ctrl-C interrupts an env call that will not
+        return (Python code, not a call stuck inside a native library).
+        """
+        if threading.current_thread() is not threading.main_thread():
+            self._server.serve()
+            return
+        interrupts = 0
+
+        def on_sigint(_signum: int, _frame: object) -> None:
+            nonlocal interrupts
+            interrupts += 1
+            if interrupts > 1:
+                raise KeyboardInterrupt
+            self._server.shutdown()
+
+        previous = signal.signal(signal.SIGINT, on_sigint)
+        try:
+            self._server.serve()
+        finally:
+            signal.signal(signal.SIGINT, previous)
+        if interrupts:
+            raise KeyboardInterrupt
 
     def start(self) -> None:
         """Start serving the environment on a background thread."""

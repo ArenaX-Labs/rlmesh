@@ -147,6 +147,128 @@ def test_ctrl_c_interrupts_wait_and_the_env_still_closes(tmp_path: Path) -> None
     assert "CLOSE_CALLED" in result.stdout
 
 
+_THREAD_ENVS = (
+    "import threading\n"
+    "seen = []\n"
+    "main = threading.main_thread().ident\n"
+    "class ThreadEnv(TinyEnv):\n"
+    "    def reset(self, *, seed=None, options=None):\n"
+    "        seen.append(threading.get_ident())\n"
+    "        return 0, {}\n"
+    "    def step(self, action):\n"
+    "        seen.append(threading.get_ident())\n"
+    "        return 0, 0.0, False, False, {}\n"
+    "class ThreadVectorEnv:\n"
+    "    num_envs = 2\n"
+    "    single_observation_space = rlmesh.spaces.Discrete(4)\n"
+    "    single_action_space = rlmesh.spaces.Discrete(2)\n"
+    "    def reset(self, *, seed=None, options=None):\n"
+    "        seen.append(threading.get_ident())\n"
+    "        return [0, 0], {}\n"
+    "    def step(self, actions):\n"
+    "        seen.append(threading.get_ident())\n"
+    "        return [0, 0], [0.0, 0.0], [False, False], [False, False], {}\n"
+    "    def close(self):\n"
+    "        print('CLOSE_CALLED', flush=True)\n"
+    "def report():\n"
+    "    print('ON_MAIN' if seen == [main, main] else f'OFF_MAIN {seen} {main}', flush=True)\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("env", "client", "action"),
+    [
+        ("ThreadEnv", "rlmesh.RemoteEnv", "0"),
+        ("ThreadVectorEnv", "rlmesh.RemoteVectorEnv", "[0, 0]"),
+    ],
+)
+def test_serve_keeps_the_env_on_the_calling_thread(
+    tmp_path: Path, env: str, client: str, action: str
+) -> None:
+    result = _run_child(
+        tmp_path,
+        _THREAD_ENVS + f"server = rlmesh.EnvServer({env}(), '127.0.0.1:0')\n"
+        "def drive():\n"
+        f"    handle = {client}(server.address)\n"
+        "    handle.reset()\n"
+        f"    handle.step({action})\n"
+        "    handle.close()\n"
+        "    server.shutdown()\n"
+        "threading.Thread(target=drive).start()\n"
+        "server.serve()\n"
+        "report()\n",
+    )
+
+    # Simulators such as Isaac Sim only work from the thread that created them,
+    # usually the main thread: a blocking serve() leaves that thread to the env
+    # (scalar or lockstep vector) and runs the gRPC server elsewhere.
+    assert result.returncode == 0, result.stderr
+    assert "ON_MAIN" in result.stdout, result.stdout
+    assert "CLOSE_CALLED" in result.stdout
+
+
+@pytest.mark.skipif(os.name != "posix", reason="SIGINT delivery is POSIX-only")
+def test_ctrl_c_stops_every_foreground_serve_and_the_env_still_closes(
+    tmp_path: Path,
+) -> None:
+    result = _run_child(
+        tmp_path,
+        "import os, signal, threading\n"
+        "for _ in range(2):\n"
+        '    server = rlmesh.EnvServer(TinyEnv(), "127.0.0.1:0")\n'
+        "    threading.Timer(0.5, lambda: os.kill(os.getpid(), signal.SIGINT)).start()\n"
+        "    try:\n"
+        "        server.serve()\n"
+        "    except KeyboardInterrupt:\n"
+        '        print("INTERRUPTED", flush=True)\n',
+    )
+
+    # The env runs on the main thread now, so Python's own SIGINT must not
+    # surface inside an env call: the server drains and closes first, then
+    # serve() raises the interrupt (the serve CLI turns that into exit 130).
+    # Two servers in a row: installing Python's handler unhooks Tokio's
+    # process-wide one, so the deferring handler has to request the shutdown
+    # itself rather than rely on Tokio noticing the signal.
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.count("CLOSE_CALLED") == 2, result.stdout
+    assert result.stdout.count("INTERRUPTED") == 2, result.stdout
+
+
+@pytest.mark.skipif(os.name != "posix", reason="SIGINT delivery is POSIX-only")
+def test_a_second_ctrl_c_interrupts_an_env_call_that_never_returns(
+    tmp_path: Path,
+) -> None:
+    result = _run_child(
+        tmp_path,
+        "import os, signal, threading, time\n"
+        "class WedgedEnv(TinyEnv):\n"
+        "    def close(self):\n"
+        '        print("CLOSE_CALLED", flush=True)\n'
+        "        time.sleep(60)\n"
+        "server = rlmesh.EnvServer(\n"
+        '    WedgedEnv(), "127.0.0.1:0",\n'
+        "    options=rlmesh.ServeOptions(close_timeout_seconds=0.1),\n"
+        ")\n"
+        "threading.Timer(0.5, lambda: os.kill(os.getpid(), signal.SIGINT)).start()\n"
+        "threading.Timer(1.5, lambda: os.kill(os.getpid(), signal.SIGINT)).start()\n"
+        "started = time.monotonic()\n"
+        "try:\n"
+        "    server.serve()\n"
+        "except (KeyboardInterrupt, RuntimeError) as exc:\n"
+        '    print(f"RETURNED {time.monotonic() - started:.1f} {exc!r}", flush=True)\n',
+    )
+
+    # The main thread cannot be preempted, so the close timeout bounds the
+    # server's wait (reported as the usual close-timeout error), not the env
+    # call it is stuck in. The escape hatch is the convention: a second Ctrl-C
+    # interrupts the call, and serve() returns.
+    assert result.returncode == 0, result.stderr
+    assert "CLOSE_CALLED" in result.stdout
+    line = next(out for out in result.stdout.splitlines() if out.startswith("RETURNED"))
+    assert float(line.split()[1]) < 10, result.stdout
+    assert "close timed out" in line, result.stdout
+
+
 def test_shutdown_detaches_the_finalizer() -> None:
     server = rlmesh.EnvServer(TinyEnv(), "127.0.0.1:0")
     assert server._finalizer.alive

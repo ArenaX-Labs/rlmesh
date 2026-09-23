@@ -23,7 +23,9 @@ use tokio_stream::wrappers::TcpListenerStream;
 #[cfg(unix)]
 use tokio_stream::wrappers::UnixListenerStream;
 
-use super::py_environment::{PyServerEnv, build_lane_server_env, build_vector_server_env};
+use super::py_environment::{
+    PyServerEnv, build_lane_server_env, build_vector_server_env, run_foreground,
+};
 use crate::lifecycle::PyServeOptions;
 use crate::spaces::env_contract_to_py;
 use crate::types::to_py_err;
@@ -296,6 +298,8 @@ impl PyEnvServer {
 
     /// Start serving (blocking).
     /// Releases the GIL while running so other Python threads can execute.
+    /// The env stays on this thread: every reset/step/render/close runs here,
+    /// so an env built on the main thread is driven from it.
     fn serve(&self, py: Python<'_>) -> PyResult<()> {
         let resources = take_resources(&self.state, "serve", ServerState::RunningForeground)?;
         let address = self.address.clone();
@@ -564,43 +568,82 @@ fn take_resources(
     }
 }
 
+/// Serve on the calling thread (`foreground`, the blocking `serve()`), or as
+/// the body of a background thread (`start()`).
+///
+/// In the foreground the calling thread is the one that built the env, so the
+/// env keeps it: its Python calls (lane 0's, for lanes) are queued back here
+/// while the gRPC server runs on a helper thread. Simulators that only work
+/// from the thread that created them (typically the Python main thread) then
+/// need no wrapper. Between calls the thread polls Python's signal handlers,
+/// so a Ctrl-C deferred by `EnvServer.serve()` still requests shutdown while
+/// the env is idle. Tokio's signal handlers are installed in the foreground
+/// only; a background server is stopped by its owner.
 fn run_server(
     resources: ServerResources,
     address: String,
     shutdown: ShutdownTrigger,
-    install_signal_handlers: bool,
+    foreground: bool,
 ) -> ServeResult {
     let ServerResources {
-        env,
+        mut env,
         runtime,
         listener,
         options,
         close_env_on_shutdown,
     } = resources;
 
-    runtime.block_on(async move {
-        tracing::info!("EnvService serving on {}", address);
-        if install_signal_handlers {
-            spawn_signal_shutdown(shutdown.clone());
-        }
+    let jobs = foreground.then(|| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        env.dispatch_foreground(tx);
+        rx
+    });
+    let signal_shutdown = shutdown.clone();
 
-        match env {
-            PyServerEnv::Lanes(lanes) => {
-                let lanes = WireLaneAdapter::new(lanes).map_err(|err| err.to_string())?;
-                run_env_server(lanes, listener, options, shutdown, close_env_on_shutdown).await
+    let serve = move || {
+        runtime.block_on(async move {
+            tracing::info!("EnvService serving on {}", address);
+            if foreground {
+                spawn_signal_shutdown(shutdown.clone());
             }
-            PyServerEnv::Vector(env) => {
-                run_env_server(
-                    WireEnvAdapter::new(*env),
-                    listener,
-                    options,
-                    shutdown,
-                    close_env_on_shutdown,
-                )
-                .await
+            match env {
+                PyServerEnv::Lanes(lanes) => {
+                    let lanes = WireLaneAdapter::new(lanes).map_err(|err| err.to_string())?;
+                    run_env_server(lanes, listener, options, shutdown, close_env_on_shutdown).await
+                }
+                PyServerEnv::Vector(env) => {
+                    run_env_server(
+                        WireEnvAdapter::new(*env),
+                        listener,
+                        options,
+                        shutdown,
+                        close_env_on_shutdown,
+                    )
+                    .await
+                }
             }
+        })
+    };
+
+    let Some(jobs) = jobs else {
+        return serve();
+    };
+    let server = std::thread::Builder::new()
+        .name("rlmesh-env-server".to_string())
+        .spawn(serve)
+        .map_err(|e| format!("failed to spawn server thread: {e}"))?;
+    // Returns once the server has dropped the env (its job queue closes). A
+    // handler that raises (Python's default KeyboardInterrupt) is a shutdown
+    // request too; the deferring handler EnvServer.serve() installs asks for
+    // one itself.
+    run_foreground(jobs, || {
+        if Python::attach(|py| py.check_signals()).is_err() {
+            signal_shutdown.trigger("sigint");
         }
-    })
+    });
+    server
+        .join()
+        .unwrap_or_else(|_| Err("server thread panicked".to_string()))
 }
 
 async fn run_env_server<E>(

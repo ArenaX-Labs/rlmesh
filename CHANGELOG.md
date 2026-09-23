@@ -4,6 +4,12 @@ All notable changes to RLMesh are documented here. This changelog tracks the `rl
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- A blocking `EnvServer.serve()` (what `python -m rlmesh.serve` runs) keeps the env on the calling thread: `reset`/`step`/`render`/`close` run on the thread that built the env, usually the main thread, for a scalar env and for a lockstep vector env alike, while the gRPC server runs on a helper thread. Simulators that only work from the thread that created them, such as Isaac Sim, need no thread-hopping wrapper. Ctrl-C drains and closes the env first and then raises `KeyboardInterrupt` from `serve()`, never inside an env call; a second Ctrl-C interrupts an env call that will not return (Python code; a call stuck inside a native library cannot be preempted). A background `start()` is unchanged.
+
 ## [0.1.0-rc.13] - 2026-09-23
 
 RLMesh connects models to environments across process, dependency, and machine boundaries with a Gymnasium-style API. This release seals the `2026.06` behavioral contract and commits to retaining `rlmesh-wire-v1`. Declare the edition a model or environment was authored against to keep its behavior across package upgrades. The runtime selects a shared edition and refuses interactions a peer cannot express; see the compatibility policy for the contract and its current test coverage.

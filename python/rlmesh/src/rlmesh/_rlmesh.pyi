@@ -417,6 +417,8 @@ class PyEnvServer:
         r"""
         Start serving (blocking).
         Releases the GIL while running so other Python threads can execute.
+        The env stays on this thread: every reset/step/render/close runs here,
+        so an env built on the main thread is driven from it.
         """
     def start(self) -> None:
         r"""
