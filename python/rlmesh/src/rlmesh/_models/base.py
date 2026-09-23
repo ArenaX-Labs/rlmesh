@@ -849,6 +849,15 @@ class ModelBase(Generic[ObsT, ActT]):
             "predict_chunk() (per lane) or predict_batch()."
         )
 
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        if "reset" in cls.__dict__:
+            raise TypeError(
+                f"{cls.__name__}.reset is never called: the Model episode hook is "
+                "on_episode_end(self, episode_id='') (a wrapped policy object's "
+                "reset() is still honored)"
+            )
+
     def on_episode_end(self, episode_id: str = "") -> None:
         """Optional: called when an episode ends (no-op by default).
 

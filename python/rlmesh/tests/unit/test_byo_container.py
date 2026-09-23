@@ -235,7 +235,7 @@ def test_session_stops_container_on_missing_env_contract(
     )
 
     model = rlmesh.SandboxModel("image://m:latest")
-    with pytest.raises(TypeError, match="requires an env client exposing"):
+    with pytest.raises(TypeError, match="env client exposing"):
         rlmesh.session(model, cast("Any", object()))
 
     # #3: the container started by serve() is stopped before re-raising.
@@ -314,7 +314,7 @@ def test_failed_session_on_reused_handle_does_not_shut_it_down(
 
     # #7: a second bind that fails must NOT stop a container this call did
     # not start -- the caller is still managing the handle.
-    with pytest.raises(TypeError, match="requires an env client exposing"):
+    with pytest.raises(TypeError, match="env client exposing"):
         rlmesh.session(model, cast("Any", object()))
     assert "container-abc" not in stopped
 

@@ -123,6 +123,7 @@ class RemoteModelBase(Generic[ObsT, ActT]):
         # leg carries the call, process, or project declaration. The env's
         # own offer still constrains the three-way floor.
         workflow_edition = resolve_workflow_edition(call=workflow_edition)
+        env, close_env = dial_env_address(env, close_env)
         try:
             client = load_native("PyModelClient")(
                 self._address,
@@ -149,10 +150,19 @@ def env_contract_of(env: object) -> EnvContract:
     contract = getattr(env, "env_contract", None)
     if contract is None:
         raise TypeError(
-            "rlmesh.session(model, env) requires an env client exposing `env_contract` "
-            f"(e.g. RemoteEnv or SandboxEnv); got {type(env).__name__}"
+            "a served model runs against an env client exposing `env_contract` "
+            f"(RemoteEnv, SandboxEnv, or an address to dial); got {type(env).__name__}"
         )
     return cast("EnvContract", contract)
+
+
+def dial_env_address(env: EnvTarget, close_env: bool) -> tuple[EnvTarget, bool]:
+    """Dial a bare ``env`` address into a ``RemoteEnv`` the session owns and closes."""
+    if not isinstance(env, str):
+        return env, close_env
+    from .._native import RemoteEnv
+
+    return RemoteEnv(env), True
 
 
 def env_session_offer(env: object) -> tuple[list[str], str | None] | None:

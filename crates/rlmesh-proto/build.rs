@@ -32,6 +32,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if head.exists() {
             println!("cargo:rerun-if-changed={}", head.display());
         }
+        // HEAD on a branch is a symbolic ref that commits never rewrite; the
+        // branch ref (or packed-refs once packed) is what moves.
+        let mut refs = vec!["packed-refs".to_string()];
+        refs.extend(git_output(repo_root, &["symbolic-ref", "-q", "HEAD"]));
+        for name in refs {
+            if let Some(path) = git_output(repo_root, &["rev-parse", "--git-path", &name]) {
+                let path = repo_root.join(path);
+                if path.exists() {
+                    println!("cargo:rerun-if-changed={}", path.display());
+                }
+            }
+        }
     }
 
     let retained = match retained_workflow_editions(&root, repo_root) {

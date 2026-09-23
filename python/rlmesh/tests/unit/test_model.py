@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 import pytest
+import rlmesh
 
 
 def test_episode_success_reads_gymnasium_info_keys() -> None:
@@ -897,3 +898,10 @@ def test_a_duck_typed_policy_declares_its_own_native_chunk(
 
     rlmesh.Model(Policy())._install_worker()
     assert captured == [12]
+
+
+def test_a_subclass_reset_hook_is_refused_at_class_creation() -> None:
+    with pytest.raises(TypeError, match="on_episode_end"):
+
+        class Stale(rlmesh.Model):
+            def reset(self) -> None: ...

@@ -11,7 +11,7 @@ pub fn init_tracing(process_role: &'static str) {
     static INIT: OnceLock<()> = OnceLock::new();
 
     INIT.get_or_init(|| {
-        let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+        let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
         let fmt_layer = fmt::layer().with_writer(std::io::stderr).with_target(false);
         let _ = registry().with(filter).with(fmt_layer).try_init();
     });

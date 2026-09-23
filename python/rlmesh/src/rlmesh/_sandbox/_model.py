@@ -205,6 +205,7 @@ class SandboxModel:
                 "not supported on a SandboxModel session; remove it"
             )
         from .._client._remote_model import (
+            dial_env_address,
             env_contract_of,
             env_session_offer,
             remote_session,
@@ -218,6 +219,7 @@ class SandboxModel:
         # caller is managing (context manager / reuse) must survive a failed bind
         # (serve() is idempotent and returns early when already serving).
         started_here = self._address is None
+        env, close_env = dial_env_address(env, close_env)
         self.serve()
         try:
             contract = env_contract_of(env)
