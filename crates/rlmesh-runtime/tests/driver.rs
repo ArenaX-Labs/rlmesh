@@ -2365,3 +2365,35 @@ fn a_multi_lane_reset_sends_the_trial_ordinals_as_a_list_in_lane_order() {
         })),
     );
 }
+
+#[tokio::test]
+async fn an_evict_never_waits_behind_a_parked_lane_predict() {
+    // Lane episodes end while another lane's predict is in flight. A local
+    // model serializes evict behind predict on one handler lock, and a predict
+    // parked in the driver's pending set is not polled while the driver awaits
+    // the evict: flushing evictions then would wait out the predict timeout.
+    let env = LaneTestEnv::new(vec![
+        (2, Duration::from_millis(5)),
+        (3, Duration::from_millis(15)),
+        (4, Duration::from_millis(25)),
+    ]);
+    let model = TestModel {
+        predict_delay: Some(Duration::from_millis(10)),
+        handler_lock: Some(Arc::new(tokio::sync::Mutex::new(()))),
+        ..Default::default()
+    };
+    let report = tokio::time::timeout(
+        Duration::from_secs(20),
+        RuntimeDriver::new(
+            lane_spec(3, 9, (100..109).collect()),
+            env,
+            model,
+            Arc::new(RecordingHooks::default()),
+        )
+        .run(),
+    )
+    .await
+    .expect("the lane run completes without waiting on the evict timeout")
+    .unwrap();
+    assert_eq!(report.total_episodes, 9);
+}

@@ -183,6 +183,9 @@ pub struct TestModel {
     pub arrived: Arc<AtomicUsize>,
     // One `()` per predict as it arrives, ahead of any delay or gate.
     pub arrivals: Option<mpsc::UnboundedSender<()>>,
+    // A lock predict holds across its delay and evict must also take, the way
+    // the local model shares one handler between the two.
+    pub handler_lock: Option<Arc<tokio::sync::Mutex<()>>>,
 }
 
 #[async_trait]
@@ -199,6 +202,10 @@ impl RuntimeModel for TestModel {
         {
             let _ = gate.clone().await;
         }
+        let _handler = match &self.handler_lock {
+            Some(lock) => Some(lock.lock().await),
+            None => None,
+        };
         if let Some(delay) = self.predict_delay {
             tokio::time::sleep(delay).await;
         }
@@ -264,6 +271,10 @@ impl RuntimeModel for TestModel {
     }
 
     async fn reset_adapter(&self, request: ResetAdapterRequest) -> Result<(), RuntimeError> {
+        let _handler = match &self.handler_lock {
+            Some(lock) => Some(lock.lock().await),
+            None => None,
+        };
         self.lifecycle
             .lock()
             .expect("lifecycle lock poisoned")

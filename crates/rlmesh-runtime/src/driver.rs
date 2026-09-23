@@ -849,13 +849,18 @@ where
             {
                 return Ok("completed requested episodes");
             }
-            self.flush_evictions(
-                state,
-                telemetry,
-                Some(cancellation),
-                self.spec.limits.model_predict_timeout,
-            )
-            .await;
+            // A predict future parked in `predicts` is not polled while this
+            // await runs, and a local model's eviction shares its handler lock
+            // with predict: flushing here would wait out the predict timeout.
+            if predicts.is_empty() {
+                self.flush_evictions(
+                    state,
+                    telemetry,
+                    Some(cancellation),
+                    self.spec.limits.model_predict_timeout,
+                )
+                .await;
+            }
             self.dispatch_steps(&mut groups, state, env_ops, telemetry)
                 .await?;
             // With nothing else in flight, a waiting group must be predicted now

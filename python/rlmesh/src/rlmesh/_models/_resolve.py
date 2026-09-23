@@ -80,6 +80,7 @@ def reject_vector_env(contract: EnvContract | None) -> None:
     num_envs = getattr(contract, "num_envs", 1) if contract is not None else 1
     if num_envs and num_envs > 1:
         raise ValueError(
-            f"Model.run() drives a single env, but the env reports num_envs={num_envs}; "
-            "use num_envs=1 (the per-episode loop reads scalar reward/termination)."
+            f"the session loop drives a single env, but the env reports num_envs={num_envs}; "
+            "drive a lane endpoint with Model.run(address) (the native loop), or "
+            "serve num_envs=1 for session()."
         )
