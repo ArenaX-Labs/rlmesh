@@ -784,34 +784,68 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogCapture {
     }
 }
 
+/// The one subscriber this test binary logs to, installed on first use. A
+/// thread-scoped `set_default` per capture raced tracing's callsite-interest
+/// cache against every other test's first log line and could capture nothing
+/// at all under load; a global subscriber is asked once and stays asked.
+fn captured_logs() -> &'static Arc<Mutex<Vec<u8>>> {
+    static LOGS: std::sync::OnceLock<Arc<Mutex<Vec<u8>>>> = std::sync::OnceLock::new();
+    LOGS.get_or_init(|| {
+        let buffer = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(LogCapture(Arc::clone(&buffer)))
+            .with_ansi(false)
+            .with_thread_ids(true)
+            .finish();
+        tracing::subscriber::set_global_default(subscriber)
+            .expect("this binary installs no other global subscriber");
+        buffer
+    })
+}
+
 /// Drive a chunking run over `lanes` and hand back everything it logged.
 pub async fn chunked_run_logs(lanes: Vec<usize>) -> String {
-    // Registering a scoped subscriber rebuilds tracing's global callsite-interest
-    // cache; two captures racing that rebuild can drop a warn. One at a time.
+    // The tripwire is once per session, so two captures must not interleave.
     static ONE_CAPTURE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let _serial = ONE_CAPTURE_AT_A_TIME.lock().await;
-    let buffer = Arc::new(Mutex::new(Vec::<u8>::new()));
-    let subscriber = tracing_subscriber::fmt()
-        .with_writer(LogCapture(Arc::clone(&buffer)))
-        .with_ansi(false)
-        .finish();
-    {
-        let _guard = tracing::subscriber::set_default(subscriber);
-        RuntimeDriver::new(
-            vector_spec(lanes.len(), 4),
-            VectorTestEnv::new(lanes.clone()),
-            TestModel {
-                replay_frames: 4,
-                ..Default::default()
-            },
-            Arc::new(RecordingHooks::default()),
-        )
-        .run()
-        .await
-        .expect("the chunked run completes");
-    }
-    String::from_utf8(buffer.lock().expect("log buffer poisoned").clone())
+    let logs = captured_logs();
+    // A callsite another test registered while the subscriber was being
+    // installed may still carry the no-op dispatcher's interest.
+    tracing::callsite::rebuild_interest_cache();
+    let start = logs.lock().expect("log buffer poisoned").len();
+    RuntimeDriver::new(
+        vector_spec(lanes.len(), 4),
+        VectorTestEnv::new(lanes.clone()),
+        TestModel {
+            replay_frames: 4,
+            ..Default::default()
+        },
+        Arc::new(RecordingHooks::default()),
+    )
+    .run()
+    .await
+    .expect("the chunked run completes");
+    let captured = logs.lock().expect("log buffer poisoned")[start..].to_vec();
+    // Every other test in the binary logs to the same subscriber; the run above
+    // is single-threaded, so its lines are the ones stamped with this thread.
+    // Compared numerically: the formatter zero-pads (`ThreadId(02)`), Debug
+    // does not.
+    let this_thread = thread_number(&format!("{:?}", std::thread::current().id()));
+    String::from_utf8(captured)
         .expect("captured logs are utf-8")
+        .lines()
+        .filter(|line| line.split("ThreadId(").nth(1).map(thread_number) == Some(this_thread))
+        .map(|line| format!("{line}\n"))
+        .collect()
+}
+
+fn thread_number(stamp: &str) -> u64 {
+    stamp
+        .trim_start_matches("ThreadId(")
+        .split(')')
+        .next()
+        .and_then(|digits| digits.parse().ok())
+        .expect("a ThreadId(N) stamp")
 }
 
 /// A spec for `episodes` back-to-back single-lane episodes whose env declares
