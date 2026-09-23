@@ -75,7 +75,7 @@ impl LaneEnv {
         let first = envs.first().expect("LaneEnv needs at least one lane");
         let observation_space = first.observation_space().clone();
         let action_space = first.action_space().clone();
-        let env_contract = first.env_contract().clone();
+        let mut env_contract = first.env_contract().clone();
         for (index, env) in envs.iter().enumerate().skip(1) {
             if env.env_contract() != &env_contract {
                 return Err(spaces::EnvRuntimeError::Runtime(format!(
@@ -84,6 +84,10 @@ impl LaneEnv {
                 )));
             }
         }
+        // Lane resets are driver-owned by construction; a scalar env's metadata
+        // may still carry a vector autoreset mode (gymnasium's SyncVectorEnv
+        // writes one into the shared class-level `gym.Env.metadata`).
+        env_contract.autoreset_mode = spaces::types::AutoresetMode::Disabled;
         let lanes = envs
             .into_iter()
             .enumerate()

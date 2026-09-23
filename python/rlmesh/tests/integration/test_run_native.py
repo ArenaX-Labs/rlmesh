@@ -1020,3 +1020,23 @@ def test_a_predict_exception_keeps_its_own_type_on_the_native_run() -> None:
     model = rlmesh.numpy.Model(predict, spec=rlmesh.NO_ADAPTER)
     with pytest.raises(KeyError, match="missing_key"):
         _drive(model, CountEnv(episode_len=2), "native", seeds=[1])
+
+
+def test_a_spec_less_predict_batch_takes_the_vector_batch() -> None:
+    from rlmesh.numpy import Model
+
+    seen: list[tuple[str, tuple[int, ...]]] = []
+
+    class Batched(Model):
+        def predict(self, observation: Any) -> Any:
+            seen.append(("predict", np.shape(observation)))
+            return np.zeros(2, np.float32)
+
+        def predict_batch(self, observations: Any) -> Any:
+            seen.append(("batch", np.shape(observations)))
+            return np.zeros((len(observations), 2), np.float32)
+
+    result = _drive(Batched(), _NextStepVectorEnv(), "native", episodes=2)
+    assert result.num_episodes == 2
+    assert seen and all(kind == "batch" for kind, _ in seen)
+    assert seen[0][1] == (2, 2)

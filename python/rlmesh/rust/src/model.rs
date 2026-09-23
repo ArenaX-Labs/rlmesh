@@ -197,6 +197,43 @@ impl PredictFn for PyPredict {
                 .env_contract
                 .as_ref()
                 .and_then(|contract| contract.observation_space.as_ref());
+            if lanes.len() > 1
+                && let (Some(batch_fn), Some(space)) =
+                    (self.predict_batch_fn.as_ref(), observation_space)
+            {
+                // The batched corner: per-lane inputs the SDK glue stacks into
+                // one forward and splits back, the same contract as an adapted
+                // route (see `call_batched`).
+                let action_space = observation
+                    .env_contract
+                    .as_ref()
+                    .and_then(|contract| contract.action_space.as_ref())
+                    .ok_or_else(|| {
+                        pyo3::exceptions::PyRuntimeError::new_err(
+                            "model worker requires action space metadata",
+                        )
+                    })?;
+                let inputs = pyo3::types::PyList::empty(py);
+                let contexts = pyo3::types::PyList::empty(py);
+                for (index, lane) in lanes.iter().enumerate() {
+                    inputs.append(space_value_to_py_neutral(py, lane, space)?)?;
+                    contexts.append(episode_context_dict(
+                        py,
+                        observation.route.episodes.get(index),
+                    )?)?;
+                }
+                let result = batch_fn.call1(py, (inputs, contexts))?;
+                let mut actions = Vec::with_capacity(lanes.len());
+                for item in result.bind(py).try_iter()? {
+                    actions.push(py_any_to_space_value_with_backend(
+                        py,
+                        &item?,
+                        action_space,
+                        ValueBackend::Native,
+                    )?);
+                }
+                return Ok(actions);
+            }
             let obs = match (observation_space, lanes.len()) {
                 (_, 0) => py.None().bind(py).clone(),
                 (Some(space), 1) => space_value_to_py_neutral(py, &lanes[0], space)?,
@@ -842,12 +879,30 @@ impl PyModel {
             model_runtime().block_on(async move {
                 let bound = ModelWorker::new(handler)
                     .bind_async(ServeModelOptions::new(address).serve_options(options))
-                    .await?;
-                crate::server::py_env_server::spawn_signal_shutdown(bound.shutdown_trigger());
-                bound.serve().await
+                    .await
+                    .map_err(to_py_err)?;
+                let shutdown = bound.shutdown_trigger();
+                crate::server::py_env_server::spawn_signal_shutdown(shutdown.clone());
+                let mut serve = std::pin::pin!(bound.serve());
+                // A signal Python's own handler caught (before the tokio
+                // listeners were armed, or on a platform without them) is only
+                // visible through check_signals: poll it like the run loop does.
+                let mut poll = tokio::time::interval(crate::client::SIGNAL_POLL_INTERVAL);
+                poll.tick().await;
+                loop {
+                    tokio::select! {
+                        result = &mut serve => return result.map_err(to_py_err),
+                        _ = poll.tick() => {
+                            if let Err(err) = Python::attach(|py| py.check_signals()) {
+                                shutdown.trigger("python signal");
+                                let _ = (&mut serve).await;
+                                return Err(err);
+                            }
+                        }
+                    }
+                }
             })
-        })
-        .map_err(to_py_err)?;
+        })?;
 
         let _ = total_guard.finish(0);
         self.profiler.log_summary_once();
