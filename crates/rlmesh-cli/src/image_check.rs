@@ -1244,7 +1244,8 @@ mod tests {
         // offered only its cohort, so adding this build's sealed base would
         // pass an image the real handshake refuses.
         assert_eq!(platform_offer_for_version("0.1.0-rc.12"), None);
-        assert_eq!(platform_offer_for_version("0.1.0"), None);
+        assert_eq!(platform_offer_for_version("0.0.1"), None);
+        assert_eq!(platform_offer_for_version("99.0.0"), None);
     }
 
     #[test]
