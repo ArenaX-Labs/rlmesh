@@ -164,7 +164,7 @@ def breaking(root: Path) -> int:
         version = tomllib.loads((root / "Cargo.toml").read_text())["workspace"][
             "package"
         ]["version"]
-        if version not in {"0.1.0-rc.12", "0.1.0"}:
+        if version not in {"0.1.0-rc.12", "0.1.0-rc.13", "0.1.0"}:
             raise SystemExit(
                 "v0.1.0 tag is required; fetch release tags before checking compatibility"
             )
