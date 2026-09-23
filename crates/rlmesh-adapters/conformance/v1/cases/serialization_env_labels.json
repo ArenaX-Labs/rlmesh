@@ -8,7 +8,7 @@
         "role": "proprio/joint_pos",
         "encoding": null,
         "range": null,
-        "labels": ["FR_hip", "FR_thigh"]
+        "labels": ["FR_hip_joint", "FR_thigh_joint"]
       },
       "flat": {
         "type": "split",
@@ -18,7 +18,7 @@
             "dim": 2,
             "encoding": null,
             "range": null,
-            "labels": ["FR_hip", "FR_thigh"]
+            "labels": ["FR_hip_joint", "FR_thigh_joint"]
           },
           {
             "role": null,
@@ -38,7 +38,7 @@
           "encoding": null,
           "range": null,
           "binary": false,
-          "labels": ["FR_hip", "FR_thigh"],
+          "labels": ["FR_hip_joint", "FR_thigh_joint"],
           "optional": true,
           "axis_fill": [0.0, 0.8],
           "axis_scale": [0.125, 0.25],

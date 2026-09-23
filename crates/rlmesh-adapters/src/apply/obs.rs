@@ -140,6 +140,17 @@ fn insert_at(node: &mut Value, segments: &[PathSeg], value: Value) -> Result<(),
         *node = value;
         return Ok(());
     };
+    // An empty placeholder (a freshly traversed child or a grown list slot)
+    // takes the container kind its next segment needs.
+    match (head, &*node) {
+        (PathSeg::Key(_), Value::List(items)) if items.is_empty() => {
+            *node = Value::Map(BTreeMap::new());
+        }
+        (PathSeg::Index(_), Value::Map(map)) if map.is_empty() => {
+            *node = Value::List(Vec::new());
+        }
+        _ => {}
+    }
     match head {
         PathSeg::Key(key) => {
             let Value::Map(map) = node else {
@@ -163,5 +174,74 @@ fn insert_at(node: &mut Value, segments: &[PathSeg], value: Value) -> Result<(),
             }
             insert_at(&mut items[*index], rest, value)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::{NodeBuilder, transform_obs};
+    use crate::apply::{CustomTransform, Value};
+    use crate::error::ApplyError;
+    use crate::path::NodePath;
+    use crate::plans::{CustomPlan, ObsPlan};
+
+    fn built(placements: &[NodePath]) -> Value {
+        let mut builder = NodeBuilder::new();
+        for (leaf, placement) in placements.iter().enumerate() {
+            builder
+                .place(placement, Value::Number(leaf as f64))
+                .unwrap();
+        }
+        builder.finish()
+    }
+
+    #[test]
+    fn a_tuple_nested_under_a_dict_key_places_as_a_list() {
+        let payload = built(&[NodePath::root().push_key("nested").push_index(0)]);
+        let expected = Value::Map(BTreeMap::from([(
+            "nested".to_owned(),
+            Value::List(vec![Value::Number(0.0)]),
+        )]));
+        assert_eq!(payload, expected);
+    }
+
+    #[test]
+    fn a_tuple_nested_in_a_tuple_places_as_a_list() {
+        let payload = built(&[
+            NodePath::root().push_index(1).push_index(0),
+            NodePath::root().push_index(0).push_index(0),
+        ]);
+        let expected = Value::List(vec![
+            Value::List(vec![Value::Number(1.0)]),
+            Value::List(vec![Value::Number(0.0)]),
+        ]);
+        assert_eq!(payload, expected);
+    }
+
+    struct Constant;
+
+    impl CustomTransform for Constant {
+        fn apply(
+            &self,
+            _model_key: &str,
+            _entrypoint: &str,
+            _raw_obs: &BTreeMap<String, Value>,
+        ) -> Result<Option<Value>, ApplyError> {
+            Ok(Some(Value::Number(7.0)))
+        }
+    }
+
+    #[test]
+    fn an_all_custom_root_tuple_places_as_a_list() {
+        let placement = NodePath::root().push_index(0);
+        let plan = ObsPlan::Custom(CustomPlan {
+            placement_key: placement.to_string(),
+            placement,
+            transform: "host:x".to_owned(),
+        });
+        let payload = transform_obs(&[plan], &BTreeMap::new(), &Constant, None).unwrap();
+        assert_eq!(payload, Value::List(vec![Value::Number(7.0)]));
     }
 }

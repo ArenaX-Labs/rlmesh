@@ -58,17 +58,21 @@ class Actuator:
             it is wrong when dims have different ranges (e.g. delta-pos in
             ``[-1, 1]`` but rotation in ``[-pi/2, pi/2]``). ``clip=True`` requires
             ``range``.
-        frame: Coordinate frame an *absolute* pose command is expressed in
-            (``action/eef_*``). Keyword-only, omitted from the wire when unset.
+        frame: Coordinate frame a Cartesian command's axes are expressed in.
+            Required of an absolute pose (``action/eef_*``) under the
+            require-frames tier; a delta (``action/delta_eef_*``) may declare it
+            too (a tool-frame delta and a base-frame delta are different
+            commands), and when both sides do they must agree. Keyword-only,
+            omitted from the wire when unset.
         reference: What a *delta* command is integrated against
             (``action/delta_eef_*``): an env declares what its Cartesian
             controller adds the delta to -- the measured pose (``"current"``) or
             the last commanded target (``"target"``) -- and a model declares what
             it was trained against. A disagreement is a hard resolve error, which
             is what stops an absolute-pose head from binding cleanly to a
-            delta controller. A delta never carries a ``frame`` (it lives in the
-            controller's own frame); ``reference`` is the attribute it gets
-            instead.
+            delta controller. ``reference`` says what a delta is added to;
+            ``frame`` says which axes it is expressed in. Declare both unless
+            the controller fixes the frame.
         part: The body part this actuator drives, when the role repeats across
             a body (``"left_arm"``, ``"right_arm"``, ...): an identity key the
             resolver matches on, never a value it checks. Keyword-only and

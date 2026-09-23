@@ -825,3 +825,126 @@ def test_episode_success_reads_the_same_keys_as_the_runtime(
     from rlmesh._models._eval import _episode_success
 
     assert _episode_success(info) is expected
+
+
+def test_closed_model_is_collectable_after_a_native_run() -> None:
+    import gc
+    import weakref
+
+    model = rlmesh.Model(lambda obs: 0)
+    model.run(_TinyEnv(), episodes=1)
+    ref = weakref.ref(model)
+    model.close()
+    del model
+    gc.collect()
+
+    assert ref() is None
+
+
+class _ClosingEnv(_TinyEnv):
+    def __init__(self, closed: list[int]) -> None:
+        super().__init__()
+        self._closed = closed
+
+    def close(self) -> None:
+        self._closed.append(1)
+
+
+def _closing_factory(closed: list[int]) -> rlmesh.EnvFactory:
+    class Factory(rlmesh.EnvFactory):
+        def make(self) -> _ClosingEnv:
+            return _ClosingEnv(closed)
+
+    return Factory()
+
+
+def test_run_closes_a_factory_env_when_adapter_resolution_fails() -> None:
+    from rlmesh.adapters import AdapterResolutionError
+
+    closed: list[int] = []
+    model = rlmesh.Model(lambda obs: 0, spec=cast(Any, object()))
+    with pytest.raises(AdapterResolutionError):
+        model.run(_closing_factory(closed), episodes=1)
+
+    assert closed == [1]
+
+
+def test_session_closes_a_factory_env_when_adapter_resolution_fails() -> None:
+    from rlmesh.adapters import AdapterResolutionError
+
+    closed: list[int] = []
+    model = rlmesh.Model(lambda obs: 0, spec=cast(Any, object()))
+    with (
+        pytest.raises(AdapterResolutionError),
+        model.session(_closing_factory(closed)) as session,
+    ):
+        session.reset()
+
+    assert closed == [1]
+
+
+def test_session_close_releases_the_env_when_episode_end_raises() -> None:
+    def fail(*_: object) -> None:
+        raise ValueError("end hook failed")
+
+    closed: list[int] = []
+    model = rlmesh.Model(lambda obs: 0, on_episode_end=fail)
+    session = model.session(_closing_factory(closed))
+    session.reset()
+    with pytest.raises(ValueError, match="end hook failed"):
+        session.close()
+    session.close()
+
+    assert closed == [1]
+
+
+@pytest.mark.parametrize(("shape", "dtype"), [((2, 3), "float32"), ((6,), "float64")])
+def test_adapted_session_and_run_hand_the_env_its_box_action(
+    shape: tuple[int, ...], dtype: str
+) -> None:
+    np = pytest.importorskip("numpy")
+    import rlmesh.adapters as adapt
+    from rlmesh import spaces
+
+    class Env:
+        def __init__(self) -> None:
+            self.observation_space = spaces.Dict(
+                {"q": spaces.Box(-np.inf, np.inf, (6,))}
+            )
+            self.action_space = spaces.Box(-1, 1, shape, dtype=dtype)
+            self.seen: list[tuple[tuple[int, ...], str]] = []
+
+        def reset(self, *, seed: object = None, options: object = None) -> object:
+            return {"q": np.zeros(6, np.float32)}, {}
+
+        def step(self, action: Any) -> object:
+            self.seen.append((tuple(action.shape), str(action.dtype)))
+            return {"q": np.zeros(6, np.float32)}, 0.0, True, False, {}
+
+        def close(self) -> None:
+            pass
+
+    action = adapt.Action(
+        adapt.Actuator(adapt.ACTION_JOINT_POS, dim=6, labels=adapt.UR5E.joints)
+    )
+    spec = adapt.ModelSpec(
+        input={"q": adapt.State(adapt.JOINT_POS, labels=adapt.UR5E.joints)},
+        output=action,
+    )
+    tags = adapt.EnvTags(
+        observation={"q": adapt.StateTag(adapt.JOINT_POS, labels=adapt.UR5E.joints)},
+        action=action,
+    )
+
+    def model() -> rlmesh.numpy.Model[Any, Any]:
+        return rlmesh.numpy.Model(
+            lambda payload: np.arange(6, dtype=np.float32) / 10.0, spec=spec
+        )
+
+    session_env = adapt.tag(Env(), tags)
+    with model().session(session_env) as session:
+        session.run(episodes=1)
+    run_env = adapt.tag(Env(), tags)
+    model().run(run_env, episodes=1)
+
+    assert session_env.seen == run_env.seen == [(shape, dtype)]

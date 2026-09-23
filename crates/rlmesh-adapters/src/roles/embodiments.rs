@@ -9,9 +9,10 @@
 //! draws the same nudge an ad-hoc role does, and the strict publish tier
 //! refuses it) and for authors, who should not retype twelve joint names.
 //!
-//! Label spelling is `<part>_<joint>` snake case, matching the Unitree SDK
-//! and Isaac Lab joint names, so a label written from a robot's own config
-//! matches a profile verbatim.
+//! Labels are the vendor URDF joint names verbatim (`FR_hip_joint`,
+//! `panda_joint1`, `shoulder_pan_joint`), which is what Isaac Lab, MuJoCo
+//! and ROS descriptions expose, so a label written from a robot's own config
+//! matches a profile without renaming.
 
 /// A named embodiment: the parts it has and its joint labels in the
 /// embodiment's canonical order.
@@ -33,8 +34,18 @@ pub const UNITREE_GO2: EmbodimentProfile = EmbodimentProfile {
     name: "unitree_go2",
     parts: &[super::parts::BASE],
     joints: &[
-        "FR_hip", "FR_thigh", "FR_calf", "FL_hip", "FL_thigh", "FL_calf", "RR_hip", "RR_thigh",
-        "RR_calf", "RL_hip", "RL_thigh", "RL_calf",
+        "FR_hip_joint",
+        "FR_thigh_joint",
+        "FR_calf_joint",
+        "FL_hip_joint",
+        "FL_thigh_joint",
+        "FL_calf_joint",
+        "RR_hip_joint",
+        "RR_thigh_joint",
+        "RR_calf_joint",
+        "RL_hip_joint",
+        "RL_thigh_joint",
+        "RL_calf_joint",
     ],
 };
 
@@ -51,35 +62,35 @@ pub const UNITREE_G1_29DOF: EmbodimentProfile = EmbodimentProfile {
         super::parts::HEAD,
     ],
     joints: &[
-        "left_hip_pitch",
-        "left_hip_roll",
-        "left_hip_yaw",
-        "left_knee",
-        "left_ankle_pitch",
-        "left_ankle_roll",
-        "right_hip_pitch",
-        "right_hip_roll",
-        "right_hip_yaw",
-        "right_knee",
-        "right_ankle_pitch",
-        "right_ankle_roll",
-        "waist_yaw",
-        "waist_roll",
-        "waist_pitch",
-        "left_shoulder_pitch",
-        "left_shoulder_roll",
-        "left_shoulder_yaw",
-        "left_elbow",
-        "left_wrist_roll",
-        "left_wrist_pitch",
-        "left_wrist_yaw",
-        "right_shoulder_pitch",
-        "right_shoulder_roll",
-        "right_shoulder_yaw",
-        "right_elbow",
-        "right_wrist_roll",
-        "right_wrist_pitch",
-        "right_wrist_yaw",
+        "left_hip_pitch_joint",
+        "left_hip_roll_joint",
+        "left_hip_yaw_joint",
+        "left_knee_joint",
+        "left_ankle_pitch_joint",
+        "left_ankle_roll_joint",
+        "right_hip_pitch_joint",
+        "right_hip_roll_joint",
+        "right_hip_yaw_joint",
+        "right_knee_joint",
+        "right_ankle_pitch_joint",
+        "right_ankle_roll_joint",
+        "waist_yaw_joint",
+        "waist_roll_joint",
+        "waist_pitch_joint",
+        "left_shoulder_pitch_joint",
+        "left_shoulder_roll_joint",
+        "left_shoulder_yaw_joint",
+        "left_elbow_joint",
+        "left_wrist_roll_joint",
+        "left_wrist_pitch_joint",
+        "left_wrist_yaw_joint",
+        "right_shoulder_pitch_joint",
+        "right_shoulder_roll_joint",
+        "right_shoulder_yaw_joint",
+        "right_elbow_joint",
+        "right_wrist_roll_joint",
+        "right_wrist_pitch_joint",
+        "right_wrist_yaw_joint",
     ],
 };
 
@@ -183,26 +194,36 @@ mod tests {
                 );
             }
         }
-        assert_eq!(UNITREE_GO2.joints[0], "FR_hip");
-        assert_eq!(UNITREE_GO2.joints[3], "FL_hip");
-        assert_eq!(UNITREE_G1_29DOF.joints[12], "waist_yaw");
+        assert_eq!(UNITREE_GO2.joints[0], "FR_hip_joint");
+        assert_eq!(UNITREE_GO2.joints[3], "FL_hip_joint");
+        assert_eq!(UNITREE_G1_29DOF.joints[12], "waist_yaw_joint");
     }
 
     #[test]
     fn a_set_or_subset_matches_and_a_stray_label_names_the_closest() {
         let isaac = owned(&[
-            "FL_hip", "FL_thigh", "FL_calf", "FR_hip", "FR_thigh", "FR_calf", "RL_hip", "RL_thigh",
-            "RL_calf", "RR_hip", "RR_thigh", "RR_calf",
+            "FL_hip_joint",
+            "FL_thigh_joint",
+            "FL_calf_joint",
+            "FR_hip_joint",
+            "FR_thigh_joint",
+            "FR_calf_joint",
+            "RL_hip_joint",
+            "RL_thigh_joint",
+            "RL_calf_joint",
+            "RR_hip_joint",
+            "RR_thigh_joint",
+            "RR_calf_joint",
         ]);
         assert_eq!(
             matching_profile(&isaac).map(|p| p.name),
             Some("unitree_go2")
         );
         assert_eq!(
-            matching_profile(&owned(&["left_knee", "right_knee"])).map(|p| p.name),
+            matching_profile(&owned(&["left_knee_joint", "right_knee_joint"])).map(|p| p.name),
             Some("unitree_g1_29dof")
         );
-        let stray = owned(&["FR_hip", "FR_thigh", "FR_shin"]);
+        let stray = owned(&["FR_hip_joint", "FR_thigh_joint", "FR_shin"]);
         assert_eq!(matching_profile(&stray), None);
         let (closest, overlap) = closest_profile(&stray).expect("shares two");
         assert_eq!((closest.name, overlap), ("unitree_go2", 2));

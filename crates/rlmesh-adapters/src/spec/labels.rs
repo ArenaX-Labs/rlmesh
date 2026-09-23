@@ -1,6 +1,6 @@
 //! The `labels` attribute: per-axis names on a numeric leaf.
 //!
-//! A label tuple names the axes of a joint vector (`FR_hip`, `FR_thigh`, ...)
+//! A label tuple names the axes of a joint vector (`FR_hip_joint`, `FR_thigh_joint`, ...)
 //! so two sides that list the same names in different orders resolve to a
 //! permutation instead of a silent misalignment. Labels are plain strings on
 //! the wire; the shipped tuples live in [`embodiments`](crate::roles::embodiments).

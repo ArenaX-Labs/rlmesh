@@ -684,7 +684,7 @@ mod tests {
     #[test]
     fn labels_fix_dim_and_refuse_index_duplicates_and_a_constant() {
         let state: State = serde_json::from_str(
-            r#"{"components": [{"role": "proprio/joint_pos", "labels": ["FR_hip", "FR_thigh"]}]}"#,
+            r#"{"components": [{"role": "proprio/joint_pos", "labels": ["FR_hip_joint", "FR_thigh_joint"]}]}"#,
         )
         .unwrap();
         // Labels fix the width at resolve; `dim` stays as authored (unset), so
@@ -692,7 +692,9 @@ mod tests {
         assert_eq!(state.components[0].dim, None);
         let json = serde_json::to_string(&state).unwrap();
         assert!(
-            json.contains(r#"[{"role":"proprio/joint_pos","labels":["FR_hip","FR_thigh"]}]"#),
+            json.contains(
+                r#"[{"role":"proprio/joint_pos","labels":["FR_hip_joint","FR_thigh_joint"]}]"#
+            ),
             "got: {json}"
         );
         let ok: State = serde_json::from_str(

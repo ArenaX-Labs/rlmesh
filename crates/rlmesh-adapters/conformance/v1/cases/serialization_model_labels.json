@@ -8,7 +8,7 @@
         "components": [
           {
             "role": "proprio/joint_pos",
-            "labels": ["FL_hip", "FR_hip"],
+            "labels": ["FL_hip_joint", "FR_hip_joint"],
             "axis_offset": [-0.1, 0.1]
           },
           {
@@ -30,7 +30,7 @@
           "encoding": null,
           "range": null,
           "binary": false,
-          "labels": ["FL_hip", "FR_hip"],
+          "labels": ["FL_hip_joint", "FR_hip_joint"],
           "axis_scale": [0.125, 0.125],
           "offset": 0.8
         }

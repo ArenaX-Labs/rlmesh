@@ -2098,6 +2098,78 @@ async fn a_runtime_truncated_episode_is_not_double_counted_when_the_env_echoes_i
     );
 }
 
+/// A scalar env that never ends an episode and reports `is_success: false` on
+/// every step, so only a runtime cap can finish it.
+#[derive(Clone, Default)]
+struct NeverSucceedsEnv;
+
+#[async_trait]
+impl RuntimeEnv for NeverSucceedsEnv {
+    async fn reset(&mut self, _request: ResetRequest) -> Result<RuntimeEnvReset, RuntimeError> {
+        Ok(RuntimeEnvReset {
+            response: ResetResponse {
+                observation: Some(leaves_value(payload([0]))),
+                infos: None,
+            },
+            endpoint_total_ns: None,
+            phases: EndpointPhases::default(),
+        })
+    }
+
+    async fn step(&mut self, _request: StepRequest) -> Result<RuntimeEnvStep, RuntimeError> {
+        let infos = rlmesh_proto::spaces::v1::MetaMap {
+            entries: [(
+                "is_success".to_string(),
+                MetaValue {
+                    kind: Some(meta_value::Kind::Bool(false)),
+                },
+            )]
+            .into(),
+        };
+        Ok(RuntimeEnvStep {
+            response: StepResponse {
+                observation: Some(leaves_value(payload([0]))),
+                rewards: vec![1.0],
+                terminated_mask: vec![0],
+                truncated_mask: vec![0],
+                infos: Some(infos),
+                completed_episodes: Vec::new(),
+                env_indices: vec![],
+            },
+            endpoint_total_ns: None,
+            phases: EndpointPhases::default(),
+        })
+    }
+
+    async fn close(&mut self, _timeout: Duration) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn a_runtime_capped_episode_keeps_the_last_step_success() {
+    // The capping step's info is the episode's last word on its outcome, as the
+    // Python Session loop reads it; dropping it reported success as unknown.
+    let spec = RuntimeSessionSpec {
+        max_episode_steps: Some(1),
+        ..one_episode_spec()
+    };
+    let report = RuntimeDriver::new(
+        spec,
+        NeverSucceedsEnv,
+        TestModel::default(),
+        Arc::new(RecordingHooks::default()),
+    )
+    .run()
+    .await
+    .unwrap();
+
+    assert_eq!(report.episodes.len(), 1);
+    let episode = &report.episodes[0];
+    assert!(episode.truncated && !episode.terminated);
+    assert_eq!(episode.success, Some(false));
+}
+
 /// A lane-capable env under NEXT_STEP autoreset: every op names exactly one
 /// lane, each lane ends its episode on a fixed cadence and rolls itself on the
 /// following step. No driver reset ever runs after the cold start, so the

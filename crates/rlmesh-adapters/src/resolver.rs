@@ -1666,10 +1666,10 @@ mod labels_tests {
             do_resolve(&go2_env(""), &go2_model(Some(&labels(&ISAAC)))).expect("resolves");
         let described = adapter.describe();
         assert!(
-            described.contains("joint_pos perm[3,4,5,0,1,2,9,10,11,6,7,8] (+[FL_hip:0.0,FL_thigh:-0.8,FL_calf:1.5,")
+            described.contains("joint_pos perm[3,4,5,0,1,2,9,10,11,6,7,8] (+[FL_hip_joint:0.0,FL_thigh_joint:-0.8,FL_calf_joint:1.5,")
                 && described.contains("joint_vel perm[3,4,5,0,1,2,9,10,11,6,7,8] (*0.05)")
                 && described.contains(
-                    "\"action/joint_pos\" <- model[0:12] (model *[FL_hip:0.125,FL_thigh:0.25,FL_calf:0.25,"
+                    "\"action/joint_pos\" <- model[0:12] (model *[FL_hip_joint:0.125,FL_thigh_joint:0.25,FL_calf_joint:0.25,"
                 )
                 && described.ends_with("]) perm[3,4,5,0,1,2,9,10,11,6,7,8]"),
             "got:\n{described}"
@@ -1721,7 +1721,7 @@ mod labels_tests {
         let adapter = do_resolve(&go2_env(""), &go2_model(Some(&sdk()))).expect("resolves");
         let described = adapter.describe();
         assert!(
-            described.contains("joint_pos[:12] (+[FR_hip:0.0,FR_thigh:-0.8,")
+            described.contains("joint_pos[:12] (+[FR_hip_joint:0.0,FR_thigh_joint:-0.8,")
                 && !described.contains("perm")
                 && !described.contains("select"),
             "got:\n{described}"
@@ -1751,8 +1751,8 @@ mod labels_tests {
         let adapter = do_resolve(&go2_env(""), &go2_model(None)).expect("env-only labels resolve");
         let described = adapter.describe();
         assert!(
-            described.contains("joint_pos[:12] (+[FR_hip:0.0,FR_thigh:-0.8,")
-                && described.contains("(model *[FR_hip:0.125,"),
+            described.contains("joint_pos[:12] (+[FR_hip_joint:0.0,FR_thigh_joint:-0.8,")
+                && described.contains("(model *[FR_hip_joint:0.125,"),
             "got:\n{described}"
         );
         assert!(
@@ -1773,7 +1773,7 @@ mod labels_tests {
         let err = do_resolve(&go2_env(""), &model).expect_err("env actuator not optional");
         assert_eq!(err.code, ErrorCode::LabelMismatch);
         assert!(
-            err.message.contains("leaves [\"RR_hip\""),
+            err.message.contains("leaves [\"RR_hip_joint\""),
             "{}",
             err.message
         );
@@ -1785,7 +1785,7 @@ mod labels_tests {
         assert!(
             described.contains("joint_pos select[3,4,5,0,1,2]")
                 && described.contains(
-                    "\"action/joint_pos\" <- model[0:6] select[3,4,5,0,1,2,-,-,-,-,-,-] (fill [RR_hip:0.0,RR_thigh:0.8,RR_calf:-1.5,RL_hip:0.0,RL_thigh:0.8,RL_calf:-1.5])"
+                    "\"action/joint_pos\" <- model[0:6] select[3,4,5,0,1,2,-,-,-,-,-,-] (fill [RR_hip_joint:0.0,RR_thigh_joint:0.8,RR_calf_joint:-1.5,RL_hip_joint:0.0,RL_thigh_joint:0.8,RL_calf_joint:-1.5])"
                 ),
             "got:\n{described}"
         );
@@ -1795,7 +1795,7 @@ mod labels_tests {
                 .iter()
                 .any(|note| note.severity == AdvisorySeverity::Info
                     && note.message.contains("drives 6 of 12 labels")
-                    && note.message.contains("RR_hip")),
+                    && note.message.contains("RR_hip_joint")),
             "{notes:?}"
         );
         let action = adapter
@@ -1809,7 +1809,7 @@ mod labels_tests {
         let env = go2_env(r#","optional":true,"fill":0.5"#);
         let adapter = do_resolve(&env, &model).expect("resolves");
         assert!(
-            adapter.describe().contains("(fill [RR_hip:0.5,"),
+            adapter.describe().contains("(fill [RR_hip_joint:0.5,"),
             "{}",
             adapter.describe()
         );
@@ -1817,12 +1817,12 @@ mod labels_tests {
 
     #[test]
     fn a_model_label_the_env_lacks_is_a_mismatch_unless_the_part_is_optional() {
-        let model = r#"{"input":{"obs":{"type":"state","components":[{"role":"proprio/joint_pos","labels":["FR_hip","FR_shin"]}]}},
+        let model = r#"{"input":{"obs":{"type":"state","components":[{"role":"proprio/joint_pos","labels":["FR_hip_joint","FR_shin"]}]}},
             "output":{"components":[{"role":"action/joint_pos","dim":12}]}}"#;
         let err = do_resolve(&go2_env(""), model).expect_err("missing label");
         assert_eq!(err.code, ErrorCode::LabelMismatch);
         assert!(err.message.contains(r#"["FR_shin"]"#), "{}", err.message);
-        let optional = r#"{"input":{"obs":{"type":"state","components":[{"role":"proprio/joint_pos","labels":["FR_hip","FR_shin"],"optional":true}]}},
+        let optional = r#"{"input":{"obs":{"type":"state","components":[{"role":"proprio/joint_pos","labels":["FR_hip_joint","FR_shin"],"optional":true}]}},
             "output":{"components":[{"role":"action/joint_pos","dim":12}]}}"#;
         let adapter = do_resolve(&go2_env(""), optional).expect("fills");
         assert!(
@@ -1949,7 +1949,7 @@ mod labels_tests {
         let described = adapter.describe();
         assert!(
             described.contains(
-                "concat(ang_vel (*0.25)@robot_base#sensed, base_quat (quat_wxyz->gravity_xyz)@world#sensed, command@robot_base, joint_pos[:12] (+[FR_hip:0.0,"
+                "concat(ang_vel (*0.25)@robot_base#sensed, base_quat (quat_wxyz->gravity_xyz)@world#sensed, command@robot_base, joint_pos[:12] (+[FR_hip_joint:0.0,"
             ) && described.contains("#sensed, joint_vel[:12] (*0.05)#sensed) clip[-100.0,100.0]\n"),
             "got:\n{described}"
         );
@@ -2119,7 +2119,7 @@ mod labels_tests {
         // A label the actuator lacks is a mismatch naming the actuator.
         let err = go2_full_resolve(
             &go2_body_env(GO2_BODY_QUAT),
-            r#"{"role":"action/joint_pos","source":"action","labels":["FR_hip","FR_shin"]}"#,
+            r#"{"role":"action/joint_pos","source":"action","labels":["FR_hip_joint","FR_shin"]}"#,
         )
         .expect_err("missing label");
         assert_eq!(err.code, ErrorCode::LabelMismatch);

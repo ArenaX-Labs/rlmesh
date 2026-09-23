@@ -92,14 +92,9 @@ pub fn transform_action(plan: &ActionPlan, raw_action: &Value) -> Result<Tensor,
             segment.model_threshold,
         );
         if let Some(scatter) = &segment.scatter {
-            let fill = segment.axis_fill.as_deref().unwrap_or(&[]);
             piece = scatter
                 .iter()
-                .enumerate()
-                .map(|(env_index, slot)| match slot {
-                    Some(model_index) => piece[*model_index as usize],
-                    None => fill[env_index] as f32,
-                })
+                .map(|slot| slot.map_or(0.0, |model_index| piece[model_index as usize]))
                 .collect();
         }
         apply_scalar_corrections(
@@ -114,8 +109,10 @@ pub fn transform_action(plan: &ActionPlan, raw_action: &Value) -> Result<Tensor,
         if segment.binarize {
             for entry in &mut piece {
                 // TODO: verify intended binary-gripper behavior at raw 0.0.
-                // threshold=None keeps a raw 0.0 neutral; a thresholded boundary opens.
-                if segment.threshold.is_some() || *entry != 0.0 {
+                // No threshold on either side keeps a raw 0.0 neutral; a
+                // thresholded boundary opens.
+                if segment.threshold.is_some() || segment.model_threshold.is_some() || *entry != 0.0
+                {
                     *entry = binary_snap(*entry);
                 }
             }
@@ -126,6 +123,15 @@ pub fn transform_action(plan: &ActionPlan, raw_action: &Value) -> Result<Tensor,
             let (low, high) = (low as f32, high as f32);
             for entry in &mut piece {
                 *entry = entry.clamp(low, high);
+            }
+        }
+        // Undriven subset axes hold their fill as a final value, exactly as the
+        // whole-actuator fallback does: no env corrections, snap or clamp.
+        if let (Some(scatter), Some(fill)) = (&segment.scatter, &segment.axis_fill) {
+            for ((entry, slot), fill) in piece.iter_mut().zip(scatter).zip(fill) {
+                if slot.is_none() {
+                    *entry = *fill as f32;
+                }
             }
         }
         pieces.extend(piece);
@@ -426,6 +432,39 @@ mod tests {
         // must snap to a definite side (open), never an undefined 0.0.
         let plan = one_segment(None, false, Some(0.5), true);
         assert_eq!(apply_one(&plan, 0.5), 1.0);
+    }
+
+    #[test]
+    fn model_threshold_boundary_opens() {
+        let mut plan = one_segment(None, false, None, true);
+        plan.segments[0].model_threshold = Some(0.5);
+        assert_eq!(apply_one(&plan, 0.5), 1.0);
+    }
+
+    #[test]
+    fn undriven_subset_axes_hold_their_fill_like_the_whole_fallback() {
+        // Env joints [a, b], fill [10, 20], env scale 2 offset 3; the model
+        // drives only `a`.
+        let mut subset = one_segment(Some(2.0), false, None, false);
+        let segment = &mut subset.segments[0];
+        segment.offset = Some(3.0);
+        segment.scatter = Some(vec![Some(0), None]);
+        segment.axis_fill = Some(vec![10.0, 20.0]);
+        assert_eq!(
+            to_f32_vec(&transform_action(&subset, &Value::List(vec![Value::Number(1.0)])).unwrap()),
+            vec![5.0, 20.0]
+        );
+
+        let mut whole = one_segment(Some(2.0), false, None, false);
+        let segment = &mut whole.segments[0];
+        segment.offset = Some(3.0);
+        segment.fill = Some((2, 10.0));
+        segment.axis_fill = Some(vec![10.0, 20.0]);
+        whole.in_dim = 0;
+        assert_eq!(
+            to_f32_vec(&transform_action(&whole, &Value::List(vec![])).unwrap()),
+            vec![10.0, 20.0]
+        );
     }
 
     #[test]

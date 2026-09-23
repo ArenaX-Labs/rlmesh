@@ -8,8 +8,10 @@
 //!   `action/eef_*`): the coordinate frame its components are expressed in.
 //! - **`reference`** qualifies a *delta* command (`action/delta_eef_*`): the
 //!   pose the env's controller integrates the delta against — the measured
-//!   pose (`current`) or the last commanded target (`target`). A delta carries
-//!   no `frame`: it is expressed in the controller's own frame by definition.
+//!   pose (`current`) or the last commanded target (`target`). A delta may
+//!   also carry a `frame`, the axes it is expressed in (a tool-frame delta
+//!   and a base-frame delta are different commands); the require-frames
+//!   tier does not demand one, but declared frames must agree.
 //!
 //! **`provenance`** answers "where did the number come from?": a physical
 //! sensor or its simulated equivalent (`sensed`), a state estimator
@@ -156,9 +158,9 @@ impl Attr {
 /// that is `Frameless` still has any declared `frame` checked for agreement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameLaw {
-    /// No frame applies: a scalar (gripper width), a joint vector (joint space
-    /// has no Cartesian frame), or a delta (expressed in the controller's own
-    /// frame, and qualified by [`ReferenceLaw`] instead).
+    /// No frame is required: a scalar (gripper width), a joint vector (joint
+    /// space has no Cartesian frame), or a delta (qualified by
+    /// [`ReferenceLaw`]; a `frame` it does declare is still checked).
     Frameless,
     /// An absolute Cartesian pose component: its numbers mean nothing without
     /// the frame they are expressed in.

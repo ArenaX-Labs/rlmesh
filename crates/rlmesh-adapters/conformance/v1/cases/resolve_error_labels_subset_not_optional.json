@@ -13,18 +13,18 @@
           "dim": 12,
           "encoding": null,
           "labels": [
-            "FR_hip",
-            "FR_thigh",
-            "FR_calf",
-            "FL_hip",
-            "FL_thigh",
-            "FL_calf",
-            "RR_hip",
-            "RR_thigh",
-            "RR_calf",
-            "RL_hip",
-            "RL_thigh",
-            "RL_calf"
+            "FR_hip_joint",
+            "FR_thigh_joint",
+            "FR_calf_joint",
+            "FL_hip_joint",
+            "FL_thigh_joint",
+            "FL_calf_joint",
+            "RR_hip_joint",
+            "RR_thigh_joint",
+            "RR_calf_joint",
+            "RL_hip_joint",
+            "RL_thigh_joint",
+            "RL_calf_joint"
           ],
           "range": null,
           "role": "action/joint_pos"
@@ -35,18 +35,18 @@
       "joint_pos": {
         "encoding": null,
         "labels": [
-          "FR_hip",
-          "FR_thigh",
-          "FR_calf",
-          "FL_hip",
-          "FL_thigh",
-          "FL_calf",
-          "RR_hip",
-          "RR_thigh",
-          "RR_calf",
-          "RL_hip",
-          "RL_thigh",
-          "RL_calf"
+          "FR_hip_joint",
+          "FR_thigh_joint",
+          "FR_calf_joint",
+          "FL_hip_joint",
+          "FL_thigh_joint",
+          "FL_calf_joint",
+          "RR_hip_joint",
+          "RR_thigh_joint",
+          "RR_calf_joint",
+          "RL_hip_joint",
+          "RL_thigh_joint",
+          "RL_calf_joint"
         ],
         "range": null,
         "role": "proprio/joint_pos",
@@ -55,18 +55,18 @@
       "joint_vel": {
         "encoding": null,
         "labels": [
-          "FR_hip",
-          "FR_thigh",
-          "FR_calf",
-          "FL_hip",
-          "FL_thigh",
-          "FL_calf",
-          "RR_hip",
-          "RR_thigh",
-          "RR_calf",
-          "RL_hip",
-          "RL_thigh",
-          "RL_calf"
+          "FR_hip_joint",
+          "FR_thigh_joint",
+          "FR_calf_joint",
+          "FL_hip_joint",
+          "FL_thigh_joint",
+          "FL_calf_joint",
+          "RR_hip_joint",
+          "RR_thigh_joint",
+          "RR_calf_joint",
+          "RL_hip_joint",
+          "RL_thigh_joint",
+          "RL_calf_joint"
         ],
         "range": null,
         "role": "proprio/joint_vel",
@@ -75,7 +75,7 @@
     }
   },
   "expect": {
-    "error_contains": "leaves [\"RR_hip\""
+    "error_contains": "leaves [\"RR_hip_joint\""
   },
   "kind": "resolve",
   "model_spec": {
@@ -83,7 +83,14 @@
       "obs": {
         "components": [
           {
-            "labels": ["FL_hip", "FL_thigh", "FL_calf", "FR_hip", "FR_thigh", "FR_calf"],
+            "labels": [
+              "FL_hip_joint",
+              "FL_thigh_joint",
+              "FL_calf_joint",
+              "FR_hip_joint",
+              "FR_thigh_joint",
+              "FR_calf_joint"
+            ],
             "role": "proprio/joint_pos"
           }
         ],
@@ -98,7 +105,14 @@
           "binary": false,
           "dim": 6,
           "encoding": null,
-          "labels": ["FL_hip", "FL_thigh", "FL_calf", "FR_hip", "FR_thigh", "FR_calf"],
+          "labels": [
+            "FL_hip_joint",
+            "FL_thigh_joint",
+            "FL_calf_joint",
+            "FR_hip_joint",
+            "FR_thigh_joint",
+            "FR_calf_joint"
+          ],
           "range": null,
           "role": "action/joint_pos"
         }

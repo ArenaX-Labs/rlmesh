@@ -877,8 +877,13 @@ class ModelBase(Generic[ObsT, ActT]):
         policy's own ``close``) once. Serving calls it when the server stops.
         """
         hook, self._on_close = self._on_close, None
-        if hook is not None:
-            hook()
+        try:
+            if hook is not None:
+                hook()
+        finally:
+            # The native worker's callbacks close over self through a class the
+            # cycle collector cannot traverse; dropping it lets the model be freed.
+            self._worker = None
 
     def _install_worker(self) -> PyModel:
         """Build (once) and return the native model worker (the serve path).
@@ -1305,40 +1310,41 @@ class ModelBase(Generic[ObsT, ActT]):
             from ._connect import factory_env
 
             env_obj = factory_env(payload)
-        if address is None:
-            from .._server import EnvServer, VectorServerEnvLike
-
-            if not hasattr(env_obj, "single_observation_space"):
-                from ._connect import local_contract
-                from ._resolve import resolve_adapter
-
-                resolve_adapter(
-                    self.spec,
-                    local_contract(env_obj),
-                    trust_entrypoints=self._trust_entrypoints,
-                )
-            from .._load_native import load_native
-
-            # The loopback server is part of THIS call, so it takes the run's
-            # already-resolved declaration verbatim instead of re-resolving and
-            # possibly landing on a different edition than the runtime tier.
-            server = EnvServer(
-                cast("VectorServerEnvLike", env_obj),
-                "127.0.0.1:0",
-                options=(
-                    load_native("ServeOptions")(workflow_edition=workflow_edition)
-                    if workflow_edition is not None
-                    else None
-                ),
-                # The env is borrowed (or built below): its close() is this
-                # call's decision, not the loopback server's.
-                close_env_on_shutdown=False,
-            )
-            server.start()
-            address = server.address
-            if self._native_run is not None:
-                self._native_run.bind_client(env_obj)
         try:
+            if address is None:
+                from .._server import EnvServer, VectorServerEnvLike
+
+                if not hasattr(env_obj, "single_observation_space"):
+                    from ._connect import local_contract
+                    from ._resolve import resolve_adapter
+
+                    resolve_adapter(
+                        self.spec,
+                        local_contract(env_obj),
+                        trust_entrypoints=self._trust_entrypoints,
+                    )
+                from .._load_native import load_native
+
+                # The loopback server is part of THIS call, so it takes the run's
+                # already-resolved declaration verbatim instead of re-resolving and
+                # possibly landing on a different edition than the runtime tier.
+                server = EnvServer(
+                    cast("VectorServerEnvLike", env_obj),
+                    "127.0.0.1:0",
+                    framework=getattr(env_obj, "_bridge", None),
+                    options=(
+                        load_native("ServeOptions")(workflow_edition=workflow_edition)
+                        if workflow_edition is not None
+                        else None
+                    ),
+                    # The env is borrowed (or built above): its close() is this
+                    # call's decision, not the loopback server's.
+                    close_env_on_shutdown=False,
+                )
+                server.start()
+                address = server.address
+                if self._native_run is not None:
+                    self._native_run.bind_client(env_obj)
             return self._run_local_for_episodes(
                 address,
                 episodes=episodes,
@@ -1363,18 +1369,21 @@ class ModelBase(Generic[ObsT, ActT]):
                 ) from error
             raise
         finally:
-            if server is not None:
-                server.shutdown()
+            try:
+                if server is not None:
+                    server.shutdown()
+            finally:
+                if kind == "handle":
+                    if close_env:
+                        from ._connect import shutdown_env
+
+                        shutdown_env(env_obj)
                 # A factory-built env is this call's own; a caller's env closes
                 # only on the opt-in.
-                if close_env or kind == "factory":
+                elif kind != "address" and (close_env or kind == "factory"):
                     close = getattr(env_obj, "close", None)
                     if callable(close):
                         close()
-            elif close_env and kind == "handle":
-                from ._connect import shutdown_env
-
-                shutdown_env(env_obj)
 
     def session(
         self,

@@ -174,6 +174,20 @@ fn check_action_dims(model: &Actuator, env: &Actuator, role: &str, subset: bool)
                 ),
             ));
         }
+        // Model per-axis corrections name the model's own axes, which no longer
+        // exist once the rotation is re-encoded for the env.
+        if model.axis_scale.is_some() || model.axis_offset.is_some() {
+            return Err(err(
+                ErrorCode::Unsupported,
+                format!(
+                    "action role {}: the model's axis_scale/axis_offset cannot apply across a \
+                 rotation conversion {}->{}; use a scalar scale/offset or declare them on the env",
+                    quoted(role),
+                    quoted_encoding(Some(model_encoding)),
+                    quoted_encoding(Some(env_encoding))
+                ),
+            ));
+        }
         return Ok(());
     }
     if model_encoding != env_encoding && (model_encoding.is_none() || env_encoding.is_none()) {
@@ -649,6 +663,45 @@ mod tests {
             error.message.contains("preserves its base width"),
             "{}",
             error.message
+        );
+    }
+
+    #[test]
+    fn rejects_model_axis_corrections_across_a_rotation_conversion() {
+        use crate::spec::{ActionEncoding, RotationEncoding};
+
+        let rotation = |dim, encoding| {
+            let mut rot = component("custom/rot");
+            rot.dim = dim;
+            rot.encoding = Some(ActionEncoding::Native(encoding));
+            rot
+        };
+        let mut model_rot = rotation(4, RotationEncoding::QuatXyzw);
+        model_rot.axis_scale = Some(vec![1.0, 1.0, 1.0, 10.0]);
+        let env_rot = rotation(3, RotationEncoding::EulerXyz);
+        let error = plan(
+            &layout(vec![model_rot.clone()]),
+            &layout(vec![env_rot]),
+            &mut Vec::new(),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        assert!(
+            error
+                .message
+                .contains("cannot apply across a rotation conversion"),
+            "{}",
+            error.message
+        );
+        // The same encoding on both sides keeps the model's axes meaningful.
+        let same = rotation(4, RotationEncoding::QuatXyzw);
+        assert!(
+            plan(
+                &layout(vec![model_rot]),
+                &layout(vec![same]),
+                &mut Vec::new()
+            )
+            .is_ok()
         );
     }
 

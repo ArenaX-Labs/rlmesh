@@ -2604,6 +2604,41 @@ def test_custom_obs_encoding_pads_and_addresses_within_the_padded_state():
     np.testing.assert_allclose(out[6:], 0.0, atol=1e-6)
 
 
+def test_identity_custom_encoding_keeps_a_concat_clip():
+    identity = adapt.CustomEncoding(base="rot6d", from_base=lambda v: v)
+    quat = np.array([0.1, 0.2, 0.3, 0.9], dtype=np.float32)
+    quat /= np.linalg.norm(quat)
+    outs = [
+        np.asarray(
+            resolve(
+                _rot_obs_env(),
+                adapt.ModelSpec(
+                    input={
+                        "rot": adapt.Concat(
+                            adapt.State(adapt.EEF_ROT, encoding=encoding),
+                            clip=(-0.1, 0.1),
+                        )
+                    },
+                    output=_gripper_action(),
+                ),
+            ).transform_obs({"q": quat})["rot"]
+        )
+        for encoding in ("rot6d", identity)
+    ]
+    assert np.abs(outs[0]).max() <= 0.1
+    np.testing.assert_allclose(outs[1], outs[0], atol=1e-6)
+
+
+def test_tree_set_grows_the_container_its_segment_needs():
+    from rlmesh.adapters.adapter import _tree_set
+
+    assert _tree_set({}, (0,), 1) == [1]
+    assert _tree_set({}, ("nested", 0), 1) == {"nested": [1]}
+    assert _tree_set([], (1, 0), 1) == [{}, [1]]
+    with pytest.raises(ValueError, match="expected a list"):
+        _tree_set({"k": 1}, (0,), 1)
+
+
 def test_custom_obs_encoding_rejects_a_width_changing_dim():
     env = _rot_obs_env()
     spec = adapt.ModelSpec(
@@ -4525,10 +4560,13 @@ def test_embodiment_profiles_mirror_the_rust_rows() -> None:
 
     assert embodiments.GO2 is adapt.GO2
     assert adapt.GO2.name == "unitree_go2"
-    assert adapt.GO2.joints[:3] == ("FR_hip", "FR_thigh", "FR_calf")
-    assert adapt.GO2.joints[3] == "FL_hip" and len(adapt.GO2.joints) == 12
+    assert adapt.GO2.joints[:3] == ("FR_hip_joint", "FR_thigh_joint", "FR_calf_joint")
+    assert adapt.GO2.joints[3] == "FL_hip_joint" and len(adapt.GO2.joints) == 12
     assert adapt.GO2.parts == ("base",)
-    assert len(adapt.G1_29DOF.joints) == 29 and adapt.G1_29DOF.joints[12] == "waist_yaw"
+    assert (
+        len(adapt.G1_29DOF.joints) == 29
+        and adapt.G1_29DOF.joints[12] == "waist_yaw_joint"
+    )
     assert adapt.G1_29DOF.parts == (
         "left_leg",
         "right_leg",
@@ -4618,7 +4656,7 @@ def test_go2_isaac_model_resolves_to_the_permutation_on_both_sides() -> None:
     adapter = resolve(env, _go2_model(GO2_ISAAC))
     text = adapter.explain()
     assert (
-        "joint_pos perm[3,4,5,0,1,2,9,10,11,6,7,8] (+[FL_hip:-0.0,FL_thigh:-0.8,"
+        "joint_pos perm[3,4,5,0,1,2,9,10,11,6,7,8] (+[FL_hip_joint:-0.0,FL_thigh_joint:-0.8,"
         in text
     )
     assert "joint_vel perm[3,4,5,0,1,2,9,10,11,6,7,8] (*0.05)" in text
@@ -4638,7 +4676,7 @@ def test_go2_isaac_model_resolves_to_the_permutation_on_both_sides() -> None:
     # An SDK-order model is the identity, and prints the env's names on its
     # per-axis values.
     identity = resolve(env, _go2_model(GO2_SDK)).explain()
-    assert "perm" not in identity and "joint_pos[:12] (+[FR_hip:-0.0," in identity
+    assert "perm" not in identity and "joint_pos[:12] (+[FR_hip_joint:-0.0," in identity
 
 
 def test_model_only_labels_are_a_resolve_error_and_env_only_are_silent() -> None:
@@ -4657,7 +4695,7 @@ def test_model_only_labels_are_a_resolve_error_and_env_only_are_silent() -> None
         resolve(unlabeled, _go2_model(GO2_SDK))
     adapter = resolve(_go2_env(), _go2_model(None))
     assert adapter.advisories() == []
-    assert "(model *[FR_hip:0.125," in adapter.explain()
+    assert "(model *[FR_hip_joint:0.125," in adapter.explain()
 
 
 def test_a_label_subset_selects_and_scatters_onto_an_optional_actuator() -> None:
@@ -4674,7 +4712,7 @@ def test_a_label_subset_selects_and_scatters_onto_an_optional_actuator() -> None
     text = adapter.explain()
     assert "joint_pos select[3,4,5,0,1,2]" in text
     assert (
-        "model[0:6] select[3,4,5,0,1,2,-,-,-,-,-,-] (fill [RR_hip:0.0,RR_thigh:0.8,"
+        "model[0:6] select[3,4,5,0,1,2,-,-,-,-,-,-] (fill [RR_hip_joint:0.0,RR_thigh_joint:0.8,"
         in text
     )
     assert any(
@@ -4690,7 +4728,9 @@ def test_a_label_subset_selects_and_scatters_onto_an_optional_actuator() -> None
             _go2_env(),
             adapt.ModelSpec(
                 input={
-                    "obs": adapt.State(adapt.JOINT_POS, labels=("FR_hip", "FR_shin"))
+                    "obs": adapt.State(
+                        adapt.JOINT_POS, labels=("FR_hip_joint", "FR_shin")
+                    )
                 },
                 output=spec.output,
             ),
@@ -4713,7 +4753,7 @@ def test_unknown_labels_nudge_and_the_require_labels_gate() -> None:
 
     stray = adapt.EnvTags(
         observation={
-            "j": adapt.StateTag(adapt.JOINT_POS, labels=("FR_hip", "FR_shin"))
+            "j": adapt.StateTag(adapt.JOINT_POS, labels=("FR_hip_joint", "FR_shin"))
         },
         action=LIBERO_ACTION,
     )
@@ -4994,7 +5034,7 @@ def test_go2_body_resolves_to_33_dims_reading_gravity_and_clamping() -> None:
     assert (
         "concat(ang_vel (*0.25)@robot_base#sensed, "
         "base_quat (quat_wxyz->gravity_xyz)@world#sensed, command@robot_base, "
-        "joint_pos[:12] (+[FR_hip:-0.0," in text
+        "joint_pos[:12] (+[FR_hip_joint:-0.0," in text
     )
     assert "#sensed, joint_vel[:12] (*0.05)#sensed) clip[-100.0,100.0]\n" in text
     assert adapter.advisories() == []
@@ -5223,7 +5263,7 @@ def test_a_previous_action_part_selects_by_label_and_needs_its_actuator() -> Non
                 adapt.State(
                     adapt.ACTION_JOINT_POS,
                     source="action",
-                    labels=("FR_hip", "FR_shin"),
+                    labels=("FR_hip_joint", "FR_shin"),
                 )
             ),
         )

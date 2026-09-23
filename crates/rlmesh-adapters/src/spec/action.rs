@@ -105,9 +105,11 @@ pub struct Actuator {
     /// enforces that. Omitted when false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub optional: bool,
-    /// The coordinate frame an *absolute* pose command is expressed in
-    /// (`action/eef_*`). A delta carries no frame -- it lives in the
-    /// controller's own frame -- and declares `reference` instead.
+    /// The coordinate frame a Cartesian command's axes are expressed in.
+    /// Required of an absolute pose (`action/eef_*`) under the require-frames
+    /// tier; a delta (`action/delta_eef_*`) may declare it too, and when both
+    /// sides do they must agree. `reference` is the separate question of what
+    /// a delta is added to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frame: Option<FrameRef>,
     /// What a *delta* command is integrated against (`action/delta_eef_*`): the
@@ -473,15 +475,18 @@ mod opaque_actuator_contract {
     #[test]
     fn labels_match_dim_and_are_barred_from_an_opaque_actuator() {
         let ok: Action = serde_json::from_str(
-            r#"{"components": [{"role": "action/joint_pos", "dim": 2, "labels": ["FR_hip", "FR_thigh"]}]}"#,
+            r#"{"components": [{"role": "action/joint_pos", "dim": 2, "labels": ["FR_hip_joint", "FR_thigh_joint"]}]}"#,
         )
         .unwrap();
         assert_eq!(
             ok.components[0].labels.as_deref(),
-            Some(&["FR_hip".to_owned(), "FR_thigh".to_owned()][..])
+            Some(&["FR_hip_joint".to_owned(), "FR_thigh_joint".to_owned()][..])
         );
         let json = serde_json::to_string(&ok).unwrap();
-        assert!(json.contains(r#""labels":["FR_hip","FR_thigh"]"#), "{json}");
+        assert!(
+            json.contains(r#""labels":["FR_hip_joint","FR_thigh_joint"]"#),
+            "{json}"
+        );
         for (doc, expect) in [
             (
                 r#"{"components": [{"role": "a", "dim": 3, "labels": ["x", "y"]}]}"#,

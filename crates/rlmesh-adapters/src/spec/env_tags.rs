@@ -529,11 +529,11 @@ mod state_field_wire_tests {
             assert!(err.to_string().contains(expect), "{doc}: {err}");
         }
         let tag: super::ObsLeaf = serde_json::from_str(
-            r#"{"type": "state", "role": "proprio/joint_pos", "labels": ["FR_hip"]}"#,
+            r#"{"type": "state", "role": "proprio/joint_pos", "labels": ["FR_hip_joint"]}"#,
         )
         .unwrap();
         let json = serde_json::to_string(&tag).unwrap();
-        assert!(json.contains(r#""labels":["FR_hip"]"#), "{json}");
+        assert!(json.contains(r#""labels":["FR_hip_joint"]"#), "{json}");
     }
 
     #[test]

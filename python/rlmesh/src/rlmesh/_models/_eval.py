@@ -40,7 +40,7 @@ from ._view import FrameSources, ViewerDriver, discover_frame_sources, resolve_v
 from .base import accepts_context
 
 if TYPE_CHECKING:
-    from rlmesh._rlmesh import Advisory, PyModelClient
+    from rlmesh._rlmesh import Advisory, PyModelClient, SpaceSpec, Tensor
 
     from .._value_conversion import ValueBridge
     from ..adapters import ObservationRoles
@@ -476,6 +476,31 @@ def _check_frame_history_budget(adapter: Any, num_envs: int) -> None:
         )
 
 
+def _box_space(action_space: object) -> SpaceSpec | None:
+    from .._rlmesh import space_spec_from_gym_space
+
+    spec = space_spec_from_gym_space(action_space)
+    return spec if spec.kind == "box" else None
+
+
+def _fit_box(action: Tensor, box: SpaceSpec) -> Tensor:
+    """Cast and shape the adapter's flat float32 action to the env's Box.
+
+    The same restore the native run applies (``tensor_to_space_value``), so a
+    session hands ``env.step`` the action ``Model.run`` would.
+    """
+    if action.dtype != box.dtype:
+        from ..numpy import (
+            _numpy_bridge,  # pyright: ignore[reportPrivateUsage]
+            ensure_available,
+        )
+
+        ensure_available()
+        numpy_action = cast("Any", _numpy_bridge.decode(action))
+        action = cast("Tensor", _numpy_bridge.encode(numpy_action.astype(box.dtype)))
+    return action.reshape(box.shape)
+
+
 def _predict_step(
     predict: Callable[..., Any],
     obs: Any,
@@ -574,6 +599,7 @@ class Session(Generic[ObsT, ActT]):
     _adapter: Any
     _contract: Any
     _env_bridge: ValueBridge | None
+    _action_box: SpaceSpec | None
     _text_placements: tuple[TextPlacement, ...]
     _horizon: int
     _native_chunk: int | None
@@ -679,6 +705,7 @@ class Session(Generic[ObsT, ActT]):
         self._adapter = None
         self._contract = None
         self._env_bridge = None
+        self._action_box = None
         self._text_placements = ()
         self._horizon = 1
         self._replay = self._new_replay()
@@ -746,38 +773,50 @@ class Session(Generic[ObsT, ActT]):
         client, contract, owns = connect_env(
             self._env, self._remote_env_cls, self._workflow_edition
         )
-        reject_vector_env(contract)
-        self._client = client
-        self._contract = contract
-        self._owns_client = owns or self._owns_env
-        # A served-model session runs at the three-way floor; the env leg is
-        # pinned to it (its first Join message) so both legs name one edition.
-        if self._model_client is not None:
-            pin = getattr(client, "_pin_workflow_edition", None)
-            if callable(pin):
-                pin(self._model_client.selected_workflow_edition())
-        # A served model resolves its adapter server-side (from the contract sent at
-        # bind); only a local model resolves it here, client-side.
-        if self._model_client is None:
-            self._adapter = resolve_adapter(self._spec, contract, self._trust)
-            if self._adapter is not None:
-                _check_frame_history_budget(
-                    self._adapter, getattr(contract, "num_envs", 1) or 1
+        try:
+            reject_vector_env(contract)
+            self._client = client
+            self._contract = contract
+            self._owns_client = owns or self._owns_env
+            # A served-model session runs at the three-way floor; the env leg is
+            # pinned to it (its first Join message) so both legs name one edition.
+            if self._model_client is not None:
+                pin = getattr(client, "_pin_workflow_edition", None)
+                if callable(pin):
+                    pin(self._model_client.selected_workflow_edition())
+            # A served model resolves its adapter server-side (from the contract sent at
+            # bind); only a local model resolves it here, client-side.
+            if self._model_client is None:
+                self._adapter = resolve_adapter(self._spec, contract, self._trust)
+                if self._adapter is not None:
+                    _check_frame_history_budget(
+                        self._adapter, getattr(contract, "num_envs", 1) or 1
+                    )
+                self._env_bridge = (
+                    adapter_env_bridge(client) if self._adapter is not None else None
                 )
-            self._env_bridge = (
-                adapter_env_bridge(client) if self._adapter is not None else None
-            )
-            self._text_placements = text_placements(self._spec)
-            # The execution horizon is a caller decision (execution_horizon), not the
-            # spec. It engages only when the model exposes a predict_chunk corner
-            # (the entry points warn about the un-chunked fallback at creation);
-            # without one, fall back to single-step predict.
-            self._horizon = (
-                self._execution_horizon if self._predict_chunk is not None else 1
-            )
-            # Seed the replay with the resolved horizon so a hand-driven predict()
-            # before the first reset() already replays the right chunk length.
-            self._replay = self._new_replay()
+                self._action_box = (
+                    _box_space(contract.action_space)
+                    if self._adapter is not None
+                    else None
+                )
+                self._text_placements = text_placements(self._spec)
+                # The execution horizon is a caller decision (execution_horizon), not the
+                # spec. It engages only when the model exposes a predict_chunk corner
+                # (the entry points warn about the un-chunked fallback at creation);
+                # without one, fall back to single-step predict.
+                self._horizon = (
+                    self._execution_horizon if self._predict_chunk is not None else 1
+                )
+                # Seed the replay with the resolved horizon so a hand-driven predict()
+                # before the first reset() already replays the right chunk length.
+                self._replay = self._new_replay()
+        except BaseException:
+            # Not yet connected, so close() would not release what was just acquired.
+            self._client = None
+            if owns:
+                close_client(client)
+            raise
         self._connected = True
 
     @property
@@ -1009,15 +1048,12 @@ class Session(Generic[ObsT, ActT]):
         else:
             self._chunk_len = self._chunk_pos = 0
         if self._adapter is not None:
-            return cast(
-                "ActT",
-                from_value(
-                    self._adapter.transform_action_value(
-                        raw_action, action_bridge=model_bridge
-                    ),
-                    self._env_bridge,
-                ),
+            action = self._adapter.transform_action_value(
+                raw_action, action_bridge=model_bridge
             )
+            if self._action_box is not None:
+                action = _fit_box(cast("Tensor", action), self._action_box)
+            return cast("ActT", from_value(action, self._env_bridge))
         return cast("ActT", raw_action)
 
     def step(self, action: ActT) -> tuple[ObsT, float, bool, bool, Mapping[str, Any]]:
@@ -1310,27 +1346,40 @@ class Session(Generic[ObsT, ActT]):
         if self._closed:
             return
         self._closed = True
-        # End an episode left open by a hand-driven loop, so a stateful model's
-        # `on_episode_end` fires for the last episode even without a following reset().
-        if self._view_driver is not None:
-            self._view_driver.close()
-        self._end_episode()
-        on_close_error: BaseException | None = None
-        if self._on_close is not None:
+        # Every step runs even when an earlier one raises (a failing
+        # `on_episode_end` must not leak the env); the first error propagates.
+        first_error: BaseException | None = None
+        for release in (
+            self._view_driver.close if self._view_driver is not None else None,
+            # End an episode left open by a hand-driven loop, so a stateful model's
+            # `on_episode_end` fires for the last episode even without a reset().
+            self._end_episode,
+            self._on_close,
+            self._release_model_client,
+            self._release_env,
+        ):
+            if release is None:
+                continue
             try:
-                self._on_close()
+                release()
             except BaseException as exc:
-                on_close_error = exc
-        model_client = self._model_client
-        if model_client is not None:
-            self._model_client = None
-            try:
-                model_client.close()
-            finally:
-                owner = self._owner
-                self._owner = None
-                if owner is not None:
-                    owner.shutdown()
+                if first_error is None:
+                    first_error = exc
+        if first_error is not None:
+            raise first_error
+
+    def _release_model_client(self) -> None:
+        model_client, self._model_client = self._model_client, None
+        if model_client is None:
+            return
+        try:
+            model_client.close()
+        finally:
+            owner, self._owner = self._owner, None
+            if owner is not None:
+                owner.shutdown()
+
+    def _release_env(self) -> None:
         if self._connected:
             try:
                 target = self._client if self._owns_client else self._env
@@ -1351,8 +1400,6 @@ class Session(Generic[ObsT, ActT]):
                 self._client = None
         elif self._owns_env:
             close_client(self._env)
-        if on_close_error is not None:
-            raise on_close_error
 
     def __enter__(self) -> Session[ObsT, ActT]:
         return self

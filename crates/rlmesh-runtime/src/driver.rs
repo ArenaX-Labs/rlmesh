@@ -1471,7 +1471,12 @@ where
         // Both run ahead of the step event so it can carry the terminal flags;
         // a cap is never configured under NEXT_STEP, so nothing here precedes a
         // roll it should follow.
-        let capped = self.capped_completions(state, &positions, &completed_episodes);
+        let capped = self.capped_completions(
+            state,
+            &positions,
+            &completed_episodes,
+            response.infos.as_ref(),
+        );
         completed_episodes.extend(capped);
         let lane_ids = state.episode_ids_at(&positions);
         let lane_flags = |ended: fn(&EpisodeMetadata) -> bool| -> Vec<bool> {
@@ -1877,7 +1882,8 @@ where
     /// Runtime-truncated completions for the group's lanes at the step/time cap
     /// this step, excluding lanes the env itself just completed. Built from the
     /// driver's own per-slot accounting (steps, accumulated reward, episode
-    /// start time); `validate()` guarantees driver-owned resets (autoreset
+    /// start time) and this step's `infos`, which carry each lane's last
+    /// reported outcome; `validate()` guarantees driver-owned resets (autoreset
     /// `DISABLED`) whenever a cap is configured, so the reset path restarts
     /// these lanes exactly like env-reported completions.
     fn capped_completions(
@@ -1885,6 +1891,7 @@ where
         state: &RouteState,
         positions: &[usize],
         env_completed: &[EpisodeMetadata],
+        infos: Option<&rlmesh_proto::spaces::v1::MetaMap>,
     ) -> Vec<EpisodeMetadata> {
         let step_cap = self.spec.max_episode_steps.or_else(|| {
             self.driver_owns_resets()
@@ -1902,7 +1909,8 @@ where
         state
             .slots_at(positions)
             .into_iter()
-            .filter_map(|slot| {
+            .enumerate()
+            .filter_map(|(lane, slot)| {
                 let episode = slot.episode.as_ref()?;
                 let env_index = u32::try_from(slot.env_index).ok()?;
                 if env_done.contains(&env_index) {
@@ -1921,7 +1929,7 @@ where
                     truncated: true,
                     start_timestamp_ns: slot.started_at_ns,
                     end_timestamp_ns: now_ns,
-                    final_info: None,
+                    final_info: rlmesh_proto::lane_final_info(infos, lane, positions.len()),
                 })
             })
             .collect()

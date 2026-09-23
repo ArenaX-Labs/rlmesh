@@ -114,7 +114,7 @@ fn write_part(note: &mut String, part: Option<&str>) {
     }
 }
 
-/// A per-axis vector as `[FR_hip:0.125,FR_thigh:0.25]`, or bare values when
+/// A per-axis vector as `[FR_hip_joint:0.125,FR_thigh_joint:0.25]`, or bare values when
 /// no labels name the axes.
 fn axis_list(values: &[f64], labels: Option<&[String]>) -> String {
     let entries: Vec<String> = values

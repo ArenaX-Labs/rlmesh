@@ -43,7 +43,7 @@
             "encoding": null,
             "range": null,
             "provenance": "sensed",
-            "labels": ["FR_hip", "FR_thigh"]
+            "labels": ["FR_hip_joint", "FR_thigh_joint"]
           },
           {
             "role": null,
@@ -63,7 +63,7 @@
           "encoding": null,
           "range": null,
           "binary": false,
-          "labels": ["FR_hip", "FR_thigh"]
+          "labels": ["FR_hip_joint", "FR_thigh_joint"]
         }
       ]
     }

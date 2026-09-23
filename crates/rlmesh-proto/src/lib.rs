@@ -1076,6 +1076,83 @@ pub fn lane_skew_ns(lane_ns: &mut [u64]) -> u64 {
         .saturating_sub(median)
 }
 
+/// A completing lane's final info from a step's `infos`, `lane` being its
+/// position among the `width` lanes the step covered. An explicit
+/// `final_info` entry wins (masked by `_final_info`). Otherwise a single-lane
+/// step's info IS the final info, and a vector step's lane is sliced out of the
+/// Gymnasium vector-info layout. `None` when the lane has nothing.
+pub fn lane_final_info(
+    info: Option<&spaces::v1::MetaMap>,
+    lane: usize,
+    width: usize,
+) -> Option<spaces::v1::MetaMap> {
+    use spaces::v1::meta_value::Kind;
+    let info = info?;
+    let Some(final_info) = info.entries.get("final_info") else {
+        if width == 1 {
+            return Some(info.clone());
+        }
+        let sliced = vector_info_lane(info, lane, width);
+        return (!sliced.entries.is_empty()).then_some(sliced);
+    };
+    let is_present = match info.entries.get("_final_info") {
+        Some(mask) => meta_bool_at(mask, lane).unwrap_or(false),
+        None => width == 1,
+    };
+    if !is_present {
+        return None;
+    }
+    match &final_info.kind {
+        Some(Kind::Map(map)) => Some(map.clone()),
+        Some(Kind::List(list)) => match &list.items.get(lane)?.kind {
+            Some(Kind::Map(map)) => Some(map.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// One lane of a Gymnasium vector info: each `key` holds a per-lane array or a
+/// nested info map, and its `_key` mask marks the lanes that actually set it.
+fn vector_info_lane(info: &spaces::v1::MetaMap, lane: usize, width: usize) -> spaces::v1::MetaMap {
+    use spaces::v1::meta_value::Kind;
+    let entries = info
+        .entries
+        .iter()
+        .filter(|(key, _)| {
+            !key.strip_prefix('_')
+                .is_some_and(|masked| info.entries.contains_key(masked))
+        })
+        .filter(|(key, _)| {
+            info.entries
+                .get(&format!("_{key}"))
+                .is_none_or(|mask| meta_bool_at(mask, lane) == Some(true))
+        })
+        .filter_map(|(key, value)| {
+            let lane_value = match &value.kind {
+                Some(Kind::Map(map)) => spaces::v1::MetaValue {
+                    kind: Some(Kind::Map(vector_info_lane(map, lane, width))),
+                },
+                Some(Kind::List(list)) if list.items.len() == width => list.items[lane].clone(),
+                _ => return None,
+            };
+            Some((key.clone(), lane_value))
+        })
+        .collect();
+    spaces::v1::MetaMap { entries }
+}
+
+fn meta_bool_at(value: &spaces::v1::MetaValue, lane: usize) -> Option<bool> {
+    use spaces::v1::meta_value::Kind;
+    match &value.kind {
+        Some(Kind::List(list)) => match list.items.get(lane)?.kind {
+            Some(Kind::Bool(flag)) => Some(flag),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// The `rlmesh.toml` array scan `build.rs` reads the retained edition list
 /// with, compiled into the test build so `cargo test` covers the real parser —
 /// a `#[test]` inside a build script never runs.
@@ -1098,6 +1175,62 @@ mod tests {
             editions: offer(can),
             preferred: want.map(str::to_string),
         }
+    }
+
+    #[test]
+    fn lane_final_info_reads_each_gymnasium_info_layout() {
+        use super::lane_final_info;
+        use super::spaces::v1::meta_value::Kind;
+        use super::spaces::v1::{MetaList, MetaMap, MetaValue};
+
+        let value = |kind: Kind| MetaValue { kind: Some(kind) };
+        let list = |items: Vec<MetaValue>| value(Kind::List(MetaList { items }));
+        let map = |entries: Vec<(&str, MetaValue)>| MetaMap {
+            entries: entries
+                .into_iter()
+                .map(|(key, value)| (key.to_string(), value))
+                .collect(),
+        };
+        let success = |flag: bool| map(vec![("is_success", value(Kind::Bool(flag)))]);
+
+        let scalar = success(false);
+        assert_eq!(lane_final_info(Some(&scalar), 0, 1), Some(success(false)));
+        assert_eq!(lane_final_info(None, 0, 2), None);
+
+        let explicit = map(vec![
+            (
+                "final_info",
+                list(vec![
+                    value(Kind::Map(success(true))),
+                    value(Kind::Map(MetaMap::default())),
+                ]),
+            ),
+            (
+                "_final_info",
+                list(vec![value(Kind::Bool(true)), value(Kind::Bool(false))]),
+            ),
+        ]);
+        assert_eq!(lane_final_info(Some(&explicit), 0, 2), Some(success(true)));
+        assert_eq!(lane_final_info(Some(&explicit), 1, 2), None);
+
+        // No masks: a lane-wide array is still per-lane.
+        let unmasked = map(vec![(
+            "is_success",
+            list(vec![value(Kind::Bool(false)), value(Kind::Bool(true))]),
+        )]);
+        assert_eq!(lane_final_info(Some(&unmasked), 1, 2), Some(success(true)));
+
+        let masked_out = map(vec![
+            (
+                "is_success",
+                list(vec![value(Kind::Bool(true)), value(Kind::Bool(false))]),
+            ),
+            (
+                "_is_success",
+                list(vec![value(Kind::Bool(true)), value(Kind::Bool(false))]),
+            ),
+        ]);
+        assert_eq!(lane_final_info(Some(&masked_out), 1, 2), None);
     }
 
     #[test]

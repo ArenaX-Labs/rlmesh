@@ -8,7 +8,7 @@
       "components": [
         {
           "role": "proprio/joint_pos",
-          "labels": ["FL_hip", "FR_hip"]
+          "labels": ["FL_hip_joint", "FR_hip_joint"]
         }
       ]
     },

@@ -822,7 +822,7 @@ mod tests {
         // Labels from a shipped profile pass, in any order and as a subset.
         let labeled: EnvTags = serde_json::from_str(
             r#"{"observation": {"j": {"type": "state", "role": "proprio/joint_pos",
-                    "labels": ["FL_hip", "FR_hip"]}},
+                    "labels": ["FL_hip_joint", "FR_hip_joint"]}},
                 "action": {"components": [{"role": "action/joint_pos_2", "dim": 2,
                     "labels": ["panda_joint1", "panda_joint2"]}]}}"#,
         )
@@ -841,7 +841,7 @@ mod tests {
         assert!(reject_unlabeled_roles_env(&axes, LabelPolicy::Strict).is_ok());
         let stray: EnvTags = serde_json::from_str(
             r#"{"observation": {"g": {"type": "state", "role": "proprio/joint_pos",
-                    "labels": ["FR_hip", "FR_shin"]}},
+                    "labels": ["FR_hip_joint", "FR_shin"]}},
                 "action": {"components": [{"role": "action/gripper", "dim": 1}]}}"#,
         )
         .unwrap();

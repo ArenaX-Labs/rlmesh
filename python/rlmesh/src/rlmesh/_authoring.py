@@ -81,8 +81,9 @@ class EnvFactory(ABC):
     #: </editions/index>`.
     workflow_edition: ClassVar[str | None] = None
     #: Framework bridge pinned by a framework-specific subclass
-    #: (``rlmesh.torch.EnvFactory`` / ``rlmesh.jax.EnvFactory``); ``serve_env``
-    #: reads it to type the served env's obs/action seam. ``None`` serves numpy.
+    #: (``rlmesh.torch.EnvFactory`` / ``rlmesh.jax.EnvFactory``) that types the
+    #: env's obs/action seam; ``make`` stamps it onto the env it returns so a
+    #: local ``run``/``session`` honors it like ``serve_env``. ``None`` is numpy.
     _bridge: ClassVar[ValueBridge | None] = None
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
@@ -128,6 +129,8 @@ class EnvFactory(ABC):
                 fragment[ENV_RESET_OPTIONS_KEY] = list(cls.reset_options)
             if fragment:
                 _stamp_metadata(env, fragment)
+            if cls._bridge is not None and getattr(env, "_bridge", None) is None:
+                env._bridge = cls._bridge  # type: ignore[attr-defined]
             return env
 
         make._rlmesh_tag_stamped = True  # type: ignore[attr-defined]

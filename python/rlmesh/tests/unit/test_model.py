@@ -400,7 +400,9 @@ def test_adapted_run_uses_env_bridge_for_adapter_boundary(
 
     class Client:
         _bridge = env_bridge
-        env_contract = SimpleNamespace(num_envs=1, metadata={})
+        env_contract = SimpleNamespace(
+            num_envs=1, metadata={}, action_space=rlmesh.spaces.Discrete(1)
+        )
 
         def reset(self) -> tuple[object, dict[str, object]]:
             return "env-obs", {}
@@ -475,7 +477,9 @@ def test_adapted_run_defaults_a_bridge_less_env_to_the_numpy_bridge(
 
     class Client:
         # A native handle (has env_contract) but, like a raw local env, no _bridge.
-        env_contract = SimpleNamespace(num_envs=1, metadata={})
+        env_contract = SimpleNamespace(
+            num_envs=1, metadata={}, action_space=rlmesh.spaces.Discrete(1)
+        )
 
         def reset(self) -> tuple[object, dict[str, object]]:
             return {"raw": "obs"}, {}

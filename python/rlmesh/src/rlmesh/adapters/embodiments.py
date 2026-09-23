@@ -9,8 +9,10 @@ joint names) and the label lint: a tuple that matches no shipped profile as a
 set draws the same nudge an ad-hoc role does, and the managed
 ``--require-labels`` tier refuses it.
 
-Label spelling is ``<part>_<joint>`` snake case, matching the Unitree SDK and
-Isaac Lab joint names. The rows are defined once, in the ``rlmesh-adapters``
+Labels are the vendor URDF joint names verbatim (``FR_hip_joint``,
+``panda_joint1``, ``shoulder_pan_joint``), which is what Isaac Lab, MuJoCo and
+ROS descriptions expose, so a label written from a robot's own config matches a
+profile without renaming. The rows are defined once, in the ``rlmesh-adapters``
 crate (``roles/embodiments.rs``); this module builds its constants from them.
 """
 

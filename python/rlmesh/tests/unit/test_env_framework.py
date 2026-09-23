@@ -416,3 +416,81 @@ def test_reset_encodes_legacy_tuple_dict_obs_whole() -> None:
     assert isinstance(obs[0], Tensor)
     assert isinstance(obs[1]["aux"], Tensor)
     assert type(info["seed_used"]) is np.int64  # info untouched
+
+
+class _TorchStrictEnv:
+    """Hands out torch observations and requires a torch action, like a sim wrapper."""
+
+    def __init__(self) -> None:
+        from rlmesh import spaces
+
+        self.observation_space = spaces.Dict({"eef_pos": spaces.Box(-1, 1, (3,))})
+        self.action_space = spaces.Box(-1, 1, (3,))
+        self.seen_actions: list[object] = []
+
+    def reset(self, *, seed: object = None, options: object = None) -> object:
+        return {"eef_pos": torch.zeros(3)}, {}
+
+    def step(self, action: object) -> object:
+        assert isinstance(action, torch.Tensor), type(action)
+        self.seen_actions.append(action)
+        return {"eef_pos": torch.zeros(3)}, 0.0, True, False, {}
+
+    def close(self) -> None:
+        pass
+
+
+def _torch_factory(built: list[_TorchStrictEnv], *, tagged: bool) -> Any:
+    import rlmesh.adapters as adapt
+    from rlmesh.torch import EnvFactory
+
+    class Factory(EnvFactory):
+        tags = (
+            adapt.EnvTags(
+                observation={"eef_pos": adapt.StateTag(role=adapt.EEF_POS)},
+                action=adapt.Action(adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3)),
+            )
+            if tagged
+            else None
+        )
+
+        def make(self) -> _TorchStrictEnv:
+            env = _TorchStrictEnv()
+            built.append(env)
+            return env
+
+    return Factory()
+
+
+def test_run_serves_a_torch_factory_env_torch_actions() -> None:
+    from rlmesh.torch import Model
+
+    built: list[_TorchStrictEnv] = []
+    model = Model(lambda obs: torch.zeros(3))
+    try:
+        result = model.run(_torch_factory(built, tagged=False), episodes=1)
+    finally:
+        model.close()
+
+    assert result.num_episodes == 1
+    assert isinstance(built[0].seen_actions[0], torch.Tensor)
+
+
+def test_adapted_session_accepts_a_torch_factory_observation() -> None:
+    import rlmesh.adapters as adapt
+    from rlmesh.torch import Model
+
+    spec = adapt.ModelSpec(
+        input={"state": adapt.State(role=adapt.EEF_POS)},
+        output=adapt.Action(adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3)),
+    )
+    built: list[_TorchStrictEnv] = []
+    model = Model(lambda obs: torch.zeros(3), spec=spec)
+    try:
+        with model.session(_torch_factory(built, tagged=True)) as session:
+            result = session.run()
+    finally:
+        model.close()
+
+    assert result.num_episodes == 1
+    assert isinstance(built[0].seen_actions[0], torch.Tensor)

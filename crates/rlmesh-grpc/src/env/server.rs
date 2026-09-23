@@ -5,8 +5,7 @@ use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use prost::Message;
-use rlmesh_proto::spaces::v1::meta_value::Kind as MetaKind;
-use rlmesh_proto::spaces::v1::{MetaMap, MetaValue};
+use rlmesh_proto::spaces::v1::MetaMap;
 use tokio::sync::{Mutex, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
@@ -826,7 +825,7 @@ fn apply_step_to_tracker(
                         lane,
                         terminated,
                         truncated,
-                        extract_env_final_info(shared_info.as_ref(), pos, width),
+                        rlmesh_proto::lane_final_info(shared_info.as_ref(), pos, width),
                     ) {
                         completed_episodes.push(metadata);
                     }
@@ -1032,56 +1031,6 @@ fn space_value_len(payload: Option<&rlmesh_proto::spaces::v1::SpaceValue>) -> us
     value_leaves(payload)
         .map(|leaves| leaves.iter().map(|leaf| leaf.len()).sum())
         .unwrap_or(0)
-}
-
-/// A completing lane's final info: the Gymnasium vector-autoreset
-/// `final_info` entry when present, else (single env only) the terminal
-/// step's own top-level info map — a scalar env has no `final_info` wrapper,
-/// its terminal info IS the final info, and the eval loop's success signal
-/// reads `is_success`/`success` from it.
-fn extract_env_final_info(
-    info: Option<&MetaMap>,
-    env_idx: usize,
-    num_envs: usize,
-) -> Option<MetaMap> {
-    let info = info?;
-    let Some(final_info) = info.entries.get("final_info") else {
-        return (num_envs == 1).then(|| info.clone());
-    };
-    let is_present = match info.entries.get("_final_info") {
-        Some(mask) => value_bool_at(mask, env_idx).unwrap_or(false),
-        None => num_envs == 1,
-    };
-
-    if !is_present {
-        return None;
-    }
-
-    match &final_info.kind {
-        Some(MetaKind::Map(map)) => Some(map.clone()),
-        Some(MetaKind::List(list)) => {
-            let entry = list.items.get(env_idx)?;
-            match &entry.kind {
-                Some(MetaKind::Map(map)) => Some(map.clone()),
-                _ => None,
-            }
-        }
-        _ => None,
-    }
-}
-
-fn value_bool_at(value: &MetaValue, env_idx: usize) -> Option<bool> {
-    match &value.kind {
-        Some(MetaKind::List(list)) => {
-            let entry = list.items.get(env_idx)?;
-            if let Some(MetaKind::Bool(flag)) = &entry.kind {
-                Some(*flag)
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
 }
 
 /// Serve the environment at the given address.
@@ -2588,6 +2537,150 @@ mod tests {
             tk.active_episode_id(0),
             Some("C"),
             "s5 rolls a new episode C"
+        );
+    }
+
+    #[tokio::test]
+    async fn next_step_vector_lanes_keep_their_masked_terminal_info() {
+        use std::sync::Arc;
+
+        use rlmesh_proto::env::v1::{
+            JoinRequest, ResetRequest as ProtoResetRequest, join_request, join_response,
+        };
+        use rlmesh_proto::spaces::v1::meta_value::Kind;
+        use rlmesh_proto::spaces::v1::{MetaList, MetaMap, MetaValue};
+        use tokio::sync::Mutex;
+
+        fn value(kind: Kind) -> MetaValue {
+            MetaValue { kind: Some(kind) }
+        }
+        fn list(items: Vec<Kind>) -> MetaValue {
+            value(Kind::List(MetaList {
+                items: items.into_iter().map(value).collect(),
+            }))
+        }
+        fn bools(flags: [bool; 3]) -> MetaValue {
+            list(flags.map(Kind::Bool).to_vec())
+        }
+        fn map(entries: Vec<(&str, MetaValue)>) -> MetaMap {
+            MetaMap {
+                entries: entries
+                    .into_iter()
+                    .map(|(key, value)| (key.to_string(), value))
+                    .collect(),
+            }
+        }
+
+        // Gymnasium SyncVectorEnv NEXT_STEP info: per-lane arrays masked by
+        // `_key`, no `final_info`. s1 ends lane 0 (success) and lane 2 (no
+        // success key); s2 rolls them and ends lane 1 (failure).
+        let s1_info = map(vec![
+            ("is_success", bools([true, false, false])),
+            ("_is_success", bools([true, false, false])),
+            (
+                "episode",
+                value(Kind::Map(map(vec![
+                    (
+                        "r",
+                        list(vec![
+                            Kind::Number(3.0),
+                            Kind::Number(0.0),
+                            Kind::Number(5.0),
+                        ]),
+                    ),
+                    ("_r", bools([true, false, true])),
+                ]))),
+            ),
+            ("_episode", bools([true, false, true])),
+        ]);
+        let s2_info = map(vec![
+            ("is_success", bools([false, false, false])),
+            ("_is_success", bools([false, true, false])),
+        ]);
+        let env = Arc::new(ScriptedVectorEnv::new(
+            3,
+            rlmesh_spaces::AutoresetMode::NextStep,
+            vec![
+                StepResponse {
+                    infos: Some(s1_info),
+                    ..step_resp(vec![1.0; 3], vec![1, 0, 0], vec![0, 0, 1])
+                },
+                StepResponse {
+                    infos: Some(s2_info),
+                    ..step_resp(vec![0.0, 1.0, 0.0], vec![0, 1, 0], vec![0; 3])
+                },
+            ],
+        ));
+        let tracker = Arc::new(Mutex::new(super::super::episode::EpisodeTracker::new()));
+        let ids = |ids: [&str; 3]| ids.map(str::to_string).to_vec();
+        let reset = JoinRequest {
+            kind: Some(join_request::Kind::Reset(ProtoResetRequest {
+                episode_ids: ids(["A", "B", "C"]),
+                ..Default::default()
+            })),
+            request_id: "r".to_string(),
+        };
+        let _ = super::handle_env_request(reset, env.clone(), tracker.clone(), false).await;
+        let step = |episode_ids: Vec<String>| JoinRequest {
+            kind: Some(join_request::Kind::Step(StepRequest {
+                episode_ids,
+                ..Default::default()
+            })),
+            request_id: "s".to_string(),
+        };
+        let completed = |response: super::JoinResponse| match response.kind {
+            Some(join_response::Kind::Step(ok)) => ok
+                .completed_episodes
+                .into_iter()
+                .map(|episode| (episode.episode_id, episode.final_info))
+                .collect::<Vec<_>>(),
+            other => panic!("expected step response, got {other:?}"),
+        };
+
+        let s1 = completed(
+            super::handle_env_request(
+                step(ids(["A", "B", "C"])),
+                env.clone(),
+                tracker.clone(),
+                false,
+            )
+            .await,
+        );
+        let s2 = completed(
+            super::handle_env_request(
+                step(ids(["D", "B", "E"])),
+                env.clone(),
+                tracker.clone(),
+                false,
+            )
+            .await,
+        );
+
+        let episode_r = |r: f64| {
+            (
+                "episode",
+                value(Kind::Map(map(vec![("r", value(Kind::Number(r)))]))),
+            )
+        };
+        assert_eq!(
+            s1,
+            vec![
+                (
+                    "A".to_string(),
+                    Some(map(vec![
+                        ("is_success", value(Kind::Bool(true))),
+                        episode_r(3.0),
+                    ])),
+                ),
+                ("C".to_string(), Some(map(vec![episode_r(5.0)]))),
+            ]
+        );
+        assert_eq!(
+            s2,
+            vec![(
+                "B".to_string(),
+                Some(map(vec![("is_success", value(Kind::Bool(false)))])),
+            )]
         );
     }
 

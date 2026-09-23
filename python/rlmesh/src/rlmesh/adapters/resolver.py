@@ -265,6 +265,7 @@ def _shadow_state(
             dtype=leaf.dtype,
             reshape=leaf.reshape,
             container=leaf.container,
+            clip=leaf.clip,
         )
     return cast(State, shadows[0])
 

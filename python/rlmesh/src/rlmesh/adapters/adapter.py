@@ -123,17 +123,18 @@ def _tree_set(tree: Any, segments: Placement, value: Any) -> Any:
     The empty path (a bare-leaf payload) replaces the whole tree. List nodes are
     rebuilt as lists so an in-place index assignment is well defined. Mirrors the
     native ``insert_at`` (`apply/obs.rs`): an ``int`` segment requires a List node
-    and grows it with empty-dict placeholders, a ``str`` segment requires a Map.
+    and grows it with empty-dict placeholders, a ``str`` segment requires a Map,
+    and an empty placeholder takes whichever kind its segment needs.
     """
     if not segments:
         return value
     head, rest = segments[0], segments[1:]
     if isinstance(head, int):
+        if isinstance(tree, Mapping) and not tree:
+            tree = []
         if not isinstance(tree, (list, tuple)):
             # Mirror the native ``insert_at`` placement-conflict guard: an int
-            # segment needs a List node. (A grow placeholder is an empty dict, so
-            # an int placement nested under another int would hit this -- the same
-            # input the native path rejects, kept consistent here.)
+            # segment needs a List node.
             raise ValueError(
                 f"payload placement conflict: expected a list to place index [{head}]"
             )
@@ -145,6 +146,8 @@ def _tree_set(tree: Any, segments: Placement, value: Any) -> Any:
             items.extend({} for _ in range(head + 1 - len(items)))
         items[head] = _tree_set(items[head], rest, value)
         return items
+    if isinstance(tree, (list, tuple)) and not tree:
+        tree = {}
     if not isinstance(tree, Mapping):
         raise ValueError(
             f"payload placement conflict: expected a mapping to place key {head!r}"

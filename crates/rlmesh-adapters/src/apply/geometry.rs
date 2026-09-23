@@ -4,6 +4,9 @@ use crate::error::ApplyError;
 use crate::spec::{RotationEncoding, RotationLiteral};
 
 const EPS: f64 = 1e-8;
+/// cos(pitch) below which roll and yaw are read as one coupled angle. Sized
+/// for float32 entries, whose rounding noise reaches ~1e-7.
+const GIMBAL_EPS: f64 = 1e-4;
 
 pub(crate) type Matrix = [[f32; 3]; 3];
 
@@ -195,28 +198,16 @@ fn matrix_to(matrix: &Matrix, encoding: RotationEncoding) -> Vec<f32> {
             vec![-matrix[2][0], -matrix[2][1], -matrix[2][2]]
         }
         RotationEncoding::AxisAngle => {
-            let trace = f64::from(matrix[0][0] + matrix[1][1] + matrix[2][2]);
-            let theta = ((trace - 1.0) / 2.0).clamp(-1.0, 1.0).acos();
-            if theta.abs() < EPS {
-                return vec![0.0; 3];
+            // Via the quaternion: recovering the angle from the float32 trace
+            // amplifies rounding near 0 and pi (28 degrees off at pi - 4e-4).
+            // w >= 0 keeps the angle in [0, pi].
+            let mut quat = matrix_to_quat_xyzw(matrix);
+            if quat[3] < 0.0 {
+                for component in &mut quat {
+                    *component = -*component;
+                }
             }
-            let sin_theta = theta.sin();
-            if sin_theta.abs() < EPS {
-                // θ ≈ π: the antisymmetric part of R vanishes (a 180° rotation
-                // matrix is symmetric), so `matrix[2][1] - matrix[1][2]` etc.
-                // are all ~0 and the axis is lost. Recover it through the
-                // quaternion path, which handles this case via the
-                // largest-diagonal branch.
-                let quat = matrix_to_quat_xyzw(matrix);
-                return quat_xyzw_to_axis_angle([quat[0], quat[1], quat[2], quat[3]]);
-            }
-            let axis = [
-                matrix[2][1] - matrix[1][2],
-                matrix[0][2] - matrix[2][0],
-                matrix[1][0] - matrix[0][1],
-            ];
-            let factor = (theta / (2.0 * sin_theta + EPS)) as f32;
-            axis.iter().map(|&x| x * factor).collect()
+            quat_xyzw_to_axis_angle([quat[0], quat[1], quat[2], quat[3]])
         }
         RotationEncoding::Rot6d => {
             // Standard: the first two columns concatenated (col0 then col1).
@@ -254,9 +245,12 @@ fn matrix_to(matrix: &Matrix, encoding: RotationEncoding) -> Vec<f32> {
             // couple, so yaw is pinned to 0.
             let m = |row: usize, col: usize| f64::from(matrix[row][col]);
             let sin_pitch = (-m(2, 0)).clamp(-1.0, 1.0);
-            let cos_pitch = (1.0 - sin_pitch * sin_pitch).max(0.0).sqrt();
-            let pitch = sin_pitch.asin();
-            let (roll, yaw) = if cos_pitch > EPS {
+            // cos(pitch) from the entries roll/yaw are read from, not
+            // sqrt(1 - sin^2): at float32 gimbal lock the latter is ~3e-4
+            // while those entries have already rounded to zero.
+            let cos_pitch = m(2, 1).hypot(m(2, 2));
+            let pitch = sin_pitch.atan2(cos_pitch);
+            let (roll, yaw) = if cos_pitch > GIMBAL_EPS {
                 (m(2, 1).atan2(m(2, 2)), m(1, 0).atan2(m(0, 0)))
             } else {
                 // With yaw pinned to 0, the combined roll+/-yaw angle is read
@@ -430,6 +424,75 @@ mod tests {
             let agree = quat.iter().zip(&requat).all(|(a, b)| (a - b).abs() < 1e-4)
                 || quat.iter().zip(&requat).all(|(a, b)| (a + b).abs() < 1e-4);
             assert!(agree, "gimbal pitch {pitch}: {quat:?} vs {requat:?}");
+        }
+    }
+
+    fn frobenius_distance(left: &Matrix, right: &Matrix) -> f32 {
+        left.iter()
+            .flatten()
+            .zip(right.iter().flatten())
+            .map(|(l, r)| (l - r) * (l - r))
+            .sum::<f32>()
+            .sqrt()
+    }
+
+    #[test]
+    fn matrix_to_axis_angle_is_stable_near_zero_and_pi() {
+        use RotationEncoding::{AxisAngle, EulerXyz, Rot6d};
+        let pi = std::f32::consts::PI;
+        // Pre-fix: pi - 4e-4 about x came back as 3.639 (28 degrees off) and
+        // 1e-4 collapsed to zero, both from the float32 trace.
+        for offset in [1e-4_f32, 3e-4, 4e-4, 1e-3, 1e-2, 0.5] {
+            for angle in [offset, pi - offset] {
+                let got = convert_rotation(&[angle, 0.0, 0.0], EulerXyz, AxisAngle).expect("ok");
+                assert!(
+                    (got[0] - angle).abs() < 2e-6 && got[1].abs() < 1e-6 && got[2].abs() < 1e-6,
+                    "Rx({angle}) -> {got:?}"
+                );
+            }
+        }
+        let rot6d = [1.0, 0.0, 0.0, 0.0, -0.999_999_94, 4e-4];
+        let got = convert_rotation(&rot6d, Rot6d, AxisAngle).expect("ok");
+        assert!((got[0] - (pi - 4e-4)).abs() < 2e-6, "{got:?}");
+    }
+
+    #[test]
+    fn euler_xyz_recovers_a_float32_quaternion_at_gimbal_lock() {
+        use RotationEncoding::{EulerXyz, QuatWxyz, QuatXyzw};
+        // Euler [0.3, -pi/2, 1.1] as a float32 quaternion. Its matrix has
+        // -m20 = 0.99999994, so sqrt(1 - s^2) claimed cos(pitch) ~ 3e-4 while
+        // the roll/yaw entries were exactly zero: the pre-fix inverse returned
+        // [0, -pi/2, 0], 80 degrees away.
+        let quat = [0.455_530_7_f32, -0.540_825_07, 0.455_530_7, 0.540_825_07];
+        for (value, encoding) in [
+            (quat, QuatXyzw),
+            ([quat[3], quat[0], quat[1], quat[2]], QuatWxyz),
+        ] {
+            let euler = convert_rotation(&value, encoding, EulerXyz).expect("ok");
+            let distance =
+                frobenius_distance(&to_matrix(&value, encoding), &to_matrix(&euler, EulerXyz));
+            assert!(
+                distance < 1e-5,
+                "{encoding:?}: euler {euler:?} is {distance} away"
+            );
+        }
+        // Just off gimbal lock, roll and yaw still separate cleanly.
+        let half_pi = std::f32::consts::FRAC_PI_2;
+        for pitch in [
+            half_pi - 1e-3,
+            -half_pi + 1e-3,
+            half_pi - 2e-4,
+            -half_pi + 2e-4,
+        ] {
+            let euler = [0.3_f32, pitch, 1.1];
+            let quat = convert_rotation(&euler, EulerXyz, QuatXyzw).expect("ok");
+            let back = convert_rotation(&quat, QuatXyzw, EulerXyz).expect("ok");
+            let distance =
+                frobenius_distance(&to_matrix(&euler, EulerXyz), &to_matrix(&back, EulerXyz));
+            assert!(
+                distance < 1e-3,
+                "pitch {pitch}: {back:?} is {distance} away"
+            );
         }
     }
 

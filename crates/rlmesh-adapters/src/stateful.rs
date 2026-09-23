@@ -26,6 +26,7 @@ use rlmesh_spaces::{SpaceKind, SpaceSpec, SpaceValue, Tensor};
 use crate::apply::value::{cast, to_f64_vec};
 use crate::apply::{CustomTransform, Value};
 use crate::error::ApplyError;
+use crate::path::NodePath;
 use crate::plans::{ImagePlan, ObsPlan, ResolvedAdapter, StackedPlacement};
 use crate::spec::StackPad;
 
@@ -70,7 +71,7 @@ impl EncodingTransform for NoEncodings {
 }
 
 /// Per-route, episode-keyed frame-history buffers:
-/// `episode_id -> placement-string -> rolling window` (window `maxlen = depth`).
+/// `episode_id -> placement -> rolling window` (window `maxlen = depth`).
 ///
 /// The handler holds one of these per `route_key`, with an edge-driven
 /// lifecycle: an episode's entry appears lazily on first use and is dropped at
@@ -92,7 +93,7 @@ pub struct FrameBuffers {
 /// action window an action-source part reads.
 #[derive(Default)]
 struct EpisodeWindows {
-    windows: BTreeMap<String, Window>,
+    windows: BTreeMap<NodePath, Window>,
     last_step: Option<i64>,
     /// The raw model action executed at each step, in model order, recorded
     /// by [`record_action`]; an observation at step `s` reads row `s - 1`.
@@ -244,7 +245,7 @@ impl FrameBuffers {
     }
 
     /// The per-key window map for an episode, created lazily if absent.
-    fn episode(&mut self, episode_id: &str) -> &mut BTreeMap<String, Window> {
+    fn episode(&mut self, episode_id: &str) -> &mut BTreeMap<NodePath, Window> {
         &mut self.inner.entry(episode_id.to_owned()).or_default().windows
     }
 }
@@ -461,7 +462,7 @@ pub fn assemble_obs(
     // Frame-stacking runs as a post-scatter pass over the single precomputed
     // stacking list ([`ResolvedAdapter::stacked_placements`]): walk the assembled
     // tree to each stacked placement and stack in place, keyed (in the
-    // per-episode window) by the placement's precomputed canonical string.
+    // per-episode window) by the structured placement.
     let stacked = adapter.stacked_placements();
     if !stacked.is_empty() {
         let windows = buffers.episode(episode_id);
@@ -481,12 +482,12 @@ pub fn assemble_obs(
             };
             // After the first frame the window exists, so the steady-state path is a
             // borrow with no key clone; only the first-frame insert pays the clone.
-            let window = if windows.contains_key(&entry.key) {
+            let window = if windows.contains_key(&entry.placement) {
                 windows
-                    .get_mut(&entry.key)
+                    .get_mut(&entry.placement)
                     .expect("window present (just checked)")
             } else {
-                windows.entry(entry.key.clone()).or_default()
+                windows.entry(entry.placement.clone()).or_default()
             };
             let ObsPlan::Image(image_plan) = &adapter.obs_plans[entry.plan_index] else {
                 unreachable!("only image plans are ever stacked")
@@ -522,7 +523,7 @@ pub fn observe_obs(
             unreachable!("only image plans are ever stacked")
         };
         windows
-            .entry(entry.key.clone())
+            .entry(entry.placement.clone())
             .or_default()
             .push(frame, entry, image_plan)?;
     }
@@ -833,12 +834,13 @@ mod tests {
         let mut buffers = FrameBuffers::new();
         assert_eq!((buffers.episodes(), buffers.state_bytes()), (0, 0));
 
-        buffers
-            .episode("ep-1")
-            .insert("image".to_owned(), Window::from([frame(1), frame(2)]));
+        buffers.episode("ep-1").insert(
+            NodePath::root().push_key("image"),
+            Window::from([frame(1), frame(2)]),
+        );
         buffers
             .episode("ep-2")
-            .insert("image".to_owned(), Window::from([frame(3)]));
+            .insert(NodePath::root().push_key("image"), Window::from([frame(3)]));
         assert_eq!(buffers.episodes(), 2);
         // Three 2-byte uint8 frames held across the two episodes.
         assert_eq!(buffers.state_bytes(), 6);
@@ -1092,6 +1094,74 @@ mod tests {
             ),
             other => panic!("cam not a tensor: {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_dotted_key_and_the_nested_path_it_renders_like_keep_separate_windows() {
+        use crate::apply::NoCustoms;
+        use crate::path::NodePath;
+        use crate::plans::{ActionPlan, ObsPlan};
+
+        let ObsPlan::Image(base) = stacked_adapter(2).obs_plans.remove(0) else {
+            unreachable!("stacked_adapter builds one image plan")
+        };
+        let image = |placement: NodePath, source: &str| {
+            let mut plan = base.clone();
+            plan.placement = placement;
+            plan.source = NodePath::root().push_key(source);
+            ObsPlan::Image(plan)
+        };
+        let dotted = NodePath::root().push_key("camera.rgb");
+        let nested = NodePath::root().push_key("camera").push_key("rgb");
+        assert_eq!(dotted.to_string(), nested.to_string());
+        let adapter = ResolvedAdapter::new(
+            vec![
+                image(dotted.clone(), "primary"),
+                image(nested.clone(), "secondary"),
+            ],
+            ActionPlan {
+                segments: vec![],
+                clip: None,
+                in_dim: 0,
+            },
+            Vec::new(),
+            Vec::new(),
+        );
+        let obs = |primary: u8, secondary: u8| -> BTreeMap<String, Value> {
+            let frame = |tag| {
+                Value::Tensor(Tensor::from_vec(vec![tag; 3], vec![1, 1, 3], DType::Uint8).unwrap())
+            };
+            [
+                ("primary".to_owned(), frame(primary)),
+                ("secondary".to_owned(), frame(secondary)),
+            ]
+            .into_iter()
+            .collect()
+        };
+        let mut buffers = FrameBuffers::new();
+        let mut payload = Value::Number(0.0);
+        for (step, (primary, secondary)) in [(10, 100), (11, 101)].into_iter().enumerate() {
+            payload = assemble_obs(
+                &adapter,
+                &obs(primary, secondary),
+                "ep",
+                step as i64,
+                &mut buffers,
+                &NoCustoms,
+                &NoEncodings,
+            )
+            .expect("assemble");
+        }
+        let mut bytes = |path: &NodePath| {
+            let Value::Tensor(tensor) =
+                crate::apply::lookup::resolve_source_mut(&mut payload, path).unwrap()
+            else {
+                panic!("stacked input is not a tensor")
+            };
+            tensor.to_contiguous_bytes().into_owned()
+        };
+        assert_eq!(bytes(&dotted), vec![10, 10, 10, 11, 11, 11]);
+        assert_eq!(bytes(&nested), vec![100, 100, 100, 101, 101, 101]);
     }
 
     #[test]
