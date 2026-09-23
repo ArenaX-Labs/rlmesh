@@ -17,6 +17,7 @@ from typing import Any, cast
 import pytest
 import rlmesh
 import rlmesh.adapters as adapt
+import rlmesh.numpy
 
 np = pytest.importorskip("numpy")
 pytest.importorskip("gymnasium")
@@ -1010,3 +1011,12 @@ def test_a_borrowed_env_is_left_open_by_the_native_run() -> None:
     assert closed == []
     _drive(_model(), env, "native", episodes=1, close_env=True)
     assert closed == [1]
+
+
+def test_a_predict_exception_keeps_its_own_type_on_the_native_run() -> None:
+    def predict(obs: Any) -> Any:
+        raise KeyError("missing_key")
+
+    model = rlmesh.numpy.Model(predict, spec=rlmesh.NO_ADAPTER)
+    with pytest.raises(KeyError, match="missing_key"):
+        _drive(model, CountEnv(episode_len=2), "native", seeds=[1])

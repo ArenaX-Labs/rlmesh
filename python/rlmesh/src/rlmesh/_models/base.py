@@ -1773,7 +1773,7 @@ def run(
         workflow_edition=workflow_edition,
     )
     try:
-        return sess.run(
+        result = sess.run(
             seeds=seeds,
             episodes=episodes,
             max_episode_steps=max_episode_steps,
@@ -1781,8 +1781,12 @@ def run(
             hooks=hooks,
             trial_index_base=trial_index_base,
         )
-    finally:
-        sess.close()
+    except BaseException:
+        with contextlib.suppress(Exception):
+            sess.close()
+        raise
+    sess.close()
+    return result
 
 
 __all__ = ["LifecycleCallback", "ModelBase", "PredictFn", "run", "session"]

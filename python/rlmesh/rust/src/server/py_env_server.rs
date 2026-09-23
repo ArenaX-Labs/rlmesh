@@ -417,7 +417,7 @@ async fn shutdown_signal() -> &'static str {
     }
 }
 
-fn spawn_signal_shutdown(shutdown: ShutdownTrigger) {
+pub(crate) fn spawn_signal_shutdown(shutdown: ShutdownTrigger) {
     tokio::spawn(async move {
         let reason = shutdown_signal().await;
         shutdown.trigger(reason);

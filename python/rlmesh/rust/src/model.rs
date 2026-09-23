@@ -73,9 +73,20 @@ struct PyPredict {
     native_chunk: Option<u32>,
     on_episode_end: Option<Py<PyAny>>,
     on_close: Option<Py<PyAny>>,
+    /// The last exception a host callback raised, kept so the in-process run
+    /// re-raises the user's own exception instead of its stringified copy.
+    last_error: LastPyError,
 }
 
+type LastPyError = Arc<std::sync::Mutex<Option<PyErr>>>;
+
 impl PyPredict {
+    fn internal(&self, err: PyErr) -> RLMeshError {
+        let message = err.to_string();
+        *self.last_error.lock().expect("last_error lock poisoned") = Some(err);
+        RLMeshError::Internal(message)
+    }
+
     fn fire(callback: &Option<Py<PyAny>>) -> rlmesh::Result<()> {
         let Some(callback) = callback else {
             return Ok(());
@@ -96,7 +107,7 @@ impl PredictFn for PyPredict {
             let action = self.predict_fn.call1(py, (input, context))?;
             decode_value(action.bind(py))
         })
-        .map_err(|err| RLMeshError::Internal(err.to_string()))
+        .map_err(|err| self.internal(err))
     }
 
     fn predict_chunk(
@@ -120,7 +131,7 @@ impl PredictFn for PyPredict {
             decode_value(chunk.bind(py))
         })
         .map(Some)
-        .map_err(|err| RLMeshError::Internal(err.to_string()))
+        .map_err(|err| self.internal(err))
     }
 
     fn has_chunk(&self) -> bool {
@@ -232,7 +243,7 @@ impl PredictFn for PyPredict {
                 )
             }
         })
-        .map_err(|err| RLMeshError::Internal(err.to_string()))
+        .map_err(|err| self.internal(err))
     }
 
     fn predict_spec_less_chunked(
@@ -310,7 +321,7 @@ impl PredictFn for PyPredict {
                 replay: frames.map(|frame| vec![frame]).collect(),
             })
         })
-        .map_err(|err| RLMeshError::Internal(err.to_string()))
+        .map_err(|err| self.internal(err))
     }
 
     fn on_episode_end(&self, episode_id: &str) -> rlmesh::Result<()> {
@@ -319,7 +330,7 @@ impl PredictFn for PyPredict {
         };
         Python::attach(|py| callback.call1(py, (episode_id,)))
             .map(|_| ())
-            .map_err(|err| RLMeshError::Internal(err.to_string()))
+            .map_err(|err| self.internal(err))
     }
 
     fn on_close(&self) -> rlmesh::Result<()> {
@@ -515,6 +526,7 @@ fn run_local_blocking(
     handler: AdaptedModelHandler,
     options: RunLocalOptions,
     relay: Option<Py<PyAny>>,
+    last_error: &LastPyError,
 ) -> PyResult<rlmesh::RuntimeReport> {
     enum RunOutcome {
         Done(rlmesh::Result<rlmesh::RuntimeReport>),
@@ -554,7 +566,11 @@ fn run_local_blocking(
         return Err(err);
     }
     match outcome {
-        RunOutcome::Done(result) => result.map_err(to_py_err),
+        RunOutcome::Done(Ok(report)) => Ok(report),
+        RunOutcome::Done(Err(err)) => {
+            let raised = last_error.lock().expect("last_error lock poisoned").take();
+            Err(raised.unwrap_or_else(|| to_py_err(err)))
+        }
         RunOutcome::Signal(err) => Err(err),
     }
 }
@@ -653,6 +669,7 @@ pub struct PyModel {
     on_episode_end: Option<Py<PyAny>>,
     on_close: Option<Py<PyAny>>,
     profiler: Arc<ProfileCollector>,
+    last_error: LastPyError,
 }
 
 impl PyModel {
@@ -672,6 +689,7 @@ impl PyModel {
             native_chunk: self.native_chunk,
             on_episode_end: self.on_episode_end.as_ref().map(|cb| cb.clone_ref(py)),
             on_close: self.on_close.as_ref().map(|cb| cb.clone_ref(py)),
+            last_error: Arc::clone(&self.last_error),
         });
         let resolver: Option<Arc<dyn RouteResolver>> =
             self.configure_fn.as_ref().map(|configure| {
@@ -712,6 +730,7 @@ impl PyModel {
             on_episode_end,
             on_close,
             profiler,
+            last_error: LastPyError::default(),
         })
     }
 
@@ -735,7 +754,7 @@ impl PyModel {
             .prefetch_lead(prefetch_lead);
         options.workflow_edition = crate::lifecycle::checked_workflow_edition(workflow_edition)?;
 
-        let report = run_local_blocking(py, handler, options, None)?;
+        let report = run_local_blocking(py, handler, options, None, &self.last_error)?;
 
         let _ = total_guard.finish(0);
         self.profiler.log_summary_once();
@@ -795,7 +814,7 @@ impl PyModel {
             options = options.trial_index_base(base);
         }
 
-        let report = run_local_blocking(py, handler, options, hooks)?;
+        let report = run_local_blocking(py, handler, options, hooks, &self.last_error)?;
 
         let _ = total_guard.finish(0);
         self.profiler.log_summary_once();
@@ -817,11 +836,15 @@ impl PyModel {
         let options = options.map(PyServeOptions::into_rust).unwrap_or_default();
         let handler = self.build_handler();
 
+        // Same signal contract as EnvServer: SIGINT/SIGTERM drain and close the
+        // model; Python's own SIGINT handler still raises KeyboardInterrupt after.
         py.detach(|| {
             model_runtime().block_on(async move {
-                ModelWorker::new(handler)
-                    .serve_async(ServeModelOptions::new(address).serve_options(options))
-                    .await
+                let bound = ModelWorker::new(handler)
+                    .bind_async(ServeModelOptions::new(address).serve_options(options))
+                    .await?;
+                crate::server::py_env_server::spawn_signal_shutdown(bound.shutdown_trigger());
+                bound.serve().await
             })
         })
         .map_err(to_py_err)?;
