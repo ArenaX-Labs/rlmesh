@@ -13,6 +13,7 @@ from ._adapter_mode import NO_ADAPTER
 from ._eval import (
     RANDOM_SAMPLE,
     EpisodeResult,
+    RunContext,
     RunHooks,
     RunResult,
     Session,
@@ -28,6 +29,7 @@ __all__ = [
     "RANDOM_SAMPLE",
     "EpisodeResult",
     "Reader",
+    "RunContext",
     "RunHooks",
     "RunResult",
     "Session",

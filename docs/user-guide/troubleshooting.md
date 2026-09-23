@@ -181,7 +181,7 @@ A bare role read keeps the env's native layout, so a `chw` camera comes back
 
 ### See it live
 
-For a moving target, attach the built-in viewer with `view=` on `session`. It shows the env's `render()` frame plus every declared camera role, selectable at runtime, with a step/reward HUD. (`run()` drives the native runtime loop, which has no viewer seam -- the viewer is fed from the session's step loop.)
+For a moving target, attach the built-in viewer with `view=` on `session`. It shows the env's `render()` frame plus every declared camera role, selectable at runtime, with a step/reward HUD. (The viewer is fed from the session's step loop; `run()` takes `hooks=` for observation, not `view=`.)
 
 ```python
 with model.session(env, view="terminal") as sess:   # half-block frames in the terminal

@@ -314,6 +314,9 @@ pub struct EmittedObservation {
     pub infos: Option<MetaMap>,
 }
 
+/// One step event's (terminated, truncated) per lane and its autoreset-roll mark.
+pub type StepFlags = (Vec<bool>, Vec<bool>, Vec<bool>);
+
 #[derive(Default)]
 pub struct RecordingHooks {
     pub actions: AtomicUsize,
@@ -325,6 +328,8 @@ pub struct RecordingHooks {
     pub observation_marker: Option<u8>,
     pub emitted_observations: Mutex<Vec<EmittedObservation>>,
     pub step_infos: Mutex<Vec<Option<MetaMap>>>,
+    // Per step event: (terminated, truncated, autoreset_roll), each per lane.
+    pub step_flags: Mutex<Vec<StepFlags>>,
     pub started_seeds: Mutex<Vec<Option<i64>>>,
     pub completed_seeds: Mutex<Vec<Option<i64>>>,
     pub started_trials: Mutex<Vec<Option<u64>>>,
@@ -440,6 +445,10 @@ impl RuntimeHooks for RecordingHooks {
             .lock()
             .expect("step info recorder lock poisoned")
             .push(event.infos);
+        self.step_flags
+            .lock()
+            .expect("step flag recorder lock poisoned")
+            .push((event.terminated, event.truncated, event.autoreset_roll));
         Ok(())
     }
 

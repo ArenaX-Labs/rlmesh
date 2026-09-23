@@ -1,5 +1,6 @@
 mod adapters;
 mod client;
+mod hooks;
 mod lifecycle;
 mod model;
 mod peer_info;

@@ -66,6 +66,11 @@ The eval surface binds a model to an environment. {func}`~rlmesh.run` pumps whol
 ```
 
 ```{eval-rst}
+.. autoclass:: rlmesh.RunContext
+   :members:
+```
+
+```{eval-rst}
 .. autoclass:: rlmesh.StepEvent
    :members:
 ```

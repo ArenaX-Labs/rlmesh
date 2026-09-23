@@ -150,6 +150,18 @@ pub struct StepCompletedEvent {
     pub env_index: i32,
     pub rewards: Vec<f64>,
     pub infos: Option<MetaMap>,
+    /// Per lane, aligned with `rewards`: whether this step ended the lane's
+    /// episode in a terminal state / by truncation (env-reported or a runtime
+    /// cap), known at the step itself, so a hook never waits for the
+    /// `episode_completed` event to learn how a step ended.
+    pub terminated: Vec<bool>,
+    pub truncated: Vec<bool>,
+    /// Per lane, aligned with `rewards`: true where this response is the
+    /// lane's `NEXT_STEP` autoreset roll -- the new episode's reset observation,
+    /// still attributed to the ended id, not a step of any episode. Lanes roll
+    /// independently, so the other lanes' entries are real steps. `infos` is
+    /// `None` when any lane rolled.
+    pub autoreset_roll: Vec<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

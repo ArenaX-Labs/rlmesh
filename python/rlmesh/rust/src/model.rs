@@ -16,6 +16,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use crate::adapters::{PyCustomTransform, PyEncodings, decode_value, encode_value};
+use crate::hooks::PyRunHooks;
 use crate::lifecycle::PyServeOptions;
 use crate::spaces::{
     ValueBackend, batched_space_values_to_py_neutral, env_contract_to_py, extract_space_spec,
@@ -530,6 +531,7 @@ fn run_local_blocking(
     py: Python<'_>,
     handler: AdaptedModelHandler,
     options: RunLocalOptions,
+    relay: Option<Py<PyAny>>,
 ) -> PyResult<rlmesh::RuntimeReport> {
     enum RunOutcome {
         Done(rlmesh::Result<rlmesh::RuntimeReport>),
@@ -537,9 +539,17 @@ fn run_local_blocking(
     }
     let cancellation = rlmesh::CancellationToken::new();
     let run_token = cancellation.clone();
+    // A hook exception cancels the run through this same token; the relay keeps
+    // the exception so it, not the cancellation, is what the caller sees.
+    let hooks = relay.map(|relay| Arc::new(PyRunHooks::new(relay, cancellation.clone())));
+    let runtime_hooks: Arc<dyn rlmesh::RuntimeHooks> = match &hooks {
+        Some(hooks) => Arc::clone(hooks) as Arc<dyn rlmesh::RuntimeHooks>,
+        None => Arc::new(rlmesh::NoopRuntimeHooks),
+    };
     let outcome = py.detach(|| {
         model_runtime().block_on(async move {
-            let run = ModelWorker::new(handler).run_local_cancellable_async(options, run_token);
+            let run =
+                ModelWorker::new(handler).run_local_hooked_async(options, run_token, runtime_hooks);
             let mut run = std::pin::pin!(run);
             let mut poll = tokio::time::interval(crate::client::SIGNAL_POLL_INTERVAL);
             poll.tick().await;
@@ -557,6 +567,9 @@ fn run_local_blocking(
             }
         })
     });
+    if let Some(err) = hooks.as_ref().and_then(|hooks| hooks.take_error()) {
+        return Err(err);
+    }
     match outcome {
         RunOutcome::Done(result) => result.map_err(to_py_err),
         RunOutcome::Signal(err) => Err(err),
@@ -739,14 +752,21 @@ impl PyModel {
             .prefetch_lead(prefetch_lead);
         options.workflow_edition = crate::lifecycle::checked_workflow_edition(workflow_edition)?;
 
-        let report = run_local_blocking(py, handler, options)?;
+        let report = run_local_blocking(py, handler, options, None)?;
 
         let _ = total_guard.finish(0);
         self.profiler.log_summary_once();
         report_to_py(py, &report)
     }
 
-    #[pyo3(signature = (env_address, max_episodes, execution_horizon=1, seeds=None, max_episode_steps=None, max_episode_seconds=None, close_env=false, trial_index_base=None, prefetch_lead=0, workflow_edition=None))]
+    /// `hooks` is a relay object receiving the runtime's per-episode events as
+    /// plain data: `episode_started(episode_id, index, env_index, seed, trial)`,
+    /// `observation(env_index, episode_ids, values)`, `action(env_index, values)`,
+    /// `step(env_index, rewards, terminated, truncated, autoreset_roll, info)`,
+    /// and `episode_completed(episode_id, index, env_index, seed, trial, steps,
+    /// reward, terminated, truncated, success, duration_s)`. An exception it
+    /// raises aborts the run and is re-raised as-is.
+    #[pyo3(signature = (env_address, max_episodes, execution_horizon=1, seeds=None, max_episode_steps=None, max_episode_seconds=None, close_env=false, trial_index_base=None, prefetch_lead=0, workflow_edition=None, hooks=None))]
     #[allow(clippy::too_many_arguments)]
     fn run_local_for_episodes(
         &self,
@@ -761,6 +781,7 @@ impl PyModel {
         trial_index_base: Option<u64>,
         prefetch_lead: u32,
         workflow_edition: Option<String>,
+        hooks: Option<Py<PyAny>>,
     ) -> PyResult<Py<PyAny>> {
         let run_span = tracing::info_span!(
             "rlmesh.model.run_local_for_episodes",
@@ -789,7 +810,7 @@ impl PyModel {
             options = options.trial_index_base(base);
         }
 
-        let report = run_local_blocking(py, handler, options)?;
+        let report = run_local_blocking(py, handler, options, hooks)?;
 
         let _ = total_guard.finish(0);
         self.profiler.log_summary_once();
@@ -836,7 +857,7 @@ import typing
 class PyModel:
     def __init__(self, predict_fn: collections.abc.Callable[[Value], Value], configure_fn: collections.abc.Callable[[EnvContract], object] | None = None, on_episode_end: collections.abc.Callable[[str], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None, predict_chunk_fn: collections.abc.Callable[[Value, int], Value] | None = None, predict_batch_fn: collections.abc.Callable[[list[Value], list[dict[str, typing.Any]]], list[Value]] | None = None, predict_chunk_batch_fn: collections.abc.Callable[[list[Value], int, list[dict[str, typing.Any]]], list[Value]] | None = None, allow_fusion: bool = True, native_chunk: int | None = None) -> None: ...
     def run_local(self, env_address: str, execution_horizon: int = 1, prefetch_lead: int = 0, workflow_edition: str | None = None) -> dict[str, typing.Any]: ...
-    def run_local_for_episodes(self, env_address: str, max_episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trial_index_base: int | None = None, prefetch_lead: int = 0, workflow_edition: str | None = None) -> dict[str, typing.Any]: ...
+    def run_local_for_episodes(self, env_address: str, max_episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trial_index_base: int | None = None, prefetch_lead: int = 0, workflow_edition: str | None = None, hooks: object | None = None) -> dict[str, typing.Any]: ...
     def serve(self, address: str, options: ServeOptions | None = None) -> None: ...
 "#
     }

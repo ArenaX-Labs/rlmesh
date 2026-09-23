@@ -1,13 +1,14 @@
 """Live capture: a :class:`~rlmesh.RunHooks` that records into a workload.
 
-This is the ``session().run(hooks=...)`` tie-in. It observes the Python-driven eval
-loop and, per episode, records the outcome plus any media the env exposes -- per-step
-image frames read through the session's own reader and streamed straight into a native
-AV1 writer (one frame in memory at a time), and/or an env-produced video file whose
-path the env leaves in the step ``info`` (that path comes from the env, which may be
-remote, so it is copied only when it names a regular file inside the run directory).
-Pure Rust ``.run()`` never surfaces per-step observations, so frame capture needs this
-path; env-video capture works there too.
+This is the ``run(hooks=...)`` tie-in, on either loop. It observes the eval and, per
+episode, records the outcome plus any media the env exposes -- per-step image frames
+read through the run's own reader and streamed straight into a native AV1 writer (one
+frame in memory at a time), and/or an env-produced video file whose path the env
+leaves in the step ``info`` (that path comes from the env, which may be remote, so it
+is copied only when it names a regular file inside the run directory). The env's
+``render()`` frame is captured when the run can reach it: always on the session loop,
+and on the native ``Model.run`` loop for a local env object (not an address target).
+Frames come from one env: a vector env is refused unless ``cameras=[]``.
 
 All capture is best-effort: a camera that fails to read or encode is warned once and
 dropped, and the episode's outcome is still recorded -- capture never aborts the run.
@@ -20,7 +21,7 @@ import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from .._models import RunHooks
+from .._models import RunContext, RunHooks
 from .._models._view import FrameSources
 from .constants import DEFAULT_CAMERA, RENDER_CAMERA
 from .frames import as_frame, read_frame
@@ -30,7 +31,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from typing import Any
 
-    from .._models import EpisodeResult, RunResult, Session, StepEvent
+    from .._models import EpisodeResult, RunResult, StepEvent
     from .._rlmesh import PyVideoWriter
     from .media import MediaStager
     from .schema import WorkloadRecord
@@ -95,7 +96,7 @@ class CaptureHooks(RunHooks):
         stager: MediaStager,
         prefix: str,
         cameras: list[str] | None,
-        session: Session[object, object] | None,
+        session: RunContext | None,
         video_keys: tuple[str, ...],
         included_in_metrics: bool,
     ) -> None:
@@ -122,18 +123,27 @@ class CaptureHooks(RunHooks):
         self._captured: set[str] = set()
         self._video_path: str | None = None
 
-    def on_run_start(self, session: Session[Any, Any]) -> None:
-        """Adopt the running session, so ``capture(session=...)`` is optional.
+    def on_run_start(self, context: RunContext) -> None:
+        """Adopt the run's context, so ``capture(session=...)`` is optional.
 
         An explicitly passed session wins (a hand-driven loop can still wire
-        one in); otherwise the session driving :meth:`Session.run` is used for
-        source discovery and the ``render()`` frame.
+        one in); otherwise the running loop's context is used for source
+        discovery and the ``render()`` frame.
         """
         if self._session is None:
-            self._session = session
+            self._session = context
 
     def on_episode_start(self, *, episode: int, seed: int | None) -> None:
         """Reset the per-episode writers and env-video path."""
+        if (
+            self._session is not None
+            and (self._cameras or not self._explicit)
+            and self._session.num_envs > 1
+        ):
+            raise ValueError(
+                "recorder captures frames from a single env: a vector env's "
+                "episodes interleave. Pass cameras=[] to record metrics only."
+            )
         self._writers = {}
         self._video_path = None
 
@@ -145,17 +155,12 @@ class CaptureHooks(RunHooks):
         return self._render
 
     def _discover(self) -> FrameSources:
-        """The session's frame sources, via the viewer's own discovery."""
-        from .._models._view import discover_frame_sources
-
+        """The run's frame sources, via the viewer's own discovery."""
         session = self._session
         if session is None:
             return FrameSources(roles=(), render_label=None, render=None)
         try:
-            return discover_frame_sources(
-                session._contract,  # pyright: ignore[reportPrivateUsage]
-                session._client,  # pyright: ignore[reportPrivateUsage]
-            )
+            return session.frame_sources()
         except Exception:
             return FrameSources(roles=(), render_label=None, render=None)
 

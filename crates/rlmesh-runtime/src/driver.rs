@@ -1425,25 +1425,6 @@ where
         let step_observation = value_leaves(response.observation.as_ref())?;
         state.record_step_at(&positions, &response.rewards);
         let snapshot = state.snapshot_at(&positions);
-        // On an autoreset roll this response carries the NEW episode's reset
-        // observation + infos, which belong on its observation event, not on
-        // the old episode's step.
-        let rolled = !groups[gid].pending_roll.is_empty();
-        fan_out_event!(
-            self,
-            step_completed,
-            StepCompletedEvent {
-                session_id: state.session_id().to_string(),
-                route: context.clone(),
-                episode_id: snapshot.episode_id.clone(),
-                episode_record_id: snapshot.episode_record_id.clone(),
-                step: snapshot.step,
-                env_index: snapshot.env_index,
-                rewards: response.rewards.clone(),
-                infos: if rolled { None } else { response.infos.clone() },
-            }
-        );
-
         // The runtime mints and owns episode ids (R1): a peer-reported completion
         // naming an id this slot has already moved past is a stale echo (the env
         // server's interrupted-episode buffer replaying an episode the runtime
@@ -1463,6 +1444,53 @@ where
                 );
             }
         }
+
+        // Cap off the FILTERED list: `capped_completions` skips lanes already in
+        // the list it is given, so a stale echo there would suppress a genuine cap.
+        // Both run ahead of the step event so it can carry the terminal flags;
+        // a cap is never configured under NEXT_STEP, so nothing here precedes a
+        // roll it should follow.
+        let capped = self.capped_completions(state, &positions, &completed_episodes);
+        completed_episodes.extend(capped);
+        let lane_ids = state.episode_ids_at(&positions);
+        let lane_flags = |ended: fn(&EpisodeMetadata) -> bool| -> Vec<bool> {
+            lane_ids
+                .iter()
+                .map(|id| {
+                    completed_episodes
+                        .iter()
+                        .any(|m| m.episode_id == *id && ended(m))
+                })
+                .collect()
+        };
+        let terminated = lane_flags(|m| m.terminated);
+        let truncated = lane_flags(|m| m.truncated);
+        let autoreset_roll: Vec<bool> = groups[gid]
+            .lanes
+            .iter()
+            .map(|lane| groups[gid].pending_roll.contains_key(lane))
+            .collect();
+        // On an autoreset roll this response carries the NEW episode's reset
+        // observation + infos, which belong on its observation event, not on
+        // the old episode's step.
+        let rolled = !groups[gid].pending_roll.is_empty();
+        fan_out_event!(
+            self,
+            step_completed,
+            StepCompletedEvent {
+                session_id: state.session_id().to_string(),
+                route: context.clone(),
+                episode_id: snapshot.episode_id.clone(),
+                episode_record_id: snapshot.episode_record_id.clone(),
+                step: snapshot.step,
+                env_index: snapshot.env_index,
+                rewards: response.rewards.clone(),
+                infos: if rolled { None } else { response.infos.clone() },
+                terminated,
+                truncated,
+                autoreset_roll,
+            }
+        );
 
         // Apply any NEXT_STEP autoreset roll the env just performed with the ids
         // we pushed down: roll our own slots to the same ids, each on a fresh
@@ -1496,10 +1524,6 @@ where
             self.invoke_started_episodes(state, &context, started).await;
         }
 
-        // Cap off the FILTERED list: `capped_completions` skips lanes already in
-        // the list it is given, so a stale echo there would suppress a genuine cap.
-        let capped = self.capped_completions(state, &positions, &completed_episodes);
-        completed_episodes.extend(capped);
         let completions = self.complete_episodes(state, &context, &completed_episodes);
         // Tell the model to evict the ended episodes' state (best-effort GC;
         // ids never repeat so a miss only leaks memory). Under NEXT_STEP the

@@ -1,19 +1,22 @@
-"""The unified native ``Model.run``: seeds, caps, and the honest signature.
+"""The unified native ``Model.run``: seeds, caps, and the hook contract.
 
 ``run()`` drives every env shape through the native runtime loop. These pin
 the Session-parity features the runtime enforces itself: explicit per-episode
 seeds (``episode_seeds``, echoed on the ``RunResult``), the step cap
-(runtime-truncated episodes), and that the Session-only knobs (``hooks`` /
-``instruction`` / ``view``) are not ``Model.run`` parameters at all -- the
-module-level ``rlmesh.run`` refuses them for a local model.
+(runtime-truncated episodes), and ``hooks`` firing the same callbacks in the
+same per-episode order as ``Session.run`` -- with the terminal flags the
+runtime knows at each step, exceptions aborting the run with their own type,
+and ``on_run_end`` firing exactly once. Only the live viewer stays session-only.
 """
 
 from __future__ import annotations
 
-from typing import Any
+import time
+from typing import Any, cast
 
 import pytest
 import rlmesh
+import rlmesh.adapters as adapt
 
 np = pytest.importorskip("numpy")
 pytest.importorskip("gymnasium")
@@ -364,16 +367,381 @@ def test_run_on_a_driven_handle_explains_the_session_conflict() -> None:
         server.shutdown()
 
 
-def test_session_only_knobs_are_not_run_parameters() -> None:
+def test_the_viewer_stays_a_session_option() -> None:
     import inspect
 
-    params = inspect.signature(rlmesh.Model.run).parameters
-    assert not {"hooks", "instruction", "view"} & params.keys()
-    for knob in ({"hooks": rlmesh.RunHooks()}, {"instruction": "pick up the cube"}):
-        with pytest.raises(TypeError, match=r"session\(\) option"):
-            rlmesh.run(_model(), CountEnv(), **knob)
+    assert "view" not in inspect.signature(rlmesh.Model.run).parameters
     with pytest.raises(TypeError, match=r"session\(\) option"):
         rlmesh.run(_model(), CountEnv(), view="terminal")
+
+
+# ---------------------------------------------------------------------------
+# hooks: the same contract on both loops
+
+
+class _BoomError(Exception):
+    pass
+
+
+class _Recorder(rlmesh.RunHooks):
+    """Every hook call in order; flags any call that lands after the run returned."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[Any, ...]] = []
+        self.events: list[rlmesh.StepEvent] = []
+        self.episode_results: list[rlmesh.EpisodeResult] = []
+        self.run_results: list[rlmesh.RunResult] = []
+        self.contexts: list[Any] = []
+        self.closed = False
+        self.late: list[tuple[Any, ...]] = []
+
+    def _note(self, *call: Any) -> None:
+        if self.closed:
+            self.late.append(call)
+        self.calls.append(call)
+
+    def on_run_start(self, context: rlmesh.RunContext) -> None:
+        self.contexts.append(context)
+        self._note("run_start")
+
+    def on_episode_start(self, *, episode: int, seed: int | None) -> None:
+        self._note("start", episode, seed)
+
+    def on_step(self, event: rlmesh.StepEvent) -> None:
+        self._note("step", event.episode, event.step)
+        self.events.append(event)
+
+    def on_episode_end(self, result: rlmesh.EpisodeResult) -> None:
+        self._note("end", result.index)
+        self.episode_results.append(result)
+
+    def on_run_end(self, result: rlmesh.RunResult) -> None:
+        self._note("run_end", result.num_episodes)
+        self.run_results.append(result)
+
+
+def _raising(hook: str, error: BaseException) -> _Recorder:
+    recorder = _Recorder()
+    original = getattr(recorder, hook)
+
+    def raise_after(*args: Any, **kwargs: Any) -> None:
+        original(*args, **kwargs)
+        raise error
+
+    setattr(recorder, hook, raise_after)
+    return recorder
+
+
+def _drive(model: Any, env: Any, path: str, **kwargs: Any) -> rlmesh.RunResult:
+    try:
+        if path == "session":
+            with model.session(env) as sess:
+                return sess.run(**kwargs)
+        return model.run(env, **kwargs)
+    except ConnectionError as exc:
+        if "Operation not permitted" in str(exc):
+            pytest.skip("local tcp bind is not permitted in this environment")
+        raise
+
+
+PATHS = ["session", "native"]
+
+
+@pytest.mark.parametrize("path", PATHS)
+def test_hooks_fire_in_order_with_indices_and_seeds(path: str) -> None:
+    recorder = _Recorder()
+    result = _drive(
+        _model(), CountEnv(episode_len=1), path, seeds=[7, 8], hooks=recorder
+    )
+    recorder.closed = True
+
+    assert recorder.calls == [
+        ("run_start",),
+        ("start", 0, 7),
+        ("step", 0, 0),
+        ("end", 0),
+        ("start", 1, 8),
+        ("step", 1, 0),
+        ("end", 1),
+        ("run_end", 2),
+    ]
+    first = recorder.events[0]
+    assert first.seed == 7 and first.reward == 1.0
+    assert first.terminated and not first.truncated
+    assert first.observation.shape == (2,) and first.action.shape == (2,)
+    assert first.predict_ms >= 0.0 and first.step_ms >= 0.0
+    assert recorder.run_results == [result]
+    # Hooks never change the result; only the hook-delivered timings are the
+    # episode's own wall-clock means rather than the run's.
+    delivered, reported = recorder.episode_results[0], result.episodes[0]
+    for field in (
+        "index",
+        "seed",
+        "trial",
+        "steps",
+        "reward",
+        "terminated",
+        "truncated",
+        "success",
+    ):
+        assert getattr(delivered, field) == getattr(reported, field), field
+    assert recorder.late == []
+
+
+@pytest.mark.parametrize("path", PATHS)
+def test_hooks_carry_the_terminal_flag_on_the_terminal_step_only(path: str) -> None:
+    recorder = _Recorder()
+    _drive(_model(), CountEnv(episode_len=3), path, max_episodes=1, hooks=recorder)
+    flags = [(e.step, e.terminated, e.truncated) for e in recorder.events]
+    assert flags == [(0, False, False), (1, False, False), (2, True, False)]
+
+
+@pytest.mark.parametrize("path", PATHS)
+def test_hooks_carry_the_truncation_on_the_capped_step(path: str) -> None:
+    recorder = _Recorder()
+    _drive(
+        _model(),
+        CountEnv(episode_len=0),
+        path,
+        max_episodes=1,
+        max_episode_steps=3,
+        hooks=recorder,
+    )
+    flags = [(e.step, e.terminated, e.truncated) for e in recorder.events]
+    assert flags == [(0, False, False), (1, False, False), (2, False, True)]
+    assert recorder.episode_results[0].truncated
+
+
+@pytest.mark.parametrize("path", PATHS)
+def test_hooks_read_a_role_off_the_observation(path: str) -> None:
+    gym = pytest.importorskip("gymnasium")
+
+    class _ArmEnv:
+        def __init__(self) -> None:
+            self.metadata: dict[str, Any] = {}
+            self.observation_space = gym.spaces.Dict(
+                {"eef_pos": gym.spaces.Box(-np.inf, np.inf, (3,), np.float32)}
+            )
+            self.action_space = gym.spaces.Box(-1.0, 1.0, (1,), np.float32)
+
+        def reset(self, *, seed: object = None, options: object = None) -> Any:
+            return {"eef_pos": np.array([0.1, 0.2, 0.3], np.float32)}, {}
+
+        def step(self, action: object) -> Any:
+            return (
+                {"eef_pos": np.array([0.1, 0.2, 0.3], np.float32)},
+                1.0,
+                True,
+                False,
+                {},
+            )
+
+        def close(self) -> None:
+            pass
+
+    tags = adapt.EnvTags(
+        observation={"eef_pos": adapt.StateTag(role=adapt.EEF_POS)},
+        action=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1)),
+    )
+    from rlmesh.numpy import Model
+
+    class _Reading(_Recorder):
+        def on_step(self, event: rlmesh.StepEvent) -> None:
+            super().on_step(event)
+            self.values = [event.read(adapt.EEF_POS)]
+            context = self.contexts[0]
+            self.seen = (context.num_envs, context.frame_sources().roles)
+
+    recorder = _Reading()
+    _drive(
+        Model(lambda obs: np.zeros(1, np.float32), spec=rlmesh.NO_ADAPTER),
+        adapt.tag(_ArmEnv(), tags),
+        path,
+        max_episodes=1,
+        hooks=recorder,
+    )
+    assert recorder.values[0].shape == (3,)
+    assert recorder.seen == (1, ())
+
+
+@pytest.mark.parametrize(
+    "hook", ["on_run_start", "on_episode_start", "on_step", "on_episode_end"]
+)
+def test_a_hook_exception_aborts_the_native_run_with_its_own_type(hook: str) -> None:
+    recorder = _raising(hook, _BoomError(hook))
+    model = _model()
+    with pytest.raises(_BoomError, match=hook):
+        _drive(model, CountEnv(episode_len=2), "native", seeds=[1, 2], hooks=recorder)
+    recorder.closed = True
+    time.sleep(0.05)
+
+    run_ends = [call for call in recorder.calls if call[0] == "run_end"]
+    assert len(run_ends) == 1 and recorder.calls[-1] == run_ends[0]
+    assert (
+        recorder.calls[-2][0]
+        == {
+            "on_run_start": "run_start",
+            "on_episode_start": "start",
+            "on_step": "step",
+            "on_episode_end": "end",
+        }[hook]
+    )
+    assert run_ends[0][1] == len(recorder.episode_results)
+    assert run_ends[0][1] <= 1, "the run stopped at the raising episode"
+    assert recorder.late == []
+    assert model._instruction is None  # pyright: ignore[reportPrivateUsage]
+    assert model._native_run is None  # pyright: ignore[reportPrivateUsage]
+
+
+def test_a_keyboard_interrupt_in_a_hook_propagates_from_the_native_run() -> None:
+    recorder = _raising("on_step", KeyboardInterrupt())
+    with pytest.raises(KeyboardInterrupt):
+        _drive(
+            _model(), CountEnv(episode_len=2), "native", seeds=[1, 2], hooks=recorder
+        )
+    assert [c for c in recorder.calls if c[0] == "run_end"] == [("run_end", 0)]
+
+
+def test_the_original_hook_exception_wins_over_a_raising_on_run_end() -> None:
+    recorder = _raising("on_step", _BoomError("original"))
+    recorder.on_run_end = _raising("on_run_end", _BoomError("run_end")).on_run_end  # type: ignore[method-assign]
+    with pytest.raises(_BoomError, match="original"):
+        _drive(
+            _model(), CountEnv(episode_len=2), "native", max_episodes=1, hooks=recorder
+        )
+
+    lone = _raising("on_run_end", _BoomError("lone"))
+    with pytest.raises(_BoomError, match="lone"):
+        _drive(_model(), CountEnv(episode_len=2), "native", max_episodes=1, hooks=lone)
+
+
+def test_hooks_fire_on_an_empty_native_run() -> None:
+    recorder = _Recorder()
+    result = _drive(_model(), CountEnv(), "native", max_episodes=0, hooks=recorder)
+    assert result.num_episodes == 0
+    assert recorder.calls == [("run_start",), ("run_end", 0)]
+
+
+class _NextStepVectorEnv:
+    """Lanes under NEXT_STEP autoreset, each with its own episode length.
+
+    A lane that ended resets on its next ``step`` call (reward 0, the reset
+    observation), as Gymnasium's vector envs do, while the other lanes step on.
+    """
+
+    def __init__(self, lengths: tuple[int, ...] = (1, 1)) -> None:
+        from rlmesh import spaces
+
+        self.num_envs = len(lengths)
+        self.single_observation_space = spaces.Box(
+            0.0, 1.0, shape=(2,), dtype="float32"
+        )
+        self.single_action_space = spaces.Box(0.0, 1.0, shape=(2,), dtype="float32")
+        self.metadata = {"autoreset_mode": "NextStep"}
+        self._lengths = lengths
+        self._t = [0] * self.num_envs
+        self._pending = [False] * self.num_envs
+
+    def reset(self, *, seed: Any = None, options: Any = None) -> tuple[Any, Any]:
+        self._t = [0] * self.num_envs
+        self._pending = [False] * self.num_envs
+        return np.zeros((self.num_envs, 2), dtype=np.float32), {}
+
+    def step(self, action: Any) -> tuple[Any, Any, Any, Any, Any]:
+        rewards: list[float] = []
+        terminated: list[bool] = []
+        for lane in range(self.num_envs):
+            if self._pending[lane]:
+                self._pending[lane] = False
+                self._t[lane] = 0
+                rewards.append(0.0)
+                terminated.append(False)
+            else:
+                self._t[lane] += 1
+                done = self._t[lane] >= self._lengths[lane]
+                self._pending[lane] = done
+                rewards.append(1.0)
+                terminated.append(done)
+        obs = np.zeros((self.num_envs, 2), dtype=np.float32)
+        return obs, rewards, terminated, [False] * self.num_envs, {}
+
+    def close(self) -> None:
+        return None
+
+
+def _episodes_by_index(recorder: _Recorder) -> dict[int, list[tuple[Any, ...]]]:
+    by_episode: dict[int, list[tuple[Any, ...]]] = {}
+    for call in recorder.calls:
+        if call[0] in ("start", "step", "end"):
+            by_episode.setdefault(call[1], []).append(call)
+    return by_episode
+
+
+def _assert_interleaved_episodes_are_well_formed(
+    recorder: _Recorder, result: rlmesh.RunResult
+) -> None:
+    assert len(recorder.episode_results) == result.num_episodes
+    assert recorder.run_results == [result]
+    steps_of = {r.index: r.steps for r in recorder.episode_results}
+    last_events = {e.episode: e for e in recorder.events}
+    for index, calls in _episodes_by_index(recorder).items():
+        if index not in steps_of:
+            continue  # cut off by the episode budget: started, never completed
+        kinds = [c[0] for c in calls]
+        assert kinds == ["start"] + ["step"] * steps_of[index] + ["end"], (index, kinds)
+        assert [c[2] for c in calls if c[0] == "step"] == list(range(steps_of[index]))
+        assert last_events[index].terminated, index
+    assert all(e.reward == 1.0 for e in recorder.events), "no autoreset roll surfaces"
+
+
+def test_hooks_on_a_next_step_vector_env() -> None:
+    from rlmesh.numpy import Model
+
+    recorder = _Recorder()
+    # A spec-less policy on a vector env predicts on the fused (N, ...) batch.
+    stacked = Model(lambda obs: np.zeros((2, 2), np.float32))
+    result = _drive(
+        stacked, _NextStepVectorEnv(), "native", max_episodes=2, hooks=recorder
+    )
+    assert result.num_episodes >= 2
+    assert recorder.contexts[0].num_envs == 2
+    _assert_interleaved_episodes_are_well_formed(recorder, result)
+
+
+def test_hooks_on_a_next_step_vector_env_whose_lanes_roll_apart() -> None:
+    # Lane 0 rolls while lane 1 is mid-episode: the roll is skipped for lane 0
+    # only, and lane 1's step on that response is delivered.
+    from rlmesh.numpy import Model
+
+    recorder = _Recorder()
+    stacked = Model(lambda obs: np.zeros((2, 2), np.float32))
+    result = _drive(
+        stacked, _NextStepVectorEnv((1, 3)), "native", max_episodes=3, hooks=recorder
+    )
+    _assert_interleaved_episodes_are_well_formed(recorder, result)
+    assert {r.steps for r in recorder.episode_results} >= {1, 3}
+
+
+def test_hooks_on_driver_reset_lanes() -> None:
+    lanes = [CountEnv(episode_len=2), CountEnv(episode_len=2)]
+    server = rlmesh.EnvServer(cast("Any", lanes), host="127.0.0.1", port=0)
+    try:
+        server.start()
+    except (OSError, ConnectionError) as exc:
+        if "Operation not permitted" in str(exc):
+            pytest.skip("local tcp bind is not permitted in this environment")
+        raise
+    recorder = _Recorder()
+    try:
+        result = _model().run(
+            server.address, max_episodes=2, seeds=[3, 4], hooks=recorder
+        )
+    finally:
+        server.shutdown()
+    assert result.num_episodes == 2
+    assert recorder.contexts[0].num_envs == 2
+    _assert_interleaved_episodes_are_well_formed(recorder, result)
+    assert sorted(c[2] for c in recorder.calls if c[0] == "start") == [3, 4]
 
 
 def test_session_served_env_context_carries_stable_episode_identity() -> None:

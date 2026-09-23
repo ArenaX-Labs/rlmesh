@@ -93,6 +93,11 @@ async fn driver_runs_one_episode_and_closes_terminal_route() {
         *hooks.step_infos.lock().unwrap(),
         vec![Some(info_map("phase", "step"))]
     );
+    // The terminal step says so itself, on the step event.
+    assert_eq!(
+        *hooks.step_flags.lock().unwrap(),
+        vec![(vec![true], vec![false], vec![false])]
+    );
     assert_eq!(
         hooks
             .emitted_observations
@@ -948,6 +953,16 @@ async fn next_step_roll_attributes_reset_infos_to_the_new_episode() {
             Some(info_map("phase", "step")),
         ]
     );
+    // The terminal flags ride the terminal step (1 and 3), not the deferred
+    // completion; the roll response (2) is marked as such and ends nothing.
+    assert_eq!(
+        *hooks.step_flags.lock().unwrap(),
+        vec![
+            (vec![true, true], vec![false, false], vec![false, false]),
+            (vec![false, false], vec![false, false], vec![true, true]),
+            (vec![true, true], vec![false, false], vec![false, false]),
+        ]
+    );
     let emitted = hooks.emitted_observations.lock().unwrap();
     assert_eq!(
         emitted.iter().map(|e| e.infos.clone()).collect::<Vec<_>>(),
@@ -960,6 +975,32 @@ async fn next_step_roll_attributes_reset_infos_to_the_new_episode() {
             .all(|id| !emitted[1].episode_ids.contains(id)),
         "post-roll observation carries the new episode ids"
     );
+}
+
+#[tokio::test]
+async fn next_step_roll_is_marked_per_lane() {
+    // Lane 0 ends every step and rolls on the next; lane 1 runs three steps.
+    // A response that rolls lane 0 is still a real step of lane 1's episode.
+    let env = VectorTestEnv::new(vec![1, 3]);
+    let hooks = Arc::new(RecordingHooks::default());
+    RuntimeDriver::new(vector_spec(2, 4), env, TestModel::default(), hooks.clone())
+        .run()
+        .await
+        .unwrap();
+
+    let flags = hooks.step_flags.lock().unwrap();
+    assert!(
+        flags.iter().any(|(_, _, roll)| roll == &[true, false]),
+        "a lane rolls on its own: {flags:?}"
+    );
+    for (terminated, truncated, roll) in flags.iter() {
+        for lane in 0..2 {
+            assert!(
+                !(roll[lane] && (terminated[lane] || truncated[lane])),
+                "a roll ends nothing: {flags:?}"
+            );
+        }
+    }
 }
 
 #[tokio::test]
@@ -1933,6 +1974,23 @@ async fn a_runtime_truncated_episode_is_not_double_counted_when_the_env_echoes_i
         report.episodes.iter().all(|episode| episode.truncated),
         "the runtime truncated every one of them"
     );
+    let flags = hooks.step_flags.lock().unwrap();
+    assert_eq!(flags.len(), 12);
+    assert!(
+        flags
+            .iter()
+            .all(|(term, _, roll)| term == &[false] && roll == &[false]),
+        "a runtime cap never terminates or rolls"
+    );
+    assert_eq!(
+        flags
+            .iter()
+            .map(|(_, trunc, _)| trunc[0])
+            .collect::<Vec<_>>(),
+        (1..=12).map(|step| step % 4 == 0).collect::<Vec<_>>(),
+        "the capped step carries the truncation itself"
+    );
+    drop(flags);
     assert_eq!(
         report
             .episodes

@@ -20,7 +20,7 @@ import warnings
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
-from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeVar, cast
 
 from .._value_conversion import from_value, identity_bridge
 from ._chunk import ChunkReplay
@@ -36,7 +36,7 @@ from ._connect import (
 from ._instruction import TextPlacement, text_placements, tree_set
 from ._read import Reader, resolve_read_adapter
 from ._resolve import reject_vector_env, resolve_adapter
-from ._view import ViewerDriver, resolve_view
+from ._view import FrameSources, ViewerDriver, discover_frame_sources, resolve_view
 from .base import accepts_context
 
 if TYPE_CHECKING:
@@ -272,7 +272,14 @@ class RunResult:
 
 @dataclass(frozen=True)
 class StepEvent:
-    """One env step of a :meth:`Session.run` eval, passed to :meth:`RunHooks.on_step`.
+    """One env step of a run, passed to :meth:`RunHooks.on_step`.
+
+    The same event on both loops. ``predict_ms`` / ``step_ms`` are wall-clock
+    spans around the step's predict and env step as the loop observed them
+    (on the native loop, between the runtime's own events); with
+    ``prefetch_lead > 0`` the predict span is time-to-action from the
+    observation, not inference duration. A ``NEXT_STEP`` autoreset roll is not
+    a step of any episode and never surfaces here.
 
     Attributes:
         episode: 0-based episode index (equals :attr:`EpisodeResult.index`).
@@ -306,22 +313,46 @@ class StepEvent:
     read: Callable[[object], object]
 
 
+class RunContext(Protocol):
+    """What a run exposes to its hooks: the connected env, in either loop.
+
+    :meth:`RunHooks.on_run_start` receives one. A :class:`Session` is one on the
+    session loop; the native :meth:`Model.run <rlmesh.Model.run>` loop passes
+    its own. ``contract`` and ``num_envs`` are known once the env is connected
+    (before the first :meth:`RunHooks.on_episode_start`); ``read`` resolves a
+    role over one observation the way :meth:`Session.read` does, and
+    ``frame_sources`` lists the env's image roles plus its ``render()`` thunk
+    when one is reachable (a native run reaches it only for a local env object).
+    """
+
+    @property
+    def contract(self) -> Any: ...
+
+    @property
+    def num_envs(self) -> int: ...
+
+    def read(self, observation: object, item: object) -> Any: ...
+
+    def frame_sources(self) -> FrameSources: ...
+
+
 class RunHooks:
-    """Observer callbacks for :meth:`Session.run`; every default is a no-op.
+    """Observer callbacks for a run; every default is a no-op.
 
     Subclass and override any subset, then pass an instance as ``hooks=`` to
     :func:`rlmesh.run`, :meth:`Model.run <rlmesh.Model.run>`, or
-    :meth:`Session.run`. Hook exceptions propagate and abort the run;
-    :meth:`on_run_end` still fires exactly once with the completed episodes.
+    :meth:`Session.run`. Both loops fire the same callbacks in the same per-
+    episode order. Hook exceptions propagate and abort the run with their own
+    type; :meth:`on_run_end` still fires exactly once with the completed
+    episodes. Hooks run inline, so a slow hook slows the loop.
     """
 
-    def on_run_start(self, session: Session[Any, Any]) -> None:
-        """Called once per ``run``, after the session connects (no-op by default).
+    def on_run_start(self, context: RunContext) -> None:
+        """Called once per ``run``, before the first episode (no-op by default).
 
-        Receives the running :class:`Session` so a hook can inspect the
-        connected env (e.g. :meth:`Session.read` items, declared image roles)
-        without the caller wiring the session into the hook by hand. Fires
-        before the first episode's reset.
+        Receives the run's :class:`RunContext` (the :class:`Session` itself on
+        the session loop) so a hook can read roles off observations and
+        discover the env's frame sources without the caller wiring anything in.
         """
 
     def on_episode_start(self, *, episode: int, seed: int | None) -> None:
@@ -994,6 +1025,22 @@ class Session(Generic[ObsT, ActT]):
             cast("Mapping[str, Any]", info),
         )
 
+    @property
+    def contract(self) -> Any:
+        """The connected env's contract (connects on first use)."""
+        self._ensure_connected()
+        return self._contract
+
+    @property
+    def num_envs(self) -> int:
+        """Lanes the connected env runs (a session drives one)."""
+        return int(getattr(self.contract, "num_envs", 1) or 1)
+
+    def frame_sources(self) -> FrameSources:
+        """The env's image roles and ``render()`` source, as the viewer sees them."""
+        self._ensure_connected()
+        return discover_frame_sources(self._contract, self._client)
+
     def reader(self, *items: object) -> Reader:
         """Build a read-only, role-addressed view over this env's observations.
 
@@ -1157,6 +1204,11 @@ class Session(Generic[ObsT, ActT]):
                     step_ms = (t2 - t1) * 1000.0
                     predict_total_ms += predict_ms
                     step_total_ms += step_ms
+                    # The step cap truncates at the capped step itself, so the
+                    # event says so -- as the native loop's does.
+                    if not self.done and self._steps >= step_cap:
+                        truncated = True
+                        self._truncated = True
                     if hooks is not None:
                         hooks.on_step(
                             StepEvent(
@@ -1267,3 +1319,174 @@ class Session(Generic[ObsT, ActT]):
     def __exit__(self, *exc: object) -> None:
         _ = exc
         self.close()
+
+
+class NativeRunContext:
+    """The :class:`RunContext` of a native :meth:`Model.run`.
+
+    ``contract`` is filled by the worker's route resolve at connect; ``client``
+    is the locally served env object (so ``render()`` is reachable while a hook
+    runs, the env being idle between runtime events) or ``None`` for an
+    address / handle target.
+    """
+
+    def __init__(self, *, trust: bool) -> None:
+        self._trust = trust
+        self.contract: Any = None
+        self._client: object | None = None
+        self._bridge = adapter_env_bridge(None)
+        self._read_cache: dict[Any, Reader] = {}
+
+    def bind_client(self, client: object | None) -> None:
+        self._client = client
+        self._bridge = adapter_env_bridge(client)
+
+    @property
+    def num_envs(self) -> int:
+        return int(getattr(self.contract, "num_envs", 1) or 1)
+
+    def decode(self, value: object) -> Any:
+        """A neutral runtime value in the env's own framework."""
+        return self._bridge.decode(cast("Any", value))
+
+    def read(self, observation: object, item: object) -> Any:
+        reader = self._read_cache.get(item)
+        if reader is None:
+            adapter, roles = resolve_read_adapter(self.contract, (item,), self._trust)
+            reader = Reader(adapter, roles, self._bridge)
+            self._read_cache[item] = reader
+        return reader(observation)[reader.roles[0]]
+
+    def frame_sources(self) -> FrameSources:
+        return discover_frame_sources(self.contract, self._client)
+
+
+@dataclass
+class _NativeEpisode:
+    index: int
+    seed: int | None
+    trial: int | None
+    steps: int = 0
+    predict_ms_total: float = 0.0
+    step_ms_total: float = 0.0
+
+
+@dataclass
+class _NativeGroup:
+    """One lane group's in-flight step: what it observed, then what it did."""
+
+    ids: list[str]
+    observations: list[Any]
+    observed_at: float
+    actions: list[Any] | None = None
+    acted_at: float = 0.0
+
+
+class NativeHookRelay:
+    """Turns the native runtime's plain-data events into :class:`RunHooks` calls.
+
+    Events arrive per lane group, keyed by the group's primary ``env_index``:
+    an observation, the action predicted from it, then the step's outcome with
+    the terminal flags the runtime already knows (so a ``StepEvent`` is exact,
+    never reconstructed). ``results`` collects the completed episodes for
+    :meth:`RunHooks.on_run_end` on a run that fails midway.
+    """
+
+    def __init__(self, hooks: RunHooks, context: NativeRunContext) -> None:
+        self._hooks = hooks
+        self._context = context
+        self._episodes: dict[str, _NativeEpisode] = {}
+        self._groups: dict[int, _NativeGroup] = {}
+        self.results: list[EpisodeResult] = []
+
+    def episode_started(
+        self,
+        episode_id: str,
+        index: int,
+        env_index: int,
+        seed: int | None,
+        trial: int | None,
+    ) -> None:
+        _ = env_index
+        self._episodes[episode_id] = _NativeEpisode(index - 1, seed, trial)
+        self._hooks.on_episode_start(episode=index - 1, seed=seed)
+
+    def observation(self, env_index: int, ids: list[str], values: list[Any]) -> None:
+        decoded = [self._context.decode(v) for v in values]
+        self._groups[env_index] = _NativeGroup(ids, decoded, time.perf_counter())
+
+    def action(self, env_index: int, values: list[Any]) -> None:
+        group = self._groups[env_index]
+        group.actions = [self._context.decode(v) for v in values]
+        group.acted_at = time.perf_counter()
+
+    def step(
+        self,
+        env_index: int,
+        rewards: list[float],
+        terminated: list[bool],
+        truncated: list[bool],
+        autoreset_roll: list[bool],
+        info: Mapping[str, Any] | None,
+    ) -> None:
+        group = self._groups[env_index]
+        now = time.perf_counter()
+        predict_ms = (group.acted_at - group.observed_at) * 1000.0
+        step_ms = (now - group.acted_at) * 1000.0
+        actions = group.actions or []
+        for lane, episode_id in enumerate(group.ids):
+            episode = self._episodes.get(episode_id)
+            if episode is None or autoreset_roll[lane]:
+                continue
+            observation = group.observations[lane]
+            event = StepEvent(
+                episode=episode.index,
+                seed=episode.seed,
+                step=episode.steps,
+                observation=observation,
+                action=actions[lane] if lane < len(actions) else None,
+                reward=rewards[lane],
+                terminated=terminated[lane],
+                truncated=truncated[lane],
+                info=info or {},
+                predict_ms=predict_ms,
+                step_ms=step_ms,
+                read=partial(self._context.read, observation),
+            )
+            episode.steps += 1
+            episode.predict_ms_total += predict_ms
+            episode.step_ms_total += step_ms
+            self._hooks.on_step(event)
+
+    def episode_completed(
+        self,
+        episode_id: str,
+        index: int,
+        env_index: int,
+        seed: int | None,
+        trial: int | None,
+        steps: int,
+        reward: float,
+        terminated: bool,
+        truncated: bool,
+        success: bool | None,
+        duration_s: float,
+    ) -> None:
+        _ = env_index
+        episode = self._episodes.pop(episode_id, None)
+        seen = episode.steps if episode is not None else 0
+        result = EpisodeResult(
+            index=index - 1,
+            seed=seed,
+            trial=trial,
+            steps=steps,
+            reward=reward,
+            terminated=terminated,
+            truncated=truncated,
+            success=success,
+            duration_s=duration_s,
+            predict_ms=episode.predict_ms_total / seen if episode and seen else 0.0,
+            step_ms=episode.step_ms_total / seen if episode and seen else 0.0,
+        )
+        self.results.append(result)
+        self._hooks.on_episode_end(result)

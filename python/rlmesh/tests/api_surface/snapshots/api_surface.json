@@ -21,6 +21,7 @@
       "RemoteEnv",
       "RemoteModel",
       "RemoteVectorEnv",
+      "RunContext",
       "RunHooks",
       "RunResult",
       "SandboxBuild",
@@ -292,7 +293,7 @@
           },
           "run": {
             "kind": "function",
-            "signature": "run(env_or_address: LocalEnvTarget, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, prefetch_lead: int = 0, trial_index_base: int = 0, workflow_edition: str | None = None) -> RunResult"
+            "signature": "run(env_or_address: LocalEnvTarget, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: RunHooks | None = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, prefetch_lead: int = 0, trial_index_base: int = 0, workflow_edition: str | None = None) -> RunResult"
           },
           "serve": {
             "kind": "function",
@@ -394,7 +395,7 @@
           },
           "capture": {
             "kind": "function",
-            "signature": "capture(*, model: str, env: str, task: str | None = None, config: dict[str, Any] | None = None, cameras: list[str] | None = None, session: Session[Any, Any] | None = None, video_info_keys: tuple[str, ...] = DEFAULT_VIDEO_INFO_KEYS, included_in_metrics: bool = True)"
+            "signature": "capture(*, model: str, env: str, task: str | None = None, config: dict[str, Any] | None = None, cameras: list[str] | None = None, session: RunContext | None = None, video_info_keys: tuple[str, ...] = DEFAULT_VIDEO_INFO_KEYS, included_in_metrics: bool = True)"
           },
           "close": {
             "kind": "function",
@@ -581,6 +582,28 @@
         "signature": "RemoteVectorEnv(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None",
         "stability": "Stable"
       },
+      "RunContext": {
+        "kind": "class",
+        "members": {
+          "contract": {
+            "kind": "property",
+            "signature": "property contract: Any"
+          },
+          "frame_sources": {
+            "kind": "function",
+            "signature": "frame_sources()"
+          },
+          "num_envs": {
+            "kind": "property",
+            "signature": "property num_envs: int"
+          },
+          "read": {
+            "kind": "function",
+            "signature": "read(observation: object, item: object)"
+          }
+        },
+        "stability": "Stable"
+      },
       "RunHooks": {
         "kind": "class",
         "members": {
@@ -598,7 +621,7 @@
           },
           "on_run_start": {
             "kind": "function",
-            "signature": "on_run_start(session: Session[Any, Any])"
+            "signature": "on_run_start(context: RunContext)"
           },
           "on_step": {
             "kind": "function",
@@ -927,9 +950,21 @@
             "kind": "function",
             "signature": "close()"
           },
+          "contract": {
+            "kind": "property",
+            "signature": "property contract: Any"
+          },
           "done": {
             "kind": "property",
             "signature": "property done: bool"
+          },
+          "frame_sources": {
+            "kind": "function",
+            "signature": "frame_sources()"
+          },
+          "num_envs": {
+            "kind": "property",
+            "signature": "property num_envs: int"
           },
           "observation_roles": {
             "kind": "function",
@@ -2576,7 +2611,7 @@
           },
           "run": {
             "kind": "function",
-            "signature": "run(env_or_address: LocalEnvTarget, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, prefetch_lead: int = 0, trial_index_base: int = 0, workflow_edition: str | None = None) -> RunResult"
+            "signature": "run(env_or_address: LocalEnvTarget, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: RunHooks | None = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, prefetch_lead: int = 0, trial_index_base: int = 0, workflow_edition: str | None = None) -> RunResult"
           },
           "serve": {
             "kind": "function",
@@ -3174,7 +3209,7 @@
           },
           "run": {
             "kind": "function",
-            "signature": "run(env_or_address: LocalEnvTarget, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, prefetch_lead: int = 0, trial_index_base: int = 0, workflow_edition: str | None = None) -> RunResult"
+            "signature": "run(env_or_address: LocalEnvTarget, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: RunHooks | None = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, prefetch_lead: int = 0, trial_index_base: int = 0, workflow_edition: str | None = None) -> RunResult"
           },
           "serve": {
             "kind": "function",
@@ -4469,7 +4504,7 @@
           },
           "run": {
             "kind": "function",
-            "signature": "run(env_or_address: LocalEnvTarget, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, prefetch_lead: int = 0, trial_index_base: int = 0, workflow_edition: str | None = None) -> RunResult"
+            "signature": "run(env_or_address: LocalEnvTarget, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: RunHooks | None = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, prefetch_lead: int = 0, trial_index_base: int = 0, workflow_edition: str | None = None) -> RunResult"
           },
           "serve": {
             "kind": "function",

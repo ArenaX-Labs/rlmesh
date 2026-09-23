@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use rlmesh_runtime::RuntimeReport;
 
 use super::handler::ModelHandler;
@@ -276,12 +278,29 @@ impl<H: ModelHandler + 'static> ModelWorker<H> {
     /// (the driver returns a cancellation error) with the close hook still
     /// fired -- the seam a host binding uses to deliver e.g. Ctrl-C.
     pub async fn run_local_cancellable_async(
-        mut self,
+        self,
         options: impl Into<RunLocalOptions>,
         cancellation: tokio_util::sync::CancellationToken,
     ) -> Result<RuntimeReport> {
+        self.run_local_hooked_async(
+            options,
+            cancellation,
+            Arc::new(rlmesh_runtime::NoopRuntimeHooks),
+        )
+        .await
+    }
+
+    /// [`run_local_cancellable_async`](ModelWorker::run_local_cancellable_async)
+    /// with the runtime's hook seam: every per-episode event of the local
+    /// session reaches `hooks`, awaited inline by the driver.
+    pub async fn run_local_hooked_async(
+        mut self,
+        options: impl Into<RunLocalOptions>,
+        cancellation: tokio_util::sync::CancellationToken,
+        hooks: Arc<dyn rlmesh_runtime::RuntimeHooks>,
+    ) -> Result<RuntimeReport> {
         let options = options.into();
-        let result = local::run_local(&mut self.handler, options, cancellation).await;
+        let result = local::run_local(&mut self.handler, options, cancellation, hooks).await;
         let close_result = self.handler.on_close().await;
         crate::error::join_results(result, close_result, "local model run failed")
     }

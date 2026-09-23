@@ -22,6 +22,18 @@ from rlmesh import EpisodeResult, Recorder, RunResult, StepEvent
 from rlmesh.recorder import SCHEMA
 
 
+def _context(client: object, contract: object) -> Any:
+    """A RunContext stand-in: what the recorder reads off a run."""
+    from rlmesh._models._view import discover_frame_sources
+
+    return SimpleNamespace(
+        contract=contract,
+        num_envs=1,
+        frame_sources=lambda: discover_frame_sources(contract, client),
+        read=lambda observation, item: None,
+    )
+
+
 def _episode(
     index: int, *, reward: float, success: bool | None, steps: int = 3
 ) -> EpisodeResult:
@@ -260,12 +272,8 @@ def test_capture_records_render_source(tmp_path: Path) -> None:
         def render(self) -> object:
             return img
 
-    class _Sess:
-        _client = _Client()
-        _contract = None
-
     rec = Recorder(fps=20)
-    session: Any = _Sess()
+    session: Any = _context(_Client(), None)
     hooks = rec.capture(model="m", env="e", task="t", session=session)
     hooks.on_episode_start(episode=0, seed=0)
     for _ in range(4):
@@ -281,11 +289,12 @@ def test_capture_records_render_source(tmp_path: Path) -> None:
     rec.close()
 
 
-def test_capture_smoke_with_real_session_run(tmp_path: Path) -> None:
-    """Recorder.capture works through a real session().run hook path.
+@pytest.mark.parametrize("path", ["session", "native"])
+def test_capture_smoke_with_a_real_run(tmp_path: Path, path: str) -> None:
+    """Recorder.capture works through a real run's hook path, on either loop.
 
-    Deliberately omits ``session=``: the hooks must adopt the running session
-    via ``RunHooks.on_run_start`` and auto-discover the image role from it.
+    Deliberately omits ``session=``: the hooks must adopt the run's context via
+    ``RunHooks.on_run_start`` and auto-discover the image role from it.
     """
     np = pytest.importorskip("numpy")
     gym = pytest.importorskip("gymnasium")
@@ -324,11 +333,26 @@ def test_capture_smoke_with_real_session_run(tmp_path: Path) -> None:
     env = adapt.tag(_ImageEnv(), tags)
 
     rec = Recorder(fps=12)
-    with rlmesh.session(rlmesh.RANDOM_SAMPLE, env) as sess:
-        result = sess.run(
-            seeds=[123],
-            hooks=rec.capture(model="random", env="image-env", task="smoke"),
-        )
+    if path == "session":
+        with rlmesh.session(rlmesh.RANDOM_SAMPLE, env) as sess:
+            result = sess.run(
+                seeds=[123],
+                hooks=rec.capture(model="random", env="image-env", task="smoke"),
+            )
+    else:
+        from rlmesh.numpy import Model
+
+        model = Model(lambda obs: np.zeros(1, np.float32), spec=rlmesh.NO_ADAPTER)
+        try:
+            result = model.run(
+                env,
+                seeds=[123],
+                hooks=rec.capture(model="zeros", env="image-env", task="smoke"),
+            )
+        except ConnectionError as exc:
+            if "Operation not permitted" in str(exc):
+                pytest.skip("local tcp bind is not permitted in this environment")
+            raise
 
     assert result.num_episodes == 1
     assert result.episodes[0].steps == 2
@@ -340,6 +364,103 @@ def test_capture_smoke_with_real_session_run(tmp_path: Path) -> None:
     assert (ref.width, ref.height) == (16, 16)
     out = rec.export(tmp_path / "bundle")
     assert (out / ref.path).read_bytes()[4:8] == b"ftyp"
+
+
+def test_native_capture_records_render_of_a_local_env(tmp_path: Path) -> None:
+    """On the native loop a local env object's ``render()`` is reachable: the env
+    is idle while a hook runs, so the recorder captures it like the session loop."""
+    np = pytest.importorskip("numpy")
+    gym = pytest.importorskip("gymnasium")
+    from rlmesh.numpy import Model
+
+    class _RenderEnv:
+        render_mode = "rgb_array"
+
+        def __init__(self) -> None:
+            self.metadata: dict[str, object] = {}
+            self.observation_space = gym.spaces.Box(
+                -1.0, 1.0, shape=(2,), dtype=np.float32
+            )
+            self.action_space = gym.spaces.Box(-1.0, 1.0, shape=(1,), dtype=np.float32)
+            self._step = 0
+
+        def reset(self, *, seed: object = None, options: object = None) -> Any:
+            self._step = 0
+            return np.zeros(2, np.float32), {}
+
+        def step(self, action: object) -> Any:
+            self._step += 1
+            return np.zeros(2, np.float32), 1.0, self._step >= 2, False, {}
+
+        def render(self) -> object:
+            return np.full((48, 64, 3), 90, dtype=np.uint8)
+
+        def close(self) -> None:
+            pass
+
+    rec = Recorder(fps=10)
+    try:
+        Model(lambda obs: np.zeros(1, np.float32)).run(
+            _RenderEnv(),
+            max_episodes=1,
+            hooks=rec.capture(model="m", env="e", task="t"),
+        )
+    except ConnectionError as exc:
+        if "Operation not permitted" in str(exc):
+            pytest.skip("local tcp bind is not permitted in this environment")
+        raise
+    media = rec.workloads[0].episodes[0].media
+    assert [m.camera for m in media] == ["render"]
+    assert media[0].frame_count == 2 and (media[0].width, media[0].height) == (64, 48)
+
+
+def test_capture_refuses_frames_from_a_vector_env() -> None:
+    np = pytest.importorskip("numpy")
+    from rlmesh import spaces
+    from rlmesh.numpy import Model
+
+    class _VectorEnv:
+        def __init__(self) -> None:
+            self.num_envs = 2
+            self.single_observation_space = spaces.Box(
+                0.0, 1.0, shape=(2,), dtype="float32"
+            )
+            self.single_action_space = spaces.Box(0.0, 1.0, shape=(2,), dtype="float32")
+            self.metadata = {"autoreset_mode": "NextStep"}
+
+        def reset(self, *, seed: Any = None, options: Any = None) -> Any:
+            return np.zeros((2, 2), np.float32), {}
+
+        def step(self, action: Any) -> Any:
+            return (
+                np.zeros((2, 2), np.float32),
+                [1.0, 1.0],
+                [True, True],
+                [False, False],
+                {},
+            )
+
+        def close(self) -> None:
+            pass
+
+    model = Model(lambda obs: np.zeros((2, 2), np.float32))
+    rec = Recorder()
+    try:
+        with pytest.raises(ValueError, match="single env"):
+            model.run(
+                _VectorEnv(), max_episodes=2, hooks=rec.capture(model="m", env="e")
+            )
+        # Metrics-only capture is fine: episodes are records, not interleaved frames.
+        result = model.run(
+            _VectorEnv(),
+            max_episodes=2,
+            hooks=rec.capture(model="m", env="e", cameras=[]),
+        )
+    except ConnectionError as exc:
+        if "Operation not permitted" in str(exc):
+            pytest.skip("local tcp bind is not permitted in this environment")
+        raise
+    assert len(rec.workloads[-1].episodes) == result.num_episodes
     rec.close()
 
 
@@ -360,10 +481,7 @@ def test_auto_discovery_records_image_role_named_render() -> None:
         def render(self) -> object:
             return render_img
 
-    session: Any = SimpleNamespace(
-        _client=_Client(),
-        _contract=SimpleNamespace(metadata=tags.to_metadata()),
-    )
+    session: Any = _context(_Client(), SimpleNamespace(metadata=tags.to_metadata()))
 
     def read(item: object) -> object:
         role = getattr(item, "role", None)
@@ -393,9 +511,8 @@ def test_auto_discovery_reads_render_role_without_render_source() -> None:
         observation={"rgb": adapt.ImageTag(role="render")},
         action=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1)),
     )
-    session: Any = SimpleNamespace(
-        _client=SimpleNamespace(render_mode=None),
-        _contract=SimpleNamespace(metadata=tags.to_metadata()),
+    session: Any = _context(
+        SimpleNamespace(render_mode=None), SimpleNamespace(metadata=tags.to_metadata())
     )
 
     def read(item: object) -> object:
@@ -486,11 +603,18 @@ def test_capture_defers_camera_discovery_to_first_step() -> None:
 
     class _Spy:
         reads = 0
+        num_envs = 1
 
         @property
-        def _contract(self) -> None:
+        def contract(self) -> None:
             type(self).reads += 1
             return None
+
+        def frame_sources(self) -> Any:
+            type(self).reads += 1
+            from rlmesh._models._view import FrameSources
+
+            return FrameSources(roles=(), render_label=None, render=None)
 
     spy: Any = _Spy()
     hooks = rec.capture(model="m", env="e", task="t", session=spy)
@@ -508,11 +632,18 @@ def test_explicit_empty_cameras_skips_discovery() -> None:
 
     class _Spy:
         reads = 0
+        num_envs = 1
 
         @property
-        def _contract(self) -> None:
+        def contract(self) -> None:
             type(self).reads += 1
             return None
+
+        def frame_sources(self) -> Any:
+            type(self).reads += 1
+            from rlmesh._models._view import FrameSources
+
+            return FrameSources(roles=(), render_label=None, render=None)
 
     spy: Any = _Spy()
     hooks = rec.capture(model="m", env="e", task="t", cameras=[], session=spy)
@@ -721,11 +852,7 @@ def test_explicit_render_camera_falls_back_to_render_source() -> None:
         def render(self) -> object:
             return img
 
-    class _Sess:
-        _client = _Client()
-        _contract = None
-
-    session: Any = _Sess()
+    session: Any = _context(_Client(), None)
     rec = Recorder()
     hooks = rec.capture(
         model="m", env="e", task="t", cameras=["render"], session=session
@@ -794,8 +921,8 @@ def test_on_run_start_prefers_explicit_session() -> None:
     from rlmesh.recorder.hooks import CaptureHooks
 
     rec = Recorder()
-    explicit: Any = SimpleNamespace(_client=None, _contract=None)
-    other: Any = SimpleNamespace(_client=None, _contract=None)
+    explicit: Any = _context(None, None)
+    other: Any = _context(None, None)
     hooks = rec.capture(model="m", env="e", task="t", session=explicit)
     assert isinstance(hooks, CaptureHooks)
     hooks.on_run_start(other)

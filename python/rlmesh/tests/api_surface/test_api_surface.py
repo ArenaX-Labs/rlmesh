@@ -25,6 +25,7 @@ def test_root_namespace_is_small() -> None:
         "RemoteEnv",
         "RemoteModel",
         "RemoteVectorEnv",
+        "RunContext",
         "RunHooks",
         "RunResult",
         "SandboxBuild",

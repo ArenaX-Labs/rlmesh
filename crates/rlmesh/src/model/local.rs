@@ -8,8 +8,8 @@ use rlmesh_grpc::wire::{
 use rlmesh_proto::model::v1::{PredictRequest, ResetAdapterRequest};
 use rlmesh_proto::{EndpointPhases, elapsed_ns};
 use rlmesh_runtime::{
-    NoopRuntimeHooks, PeerCeiling, RuntimeDriver, RuntimeEnv, RuntimeEnvReset, RuntimeEnvStep,
-    RuntimeError, RuntimeModel, RuntimeModelPrediction, RuntimeReport, RuntimeSessionSpec,
+    PeerCeiling, RuntimeDriver, RuntimeEnv, RuntimeEnvReset, RuntimeEnvStep, RuntimeError,
+    RuntimeHooks, RuntimeModel, RuntimeModelPrediction, RuntimeReport, RuntimeSessionSpec,
 };
 
 use super::handler::{ModelHandler, PredictFrames};
@@ -30,6 +30,7 @@ pub(super) async fn run_local<H>(
     handler: &mut H,
     options: crate::RunLocalOptions,
     cancellation: tokio_util::sync::CancellationToken,
+    hooks: Arc<dyn RuntimeHooks>,
 ) -> Result<RuntimeReport>
 where
     H: ModelHandler + 'static,
@@ -124,7 +125,7 @@ where
     };
     let env = EnvClientRuntimeEnv::new(env);
     let model = ModelHandlerRuntimeModel::new(handler, env_contract).with_history(wants_history);
-    RuntimeDriver::new(spec, env, model, Arc::new(NoopRuntimeHooks))
+    RuntimeDriver::new(spec, env, model, hooks)
         .with_prefetch(options.prefetch_lead)
         .run_with_cancellation_reason(cancellation, "interrupted by the host (signal)")
         .await

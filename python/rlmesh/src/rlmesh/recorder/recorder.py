@@ -24,7 +24,7 @@ from .media import MediaStager
 from .schema import EpisodeRecord, ResultSet, WorkloadRecord
 
 if TYPE_CHECKING:
-    from .._models import RunHooks, RunResult, Session
+    from .._models import RunContext, RunHooks, RunResult
 
 
 def _now_iso() -> str:
@@ -144,7 +144,7 @@ class Recorder:
         task: str | None = None,
         config: dict[str, Any] | None = None,
         cameras: list[str] | None = None,
-        session: Session[Any, Any] | None = None,
+        session: RunContext | None = None,
         video_info_keys: tuple[str, ...] = DEFAULT_VIDEO_INFO_KEYS,
         included_in_metrics: bool = True,
     ) -> RunHooks:
@@ -162,8 +162,10 @@ class Recorder:
           (read as HWC) and/or ``"render"`` for the env's ``render()`` frame.
           ``cameras=[]`` opts out of frames entirely (metrics only).
         * ``session`` -- only needed when driving the hooks by hand (outside
-          :meth:`Session.run`); an explicitly passed session also wins over the
-          running one.
+          a ``run``); an explicitly passed session also wins over the running
+          loop's :class:`~rlmesh.RunContext`. The ``render()`` frame is reachable
+          on the session loop and, on the native ``Model.run`` loop, for a local
+          env object; a vector env is refused unless ``cameras=[]``.
 
         ``video_info_keys`` name the step-``info`` keys checked for an env-produced
         video file path (the env renders its own video); the file is copied into the

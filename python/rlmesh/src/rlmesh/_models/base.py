@@ -21,12 +21,13 @@ from typing import (
 from .._value_conversion import ValueBridge, identity_bridge, tree_map
 from ..types import EnvTarget, LocalEnvTarget, Value, ViewArg
 from ._episodes import EpisodeStore
+from ._instruction import text_placements, tree_set
 
 if TYPE_CHECKING:
     from rlmesh._rlmesh import PyModel, ServeOptions
     from rlmesh.params import ParamSpec
 
-    from ._eval import RunHooks, RunResult, Session
+    from ._eval import NativeRunContext, RunHooks, RunResult, Session
 
 ObsT = TypeVar("ObsT")
 ActT = TypeVar("ActT")
@@ -687,6 +688,10 @@ class ModelBase(Generic[ObsT, ActT]):
         self._on_episode_end: LifecycleCallback = self._episodes.end
         self._trust_entrypoints = trust_entrypoints
         self._worker: PyModel | None = None
+        #: Per-run state the cached native worker reads at call time: the
+        #: ``instruction=`` override and the hooks' run context.
+        self._instruction: str | None = None
+        self._native_run: NativeRunContext | None = None
         # A class-level K with no chunk corner can never be honored (and nothing
         # would ever check it), so reject it where the corners are known. A K set
         # in load() is caught by the same door at resolve instead -- load() may run
@@ -862,7 +867,25 @@ class ModelBase(Generic[ObsT, ActT]):
                 cast("Any", env_contract),
                 trust_entrypoints=self._trust_entrypoints,
             )
+            if self._native_run is not None:
+                self._native_run.contract = env_contract
             return adapter.serve_route(bridge) if adapter is not None else None
+
+        placements = text_placements(spec)
+
+        def observe(observation: Value) -> Any:
+            """The engine's assembled model input, in the framework, on device.
+
+            A run's ``instruction=`` lands in every text leaf here, per lane,
+            in the leaf's declared shape (the Session loop does the same).
+            """
+            payload = self._to_device(bridge.decode(observation))
+            instruction = self._instruction
+            if instruction is not None:
+                for placement in placements:
+                    value: Any = [instruction] if placement.as_list else instruction
+                    payload = tree_set(payload, placement.segments, value)
+            return payload
 
         raw_predict_takes_context = accepts_context(raw_predict, 1)
 
@@ -876,7 +899,7 @@ class ModelBase(Generic[ObsT, ActT]):
             # observation through the identical path (no adapter). ``context``
             # (this lane's episode identity) reaches the author's own predict()
             # only when its signature declares a trailing ``context`` param.
-            decoded = cast(ObsT, self._to_device(bridge.decode(observation)))
+            decoded = cast(ObsT, observe(observation))
             if context is not None and raw_predict_takes_context:
                 action = cast("Corner", raw_predict)(decoded, context)
             else:
@@ -896,7 +919,7 @@ class ModelBase(Generic[ObsT, ActT]):
                 horizon: int,
                 context: Mapping[str, Any] | None = None,
             ) -> Value:
-                decoded = cast(ObsT, self._to_device(bridge.decode(observation)))
+                decoded = cast(ObsT, observe(observation))
                 if context is not None and chunk_fn_takes_context:
                     chunk = chunk_fn(decoded, horizon, context)
                 else:
@@ -925,9 +948,7 @@ class ModelBase(Generic[ObsT, ActT]):
             ) -> list[Value]:
                 if not observations:
                     return []
-                fused = bridge.tree_stack(
-                    [self._to_device(bridge.decode(o)) for o in observations]
-                )
+                fused = bridge.tree_stack([observe(o) for o in observations])
                 # `context` is row-aligned with `observations`: one per lane of the
                 # fused batch, which may span independent episodes.
                 actions = (
@@ -955,9 +976,7 @@ class ModelBase(Generic[ObsT, ActT]):
             ) -> list[Value]:
                 if not observations:
                     return []
-                fused = bridge.tree_stack(
-                    [self._to_device(bridge.decode(o)) for o in observations]
-                )
+                fused = bridge.tree_stack([observe(o) for o in observations])
                 chunks = (
                     chunk_batch_fn(fused, horizon, context)
                     if chunk_batch_fn_takes_context
@@ -996,6 +1015,8 @@ class ModelBase(Generic[ObsT, ActT]):
         max_episodes: int | None = None,
         max_episode_steps: int | None = None,
         max_episode_seconds: float | None = None,
+        hooks: RunHooks | None = None,
+        instruction: str | None = None,
         close_env: bool = False,
         trust_entrypoints: bool | None = None,
         execution_horizon: int = 1,
@@ -1062,9 +1083,19 @@ class ModelBase(Generic[ObsT, ActT]):
         neither side can run is refused before any episode starts, naming what
         each tier wants and can do.
 
-        This loop has no observer seam: for step-level callbacks (``hooks``), a
-        per-step instruction override, or a live viewer, drive the episodes with
-        :meth:`session` and :meth:`Session.run <rlmesh.Session.run>` instead.
+        ``hooks`` observes the loop: a :class:`~rlmesh.RunHooks` receives the
+        runtime's own events -- episode starts, every step as a
+        :class:`~rlmesh.StepEvent` with the terminal flags the runtime knows at
+        that step, and episode ends -- in the same per-episode order as
+        :meth:`Session.run <rlmesh.Session.run>`, with
+        :meth:`RunHooks.on_run_start <rlmesh.RunHooks.on_run_start>` receiving a
+        :class:`~rlmesh.RunContext` for role reads and frame discovery. Hooks
+        never change the result: it is the runtime's report either way, while
+        the :class:`~rlmesh.EpisodeResult` handed to ``on_episode_end`` carries
+        that episode's own wall-clock means. On a vectorized env episodes
+        interleave. ``instruction`` overrides the text input of a spec'd model
+        in its declared shape, exactly as on the session loop. The live viewer
+        (``view=``) is a :meth:`session` option.
         """
         if execution_horizon < 1:
             raise ValueError(f"execution_horizon must be >= 1, got {execution_horizon}")
@@ -1082,32 +1113,58 @@ class ModelBase(Generic[ObsT, ActT]):
             )
         if max_episodes is None:
             max_episodes = len(seeds) if seeds is not None else 1
-        if max_episodes == 0:
-            from ._eval import RunResult
-
-            return RunResult()
+        from ._eval import (
+            EpisodeResult,
+            NativeHookRelay,
+            NativeRunContext,
+            RunResult,
+            TelemetryRow,
+        )
 
         previous_trust = self._trust_entrypoints
         if trust_entrypoints is not None:
             self._trust_entrypoints = trust_entrypoints
+        relay: NativeHookRelay | None = None
+        self._instruction = instruction
         try:
-            report = self._run_native(
-                env_or_address,
-                max_episodes=max_episodes,
-                seeds=seeds,
-                max_episode_steps=max_episode_steps,
-                max_episode_seconds=max_episode_seconds,
-                close_env=close_env,
-                execution_horizon=execution_horizon,
-                prefetch_lead=prefetch_lead,
-                trial_index_base=trial_index_base,
-                workflow_edition=declared_edition,
-            )
+            if hooks is not None:
+                self._native_run = NativeRunContext(trust=bool(self._trust_entrypoints))
+                relay = NativeHookRelay(hooks, self._native_run)
+                hooks.on_run_start(self._native_run)
+            if max_episodes == 0:
+                report: dict[str, Any] = {
+                    "episodes": [],
+                    "telemetry": [],
+                    "advisories": [],
+                }
+            else:
+                report = self._run_native(
+                    env_or_address,
+                    max_episodes=max_episodes,
+                    seeds=seeds,
+                    max_episode_steps=max_episode_steps,
+                    max_episode_seconds=max_episode_seconds,
+                    close_env=close_env,
+                    execution_horizon=execution_horizon,
+                    prefetch_lead=prefetch_lead,
+                    trial_index_base=trial_index_base,
+                    workflow_edition=declared_edition,
+                    relay=relay,
+                )
+        except BaseException:
+            # The run's own exception wins over anything on_run_end raises.
+            if hooks is not None:
+                with contextlib.suppress(BaseException):
+                    hooks.on_run_end(
+                        RunResult(episodes=tuple(relay.results if relay else ()))
+                    )
+            raise
         finally:
             self._trust_entrypoints = previous_trust
-        from ._eval import EpisodeResult, RunResult, TelemetryRow
+            self._instruction = None
+            self._native_run = None
 
-        return RunResult(
+        result = RunResult(
             episodes=tuple(
                 EpisodeResult(
                     # The runtime reports 1-based slot ordinals; EpisodeResult.index
@@ -1130,6 +1187,9 @@ class ModelBase(Generic[ObsT, ActT]):
             telemetry=tuple(TelemetryRow(**row) for row in report["telemetry"]),
             advisories=tuple(report["advisories"]),
         )
+        if hooks is not None:
+            hooks.on_run_end(result)
+        return result
 
     def _run_native(
         self,
@@ -1144,6 +1204,7 @@ class ModelBase(Generic[ObsT, ActT]):
         prefetch_lead: int = 0,
         trial_index_base: int = 0,
         workflow_edition: str | None = None,
+        relay: object | None = None,
     ) -> dict[str, Any]:
         """Normalize the env target, drive the native loop, return the report.
 
@@ -1209,6 +1270,8 @@ class ModelBase(Generic[ObsT, ActT]):
             )
             server.start()
             address = server.address
+            if self._native_run is not None:
+                self._native_run.bind_client(env_obj)
         try:
             return self._run_local_for_episodes(
                 address,
@@ -1221,6 +1284,7 @@ class ModelBase(Generic[ObsT, ActT]):
                 close_env=close_env and kind == "address",
                 trial_index_base=trial_index_base,
                 workflow_edition=workflow_edition,
+                hooks=relay,
             )
         except (RuntimeError, ConnectionError) as error:
             if "active Join session" in str(error):
@@ -1357,6 +1421,7 @@ class ModelBase(Generic[ObsT, ActT]):
         trial_index_base: int = 0,
         prefetch_lead: int = 0,
         workflow_edition: str | None = None,
+        hooks: object | None = None,
     ) -> dict[str, Any]:
         """Native worker loop against a remote env for a fixed episode count.
 
@@ -1376,6 +1441,7 @@ class ModelBase(Generic[ObsT, ActT]):
             trial_index_base,
             prefetch_lead,
             workflow_edition,
+            hooks,
         )
 
     def _declared_workflow_edition(self, call: str | None) -> str | None:
@@ -1575,9 +1641,9 @@ def run(
     up to ``prefetch_lead`` steps stale, so the result is not comparable to a
     synchronous run. A served :class:`RemoteModel` / :class:`SandboxModel` (and
     the :data:`rlmesh.RANDOM_SAMPLE` baseline) runs through its own session
-    loop, which supports every parameter except ``prefetch_lead``; ``hooks``,
-    ``instruction`` and ``view`` are that loop's alone -- a local model takes
-    them on :meth:`Model.session` / :meth:`Session.run <rlmesh.Session.run>`.
+    loop, which supports every parameter except ``prefetch_lead``. ``hooks``
+    and ``instruction`` work on both; the live viewer (``view``) is the session
+    loop's alone -- a local model takes it on :meth:`Model.session`.
 
     ``workflow_edition`` declares the contract for this call with the same
     precedence as :func:`rlmesh.session`.
@@ -1585,22 +1651,19 @@ def run(
     from ._eval import RANDOM_SAMPLE
 
     if model is not RANDOM_SAMPLE and not _served_handle(model):
-        for name, given in (
-            ("hooks", hooks is not None),
-            ("instruction", instruction is not None),
-            ("view", view is not None),
-        ):
-            if given:
-                raise TypeError(
-                    f"{name} is a session() option for a local model: use "
-                    "model.session(env, ...).run(...) for it."
-                )
+        if view is not None:
+            raise TypeError(
+                "view is a session() option for a local model: use "
+                "model.session(env, view=...).run(...) for it."
+            )
         return as_model(model).run(
             cast("LocalEnvTarget", env),
             seeds=seeds,
             max_episodes=max_episodes,
             max_episode_steps=max_episode_steps,
             max_episode_seconds=max_episode_seconds,
+            hooks=hooks,
+            instruction=instruction,
             close_env=close_env,
             trust_entrypoints=trust_entrypoints,
             execution_horizon=execution_horizon,
