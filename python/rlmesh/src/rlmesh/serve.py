@@ -66,14 +66,16 @@ def startup_marks() -> dict[str, str]:
     return marks
 
 
-def _stamp_startup(kind: str, address: str, target: object) -> None:
+def _stamp_startup(
+    kind: str, address: str, target: object, served_env: object | None = None
+) -> None:
     """Mark the listen point, put the marks and the describe on the handshake, print them."""
     from ._peer_info import register_python_peer_info
     from ._rlmesh import DESCRIBE_METADATA_KEY
 
     _mark("listen")
     extra = startup_marks()
-    if describe := _handshake_describe(target, kind):
+    if describe := _handshake_describe(target, kind, served_env):
         extra[DESCRIBE_METADATA_KEY] = describe
     register_python_peer_info(extra=extra)
     phases = ", ".join(
@@ -86,7 +88,9 @@ def _stamp_startup(kind: str, address: str, target: object) -> None:
     print(f"RLMesh serving {kind} on {address} (startup: {phases})", flush=True)
 
 
-def _handshake_describe(target: object, kind: str) -> str | None:
+def _handshake_describe(
+    target: object, kind: str, served_env: object | None = None
+) -> str | None:
     """The served target's describe envelope, for ``PeerInfo.extra``.
 
     The managed platform reads it off the handshake when an image carries no
@@ -97,7 +101,7 @@ def _handshake_describe(target: object, kind: str) -> str | None:
     from ._describe import describe_json
 
     try:
-        return describe_json(target, kind=kind)
+        return describe_json(target, kind=kind, served_env=served_env)
     except Exception as exc:
         print(
             f"RLMesh could not describe the served {kind} ({exc}); the handshake "
@@ -488,7 +492,7 @@ def serve_env(
         ),
     )
     _mark("env")
-    _stamp_startup("env", server.address, env_source)
+    _stamp_startup("env", server.address, env_source, env)
     server.serve()
 
 

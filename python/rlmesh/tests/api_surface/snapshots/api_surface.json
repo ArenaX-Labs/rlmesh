@@ -1259,7 +1259,7 @@
       },
       "describe_json": {
         "kind": "function",
-        "signature": "describe_json(obj: object, *, kind: str | None = None, generated_at: str | None = None) -> str",
+        "signature": "describe_json(obj: object, *, kind: str | None = None, generated_at: str | None = None, served_env: object | None = None) -> str",
         "stability": "Stable"
       },
       "params": {

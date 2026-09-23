@@ -80,19 +80,25 @@ def describe(
 
 
 def describe_json(
-    obj: object, *, kind: str | None = None, generated_at: str | None = None
+    obj: object,
+    *,
+    kind: str | None = None,
+    generated_at: str | None = None,
+    served_env: object | None = None,
 ) -> str:
     """Like :func:`describe`, but return the canonical JSON string verbatim.
 
     This is the byte-stable artifact (Rust-serialized); persist it as-is (no
-    ``json.loads`` round-trip) when baking into OCI metadata.
+    ``json.loads`` round-trip) when baking into OCI metadata. ``served_env`` is
+    an env already built from ``obj`` (the one a server hosts): its spaces are
+    read directly instead of constructing a second representative env.
     """
     entrypoint: str | None = None
     if isinstance(obj, str):
         entrypoint = obj
         obj = resolve_entrypoint(obj, label="describe entrypoint")
     kind, method = _kind_and_method(obj, kind)
-    pieces = _gather(obj, method, kind, entrypoint)
+    pieces = _gather(obj, method, kind, entrypoint, served_env)
     # default=repr keeps describe total: an exotic catalog/param value renders as
     # a string rather than crashing the artifact; allow_nan=False matches the Rust
     # codec's RFC-8259 strictness (NaN/Infinity are rejected, not silently passed).
@@ -121,7 +127,11 @@ def _finite(value: object) -> object:
 
 
 def _gather(
-    obj: object, method: str, kind: str, entrypoint: str | None
+    obj: object,
+    method: str,
+    kind: str,
+    entrypoint: str | None,
+    served_env: object | None = None,
 ) -> dict[str, Any]:
     """Assemble the per-language raw pieces; Rust owns the wrapper + serialization."""
     spec, target, enumerate_fn, catalog_fn = _resolve_target(obj, method)
@@ -135,7 +145,9 @@ def _gather(
         pieces["variants"] = variants
     if kind == "env":
         pieces["env_tags"] = _env_tags(obj)
-        pieces["env_spec"] = _env_spec(obj, spec, target, catalog_fn)
+        pieces["env_spec"] = _env_spec(
+            obj, spec, target, catalog_fn, served_env=served_env
+        )
         contracts = _env_contracts(obj, spec, target, catalog_fn, pieces)
         if contracts is not None:
             pieces["env_contracts"] = contracts
@@ -342,8 +354,13 @@ def _env_spec(
     target: Callable[..., object],
     catalog_fn: Callable[..., Any] | None,
     branch: Mapping[str, Any] | None = None,
+    *,
+    served_env: object | None = None,
 ) -> dict[str, Any]:
     """Construct one representative env and serialize its obs/action spaces.
+
+    A ``served_env`` (or the first lane of a list of them) is read as-is and left
+    open; it is the caller's env, not a throwaway built here.
 
     One shape per *contract branch*: a factory's variants share spaces, but a
     declared ``tag_params`` discriminant may move them, so ``branch`` binds one
@@ -353,10 +370,16 @@ def _env_spec(
     failure becomes ``{"error":...}`` so the rest of the envelope still ships
     (e.g. a no-GPU OCI build).
     """
-    try:
-        env, close = _build_env(obj, spec, target, catalog_fn, branch)
-    except Exception as exc:
-        return {"error": str(exc)}
+    env: Any
+    close: Callable[[], object]
+    if served_env is not None:
+        env = cast("Any", served_env[0] if isinstance(served_env, list) else served_env)
+        close = lambda: None  # noqa: E731
+    else:
+        try:
+            env, close = _build_env(obj, spec, target, catalog_fn, branch)
+        except Exception as exc:
+            return {"error": str(exc)}
     try:
         # Vector envs expose single_* (+ num_envs), not observation_space/action_space.
         if _is_vector_env(env):
