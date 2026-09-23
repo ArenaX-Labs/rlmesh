@@ -1040,3 +1040,10 @@ def test_a_spec_less_predict_batch_takes_the_vector_batch() -> None:
     assert result.num_episodes == 2
     assert seen and all(kind == "batch" for kind, _ in seen)
     assert seen[0][1] == (2, 2)
+
+
+def test_a_scalar_predict_on_a_vector_env_is_refused_with_direction() -> None:
+    from rlmesh.numpy import Model
+
+    with pytest.raises(TypeError, match="predict_batch"):
+        _drive(Model(lambda obs: 0), _NextStepVectorEnv(), "native", episodes=2)

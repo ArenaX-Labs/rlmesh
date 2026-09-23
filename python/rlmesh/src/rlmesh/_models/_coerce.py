@@ -76,7 +76,13 @@ def coerce_model(
             predict_chunk_batch=getattr(inst, "predict_chunk_batch", None),
         )
     if callable(source):
-        return CoercedModel(source, spec, None, None, None)
+        return CoercedModel(
+            source,
+            spec,
+            getattr(source, "reset", None),
+            getattr(source, "close", None),
+            None,
+        )
     raise TypeError(
         "Model source must be a predict callable or a policy object with predict(); "
         f"got {type(source).__name__}"

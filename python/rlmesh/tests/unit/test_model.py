@@ -905,3 +905,20 @@ def test_a_subclass_reset_hook_is_refused_at_class_creation() -> None:
 
         class Stale(rlmesh.Model):
             def reset(self) -> None: ...
+
+
+def test_a_wrapped_callable_object_keeps_its_reset_and_close_hooks() -> None:
+    from rlmesh._models._coerce import coerce_model
+
+    class Policy:
+        def __call__(self, observation: object) -> int:
+            return 0
+
+        def reset(self) -> None: ...
+
+        def close(self) -> None: ...
+
+    policy = Policy()
+    coerced = coerce_model(policy, spec=None)
+    assert coerced.on_episode_end == policy.reset
+    assert coerced.on_close == policy.close

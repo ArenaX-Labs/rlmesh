@@ -14,6 +14,7 @@ use rlmesh_spaces::{EnvContract, SpaceValue, spaces::SpaceSpec};
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::adapters::{PyCustomTransform, PyEncodings, decode_value, encode_value};
 use crate::hooks::PyRunHooks;
@@ -79,6 +80,8 @@ struct PyPredict {
 }
 
 type LastPyError = Arc<std::sync::Mutex<Option<PyErr>>>;
+
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
 impl PyPredict {
     fn internal(&self, err: PyErr) -> RLMeshError {
@@ -278,6 +281,15 @@ impl PredictFn for PyPredict {
                     observation.num_envs,
                     ValueBackend::Native,
                 )
+                .map_err(|err| {
+                    pyo3::exceptions::PyTypeError::new_err(format!(
+                        "predict received a batch of {} observations from a vector env and \
+                         must return {} actions with a leading batch axis; define \
+                         predict_batch for a batched forward, or serve the env as lanes \
+                         for one observation per predict ({err})",
+                        observation.num_envs, observation.num_envs
+                    ))
+                })
             }
         })
         .map_err(|err| self.internal(err))
@@ -870,7 +882,11 @@ impl PyModel {
         let total_guard = self.profiler.start("model.serve.total");
 
         let address = BindAddress::parse(address).map_err(to_py_err)?;
-        let options = options.map(PyServeOptions::into_rust).unwrap_or_default();
+        let mut options = options.map(PyServeOptions::into_rust).unwrap_or_default();
+        // Same bounded teardown as EnvServer: a signal must not wait out a
+        // client's whole session before the server stops.
+        options.drain_timeout = options.drain_timeout.or(Some(SHUTDOWN_GRACE));
+        options.close_timeout = options.close_timeout.or(Some(SHUTDOWN_GRACE));
         let handler = self.build_handler();
 
         // Same signal contract as EnvServer: SIGINT/SIGTERM drain and close the

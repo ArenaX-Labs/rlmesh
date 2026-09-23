@@ -56,7 +56,7 @@ pub(super) fn spawn_response_pump(
                     }
                 }
                 Ok(None) => {
-                    tracing::warn!("model join stream ended");
+                    tracing::debug!("model join stream ended");
                     fail_all_pending(&pending, || Status::unavailable("model join stream ended"));
                     break;
                 }
