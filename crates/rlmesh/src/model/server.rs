@@ -641,8 +641,15 @@ async fn handle_resolve_adapter(
         // Empty pin: a legacy/older runtime that predates edition propagation.
         // Harmless while a single edition exists (the floor could only be CURRENT).
         // Once the support window grows, an unpinned env could silently run newest
-        // semantics, so reject it then — production must select the floor.
-        if rlmesh_proto::SUPPORTED_WORKFLOW_EDITIONS.len() > 1 {
+        // semantics, so reject it then — production must select the floor. Two
+        // spellings of one base (a prerelease cohort next to the sealed name)
+        // are still one edition.
+        let retained_bases: std::collections::HashSet<Edition> =
+            rlmesh_proto::SUPPORTED_WORKFLOW_EDITIONS
+                .iter()
+                .filter_map(|spelling| Edition::parse(spelling).ok())
+                .collect();
+        if retained_bases.len() > 1 {
             return Some(model_error(
                 "resolve_adapter arrived without a workflow edition pin; the runtime must \
                  select the session floor once more than one edition is supported",
