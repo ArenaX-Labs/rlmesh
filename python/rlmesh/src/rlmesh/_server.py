@@ -41,7 +41,9 @@ def _is_vector_env(env: object) -> bool:
     """Whether ``env`` has the vectorized (VectorEnvLike) shape.
 
     A vectorized env exposes ``num_envs`` and per-lane ``single_*`` spaces; a single
-    env has none of these. The native vector server then enforces ``num_envs >= 2``.
+    env has none of these. A one-lane vector is served as a scalar env
+    (:class:`~rlmesh._single_lane.SingleLaneEnv`); the native vector server
+    takes ``num_envs >= 2``.
     """
     return (
         hasattr(env, "num_envs")
@@ -201,6 +203,10 @@ class EnvServer:
             is_vector = False
         else:
             is_vector = _is_vector_env(env)
+            if is_vector and getattr(env, "num_envs", None) == 1:
+                from ._single_lane import SingleLaneEnv
+
+                env, is_vector = SingleLaneEnv(env), False
 
         # The framework is a value the author sets on the env side -- here, the
         # framework= kwarg (an EnvFactory passes its declared framework through it).

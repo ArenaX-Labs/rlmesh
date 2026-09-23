@@ -768,14 +768,24 @@ def test_remote_vector_close_detaches_without_stopping_endpoint() -> None:
     assert env.close_calls == 1
 
 
-def test_env_server_rejects_one_env_vector_shape() -> None:
-    # A num_envs==1 vector-shaped env auto-detects to the native vector server,
-    # which requires num_envs >= 2.
+def test_env_server_serves_one_env_vector_shape_as_scalar() -> None:
+    # A num_envs==1 vector-shaped env is served as the scalar env it is: one
+    # lane, unbatched spaces, and actions re-batched on the way in.
     import rlmesh
+    from rlmesh.numpy import RemoteEnv
 
     env = TinyOneVectorEnv()
-    with pytest.raises(ValueError, match="num_envs >= 2"):
-        rlmesh.EnvServer(env, host="127.0.0.1", port=0)
+    server = rlmesh.EnvServer(env, host="127.0.0.1", port=0)
+    server.start()
+    try:
+        client = RemoteEnv(server.address)
+        assert client.env_contract.num_envs == 1
+        client.reset(seed=0)
+        client.step(1)
+        assert env.last_actions_shape == (1,)
+        client.close()
+    finally:
+        server.shutdown()
 
 
 def test_env_server_asserts_the_expected_contract_branch(
