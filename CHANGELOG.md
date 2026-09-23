@@ -4,21 +4,7 @@ All notable changes to RLMesh are documented here. This changelog tracks the `rl
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Added
-
-- `rlmesh check MODULE:CLASS`, `rlmesh check-image IMAGE`, and `rlmesh describe MODULE:CLASS [--label]`: pre-push checks that sort what they find into failed, warnings, and not checked, exiting 1 only on a failure. `check` runs the describe on a class and fails on a model without a `spec`, an env without `tags`, a spec that does not resolve, or an edition declaration the build cannot run, reporting an env that needs a GPU or assets to build as not checked; `check-image` reads `docker image inspect` and checks the `rlmesh.serve` command, `--env`, a baked `--address`, `EXPOSE 50051`, `linux/amd64`, the rlmesh labels, and whether the image's rlmesh shares a workflow edition with the target platform (`--platform-editions` / `--platform-version`), negotiated the way the runtime does; `describe --label` prints the `dev.rlmesh.describe` value for a custom-entrypoint image, to be run inside the built image (`docker run --rm --entrypoint rlmesh IMAGE describe ... --label`) since the envelope records the machine it ran on and a label generated off linux fails admission, which `check-image` reports too.
-- The describe envelope's `runtime` block advertises the edition handshake under the wire's names: `protocol_generation`, `supported_workflow_editions`, and `preferred_workflow_edition`, and `rlmesh.build_info().supported_workflow_editions` lists the editions a build can drive.
-- `python -m rlmesh.serve` warns at startup when the served model declares no `spec`: the managed probe cannot synthesize inputs for it.
-
-### Changed
-
-- A blocking `EnvServer.serve()` (what `python -m rlmesh.serve` runs) keeps the env on the calling thread: `reset`/`step`/`render`/`close` run on the thread that built the env, usually the main thread, for a scalar env and for a lockstep vector env alike, while the gRPC server runs on a helper thread. Simulators that only work from the thread that created them, such as Isaac Sim, need no thread-hopping wrapper. Ctrl-C drains and closes the env first and then raises `KeyboardInterrupt` from `serve()`, never inside an env call; a second Ctrl-C interrupts an env call that will not return (Python code; a call stuck inside a native library cannot be preempted). A background `start()` is unchanged.
-- A vectorized env with `num_envs == 1` now serves as the scalar env it is instead of failing with `VectorEnvServer requires num_envs >= 2`. Each value loses its batch axis (lane 0 of the observation and of the `info` under gymnasium's `key`/`_key` convention), actions gain one, and the runtime owns resets, so per-episode `seeds`, `trial_index` and `max_episode_steps` apply. A batched simulator configured with one lane, such as Isaac Lab at `num_envs=1`, needs no scalar rewrite. A one-lane env with `SAME_STEP` autoreset is refused, because its terminal observation is already the next episode's first.
-- `python -m rlmesh._describe --check IMAGE` no longer fails an image for lacking a `dev.rlmesh.describe` label; the platform reads describe off the `rlmesh.serve` handshake, so the missing label is reported as not checked. A present label now gets the same class-level checks as `rlmesh check`.
-
-## [0.1.0-rc.14] - 2026-09-23
+## [0.1.0-rc.15] - 2026-09-23
 
 RLMesh connects models to environments across process, dependency, and machine boundaries with a Gymnasium-style API. This release seals the `2026.06` behavioral contract and commits to retaining `rlmesh-wire-v1`. Declare the edition a model or environment was authored against to keep its behavior across package upgrades. The runtime selects a shared edition and refuses interactions a peer cannot express; see the compatibility policy for the contract and its current test coverage.
 
@@ -98,6 +84,9 @@ RLMesh connects models to environments across process, dependency, and machine b
 - `RLMESH_API_KEY` (with `RLMESH_PLATFORM_URL`) drives `rlmesh token`, `rlmesh eval`, and `rlmesh whoami` without a browser sign-in, matching `rlmesh.platform.Client`; `RLMESH_CONFIG_DIR`, `RLMESH_DATA_DIR`, and `RLMESH_KEYCHAIN=off` confine the CLI's files and keep the OS keychain out, for CI runners and containers.
 - `rlmesh logout` asks the platform to end the session (`DELETE /v1/me/session`) before deleting the local credential, so the refresh token stops working server-side too; a platform without the route still signs out locally.
 - A CLI reference page covering every command, exit code, environment variable, file, JSON output, and the contract a platform must serve to be driven by the CLI.
+- `rlmesh check MODULE:CLASS`, `rlmesh check-image IMAGE`, and `rlmesh describe MODULE:CLASS [--label]`: pre-push checks that sort what they find into failed, warnings, and not checked, exiting 1 only on a failure. `check` runs the describe on a class and fails on a model without a `spec`, an env without `tags`, a spec that does not resolve, or an edition declaration the build cannot run, reporting an env that needs a GPU or assets to build as not checked; `check-image` reads `docker image inspect` and checks the `rlmesh.serve` command, `--env`, a baked `--address`, `EXPOSE 50051`, `linux/amd64`, the rlmesh labels, and whether the image's rlmesh shares a workflow edition with the target platform (`--platform-editions` / `--platform-version`), negotiated the way the runtime does; `describe --label` prints the `dev.rlmesh.describe` value for a custom-entrypoint image, to be run inside the built image (`docker run --rm --entrypoint rlmesh IMAGE describe ... --label`) since the envelope records the machine it ran on and a label generated off linux fails admission, which `check-image` reports too.
+- The describe envelope's `runtime` block advertises the edition handshake under the wire's names: `protocol_generation`, `supported_workflow_editions`, and `preferred_workflow_edition`, and `rlmesh.build_info().supported_workflow_editions` lists the editions a build can drive.
+- `python -m rlmesh.serve` warns at startup when the served model declares no `spec`: the managed probe cannot synthesize inputs for it.
 
 ### Changed
 
@@ -112,6 +101,9 @@ RLMesh connects models to environments across process, dependency, and machine b
 - The CLI reuses its access token until a minute before the `exp` claim and refreshes only then, under a per-profile lock that re-reads the credential store after acquiring it, so `rlmesh token`, `rlmesh eval`, and every docker pull cost no identity-provider round trip and concurrent commands rotate the single-use refresh token once. A request the platform still rejects is retried once after a forced refresh.
 - The CLI has no built-in identity provider: a platform whose `/v1/info` does not advertise `deviceAuthorizationEndpoint` and `tokenEndpoint` cannot be signed in to, the platform URL itself must be https (loopback excepted), and the token endpoint's host is pinned per profile at sign-in so a later `/v1/info` cannot redirect a stored refresh token. Identity (email, display name, organization) now comes from the platform's `/v1/me`, never from provider-specific fields on the token response; `rlmesh login` reports a platform that cannot confirm the identity instead of hiding it.
 - `embodiments.GO2` and `G1_29DOF` name their joints as the vendor URDF joint names Isaac Lab and MuJoCo expose (`FR_hip_joint`, `left_hip_pitch_joint`, `waist_yaw_joint`), matching `FRANKA_PANDA` and `UR5E`; a spec written from the rc.12 spellings (`FR_hip`) must be re-authored from the profile. A delta actuator (`action/delta_eef_*`) may declare the `frame` its axes are expressed in next to its `reference`; the docs no longer say a delta never carries one.
+- A blocking `EnvServer.serve()` (what `python -m rlmesh.serve` runs) keeps the env on the calling thread: `reset`/`step`/`render`/`close` run on the thread that built the env, usually the main thread, for a scalar env and for a lockstep vector env alike, while the gRPC server runs on a helper thread. Simulators that only work from the thread that created them, such as Isaac Sim, need no thread-hopping wrapper. Ctrl-C drains and closes the env first and then raises `KeyboardInterrupt` from `serve()`, never inside an env call; a second Ctrl-C interrupts an env call that will not return (Python code; a call stuck inside a native library cannot be preempted). A background `start()` is unchanged.
+- A vectorized env with `num_envs == 1` now serves as the scalar env it is instead of failing with `VectorEnvServer requires num_envs >= 2`. Each value loses its batch axis (lane 0 of the observation and of the `info` under gymnasium's `key`/`_key` convention), actions gain one, and the runtime owns resets, so per-episode `seeds`, `trial_index` and `max_episode_steps` apply. A batched simulator configured with one lane, such as Isaac Lab at `num_envs=1`, needs no scalar rewrite. A one-lane env with `SAME_STEP` autoreset is refused, because its terminal observation is already the next episode's first.
+- `python -m rlmesh._describe --check IMAGE` no longer fails an image for lacking a `dev.rlmesh.describe` label; the platform reads describe off the `rlmesh.serve` handshake, so the missing label is reported as not checked. A present label now gets the same class-level checks as `rlmesh check`.
 
 ### Fixed
 
@@ -284,7 +276,7 @@ RLMesh connects models to environments across process, dependency, and machine b
 
 - Batched and chunked prediction now works in local `run()` evals. `run()` drives the same native runtime loop as a served model, so `predict_batch`, `predict_chunk`, and `predict_chunk_batch` activate locally instead of only on the served wire path.
 
-[0.1.0-rc.14]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.1.0-rc.14
+[0.1.0-rc.15]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.1.0-rc.15
 [0.1.0-rc.12]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.1.0-rc.12
 [0.1.0-rc.11]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.1.0-rc.11
 [0.1.0-rc.10]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.1.0-rc.10
