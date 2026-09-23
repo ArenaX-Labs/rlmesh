@@ -36,7 +36,9 @@ class FrankaReachEnv(gym.vector.VectorEnv):
                 "target_pos": gym.spaces.Box(-np.inf, np.inf, (3,), np.float32),
             }
         )
-        self.single_action_space = gym.spaces.Box(-MAX_DELTA, MAX_DELTA, (3,), np.float32)
+        self.single_action_space = gym.spaces.Box(
+            -MAX_DELTA, MAX_DELTA, (3,), np.float32
+        )
         self.observation_space = batch_space(self.single_observation_space, lanes)
         self.action_space = batch_space(self.single_action_space, lanes)
         self.origins = np.array([[0.0, SPACING * i, 0.0] for i in range(lanes)])
@@ -57,19 +59,33 @@ class FrankaReachEnv(gym.vector.VectorEnv):
         stage_utils.create_new_stage(template="sunlight")
         lanes = [f"/World/env_{i}" for i in range(self.num_envs)]
         for lane in lanes:
-            stage_utils.add_reference_to_stage(get_assets_root_path() + FRANKA_USD, path=f"{lane}/robot")
-        self.robot = Articulation([f"{lane}/robot" for lane in lanes], positions=self.origins)
-        self.robot.set_default_state(positions=self.origins, dof_positions=np.tile(HOME, (self.num_envs, 1)))
+            stage_utils.add_reference_to_stage(
+                get_assets_root_path() + FRANKA_USD, path=f"{lane}/robot"
+            )
+        self.robot = Articulation(
+            [f"{lane}/robot" for lane in lanes], positions=self.origins
+        )
+        self.robot.set_default_state(
+            positions=self.origins, dof_positions=np.tile(HOME, (self.num_envs, 1))
+        )
         self.hand = RigidPrim([f"{lane}/robot/panda_hand" for lane in lanes])
         self.hand_row = self.robot.get_link_indices("panda_hand").list()[0] - 1
         red = PreviewSurfaceMaterial("/Looks/red")
         red.set_input_values("diffuseColor", [1.0, 0.0, 0.0])
-        self.target = Sphere([f"{lane}/target" for lane in lanes], radii=[0.03] * self.num_envs, reset_xform_op_properties=True)
+        self.target = Sphere(
+            [f"{lane}/target" for lane in lanes],
+            radii=[0.03] * self.num_envs,
+            reset_xform_op_properties=True,
+        )
         self.target.apply_visual_materials(red)
         # Level with each workspace, looking down -X at its robot.
         self.cameras = [
             CameraSensor(
-                RtxCamera(f"{lane}/camera", translations=origin + CAMERA_OFFSET, orientations=[0.5, 0.5, 0.5, 0.5]),
+                RtxCamera(
+                    f"{lane}/camera",
+                    translations=origin + CAMERA_OFFSET,
+                    orientations=[0.5, 0.5, 0.5, 0.5],
+                ),
                 resolution=(image_size, image_size),
                 annotators=["rgb"],
             )
@@ -90,11 +106,18 @@ class FrankaReachEnv(gym.vector.VectorEnv):
         delta = np.clip(actions, -MAX_DELTA, MAX_DELTA) / SUBSTEPS
         delta[resetting] = 0.0  # NEXT_STEP discards a resetting lane's action
         for _ in range(SUBSTEPS):
-            jacobian = self.robot.get_jacobian_matrices().numpy()[:, self.hand_row, :3, :7]
+            jacobian = self.robot.get_jacobian_matrices().numpy()[
+                :, self.hand_row, :3, :7
+            ]
             joints = self.robot.get_dof_positions().numpy()[:, ARM]
             # Damped least-squares IK for the hand delta, batched over lanes.
-            dq = np.linalg.solve(jacobian @ jacobian.transpose(0, 2, 1) + 0.05**2 * np.eye(3), delta[..., None])
-            self.robot.set_dof_position_targets(joints + (jacobian.transpose(0, 2, 1) @ dq)[..., 0], dof_indices=ARM)
+            dq = np.linalg.solve(
+                jacobian @ jacobian.transpose(0, 2, 1) + 0.05**2 * np.eye(3),
+                delta[..., None],
+            )
+            self.robot.set_dof_position_targets(
+                joints + (jacobian.transpose(0, 2, 1) @ dq)[..., 0], dof_indices=ARM
+            )
             self.app.update()
         obs = self._observe()
         distance = np.linalg.norm(obs["eef_pos"] - obs["target_pos"], axis=1)
@@ -112,8 +135,12 @@ class FrankaReachEnv(gym.vector.VectorEnv):
     def _reset_lanes(self, lanes):
         if not len(lanes):
             return
-        self.targets[lanes] = [0.5, 0.0, 0.4] + self.np_random.uniform(-1, 1, (len(lanes), 3)) * [0.15, 0.2, 0.15]
-        self.target.set_world_poses(positions=self.origins[lanes] + self.targets[lanes], indices=lanes)
+        self.targets[lanes] = [0.5, 0.0, 0.4] + self.np_random.uniform(
+            -1, 1, (len(lanes), 3)
+        ) * [0.15, 0.2, 0.15]
+        self.target.set_world_poses(
+            positions=self.origins[lanes] + self.targets[lanes], indices=lanes
+        )
         self.robot.set_dof_positions(HOME, indices=lanes)
         self.robot.set_dof_velocities(0.0, indices=lanes)
         self.robot.set_dof_position_targets(HOME, indices=lanes)
@@ -124,7 +151,9 @@ class FrankaReachEnv(gym.vector.VectorEnv):
         return {
             "image": np.stack([self._frame(camera) for camera in self.cameras]),
             "joint_pos": self.robot.get_dof_positions().numpy().astype(np.float32),
-            "eef_pos": (self.hand.get_world_poses()[0].numpy() - self.origins).astype(np.float32),
+            "eef_pos": (self.hand.get_world_poses()[0].numpy() - self.origins).astype(
+                np.float32
+            ),
             "target_pos": self.targets.astype(np.float32),
         }
 
@@ -144,7 +173,9 @@ class FrankaReach(rlmesh.EnvFactory):
             "joint_pos": adapt.StateTag(adapt.JOINT_POS),
             "eef_pos": adapt.StateTag(adapt.EEF_POS),
         },
-        action=adapt.Action(adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3, range=(-MAX_DELTA, MAX_DELTA))),
+        action=adapt.Action(
+            adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3, range=(-MAX_DELTA, MAX_DELTA))
+        ),
     )
 
     def prepare(self):

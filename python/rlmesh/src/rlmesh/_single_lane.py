@@ -10,7 +10,7 @@ seeds, ``trial_index`` and ``max_episode_steps`` all apply.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, cast
 
 _AUTORESET_KEY = "autoreset_mode"
 
@@ -29,7 +29,7 @@ class SingleLaneEnv:
     """
 
     def __init__(self, env: Any):
-        metadata = getattr(env, "metadata", None) or {}
+        metadata: dict[str, Any] = dict(getattr(env, "metadata", None) or {})
         mode = metadata.get(_AUTORESET_KEY)
         if mode is not None and _mode_name(mode) == "SAME_STEP":
             raise ValueError(
@@ -74,7 +74,7 @@ class SingleLaneEnv:
 
 def _lane0(space: Any, value: Any) -> Any:
     """Lane 0 of a batched value, walking the per-lane ``space``'s structure."""
-    children = getattr(space, "spaces", None)
+    children = _children(space)
     if isinstance(children, Mapping):
         return {key: _lane0(sub, value[key]) for key, sub in children.items()}
     if isinstance(children, Sequence):
@@ -86,7 +86,7 @@ def _lane0(space: Any, value: Any) -> Any:
 
 def _batch1(space: Any, value: Any) -> Any:
     """A one-lane batch of ``value``, walking the per-lane ``space``'s structure."""
-    children = getattr(space, "spaces", None)
+    children = _children(space)
     if isinstance(children, Mapping):
         return {key: _batch1(sub, value[key]) for key, sub in children.items()}
     if isinstance(children, Sequence):
@@ -94,6 +94,13 @@ def _batch1(space: Any, value: Any) -> Any:
             _batch1(sub, part) for sub, part in zip(children, value, strict=True)
         )
     return value[None] if hasattr(value, "shape") else [value]
+
+
+def _children(space: Any) -> Mapping[str, Any] | Sequence[Any] | None:
+    """A Dict space's named children, a Tuple space's ordered ones, or None."""
+    return cast(
+        "Mapping[str, Any] | Sequence[Any] | None", getattr(space, "spaces", None)
+    )
 
 
 def _info0(info: Mapping[str, Any]) -> dict[str, Any]:
@@ -106,7 +113,7 @@ def _info0(info: Mapping[str, Any]) -> dict[str, Any]:
         if mask is not None and not mask[0]:
             continue
         if isinstance(value, Mapping):
-            lane[key] = _info0(value)
+            lane[key] = _info0(cast("Mapping[str, Any]", value))
         elif (
             not isinstance(value, (str, bytes))
             and hasattr(value, "__len__")

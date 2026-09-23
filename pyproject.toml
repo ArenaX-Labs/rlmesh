@@ -28,6 +28,8 @@ include = [
   "python/rlmesh/tests/type_contract/fixtures",
   "tools/rlmesh_api_surface/src/rlmesh_api_surface",
 ]
+# Isaac Sim examples import the Kit runtime, which no dev environment carries.
+exclude = ["examples/python/isaacsim"]
 typeCheckingMode = "basic"
 strict = ["python/rlmesh/src/rlmesh"]
 defineConstant = { DEBUG = true }
@@ -88,7 +90,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"examples/python/**" = ["D", "F841"]
+"examples/python/**" = ["D", "F841", "RUF012"]
 "python/rlmesh/tests/**" = ["B017", "D"]
 "python/rlmesh/tests/type_contract/fixtures/**" = ["D"]
 "tests/system/**" = ["B017", "D"]
