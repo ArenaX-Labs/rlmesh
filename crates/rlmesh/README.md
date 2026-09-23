@@ -8,7 +8,7 @@ This is the Rust-side surface we intend to stabilize. It is not stable yet and c
 
 ```toml
 [dependencies]
-rlmesh = "0.1.0"
+rlmesh = "0.1.0-rc.13"
 ```
 
 `Env`, `VectorEnv`, and `ModelHandler` are `async-trait` traits: annotate your impls with `#[rlmesh::async_trait]`, the macro this crate re-exports. If you would rather name the macro directly, add `async-trait = "0.1"` beside `rlmesh` and use `#[async_trait::async_trait]`.

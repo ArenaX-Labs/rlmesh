@@ -73,7 +73,7 @@ _format_ is shared.
     "component": "rlmesh-python",
     "language": "python",
     "language_version": "3.11.8",
-    "package_version": "0.1.0",
+    "package_version": "0.1.0rc13",
     "os": "linux", "os_version": "...", "arch": "x86_64",
     "framework_versions": { "numpy": "...", "torch": "..." }
   }
