@@ -948,3 +948,82 @@ def test_adapted_session_and_run_hand_the_env_its_box_action(
     model().run(run_env, episodes=1)
 
     assert session_env.seen == run_env.seen == [(shape, dtype)]
+
+
+def test_an_authored_close_fires_once_and_drops_the_worker() -> None:
+    import gc
+    import weakref
+
+    calls: list[str] = []
+
+    class WithSuper(rlmesh.Model[Any, Any]):
+        def predict(self, obs: Any) -> Any:
+            return 0
+
+        def close(self) -> None:
+            calls.append("with")
+            super().close()
+
+    class WithoutSuper(rlmesh.Model[Any, Any]):
+        def predict(self, obs: Any) -> Any:
+            return 0
+
+        def close(self) -> None:
+            calls.append("without")
+
+    for cls, expected in ((WithSuper, ["with"]), (WithoutSuper, ["without"])):
+        calls.clear()
+        model = cls()
+        model.run(_TinyEnv(), episodes=1)
+        ref = weakref.ref(model)
+        model.close()
+        assert calls == expected
+        del model
+        gc.collect()
+        assert ref() is None, cls.__name__
+
+
+@pytest.mark.parametrize("value", [0.75, 130.0])
+def test_adapted_session_refuses_an_action_the_env_int_box_cannot_hold(
+    value: float,
+) -> None:
+    np = pytest.importorskip("numpy")
+    import rlmesh.adapters as adapt
+    from rlmesh import spaces
+
+    class Env:
+        def __init__(self) -> None:
+            self.observation_space = spaces.Dict(
+                {"q": spaces.Box(-np.inf, np.inf, (6,))}
+            )
+            self.action_space = spaces.Box(-128, 127, (6,), dtype="int8")
+
+        def reset(self, *, seed: object = None, options: object = None) -> object:
+            return {"q": np.zeros(6, np.float32)}, {}
+
+        def step(self, action: Any) -> object:
+            raise AssertionError(f"env stepped with {action!r}")
+
+        def close(self) -> None:
+            pass
+
+    action = adapt.Action(
+        adapt.Actuator(adapt.ACTION_JOINT_POS, dim=6, labels=adapt.UR5E.joints)
+    )
+    spec = adapt.ModelSpec(
+        input={"q": adapt.State(adapt.JOINT_POS, labels=adapt.UR5E.joints)},
+        output=action,
+    )
+    tags = adapt.EnvTags(
+        observation={"q": adapt.StateTag(adapt.JOINT_POS, labels=adapt.UR5E.joints)},
+        action=action,
+    )
+    model = rlmesh.numpy.Model(
+        lambda payload: np.full(6, value, dtype=np.float32), spec=spec
+    )
+    with model.session(adapt.tag(Env(), tags)) as session:
+        obs, _ = session.reset()
+        with pytest.raises(ValueError):
+            session.predict(obs)
+    with pytest.raises(Exception):
+        model.run(adapt.tag(Env(), tags), episodes=1)

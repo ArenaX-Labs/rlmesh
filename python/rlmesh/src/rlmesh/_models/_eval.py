@@ -496,8 +496,25 @@ def _fit_box(action: Tensor, box: SpaceSpec) -> Tensor:
         )
 
         ensure_available()
+        import numpy as np
+
         numpy_action = cast("Any", _numpy_bridge.decode(action))
-        action = cast("Tensor", _numpy_bridge.encode(numpy_action.astype(box.dtype)))
+        target = np.dtype(box.dtype)
+        if np.issubdtype(target, np.integer) and numpy_action.size:
+            # astype truncates and wraps; the native cast refuses, so do we.
+            if not np.all(np.isfinite(numpy_action)) or np.any(
+                numpy_action != np.floor(numpy_action)
+            ):
+                raise ValueError(
+                    f"cannot cast non-integral action values to {box.dtype}"
+                )
+            bounds = np.iinfo(target)
+            if numpy_action.min() < bounds.min or numpy_action.max() > bounds.max:
+                raise ValueError(
+                    f"action values out of range for {box.dtype} "
+                    f"[{bounds.min}, {bounds.max}]"
+                )
+        action = cast("Tensor", _numpy_bridge.encode(numpy_action.astype(target)))
     return action.reshape(box.shape)
 
 

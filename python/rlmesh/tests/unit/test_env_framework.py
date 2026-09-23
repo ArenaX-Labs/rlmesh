@@ -494,3 +494,29 @@ def test_adapted_session_accepts_a_torch_factory_observation() -> None:
 
     assert result.num_episodes == 1
     assert isinstance(built[0].seen_actions[0], torch.Tensor)
+
+
+def test_a_factory_still_builds_a_slotted_env() -> None:
+    from rlmesh import spaces
+    from rlmesh.numpy import EnvFactory
+
+    class SlottedEnv:
+        __slots__ = ("action_space", "observation_space")
+
+        def __init__(self) -> None:
+            self.observation_space = spaces.Discrete(1)
+            self.action_space = spaces.Discrete(1)
+
+        def reset(self, *, seed: object = None, options: object = None) -> object:
+            return 0, {}
+
+        def step(self, action: object) -> object:
+            return 0, 0.0, True, False, {}
+
+    class Factory(EnvFactory):
+        def make(self) -> SlottedEnv:
+            return SlottedEnv()
+
+    env = Factory().make()
+    assert isinstance(env, SlottedEnv)
+    assert not hasattr(env, "_bridge")

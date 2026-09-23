@@ -130,7 +130,10 @@ class EnvFactory(ABC):
             if fragment:
                 _stamp_metadata(env, fragment)
             if cls._bridge is not None and getattr(env, "_bridge", None) is None:
-                env._bridge = cls._bridge  # type: ignore[attr-defined]
+                try:
+                    env._bridge = cls._bridge  # type: ignore[attr-defined]
+                except AttributeError:
+                    pass  # a __slots__ env: it stays on the numpy default
             return env
 
         make._rlmesh_tag_stamped = True  # type: ignore[attr-defined]

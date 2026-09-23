@@ -118,13 +118,12 @@ pub(crate) fn to_matrix(value: &[f32], encoding: RotationEncoding) -> Matrix {
             unreachable!("gravity_xyz is a sink; check_source refuses it before decoding")
         }
         RotationEncoding::QuatXyzw | RotationEncoding::QuatWxyz => {
-            let quat = as_quat_xyzw(value, encoding);
-            let quat_norm = norm(&quat);
+            let quat = as_quat_xyzw(value, encoding).map(f64::from);
+            let quat_norm = quat.iter().map(|c| c * c).sum::<f64>().sqrt();
             if quat_norm <= EPS {
                 return eye();
             }
-            let scale = quat_norm as f32;
-            let [x, y, z, w] = quat.map(|component| f64::from(component / scale));
+            let [x, y, z, w] = quat.map(|component| component / quat_norm);
             let (xx, yy, zz) = (x * x, y * y, z * z);
             let (xy, xz, yz) = (x * y, x * z, y * z);
             let (wx, wy, wz) = (w * x, w * y, w * z);
@@ -493,6 +492,26 @@ mod tests {
                 distance < 1e-3,
                 "pitch {pitch}: {back:?} is {distance} away"
             );
+        }
+    }
+
+    #[test]
+    fn euler_xyz_survives_float32_quaternions_across_gimbal_lock() {
+        use RotationEncoding::{EulerXyz, QuatXyzw};
+        // Normalizing the float32 quaternion in float32 left a 0.2 degree
+        // error at some roll/yaw pairs; the f64 normalization holds them all.
+        let half_pi = std::f32::consts::FRAC_PI_2;
+        for pitch in [half_pi, -half_pi, half_pi - 1e-4, -half_pi + 1e-4] {
+            for step in 0..64 {
+                let roll = -3.0 + step as f32 * 0.1;
+                let yaw = 3.0 - step as f32 * 0.07;
+                let euler = [roll, pitch, yaw];
+                let quat = convert_rotation(&euler, EulerXyz, QuatXyzw).expect("ok");
+                let back = convert_rotation(&quat, QuatXyzw, EulerXyz).expect("ok");
+                let distance =
+                    frobenius_distance(&to_matrix(&quat, QuatXyzw), &to_matrix(&back, EulerXyz));
+                assert!(distance < 5e-4, "{euler:?} -> {back:?} is {distance} away");
+            }
         }
     }
 

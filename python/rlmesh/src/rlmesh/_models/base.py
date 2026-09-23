@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import functools
 import inspect
 import warnings
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -616,11 +617,10 @@ class ModelBase(Generic[ObsT, ActT]):
                 self.load()
             resolved_spec = spec if spec is not None else type(self).spec
             coerced_on_episode_end: LifecycleCallback | None = self.on_episode_end
-            # Only an authored close() is a hook; the base close() below fires
-            # the wrapped hook itself, so wiring it here would recurse.
-            coerced_on_close: LifecycleCallback | None = (
-                self.close if _overridden("close") is not None else None
-            )
+            # An authored close() is the public close itself (wrapped by
+            # __init_subclass__ to drop the worker), never a hook: wiring it
+            # here would fire it twice when it calls super().close().
+            coerced_on_close: LifecycleCallback | None = None
             policy: object = self
             raw_predict: Corner | None = corners["predict"]
             raw_predict_chunk = corners["predict_chunk"]
@@ -851,6 +851,18 @@ class ModelBase(Generic[ObsT, ActT]):
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
+        authored_close = cls.__dict__.get("close")
+        if callable(authored_close):
+            # An override need not call super().close(); the worker cycle
+            # (see close) is dropped around it either way.
+            @functools.wraps(authored_close)
+            def close(self: ModelBase[Any, Any], *args: Any, **kwargs: Any) -> None:
+                try:
+                    authored_close(self, *args, **kwargs)
+                finally:
+                    self._worker = None
+
+            cls.close = close  # type: ignore[method-assign]
         if "reset" in cls.__dict__:
             raise TypeError(
                 f"{cls.__name__}.reset is never called: the Model episode hook is "
@@ -1053,7 +1065,7 @@ class ModelBase(Generic[ObsT, ActT]):
             predict_fn=predict_neutral,
             configure_fn=configure,
             on_episode_end=self._on_episode_end,
-            on_close=self._on_close,
+            on_close=self.close,
             predict_chunk_fn=predict_chunk_neutral,
             predict_batch_fn=predict_batch_neutral,
             predict_chunk_batch_fn=predict_chunk_batch_neutral,
