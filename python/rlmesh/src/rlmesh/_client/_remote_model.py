@@ -123,7 +123,7 @@ class RemoteModelBase(Generic[ObsT, ActT]):
         # leg carries the call, process, or project declaration. The env's
         # own offer still constrains the three-way floor.
         workflow_edition = resolve_workflow_edition(call=workflow_edition)
-        env, close_env = dial_env_address(env, close_env)
+        env, owns_env = dial_env_address(env)
         try:
             client = load_native("PyModelClient")(
                 self._address,
@@ -139,7 +139,9 @@ class RemoteModelBase(Generic[ObsT, ActT]):
                 f"could not connect to a model at {self._address!r}; "
                 f"is the model being served? ({exc})"
             ) from None
-        return remote_session(client, env, close_env=close_env, view=view)
+        return remote_session(
+            client, env, close_env=close_env, owns_env=owns_env, view=view
+        )
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}(address={self._address!r})"
@@ -156,10 +158,14 @@ def env_contract_of(env: object) -> EnvContract:
     return cast("EnvContract", contract)
 
 
-def dial_env_address(env: EnvTarget, close_env: bool) -> tuple[EnvTarget, bool]:
-    """Dial a bare ``env`` address into a ``RemoteEnv`` the session owns and closes."""
+def dial_env_address(env: EnvTarget) -> tuple[EnvTarget, bool]:
+    """Dial a bare ``env`` address into a ``RemoteEnv``; ``True`` when this dialed it.
+
+    A handle dialed here is the session's own: it is released (its join slot
+    freed) when the session closes, like a connection the session opens itself.
+    """
     if not isinstance(env, str):
-        return env, close_env
+        return env, False
     from .._native import RemoteEnv
 
     return RemoteEnv(env), True
@@ -184,6 +190,7 @@ def remote_session(
     *,
     owner: Any = None,
     close_env: bool = False,
+    owns_env: bool = False,
     view: object = None,
 ) -> Session[Any, Any]:
     """Build a neutral :class:`Session` over a pre-built served-model ``client``.
@@ -203,6 +210,7 @@ def remote_session(
         bridge=bridge,
         owner=owner,
         close_env=close_env,
+        owns_env=owns_env,
         view=view,
     )
 

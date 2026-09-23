@@ -219,7 +219,7 @@ class SandboxModel:
         # caller is managing (context manager / reuse) must survive a failed bind
         # (serve() is idempotent and returns early when already serving).
         started_here = self._address is None
-        env, close_env = dial_env_address(env, close_env)
+        env, owns_env = dial_env_address(env)
         self.serve()
         try:
             contract = env_contract_of(env)
@@ -240,6 +240,7 @@ class SandboxModel:
                     env,
                     owner=self if started_here else None,
                     close_env=close_env,
+                    owns_env=owns_env,
                     view=view,
                 )
             except BaseException:

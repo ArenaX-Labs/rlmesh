@@ -563,6 +563,7 @@ class Session(Generic[ObsT, ActT]):
     _remote_env_cls: type | None
     _instruction: str | None
     _close_env: bool
+    _owns_env: bool
     _model_client: PyModelClient | None
     _owner: Any
     _device: object | None
@@ -621,6 +622,7 @@ class Session(Generic[ObsT, ActT]):
         remote_env_cls: type | None = None,
         instruction: str | None = None,
         close_env: bool = False,
+        owns_env: bool = False,
         execution_horizon: int = 1,
         native_chunk: int | None = None,
         model_client: PyModelClient | None = None,
@@ -662,6 +664,10 @@ class Session(Generic[ObsT, ActT]):
         self._remote_env_cls = remote_env_cls
         self._instruction = instruction
         self._close_env = close_env
+        # An env handle the caller's entry point dialed for this session (a bare
+        # address to a served model): released with the session, like a
+        # connection it opens itself.
+        self._owns_env = owns_env
         self._model_client = model_client
         self._workflow_edition = workflow_edition
         self._owner = owner
@@ -743,7 +749,7 @@ class Session(Generic[ObsT, ActT]):
         reject_vector_env(contract)
         self._client = client
         self._contract = contract
-        self._owns_client = owns
+        self._owns_client = owns or self._owns_env
         # A served-model session runs at the three-way floor; the env leg is
         # pinned to it (its first Join message) so both legs name one edition.
         if self._model_client is not None:
@@ -1343,6 +1349,8 @@ class Session(Generic[ObsT, ActT]):
                     close_client(self._client)
                 self._connected = False
                 self._client = None
+        elif self._owns_env:
+            close_client(self._env)
         if on_close_error is not None:
             raise on_close_error
 
