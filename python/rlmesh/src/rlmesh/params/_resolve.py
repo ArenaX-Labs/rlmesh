@@ -76,8 +76,10 @@ def resolve(
     * ``spec is None`` -> kwargs unchanged (blind passthrough; full back-compat).
     * rest empty -> ``{**declared, **derived}``.
 
-    Only *supplied* keys come back: a declared parameter left out is absent from
-    the result, so ``make``'s own signature applies its default. The returned dict
+    Only *supplied* keys come back: a parameter left out is absent from the
+    result, so ``make``'s own signature applies its default; one with no
+    signature default is required, declared or not
+    (:class:`MissingParamError`). The returned dict
     is therefore never a complete binding -- read a resolved discriminant off the
     env's published ``rlmesh.adapters.v1.env_branch``, which is bound from the
     signature with defaults applied.
@@ -135,6 +137,9 @@ def resolve(
         # nothing); no signature default => the param is genuinely required.
         sig = sig_params.get(name)
         if sig is None or sig.default is inspect.Parameter.empty:
+            raise MissingParamError(name)
+    for name, sig in sig_params.items():
+        if name not in out and sig.default is inspect.Parameter.empty:
             raise MissingParamError(name)
 
     if rest:

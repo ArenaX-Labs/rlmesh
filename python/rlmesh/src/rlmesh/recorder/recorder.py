@@ -41,7 +41,7 @@ class Recorder:
     Example -- metrics only, path-agnostic::
 
         rec = rlmesh.Recorder()
-        result = rlmesh.run(model, env, max_episodes=50)
+        result = rlmesh.run(model, env, episodes=50)
         rec.add(result, model="smolvla", env="libero", task="libero-spatial-0")
         rec.export("results/run.zip")
 
@@ -50,7 +50,7 @@ class Recorder:
         rec = rlmesh.Recorder()
         sess = rlmesh.session(model, env)
         sess.run(
-            max_episodes=50,
+            episodes=50,
             hooks=rec.capture(model="smolvla", env="libero", task="libero-spatial-0"),
         )
         rec.export("results/run.zip")

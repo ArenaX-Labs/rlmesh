@@ -121,7 +121,7 @@ def run_remote(address: str, model_name: str, env_name: str, episodes: int) -> N
                 ).explain()
             )
             model = Model(model_entry.load_predict_fn(), spec=model_entry.spec)
-            model.run(env, max_episodes=episodes)
+            model.run(env, episodes=episodes)
         else:
             adapter = build_adapter(model_name, env_name, ENVS[env_name])
             print(adapter.explain())
@@ -129,7 +129,7 @@ def run_remote(address: str, model_name: str, env_name: str, episodes: int) -> N
                 adapter.wrap_predict(model_entry.load_predict_fn()),
                 on_episode_end=adapter.reset,
             )
-            model.run(env, max_episodes=episodes)
+            model.run(env, episodes=episodes)
     finally:
         env.close()
 

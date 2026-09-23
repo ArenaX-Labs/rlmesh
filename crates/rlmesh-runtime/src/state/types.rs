@@ -35,6 +35,10 @@ pub(crate) struct SlotState {
     /// Unix-ns timestamp of the slot's current episode start (reset), for the
     /// `max_episode_seconds` cap and synthesized completion timestamps.
     pub(crate) started_at_ns: i64,
+    /// Wall time of the model predicts and env steps that served the slot's
+    /// current episode, for its per-episode latency means.
+    pub(crate) predict_ns: u64,
+    pub(crate) step_ns: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

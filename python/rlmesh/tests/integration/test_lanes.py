@@ -69,7 +69,7 @@ def test_env_server_hosts_a_list_of_envs_as_independently_reset_lanes() -> None:
 
     try:
         result = rlmesh_numpy.Model(predict)._run_local_for_episodes(
-            server.address, max_episodes=4, seeds=[11, 12, 13, 14, 15, 16]
+            server.address, episodes=4, seeds=[11, 12, 13, 14, 15, 16]
         )
     finally:
         server.shutdown()

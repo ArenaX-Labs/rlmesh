@@ -33,7 +33,7 @@ def test_the_open_source_relay_raises_no_advisories() -> None:
     from rlmesh.numpy import Model
 
     try:
-        result = Model(lambda obs: 0).run(_TinyEnv(), max_episodes=1)
+        result = Model(lambda obs: 0).run(_TinyEnv(), episodes=1)
     except ConnectionError as exc:
         if "Operation not permitted" in str(exc):
             pytest.skip("local tcp bind is not permitted in this environment")
@@ -56,7 +56,7 @@ def test_report_advisories_reach_the_run_result(
     model = Model(lambda obs: 0)
     monkeypatch.setattr(model, "_run_native", converted_run)
 
-    result = model.run("tcp://127.0.0.1:1", max_episodes=1)
+    result = model.run("tcp://127.0.0.1:1", episodes=1)
 
     assert result.advisories == (caution,)
     assert rlmesh.RunResult().advisories == ()

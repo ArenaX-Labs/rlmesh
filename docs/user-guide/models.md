@@ -77,10 +77,31 @@ A model has four lifecycle seams. They fire identically on the local `run` / `se
 
 | Seam                           | When it fires         | What to do in it                                                      |
 | ------------------------------ | --------------------- | --------------------------------------------------------------------- |
-| `load(**binding)`              | once, at construction | Load weights into `self`; keep heavy imports here, not at module top. |
+| `load(**config)`               | once, at construction | Load weights into `self`; keep heavy imports here, not at module top. |
 | `on_episode_end([episode_id])` | when an episode ends  | Clear per-episode state (RNN hidden state, chunk replay).             |
-| `close()`                      | at the end of a run   | Release resources.                                                    |
+| `close()`                      | when you call it      | Release resources. A run or session never closes a model you passed.  |
 | `on_episode_end` / `on_close`  | constructor callbacks | The same edges for a wrapped callable that cannot override methods.   |
+
+`MyModel()` loads with `load()`'s own defaults. `MyModel.from_config(**config)` is the same construction with keywords -- every keyword configures `load()`, validated first against its signature and the declared {attr}`~rlmesh.Model.params` (an unknown name, a missing required parameter, or a value outside a `Param`'s choices raises before any weights load), and `load(**config)` then runs exactly once. A served model's binding (`RLMESH_MAKE_KWARGS`, `--kwargs-json`) takes the identical path, so a configuration that works locally serves the same:
+
+```python
+class MyModel(rlmesh.torch.Model):
+    params = rlmesh.ParamSpec(rlmesh.Param("device", choices=("cpu", "cuda")))
+
+    def load(self, checkpoint="default", device="cpu"):
+        self.device = device
+        self.policy = load_policy(checkpoint, device=device)
+
+    def predict(self, observation):
+        return self.policy(observation)
+
+
+model = MyModel.from_config(checkpoint="other", device="cuda")
+```
+
+`from_config` is for an authored subclass; a framework base class with no predict corner of its own refuses it. To wrap an existing policy, `Model(predict, spec=...)` is the constructor.
+
+Ownership is by who created what. A model instance and an env you pass to `run` or `session` are borrowed: they stay usable afterwards, on success, failure, or interrupt alike, and `model.close()` is the explicit release. What the call creates it also releases -- a model instantiated from a class you passed, an env built from an {class}`~rlmesh.EnvFactory`, the loopback server and runtime session -- and `close_env=True` opts a caller's env into shutdown.
 
 There is no episode-_begin_ hook. Per-episode state is lazy-seeded on the first `predict`, so a stateful model clears its state at episode _end_ via `on_episode_end()`, the one per-episode boundary both the local loop and the served path signal.
 

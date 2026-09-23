@@ -423,6 +423,11 @@ pub struct EpisodeSummary {
     /// `is_success` / `success`, or `task_success`); `None` when the env emits
     /// no such signal.
     pub success: Option<bool>,
+    /// Per-step means over the episode of the predict and env-step wall time,
+    /// in milliseconds (the same accounting as the `step_completed` hook
+    /// event); `None` for an episode that completed before its first step.
+    pub predict_ms: Option<f64>,
+    pub step_ms: Option<f64>,
 }
 
 /// What a finished or aborted session returns: totals plus the durable

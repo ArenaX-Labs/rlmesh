@@ -149,9 +149,7 @@ def test_adapted_model_runs_against_tagged_server() -> None:
         recovered = adapt.EnvTags.from_metadata(client.env_contract.metadata or {})
         assert recovered == tags
 
-        Model(predict, spec=spec, on_episode_end=on_episode_end).run(
-            client, max_episodes=1
-        )
+        Model(predict, spec=spec, on_episode_end=on_episode_end).run(client, episodes=1)
         client.close()
     finally:
         server.shutdown()
@@ -200,7 +198,7 @@ def test_adapted_model_runs_against_local_tagged_env() -> None:
 
     # A locally tagged env -- no EnvServer, no transport -- resolves the adapter.
     tagged = adapt.tag(env_obj, _tags())
-    result = Model(_arm_predict(spec, captured), spec=spec).run(tagged, max_episodes=1)
+    result = Model(_arm_predict(spec, captured), spec=spec).run(tagged, episodes=1)
 
     assert result.num_episodes == 1
     assert captured["keys"] == ["image", "instruction", "state"]
@@ -253,10 +251,10 @@ def test_instruction_override_reaches_predict_in_declared_shape(
     model = Model(predict, spec=spec)
     if path == "session":
         with rlmesh.session(model, tagged, instruction="follow the override") as sess:
-            sess.run(max_episodes=1)
+            sess.run(episodes=1)
     else:
         try:
-            model.run(tagged, max_episodes=1, instruction="follow the override")
+            model.run(tagged, episodes=1, instruction="follow the override")
         except ConnectionError as exc:
             if "Operation not permitted" in str(exc):
                 pytest.skip("local tcp bind is not permitted in this environment")
@@ -265,7 +263,7 @@ def test_instruction_override_reaches_predict_in_declared_shape(
     assert seen["instruction"] == expected
 
     if path == "native":
-        model.run(tagged, max_episodes=1)
+        model.run(tagged, episodes=1)
         assert seen["instruction"] != expected, "the override is scoped to its run"
 
 
@@ -317,7 +315,7 @@ def test_spec_model_drives_local_numpy_env_for_any_framework(framework: str) -> 
         return _fw_zeros(framework, spec.output.dim)
 
     tagged = adapt.tag(env_obj, _tags())
-    result = model_cls(predict, spec=spec).run(tagged, max_episodes=1)
+    result = model_cls(predict, spec=spec).run(tagged, episodes=1)
 
     assert result.num_episodes == 1
     # predict saw the model's own framework tensors (obs decoded into them)...
@@ -334,7 +332,7 @@ def test_adapted_model_runs_against_env_factory() -> None:
 
     # Pass the EnvFactory straight in: session/run builds + tags + drives it locally.
     result = Model(_arm_predict(spec, captured), spec=spec).run(
-        TinyArmFactory(), max_episodes=1
+        TinyArmFactory(), episodes=1
     )
 
     assert result.num_episodes == 1
@@ -345,7 +343,7 @@ def test_adapted_model_against_untagged_local_env_errors_clearly() -> None:
     pytest.importorskip("numpy")
     model = Model(lambda payload: None, spec=_model_spec())
     with pytest.raises(adapt.AdapterResolutionError, match="no adapter tags"):
-        model.run(TinyArmEnv(), max_episodes=1)
+        model.run(TinyArmEnv(), episodes=1)
 
 
 def test_resolve_from_contract_describes_the_pairing() -> None:
@@ -457,7 +455,7 @@ def test_local_stacked_run_reports_held_state_telemetry() -> None:
 
         return np.zeros(spec.output.dim, dtype=np.float32)
 
-    result = Model(predict, spec=spec).run(tagged, max_episodes=1)
+    result = Model(predict, spec=spec).run(tagged, episodes=1)
 
     # A stacked route holds per-episode frame windows: the engine's held-state
     # gauges reach the run telemetry end to end.
@@ -576,7 +574,7 @@ def test_run_env_chunks_a_predict_chunk_model_in_process() -> None:
     server.start()
     try:
         client = RemoteEnv(server.address)
-        ChunkModel().run(client, max_episodes=1, execution_horizon=2)
+        ChunkModel().run(client, episodes=1, execution_horizon=2)
         client.close()
     finally:
         server.shutdown()
@@ -614,7 +612,7 @@ def test_run_env_without_predict_chunk_warns_and_runs_unchunked() -> None:
         client = RemoteEnv(server.address)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            PlainModel().run(client, max_episodes=1, execution_horizon=2)
+            PlainModel().run(client, episodes=1, execution_horizon=2)
         client.close()
     finally:
         server.shutdown()
@@ -678,7 +676,7 @@ def test_served_model_chunks_via_remote_model_mini_driver() -> None:
         if sess is None:
             raise AssertionError("served model never came up") from last_error
 
-        sess.run(max_episodes=1)
+        sess.run(episodes=1)
         sess.close()
         env.close()
     finally:

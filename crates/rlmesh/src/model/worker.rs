@@ -65,6 +65,10 @@ pub struct RunLocalOptions {
     pub max_episode_seconds: Option<f64>,
     /// Ask the env to close when the run ends.
     pub close_env: bool,
+    /// Fire the handler's `on_close` when the run ends (the default: the
+    /// worker is consumed, so the model is done). Off when the handler
+    /// outlives the run -- a borrowed model the caller closes itself.
+    pub close_model: bool,
     /// How many actions of each predicted chunk the runtime executes before
     /// re-planning (1 = no chunking). Pinned onto the route at resolve, exactly
     /// as the served path pins it via `ResolveAdapter`.
@@ -101,6 +105,7 @@ impl RunLocalOptions {
             max_episode_steps: None,
             max_episode_seconds: None,
             close_env: false,
+            close_model: true,
             execution_horizon: 1,
             prefetch_lead: 0,
             workflow_edition: None,
@@ -177,6 +182,12 @@ impl RunLocalOptions {
     /// Ask the env to close when the run ends.
     pub fn close_env(mut self, close_env: bool) -> Self {
         self.close_env = close_env;
+        self
+    }
+
+    /// Keep the handler open after the run (see [`close_model`](Self::close_model)).
+    pub fn close_model(mut self, close_model: bool) -> Self {
+        self.close_model = close_model;
         self
     }
 
@@ -300,7 +311,11 @@ impl<H: ModelHandler + 'static> ModelWorker<H> {
         hooks: Arc<dyn rlmesh_runtime::RuntimeHooks>,
     ) -> Result<RuntimeReport> {
         let options = options.into();
+        let close_model = options.close_model;
         let result = local::run_local(&mut self.handler, options, cancellation, hooks).await;
+        if !close_model {
+            return result;
+        }
         let close_result = self.handler.on_close().await;
         crate::error::join_results(result, close_result, "local model run failed")
     }

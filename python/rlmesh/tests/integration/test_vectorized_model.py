@@ -89,9 +89,7 @@ def test_vectorized_numpy_model_splits_stacked_action() -> None:
         return np.full((env.num_envs, 2), 0.5, dtype=np.float32)
 
     try:
-        rlmesh_numpy.Model(predict)._run_local_for_episodes(
-            server.address, max_episodes=1
-        )
+        rlmesh_numpy.Model(predict)._run_local_for_episodes(server.address, episodes=1)
     finally:
         server.shutdown()
 
@@ -118,9 +116,7 @@ def test_vectorized_spec_less_predict_receives_empty_identity_context() -> None:
         return np.full((env.num_envs, 2), 0.5, dtype=np.float32)
 
     try:
-        rlmesh_numpy.Model(predict)._run_local_for_episodes(
-            server.address, max_episodes=1
-        )
+        rlmesh_numpy.Model(predict)._run_local_for_episodes(server.address, episodes=1)
     finally:
         server.shutdown()
 

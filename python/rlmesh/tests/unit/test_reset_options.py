@@ -125,7 +125,7 @@ def test_session_run_walks_trial_ordinals_by_default() -> None:
     # without the caller asking for anything.
     declared = _TrialFactory().make()
     with rlmesh.session(rlmesh.Model(lambda obs: 0), declared) as sess:
-        result = sess.run(max_episodes=3)
+        result = sess.run(episodes=3)
     assert [episode.trial for episode in result.episodes] == [0, 1, 2]
     assert [reset["options"] for reset in declared.resets] == [
         {"trial_index": 0},
@@ -141,7 +141,7 @@ def test_session_run_never_sends_the_key_to_an_undeclared_env() -> None:
     with rlmesh.session(rlmesh.Model(lambda obs: 0), plain) as sess:
         with warnings.catch_warnings():
             warnings.simplefilter("error")
-            result = sess.run(max_episodes=2)
+            result = sess.run(episodes=2)
     assert [episode.trial for episode in result.episodes] == [0, 1]
     assert all(reset["options"] is None for reset in plain.resets)
 
@@ -149,9 +149,9 @@ def test_session_run_never_sends_the_key_to_an_undeclared_env() -> None:
 def test_session_run_walks_trial_ordinals_from_the_base() -> None:
     declared = _TrialFactory().make()
     with rlmesh.session(rlmesh.Model(lambda obs: 0), declared) as sess:
-        result = sess.run(max_episodes=2, trial_index_base=10)
+        result = sess.run(episodes=2, trial_index_base=10)
         with pytest.raises(ValueError, match="trial_index_base"):
-            sess.run(max_episodes=1, trial_index_base=-1)
+            sess.run(episodes=1, trial_index_base=-1)
     assert [episode.trial for episode in result.episodes] == [10, 11]
     assert [reset["options"] for reset in declared.resets] == [
         {"trial_index": 10},
@@ -252,7 +252,7 @@ def _run_native(env: _TinyEnv, **kwargs: Any) -> rlmesh.RunResult:
 
 def test_native_run_delivers_the_ordinal_by_default() -> None:
     env = _TrialFactory().make()
-    result = _run_native(env, max_episodes=3)
+    result = _run_native(env, episodes=3)
 
     assert [reset["options"] for reset in env.resets] == [
         {"trial_index": 0},
@@ -264,7 +264,7 @@ def test_native_run_delivers_the_ordinal_by_default() -> None:
 
 def test_native_run_walks_the_ordinals_from_the_base() -> None:
     env = _TrialFactory().make()
-    result = _run_native(env, max_episodes=2, trial_index_base=5)
+    result = _run_native(env, episodes=2, trial_index_base=5)
 
     assert [reset["options"] for reset in env.resets] == [
         {"trial_index": 5},
@@ -273,7 +273,7 @@ def test_native_run_walks_the_ordinals_from_the_base() -> None:
     assert [episode.trial for episode in result.episodes] == [5, 6]
 
     with pytest.raises(ValueError, match="trial_index_base"):
-        _run_native(env, max_episodes=1, trial_index_base=-1)
+        _run_native(env, episodes=1, trial_index_base=-1)
 
 
 def test_native_run_reports_zero_based_episode_indices() -> None:
@@ -291,7 +291,7 @@ def test_native_run_reports_zero_based_episode_indices() -> None:
 
 def test_native_run_never_sends_the_key_to_an_undeclared_env() -> None:
     env = _PlainFactory().make()
-    result = _run_native(env, max_episodes=2)
+    result = _run_native(env, episodes=2)
 
     assert all(reset["options"] is None for reset in env.resets)
     # Minted and reported either way, so the sweep can be read off the result.

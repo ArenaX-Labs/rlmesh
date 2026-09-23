@@ -183,7 +183,7 @@ def test_closed_session_rejects_any_further_use() -> None:
     sess.close()
     sess.close()  # idempotent
     with pytest.raises(RuntimeError, match="session is closed"):
-        sess.run(max_episodes=1)
+        sess.run(episodes=1)
     with pytest.raises(RuntimeError, match="session is closed"):
         sess.reset()
     with pytest.raises(RuntimeError, match="session is closed"):
@@ -194,28 +194,97 @@ def test_closed_session_rejects_any_further_use() -> None:
         sess.read(obs, "state/eef_pos")
 
 
-def test_session_close_fires_model_on_close_exactly_once() -> None:
-    # The model's close() hook fires from Session.close() -- so a hand-driven
-    # `with model.session(env)` block fires it too -- and idempotently.
+def test_session_close_leaves_a_borrowed_model_open() -> None:
+    # A model instance is the caller's: closing the session releases the
+    # connection and episode state, never the model. close() is explicit.
     closes: list[int] = []
     model = rlmesh.Model(lambda obs: 0, on_close=lambda: closes.append(1))
     with rlmesh.session(model, _TinyEnv()) as sess:
         sess.run(seeds=[0])
-        assert closes == []  # run() on a caller-held session does not close
+    assert closes == []
+    with rlmesh.session(model, _TinyEnv()) as sess:  # still usable
+        assert sess.run(seeds=[1]).num_episodes == 1
+    model.close()
+    assert closes == [1]
+
+
+def test_session_owns_a_model_it_built_from_a_class() -> None:
+    closes: list[int] = []
+
+    class _Owned(rlmesh.Model):
+        def predict(self, observation: object) -> int:
+            return 0
+
+        def close(self) -> None:
+            closes.append(1)
+
+    with rlmesh.session(_Owned, _TinyEnv()) as sess:
+        sess.run(seeds=[0])
+        assert closes == []
     assert closes == [1]
     sess.close()
     assert closes == [1]  # idempotent
+    rlmesh.run(_Owned, _TinyEnv())
+    assert closes == [1, 1]  # one-shot run closes the model it built
 
 
-def test_one_shot_run_still_closes_everything() -> None:
-    # rlmesh.run / Model.run create their session internally and close it when the
-    # run ends, firing the model's close() once per one-shot run.
+def test_one_shot_run_borrows_a_model_instance() -> None:
     closes: list[int] = []
     model = rlmesh.Model(lambda obs: 0, on_close=lambda: closes.append(1))
     rlmesh.run(model, _TinyEnv())
-    assert closes == [1]
     model.run(_TinyEnv())
-    assert closes == [1, 1]
+    assert closes == []
+    model.close()
+    assert closes == [1]
+
+
+def test_run_and_session_release_a_factory_built_env() -> None:
+    closed: list[int] = []
+
+    class _Env(_TinyEnv):
+        def close(self) -> None:
+            closed.append(1)
+
+    class _Factory(rlmesh.EnvFactory):
+        def make(self) -> object:
+            return _Env()
+
+    model = rlmesh.Model(lambda obs: 0)
+    model.run(_Factory())
+    assert closed == [1]
+    with rlmesh.session(model, _Factory()) as sess:
+        sess.run(seeds=[0])
+    assert closed == [1, 1]
+    # A caller's env is borrowed: closed only on the opt-in.
+    env = _Env()
+    model.run(env)
+    with rlmesh.session(model, env) as sess:
+        sess.run(seeds=[0])
+    assert closed == [1, 1]
+    model.run(env, close_env=True)
+    assert closed == [1, 1, 1]
+    # Opting a factory-built env into shutdown closes it once, not twice.
+    with rlmesh.session(model, _Factory(), close_env=True) as sess:
+        sess.run(seeds=[0])
+    assert closed == [1, 1, 1, 1]
+    model.run(_Factory(), close_env=True)
+    assert closed == [1, 1, 1, 1, 1]
+
+
+def test_session_run_episode_budget_is_exact_and_validated() -> None:
+    model = rlmesh.Model(lambda obs: 0)
+    with rlmesh.session(model, _TinyEnv()) as sess:
+        assert sess.run().num_episodes == 1
+        assert sess.run(seeds=[1, 2]).num_episodes == 2
+        assert sess.run(episodes=3).num_episodes == 3
+        assert sess.run(episodes=0).num_episodes == 0
+        assert sess.run(episodes=2, seeds=[1, 2]).num_episodes == 2
+        with pytest.raises(ValueError, match="episodes must be >= 0"):
+            sess.run(episodes=-1)
+        with pytest.raises(ValueError, match="does not match"):
+            sess.run(episodes=1, seeds=[1, 2])
+        episode = sess.run(seeds=[5]).episodes[0]
+        assert episode.predict_ms is not None and episode.step_ms is not None
 
 
 def test_as_model_rejects_a_non_model_source() -> None:
@@ -393,8 +462,8 @@ def test_run_hooks_fire_in_order_with_indices_and_seeds() -> None:
     assert recorder.run_results == [result]
     assert recorder.episode_results[0] == result.episodes[0]
     assert result.episodes[0].duration_s > 0.0
-    assert result.episodes[0].predict_ms >= 0.0
-    assert result.episodes[0].step_ms >= 0.0
+    assert result.episodes[0].predict_ms is not None
+    assert result.episodes[0].step_ms is not None
 
 
 def test_max_episode_steps_caps_and_truncates_each_episode() -> None:
@@ -731,7 +800,7 @@ def test_numpy_chunk_runs_over_a_scalar_action_space() -> None:
 
     env = _ScalarActionEnv()
     result = rlmesh.run(
-        rlmesh.numpy.Model(_NumpyChunky()), env, max_episodes=1, execution_horizon=4
+        rlmesh.numpy.Model(_NumpyChunky()), env, episodes=1, execution_horizon=4
     )
     assert result.num_episodes == 1
     assert len(env.actions) == 8

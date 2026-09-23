@@ -26,7 +26,7 @@ def main() -> None:
     from rlmesh.numpy import Model
 
     model = Model(predict)
-    result = model.run(args.address, max_episodes=args.episodes)
+    result = model.run(args.address, episodes=args.episodes)
     print(
         f"episodes={result.num_episodes} "
         f"mean_reward={result.mean_reward:.2f} steps={result.total_steps}"

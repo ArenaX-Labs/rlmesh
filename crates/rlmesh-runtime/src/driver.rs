@@ -392,6 +392,9 @@ struct Group<E> {
     pending_start: Option<(Vec<String>, Vec<u64>)>,
     reset_generation: u64,
     round_started: Instant,
+    /// Wall time of the predict(s) that landed since the group's last step,
+    /// charged to its next step (see `StepCompletedEvent::predict_ms`).
+    pending_predict: Duration,
 }
 
 impl<E> Group<E> {
@@ -579,6 +582,7 @@ where
                 pending_start: None,
                 reset_generation: 0,
                 round_started: Instant::now(),
+                pending_predict: Duration::ZERO,
             })
             .collect()
     }
@@ -888,8 +892,9 @@ where
     }
 
     /// Start (or restart) every lane of a group: claim the episodes' slots,
-    /// pick their seeds, mint their ids, and put the reset in flight. A lane
-    /// group with no slot left goes idle instead.
+    /// pick their seeds, mint their ids, and put the reset in flight. A group
+    /// with no slot left goes idle instead; a lockstep vector wider than the
+    /// remaining budget starts its extra lanes surplus (never scored).
     fn begin_reset(
         &mut self,
         gid: usize,
@@ -899,12 +904,16 @@ where
         initial: bool,
     ) {
         let width = groups[gid].width();
-        let bounded = groups[gid].lane_group;
-        let Some(slots) = state.claim_slots(width, bounded) else {
+        let slots = if groups[gid].lane_group {
+            state.claim_slots(width, true).unwrap_or_default()
+        } else {
+            state.claim_slots_upto(width)
+        };
+        if slots.is_empty() {
             groups[gid].phase = EnvPhase::Idle;
             groups[gid].predict = PredictState::None;
             return;
-        };
+        }
         if !initial {
             groups[gid].reset_generation += 1;
         }
@@ -913,6 +922,9 @@ where
         // lane and push them DOWN so the env tags its episodes with our ids; we
         // never read ids back from the env.
         let episode_ids = mint_episode_ids(width);
+        for surplus in &episode_ids[slots.len()..] {
+            state.mark_surplus(surplus);
+        }
         state.note_episode_seeds(&episode_ids, &seeds);
         let trials = self.planned_trial_indices(state, width);
         state.note_episode_trials(&episode_ids, &trials);
@@ -1204,6 +1216,7 @@ where
             )));
         }
         let group_count = outcome.requests.len() as u64;
+        let rpc = outcome.rpc;
         let mut recorded = false;
         for ((gid, expected_context, request_bytes), result) in
             outcome.requests.into_iter().zip(results)
@@ -1254,6 +1267,7 @@ where
                 }
             }
             let group = &mut groups[gid];
+            group.pending_predict += rpc;
             group.predict = match std::mem::replace(&mut group.predict, PredictState::None) {
                 // Conditioned on an observation from before an episode boundary:
                 // the chunk must not leak into the new episode. If the next
@@ -1392,7 +1406,7 @@ where
                     request_bytes,
                     step.response.encoded_len() as u64,
                 );
-                self.on_step(gid, groups, state, env_ops, telemetry, step.response)
+                self.on_step(gid, groups, state, env_ops, telemetry, step.response, rpc)
                     .await
             }
         }
@@ -1409,6 +1423,7 @@ where
         env_ops: &mut JoinSet<EnvOutcome<E>>,
         telemetry: &Arc<Mutex<Aggregator>>,
         response: StepResponse,
+        rpc: Duration,
     ) -> Result<(), RuntimeError> {
         let positions = groups[gid].positions.clone();
         let lane_group = groups[gid].lane_group;
@@ -1423,7 +1438,8 @@ where
         groups[gid].steps += 1;
 
         let step_observation = value_leaves(response.observation.as_ref())?;
-        state.record_step_at(&positions, &response.rewards);
+        let predict = std::mem::take(&mut groups[gid].pending_predict);
+        state.record_step_at(&positions, &response.rewards, rpc, predict);
         let snapshot = state.snapshot_at(&positions);
         // The runtime mints and owns episode ids (R1): a peer-reported completion
         // naming an id this slot has already moved past is a stale echo (the env
@@ -1489,6 +1505,8 @@ where
                 terminated,
                 truncated,
                 autoreset_roll,
+                predict_ms: predict.as_secs_f64() * 1e3,
+                step_ms: rpc.as_secs_f64() * 1e3,
             }
         );
 
@@ -1515,11 +1533,17 @@ where
                 .map(|lane| {
                     pending_roll
                         .contains_key(lane)
-                        .then(|| state.claim_slots(1, false))
+                        .then(|| state.claim_slots(1, true))
                         .flatten()
                         .and_then(|slots| slots.first().copied())
                 })
                 .collect();
+            // A rolled lane the budget no longer covers runs surplus.
+            for ((lane, id), slot) in groups[gid].lanes.iter().zip(&roll_ids).zip(&rolling) {
+                if pending_roll.contains_key(lane) && slot.is_none() {
+                    state.mark_surplus(id);
+                }
+            }
             let started = state.observe_episode_ids_at(&positions, roll_ids, &rolling);
             self.invoke_started_episodes(state, &context, started).await;
         }
@@ -1579,16 +1603,19 @@ where
             }
         }
 
-        // A group runs until the route's episode budget is spent (the env keeps
-        // rolling under NEXT_STEP; those extra episodes are not scored). The one
-        // exception is a lane group whose resets the DRIVER owns: that budget is
-        // the slot counter, checked at reset by `claim_slots`. Under NEXT_STEP no
-        // reset runs, so a lane group is bounded here or it never stops.
-        if (!lane_group || !self.driver_owns_resets())
-            && self
-                .spec
-                .max_episodes
-                .is_some_and(|limit| state.total_episodes() >= limit as i64)
+        // A group runs until every scored episode completed -- the budget bounds
+        // episode starts (slot claims), so `total_episodes` reaching it means
+        // nothing scored is live anywhere (surplus lanes the env rolled past the
+        // budget are stepped, never counted). The one exception is a lane group
+        // whose resets the DRIVER owns: that budget is the slot counter, checked
+        // at reset by `claim_slots`. A group left holding only surplus lanes
+        // (a lane group rolled past the budget under NEXT_STEP) stops now.
+        let budget_spent = self
+            .spec
+            .max_episodes
+            .is_some_and(|limit| state.total_episodes() >= limit as i64);
+        if ((!lane_group || !self.driver_owns_resets()) && budget_spent)
+            || state.all_surplus_at(&positions)
         {
             // The group never steps again, so the ended lanes' deferred
             // completions and evictions (NEXT_STEP, see `queue_evictions`) go
@@ -1820,6 +1847,9 @@ where
         episodes: Vec<StartedEpisode>,
     ) {
         for episode in episodes {
+            if state.is_surplus(&episode.episode_id) {
+                continue;
+            }
             let record = &episode.record;
             fan_out_event!(
                 self,
@@ -1907,6 +1937,10 @@ where
     ) -> Vec<EpisodeCompletedEvent> {
         let mut events = Vec::with_capacity(episodes.len());
         for completed in episodes {
+            if state.is_surplus(&completed.episode_id) {
+                continue;
+            }
+            let (predict_ms, step_ms) = state.slot_timings_ms(completed.env_index);
             let record = state.complete_episode(&completed.episode_id);
             let episode_record_id = record
                 .as_ref()
@@ -1932,6 +1966,8 @@ where
                         self.spec.edition_defaults().success_info_keys,
                         completed.final_info.as_ref(),
                     ),
+                    predict_ms,
+                    step_ms,
                 });
             }
             events.push(EpisodeCompletedEvent {
@@ -1954,6 +1990,8 @@ where
                 final_info: completed.final_info.clone(),
                 seed,
                 trial_index,
+                predict_ms,
+                step_ms,
             });
         }
         events

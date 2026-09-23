@@ -1004,6 +1004,92 @@ async fn next_step_roll_is_marked_per_lane() {
 }
 
 #[tokio::test]
+async fn the_budget_bounds_episode_starts_on_a_lockstep_vector() {
+    // Two lanes of equal length under a budget of three: the second pair of
+    // completions would overshoot by one. The budget bounds STARTS, so the
+    // fourth lane-episode the env rolls into is surplus: stepped in lockstep,
+    // never announced, scored, or counted -- exactly three episodes report.
+    let env = VectorTestEnv::new(vec![2, 2]);
+    let hooks = Arc::new(RecordingHooks::default());
+    let report = RuntimeDriver::new(vector_spec(2, 3), env, TestModel::default(), hooks.clone())
+        .run()
+        .await
+        .unwrap();
+
+    assert_eq!(report.episodes.len(), 3);
+    assert_eq!(report.total_episodes, 3);
+    let mut indices: Vec<i64> = report.episodes.iter().map(|e| e.episode_index).collect();
+    indices.sort_unstable();
+    assert_eq!(indices, [1, 2, 3]);
+    assert_eq!(hooks.started_seeds.lock().unwrap().len(), 3);
+    assert_eq!(hooks.completed_seeds.lock().unwrap().len(), 3);
+    for episode in &report.episodes {
+        assert_eq!(episode.step_count, 2);
+        assert!(episode.step_ms.is_some_and(|ms| ms > 0.0), "{episode:?}");
+        assert!(
+            episode.predict_ms.is_some_and(|ms| ms >= 0.0),
+            "{episode:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_budget_is_exact_on_driver_reset_lanes() {
+    let env = VectorTestEnv::new(vec![1, 3]);
+    let hooks = Arc::new(RecordingHooks::default());
+    let report = RuntimeDriver::new(
+        lane_spec(2, 3, vec![]),
+        env,
+        TestModel::default(),
+        hooks.clone(),
+    )
+    .run()
+    .await
+    .unwrap();
+    assert_eq!(report.episodes.len(), 3);
+    assert_eq!(hooks.started_seeds.lock().unwrap().len(), 3);
+    assert_eq!(hooks.completed_seeds.lock().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn step_timings_charge_a_chunk_predict_to_the_step_that_consumed_it() {
+    // A chunk of five frames: the predict lands on the step that first consumed
+    // it, the four replayed steps carry no predict time, and every step carries
+    // its own env round trip. The episode mean spreads the predict over its steps.
+    let model = TestModel {
+        replay_frames: 4,
+        ..Default::default()
+    };
+    let hooks = Arc::new(RecordingHooks::default());
+    let report = RuntimeDriver::new(
+        vector_spec(1, 1),
+        VectorTestEnv::new(vec![5]),
+        model,
+        hooks.clone(),
+    )
+    .run()
+    .await
+    .unwrap();
+
+    let timings = hooks.step_timings.lock().unwrap().clone();
+    assert_eq!(timings.len(), 5, "{timings:?}");
+    assert!(
+        timings[0].0 > 0.0,
+        "the first step consumed the chunk: {timings:?}"
+    );
+    assert!(
+        timings[1..].iter().all(|(predict, _)| *predict == 0.0),
+        "replayed steps carry no predict: {timings:?}"
+    );
+    assert!(timings.iter().all(|(_, step)| *step > 0.0), "{timings:?}");
+    let episode = &report.episodes[0];
+    let predict_total: f64 = timings.iter().map(|(p, _)| p).sum();
+    let step_total: f64 = timings.iter().map(|(_, s)| s).sum();
+    assert!((episode.predict_ms.unwrap() - predict_total / 5.0).abs() < 1e-9);
+    assert!((episode.step_ms.unwrap() - step_total / 5.0).abs() < 1e-9);
+}
+
+#[tokio::test]
 async fn chunking_does_not_break_autoreset_eviction() {
     // Chunking × NEXT_STEP autoreset. Chunk replay skips most predict calls, but
     // env.step + completion detection + ResetAdapter eviction still run every

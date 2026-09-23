@@ -482,13 +482,8 @@ fn report_telemetry_to_py(py: Python<'_>, report: &rlmesh::RuntimeReport) -> PyR
 
 /// The in-process run's per-episode results as a Python `list[dict]` (keys
 /// matching the SDK's `EpisodeResult` fields), from the runtime report's
-/// episode summaries. `predict_ms`/`step_ms` carry the report's SESSION-mean
-/// op latencies (the runtime aggregates timing per op, not per episode), so
-/// every episode reports the same mean -- real numbers rather than silent
-/// zeros, with the per-episode distinction documented on `Model.run`.
+/// episode summaries, each episode's own latency means included.
 fn report_episodes_to_py(py: Python<'_>, report: &rlmesh::RuntimeReport) -> PyResult<Py<PyAny>> {
-    let predict_ms = session_mean_ms(report, "model.predict");
-    let step_ms = session_mean_ms(report, "env.step");
     let episodes = pyo3::types::PyList::empty(py);
     for episode in &report.episodes {
         let entry = pyo3::types::PyDict::new(py);
@@ -502,23 +497,11 @@ fn report_episodes_to_py(py: Python<'_>, report: &rlmesh::RuntimeReport) -> PyRe
         entry.set_item("truncated", episode.truncated)?;
         entry.set_item("success", episode.success)?;
         entry.set_item("duration_s", episode.duration_ms as f64 / 1000.0)?;
-        entry.set_item("predict_ms", predict_ms)?;
-        entry.set_item("step_ms", step_ms)?;
+        entry.set_item("predict_ms", episode.predict_ms)?;
+        entry.set_item("step_ms", episode.step_ms)?;
         episodes.append(entry)?;
     }
     Ok(episodes.into_any().unbind())
-}
-
-/// The session-mean `rpc.total` latency (ms) for `op` from the report's
-/// telemetry aggregate, `0.0` when the op never ran.
-fn session_mean_ms(report: &rlmesh::RuntimeReport, op: &str) -> f64 {
-    report
-        .telemetry
-        .rows
-        .iter()
-        .find(|row| row.source.op == op && row.metric.name == "rpc.total")
-        .map(|row| row.avg)
-        .unwrap_or(0.0)
 }
 
 /// Run the in-process worker loop with Python signal delivery: the run future
@@ -766,13 +749,13 @@ impl PyModel {
     /// and `episode_completed(episode_id, index, env_index, seed, trial, steps,
     /// reward, terminated, truncated, success, duration_s)`. An exception it
     /// raises aborts the run and is re-raised as-is.
-    #[pyo3(signature = (env_address, max_episodes, execution_horizon=1, seeds=None, max_episode_steps=None, max_episode_seconds=None, close_env=false, trial_index_base=None, prefetch_lead=0, workflow_edition=None, hooks=None))]
+    #[pyo3(signature = (env_address, episodes, execution_horizon=1, seeds=None, max_episode_steps=None, max_episode_seconds=None, close_env=false, trial_index_base=None, prefetch_lead=0, workflow_edition=None, hooks=None))]
     #[allow(clippy::too_many_arguments)]
     fn run_local_for_episodes(
         &self,
         py: Python<'_>,
         env_address: &str,
-        max_episodes: u64,
+        episodes: u64,
         execution_horizon: u32,
         seeds: Option<Vec<i64>>,
         max_episode_steps: Option<i64>,
@@ -786,7 +769,7 @@ impl PyModel {
         let run_span = tracing::info_span!(
             "rlmesh.model.run_local_for_episodes",
             env_address = env_address,
-            max_episodes
+            episodes
         );
         let _run_enter = run_span.enter();
         let total_guard = self.profiler.start("model.run_local.total");
@@ -794,11 +777,13 @@ impl PyModel {
         let env_address = ConnectAddress::parse(env_address).map_err(to_py_err)?;
         let handler = self.build_handler();
         let mut options = RunLocalOptions::new(env_address)
-            .for_episodes(max_episodes)
+            .for_episodes(episodes)
             .execution_horizon(execution_horizon)
             .prefetch_lead(prefetch_lead)
             .episode_seeds(seeds.unwrap_or_default())
-            .close_env(close_env);
+            .close_env(close_env)
+            // The Python model outlives this run: its close() is the caller's.
+            .close_model(false);
         options.workflow_edition = crate::lifecycle::checked_workflow_edition(workflow_edition)?;
         if let Some(cap) = max_episode_steps {
             options = options.max_episode_steps(cap);
@@ -857,7 +842,7 @@ import typing
 class PyModel:
     def __init__(self, predict_fn: collections.abc.Callable[[Value], Value], configure_fn: collections.abc.Callable[[EnvContract], object] | None = None, on_episode_end: collections.abc.Callable[[str], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None, predict_chunk_fn: collections.abc.Callable[[Value, int], Value] | None = None, predict_batch_fn: collections.abc.Callable[[list[Value], list[dict[str, typing.Any]]], list[Value]] | None = None, predict_chunk_batch_fn: collections.abc.Callable[[list[Value], int, list[dict[str, typing.Any]]], list[Value]] | None = None, allow_fusion: bool = True, native_chunk: int | None = None) -> None: ...
     def run_local(self, env_address: str, execution_horizon: int = 1, prefetch_lead: int = 0, workflow_edition: str | None = None) -> dict[str, typing.Any]: ...
-    def run_local_for_episodes(self, env_address: str, max_episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trial_index_base: int | None = None, prefetch_lead: int = 0, workflow_edition: str | None = None, hooks: object | None = None) -> dict[str, typing.Any]: ...
+    def run_local_for_episodes(self, env_address: str, episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trial_index_base: int | None = None, prefetch_lead: int = 0, workflow_edition: str | None = None, hooks: object | None = None) -> dict[str, typing.Any]: ...
     def serve(self, address: str, options: ServeOptions | None = None) -> None: ...
 "#
     }

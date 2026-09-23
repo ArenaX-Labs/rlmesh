@@ -360,6 +360,7 @@ def construct_authored_model(source: Any, /, **kwargs: object) -> Any:
     than silently dropped.
     """
     from rlmesh._models.base import ModelBase, suppress_autoload
+    from rlmesh.params import ParamSpec
     from rlmesh.params._resolve import resolve
 
     if isinstance(source, type):
@@ -380,7 +381,9 @@ def construct_authored_model(source: Any, /, **kwargs: object) -> Any:
         return inst
 
     model = cast("ModelBase[Any, Any]", inst)
-    spec = model.params
+    # No declared params: the signature alone is the contract -- a keyword
+    # `load` does not take is refused, one it takes through **kwargs forwards.
+    spec = model.params if model.params is not None else ParamSpec(extra="passthrough")
     resolved = resolve(spec, model.load, kwargs)
     # The default ModelBase.load is a no-op: a non-empty binding would be silently
     # swallowed (and the eager auto-load was already suppressed). Fail loud so the

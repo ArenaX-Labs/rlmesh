@@ -604,3 +604,72 @@ def test_tag_branches_orders_the_default_first() -> None:
         {"action_type": "delta"},
         {"action_type": "abs"},
     ]
+
+
+# --- Model.from_config: the configured constructor ---
+
+
+class _Configured(rlmesh.Model):
+    params = rlmesh.ParamSpec(rlmesh.Param("device", choices=("cpu", "cuda")))
+    loads: list[dict[str, object]]
+
+    def load(self, checkpoint: str = "default", device: str = "cpu") -> None:
+        self.loads = [
+            *getattr(self, "loads", []),
+            {"checkpoint": checkpoint, "device": device},
+        ]
+
+    def predict(self, observation: object) -> int:
+        return 0
+
+
+def test_from_config_returns_the_subclass_loaded_once_with_defaults() -> None:
+    model = _Configured.from_config()
+    assert type(model) is _Configured
+    assert model.loads == [{"checkpoint": "default", "device": "cpu"}]
+
+
+def test_from_config_keywords_configure_load_exactly_once() -> None:
+    model = _Configured.from_config(checkpoint="other", device="cuda")
+    assert model.loads == [{"checkpoint": "other", "device": "cuda"}]
+
+
+def test_from_config_validates_against_signature_and_params() -> None:
+    from rlmesh.params import MissingParamError, ParamError, UnknownParamError
+
+    with pytest.raises(UnknownParamError, match="dtype"):
+        _Configured.from_config(dtype="fp16")
+    with pytest.raises(ParamError, match="device"):
+        _Configured.from_config(device="tpu")
+
+    class _Required(_Configured):
+        def load(self, checkpoint: str, device: str = "cpu") -> None:  # type: ignore[override]
+            super().load(checkpoint=checkpoint, device=device)
+
+    with pytest.raises(MissingParamError, match="checkpoint"):
+        _Required.from_config()
+    assert _Required.from_config(checkpoint="x").loads == [
+        {"checkpoint": "x", "device": "cpu"}
+    ]
+
+
+def test_from_config_matches_the_served_binding() -> None:
+    from rlmesh import serve
+
+    local = _Configured.from_config(checkpoint="ckpt-3", device="cuda")
+    served = serve._resolve_model(
+        _Configured, {"checkpoint": "ckpt-3", "device": "cuda"}
+    )
+    assert isinstance(served, _Configured)
+    assert served.loads == local.loads == [{"checkpoint": "ckpt-3", "device": "cuda"}]
+
+
+def test_from_config_refuses_a_framework_base_class() -> None:
+    import rlmesh.numpy
+
+    for base in (rlmesh.Model, rlmesh.numpy.Model):
+        with pytest.raises(TypeError, match="authored Model subclass"):
+            base.from_config()
+    # The plain constructors keep their shapes.
+    assert _Configured().loads == [{"checkpoint": "default", "device": "cpu"}]
+    assert rlmesh.Model(lambda obs: obs, spec=rlmesh.NO_ADAPTER) is not None

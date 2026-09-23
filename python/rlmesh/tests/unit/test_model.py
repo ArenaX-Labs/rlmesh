@@ -178,7 +178,7 @@ def test_session_predict_can_pass_optional_context_with_episode_seed() -> None:
         seen.append({"observation": observation, **context})
         return 0
 
-    result = Model(predict).run(Env(), seeds=[7, 8], max_episodes=2)
+    result = Model(predict).run(Env(), seeds=[7, 8], episodes=2)
 
     assert result.num_episodes == 2
     assert [episode.seed for episode in result.episodes] == [7, 8]
@@ -219,7 +219,7 @@ def test_session_predict_context_carries_stable_episode_identity() -> None:
         return 0
 
     with Model(predict).session(Env()) as sess:
-        sess.run(seeds=[7], max_episodes=1)
+        sess.run(seeds=[7], episodes=1)
 
     # A plain local env is driven directly (no runtime in the loop), so the
     # session mints the episode identity itself -- one id for the whole episode,
@@ -420,7 +420,7 @@ def test_adapted_run_uses_env_bridge_for_adapter_boundary(
         spec=object(),
         env=Client(),
         bridge=model_bridge,
-    ).run(max_episodes=1)
+    ).run(episodes=1)
 
     assert result.num_episodes == 1
     assert seen["reset"] is True
@@ -490,7 +490,7 @@ def test_adapted_run_defaults_a_bridge_less_env_to_the_numpy_bridge(
         spec=object(),
         env=Client(),
         bridge=identity_bridge,  # the model bridge -- must not become the env bridge
-    ).run(max_episodes=1)
+    ).run(episodes=1)
 
     assert result.num_episodes == 1
     # Env side is numpy (the env's native default), regardless of the model bridge.
@@ -534,7 +534,7 @@ def _address_run_calls(*, close_env: bool) -> tuple[Any, list[str]]:
         close_env=close_env,
         remote_env_cls=FakeRemoteEnv,
     )
-    result = sess.run(max_episodes=1)
+    result = sess.run(episodes=1)
     # run() leaves a caller-held session open (reusable); teardown is close()'s.
     assert calls == []
     sess.close()
@@ -743,7 +743,7 @@ def test_local_session_threads_device_to_predict_step(
         env=Client(),
         bridge=RecordingBridge(),
         device="cpu",
-    ).run(max_episodes=1)
+    ).run(episodes=1)
     assert seen["payload"] == {"placed_on": "cpu"}
 
 

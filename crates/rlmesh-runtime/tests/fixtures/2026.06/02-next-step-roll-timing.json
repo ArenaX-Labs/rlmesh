@@ -97,12 +97,6 @@
       },
       {
         "episodes": [
-          "ep-5"
-        ],
-        "event": "started"
-      },
-      {
-        "episodes": [
           "ep-4",
           "ep-5"
         ],
@@ -408,18 +402,6 @@
       },
       {
         "episodes": [
-          "ep-9"
-        ],
-        "event": "started"
-      },
-      {
-        "episodes": [
-          "ep-10"
-        ],
-        "event": "started"
-      },
-      {
-        "episodes": [
           "ep-9",
           "ep-7",
           "ep-10",
@@ -456,24 +438,27 @@
       },
       {
         "episodes": [
-          "ep-11"
+          "ep-9",
+          "ep-11",
+          "ep-10",
+          "ep-8"
         ],
-        "event": "started"
+        "event": "observation"
       },
       {
         "episodes": [
           "ep-9"
         ],
-        "event": "completed"
+        "event": "step"
       },
       {
         "episodes": [
-          "ep-10"
+          "ep-8"
         ],
         "event": "completed"
       }
     ],
-    "predicts": 8,
+    "predicts": 9,
     "report": {
       "episodes": [
         {
@@ -554,30 +539,19 @@
           "truncated": false
         },
         {
-          "cumulative_reward": 2.0,
-          "env_index": 0,
-          "episode_index": 9,
+          "cumulative_reward": 4.0,
+          "env_index": 3,
+          "episode_index": 8,
           "seed": null,
-          "step_count": 2,
-          "success": false,
-          "terminated": true,
-          "trial_index": null,
-          "truncated": false
-        },
-        {
-          "cumulative_reward": 2.0,
-          "env_index": 2,
-          "episode_index": 10,
-          "seed": null,
-          "step_count": 2,
+          "step_count": 4,
           "success": null,
           "terminated": true,
           "trial_index": null,
           "truncated": false
         }
       ],
-      "total_episodes": 9,
-      "total_steps": 8
+      "total_episodes": 8,
+      "total_steps": 9
     }
   },
   "simultaneous_roll": {

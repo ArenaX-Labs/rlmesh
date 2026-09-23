@@ -14,7 +14,7 @@ use rlmesh_proto::model::v1::{
 };
 use rlmesh_proto::spaces::v1::SpaceValue;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::episodes::{EpisodeRecord, EpisodeRecordRegistry};
 use crate::hooks::RuntimeEnvContext;
@@ -67,6 +67,10 @@ pub(crate) struct RouteState {
     /// How many trial ordinals have been minted off `trial_index_base`
     /// (episode-start order). Monotone for the life of the route.
     trial_cursor: u64,
+    /// Episodes that started past the budget: a lockstep lane the env rolled
+    /// (or reset) after every slot was claimed. Stepped because its vector
+    /// cannot pause one lane, but never scored, counted, or announced.
+    surplus: HashSet<String>,
 }
 
 impl RouteState {
@@ -79,6 +83,8 @@ impl RouteState {
                 reset: true,
                 cumulative_reward: 0.0,
                 started_at_ns: now_unix_ns(),
+                predict_ns: 0,
+                step_ns: 0,
             })
             .collect();
 
@@ -98,6 +104,7 @@ impl RouteState {
             max_episodes: spec.max_episodes,
             trial_by_episode: HashMap::new(),
             trial_cursor: 0,
+            surplus: HashSet::new(),
         }
     }
 
@@ -162,6 +169,55 @@ impl RouteState {
         }
         self.next_slot = last;
         Some((first..last).collect())
+    }
+
+    /// Claim up to `count` consecutive slots: as many as the budget still
+    /// holds (all of them when unbounded), so a lockstep vector whose width
+    /// exceeds the remaining budget starts the scored lanes and leaves the rest
+    /// surplus.
+    pub(crate) fn claim_slots_upto(&mut self, count: usize) -> Vec<u64> {
+        let first = self.next_slot;
+        let remaining = self
+            .max_episodes
+            .map_or(count as u64, |max| max.saturating_sub(first));
+        let last = first + (count as u64).min(remaining);
+        self.next_slot = last;
+        (first..last).collect()
+    }
+
+    pub(crate) fn mark_surplus(&mut self, episode_id: &str) {
+        self.surplus.insert(episode_id.to_string());
+    }
+
+    pub(crate) fn is_surplus(&self, episode_id: &str) -> bool {
+        self.surplus.contains(episode_id)
+    }
+
+    /// Every lane at `positions` holds a surplus episode: the group has
+    /// nothing scored left to run.
+    pub(crate) fn all_surplus_at(&self, positions: &[usize]) -> bool {
+        positions.iter().all(|&position| {
+            self.slots
+                .get(position)
+                .and_then(|slot| slot.episode.as_ref())
+                .is_some_and(|episode| self.surplus.contains(&episode.episode_id))
+        })
+    }
+
+    /// The slot's per-step latency means over its current episode, in
+    /// milliseconds; `None` before its first step.
+    pub(crate) fn slot_timings_ms(&self, env_index: u32) -> (Option<f64>, Option<f64>) {
+        let Some(slot) = self
+            .slot_position(env_index)
+            .and_then(|p| self.slots.get(p))
+        else {
+            return (None, None);
+        };
+        if slot.step <= 0 {
+            return (None, None);
+        }
+        let per_step = |ns: u64| Some(ns as f64 / 1e6 / slot.step as f64);
+        (per_step(slot.predict_ns), per_step(slot.step_ns))
     }
 
     /// Remember which explicit seed each episode in a reset batch received, so
@@ -348,13 +404,24 @@ impl RouteState {
     }
 
     /// Advance the group's lanes by one step; `rewards` aligns to `positions`.
-    pub(crate) fn record_step_at(&mut self, positions: &[usize], rewards: &[f64]) {
+    /// `step` is the env round trip's wall time and `predict` that of the
+    /// predict(s) that landed since the previous step (zero for a step served
+    /// from chunk replay); every lane of the group experienced both.
+    pub(crate) fn record_step_at(
+        &mut self,
+        positions: &[usize],
+        rewards: &[f64],
+        step: std::time::Duration,
+        predict: std::time::Duration,
+    ) {
         self.total_steps += 1;
         for (i, &position) in positions.iter().enumerate() {
             if let Some(slot) = self.slots.get_mut(position) {
                 slot.step += 1;
                 slot.reset = false;
                 slot.cumulative_reward += rewards.get(i).copied().unwrap_or(0.0);
+                slot.step_ns += step.as_nanos() as u64;
+                slot.predict_ns += predict.as_nanos() as u64;
             }
         }
     }
@@ -492,6 +559,7 @@ impl RouteState {
                 // iteration's final predict still reports it.
                 self.seed_by_episode.remove(&previous_id);
                 self.trial_by_episode.remove(&previous_id);
+                self.surplus.remove(&previous_id);
             }
             // A sync that leaves a lane's id alone (the siblings of an
             // autoreset roll) leaves its episode live on the model too, so its
@@ -522,6 +590,8 @@ impl RouteState {
                 slot.reset = true;
                 slot.cumulative_reward = 0.0;
                 slot.started_at_ns = now_unix_ns();
+                slot.predict_ns = 0;
+                slot.step_ns = 0;
             }
         }
     }

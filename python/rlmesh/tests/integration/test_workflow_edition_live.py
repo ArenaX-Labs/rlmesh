@@ -174,7 +174,7 @@ def test_public_wrappers_forward_the_call_pin(
         session.reset()
         assert session.selected_workflow_edition == COHORT
     result = rlmesh.run(
-        policy, served_env, max_episodes=1, workflow_edition=declared_edition
+        policy, served_env, episodes=1, workflow_edition=declared_edition
     )
     assert len(result.episodes) == 1
 

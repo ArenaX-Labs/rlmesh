@@ -74,7 +74,7 @@ server.start()
 client = RemoteEnv(server.address)
 
 print(adapt.resolve_from_contract(client.env_contract, MODEL_SPEC).explain())
-Model(predict, spec=MODEL_SPEC).run(client, max_episodes=1)
+Model(predict, spec=MODEL_SPEC).run(client, episodes=1)
 ```
 
 The script first prints `resolve_from_contract(...).explain()`, the exact transformations chosen: the image is resized, `quat_xyzw -> rot6d` is applied to the rotation, the instruction key is remapped, and the model's `rot6d` action is converted `rot6d -> axis_angle` and clipped into the environment's action.
@@ -173,12 +173,12 @@ uv run python -m vla_adapters.eval --model smolvla --env libero --address 127.0.
 if is_plain:
     print(adapt.resolve_from_contract(env.env_contract, model_entry.spec).explain())
     model = Model(model_entry.load_predict_fn(), spec=model_entry.spec)
-    model.run(env, max_episodes=episodes)
+    model.run(env, episodes=episodes)
 else:
     adapter = build_adapter(model_name, env_name, ENVS[env_name])
     model = Model(
         adapter.wrap_predict(model_entry.load_predict_fn()),
         on_episode_end=adapter.reset,
     )
-    model.run(env, max_episodes=episodes)
+    model.run(env, episodes=episodes)
 ```

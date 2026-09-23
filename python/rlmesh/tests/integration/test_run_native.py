@@ -115,8 +115,8 @@ def test_run_reports_the_envs_success_signal() -> None:
     failed = CountEnv(episode_len=2, final_info={"is_success": False})
     succeeded = CountEnv(episode_len=2, final_info={"success": 1})
     try:
-        failed_result = _model().run(failed, max_episodes=1)
-        succeeded_result = _model().run(succeeded, max_episodes=1)
+        failed_result = _model().run(failed, episodes=1)
+        succeeded_result = _model().run(succeeded, episodes=1)
     except ConnectionError as exc:
         if "Operation not permitted" in str(exc):
             pytest.skip("local tcp bind is not permitted in this environment")
@@ -131,7 +131,7 @@ def test_run_reports_the_envs_success_signal() -> None:
 def test_run_trust_entrypoints_is_scoped_to_the_call() -> None:
     model = _model()
     try:
-        model.run(CountEnv(), max_episodes=1, trust_entrypoints=True)
+        model.run(CountEnv(), episodes=1, trust_entrypoints=True)
     except ConnectionError as exc:
         if "Operation not permitted" in str(exc):
             pytest.skip("local tcp bind is not permitted in this environment")
@@ -163,7 +163,7 @@ def test_run_truncates_an_over_produced_dict_chunk_to_the_horizon() -> None:
 
     env = DictActionEnv()
     try:
-        result = ChunkPolicy().run(env, max_episodes=1, execution_horizon=3)
+        result = ChunkPolicy().run(env, episodes=1, execution_horizon=3)
     except ConnectionError as exc:
         if "Operation not permitted" in str(exc):
             pytest.skip("local tcp bind is not permitted in this environment")
@@ -213,7 +213,7 @@ def test_run_prefetch_lead_predicts_the_next_chunk_from_a_stale_observation() ->
 
         try:
             result = ChunkPolicy().run(
-                StepEnv(), max_episodes=2, execution_horizon=3, prefetch_lead=lead
+                StepEnv(), episodes=2, execution_horizon=3, prefetch_lead=lead
             )
         except ConnectionError as exc:
             if "Operation not permitted" in str(exc):
@@ -252,7 +252,7 @@ def test_run_holds_a_declared_native_chunk_to_its_length() -> None:
         with pytest.raises(
             Exception, match="native_chunk=8 but its chunk corner returned 2"
         ):
-            ShortChunk().run(CountEnv(), max_episodes=1, execution_horizon=4)
+            ShortChunk().run(CountEnv(), episodes=1, execution_horizon=4)
     except ConnectionError as exc:
         if "Operation not permitted" in str(exc):
             pytest.skip("local tcp bind is not permitted in this environment")
@@ -309,9 +309,9 @@ def test_run_delivers_every_step_to_a_stacked_model_at_any_horizon() -> None:
         env = adapt.tag(CameraEnv(), tags)
         try:
             if path == "session":
-                model.session(env, execution_horizon=horizon).run(max_episodes=1)
+                model.session(env, execution_horizon=horizon).run(episodes=1)
             else:
-                model.run(env, max_episodes=1, execution_horizon=horizon)
+                model.run(env, episodes=1, execution_horizon=horizon)
         except ConnectionError as exc:
             if "Operation not permitted" in str(exc):
                 pytest.skip("local tcp bind is not permitted in this environment")
@@ -329,7 +329,7 @@ def test_run_delivers_every_step_to_a_stacked_model_at_any_horizon() -> None:
 def test_run_max_episode_steps_truncates_via_the_runtime() -> None:
     env = CountEnv(episode_len=0)
     try:
-        result = _model().run(env, max_episodes=2, max_episode_steps=4)
+        result = _model().run(env, episodes=2, max_episode_steps=4)
     except ConnectionError as exc:
         if "Operation not permitted" in str(exc):
             pytest.skip("local tcp bind is not permitted in this environment")
@@ -361,7 +361,7 @@ def test_run_on_a_driven_handle_explains_the_session_conflict() -> None:
         handle = rlmesh.numpy.RemoteEnv(server.address)
         handle.reset()
         with pytest.raises(RuntimeError, match=r"close\(\) the handle"):
-            _model().run(handle, max_episodes=1)
+            _model().run(handle, episodes=1)
         handle.close()
     finally:
         server.shutdown()
@@ -471,27 +471,20 @@ def test_hooks_fire_in_order_with_indices_and_seeds(path: str) -> None:
     assert first.observation.shape == (2,) and first.action.shape == (2,)
     assert first.predict_ms >= 0.0 and first.step_ms >= 0.0
     assert recorder.run_results == [result]
-    # Hooks never change the result; only the hook-delivered timings are the
-    # episode's own wall-clock means rather than the run's.
-    delivered, reported = recorder.episode_results[0], result.episodes[0]
-    for field in (
-        "index",
-        "seed",
-        "trial",
-        "steps",
-        "reward",
-        "terminated",
-        "truncated",
-        "success",
-    ):
-        assert getattr(delivered, field) == getattr(reported, field), field
+    # Hooks never change the result, and the record delivered to on_episode_end
+    # IS the result's: one timing definition, timings included.
+    assert recorder.episode_results == list(result.episodes)
+    assert all(
+        e.predict_ms is not None and e.step_ms is not None and e.step_ms > 0.0
+        for e in result.episodes
+    )
     assert recorder.late == []
 
 
 @pytest.mark.parametrize("path", PATHS)
 def test_hooks_carry_the_terminal_flag_on_the_terminal_step_only(path: str) -> None:
     recorder = _Recorder()
-    _drive(_model(), CountEnv(episode_len=3), path, max_episodes=1, hooks=recorder)
+    _drive(_model(), CountEnv(episode_len=3), path, episodes=1, hooks=recorder)
     flags = [(e.step, e.terminated, e.truncated) for e in recorder.events]
     assert flags == [(0, False, False), (1, False, False), (2, True, False)]
 
@@ -503,7 +496,7 @@ def test_hooks_carry_the_truncation_on_the_capped_step(path: str) -> None:
         _model(),
         CountEnv(episode_len=0),
         path,
-        max_episodes=1,
+        episodes=1,
         max_episode_steps=3,
         hooks=recorder,
     )
@@ -557,7 +550,7 @@ def test_hooks_read_a_role_off_the_observation(path: str) -> None:
         Model(lambda obs: np.zeros(1, np.float32), spec=rlmesh.NO_ADAPTER),
         adapt.tag(_ArmEnv(), tags),
         path,
-        max_episodes=1,
+        episodes=1,
         hooks=recorder,
     )
     assert recorder.values[0].shape == (3,)
@@ -606,18 +599,16 @@ def test_the_original_hook_exception_wins_over_a_raising_on_run_end() -> None:
     recorder = _raising("on_step", _BoomError("original"))
     recorder.on_run_end = _raising("on_run_end", _BoomError("run_end")).on_run_end  # type: ignore[method-assign]
     with pytest.raises(_BoomError, match="original"):
-        _drive(
-            _model(), CountEnv(episode_len=2), "native", max_episodes=1, hooks=recorder
-        )
+        _drive(_model(), CountEnv(episode_len=2), "native", episodes=1, hooks=recorder)
 
     lone = _raising("on_run_end", _BoomError("lone"))
     with pytest.raises(_BoomError, match="lone"):
-        _drive(_model(), CountEnv(episode_len=2), "native", max_episodes=1, hooks=lone)
+        _drive(_model(), CountEnv(episode_len=2), "native", episodes=1, hooks=lone)
 
 
 def test_hooks_fire_on_an_empty_native_run() -> None:
     recorder = _Recorder()
-    result = _drive(_model(), CountEnv(), "native", max_episodes=0, hooks=recorder)
+    result = _drive(_model(), CountEnv(), "native", episodes=0, hooks=recorder)
     assert result.num_episodes == 0
     assert recorder.calls == [("run_start",), ("run_end", 0)]
 
@@ -685,8 +676,8 @@ def _assert_interleaved_episodes_are_well_formed(
     steps_of = {r.index: r.steps for r in recorder.episode_results}
     last_events = {e.episode: e for e in recorder.events}
     for index, calls in _episodes_by_index(recorder).items():
-        if index not in steps_of:
-            continue  # cut off by the episode budget: started, never completed
+        # The budget bounds starts: every episode a hook sees start completes.
+        assert index in steps_of, index
         kinds = [c[0] for c in calls]
         assert kinds == ["start"] + ["step"] * steps_of[index] + ["end"], (index, kinds)
         assert [c[2] for c in calls if c[0] == "step"] == list(range(steps_of[index]))
@@ -700,12 +691,76 @@ def test_hooks_on_a_next_step_vector_env() -> None:
     recorder = _Recorder()
     # A spec-less policy on a vector env predicts on the fused (N, ...) batch.
     stacked = Model(lambda obs: np.zeros((2, 2), np.float32))
-    result = _drive(
-        stacked, _NextStepVectorEnv(), "native", max_episodes=2, hooks=recorder
-    )
-    assert result.num_episodes >= 2
+    result = _drive(stacked, _NextStepVectorEnv(), "native", episodes=2, hooks=recorder)
+    assert result.num_episodes == 2
     assert recorder.contexts[0].num_envs == 2
     _assert_interleaved_episodes_are_well_formed(recorder, result)
+
+
+@pytest.mark.parametrize("lengths", [(2, 2), (1, 3), (3, 1)])
+def test_an_uneven_budget_is_exact_on_a_lockstep_vector_env(
+    lengths: tuple[int, int],
+) -> None:
+    # Two lanes, three episodes: equal lengths complete in pairs (the second
+    # pair overshoots the budget by one), unequal ones roll apart. Either way
+    # exactly three are started, scored, and reported; the fourth lane-episode
+    # the env rolls into is never announced.
+    from rlmesh.numpy import Model
+
+    recorder = _Recorder()
+    stacked = Model(lambda obs: np.zeros((2, 2), np.float32))
+    result = _drive(
+        stacked, _NextStepVectorEnv(lengths), "native", episodes=3, hooks=recorder
+    )
+    assert result.num_episodes == 3
+    assert sorted(e.index for e in result.episodes) == [0, 1, 2]
+    assert [c[1] for c in recorder.calls if c[0] == "start"] == [0, 1, 2]
+    _assert_interleaved_episodes_are_well_formed(recorder, result)
+    assert sum(e.steps for e in result.episodes) == sum(
+        e.steps for e in recorder.episode_results
+    )
+
+
+def test_an_uneven_budget_is_exact_on_driver_reset_lanes() -> None:
+    lanes = [CountEnv(episode_len=1), CountEnv(episode_len=3)]
+    server = rlmesh.EnvServer(cast("Any", lanes), host="127.0.0.1", port=0)
+    try:
+        server.start()
+    except (OSError, ConnectionError) as exc:
+        if "Operation not permitted" in str(exc):
+            pytest.skip("local tcp bind is not permitted in this environment")
+        raise
+    recorder = _Recorder()
+    try:
+        result = _model().run(server.address, seeds=[3, 4, 5], hooks=recorder)
+    finally:
+        server.shutdown()
+    assert result.num_episodes == 3
+    assert sorted(e.seed for e in result.episodes) == [3, 4, 5]
+    assert sorted(e.trial for e in result.episodes) == [0, 1, 2]
+    _assert_interleaved_episodes_are_well_formed(recorder, result)
+
+
+def test_the_episode_budget_is_validated_before_any_episode() -> None:
+    model = _model()
+    with pytest.raises(ValueError, match="episodes must be >= 0"):
+        model.run(CountEnv(episode_len=1), episodes=-1)
+    with pytest.raises(ValueError, match="does not match len\\(seeds\\)"):
+        model.run(CountEnv(episode_len=1), episodes=2, seeds=[1, 2, 3])
+    assert model.run(CountEnv(episode_len=1), episodes=0).num_episodes == 0
+    assert (
+        model.run(CountEnv(episode_len=1), episodes=2, seeds=[1, 2]).num_episodes == 2
+    )
+
+
+def test_seeds_on_an_autoresetting_vector_env_are_refused_before_execution() -> None:
+    from rlmesh.numpy import Model
+
+    recorder = _Recorder()
+    stacked = Model(lambda obs: np.zeros((2, 2), np.float32))
+    with pytest.raises(Exception, match="autoreset"):
+        _drive(stacked, _NextStepVectorEnv(), "native", seeds=[1, 2], hooks=recorder)
+    assert [c[0] for c in recorder.calls] == ["run_start", "run_end"]
 
 
 def test_hooks_on_a_next_step_vector_env_whose_lanes_roll_apart() -> None:
@@ -716,7 +771,7 @@ def test_hooks_on_a_next_step_vector_env_whose_lanes_roll_apart() -> None:
     recorder = _Recorder()
     stacked = Model(lambda obs: np.zeros((2, 2), np.float32))
     result = _drive(
-        stacked, _NextStepVectorEnv((1, 3)), "native", max_episodes=3, hooks=recorder
+        stacked, _NextStepVectorEnv((1, 3)), "native", episodes=3, hooks=recorder
     )
     _assert_interleaved_episodes_are_well_formed(recorder, result)
     assert {r.steps for r in recorder.episode_results} >= {1, 3}
@@ -733,9 +788,7 @@ def test_hooks_on_driver_reset_lanes() -> None:
         raise
     recorder = _Recorder()
     try:
-        result = _model().run(
-            server.address, max_episodes=2, seeds=[3, 4], hooks=recorder
-        )
+        result = _model().run(server.address, episodes=2, seeds=[3, 4], hooks=recorder)
     finally:
         server.shutdown()
     assert result.num_episodes == 2
@@ -762,7 +815,7 @@ def test_session_served_env_context_carries_stable_episode_identity() -> None:
     server.start()
     try:
         with Model(predict).session(server.address) as sess:
-            sess.run(seeds=[7], max_episodes=1)
+            sess.run(seeds=[7], episodes=1)
     finally:
         server.shutdown()
 
@@ -885,9 +938,9 @@ def test_run_feeds_a_previous_action_part_the_frame_executed_the_step_before() -
         env = adapt.tag(Go2Env(), tags)
         try:
             if path == "session":
-                model.session(env, execution_horizon=horizon).run(max_episodes=1)
+                model.session(env, execution_horizon=horizon).run(episodes=1)
             else:
-                model.run(env, max_episodes=1, execution_horizon=horizon)
+                model.run(env, episodes=1, execution_horizon=horizon)
         except ConnectionError as exc:
             if "Operation not permitted" in str(exc):
                 pytest.skip("local tcp bind is not permitted in this environment")
@@ -902,3 +955,58 @@ def test_run_feeds_a_previous_action_part_the_frame_executed_the_step_before() -
     # chunk executed before (7 and 12), never frame 0 of it (1 and 6).
     assert previous("native", 7) == [0.0, 7.0, 12.0]
     assert previous("session", 7) == [0.0, 7.0, 12.0]
+
+
+# ---------------------------------------------------------------------------
+# Ownership: a borrowed model and env survive a run, a failure, an interrupt
+# ---------------------------------------------------------------------------
+
+
+def test_a_model_is_reusable_after_a_predict_failure_and_an_interrupt() -> None:
+    from rlmesh.numpy import Model
+
+    closes: list[int] = []
+    calls = {"n": 0}
+
+    def predict(observation: Any) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise _BoomError("first predict fails")
+        return np.zeros(2, np.float32)
+
+    model = Model(predict, on_close=lambda: closes.append(1))
+    env = CountEnv(episode_len=2)
+    with pytest.raises(Exception, match="first predict fails"):
+        _drive(model, env, "native", episodes=1)
+    assert _drive(model, env, "native", episodes=1).num_episodes == 1
+    with pytest.raises(KeyboardInterrupt):
+        _drive(
+            model,
+            env,
+            "native",
+            episodes=1,
+            hooks=_raising("on_step", KeyboardInterrupt()),
+        )
+    assert _drive(model, env, "native", episodes=2).num_episodes == 2
+    # A session on the same model, then a run on it again: nothing was closed.
+    with model.session(env) as sess:
+        assert sess.run(episodes=1).num_episodes == 1
+    assert _drive(model, env, "native", episodes=1).num_episodes == 1
+    assert closes == []
+    model.close()
+    assert closes == [1]
+
+
+def test_a_borrowed_env_is_left_open_by_the_native_run() -> None:
+    closed: list[int] = []
+
+    class _ClosingEnv(CountEnv):
+        def close(self) -> None:
+            closed.append(1)
+
+    env = _ClosingEnv(episode_len=1)
+    _drive(_model(), env, "native", episodes=2)
+    _drive(_model(), env, "native", episodes=1)
+    assert closed == []
+    _drive(_model(), env, "native", episodes=1, close_env=True)
+    assert closed == [1]

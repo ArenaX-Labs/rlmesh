@@ -139,7 +139,7 @@ def main() -> None:
         print("\nRunning one episode:")
 
         # No glue: the adapter is resolved from the env's published tags.
-        Model(predict, spec=MODEL_SPEC).run(client, max_episodes=1)
+        Model(predict, spec=MODEL_SPEC).run(client, episodes=1)
 
         client.close()
         print("\nDone.")

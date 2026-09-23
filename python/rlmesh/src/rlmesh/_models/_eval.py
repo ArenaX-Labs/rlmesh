@@ -93,6 +93,26 @@ def _episode_success(info: Mapping[str, Any]) -> bool | None:
     return None
 
 
+def resolve_episode_budget(episodes: int | None, seeds: Sequence[int] | None) -> int:
+    """The exact number of episodes a run executes.
+
+    One when neither ``episodes`` nor ``seeds`` is given; the length of
+    ``seeds`` when only seeds are; ``episodes`` itself otherwise, which must
+    then match the seed count (a seed per episode, no unseeded tail). Zero
+    runs nothing; a negative count is refused.
+    """
+    if episodes is None:
+        return len(seeds) if seeds is not None else 1
+    if episodes < 0:
+        raise ValueError(f"episodes must be >= 0, got {episodes}")
+    if seeds is not None and len(seeds) != episodes:
+        raise ValueError(
+            f"episodes={episodes} does not match len(seeds)={len(seeds)}: pass "
+            "one seed per episode, or only one of the two"
+        )
+    return episodes
+
+
 @dataclass(frozen=True)
 class EpisodeResult:
     """The outcome of one evaluation episode.
@@ -112,9 +132,13 @@ class EpisodeResult:
             says the episode reached a terminal state, not how it ended); an
             unknown outcome is never inferred from it.
         duration_s: Wall time from reset-return to episode end, in seconds.
-        predict_ms: Mean per-step wall time of ``predict``, in milliseconds.
-        step_ms: Mean per-step wall time of the env ``step`` round trip, in
-            milliseconds.
+        predict_ms: This episode's mean per-step wall time of ``predict``, in
+            milliseconds -- the mean of its :attr:`StepEvent.predict_ms`
+            values, so on the native loop a chunk's predict is spread over the
+            steps it served. ``None`` when no step was timed (an episode that
+            ended before its first step); never a run-wide average.
+        step_ms: This episode's mean per-step wall time of the env ``step``
+            round trip, in milliseconds, or ``None`` on the same terms.
         trial: The trial ordinal the episode walked, ``trial_index_base + index``
             on ``run()``. Delivered as ``reset(options={"trial_index": ...})``
             only to an env that declared the option, but recorded either way so
@@ -131,8 +155,8 @@ class EpisodeResult:
     truncated: bool
     success: bool | None = None
     duration_s: float = 0.0
-    predict_ms: float = 0.0
-    step_ms: float = 0.0
+    predict_ms: float | None = None
+    step_ms: float | None = None
     trial: int | None = None
 
 
@@ -274,12 +298,18 @@ class RunResult:
 class StepEvent:
     """One env step of a run, passed to :meth:`RunHooks.on_step`.
 
-    The same event on both loops. ``predict_ms`` / ``step_ms`` are wall-clock
-    spans around the step's predict and env step as the loop observed them
-    (on the native loop, between the runtime's own events); with
-    ``prefetch_lead > 0`` the predict span is time-to-action from the
-    observation, not inference duration. A ``NEXT_STEP`` autoreset roll is not
-    a step of any episode and never surfaces here.
+    The same event on both loops, with one timing definition: ``step_ms`` is
+    the wall time of this step's env round trip, and ``predict_ms`` the wall
+    time of the model predict(s) that produced an action since the previous
+    step -- the session loop's synchronous ``predict``; on the native loop the
+    runtime's own measurement, which is zero for a step served from chunk
+    replay (``execution_horizon > 1``: the chunk's predict lands on the step
+    that first consumed it) and, with ``prefetch_lead > 0``, the next chunk's
+    predict on the step it landed on. On a vectorized env every lane of a
+    group shares both numbers. The per-episode means of these values are
+    :attr:`EpisodeResult.predict_ms` / :attr:`EpisodeResult.step_ms`. A
+    ``NEXT_STEP`` autoreset roll is not a step of any episode and never
+    surfaces here.
 
     Attributes:
         episode: 0-based episode index (equals :attr:`EpisodeResult.index`).
@@ -291,9 +321,9 @@ class StepEvent:
         terminated: Whether the env reported a terminal state on this step.
         truncated: Whether this step truncated the episode.
         info: The step's ``info`` mapping.
-        predict_ms: Raw wall time of this step's ``predict``, in milliseconds;
-            near zero on chunk-replay steps, where no model forward runs.
-        step_ms: Raw wall time of the env ``step`` round trip, in milliseconds.
+        predict_ms: Wall time of the predict(s) charged to this step, in
+            milliseconds (see above); zero on a chunk-replay step.
+        step_ms: Wall time of the env ``step`` round trip, in milliseconds.
         read: Lazy role reader bound to ``observation`` -- ``event.read(item)``
             delegates to :meth:`Session.read`, so resolution is cached per item
             and never triggered unless called.
@@ -1111,7 +1141,7 @@ class Session(Generic[ObsT, ActT]):
         self,
         *,
         seeds: Sequence[int] | None = None,
-        max_episodes: int | None = None,
+        episodes: int | None = None,
         max_episode_steps: int | None = None,
         max_episode_seconds: float | None = None,
         hooks: RunHooks | None = None,
@@ -1121,8 +1151,10 @@ class Session(Generic[ObsT, ActT]):
 
         The single drive loop: pumps this session's own ``reset`` / ``predict`` /
         ``step`` primitives, so a served model's ``run`` routes through here.
-        ``seeds`` gives a per-episode seed and sets the episode count unless
-        ``max_episodes`` is given. ``max_episode_steps`` / ``max_episode_seconds``
+        ``episodes`` is the exact number of episodes to run (see
+        :func:`resolve_episode_budget`: one by default, the length of ``seeds``
+        when only seeds are given, and the two must agree when both are).
+        ``max_episode_steps`` / ``max_episode_seconds``
         cap each episode -- hitting a cap marks it ``truncated``, exactly like the
         built-in step bound (the wall-clock cap is checked at the top of the step
         loop). Episode ``i`` walks trial ordinal ``trial_index_base + i``,
@@ -1151,18 +1183,13 @@ class Session(Generic[ObsT, ActT]):
         if trial_index_base < 0:
             raise ValueError(f"trial_index_base must be >= 0, got {trial_index_base}")
         self._ensure_connected()
-        if max_episodes is not None:
-            n_episodes = max_episodes
-        elif seeds is not None:
-            n_episodes = len(seeds)
-        else:
-            n_episodes = 1
+        n_episodes = resolve_episode_budget(episodes, seeds)
         step_cap = (
             max_episode_steps
             if max_episode_steps is not None
             else _MAX_STEPS_PER_EPISODE
         )
-        episodes: list[EpisodeResult] = []
+        results: list[EpisodeResult] = []
         run_end_error: BaseException | None = None
         self._ep_total = n_episodes
         # Walk the benchmark's trials in order (episode i is trial base + i), but
@@ -1239,10 +1266,10 @@ class Session(Generic[ObsT, ActT]):
                     truncated=self._truncated,
                     success=_episode_success(last_info),
                     duration_s=time.perf_counter() - ep_start,
-                    predict_ms=predict_total_ms / steps if steps else 0.0,
-                    step_ms=step_total_ms / steps if steps else 0.0,
+                    predict_ms=predict_total_ms / steps if steps else None,
+                    step_ms=step_total_ms / steps if steps else None,
                 )
-                episodes.append(episode)
+                results.append(episode)
                 if hooks is not None:
                     hooks.on_episode_end(episode)
                 # Viewer quit (`q` / Esc): stop early and return the partial result
@@ -1253,25 +1280,26 @@ class Session(Generic[ObsT, ActT]):
         finally:
             if hooks is not None:
                 try:
-                    hooks.on_run_end(RunResult(episodes=tuple(episodes)))
+                    hooks.on_run_end(RunResult(episodes=tuple(results)))
                 except BaseException as exc:
                     run_end_error = exc
             self._end_episode()
         if run_end_error is not None:
             raise run_end_error
-        return RunResult(episodes=tuple(episodes))
+        return RunResult(episodes=tuple(results))
 
     def close(self) -> None:
-        """Close this session: model close hook, served route (and owned source), env.
+        """Close this session: served route (and owned source), connection, env.
 
         For a served model, closes the model client and shuts down a managed source it
         started (e.g. a ``SandboxModel`` container). For the env, shuts it down only on
-        the ``close_env`` opt-in and closes a connection this session dialed.
+        the ``close_env`` opt-in, and always releases what this session made itself:
+        a connection it dialed or an env it built from a factory. A local model
+        instance is the caller's and is never closed here (one the session built
+        from a class is closed exactly once).
 
-        Idempotent: the first call tears everything down (firing a local model's
-        ``on_close`` exactly once, whether the session was pumped via ``run`` or
-        driven by hand); later calls are no-ops, and any other use of a closed
-        session raises ``RuntimeError``.
+        Idempotent: later calls are no-ops, and any other use of a closed session
+        raises ``RuntimeError``.
         """
         if self._closed:
             return
@@ -1299,10 +1327,15 @@ class Session(Generic[ObsT, ActT]):
                     owner.shutdown()
         if self._connected:
             try:
-                if self._close_env:
-                    # Explicit opt-in to stop the env: the dialed client if we opened
-                    # it, else the caller-supplied env/address.
-                    shutdown_env(self._client if self._owns_client else self._env)
+                target = self._client if self._owns_client else self._env
+                # Explicit opt-in to stop the env: the dialed client if we opened
+                # it, else the caller-supplied env/address. An owned local env
+                # (built from a factory) has only close(), which the release
+                # below is; shutting it down here too would close it twice.
+                if self._close_env and not (
+                    self._owns_client and not hasattr(target, "shutdown")
+                ):
+                    shutdown_env(target)
             finally:
                 # Always release the dialed connection and clear state, even if the
                 # shutdown raised (the error still propagates after cleanup).
@@ -1367,8 +1400,6 @@ class _NativeEpisode:
     seed: int | None
     trial: int | None
     steps: int = 0
-    predict_ms_total: float = 0.0
-    step_ms_total: float = 0.0
 
 
 @dataclass
@@ -1377,9 +1408,7 @@ class _NativeGroup:
 
     ids: list[str]
     observations: list[Any]
-    observed_at: float
     actions: list[Any] | None = None
-    acted_at: float = 0.0
 
 
 class NativeHookRelay:
@@ -1413,12 +1442,10 @@ class NativeHookRelay:
 
     def observation(self, env_index: int, ids: list[str], values: list[Any]) -> None:
         decoded = [self._context.decode(v) for v in values]
-        self._groups[env_index] = _NativeGroup(ids, decoded, time.perf_counter())
+        self._groups[env_index] = _NativeGroup(ids, decoded)
 
     def action(self, env_index: int, values: list[Any]) -> None:
-        group = self._groups[env_index]
-        group.actions = [self._context.decode(v) for v in values]
-        group.acted_at = time.perf_counter()
+        self._groups[env_index].actions = [self._context.decode(v) for v in values]
 
     def step(
         self,
@@ -1428,11 +1455,10 @@ class NativeHookRelay:
         truncated: list[bool],
         autoreset_roll: list[bool],
         info: Mapping[str, Any] | None,
+        predict_ms: float,
+        step_ms: float,
     ) -> None:
         group = self._groups[env_index]
-        now = time.perf_counter()
-        predict_ms = (group.acted_at - group.observed_at) * 1000.0
-        step_ms = (now - group.acted_at) * 1000.0
         actions = group.actions or []
         for lane, episode_id in enumerate(group.ids):
             episode = self._episodes.get(episode_id)
@@ -1454,8 +1480,6 @@ class NativeHookRelay:
                 read=partial(self._context.read, observation),
             )
             episode.steps += 1
-            episode.predict_ms_total += predict_ms
-            episode.step_ms_total += step_ms
             self._hooks.on_step(event)
 
     def episode_completed(
@@ -1471,10 +1495,11 @@ class NativeHookRelay:
         truncated: bool,
         success: bool | None,
         duration_s: float,
+        timings: tuple[float | None, float | None],
     ) -> None:
         _ = env_index
-        episode = self._episodes.pop(episode_id, None)
-        seen = episode.steps if episode is not None else 0
+        self._episodes.pop(episode_id, None)
+        predict_ms, step_ms = timings
         result = EpisodeResult(
             index=index - 1,
             seed=seed,
@@ -1485,8 +1510,8 @@ class NativeHookRelay:
             truncated=truncated,
             success=success,
             duration_s=duration_s,
-            predict_ms=episode.predict_ms_total / seen if episode and seen else 0.0,
-            step_ms=episode.step_ms_total / seen if episode and seen else 0.0,
+            predict_ms=predict_ms,
+            step_ms=step_ms,
         )
         self.results.append(result)
         self._hooks.on_episode_end(result)

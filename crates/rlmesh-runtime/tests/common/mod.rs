@@ -330,6 +330,8 @@ pub struct RecordingHooks {
     pub step_infos: Mutex<Vec<Option<MetaMap>>>,
     // Per step event: (terminated, truncated, autoreset_roll), each per lane.
     pub step_flags: Mutex<Vec<StepFlags>>,
+    /// `(predict_ms, step_ms)` of every `step_completed` event, in order.
+    pub step_timings: Mutex<Vec<(f64, f64)>>,
     pub started_seeds: Mutex<Vec<Option<i64>>>,
     pub completed_seeds: Mutex<Vec<Option<i64>>>,
     pub started_trials: Mutex<Vec<Option<u64>>>,
@@ -449,6 +451,10 @@ impl RuntimeHooks for RecordingHooks {
             .lock()
             .expect("step flag recorder lock poisoned")
             .push((event.terminated, event.truncated, event.autoreset_roll));
+        self.step_timings
+            .lock()
+            .expect("step timing recorder lock poisoned")
+            .push((event.predict_ms, event.step_ms));
         Ok(())
     }
 

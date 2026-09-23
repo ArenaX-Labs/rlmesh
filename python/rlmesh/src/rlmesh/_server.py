@@ -159,6 +159,10 @@ class EnvServer:
         ...         return None
         >>> server = EnvServer(TinyEnv(), "localhost:5555")  # doctest: +SKIP
         >>> server.serve()  # doctest: +SKIP
+
+    ``close_env_on_shutdown`` (default ``True``) calls the env's ``close()`` when
+    the server stops; pass ``False`` for a server standing in front of an env
+    its caller owns, whose ``close()`` stays the caller's.
     """
 
     def __init__(
@@ -174,6 +178,7 @@ class EnvServer:
         tags: EnvTags | None = None,
         framework: str | ValueBridge | None = None,
         device: object | None = None,
+        close_env_on_shutdown: bool = True,
     ) -> None:
         # A list is the lanes of one endpoint (each a scalar env); anything else
         # is one env. The env is self-describing: a vectorized env (the
@@ -278,6 +283,7 @@ class EnvServer:
             address=normalized_address,
             options=options,
             native_values=native_values,
+            close_env_on_shutdown=close_env_on_shutdown,
         )
         # A server still running when CPython finalizes is fatal: its serve and
         # lane threads call into the interpreter as it tears down. Stop it from

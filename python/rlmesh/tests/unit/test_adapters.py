@@ -2094,7 +2094,7 @@ def test_vector_env_rejected_by_single_env_eval_loop() -> None:
     import rlmesh
 
     with pytest.raises(ValueError, match="num_envs=2"):
-        rlmesh.session(model, fake_env).run(max_episodes=1)
+        rlmesh.session(model, fake_env).run(episodes=1)
 
 
 def test_stateful_adapter_allowed_on_vector_route() -> None:

@@ -100,7 +100,7 @@ Backends apply to models the same way. A `Model` from any backend hands `predict
 from rlmesh.numpy import Model
 
 model = Model(lambda obs: 0)
-model.run("127.0.0.1:5555", max_episodes=1)
+model.run("127.0.0.1:5555", episodes=1)
 ```
 
 ## Where next

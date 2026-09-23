@@ -402,7 +402,7 @@ def test_native_capture_records_render_of_a_local_env(tmp_path: Path) -> None:
     try:
         Model(lambda obs: np.zeros(1, np.float32)).run(
             _RenderEnv(),
-            max_episodes=1,
+            episodes=1,
             hooks=rec.capture(model="m", env="e", task="t"),
         )
     except ConnectionError as exc:
@@ -447,13 +447,11 @@ def test_capture_refuses_frames_from_a_vector_env() -> None:
     rec = Recorder()
     try:
         with pytest.raises(ValueError, match="single env"):
-            model.run(
-                _VectorEnv(), max_episodes=2, hooks=rec.capture(model="m", env="e")
-            )
+            model.run(_VectorEnv(), episodes=2, hooks=rec.capture(model="m", env="e"))
         # Metrics-only capture is fine: episodes are records, not interleaved frames.
         result = model.run(
             _VectorEnv(),
-            max_episodes=2,
+            episodes=2,
             hooks=rec.capture(model="m", env="e", cameras=[]),
         )
     except ConnectionError as exc:
@@ -955,3 +953,61 @@ def test_capture_warnings_never_raise_under_warnings_as_errors() -> None:
     ep = rec.workloads[0].episodes[0]
     assert ep.media == () and ep.reward == 2.0
     rec.close()
+
+
+@pytest.mark.parametrize("path", ["session", "native"])
+def test_live_capture_and_add_record_the_same_episode_metrics(path: str) -> None:
+    """One timing definition: the record ``capture()`` builds from the episode
+    delivered to ``on_episode_end`` equals the one ``add(result)`` builds from
+    the returned result, on both loops."""
+    np = pytest.importorskip("numpy")
+    from rlmesh.numpy import Model
+
+    class _Env:
+        def __init__(self) -> None:
+            from rlmesh import spaces
+
+            self.metadata: dict[str, object] = {}
+            self.observation_space = spaces.Box(-1.0, 1.0, shape=(2,), dtype="float32")
+            self.action_space = spaces.Box(-1.0, 1.0, shape=(1,), dtype="float32")
+            self._step = 0
+
+        def reset(self, *, seed: object = None, options: object = None) -> Any:
+            self._step = 0
+            return np.zeros(2, np.float32), {}
+
+        def step(self, action: object) -> Any:
+            self._step += 1
+            return (
+                np.zeros(2, np.float32),
+                1.0,
+                self._step >= 2,
+                False,
+                {"success": True},
+            )
+
+        def close(self) -> None:
+            pass
+
+    model = Model(lambda obs: np.zeros(1, np.float32))
+    live = Recorder()
+    hooks = live.capture(model="m", env="e", task="t", cameras=[])
+    try:
+        if path == "session":
+            with model.session(_Env()) as sess:
+                result = sess.run(seeds=[1, 2], hooks=hooks)
+        else:
+            result = model.run(_Env(), seeds=[1, 2], hooks=hooks)
+    except ConnectionError as exc:
+        if "Operation not permitted" in str(exc):
+            pytest.skip("local tcp bind is not permitted in this environment")
+        raise
+    post_hoc = Recorder()
+    post_hoc.add(result, model="m", env="e", task="t")
+    captured = live.to_dict()["workloads"][0]["episodes"]
+    added = post_hoc.to_dict()["workloads"][0]["episodes"]
+    assert captured == added
+    assert [e["success"] for e in added] == [True, True]
+    assert all(
+        e.predict_ms is not None and e.step_ms is not None for e in result.episodes
+    )

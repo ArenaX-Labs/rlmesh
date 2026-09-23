@@ -143,7 +143,7 @@ The public Python clients connect once when you construct them; they do not poll
 
 ## Episode accounting
 
-`run` counts episodes from `seeds` and `max_episodes`, and reports each one in the result.
+`run` executes exactly the episodes `seeds` and `episodes` name, and reports each one in the result.
 
 ```python
 result = model.run(env, seeds=range(100))
@@ -152,14 +152,16 @@ print(result.num_episodes, result.total_steps, result.success_rate)
 
 The count follows three rules:
 
-- `max_episodes` set: run exactly that many. It overrides the length of `seeds`. When both are given and `max_episodes` exceeds the seed count, episodes past the last seed run unseeded.
+- `episodes` set: run exactly that many (`0` runs none, a negative count is refused). With `seeds` as well, the two must agree: one seed per episode, never an unseeded tail.
 - only `seeds` set: run one episode per seed, each with its seed.
 - neither set: run a single episode.
 
+The budget is exact on a vectorized env too. It bounds episode _starts_, so the scored set is fixed by the budget alone: with `episodes=3` on two lanes, one lane runs two episodes and the other one, and `result.num_episodes == 3`. Under `NEXT_STEP` autoreset the env steps every lane in lockstep and rolls a finished lane into a new episode on its own, so a lane rolled past the budget keeps stepping while the scored episodes finish -- unscored: it is never counted, reported, or seen by hooks. Seeds and per-episode caps need the runtime to own resets, so they are refused before any episode starts on an autoresetting vector env.
+
 ```python
-result = model.run(env, max_episodes=1000)            # 1000 episodes, no seeding
+result = model.run(env, episodes=1000)            # 1000 episodes, no seeding
 result = model.run(env, seeds=range(50))              # 50 seeded episodes
-baseline = rlmesh.run(rlmesh.RANDOM_SAMPLE, env, max_episodes=10)
+baseline = rlmesh.run(rlmesh.RANDOM_SAMPLE, env, episodes=10)
 ```
 
 Each episode is an {class}`~rlmesh.EpisodeResult` carrying `index`, `seed`, `steps`, `reward`, `terminated`, `truncated`, and `success`. The `success` field is the env-reported task outcome from the final step's `info` (Gymnasium's `is_success` / `success`, or `task_success`), or `None` when the env emits none. {attr}`RunResult.success_rate <rlmesh.RunResult.success_rate>` counts that signal only and is `None` when any episode lacks it, so an env that has a notion of success should report it through `info`; a terminal state is never inferred to be one.

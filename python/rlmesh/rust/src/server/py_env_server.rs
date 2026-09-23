@@ -47,6 +47,9 @@ struct ServerResources {
     runtime: tokio::runtime::Runtime,
     listener: BoundListener,
     options: ServeOptions,
+    /// Call the env's `close()` when the server stops (the default). Off for a
+    /// server standing in front of an env its caller owns and closes.
+    close_env_on_shutdown: bool,
 }
 
 enum ServerState {
@@ -76,18 +79,20 @@ impl PyVectorEnvServer {
     /// * `env` - Python gymnasium.vector.VectorEnv object
     /// * `address` - Optional bind address shortcut
     #[new]
-    #[pyo3(signature = (env, address=None, *, options=None, native_values=false))]
+    #[pyo3(signature = (env, address=None, *, options=None, native_values=false, close_env_on_shutdown=true))]
     fn new(
         env: Py<PyAny>,
         address: Option<&str>,
         options: Option<PyServeOptions>,
         native_values: bool,
+        close_env_on_shutdown: bool,
     ) -> PyResult<Self> {
         Ok(Self {
             inner: construct_server(
                 build_vector_server_env(env, native_values)?,
                 address,
                 options,
+                close_env_on_shutdown,
             )?,
         })
     }
@@ -136,6 +141,7 @@ fn construct_server(
     py_env: PyServerEnv,
     address: Option<&str>,
     options: Option<PyServeOptions>,
+    close_env_on_shutdown: bool,
 ) -> PyResult<PyEnvServer> {
     crate::telemetry::init_tracing("env_server");
     let shutdown = ShutdownTrigger::new();
@@ -232,6 +238,7 @@ fn construct_server(
             runtime,
             listener,
             options: options.map(PyServeOptions::into_rust).unwrap_or_default(),
+            close_env_on_shutdown,
         }))),
         shutdown,
     })
@@ -247,13 +254,14 @@ impl PyEnvServer {
     ///   lanes of one endpoint (`num_envs = len(list)`)
     /// * `address` - Optional bind address shortcut
     #[new]
-    #[pyo3(signature = (env, address=None, *, options=None, native_values=false))]
+    #[pyo3(signature = (env, address=None, *, options=None, native_values=false, close_env_on_shutdown=true))]
     fn new(
         py: Python<'_>,
         env: Py<PyAny>,
         address: Option<&str>,
         options: Option<PyServeOptions>,
         native_values: bool,
+        close_env_on_shutdown: bool,
     ) -> PyResult<Self> {
         let lanes: Vec<Py<PyAny>> = match env.bind(py).cast::<pyo3::types::PyList>() {
             Ok(list) => list.iter().map(|lane| lane.unbind()).collect(),
@@ -263,6 +271,7 @@ impl PyEnvServer {
             build_lane_server_env(lanes, native_values)?,
             address,
             options,
+            close_env_on_shutdown,
         )
     }
 
@@ -566,6 +575,7 @@ fn run_server(
         runtime,
         listener,
         options,
+        close_env_on_shutdown,
     } = resources;
 
     runtime.block_on(async move {
@@ -577,10 +587,17 @@ fn run_server(
         match env {
             PyServerEnv::Lanes(lanes) => {
                 let lanes = WireLaneAdapter::new(lanes).map_err(|err| err.to_string())?;
-                run_env_server(lanes, listener, options, shutdown).await
+                run_env_server(lanes, listener, options, shutdown, close_env_on_shutdown).await
             }
             PyServerEnv::Vector(env) => {
-                run_env_server(WireEnvAdapter::new(*env), listener, options, shutdown).await
+                run_env_server(
+                    WireEnvAdapter::new(*env),
+                    listener,
+                    options,
+                    shutdown,
+                    close_env_on_shutdown,
+                )
+                .await
             }
         }
     })
@@ -591,6 +608,7 @@ async fn run_env_server<E>(
     listener: BoundListener,
     options: ServeOptions,
     shutdown: ShutdownTrigger,
+    close_env_on_shutdown: bool,
 ) -> ServeResult
 where
     E: Environment + 'static,
@@ -640,7 +658,11 @@ where
         }
     };
 
-    let close_result = close_env(env, close_timeout).await;
+    let close_result = if close_env_on_shutdown {
+        close_env(env, close_timeout).await
+    } else {
+        Ok(())
+    };
     match (serve_result, close_result) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(err), Ok(())) => Err(err),
@@ -668,6 +690,7 @@ fn cleanup_ready_resources(resources: ServerResources) -> ServeResult {
         runtime,
         listener,
         options,
+        close_env_on_shutdown,
     } = resources;
 
     match listener {
@@ -681,6 +704,9 @@ fn cleanup_ready_resources(resources: ServerResources) -> ServeResult {
         }
     }
 
+    if !close_env_on_shutdown {
+        return Ok(());
+    }
     let close_timeout = Some(options.close_timeout.unwrap_or(DEFAULT_SHUTDOWN_GRACE));
     runtime.block_on(async move {
         await_close_with_timeout(env.close(), close_timeout)

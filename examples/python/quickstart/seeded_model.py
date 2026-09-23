@@ -41,7 +41,7 @@ def predict(observation, context):
 def main() -> None:
     from rlmesh.numpy import Model
 
-    result = Model(predict).run(TwoStepEnv(), seeds=[7, 8], max_episodes=2)
+    result = Model(predict).run(TwoStepEnv(), seeds=[7, 8], episodes=2)
     print("episode report seeds:", [episode.seed for episode in result.episodes])
 
 

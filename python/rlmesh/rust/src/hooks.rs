@@ -145,6 +145,8 @@ impl RuntimeHooks for PyRunHooks {
                         event.truncated,
                         event.autoreset_roll,
                         info,
+                        event.predict_ms,
+                        event.step_ms,
                     ),
                 )
                 .map(drop)
@@ -170,6 +172,7 @@ impl RuntimeHooks for PyRunHooks {
                         event.truncated,
                         event.success,
                         event.duration_ms as f64 / 1000.0,
+                        (event.predict_ms, event.step_ms),
                     ),
                 )
                 .map(drop)

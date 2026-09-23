@@ -112,6 +112,11 @@ pub struct EpisodeCompletedEvent {
     /// episode-start position); `None` only under `NEXT_STEP` autoreset, where
     /// no ordinal is minted.
     pub trial_index: Option<u64>,
+    /// Per-step means over the episode of the predict and env-step wall time
+    /// (see `StepCompletedEvent::predict_ms`), in milliseconds; `None` for an
+    /// episode that completed before its first step.
+    pub predict_ms: Option<f64>,
+    pub step_ms: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -162,6 +167,13 @@ pub struct StepCompletedEvent {
     /// independently, so the other lanes' entries are real steps. `infos` is
     /// `None` when any lane rolled.
     pub autoreset_roll: Vec<bool>,
+    /// Wall time, in milliseconds, of the predict(s) that landed since the
+    /// group's previous step -- zero for a step served from chunk replay, and
+    /// under prefetch the next chunk's predict, attributed to the step it
+    /// landed on -- and of this step's env round trip. Every lane of the
+    /// group experienced both.
+    pub predict_ms: f64,
+    pub step_ms: f64,
 }
 
 #[derive(Debug, Clone, PartialEq)]

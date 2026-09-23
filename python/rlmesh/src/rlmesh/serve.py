@@ -350,33 +350,24 @@ def _resolve_model(
 ) -> ModelBase[Any, Any]:
     """Resolve a model source to a serveable ``Model`` without double-construction.
 
-    A ``Model`` subclass *class* is instantiated once (its ``load()`` runs); an
-    existing ``Model`` instance is used as-is (it already built its worker); anything
-    else (a bare predict callable or a duck-typed policy object) is served as a NumPy
-    framework ``Model``: the documented default for a policy image, where the
-    library's ``run`` / ``session`` refuse to pick a framework for the caller.
-
-    With a non-empty ``binding`` the model is built on the bootstrap-authoritative
-    path: the eager auto-load is suppressed, the binding is resolved against the
-    declared ``params``, and ``load(**binding)`` runs once before serving. Bindings
+    A ``Model`` subclass *class* is built by :meth:`rlmesh.Model.from_config`
+    with the binding (``load(**binding)`` runs once, after the binding is
+    resolved against the declared ``params``); an existing ``Model`` instance is
+    used as-is (it already built its worker); anything else (a bare predict
+    callable or a duck-typed policy object) is served as a NumPy framework
+    ``Model``: the documented default for a policy image, where the library's
+    ``run`` / ``session`` refuse to pick a framework for the caller. Bindings
     require a :class:`rlmesh.Model` subclass *class* entrypoint -- the documented
     authoring path -- so there is no double-construction of a wrapped policy.
     """
     from rlmesh._models.base import ModelBase
 
     if isinstance(model_source, type) and issubclass(model_source, ModelBase):
-        # Always resolve a Model subclass through the authored path -- even with no
-        # binding -- so declared required params are enforced before weights load,
-        # matching the env path (construct_authored_env always resolves).
-        from ._bootstrap.loaders import construct_authored_model
-
+        # A Model subclass class is `from_config`'d -- even with no binding -- so
+        # declared required params are enforced before weights load, matching
+        # the env path (construct_authored_env always resolves).
         resolved_binding: dict[str, Any] = binding or {}
-        return cast(
-            "ModelBase[Any, Any]",
-            construct_authored_model(
-                cast("type[Any]", model_source), **resolved_binding
-            ),
-        )
+        return cast("ModelBase[Any, Any]", model_source.from_config(**resolved_binding))
     if binding:
         raise TypeError(
             "model construction params (--kwargs-json / RLMESH_MAKE_KWARGS) "

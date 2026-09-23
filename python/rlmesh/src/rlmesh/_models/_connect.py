@@ -77,7 +77,8 @@ def connect_env(
 
     ``target`` is an address string, a live env (local object or remote handle), an
     :class:`~rlmesh.EnvFactory`, or an object exposing an ``address``. ``owns_client``
-    is True when this dialed the connection, so the session knows to close it.
+    is True when this dialed the connection or built the env from a factory, so
+    the session knows to close it; a caller's env or handle is borrowed.
     A handle is driven in-process through its own client; a plain local env gets
     a synthesized contract (tags ride in ``env.metadata`` via ``tag()`` /
     ``EnvFactory.make``); a factory is built and driven locally -- no serving
@@ -94,8 +95,9 @@ def connect_env(
     if kind == "handle":
         return payload, payload.env_contract, False
     if kind == "factory":
+        # Built here, so owned here: closed with the session.
         env = factory_env(payload)
-        return env, local_contract(env), False
+        return env, local_contract(env), True
     return payload, local_contract(payload), False
 
 

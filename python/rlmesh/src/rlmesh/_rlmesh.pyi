@@ -401,7 +401,7 @@ class PyEnvServer:
         r"""
         Alias for env_contract.
         """
-    def __new__(cls, env: typing.Any, address: typing.Optional[builtins.str] = None, *, options: typing.Optional[ServeOptions] = None, native_values: builtins.bool = ...) -> PyEnvServer:
+    def __new__(cls, env: typing.Any, address: typing.Optional[builtins.str] = None, *, options: typing.Optional[ServeOptions] = None, native_values: builtins.bool = ..., close_env_on_shutdown: builtins.bool = ...) -> PyEnvServer:
         r"""
         Create a new RLMesh environment server.
         # Arguments
@@ -435,7 +435,7 @@ class PyEnvServer:
 class PyModel:
     def __init__(self, predict_fn: collections.abc.Callable[[Value], Value], configure_fn: collections.abc.Callable[[EnvContract], object] | None = None, on_episode_end: collections.abc.Callable[[str], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None, predict_chunk_fn: collections.abc.Callable[[Value, int], Value] | None = None, predict_batch_fn: collections.abc.Callable[[list[Value], list[dict[str, typing.Any]]], list[Value]] | None = None, predict_chunk_batch_fn: collections.abc.Callable[[list[Value], int, list[dict[str, typing.Any]]], list[Value]] | None = None, allow_fusion: bool = True, native_chunk: int | None = None) -> None: ...
     def run_local(self, env_address: str, execution_horizon: int = 1, prefetch_lead: int = 0, workflow_edition: str | None = None) -> dict[str, typing.Any]: ...
-    def run_local_for_episodes(self, env_address: str, max_episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trial_index_base: int | None = None, prefetch_lead: int = 0, workflow_edition: str | None = None, hooks: object | None = None) -> dict[str, typing.Any]: ...
+    def run_local_for_episodes(self, env_address: str, episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trial_index_base: int | None = None, prefetch_lead: int = 0, workflow_edition: str | None = None, hooks: object | None = None) -> dict[str, typing.Any]: ...
     def serve(self, address: str, options: ServeOptions | None = None) -> None: ...
 
 @typing.final
@@ -479,7 +479,7 @@ class PyVectorEnvServer:
     def env_contract(self) -> EnvContract: ...
     @property
     def spec(self) -> EnvContract: ...
-    def __new__(cls, env: typing.Any, address: typing.Optional[builtins.str] = None, *, options: typing.Optional[ServeOptions] = None, native_values: builtins.bool = ...) -> PyVectorEnvServer:
+    def __new__(cls, env: typing.Any, address: typing.Optional[builtins.str] = None, *, options: typing.Optional[ServeOptions] = None, native_values: builtins.bool = ..., close_env_on_shutdown: builtins.bool = ...) -> PyVectorEnvServer:
         r"""
         Create a new vectorized RLMesh environment server.
         # Arguments

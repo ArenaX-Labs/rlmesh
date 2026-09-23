@@ -55,7 +55,7 @@ def predict(observation):
 
 
 model = rlmesh.Model(predict)
-result = model.run("127.0.0.1:5555", max_episodes=3)
+result = model.run("127.0.0.1:5555", episodes=3)
 print(result.mean_reward)
 ```
 

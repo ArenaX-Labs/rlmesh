@@ -990,7 +990,7 @@ def test_model_run_close_env_requests_shutdown(monkeypatch: pytest.MonkeyPatch) 
 
     try:
         model = rlmesh.Model(lambda _observation: 0)
-        model.run(remote, max_episodes=1, close_env=True)
+        model.run(remote, episodes=1, close_env=True)
     finally:
         server.shutdown()
 
@@ -1018,7 +1018,9 @@ def test_model_lifecycle_callbacks_are_zero_argument() -> None:
             on_episode_end=on_episode_end,
             on_close=on_close,
         )
-        model.run(remote, max_episodes=1, close_env=True)
+        model.run(remote, episodes=1, close_env=True)
+        assert calls == ["episode_end"]  # the model is borrowed: not closed
+        model.close()
     finally:
         server.shutdown()
 
@@ -1091,7 +1093,7 @@ def test_server_client_lifecycle_process_exits_promptly() -> None:
 
         try:
             rlmesh.Model(lambda _o: 0).run(
-                remote, max_episodes=1, close_env=True
+                remote, episodes=1, close_env=True
             )
         except Exception:
             pass
@@ -1138,7 +1140,7 @@ def test_repeated_evals_do_not_accumulate_fds_or_runtimes() -> None:
         server.start()
         try:
             remote = connect_with_retry(rlmesh.RemoteEnv, server.address)
-            rlmesh.run(rlmesh.Model(lambda _o: 0), remote, max_episodes=1)
+            rlmesh.run(rlmesh.Model(lambda _o: 0), remote, episodes=1)
         finally:
             server.shutdown()
 

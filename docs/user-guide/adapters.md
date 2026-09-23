@@ -138,7 +138,7 @@ from rlmesh.numpy import Model, RemoteEnv
 
 env = RemoteEnv("127.0.0.1:5555")
 model = Model(predict, spec=spec)  # predict works in the model's own format
-model.run(env, max_episodes=10)
+model.run(env, episodes=10)
 ```
 
 `run(env)` reads the environment's contract, resolves the adapter, and wraps `predict` so it only ever sees the model's declared payload. To resolve explicitly, use {func}`~rlmesh.adapters.resolve_from_contract` and `adapter.wrap_predict(predict)`. See {doc}`models` for the prediction corners a `predict` may implement, and {doc}`serving-environments` for addresses, readiness, and health. {source}`examples/python/adapters` is the smallest end-to-end serve-and-run loop.
