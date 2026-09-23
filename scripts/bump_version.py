@@ -99,6 +99,14 @@ def _replace_workflow_edition_block(
     return text[: match.start()] + block + text[match.end() :]
 
 
+def _drop_provisional_workflow_edition_block(text: str, edition: str) -> str:
+    # A stable release ships no provisional cohort (policy:check refuses one).
+    match = _workflow_edition_block(text, edition)
+    if match is None or _workflow_edition_status(match.group(0)) != "provisional":
+        return text
+    return _replace_workflow_edition_block(text, match, "")
+
+
 def _insert_workflow_edition_block(text: str, block: str) -> str:
     seen_workflow_edition = False
     for match in re.finditer(r"^\[[^\]]+\]\n", text, re.MULTILINE):
@@ -167,7 +175,7 @@ def _update_workflow_manifest(text: str, version: str) -> str:
             status == "stable"
             and _workflow_edition_status(new_match.group(0)) == "sealed"
         ):
-            return text
+            return _drop_provisional_workflow_edition_block(text, old_edition)
         return _replace_workflow_edition_block(text, new_match, block)
 
     old_match = _workflow_edition_block(text, old_edition)
