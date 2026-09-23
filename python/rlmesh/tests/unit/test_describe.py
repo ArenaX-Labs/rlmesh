@@ -409,12 +409,13 @@ def test_check_labels_flags_the_push_blockers() -> None:
     assert check_labels({DESCRIBE_LABEL: '{"schema_version":2,"kind":"model"}'}).failed
     assert check_labels({DESCRIBE_LABEL: '{"schema_version":1,"kind":"thing"}'}).failed
     # No class-level spec is a warning (load() may set it; a label will not
-    # carry it); an env without tags lands as not-runnable.
+    # carry it); an env without tags runs against spec-less models.
     report = check_labels({DESCRIBE_LABEL: rlmesh.describe_json(_TinyModel)})
     assert report.failed == [], report
     assert any("no class-level spec" in m for m in report.warnings), report
     report = check_labels({DESCRIBE_LABEL: '{"schema_version":1,"kind":"env"}'})
-    assert any("declares no tags" in message for message in report.failed), report
+    assert not any("tags" in message for message in report.failed), report
+    assert any("declares no tags" in message for message in report.warnings), report
 
     # Package label: bad checkpoints fail (the platform would drop them).
     labels = {
@@ -550,7 +551,23 @@ def test_runtime_carries_the_edition_handshake(
 # --- rlmesh check: the class-level checks ---------------------------------------
 
 
+def _arm_tags(dim: int = 1) -> Any:
+    import rlmesh.adapters as adapt
+
+    return adapt.EnvTags(
+        observation={"eef_pos": adapt.StateTag(adapt.EEF_POS)},
+        action=adapt.Action(adapt.Actuator("x/act", dim=dim)),
+    )
+
+
 class _UntaggedFactory(rlmesh.EnvFactory):
+    def make(self, **kwargs: Any) -> Any:
+        return _ArmEnv()
+
+
+class _WrongWidthFactory(rlmesh.EnvFactory):
+    tags = _arm_tags(dim=3)
+
     def make(self, **kwargs: Any) -> Any:
         return _ArmEnv()
 
@@ -574,9 +591,10 @@ def test_check_target_buckets(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) ->
     assert report.ok, report
     assert any("no class-level spec" in m for m in report.warnings), report
 
-    # The tagless env: the platform cannot adapt to it.
+    # The tagless env runs; the platform just cannot adapt a spec'd model to it.
     report = check_target(_UntaggedFactory)
-    assert any("declares no tags" in m for m in report.failed), report
+    assert report.ok, report
+    assert any("declares no tags" in m for m in report.warnings), report
 
     # Needs a GPU to build: not checked here, named as such.
     report = check_target(_BrokenFactory)
@@ -639,11 +657,11 @@ def test_cli_check_and_describe_modes(
     tiny = f"{__name__}:_TinyModel"
 
     # --check-entrypoint: exit 1 on a failure, 0 otherwise; --json is the report.
-    untagged = f"{__name__}:_UntaggedFactory"
-    assert main(["--check-entrypoint", untagged, "--json"]) == 1
+    wrong_width = f"{__name__}:_WrongWidthFactory"
+    assert main(["--check-entrypoint", wrong_width, "--json"]) == 1
     report = json.loads(capsys.readouterr().out)
     assert set(report) == {"failed", "warnings", "not_checked", "passed"}
-    assert any("declares no tags" in m for m in report["failed"])
+    assert any("does not fit" in m for m in report["failed"])
     assert main(["--check-entrypoint", tiny, "--json"]) == 0
     assert any(
         "no class-level spec" in m
@@ -698,7 +716,7 @@ def test_cli_keeps_author_stdout_off_the_payload(
     assert out == f"{DESCRIBE_LABEL}={expected}\n"
     assert "banner on stdout" in err
 
-    assert main(["--check-entrypoint", target, "--json"]) == 1  # no tags
+    assert main(["--check-entrypoint", target, "--json"]) == 0  # untagged: a warning
     out, err = capsys.readouterr()
     assert set(json.loads(out)) == {"failed", "warnings", "not_checked", "passed"}
     assert "banner on stdout" in err
@@ -819,6 +837,7 @@ def test_check_labels_surfaces_a_non_default_branch_badge() -> None:
                     {
                         "params": {"action_type": "abs"},
                         "default": False,
+                        "env_tags": _tags(),
                         "env_spec": {"error": "sapien needs a GPU"},
                     },
                 ],
@@ -832,3 +851,90 @@ def test_check_labels_surfaces_a_non_default_branch_badge() -> None:
         "env_contracts.branches[{'action_type': 'abs'}].env_spec" in w and "sapien" in w
         for w in report.warnings
     )
+
+
+# --- check joins tags against the spaces, as rlmesh.serve does ---------------
+
+
+class _DiscreteEnv:
+    def __init__(self) -> None:
+        import gymnasium as gym
+        import numpy as np
+
+        self.observation_space = gym.spaces.Box(-1.0, 1.0, (4,), np.float32)
+        self.action_space = gym.spaces.Discrete(2)
+
+
+def _discrete_tags() -> Any:
+    import rlmesh.adapters as adapt
+
+    return adapt.EnvTags(
+        observation=adapt.StateTag("x/state"),
+        action=adapt.Action(adapt.Actuator(role=None, dim=1)),
+    )
+
+
+class _DiscreteTaggedFactory(rlmesh.EnvFactory):
+    tags = _discrete_tags()
+
+    def make(self, **kwargs: Any) -> Any:
+        return _DiscreteEnv()
+
+
+class _TaggedArmFactory(rlmesh.EnvFactory):
+    tags = _arm_tags()
+
+    def make(self, **kwargs: Any) -> Any:
+        return _ArmEnv()
+
+
+class _BadBranchFactory(_BranchedFactory):
+    @classmethod
+    def tags_for(cls, **params: Any) -> Any:
+        return _BRANCH_DELTA if params["action_type"] == "delta" else _arm_tags(dim=7)
+
+
+class _UntaggedBranchFactory(_BranchedFactory):
+    """Generic on every branch: authoring allows it, the platform probe does not."""
+
+    tags = None
+
+    @classmethod
+    def tags_for(cls, **params: Any) -> Any:
+        return None
+
+
+def _failed(target: Any) -> list[str]:
+    from rlmesh._describe import DESCRIBE_LABEL, check_labels, check_target
+
+    fresh = check_target(target).failed
+    baked = check_labels({DESCRIBE_LABEL: rlmesh.describe_json(target)}).failed
+    # The baked label must reach the same verdict off the JSON spaces alone.
+    assert bool(fresh) == bool(baked), (fresh, baked)
+    return fresh
+
+
+def test_check_passes_tags_that_fit_every_branch() -> None:
+    assert _failed(_TaggedArmFactory) == []
+    assert _failed(_BranchedFactory) == []
+
+
+def test_check_fails_tags_that_rlmesh_serve_would_refuse() -> None:
+    assert any(
+        "does not fit" in m and "width is 1" in m for m in _failed(_WrongWidthFactory)
+    )
+    assert any(
+        "does not fit" in m and "Discrete" in m for m in _failed(_DiscreteTaggedFactory)
+    )
+
+
+def test_check_joins_each_non_default_branch() -> None:
+    failed = _failed(_BadBranchFactory)
+    assert failed and all("'action_type': 'abs'" in m for m in failed), failed
+    assert any("width is 3" in m for m in failed), failed
+
+
+def test_check_fails_a_contract_branch_without_tags() -> None:
+    failed = _failed(_UntaggedBranchFactory)
+    assert any("default branch has no tags" in m for m in failed), failed
+    assert sum("branch has no tags" in m for m in failed) == 4, failed
