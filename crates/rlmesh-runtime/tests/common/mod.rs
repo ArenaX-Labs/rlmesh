@@ -775,6 +775,10 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogCapture {
 
 /// Drive a chunking run over `lanes` and hand back everything it logged.
 pub async fn chunked_run_logs(lanes: Vec<usize>) -> String {
+    // Registering a scoped subscriber rebuilds tracing's global callsite-interest
+    // cache; two captures racing that rebuild can drop a warn. One at a time.
+    static ONE_CAPTURE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _serial = ONE_CAPTURE_AT_A_TIME.lock().await;
     let buffer = Arc::new(Mutex::new(Vec::<u8>::new()));
     let subscriber = tracing_subscriber::fmt()
         .with_writer(LogCapture(Arc::clone(&buffer)))
