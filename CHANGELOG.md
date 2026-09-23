@@ -4,7 +4,7 @@ All notable changes to RLMesh are documented here. This changelog tracks the `rl
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0] - 2026-09-22
+## [0.1.0-rc.13] - 2026-09-23
 
 RLMesh connects models to environments across process, dependency, and machine boundaries with a Gymnasium-style API. This release seals the `2026.06` behavioral contract and commits to retaining `rlmesh-wire-v1`. Declare the edition a model or environment was authored against to keep its behavior across package upgrades. The runtime selects a shared edition and refuses interactions a peer cannot express; see the compatibility policy for the contract and its current test coverage.
 
@@ -270,7 +270,7 @@ RLMesh connects models to environments across process, dependency, and machine b
 
 - Batched and chunked prediction now works in local `run()` evals. `run()` drives the same native runtime loop as a served model, so `predict_batch`, `predict_chunk`, and `predict_chunk_batch` activate locally instead of only on the served wire path.
 
-[0.1.0]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.1.0
+[0.1.0-rc.13]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.1.0-rc.13
 [0.1.0-rc.12]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.1.0-rc.12
 [0.1.0-rc.11]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.1.0-rc.11
 [0.1.0-rc.10]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.1.0-rc.10
