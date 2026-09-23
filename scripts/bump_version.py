@@ -271,8 +271,22 @@ def bump(old: str, new: str) -> None:
     # the `BASE-X.Y.Z` cohort strings. Excludes the changelog and the
     # version-stamped edition specs. policy:check's doc-version guard fails loudly
     # if any stale literal survives.
+    # One pass, spelling chosen per site: a stable version reads the same in
+    # SemVer and PEP 440, so a second pass would rewrite inside the first
+    # pass's output ("0.1.0rc13-rc.13").
+    literal = re.compile(rf'(?P<pep>(?<===)|(?<="package_version": "))?(?:{op}|{o})')
+
+    def prose_spelling(match: re.Match[str]) -> str:
+        if old != old_pep:
+            return new_pep if match.group(0) == old_pep else new
+        return new_pep if match.group("pep") is not None else new
+
     for prose in prose_version_files(ROOT):
-        sub_file(prose, [(o, new), (op, new_pep)])
+        text = prose.read_text()
+        rewritten = literal.sub(prose_spelling, text)
+        if rewritten != text:
+            prose.write_text(rewritten)
+            print(f"  {prose.relative_to(ROOT)}")
 
     print("sync lockfiles + policy check")
     subprocess.run(["cargo", "update", "--workspace"], cwd=ROOT, check=True)
@@ -286,6 +300,13 @@ def selfcheck() -> None:
     assert pep440("0.1.0-beta.2") == "0.1.0b2"
     assert pep440("0.1.0-rc.3") == "0.1.0rc3"
     assert pep440("0.1.0") == "0.1.0"
+    # A stable version reads the same in both spellings: each prose site keeps
+    # its own form when bumped to a prerelease, and back again.
+    stable_to_rc = re.compile(r'(?P<pep>(?<===)|(?<="package_version": "))?0\.1\.0')
+    assert stable_to_rc.sub(
+        lambda m: "0.1.0rc13" if m.group("pep") is not None else "0.1.0-rc.13",
+        'rlmesh==0.1.0 "package_version": "0.1.0" 2026.06-0.1.0',
+    ) == 'rlmesh==0.1.0rc13 "package_version": "0.1.0rc13" 2026.06-0.1.0-rc.13'
     assert _release_status("0.1.0-alpha.1") == "alpha"
     assert _release_status("0.1.0-beta.2") == "beta"
     assert _release_status("0.1.0-rc.3") == "rc"
