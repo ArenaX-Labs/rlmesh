@@ -566,7 +566,7 @@ fn select_workflow_edition(tiers: &[(&str, &SessionOffer)]) -> Result<String, Ed
             })
             .collect(),
     };
-    let (_, first) = tiers.first().ok_or_else(&refuse)?;
+    let (_, first) = tiers.first().ok_or_else(refuse)?;
 
     first
         .can()
@@ -582,7 +582,7 @@ fn select_workflow_edition(tiers: &[(&str, &SessionOffer)]) -> Result<String, Ed
         })
         .max_by_key(|edition| edition_sort_key(edition))
         .map(str::to_string)
-        .ok_or_else(&refuse)
+        .ok_or_else(refuse)
 }
 
 /// Select the workflow edition governing a session between this runtime and one

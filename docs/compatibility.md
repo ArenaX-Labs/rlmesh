@@ -27,7 +27,7 @@ Torch and JAX backends and sandbox helpers are experimental. The `MultiBinary`, 
 
 ## Rust crates
 
-Most Rust crates are internal implementation detail with no stability promise: they are published to crates.io so the Python extension can build, but their Rust API may change at any time and there is no plan to stabilize it. The exceptions are the `rlmesh` facade crate and the CLI commands, the Rust-side surfaces we intend to stabilize. Stabilizing the facade API is a near-term goal (see the roadmap below); until then, build on the Python package. Every crate declares `rust-version = "1.96"`, the toolchain CI builds and tests with. See [versioning](versioning.md).
+Most Rust crates are internal implementation detail with no stability promise: they are published to crates.io so the Python extension can build, but their Rust API may change at any time and there is no plan to stabilize it. The exceptions are the `rlmesh` facade crate and the CLI commands, the Rust-side surfaces we intend to stabilize. Stabilizing the facade API is a near-term goal (see the roadmap below); until then, build on the Python package. Every crate declares a `rust-version` matching the toolchain pinned in `mise.toml`, which CI builds and tests with; it moves up with that toolchain. See [versioning](versioning.md).
 
 ## Framework Version Floors
 

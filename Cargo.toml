@@ -19,7 +19,7 @@ resolver = "3"
 version = "0.1.0"
 authors = ["ArenaX Labs, Inc. <research@competesai.com>", "Josh Blayone <josh@arenaxlabs.com>"]
 edition = "2024"
-rust-version = "1.96"
+rust-version = "1.99"
 homepage = "https://rlmesh.dev"
 repository = "https://github.com/ArenaX-Labs/rlmesh"
 documentation = "https://docs.rs/rlmesh"
@@ -118,6 +118,8 @@ todo = "warn"
 unimplemented = "warn"
 print_stdout = "warn"
 print_stderr = "warn"
+# Fires on every `#[tonic::async_trait]` service stub and impl (generated code).
+double_must_use = "allow"
 
 # Keep unwinding well-defined across the rlmesh-capi `extern "C"` boundary: every
 # FFI body relies on `catch_unwind`, which is a no-op under `panic = "abort"`.
