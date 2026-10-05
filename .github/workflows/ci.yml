@@ -33,6 +33,14 @@ jobs:
           python: "true"
           rust-components: "true"
 
+      # Catches a mise.toml bump that skipped `mise lock`.
+      - name: mise.lock is current
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          mise lock
+          git diff --exit-code mise.lock || { echo "::error file=mise.lock::mise.lock is stale; run 'mise lock' and commit it"; exit 1; }
+
       - name: Static checks
         run: mise run --skip-tools check
 

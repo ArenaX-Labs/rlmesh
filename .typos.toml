@@ -7,3 +7,7 @@ mis = "mis"
 # MP4 (ISO BMFF) box fourccs used by the recorder muxer.
 trak = "trak"
 mdia = "mdia"
+# numpy's `ndarray.flags.writeable` spelling.
+writeable = "writeable"
+# Deliberately misspelled backend name in test_view.py.
+termnal = "termnal"

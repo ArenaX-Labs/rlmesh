@@ -959,7 +959,7 @@ mod tests {
             let bytes = img.to_contiguous_bytes();
             let plane = 256 * 256;
             let mut out = vec![0f32; bytes.len()];
-            for (pixel, px) in bytes.chunks_exact(3).enumerate() {
+            for (pixel, px) in bytes.as_chunks::<3>().0.iter().enumerate() {
                 for (channel, &v) in px.iter().enumerate() {
                     out[channel * plane + pixel] = table[v as usize];
                 }
@@ -1043,7 +1043,7 @@ mod tests {
     fn swap_rb_generic(tensor: &Tensor) -> Tensor {
         let bytes = tensor.to_contiguous_bytes();
         let mut out = bytes.to_vec();
-        for px in out.chunks_exact_mut(3) {
+        for px in out.as_chunks_mut::<3>().0 {
             px.swap(0, 2);
         }
         value::tensor_from_u8(tensor.shape().to_vec(), out)
