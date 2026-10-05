@@ -2,35 +2,45 @@
 # Tools
 # ──────────────────────────────────────────────
 [tools]
-rust = { version = "1.96", components = "rustfmt,clippy" }
+rust = { version = "1.99", components = "rustfmt,clippy" }
 
-# Python
+# Python: 3.11 is the dev interpreter (abi3 floor); 3.10 is added for release
+# wheels by `setup:python:release`.
 python = "3.11"
-uv = "0.11"
-zig = "0.16"
+uv = "0.12"
+maturin = "1.15"
+
+# Cross-compiles release wheels (maturin --zig) and builds the C/C++ binding smokes.
+zig = "0.17"
+
+# Markdown/TOML/YAML/JSON formatting. node only exists to run oxfmt (npm backend).
 node = "24"
-oxfmt = "0.53"
-"cargo:maturin" = "1.13"
-"cargo:cargo-zigbuild" = "0.22"
-"cargo:cargo-deny" = "0.19"
+oxfmt = "0.71"
+
+# Rust lint and dependency checks. cargo-binstall lets the cargo: tools download
+# prebuilt binaries instead of compiling.
+typos = "1.50"
+cargo-deny = "0.20"
+cargo-binstall = "1.25"
 "cargo:cargo-audit" = "0.22"
-"cargo:typos-cli" = "1.40"
 "cargo:cargo-machete" = "0.9"
 
-# Protobuf
-protoc = "35"
-buf = "1.70"
+# Protobuf. protoc is required by crates/rlmesh-proto/build.rs.
+protoc = "36"
+buf = "1.73"
 
-# C/C++ bindings (rlmesh-capi): zig compiles, clang-format formats, cmake drives the packaging smoke.
-"pipx:clang-format" = "20.1.0"
-cmake = "4.3"
+# C/C++ bindings (rlmesh-capi): clang-format formats, cmake drives the packaging smoke.
+clang-format = "23"
+cmake = "4.4"
 
 # Hooks
-prek = "0.4"
-fnox = "1.25"
+prek = "0.5"
+
+# Publish tokens (CARGO_REGISTRY_TOKEN, PYPI_TOKEN) from the keychain via fnox.toml.
+fnox = "1.36"
 
 # `mise watch <task>` (e.g. `mise watch test:rust`) reruns a task on file change.
-watchexec = "2.7.3"
+watchexec = "2.7"
 
 [settings]
 python.uv_venv_auto = "create|source"
