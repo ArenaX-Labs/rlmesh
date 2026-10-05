@@ -294,9 +294,15 @@ description = "Build the C/C++ package, then build the C++ smoke against the INS
 dir = "{{ config_root }}"
 file = "scripts/test-cxx-pkg.sh"
 
+# The extension's tests embed Python, which does not discover the venv on its
+# own on every platform (macOS), so its site-packages is put on PYTHONPATH.
 [tasks."test:rust"]
 description = "Run Rust workspace tests and doctests"
-run = ["cargo test --workspace --all-targets", "cargo test --workspace --doc"]
+run = '''
+export PYTHONPATH="$(python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')" &&
+  cargo test --workspace --all-targets &&
+  cargo test --workspace --doc
+'''
 
 [tasks."test:python"]
 description = "Run Python unit, integration, and conformance tests plus the authoring-import guard"
