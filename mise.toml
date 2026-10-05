@@ -194,6 +194,14 @@ run = "cargo tree -d --workspace"
 description = "Check for unused Rust dependencies"
 run = "cargo machete --with-metadata"
 
+[tasks."deps:outdated"]
+description = "Report outdated mise tools, Rust crates, and Python dependencies without changing anything"
+run = [
+  "echo '==> mise tools'; mise outdated --bump",
+  "echo '==> Rust crates (Cargo.lock)'; cargo update --dry-run",
+  "echo '==> Python direct dependencies'; uv tree --outdated --depth 1 --all-groups | grep 'latest:' || echo 'all up to date'",
+]
+
 # ──────────────────────────────────────────────
 # Typecheck (non-mutating)
 # ──────────────────────────────────────────────
