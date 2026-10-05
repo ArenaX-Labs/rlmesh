@@ -17,13 +17,10 @@ zig = "0.17"
 node = "24"
 oxfmt = "0.71"
 
-# Rust lint and dependency checks. cargo-binstall lets the cargo: tools download
-# prebuilt binaries instead of compiling.
+# Rust lint and dependency checks
 typos = "1.50"
 cargo-deny = "0.20"
-cargo-binstall = "1.25"
-"cargo:cargo-audit" = "0.22"
-"cargo:cargo-machete" = "0.9"
+"github:bnjbvr/cargo-machete" = "0.9"
 
 # Protobuf. protoc is required by crates/rlmesh-proto/build.rs.
 protoc = "36"
@@ -79,7 +76,7 @@ run = "rustup target add aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown
 # ──────────────────────────────────────────────
 [tasks."fmt"]
 description = "Format all source files"
-depends = ["fmt:rust", "fmt:python", "fmt:proto", "fmt:oxfmt", "fmt:cxx"]
+depends = ["fmt:rust", "fmt:python", "fmt:proto", "fmt:config", "fmt:cxx"]
 
 [tasks."fmt:rust"]
 description = "Format Rust code"
@@ -93,7 +90,7 @@ run = "uv run ruff format"
 description = "Format Protobuf definitions"
 run = "buf format -w"
 
-[tasks."fmt:oxfmt"]
+[tasks."fmt:config"]
 description = "Format Markdown, TOML, YAML, and JSON files with oxfmt"
 run = "git ls-files -z --cached --others --exclude-standard -- '*.md' '*.toml' '*.yml' '*.yaml' '*.json' '*.jsonc' | xargs -0 oxfmt --write"
 
@@ -106,7 +103,7 @@ depends = [
   "fmt:check:rust",
   "fmt:check:python",
   "fmt:check:proto",
-  "fmt:check:oxfmt",
+  "fmt:check:config",
   "fmt:check:cxx",
 ]
 
@@ -130,7 +127,7 @@ run = "clang-format --dry-run --Werror crates/rlmesh-capi/include/*.h* crates/rl
 description = "Check Protobuf formatting"
 run = "buf format -d --exit-code"
 
-[tasks."fmt:check:oxfmt"]
+[tasks."fmt:check:config"]
 description = "Check Markdown, TOML, YAML, and JSON formatting with oxfmt"
 run = "git ls-files -z --cached --others --exclude-standard -- '*.md' '*.toml' '*.yml' '*.yaml' '*.json' '*.jsonc' | xargs -0 oxfmt --check"
 
@@ -175,12 +172,15 @@ description = "Check spelling in source files"
 run = "typos"
 
 [tasks."lint:deps"]
-description = "Check Rust dependency advisories, licenses, bans, and sources"
-run = ["mise run lint:deps:audit", "mise run lint:deps:deny", "mise run lint:deps:unused"]
+description = "Check Rust dependency licenses, bans, sources, and unused dependencies"
+# Deterministic checks only. lint:deps:audit (RustSec advisories) is invocable
+# on demand and runs in nightly CI, but stays out of the check gate so a new
+# advisory can't red main/PRs with zero code change.
+run = ["mise run lint:deps:deny", "mise run lint:deps:unused"]
 
 [tasks."lint:deps:audit"]
-description = "Check Rust dependency advisories"
-run = "cargo audit"
+description = "Check Rust dependency advisories (RustSec; not in the check gate)"
+run = "cargo deny check advisories"
 
 [tasks."lint:deps:deny"]
 description = "Check Rust dependency licenses, bans, and sources"
