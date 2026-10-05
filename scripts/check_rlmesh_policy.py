@@ -320,6 +320,14 @@ service S {
     assert _check_message_cap(wire, "")
     assert _check_message_cap({**wire, "max_message_bytes": "256 MiB"}, lib)
 
+    # rust-version tracks the mise toolchain at major.minor precision.
+    assert not _check_rust_version("1.99", "1.99")
+    assert not _check_rust_version({"version": "1.99.0"}, "1.99")
+    assert _check_rust_version("1.100", "1.99")
+    assert _check_rust_version("stable", "1.99")
+    assert _check_rust_version(None, "1.99")
+    assert _check_rust_version("1.99", None)
+
     print("policy self-check passed")
 
 
@@ -382,6 +390,7 @@ def validate_rlmesh_policy(*, repo_root: Path, manifest_path: Path) -> list[str]
         )
     )
     errors.extend(_validate_doc_versions(repo_root, workspace_version))
+    errors.extend(_validate_rust_version(repo_root))
 
     return errors
 
@@ -1434,6 +1443,31 @@ def _validate_doc_versions(repo_root: Path, workspace_version: str | None) -> li
                 "release-neutral phrasing"
             )
     return errors
+
+
+def _validate_rust_version(repo_root: Path) -> list[str]:
+    mise_rust = _read_toml(repo_root / "mise.toml").get("tools", {}).get("rust")
+    package = _read_toml(repo_root / "Cargo.toml").get("workspace", {}).get("package", {})
+    return _check_rust_version(mise_rust, package.get("rust-version"))
+
+
+def _check_rust_version(mise_rust: Any, rust_version: Any) -> list[str]:
+    """``[workspace.package].rust-version`` must equal the mise rust toolchain.
+
+    Rust has no compatibility promise yet, so the MSRV is not a separate floor:
+    it moves with the toolchain CI builds on. Compared at major.minor.
+    """
+    toolchain = mise_rust.get("version") if isinstance(mise_rust, dict) else mise_rust
+    if not isinstance(toolchain, str) or not re.match(r"^\d+\.\d+", toolchain):
+        return [f"mise.toml [tools].rust must pin a numeric version, got {toolchain!r}"]
+    if not isinstance(rust_version, str):
+        return ["root Cargo.toml is missing [workspace.package].rust-version"]
+    if toolchain.split(".")[:2] != rust_version.split(".")[:2]:
+        return [
+            f"Cargo.toml rust-version is {rust_version!r} but mise.toml pins rust "
+            f"{toolchain!r}; keep them in lockstep"
+        ]
+    return []
 
 
 def _read_toml(path: Path) -> dict[str, Any]:
