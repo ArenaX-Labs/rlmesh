@@ -86,7 +86,7 @@ pub enum JoinError {
         tag: (f64, f64),
         space: (f64, f64),
     },
-    #[error("the action space must be a flat Box but it is {actual}")]
+    #[error("the action space must be a Box but it is {actual}")]
     ActionClass { actual: String },
     #[error(
         "action component dims sum to {component_sum} but the action space width is {action_width}"

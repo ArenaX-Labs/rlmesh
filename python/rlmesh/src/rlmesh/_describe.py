@@ -69,7 +69,11 @@ from dataclasses import dataclass, field
 from typing import Any, cast
 
 from ._entrypoint import resolve_entrypoint
-from ._rlmesh import adapters_spec_normalize, describe_envelope_normalize
+from ._rlmesh import (
+    adapters_join_check,
+    adapters_spec_normalize,
+    describe_envelope_normalize,
+)
 from ._variants import Variant
 from .params._resolve import describe as _describe_params
 from .params._resolve import resolve
@@ -787,10 +791,11 @@ def check_target(target: object, *, kind: str | None = None) -> CheckReport:
     """Check an env/model class the way the platform will, before it is built.
 
     ``target`` is a ``"module:Class"`` entrypoint, a class, or an instance
-    (see :func:`describe`). Fails on: an env without ``tags``, a spec/tags
-    that does not resolve, a broken ``model_spec`` / ``env_tags``, an edition
+    (see :func:`describe`). Fails on: a spec/tags that does not resolve, tags
+    that do not fit the env's spaces (per contract branch), a contract branch
+    without tags, a broken ``model_spec`` / ``env_tags``, an edition
     declaration this build cannot run, or a target that does not import. Warns
-    on a model with no class-level ``spec`` (one set in ``load()`` serves fine
+    on an untagged env (it runs, but only against spec-less models), on a model with no class-level ``spec`` (one set in ``load()`` serves fine
     and rides the handshake, but a baked label will not carry it; the managed
     probe cannot synthesize inputs without a ``ModelSpec``), on ad hoc roles a
     curated publish gate would refuse, and on best-effort badges elsewhere in
@@ -898,11 +903,18 @@ def _check_envelope(
             report.passed.append(f"{where}model_spec: declared")
     else:
         tags = envelope.get("env_tags")
-        if tags is None:
+        branched = isinstance(envelope.get("env_contracts"), Mapping)
+        if tags is None and branched:
             report.failed.append(
-                f"{where}env_tags: {name} declares no tags; the platform cannot "
-                "adapt a model to it without EnvTags (set `tags = EnvTags(...)` "
-                "on the class)"
+                f"{where}env_tags: {name} declares tag_params but its default "
+                "branch has no tags; the platform probe fails a contract branch "
+                "without EnvTags"
+            )
+        elif tags is None:
+            report.warnings.append(
+                f"{where}env_tags: {name} declares no tags; it runs against "
+                "spec-less models, but the platform cannot adapt a spec'd model to "
+                "it without EnvTags (set `tags = EnvTags(...)` on the class)"
             )
         elif isinstance(tags, Mapping) and "error" in tags:
             # The platform warns on a tags badge (it can still read the spaces).
@@ -938,6 +950,7 @@ def _check_envelope(
             continue  # reported above, with their own severity
         report.warnings.append(f"{where}{path}: {badge}")
     _check_specs(envelope, report, where)
+    _check_branches(envelope, report, where)
     _check_runtime(envelope, report, where)
 
 
@@ -977,10 +990,71 @@ def _check_specs(envelope: Mapping[str, Any], report: CheckReport, where: str) -
         except ValueError as exc:
             report.failed.append(f"{where}{key}: does not resolve: {exc}")
             continue
+        if side == "env":
+            _check_join(key, raw, envelope.get("env_spec"), report, where)
         try:
             adapters_spec_normalize(side, raw, True, "strict")
         except ValueError as exc:
             report.warnings.append(f"{where}{key}: {exc}")
+
+
+def _check_branches(
+    envelope: Mapping[str, Any], report: CheckReport, where: str
+) -> None:
+    """Each non-default contract branch needs tags that fit its own spaces.
+
+    The default branch is the top-level ``env_tags``/``env_spec`` pair, checked
+    by :func:`_check_specs`.
+    """
+    contracts = envelope.get("env_contracts")
+    if not isinstance(contracts, Mapping):
+        return
+    branches = cast("Mapping[str, object]", contracts).get("branches")
+    for branch in cast("list[object]", branches if isinstance(branches, list) else []):
+        if not isinstance(branch, Mapping):
+            continue
+        branch_map = cast("Mapping[str, Any]", branch)
+        if branch_map.get("default"):
+            continue
+        key = f"env_contracts.branches[{branch_map.get('params')!r}].env_tags"
+        tags = branch_map.get("env_tags")
+        if tags is None:
+            report.failed.append(
+                f"{where}{key}: this contract branch has no tags; the platform "
+                "probe fails a branch without EnvTags"
+            )
+        elif isinstance(tags, Mapping) and "error" not in tags:
+            _check_join(
+                key, json.dumps(tags), branch_map.get("env_spec"), report, where
+            )
+
+
+def _check_join(
+    key: str,
+    tags_json: str,
+    env_spec: object,
+    report: CheckReport,
+    where: str,
+) -> None:
+    """Join tags against the spaces they claim, as ``rlmesh.serve`` does at startup.
+
+    Spaces that could not be read (an ``env_spec`` badge) are reported where the
+    badge is; there is nothing to join here.
+    """
+    if not isinstance(env_spec, Mapping) or "error" in env_spec:
+        return
+    spaces = cast("Mapping[str, Any]", env_spec)
+    try:
+        advisories = adapters_join_check(
+            tags_json, spaces["observation_space"], spaces["action_space"]
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        report.failed.append(
+            f"{where}{key}: does not fit the env's spaces (rlmesh.serve refuses "
+            f"it): {exc}"
+        )
+        return
+    report.warnings.extend(f"{where}{key}: {note}" for note in advisories)
 
 
 def _check_runtime(
