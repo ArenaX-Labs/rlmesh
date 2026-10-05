@@ -1,0 +1,33 @@
+# Dependabot keeps the SHA-pinned GitHub Actions and the example container
+# base images current, matching rlmesh-closed. It rewrites the pinned commit
+# SHA and the `# vX.Y.Z` comment together. The cooldown holds a new release
+# back for a week. Rust and Python dependencies and mise tools are bumped by
+# hand (`mise run deps:outdated`).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "ci(deps)"
+
+  - package-ecosystem: docker
+    directories:
+      - /examples/python/byo_container/env
+      - /examples/python/byo_container/model
+      - /examples/python/isaacsim
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      base-images:
+        patterns: ["*"]
+    commit-message:
+      prefix: "build(deps)"

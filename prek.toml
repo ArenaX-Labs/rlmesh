@@ -53,12 +53,20 @@ entry = "mise run lint:proto"
 pass_filenames = false
 files = "\\.proto$"
 
+[[repos.hooks]]
+id = "buf-format"
+name = "buf format"
+language = "system"
+entry = "mise run fmt:check:proto"
+pass_filenames = false
+files = "\\.proto$"
+
 # Docs and config
 [[repos.hooks]]
-id = "oxfmt"
-name = "oxfmt"
+id = "config-format"
+name = "config format"
 language = "system"
-entry = "mise run fmt:check:oxfmt"
+entry = "mise run fmt:check:config"
 pass_filenames = false
 files = "\\.(md|toml|ya?ml|jsonc?)$"
 
@@ -69,6 +77,15 @@ name = "typos"
 language = "system"
 entry = "mise run lint:spelling"
 pass_filenames = false
+
+# Dependencies
+[[repos.hooks]]
+id = "cargo-deny"
+name = "cargo deny"
+language = "system"
+entry = "mise run lint:deps:deny"
+pass_filenames = false
+files = "^(Cargo\\.(toml|lock)|deny\\.toml|crates/[^/]+/Cargo\\.toml|python/rlmesh/rust/Cargo\\.toml)$"
 
 # Native extension — the editable install imports the compiled _rlmesh.abi3.so
 # straight from the source tree, and `maturin build` never refreshes it, so a

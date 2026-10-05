@@ -1,0 +1,50 @@
+name: Audit
+
+on:
+  schedule:
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: Dependency advisories
+    permissions:
+      contents: read
+    runs-on: depot-ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Scope mise to repository config
+        run: echo "MISE_IGNORED_CONFIG_PATHS=$HOME/.config/mise/config.toml" >> "$GITHUB_ENV"
+
+      - name: Install mise
+        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
+        with:
+          version: 2026.10.2
+          install: true
+          # rust + cargo-deny run `cargo deny check advisories`; python is
+          # only here because mise.toml's UV_PYTHON env renders
+          # `tools.python.path`, which fails when the tool is absent.
+          install_args: --locked rust cargo-deny python
+          cache_key: >-
+            {{cache_key_prefix}}-{{platform}}-{{version}}-{{install_args_hash}}-${{hashFiles('mise.lock')}}
+          cache: true
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: |
+            . -> target
+
+      - name: Audit Rust dependencies
+        run: mise run --skip-tools lint:deps:audit
