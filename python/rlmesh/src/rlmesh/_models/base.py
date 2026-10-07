@@ -1475,6 +1475,10 @@ class ModelBase(Generic[ObsT, ActT]):
         ``resolve_adapter`` handshake delivers, then applies it around predict; a
         spec-less / ``NO_ADAPTER`` model serves its own predict directly.
 
+        ``RLMESH_MODEL_ENDPOINT_TOKEN``, when set, requires that bearer token on
+        every model RPC. An empty or whitespace-only value fails startup.
+        When unset, the endpoint serves without authentication.
+
         The endpoint declares a workflow edition on every handshake: ``options``'
         own ``workflow_edition`` if it sets one, else the resolved declaration
         (``RLMESH_WORKFLOW_EDITION``, :attr:`workflow_edition`, ``[tool.rlmesh]``).

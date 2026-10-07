@@ -34,7 +34,23 @@ mise watch test:python:unit
 mise run test:ci
 ```
 
-If `check` and `test:ci` pass locally, the CI fast job passes (it additionally rebuilds the C/C++ smoke under clang and gcc and builds the docs). On push, CI also runs `release:rust:package` and `test:cxx:pkg` in a separate package job.
+CI uses one required job, `Fast Checks`, on pull requests, pushes to `main`, and manual runs. It runs `check` and `test:ci`, reuses the resulting wheels for cross-version compatibility, verifies Rust and C/C++ packages, and repeats the C/C++ smoke under clang and gcc. Package and compatibility failures therefore fail the same required check as the rest of CI; there are no event-specific skipped jobs.
+
+Toolchain setup installs the committed `mise.lock` with `--locked`; CI does not regenerate it against changing upstream dependency metadata. Refresh the lock explicitly when updating tools.
+
+CI sets `RLMESH_RELEASE_BUILD=1` so one local wheel build covers both the basic installed-artifact and compatibility profiles. To reproduce its checks locally:
+
+```bash
+RLMESH_RELEASE_BUILD=1 mise run check
+RLMESH_RELEASE_BUILD=1 mise run test:ci
+mise run test:crossver:installed
+mise run release:rust:package
+CC=clang CXX=clang++ mise run test:cxx:pkg
+CC=clang CXX=clang++ mise run test:cxx
+CC=gcc CXX=g++ mise run test:cxx
+```
+
+`release:rust:package` extracts and compiles the packaged crates, catching omitted source files and invalid published dependency metadata that a workspace build can miss. Keep this verification even when workspace tests pass.
 
 ## API Surface Tests
 
@@ -90,11 +106,13 @@ mise run test:system:clean
 
 ## Cross-Version Matrix
 
-The cross-version matrix runs this tree against the last published release, on every pull request and on pushes to `main`:
+The cross-version matrix runs this tree against the last published release as part of the required CI job, on every pull request and on pushes to `main`. The standalone local entrypoint builds its own release wheels:
 
 ```bash
 mise run test:crossver
 ```
+
+When release-cohort wheels have already been built, run `mise run test:crossver:installed` to validate them without rebuilding. CI and `release:check` use this entrypoint; the runner rejects a dev-cohort wheel rather than silently testing the wrong artifact.
 
 The old side of every cell is the PyPI wheel pinned by exact version and sha256 in `tests/system/crossver.lock`; the new side is a wheel built from this tree with `RLMESH_RELEASE_BUILD=1`, which stamps the same workflow-edition cohort the published wheel advertises (a plain dev build stamps `2026.06-dev.<sha>` and is refused at the edition floor by design). `tests/system/crossver.py` drives the cells: old and new env servers against old and new runtimes, old and new served models against the other side's runtime, both same-version controls, and two forged refusals (a ConfigureEnv pin naming an edition no build implements, and a `rlmesh-wire-v2` handshake). Each of the six real cells asserts that the cross-version Join reproduces `tests/system/traces/counter-entrypoint.json`, and — measured on the server it runs against, by a raw wire probe rather than by the runtime's own client — that server's `HandshakeResponse.compatible` flag and its declared WANT (this tree's servers declare the current edition; the published wheel declares none). The edition column is the runtime's real `ResolveAdapter` pin on the model cells and its real `ConfigureEnv` pin on the env cells this tree's runtime drives (read off this tree's env server log, or proven by the trace when the published wheel serves the env, since a refused pin aborts before Reset); the published wheel's runtime sends no pin, so its env cells fall back to the two builds' CAN intersection acked through a forged `ConfigureEnv`. The two refusal cells assert the refusal message instead; the results table prints the same legend.
 

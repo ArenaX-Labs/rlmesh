@@ -62,6 +62,16 @@ env.close()
 
 For runnable files and exact commands, see [`examples/python`](examples/python). Start with the quickstart, then try the adapters example for tag-driven IO, the sandbox example for Docker-backed environments, or `byo_container` for hand-written env and model images.
 
+## Model endpoint authentication
+
+Set `RLMESH_MODEL_ENDPOINT_TOKEN` in a model server's environment to require
+`authorization: <token>` on its Handshake, Join, and Shutdown RPCs. This
+applies to Python `Model.serve()` and Rust `ModelWorker` serving. The environment
+token takes precedence over explicit token options and is captured when the
+server binds; restart the server to rotate it. Empty, whitespace-only, or
+non-Unicode values fail startup. When the variable is unset, explicit token
+options still work, and serving without a token remains available for local use.
+
 ## Building the Rust SDK
 
 The gRPC crates generate their stubs from `.proto` files at build time. Building any of them (`rlmesh`, `rlmesh-grpc`, `rlmesh-runtime`, `rlmesh-sandbox`) from source, including a plain `cargo add rlmesh && cargo build` from crates.io, requires the Protocol Buffers compiler `protoc` on the system. Install it from your package manager (for example `apt install protobuf-compiler` or `brew install protobuf`), or point `PROTOC` at an existing binary. The Python package has no such requirement; its wheels ship pre-built.

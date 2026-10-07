@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ### Fixed
 
+- Served model endpoints enforce `RLMESH_MODEL_ENDPOINT_TOKEN` when set, taking precedence over token options. Empty or invalid environment values fail startup instead of disabling authentication.
+
 - `rlmesh check`, `rlmesh check-image`, and `python -m rlmesh._describe --check` join an env's tags against its spaces, per contract branch, the way `rlmesh.serve` does at startup, so tags whose widths or space classes do not fit now fail the check instead of passing it and crashing the server. A contract branch without tags fails, as the platform probe does.
 
 ### Changed

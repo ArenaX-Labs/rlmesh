@@ -211,17 +211,19 @@ impl From<ConnectAddress> for RunLocalOptions {
 pub struct ServeModelOptions {
     /// Address to bind the model server to.
     pub address: BindAddress,
-    /// Bearer token required on requests; empty/`""` disables auth.
+    /// Bearer token required on requests when `RLMESH_MODEL_ENDPOINT_TOKEN` is unset.
+    /// Empty/`""` disables auth only when the environment variable is unset.
     ///
     /// A non-empty [`ServeOptions::token`](crate::ServeOptions::token) in
     /// `serve` takes precedence over this field; either one alone arms auth.
+    /// `RLMESH_MODEL_ENDPOINT_TOKEN`, when set, takes precedence over both.
     pub token: String,
     /// Transport serve options (idle/drain/close timeouts, remote shutdown).
     pub serve: ServeOptions,
 }
 
 impl ServeModelOptions {
-    /// Serve on `address` with no token and default serve options.
+    /// Serve on `address` with default serve options and the environment token, if set.
     pub fn new(address: BindAddress) -> Self {
         Self {
             address,
@@ -235,7 +237,7 @@ impl ServeModelOptions {
         Ok(Self::new(BindAddress::parse(address)?))
     }
 
-    /// Require `token` on the `authorization` header (empty disables auth).
+    /// Require `token` on the `authorization` header when the environment token is unset.
     ///
     /// A non-empty [`ServeOptions::token`](crate::ServeOptions::token) set
     /// through [`serve_options`](Self::serve_options) wins over this one.
@@ -347,18 +349,17 @@ impl<H: ModelHandler + 'static> ModelWorker<H> {
     ///
     /// The bearer token is taken from `options.serve.token` when it is set and
     /// non-empty, otherwise from `options.token`, so auth configured either way
-    /// is enforced.
+    /// is enforced. `RLMESH_MODEL_ENDPOINT_TOKEN`, when set, overrides both
+    /// options. An empty, whitespace-only, or non-Unicode environment value
+    /// fails startup instead of disabling authentication. The token is captured
+    /// at bind time and is required on Handshake, Join, and Shutdown.
     pub async fn bind_async(
         self,
         options: impl Into<ServeModelOptions>,
     ) -> Result<BoundModelServer> {
         let options = options.into();
-        let effective_token = options
-            .serve
-            .token
-            .clone()
-            .filter(|token| !token.is_empty())
-            .unwrap_or_else(|| options.token.clone());
+        let effective_token =
+            model_endpoint_token(&options, std::env::var("RLMESH_MODEL_ENDPOINT_TOKEN"))?;
         server::bind_model_with_options(
             self.handler,
             options.address,
@@ -366,5 +367,79 @@ impl<H: ModelHandler + 'static> ModelWorker<H> {
             options.serve,
         )
         .await
+    }
+}
+
+/// Resolve the deployment credential before binding a listener. Keep the env
+/// read outside this helper so invalid values and precedence can be tested
+/// without mutating the process environment.
+fn model_endpoint_token(
+    options: &ServeModelOptions,
+    environment: std::result::Result<String, std::env::VarError>,
+) -> Result<String> {
+    match environment {
+        Ok(token) if token.trim().is_empty() => Err(Error::Server(
+            "RLMESH_MODEL_ENDPOINT_TOKEN must not be empty or whitespace-only".to_string(),
+        )),
+        Ok(token) => Ok(token),
+        Err(std::env::VarError::NotUnicode(_)) => Err(Error::Server(
+            "RLMESH_MODEL_ENDPOINT_TOKEN must be valid Unicode".to_string(),
+        )),
+        Err(std::env::VarError::NotPresent) => Ok(options
+            .serve
+            .token
+            .clone()
+            .filter(|token| !token.is_empty())
+            .unwrap_or_else(|| options.token.clone())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_endpoint_token_precedence() {
+        for (nested, direct, expected) in [
+            (None, "", ""),
+            (None, "direct", "direct"),
+            (Some(""), "direct", "direct"),
+            (Some("nested"), "direct", "nested"),
+        ] {
+            let options = ServeModelOptions::parse("tcp://127.0.0.1:0")
+                .unwrap()
+                .token(direct)
+                .serve_options(ServeOptions {
+                    token: nested.map(str::to_string),
+                    ..ServeOptions::default()
+                });
+            assert_eq!(
+                model_endpoint_token(&options, Err(std::env::VarError::NotPresent)).unwrap(),
+                expected
+            );
+            assert_eq!(
+                model_endpoint_token(&options, Ok("deployment-token".to_string())).unwrap(),
+                "deployment-token"
+            );
+        }
+    }
+
+    #[test]
+    fn model_endpoint_token_invalid_environment_fails_closed() {
+        let options = ServeModelOptions::parse("tcp://127.0.0.1:0")
+            .unwrap()
+            .token("fallback-must-not-be-used");
+        for value in ["", " ", "\t\n"] {
+            let error = model_endpoint_token(&options, Ok(value.to_string())).unwrap_err();
+            assert!(error.to_string().contains("RLMESH_MODEL_ENDPOINT_TOKEN"));
+            assert!(!error.to_string().contains("fallback-must-not-be-used"));
+        }
+        let error = model_endpoint_token(
+            &options,
+            Err(std::env::VarError::NotUnicode("private-value".into())),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("valid Unicode"));
+        assert!(!error.to_string().contains("private-value"));
     }
 }
