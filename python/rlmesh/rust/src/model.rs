@@ -817,7 +817,7 @@ impl PyModel {
     /// and `episode_completed(episode_id, index, env_index, seed, trial, steps,
     /// reward, terminated, truncated, success, duration_s)`. An exception it
     /// raises aborts the run and is re-raised as-is.
-    #[pyo3(signature = (env_address, episodes, execution_horizon=1, seeds=None, max_episode_steps=None, max_episode_seconds=None, close_env=false, trial_index_base=None, prefetch_lead=0, workflow_edition=None, hooks=None))]
+    #[pyo3(signature = (env_address, episodes, execution_horizon=1, seeds=None, max_episode_steps=None, max_episode_seconds=None, close_env=false, trial_index_base=None, prefetch_lead=0, workflow_edition=None, hooks=None, env_token=None))]
     #[allow(clippy::too_many_arguments)]
     fn run_local_for_episodes(
         &self,
@@ -833,6 +833,7 @@ impl PyModel {
         prefetch_lead: u32,
         workflow_edition: Option<String>,
         hooks: Option<Py<PyAny>>,
+        env_token: Option<String>,
     ) -> PyResult<Py<PyAny>> {
         let run_span = tracing::info_span!(
             "rlmesh.model.run_local_for_episodes",
@@ -851,7 +852,8 @@ impl PyModel {
             .episode_seeds(seeds.unwrap_or_default())
             .close_env(close_env)
             // The Python model outlives this run: its close() is the caller's.
-            .close_model(false);
+            .close_model(false)
+            .token(env_token.unwrap_or_default());
         options.workflow_edition = crate::lifecycle::checked_workflow_edition(workflow_edition)?;
         if let Some(cap) = max_episode_steps {
             options = options.max_episode_steps(cap);
@@ -936,7 +938,7 @@ import typing
 class PyModel:
     def __init__(self, predict_fn: collections.abc.Callable[[Value], Value], configure_fn: collections.abc.Callable[[EnvContract], object] | None = None, on_episode_end: collections.abc.Callable[[str], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None, predict_chunk_fn: collections.abc.Callable[[Value, int], Value] | None = None, predict_batch_fn: collections.abc.Callable[[list[Value], list[dict[str, typing.Any]]], list[Value]] | None = None, predict_chunk_batch_fn: collections.abc.Callable[[list[Value], int, list[dict[str, typing.Any]]], list[Value]] | None = None, allow_fusion: bool = True, native_chunk: int | None = None) -> None: ...
     def run_local(self, env_address: str, execution_horizon: int = 1, prefetch_lead: int = 0, workflow_edition: str | None = None) -> dict[str, typing.Any]: ...
-    def run_local_for_episodes(self, env_address: str, episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trial_index_base: int | None = None, prefetch_lead: int = 0, workflow_edition: str | None = None, hooks: object | None = None) -> dict[str, typing.Any]: ...
+    def run_local_for_episodes(self, env_address: str, episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trial_index_base: int | None = None, prefetch_lead: int = 0, workflow_edition: str | None = None, hooks: object | None = None, env_token: str | None = None) -> dict[str, typing.Any]: ...
     def serve(self, address: str, options: ServeOptions | None = None) -> None: ...
 "#
     }
@@ -947,7 +949,7 @@ submit! {
     gen_methods_from_python! {
         r#"
 class PyModelClient:
-    def __init__(self, address: str, env_contract: EnvContract, execution_horizon: int = 1, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, env_offer: tuple[list[str], str | None] | None = None) -> None: ...
+    def __init__(self, address: str, env_contract: EnvContract, execution_horizon: int = 1, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, env_offer: tuple[list[str], str | None] | None = None, token: str | None = None) -> None: ...
     def address(self) -> str: ...
     def env_id(self) -> str: ...
     def selected_workflow_edition(self) -> str: ...
@@ -984,7 +986,7 @@ pub struct PyModelClient {
 impl PyModelClient {
     #[new]
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (address, env_contract, execution_horizon=1, *, connect_timeout_seconds=None, request_timeout_seconds=None, workflow_edition=None, env_offer=None))]
+    #[pyo3(signature = (address, env_contract, execution_horizon=1, *, connect_timeout_seconds=None, request_timeout_seconds=None, workflow_edition=None, env_offer=None, token=None))]
     fn new(
         py: Python<'_>,
         address: &str,
@@ -994,6 +996,7 @@ impl PyModelClient {
         request_timeout_seconds: Option<f64>,
         workflow_edition: Option<String>,
         env_offer: Option<(Vec<String>, Option<String>)>,
+        token: Option<String>,
     ) -> PyResult<Self> {
         init_tracing("model_client");
         let contract = native_env_contract_from_py(env_contract)?;
@@ -1024,7 +1027,7 @@ impl PyModelClient {
         let mut inner = py.detach(|| {
             let connect = RemoteModel::connect_declaring(
                 &address,
-                "",
+                token.as_deref().unwrap_or_default(),
                 contract,
                 env_offer,
                 declared.as_deref(),

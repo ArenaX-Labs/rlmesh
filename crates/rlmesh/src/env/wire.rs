@@ -1489,6 +1489,67 @@ mod tests {
         assert!(client.shutdown("done").await.unwrap());
         shutdown_and_join(server).await;
     }
+
+    /// Run with a private environment in a subprocess: changing process-wide env
+    /// vars in this parallel test suite could accidentally authenticate other servers.
+    #[tokio::test]
+    async fn env_endpoint_environment_token_is_enforced() {
+        const CHILD: &str = "RLMESH_TEST_ENDPOINT_TOKEN_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "env::wire::tests::env_endpoint_environment_token_is_enforced",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .env(crate::ENV_ENDPOINT_TOKEN_ENV, "deployment-token")
+                .status()
+                .unwrap();
+            assert!(status.success(), "environment token subprocess failed");
+            return;
+        }
+
+        let bound = EnvServer::new(DummyEnv::new())
+            .bind_with_options(
+                BindAddress::Tcp {
+                    host: "127.0.0.1".to_string(),
+                    port: 0,
+                },
+                ServeOptions {
+                    token: Some("direct-token".to_string()),
+                    allow_remote_shutdown: true,
+                    ..ServeOptions::default()
+                },
+            )
+            .await
+            .unwrap();
+        let address = bound.local_addr().to_string();
+        let server = tokio::spawn(async move { bound.serve().await });
+
+        assert!(RemoteEnv::connect(&address).await.is_err());
+        for token in ["wrong-token", "direct-token", "Bearer direct-token"] {
+            assert!(
+                RemoteEnv::connect_with_token(&address, token)
+                    .await
+                    .is_err(),
+                "{token} must be rejected"
+            );
+        }
+
+        // The deployment token is accepted raw and in `Bearer` form.
+        drop(
+            RemoteEnv::connect_with_token(&address, "Bearer deployment-token")
+                .await
+                .unwrap(),
+        );
+        let mut client = RemoteEnv::connect_with_token(&address, "deployment-token")
+            .await
+            .unwrap();
+        assert!(client.shutdown("done").await.unwrap());
+        shutdown_and_join(server).await;
+    }
+
     /// One lane of a [`WireLaneAdapter`] that records the reset options it saw.
     struct RecordingLane {
         obs_space: spaces::SpaceSpec,

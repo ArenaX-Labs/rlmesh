@@ -49,6 +49,7 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
         connect_timeout_seconds: float | None = None,
         request_timeout_seconds: float | None = None,
         workflow_edition: str | None = None,
+        token: str | None = None,
     ) -> None:
         self._initialize(
             address,
@@ -59,6 +60,7 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
             connect_timeout_seconds=connect_timeout_seconds,
             request_timeout_seconds=request_timeout_seconds,
             workflow_edition=workflow_edition,
+            token=token,
         )
 
     def _initialize(
@@ -72,6 +74,7 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
         connect_timeout_seconds: float | None,
         request_timeout_seconds: float | None = None,
         workflow_edition: str | None = None,
+        token: str | None = None,
     ) -> None:
         self._bridge.ensure_available()
         # This client is the runtime tier of its session, so it declares an
@@ -91,6 +94,7 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
                 connect_timeout_seconds,
                 request_timeout_seconds,
                 workflow_edition,
+                token,
             )
         except ConnectionError as exc:
             raise ConnectionError(
@@ -123,6 +127,7 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
         connect_timeout_seconds: float | None,
         request_timeout_seconds: float | None,
         workflow_edition: str | None,
+        token: str | None,
     ) -> Any:
         """Build and return the native client. Overridden per arity."""
         raise NotImplementedError

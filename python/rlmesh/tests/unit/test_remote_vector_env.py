@@ -125,7 +125,9 @@ def test_vector_client_rejects_scalar_endpoint(
     from rlmesh._native import RemoteVectorEnv
 
     fake = _FakeNativeClient(num_envs=1)
-    monkeypatch.setattr(RemoteVectorEnv, "_make_client", lambda self, a, c, r, e: fake)
+    monkeypatch.setattr(
+        RemoteVectorEnv, "_make_client", lambda self, a, c, r, e, t: fake
+    )
 
     with pytest.raises(ValueError, match="Use RemoteEnv instead"):
         RemoteVectorEnv("127.0.0.1:5555")
@@ -140,7 +142,7 @@ def test_handshake_failure_closes_client_and_names_handshake(
     from rlmesh._native import RemoteEnv
 
     fake = _FakeNativeClient(handshake_error=ConnectionError("boom"))
-    monkeypatch.setattr(RemoteEnv, "_make_client", lambda self, a, c, r, e: fake)
+    monkeypatch.setattr(RemoteEnv, "_make_client", lambda self, a, c, r, e, t: fake)
 
     with pytest.raises(ConnectionError, match="handshake failed") as excinfo:
         RemoteEnv("127.0.0.1:5555")
@@ -148,16 +150,18 @@ def test_handshake_failure_closes_client_and_names_handshake(
     assert fake.closed is True
 
     fake_other = _FakeNativeClient(handshake_error=RuntimeError("proto"))
-    monkeypatch.setattr(RemoteEnv, "_make_client", lambda self, a, c, r, e: fake_other)
+    monkeypatch.setattr(
+        RemoteEnv, "_make_client", lambda self, a, c, r, e, t: fake_other
+    )
     with pytest.raises(RuntimeError, match="proto"):
         RemoteEnv("127.0.0.1:5555")
     assert fake_other.closed is True
 
 
-def test_client_timeouts_pass_through_to_native(
+def test_client_options_pass_through_to_native(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # connect_timeout_seconds / request_timeout_seconds ride the constructor
+    # connect_timeout_seconds / request_timeout_seconds / token ride the constructor
     # down to the native client instead of being hardcoded to None.
     from rlmesh._native import RemoteVectorEnv
 
@@ -169,15 +173,20 @@ def test_client_timeouts_pass_through_to_native(
         connect: float | None,
         request: float | None,
         workflow_edition: str | None,
+        token: str | None,
     ) -> Any:
         captured["connect"], captured["request"] = connect, request
+        captured["token"] = token
         return _FakeNativeClient(num_envs=3)
 
     monkeypatch.setattr(RemoteVectorEnv, "_make_client", fake_make)
     RemoteVectorEnv(
-        "127.0.0.1:5555", connect_timeout_seconds=1.5, request_timeout_seconds=2.5
+        "127.0.0.1:5555",
+        connect_timeout_seconds=1.5,
+        request_timeout_seconds=2.5,
+        token="s3cret",
     )
-    assert captured == {"connect": 1.5, "request": 2.5}
+    assert captured == {"connect": 1.5, "request": 2.5, "token": "s3cret"}
 
 
 def test_remote_model_supports_endpoint_helper_grammar() -> None:

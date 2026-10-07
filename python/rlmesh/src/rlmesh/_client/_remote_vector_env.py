@@ -33,6 +33,8 @@ class RemoteVectorEnvBase(RemoteClientBase[ValueT, ActionT]):
         transport: Explicit transport selector.
         connect_timeout_seconds: Optional dial timeout in seconds.
         request_timeout_seconds: Optional per-request timeout in seconds.
+        token: Token sent on the ``authorization`` header of every request, for
+            an endpoint that requires one.
     """
 
     _single_observation_space: Space[ValueT] | None = None
@@ -44,6 +46,7 @@ class RemoteVectorEnvBase(RemoteClientBase[ValueT, ActionT]):
         connect_timeout_seconds: float | None,
         request_timeout_seconds: float | None,
         workflow_edition: str | None,
+        token: str | None,
     ) -> Any:
         from .._load_native import load_native
 
@@ -52,6 +55,7 @@ class RemoteVectorEnvBase(RemoteClientBase[ValueT, ActionT]):
             connect_timeout_seconds=connect_timeout_seconds,
             request_timeout_seconds=request_timeout_seconds,
             workflow_edition=workflow_edition,
+            token=token,
         )
 
     def _post_handshake(self) -> None:

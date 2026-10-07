@@ -5,6 +5,7 @@ use rlmesh_runtime::RuntimeReport;
 use super::handler::ModelHandler;
 use super::server::BoundModelServer;
 use super::{local, server};
+use crate::serve_options::MODEL_ENDPOINT_TOKEN_ENV;
 use crate::{BindAddress, ConnectAddress, Error, Result, ServeOptions};
 
 /// Drives or serves a [`ModelHandler`].
@@ -359,7 +360,7 @@ impl<H: ModelHandler + 'static> ModelWorker<H> {
     ) -> Result<BoundModelServer> {
         let options = options.into();
         let effective_token =
-            model_endpoint_token(&options, std::env::var("RLMESH_MODEL_ENDPOINT_TOKEN"))?;
+            model_endpoint_token(&options, std::env::var(MODEL_ENDPOINT_TOKEN_ENV))?;
         server::bind_model_with_options(
             self.handler,
             options.address,
@@ -377,21 +378,13 @@ fn model_endpoint_token(
     options: &ServeModelOptions,
     environment: std::result::Result<String, std::env::VarError>,
 ) -> Result<String> {
-    match environment {
-        Ok(token) if token.trim().is_empty() => Err(Error::Server(
-            "RLMESH_MODEL_ENDPOINT_TOKEN must not be empty or whitespace-only".to_string(),
-        )),
-        Ok(token) => Ok(token),
-        Err(std::env::VarError::NotUnicode(_)) => Err(Error::Server(
-            "RLMESH_MODEL_ENDPOINT_TOKEN must be valid Unicode".to_string(),
-        )),
-        Err(std::env::VarError::NotPresent) => Ok(options
-            .serve
-            .token
-            .clone()
-            .filter(|token| !token.is_empty())
-            .unwrap_or_else(|| options.token.clone())),
-    }
+    let configured = options
+        .serve
+        .token
+        .clone()
+        .filter(|token| !token.is_empty())
+        .unwrap_or_else(|| options.token.clone());
+    crate::serve_options::endpoint_token(MODEL_ENDPOINT_TOKEN_ENV, configured, environment)
 }
 
 #[cfg(test)]

@@ -35,11 +35,17 @@ impl<E: Env + 'static> EnvServer<E> {
     }
 
     /// Bind the server to `addr` with explicit [`ServeOptions`].
+    ///
+    /// `RLMESH_ENV_ENDPOINT_TOKEN`, when set, overrides
+    /// [`ServeOptions::token`] and is captured at bind time; an empty,
+    /// whitespace-only, or non-Unicode value fails instead of disabling
+    /// authentication.
     pub async fn bind_with_options(
         self,
         addr: BindAddress,
         options: ServeOptions,
     ) -> Result<BoundEnvServer> {
+        let options = options.with_env_endpoint_token()?;
         let shutdown = rlmesh_grpc::lifecycle::ShutdownTrigger::new();
         let activity_tx = start_idle_shutdown(options.idle_timeout, shutdown.clone());
         let drain_timeout = options.drain_timeout;
@@ -115,11 +121,17 @@ impl<E: VectorEnv + 'static> VectorEnvServer<E> {
     }
 
     /// Bind the server to `addr` with explicit [`ServeOptions`].
+    ///
+    /// `RLMESH_ENV_ENDPOINT_TOKEN`, when set, overrides
+    /// [`ServeOptions::token`] and is captured at bind time; an empty,
+    /// whitespace-only, or non-Unicode value fails instead of disabling
+    /// authentication.
     pub async fn bind_with_options(
         self,
         addr: BindAddress,
         options: ServeOptions,
     ) -> Result<BoundEnvServer> {
+        let options = options.with_env_endpoint_token()?;
         let shutdown = rlmesh_grpc::lifecycle::ShutdownTrigger::new();
         let activity_tx = start_idle_shutdown(options.idle_timeout, shutdown.clone());
         let drain_timeout = options.drain_timeout;
