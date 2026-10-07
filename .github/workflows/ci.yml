@@ -20,6 +20,8 @@ jobs:
     runs-on: depot-ubuntu-24.04-8
     env:
       UV_CACHE_DIR: /tmp/.uv-cache
+      # One release-cohort wheel build serves basic and compatibility profiles.
+      RLMESH_RELEASE_BUILD: "1"
 
     steps:
       - name: Checkout repository
@@ -34,14 +36,8 @@ jobs:
           python: "true"
           rust-components: "true"
 
-      # Catches a mise.toml bump that skipped `mise lock`.
-      - name: mise.lock is current
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          mise lock
-          git diff --exit-code mise.lock || { echo "::error file=mise.lock::mise.lock is stale; run 'mise lock' and commit it"; exit 1; }
-
+      # Setup installs the committed tool lock with --locked. Do not refresh
+      # remote dependency metadata during verification.
       - name: Static checks
         run: mise run --skip-tools check
 
@@ -50,6 +46,20 @@ jobs:
       # profile against a wheel built from this checkout.
       - name: Tests
         run: mise run --skip-tools test:ci
+
+      - name: Cross-version matrix against the already-built wheels
+        run: mise run --skip-tools test:crossver:installed
+
+      # Verify the distributable source, not just the workspace checkout.
+      # Keep this in the required job so package failures cannot pass the gate.
+      - name: Rust package verification
+        run: mise run --skip-tools release:rust:package
+
+      - name: C/C++ package verification (pkg-config + CMake find_package)
+        env:
+          CC: clang
+          CXX: clang++
+        run: mise run --skip-tools test:cxx:pkg
 
       # `test` runs the C/C++ bindings under zig (libc++); re-run under clang and gcc.
       - name: C/C++ bindings under clang and gcc
@@ -64,59 +74,3 @@ jobs:
       - name: Minimize uv cache
         if: always()
         run: uv cache prune --ci
-
-  cross-version:
-    name: Cross-Version Matrix
-    runs-on: depot-ubuntu-24.04-4
-    env:
-      UV_CACHE_DIR: /tmp/.uv-cache
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Setup toolchain
-        uses: ./.github/actions/setup
-        with:
-          python: "true"
-          rust-components: "true"
-
-      # Builds a release-cohort wheel and runs it against the published wheel
-      # pinned in tests/system/crossver.lock. Its own job, not part of `test`:
-      # a break here is a break in the compatibility promise, not a nightly.
-      - name: Cross-version matrix
-        run: mise run --skip-tools test:crossver
-
-      - name: Minimize uv cache
-        if: always()
-        run: uv cache prune --ci
-
-  package:
-    name: Rust Package Verification
-    runs-on: depot-ubuntu-24.04-4
-    needs: fast
-    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Setup toolchain
-        uses: ./.github/actions/setup
-        with:
-          rust-components: "true"
-
-      - name: Rust package verification
-        run: mise run --skip-tools release:rust:package
-
-      - name: C/C++ package verification (pkg-config + CMake find_package)
-        env:
-          CC: clang
-          CXX: clang++
-        run: mise run --skip-tools test:cxx:pkg
