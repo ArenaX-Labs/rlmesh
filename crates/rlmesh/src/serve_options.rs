@@ -5,7 +5,8 @@ use std::time::Duration;
 /// Transport lifecycle policy for a server (shutdown, timeouts, auth).
 ///
 /// Defaults are conservative: remote shutdown is disabled, every timeout is
-/// unset (no idle shutdown, no drain/close bound), and no token is required.
+/// unset (no idle shutdown, no drain/close bound). Model servers additionally
+/// enforce `RLMESH_MODEL_ENDPOINT_TOKEN` when set.
 /// Pass an instance to [`EnvServer::bind_with_options`](crate::EnvServer::bind_with_options)
 /// or via [`ServeModelOptions`](crate::ServeModelOptions) for the model server.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -25,11 +26,13 @@ pub struct ServeOptions {
     /// request to this endpoint.
     ///
     /// `None` (or an empty string) **disables authentication**: the endpoint
-    /// accepts every request without a token. Set this to require a token.
+    /// accepts every request without a token unless a model token is configured
+    /// through `RLMESH_MODEL_ENDPOINT_TOKEN` or `ServeModelOptions::token`.
     ///
     /// The model server also reads
     /// [`ServeModelOptions::token`](crate::ServeModelOptions::token); a
-    /// non-empty value here wins over that field.
+    /// non-empty value here wins over that field. `RLMESH_MODEL_ENDPOINT_TOKEN`,
+    /// when set, overrides both model token options.
     pub token: Option<String>,
     /// Maximum number of model Join-stream requests a served model processes
     /// concurrently per connection (pipelined predict). `None` applies the

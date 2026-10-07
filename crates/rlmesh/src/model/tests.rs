@@ -2485,6 +2485,114 @@ async fn model_serve_options_token_is_enforced_by_the_server() {
     shutdown_and_join(server).await;
 }
 
+/// Run with a private environment in a subprocess: changing process-wide env
+/// vars in this parallel test suite could accidentally authenticate other servers.
+#[tokio::test]
+async fn model_endpoint_environment_token_is_enforced() {
+    const CHILD: &str = "RLMESH_TEST_ENDPOINT_TOKEN_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "model::tests::model_endpoint_environment_token_is_enforced",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("RLMESH_MODEL_ENDPOINT_TOKEN", "deployment-token")
+            .status()
+            .unwrap();
+        assert!(status.success(), "environment token subprocess failed");
+        return;
+    }
+
+    let predicts = Arc::new(AtomicUsize::new(0));
+    let bound = ModelWorker::new(SmokeModel {
+        predicts: Arc::clone(&predicts),
+        closes: Arc::new(AtomicUsize::new(0)),
+    })
+    .bind_async(
+        ServeModelOptions::parse("tcp://127.0.0.1:0")
+            .unwrap()
+            .token("direct-token")
+            .serve_options(ServeOptions {
+                token: Some("nested-token".to_string()),
+                allow_remote_shutdown: true,
+                ..ServeOptions::default()
+            }),
+    )
+    .await
+    .unwrap();
+    let (port, server) = spawn_bound_server(bound);
+    let address = format!("tcp://127.0.0.1:{port}");
+    let mut client = rlmesh_proto::model::v1::model_service_client::ModelServiceClient::connect(
+        format!("http://127.0.0.1:{port}"),
+    )
+    .await
+    .unwrap();
+
+    for token in [
+        None,
+        Some("wrong-token"),
+        Some("direct-token"),
+        Some("nested-token"),
+    ] {
+        let metadata = token.map(|token| {
+            token
+                .parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
+                .unwrap()
+        });
+        let mut handshake =
+            tonic::Request::new(rlmesh_proto::model::v1::HandshakeRequest::default());
+        let mut join = tonic::Request::new(tokio_stream::empty::<JoinRequest>());
+        let mut shutdown = tonic::Request::new(rlmesh_proto::model::v1::ShutdownRequest::default());
+        if let Some(metadata) = metadata {
+            handshake
+                .metadata_mut()
+                .insert("authorization", metadata.clone());
+            join.metadata_mut()
+                .insert("authorization", metadata.clone());
+            shutdown.metadata_mut().insert("authorization", metadata);
+        }
+        assert_eq!(
+            client.handshake(handshake).await.unwrap_err().code(),
+            tonic::Code::Unauthenticated
+        );
+        assert_eq!(
+            client.join(join).await.unwrap_err().code(),
+            tonic::Code::Unauthenticated
+        );
+        assert_eq!(
+            client.shutdown(shutdown).await.unwrap_err().code(),
+            tonic::Code::Unauthenticated
+        );
+    }
+    assert_eq!(predicts.load(Ordering::SeqCst), 0);
+
+    let mut model = crate::RemoteModel::connect_with_token(
+        &address,
+        "deployment-token",
+        SmokeEnv::new().env_contract,
+    )
+    .await
+    .unwrap();
+    model.reset(None);
+    model
+        .predict(spaces::SpaceValue::Box(
+            spaces::Tensor::from_vec(vec![5u8], vec![1], spaces::DType::Uint8).unwrap(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(predicts.load(Ordering::SeqCst), 1);
+    drop(model);
+
+    let mut shutdown_client = rlmesh_grpc::ModelClient::connect(&address, "deployment-token")
+        .await
+        .unwrap();
+    shutdown_client.handshake().await.unwrap();
+    assert!(shutdown_client.shutdown("done").await.unwrap().accepted);
+    shutdown_and_join(server).await;
+}
+
 /// `RunLocalOptions::token` is the only way an in-process run can reach a
 /// token-protected env server, so the env client must be built with it.
 #[tokio::test]
