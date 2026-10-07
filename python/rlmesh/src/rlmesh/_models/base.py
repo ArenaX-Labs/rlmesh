@@ -6,6 +6,7 @@ import contextlib
 import contextvars
 import functools
 import inspect
+import os
 import warnings
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import (
@@ -1376,6 +1377,14 @@ class ModelBase(Generic[ObsT, ActT]):
                 trial_index_base=trial_index_base,
                 workflow_edition=workflow_edition,
                 hooks=relay,
+                # The loopback server enforces the deployment env token when
+                # one is set, so this call's own client must present it. It is
+                # never sent to a caller-supplied address.
+                env_token=(
+                    os.environ.get("RLMESH_ENV_ENDPOINT_TOKEN")
+                    if server is not None
+                    else None
+                ),
             )
         except (RuntimeError, ConnectionError) as error:
             if "active Join session" in str(error):
@@ -1523,6 +1532,7 @@ class ModelBase(Generic[ObsT, ActT]):
         prefetch_lead: int = 0,
         workflow_edition: str | None = None,
         hooks: object | None = None,
+        env_token: str | None = None,
     ) -> dict[str, Any]:
         """Native worker loop against a remote env for a fixed episode count.
 
@@ -1543,6 +1553,7 @@ class ModelBase(Generic[ObsT, ActT]):
             prefetch_lead,
             workflow_edition,
             hooks,
+            env_token,
         )
 
     def _declared_workflow_edition(self, call: str | None) -> str | None:

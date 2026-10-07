@@ -26,13 +26,24 @@ pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 ///
 /// **An empty `configured` token disables authentication**: every request is
 /// accepted (this is the explicit opt-out for unauthenticated endpoints).
-/// Otherwise the provided token must match in constant time.
+/// Otherwise the provided token must match in constant time, sent either raw
+/// or in the standard `Bearer <token>` form (scheme matched case-insensitively).
 #[must_use]
 pub fn bearer_token_matches(configured: &str, provided: &str) -> bool {
     if configured.is_empty() {
         return true;
     }
     constant_time_eq(configured.as_bytes(), provided.as_bytes())
+        || strip_bearer_scheme(provided)
+            .is_some_and(|token| constant_time_eq(configured.as_bytes(), token.as_bytes()))
+}
+
+/// The credential of an `authorization` value in `Bearer <token>` form.
+fn strip_bearer_scheme(provided: &str) -> Option<&str> {
+    let (scheme, token) = provided.split_once(' ')?;
+    scheme
+        .eq_ignore_ascii_case("bearer")
+        .then_some(token.trim_start_matches(' '))
 }
 
 #[cfg(test)]
@@ -51,6 +62,18 @@ mod tests {
     fn empty_configured_token_disables_auth() {
         assert!(bearer_token_matches("", ""));
         assert!(bearer_token_matches("", "anything"));
+    }
+
+    #[test]
+    fn bearer_scheme_is_accepted() {
+        assert!(bearer_token_matches("s3cret", "Bearer s3cret"));
+        assert!(bearer_token_matches("s3cret", "bearer s3cret"));
+        assert!(bearer_token_matches("s3cret", "BEARER  s3cret"));
+        assert!(!bearer_token_matches("s3cret", "Bearer wrong"));
+        assert!(!bearer_token_matches("s3cret", "Bearer "));
+        assert!(!bearer_token_matches("s3cret", "Basic s3cret"));
+        // A configured token that itself contains a space still matches raw.
+        assert!(bearer_token_matches("Bearer s3cret", "Bearer s3cret"));
     }
 
     #[test]

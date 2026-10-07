@@ -62,15 +62,23 @@ env.close()
 
 For runnable files and exact commands, see [`examples/python`](examples/python). Start with the quickstart, then try the adapters example for tag-driven IO, the sandbox example for Docker-backed environments, or `byo_container` for hand-written env and model images.
 
-## Model endpoint authentication
+## Endpoint authentication
 
-Set `RLMESH_MODEL_ENDPOINT_TOKEN` in a model server's environment to require
-`authorization: <token>` on its Handshake, Join, and Shutdown RPCs. This
-applies to Python `Model.serve()` and Rust `ModelWorker` serving. The environment
-token takes precedence over explicit token options and is captured when the
+Set `RLMESH_MODEL_ENDPOINT_TOKEN` in a model server's environment, or
+`RLMESH_ENV_ENDPOINT_TOKEN` in an environment server's, to require
+`authorization: <token>` (or `authorization: Bearer <token>`) on its Handshake,
+Join, and Shutdown RPCs. This applies to Python `Model.serve()` and
+`EnvServer`, and to Rust `ModelWorker`, `EnvServer`, and `VectorEnvServer`. The
+variable takes precedence over the Rust token options
+(`ServeOptions::token`, `ServeModelOptions::token`) and is captured when the
 server binds; restart the server to rotate it. Empty, whitespace-only, or
-non-Unicode values fail startup. When the variable is unset, explicit token
+non-Unicode values fail startup. When the variable is unset, the Rust token
 options still work, and serving without a token remains available for local use.
+Rust clients send the token with `connect_with_token`.
+
+The token travels in plaintext: the SDK does not encrypt TCP connections, so
+serve on a private network, or put a TLS-terminating proxy or service mesh in
+front of endpoints reached across untrusted networks.
 
 ## Building the Rust SDK
 

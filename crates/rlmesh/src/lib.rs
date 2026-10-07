@@ -156,7 +156,7 @@ pub use rlmesh_runtime::{
 };
 #[doc(no_inline)]
 pub use rlmesh_runtime::{ENV_RESET_OPTIONS_KEY, PeerCeiling, RuntimeReport, TRIAL_INDEX_OPTION};
-pub use serve_options::ServeOptions;
+pub use serve_options::{ENV_ENDPOINT_TOKEN_ENV, MODEL_ENDPOINT_TOKEN_ENV, ServeOptions};
 pub use spaces::{EnvContract, EnvRuntimeError, RenderFrame, SpaceSpec, SpaceValue};
 pub use tokio_util::sync::CancellationToken;
 

@@ -10,6 +10,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 - Served model endpoints enforce `RLMESH_MODEL_ENDPOINT_TOKEN` when set, taking precedence over token options. Empty or invalid environment values fail startup instead of disabling authentication.
 
+- Served environment endpoints enforce `RLMESH_ENV_ENDPOINT_TOKEN` the same way, from both Rust `EnvServer`/`VectorEnvServer` and Python `EnvServer`.
+
+- Model and environment servers accept the endpoint token as `authorization: Bearer <token>` as well as the raw token.
+
+- `Model.run()` presents `RLMESH_ENV_ENDPOINT_TOKEN` to the loopback env server it starts, so setting the variable does not lock the run out of its own env.
+
 - `rlmesh check`, `rlmesh check-image`, and `python -m rlmesh._describe --check` join an env's tags against its spaces, per contract branch, the way `rlmesh.serve` does at startup, so tags whose widths or space classes do not fit now fail the check instead of passing it and crashing the server. A contract branch without tags fails, as the platform probe does.
 
 ### Changed

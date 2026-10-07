@@ -146,6 +146,13 @@ fn construct_server(
     close_env_on_shutdown: bool,
 ) -> PyResult<PyEnvServer> {
     crate::telemetry::init_tracing("env_server");
+    // Resolve the deployment token before binding, so an invalid
+    // `RLMESH_ENV_ENDPOINT_TOKEN` fails construction without holding the port.
+    let options = options
+        .map(PyServeOptions::into_rust)
+        .unwrap_or_default()
+        .with_env_endpoint_token()
+        .map_err(to_py_err)?;
     let shutdown = ShutdownTrigger::new();
 
     // The served contract is one lane's contract at the served width (lane 0's
@@ -239,7 +246,7 @@ fn construct_server(
             env: py_env,
             runtime,
             listener,
-            options: options.map(PyServeOptions::into_rust).unwrap_or_default(),
+            options,
             close_env_on_shutdown,
         }))),
         shutdown,
