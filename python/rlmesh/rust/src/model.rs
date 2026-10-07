@@ -949,7 +949,7 @@ submit! {
     gen_methods_from_python! {
         r#"
 class PyModelClient:
-    def __init__(self, address: str, env_contract: EnvContract, execution_horizon: int = 1, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, env_offer: tuple[list[str], str | None] | None = None, token: str | None = None) -> None: ...
+    def __init__(self, address: str, env_contract: EnvContract, execution_horizon: int = 1, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, env_offer: tuple[list[str], str | None] | None = None) -> None: ...
     def address(self) -> str: ...
     def env_id(self) -> str: ...
     def selected_workflow_edition(self) -> str: ...
@@ -986,7 +986,7 @@ pub struct PyModelClient {
 impl PyModelClient {
     #[new]
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (address, env_contract, execution_horizon=1, *, connect_timeout_seconds=None, request_timeout_seconds=None, workflow_edition=None, env_offer=None, token=None))]
+    #[pyo3(signature = (address, env_contract, execution_horizon=1, *, connect_timeout_seconds=None, request_timeout_seconds=None, workflow_edition=None, env_offer=None))]
     fn new(
         py: Python<'_>,
         address: &str,
@@ -996,7 +996,6 @@ impl PyModelClient {
         request_timeout_seconds: Option<f64>,
         workflow_edition: Option<String>,
         env_offer: Option<(Vec<String>, Option<String>)>,
-        token: Option<String>,
     ) -> PyResult<Self> {
         init_tracing("model_client");
         let contract = native_env_contract_from_py(env_contract)?;
@@ -1027,7 +1026,7 @@ impl PyModelClient {
         let mut inner = py.detach(|| {
             let connect = RemoteModel::connect_declaring(
                 &address,
-                token.as_deref().unwrap_or_default(),
+                "",
                 contract,
                 env_offer,
                 declared.as_deref(),

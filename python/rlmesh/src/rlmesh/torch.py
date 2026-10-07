@@ -328,8 +328,6 @@ class RemoteEnv(RemoteEnvBase[TorchValue, TorchValue]):
             uses the native default.
         request_timeout_seconds: Optional per-request (reset/step/render)
             timeout in seconds; ``None`` waits indefinitely.
-        token: Token sent on the ``authorization`` header of every request,
-            for an endpoint that requires one.
 
     Examples:
         >>> from rlmesh.torch import RemoteEnv
@@ -390,8 +388,6 @@ class RemoteVectorEnv(RemoteVectorEnvBase[TorchValue, TorchValue]):
             uses the native default.
         request_timeout_seconds: Optional per-request (reset/step/render)
             timeout in seconds; ``None`` waits indefinitely.
-        token: Token sent on the ``authorization`` header of every request,
-            for an endpoint that requires one.
 
     Examples:
         >>> from rlmesh.torch import RemoteVectorEnv

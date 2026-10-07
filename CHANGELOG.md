@@ -14,7 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 - Model and environment servers accept the endpoint token as `authorization: Bearer <token>` as well as the raw token.
 
-- Python can now authenticate: `ServeOptions(token=...)` requires a token on a served env or model, and `RemoteEnv`, `RemoteVectorEnv`, and `RemoteModel` take `token=` to send one. `Model.run()` presents `RLMESH_ENV_ENDPOINT_TOKEN` to the loopback env server it starts.
+- `Model.run()` presents `RLMESH_ENV_ENDPOINT_TOKEN` to the loopback env server it starts, so setting the variable does not lock the run out of its own env.
 
 - `rlmesh check`, `rlmesh check-image`, and `python -m rlmesh._describe --check` join an env's tags against its spaces, per contract branch, the way `rlmesh.serve` does at startup, so tags whose widths or space classes do not fit now fail the check instead of passing it and crashing the server. A contract branch without tags fails, as the platform probe does.
 

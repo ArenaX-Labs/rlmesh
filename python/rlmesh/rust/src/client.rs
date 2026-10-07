@@ -68,7 +68,6 @@ impl ClientCore {
         connect_timeout_seconds: Option<f64>,
         request_timeout_seconds: Option<f64>,
         workflow_edition: Option<String>,
-        token: Option<String>,
     ) -> PyResult<Self> {
         init_tracing(role);
         let profiler = ProfileCollector::new(role);
@@ -91,7 +90,6 @@ impl ClientCore {
                     connect_address,
                     connect_timeout_seconds,
                     declared.as_deref(),
-                    token.as_deref().unwrap_or_default(),
                 )
             })
         })?;
@@ -326,13 +324,12 @@ macro_rules! client_class {
         #[pymethods]
         impl $Class {
             #[new]
-            #[pyo3(signature = (address, *, connect_timeout_seconds=None, request_timeout_seconds=None, workflow_edition=None, token=None))]
+            #[pyo3(signature = (address, *, connect_timeout_seconds=None, request_timeout_seconds=None, workflow_edition=None))]
             fn new(
                 address: &str,
                 connect_timeout_seconds: Option<f64>,
                 request_timeout_seconds: Option<f64>,
                 workflow_edition: Option<String>,
-                token: Option<String>,
             ) -> PyResult<Self> {
                 Ok(Self {
                     core: ClientCore::connect(
@@ -341,7 +338,6 @@ macro_rules! client_class {
                         connect_timeout_seconds,
                         request_timeout_seconds,
                         workflow_edition,
-                        token,
                     )?,
                 })
             }
@@ -638,7 +634,7 @@ submit! {
     gen_methods_from_python! {
         r#"
 class PyEnvClient:
-    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, token: str | None = None) -> None: ...
+    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None: ...
     def address(self) -> str: ...
     def env_id(self) -> str: ...
     def selected_workflow_edition(self) -> str: ...
@@ -661,7 +657,7 @@ submit! {
     gen_methods_from_python! {
         r#"
 class PyVectorEnvClient:
-    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, token: str | None = None) -> None: ...
+    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None: ...
     def address(self) -> str: ...
     def env_id(self) -> str: ...
     def selected_workflow_edition(self) -> str: ...
@@ -685,10 +681,9 @@ fn connect_remote_env(
     address: ConnectAddress,
     connect_timeout_seconds: Option<f64>,
     declared: Option<&str>,
-    token: &str,
 ) -> PyResult<RemoteVectorEnv> {
     let timeout = optional_timeout(connect_timeout_seconds, "connect_timeout_seconds")?;
-    let connect = RemoteVectorEnv::connect_declaring(address, token, declared);
+    let connect = RemoteVectorEnv::connect_declaring(address, "", declared);
     match timeout {
         Some(timeout) => runtime
             .block_on(async { tokio::time::timeout(timeout, connect).await })

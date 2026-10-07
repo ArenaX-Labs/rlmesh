@@ -284,5 +284,4 @@ def serve_options_declaring(
         drain_timeout_seconds=options.drain_timeout_seconds,
         close_timeout_seconds=options.close_timeout_seconds,
         workflow_edition=resolved,
-        token=options.token,
     )

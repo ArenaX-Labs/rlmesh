@@ -264,8 +264,6 @@ class RemoteEnv(RemoteEnvBase[JaxValue, JaxValue]):
             uses the native default.
         request_timeout_seconds: Optional per-request (reset/step/render)
             timeout in seconds; ``None`` waits indefinitely.
-        token: Token sent on the ``authorization`` header of every request,
-            for an endpoint that requires one.
 
     Examples:
         >>> from rlmesh.jax import RemoteEnv
@@ -326,8 +324,6 @@ class RemoteVectorEnv(RemoteVectorEnvBase[JaxValue, JaxValue]):
             uses the native default.
         request_timeout_seconds: Optional per-request (reset/step/render)
             timeout in seconds; ``None`` waits indefinitely.
-        token: Token sent on the ``authorization`` header of every request,
-            for an endpoint that requires one.
 
     Examples:
         >>> from rlmesh.jax import RemoteVectorEnv

@@ -44,8 +44,6 @@ class RemoteModelBase(Generic[ObsT, ActT]):
         request_timeout_seconds: Optional per-request bound applied to every
             predict/close RPC of sessions off this handle; ``None`` (default)
             waits indefinitely.
-        token: Token sent on the ``authorization`` header of every request, for
-            a model endpoint that requires one. It is not sent to the env.
     """
 
     _bridge: ClassVar[ValueBridge]
@@ -60,7 +58,6 @@ class RemoteModelBase(Generic[ObsT, ActT]):
         transport: Transport | None = None,
         connect_timeout_seconds: float | None = None,
         request_timeout_seconds: float | None = None,
-        token: str | None = None,
     ) -> None:
         self._bridge.ensure_available()
         self._address = normalize_connect_address(
@@ -72,7 +69,6 @@ class RemoteModelBase(Generic[ObsT, ActT]):
         )
         self._connect_timeout_seconds = connect_timeout_seconds
         self._request_timeout_seconds = request_timeout_seconds
-        self._token = token
 
     @property
     def address(self) -> str:
@@ -137,7 +133,6 @@ class RemoteModelBase(Generic[ObsT, ActT]):
                 request_timeout_seconds=self._request_timeout_seconds,
                 workflow_edition=workflow_edition,
                 env_offer=env_session_offer(env),
-                token=self._token,
             )
         except ConnectionError as exc:
             raise ConnectionError(

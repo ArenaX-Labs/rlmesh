@@ -127,9 +127,8 @@ class EnvServer:
             edition this endpoint declares (see :doc:`/editions/index`). An
             edition set here is declared verbatim; options without one take
             ``RLMESH_WORKFLOW_EDITION``, then ``[tool.rlmesh]``.
-            ``options.token`` requires that token on every env RPC;
-            ``RLMESH_ENV_ENDPOINT_TOKEN``, when set, overrides it, and an empty
-            or whitespace-only value fails construction.
+            ``RLMESH_ENV_ENDPOINT_TOKEN``, when set, requires that token on
+            every env RPC; an empty or whitespace-only value fails construction.
         tags: Optional adapter env tags
             (:class:`rlmesh.adapters.EnvTags`) to publish for this env.
             They are validated against the env's spaces and merged into its
