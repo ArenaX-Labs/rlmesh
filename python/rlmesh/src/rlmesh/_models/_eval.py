@@ -13,8 +13,8 @@ names :class:`Session` resolves as module globals: connection/contract synthesis
 
 from __future__ import annotations
 
-import numbers
 import math
+import numbers
 import os
 import time
 import uuid

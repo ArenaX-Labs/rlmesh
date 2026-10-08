@@ -276,6 +276,7 @@ mod tests {
             num_reset_options: 0,
             render_mode: std::ptr::null(),
             metadata_json: std::ptr::null(),
+            foreground: false,
         };
         let vtable = RlmeshEnvVtable {
             struct_size: std::mem::size_of::<RlmeshEnvVtable>(),
