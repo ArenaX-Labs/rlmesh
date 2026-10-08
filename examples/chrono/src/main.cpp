@@ -1,6 +1,11 @@
 // Serve Chrono's industrial robot as an RLMesh environment, natively in C++.
 //
 //   chrono_reach_env [--address HOST:PORT] [--image-size N] [--max-steps N]
+//   chrono_reach_env --describe [--image-size N] [--max-steps N]
+//
+// --describe prints the env's describe envelope (its spaces, tags, and edition
+// handshake) and exits, without binding: bake it as the image's
+// dev.rlmesh.describe label (see README.md).
 //
 // The address defaults to $RLMESH_ADDRESS, else 0.0.0.0:50051 (the managed
 // platform's convention). $RLMESH_ENV_ENDPOINT_TOKEN, when set, is required on
@@ -22,7 +27,8 @@ namespace {
 
 void usage() {
   std::fprintf(stderr,
-               "usage: chrono_reach_env [--address HOST:PORT] [--image-size N] [--max-steps N]\n");
+               "usage: chrono_reach_env [--address HOST:PORT] [--image-size N] [--max-steps N]\n"
+               "       chrono_reach_env --describe [--image-size N] [--max-steps N]\n");
 }
 
 }  // namespace
@@ -39,11 +45,14 @@ int main(int argc, char** argv) {
   const char* env_address = std::getenv("RLMESH_ADDRESS");
   std::string address = env_address != nullptr ? env_address : "0.0.0.0:50051";
   chrono_reach::Options options;
+  bool describe = false;
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     const bool has_value = i + 1 < argc;
     if (arg == "--address" && has_value) {
       address = argv[++i];
+    } else if (arg == "--describe") {
+      describe = true;
     } else if (arg == "--image-size" && has_value) {
       options.image_size = std::atoi(argv[++i]);
     } else if (arg == "--max-steps" && has_value) {
@@ -64,6 +73,15 @@ int main(int argc, char** argv) {
   if (!server) {
     std::fprintf(stderr, "failed to create env: %s\n", server.error().message().c_str());
     return 1;
+  }
+  if (describe) {
+    auto envelope = server->describe_json();
+    if (!envelope) {
+      std::fprintf(stderr, "failed to describe: %s\n", envelope.error().message().c_str());
+      return 1;
+    }
+    std::printf("%s\n", envelope->c_str());
+    return 0;
   }
   auto bound = server->bind(address);
   if (!bound) {

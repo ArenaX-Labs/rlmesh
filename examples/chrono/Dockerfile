@@ -4,6 +4,12 @@
 #
 #   docker build -f examples/chrono/Dockerfile -t chrono-reach:dev .
 #   docker run --rm -p 50051:50051 chrono-reach:dev
+#
+# A LABEL cannot run the binary, so the describe label is baked from the built
+# image (see README.md, "Run it as a container"):
+#
+#   docker build -f examples/chrono/Dockerfile -t chrono-reach:dev \
+#     --label dev.rlmesh.describe="$(docker run --rm chrono-reach:dev --describe)" .
 
 ARG DEBIAN=trixie
 

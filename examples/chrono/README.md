@@ -77,10 +77,20 @@ docker tag chrono-reach:dev registry.rlmesh.dev/<namespace>/chrono-reach:v1
 docker push registry.rlmesh.dev/<namespace>/chrono-reach:v1
 ```
 
+The env publishes its describe envelope (spaces, tags, and workflow editions) on the handshake when it binds, so the platform can read the image as it is. To describe the image before it runs, bake the envelope as its `dev.rlmesh.describe` label. A `LABEL` cannot run the binary, so print the envelope from the built image and rebuild with it; the second build reuses every cached layer:
+
+```bash
+describe="$(docker run --rm chrono-reach:dev --describe)"
+docker build -f examples/chrono/Dockerfile -t chrono-reach:dev --label dev.rlmesh.describe="$describe" .
+rlmesh check-image chrono-reach:dev
+```
+
+Generate it from the image rather than a local build: the envelope records the machine it ran on, and the platform fails a label whose `os` is not `linux`. Pass the same `--image-size`/`--max-steps` the image serves with, since they change the spaces.
+
 ## Layout
 
 - `src/reach_env.{h,cpp}`: the Chrono scene, the `rlmesh::Environment`, and its spaces and tags.
 - `src/raytracer.h`: the CPU camera.
-- `src/main.cpp`: arguments, `rlmesh::EnvServer`, and signal handling.
+- `src/main.cpp`: arguments, `rlmesh::EnvServer`, `--describe`, and signal handling.
 - `src/scripted_model.cpp`: the scripted policy as a C++ model.
 - `run_model.py`: the Python model, with its `ModelSpec` and a scripted or random policy.
