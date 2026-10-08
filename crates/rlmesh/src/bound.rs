@@ -10,6 +10,7 @@ use std::net::SocketAddr;
 use tokio::net::TcpListener;
 #[cfg(unix)]
 use tokio::net::UnixListener;
+use tokio_stream::StreamExt;
 use tokio_stream::wrappers::TcpListenerStream;
 #[cfg(unix)]
 use tokio_stream::wrappers::UnixListenerStream;
@@ -87,7 +88,7 @@ impl BoundListener {
         match self {
             Self::Tcp(listener) => rlmesh_grpc::lifecycle::await_server_shutdown(
                 router.serve_with_incoming_shutdown(
-                    TcpListenerStream::new(listener),
+                    nodelay_incoming(listener),
                     shutdown.cancelled_owned(),
                 ),
                 shutdown.clone(),
@@ -114,4 +115,18 @@ impl BoundListener {
             }
         }
     }
+}
+
+/// Accepted TCP connections with Nagle's algorithm off. A step response is one
+/// large write (an image observation is ~200 KB); with Nagle on, its tail waits
+/// for the client's delayed ACK and a loopback step stalls ~40 ms about one time
+/// in ten.
+pub(crate) fn nodelay_incoming(
+    listener: TcpListener,
+) -> impl tokio_stream::Stream<Item = std::io::Result<tokio::net::TcpStream>> {
+    TcpListenerStream::new(listener).map(|stream| {
+        let stream = stream?;
+        stream.set_nodelay(true)?;
+        Ok(stream)
+    })
 }

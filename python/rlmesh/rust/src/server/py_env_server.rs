@@ -19,6 +19,7 @@ use rlmesh_spaces::EnvContract;
 use tokio::net::TcpListener;
 #[cfg(unix)]
 use tokio::net::UnixListener;
+use tokio_stream::StreamExt;
 use tokio_stream::wrappers::TcpListenerStream;
 #[cfg(unix)]
 use tokio_stream::wrappers::UnixListenerStream;
@@ -682,7 +683,7 @@ where
             tonic::transport::Server::builder()
                 .add_service(service)
                 .serve_with_incoming_shutdown(
-                    TcpListenerStream::new(listener),
+                    nodelay_incoming(listener),
                     shutdown.cancelled_owned(),
                 ),
             shutdown.clone(),
@@ -772,4 +773,18 @@ fn join_background_server(handle: JoinHandle<ServeResult>) -> PyResult<()> {
         Ok(Err(err)) => Err(py_runtime_err(format!("serve failed: {}", err))),
         Err(_) => Err(py_runtime_err("background server thread panicked")),
     }
+}
+
+/// Accepted TCP connections with Nagle's algorithm off. A step response is one
+/// large write (an image observation is ~200 KB); with Nagle on, its tail waits
+/// for the client's delayed ACK and a loopback step stalls ~40 ms about one time
+/// in ten.
+fn nodelay_incoming(
+    listener: TcpListener,
+) -> impl tokio_stream::Stream<Item = std::io::Result<tokio::net::TcpStream>> {
+    TcpListenerStream::new(listener).map(|stream| {
+        let stream = stream?;
+        stream.set_nodelay(true)?;
+        Ok(stream)
+    })
 }
