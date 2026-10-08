@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/assets/brand-mark.svg" alt="RLMesh" width="96" height="96">
+
 # RLMesh
 
 **Gymnasium-compatible infrastructure for model-environment evaluation.**

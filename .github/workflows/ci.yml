@@ -67,6 +67,11 @@ jobs:
           CC=clang CXX=clang++ mise run --skip-tools test:cxx
           CC=gcc CXX=g++ mise run --skip-tools test:cxx
 
+      # RUSTC_WRAPPER=sccache comes from mise.toml; Depot runners point it at Depot Cache.
+      - name: Compile cache stats
+        if: always()
+        run: sccache --show-stats
+
       - name: Remove system-test venvs before the Rust cache walks target/
         if: always()
         run: mise run --skip-tools test:system:clean

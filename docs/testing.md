@@ -19,6 +19,14 @@ mise run test:python:unit
 mise run test:python:integration
 ```
 
+Run only what a change can affect (changed crates since `origin/main`, their dependents, and Python when reachable):
+
+```bash
+mise run test:affected
+```
+
+Rust tests run under [cargo-nextest](https://nexte.st) (configured in `.config/nextest.toml`); doctests still run through `cargo test --doc`.
+
 Rerun a task whenever a file changes:
 
 ```bash
@@ -33,6 +41,8 @@ mise watch test:python:unit
 ```bash
 mise run test:ci
 ```
+
+To run the whole CI job on Depot compute instead of locally, including uncommitted changes, use `mise run ci:remote` (see [local development](local-dev.md#worktrees-and-limited-compute)).
 
 CI uses one required job, `Fast Checks`, on pull requests, pushes to `main`, and manual runs. It runs `check` and `test:ci`, reuses the resulting wheels for cross-version compatibility, verifies Rust and C/C++ packages, and repeats the C/C++ smoke under clang and gcc. Package and compatibility failures therefore fail the same required check as the rest of CI; there are no event-specific skipped jobs.
 

@@ -1,0 +1,40 @@
+{
+  "$schema": "https://t3.codes/schema/t3.json",
+  "iconPath": "docs/assets/brand-mark.svg",
+  "defaultThreadEnvMode": "worktree",
+  "scripts": [
+    {
+      "name": "Setup worktree",
+      "command": "scripts/dev/setup-worktree.sh",
+      "icon": "configure",
+      "runOnWorktreeCreate": true,
+      "async": false
+    },
+    {
+      "name": "Check",
+      "command": "mise run check",
+      "icon": "lint"
+    },
+    {
+      "name": "Test (affected)",
+      "command": "mise run test:affected",
+      "icon": "test"
+    },
+    {
+      "name": "Test (CI on Depot)",
+      "command": "mise run ci:remote",
+      "icon": "test"
+    },
+    {
+      "name": "Build",
+      "command": "mise run dev:heavy -- mise run build",
+      "icon": "build"
+    },
+    {
+      "name": "Clean worktree",
+      "command": "rm -rf .venv target python/rlmesh/src/rlmesh/_rlmesh*.so && find . -maxdepth 1 -type l -name '*.local.toml' -delete",
+      "icon": "configure",
+      "runOnSettle": true
+    }
+  ]
+}

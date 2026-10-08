@@ -1,0 +1,8 @@
+# cargo-nextest configuration (https://nexte.st/docs/configuration/).
+
+[profile.default]
+# Report every failure in one run instead of stopping at the first.
+fail-fast = false
+# Flag tests slower than 60s, and kill any still running after 10 minutes so a
+# hung test fails instead of stalling an agent or CI job.
+slow-timeout = { period = "60s", terminate-after = 10 }
