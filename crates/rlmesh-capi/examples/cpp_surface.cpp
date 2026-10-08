@@ -265,7 +265,7 @@ rlmesh::Result<rlmesh::Space> spaces() {
   if (!bits) return bits.error();
   auto counts = rlmesh::Space::multi_discrete({2, 3});
   if (!counts) return counts.error();
-  auto text = rlmesh::Space::text(0, 32, "abc");
+  auto text = rlmesh::Space::text(1, 32, "abc");
   if (!text) return text.error();
   std::vector<rlmesh::Space> children;
   children.push_back(discrete.unwrap());

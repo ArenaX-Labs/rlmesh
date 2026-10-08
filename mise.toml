@@ -131,12 +131,12 @@ description = "Check Python formatting"
 run = "uv run ruff format --check"
 
 [tasks."fmt:cxx"]
-description = "Format the C/C++ bindings (clang-format)"
-run = "clang-format -i crates/rlmesh-capi/include/*.h* crates/rlmesh-capi/examples/*.c crates/rlmesh-capi/examples/*.cpp"
+description = "Format the C/C++ bindings and examples (clang-format)"
+run = "clang-format -i crates/rlmesh-capi/include/*.h* crates/rlmesh-capi/examples/*.c crates/rlmesh-capi/examples/*.cpp examples/chrono/src/*"
 
 [tasks."fmt:check:cxx"]
-description = "Check the C/C++ binding formatting"
-run = "clang-format --dry-run --Werror crates/rlmesh-capi/include/*.h* crates/rlmesh-capi/examples/*.c crates/rlmesh-capi/examples/*.cpp"
+description = "Check the C/C++ binding and example formatting"
+run = "clang-format --dry-run --Werror crates/rlmesh-capi/include/*.h* crates/rlmesh-capi/examples/*.c crates/rlmesh-capi/examples/*.cpp examples/chrono/src/*"
 
 [tasks."fmt:check:proto"]
 description = "Check Protobuf formatting"

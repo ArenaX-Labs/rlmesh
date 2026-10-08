@@ -970,7 +970,7 @@ mod tests {
         let err = new_env(Some(bad), &probe).expect_err("rejected");
         assert!(err.contains("adapter tags"), "{err}");
         // An unknown field is a publish-time error too.
-        let typo = r#"{"observation": {"eef_pos": {"type": "state", "role": "proprio/eef_pos", "rnage": [0, 1]}},
+        let typo = r#"{"observation": {"eef_pos": {"type": "state", "role": "proprio/eef_pos", "colour": "red"}},
             "action": {"components": [{"role": "action/gripper", "dim": 1}]}}"#;
         assert!(new_env(Some(typo), &probe).is_err());
     }
