@@ -260,9 +260,15 @@ fn constraint_floor(clauses: &[Clause]) -> Option<&[u64]> {
 fn caps_below(clauses: &[Clause], version: &[u64]) -> bool {
     clauses.iter().any(|clause| match clause.comparator {
         Comparator::Lt => compare(&clause.version, version).is_le(),
-        Comparator::Le => compare(&clause.version, version).is_lt(),
+        Comparator::Le | Comparator::Eq => compare(&clause.version, version).is_lt(),
         _ => false,
     })
+}
+
+/// Whether a constraint admits some version below `version`: it has no lower
+/// bound (`<13` admits 12.2), or its tightest one sits below `version`.
+fn admits_below(clauses: &[Clause], version: &[u64]) -> bool {
+    constraint_floor(clauses).is_none_or(|floor| compare(floor, version).is_lt())
 }
 
 fn is_gfx_target(value: &str) -> bool {
@@ -312,8 +318,10 @@ pub fn parse_requirement(key: &str, value: &Value) -> Result<Requirement, String
                 )),
             }
         }
+        // The platform stores the minimum as an int64.
         "accel.vram_bytes" => value
-            .as_u64()
+            .as_i64()
+            .and_then(|bytes| u64::try_from(bytes).ok())
             .filter(|bytes| *bytes > 0)
             .map(Requirement::MinBytes)
             .ok_or_else(|| {
@@ -613,7 +621,10 @@ fn parse_variant(raw: &Map<String, Value>, report: &mut CheckReport) -> Variant 
         variant.requires = Some(requires);
     }
     if let Some(priority) = raw.get("priority") {
-        match priority.as_i64().filter(|p| p.abs() <= MAX_PRIORITY) {
+        match priority
+            .as_i64()
+            .filter(|p| (-MAX_PRIORITY..=MAX_PRIORITY).contains(p))
+        {
             Some(priority) => variant.priority = priority,
             None => report.failed.push(format!(
                 "variant: priority {priority} is not an integer in [-{MAX_PRIORITY}, {MAX_PRIORITY}]"
@@ -1028,6 +1039,12 @@ pub fn check_variant(config: &ImageConfig) -> CheckReport {
         check_against_markers(variant, config, &inferred, &mut report);
     }
     for profile in &blocks.profiles {
+        if profile.resources {
+            report.not_checked.push(format!(
+                "profiles: {}: resources are validated by the platform against its ceilings",
+                profile.key
+            ));
+        }
         // Profiles override key by key; the merged map must still hold together.
         if profile.requires.is_empty() {
             continue;
@@ -1051,12 +1068,6 @@ pub fn check_variant(config: &ImageConfig) -> CheckReport {
                 &inferred,
                 &mut report,
             );
-        }
-        if profile.resources {
-            report.not_checked.push(format!(
-                "profiles: {}: resources are validated by the platform against its ceilings",
-                profile.key
-            ));
         }
     }
 
@@ -1163,15 +1174,15 @@ fn check_against_markers(
         && let Some(image) = parse_version(cuda)
     {
         let requirement = &declared["accel.cuda"];
-        if constraint_floor(clauses).is_some_and(|floor| compare(floor, &image).is_lt()) {
-            report.warnings.push(format!(
-                "variant: requires accel.cuda{requirement} admits drivers older than the image's \
-                 CUDA {cuda} runtime needs; declare \">={cuda}\""
-            ));
-        } else if caps_below(clauses, &image) {
+        if caps_below(clauses, &image) {
             report.warnings.push(format!(
                 "variant: requires accel.cuda{requirement} admits no driver that can run the \
                  image's CUDA {cuda} runtime"
+            ));
+        } else if admits_below(clauses, &image) {
+            report.warnings.push(format!(
+                "variant: requires accel.cuda{requirement} admits drivers older than the image's \
+                 CUDA {cuda} runtime needs; declare \">={cuda}\""
             ));
         }
     }
@@ -1332,6 +1343,10 @@ mod tests {
             Requirement::MinBytes(24000000000)
         );
         assert_eq!(
+            ok("accel.vram_bytes", json!(i64::MAX)),
+            Requirement::MinBytes(i64::MAX as u64)
+        );
+        assert_eq!(
             ok("accel.driver", json!("535.104.05")).to_string(),
             ">=535.104.5"
         );
@@ -1362,7 +1377,19 @@ mod tests {
                 "write the minimum as a JSON number: 24000000000",
             ),
             ("accel.vram_bytes", json!(0), "not a positive integer"),
+            ("accel.vram_bytes", json!(-1), "not a positive integer"),
             ("accel.vram_bytes", json!(1.5), "not a positive integer"),
+            // The platform stores an int64.
+            (
+                "accel.vram_bytes",
+                json!(i64::MAX as u64 + 1),
+                "not a positive integer",
+            ),
+            (
+                "accel.vram_bytes",
+                json!(u64::MAX),
+                "not a positive integer",
+            ),
             ("accel.memory", json!(1), "unknown key \"accel.memory\""),
         ] {
             let error = parse_requirement(key, &value).unwrap_err();
@@ -1465,6 +1492,42 @@ mod tests {
                 "fractional priority",
                 json!({"variant": {"key": "a", "priority": 1.5}}),
                 vec!["priority 1.5 is not an integer"],
+                vec![],
+            ),
+            (
+                "priority as a string",
+                json!({"variant": {"key": "a", "priority": "10"}}),
+                vec!["priority \"10\" is not an integer"],
+                vec![],
+            ),
+            (
+                "priority at the lower bound",
+                json!({"variant": {"key": "a", "priority": -1000}}),
+                vec![],
+                vec![],
+            ),
+            (
+                "priority at the upper bound",
+                json!({"variant": {"key": "a", "priority": 1000}}),
+                vec![],
+                vec![],
+            ),
+            (
+                "priority just past the bounds",
+                json!({"variant": {"key": "a", "priority": 1001}}),
+                vec!["priority 1001 is not an integer in [-1000, 1000]"],
+                vec![],
+            ),
+            (
+                "priority at i64::MIN does not overflow",
+                json!({"variant": {"key": "a", "priority": i64::MIN}}),
+                vec!["priority -9223372036854775808 is not an integer in [-1000, 1000]"],
+                vec![],
+            ),
+            (
+                "priority at i64::MAX",
+                json!({"variant": {"key": "a", "priority": i64::MAX}}),
+                vec!["priority 9223372036854775807 is not an integer in [-1000, 1000]"],
                 vec![],
             ),
             (
@@ -1732,6 +1795,34 @@ mod tests {
             &[],
             &["accel.cuda<12 admits no driver that can run the image's CUDA 12.4"],
         );
+        // The whole constraint decides: no lower bound admits older drivers,
+        // and a cap below the runtime is the stronger complaint.
+        for (constraint, warnings) in [
+            (
+                "<13",
+                vec!["accel.cuda<13 admits drivers older than the image's CUDA 12.4 runtime needs"],
+            ),
+            ("<=12.6", vec!["accel.cuda<=12.6 admits drivers older"]),
+            ("==12.4", vec![]),
+            ("=12.4.0", vec![]),
+            (">12.4", vec![]),
+            (">=12.4,<13", vec![]),
+            (">12.3", vec!["accel.cuda>12.3 admits drivers older"]),
+            (
+                "==12.2",
+                vec!["accel.cuda==12.2 admits no driver that can run the image's CUDA 12.4"],
+            ),
+            (
+                ">=12.2,<12.3",
+                vec!["accel.cuda>=12.2,<12.3 admits no driver that can run"],
+            ),
+        ] {
+            let report = check_variant(&cuda(variant(
+                json!({"accel.vendor": "nvidia", "accel.cuda": constraint}),
+                json!({}),
+            )));
+            assert_buckets(&report, &[], &warnings);
+        }
         let report = check_variant(&cuda(variant(
             json!({"accel.vendor": "amd"}),
             json!({"accel": "rocm"}),
@@ -1794,6 +1885,19 @@ mod tests {
         );
         assert_eq!(report.not_checked.len(), 1, "{report:#?}");
         assert!(report.not_checked[0].contains("resources are validated by the platform"));
+
+        // Resources are noted whether or not the profile overrides requires.
+        let package = json!({
+            "schemaVersion": 1,
+            "variant": {"key": "cpu"},
+            "profiles": [{"key": "big", "default": true, "resources": {"memory": "64Gi"}}]
+        });
+        let report = check_variant(&image(&[], Some(package)));
+        assert_buckets(&report, &[], &[]);
+        assert_eq!(
+            report.not_checked,
+            ["profiles: big: resources are validated by the platform against its ceilings"]
+        );
     }
 
     #[test]

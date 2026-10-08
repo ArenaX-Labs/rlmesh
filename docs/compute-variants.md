@@ -80,7 +80,7 @@ When a variant block declares both `facets.accel` and `requires`, they must agre
 | `accel.gfx`        | A non-empty list of AMD GPU targets: `["gfx942", "gfx90a"]`.              |
 | `accel.vram_bytes` | The minimum VRAM per GPU, as a JSON integer in bytes: `24000000000`.      |
 
-A version constraint is a string of comma-joined clauses. Each clause is an optional `>=`, `>`, `<=`, `<`, `==`, or `=` followed by a dotted version of up to three parts. A bare version means a minimum, so `"12.4"` is `">=12.4"`. Versions compare numerically part by part, so `12` equals `12.0`. `accel.vram_bytes` is a number, not a string: the platform refuses `">=24000000000"`, and a value it cannot decode costs the image its whole variant declaration.
+A version constraint is a string of comma-joined clauses. Each clause is an optional `>=`, `>`, `<=`, `<`, `==`, or `=` followed by a dotted version of up to three parts. A bare version means a minimum, so `"12.4"` is `">=12.4"`. Versions compare numerically part by part, so `12` equals `12.0`. `accel.vram_bytes` is a number, not a string: the platform refuses `">=24000000000"`, and a value it cannot decode costs the image its whole variant declaration. The platform stores it as a signed 64-bit integer, so it must lie between 1 and 9223372036854775807.
 
 Every key other than `accel.vendor` needs `accel.vendor` in the same `requires` object. A profile that adds `accel.cuda` repeats `"accel.vendor": "nvidia"`. The NVIDIA keys (`accel.compute`, `accel.cuda`, `accel.driver`) cannot sit under `amd`, and `accel.gfx` cannot sit under `nvidia`.
 
@@ -224,9 +224,9 @@ It **fails** on what the platform's `variant_requires_schema` check fails:
 - a block of the wrong type
 - a missing or malformed key
 - an unknown field or facet, or a facet value outside its vocabulary
-- a `priority` outside `[-1000, 1000]`
+- a `priority` that is not an integer in `[-1000, 1000]` (a string such as `"10"` or a fraction fails too)
 - an unknown `requires` key, or a malformed constraint
-- `accel.vram_bytes` that is not a positive integer
+- `accel.vram_bytes` that is not a positive integer within the signed 64-bit range
 - `accel.gfx` that is not a list of `gfx…` targets
 - a hardware key without `accel.vendor`, or one under the wrong vendor
 - `facets.accel` contradicting `accel.vendor`
@@ -237,7 +237,7 @@ It **fails** on what the platform's `variant_requires_schema` check fails:
 It **warns**, as the platform's `variant_requires_vs_env` check does, when a declaration contradicts the image's own markers:
 
 - `accel.vendor` `amd` on a CUDA image, or `nvidia` on a ROCm image
-- `accel.cuda` whose floor admits drivers older than the image's CUDA runtime needs, or whose upper bound admits none that can run it
+- `accel.cuda` that admits drivers older than the image's CUDA runtime needs, because the constraint has no lower bound (`<13`) or its lower bound sits below the runtime (`>=12.2` on CUDA 12.4); or that admits none that can run it, because an upper bound or an `==` sits below the runtime (`<12`, `==12.2`)
 - `facets.accel` naming a stack other than the one the image is built on
 - `facets.framework` absent from the describe label's `framework_versions`
 
