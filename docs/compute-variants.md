@@ -86,7 +86,11 @@ Every key other than `accel.vendor` needs `accel.vendor` in the same `requires` 
 
 ### The index annotation
 
-Version-level data that applies to every variant can go on the index itself, as a `dev.rlmesh.package` annotation; `rlmesh registry publish --index-package version.json` sets it. It may carry only `name`, `description`, `checkpoints`, `compatibility`, `capabilities`, and `inputArtifacts`, plus `schemaVersion` and `rev`. The platform ignores any other key, and `publish` warns about it. Where a child's label sets one of those keys differently, the annotation wins, and `publish` warns about that too. Children's `variant` blocks remain the primary declaration: `variant` and `profiles` never belong on the index.
+Version-level data that applies to every variant can go on the index itself, as a `dev.rlmesh.package` annotation; `rlmesh registry publish --index-package version.json` sets it. It may carry only `name`, `description`, `checkpoints`, `compatibility`, `capabilities`, and `inputArtifacts`, plus `schemaVersion` (1, the default) and `rev`. The platform ignores any other key, and `publish` warns about it. Where a child's label sets one of those keys differently, the annotation wins, and `publish` warns about that too. Children's `variant` blocks remain the primary declaration: `variant` and `profiles` never belong on the index.
+
+Only an OCI image index carries annotations. docker assembles a Docker manifest list instead when every source is a Docker schema2 image, as a classic `docker build` and `docker push` produce, so `publish` refuses `--index-package` then and names the sources. Rebuild them with OCI media types: `docker buildx build --push` (its attestations make the push an OCI index), or `--provenance=false --output type=image,oci-mediatypes=true,push=true`. One OCI source among them is enough. Without `--index-package`, schema2 sources publish as a Docker manifest list, which the platform reads as a version too.
+
+A single source that is itself an index, published without `--index-package`, is republished as is, so its own `dev.rlmesh.package` annotation becomes the version's. `publish` checks it by the same rules as `--index-package` (a `schemaVersion` other than 1 fails; other keys are warned about), says that it is kept, and compares it with the child's label. Pass `--index-package` to replace it. With several sources, a source index's annotation is not carried into the version, and `publish` warns that it is dropped.
 
 ## Inference without a variant block
 
@@ -150,7 +154,7 @@ rlmesh registry publish ns/pi0:v3 ns/pi0:v3-cuda12 ns/pi0:v3-rocm6 ns/pi0:v3-jax
 
 The first reference is the version (`REPOSITORY:TAG`); the rest are the variants. Publishing:
 
-1. Resolves each source and pins it by digest, so a tag that moves mid-publish cannot swap a child. Each source must be one linux image. A BuildKit push is an index of the image plus its attestation manifests, and the attestations are carried into the version.
+1. Resolves each source and pins it by digest, so a tag that moves mid-publish cannot swap a child. Each source must be one linux image. A BuildKit push is an index of the image plus its attestation manifests, and the attestations are carried into the version. Each carried attestation must describe an image of the version (its `vnd.docker.reference.digest`); a source whose attestation names another image, or none, fails, and naming that source's image by digest (`ns/pi0@sha256:…`) leaves its attestations behind. When a source is an index, the platform its index declares for the image must match the image config's `os`/`architecture`, since the platform schedules by the one and runs the other.
 2. Reads each image's config and runs the version's checks:
    - every child carries a `dev.rlmesh.package` label with a `variant` block that passes the same checks as `check-image`
    - variant keys and derived row keys are unique
@@ -159,16 +163,18 @@ The first reference is the version (`REPOSITORY:TAG`); the rest are the variants
 
    A non-amd64 child is only a warning, since the platform records it as `excluded`. Every problem across all sources is reported at once, and nothing is pushed if there is one.
 
-3. Creates the index with `docker buildx imagetools create` and pushes it under TARGET, each `--tag`, and `--channel`.
+3. Checks where each tag points now. TARGET and each `--tag` name the version, so one that already points at a different index is refused unless you pass `--force`; one that already points at this very index is left as is, so publishing again is safe. The `--channel` tag moves, which is what it is for, and the summary shows the digest it moves from. A tag that cannot be read is warned about and treated as new.
+4. Creates the index with `docker buildx imagetools create` and pushes it under TARGET, each `--tag`, and `--channel`.
 
 | Flag                   | Effect                                                                                                                                                               |
 | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--tag TAG`            | Another tag for the index in TARGET's repository; repeatable.                                                                                                        |
-| `--channel TAG`        | A moving channel tag such as `latest`.                                                                                                                               |
+| `--tag TAG`            | Another tag for the index in TARGET's repository; repeatable. Like TARGET, it does not move to a different index without `--force`.                                  |
+| `--channel TAG`        | A moving channel tag such as `latest`. It moves without `--force`, and the summary prints the digest it moved from.                                                  |
 | `--index-package FILE` | Version-level JSON, set as the index's `dev.rlmesh.package` annotation. `schemaVersion` defaults to 1; keys outside the version-level set are kept but warned about. |
-| `--dry-run`            | Prints the per-variant summary and the index JSON without pushing.                                                                                                   |
+| `--dry-run`            | Prints the per-variant summary, the index JSON, and each tag's state without pushing; fails on a tag the real run would refuse.                                      |
+| `--force`              | Moves TARGET or a `--tag` that already points at a different index.                                                                                                  |
 
-The summary shows each child's effective facets and requires (marked `(inferred)` when they come from the image's markers), its row keys, and the version's default row (`*`):
+The summary shows each child's effective facets and requires (marked `(inferred)` when they come from the image's markers), its row keys, the version's default row (`*`), and where each tag points now:
 
 ```text
 $ rlmesh registry publish --dry-run --channel latest --index-package version.json \
@@ -183,6 +189,10 @@ jax           model  linux/amd64  0         accel=cpu, framework=jax     -      
 
 Index for ns/pi0:v3, ns/pi0:latest (nothing pushed):
 { "schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json", "manifests": [ ... ] }
+
+Tags:
+  ns/pi0:v3      new
+  ns/pi0:latest  moves from sha256:2c5e1f0a9b7d... (channel)
 ```
 
 Publishing goes through docker, so it authenticates the way `docker push` does. Against the managed platform's registry, run `rlmesh registry login` first.

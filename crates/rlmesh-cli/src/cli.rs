@@ -119,6 +119,10 @@ pub struct PublishArgs {
     /// Print the per-variant summary and the index JSON without pushing.
     #[arg(long)]
     pub dry_run: bool,
+    /// Move TARGET or a `--tag` that already points at a different index
+    /// (the channel tag always moves).
+    #[arg(long)]
+    pub force: bool,
 }
 
 /// The docker credential-helper operation, per its get/store/erase protocol.
