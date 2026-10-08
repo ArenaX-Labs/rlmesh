@@ -10,8 +10,15 @@
 #
 #   docker build -f examples/chrono/Dockerfile -t chrono-reach:dev \
 #     --label dev.rlmesh.describe="$(docker run --rm chrono-reach:dev --describe)" .
+#
+# --build-arg VULKAN=ON adds the Vulkan camera (`--renderer vulkan`) with the
+# Vulkan loader and Mesa's lavapipe; on an NVIDIA host the GPU takes over:
+#
+#   docker build -f examples/chrono/Dockerfile --build-arg VULKAN=ON -t chrono-reach:vulkan .
+#   docker run --rm --device nvidia.com/gpu=all -p 50051:50051 chrono-reach:vulkan --renderer vulkan
 
 ARG DEBIAN=trixie
+ARG VULKAN=OFF
 
 # ---- rlmesh-capi: the RLMesh C ABI, built from this checkout -----------------
 FROM rust:1.99-${DEBIAN} AS capi
@@ -59,10 +66,15 @@ RUN curl -fsSL "https://github.com/projectchrono/chrono/archive/refs/tags/${CHRO
 
 # ---- the env -----------------------------------------------------------------
 FROM chrono AS env
+ARG VULKAN
+RUN if [ "$VULKAN" = ON ]; then \
+      apt-get update && apt-get install -y --no-install-recommends libvulkan-dev glslang-tools \
+      && rm -rf /var/lib/apt/lists/*; \
+    fi
 COPY --from=capi /out /opt/rlmesh
 COPY examples/chrono /src/chrono
 RUN cmake -S /src/chrono -B /src/build -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_PREFIX_PATH="/opt/chrono;/opt/eigen" \
+      -DCMAKE_PREFIX_PATH="/opt/chrono;/opt/eigen" -DCHRONO_REACH_VULKAN="$VULKAN" \
       -DRLMESH_INCLUDE_DIR=/opt/rlmesh/include -DRLMESH_LIBRARY_DIR=/opt/rlmesh/lib \
  && cmake --build /src/build -j"$(nproc)" \
  && cmake --install /src/build --prefix /opt/app \
@@ -71,7 +83,11 @@ RUN cmake -S /src/chrono -B /src/build -DCMAKE_BUILD_TYPE=Release \
 
 # ---- runtime -------------------------------------------------------------------
 FROM debian:${DEBIAN}-slim
+ARG VULKAN
+# Vulkan: the loader and lavapipe, plus the EGL and X libraries NVIDIA's Vulkan
+# driver loads (the container toolkit mounts the driver itself with the GPU).
 RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
+      $([ "$VULKAN" = ON ] && echo libvulkan1 mesa-vulkan-drivers libegl1 libx11-6 libxext6) \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=env /opt/app /opt/app
 # The binary's RUNPATH is $ORIGIN/../lib, so the shared libraries resolve there.
