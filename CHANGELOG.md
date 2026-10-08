@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ### Added
 
+- The experimental C ABI hosts environments as well as models: a C or C++ program implements reset, step, render, and close (`RLMeshEnvVtable`, or `rlmesh::Environment` in `rlmesh.hpp`), declares its spaces with the `rlmesh_space_*` builders and its adapter tags as JSON (validated against the spaces at creation), and serves them with `rlmesh_env_new`/`bind`/`serve`. `rlmesh_env_new_lanes` serves N instances as the lanes of one `num_envs = N` endpoint, each on its own thread; `RLMeshEnvConfig.foreground` runs every callback on the thread that calls serve instead. A callback can fail one request as recoverable without ending the session. Each endpoint publishes its describe envelope on its handshake, and `rlmesh_env_describe_json` prints it for an image label. When `rlmesh_env_serve` or `rlmesh_env_free` returns, no callback is running or will run again; `close_timeout_ms` does not apply to a C env. The additions are additive: the ABI version is unchanged.
+
+- `examples/chrono` serves Project Chrono's six-axis industrial robot from native C++ as a reach task, with a CPU ray-traced camera or an opt-in offscreen Vulkan one (GPU or lavapipe), driven by either a Python model with a `ModelSpec` or a C++ model, plus a Dockerfile.
+
+- Env errors can be recoverable: the request fails but the client's session stays usable. After a fatal env error the client's next reset opens a new session instead of every later call failing; Python raises `RecoverableEnvironmentException` for a recoverable one, and env exceptions carry `code` and `is_recoverable`. In a multi-lane batch a fatal lane error wins over a recoverable one, and a batch where some lanes failed recoverably while others advanced ends the session, since replaying it would step the advanced lanes twice.
+
 - `View(hold=...)` keeps the live viewer up after the session ends, showing the final frame and HUD (marked `[held]`, with every source still selectable): `hold=True` until you quit it, or a number of seconds. The default still closes the viewer with the session, and an unbounded hold with only the terminal backend and no interactive terminal is skipped with a warning, so a non-interactive run never blocks on it.
 
 - `View(step_hz=...)` paces a viewed session's env steps to at most that rate, so a fast simulator plays back at a watchable speed (the env's control rate for real time). `View.fps` still only thins the drawing. The pacing sleep is left out of the run's step and round timings.
@@ -19,6 +25,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - `ServeOptions(compress_responses=True)` has an env server compress its responses (zstd, else gzip) for clients that accept it; every RLMesh client and server now accepts compressed messages. It is off by default: on loopback a ~200 KB rendered-image observation shrinks to ~1.4 KB on the wire but the step takes as long, so it only pays on a slow link with compressible observations.
 
 ### Fixed
+
+- Model and env servers disable Nagle's algorithm on accepted TCP connections, which removed a ~40 ms stall on some env steps.
 
 - Served model endpoints enforce `RLMESH_MODEL_ENDPOINT_TOKEN` when set, taking precedence over token options. Empty or invalid environment values fail startup instead of disabling authentication.
 

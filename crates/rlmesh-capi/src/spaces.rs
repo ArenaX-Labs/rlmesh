@@ -687,7 +687,8 @@ unsafe fn build_composite(
     Ok(space)
 }
 
-/// A `Dict` space of `n` (key, child) pairs, in declaration order. Takes
+/// A `Dict` space of `n` (key, child) pairs, stored sorted by key (as every
+/// Rust-built Dict space is), so reading it back yields sorted order. Takes
 /// ownership of every child on success; on failure (NULL), whatever the reason,
 /// takes none of them. Keys must be non-empty and unique.
 ///
