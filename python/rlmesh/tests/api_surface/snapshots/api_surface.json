@@ -936,6 +936,10 @@
             "kind": "property",
             "signature": "property close_timeout_seconds: Optional[float]"
           },
+          "compress_responses": {
+            "kind": "property",
+            "signature": "property compress_responses: bool"
+          },
           "drain_timeout_seconds": {
             "kind": "property",
             "signature": "property drain_timeout_seconds: Optional[float]"
@@ -949,7 +953,7 @@
             "signature": "property workflow_edition: Optional[str]"
           }
         },
-        "signature": "ServeOptions(*, allow_remote_shutdown: bool = ..., idle_timeout_seconds: Optional[float] = None, drain_timeout_seconds: Optional[float] = None, close_timeout_seconds: Optional[float] = None, workflow_edition: Optional[str] = None) -> ServeOptions",
+        "signature": "ServeOptions(*, allow_remote_shutdown: bool = ..., idle_timeout_seconds: Optional[float] = None, drain_timeout_seconds: Optional[float] = None, close_timeout_seconds: Optional[float] = None, workflow_edition: Optional[str] = None, compress_responses: bool = ...) -> ServeOptions",
         "stability": "Stable"
       },
       "Session": {

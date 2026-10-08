@@ -21,13 +21,14 @@ pub struct PyServeOptions {
 #[pymethods]
 impl PyServeOptions {
     #[new]
-    #[pyo3(signature = (*, allow_remote_shutdown=false, idle_timeout_seconds=None, drain_timeout_seconds=None, close_timeout_seconds=None, workflow_edition=None))]
+    #[pyo3(signature = (*, allow_remote_shutdown=false, idle_timeout_seconds=None, drain_timeout_seconds=None, close_timeout_seconds=None, workflow_edition=None, compress_responses=false))]
     fn new(
         allow_remote_shutdown: bool,
         idle_timeout_seconds: Option<f64>,
         drain_timeout_seconds: Option<f64>,
         close_timeout_seconds: Option<f64>,
         workflow_edition: Option<String>,
+        compress_responses: bool,
     ) -> PyResult<PyServeOptions> {
         Ok(PyServeOptions {
             options: ServeOptions {
@@ -42,6 +43,7 @@ impl PyServeOptions {
                 // future Python knob can surface it without a wire change.
                 predict_concurrency: None,
                 workflow_edition: checked_workflow_edition(workflow_edition)?,
+                compress_responses,
             },
         })
     }
@@ -69,6 +71,13 @@ impl PyServeOptions {
     #[getter]
     fn workflow_edition(&self) -> Option<String> {
         self.options.workflow_edition.clone()
+    }
+
+    /// Whether an env server compresses its responses (zstd, else gzip) for a
+    /// client that accepts them. Off by default; it only pays on a slow link.
+    #[getter]
+    fn compress_responses(&self) -> bool {
+        self.options.compress_responses
     }
 }
 

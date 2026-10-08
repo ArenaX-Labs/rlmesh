@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `ServeOptions(compress_responses=True)` has an env server compress its responses (zstd, else gzip) for clients that accept it; every RLMesh client and server now accepts compressed messages. It is off by default: on loopback a ~200 KB rendered-image observation shrinks to ~1.4 KB on the wire but the step takes as long, so it only pays on a slow link with compressible observations.
+
 ### Fixed
 
 - Served model endpoints enforce `RLMESH_MODEL_ENDPOINT_TOKEN` when set, taking precedence over token options. Empty or invalid environment values fail startup instead of disabling authentication.

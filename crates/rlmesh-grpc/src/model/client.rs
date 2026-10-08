@@ -95,9 +95,12 @@ impl ModelClient {
 
         Ok(Self {
             address,
-            client: ModelServiceClient::new(channel)
-                .max_decoding_message_size(crate::MAX_MESSAGE_SIZE)
-                .max_encoding_message_size(crate::MAX_MESSAGE_SIZE),
+            client: crate::ACCEPTED_COMPRESSION.into_iter().fold(
+                ModelServiceClient::new(channel)
+                    .max_decoding_message_size(crate::MAX_MESSAGE_SIZE)
+                    .max_encoding_message_size(crate::MAX_MESSAGE_SIZE),
+                |client, encoding| client.accept_compressed(encoding),
+            ),
             token: token.to_string(),
             state: ClientState::Connected,
             request_tx: None,

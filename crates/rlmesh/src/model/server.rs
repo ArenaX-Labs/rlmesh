@@ -198,7 +198,7 @@ where
     H: ModelHandler + 'static,
 {
     let declared_workflow_edition = declared_workflow_edition_of(&serve_options);
-    ModelServiceServer::new(ServedModelServer {
+    let service = ModelServiceServer::new(ServedModelServer {
         handler,
         route_setup,
         route_configs: Arc::new(Mutex::new(HashMap::new())),
@@ -209,7 +209,12 @@ where
         declared_workflow_edition,
     })
     .max_decoding_message_size(rlmesh_grpc::MAX_MESSAGE_SIZE)
-    .max_encoding_message_size(rlmesh_grpc::MAX_MESSAGE_SIZE)
+    .max_encoding_message_size(rlmesh_grpc::MAX_MESSAGE_SIZE);
+    rlmesh_grpc::ACCEPTED_COMPRESSION
+        .into_iter()
+        .fold(service, |service, encoding| {
+            service.accept_compressed(encoding)
+        })
 }
 
 #[tonic::async_trait]

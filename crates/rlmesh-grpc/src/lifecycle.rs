@@ -82,6 +82,13 @@ pub struct ServeOptions {
     /// trimmed here and is refused at negotiation instead, by the refusal that
     /// names every tier's WANT and CAN.
     pub workflow_edition: Option<String>,
+    /// Compress env responses (zstd, else gzip) for a client that advertises it
+    /// accepts them. Off by default: an observation's large leaves are raw
+    /// tensor bytes, so compression costs CPU on both ends and only pays on a
+    /// slow link with compressible payloads (rendered images, sparse tensors).
+    /// Every server accepts compressed requests regardless. Ignored by the
+    /// model server.
+    pub compress_responses: bool,
 }
 
 /// Default per-connection concurrency cap for pipelined model predict requests.
@@ -276,6 +283,7 @@ mod tests {
                 token: None,
                 predict_concurrency: None,
                 workflow_edition: None,
+                compress_responses: false,
             }
         );
     }

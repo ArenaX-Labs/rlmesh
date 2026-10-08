@@ -73,6 +73,13 @@ pub struct ServeOptions {
     /// refused at negotiation instead, by the refusal naming every tier's WANT
     /// and CAN.
     pub workflow_edition: Option<String>,
+    /// Compress environment responses (zstd, else gzip) for a client that
+    /// advertises it accepts them. Off by default: observation leaves are raw
+    /// tensor bytes, so compression spends CPU on both ends and only pays on a
+    /// slow link with compressible payloads such as rendered images. Servers
+    /// accept compressed requests either way. Has no effect on the model
+    /// server.
+    pub compress_responses: bool,
 }
 
 impl From<ServeOptions> for rlmesh_grpc::ServeOptions {
@@ -88,6 +95,7 @@ impl From<ServeOptions> for rlmesh_grpc::ServeOptions {
                 .workflow_edition
                 .map(|edition| edition.trim().to_string())
                 .filter(|edition| !edition.is_empty()),
+            compress_responses: value.compress_responses,
         }
     }
 }
@@ -150,6 +158,7 @@ mod tests {
                 token: None,
                 predict_concurrency: None,
                 workflow_edition: None,
+                compress_responses: false,
             }
         );
     }
@@ -164,6 +173,7 @@ mod tests {
             token: Some("s3cret".to_string()),
             predict_concurrency: Some(8),
             workflow_edition: Some(rlmesh_proto::CURRENT_WORKFLOW_EDITION.to_string()),
+            compress_responses: true,
         };
         let grpc_options = rlmesh_grpc::ServeOptions::from(options.clone());
         assert_eq!(
@@ -182,6 +192,7 @@ mod tests {
             grpc_options.workflow_edition.as_deref(),
             Some(rlmesh_proto::CURRENT_WORKFLOW_EDITION)
         );
+        assert!(grpc_options.compress_responses);
     }
 
     #[test]

@@ -190,9 +190,15 @@ impl<E: Environment> GrpcEnvServer<E> {
 pub fn env_service<E: Environment + 'static>(
     env: E,
 ) -> rlmesh_proto::env::v1::env_service_server::EnvServiceServer<GrpcEnvServer<E>> {
-    rlmesh_proto::env::v1::env_service_server::EnvServiceServer::new(GrpcEnvServer::new(env))
-        .max_decoding_message_size(crate::MAX_MESSAGE_SIZE)
-        .max_encoding_message_size(crate::MAX_MESSAGE_SIZE)
+    let service =
+        rlmesh_proto::env::v1::env_service_server::EnvServiceServer::new(GrpcEnvServer::new(env))
+            .max_decoding_message_size(crate::MAX_MESSAGE_SIZE)
+            .max_encoding_message_size(crate::MAX_MESSAGE_SIZE);
+    crate::ACCEPTED_COMPRESSION
+        .into_iter()
+        .fold(service, |service, encoding| {
+            service.accept_compressed(encoding)
+        })
 }
 
 #[doc(hidden)]
@@ -202,14 +208,22 @@ pub fn env_service_from_shared<E: Environment + 'static>(
     serve_options: ServeOptions,
     activity_tx: Option<mpsc::UnboundedSender<IdleActivity>>,
 ) -> rlmesh_proto::env::v1::env_service_server::EnvServiceServer<GrpcEnvServer<E>> {
-    rlmesh_proto::env::v1::env_service_server::EnvServiceServer::new(GrpcEnvServer::from_shared(
-        env,
-        shutdown,
-        serve_options,
-        activity_tx,
-    ))
+    let compress_responses = serve_options.compress_responses;
+    let service = rlmesh_proto::env::v1::env_service_server::EnvServiceServer::new(
+        GrpcEnvServer::from_shared(env, shutdown, serve_options, activity_tx),
+    )
     .max_decoding_message_size(crate::MAX_MESSAGE_SIZE)
-    .max_encoding_message_size(crate::MAX_MESSAGE_SIZE)
+    .max_encoding_message_size(crate::MAX_MESSAGE_SIZE);
+    crate::ACCEPTED_COMPRESSION
+        .into_iter()
+        .fold(service, |service, encoding| {
+            let service = service.accept_compressed(encoding);
+            if compress_responses {
+                service.send_compressed(encoding)
+            } else {
+                service
+            }
+        })
 }
 
 #[tonic::async_trait]
@@ -1615,6 +1629,96 @@ mod tests {
 
         let _ = shutdown_tx.send(());
         let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server).await;
+    }
+
+    /// `compress_responses` compresses only for a client that advertises the
+    /// encoding; every server accepts compressed requests, and the RLMesh
+    /// client round-trips through a compressing server unchanged.
+    #[tokio::test]
+    async fn opted_in_server_compresses_responses_for_accepting_clients() {
+        use crate::lifecycle::{ServeOptions, ShutdownTrigger};
+        use rlmesh_proto::env::v1::env_service_client::EnvServiceClient;
+        use tonic::codec::CompressionEncoding;
+
+        let serve = |compress_responses: bool| {
+            let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let addr = listener.local_addr().unwrap();
+            drop(listener);
+            let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+            tokio::spawn(async move {
+                tonic::transport::Server::builder()
+                    .add_service(super::env_service_from_shared(
+                        std::sync::Arc::new(ScriptedVectorEnv::handshake_only()),
+                        ShutdownTrigger::new(),
+                        ServeOptions {
+                            compress_responses,
+                            ..ServeOptions::default()
+                        },
+                        None,
+                    ))
+                    .serve_with_shutdown(addr, async {
+                        let _ = shutdown_rx.await;
+                    })
+                    .await
+            });
+            (addr, shutdown_tx)
+        };
+        let raw_client = |addr: std::net::SocketAddr| async move {
+            let endpoint = format!("http://{addr}");
+            loop {
+                match EnvServiceClient::connect(endpoint.clone()).await {
+                    Ok(client) => break client,
+                    Err(_) => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+                }
+            }
+        };
+        let encoding_of = |response: &tonic::Response<_>| {
+            response
+                .metadata()
+                .get("grpc-encoding")
+                .map(|value| value.to_str().unwrap().to_string())
+        };
+        let request = || {
+            Request::new(handshake_request(
+                PROTOCOL_GENERATION,
+                &[CURRENT_WORKFLOW_EDITION],
+            ))
+        };
+
+        let (addr, _compressing) = serve(true);
+        let mut accepting = raw_client(addr)
+            .await
+            .accept_compressed(CompressionEncoding::Zstd)
+            .send_compressed(CompressionEncoding::Zstd);
+        let response = accepting.handshake(request()).await.expect("handshake");
+        assert_eq!(encoding_of(&response).as_deref(), Some("zstd"));
+        assert!(response.into_inner().env_contract.is_some());
+
+        // A client that never advertised an encoding is answered uncompressed.
+        let mut plain = raw_client(addr).await;
+        let response = plain.handshake(request()).await.expect("handshake");
+        assert_eq!(encoding_of(&response), None);
+
+        // The RLMesh client accepts compression and decodes the replies.
+        let connect_options =
+            crate::connect::ConnectOptions::with_deadline(std::time::Duration::from_secs(5))
+                .backoff(std::time::Duration::from_millis(10));
+        let mut client =
+            crate::EnvClient::connect_with_retry(&format!("tcp://{addr}"), "", &connect_options)
+                .await
+                .expect("test server did not start");
+        client.handshake().await.expect("handshake");
+        client.reset(ResetRequest::default()).await.expect("reset");
+
+        // The default stays off even for a client that accepts compression,
+        // and still accepts a compressed request.
+        let (addr, _default) = serve(false);
+        let mut accepting = raw_client(addr)
+            .await
+            .accept_compressed(CompressionEncoding::Zstd)
+            .send_compressed(CompressionEncoding::Gzip);
+        let response = accepting.handshake(request()).await.expect("handshake");
+        assert_eq!(encoding_of(&response), None);
     }
 
     #[tokio::test]

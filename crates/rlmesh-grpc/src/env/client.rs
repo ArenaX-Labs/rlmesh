@@ -235,9 +235,12 @@ impl EnvClient {
         };
 
         Ok(Self {
-            client: EnvServiceClient::new(channel)
-                .max_decoding_message_size(crate::MAX_MESSAGE_SIZE)
-                .max_encoding_message_size(crate::MAX_MESSAGE_SIZE),
+            client: crate::ACCEPTED_COMPRESSION.into_iter().fold(
+                EnvServiceClient::new(channel)
+                    .max_decoding_message_size(crate::MAX_MESSAGE_SIZE)
+                    .max_encoding_message_size(crate::MAX_MESSAGE_SIZE),
+                |client, encoding| client.accept_compressed(encoding),
+            ),
             address: target.display_address().to_string(),
             token: token.to_string(),
             shared: Arc::new(Shared::new(ClientState::Connected, None)),

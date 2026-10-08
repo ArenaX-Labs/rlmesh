@@ -564,7 +564,13 @@ class ServeOptions:
     def close_timeout_seconds(self) -> typing.Optional[builtins.float]: ...
     @property
     def workflow_edition(self) -> typing.Optional[builtins.str]: ...
-    def __new__(cls, *, allow_remote_shutdown: builtins.bool = ..., idle_timeout_seconds: typing.Optional[builtins.float] = None, drain_timeout_seconds: typing.Optional[builtins.float] = None, close_timeout_seconds: typing.Optional[builtins.float] = None, workflow_edition: typing.Optional[builtins.str] = None) -> ServeOptions: ...
+    @property
+    def compress_responses(self) -> builtins.bool:
+        r"""
+        Whether an env server compresses its responses (zstd, else gzip) for a
+        client that accepts them. Off by default; it only pays on a slow link.
+        """
+    def __new__(cls, *, allow_remote_shutdown: builtins.bool = ..., idle_timeout_seconds: typing.Optional[builtins.float] = None, drain_timeout_seconds: typing.Optional[builtins.float] = None, close_timeout_seconds: typing.Optional[builtins.float] = None, workflow_edition: typing.Optional[builtins.str] = None, compress_responses: builtins.bool = ...) -> ServeOptions: ...
 
 @typing.final
 class Space:

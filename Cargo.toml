@@ -44,7 +44,7 @@ rlmesh-viewer = { version = "=0.1.0", path = "crates/rlmesh-viewer" }
 rayon = "1.10"
 prost = "0.14"
 prost-types = "0.14"
-tonic = "0.14"
+tonic = { version = "0.14", features = ["gzip", "zstd"] }
 tonic-health = "0.14"
 tonic-prost = "0.14"
 tonic-prost-build = "0.14"
