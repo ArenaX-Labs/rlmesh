@@ -73,12 +73,14 @@ pub(crate) fn validate_text_at(spec: &SpaceSpec, path: &str) -> Result<(), Space
         _ => return err_space!(path, "Text", "spec.text must be set"),
     };
 
-    if t.min_length <= 0 {
-        return err_space!(path, "Text", "min_length must be > 0");
+    // Zero is a valid bound (gymnasium's `Text(min_length=0)` admits the empty
+    // string, and proto3 decodes an unset bound as 0); only negatives are invalid.
+    if t.min_length < 0 {
+        return err_space!(path, "Text", "min_length must be >= 0");
     }
 
-    if t.max_length <= 0 {
-        return err_space!(path, "Text", "max_length must be > 0");
+    if t.max_length < 0 {
+        return err_space!(path, "Text", "max_length must be >= 0");
     }
 
     if t.min_length > t.max_length {
@@ -179,5 +181,23 @@ mod tests {
         assert!(TextBuilder::new(5).min_length(10).build().is_err());
         // Equal bounds remain valid (fixed-length text).
         assert!(TextBuilder::new(5).min_length(5).build().is_ok());
+    }
+
+    #[test]
+    fn test_text_allows_zero_lengths() {
+        // gymnasium allows min_length=0, and proto3 decodes an unset bound as 0.
+        let space = TextBuilder::new(4).min_length(0).build().unwrap();
+        assert!(contains(&space, &SpaceValue::Text(String::new())).is_ok());
+        assert!(contains(&space, &SpaceValue::Text("abcd".to_string())).is_ok());
+
+        let empty_only = TextBuilder::new(0).min_length(0).build().unwrap();
+        assert!(contains(&empty_only, &SpaceValue::Text(String::new())).is_ok());
+        assert!(contains(&empty_only, &SpaceValue::Text("a".to_string())).is_err());
+    }
+
+    #[test]
+    fn test_text_rejects_negative_lengths() {
+        assert!(TextBuilder::new(5).min_length(-1).build().is_err());
+        assert!(TextBuilder::new(-1).min_length(-2).build().is_err());
     }
 }
