@@ -412,8 +412,8 @@ pub fn check_serve_command(config: &ImageConfig, kind: Option<Kind>) -> CheckRep
     }
     let Some(serve) = command.serve else {
         report.not_checked.push(format!(
-            "entrypoint: command `{}` does not run -m rlmesh.serve (custom entrypoint); \
-             the runtime probe verifies serving",
+            "entrypoint: command `{}` does not run -m rlmesh.serve (custom entrypoint, e.g. \
+             a native C/C++ host); the runtime probe verifies serving",
             command.argv.join(" ")
         ));
         return report;
@@ -596,18 +596,36 @@ pub fn parse_describe_label(raw: &str) -> Result<DescribeLabel, String> {
     })
 }
 
+/// The note for an image without a describe label, by what it serves: an
+/// `rlmesh.serve` image is described on its handshake; a custom entrypoint is
+/// most likely a native host, whose env describes itself through the C ABI.
+fn missing_describe_note(config: &ImageConfig) -> String {
+    let command = parse_serve_command(config);
+    if command.serve.is_some() || command.argv.is_empty() {
+        return format!(
+            "labels: no {DESCRIBE_LABEL} label; the platform reads describe off the \
+             rlmesh.serve handshake instead (run `rlmesh check <module:Class>` for the \
+             class-level checks)"
+        );
+    }
+    format!(
+        "labels: no {DESCRIBE_LABEL} label; the platform reads describe off the served \
+         peer's handshake, which a native (C/C++) env publishes through the C ABI when it \
+         binds (a native model publishes none). To describe the image before it runs, bake \
+         {DESCRIBE_LABEL} with the env's describe JSON (`rlmesh_env_describe_json`, C++ \
+         `EnvServer::describe_json()`)"
+    )
+}
+
 /// Check the rlmesh labels' wrappers and read the describe label. A missing
-/// describe label is not a failure: the platform reads describe off the
-/// `rlmesh.serve` handshake instead.
+/// describe label is not a failure: the platform reads describe off the served
+/// peer's handshake instead, which `rlmesh.serve` stamps, and a native (C/C++)
+/// env stamps through the C ABI when it binds.
 pub fn check_labels(config: &ImageConfig) -> (CheckReport, Option<DescribeLabel>) {
     let mut report = CheckReport::default();
     let label = match config.labels.get(DESCRIBE_LABEL) {
         None => {
-            report.not_checked.push(format!(
-                "labels: no {DESCRIBE_LABEL} label; the platform reads describe off the \
-                 rlmesh.serve handshake instead (run `rlmesh check <module:Class>` for the \
-                 class-level checks)"
-            ));
+            report.not_checked.push(missing_describe_note(config));
             None
         }
         Some(raw) => match parse_describe_label(raw) {
@@ -1177,6 +1195,18 @@ mod tests {
         assert!(label.is_none());
         assert!(report.ok());
         assert!(report.not_checked[0].contains("handshake"), "{report:?}");
+    }
+
+    #[test]
+    fn missing_describe_label_on_a_custom_entrypoint_points_at_the_native_describe() {
+        let config = image(&["/usr/local/bin/chrono_env"], &["0.0.0.0:50051"], &[], &[]);
+        let (report, label) = check_labels(&config);
+        assert!(label.is_none());
+        assert!(report.ok());
+        let note = &report.not_checked[0];
+        assert!(!note.contains("rlmesh.serve"), "{note}");
+        assert!(note.contains("C ABI"), "{note}");
+        assert!(note.contains("rlmesh_env_describe_json"), "{note}");
     }
 
     #[test]
