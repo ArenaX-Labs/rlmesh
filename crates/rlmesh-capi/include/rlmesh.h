@@ -614,6 +614,17 @@ RLMESH_API RlmeshStatus rlmesh_env_bind(RlmeshEnv* env, const char* bind_address
                                         const RlmeshServeOptions* options,
                                         RlmeshBytes* out_address);
 
+/* The env's describe envelope (rlmesh.describe.v1: target "native:<id>", the
+ * spaces as env_spec, the published adapter tags as env_tags, and the runtime
+ * edition handshake) as UTF-8 JSON into `out` (not NUL-terminated; free with
+ * rlmesh_bytes_free). Valid before and after bind; after bind it declares the
+ * workflow edition the server was bound with. rlmesh_env_bind also puts it on
+ * the handshake PeerInfo.extra under "rlmesh.describe.v1" (process-wide: with
+ * several envs in one process the last bound wins), which is where the managed
+ * platform reads it for an image without a baked `dev.rlmesh.describe` label.
+ * Bake that label with this output to describe the image before it runs. */
+RLMESH_API RlmeshStatus rlmesh_env_describe_json(const RlmeshEnv* env, RlmeshBytes* out);
+
 /* Serve the bound env until a remote shutdown, an idle timeout, or
  * rlmesh_env_cancel. Blocking. `close` runs once per lane before this returns.
  * A foreground env runs every callback on the calling thread until then. */

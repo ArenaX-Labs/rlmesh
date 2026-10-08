@@ -147,6 +147,12 @@ pub use model::{
     predict_seed,
 };
 pub use rlmesh_proto::{CURRENT_WORKFLOW_EDITION, parse_declared_edition};
+/// The build's wire identity and the host-supplied handshake `PeerInfo`
+/// override, for a non-Rust host (the C ABI) that describes itself.
+pub use rlmesh_proto::{
+    PROTOCOL_GENERATION, PeerInfoOverride, peer_info_override, supported_workflow_editions,
+    update_peer_info_override,
+};
 #[doc(no_inline)]
 pub use rlmesh_runtime::telemetry;
 #[doc(no_inline)]

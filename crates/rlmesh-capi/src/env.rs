@@ -33,6 +33,7 @@ use crate::abi::status::{
 };
 use crate::adapters::{json_to_meta, meta_to_json};
 use crate::codec::RlmeshBytes;
+use crate::describe::Describe;
 use crate::model::{RlmeshServeOptions, cstr_to_str, serve_options, vtable_field};
 use crate::spaces::{RlmeshSpaceSpec, spec_ref};
 use crate::value::handle::RlmeshValue;
@@ -436,6 +437,13 @@ pub struct RlmeshEnv {
     cancel: CancellationToken,
     /// Set for a foreground env until `rlmesh_env_serve` drains it.
     foreground: Mutex<Option<ForegroundQueue>>,
+    describe: Describe,
+}
+
+impl RlmeshEnv {
+    pub(crate) fn describe(&self) -> &Describe {
+        &self.describe
+    }
 }
 
 /// Read the caller's vtable honoring its `struct_size`.
@@ -675,6 +683,7 @@ unsafe fn new_env(
     }
     crate::abi::ignore_sigpipe();
     let (observation_space, action_space, contract) = build_contract(&config)?;
+    let describe = Describe::new(&contract)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -700,6 +709,7 @@ unsafe fn new_env(
         bound: Mutex::new(None),
         cancel: CancellationToken::new(),
         foreground: Mutex::new(foreground),
+        describe,
     }));
     Ok(())
 }
@@ -734,6 +744,7 @@ pub unsafe extern "C" fn rlmesh_env_bind(
         let cenv = lock(&handle.env)
             .take()
             .ok_or_else(|| CapiError::invalid_arg("env is already bound"))?;
+        handle.describe.publish(serve.workflow_edition.as_deref())?;
         let bound = handle
             .runtime
             .block_on(EnvServer::lanes(cenv).bind_with_options(bind, serve))

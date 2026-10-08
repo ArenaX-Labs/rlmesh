@@ -1405,6 +1405,18 @@ class EnvServer {
     return out;
   }
 
+  /// The env's describe envelope JSON (`rlmesh.describe.v1`): what to bake as
+  /// the image's `dev.rlmesh.describe` label. After `bind` it declares the
+  /// bound workflow edition; `bind` also publishes it on the handshake.
+  Result<std::string> describe_json() const {
+    RlmeshBytes bytes{};
+    RlmeshStatus status = rlmesh_env_describe_json(env_, &bytes);
+    if (status != RLMESH_OK) return Error::from_last(status);
+    std::string out(reinterpret_cast<const char*>(bytes.data), bytes.len);
+    rlmesh_bytes_free(bytes);
+    return out;
+  }
+
   /// Serve until a remote shutdown, an idle timeout, or `cancel()`. Blocking;
   /// each lane's `Environment::close` runs before it returns. With
   /// `EnvConfig::foreground`, every `Environment` method runs on this thread.

@@ -865,6 +865,23 @@ pub fn set_peer_info_override(info: PeerInfoOverride) {
     }
 }
 
+/// The installed process-wide [`PeerInfoOverride`], if any.
+pub fn peer_info_override() -> Option<PeerInfoOverride> {
+    PEER_INFO_OVERRIDE
+        .read()
+        .ok()
+        .and_then(|guard| guard.clone())
+}
+
+/// Edit the process-wide [`PeerInfoOverride`] in place, starting from an empty
+/// one when none is installed, so a host can add one field (e.g. an
+/// [`extra`](PeerInfoOverride::extra) key) without clobbering the rest.
+pub fn update_peer_info_override(edit: impl FnOnce(&mut PeerInfoOverride)) {
+    if let Ok(mut guard) = PEER_INFO_OVERRIDE.write() {
+        edit(guard.get_or_insert_with(PeerInfoOverride::default));
+    }
+}
+
 /// Build advisory [`PeerInfo`](core::v1::PeerInfo) diagnostics for a handshake.
 ///
 /// `component` names the emitting participant (e.g. `"rlmesh-runtime"`,

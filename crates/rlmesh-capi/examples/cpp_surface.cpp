@@ -330,6 +330,8 @@ rlmesh::Status env_server(const std::string& address) {
   if (!multi) return multi.error();
   auto server = rlmesh::EnvServer::create(std::make_unique<SurfaceEnv>(), config);
   if (!server) return server.error();
+  rlmesh::Result<std::string> describe = server->describe_json();
+  if (!describe) return describe.error();
   rlmesh::ServeOptions options;
   auto bound = server->bind(address, options);
   if (!bound) return bound.error();
