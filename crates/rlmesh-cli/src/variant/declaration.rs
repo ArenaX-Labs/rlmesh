@@ -5,9 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Map, Value};
 
-use super::requires::{
-    Requires, accel_vendor, parse_facets, parse_requires, requires_warnings, valid_key,
-};
+use super::requires::{Requires, accel_vendor, parse_facets, parse_requires, valid_key};
 use crate::image_check::{ADDRESS_ENV, CheckReport};
 
 /// `variant.priority` lies in `[-MAX_PRIORITY, MAX_PRIORITY]`.
@@ -182,11 +180,6 @@ fn parse_variant(raw: &Map<String, Value>, report: &mut CheckReport) -> Variant 
                 .into_iter()
                 .map(|p| format!("variant: requires {p}")),
         );
-        report.warnings.extend(
-            requires_warnings(raw_requires)
-                .into_iter()
-                .map(|w| format!("variant: requires {w}")),
-        );
         variant.requires = Some(requires);
     }
     if let Some(priority) = raw.get("priority") {
@@ -261,11 +254,6 @@ fn parse_profile(index: usize, entry: &Value, report: &mut CheckReport) -> Optio
             problems
                 .into_iter()
                 .map(|p| format!("{scope} requires {p}")),
-        );
-        report.warnings.extend(
-            requires_warnings(raw_requires)
-                .into_iter()
-                .map(|w| format!("{scope} requires {w}")),
         );
     }
     profile.resources = raw.contains_key("resources");
@@ -483,13 +471,6 @@ mod tests {
                 vec![],
             ),
             (
-                "deprecated vram key",
-                json!({"variant": {"key": "a", "requires": {"accel.vendor": "nvidia",
-                    "accel.vram_bytes": 16000000000_u64}}}),
-                vec![],
-                vec!["variant: requires accel.vram_bytes is deprecated; write accel.vram: \"16G\""],
-            ),
-            (
                 "vram quantity",
                 json!({"variant": {"key": "a", "requires": {"accel.vendor": "amd", "accel.vram": "192Gi"}}}),
                 vec![],
@@ -503,17 +484,6 @@ mod tests {
                       quantity string, e.g. \"16Gi\"",
                 ],
                 vec![],
-            ),
-            (
-                "both vram spellings in a profile",
-                json!({"profiles": [{"key": "big", "default": true, "requires": {"accel.vendor": "nvidia",
-                    "accel.vram": "80Gi", "accel.vram_bytes": 85899345920_u64}}]}),
-                vec![
-                    "profiles: big: requires set accel.vram or the deprecated accel.vram_bytes, not both",
-                ],
-                vec![
-                    "profiles: big: requires accel.vram_bytes is deprecated; write accel.vram: \"80Gi\"",
-                ],
             ),
             (
                 "profiles not a list",

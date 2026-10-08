@@ -224,7 +224,7 @@ mod tests {
     }
 
     #[test]
-    fn vram_renders_as_a_quantity_in_either_spelling() {
+    fn vram_renders_as_a_quantity() {
         let mut registry = FakeRegistry::default();
         for (tag, seed, requires) in [
             (
@@ -233,9 +233,9 @@ mod tests {
                 json!({"accel.vendor": "nvidia", "accel.vram": "80Gi"}),
             ),
             (
-                "v3-old",
-                'o',
-                json!({"accel.vendor": "nvidia", "accel.vram_bytes": 24000000000_u64}),
+                "v3-dec",
+                'd',
+                json!({"accel.vendor": "nvidia", "accel.vram": "24000M"}),
             ),
         ] {
             registry.add(
@@ -250,17 +250,11 @@ mod tests {
                 ),
             );
         }
-        let children = ["reg.example/ns/pi0:v3-new", "reg.example/ns/pi0:v3-old"]
+        let children = ["reg.example/ns/pi0:v3-new", "reg.example/ns/pi0:v3-dec"]
             .iter()
             .map(|source| resolve_source(&registry, source).unwrap())
             .collect();
-        let (variants, warnings, _) = check_variants(children);
-        assert!(
-            warnings.iter().any(|w| w.ends_with(
-                "v3-old: variant: requires accel.vram_bytes is deprecated; write accel.vram: \"24G\""
-            )),
-            "{warnings:?}"
-        );
+        let (variants, _, _) = check_variants(children);
         let table = table(Style::for_terminal(false), &variants);
         let requires: Vec<&str> = table
             .lines()

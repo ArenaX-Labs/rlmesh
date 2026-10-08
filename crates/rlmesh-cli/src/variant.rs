@@ -29,11 +29,10 @@
 //! `accel.cuda`, and `accel.driver` are comma-joined version clauses
 //! (`>=8.0,<10.0`, a bare version meaning a minimum); `accel.gfx` is a list of
 //! AMD targets; `accel.vram` is the minimum VRAM per GPU as a quantity string
-//! (`"16Gi"`, [`parse_quantity`]), `accel.vram_bytes` its deprecated spelling
-//! in integer bytes; every key but `accel.vendor` needs `accel.vendor`. A
-//! profile's `requires` and `facets` override the variant's key by key, the
-//! two VRAM spellings counting as one key. An image without a variant block gets
-//! its requires inferred from its CUDA/ROCm markers ([`infer`](fn@infer)).
+//! (`"16Gi"`, [`parse_quantity`]); every key but `accel.vendor` needs
+//! `accel.vendor`. A profile's `requires` and `facets` override the variant's
+//! key by key. An image without a variant block gets its requires inferred
+//! from its CUDA/ROCm markers ([`infer`](fn@infer)).
 //!
 //! The managed platform implements exactly these rules (its
 //! `variant_requires_schema`, `variant_requires_vs_env`, and row naming), so
@@ -63,9 +62,8 @@ pub use declaration::{
 pub use infer::{Inferred, infer};
 pub use quantity::{QuantityError, format_quantity, parse_quantity};
 pub use requires::{
-    ACCEL_FACETS, DEPRECATED_VRAM_KEY, FACET_KEYS, MAX_KEY_LEN, RENDER_FACETS, REQUIRE_KEYS,
-    Requirement, Requires, VENDORS, format_facets, format_requires, parse_requirement,
-    requirement_key, valid_key,
+    ACCEL_FACETS, FACET_KEYS, MAX_KEY_LEN, RENDER_FACETS, REQUIRE_KEYS, Requirement, Requires,
+    VENDORS, format_facets, format_requires, parse_requirement, valid_key,
 };
 
 use infer::{check_against_markers, marker_vendor_warning};
@@ -405,7 +403,7 @@ mod tests {
     }
 
     #[test]
-    fn profiles_override_vram_across_spellings() {
+    fn profiles_override_vram() {
         let package = |variant: Value, profile: Value| {
             json!({
                 "schemaVersion": 1,
@@ -415,14 +413,9 @@ mod tests {
         };
         for (variant, profile, merged) in [
             (
-                json!({"accel.vendor": "nvidia", "accel.vram_bytes": 16000000000_u64}),
+                json!({"accel.vendor": "nvidia", "accel.vram": "16G"}),
                 json!({"accel.vendor": "nvidia", "accel.vram": "80Gi"}),
                 "accel.vendor=nvidia, accel.vram>=80Gi",
-            ),
-            (
-                json!({"accel.vendor": "nvidia", "accel.vram": "16Gi"}),
-                json!({"accel.vendor": "nvidia", "accel.vram_bytes": 24000000000_u64}),
-                "accel.vendor=nvidia, accel.vram>=24G",
             ),
             (
                 json!({"accel.vendor": "nvidia", "accel.vram": "16Gi"}),
@@ -436,19 +429,6 @@ mod tests {
             requires.extend(blocks.profiles[0].requires.clone());
             assert_eq!(format_requires(&requires), merged);
         }
-        // The deprecated spelling warns in a profile too.
-        let report = check_variant(&image(
-            &[],
-            Some(package(
-                json!({"accel.vendor": "nvidia", "accel.vram": "16Gi"}),
-                json!({"accel.vendor": "nvidia", "accel.vram_bytes": 24000000000_u64}),
-            )),
-        ));
-        assert_buckets(
-            &report,
-            &[],
-            &["profiles: big: requires accel.vram_bytes is deprecated; write accel.vram: \"24G\""],
-        );
     }
 
     #[test]

@@ -84,8 +84,6 @@ A version constraint is a string of comma-joined clauses. Each clause is an opti
 
 `accel.vram` is a quantity, the way Kubernetes writes memory: digits, an optional fraction, and an optional suffix, `Ki`, `Mi`, `Gi`, `Ti` (powers of 1024) or `K`, `M`, `G`, `T` (powers of 1000), no suffix meaning bytes. `"24Gi"`, `"24G"`, `"1.5Gi"`, and `"80000000000"` are quantities. It is always a minimum, so it takes no comparator (`">=24Gi"` fails), and it has no exponent (`"1e9"`), no milli suffix (`"100m"`), no space (`"24 Gi"`), and no other unit (`"24GB"`, `"24gi"`). It must be a positive whole number of bytes (`"1.5"` fails, `"1.5Gi"` does not) that fits a signed 64-bit integer. A JSON number such as `24` fails; write it as a quantity string. A value the platform cannot decode costs the image its whole variant declaration.
 
-`accel.vram_bytes`, the minimum as a JSON integer in bytes (`24000000000`), is deprecated but still accepted: `check-image` and `publish` warn and name the quantity to write instead (`accel.vram: "24G"`). It must be a positive integer within the signed 64-bit range. One `requires` object sets `accel.vram` or `accel.vram_bytes`, not both. The two count as one key: a profile's `accel.vram` overrides the variant's `accel.vram_bytes`, and the other way round, and the summaries render either as a quantity (`accel.vram>=24Gi`).
-
 Every key other than `accel.vendor` needs `accel.vendor` in the same `requires` object. A profile that adds `accel.cuda` repeats `"accel.vendor": "nvidia"`. The NVIDIA keys (`accel.compute`, `accel.cuda`, `accel.driver`) cannot sit under `amd`, and `accel.gfx` cannot sit under `nvidia`.
 
 ### The index annotation
@@ -243,7 +241,7 @@ It **fails** on what the platform's `variant_requires_schema` check fails:
 - an unknown field or facet, or a facet value outside its vocabulary
 - a `priority` that is not an integer in `[-1000, 1000]` (a string such as `"10"` or a fraction fails too)
 - an unknown `requires` key, or a malformed constraint
-- `accel.vram` that is not a positive whole-byte quantity string within the signed 64-bit range, `accel.vram_bytes` that is not a positive integer within it, or both in one `requires` object
+- `accel.vram` that is not a positive whole-byte quantity string within the signed 64-bit range
 - `accel.gfx` that is not a list of `gfx…` targets
 - a hardware key without `accel.vendor`, or one under the wrong vendor
 - `facets.accel` contradicting `accel.vendor`
@@ -258,7 +256,7 @@ It **warns** when a declaration contradicts the image's own markers, the cases t
 - `facets.accel` naming a stack other than the one the image is built on
 - `facets.framework` absent from the describe label's `framework_versions`
 
-It also warns when no profile is marked default (the first one is), when a profile's overrides leave the merged `requires` incoherent (for example, `accel.vendor: amd` over an inherited `accel.cuda`), on non-portable or platform-assigned `envVars`, and on the deprecated `accel.vram_bytes`, naming the `accel.vram` quantity to write instead. With or without a variant block, it reports the effective requires (declared or [inferred](#inference-without-a-variant-block)) and the [row keys](#row-keys) the image gets when pushed on its own.
+It also warns when no profile is marked default (the first one is), when a profile's overrides leave the merged `requires` incoherent (for example, `accel.vendor: amd` over an inherited `accel.cuda`), and on non-portable or platform-assigned `envVars`. With or without a variant block, it reports the effective requires (declared or [inferred](#inference-without-a-variant-block)) and the [row keys](#row-keys) the image gets when pushed on its own.
 
 ## What the managed platform does with it
 
