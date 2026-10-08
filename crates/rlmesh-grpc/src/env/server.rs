@@ -168,6 +168,19 @@ impl<E: Environment> GrpcEnvServer<E> {
         }
     }
 
+    /// This server's handshake identity: the process-wide [`peer_info`] plus
+    /// this endpoint's own [`ServeOptions::peer_info_extra`], which wins.
+    fn peer_info(&self) -> rlmesh_proto::core::v1::PeerInfo {
+        let mut info = peer_info("rlmesh-env");
+        info.extra.extend(
+            self.serve_options
+                .peer_info_extra
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone())),
+        );
+        info
+    }
+
     /// Reject the request when a token is configured and the request's
     /// `authorization` metadata does not match it. Mirrors the model service's
     /// bearer-token check. A no-op when no token is configured.
@@ -279,7 +292,7 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
 
         let base = rlmesh_proto::core::v1::HandshakeResponse {
             compatible,
-            peer_info: Some(peer_info("rlmesh-env")),
+            peer_info: Some(self.peer_info()),
             error_message: (!compatible)
                 .then(|| generation_mismatch_message(&req.protocol_generation)),
             capabilities: capability_map(capabilities),
@@ -1873,6 +1886,42 @@ mod tests {
             "python handshake should carry framework versions, got {:?}",
             peer.framework_versions
         );
+    }
+
+    #[tokio::test]
+    async fn each_server_reports_its_own_peer_info_extra() {
+        use crate::lifecycle::{ServeOptions, ShutdownTrigger};
+
+        let serve = |value: &str| {
+            GrpcEnvServer::new_with_options(
+                ScriptedVectorEnv::handshake_only(),
+                ShutdownTrigger::new(),
+                ServeOptions {
+                    peer_info_extra: [("test.contract".to_string(), value.to_string())].into(),
+                    ..ServeOptions::default()
+                },
+                None,
+            )
+        };
+        for (server, expected) in [(serve("a"), "a"), (serve("b"), "b")] {
+            let response = EnvService::handshake(
+                &server,
+                Request::new(handshake_request(
+                    PROTOCOL_GENERATION,
+                    &[CURRENT_WORKFLOW_EDITION],
+                )),
+            )
+            .await
+            .unwrap()
+            .into_inner();
+            let peer = response.base.unwrap().peer_info.unwrap();
+            assert_eq!(
+                peer.extra.get("test.contract").map(String::as_str),
+                Some(expected)
+            );
+            // The build's own extra entries are still reported beside it.
+            assert!(peer.extra.contains_key("rlmesh.workflow.edition"));
+        }
     }
 
     #[tokio::test]

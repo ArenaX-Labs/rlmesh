@@ -143,10 +143,28 @@ rlmesh::Result<rlmesh::EnvConfig> config() {
   return config;
 }
 
+/// A composite the capi refuses must leave its children with the wrapper, which
+/// frees them exactly once (a double free here aborts the smoke), and an
+/// integer bound past the dtype must be refused rather than clamped.
+bool rejected_spaces_are_refused_cleanly() {
+  std::vector<std::pair<std::string, rlmesh::Space>> fields;
+  auto ok = rlmesh::Space::discrete(2);
+  auto empty_key = rlmesh::Space::discrete(3);
+  if (!ok || !empty_key) return false;
+  fields.emplace_back("ok", ok.unwrap());
+  fields.emplace_back("", empty_key.unwrap());
+  if (rlmesh::Space::dict(std::move(fields))) return false;
+  return !rlmesh::Space::box<int64_t>({2}, 1e30, 1e31);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   const std::string address = argc > 1 ? argv[1] : "127.0.0.1:5555";
+  if (!rejected_spaces_are_refused_cleanly()) {
+    std::fprintf(stderr, "an invalid space was not refused\n");
+    return 1;
+  }
   auto env_config = config();
   if (!env_config) {
     std::fprintf(stderr, "invalid env config: %s\n", env_config.error().message().c_str());

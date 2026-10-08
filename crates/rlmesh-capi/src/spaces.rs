@@ -449,11 +449,15 @@ fn is_unsigned_int(dtype: DType) -> bool {
     )
 }
 
+/// `2^63` and `2^64`: exact in `f64`, unlike `i64::MAX`/`u64::MAX`, which round
+/// up to them. The exclusive upper ends of the 64-bit integer ranges.
+const TWO_POW_63: f64 = 9_223_372_036_854_775_808.0;
+const TWO_POW_64: f64 = 18_446_744_073_709_551_616.0;
+
 /// An integer dtype's bound must be a finite whole number.
-fn int_bound(value: f64) -> Result<i64, CapiError> {
+fn whole_bound(value: f64) -> Result<f64, CapiError> {
     if value.is_finite() && value.fract() == 0.0 {
-        #[allow(clippy::cast_possible_truncation)]
-        Ok(value as i64)
+        Ok(value)
     } else {
         Err(CapiError::invalid_arg(format!(
             "integer Box bound {value} is not a finite whole number"
@@ -461,9 +465,51 @@ fn int_bound(value: f64) -> Result<i64, CapiError> {
     }
 }
 
+/// A signed-integer bound, converted only when it fits `i64` (a plain `as` cast
+/// would saturate). The builder then checks it against the dtype's own range.
+fn int_bound(value: f64) -> Result<i64, CapiError> {
+    let value = whole_bound(value)?;
+    if (-TWO_POW_63..TWO_POW_63).contains(&value) {
+        #[allow(clippy::cast_possible_truncation)]
+        Ok(value as i64)
+    } else {
+        Err(CapiError::invalid_arg(format!(
+            "integer Box bound {value} is out of range for a 64-bit signed integer"
+        )))
+    }
+}
+
+/// An unsigned-integer bound, converted straight to `u64` (never through `i64`)
+/// when it fits. The builder then checks it against the dtype's own range.
+fn uint_bound(value: f64) -> Result<u64, CapiError> {
+    let value = whole_bound(value)?;
+    if value < 0.0 {
+        return Err(CapiError::invalid_arg(format!(
+            "unsigned Box bound {value} is negative"
+        )));
+    }
+    if value < TWO_POW_64 {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        Ok(value as u64)
+    } else {
+        Err(CapiError::invalid_arg(format!(
+            "unsigned Box bound {value} is out of range for a 64-bit unsigned integer"
+        )))
+    }
+}
+
+fn bounds_vec<T>(
+    bounds: &[f64],
+    convert: impl Fn(f64) -> Result<T, CapiError>,
+) -> Result<Vec<T>, CapiError> {
+    bounds.iter().map(|&bound| convert(bound)).collect()
+}
+
 /// A `Box` space with one bound pair for every element. `low`/`high` may be
 /// infinite for a float dtype (unbounded on that side); an integer dtype needs
-/// finite whole-number bounds. Returns an owned space, or NULL on error.
+/// finite whole-number bounds the dtype can represent (an unsigned one, no
+/// negative bound): an out-of-range bound is refused, never clamped. Returns an
+/// owned space, or NULL on error.
 ///
 /// # Safety
 /// `shape` points at `ndim` readable `int64_t`s (NULL when `ndim == 0`).
@@ -479,11 +525,7 @@ pub unsafe extern "C" fn rlmesh_space_box(
         let dtype = core_dtype(dtype)?;
         let shape = unsafe { slice_arg(shape, ndim, "shape") }?.to_vec();
         let builder = if is_unsigned_int(dtype) {
-            let low = u64::try_from(int_bound(low)?)
-                .map_err(|_| CapiError::invalid_arg("unsigned Box bound is negative"))?;
-            let high = u64::try_from(int_bound(high)?)
-                .map_err(|_| CapiError::invalid_arg("unsigned Box bound is negative"))?;
-            BoxSpaceBuilder::uint_scalar(low, high, shape)
+            BoxSpaceBuilder::uint_scalar(uint_bound(low)?, uint_bound(high)?, shape)
         } else if is_signed_int(dtype) {
             BoxSpaceBuilder::int_scalar(int_bound(low)?, int_bound(high)?, shape)
         } else {
@@ -517,11 +559,18 @@ pub unsafe extern "C" fn rlmesh_space_box_elementwise(
         })?;
         let low = unsafe { slice_arg(low, numel, "low") }?;
         let high = unsafe { slice_arg(high, numel, "high") }?;
-        let builder = if is_signed_int(dtype) || is_unsigned_int(dtype) {
-            let ints = |bounds: &[f64]| -> Result<Vec<i64>, CapiError> {
-                bounds.iter().map(|&b| int_bound(b)).collect()
-            };
-            BoxSpaceBuilder::int_tensor(ints(low)?, ints(high)?, shape)
+        let builder = if is_unsigned_int(dtype) {
+            BoxSpaceBuilder::uint_tensor(
+                bounds_vec(low, uint_bound)?,
+                bounds_vec(high, uint_bound)?,
+                shape,
+            )
+        } else if is_signed_int(dtype) {
+            BoxSpaceBuilder::int_tensor(
+                bounds_vec(low, int_bound)?,
+                bounds_vec(high, int_bound)?,
+                shape,
+            )
         } else {
             BoxSpaceBuilder::tensor(low.to_vec(), high.to_vec(), shape)
         };
@@ -588,28 +637,59 @@ pub unsafe extern "C" fn rlmesh_space_text(
     })
 }
 
-/// Reclaim `n` owned child handles, all or nothing: the composite builders take
-/// ownership only once every argument checks out.
+/// Clone `n` owned child handles without taking them, so a composite is built
+/// (and validated by its builder) before any ownership moves: a builder that
+/// rejects the composite leaves every child with the caller.
 ///
 /// # Safety
 /// `children` points at `n` handles from the space constructors.
-unsafe fn take_children(
+unsafe fn borrow_children(
     children: *const *mut RLMeshSpaceSpec,
     n: usize,
 ) -> Result<Vec<SpaceSpec>, CapiError> {
     let children = unsafe { slice_arg(children, n, "children") }?;
-    if children.iter().any(|child| child.is_null()) {
-        return Err(CapiError::invalid_arg("null child space"));
-    }
-    Ok(children
+    children
         .iter()
-        .map(|&child| unsafe { Box::from_raw(child) }.0)
-        .collect())
+        .map(|&child| {
+            spec_ref(child)
+                .cloned()
+                .ok_or_else(|| CapiError::invalid_arg("null child space"))
+        })
+        .collect()
+}
+
+/// Adopt (free) the `n` children a composite was built from: the composite
+/// holds its own copies, so success is the one point ownership transfers.
+///
+/// # Safety
+/// `children` points at `n` non-NULL owned handles that `borrow_children`
+/// accepted.
+unsafe fn adopt_children(children: *const *mut RLMeshSpaceSpec, n: usize) {
+    if n == 0 {
+        return;
+    }
+    for &child in unsafe { std::slice::from_raw_parts(children, n) } {
+        drop(unsafe { Box::from_raw(child) });
+    }
+}
+
+/// Build a composite from cloned children; free the originals only once it built.
+///
+/// # Safety
+/// As `borrow_children`.
+unsafe fn build_composite(
+    children: *const *mut RLMeshSpaceSpec,
+    n: usize,
+    build: impl FnOnce(Vec<SpaceSpec>) -> Result<SpaceSpec, SpaceError>,
+) -> Result<*mut RLMeshSpaceSpec, CapiError> {
+    let space = built(build(unsafe { borrow_children(children, n) }?))?;
+    unsafe { adopt_children(children, n) };
+    Ok(space)
 }
 
 /// A `Dict` space of `n` (key, child) pairs, in declaration order. Takes
-/// ownership of every child on success; on failure (NULL) takes none of them.
-/// Keys must be unique.
+/// ownership of every child on success; on failure (NULL), whatever the reason,
+/// takes none of them. Keys must be non-empty and unique.
 ///
 /// # Safety
 /// `keys` points at `n` C strings; `children` at `n` owned space handles.
@@ -636,12 +716,15 @@ pub unsafe extern "C" fn rlmesh_space_dict(
             }
             names.push(key.to_string());
         }
-        let children = unsafe { take_children(children, n) }?;
-        built(
-            DictSpaceBuilder::new()
-                .extend(names.into_iter().zip(children))
-                .build(),
-        )
+        // The builder enforces the rest (e.g. non-empty keys) and keeps the
+        // last of a duplicate, hence the explicit duplicate check above.
+        unsafe {
+            build_composite(children, n, |children| {
+                DictSpaceBuilder::new()
+                    .extend(names.into_iter().zip(children))
+                    .build()
+            })
+        }
     })
 }
 
@@ -655,9 +738,10 @@ pub unsafe extern "C" fn rlmesh_space_tuple(
     children: *const *mut RLMeshSpaceSpec,
     n: usize,
 ) -> *mut RLMeshSpaceSpec {
-    guard_ptr(|| {
-        let children = unsafe { take_children(children, n) }?;
-        built(TupleSpaceBuilder::new().extend(children).build())
+    guard_ptr(|| unsafe {
+        build_composite(children, n, |children| {
+            TupleSpaceBuilder::new().extend(children).build()
+        })
     })
 }
 

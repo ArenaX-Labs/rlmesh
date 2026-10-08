@@ -146,9 +146,10 @@ apply to an env.
 `rlmesh_env_describe_json` (C++: `EnvServer::describe_json()`) returns the env's
 `rlmesh.describe.v1` envelope: the spaces, the tags, and the edition handshake,
 the same artifact `rlmesh describe` emits for a Python env. `rlmesh_env_bind`
-puts it on the handshake too, so the managed platform can read an image without
-a label; bake it as the image's `dev.rlmesh.describe` label to describe the
-image before it runs.
+puts it on that endpoint's handshake too (each env bound in a process reports
+its own), so the managed platform can read an image without a label; bake it
+as the image's `dev.rlmesh.describe` label to describe the image before it
+runs.
 
 By default the env is served as one lane: every callback runs on one dedicated
 thread, one call at a time. `reset` gets the seed and trial index (and every

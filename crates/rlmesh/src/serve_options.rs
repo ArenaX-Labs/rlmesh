@@ -1,5 +1,6 @@
 //! Transport serve options shared by the env and model servers.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use crate::{Error, Result};
@@ -80,6 +81,11 @@ pub struct ServeOptions {
     /// accept compressed requests either way. Has no effect on the model
     /// server.
     pub compress_responses: bool,
+    /// Advisory entries this endpoint adds to its handshake `PeerInfo.extra`,
+    /// over the process-wide peer-info override, so several servers in one
+    /// process each report their own. Diagnostics only: they never gate
+    /// compatibility. Empty by default. Has no effect on the model server.
+    pub peer_info_extra: BTreeMap<String, String>,
 }
 
 impl From<ServeOptions> for rlmesh_grpc::ServeOptions {
@@ -96,6 +102,7 @@ impl From<ServeOptions> for rlmesh_grpc::ServeOptions {
                 .map(|edition| edition.trim().to_string())
                 .filter(|edition| !edition.is_empty()),
             compress_responses: value.compress_responses,
+            peer_info_extra: value.peer_info_extra,
         }
     }
 }
@@ -159,6 +166,7 @@ mod tests {
                 predict_concurrency: None,
                 workflow_edition: None,
                 compress_responses: false,
+                peer_info_extra: BTreeMap::new(),
             }
         );
     }
@@ -174,6 +182,7 @@ mod tests {
             predict_concurrency: Some(8),
             workflow_edition: Some(rlmesh_proto::CURRENT_WORKFLOW_EDITION.to_string()),
             compress_responses: true,
+            peer_info_extra: BTreeMap::from([("k".to_string(), "v".to_string())]),
         };
         let grpc_options = rlmesh_grpc::ServeOptions::from(options.clone());
         assert_eq!(
@@ -193,6 +202,7 @@ mod tests {
             Some(rlmesh_proto::CURRENT_WORKFLOW_EDITION)
         );
         assert!(grpc_options.compress_responses);
+        assert_eq!(grpc_options.peer_info_extra, options.peer_info_extra);
     }
 
     #[test]

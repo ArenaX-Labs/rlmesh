@@ -18,6 +18,7 @@ enum PendingBounds {
     IntUniform { low: i64, high: i64 },
     IntTensor { low: Vec<i64>, high: Vec<i64> },
     UintUniform { low: u64, high: u64 },
+    UintTensor { low: Vec<u64>, high: Vec<u64> },
 }
 
 #[must_use = "a space builder does nothing until .build() is called"]
@@ -83,6 +84,16 @@ impl BoxSpaceBuilder {
         }
     }
 
+    /// Per-element unsigned-integer bounds (row-major), carried as dtype-typed
+    /// bytes so values up to `u64::MAX` round-trip exactly. Defaults to `Uint64`.
+    pub fn uint_tensor(low: Vec<u64>, high: Vec<u64>, shape: impl Into<Vec<i64>>) -> Self {
+        Self {
+            shape: shape.into(),
+            dtype: DType::Uint64,
+            bounds: PendingBounds::UintTensor { low, high },
+        }
+    }
+
     pub fn dtype(mut self, dtype: DType) -> Self {
         self.dtype = dtype;
         self
@@ -108,6 +119,12 @@ impl BoxSpaceBuilder {
                 BoxBounds::TypedUniform(TypedUniformBounds {
                     low: encode_uint_bound(&[low], dtype)?,
                     high: encode_uint_bound(&[high], dtype)?,
+                })
+            }
+            PendingBounds::UintTensor { low, high } => {
+                BoxBounds::TypedElementwise(TypedElementwiseBounds {
+                    low: encode_uint_bound(&low, dtype)?,
+                    high: encode_uint_bound(&high, dtype)?,
                 })
             }
         };
@@ -465,6 +482,31 @@ mod tests {
             panic!("expected typed-uniform bounds");
         };
         assert_eq!(t.high, u64::MAX.to_le_bytes());
+    }
+
+    #[test]
+    fn test_uint_tensor_builder_encodes_u64_bounds_exactly_and_checks_range() {
+        let spec = BoxSpaceBuilder::uint_tensor(vec![0, 1], vec![u64::MAX, 1 << 63], vec![2])
+            .build()
+            .expect("valid space");
+        let Some(SpaceKind::Box(b)) = spec.spec else {
+            panic!("expected Box");
+        };
+        let Some(BoxBounds::TypedElementwise(t)) = b.bounds else {
+            panic!("expected typed-elementwise bounds");
+        };
+        let high: Vec<u8> = [u64::MAX, 1 << 63]
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        assert_eq!(t.high, high);
+        // An element outside a narrower dtype fails rather than wrapping.
+        assert!(
+            BoxSpaceBuilder::uint_tensor(vec![0, 0], vec![255, 256], vec![2])
+                .dtype(DType::Uint8)
+                .build()
+                .is_err()
+        );
     }
 
     #[test]

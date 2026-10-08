@@ -5,8 +5,9 @@
 //! envelope carries the target, the spaces, the published tags, and the runtime
 //! edition handshake. The managed platform reads it off a baked
 //! `dev.rlmesh.describe` image label, or, for an image without one, off the
-//! handshake `PeerInfo.extra` the server stamps at bind, exactly as
-//! `rlmesh.serve` does for a Python env.
+//! handshake `PeerInfo.extra` the server stamps at bind, as `rlmesh.serve` does
+//! for a Python env. Each bound env stamps its own server, so several envs in
+//! one process each advertise their own contract.
 #![allow(unsafe_code)] // FFI: the exported describe call.
 
 use std::sync::Mutex;
@@ -45,18 +46,23 @@ impl Describe {
         lock(&self.envelope).clone()
     }
 
-    /// Rebuild the envelope with the edition the server declares and put it on
-    /// the handshake `PeerInfo.extra` under [`DESCRIBE_METADATA_KEY`], beside
-    /// whatever else the process override already reports. The override is
-    /// process-wide, so with several envs in one process the last bound wins.
-    pub(crate) fn publish(&self, workflow_edition: Option<&str>) -> Result<(), CapiError> {
-        let envelope = envelope(&self.contract, workflow_edition)?;
-        rlmesh::update_peer_info_override(|info| {
-            info.extra
-                .insert(DESCRIBE_METADATA_KEY.to_string(), envelope.clone());
-        });
+    /// The envelope rebuilt with the edition the server declares, for bind to
+    /// put on this env's own handshake `PeerInfo.extra` (see
+    /// [`Describe::bound_extra`]). Nothing changes until bind succeeds and
+    /// calls [`Describe::commit`].
+    pub(crate) fn for_bind(&self, workflow_edition: Option<&str>) -> Result<String, CapiError> {
+        envelope(&self.contract, workflow_edition)
+    }
+
+    /// The handshake `PeerInfo.extra` entry carrying `envelope`, set per server
+    /// (on its serve options) so each endpoint in a process reports its own.
+    pub(crate) fn bound_extra(envelope: &str) -> (String, String) {
+        (DESCRIBE_METADATA_KEY.to_string(), envelope.to_string())
+    }
+
+    /// Keep the envelope a successful bind advertised as this env's describe.
+    pub(crate) fn commit(&self, envelope: String) {
         *lock(&self.envelope) = envelope;
-        Ok(())
     }
 }
 
@@ -235,32 +241,26 @@ mod tests {
         parse(&String::from_utf8(unsafe { out.into_vec() }).expect("utf-8"))
     }
 
-    #[test]
-    fn the_c_export_describes_the_env_and_bind_puts_it_on_the_handshake() {
+    const F32: crate::value::dtype::RLMeshDType = crate::value::dtype::RLMeshDType {
+        code: 2,
+        bits: 32,
+        lanes: 1,
+    };
+
+    /// A C env `id` whose observation is Dict{eef_pos: f32[3] in [-bound, bound]}.
+    fn native_env(id: &str, bound: f64) -> *mut RLMeshEnv {
         use std::ffi::CString;
 
-        use crate::env::{
-            RLMeshEnvConfig, RLMeshEnvVtable, rlmesh_env_bind, rlmesh_env_free, rlmesh_env_new,
-        };
-        use crate::model::RLMeshServeOptions;
+        use crate::env::{RLMeshEnvConfig, RLMeshEnvVtable, rlmesh_env_new};
         use crate::spaces::{rlmesh_space_box, rlmesh_space_dict, rlmesh_space_free};
-        use crate::value::dtype::RLMeshDType;
-
-        const F32: RLMeshDType = RLMeshDType {
-            code: 2,
-            bits: 32,
-            lanes: 1,
-        };
-        // A host's own override fields survive the describe stamp.
-        rlmesh::update_peer_info_override(|info| info.os_version = "6.1".into());
 
         let three = [3i64];
-        let eef = unsafe { rlmesh_space_box(F32, three.as_ptr(), 1, -2.0, 2.0) };
+        let eef = unsafe { rlmesh_space_box(F32, three.as_ptr(), 1, -bound, bound) };
         let key = CString::new("eef_pos").unwrap();
         let obs = unsafe { rlmesh_space_dict([key.as_ptr()].as_ptr(), [eef].as_ptr(), 1) };
         let one = [1i64];
         let act = unsafe { rlmesh_space_box(F32, one.as_ptr(), 1, -1.0, 1.0) };
-        let id = CString::new("Native-v0").unwrap();
+        let id = CString::new(id).unwrap();
         let tags = CString::new(
             r#"{"observation": {"eef_pos": {"type": "state", "role": "proprio/eef_pos"}},
                 "action": {"components": [{"role": "action/gripper", "dim": 1}]}}"#,
@@ -292,8 +292,45 @@ mod tests {
             rlmesh_space_free(act);
         }
         assert_eq!(status, RLMeshStatus::Ok);
+        env
+    }
 
-        let before = describe_json(env);
+    /// Bind `env` at `address` declaring `edition`; the bound address on success.
+    fn bind(env: *mut RLMeshEnv, address: &str, edition: &str) -> Result<String, RLMeshStatus> {
+        use std::ffi::CString;
+
+        use crate::env::rlmesh_env_bind;
+        use crate::model::RLMeshServeOptions;
+
+        let edition = CString::new(edition).unwrap();
+        let options = RLMeshServeOptions {
+            token: std::ptr::null(),
+            allow_remote_shutdown: false,
+            idle_timeout_ms: 0,
+            drain_timeout_ms: 0,
+            close_timeout_ms: 0,
+            predict_concurrency: 0,
+            workflow_edition: edition.as_ptr(),
+        };
+        let address = CString::new(address).unwrap();
+        let mut out = RLMeshBytes::from_vec(Vec::new());
+        match unsafe { rlmesh_env_bind(env, address.as_ptr(), &options, &mut out) } {
+            RLMeshStatus::Ok => Ok(String::from_utf8(unsafe { out.into_vec() }).unwrap()),
+            status => Err(status),
+        }
+    }
+
+    #[test]
+    fn the_c_export_describes_each_env_and_only_a_successful_bind_publishes() {
+        use crate::env::rlmesh_env_free;
+
+        // A host's own process-wide override fields are left as they are.
+        rlmesh::update_peer_info_override(|info| info.os_version = "6.1".into());
+
+        let first = native_env("Native-v0", 2.0);
+        let second = native_env("Other-v0", 5.0);
+
+        let before = describe_json(first);
         assert_eq!(before["kind"], "env");
         assert_eq!(before["target"]["qualname"], "native:Native-v0");
         let eef_space = &before["env_spec"]["observation_space"]["details"]["spaces"]["eef_pos"];
@@ -310,30 +347,49 @@ mod tests {
         // Bound with a declared edition: the envelope (and the handshake copy)
         // declares exactly what the server sends.
         let base = rlmesh::CURRENT_WORKFLOW_EDITION.split('-').next().unwrap();
-        let edition = CString::new(base).unwrap();
-        let options = RLMeshServeOptions {
-            token: std::ptr::null(),
-            allow_remote_shutdown: false,
-            idle_timeout_ms: 0,
-            drain_timeout_ms: 0,
-            close_timeout_ms: 0,
-            predict_concurrency: 0,
-            workflow_edition: edition.as_ptr(),
-        };
-        let address = CString::new("127.0.0.1:0").unwrap();
-        let status =
-            unsafe { rlmesh_env_bind(env, address.as_ptr(), &options, std::ptr::null_mut()) };
-        assert_eq!(status, RLMeshStatus::Ok);
-        let after = describe_json(env);
+        let first_address = bind(first, "127.0.0.1:0", base).expect("bind the first env");
+        bind(second, "127.0.0.1:0", rlmesh::CURRENT_WORKFLOW_EDITION).expect("bind the second");
+        let after = describe_json(first);
         assert_eq!(after["runtime"]["preferred_workflow_edition"], base);
-        let peer = rlmesh::peer_info_override().expect("an override is installed");
-        let stamped = peer
-            .extra
-            .get(DESCRIBE_METADATA_KEY)
-            .expect("describe on the handshake");
-        assert_eq!(parse(stamped), after);
-        assert_eq!(peer.os_version, "6.1", "other override fields are kept");
-        unsafe { rlmesh_env_free(env) };
+
+        // A bind that fails (the first env's port is taken) publishes nothing:
+        // its describe keeps the pre-bind edition and the others are untouched.
+        let third = native_env("Failed-v0", 9.0);
+        let third_before = describe_json(third);
+        assert!(bind(third, &first_address, base).is_err());
+        assert_eq!(describe_json(third), third_before);
+        unsafe { rlmesh_env_free(third) };
+        assert!(
+            rlmesh::peer_info_override()
+                .is_none_or(|info| !info.extra.contains_key(DESCRIBE_METADATA_KEY)),
+            "the describe is per server, not process-wide"
+        );
+
+        // Each endpoint carries its own envelope on its own handshake (the
+        // per-server `ServeOptions::peer_info_extra`, covered over the wire in
+        // rlmesh-grpc); here the two bound envs keep distinct contracts.
+        let second_after = describe_json(second);
+        assert_eq!(second_after["target"]["qualname"], "native:Other-v0");
+        let other_eef =
+            &second_after["env_spec"]["observation_space"]["details"]["spaces"]["eef_pos"];
+        assert_eq!(other_eef["details"]["low"], -5.0);
+        assert_eq!(
+            second_after["runtime"]["preferred_workflow_edition"],
+            rlmesh::CURRENT_WORKFLOW_EDITION
+        );
+        assert_eq!(
+            describe_json(first),
+            after,
+            "binding the second left the first alone"
+        );
+        assert_eq!(
+            rlmesh::peer_info_override().map(|info| info.os_version),
+            Some("6.1".into()),
+            "other override fields are kept"
+        );
+        for env in [first, second] {
+            unsafe { rlmesh_env_free(env) };
+        }
 
         let mut out = RLMeshBytes::from_vec(Vec::new());
         let status = unsafe { rlmesh_env_describe_json(std::ptr::null(), &mut out) };

@@ -14,10 +14,11 @@ use rlmesh_spaces::{
 use crate::abi::status::{RLMeshStatus, rlmesh_last_error_is_recoverable};
 use crate::spaces::{
     RLMeshContract, RLMeshSpaceSpec, rlmesh_contract_num_envs, rlmesh_contract_observation_space,
-    rlmesh_space_box_bounds, rlmesh_space_copy_nvec, rlmesh_space_copy_shape,
-    rlmesh_space_dict_get, rlmesh_space_dict_get_at, rlmesh_space_dict_key,
-    rlmesh_space_discrete_n, rlmesh_space_len, rlmesh_space_text_charset, rlmesh_space_text_length,
-    rlmesh_space_tuple_get, rlmesh_space_type,
+    rlmesh_space_box, rlmesh_space_box_bounds, rlmesh_space_box_elementwise,
+    rlmesh_space_copy_nvec, rlmesh_space_copy_shape, rlmesh_space_dict, rlmesh_space_dict_get,
+    rlmesh_space_dict_get_at, rlmesh_space_dict_key, rlmesh_space_discrete,
+    rlmesh_space_discrete_n, rlmesh_space_free, rlmesh_space_len, rlmesh_space_text_charset,
+    rlmesh_space_text_length, rlmesh_space_tuple, rlmesh_space_tuple_get, rlmesh_space_type,
 };
 use crate::value::dtype::RLMeshDType;
 use crate::value::handle::{
@@ -948,4 +949,168 @@ fn space_key(spec: *const RLMeshSpaceSpec, index: usize) -> String {
     );
     let bytes = unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), len) };
     String::from_utf8(bytes.to_vec()).expect("utf-8 key")
+}
+
+fn capi_dtype(dtype: DType) -> RLMeshDType {
+    RLMeshDType::from_core(dtype).expect("a C dtype")
+}
+
+/// The owned spec behind a builder handle.
+fn built_spec<'a>(spec: *mut RLMeshSpaceSpec) -> &'a SpaceSpec {
+    assert!(!spec.is_null(), "builder failed");
+    unsafe { &(*spec).0 }
+}
+
+#[test]
+fn a_dict_space_the_builder_rejects_takes_none_of_its_children() {
+    // An empty key passes the capi's own key checks and is refused only by the
+    // Dict builder; both children must still be the caller's afterwards.
+    let first = rlmesh_space_discrete(2, 0);
+    let second = rlmesh_space_discrete(3, 0);
+    let keys: [*const c_char; 2] = [c"ok".as_ptr(), c"".as_ptr()];
+    let children = [first, second];
+    assert!(unsafe { rlmesh_space_dict(keys.as_ptr(), children.as_ptr(), 2) }.is_null());
+    assert_eq!(
+        crate::abi::status::rlmesh_last_error_status(),
+        RLMeshStatus::InvalidArgument
+    );
+    assert_eq!(
+        unsafe { rlmesh_space_type(first) },
+        RLMeshValueKind::Discrete
+    );
+    assert_eq!(
+        unsafe { rlmesh_space_type(second) },
+        RLMeshValueKind::Discrete
+    );
+    // The same children still build a valid Dict, which then owns them.
+    let keys: [*const c_char; 2] = [c"a".as_ptr(), c"b".as_ptr()];
+    let dict = unsafe { rlmesh_space_dict(keys.as_ptr(), children.as_ptr(), 2) };
+    let mut len = 0usize;
+    assert_eq!(
+        unsafe { rlmesh_space_len(dict, &mut len) },
+        RLMeshStatus::Ok
+    );
+    assert_eq!(len, 2);
+    unsafe { rlmesh_space_free(dict) };
+}
+
+#[test]
+fn a_tuple_space_with_a_null_child_takes_none_of_the_others() {
+    let child = rlmesh_space_discrete(2, 0);
+    let children = [child, std::ptr::null_mut()];
+    assert!(unsafe { rlmesh_space_tuple(children.as_ptr(), 2) }.is_null());
+    assert_eq!(
+        unsafe { rlmesh_space_type(child) },
+        RLMeshValueKind::Discrete
+    );
+    let tuple = unsafe { rlmesh_space_tuple([child].as_ptr(), 1) };
+    assert_eq!(unsafe { rlmesh_space_type(tuple) }, RLMeshValueKind::Tuple);
+    unsafe { rlmesh_space_free(tuple) };
+}
+
+#[test]
+fn integer_box_bounds_outside_the_dtype_are_refused_not_clamped() {
+    let shape = [2i64];
+    let refused = |dtype: DType, low: f64, high: f64| {
+        let spec = unsafe { rlmesh_space_box(capi_dtype(dtype), shape.as_ptr(), 1, low, high) };
+        assert!(spec.is_null(), "{dtype:?} [{low}, {high}] built");
+        assert_eq!(
+            crate::abi::status::rlmesh_last_error_status(),
+            RLMeshStatus::InvalidArgument
+        );
+        let elementwise = unsafe {
+            rlmesh_space_box_elementwise(
+                capi_dtype(dtype),
+                shape.as_ptr(),
+                1,
+                [low, low].as_ptr(),
+                [high, high].as_ptr(),
+            )
+        };
+        assert!(
+            elementwise.is_null(),
+            "{dtype:?} elementwise [{low}, {high}] built"
+        );
+    };
+    // Past 64 bits: previously both saturated to i64::MAX and built.
+    refused(DType::Int64, 1e30, 1e31);
+    refused(DType::Int64, -1e30, 0.0);
+    // 2^63 is i64::MAX + 1 (i64::MAX itself rounds up to it as a double).
+    refused(DType::Int64, 0.0, 9_223_372_036_854_775_808.0);
+    refused(DType::Uint64, 0.0, 18_446_744_073_709_551_616.0);
+    refused(DType::Uint64, -1.0, 1.0);
+    // Inside 64 bits but outside the dtype.
+    refused(DType::Int8, 0.0, 128.0);
+    refused(DType::Uint8, 0.0, 256.0);
+    refused(DType::Int32, -2_147_483_649.0, 0.0);
+}
+
+#[test]
+fn unsigned_box_bounds_above_i64_max_round_trip_exactly() {
+    // 2^63 and 2^64 - 2^11 (the largest double below 2^64) fit Uint64 but not
+    // i64: they must reach the spec unchanged, never via a saturating i64.
+    let low_value = 1u64 << 63;
+    let high_value = u64::MAX - 2047;
+    let typed_high = |spec: &SpaceSpec| -> Vec<u8> {
+        let Some(SpaceKind::Box(BoxSpec {
+            bounds: Some(BoxBounds::TypedUniform(rlmesh_spaces::TypedUniformBounds { low, high })),
+        })) = &spec.spec
+        else {
+            panic!("expected typed-uniform bounds: {spec:?}");
+        };
+        assert_eq!(*low, low_value.to_le_bytes());
+        high.clone()
+    };
+    let shape = [1i64];
+    let uniform = unsafe {
+        rlmesh_space_box(
+            capi_dtype(DType::Uint64),
+            shape.as_ptr(),
+            1,
+            low_value as f64,
+            high_value as f64,
+        )
+    };
+    assert_eq!(typed_high(built_spec(uniform)), high_value.to_le_bytes());
+    unsafe { rlmesh_space_free(uniform) };
+
+    let shape = [2i64];
+    let elementwise = unsafe {
+        rlmesh_space_box_elementwise(
+            capi_dtype(DType::Uint64),
+            shape.as_ptr(),
+            1,
+            [0.0, low_value as f64].as_ptr(),
+            [high_value as f64, high_value as f64].as_ptr(),
+        )
+    };
+    let Some(SpaceKind::Box(BoxSpec {
+        bounds: Some(BoxBounds::TypedElementwise(typed)),
+    })) = &built_spec(elementwise).spec
+    else {
+        panic!("expected typed-elementwise bounds");
+    };
+    let expect = |values: [u64; 2]| -> Vec<u8> {
+        values
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect()
+    };
+    assert_eq!(typed.low, expect([0, low_value]));
+    assert_eq!(typed.high, expect([high_value, high_value]));
+    unsafe { rlmesh_space_free(elementwise) };
+
+    // The signed edge still builds: i64::MIN is exactly -2^63.
+    let shape = [1i64];
+    let signed = unsafe {
+        rlmesh_space_box(
+            capi_dtype(DType::Int64),
+            shape.as_ptr(),
+            1,
+            i64::MIN as f64,
+            0.0,
+        )
+    };
+    assert!(!signed.is_null());
+    unsafe { rlmesh_space_free(signed) };
 }

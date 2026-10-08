@@ -1159,7 +1159,8 @@ class Space {
   }
 
   /// A Box with one bound pair for every element. A float dtype takes
-  /// +-INFINITY for an unbounded side; an integer one needs finite whole bounds.
+  /// +-INFINITY for an unbounded side; an integer one needs finite whole bounds
+  /// the dtype can represent (out of range is an error, never clamped).
   static Result<Space> box(RLMeshDType dtype, const std::vector<int64_t>& shape, double low,
                            double high) {
     return adopt(rlmesh_space_box(dtype, shape.data(), shape.size(), low, high));
@@ -1195,7 +1196,8 @@ class Space {
     return adopt(
         rlmesh_space_text(min_length, max_length, charset.empty() ? nullptr : charset.c_str()));
   }
-  /// Dict from owned (key, space) entries, in declaration order; keys unique.
+  /// Dict from owned (key, space) entries, in declaration order; keys
+  /// non-empty and unique.
   /// All-or-nothing ownership, as `Value::dict`.
   static Result<Space> dict(std::vector<std::pair<std::string, Space>> entries) {
     std::vector<const char*> keys;
@@ -1409,7 +1411,8 @@ class EnvServer {
 
   /// The env's describe envelope JSON (`rlmesh.describe.v1`): what to bake as
   /// the image's `dev.rlmesh.describe` label. After `bind` it declares the
-  /// bound workflow edition; `bind` also publishes it on the handshake.
+  /// bound workflow edition; `bind` also publishes it on this endpoint's
+  /// handshake.
   Result<std::string> describe_json() const {
     RLMeshBytes bytes{};
     RLMeshStatus status = rlmesh_env_describe_json(env_, &bytes);
