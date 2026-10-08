@@ -23,7 +23,8 @@ pub enum Command {
     /// Show the active profile, its platform, and sign-in state (exits
     /// nonzero unless signed in with a verified session).
     Whoami(WhoamiArgs),
-    /// Authenticate container tooling with the platform's image registry.
+    /// Authenticate container tooling with the platform's image registry, and
+    /// publish multi-variant image indexes.
     Registry(RegistryArgs),
     /// Manage named platform profiles.
     Profile(ProfileCommandArgs),
@@ -86,10 +87,38 @@ pub struct RegistryArgs {
 pub enum RegistryCommand {
     /// Log Docker in to the platform's image registry using the current session.
     Login(ProfileArgs),
+    /// Assemble pushed per-variant images into one OCI image index (a version
+    /// whose children are compute variants) and push it under TARGET.
+    Publish(PublishArgs),
     /// Docker credential-helper protocol endpoint (invoked by docker as
     /// docker-credential-rlmesh, not by hand).
     #[command(hide = true)]
     CredentialHelper(CredentialHelperArgs),
+}
+
+/// Flags for `rlmesh registry publish`.
+#[derive(Args, Debug)]
+pub struct PublishArgs {
+    /// The version to publish, as `REPOSITORY:TAG` (e.g. `registry.rlmesh.dev/ns/pi0:v3`).
+    pub target: String,
+    /// The per-variant images, already pushed (e.g. `ns/pi0:v3-cuda12`). Each must
+    /// be one linux image (attestations are carried along) whose
+    /// `dev.rlmesh.package` label declares a unique `variant.key`.
+    #[arg(required = true, value_name = "SOURCE")]
+    pub sources: Vec<String>,
+    /// Another tag for the index in TARGET's repository; repeatable.
+    #[arg(long = "tag", value_name = "TAG")]
+    pub tags: Vec<String>,
+    /// A moving channel tag (e.g. `latest`) to point at this version too.
+    #[arg(long, value_name = "TAG")]
+    pub channel: Option<String>,
+    /// A JSON file of version-level package data (checkpoints, compatibility),
+    /// set as the index's `dev.rlmesh.package` annotation.
+    #[arg(long, value_name = "FILE")]
+    pub index_package: Option<std::path::PathBuf>,
+    /// Print the per-variant summary and the index JSON without pushing.
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 /// The docker credential-helper operation, per its get/store/erase protocol.

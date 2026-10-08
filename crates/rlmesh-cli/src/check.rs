@@ -415,6 +415,7 @@ mod tests {
                 "labels: dev.rlmesh.package schemaVersion 2 is not the supported version 1"
                     .to_owned(),
                 "labels: the describe label was generated on macos".to_owned(),
+                "variant: requires accel.cuda comparator in \">12\" is not supported".to_owned(),
             ],
             not_checked: vec![
                 "editions: describe carries no supported_workflow_editions".to_owned(),
@@ -440,6 +441,7 @@ mod tests {
             report.failed,
             [
                 "labels: the describe label was generated on macos",
+                "variant: requires accel.cuda comparator in \">12\" is not supported",
                 "dev.rlmesh.package schemaVersion 2 is not the supported version 1",
             ]
         );

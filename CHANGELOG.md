@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `rlmesh registry publish TARGET SOURCE...` publishes a version with several compute variants: it assembles already-pushed per-variant images (a PyTorch CUDA build, a ROCm build, a JAX build) into one OCI image index and pushes it under the target tag, plus `--tag` and `--channel` tags. Each child must be one linux image whose `dev.rlmesh.package` label declares a unique `variant.key`, and all children must serve the same kind. Every problem is reported before anything is pushed. `--index-package FILE` sets version-level data as the index's `dev.rlmesh.package` annotation, and `--dry-run` prints the per-variant table and the index JSON. See [Publishing compute variants](docs/compute-variants.md).
+- `rlmesh check-image` validates the package label's `variant` and `profiles` blocks:
+  - the schema, and `requires` keys and comparators (`>=`, `<`, `=`, or a list)
+  - unique profile keys and exactly one default profile
+  - profile `requires` that contradict the variant's
+  - `requires` that disagree with the image's `CUDA_VERSION`, `NVIDIA_REQUIRE_CUDA`, or `ROCM_VERSION`
+
 ### Fixed
 
 - Served model endpoints enforce `RLMESH_MODEL_ENDPOINT_TOKEN` when set, taking precedence over token options. Empty or invalid environment values fail startup instead of disabling authentication.

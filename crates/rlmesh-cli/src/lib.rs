@@ -4,8 +4,10 @@ mod cli;
 mod config;
 mod helpers;
 pub mod image_check;
+pub mod package;
 mod platform;
 mod profile;
+mod publish;
 mod registry;
 mod render;
 mod session;
@@ -76,7 +78,10 @@ pub async fn run_cli_in(
         | Command::Viewtest(_)
         | Command::Check(_)
         | Command::CheckImage(_)
-        | Command::Describe(_) => None,
+        | Command::Describe(_)
+        | Command::Registry(cli::RegistryArgs {
+            command: cli::RegistryCommand::Publish(_),
+        }) => None,
         _ => match ProfileStore::load(&settings) {
             Ok(profiles) => Some(profiles),
             Err(error) => {
@@ -107,6 +112,7 @@ pub async fn run_cli_in(
                     .await
                     .map(|()| 0)
             }
+            cli::RegistryCommand::Publish(args) => publish::publish(&args, stdout, stdout_style),
             cli::RegistryCommand::CredentialHelper(args) => {
                 registry::credential_helper(profile_store(&mut profiles), &args, stdout).await
             }
