@@ -11,3 +11,12 @@ mdia = "mdia"
 writeable = "writeable"
 # Deliberately misspelled backend name in test_view.py.
 termnal = "termnal"
+
+# C and C++ sources (the C API, the Chrono example's kinematics and ray
+# tracer) name vectors and points with two-letter math identifiers (`ba`,
+# `ot`) that the dictionary reads as misspellings. Exempt only whole two-letter
+# lowercase identifiers, so longer typos such as `teh` are still caught.
+# `*.h` is listed so headers get the same rule.
+[type.cpp]
+extend-glob = ["*.h"]
+extend-ignore-identifiers-re = ["^[a-z]{2}$"]

@@ -131,12 +131,12 @@ description = "Check Python formatting"
 run = "uv run ruff format --check"
 
 [tasks."fmt:cxx"]
-description = "Format the C/C++ bindings (clang-format)"
-run = "clang-format -i crates/rlmesh-capi/include/*.h* crates/rlmesh-capi/examples/*.c crates/rlmesh-capi/examples/*.cpp"
+description = "Format the C/C++ bindings and examples (clang-format)"
+run = "clang-format -i crates/rlmesh-capi/include/*.h* crates/rlmesh-capi/examples/*.c crates/rlmesh-capi/examples/*.cpp examples/chrono/src/*"
 
 [tasks."fmt:check:cxx"]
-description = "Check the C/C++ binding formatting"
-run = "clang-format --dry-run --Werror crates/rlmesh-capi/include/*.h* crates/rlmesh-capi/examples/*.c crates/rlmesh-capi/examples/*.cpp"
+description = "Check the C/C++ binding and example formatting"
+run = "clang-format --dry-run --Werror crates/rlmesh-capi/include/*.h* crates/rlmesh-capi/examples/*.c crates/rlmesh-capi/examples/*.cpp examples/chrono/src/*"
 
 [tasks."fmt:check:proto"]
 description = "Check Protobuf formatting"
@@ -323,7 +323,7 @@ export PYTHONPATH="$(python -c 'import sysconfig; print(sysconfig.get_path("pure
 # plus Python tests when they can be affected. Not a gate; see the script.
 [tasks."test:affected"]
 description = "Run tests for crates changed since origin/main (and their dependents); pass --base REF or --dry-run"
-run = 'mise run dev:heavy -- python scripts/dev/affected.py {{arg(name="args", var=true, default="")}}'
+run = 'mise run dev:heavy -- python scripts/dev/affected.py {{arg(name="args", var=true, required=false)}}'
 
 [tasks."test:python"]
 description = "Run Python unit, integration, and conformance tests plus the authoring-import guard"

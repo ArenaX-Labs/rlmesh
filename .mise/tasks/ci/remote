@@ -6,6 +6,12 @@
 # upload so new files reach the job, then put them back to untracked.
 set -euo pipefail
 
+if ! command -v depot >/dev/null 2>&1; then
+  echo "ci:remote needs the depot CLI, which is not on PATH." >&2
+  echo "Install it (https://depot.dev/docs/cli/installation), then run \`depot login\`." >&2
+  exit 1
+fi
+
 mapfile -d '' untracked < <(git ls-files -z --others --exclude-standard)
 if [ "${#untracked[@]}" -gt 0 ]; then
   git add --intent-to-add -- "${untracked[@]}"

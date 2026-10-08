@@ -58,6 +58,21 @@ class SlowStepEnv(TinyEnv):
         return super().step(action)
 
 
+class FailingStepEnv(TinyEnv):
+    """Env whose step() raises the queued exception, if any, else continues."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_with: BaseException | None = None
+
+    def step(self, action: object):
+        failure, self.fail_with = self.fail_with, None
+        if failure is not None:
+            raise failure
+        self.step_count += 1
+        return 1, 1.0, False, False, {}
+
+
 class BlockingStepEnv(TinyEnv):
     """Env whose step() signals that it started, then blocks until released."""
 
@@ -499,6 +514,58 @@ def test_env_server_wait_returns_true_after_remote_shutdown() -> None:
     assert env.close_calls == 1
 
 
+class ImageEnv(TinyEnv):
+    """Env whose observation is a ~200 KB uint8 image (compressible gradient)."""
+
+    def __init__(self) -> None:
+        import numpy as np
+        from rlmesh import spaces
+
+        super().__init__()
+        self.frame = (np.arange(240 * 280 * 3) % 251).astype(np.uint8)
+        self.frame = self.frame.reshape(240, 280, 3)
+        self.observation_space = spaces.Box(0, 255, (240, 280, 3), dtype=np.uint8)
+
+    def reset(
+        self, *, seed: int | None = None, options: dict[str, object] | None = None
+    ):
+        return self.frame, {}
+
+    def step(self, action: object):
+        return self.frame, 1.0, False, False, {}
+
+
+def test_env_server_compressed_responses_round_trip() -> None:
+    import numpy as np
+    import rlmesh
+    from rlmesh._editions import serve_options_declaring
+
+    options = rlmesh.ServeOptions(compress_responses=True)
+    assert options.compress_responses is True
+    assert rlmesh.ServeOptions().compress_responses is False
+    # Restamping an edition declaration keeps the compression opt-in.
+    restamped = serve_options_declaring(
+        options, option=rlmesh.current_workflow_edition()
+    )
+    assert restamped is not None and restamped.compress_responses is True
+
+    env = ImageEnv()
+    server = env_server(env, options)
+    server.start()
+    try:
+        remote = connect_with_retry(rlmesh.RemoteEnv, server.address)
+        try:
+            obs, _ = remote.reset(seed=0)
+            np.testing.assert_array_equal(np.asarray(obs), env.frame)
+            obs, reward, *_ = remote.step(0)
+            np.testing.assert_array_equal(np.asarray(obs), env.frame)
+            assert reward == 1.0
+        finally:
+            remote.close()
+    finally:
+        server.shutdown()
+
+
 @pytest.mark.parametrize(
     ("channels", "expected_shape"),
     [(3, (4, 3, 3)), (4, (4, 3, 4)), (1, (4, 3))],
@@ -548,6 +615,62 @@ def test_client_preserves_env_provided_info_keys() -> None:
             client.close()
     finally:
         server.shutdown()
+
+
+def test_client_logs_a_shadowed_runtime_info_key_once(
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    """An env key shadowing a runtime-reserved one is kept but logged, once."""
+    from rlmesh._rlmesh import PyEnvClient
+
+    env = InfoKeyEnv()
+    server = env_server(env)
+    server.start()
+    try:
+        client = PyEnvClient(server.address)
+        try:
+            client.reset()
+            client.step(0)
+            client.reset()
+            client.step(0)
+        finally:
+            client.close()
+    finally:
+        server.shutdown()
+
+    stderr = capfd.readouterr().err
+    assert stderr.count("shadows the runtime-reserved info key") == 1
+
+
+class _TwoStepEnv(TinyEnv):
+    """Env whose episodes end on the second step."""
+
+    def step(self, action: object):
+        self.step_count += 1
+        return 1, 1.0, self.step_count >= 2, False, {}
+
+
+def test_scalar_client_reports_completed_episodes_on_every_step() -> None:
+    """`completed_episodes` is present mid-episode (0) as on the vector client."""
+    from rlmesh._rlmesh import PyEnvClient
+
+    env = _TwoStepEnv()
+    server = env_server(env)
+    server.start()
+    try:
+        client = PyEnvClient(server.address)
+        try:
+            client.reset()
+            *_, mid_info = client.step(0)
+            *_, end_info = client.step(0)
+        finally:
+            client.close()
+    finally:
+        server.shutdown()
+
+    assert mid_info["completed_episodes"] == 0
+    assert end_info["completed_episodes"] == 1
+    assert len(cast("list[str]", mid_info["episode_ids"])) == 1
 
 
 def test_client_injects_episode_ids_when_env_omits_them() -> None:
@@ -602,6 +725,47 @@ def test_client_constructor_default_timeout_applies() -> None:
                 client.step(0)
         finally:
             client.close()
+    finally:
+        server.shutdown()
+
+
+def test_recoverable_env_error_keeps_the_session() -> None:
+    """A recoverable env error fails one step; a fatal one ends the session
+    until the next reset reopens it."""
+    import rlmesh
+
+    env = FailingStepEnv()
+    server = env_server(env)
+    server.start()
+    try:
+        remote = connect_with_retry(rlmesh.RemoteEnv, server.address)
+        remote.reset(seed=0)
+
+        env.fail_with = rlmesh.RecoverableEnvironmentException("solver hiccup")
+        with pytest.raises(
+            rlmesh.RecoverableEnvironmentException, match="solver hiccup"
+        ) as recoverable:
+            remote.step(0)
+        assert recoverable.value.is_recoverable is True
+        assert recoverable.value.code == "INTERNAL"
+        remote.step(0)  # same session, no reset
+
+        env.fail_with = RuntimeError("solver diverged")
+        with pytest.raises(
+            rlmesh.EnvironmentException, match="solver diverged"
+        ) as fatal:
+            remote.step(0)
+        assert fatal.value.is_recoverable is False
+        assert not isinstance(fatal.value, rlmesh.RecoverableEnvironmentException)
+        with pytest.raises(
+            rlmesh.EnvironmentException, match="reset to start a new session"
+        ):
+            remote.step(0)
+
+        remote.reset(seed=1)
+        remote.step(0)
+        assert env.step_count == 1
+        remote.close()
     finally:
         server.shutdown()
 

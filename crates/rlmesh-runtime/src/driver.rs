@@ -215,9 +215,10 @@ const DEFAULT_CANCELLATION_REASON: &str = "cancelled by caller";
 /// The env-reported task outcome from an episode's final-step info, read under
 /// the `keys` the session's edition governs
 /// ([`EditionDefaults::success_info_keys`](rlmesh_proto::EditionDefaults::success_info_keys)),
-/// in priority order; `None` when none of them is present. Numeric values coerce
-/// by truthiness (`1`/`1.0` → true), matching the Python Session's
-/// `bool(info[key])` so the two loops report identical success.
+/// in priority order: the first key holding a bool, integer, or number decides
+/// (numbers by truthiness, `1`/`1.0` → true), and keys of any other kind are
+/// skipped; `None` when no key decides. The Python Session's `_episode_success`
+/// applies the same rule so the two loops report identical success.
 fn success_from_final_info(
     keys: &[&str],
     final_info: Option<&rlmesh_proto::spaces::v1::MetaMap>,
@@ -2572,5 +2573,47 @@ impl TelemetryTicker {
 impl Drop for TelemetryTicker {
     fn drop(&mut self) {
         self.handle.abort();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::success_from_final_info;
+    use rlmesh_proto::spaces::v1::{MetaMap, MetaValue, meta_value::Kind};
+
+    const KEYS: &[&str] = &["is_success", "success", "task_success"];
+
+    fn info(entries: &[(&str, Option<Kind>)]) -> MetaMap {
+        MetaMap {
+            entries: entries
+                .iter()
+                .map(|(key, kind)| (key.to_string(), MetaValue { kind: kind.clone() }))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn success_skips_keys_whose_kind_carries_no_outcome() {
+        // A string (even "False"), a null, or a list never decides; the next
+        // key in priority order does.
+        let skipped = info(&[
+            ("is_success", Some(Kind::Text("False".into()))),
+            ("success", None),
+            ("task_success", Some(Kind::Integer(1))),
+        ]);
+        assert_eq!(success_from_final_info(KEYS, Some(&skipped)), Some(true));
+
+        let undecided = info(&[("is_success", Some(Kind::Text("True".into())))]);
+        assert_eq!(success_from_final_info(KEYS, Some(&undecided)), None);
+        assert_eq!(success_from_final_info(KEYS, None), None);
+    }
+
+    #[test]
+    fn success_takes_the_first_deciding_key_by_priority() {
+        let both = info(&[
+            ("is_success", Some(Kind::Number(0.0))),
+            ("success", Some(Kind::Bool(true))),
+        ]);
+        assert_eq!(success_from_final_info(KEYS, Some(&both)), Some(false));
     }
 }

@@ -66,3 +66,12 @@ def spec_details(spec: SpaceSpec) -> Mapping[str, object]:
 
 def spec_to_dict(spec: SpaceSpec) -> dict[str, object]:
     return spec._to_dict()
+
+
+def spec_to_json(spec: SpaceSpec) -> str:
+    """:func:`spec_to_dict` as strict JSON (non-finite bounds as ``null``).
+
+    The describe-envelope form, rendered in Rust by the same function a native
+    host uses, so the two producers cannot drift.
+    """
+    return spec._to_json()

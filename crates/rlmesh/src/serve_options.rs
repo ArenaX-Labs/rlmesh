@@ -1,5 +1,6 @@
 //! Transport serve options shared by the env and model servers.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use crate::{Error, Result};
@@ -68,11 +69,23 @@ pub struct ServeOptions {
     /// exact moving build instead. Either must admit an edition this build offers
     /// ([`rlmesh_proto::parse_declared_edition`]); the surfaces that take this
     /// from a user — the Python `ServeOptions`, `--workflow-edition`, the C API's
-    /// `RlmeshServeOptions` — refuse any other value where it is typed, while a
+    /// `RLMeshServeOptions` — refuse any other value where it is typed, while a
     /// value set directly on this bare `pub` struct is only trimmed here and is
     /// refused at negotiation instead, by the refusal naming every tier's WANT
     /// and CAN.
     pub workflow_edition: Option<String>,
+    /// Compress environment responses (zstd, else gzip) for a client that
+    /// advertises it accepts them. Off by default: observation leaves are raw
+    /// tensor bytes, so compression spends CPU on both ends and only pays on a
+    /// slow link with compressible payloads such as rendered images. Servers
+    /// accept compressed requests either way. Has no effect on the model
+    /// server.
+    pub compress_responses: bool,
+    /// Advisory entries this endpoint adds to its handshake `PeerInfo.extra`,
+    /// over the process-wide peer-info override, so several servers in one
+    /// process each report their own. Diagnostics only: they never gate
+    /// compatibility. Empty by default. Has no effect on the model server.
+    pub peer_info_extra: BTreeMap<String, String>,
 }
 
 impl From<ServeOptions> for rlmesh_grpc::ServeOptions {
@@ -88,6 +101,8 @@ impl From<ServeOptions> for rlmesh_grpc::ServeOptions {
                 .workflow_edition
                 .map(|edition| edition.trim().to_string())
                 .filter(|edition| !edition.is_empty()),
+            compress_responses: value.compress_responses,
+            peer_info_extra: value.peer_info_extra,
         }
     }
 }
@@ -150,6 +165,8 @@ mod tests {
                 token: None,
                 predict_concurrency: None,
                 workflow_edition: None,
+                compress_responses: false,
+                peer_info_extra: BTreeMap::new(),
             }
         );
     }
@@ -164,6 +181,8 @@ mod tests {
             token: Some("s3cret".to_string()),
             predict_concurrency: Some(8),
             workflow_edition: Some(rlmesh_proto::CURRENT_WORKFLOW_EDITION.to_string()),
+            compress_responses: true,
+            peer_info_extra: BTreeMap::from([("k".to_string(), "v".to_string())]),
         };
         let grpc_options = rlmesh_grpc::ServeOptions::from(options.clone());
         assert_eq!(
@@ -182,6 +201,8 @@ mod tests {
             grpc_options.workflow_edition.as_deref(),
             Some(rlmesh_proto::CURRENT_WORKFLOW_EDITION)
         );
+        assert!(grpc_options.compress_responses);
+        assert_eq!(grpc_options.peer_info_extra, options.peer_info_extra);
     }
 
     #[test]

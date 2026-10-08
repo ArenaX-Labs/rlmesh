@@ -316,7 +316,8 @@ impl Window {
                             .cloned()
                             .ok_or_else(|| {
                                 ApplyError::new(format!(
-                                    "frame window for '{}' holds {} frame(s), too few to reach                                      offset {offset}",
+                                    "frame window for '{}' holds {} frame(s), too few to reach \
+                                     offset {offset}",
                                     entry.key,
                                     self.frames.len()
                                 ))

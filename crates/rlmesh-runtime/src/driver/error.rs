@@ -32,7 +32,7 @@ pub enum RuntimeError {
     },
 
     #[error(
-        "environment {operation} failed at runtime step {step}: {message}. If the source is 'transport error: connection closed', the environment server exited, crashed, or received SIGTERM before replying; inspect the environment container logs immediately before the runtime error timestamp"
+        "environment {operation} failed at runtime step {step}: {message}. If the source is 'transport error: connection closed', the env session's stream ended without a reply (an env error that ended the session is reported as itself, not as a closed connection), so the environment server most likely exited, crashed, or received SIGTERM; inspect the environment container logs immediately before the runtime error timestamp"
     )]
     EnvRpc {
         operation: &'static str,

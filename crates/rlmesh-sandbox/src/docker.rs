@@ -1023,12 +1023,12 @@ mod tests {
     };
     use crate::source::{ResolvedEnvironmentSourceRef, ResolvedHfSourceRef};
     use crate::{
-        EffectiveSandboxSpec, EnvironmentSourceRef, GymSourceRef, ResolvedRlmeshPackage,
+        EffectiveSandboxSpec, EnvironmentSourceRef, GymSourceRef, ResolvedRLMeshPackage,
         VectorizationMode,
     };
 
-    fn pip_rlmesh_package() -> ResolvedRlmeshPackage {
-        ResolvedRlmeshPackage::Pip {
+    fn pip_rlmesh_package() -> ResolvedRLMeshPackage {
+        ResolvedRLMeshPackage::Pip {
             spec: "rlmesh==0.1.0b2".to_string(),
         }
     }
@@ -1452,7 +1452,7 @@ mod tests {
     #[test]
     fn dockerfile_copies_and_installs_rlmesh_wheel_package() {
         let spec = EffectiveSandboxSpec {
-            rlmesh_package: ResolvedRlmeshPackage::Wheel {
+            rlmesh_package: ResolvedRLMeshPackage::Wheel {
                 source_path: "/tmp/rlmesh-0.1.0b2-cp311-abi3-manylinux_x86_64.whl".into(),
                 install_path: "/opt/rlmesh/packages/rlmesh-0.1.0b2-cp311-abi3-manylinux_x86_64.whl"
                     .to_string(),

@@ -6,7 +6,7 @@ from rlmesh_system_fixtures.registry import (
     make_env,
     resolve_model,
 )
-from rlmesh_system_fixtures.trace import fingerprint
+from rlmesh_system_fixtures.trace import canonical_info, fingerprint
 
 
 def test_counter_env_is_deterministic() -> None:
@@ -75,3 +75,12 @@ def test_model_resolver_keeps_dotted_entrypoint_escape_hatch() -> None:
     model = resolve_model("rlmesh_system_fixtures.models.discrete:discrete_zero")
 
     assert model(object()) == 0
+
+
+def test_canonical_info_drops_volatile_keys_and_zero_runtime_counts() -> None:
+    info = {"action": 0, "episode_ids": ["e1"], "completed_episodes": 0}
+    assert canonical_info(info) == {"action": 0}
+    assert canonical_info({**info, "completed_episodes": 1}) == {
+        "action": 0,
+        "completed_episodes": 1,
+    }

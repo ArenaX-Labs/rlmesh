@@ -9,6 +9,7 @@ const SUPPLEMENTAL_EXPORTS: &[&str] = &[
     "RLMeshException",
     "ProtocolException",
     "EnvironmentException",
+    "RecoverableEnvironmentException",
 ];
 const SUPPLEMENTAL_STUBS: &str = r#"
 __version__: builtins.str
@@ -19,7 +20,11 @@ class RLMeshException(builtins.RuntimeError): ...
 
 class ProtocolException(RLMeshException): ...
 
-class EnvironmentException(RLMeshException): ...
+class EnvironmentException(RLMeshException):
+    code: builtins.str
+    is_recoverable: builtins.bool
+
+class RecoverableEnvironmentException(EnvironmentException): ...
 
 ResetInfo: TypeAlias = dict[str, object]
 

@@ -81,9 +81,10 @@ pub struct HttpShared {
     /// Index into `sources` the viewer should draw. Written by the terminal key
     /// thread and the HTTP `/select` route; read by both backends.
     pub selected: AtomicUsize,
-    /// Set by the terminal key thread when the user asks to quit (q / Esc / Ctrl-C).
-    /// Raw mode swallows SIGINT, so the eval reads this each step (via the Python
-    /// driver) and raises KeyboardInterrupt to stop the loop.
+    /// Set by the terminal key thread when the user asks to quit (q / Esc / Ctrl-C)
+    /// or by the `/quit` route. Raw mode swallows SIGINT, so the eval reads this
+    /// each step (via the Python driver) and stops the loop; a viewer held open
+    /// after the run reads it to close.
     pub quit: AtomicBool,
     /// Set by the `n` key / `/skip` route to end the *current episode* early (a soft,
     /// non-failure stop that advances to the next episode) — unlike `quit`, which stops
@@ -174,6 +175,11 @@ fn route(url: &str, shared: &HttpShared) -> Response<Cursor<Vec<u8>>> {
             shared.skip.store(true, Ordering::Relaxed);
             with_ct(Response::from_string("{\"ok\":true}"), "application/json")
         }
+        "/quit" => {
+            // The page's `q`: stop the run (or close a viewer held after it).
+            shared.quit.store(true, Ordering::Relaxed);
+            with_ct(Response::from_string("{\"ok\":true}"), "application/json")
+        }
         _ => Response::from_string("not found").with_status_code(404),
     }
 }
@@ -202,7 +208,7 @@ button{margin:3px;padding:4px 10px;background:#222;color:#ccc;border:1px solid #
 button.sel{font-weight:bold;border-color:#888;background:#333}
 </style></head><body>
 <div id="bar"></div>
-<div id="ctl"><button onclick="fetch('/skip')" title="end the current episode and advance (n)">end episode ▸</button></div>
+<div id="ctl"><button onclick="fetch('/skip')" title="end the current episode and advance (n)">end episode ▸</button><button onclick="fetch('/quit')" title="stop the run, or close a held viewer (q)">quit ■</button></div>
 <div id="hud"></div><img id="f" alt="waiting for frames…">
 <script>
 const f=document.getElementById('f'),bar=document.getElementById('bar'),hud=document.getElementById('hud'),fps=15;
@@ -231,3 +237,18 @@ async function hudtick(){let h=null;try{h=await(await fetch('/hud.json')).json()
 sources();setInterval(sources,2000);setInterval(hudtick,250);
 setInterval(()=>{f.src='/frame?t='+Date.now();},1000/fps);
 </script></body></html>"#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn skip_and_quit_routes_set_their_flags() {
+        let shared = HttpShared::new("image/jpeg");
+        assert_eq!(route("/skip", &shared).status_code().0, 200);
+        assert!(shared.skip.load(Ordering::Relaxed));
+        assert!(!shared.quit.load(Ordering::Relaxed));
+        assert_eq!(route("/quit?t=1", &shared).status_code().0, 200);
+        assert!(shared.quit.load(Ordering::Relaxed));
+    }
+}

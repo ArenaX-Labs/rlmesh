@@ -7,6 +7,7 @@
 //! a handler panics; idle shutdown then fires once the count stays at zero for
 //! `idle_timeout`.
 
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::{
     Arc, Mutex,
@@ -77,11 +78,23 @@ pub struct ServeOptions {
     /// [`rlmesh_proto::parse_declared_edition`] accepts: a sealed release offers
     /// its bare `YYYY.MM` base, a prerelease build only its cohort spelling. The
     /// surfaces that take this from a user (the Python `ServeOptions`, the
-    /// `--workflow-edition` flag, the C API's `RlmeshServeOptions`) refuse such a
+    /// `--workflow-edition` flag, the C API's `RLMeshServeOptions`) refuse such a
     /// value where it is typed; a value set directly on this struct is only
     /// trimmed here and is refused at negotiation instead, by the refusal that
     /// names every tier's WANT and CAN.
     pub workflow_edition: Option<String>,
+    /// Compress env responses (zstd, else gzip) for a client that advertises it
+    /// accepts them. Off by default: an observation's large leaves are raw
+    /// tensor bytes, so compression costs CPU on both ends and only pays on a
+    /// slow link with compressible payloads (rendered images, sparse tensors).
+    /// Every server accepts compressed requests regardless. Ignored by the
+    /// model server.
+    pub compress_responses: bool,
+    /// Advisory entries this endpoint adds to its handshake
+    /// `PeerInfo.extra`, over the process-wide peer-info override, so two
+    /// servers in one process can each report their own (e.g. their own
+    /// describe envelope). Empty by default. Ignored by the model server.
+    pub peer_info_extra: BTreeMap<String, String>,
 }
 
 /// Default per-connection concurrency cap for pipelined model predict requests.
@@ -276,6 +289,8 @@ mod tests {
                 token: None,
                 predict_concurrency: None,
                 workflow_edition: None,
+                compress_responses: false,
+                peer_info_extra: BTreeMap::new(),
             }
         );
     }

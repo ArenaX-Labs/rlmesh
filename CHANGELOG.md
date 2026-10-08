@@ -14,7 +14,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
   - warns where `requires` disagree with the image's `CUDA_VERSION`, `NVIDIA_REQUIRE_CUDA`, `ROCM_VERSION`, or describe `framework_versions`, including an `accel.cuda` constraint without a lower bound (`<13`), which admits drivers older than the image's CUDA runtime
   - reports the requires the platform infers for an image without a variant block, and the row keys the image gets
 
+- The experimental C ABI hosts environments as well as models: a C or C++ program implements reset, step, render, and close (`RLMeshEnvVtable`, or `rlmesh::Environment` in `rlmesh.hpp`), declares its spaces with the `rlmesh_space_*` builders and its adapter tags as JSON (validated against the spaces at creation), and serves them with `rlmesh_env_new`/`bind`/`serve`. `rlmesh_env_new_lanes` serves N instances as the lanes of one `num_envs = N` endpoint, each on its own thread; `RLMeshEnvConfig.foreground` runs every callback on the thread that calls serve instead. A callback can fail one request as recoverable without ending the session. Each endpoint publishes its describe envelope on its handshake, and `rlmesh_env_describe_json` prints it for an image label. When `rlmesh_env_serve` or `rlmesh_env_free` returns, no callback is running or will run again; `close_timeout_ms` does not apply to a C env. The additions are additive: the ABI version is unchanged.
+
+- `examples/chrono` serves Project Chrono's six-axis industrial robot from native C++ as a reach task, with a CPU ray-traced camera or an opt-in offscreen Vulkan one (GPU or lavapipe), driven by either a Python model with a `ModelSpec` or a C++ model, plus a Dockerfile.
+
+- Env errors can be recoverable: the request fails but the client's session stays usable. After a fatal env error the client's next reset opens a new session instead of every later call failing; Python raises `RecoverableEnvironmentException` for a recoverable one, and env exceptions carry `code` and `is_recoverable`. In a multi-lane batch a fatal lane error wins over a recoverable one, and a batch where some lanes failed recoverably while others advanced ends the session, since replaying it would step the advanced lanes twice.
+
+- `View(hold=...)` keeps the live viewer up after the session ends, showing the final frame and HUD (marked `[held]`, with every source still selectable): `hold=True` until you quit it, or a number of seconds. The default still closes the viewer with the session, and an unbounded hold with only the terminal backend and no interactive terminal is skipped with a warning, so a non-interactive run never blocks on it.
+
+- `View(step_hz=...)` paces a viewed session's env steps to at most that rate, so a fast simulator plays back at a watchable speed (the env's control rate for real time). `View.fps` still only thins the drawing. The pacing sleep is left out of the run's step and round timings.
+
+- The HTTP viewer has a quit button (and a `/quit` route) that does what `q` does in the terminal: stop the run, or close a held viewer.
+
+- `Session.run()` fills `RunResult.telemetry`, so `format_telemetry()` works on the Python loop a served model or a viewed run drives. It reports the client-observed `rpc.total` of `model.predict`, `env.reset`, `env.step`, and `runner.round`, under the names the native `Model.run` loop uses.
+
+- `ServeOptions(compress_responses=True)` has an env server compress its responses (zstd, else gzip) for clients that accept it; every RLMesh client and server now accepts compressed messages. It is off by default: on loopback a ~200 KB rendered-image observation shrinks to ~1.4 KB on the wire but the step takes as long, so it only pays on a slow link with compressible observations.
+
 ### Fixed
+
+- Model and env servers disable Nagle's algorithm on accepted TCP connections, which removed a ~40 ms stall on some env steps.
 
 - Served model endpoints enforce `RLMESH_MODEL_ENDPOINT_TOKEN` when set, taking precedence over token options. Empty or invalid environment values fail startup instead of disabling authentication.
 
@@ -26,9 +44,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 - `rlmesh check`, `rlmesh check-image`, and `python -m rlmesh._describe --check` join an env's tags against its spaces, per contract branch, the way `rlmesh.serve` does at startup, so tags whose widths or space classes do not fit now fail the check instead of passing it and crashing the server. A contract branch without tags fails, as the platform probe does.
 
+- `spaces.Text` accepts `min_length=0` (and `max_length=0`), as Gymnasium does, so a Gymnasium `Text(min_length=0)` converts instead of failing; only negative lengths are rejected.
+
+- `rlmesh.run()` and `Session` read an episode's success the way the runtime does. Of `is_success`, `success`, and `task_success` in the final step's `info`, the first holding a bool, integer, or float decides; a string such as `"False"`, `None`, or a list is skipped instead of counting as success or ending the search. NumPy scalars and 0-d arrays count as their values.
+
+- `rlmesh.trial_index(options)` reads a NumPy integer, and reads the per-lane list a multi-lane reset sends through the new `lane=` argument. Without `lane=` the list raises a `ValueError` saying to pass it, instead of returning `None`.
+
+- `RemoteEnv.step` reports `completed_episodes` in its `info` on every step (`0` mid-episode), as `RemoteVectorEnv.step` does; it used to appear only on the step that ended an episode.
+
+- Importing `rlmesh` in an embedded interpreter that installed no signal handlers ignores SIGPIPE, as CPython itself does, so a peer that hangs up mid-write fails that write instead of killing the host process. A handler the host installed is left alone.
+
 ### Changed
 
+- The C and C++ API's type names spell the project name `RLMesh` (`RLMeshStatus`, `RLMeshValue`, `RLMeshEpisode`, ...) instead of `Rlmesh`, matching the Python `RLMeshError`. This breaks source but not ABI: function names (`rlmesh_*`), macros (`RLMESH_*`), the `rlmesh::` C++ namespace, struct layouts, and the ABI version are unchanged.
+
 - `rlmesh check` warns on an env without `tags` instead of failing it: an untagged env runs against spec-less models; tags are what let the platform adapt a spec'd model to it.
+
+- `RemoteEnv` and `RemoteVectorEnv` log a warning, once per client, when an env's own `info` key shadows a runtime-reserved one (`episode_ids`, `completed_episodes`). The env's value is still kept.
+
+- The live viewer shows the env's first declared image role by default instead of its `render()` frame. The role rides the step response, while `render()` costs one more env round trip per drawn frame; `render` stays selectable, and `View(source="render")` asks for it.
 
 ## [0.1.0] - 2026-09-23
 

@@ -1,7 +1,7 @@
-//! `RlmeshTensor` — the minimal DLPack-shaped POD tensor (data + shape + dtype).
+//! `RLMeshTensor` — the minimal DLPack-shaped POD tensor (data + shape + dtype).
 //!
 //! A tensor returned by value (e.g. from `rlmesh_value_as_tensor`) is a borrowed
-//! view: `deleter == NULL`, valid only while its source `RlmeshValue` lives. A
+//! view: `deleter == NULL`, valid only while its source `RLMeshValue` lives. A
 //! by-value out-param tensor's `deleter` (when present) releases only
 //! `manager_ctx` and never frees `self` — that diverges from DLPack, whose
 //! "deleter frees self" applies only to the heap `DLManagedTensorVersioned`.
@@ -9,7 +9,7 @@
 
 use std::ffi::c_void;
 
-use super::dtype::RlmeshDType;
+use super::dtype::RLMeshDType;
 use crate::abi::status::guard_value;
 
 /// Host CPU device (`kDLCPU`).
@@ -24,7 +24,7 @@ pub const RLMESH_TENSOR_FLAG_READ_ONLY: u64 = 1;
 /// reference, so writing through it would be UB. A producer (`rlmesh_value_box`)
 /// only reads it, so the same `const` pointer serves both directions.
 #[repr(C)]
-pub struct RlmeshTensor {
+pub struct RLMeshTensor {
     /// Element 0, read-only (aligned, but do not assume 256-byte alignment).
     pub data: *const c_void,
     pub ndim: i32,
@@ -32,23 +32,23 @@ pub struct RlmeshTensor {
     pub shape: *const i64,
     /// Element-count strides, or NULL for row-major contiguous.
     pub strides: *const i64,
-    pub dtype: RlmeshDType,
+    pub dtype: RLMeshDType,
     pub device_type: i32,
     pub device_id: i32,
     pub flags: u64,
     /// Producer-owned context dropped by `deleter`; NULL for a borrowed view.
     pub manager_ctx: *mut c_void,
     /// Releases `manager_ctx` only (never frees `self`); NULL for a borrowed view.
-    pub deleter: Option<unsafe extern "C" fn(*mut RlmeshTensor)>,
+    pub deleter: Option<unsafe extern "C" fn(*mut RLMeshTensor)>,
 }
 
 /// Release a tensor's backing resource. A no-op for a borrowed view (NULL
-/// `deleter`). Never frees the `RlmeshTensor` itself.
+/// `deleter`). Never frees the `RLMeshTensor` itself.
 ///
 /// # Safety
-/// `tensor` must be a valid pointer to an `RlmeshTensor` this thread owns.
+/// `tensor` must be a valid pointer to an `RLMeshTensor` this thread owns.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_tensor_release(tensor: *mut RlmeshTensor) {
+pub unsafe extern "C" fn rlmesh_tensor_release(tensor: *mut RLMeshTensor) {
     guard_value((), || {
         if tensor.is_null() {
             return;

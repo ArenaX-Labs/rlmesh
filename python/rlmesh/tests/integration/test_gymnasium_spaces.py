@@ -29,6 +29,30 @@ def test_default_gymnasium_text_imports_as_unrestricted_rlmesh_text() -> None:
     assert space.contains("pick up the object!")
 
 
+def test_gymnasium_text_with_zero_min_length_roundtrips() -> None:
+    gymnasium = pytest.importorskip("gymnasium")
+    from rlmesh import spaces
+
+    source = gymnasium.spaces.Text(max_length=8, min_length=0)
+
+    space = spaces.from_gymnasium_space(source)
+
+    assert isinstance(space, spaces.Text)
+    assert space.min_length == 0
+    assert space.contains("")
+    restored = spaces.to_gymnasium_space(space)
+    assert isinstance(restored, gymnasium.spaces.Text)
+    assert restored.min_length == 0
+    assert restored.contains("")
+
+
+def test_text_rejects_negative_min_length() -> None:
+    from rlmesh import spaces
+
+    with pytest.raises(ValueError, match="min_length"):
+        spaces.Text(8, min_length=-1)
+
+
 def test_gymnasium_box_roundtrip_preserves_stable_shape_dtype_and_bounds() -> None:
     gymnasium = pytest.importorskip("gymnasium")
     from rlmesh import spaces

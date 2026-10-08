@@ -18,7 +18,8 @@
 //! **Kinds are closed.** A role is `<kind>/<name>` and the kind is one of
 //! [`KINDS`]; any other prefix is refused at authoring, join and resolve (a
 //! newer peer's spec still parses and relays). `x/` stays the escape for a
-//! whole role. A role with no `/` names no kind and stays ad-hoc.
+//! whole role. A role with no `/` names no kind and stays ad-hoc (still
+//! accepted, but nudged toward a kind prefix or `x/`).
 //!
 //! **Parts, not suffixes.** A repeated role carries a `part` on the leaf
 //! ([`parts`](super::parts)); the role name itself never repeats.
@@ -44,10 +45,31 @@ pub fn is_known_kind(role: &str) -> bool {
 pub fn check_role(role: &str) -> Result<(), String> {
     if !is_known_kind(role) {
         return Err(format!(
-            "role {role:?} carries a kind this core does not define; the kinds are {KINDS:?}              (or the x/ escape for the whole role)"
+            "role {role:?} carries a kind this core does not define; the kinds are {KINDS:?}. \
+             Use one of them, or prefix a deliberately non-standard role with the x/ escape \
+             (e.g. x/target_pos)"
         ));
     }
     Ok(())
+}
+
+/// Whether `role` names no kind at all (no `/`). Such a role still passes
+/// [`check_role`] -- older specs declare them -- but it sidesteps the kind
+/// check, so it draws [`kindless_hint`] wherever an ad-hoc role is nudged.
+pub fn is_kindless(role: &str) -> bool {
+    !role.contains('/')
+}
+
+/// The advisory clause for a kind-less role, or `None` when `role` names a
+/// kind. Reads as a sentence on its own; callers append it to their message.
+pub fn kindless_hint(role: &str) -> Option<String> {
+    is_kindless(role).then(|| {
+        format!(
+            "{role:?} names no kind, so the closed-kind check never sees it: prefix it with \
+             one of {KINDS:?}, or with the x/ escape if it is deliberately non-standard \
+             (e.g. x/{role})"
+        )
+    })
 }
 
 /// How a registered role constrains the dim of the leaf that declares it.
@@ -125,7 +147,7 @@ pub fn is_sanctioned_role(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{DimLaw, KINDS, check_role, is_known_role, role_def};
+    use super::{DimLaw, KINDS, check_role, is_known_role, kindless_hint, role_def};
 
     /// The raw-quantity law as data: every registered role, each a quantity a
     /// sensor reads or a controller takes verbatim. Adding a role means adding
@@ -204,6 +226,21 @@ mod tests {
         }
         let err = check_role("audio/mic").unwrap_err();
         assert!(err.contains("kind this core does not define"), "{err}");
+        assert!(err.contains("e.g. x/target_pos"), "{err}");
+        assert!(!err.contains("  "), "{err:?}");
+    }
+
+    #[test]
+    fn kindless_roles_draw_a_hint_and_kinded_ones_do_not() {
+        let hint = kindless_hint("bare").expect("a kind-less role is hinted");
+        assert!(
+            hint.contains("names no kind") && hint.contains("e.g. x/bare"),
+            "{hint}"
+        );
+        assert!(!hint.contains("  "), "{hint:?}");
+        for role in ["proprio/eef_pos", "x/anything", "audio/mic"] {
+            assert!(kindless_hint(role).is_none(), "{role}");
+        }
     }
 
     #[test]

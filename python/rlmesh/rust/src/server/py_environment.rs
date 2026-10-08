@@ -411,36 +411,50 @@ pub fn build_vector_server_env(env: Py<PyAny>, native_values: bool) -> PyResult<
 fn env_error_to_runtime_error(error: EnvError) -> EnvRuntimeError {
     match error.code {
         EnvErrorCode::InvalidAction => EnvRuntimeError::InvalidValue(error.message),
+        _ if error.is_recoverable => EnvRuntimeError::Recoverable(error.message),
         _ => EnvRuntimeError::Runtime(error.message),
     }
 }
 
+/// Whether a Python exception leaves the session usable: one that carries a
+/// truthy `is_recoverable` (`RecoverableEnvironmentException`, or an
+/// `EnvironmentException` re-raised from a remote env that was recoverable).
+fn py_err_is_recoverable(error: &PyErr) -> bool {
+    Python::attach(|py| {
+        error
+            .value(py)
+            .getattr("is_recoverable")
+            .and_then(|flag| flag.is_truthy())
+            .unwrap_or(false)
+    })
+}
+
 /// Run `work` under the GIL where `dispatch` says, mapping a lost reply or a
-/// `PyErr` through `into_err`. Wraps the boilerplate every
-/// reset/step/render/close body shares.
+/// `PyErr` through `into_err` (with whether the error is recoverable). Wraps
+/// the boilerplate every reset/step/render/close body shares.
 async fn spawn_py<T, E, W, M>(dispatch: Dispatch, phase: &str, work: W, into_err: M) -> Result<T, E>
 where
     T: Send + 'static,
     W: FnOnce(Python<'_>) -> PyResult<T> + Send + 'static,
-    M: Fn(String) -> E,
+    M: Fn(String, bool) -> E,
 {
     let result = match dispatch {
         Dispatch::Pinned => Python::attach(work),
         Dispatch::Pool => tokio::task::spawn_blocking(move || Python::attach(work))
             .await
-            .map_err(|e| into_err(format!("{phase} task panicked: {e}")))?,
+            .map_err(|e| into_err(format!("{phase} task panicked: {e}"), false))?,
         Dispatch::Foreground(jobs) => {
             let (reply, replied) = tokio::sync::oneshot::channel();
             jobs.send(Box::new(move || {
                 let _ = reply.send(Python::attach(work));
             }))
-            .map_err(|_| into_err(format!("{phase}: the serving thread has stopped")))?;
+            .map_err(|_| into_err(format!("{phase}: the serving thread has stopped"), false))?;
             replied
                 .await
-                .map_err(|_| into_err(format!("{phase}: the serving thread has stopped")))?
+                .map_err(|_| into_err(format!("{phase}: the serving thread has stopped"), false))?
         }
     };
-    result.map_err(|e: PyErr| into_err(format!("{phase} failed: {e}")))
+    result.map_err(|e: PyErr| into_err(format!("{phase} failed: {e}"), py_err_is_recoverable(&e)))
 }
 
 /// Reset `options` reached an env whose `reset` takes no such parameter; latched
@@ -496,8 +510,19 @@ fn set_reset_options(
     Ok(())
 }
 
-fn internal_env_err(message: String) -> EnvError {
-    EnvError::new(EnvErrorCode::Internal, message)
+fn internal_env_err(message: String, recoverable: bool) -> EnvError {
+    EnvError {
+        is_recoverable: recoverable,
+        ..EnvError::new(EnvErrorCode::Internal, message)
+    }
+}
+
+fn runtime_env_err(message: String, recoverable: bool) -> EnvRuntimeError {
+    if recoverable {
+        EnvRuntimeError::Recoverable(message)
+    } else {
+        EnvRuntimeError::Runtime(message)
+    }
 }
 
 impl PyEnvironment {
@@ -825,7 +850,7 @@ impl PyEnvironment {
                     EndpointPhases::from_durations(Duration::ZERO, user, encode),
                 ))
             },
-            EnvRuntimeError::Runtime,
+            runtime_env_err,
         )
         .await?;
         self.last_phases = phases;
@@ -954,7 +979,7 @@ impl PyEnvironment {
                     EndpointPhases::from_durations(decode, user, encode),
                 ))
             },
-            EnvRuntimeError::Runtime,
+            runtime_env_err,
         )
         .await?;
         self.last_phases = phases;
@@ -1016,7 +1041,7 @@ impl PyEnvironment {
 
                 Ok((None, EndpointPhases::default()))
             },
-            EnvRuntimeError::Runtime,
+            runtime_env_err,
         )
         .await?;
 
@@ -1048,7 +1073,7 @@ impl PyEnvironment {
                 let _ = call_guard.finish(0);
                 Ok(())
             },
-            EnvRuntimeError::Runtime,
+            runtime_env_err,
         )
         .await?;
 

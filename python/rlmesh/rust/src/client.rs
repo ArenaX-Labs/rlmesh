@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use image::ImageFormat;
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyTuple};
+use pyo3::types::{PyAny, PyDict, PyTuple};
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_methods_from_python, gen_stub_pyclass};
 #[cfg(feature = "stub-gen")]
@@ -49,6 +49,11 @@ fn shared_runtime() -> &'static tokio::runtime::Runtime {
     })
 }
 
+/// Info keys the client adds to every `reset`/`step` info dict the env did not
+/// already fill: `episode_ids` (the runtime-minted id per lane) on both, and
+/// `completed_episodes` (how many episodes ended on that step) on `step`.
+const RUNTIME_INFO_KEYS: [&str; 2] = ["episode_ids", "completed_episodes"];
+
 /// Shared core for single and vector env facades.
 struct ClientCore {
     client: RemoteVectorEnv,
@@ -59,6 +64,9 @@ struct ClientCore {
     profiler: Arc<ProfileCollector>,
     default_timeout: Option<Duration>,
     num_envs: usize,
+    /// Whether the env-shadows-a-runtime-info-key warning has been logged; it
+    /// fires once per client, not on every step.
+    warned_shadowed_info_key: bool,
 }
 
 impl ClientCore {
@@ -123,6 +131,7 @@ impl ClientCore {
             profiler,
             default_timeout,
             num_envs,
+            warned_shadowed_info_key: false,
         })
     }
 
@@ -133,6 +142,34 @@ impl ClientCore {
         } else {
             0
         }
+    }
+
+    /// Set one of the runtime's reserved info keys ([`RUNTIME_INFO_KEYS`]) on
+    /// `info`, unless the env already reported a value under that name: the
+    /// env's value wins (renaming the runtime keys would break readers), and the
+    /// first collision per client is logged so the shadowing is not silent.
+    fn insert_runtime_info<'py, V>(
+        &mut self,
+        info: &Bound<'py, PyDict>,
+        key: &'static str,
+        value: V,
+    ) -> PyResult<()>
+    where
+        V: IntoPyObject<'py>,
+    {
+        if !info.contains(key)? {
+            return info.set_item(key, value);
+        }
+        if !self.warned_shadowed_info_key {
+            self.warned_shadowed_info_key = true;
+            tracing::warn!(
+                address = %self.address,
+                "env info key {key:?} shadows the runtime-reserved info key of the same \
+                 name; keeping the env's value (reserved keys: {RUNTIME_INFO_KEYS:?}). \
+                 Rename the env's key to read the runtime's value. Logged once per client."
+            );
+        }
+        Ok(())
     }
 
     fn span(&self, name: &'static str) -> Option<tracing::span::EnteredSpan> {
@@ -476,9 +513,8 @@ client_class!(PyEnvClient, "env_client", "RemoteEnv", {
             None => py.None().bind(py).clone(),
         };
         let info = info_to_pydict(py, result.info.as_ref())?;
-        if !info.contains("episode_ids")? {
-            info.set_item("episode_ids", result.episode_ids.to_vec())?;
-        }
+        this.core
+            .insert_runtime_info(&info, "episode_ids", result.episode_ids.to_vec())?;
 
         let tuple = PyTuple::new(py, [obs.as_any(), info.as_any()])?;
         let _ = total_guard.finish(options_bytes + obs_bytes_len + info_bytes_len);
@@ -520,12 +556,12 @@ client_class!(PyEnvClient, "env_client", "RemoteEnv", {
             None => py.None().bind(py).clone(),
         };
         let info = info_to_pydict(py, result.info.as_ref())?;
-        if !info.contains("episode_ids")? {
-            info.set_item("episode_ids", result.episode_ids.to_vec())?;
-        }
-        if (terminated || truncated) && !info.contains("completed_episodes")? {
-            info.set_item("completed_episodes", 1)?;
-        }
+        this.core
+            .insert_runtime_info(&info, "episode_ids", result.episode_ids.to_vec())?;
+        // Present on every step (0 mid-episode), as on `RemoteVectorEnv`.
+        let completed = usize::from(terminated || truncated).max(result.completed_episodes.len());
+        this.core
+            .insert_runtime_info(&info, "completed_episodes", completed)?;
 
         let tuple = PyTuple::new(
             py,
@@ -570,9 +606,8 @@ client_class!(PyVectorEnvClient, "vector_env_client", "RemoteVectorEnv", {
             &this.core.observation_space,
         )?;
         let info = info_to_pydict(py, result.info.as_ref())?;
-        if !info.contains("episode_ids")? {
-            info.set_item("episode_ids", result.episode_ids)?;
-        }
+        this.core
+            .insert_runtime_info(&info, "episode_ids", result.episode_ids)?;
         Ok(PyTuple::new(py, [obs.as_any(), info.as_any()])?
             .into_any()
             .unbind())
@@ -607,12 +642,13 @@ client_class!(PyVectorEnvClient, "vector_env_client", "RemoteVectorEnv", {
         let terminated = vector_bool_to_py(py, &result.terminated)?;
         let truncated = vector_bool_to_py(py, &result.truncated)?;
         let info = info_to_pydict(py, result.info.as_ref())?;
-        if !info.contains("episode_ids")? {
-            info.set_item("episode_ids", result.episode_ids)?;
-        }
-        if !info.contains("completed_episodes")? {
-            info.set_item("completed_episodes", result.completed_episodes.len())?;
-        }
+        this.core
+            .insert_runtime_info(&info, "episode_ids", result.episode_ids)?;
+        this.core.insert_runtime_info(
+            &info,
+            "completed_episodes",
+            result.completed_episodes.len(),
+        )?;
 
         Ok(PyTuple::new(
             py,

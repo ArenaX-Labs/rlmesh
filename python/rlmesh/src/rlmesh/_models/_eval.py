@@ -13,6 +13,8 @@ names :class:`Session` resolves as module globals: connection/contract synthesis
 
 from __future__ import annotations
 
+import math
+import numbers
 import os
 import time
 import uuid
@@ -80,16 +82,96 @@ def _ema(prev: float, sample: float) -> float:
     return sample if prev <= 0.0 else 0.85 * prev + 0.15 * sample
 
 
+# Mirrors `EditionDefaults::success_info_keys` in crates/rlmesh-proto; keep in sync.
+_SUCCESS_INFO_KEYS = ("is_success", "success", "task_success")
+
+
+def _success_flag(value: object) -> bool | None:
+    """One info value as a task outcome, or ``None`` when its kind carries none.
+
+    Matches the native runtime (`success_from_final_info` in
+    crates/rlmesh-runtime `driver.rs`) over the value as it crosses the wire:
+    NumPy scalars and 0-d arrays unwrap to Python scalars first (as metadata
+    encoding does), then a bool is taken as-is and an integer or float is
+    true when non-zero. Any other kind -- a string, ``None``, a list -- is
+    skipped, so the next key decides.
+    """
+    for unwrap in ("tolist", "item"):
+        method: object = getattr(value, unwrap, None)
+        if callable(method):
+            value = method()
+            break
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, numbers.Integral):
+        return int(value) != 0
+    if isinstance(value, numbers.Real):
+        return float(value) != 0.0
+    return None
+
+
+def _nearest_rank(ordered: Sequence[float], percentile: float) -> float:
+    """Nearest-rank percentile of a sorted, non-empty sequence (the native rule)."""
+    return ordered[math.ceil((len(ordered) - 1) * percentile)]
+
+
+class _RunTelemetry:
+    """The per-op timing samples one :meth:`Session.run` measures, as telemetry rows.
+
+    The Python loop's twin of the native runtime's aggregator: every sample is a
+    client-observed wall time (``rpc.total``) under the same ``op`` / ``component``
+    names the native loop uses, so :meth:`RunResult.format_telemetry` reads the
+    same on both paths. Summarized with the native nearest-rank percentiles.
+    """
+
+    #: Row order: the model, then the env, then the loop around them.
+    _ORDER = ("model.predict", "env.reset", "env.step", "runner.round")
+
+    def __init__(self) -> None:
+        self._samples: dict[tuple[str, str], list[float]] = {}
+
+    def record(self, op: str, component: str, ms: float) -> None:
+        self._samples.setdefault((op, component), []).append(ms)
+
+    def rows(self) -> tuple[TelemetryRow, ...]:
+        def rank(key: tuple[str, str]) -> tuple[int, str]:
+            op = key[0]
+            return (
+                self._ORDER.index(op) if op in self._ORDER else len(self._ORDER),
+                op,
+            )
+
+        rows: list[TelemetryRow] = []
+        for op, component in sorted(self._samples, key=rank):
+            values = self._samples[(op, component)]
+            ordered = sorted(values)
+            rows.append(
+                TelemetryRow(
+                    op=op,
+                    component=component,
+                    metric="rpc.total",
+                    unit="ms",
+                    count=len(values),
+                    avg=sum(values) / len(values),
+                    p50=_nearest_rank(ordered, 0.50),
+                    p95=_nearest_rank(ordered, 0.95),
+                    p99=_nearest_rank(ordered, 0.99),
+                )
+            )
+        return tuple(rows)
+
+
 def _episode_success(info: Mapping[str, Any]) -> bool | None:
     """Read an env-reported task outcome from a step ``info`` (Gymnasium convention).
 
-    Returns the ``is_success`` / ``success`` flag when the env emits one, else
-    ``None``: the outcome is unknown, never inferred from ``terminated``.
+    Checks ``is_success``, ``success``, then ``task_success``; the first one
+    holding a bool, integer, or float decides (numbers by non-zero). Returns
+    ``None`` when none does: the outcome is unknown, never inferred from
+    ``terminated``.
     """
-    # Mirrors `EditionDefaults::success_info_keys` in crates/rlmesh-proto; keep in sync.
-    for key in ("is_success", "success", "task_success"):
-        if key in info:
-            return bool(info[key])
+    for key in _SUCCESS_INFO_KEYS:
+        if key in info and (flag := _success_flag(info[key])) is not None:
+            return flag
     return None
 
 
@@ -127,8 +209,9 @@ class EpisodeResult:
             ``max_episode_steps`` / ``max_episode_seconds`` cap, or the built-in
             step bound).
         success: The env-reported task outcome from the final step's ``info``
-            (Gymnasium's ``is_success`` / ``success`` key), or ``None`` when the
-            env emits no such signal. Distinct from ``terminated`` (which only
+            (``is_success``, ``success``, then ``task_success``; the first
+            holding a bool or number decides), or ``None`` when the env emits
+            no such signal. Distinct from ``terminated`` (which only
             says the episode reached a terminal state, not how it ended); an
             unknown outcome is never inferred from it.
         duration_s: Wall time from reset-return to episode end, in seconds.
@@ -165,7 +248,11 @@ class TelemetryRow:
     """One aggregated metric series from a :meth:`Model.run` eval.
 
     The runtime aggregates every measurement per ``(op, component, metric)``
-    over the whole run. ``rpc.total`` is the client-observed round trip of an
+    over the whole run. :meth:`Session.run` (the Python loop a served model or a
+    viewed run drives) reports the subset it can see from the client side under
+    the same names: ``rpc.total`` of ``model.predict`` (each predict that ran
+    the model; a replayed chunk step is not one), ``env.reset``, ``env.step``,
+    and ``runner.round``, with any ``View.step_hz`` pacing sleep left out. ``rpc.total`` is the client-observed round trip of an
     op; ``endpoint.total`` the peer's own handling wall, split by
     ``endpoint.decode`` / ``endpoint.user`` / ``endpoint.encode``;
     ``endpoint.queue`` the wait before the op's handler ran (the model's
@@ -210,8 +297,9 @@ class RunResult:
 
     episodes: tuple[EpisodeResult, ...] = ()
     #: The run's aggregated timing/size telemetry, one :class:`TelemetryRow`
-    #: per measured series. Populated by :meth:`Model.run`'s native loop;
-    #: empty on the :meth:`Session.run` path.
+    #: per measured series. The native :meth:`Model.run` loop reports every
+    #: series its peers stamp; :meth:`Session.run` reports its client-side
+    #: round trips (see :class:`TelemetryRow`).
     telemetry: tuple[TelemetryRow, ...] = ()
     #: Each distinct :class:`~rlmesh.adapters.Advisory` the runtime raised while
     #: relaying payloads between the env and the model; a ``"caution"`` marks
@@ -241,8 +329,9 @@ class RunResult:
     def success_rate(self) -> float | None:
         """Fraction of episodes the env reported as a success, or ``None``.
 
-        Counts the env-reported task outcome only (Gymnasium ``info["is_success"]``
-        / ``["success"]``, captured per episode in :attr:`EpisodeResult.success`).
+        Counts the env-reported task outcome only (the final step's
+        ``info["is_success"]`` / ``["success"]`` / ``["task_success"]``,
+        captured per episode in :attr:`EpisodeResult.success`).
         ``None`` when the run is empty or any episode lacks that signal: an
         unknown outcome is never inferred from ``terminated``. Read
         :attr:`EpisodeResult.terminated` yourself if a terminal state is the
@@ -260,7 +349,7 @@ class RunResult:
         (model forward, env step, serialization, queueing) without a profiler.
         """
         if not self.telemetry:
-            return "(no telemetry: populated by Model.run's native loop)"
+            return "(no telemetry recorded)"
         header = ("op", "metric", "unit", "count", "avg", "p50", "p95", "p99")
         rows = [
             (
@@ -643,6 +732,8 @@ class Session(Generic[ObsT, ActT]):
     _read_cache: dict[Any, Reader]
     _view_driver: ViewerDriver | None
     _workflow_edition: str | None
+    _telemetry: _RunTelemetry | None
+    _paced_s: float
 
     def __init__(self) -> None:
         raise TypeError(
@@ -767,6 +858,11 @@ class Session(Generic[ObsT, ActT]):
         #: a native ``PyViewer`` on the first fed frame; best-effort, never fatal.
         _view = resolve_view(view)
         self._view_driver = ViewerDriver(_view) if _view is not None else None
+        #: Per-op timing samples, collected only while `run` drives the session.
+        self._telemetry = None
+        #: Seconds the last `step` slept for `View.step_hz` pacing, so `run`
+        #: leaves the deliberate idle out of its step and round timings.
+        self._paced_s = 0.0
         return self
 
     def _new_replay(self) -> ChunkReplay:
@@ -950,7 +1046,12 @@ class Session(Generic[ObsT, ActT]):
                     "reset option (EnvFactory.reset_options); resetting without it.",
                     stacklevel=2,
                 )
+        t0 = time.perf_counter()
         obs, info = reset_env(self._client, seed, options)
+        if self._telemetry is not None:
+            self._telemetry.record(
+                "env.reset", "env", (time.perf_counter() - t0) * 1000.0
+            )
         if self._model_client is not None:
             # Mark a reset boundary on the served route; the seed rides too, as
             # the served model's context["episode_seed"] on every predict of
@@ -981,7 +1082,7 @@ class Session(Generic[ObsT, ActT]):
         if self._predict is RANDOM_SAMPLE:
             t0 = time.perf_counter()
             action = self._client.action_space.sample()
-            self._model_ms = _ema(self._model_ms, (time.perf_counter() - t0) * 1000.0)
+            self._record_predict((time.perf_counter() - t0) * 1000.0)
             return cast("ActT", action)
         if self._model_client is not None:
             # Served model: the server applies the adapter (and any chunk replay);
@@ -990,7 +1091,7 @@ class Session(Generic[ObsT, ActT]):
             bridge = self._bridge if self._bridge is not None else identity_bridge
             t0 = time.perf_counter()
             action = self._model_client.predict(bridge.encode(observation))
-            self._model_ms = _ema(self._model_ms, (time.perf_counter() - t0) * 1000.0)
+            self._record_predict((time.perf_counter() - t0) * 1000.0)
             return cast("ActT", bridge.decode(action))
         model_bridge = self._bridge if self._bridge is not None else self._env_bridge
         # Local mode always has a predict (only the served-model branch above lacks
@@ -1044,7 +1145,7 @@ class Session(Generic[ObsT, ActT]):
                 self._device,
                 predict_context,
             )
-            self._model_ms = _ema(self._model_ms, (time.perf_counter() - t0) * 1000.0)
+            self._record_predict((time.perf_counter() - t0) * 1000.0)
             return out
 
         # The replayed-step tick: a queued action still consumed an env step, so
@@ -1073,12 +1174,24 @@ class Session(Generic[ObsT, ActT]):
             return cast("ActT", from_value(action, self._env_bridge))
         return cast("ActT", raw_action)
 
+    def _record_predict(self, ms: float) -> None:
+        """Book one model forward: the HUD's smoothed model time and run telemetry."""
+        self._model_ms = _ema(self._model_ms, ms)
+        if self._telemetry is not None:
+            self._telemetry.record("model.predict", "model", ms)
+
     def step(self, action: ActT) -> tuple[ObsT, float, bool, bool, Mapping[str, Any]]:
-        """Apply one action to the env; record reward and termination."""
+        """Apply one action to the env; record reward and termination.
+
+        With a viewer paced by :attr:`View.step_hz <rlmesh.View.step_hz>`, returns
+        no sooner than the next step is due.
+        """
         self._ensure_connected()
         t0 = time.perf_counter()
         obs, reward, terminated, truncated, info = self._client.step(action)
         now = time.perf_counter()
+        if self._telemetry is not None:
+            self._telemetry.record("env.step", "env", (now - t0) * 1000.0)
         # env_ms = the simulator step alone; sps = realized throughput from the gap
         # between consecutive steps (model + env + overhead), skipping the first step
         # of an episode (no prior timestamp).
@@ -1106,6 +1219,9 @@ class Session(Generic[ObsT, ActT]):
         ):
             truncated = True
             self._truncated = True
+        self._paced_s = (
+            self._view_driver.pace() if self._view_driver is not None else 0.0
+        )
         return (
             cast("ObsT", obs),
             float(reward),
@@ -1250,6 +1366,8 @@ class Session(Generic[ObsT, ActT]):
         )
         results: list[EpisodeResult] = []
         run_end_error: BaseException | None = None
+        telemetry = _RunTelemetry()
+        self._telemetry = telemetry
         self._ep_total = n_episodes
         # Walk the benchmark's trials in order (episode i is trial base + i), but
         # only for an env that declared the option -- everyone else keeps today's
@@ -1269,6 +1387,7 @@ class Session(Generic[ObsT, ActT]):
                 # the declaration gates), matching the native loop's report.
                 self._trial = trial
                 ep_start = time.perf_counter()
+                round_start = ep_start
                 if hooks is not None:
                     hooks.on_episode_start(episode=i, seed=seed)
                 predict_total_ms = 0.0
@@ -1286,8 +1405,13 @@ class Session(Generic[ObsT, ActT]):
                     t1 = time.perf_counter()
                     obs, reward, terminated, truncated, last_info = self.step(action)
                     t2 = time.perf_counter()
+                    paced_ms = self._paced_s * 1000.0
                     predict_ms = (t1 - t0) * 1000.0
-                    step_ms = (t2 - t1) * 1000.0
+                    step_ms = (t2 - t1) * 1000.0 - paced_ms
+                    telemetry.record(
+                        "runner.round", "runner", (t2 - round_start) * 1000.0 - paced_ms
+                    )
+                    round_start = t2
                     predict_total_ms += predict_ms
                     step_total_ms += step_ms
                     # The step cap truncates at the capped step itself, so the
@@ -1337,15 +1461,17 @@ class Session(Generic[ObsT, ActT]):
                 if self._view_driver is not None and self._view_driver.quit_requested():
                     break
         finally:
+            self._telemetry = None
+            result = RunResult(episodes=tuple(results), telemetry=telemetry.rows())
             if hooks is not None:
                 try:
-                    hooks.on_run_end(RunResult(episodes=tuple(results)))
+                    hooks.on_run_end(result)
                 except BaseException as exc:
                     run_end_error = exc
             self._end_episode()
         if run_end_error is not None:
             raise run_end_error
-        return RunResult(episodes=tuple(results))
+        return result
 
     def close(self) -> None:
         """Close this session: served route (and owned source), connection, env.

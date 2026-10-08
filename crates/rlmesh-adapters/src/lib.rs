@@ -31,6 +31,7 @@ mod path;
 mod plans;
 mod resolver;
 pub mod roles;
+mod space_json;
 mod space_view;
 mod spec;
 mod stateful;
@@ -59,6 +60,9 @@ pub mod v1 {
         PreviousAction, ResolvedAdapter, StatePiece, StatePlan, TextPlan,
     };
     pub use crate::resolver::resolve;
+    pub use crate::space_json::{
+        SpaceJsonError, space_dtype_name, space_kind_name, space_spec_to_json,
+    };
     pub use crate::space_view::{SpaceView, SpaceViewKind};
     pub use crate::spec::{
         Action, ActionEncoding, Actuator, Attr, CHANNEL_ORDERS, CROP_MODES, ConcatPart, Custom,

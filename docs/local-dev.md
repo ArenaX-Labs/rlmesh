@@ -67,7 +67,7 @@ mise run test:python:unit
 mise run test:python:integration
 ```
 
-On `uv run`, uv rebuilds the native extension when Rust sources change; the git hooks installed by `setup:hooks` rebuild it on checkout and merge. See [testing](testing.md) for the full test layering.
+On `uv run`, uv rebuilds the native extension when Rust sources change; the git hooks installed by `setup:hooks` rebuild it on checkout and merge. Otherwise the editable install keeps loading the last in-tree build: when a source build was stamped from a commit other than the checkout's HEAD, rlmesh warns once, on first use of the native core, to run `mise run build:python:develop` (set `RLMESH_STALE_CHECK=0` to skip the check; installed wheels are never checked). See [testing](testing.md) for the full test layering.
 
 ## Worktrees and Limited Compute
 
@@ -77,7 +77,7 @@ The repository is set up for several worktrees (and coding agents) sharing one m
 - **Affected tests.** `mise run test:affected` runs Rust tests (under [nextest](https://nexte.st)) for crates changed since `origin/main` plus every crate that depends on them, and the Python tests when Python sources or the extension crate are affected. Pass `-- --base <ref>` to compare elsewhere, or `-- --dry-run` to print the selection.
 - **Heavy-job queue.** `mise run dev:heavy -- <command>` runs a command under a machine-wide lock, so two full builds never compete for memory. A waiting job prints which command holds the lock.
 - **Compile cache.** Every `rustc` call goes through [sccache](https://github.com/mozilla/sccache) (`RUSTC_WRAPPER` in `mise.toml`). By default it caches on local disk, shared by all worktrees. With `RLMESH_BUILDER=depot` in your mise environment (for example `~/.config/mise/config.toml`) and a `depot login`, it uses Depot Cache instead, the same cache CI's Depot runners use. Run `sccache --show-stats` to see hit rates, and set `RUSTC_WRAPPER = ""` in `mise.local.toml` to opt out.
-- **Remote CI.** `mise run ci:remote` runs the CI `Fast Checks` job on Depot compute with your local changes uploaded as a patch, so the full `test:ci` gate runs without pushing and without loading this machine. Extra arguments go to `depot ci run` (for example `-- --ssh` to open a shell on the job's sandbox). It needs `depot login` and an organization with Depot CI enabled for this repository.
+- **Remote CI.** `mise run ci:remote` runs the CI `Fast Checks` job on Depot compute with your local changes uploaded as a patch, so the full `test:ci` gate runs without pushing and without loading this machine. Extra arguments go to `depot ci run` (for example `-- --ssh` to open a shell on the job's sandbox). It needs the `depot` CLI, which mise does not install (see [Depot's installation guide](https://depot.dev/docs/cli/installation)), a `depot login`, and an organization with Depot CI enabled for this repository.
 
 uv uses one per-user cache (`~/.cache/uv`) for every worktree and hardlinks from it, so syncing a new worktree is fast.
 
@@ -103,6 +103,15 @@ Build the linux-glibc wheel pair consumed by container images (skips when the wh
 ```bash
 mise run build:python:docker
 ```
+
+### Dev Builds and the Dev Cohort
+
+A build from this checkout is a **dev build**: `crates/rlmesh-proto/build.rs` stamps its workflow edition with a dev cohort, `<base>-dev.<git>`, where `<git>` is the 12-character HEAD sha, suffixed `.dirty.<fingerprint>` (a hash of `git diff HEAD` plus untracked files) when the tree has uncommitted changes. `rlmesh.build_info()` reports it as `workflow_edition`, with `build_source == "git"`. A dev build offers only that cohort: it drops the sealed current edition from its offer so a moving build never claims the release contract (see [workflow editions](editions/index.md#negotiation)).
+
+So two dev artifacts interoperate only when they were built from the identical tree state. This bites when the two sides of a session come from separate builds, for example a C or C++ env linked against `rlmesh-capi` and the editable Python extension, or an env server built before you edited a file and a runtime built after. The build script reruns only when HEAD, `rlmesh.toml`, the protos, or `RLMESH_RELEASE_BUILD` change, so even an artifact that cargo considers fresh can carry an older dirty fingerprint. The session then fails at the runtime's floor with `no mutual workflow edition`, and the message ends with a hint naming the remedy:
+
+- Rebuild both sides from the same tree state (commit or stash first, then rebuild each artifact).
+- Or build both with `RLMESH_RELEASE_BUILD=1`, which stamps the release cohort instead, so both sides speak the sealed edition however dirty the checkout is. Set it for every build that takes part, for example `RLMESH_RELEASE_BUILD=1 cargo build -p rlmesh-capi --release` and `RLMESH_RELEASE_BUILD=1 mise run build:python:develop`. `examples/chrono/demo.sh` does this.
 
 ## Docs
 

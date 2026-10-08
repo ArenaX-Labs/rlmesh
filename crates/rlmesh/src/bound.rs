@@ -10,9 +10,9 @@ use std::net::SocketAddr;
 use tokio::net::TcpListener;
 #[cfg(unix)]
 use tokio::net::UnixListener;
-use tokio_stream::wrappers::TcpListenerStream;
 #[cfg(unix)]
 use tokio_stream::wrappers::UnixListenerStream;
+use tonic::transport::server::TcpIncoming;
 
 use crate::{BindAddress, Error, Result};
 
@@ -86,8 +86,13 @@ impl BoundListener {
     ) -> Result<()> {
         match self {
             Self::Tcp(listener) => rlmesh_grpc::lifecycle::await_server_shutdown(
+                // Nagle off on accepted connections. A step response is one
+                // large write (an image observation is ~200 KB); with Nagle on,
+                // its tail waits for the client's delayed ACK and a loopback
+                // step stalls ~40 ms about one time in ten. tonic only warns
+                // when the option cannot be set; the connection still serves.
                 router.serve_with_incoming_shutdown(
-                    TcpListenerStream::new(listener),
+                    TcpIncoming::from(listener).with_nodelay(Some(true)),
                     shutdown.cancelled_owned(),
                 ),
                 shutdown.clone(),
