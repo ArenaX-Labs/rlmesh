@@ -1159,7 +1159,8 @@ class Space {
   }
 
   /// A Box with one bound pair for every element. A float dtype takes
-  /// +-INFINITY for an unbounded side; an integer one needs finite whole bounds.
+  /// +-INFINITY for an unbounded side; an integer one needs finite whole bounds
+  /// the dtype can represent (out of range is an error, never clamped).
   static Result<Space> box(RLMeshDType dtype, const std::vector<int64_t>& shape, double low,
                            double high) {
     return adopt(rlmesh_space_box(dtype, shape.data(), shape.size(), low, high));

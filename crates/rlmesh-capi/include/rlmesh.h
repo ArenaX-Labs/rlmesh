@@ -289,7 +289,10 @@ RLMESH_API RLMeshStatus rlmesh_space_copy_nvec(const RLMeshSpaceSpec* spec, int6
 /* Space builders (the env-authoring side). Each returns an OWNED space, or NULL
  * on error (detail in rlmesh_last_error_message()); free with rlmesh_space_free
  * unless a composite builder adopted it. A float Box takes +-INFINITY for an
- * unbounded side; an integer-dtype Box needs finite whole-number bounds. */
+ * unbounded side; an integer-dtype Box needs finite whole-number bounds the
+ * dtype can represent (none negative for an unsigned dtype): an out-of-range
+ * bound is RLMESH_ERR_INVALID_ARGUMENT, never clamped. A double holds every
+ * integer only up to 2^53: a larger 64-bit bound is the double's exact value. */
 RLMESH_API RLMeshSpaceSpec* rlmesh_space_box(RLMeshDType dtype, const int64_t* shape, size_t ndim,
                                              double low, double high);
 /* Per-element bounds: `low` / `high` each hold the shape's element count. */
