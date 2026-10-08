@@ -258,6 +258,48 @@ def test_partially_infinite_box_bounds_serialize_as_null() -> None:
     assert "Infinity" not in rlmesh.describe_json(_HalfBoundedFactory)
 
 
+def test_space_json_matches_space_dict_for_every_kind() -> None:
+    # The envelope's space JSON is rendered by the Rust function a native (C/C++)
+    # host uses; it must be spec_to_dict exactly, non-finite edges as null.
+    # Compared as sorted JSON text so an int/float drift (1 vs 1.0) fails too.
+    import json
+
+    import gymnasium as gym
+    import numpy as np
+    from rlmesh._describe import _finite
+    from rlmesh.spaces import from_gymnasium_space
+    from rlmesh.spaces._internals import spec_to_dict, spec_to_json
+
+    spaces = [
+        gym.spaces.Box(-1.0, 1.0, (3,), np.float32),
+        gym.spaces.Box(0, 255, (2, 2, 3), np.uint8),
+        gym.spaces.Box(
+            np.array([-np.inf, 0.0]), np.array([1.5, np.inf]), dtype=np.float64
+        ),
+        gym.spaces.Box(np.array([0, -3]), np.array([7, 3]), dtype=np.int32),
+        gym.spaces.Box(0, 2**64 - 1, (2,), np.uint64),
+        gym.spaces.Box(0, 1, (2,), cast("Any", np.bool_)),
+        gym.spaces.Discrete(4, start=-1),
+        gym.spaces.MultiBinary(5),
+        gym.spaces.MultiBinary([2, 3]),
+        gym.spaces.MultiDiscrete([2, 3]),
+        gym.spaces.MultiDiscrete(np.array([[2, 3], [4, 5]])),
+        gym.spaces.Text(8, min_length=1, charset="abc"),
+        gym.spaces.Dict(
+            {
+                "b": gym.spaces.Discrete(2),
+                "a": gym.spaces.Tuple(
+                    [gym.spaces.Box(-1, 1, (1,)), gym.spaces.Discrete(3)]
+                ),
+            }
+        ),
+    ]
+    for space in spaces:
+        spec = from_gymnasium_space(space).spec
+        expected = json.dumps(_finite(spec_to_dict(spec)), sort_keys=True)
+        assert json.dumps(json.loads(spec_to_json(spec)), sort_keys=True) == expected
+
+
 def test_model_envelope_omits_spaces() -> None:
     model = rlmesh.describe(_TinyModel)
     assert model["kind"] == "model"

@@ -4,21 +4,10 @@ use rlmesh_spaces::scalar::{Scalar, decode_scalars};
 use rlmesh_spaces::spaces::{SpaceKind, SpaceSpec};
 use rlmesh_spaces::{BoxBounds, BoxSpec, DType};
 
+pub(super) use rlmesh_adapters::v1::space_kind_name;
+
 use super::spec_view::PySpaceSpec;
 use crate::spaces::utils::dtype_name;
-
-pub(super) fn space_kind_name(space: &SpaceSpec) -> &'static str {
-    match space.spec.as_ref() {
-        Some(SpaceKind::Box(_)) => "box",
-        Some(SpaceKind::Discrete(_)) => "discrete",
-        Some(SpaceKind::MultiBinary(_)) => "multi_binary",
-        Some(SpaceKind::MultiDiscrete(_)) => "multi_discrete",
-        Some(SpaceKind::Text(_)) => "text",
-        Some(SpaceKind::Dict(_)) => "dict",
-        Some(SpaceKind::Tuple(_)) => "tuple",
-        None => "unknown",
-    }
-}
 
 pub(super) fn space_spec_to_pydict<'py>(
     py: Python<'py>,
