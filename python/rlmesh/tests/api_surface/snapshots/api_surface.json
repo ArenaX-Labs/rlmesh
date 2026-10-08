@@ -1305,7 +1305,7 @@
       },
       "trial_index": {
         "kind": "function",
-        "signature": "trial_index(options: Mapping[str, Any] | None) -> int | None",
+        "signature": "trial_index(options: Mapping[str, Any] | None, *, lane: int | None = None) -> int | None",
         "stability": "Stable"
       },
       "types": {
