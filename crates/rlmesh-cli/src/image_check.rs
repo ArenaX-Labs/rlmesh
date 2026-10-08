@@ -1229,7 +1229,11 @@ mod tests {
             .collect();
         assert_eq!(variant.len(), 2, "{report:#?}");
         assert!(
-            variant[0].contains("accel.vram_bytes \">=24000000000\" is not a positive integer")
+            variant[0].contains(
+                "accel.vram_bytes \">=24000000000\" is not a positive integer byte count \
+                 (write accel.vram: \"24G\")"
+            ),
+            "{variant:?}"
         );
         assert!(variant[1].contains("at most one may be"));
         assert!(

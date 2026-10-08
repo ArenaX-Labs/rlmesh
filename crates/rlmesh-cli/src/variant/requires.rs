@@ -6,16 +6,20 @@ use std::fmt;
 use serde_json::Value;
 
 use super::constraint::{Clause, dotted, parse_constraint};
+use super::quantity::{QuantityError, format_quantity, parse_quantity};
 
 /// The `requires` keys the platform matches hardware against.
-pub const REQUIRE_KEYS: [&str; 6] = [
+pub const REQUIRE_KEYS: [&str; 7] = [
     "accel.vendor",
     "accel.compute",
     "accel.gfx",
     "accel.cuda",
     "accel.driver",
+    "accel.vram",
     "accel.vram_bytes",
 ];
+/// The deprecated spelling of `accel.vram`: the minimum as integer bytes.
+pub const DEPRECATED_VRAM_KEY: &str = "accel.vram_bytes";
 /// The `accel.vendor` values.
 pub const VENDORS: [&str; 2] = ["nvidia", "amd"];
 /// The facet keys a declaration may use.
@@ -39,7 +43,7 @@ pub enum Requirement {
     Targets(Vec<String>),
     /// `accel.compute`, `accel.cuda`, `accel.driver`: every clause must hold.
     Version(Vec<Clause>),
-    /// `accel.vram_bytes`: a minimum per GPU.
+    /// `accel.vram`, or the deprecated `accel.vram_bytes`: a minimum per GPU.
     MinBytes(u64),
 }
 
@@ -57,13 +61,24 @@ impl fmt::Display for Requirement {
                     .collect();
                 f.write_str(&clauses.join(","))
             }
-            Self::MinBytes(bytes) => write!(f, ">={bytes}"),
+            Self::MinBytes(bytes) => write!(f, ">={}", format_quantity(*bytes)),
         }
     }
 }
 
-/// `requires` entries by key, in key order.
+/// `requires` entries by key, in key order; `accel.vram_bytes` is recorded
+/// as `accel.vram` (see [`requirement_key`]).
 pub type Requires = BTreeMap<String, Requirement>;
+
+/// The key a `requires` entry is recorded under: `accel.vram_bytes` is
+/// `accel.vram`, so one spelling overrides the other key by key.
+pub fn requirement_key(key: &str) -> &str {
+    if key == DEPRECATED_VRAM_KEY {
+        "accel.vram"
+    } else {
+        key
+    }
+}
 
 /// Render `requires` as `accel.cuda>=12.4, accel.vendor=nvidia`.
 pub fn format_requires(requires: &Requires) -> String {
@@ -130,6 +145,7 @@ pub fn parse_requirement(key: &str, value: &Value) -> Result<Requirement, String
                 )),
             }
         }
+        "accel.vram" => parse_vram(value),
         // The platform stores the minimum as an int64.
         "accel.vram_bytes" => value
             .as_i64()
@@ -139,12 +155,8 @@ pub fn parse_requirement(key: &str, value: &Value) -> Result<Requirement, String
             .ok_or_else(|| {
                 let hint = value
                     .as_str()
-                    .map(|raw| {
-                        format!(
-                            " (write the minimum as a JSON number: {})",
-                            raw.trim().trim_start_matches(">=").trim()
-                        )
-                    })
+                    .and_then(|raw| parse_quantity(raw.trim().trim_start_matches(">=").trim()).ok())
+                    .map(|bytes| format!(" (write accel.vram: \"{}\")", format_quantity(bytes)))
                     .unwrap_or_default();
                 format!("accel.vram_bytes {value} is not a positive integer byte count{hint}")
             }),
@@ -152,6 +164,57 @@ pub fn parse_requirement(key: &str, value: &Value) -> Result<Requirement, String
             "unknown key {key:?} (allowed: {})",
             REQUIRE_KEYS.join(", ")
         )),
+    }
+}
+
+/// `accel.vram`: a quantity string like `"16Gi"`, a positive whole number of
+/// bytes within the signed 64-bit range.
+fn parse_vram(value: &Value) -> Result<Requirement, String> {
+    let Some(raw) = value.as_str() else {
+        let hint = if value.is_number() {
+            "; write it as a quantity string, e.g. \"16Gi\""
+        } else {
+            ""
+        };
+        return Err(format!("accel.vram {value} is not a quantity string{hint}"));
+    };
+    parse_quantity(raw)
+        .map(Requirement::MinBytes)
+        .map_err(|error| match error {
+            QuantityError::Syntax => format!(
+                "accel.vram {value} is not a quantity like \"16Gi\" (digits with an optional \
+                 Ki, Mi, Gi, Ti, K, M, G or T suffix)"
+            ),
+            QuantityError::Zero => format!("accel.vram {value} is not a positive quantity"),
+            QuantityError::Fractional => {
+                format!("accel.vram {value} is not a whole number of bytes")
+            }
+            QuantityError::TooLarge => {
+                format!("accel.vram {value} is more than {} bytes", i64::MAX)
+            }
+        })
+}
+
+/// One `requires` map may spell the VRAM minimum one way only.
+fn vram_spelling_problems(keys: &BTreeSet<&str>) -> Vec<String> {
+    if keys.contains("accel.vram") && keys.contains(DEPRECATED_VRAM_KEY) {
+        vec!["set accel.vram or the deprecated accel.vram_bytes, not both".to_owned()]
+    } else {
+        Vec::new()
+    }
+}
+
+/// The deprecated `accel.vram_bytes`, with the quantity to write instead.
+pub(super) fn requires_warnings(raw: &Value) -> Vec<String> {
+    match raw
+        .get(DEPRECATED_VRAM_KEY)
+        .map(|value| parse_requirement(DEPRECATED_VRAM_KEY, value))
+    {
+        Some(Ok(Requirement::MinBytes(bytes))) => vec![format!(
+            "accel.vram_bytes is deprecated; write accel.vram: \"{}\"",
+            format_quantity(bytes)
+        )],
+        _ => Vec::new(),
     }
 }
 
@@ -177,7 +240,7 @@ pub(super) fn vendor_problems(keys: &BTreeSet<&str>, vendor: Option<&str>) -> Ve
         None => {
             if let Some(key) = NVIDIA_KEYS
                 .iter()
-                .chain(&["accel.gfx", "accel.vram_bytes"])
+                .chain(&["accel.gfx", "accel.vram", DEPRECATED_VRAM_KEY])
                 .find(|key| keys.contains(*key))
             {
                 problems.push(format!("{key} needs accel.vendor"));
@@ -187,7 +250,8 @@ pub(super) fn vendor_problems(keys: &BTreeSet<&str>, vendor: Option<&str>) -> Ve
     problems
 }
 
-/// Parse a `requires` object as written: every entry and the vendor rules.
+/// Parse a `requires` object as written: every entry, the VRAM spelling, and
+/// the vendor rules.
 pub(super) fn parse_requires(raw: &Value) -> (Requires, Vec<String>) {
     let Value::Object(entries) = raw else {
         return (
@@ -200,12 +264,13 @@ pub(super) fn parse_requires(raw: &Value) -> (Requires, Vec<String>) {
     for (key, value) in entries {
         match parse_requirement(key, value) {
             Ok(requirement) => {
-                requires.insert(key.clone(), requirement);
+                requires.insert(requirement_key(key).to_owned(), requirement);
             }
             Err(problem) => problems.push(problem),
         }
     }
     let keys: BTreeSet<&str> = entries.keys().map(String::as_str).collect();
+    problems.extend(vram_spelling_problems(&keys));
     problems.extend(vendor_problems(
         &keys,
         entries.get("accel.vendor").and_then(Value::as_str),
@@ -311,6 +376,21 @@ mod tests {
             ok("accel.vram_bytes", json!(i64::MAX)),
             Requirement::MinBytes(i64::MAX as u64)
         );
+        for (raw, bytes) in [
+            ("16Gi", 17_179_869_184),
+            ("24G", 24_000_000_000),
+            ("1.5Gi", 1_610_612_736),
+            ("512Mi", 536_870_912),
+            ("80000000000", 80_000_000_000),
+        ] {
+            assert_eq!(ok("accel.vram", json!(raw)), Requirement::MinBytes(bytes));
+        }
+        // Both spellings render as a quantity.
+        assert_eq!(
+            ok("accel.vram_bytes", json!(17179869184_u64)).to_string(),
+            ">=16Gi"
+        );
+        assert_eq!(ok("accel.vram", json!("24000M")).to_string(), ">=24G");
         assert_eq!(
             ok("accel.driver", json!("535.104.05")).to_string(),
             ">=535.104.5"
@@ -339,7 +419,44 @@ mod tests {
             (
                 "accel.vram_bytes",
                 json!(">=24000000000"),
-                "write the minimum as a JSON number: 24000000000",
+                "is not a positive integer byte count (write accel.vram: \"24G\")",
+            ),
+            (
+                "accel.vram_bytes",
+                json!("lots"),
+                "\"lots\" is not a positive integer byte count",
+            ),
+            (
+                "accel.vram",
+                json!(16),
+                "16 is not a quantity string; write it as a quantity string, e.g. \"16Gi\"",
+            ),
+            (
+                "accel.vram",
+                json!(["16Gi"]),
+                "[\"16Gi\"] is not a quantity string",
+            ),
+            (
+                "accel.vram",
+                json!("16 Gi"),
+                "is not a quantity like \"16Gi\"",
+            ),
+            ("accel.vram", json!("16gi"), "is not a quantity like"),
+            ("accel.vram", json!("16GB"), "is not a quantity like"),
+            ("accel.vram", json!("-1Gi"), "is not a quantity like"),
+            ("accel.vram", json!("1e9"), "is not a quantity like"),
+            ("accel.vram", json!(">=16Gi"), "is not a quantity like"),
+            ("accel.vram", json!(""), "is not a quantity like"),
+            ("accel.vram", json!("0"), "\"0\" is not a positive quantity"),
+            (
+                "accel.vram",
+                json!("1.5"),
+                "\"1.5\" is not a whole number of bytes",
+            ),
+            (
+                "accel.vram",
+                json!("9999999999Ti"),
+                "\"9999999999Ti\" is more than 9223372036854775807 bytes",
             ),
             ("accel.vram_bytes", json!(0), "not a positive integer"),
             ("accel.vram_bytes", json!(-1), "not a positive integer"),
@@ -374,6 +491,10 @@ mod tests {
             ["accel.vram_bytes needs accel.vendor"]
         );
         assert_eq!(
+            problems(json!({"accel.vram": "16Gi"})),
+            ["accel.vram needs accel.vendor"]
+        );
+        assert_eq!(
             problems(json!({"accel.vendor": "amd", "accel.cuda": ">=12", "accel.driver": "550"})),
             [
                 "accel.cuda is an NVIDIA requirement but accel.vendor is amd",
@@ -391,5 +512,51 @@ mod tests {
             .is_empty()
         );
         assert_eq!(problems(json!([])), ["requires is not an object"]);
+    }
+
+    #[test]
+    fn vram_is_spelled_one_way() {
+        let (requires, problems) = parse_requires(
+            &json!({"accel.vendor": "nvidia", "accel.vram": "16Gi", "accel.vram_bytes": 1}),
+        );
+        assert_eq!(
+            problems,
+            ["set accel.vram or the deprecated accel.vram_bytes, not both"]
+        );
+        assert!(!requires.contains_key("accel.vram_bytes"), "{requires:?}");
+        // The deprecated key is recorded, and rendered, as accel.vram.
+        let (requires, problems) =
+            parse_requires(&json!({"accel.vendor": "nvidia", "accel.vram_bytes": 16000000000_u64}));
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(
+            format_requires(&requires),
+            "accel.vendor=nvidia, accel.vram>=16G"
+        );
+    }
+
+    #[test]
+    fn the_deprecated_vram_key_warns_with_its_quantity() {
+        for (bytes, quantity) in [
+            (json!(16000000000_u64), "16G"),
+            (json!(17179869184_u64), "16Gi"),
+            (json!(24000000000_u64), "24G"),
+            (json!(123), "123"),
+        ] {
+            assert_eq!(
+                requires_warnings(&json!({"accel.vendor": "nvidia", "accel.vram_bytes": bytes})),
+                [format!(
+                    "accel.vram_bytes is deprecated; write accel.vram: \"{quantity}\""
+                )]
+            );
+        }
+        // A value the platform refuses is a failure, not a deprecation.
+        for raw in [
+            json!({"accel.vendor": "nvidia", "accel.vram": "16Gi"}),
+            json!({"accel.vram_bytes": 0}),
+            json!({"accel.vram_bytes": "16Gi"}),
+            json!([]),
+        ] {
+            assert!(requires_warnings(&raw).is_empty(), "{raw}");
+        }
     }
 }

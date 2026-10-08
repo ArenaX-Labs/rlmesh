@@ -224,6 +224,60 @@ mod tests {
     }
 
     #[test]
+    fn vram_renders_as_a_quantity_in_either_spelling() {
+        let mut registry = FakeRegistry::default();
+        for (tag, seed, requires) in [
+            (
+                "v3-new",
+                'n',
+                json!({"accel.vendor": "nvidia", "accel.vram": "80Gi"}),
+            ),
+            (
+                "v3-old",
+                'o',
+                json!({"accel.vendor": "nvidia", "accel.vram_bytes": 24000000000_u64}),
+            ),
+        ] {
+            registry.add(
+                &format!("reg.example/ns/pi0:{tag}"),
+                None,
+                seed,
+                oci_config(
+                    &[],
+                    MODEL,
+                    Some(json!({"schemaVersion": 1, "variant": {"key": tag,
+                        "facets": {"accel": "cuda"}, "requires": requires}})),
+                ),
+            );
+        }
+        let children = ["reg.example/ns/pi0:v3-new", "reg.example/ns/pi0:v3-old"]
+            .iter()
+            .map(|source| resolve_source(&registry, source).unwrap())
+            .collect();
+        let (variants, warnings, _) = check_variants(children);
+        assert!(
+            warnings.iter().any(|w| w.ends_with(
+                "v3-old: variant: requires accel.vram_bytes is deprecated; write accel.vram: \"24G\""
+            )),
+            "{warnings:?}"
+        );
+        let table = table(Style::for_terminal(false), &variants);
+        let requires: Vec<&str> = table
+            .lines()
+            .skip(1)
+            .filter_map(|line| line.split("  ").find(|cell| cell.contains("accel.vram")))
+            .collect();
+        assert_eq!(
+            requires,
+            [
+                "accel.vendor=nvidia, accel.vram>=80Gi",
+                "accel.vendor=nvidia, accel.vram>=24G"
+            ],
+            "{table}"
+        );
+    }
+
+    #[test]
     fn short_digests_are_twelve_hex_characters() {
         assert_eq!(short_digest(&digest('c')), "(cccccccccccc)");
         assert_eq!(short_digest("sha256:abc"), "(abc)");

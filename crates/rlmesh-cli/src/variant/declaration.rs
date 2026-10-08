@@ -5,7 +5,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Map, Value};
 
-use super::requires::{Requires, accel_vendor, parse_facets, parse_requires, valid_key};
+use super::requires::{
+    Requires, accel_vendor, parse_facets, parse_requires, requires_warnings, valid_key,
+};
 use crate::image_check::{ADDRESS_ENV, CheckReport};
 
 /// `variant.priority` lies in `[-MAX_PRIORITY, MAX_PRIORITY]`.
@@ -173,12 +175,17 @@ fn parse_variant(raw: &Map<String, Value>, report: &mut CheckReport) -> Variant 
             .failed
             .extend(problems.into_iter().map(|p| format!("variant: {p}")));
     }
-    if let Some(requires) = raw.get("requires") {
-        let (requires, problems) = parse_requires(requires);
+    if let Some(raw_requires) = raw.get("requires") {
+        let (requires, problems) = parse_requires(raw_requires);
         report.failed.extend(
             problems
                 .into_iter()
                 .map(|p| format!("variant: requires {p}")),
+        );
+        report.warnings.extend(
+            requires_warnings(raw_requires)
+                .into_iter()
+                .map(|w| format!("variant: requires {w}")),
         );
         variant.requires = Some(requires);
     }
@@ -247,13 +254,18 @@ fn parse_profile(index: usize, entry: &Value, report: &mut CheckReport) -> Optio
     if let Some(gpu) = raw.get("gpu") {
         profile.gpu_count = parse_gpu(&scope, gpu, report);
     }
-    if let Some(requires) = raw.get("requires") {
-        let (requires, problems) = parse_requires(requires);
+    if let Some(raw_requires) = raw.get("requires") {
+        let (requires, problems) = parse_requires(raw_requires);
         profile.requires = requires;
         report.failed.extend(
             problems
                 .into_iter()
                 .map(|p| format!("{scope} requires {p}")),
+        );
+        report.warnings.extend(
+            requires_warnings(raw_requires)
+                .into_iter()
+                .map(|w| format!("{scope} requires {w}")),
         );
     }
     profile.resources = raw.contains_key("resources");
@@ -469,6 +481,39 @@ mod tests {
                 json!({"variant": {"key": "a", "facets": {"accel": "cpu"}, "requires": {"accel.vendor": "nvidia"}}}),
                 vec!["facets.accel cpu contradicts requires accel.vendor nvidia"],
                 vec![],
+            ),
+            (
+                "deprecated vram key",
+                json!({"variant": {"key": "a", "requires": {"accel.vendor": "nvidia",
+                    "accel.vram_bytes": 16000000000_u64}}}),
+                vec![],
+                vec!["variant: requires accel.vram_bytes is deprecated; write accel.vram: \"16G\""],
+            ),
+            (
+                "vram quantity",
+                json!({"variant": {"key": "a", "requires": {"accel.vendor": "amd", "accel.vram": "192Gi"}}}),
+                vec![],
+                vec![],
+            ),
+            (
+                "vram as a number",
+                json!({"variant": {"key": "a", "requires": {"accel.vendor": "amd", "accel.vram": 16}}}),
+                vec![
+                    "variant: requires accel.vram 16 is not a quantity string; write it as a \
+                      quantity string, e.g. \"16Gi\"",
+                ],
+                vec![],
+            ),
+            (
+                "both vram spellings in a profile",
+                json!({"profiles": [{"key": "big", "default": true, "requires": {"accel.vendor": "nvidia",
+                    "accel.vram": "80Gi", "accel.vram_bytes": 85899345920_u64}}]}),
+                vec![
+                    "profiles: big: requires set accel.vram or the deprecated accel.vram_bytes, not both",
+                ],
+                vec![
+                    "profiles: big: requires accel.vram_bytes is deprecated; write accel.vram: \"80Gi\"",
+                ],
             ),
             (
                 "profiles not a list",
