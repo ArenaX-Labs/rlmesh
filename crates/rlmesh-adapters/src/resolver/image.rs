@@ -375,7 +375,8 @@ fn stack_window(model_input: &Image, at: &str) -> Result<Option<Vec<i32>>> {
         return Err(err(
             ErrorCode::Unsupported,
             format!(
-                "model input {at}: stack_pad only applies to a stacked image;                  set stack > 1 or drop stack_pad"
+                "model input {at}: stack_pad only applies to a stacked image; set stack > 1 or \
+                 drop stack_pad"
             ),
         ));
     }
@@ -387,7 +388,8 @@ fn stack_window(model_input: &Image, at: &str) -> Result<Option<Vec<i32>>> {
         return Err(err(
             ErrorCode::Unsupported,
             format!(
-                "model input {at}: offsets must be non-positive and strictly increasing,                  ending at 0 (the current frame), got {offsets:?}"
+                "model input {at}: offsets must be non-positive and strictly increasing, ending \
+                 at 0 (the current frame), got {offsets:?}"
             ),
         ));
     }
@@ -395,7 +397,8 @@ fn stack_window(model_input: &Image, at: &str) -> Result<Option<Vec<i32>>> {
         return Err(err(
             ErrorCode::Unsupported,
             format!(
-                "model input {at}: stack={} disagrees with {} offset(s) {offsets:?};                  a frame window declares both and they are never inferred from each other",
+                "model input {at}: stack={} disagrees with {} offset(s) {offsets:?}; a frame \
+                 window declares both and they are never inferred from each other",
                 model_input.stack,
                 offsets.len()
             ),
@@ -406,7 +409,8 @@ fn stack_window(model_input: &Image, at: &str) -> Result<Option<Vec<i32>>> {
         return Err(err(
             ErrorCode::Unsupported,
             format!(
-                "model input {at}: stack={} over offsets {offsets:?} spans {span} consecutive                  frames, more than the {MAX_STACK_SPAN} a window may hold",
+                "model input {at}: stack={} over offsets {offsets:?} spans {span} consecutive \
+                 frames, more than the {MAX_STACK_SPAN} a window may hold",
                 model_input.stack
             ),
         ));
@@ -496,9 +500,10 @@ fn resolve_fit(
                 set.wire_names()
             ),
             Some(_) => format!(
-                "model input {at}: every declared fit would upscale the env's \
-             {env_height}x{env_width} image to {target_height}x{target_width}; set allow_upscale \
-             or declare a fit that downscales (e.g. 'pad')"
+                "model input {at}: every declared fit would upscale {} to \
+                 {target_height}x{target_width}; declare a fit that downscales (e.g. 'pad'), or {}",
+                upscale_source(env_image, crop, env_height, env_width),
+                upscale_remedy(crop),
             ),
         };
         return Err(err(ErrorCode::Unsupported, message));
@@ -526,8 +531,9 @@ fn resolve_fit(
         return Err(err(
             ErrorCode::Unsupported,
             format!(
-                "model input {at}: target {target_height}x{target_width} upscales the env's \
-             {env_height}x{env_width} image; set allow_upscale to interpolate detail that is not there"
+                "model input {at}: target {target_height}x{target_width} upscales {}; {}",
+                upscale_source(env_image, crop, env_height, env_width),
+                upscale_remedy(crop),
             ),
         ));
     }
@@ -537,6 +543,41 @@ fn resolve_fit(
     // never happens. An unknown camera size keeps the declared mode, since the
     // aspect (and so the step) is decided per frame.
     Ok(if known { FitMode::Stretch } else { mode })
+}
+
+/// What the upscale guard measured, for its error: the env camera, or -- when
+/// the model crops -- the crop box, named against the camera it is cut from.
+fn upscale_source(
+    env_image: &EnvImage,
+    crop: Option<&CropPlan>,
+    source_height: u32,
+    source_width: u32,
+) -> String {
+    let camera = format!("the env's {}x{} camera", env_image.height, env_image.width);
+    match crop {
+        None => camera,
+        Some(crop) => {
+            let declared = match crop.area {
+                Some(area) => format!("crop_area={area}"),
+                None => format!("crop={}", crop.fraction),
+            };
+            format!(
+                "the {source_height}x{source_width} crop box the model's {declared} cuts from \
+                 {camera}"
+            )
+        }
+    }
+}
+
+/// How to clear the upscale guard. The knob lives on the *model's* Image
+/// input, not the env; the env's side of the fix is a larger camera.
+fn upscale_remedy(crop: Option<&CropPlan>) -> String {
+    let crop_less = if crop.is_some() { ", or crop less" } else { "" };
+    format!(
+        "set allow_upscale on the model's Image input (`adapt.Image(..., allow_upscale=True)`, \
+         JSON `\"allow_upscale\": true`) to interpolate detail that is not there, or have the \
+         env publish a larger camera{crop_less}"
+    )
 }
 
 #[cfg(test)]
@@ -616,7 +657,40 @@ mod image_resolve_tests {
         let env = env_image(128, 128);
         let error = plan(&model_image(256, 256, false), &images(&env)).expect_err("err");
         assert_eq!(error.code, ErrorCode::Unsupported);
-        assert!(error.message.contains("upscale"), "got: {}", error.message);
+        let message = &error.message;
+        // Actionable: the knob is on the model's Image input, or the env grows.
+        assert!(message.contains("the env's 128x128 camera"), "{message}");
+        assert!(message.contains("allow_upscale=True"), "{message}");
+        assert!(message.contains(r#""allow_upscale": true"#), "{message}");
+        assert!(message.contains("larger camera"), "{message}");
+        assert!(!message.contains("crop"), "{message}");
+        assert!(!message.contains("  "), "{message:?}");
+    }
+
+    #[test]
+    fn frame_window_errors_read_as_single_spaced_sentences() {
+        let env = env_image(8, 8);
+        let mut inert_pad = model_image(8, 8, false);
+        inert_pad.stack_pad = StackPad::Black;
+        let mut unordered = model_image(8, 8, false);
+        unordered.stack = 2;
+        unordered.offsets = Some(vec![0, -1]);
+        let mut disagreeing = model_image(8, 8, false);
+        disagreeing.stack = 3;
+        disagreeing.offsets = Some(vec![-1, 0]);
+        let mut too_wide = model_image(8, 8, false);
+        too_wide.stack = 2;
+        too_wide.offsets = Some(vec![-200, 0]);
+        for (model, expect) in [
+            (inert_pad, "set stack > 1 or drop stack_pad"),
+            (unordered, "strictly increasing, ending at 0"),
+            (disagreeing, "a frame window declares both"),
+            (too_wide, "consecutive frames, more than"),
+        ] {
+            let error = plan(&model, &images(&env)).expect_err("err");
+            assert!(error.message.contains(expect), "{}", error.message);
+            assert!(!error.message.contains("  "), "{:?}", error.message);
+        }
     }
 
     #[test]
@@ -695,6 +769,24 @@ mod image_resolve_tests {
         // Too short to crop-cover without upscaling -> falls back to pad.
         let small = env_image(50, 150);
         assert_eq!(plan(&model, &images(&small)).expect("ok").fit, FitMode::Pad);
+    }
+
+    #[test]
+    fn every_fit_upscaling_names_the_model_knob_and_the_env_camera() {
+        let mut model = model_image(100, 100, false);
+        model.fit = Some(AcceptSet::single(FitMode::Crop));
+        let error = plan(&model, &images(&env_image(50, 150))).expect_err("err");
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        let message = &error.message;
+        assert!(
+            message.contains("every declared fit would upscale the env's 50x150 camera"),
+            "{message}"
+        );
+        assert!(
+            message.contains("or set allow_upscale on the model's Image input"),
+            "{message}"
+        );
+        assert!(!message.contains("  "), "{message:?}");
     }
 
     #[test]
@@ -986,7 +1078,17 @@ mod image_resolve_tests {
         model.crop = Some(0.5);
         let error = plan(&model, &images(&env)).expect_err("err");
         assert_eq!(error.code, ErrorCode::Unsupported);
-        assert!(error.message.contains("upscale"), "got: {}", error.message);
+        let message = &error.message;
+        assert!(
+            message
+                .contains("the 6x6 crop box the model's crop=0.5 cuts from the env's 12x12 camera"),
+            "{message}"
+        );
+        assert!(
+            message.contains("allow_upscale=True") && message.contains("crop less"),
+            "{message}"
+        );
+        assert!(!message.contains("  "), "{message:?}");
         // Without the crop the same target is an honest downscale.
         assert!(plan(&model_image(8, 8, false), &images(&env)).is_ok());
     }

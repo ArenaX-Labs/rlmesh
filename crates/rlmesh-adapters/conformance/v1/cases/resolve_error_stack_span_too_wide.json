@@ -41,7 +41,7 @@
     }
   },
   "expect": {
-    "error_contains": "model input \"<root>\": stack=2 over offsets [-200, 0] spans 201 consecutive                  frames, more than the 128 a window may hold"
+    "error_contains": "model input \"<root>\": stack=2 over offsets [-200, 0] spans 201 consecutive frames, more than the 128 a window may hold"
   },
   "kind": "resolve",
   "model_spec": {

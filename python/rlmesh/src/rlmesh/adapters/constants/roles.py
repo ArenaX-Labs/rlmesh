@@ -1,8 +1,20 @@
 """Semantic role vocabulary for matching env features to model inputs.
 
-Roles are an open vocabulary: any string can be used as long as the env and
-model specs agree. The two domains below are the registry of well-known
-conventions that ship with RLMesh:
+A role is ``<kind>/<name>``, and the kinds are closed: ``image/``,
+``proprio/``, ``text/``, ``action/``, and ``command/``. Any other prefix is
+refused when a spec is authored, joined, or resolved. A role this registry
+does not list still resolves, but only when the env and model agree on its
+exact string, so the join nudges it toward a registered name.
+
+A deliberately non-standard role goes under the ``x/`` escape (for example
+``x/target_pos``): it is never nudged and passes the strict publish gate. A
+role with no ``/`` names no kind at all; it is still accepted, but it skips
+the kind check and draws an advisory recommending a kind prefix or ``x/``.
+
+There is no registered goal role yet: by convention, a goal or target
+position is ``x/target_pos``.
+
+The registry ships three domains:
 
 - Domain-agnostic roles (cameras, instruction text, joints).
 - Arm manipulation roles (end-effector pose, gripper, the six-axis wrench).
@@ -12,12 +24,11 @@ conventions that ship with RLMesh:
   deliberately unregistered (a real robot only has an estimate of it).
 
 Registry policy: a domain earns its roles here when its first real env/model
-pair lands; until then its specs use ad-hoc strings. Role strings are wire
+pair lands; until then its specs use ``x/`` roles. Role strings are wire
 format -- they are matched verbatim between independently authored specs and
-must never be renamed once released. Strings carry feature-kind prefixes
-(``proprio/``, ``action/``, ``image/``, ``text/``), not domain prefixes:
-domains sharing a role (e.g. ``proprio/joint_pos`` in both manipulation and
-locomotion) is intentional.
+must never be renamed once released. The prefix names a feature kind, not a
+domain: domains sharing a role (e.g. ``proprio/joint_pos`` in both
+manipulation and locomotion) is intentional.
 
 Width conventions: the author always pins ``dim`` explicitly; a registered role
 with a fixed canonical width (e.g. ``eef_pos``/``delta_eef_pos`` are 3-D
@@ -32,7 +43,7 @@ role, a model must name the part it wants. By convention
 ``eef_pos``/``delta_eef_pos`` are 3-D Cartesian; gripper widths vary by
 embodiment.
 
-Values are defined once, in the ``rlmesh-adapters`` crate (``v1/roles/``);
+Values are defined once, in the ``rlmesh-adapters`` crate (``src/roles/``);
 this module re-exports them through the native bindings.
 """
 
