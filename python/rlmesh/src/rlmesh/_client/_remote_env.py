@@ -89,7 +89,10 @@ class RemoteEnvBase(RemoteClientBase[ValueT, ActionT]):
             options: Optional reset options forwarded to the environment.
 
         Returns:
-            A decoded observation and reset info dictionary.
+            A decoded observation and reset info dictionary. Besides the env's
+            own keys, the info carries the runtime-reserved ``episode_ids``
+            (the runtime-minted episode id, as a one-element list). An env key
+            of the same name wins and shadows it; the client logs that once.
         """
         seeds = [seed] if seed is not None else None
         obs, info = self._client.reset(seeds=seeds, options=options)
@@ -103,6 +106,11 @@ class RemoteEnvBase(RemoteClientBase[ValueT, ActionT]):
 
         Returns:
             Observation, reward, terminated flag, truncated flag, and step info.
+            Besides the env's own keys, the info carries two runtime-reserved
+            keys on every step: ``episode_ids`` (the runtime-minted episode id,
+            as a one-element list) and ``completed_episodes`` (``1`` on the
+            step that ends an episode, else ``0``). An env key of the same name
+            wins and shadows the runtime's; the client logs that once.
         """
         obs, reward, terminated, truncated, info = self._client.step(
             self._bridge.encode(action)

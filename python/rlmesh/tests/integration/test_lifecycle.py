@@ -550,6 +550,62 @@ def test_client_preserves_env_provided_info_keys() -> None:
         server.shutdown()
 
 
+def test_client_logs_a_shadowed_runtime_info_key_once(
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    """An env key shadowing a runtime-reserved one is kept but logged, once."""
+    from rlmesh._rlmesh import PyEnvClient
+
+    env = InfoKeyEnv()
+    server = env_server(env)
+    server.start()
+    try:
+        client = PyEnvClient(server.address)
+        try:
+            client.reset()
+            client.step(0)
+            client.reset()
+            client.step(0)
+        finally:
+            client.close()
+    finally:
+        server.shutdown()
+
+    stderr = capfd.readouterr().err
+    assert stderr.count("shadows the runtime-reserved info key") == 1
+
+
+class _TwoStepEnv(TinyEnv):
+    """Env whose episodes end on the second step."""
+
+    def step(self, action: object):
+        self.step_count += 1
+        return 1, 1.0, self.step_count >= 2, False, {}
+
+
+def test_scalar_client_reports_completed_episodes_on_every_step() -> None:
+    """`completed_episodes` is present mid-episode (0) as on the vector client."""
+    from rlmesh._rlmesh import PyEnvClient
+
+    env = _TwoStepEnv()
+    server = env_server(env)
+    server.start()
+    try:
+        client = PyEnvClient(server.address)
+        try:
+            client.reset()
+            *_, mid_info = client.step(0)
+            *_, end_info = client.step(0)
+        finally:
+            client.close()
+    finally:
+        server.shutdown()
+
+    assert mid_info["completed_episodes"] == 0
+    assert end_info["completed_episodes"] == 1
+    assert len(cast("list[str]", mid_info["episode_ids"])) == 1
+
+
 def test_client_injects_episode_ids_when_env_omits_them() -> None:
     """When the env omits the key, rlmesh still injects its telemetry."""
     from rlmesh._rlmesh import PyEnvClient
