@@ -1,6 +1,7 @@
 #include "reach_env.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <sstream>
@@ -38,6 +39,12 @@ constexpr const char* kTags = R"({
     "clip": [-1.0, 1.0]
   }
 })";
+
+using Clock = std::chrono::steady_clock;
+
+double ms_since(Clock::time_point start) {
+  return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+}
 
 raytracer::Vec3 rt(const ChVector3d& v) { return {v.x(), v.y(), v.z()}; }
 
@@ -175,11 +182,16 @@ rlmesh::Result<rlmesh::StepOutput> IndustrialReach::step(std::optional<rlmesh::V
   if (!reachable(next)) next = command_;  // refuse to leave the workspace
   const int substeps =
       std::max(1, static_cast<int>(std::lround(options_.control_dt / options_.physics_dt)));
+  double ik_ms = 0, physics_ms = 0;
   for (int i = 1; i <= substeps; ++i) {
     const double blend = static_cast<double>(i) / substeps;
     const ChVector3d waypoint = command_ + (next - command_) * blend;
+    const auto ik_start = Clock::now();
     robot_->SetSetpoints(solve_ik(waypoint), system_->GetChTime());
+    ik_ms += ms_since(ik_start);
+    const auto physics_start = Clock::now();
     system_->DoStepDynamics(options_.physics_dt);
+    physics_ms += ms_since(physics_start);
   }
   command_ = next;
   ++steps_;
@@ -189,11 +201,16 @@ rlmesh::Result<rlmesh::StepOutput> IndustrialReach::step(std::optional<rlmesh::V
   const double dist = distance();
   success_ = dist < options_.success_radius;
   const bool truncated = !success_ && steps_ >= options_.max_steps;
+  const auto observe_start = Clock::now();
   auto observation = observe();
   if (!observation) return observation.error();
+  const double observe_ms = ms_since(observe_start);
+  // Where this step's wall time went, so a driver can profile the env.
   std::ostringstream info;
   info << "{\"is_success\": " << (success_ ? "true" : "false") << ", \"distance\": " << dist
-       << ", \"sim_time\": " << system_->GetChTime() << "}";
+       << ", \"sim_time\": " << system_->GetChTime() << ", \"substeps\": " << substeps
+       << ", \"physics_ms\": " << physics_ms << ", \"ik_ms\": " << ik_ms
+       << ", \"observe_ms\": " << observe_ms << "}";
   return rlmesh::StepOutput{observation.unwrap(), -dist + (success_ ? 1.0 : 0.0), success_,
                             truncated, info.str()};
 }
