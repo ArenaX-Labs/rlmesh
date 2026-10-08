@@ -630,8 +630,7 @@ pub fn parse_describe_label(raw: &str) -> Result<DescribeLabel, String> {
     })
 }
 
-/// Check the rlmesh labels' wrappers and read the describe label, and the
-/// package label's compute-variant blocks ([`crate::package`]). A missing
+/// Check the rlmesh labels' wrappers and read the describe label. A missing
 /// describe label is not a failure: the platform reads describe off the
 /// `rlmesh.serve` handshake instead.
 pub fn check_labels(config: &ImageConfig) -> (CheckReport, Option<DescribeLabel>) {
@@ -676,7 +675,6 @@ pub fn check_labels(config: &ImageConfig) -> (CheckReport, Option<DescribeLabel>
                             .unwrap_or(&serde_json::Value::Null)
                     ));
                 }
-                report.extend(crate::package::check_compute_blocks(&package, config));
             }
             Ok(_) => report
                 .failed
@@ -867,7 +865,8 @@ pub fn declared_workflow_edition(config: &ImageConfig) -> Option<Option<String>>
     })
 }
 
-/// Run every image-config check: platform, serve command, labels, and (when
+/// Run every image-config check: platform, serve command, labels, the compute
+/// variant ([`crate::package::check_variant`]: declared or inferred), and (when
 /// the describe label advertises editions) edition compatibility with
 /// `platform`, or a `not_checked` note when the caller has no platform offer
 /// to check against. A `--workflow-edition` or `ENV RLMESH_WORKFLOW_EDITION`
@@ -879,6 +878,7 @@ pub fn check_image(config: &ImageConfig, platform: Option<&SessionOffer>) -> Che
     let kind = describe.as_ref().and_then(|label| label.kind);
     report.extend(check_serve_command(config, kind));
     report.extend(labels);
+    report.extend(crate::package::check_variant(config));
     match describe {
         Some(mut label) => {
             let command = parse_serve_command(config);
@@ -1197,8 +1197,9 @@ mod tests {
             PACKAGE_LABEL.to_owned(),
             serde_json::json!({
                 "schemaVersion": 1,
-                "variant": {"key": "torch-cuda12", "requires": {"accel.vendor": "nvidia", "accel.cuda": ">12"}},
-                "profiles": [{"key": "osmesa"}, {"key": "egl"}],
+                "variant": {"key": "torch-cuda12", "requires": {"accel.vendor": "nvidia",
+                    "accel.cuda": ">=12.2", "accel.vram_bytes": ">=24000000000"}},
+                "profiles": [{"key": "osmesa", "default": true}, {"key": "egl", "default": true}],
             })
             .to_string(),
         );
@@ -1209,13 +1210,29 @@ mod tests {
             .filter(|m| m.starts_with("variant:") || m.starts_with("profiles:"))
             .collect();
         assert_eq!(variant.len(), 2, "{report:#?}");
-        assert!(variant[0].contains("comparator in \">12\" is not supported"));
-        assert!(variant[1].contains("no profile is marked"));
+        assert!(
+            variant[0].contains("accel.vram_bytes \">=24000000000\" is not a positive integer")
+        );
+        assert!(variant[1].contains("at most one may be"));
         assert!(
             report
                 .warnings
                 .iter()
-                .any(|m| m.contains("declare \"accel.cuda\": \">=12.4\"")),
+                .any(|m| m.contains("admits drivers older than the image's CUDA 12.4")),
+            "{report:#?}"
+        );
+        // An image without a variant block reports what the platform infers.
+        config.labels.clear();
+        let report = check_image(&config, None);
+        assert!(
+            report
+                .passed
+                .iter()
+                .any(|m| m.starts_with("variant: none declared; inferred from CUDA_VERSION=12.4.1")),
+            "{report:#?}"
+        );
+        assert!(
+            report.passed.iter().any(|m| m == "rows: default"),
             "{report:#?}"
         );
     }

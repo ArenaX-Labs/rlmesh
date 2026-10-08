@@ -10,7 +10,7 @@
 //! pinned by digest before the index is created, so a tag moving underneath a
 //! publish cannot swap a child.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::process::{Command, Stdio};
 
@@ -21,7 +21,7 @@ use crate::cli::PublishArgs;
 use crate::image_check::{
     self, CheckReport, DESCRIBE_LABEL, ImageConfig, Kind, PACKAGE_LABEL, parse_serve_command,
 };
-use crate::package::{self, ComputeBlocks};
+use crate::package::{self, ComputeBlocks, Requires};
 use crate::render::Style;
 
 /// The annotation BuildKit puts on an attestation manifest inside an index.
@@ -259,6 +259,19 @@ pub(crate) struct VariantImage {
     pub key: String,
     pub kind: Option<Kind>,
     pub blocks: ComputeBlocks,
+    /// The requires the platform records for the base row: declared, or
+    /// inferred from the image's markers.
+    pub requires: Requires,
+    pub requires_inferred: bool,
+    pub facets: BTreeMap<String, String>,
+    /// The row keys the platform derives (one per profile).
+    pub rows: Vec<String>,
+}
+
+impl VariantImage {
+    fn selectable(&self) -> bool {
+        package::selectable(&self.child.config.os, &self.child.config.architecture)
+    }
 }
 
 /// What the image serves: the describe label's kind, else the serve command's.
@@ -271,10 +284,20 @@ fn image_kind(config: &ImageConfig) -> Option<Kind> {
         .or_else(|| parse_serve_command(config).kind())
 }
 
+/// The version's default row: the first `linux/amd64` child, at its default
+/// profile, as `(variant index, row index)`.
+pub(crate) fn default_row(variants: &[VariantImage]) -> Option<(usize, usize)> {
+    variants
+        .iter()
+        .position(VariantImage::selectable)
+        .map(|index| (index, variants[index].blocks.default_profile().unwrap_or(0)))
+}
+
 /// Read and check each child's package label, and the set as a whole: every
-/// child needs a label with a `variant.key`, keys are unique, kinds agree.
-/// Returns the variants, the warnings worth printing, and every error found
-/// (all of them, so one run reports everything to fix).
+/// child needs a label with a `variant.key`, its declaration must pass the
+/// platform's checks, row keys are unique, kinds agree, and at least one
+/// child is `linux/amd64`. Returns the variants, the warnings worth printing,
+/// and every error found (all of them, so one run reports everything to fix).
 pub(crate) fn check_variants(
     children: Vec<Child>,
 ) -> (Vec<VariantImage>, Vec<String>, Vec<String>) {
@@ -314,21 +337,17 @@ pub(crate) fn check_variants(
                 package.get("schemaVersion").unwrap_or(&Value::Null)
             ));
         }
-        let report: CheckReport = package::check_compute_blocks(&package, &child.config);
+        let report: CheckReport = package::check_variant(&child.config);
         errors.extend(report.failed.iter().map(|m| format!("{source}: {m}")));
-        warnings.extend(
-            report
-                .warnings
-                .iter()
-                .filter(|m| !m.starts_with("variant: no key"))
-                .map(|m| format!("{source}: {m}")),
-        );
+        warnings.extend(report.warnings.iter().map(|m| format!("{source}: {m}")));
         let (blocks, _) = package::parse_compute_blocks(&package);
         let Some(key) = blocks.variant.as_ref().and_then(|v| v.key.clone()) else {
-            errors.push(format!(
-                "{source}: {PACKAGE_LABEL} declares no variant.key; each child of a version \
-                 is addressed by its key"
-            ));
+            if blocks.variant.is_none() {
+                errors.push(format!(
+                    "{source}: {PACKAGE_LABEL} declares no variant block; each child of a \
+                     version is addressed by its variant.key"
+                ));
+            }
             continue;
         };
         let kind = image_kind(&child.config);
@@ -338,31 +357,63 @@ pub(crate) fn check_variants(
                  run -m rlmesh.serve); the platform's probe decides it"
             ));
         }
-        if !child.config.architecture.is_empty() && child.config.architecture != "amd64" {
+        if !package::selectable(&child.config.os, &child.config.architecture) {
             warnings.push(format!(
-                "{source}: {} image; the platform runs linux/amd64 today",
+                "{source}: {} image; recorded with status excluded and never selected, since \
+                 the fleet runs linux/amd64",
                 child.platform
             ));
         }
+        let inferred = package::infer(&child.config);
+        let (requires, facets) = package::effective(&blocks, &inferred);
+        let requires_inferred = blocks
+            .variant
+            .as_ref()
+            .is_some_and(|variant| variant.requires.is_none());
+        let rows = blocks.row_keys(&key);
         variants.push(VariantImage {
             child,
             key,
             kind,
             blocks,
+            requires,
+            requires_inferred,
+            facets,
+            rows,
         });
     }
     let mut by_key: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    let mut by_row: BTreeMap<&str, Vec<&VariantImage>> = BTreeMap::new();
     for variant in &variants {
         by_key
             .entry(&variant.key)
             .or_default()
             .push(&variant.child.source);
+        for row in &variant.rows {
+            by_row.entry(row).or_default().push(variant);
+        }
     }
     for (key, sources) in by_key.iter().filter(|(_, sources)| sources.len() > 1) {
         errors.push(format!(
             "variant.key {key:?} is declared by {}; keys must be unique within a version",
             sources.join(" and ")
         ));
+    }
+    for (row, owners) in &by_row {
+        let keys: BTreeSet<&str> = owners.iter().map(|v| v.key.as_str()).collect();
+        // A shared variant.key was reported above; this is a profile row
+        // colliding with another child's key or row.
+        if owners.len() > 1 && keys.len() > 1 {
+            errors.push(format!(
+                "row key {row:?} is derived by {}; rows are <variant.key>-<profile.key>, so \
+                 rename a key",
+                owners
+                    .iter()
+                    .map(|v| v.child.source.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" and ")
+            ));
+        }
     }
     let mut by_kind: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for variant in &variants {
@@ -383,13 +434,19 @@ pub(crate) fn check_variants(
                 .join(" vs ")
         ));
     }
+    if !variants.is_empty() && default_row(&variants).is_none() {
+        errors.push(
+            "no child is linux/amd64, so nothing in this version can be scheduled".to_owned(),
+        );
+    }
     (variants, warnings, errors)
 }
 
 /// Read `--index-package`: a JSON object of version-level package data.
-/// `schemaVersion` defaults to 1; `variant` and `profiles` describe one
-/// image and belong in that image's label. Returns compact JSON.
-pub(crate) fn index_package(raw: &str, origin: &str) -> Result<String> {
+/// `schemaVersion` defaults to 1. The platform reads only the version-level
+/// keys off the index ([`package::VERSION_PACKAGE_KEYS`]); anything else is
+/// kept as written but warned about. Returns compact JSON and the warnings.
+pub(crate) fn index_package(raw: &str, origin: &str) -> Result<(String, Vec<String>)> {
     let mut value: Value =
         serde_json::from_str(raw).with_context(|| format!("{origin} is not valid JSON"))?;
     let Value::Object(package) = &mut value else {
@@ -402,15 +459,37 @@ pub(crate) fn index_package(raw: &str, origin: &str) -> Result<String> {
         Some(version) if version.as_u64() == Some(1) => {}
         Some(version) => bail!("{origin} schemaVersion {version} is not the supported version 1"),
     }
-    for field in ["variant", "profiles"] {
-        if package.contains_key(field) {
-            bail!(
-                "{origin} declares {field:?}, which describes one image; put it in that image's \
-                 {PACKAGE_LABEL} label instead"
-            );
-        }
-    }
-    Ok(serde_json::to_string(&value)?)
+    let warnings = package::index_annotation_warnings(package)
+        .into_iter()
+        .map(|warning| format!("{origin}: {warning}"))
+        .collect();
+    Ok((serde_json::to_string(&value)?, warnings))
+}
+
+/// Warn for each child that sets a version-level key differently from the
+/// index annotation, which wins on the platform.
+fn index_disagreements(annotation: &str, variants: &[VariantImage]) -> Vec<String> {
+    let Ok(Value::Object(index)) = serde_json::from_str::<Value>(annotation) else {
+        return Vec::new();
+    };
+    variants
+        .iter()
+        .filter_map(|variant| {
+            let child = package::package_object(&variant.child.config)?;
+            let differs: Vec<&str> = package::VERSION_PACKAGE_KEYS
+                .iter()
+                .copied()
+                .filter(|key| matches!((child.get(*key), index.get(*key)), (Some(a), Some(b)) if a != b))
+                .collect();
+            (!differs.is_empty()).then(|| {
+                format!(
+                    "{}: sets {} differently from the index annotation, which wins",
+                    variant.child.source,
+                    differs.join(", ")
+                )
+            })
+        })
+        .collect()
 }
 
 /// The full target references: TARGET, each `--tag` in its repository, then
@@ -470,11 +549,14 @@ pub(crate) fn publish_with(
     style: Style,
 ) -> Result<i32> {
     let (target, tags) = target_tags(args)?;
+    let mut warnings = Vec::new();
     let annotation = match &args.index_package {
         Some(path) => {
             let raw = std::fs::read_to_string(path)
                 .with_context(|| format!("reading {}", path.display()))?;
-            Some(index_package(&raw, &path.display().to_string())?)
+            let (annotation, index_warnings) = index_package(&raw, &path.display().to_string())?;
+            warnings.extend(index_warnings);
+            Some(annotation)
         }
         None => None,
     };
@@ -487,7 +569,11 @@ pub(crate) fn publish_with(
             Err(error) => errors.push(format!("{error:#}")),
         }
     }
-    let (variants, warnings, check_errors) = check_variants(children);
+    let (variants, check_warnings, check_errors) = check_variants(children);
+    warnings.extend(check_warnings);
+    if let Some(annotation) = &annotation {
+        warnings.extend(index_disagreements(annotation, &variants));
+    }
     errors.extend(check_errors);
 
     writeln!(
@@ -558,12 +644,18 @@ pub(crate) fn publish_with(
 
 fn write_table(stdout: &mut impl Write, style: Style, variants: &[VariantImage]) -> Result<()> {
     let headers = [
-        "VARIANT", "KIND", "PLATFORM", "PRIORITY", "FACETS", "REQUIRES", "PROFILES", "IMAGE",
+        "VARIANT", "KIND", "PLATFORM", "PRIORITY", "FACETS", "REQUIRES", "ROWS", "IMAGE",
     ];
+    let default = default_row(variants);
     let rows: Vec<[String; 8]> = variants
         .iter()
-        .map(|variant| {
-            let detail = variant.blocks.variant.clone().unwrap_or_default();
+        .enumerate()
+        .map(|(index, variant)| {
+            let priority = variant
+                .blocks
+                .variant
+                .as_ref()
+                .map_or(0, |declared| declared.priority);
             let or_dash = |value: String| {
                 if value.is_empty() {
                     "-".to_owned()
@@ -571,16 +663,39 @@ fn write_table(stdout: &mut impl Write, style: Style, variants: &[VariantImage])
                     value
                 }
             };
+            let requires = match (
+                package::format_requires(&variant.requires),
+                variant.requires_inferred,
+            ) {
+                (requires, _) if requires.is_empty() => "-".to_owned(),
+                (requires, true) => format!("{requires} (inferred)"),
+                (requires, false) => requires,
+            };
+            let row_keys = variant
+                .rows
+                .iter()
+                .enumerate()
+                .map(|(row, key)| {
+                    if default == Some((index, row)) {
+                        format!("{key}*")
+                    } else {
+                        key.clone()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
             [
                 variant.key.clone(),
                 variant.kind.map_or("?", Kind::name).to_owned(),
-                variant.child.platform.clone(),
-                detail
-                    .priority
-                    .map_or_else(|| "-".to_owned(), |p| p.to_string()),
-                or_dash(package::format_facets(&detail.facets)),
-                or_dash(package::format_requires(&detail.requires)),
-                or_dash(package::profile_summary(&variant.blocks.profiles)),
+                if variant.selectable() {
+                    variant.child.platform.clone()
+                } else {
+                    format!("{} (excluded)", variant.child.platform)
+                },
+                priority.to_string(),
+                or_dash(package::format_facets(&variant.facets)),
+                requires,
+                row_keys,
                 format!(
                     "{} {}",
                     variant.child.source,
@@ -612,6 +727,15 @@ fn write_table(stdout: &mut impl Write, style: Style, variants: &[VariantImage])
     writeln!(stdout, "{}", style.bold(&line(&header)))?;
     for row in &rows {
         writeln!(stdout, "{}", line(row))?;
+    }
+    if default.is_some() {
+        writeln!(
+            stdout,
+            "{}",
+            style.muted(
+                "* the version's default row: the first linux/amd64 child, at its default profile"
+            )
+        )?;
     }
     Ok(())
 }
@@ -736,7 +860,7 @@ mod tests {
                 &["CUDA_VERSION=12.4.1", "NVIDIA_REQUIRE_CUDA=cuda>=12.4"],
                 MODEL,
                 Some(json!({"schemaVersion": 1, "variant": {"key": "torch-cuda12",
-                    "facets": {"framework": "torch", "accel": "nvidia"},
+                    "facets": {"framework": "torch", "accel": "cuda"},
                     "requires": {"accel.vendor": "nvidia", "accel.cuda": ">=12.4"}, "priority": 10}})),
             ),
         );
@@ -859,7 +983,7 @@ mod tests {
         );
         let header = out.lines().find(|l| l.starts_with("VARIANT")).unwrap();
         for column in [
-            "KIND", "PLATFORM", "PRIORITY", "FACETS", "REQUIRES", "PROFILES", "IMAGE",
+            "KIND", "PLATFORM", "PRIORITY", "FACETS", "REQUIRES", "ROWS", "IMAGE",
         ] {
             assert!(header.contains(column), "{header}");
         }
@@ -868,8 +992,10 @@ mod tests {
             "model",
             "linux/amd64",
             "10",
-            "accel=nvidia, framework=torch",
+            "accel=cuda, framework=torch",
             "accel.cuda>=12.4",
+            // The version's default row: the first linux/amd64 child.
+            "torch-cuda12*",
         ] {
             assert!(row.contains(cell), "{cell:?} not in {row:?}");
         }
@@ -879,8 +1005,12 @@ mod tests {
         );
         let row = out.lines().find(|l| l.starts_with("torch-rocm6")).unwrap();
         assert!(row.contains("accel.gfx in [gfx942,gfx90a]"), "{row}");
+        assert!(row.contains("accel=rocm"), "inferred facet: {row}");
         let row = out.lines().find(|l| l.starts_with("jax")).unwrap();
-        assert!(row.contains("osmesa (default), egl"), "{row}");
+        // No requires declared and no markers: a CPU image, rows per profile.
+        assert!(row.contains("accel=cpu, framework=jax"), "{row}");
+        assert!(row.contains("jax-osmesa, jax-egl"), "{row}");
+        assert!(out.contains("* the version's default row"), "{out}");
         assert!(out.contains("(nothing pushed)"), "{out}");
         assert!(
             out.contains("application/vnd.oci.image.index.v1+json"),
@@ -996,8 +1126,8 @@ mod tests {
             "reg.example/ns/pi0:missing: not found",
             "reg.example/ns/pi0:nolabel: no dev.rlmesh.package label",
             "reg.example/ns/pi0:empty: no dev.rlmesh.package label",
-            "reg.example/ns/pi0:nokey: dev.rlmesh.package declares no variant.key",
-            "reg.example/ns/pi0:badreq: variant: requires accel.cuda comparator",
+            "reg.example/ns/pi0:nokey: dev.rlmesh.package declares no variant block",
+            "reg.example/ns/pi0:badreq: variant: requires accel.cuda needs accel.vendor",
             "variant.key \"torch-cuda12\" is declared by reg.example/ns/pi0:v3-cuda12 and reg.example/ns/pi0:dup",
             "mixed kinds: env (reg.example/ns/pi0:env) vs model (",
         ] {
@@ -1040,19 +1170,105 @@ mod tests {
     fn index_package_is_version_level_only() {
         assert_eq!(
             index_package(r#"{"checkpoints":[]}"#, "f").unwrap(),
-            r#"{"checkpoints":[],"schemaVersion":1}"#
+            (r#"{"checkpoints":[],"schemaVersion":1}"#.to_owned(), vec![])
         );
-        assert!(index_package(r#"{"schemaVersion":1}"#, "f").is_ok());
+        let (_, warnings) =
+            index_package(r#"{"rev":3,"variant":{"key":"a"},"tags":[]}"#, "f").unwrap();
+        assert_eq!(
+            warnings,
+            ["f: index annotation keys ignored (they belong on the child images): tags, variant"]
+        );
         for (raw, needle) in [
             ("[]", "must be a JSON object"),
             ("{", "not valid JSON"),
             (r#"{"schemaVersion":2}"#, "schemaVersion 2"),
-            (r#"{"variant":{"key":"a"}}"#, "declares \"variant\""),
-            (r#"{"profiles":[]}"#, "declares \"profiles\""),
         ] {
             let error = format!("{:#}", index_package(raw, "f").unwrap_err());
             assert!(error.contains(needle), "{raw}: {error}");
         }
+    }
+
+    #[test]
+    fn the_index_annotation_wins_over_children_and_is_warned_about() {
+        let mut registry = FakeRegistry::default();
+        registry.add(
+            "r/x:a",
+            None,
+            'a',
+            oci_config(
+                &[],
+                MODEL,
+                Some(json!({"schemaVersion": 1, "name": "old",
+                "variant": {"key": "a"}})),
+            ),
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let package = dir.path().join("version.json");
+        std::fs::write(&package, r#"{"name":"pi0","tags":["gpu"]}"#).unwrap();
+        let mut publish = args("r/x:v1", &["r/x:a"]);
+        publish.dry_run = true;
+        publish.index_package = Some(package);
+        let (result, out) = run(&registry, &publish);
+        assert_eq!(result.unwrap(), 0, "{out}");
+        assert!(
+            out.contains("index annotation keys ignored (they belong on the child images): tags"),
+            "{out}"
+        );
+        assert!(
+            out.contains("r/x:a: sets name differently from the index annotation, which wins"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn rows_are_unique_across_the_version_and_one_child_must_be_schedulable() {
+        let mut registry = FakeRegistry::default();
+        // "cuda12" with profile "egl" derives "cuda12-egl", another child's key.
+        registry.add(
+            "r/x:a",
+            None,
+            'a',
+            oci_config(
+                &[],
+                MODEL,
+                Some(json!({"schemaVersion": 1, "variant": {"key": "cuda12"},
+                "profiles": [{"key": "egl", "default": true}]})),
+            ),
+        );
+        registry.add(
+            "r/x:b",
+            None,
+            'b',
+            oci_config(
+                &[],
+                MODEL,
+                Some(json!({"schemaVersion": 1, "variant": {"key": "cuda12-egl"}})),
+            ),
+        );
+        let (result, _) = run(&registry, &args("r/x:v1", &["r/x:a", "r/x:b"]));
+        let error = format!("{:#}", result.unwrap_err());
+        assert!(
+            error.contains("row key \"cuda12-egl\" is derived by r/x:a and r/x:b"),
+            "{error}"
+        );
+
+        // Only an arm64 child: excluded, so nothing can be scheduled.
+        let mut arm: Value = serde_json::from_str(&oci_config(
+            &[],
+            MODEL,
+            Some(json!({"schemaVersion": 1, "variant": {"key": "arm"}})),
+        ))
+        .unwrap();
+        arm["architecture"] = Value::from("arm64");
+        registry.add("r/x:arm", None, 'r', arm.to_string());
+        let (result, out) = run(&registry, &args("r/x:v1", &["r/x:arm"]));
+        let error = format!("{:#}", result.unwrap_err());
+        assert!(error.contains("no child is linux/amd64"), "{error}");
+        assert!(
+            out.contains("linux/amd64") && out.contains("status excluded"),
+            "{out}"
+        );
+        assert!(out.contains("linux/arm64 (excluded)"), "{out}");
     }
 
     #[test]

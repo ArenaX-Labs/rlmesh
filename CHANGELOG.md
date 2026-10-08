@@ -8,12 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ### Added
 
-- `rlmesh registry publish TARGET SOURCE...` publishes a version with several compute variants: it assembles already-pushed per-variant images (a PyTorch CUDA build, a ROCm build, a JAX build) into one OCI image index and pushes it under the target tag, plus `--tag` and `--channel` tags. Each child must be one linux image whose `dev.rlmesh.package` label declares a unique `variant.key`, and all children must serve the same kind. Every problem is reported before anything is pushed. `--index-package FILE` sets version-level data as the index's `dev.rlmesh.package` annotation, and `--dry-run` prints the per-variant table and the index JSON. See [Publishing compute variants](docs/compute-variants.md).
-- `rlmesh check-image` validates the package label's `variant` and `profiles` blocks:
-  - the schema, and `requires` keys and comparators (`>=`, `<`, `=`, or a list)
-  - unique profile keys and exactly one default profile
-  - profile `requires` that contradict the variant's
-  - `requires` that disagree with the image's `CUDA_VERSION`, `NVIDIA_REQUIRE_CUDA`, or `ROCM_VERSION`
+- `rlmesh registry publish TARGET SOURCE...` publishes a version with several compute variants: it assembles already-pushed per-variant images (a PyTorch CUDA build, a ROCm build, a JAX build) into one OCI image index and pushes it under the target tag, plus `--tag` and `--channel` tags. Each child must be one linux image whose `dev.rlmesh.package` label declares a valid `variant` block. Variant and row keys must be unique, all children must serve the same kind, and at least one must be `linux/amd64`. Every problem is reported before anything is pushed. `--index-package FILE` sets version-level data as the index's `dev.rlmesh.package` annotation, and `--dry-run` prints the per-variant table and the index JSON. See [Publishing compute variants](docs/compute-variants.md).
+- `rlmesh check-image` checks an image's compute variant by the managed platform's rules:
+  - fails what the platform fails: keys (`^[a-z0-9][a-z0-9-]{0,31}$`), the `framework`/`accel`/`render` facets, `requires` constraints (comma-joined `>=`, `>`, `<=`, `<`, `==`, `=` clauses, a bare version meaning a minimum; `accel.vram_bytes` as integer bytes) and their vendor rules, `priority` in `[-1000, 1000]`, `gpu.count` up to 8, at most one default profile, and derived row keys
+  - warns where `requires` disagree with the image's `CUDA_VERSION`, `NVIDIA_REQUIRE_CUDA`, `ROCM_VERSION`, or describe `framework_versions`
+  - reports the requires the platform infers for an image without a variant block, and the row keys the image gets
 
 ### Fixed
 

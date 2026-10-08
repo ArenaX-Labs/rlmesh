@@ -10,33 +10,41 @@
 //! {
 //!   "schemaVersion": 1,
 //!   "variant": {
-//!     "key": "torch-cuda12",
-//!     "facets": {"framework": "torch", "accel": "nvidia"},
-//!     "requires": {"accel.vendor": "nvidia", "accel.cuda": ">=12.2"},
+//!     "key": "cuda12",
+//!     "facets": {"framework": "torch", "accel": "cuda"},
+//!     "requires": {"accel.vendor": "nvidia", "accel.cuda": ">=12.4"},
 //!     "priority": 10
 //!   },
 //!   "profiles": [
 //!     {"key": "osmesa", "default": true, "envVars": {"MUJOCO_GL": "osmesa"}},
-//!     {"key": "egl", "envVars": {"MUJOCO_GL": "egl"}, "gpu": {"count": 1},
-//!      "requires": {"accel.vendor": "nvidia"}}
+//!     {"key": "egl", "envVars": {"MUJOCO_GL": "egl"}, "gpu": {"count": 1}}
 //!   ]
 //! }
 //! ```
 //!
-//! Every field is optional. `facets` are free-form string tags; `requires`
-//! keys are the fixed set [`REQUIRE_KEYS`], each a comparator string (`>=X`,
-//! `<X`, `=X`, or a bare `X` meaning `=X`) or an array of bare values (set
-//! membership); a higher `priority` wins ties. The platform implements exactly
-//! this schema, so like [`crate::image_check`] the parsing rules and the
-//! report's message prefixes (`variant:`, `profiles:`) are a contract.
+//! Each block is optional; a `variant` block needs a `key`. `facets` are
+//! `framework` (a lowercase token), `accel` (`cpu`, `cuda`, `rocm`), and
+//! `render` (`osmesa`, `egl`, `none`). `requires` keys are the fixed set
+//! [`REQUIRE_KEYS`]: `accel.vendor` is `nvidia` or `amd`; `accel.compute`,
+//! `accel.cuda`, and `accel.driver` are comma-joined version clauses
+//! (`>=8.0,<10.0`, a bare version meaning a minimum); `accel.gfx` is a list of
+//! AMD targets; `accel.vram_bytes` is a minimum in integer bytes; every key but
+//! `accel.vendor` needs `accel.vendor`. A profile's `requires` and `facets`
+//! override the variant's key by key. An image without a variant block gets
+//! its requires inferred from its CUDA/ROCm markers ([`infer`]).
+//!
+//! The managed platform implements exactly these rules (its
+//! `variant_requires_schema`, `variant_requires_vs_env`, and row naming), so
+//! like [`crate::image_check`] the parsing rules, the row keys, and the
+//! report's message prefixes (`variant:`, `profiles:`, `rows:`) are a
+//! contract.
 
-use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use serde_json::{Map, Value};
 
-use crate::image_check::{ADDRESS_ENV, CheckReport, ImageConfig};
+use crate::image_check::{ADDRESS_ENV, CheckReport, DESCRIBE_LABEL, ImageConfig, PACKAGE_LABEL};
 
 /// The `requires` keys the platform matches hardware against.
 pub const REQUIRE_KEYS: [&str; 6] = [
@@ -47,55 +55,125 @@ pub const REQUIRE_KEYS: [&str; 6] = [
     "accel.driver",
     "accel.vram_bytes",
 ];
-/// The `accel.vendor` values the platform's hardware classes report.
-pub const KNOWN_VENDORS: [&str; 3] = ["nvidia", "amd", "intel"];
+/// The `accel.vendor` values.
+pub const VENDORS: [&str; 2] = ["nvidia", "amd"];
+/// The facet keys a declaration may use.
+pub const FACET_KEYS: [&str; 3] = ["framework", "accel", "render"];
+/// The `facets.accel` values: the accelerator stack an image is built for.
+pub const ACCEL_FACETS: [&str; 3] = ["cpu", "cuda", "rocm"];
+/// The `facets.render` values: the GL backend an environment renders with.
+pub const RENDER_FACETS: [&str; 3] = ["osmesa", "egl", "none"];
+/// The longest variant, profile, or row key.
+pub const MAX_KEY_LEN: usize = 32;
+/// `variant.priority` lies in `[-MAX_PRIORITY, MAX_PRIORITY]`.
+pub const MAX_PRIORITY: i64 = 1000;
+/// The most GPUs a profile may request.
+pub const MAX_PROFILE_GPUS: u64 = 8;
+/// The row key of an undeclared image.
+pub const DEFAULT_VARIANT_KEY: &str = "default";
+/// The package keys an index annotation may set for the whole version
+/// (besides `schemaVersion` and `rev`); the annotation wins over a child.
+pub const VERSION_PACKAGE_KEYS: [&str; 6] = [
+    "name",
+    "description",
+    "checkpoints",
+    "compatibility",
+    "capabilities",
+    "inputArtifacts",
+];
 
 const VARIANT_FIELDS: [&str; 4] = ["key", "facets", "requires", "priority"];
-const PROFILE_FIELDS: [&str; 6] = ["key", "default", "facets", "envVars", "gpu", "requires"];
+const PROFILE_FIELDS: [&str; 7] = [
+    "key",
+    "default",
+    "facets",
+    "envVars",
+    "gpu",
+    "requires",
+    "resources",
+];
+/// `requires` keys only an NVIDIA GPU has.
+const NVIDIA_KEYS: [&str; 3] = ["accel.compute", "accel.cuda", "accel.driver"];
 
-/// How a `requires` value compares against the hardware's.
+/// One comparator in a version clause.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Comparator {
-    /// `=X` or a bare `X`.
-    Eq,
-    /// `>=X`.
+    /// `>=X`, or a bare `X`.
     Ge,
+    /// `>X`.
+    Gt,
+    /// `<=X`.
+    Le,
     /// `<X`.
     Lt,
+    /// `==X` or `=X`.
+    Eq,
 }
 
 impl Comparator {
     fn symbol(self) -> &'static str {
         match self {
-            Self::Eq => "=",
             Self::Ge => ">=",
+            Self::Gt => ">",
+            Self::Le => "<=",
             Self::Lt => "<",
+            Self::Eq => "==",
         }
     }
+}
+
+/// One clause of a version constraint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Clause {
+    pub comparator: Comparator,
+    /// Up to three dotted numeric parts.
+    pub version: Vec<u64>,
 }
 
 /// One parsed `requires` entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Requirement {
-    /// A comparator string; the value is stored without its operator.
-    Compare(Comparator, String),
-    /// A string array: the hardware's value must be one of these.
-    OneOf(Vec<String>),
+    /// `accel.vendor`.
+    Vendor(String),
+    /// `accel.gfx`: the GPU's target must be one of these.
+    Targets(Vec<String>),
+    /// `accel.compute`, `accel.cuda`, `accel.driver`: every clause must hold.
+    Version(Vec<Clause>),
+    /// `accel.vram_bytes`: a minimum per GPU.
+    MinBytes(u64),
 }
 
 impl fmt::Display for Requirement {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Compare(comparator, value) => write!(f, "{}{value}", comparator.symbol()),
-            Self::OneOf(values) => write!(f, " in [{}]", values.join(",")),
+            Self::Vendor(vendor) => write!(f, "={vendor}"),
+            Self::Targets(targets) => write!(f, " in [{}]", targets.join(",")),
+            Self::Version(clauses) => {
+                let clauses: Vec<String> = clauses
+                    .iter()
+                    .map(|clause| {
+                        format!("{}{}", clause.comparator.symbol(), dotted(&clause.version))
+                    })
+                    .collect();
+                f.write_str(&clauses.join(","))
+            }
+            Self::MinBytes(bytes) => write!(f, ">={bytes}"),
         }
     }
+}
+
+fn dotted(version: &[u64]) -> String {
+    version
+        .iter()
+        .map(u64::to_string)
+        .collect::<Vec<_>>()
+        .join(".")
 }
 
 /// `requires` entries by key, in key order.
 pub type Requires = BTreeMap<String, Requirement>;
 
-/// Render `requires` as `accel.vendor=nvidia, accel.cuda>=12.2`.
+/// Render `requires` as `accel.cuda>=12.4, accel.vendor=nvidia`.
 pub fn format_requires(requires: &Requires) -> String {
     requires
         .iter()
@@ -104,7 +182,7 @@ pub fn format_requires(requires: &Requires) -> String {
         .join(", ")
 }
 
-/// Render facets as `framework=torch, accel=nvidia`.
+/// Render facets as `accel=cuda, framework=torch`.
 pub fn format_facets(facets: &BTreeMap<String, String>) -> String {
     facets
         .iter()
@@ -113,237 +191,278 @@ pub fn format_facets(facets: &BTreeMap<String, String>) -> String {
         .join(", ")
 }
 
-/// What kind of value a `requires` key compares.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Domain {
-    /// Equality and set membership only (`accel.vendor`, `accel.gfx`).
-    Text,
-    /// Dotted numeric versions, up to four parts (`8.0`, `12.2`, `535.104.05`).
-    Version,
-    /// A whole number of bytes.
-    Bytes,
+/// Parse a dotted numeric version of one to three parts.
+fn parse_version(raw: &str) -> Option<Vec<u64>> {
+    let parts: Vec<&str> = raw.split('.').collect();
+    if parts.len() > 3
+        || parts
+            .iter()
+            .any(|part| part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return None;
+    }
+    parts.iter().map(|part| part.parse().ok()).collect()
 }
 
-fn domain(key: &str) -> Option<Domain> {
+fn compare(left: &[u64], right: &[u64]) -> std::cmp::Ordering {
+    let len = left.len().max(right.len());
+    (0..len)
+        .map(|i| {
+            let a = left.get(i).copied().unwrap_or(0);
+            let b = right.get(i).copied().unwrap_or(0);
+            a.cmp(&b)
+        })
+        .find(|ordering| ordering.is_ne())
+        .unwrap_or(std::cmp::Ordering::Equal)
+}
+
+/// Parse a comma-joined version constraint: each clause an optional `>=`,
+/// `>`, `<=`, `<`, `==`, or `=` and a version; a bare version is a minimum.
+pub fn parse_constraint(raw: &str) -> Option<Vec<Clause>> {
+    if raw.trim().is_empty() {
+        return None;
+    }
+    raw.split(',')
+        .map(|clause| {
+            let clause = clause.trim();
+            let (comparator, rest) = [
+                (">=", Comparator::Ge),
+                ("<=", Comparator::Le),
+                ("==", Comparator::Eq),
+                ("=", Comparator::Eq),
+                (">", Comparator::Gt),
+                ("<", Comparator::Lt),
+            ]
+            .iter()
+            .find_map(|(symbol, comparator)| {
+                clause.strip_prefix(symbol).map(|rest| (*comparator, rest))
+            })
+            .unwrap_or((Comparator::Ge, clause));
+            Some(Clause {
+                comparator,
+                version: parse_version(rest.trim_start())?,
+            })
+        })
+        .collect()
+}
+
+/// The lowest version a constraint admits, from its clauses that bound from
+/// below (bare, `>=`, `>`, `==`); `None` when none does.
+fn constraint_floor(clauses: &[Clause]) -> Option<&[u64]> {
+    clauses
+        .iter()
+        .filter(|clause| !matches!(clause.comparator, Comparator::Lt | Comparator::Le))
+        .map(|clause| clause.version.as_slice())
+        .max_by(|a, b| compare(a, b))
+}
+
+/// Whether a constraint's upper bound already excludes `version`.
+fn caps_below(clauses: &[Clause], version: &[u64]) -> bool {
+    clauses.iter().any(|clause| match clause.comparator {
+        Comparator::Lt => compare(&clause.version, version).is_le(),
+        Comparator::Le => compare(&clause.version, version).is_lt(),
+        _ => false,
+    })
+}
+
+fn is_gfx_target(value: &str) -> bool {
+    value.strip_prefix("gfx").is_some_and(|hex| {
+        (3..=4).contains(&hex.len()) && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    })
+}
+
+/// Parse one `requires` entry, in the platform's words when it is refused.
+pub fn parse_requirement(key: &str, value: &Value) -> Result<Requirement, String> {
     match key {
-        "accel.vendor" | "accel.gfx" => Some(Domain::Text),
-        "accel.compute" | "accel.cuda" | "accel.driver" => Some(Domain::Version),
-        "accel.vram_bytes" => Some(Domain::Bytes),
+        "accel.vendor" => match value.as_str() {
+            Some(vendor) if VENDORS.contains(&vendor) => Ok(Requirement::Vendor(vendor.to_owned())),
+            _ => Err(format!("accel.vendor {value} is not \"nvidia\" or \"amd\"")),
+        },
+        "accel.compute" | "accel.cuda" | "accel.driver" => value
+            .as_str()
+            .and_then(parse_constraint)
+            .map(Requirement::Version)
+            .ok_or_else(|| format!("{key} {value} is not a version constraint like \">=12.1\"")),
+        "accel.gfx" => {
+            let targets: Option<Vec<String>> = value
+                .as_array()
+                .filter(|list| !list.is_empty())
+                .map(|list| {
+                    list.iter()
+                        .filter_map(|target| {
+                            target
+                                .as_str()
+                                .filter(|t| is_gfx_target(t))
+                                .map(str::to_owned)
+                        })
+                        .collect()
+                });
+            match (targets, value.as_array()) {
+                (Some(targets), Some(list)) if targets.len() == list.len() => {
+                    Ok(Requirement::Targets(targets))
+                }
+                (Some(_), Some(list)) => Err(format!(
+                    "accel.gfx entry {} is not a gfx target like \"gfx942\"",
+                    list.iter()
+                        .find(|target| !target.as_str().is_some_and(is_gfx_target))
+                        .unwrap_or(&Value::Null)
+                )),
+                _ => Err(format!(
+                    "accel.gfx {value} is not a non-empty list of gfx targets"
+                )),
+            }
+        }
+        "accel.vram_bytes" => value
+            .as_u64()
+            .filter(|bytes| *bytes > 0)
+            .map(Requirement::MinBytes)
+            .ok_or_else(|| {
+                let hint = value
+                    .as_str()
+                    .map(|raw| {
+                        format!(
+                            " (write the minimum as a JSON number: {})",
+                            raw.trim().trim_start_matches(">=").trim()
+                        )
+                    })
+                    .unwrap_or_default();
+                format!("accel.vram_bytes {value} is not a positive integer byte count{hint}")
+            }),
+        _ => Err(format!(
+            "unknown key {key:?} (allowed: {})",
+            REQUIRE_KEYS.join(", ")
+        )),
+    }
+}
+
+/// The vendor-coherence rules on one `requires` map: NVIDIA keys under `amd`,
+/// `accel.gfx` under `nvidia`, and any hardware key without a vendor.
+fn vendor_problems(keys: &BTreeSet<&str>, vendor: Option<&str>) -> Vec<String> {
+    let mut problems = Vec::new();
+    match vendor {
+        Some("amd") => {
+            for key in NVIDIA_KEYS.iter().filter(|key| keys.contains(*key)) {
+                problems.push(format!(
+                    "{key} is an NVIDIA requirement but accel.vendor is amd"
+                ));
+            }
+        }
+        Some("nvidia") => {
+            if keys.contains("accel.gfx") {
+                problems
+                    .push("accel.gfx is an AMD requirement but accel.vendor is nvidia".to_owned());
+            }
+        }
+        Some(_) => {}
+        None => {
+            if let Some(key) = NVIDIA_KEYS
+                .iter()
+                .chain(&["accel.gfx", "accel.vram_bytes"])
+                .find(|key| keys.contains(*key))
+            {
+                problems.push(format!("{key} needs accel.vendor"));
+            }
+        }
+    }
+    problems
+}
+
+/// Parse a `requires` object as written: every entry and the vendor rules.
+fn parse_requires(raw: &Value) -> (Requires, Vec<String>) {
+    let Value::Object(entries) = raw else {
+        return (
+            Requires::new(),
+            vec!["requires is not an object".to_owned()],
+        );
+    };
+    let mut requires = Requires::new();
+    let mut problems = Vec::new();
+    for (key, value) in entries {
+        match parse_requirement(key, value) {
+            Ok(requirement) => {
+                requires.insert(key.clone(), requirement);
+            }
+            Err(problem) => problems.push(problem),
+        }
+    }
+    let keys: BTreeSet<&str> = entries.keys().map(String::as_str).collect();
+    problems.extend(vendor_problems(
+        &keys,
+        entries.get("accel.vendor").and_then(Value::as_str),
+    ));
+    (requires, problems)
+}
+
+fn requires_vendor(requires: &Requires) -> Option<&str> {
+    match requires.get("accel.vendor") {
+        Some(Requirement::Vendor(vendor)) => Some(vendor),
         _ => None,
     }
 }
 
-/// A version or byte count as numeric parts; compared with zero padding, so
-/// `12` equals `12.0`.
-fn ordered(domain: Domain, value: &str) -> Option<Vec<u64>> {
-    match domain {
-        Domain::Text => None,
-        Domain::Version => {
-            let parts: Vec<&str> = value.split('.').collect();
-            if parts.len() > 4
-                || parts
-                    .iter()
-                    .any(|part| part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()))
-            {
-                return None;
-            }
-            parts.iter().map(|part| part.parse().ok()).collect()
-        }
-        Domain::Bytes => {
-            if !value.bytes().all(|b| b.is_ascii_digit()) {
-                return None;
-            }
-            value.parse().ok().map(|bytes| vec![bytes])
-        }
-    }
-}
-
-fn compare(left: &[u64], right: &[u64]) -> Ordering {
-    let len = left.len().max(right.len());
-    (0..len)
-        .map(|index| {
-            let a = left.get(index).copied().unwrap_or(0);
-            let b = right.get(index).copied().unwrap_or(0);
-            a.cmp(&b)
-        })
-        .find(|ordering| ordering.is_ne())
-        .unwrap_or(Ordering::Equal)
-}
-
-fn check_value(key: &str, domain: Domain, value: &str) -> Result<(), String> {
-    if value.is_empty() {
-        return Err(format!("{key} has an empty value"));
-    }
-    match domain {
-        Domain::Text if value.chars().any(char::is_whitespace) => {
-            Err(format!("{key} value {value:?} contains whitespace"))
-        }
-        Domain::Text => Ok(()),
-        Domain::Version => ordered(domain, value).map(|_| ()).ok_or_else(|| {
-            format!("{key} value {value:?} is not a dotted numeric version (e.g. 12.2)")
-        }),
-        Domain::Bytes => ordered(domain, value)
-            .map(|_| ())
-            .ok_or_else(|| format!("{key} value {value:?} is not a whole number of bytes")),
-    }
-}
-
-/// Parse one `requires` entry. Accepted comparators are exactly `>=`, `<`,
-/// and `=` (or none, meaning `=`); `accel.vendor` and `accel.gfx` take only
-/// equality or a list. A JSON number is refused rather than read as `=`, since
-/// `"accel.vram_bytes": 24000000000` almost always meant `>=`.
-pub fn parse_requirement(key: &str, value: &Value) -> Result<Requirement, String> {
-    let Some(domain) = domain(key) else {
-        return Err(format!(
-            "unknown requires key {key:?}; the platform matches only {}",
-            REQUIRE_KEYS.join(", ")
-        ));
+/// Parse a `facets` object as written.
+fn parse_facets(raw: &Value) -> (BTreeMap<String, String>, Vec<String>) {
+    let Value::Object(entries) = raw else {
+        return (BTreeMap::new(), vec!["facets is not an object".to_owned()]);
     };
-    match value {
-        Value::String(raw) => {
-            let raw = raw.trim();
-            let (comparator, rest) = if let Some(rest) = raw.strip_prefix(">=") {
-                (Comparator::Ge, rest)
-            } else if raw.starts_with("<=") || raw.starts_with("!=") || raw.starts_with('>') {
-                return Err(format!(
-                    "{key} comparator in {raw:?} is not supported; use >=, <, or ="
+    let mut facets = BTreeMap::new();
+    let mut problems = Vec::new();
+    for (key, value) in entries {
+        let text = value.as_str().unwrap_or_default();
+        let ok = match key.as_str() {
+            "framework" => is_token(text),
+            "accel" => ACCEL_FACETS.contains(&text),
+            "render" => RENDER_FACETS.contains(&text),
+            _ => {
+                problems.push(format!(
+                    "unknown facet {key:?} (allowed: {})",
+                    FACET_KEYS.join(", ")
                 ));
-            } else if let Some(rest) = raw.strip_prefix('<') {
-                (Comparator::Lt, rest)
-            } else if let Some(rest) = raw.strip_prefix('=') {
-                (Comparator::Eq, rest)
-            } else {
-                (Comparator::Eq, raw)
-            };
-            let rest = rest.trim();
-            if domain == Domain::Text && comparator != Comparator::Eq {
-                return Err(format!(
-                    "{key} takes a value or a list of values, not a {} comparison",
-                    comparator.symbol()
-                ));
-            }
-            check_value(key, domain, rest)?;
-            Ok(Requirement::Compare(comparator, rest.to_owned()))
-        }
-        Value::Array(items) => {
-            if items.is_empty() {
-                return Err(format!("{key} is an empty list, which no hardware matches"));
-            }
-            let mut values = Vec::with_capacity(items.len());
-            for item in items {
-                let Some(raw) = item.as_str() else {
-                    return Err(format!("{key} list entries must be strings, got {item}"));
-                };
-                let raw = raw.trim();
-                if raw.starts_with(['<', '>', '=', '!']) {
-                    return Err(format!(
-                        "{key} list entry {raw:?} carries a comparator; list entries are \
-                         plain values"
-                    ));
-                }
-                check_value(key, domain, raw)?;
-                values.push(raw.to_owned());
-            }
-            Ok(Requirement::OneOf(values))
-        }
-        Value::Number(number) => Err(format!(
-            "{key} is the number {number}; write a comparator string such as \">={number}\""
-        )),
-        other => Err(format!(
-            "{key} must be a comparator string or a list of strings, got {other}"
-        )),
-    }
-}
-
-/// Whether some hardware value meets every requirement in `requirements`
-/// (all for the same `key`).
-pub fn satisfiable(key: &str, requirements: &[&Requirement]) -> bool {
-    let Some(domain) = domain(key) else {
-        return true;
-    };
-    let same = |a: &str, b: &str| match domain {
-        Domain::Text => a == b,
-        _ => match (ordered(domain, a), ordered(domain, b)) {
-            (Some(a), Some(b)) => compare(&a, &b).is_eq(),
-            _ => a == b,
-        },
-    };
-    let mut allowed: Option<Vec<&str>> = None;
-    let mut lower: Option<Vec<u64>> = None;
-    let mut upper: Option<Vec<u64>> = None;
-    for requirement in requirements {
-        let values: Vec<&str> = match requirement {
-            Requirement::Compare(Comparator::Eq, value) => vec![value.as_str()],
-            Requirement::OneOf(values) => values.iter().map(String::as_str).collect(),
-            Requirement::Compare(comparator, value) => {
-                let Some(bound) = ordered(domain, value) else {
-                    continue;
-                };
-                let slot = if *comparator == Comparator::Ge {
-                    &mut lower
-                } else {
-                    &mut upper
-                };
-                let tighter = match slot {
-                    None => true,
-                    Some(current) if *comparator == Comparator::Ge => {
-                        compare(&bound, current).is_gt()
-                    }
-                    Some(current) => compare(&bound, current).is_lt(),
-                };
-                if tighter {
-                    *slot = Some(bound);
-                }
                 continue;
             }
         };
-        allowed = Some(match allowed {
-            None => values,
-            Some(current) => current
-                .into_iter()
-                .filter(|a| values.iter().any(|b| same(a, b)))
-                .collect(),
-        });
+        if ok && value.is_string() {
+            facets.insert(key.clone(), text.to_owned());
+        } else {
+            problems.push(match key.as_str() {
+                "framework" => format!("facets.framework {value} is not a lowercase token"),
+                "accel" => format!("facets.accel {value} is not cpu, cuda or rocm"),
+                _ => format!("facets.render {value} is not osmesa, egl or none"),
+            });
+        }
     }
-    let in_range = |value: &[u64]| {
-        lower.as_ref().is_none_or(|l| compare(value, l).is_ge())
-            && upper.as_ref().is_none_or(|u| compare(value, u).is_lt())
-    };
-    match allowed {
-        Some(values) => values.iter().any(|value| {
-            domain == Domain::Text || ordered(domain, value).is_some_and(|v| in_range(&v))
-        }),
-        None => match (&lower, &upper) {
-            (Some(l), Some(u)) => compare(l, u).is_lt(),
-            _ => true,
-        },
-    }
+    (facets, problems)
 }
 
-/// The lowest hardware value a requirement admits, when it has one.
-fn lower_bound(key: &str, requirement: &Requirement) -> Option<Vec<u64>> {
-    let domain = domain(key)?;
-    match requirement {
-        Requirement::Compare(Comparator::Ge | Comparator::Eq, value) => ordered(domain, value),
-        Requirement::Compare(Comparator::Lt, _) => None,
-        Requirement::OneOf(values) => values
-            .iter()
-            .filter_map(|value| ordered(domain, value))
-            .min_by(|a, b| compare(a, b)),
-    }
+/// A lowercase token: `^[a-z0-9][a-z0-9_.-]{0,31}$`.
+fn is_token(value: &str) -> bool {
+    let mut bytes = value.bytes();
+    value.len() <= MAX_KEY_LEN
+        && bytes
+            .next()
+            .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        && bytes.all(|b| {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'.' | b'-')
+        })
 }
 
-/// Whether `requirement` admits `vendor` (`None` when it says nothing).
-fn admits_vendor(requires: &Requires, vendor: &str) -> Option<bool> {
-    requires.get("accel.vendor").map(|requirement| {
-        satisfiable(
-            "accel.vendor",
-            &[
-                requirement,
-                &Requirement::Compare(Comparator::Eq, vendor.to_owned()),
-            ],
-        )
-    })
+/// A variant, profile, or row key: `^[a-z0-9][a-z0-9-]{0,31}$`.
+pub fn valid_key(key: &str) -> bool {
+    let mut bytes = key.bytes();
+    key.len() <= MAX_KEY_LEN
+        && bytes
+            .next()
+            .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        && bytes.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// The vendor a `facets.accel` value implies.
+fn accel_vendor(accel: &str) -> Option<&'static str> {
+    match accel {
+        "cuda" => Some("nvidia"),
+        "rocm" => Some("amd"),
+        _ => None,
+    }
 }
 
 /// A parsed `variant` block.
@@ -351,8 +470,10 @@ fn admits_vendor(requires: &Requires, vendor: &str) -> Option<bool> {
 pub struct Variant {
     pub key: Option<String>,
     pub facets: BTreeMap<String, String>,
-    pub requires: Requires,
-    pub priority: Option<i64>,
+    /// `None` when the block has no `requires`, so the platform infers them.
+    pub requires: Option<Requires>,
+    /// Defaults to 0.
+    pub priority: i64,
 }
 
 /// A parsed `profiles[]` entry.
@@ -363,7 +484,11 @@ pub struct Profile {
     pub facets: BTreeMap<String, String>,
     pub env_vars: BTreeMap<String, String>,
     pub gpu_count: Option<u64>,
+    /// Overrides the variant's, key by key.
     pub requires: Requires,
+    /// Whether the profile sets `resources`, which the platform validates
+    /// against its own ceilings.
+    pub resources: bool,
 }
 
 /// The `variant` and `profiles` blocks of one image's package label.
@@ -379,45 +504,53 @@ impl ComputeBlocks {
         self.variant.is_none() && self.profiles.is_empty()
     }
 
-    /// The profile marked `default`, when exactly one is.
-    pub fn default_profile(&self) -> Option<&Profile> {
-        let mut defaults = self.profiles.iter().filter(|profile| profile.default);
-        match (defaults.next(), defaults.next()) {
-            (Some(profile), None) => Some(profile),
-            _ => None,
+    /// The index of the default profile: the one marked, else the first.
+    pub fn default_profile(&self) -> Option<usize> {
+        if self.profiles.is_empty() {
+            return None;
         }
+        Some(self.profiles.iter().position(|p| p.default).unwrap_or(0))
+    }
+
+    /// The rows the platform derives from this image, given its variant key
+    /// (declared, or synthesized by [`synth_key`]): one per profile, named
+    /// `<variant.key>-<profile.key>` (the bare profile key without a variant
+    /// block), else the one key.
+    pub fn row_keys(&self, base: &str) -> Vec<String> {
+        if self.profiles.is_empty() {
+            return vec![base.to_owned()];
+        }
+        self.profiles
+            .iter()
+            .map(|profile| match &self.variant {
+                Some(_) => format!("{base}-{}", profile.key),
+                None => profile.key.clone(),
+            })
+            .collect()
     }
 }
 
 /// Parse the `variant` and `profiles` blocks out of a package label object,
-/// reporting structural problems (wrong types, unknown `requires` keys, bad
-/// comparators, duplicate or missing profile keys, not exactly one default)
-/// into the returned report. Whatever parsed cleanly is kept, so one bad
-/// field does not hide the rest.
+/// reporting what the platform's `variant_requires_schema` fails on into the
+/// returned report. Whatever parsed cleanly is kept, so one bad field does not
+/// hide the rest.
 pub fn parse_compute_blocks(package: &Map<String, Value>) -> (ComputeBlocks, CheckReport) {
     let mut report = CheckReport::default();
     let mut blocks = ComputeBlocks::default();
     match package.get("variant") {
-        None | Some(Value::Null) => {}
+        None => {}
         Some(Value::Object(raw)) => blocks.variant = Some(parse_variant(raw, &mut report)),
-        Some(other) => report.failed.push(format!(
-            "variant: must be a JSON object, got {}",
-            type_name(other)
-        )),
+        Some(_) => report
+            .failed
+            .push("variant: variant is not an object".to_owned()),
     }
     match package.get("profiles") {
-        None | Some(Value::Null) => {}
+        None => {}
         Some(Value::Array(entries)) => {
             let mut seen = BTreeSet::new();
+            let mut defaults = Vec::new();
             for (index, entry) in entries.iter().enumerate() {
-                let Value::Object(raw) = entry else {
-                    report.failed.push(format!(
-                        "profiles: entry {index} must be a JSON object, got {}",
-                        type_name(entry)
-                    ));
-                    continue;
-                };
-                let Some(profile) = parse_profile(index, raw, &mut report) else {
+                let Some(profile) = parse_profile(index, entry, &mut report) else {
                     continue;
                 };
                 if !seen.insert(profile.key.clone()) {
@@ -427,463 +560,187 @@ pub fn parse_compute_blocks(package: &Map<String, Value>) -> (ComputeBlocks, Che
                     ));
                     continue;
                 }
+                if profile.default {
+                    defaults.push(profile.key.clone());
+                }
                 blocks.profiles.push(profile);
             }
-            if !entries.is_empty() {
-                let defaults: Vec<&str> = blocks
-                    .profiles
-                    .iter()
-                    .filter(|profile| profile.default)
-                    .map(|profile| profile.key.as_str())
-                    .collect();
-                match defaults.len() {
-                    1 => {}
-                    0 => report.failed.push(
-                        "profiles: no profile is marked \"default\": true; mark exactly one, \
-                         the one the platform runs when a request names none"
-                            .to_owned(),
-                    ),
-                    _ => report.failed.push(format!(
-                        "profiles: {} are all marked default; mark exactly one",
-                        defaults.join(", ")
-                    )),
-                }
+            match defaults.len() {
+                0 if !blocks.profiles.is_empty() => report.warnings.push(format!(
+                    "profiles: none is marked \"default\": true, so the first, {}, is the default; \
+                     mark one to say so",
+                    blocks.profiles[0].key
+                )),
+                0 | 1 => {}
+                _ => report.failed.push(format!(
+                    "profiles: {} are all marked default; at most one may be",
+                    defaults.join(", ")
+                )),
             }
         }
-        Some(other) => report.failed.push(format!(
-            "profiles: must be a JSON array, got {}",
-            type_name(other)
-        )),
+        Some(_) => report
+            .failed
+            .push("profiles: profiles is not a list".to_owned()),
     }
     (blocks, report)
 }
 
 fn parse_variant(raw: &Map<String, Value>, report: &mut CheckReport) -> Variant {
     let mut variant = Variant::default();
-    match raw.get("key") {
-        None | Some(Value::Null) => report.warnings.push(
-            "variant: no key; the platform cannot address the variant by name and \
-             `rlmesh registry publish` refuses it"
-                .to_owned(),
-        ),
-        Some(Value::String(key)) if !key.trim().is_empty() => {
-            check_key("variant:", key, report);
-            variant.key = Some(key.trim().to_owned());
-        }
-        Some(other) => report.failed.push(format!(
-            "variant: key must be a non-empty string, got {other}"
+    match raw.get("key").and_then(Value::as_str) {
+        Some(key) if valid_key(key) => variant.key = Some(key.to_owned()),
+        Some(key) if !key.is_empty() => report.failed.push(format!(
+            "variant: key {key:?} is not 1-32 lowercase letters, digits or dashes"
         )),
+        _ => report
+            .failed
+            .push("variant: variant.key is required".to_owned()),
     }
-    variant.facets = parse_facets("variant:", raw.get("facets"), report);
-    variant.requires = parse_requires("variant:", raw.get("requires"), report);
-    match raw.get("priority") {
-        None | Some(Value::Null) => {}
-        Some(value) => match value.as_i64() {
-            Some(priority) => variant.priority = Some(priority),
-            None => report
-                .failed
-                .push(format!("variant: priority must be an integer, got {value}")),
-        },
+    if let Some(facets) = raw.get("facets") {
+        let (facets, problems) = parse_facets(facets);
+        variant.facets = facets;
+        report
+            .failed
+            .extend(problems.into_iter().map(|p| format!("variant: {p}")));
     }
-    warn_unknown_fields("variant:", raw, &VARIANT_FIELDS, report);
+    if let Some(requires) = raw.get("requires") {
+        let (requires, problems) = parse_requires(requires);
+        report.failed.extend(
+            problems
+                .into_iter()
+                .map(|p| format!("variant: requires {p}")),
+        );
+        variant.requires = Some(requires);
+    }
+    if let Some(priority) = raw.get("priority") {
+        match priority.as_i64().filter(|p| p.abs() <= MAX_PRIORITY) {
+            Some(priority) => variant.priority = priority,
+            None => report.failed.push(format!(
+                "variant: priority {priority} is not an integer in [-{MAX_PRIORITY}, {MAX_PRIORITY}]"
+            )),
+        }
+    }
+    // A declared stack must agree with the declared vendor when both are set.
+    if let (Some(accel), Some(requires)) = (variant.facets.get("accel"), raw.get("requires")) {
+        let vendor = requires.get("accel.vendor").and_then(Value::as_str);
+        if accel_vendor(accel) != vendor {
+            report.failed.push(format!(
+                "variant: facets.accel {accel} contradicts requires accel.vendor {}",
+                vendor.unwrap_or("(none)")
+            ));
+        }
+    }
+    for field in raw
+        .keys()
+        .filter(|field| !VARIANT_FIELDS.contains(&field.as_str()))
+    {
+        report
+            .failed
+            .push(format!("variant: unknown key {field:?}"));
+    }
     variant
 }
 
-fn parse_profile(
-    index: usize,
-    raw: &Map<String, Value>,
-    report: &mut CheckReport,
-) -> Option<Profile> {
-    let key = match raw.get("key") {
-        Some(Value::String(key)) if !key.trim().is_empty() => key.trim().to_owned(),
-        None | Some(Value::Null) => {
-            report
-                .failed
-                .push(format!("profiles: entry {index} has no key"));
+fn parse_profile(index: usize, entry: &Value, report: &mut CheckReport) -> Option<Profile> {
+    let Value::Object(raw) = entry else {
+        report
+            .failed
+            .push(format!("profiles: profiles[{index}] is not an object"));
+        return None;
+    };
+    let key = match raw.get("key").and_then(Value::as_str) {
+        Some(key) if valid_key(key) => key.to_owned(),
+        Some(key) if !key.is_empty() => {
+            report.failed.push(format!(
+                "profiles: profiles[{index}].key {key:?} is not 1-32 lowercase letters, digits or \
+                 dashes"
+            ));
             return None;
         }
-        Some(other) => {
-            report.failed.push(format!(
-                "profiles: entry {index} key must be a non-empty string, got {other}"
-            ));
+        _ => {
+            report
+                .failed
+                .push(format!("profiles: profiles[{index}].key is required"));
             return None;
         }
     };
     let scope = format!("profiles: {key}:");
-    check_key(&scope, &key, report);
     let mut profile = Profile {
         key,
         ..Profile::default()
     };
     match raw.get("default") {
-        None | Some(Value::Null) => {}
+        None => {}
         Some(Value::Bool(default)) => profile.default = *default,
-        Some(other) => report.failed.push(format!(
-            "{scope} default must be true or false, got {other}"
-        )),
+        Some(other) => report
+            .failed
+            .push(format!("{scope} default {other} is not true or false")),
     }
-    profile.facets = parse_facets(&scope, raw.get("facets"), report);
+    if let Some(facets) = raw.get("facets") {
+        let (facets, problems) = parse_facets(facets);
+        profile.facets = facets;
+        report
+            .failed
+            .extend(problems.into_iter().map(|p| format!("{scope} {p}")));
+    }
     match raw.get("envVars") {
-        None | Some(Value::Null) => {}
+        None => {}
         Some(Value::Object(vars)) => {
             for (name, value) in vars {
-                if !is_env_name(name) {
-                    report.failed.push(format!(
-                        "{scope} envVars name {name:?} is not a valid environment variable name"
-                    ));
-                    continue;
-                }
                 let Some(value) = value.as_str() else {
-                    report.failed.push(format!(
-                        "{scope} envVars {name} must be a string, got {value}"
-                    ));
+                    report
+                        .failed
+                        .push(format!("{scope} envVars {name} {value} is not a string"));
                     continue;
                 };
+                if !is_env_name(name) {
+                    report.warnings.push(format!(
+                        "{scope} envVars name {name:?} is not a portable environment variable name"
+                    ));
+                }
                 if name == ADDRESS_ENV {
                     report.warnings.push(format!(
-                        "{scope} envVars sets {ADDRESS_ENV}; the platform assigns it per pod, \
-                         so it has no effect there"
+                        "{scope} envVars sets {ADDRESS_ENV}; the platform assigns it per pod, so it \
+                         has no effect there"
                     ));
                 }
                 profile.env_vars.insert(name.clone(), value.to_owned());
             }
         }
-        Some(other) => report.failed.push(format!(
-            "{scope} envVars must be an object of strings, got {}",
-            type_name(other)
-        )),
+        Some(_) => report
+            .failed
+            .push(format!("{scope} envVars is not an object of strings")),
     }
     match raw.get("gpu") {
-        None | Some(Value::Null) => {}
-        Some(Value::Object(gpu)) => {
-            match gpu.get("count") {
-                None | Some(Value::Null) => {}
-                Some(value) => match value.as_u64() {
-                    Some(count) => profile.gpu_count = Some(count),
-                    None => report.failed.push(format!(
-                        "{scope} gpu.count must be a non-negative integer, got {value}"
-                    )),
-                },
-            }
-            warn_unknown_fields(&format!("{scope} gpu"), gpu, &["count"], report);
-        }
-        Some(other) => report.failed.push(format!(
-            "{scope} gpu must be an object, got {}",
-            type_name(other)
-        )),
-    }
-    profile.requires = parse_requires(&scope, raw.get("requires"), report);
-    warn_unknown_fields(&scope, raw, &PROFILE_FIELDS, report);
-    Some(profile)
-}
-
-fn parse_facets(
-    scope: &str,
-    raw: Option<&Value>,
-    report: &mut CheckReport,
-) -> BTreeMap<String, String> {
-    let mut facets = BTreeMap::new();
-    match raw {
-        None | Some(Value::Null) => {}
-        Some(Value::Object(entries)) => {
-            for (name, value) in entries {
-                match value.as_str() {
-                    Some(value) if !name.is_empty() && !value.is_empty() => {
-                        facets.insert(name.clone(), value.to_owned());
-                    }
-                    Some(_) => report.failed.push(format!(
-                        "{scope} facets {name:?} has an empty name or value"
-                    )),
-                    None => report.failed.push(format!(
-                        "{scope} facets {name:?} must be a string, got {value}"
-                    )),
-                }
-            }
-        }
-        Some(other) => report.failed.push(format!(
-            "{scope} facets must be an object of strings, got {}",
-            type_name(other)
-        )),
-    }
-    facets
-}
-
-fn parse_requires(scope: &str, raw: Option<&Value>, report: &mut CheckReport) -> Requires {
-    let mut requires = Requires::new();
-    match raw {
-        None | Some(Value::Null) => {}
-        Some(Value::Object(entries)) => {
-            for (key, value) in entries {
-                match parse_requirement(key, value) {
-                    Ok(requirement) => {
-                        requires.insert(key.clone(), requirement);
-                    }
-                    Err(message) => report.failed.push(format!("{scope} requires {message}")),
-                }
-            }
-            let vendors: Vec<&str> = match requires.get("accel.vendor") {
-                Some(Requirement::Compare(_, vendor)) => vec![vendor.as_str()],
-                Some(Requirement::OneOf(vendors)) => vendors.iter().map(String::as_str).collect(),
-                None => Vec::new(),
-            };
-            for vendor in vendors.into_iter().filter(|v| !KNOWN_VENDORS.contains(v)) {
-                report.warnings.push(format!(
-                    "{scope} requires accel.vendor {vendor:?} is not one the platform's \
-                     hardware reports ({})",
-                    KNOWN_VENDORS.join(", ")
-                ));
-            }
-        }
-        Some(other) => report.failed.push(format!(
-            "{scope} requires must be an object, got {}",
-            type_name(other)
-        )),
-    }
-    requires
-}
-
-/// The accelerator stack an image's environment declares.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ImageAccel {
-    /// `CUDA_VERSION`, the toolkit the image was built on.
-    pub cuda_version: Option<String>,
-    /// The `cuda>=X` floor in `NVIDIA_REQUIRE_CUDA`, which the NVIDIA
-    /// container runtime enforces against the host driver.
-    pub require_cuda: Option<String>,
-    /// `ROCM_VERSION`.
-    pub rocm_version: Option<String>,
-}
-
-impl ImageAccel {
-    /// Read the CUDA and ROCm markers off an image's `Env`.
-    pub fn from_config(config: &ImageConfig) -> Self {
-        let set = |key: &str| {
-            config
-                .env_value(key)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_owned)
-        };
-        Self {
-            cuda_version: set("CUDA_VERSION"),
-            require_cuda: set("NVIDIA_REQUIRE_CUDA").and_then(|value| {
-                // `cuda>=12.4 brand=tesla,driver>=470,driver<471 ...`: only the
-                // standalone cuda floor; the comma groups are alternatives.
-                value.split_whitespace().find_map(|word| {
-                    word.strip_prefix("cuda>=")
-                        .filter(|floor| ordered(Domain::Version, floor).is_some())
-                        .map(str::to_owned)
-                })
-            }),
-            rocm_version: set("ROCM_VERSION"),
-        }
-    }
-
-    fn is_cuda(&self) -> bool {
-        self.cuda_version.is_some() || self.require_cuda.is_some()
-    }
-
-    /// The host CUDA floor and where it came from: the enforced
-    /// `NVIDIA_REQUIRE_CUDA` when present, else `CUDA_VERSION`'s major.minor.
-    fn cuda_floor(&self) -> Option<(String, String)> {
-        if let Some(floor) = &self.require_cuda {
-            return Some((floor.clone(), format!("NVIDIA_REQUIRE_CUDA cuda>={floor}")));
-        }
-        let version = self.cuda_version.as_ref()?;
-        let parts: Vec<&str> = version.split('.').take(2).collect();
-        let floor = parts.join(".");
-        ordered(Domain::Version, &floor).map(|_| (floor, format!("CUDA_VERSION={version}")))
-    }
-}
-
-/// Check one scope's effective `requires` against the image's accelerator
-/// stack. `variant_scope` adds the "declare it" warnings, which would repeat
-/// for every profile otherwise.
-fn check_against_image(
-    scope: &str,
-    requires: &Requires,
-    accel: &ImageAccel,
-    variant_scope: bool,
-    report: &mut CheckReport,
-) {
-    if accel.is_cuda() {
-        let marker = accel
-            .cuda_version
-            .as_ref()
-            .map(|v| format!("CUDA_VERSION={v}"))
-            .unwrap_or_else(|| "NVIDIA_REQUIRE_CUDA".to_owned());
-        match admits_vendor(requires, "nvidia") {
-            Some(false) => report.warnings.push(format!(
-                "{scope} the image is a CUDA image ({marker}) but requires accel.vendor{}",
-                requires["accel.vendor"]
-            )),
-            None if variant_scope => report.warnings.push(format!(
-                "{scope} the image is a CUDA image ({marker}) but requires no accel.vendor; \
-                 declare \"accel.vendor\": \"nvidia\" so the platform does not place it on \
-                 other hardware"
-            )),
-            _ => {}
-        }
-        if requires.contains_key("accel.gfx") {
-            report.warnings.push(format!(
-                "{scope} requires accel.gfx (an AMD GPU target) on a CUDA image"
-            ));
-        }
-        if let Some((floor, source)) = accel.cuda_floor() {
-            let floor_requirement = Requirement::Compare(Comparator::Ge, floor.clone());
-            match requires.get("accel.cuda") {
-                Some(declared) if !satisfiable("accel.cuda", &[declared, &floor_requirement]) => {
-                    report.failed.push(format!(
-                        "{scope} requires accel.cuda{declared} but the image needs a host with \
-                         CUDA >={floor} ({source}); no host satisfies both"
-                    ));
-                }
-                Some(declared) => {
-                    let below = lower_bound("accel.cuda", declared).is_none_or(|bound| {
-                        compare(
-                            &bound,
-                            &ordered(Domain::Version, &floor).unwrap_or_default(),
-                        )
-                        .is_lt()
-                    });
-                    if below {
-                        report.warnings.push(format!(
-                            "{scope} requires accel.cuda{declared}, which admits hosts below \
-                             the image's {source}; declare \">={floor}\""
-                        ));
-                    }
-                }
-                None if variant_scope => report.warnings.push(format!(
-                    "{scope} the image needs a host with CUDA >={floor} ({source}) but \
-                     requires no accel.cuda; declare \"accel.cuda\": \">={floor}\""
+        None => {}
+        Some(Value::Object(gpu)) => match gpu.get("count") {
+            Some(count) => match count.as_u64().filter(|n| *n <= MAX_PROFILE_GPUS) {
+                Some(count) => profile.gpu_count = Some(count),
+                None => report.failed.push(format!(
+                    "{scope} gpu.count {count} is not in [0, {MAX_PROFILE_GPUS}]"
                 )),
-                None => {}
-            }
-        }
+            },
+            None => report.failed.push(format!("{scope} gpu has no count")),
+        },
+        Some(_) => report.failed.push(format!("{scope} gpu is not an object")),
     }
-    if let Some(rocm) = &accel.rocm_version {
-        match admits_vendor(requires, "amd") {
-            Some(false) => report.warnings.push(format!(
-                "{scope} the image is a ROCm image (ROCM_VERSION={rocm}) but requires \
-                 accel.vendor{}",
-                requires["accel.vendor"]
-            )),
-            None if variant_scope => report.warnings.push(format!(
-                "{scope} the image is a ROCm image (ROCM_VERSION={rocm}) but requires no \
-                 accel.vendor; declare \"accel.vendor\": \"amd\""
-            )),
-            _ => {}
-        }
-        for key in ["accel.cuda", "accel.compute"] {
-            if requires.contains_key(key) && !accel.is_cuda() {
-                report.warnings.push(format!(
-                    "{scope} requires {key} (an NVIDIA property) on a ROCm image"
-                ));
-            }
-        }
+    if let Some(requires) = raw.get("requires") {
+        let (requires, problems) = parse_requires(requires);
+        profile.requires = requires;
+        report.failed.extend(
+            problems
+                .into_iter()
+                .map(|p| format!("{scope} requires {p}")),
+        );
     }
-}
-
-/// Validate a package label's `variant` and `profiles` blocks: the schema,
-/// comparators, profile keys and the single default, whether each profile's
-/// `requires` can hold together with the variant's, and whether the
-/// `requires` agree with the CUDA/ROCm stack the image's `Env` declares. A
-/// label with neither block reports nothing.
-pub fn check_compute_blocks(package: &Map<String, Value>, config: &ImageConfig) -> CheckReport {
-    let (blocks, mut report) = parse_compute_blocks(package);
-    if blocks.is_empty() {
-        return report;
+    profile.resources = raw.contains_key("resources");
+    for field in raw
+        .keys()
+        .filter(|field| !PROFILE_FIELDS.contains(&field.as_str()))
+    {
+        report.failed.push(format!("{scope} unknown key {field:?}"));
     }
-    let accel = ImageAccel::from_config(config);
-    let no_requires = Requires::new();
-    let variant_requires = blocks
-        .variant
-        .as_ref()
-        .map_or(&no_requires, |variant| &variant.requires);
-    if let Some(variant) = &blocks.variant {
-        check_against_image("variant:", &variant.requires, &accel, true, &mut report);
-    }
-    for profile in &blocks.profiles {
-        let scope = format!("profiles: {}:", profile.key);
-        for (key, requirement) in &profile.requires {
-            if let Some(inherited) = variant_requires.get(key)
-                && !satisfiable(key, &[inherited, requirement])
-            {
-                report.failed.push(format!(
-                    "{scope} requires {key}{requirement} but the variant requires \
-                     {key}{inherited}; no host satisfies both"
-                ));
-            }
-        }
-        // Only what the profile itself declares: inherited entries were
-        // judged at the variant scope.
-        check_against_image(&scope, &profile.requires, &accel, false, &mut report);
-    }
-    let failed = |prefix: &str| report.failed.iter().any(|m| m.starts_with(prefix));
-    let (variant_failed, profiles_failed) = (failed("variant:"), failed("profiles:"));
-    if let Some(variant) = blocks.variant.as_ref().filter(|_| !variant_failed) {
-        let mut details = Vec::new();
-        if !variant.facets.is_empty() {
-            details.push(format!("facets {}", format_facets(&variant.facets)));
-        }
-        if !variant.requires.is_empty() {
-            details.push(format!("requires {}", format_requires(&variant.requires)));
-        }
-        if let Some(priority) = variant.priority {
-            details.push(format!("priority {priority}"));
-        }
-        report.passed.push(format!(
-            "variant: {}{}",
-            variant.key.as_deref().unwrap_or("(no key)"),
-            if details.is_empty() {
-                String::new()
-            } else {
-                format!(" ({})", details.join("; "))
-            }
-        ));
-    }
-    if !blocks.profiles.is_empty() && !profiles_failed {
-        report
-            .passed
-            .push(format!("profiles: {}", profile_summary(&blocks.profiles)));
-    }
-    report
-}
-
-/// `osmesa (default), egl`.
-pub fn profile_summary(profiles: &[Profile]) -> String {
-    profiles
-        .iter()
-        .map(|profile| {
-            if profile.default {
-                format!("{} (default)", profile.key)
-            } else {
-                profile.key.clone()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-/// Keys name workloads and appear in evaluation requests (`variant: ...`),
-/// so they should read as DNS labels, like checkpoint names.
-fn check_key(scope: &str, key: &str, report: &mut CheckReport) {
-    if !is_dns_label(key) {
-        report.warnings.push(format!(
-            "{scope} key {key:?} is not a DNS label; keep keys to lowercase letters, digits, \
-             and '-' (at most 63) so they can name workloads"
-        ));
-    }
-}
-
-fn is_dns_label(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 63
-        && value
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-        && !value.starts_with('-')
-        && !value.ends_with('-')
+    Some(profile)
 }
 
 fn is_env_name(name: &str) -> bool {
@@ -894,29 +751,471 @@ fn is_env_name(name: &str) -> bool {
         && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 
-fn warn_unknown_fields(
-    scope: &str,
-    raw: &Map<String, Value>,
-    known: &[&str],
-    report: &mut CheckReport,
-) {
-    let scope = scope.trim_end_matches(':');
-    for field in raw.keys().filter(|field| !known.contains(&field.as_str())) {
-        report.warnings.push(format!(
-            "{scope}: unknown field {field:?}; the platform ignores it"
-        ));
+/// What an image says about its accelerator without declaring it, read the
+/// way the platform reads an undeclared image.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Inferred {
+    /// `accel` (`cuda`, `rocm`, `cpu`; absent when the image carries both
+    /// CUDA and ROCm markers) and `framework` (from the describe label).
+    pub facets: BTreeMap<String, String>,
+    pub requires: Requires,
+    /// The CUDA toolkit found, as major.minor.
+    pub cuda: Option<String>,
+    /// The ROCm version found, as major.minor.
+    pub rocm: Option<String>,
+    /// What the inference was read from, for the report.
+    pub evidence: String,
+}
+
+impl Inferred {
+    /// The key an undeclared child of an index is named for when its
+    /// platform has several: `cuda12`, `rocm6`, `cpu`, else `default`.
+    pub fn stack_key(&self) -> String {
+        let major = |version: &Option<String>| {
+            version
+                .as_deref()
+                .and_then(|v| v.split('.').next())
+                .unwrap_or_default()
+                .to_owned()
+        };
+        match self.facets.get("accel").map(String::as_str) {
+            Some("cuda") => format!("cuda{}", major(&self.cuda)),
+            Some("rocm") => format!("rocm{}", major(&self.rocm)),
+            Some("cpu") => "cpu".to_owned(),
+            _ => DEFAULT_VARIANT_KEY.to_owned(),
+        }
     }
 }
 
-fn type_name(value: &Value) -> &'static str {
-    match value {
-        Value::Null => "null",
-        Value::Bool(_) => "a boolean",
-        Value::Number(_) => "a number",
-        Value::String(_) => "a string",
-        Value::Array(_) => "an array",
-        Value::Object(_) => "an object",
+/// `12.4.1` → `12.4`; `None` when a part is not a number.
+fn major_minor(version: &str) -> Option<String> {
+    let parts: Vec<&str> = version
+        .trim()
+        .trim_start_matches('v')
+        .split('.')
+        .take(2)
+        .collect();
+    parts
+        .iter()
+        .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+        .then(|| parts.join("."))
+}
+
+/// `describe.runtime.framework_versions`, keys lowercased.
+fn framework_versions(config: &ImageConfig) -> BTreeMap<String, String> {
+    config
+        .labels
+        .get(DESCRIBE_LABEL)
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        .and_then(|envelope| envelope.pointer("/runtime/framework_versions").cloned())
+        .and_then(|versions| match versions {
+            Value::Object(versions) => Some(versions),
+            _ => None,
+        })
+        .map(|versions| {
+            versions
+                .into_iter()
+                .filter_map(|(k, v)| v.as_str().map(|v| (k.to_lowercase(), v.to_owned())))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The `framework_versions` packages that name each framework facet, in
+/// precedence order for an image that ships more than one.
+const FRAMEWORK_PACKAGES: [(&str, &str); 4] = [
+    ("torch", "torch"),
+    ("jax", "jax"),
+    ("jaxlib", "jax"),
+    ("tensorflow", "tensorflow"),
+];
+
+/// Infer an image's accelerator from its markers: `CUDA_VERSION` (else the
+/// `cuda>=X.Y` in `NVIDIA_REQUIRE_CUDA`) means NVIDIA with `accel.cuda>=X.Y`;
+/// `ROCM_VERSION` means AMD; without either, a torch build tag in the
+/// describe label (`2.3.0+cu121`, `+rocm6.0`) decides; else a CPU image. An
+/// image with both markers gets neither accel nor requires.
+pub fn infer(config: &ImageConfig) -> Inferred {
+    let env = |key: &str| {
+        config
+            .env_value(key)
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+    };
+    let mut out = Inferred::default();
+    let mut evidence = Vec::new();
+    if let Some(version) = env("CUDA_VERSION") {
+        out.cuda = major_minor(version);
+        evidence.push(format!("CUDA_VERSION={version}"));
+    } else if let Some(floor) = env("NVIDIA_REQUIRE_CUDA").and_then(|value| {
+        // The first `cuda>=X.Y` anywhere in the value, as the platform reads it.
+        value.match_indices("cuda>=").find_map(|(at, _)| {
+            let rest = &value[at + "cuda>=".len()..];
+            let end = rest
+                .find(|c: char| !c.is_ascii_digit() && c != '.')
+                .unwrap_or(rest.len());
+            let mut parts = rest[..end].split('.');
+            match (parts.next(), parts.next()) {
+                (Some(major), Some(minor)) if !major.is_empty() && !minor.is_empty() => {
+                    let minor: String = minor.chars().take_while(char::is_ascii_digit).collect();
+                    Some(format!("{major}.{minor}"))
+                }
+                _ => None,
+            }
+        })
+    }) {
+        evidence.push(format!("NVIDIA_REQUIRE_CUDA cuda>={floor}"));
+        out.cuda = Some(floor);
     }
+    if let Some(version) = env("ROCM_VERSION") {
+        out.rocm = major_minor(version);
+        evidence.push(format!("ROCM_VERSION={version}"));
+    }
+    let versions = framework_versions(config);
+    if let Some((_, framework)) = FRAMEWORK_PACKAGES
+        .iter()
+        .find(|(package, _)| versions.contains_key(*package))
+    {
+        out.facets
+            .insert("framework".to_owned(), (*framework).to_owned());
+    }
+    if out.cuda.is_none()
+        && out.rocm.is_none()
+        && let Some(torch) = versions.get("torch")
+        && let Some((_, tag)) = torch.rsplit_once('+')
+    {
+        let (stack, version) = if let Some(v) = tag.strip_prefix("cu") {
+            ("cu", v)
+        } else if let Some(v) = tag.strip_prefix("rocm") {
+            ("rocm", v)
+        } else {
+            ("", "")
+        };
+        if !version.is_empty() && version.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
+            let version = if stack == "cu" && version.len() >= 3 && !version.contains('.') {
+                // cu121 is CUDA 12.1; cu118 is 11.8.
+                format!(
+                    "{}.{}",
+                    &version[..version.len() - 1],
+                    &version[version.len() - 1..]
+                )
+            } else {
+                version.to_owned()
+            };
+            if stack == "cu" {
+                out.cuda = major_minor(&version);
+            } else if stack == "rocm" {
+                out.rocm = major_minor(&version);
+            }
+            evidence.push(format!("torch {torch}"));
+        }
+    }
+    match (&out.cuda, &out.rocm) {
+        (Some(cuda), None) => {
+            out.facets.insert("accel".to_owned(), "cuda".to_owned());
+            out.requires.insert(
+                "accel.vendor".to_owned(),
+                Requirement::Vendor("nvidia".to_owned()),
+            );
+            if let Some(clauses) = parse_constraint(&format!(">={cuda}")) {
+                out.requires
+                    .insert("accel.cuda".to_owned(), Requirement::Version(clauses));
+            }
+        }
+        (None, Some(_)) => {
+            out.facets.insert("accel".to_owned(), "rocm".to_owned());
+            out.requires.insert(
+                "accel.vendor".to_owned(),
+                Requirement::Vendor("amd".to_owned()),
+            );
+        }
+        (None, None) => {
+            out.facets.insert("accel".to_owned(), "cpu".to_owned());
+            evidence.push("no CUDA or ROCm markers".to_owned());
+        }
+        // Both markers: a base that layers one toolkit on the other says
+        // nothing reliable, so neither accel nor requires is guessed.
+        (Some(_), Some(_)) => evidence.push("both CUDA and ROCm markers, so nothing".to_owned()),
+    }
+    out.evidence = evidence.join(", ");
+    out
+}
+
+/// The requires and facets the platform records for the image's base row:
+/// the declared requires when the variant block has them; else, when the
+/// declared `facets.accel` names a stack the markers do not show, only the
+/// vendor that stack implies; else the inferred ones.
+pub fn effective(
+    blocks: &ComputeBlocks,
+    inferred: &Inferred,
+) -> (Requires, BTreeMap<String, String>) {
+    let Some(variant) = &blocks.variant else {
+        return (inferred.requires.clone(), inferred.facets.clone());
+    };
+    let mut facets = inferred.facets.clone();
+    facets.extend(variant.facets.clone());
+    let requires = match (&variant.requires, variant.facets.get("accel")) {
+        (Some(requires), _) => requires.clone(),
+        (None, Some(accel)) if inferred.facets.get("accel") != Some(accel) => accel_vendor(accel)
+            .map(|vendor| {
+                Requires::from([(
+                    "accel.vendor".to_owned(),
+                    Requirement::Vendor(vendor.to_owned()),
+                )])
+            })
+            .unwrap_or_default(),
+        (None, _) => inferred.requires.clone(),
+    };
+    (requires, facets)
+}
+
+/// Whether the platform can select an image of this platform.
+pub fn selectable(os: &str, architecture: &str) -> bool {
+    os == "linux" && architecture == "amd64"
+}
+
+/// The key the platform gives an image with no variant block: `default` when
+/// it is the only undeclared image on its platform (always, for a single
+/// image), else named for its stack (`cuda12`, `rocm6`, `cpu`); a platform the
+/// fleet cannot select is appended (`default-arm64v8`).
+pub fn synth_key(
+    inferred: &Inferred,
+    os: &str,
+    architecture: &str,
+    platform_variant: &str,
+    undeclared_on_platform: usize,
+) -> String {
+    let mut key = if undeclared_on_platform > 1 {
+        inferred.stack_key()
+    } else {
+        DEFAULT_VARIANT_KEY.to_owned()
+    };
+    if !selectable(os, architecture) {
+        let suffix: String = format!("{architecture}{platform_variant}")
+            .to_lowercase()
+            .chars()
+            .filter(char::is_ascii_alphanumeric)
+            .collect();
+        if !suffix.is_empty() {
+            key = format!("{key}-{suffix}");
+        }
+    }
+    key
+}
+
+/// The image's package label, when it is a JSON object (a malformed label is
+/// [`crate::image_check::check_labels`]' to report).
+pub fn package_object(config: &ImageConfig) -> Option<Map<String, Value>> {
+    match serde_json::from_str(config.labels.get(PACKAGE_LABEL)?) {
+        Ok(Value::Object(package)) => Some(package),
+        _ => None,
+    }
+}
+
+/// Check an image's compute variant the way the platform will: the `variant`
+/// and `profiles` blocks as written (`variant_requires_schema`, failures),
+/// the declaration against the image's CUDA/ROCm markers and describe
+/// (`variant_requires_vs_env`, warnings), and the row keys the platform
+/// derives when the image is pushed alone. An image without a variant block
+/// reports what is inferred for it.
+pub fn check_variant(config: &ImageConfig) -> CheckReport {
+    let package = package_object(config).unwrap_or_default();
+    let (blocks, mut report) = parse_compute_blocks(&package);
+    let inferred = infer(config);
+    let (requires, facets) = effective(&blocks, &inferred);
+
+    if let Some(variant) = &blocks.variant {
+        check_against_markers(variant, config, &inferred, &mut report);
+    }
+    for profile in &blocks.profiles {
+        // Profiles override key by key; the merged map must still hold together.
+        if profile.requires.is_empty() {
+            continue;
+        }
+        let mut merged = requires.clone();
+        merged.extend(profile.requires.clone());
+        let keys: BTreeSet<&str> = merged.keys().map(String::as_str).collect();
+        for problem in vendor_problems(&keys, requires_vendor(&merged)) {
+            report.warnings.push(format!(
+                "profiles: {}: with the variant's requires it inherits, {problem}",
+                profile.key
+            ));
+        }
+        if let Some(vendor) = profile.requires.get("accel.vendor").and_then(|r| match r {
+            Requirement::Vendor(v) => Some(v.as_str()),
+            _ => None,
+        }) {
+            marker_vendor_warning(
+                &format!("profiles: {}:", profile.key),
+                vendor,
+                &inferred,
+                &mut report,
+            );
+        }
+        if profile.resources {
+            report.not_checked.push(format!(
+                "profiles: {}: resources are validated by the platform against its ceilings",
+                profile.key
+            ));
+        }
+    }
+
+    let variant_failed = report.failed.iter().any(|m| m.starts_with("variant:"));
+    let profiles_failed = report.failed.iter().any(|m| m.starts_with("profiles:"));
+    let mut details = Vec::new();
+    if !facets.is_empty() {
+        details.push(format!("facets {}", format_facets(&facets)));
+    }
+    details.push(if requires.is_empty() {
+        "no requires (a CPU image)".to_owned()
+    } else {
+        format!("requires {}", format_requires(&requires))
+    });
+    match &blocks.variant {
+        Some(variant) if !variant_failed => {
+            if variant.priority != 0 {
+                details.push(format!("priority {}", variant.priority));
+            }
+            let inferred_note = if variant.requires.is_none() && requires == inferred.requires {
+                format!("; requires inferred from {}", inferred.evidence)
+            } else {
+                String::new()
+            };
+            report.passed.push(format!(
+                "variant: {} ({}){inferred_note}",
+                variant.key.as_deref().unwrap_or_default(),
+                details.join("; ")
+            ));
+        }
+        Some(_) => {}
+        None => report.passed.push(format!(
+            "variant: none declared; inferred from {}: {}",
+            inferred.evidence,
+            details.join("; ")
+        )),
+    }
+
+    if !(variant_failed || profiles_failed) {
+        let base = match blocks.variant.as_ref().and_then(|v| v.key.as_deref()) {
+            Some(key) => key.to_owned(),
+            None => synth_key(&inferred, &config.os, &config.architecture, "", 1),
+        };
+        let rows = blocks.row_keys(&base);
+        let invalid: Vec<&String> = rows.iter().filter(|row| !valid_key(row)).collect();
+        if invalid.is_empty() {
+            let default = blocks.default_profile().unwrap_or(0);
+            let excluded = if selectable(&config.os, &config.architecture) {
+                ""
+            } else {
+                " (excluded: not linux/amd64)"
+            };
+            report.passed.push(format!(
+                "rows: {}{excluded}",
+                rows.iter()
+                    .enumerate()
+                    .map(|(i, row)| if rows.len() > 1 && i == default {
+                        format!("{row} (default)")
+                    } else {
+                        row.clone()
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        } else {
+            for row in invalid {
+                report.failed.push(format!(
+                    "rows: row key {row:?} (variant.key-profile.key) is not 1-32 lowercase letters, \
+                     digits or dashes; shorten the keys"
+                ));
+            }
+        }
+    }
+    report
+}
+
+fn marker_vendor_warning(scope: &str, vendor: &str, inferred: &Inferred, report: &mut CheckReport) {
+    match (vendor, &inferred.cuda, &inferred.rocm) {
+        ("nvidia", None, Some(rocm)) => report.warnings.push(format!(
+            "{scope} requires accel.vendor nvidia but the image carries ROCm {rocm}"
+        )),
+        ("amd", Some(cuda), None) => report.warnings.push(format!(
+            "{scope} requires accel.vendor amd but the image carries CUDA {cuda}"
+        )),
+        _ => {}
+    }
+}
+
+/// `variant_requires_vs_env`: a declaration the image's own markers
+/// contradict. Warnings only: the markers are evidence, and a probe on real
+/// hardware settles it.
+fn check_against_markers(
+    variant: &Variant,
+    config: &ImageConfig,
+    inferred: &Inferred,
+    report: &mut CheckReport,
+) {
+    let declared = variant.requires.clone().unwrap_or_default();
+    if let Some(vendor) = requires_vendor(&declared) {
+        marker_vendor_warning("variant:", vendor, inferred, report);
+    }
+    if let (Some(Requirement::Version(clauses)), Some(cuda)) =
+        (declared.get("accel.cuda"), &inferred.cuda)
+        && let Some(image) = parse_version(cuda)
+    {
+        let requirement = &declared["accel.cuda"];
+        if constraint_floor(clauses).is_some_and(|floor| compare(floor, &image).is_lt()) {
+            report.warnings.push(format!(
+                "variant: requires accel.cuda{requirement} admits drivers older than the image's \
+                 CUDA {cuda} runtime needs; declare \">={cuda}\""
+            ));
+        } else if caps_below(clauses, &image) {
+            report.warnings.push(format!(
+                "variant: requires accel.cuda{requirement} admits no driver that can run the \
+                 image's CUDA {cuda} runtime"
+            ));
+        }
+    }
+    if let (Some(declared), Some(built)) =
+        (variant.facets.get("accel"), inferred.facets.get("accel"))
+        && built != "cpu"
+        && declared != built
+    {
+        report.warnings.push(format!(
+            "variant: facets.accel {declared} but the image is built on {built}"
+        ));
+    }
+    if let Some(framework) = variant.facets.get("framework") {
+        let versions = framework_versions(config);
+        let named = FRAMEWORK_PACKAGES
+            .iter()
+            .any(|(package, facet)| facet == framework && versions.contains_key(*package));
+        if !versions.is_empty() && !named && !versions.contains_key(framework) {
+            report.warnings.push(format!(
+                "variant: facets.framework {framework} is not among describe.runtime.framework_versions"
+            ));
+        }
+    }
+}
+
+/// Check an index annotation's `dev.rlmesh.package` object: it may carry only
+/// the version-level keys ([`VERSION_PACKAGE_KEYS`], plus `schemaVersion` and
+/// `rev`); the platform ignores anything else, which belongs on the child
+/// images. Returns the warnings.
+pub fn index_annotation_warnings(package: &Map<String, Value>) -> Vec<String> {
+    let ignored: Vec<&str> = package
+        .keys()
+        .map(String::as_str)
+        .filter(|key| {
+            *key != "schemaVersion" && *key != "rev" && !VERSION_PACKAGE_KEYS.contains(key)
+        })
+        .collect();
+    if ignored.is_empty() {
+        return Vec::new();
+    }
+    vec![format!(
+        "index annotation keys ignored (they belong on the child images): {}",
+        ignored.join(", ")
+    )]
 }
 
 #[cfg(test)]
@@ -931,13 +1230,27 @@ mod tests {
         }
     }
 
-    fn image(env: &[&str]) -> ImageConfig {
-        ImageConfig {
+    fn image(env: &[&str], package: Option<Value>) -> ImageConfig {
+        let mut config = ImageConfig {
             os: "linux".to_owned(),
             architecture: "amd64".to_owned(),
             env: env.iter().map(|e| (*e).to_owned()).collect(),
             ..ImageConfig::default()
+        };
+        if let Some(package) = package {
+            config
+                .labels
+                .insert(PACKAGE_LABEL.to_owned(), package.to_string());
         }
+        config
+    }
+
+    fn with_torch(mut config: ImageConfig, versions: Value) -> ImageConfig {
+        config.labels.insert(
+            DESCRIBE_LABEL.to_owned(),
+            json!({"schema_version": 1, "runtime": {"framework_versions": versions}}).to_string(),
+        );
+        config
     }
 
     /// Assert each bucket holds exactly one message per needle, in order.
@@ -950,19 +1263,19 @@ mod tests {
         }
     }
 
-    /// The label from the schema this module documents.
-    fn spec_package() -> Map<String, Value> {
-        object(json!({
+    /// The label docs/compute-variants.md documents.
+    fn documented() -> Value {
+        json!({
             "schemaVersion": 1,
             "variant": {
-                "key": "torch-cuda12",
-                "facets": {"framework": "torch", "accel": "nvidia", "render": "egl"},
+                "key": "cuda12",
+                "facets": {"framework": "torch", "accel": "cuda", "render": "egl"},
                 "requires": {
                     "accel.vendor": "nvidia",
-                    "accel.compute": ">=8.0",
-                    "accel.cuda": ">=12.2",
-                    "accel.driver": ">=535",
-                    "accel.vram_bytes": ">=24000000000"
+                    "accel.compute": ">=8.0,<10.0",
+                    "accel.cuda": ">=12.4",
+                    "accel.driver": "550",
+                    "accel.vram_bytes": 24000000000_u64
                 },
                 "priority": 10
             },
@@ -970,82 +1283,87 @@ mod tests {
                 {"key": "osmesa", "default": true, "facets": {"render": "osmesa"},
                  "envVars": {"MUJOCO_GL": "osmesa"}},
                 {"key": "egl", "facets": {"render": "egl"}, "envVars": {"MUJOCO_GL": "egl"},
-                 "gpu": {"count": 1}, "requires": {"accel.vendor": "nvidia"}}
+                 "gpu": {"count": 1}}
             ]
-        }))
+        })
     }
 
     #[test]
-    fn requirement_parsing_table() {
-        let ok = |key: &str, value: Value, expected: Requirement| {
-            assert_eq!(
-                parse_requirement(key, &value),
-                Ok(expected),
-                "{key} {value}"
-            );
+    fn constraints_parse_like_the_platform() {
+        let parse = |raw: &str| {
+            parse_constraint(raw).map(|clauses| Requirement::Version(clauses).to_string())
         };
-        let cmp = |c: Comparator, v: &str| Requirement::Compare(c, v.to_owned());
-        ok(
-            "accel.vendor",
-            json!("nvidia"),
-            cmp(Comparator::Eq, "nvidia"),
+        assert_eq!(parse(">=8.0,<10.0").as_deref(), Some(">=8.0,<10.0"));
+        // A bare version is a minimum.
+        assert_eq!(parse("12.4").as_deref(), Some(">=12.4"));
+        assert_eq!(parse(" >= 12.2 ").as_deref(), Some(">=12.2"));
+        assert_eq!(parse("==12.4").as_deref(), Some("==12.4"));
+        assert_eq!(parse("=12").as_deref(), Some("==12"));
+        assert_eq!(parse(">12,<=12.6.1").as_deref(), Some(">12,<=12.6.1"));
+        for bad in [
+            "", " ", "12.4.1.2", "~12", ">=", "12,", "abc", "!=12", "12.x",
+        ] {
+            assert_eq!(parse(bad), None, "{bad:?}");
+        }
+        let floor = |raw: &str| {
+            let clauses = parse_constraint(raw).unwrap();
+            constraint_floor(&clauses).map(dotted)
+        };
+        assert_eq!(floor(">=12.2,>12.4,<13").as_deref(), Some("12.4"));
+        assert_eq!(floor("<13"), None);
+        assert_eq!(floor("==12.1").as_deref(), Some("12.1"));
+    }
+
+    #[test]
+    fn requirement_values_table() {
+        let ok = |key: &str, value: Value| {
+            parse_requirement(key, &value).unwrap_or_else(|e| panic!("{key} {value}: {e}"))
+        };
+        assert_eq!(
+            ok("accel.vendor", json!("amd")),
+            Requirement::Vendor("amd".to_owned())
         );
-        ok("accel.vendor", json!("=amd"), cmp(Comparator::Eq, "amd"));
-        ok("accel.cuda", json!(">=12.2"), cmp(Comparator::Ge, "12.2"));
-        ok(
-            "accel.cuda",
-            json!(" >= 12.2 "),
-            cmp(Comparator::Ge, "12.2"),
+        assert_eq!(
+            ok("accel.gfx", json!(["gfx942", "gfx90a"])),
+            Requirement::Targets(vec!["gfx942".to_owned(), "gfx90a".to_owned()])
         );
-        ok("accel.compute", json!("<9.0"), cmp(Comparator::Lt, "9.0"));
-        ok(
-            "accel.driver",
-            json!("535.104.05"),
-            cmp(Comparator::Eq, "535.104.05"),
+        assert_eq!(
+            ok("accel.vram_bytes", json!(24000000000_u64)),
+            Requirement::MinBytes(24000000000)
         );
-        ok(
-            "accel.vram_bytes",
-            json!(">=24000000000"),
-            cmp(Comparator::Ge, "24000000000"),
-        );
-        ok(
-            "accel.gfx",
-            json!(["gfx942", "gfx90a"]),
-            Requirement::OneOf(vec!["gfx942".to_owned(), "gfx90a".to_owned()]),
-        );
-        ok(
-            "accel.compute",
-            json!(["8.0", "9.0"]),
-            Requirement::OneOf(vec!["8.0".to_owned(), "9.0".to_owned()]),
+        assert_eq!(
+            ok("accel.driver", json!("535.104.05")).to_string(),
+            ">=535.104.5"
         );
         for (key, value, needle) in [
-            ("accel.memory", json!(">=1"), "unknown requires key"),
-            ("accel.cuda", json!(">12"), "not supported"),
-            ("accel.cuda", json!("<=12"), "not supported"),
-            ("accel.cuda", json!("!=12"), "not supported"),
             (
-                "accel.cuda",
-                json!(">=twelve"),
-                "not a dotted numeric version",
+                "accel.vendor",
+                json!("intel"),
+                "is not \"nvidia\" or \"amd\"",
             ),
             (
-                "accel.cuda",
-                json!(">=1.2.3.4.5"),
-                "not a dotted numeric version",
+                "accel.vendor",
+                json!(["nvidia"]),
+                "is not \"nvidia\" or \"amd\"",
             ),
-            ("accel.cuda", json!(">="), "empty value"),
-            ("accel.vram_bytes", json!(">=24G"), "whole number of bytes"),
+            ("accel.cuda", json!(12.4), "is not a version constraint"),
+            ("accel.cuda", json!(["12.4"]), "is not a version constraint"),
+            ("accel.compute", json!("~8"), "is not a version constraint"),
+            ("accel.gfx", json!("gfx942"), "not a non-empty list"),
+            ("accel.gfx", json!([]), "not a non-empty list"),
+            (
+                "accel.gfx",
+                json!(["gfx942", "mi300"]),
+                "entry \"mi300\" is not a gfx target",
+            ),
             (
                 "accel.vram_bytes",
-                json!(24_000_000_000_u64),
-                "write a comparator string",
+                json!(">=24000000000"),
+                "write the minimum as a JSON number: 24000000000",
             ),
-            ("accel.vendor", json!(">=nvidia"), "not a >= comparison"),
-            ("accel.vendor", json!("nv idia"), "whitespace"),
-            ("accel.gfx", json!([]), "empty list"),
-            ("accel.gfx", json!([942]), "must be strings"),
-            ("accel.compute", json!([">=8.0"]), "carries a comparator"),
-            ("accel.vendor", json!(true), "comparator string or a list"),
+            ("accel.vram_bytes", json!(0), "not a positive integer"),
+            ("accel.vram_bytes", json!(1.5), "not a positive integer"),
+            ("accel.memory", json!(1), "unknown key \"accel.memory\""),
         ] {
             let error = parse_requirement(key, &value).unwrap_err();
             assert!(error.contains(needle), "{key} {value}: {error}");
@@ -1053,342 +1371,473 @@ mod tests {
     }
 
     #[test]
-    fn requirements_combine_by_key() {
-        let parse = |key: &str, value: Value| parse_requirement(key, &value).unwrap();
-        let sat = |key: &str, values: &[Value]| {
-            let parsed: Vec<Requirement> = values.iter().map(|v| parse(key, v.clone())).collect();
-            satisfiable(key, &parsed.iter().collect::<Vec<_>>())
-        };
-        assert!(sat("accel.cuda", &[json!(">=12.2"), json!("<13")]));
-        assert!(!sat("accel.cuda", &[json!(">=12.4"), json!("<12.4")]));
-        assert!(!sat("accel.cuda", &[json!(">=12"), json!("<12")]));
-        // Zero padding: 12 is 12.0.
-        assert!(sat("accel.cuda", &[json!("=12"), json!(">=12.0")]));
-        assert!(!sat("accel.cuda", &[json!("=12.1"), json!(">=12.2")]));
-        assert!(sat(
-            "accel.compute",
-            &[json!(["8.0", "9.0"]), json!(">=8.6")]
-        ));
-        assert!(!sat(
-            "accel.compute",
-            &[json!(["7.5", "8.0"]), json!(">=8.6")]
-        ));
-        assert!(sat(
-            "accel.vendor",
-            &[json!(["nvidia", "amd"]), json!("amd")]
-        ));
-        assert!(!sat("accel.vendor", &[json!("nvidia"), json!("amd")]));
-        assert!(!sat("accel.gfx", &[json!(["gfx942"]), json!(["gfx90a"])]));
-        assert!(sat(
-            "accel.vram_bytes",
-            &[json!(">=24000000000"), json!("<80000000001")]
-        ));
+    fn hardware_keys_need_a_consistent_vendor() {
+        let problems = |raw: Value| parse_requires(&raw).1;
+        assert_eq!(
+            problems(json!({"accel.cuda": ">=12"})),
+            ["accel.cuda needs accel.vendor"]
+        );
+        assert_eq!(
+            problems(json!({"accel.vram_bytes": 1})),
+            ["accel.vram_bytes needs accel.vendor"]
+        );
+        assert_eq!(
+            problems(json!({"accel.vendor": "amd", "accel.cuda": ">=12", "accel.driver": "550"})),
+            [
+                "accel.cuda is an NVIDIA requirement but accel.vendor is amd",
+                "accel.driver is an NVIDIA requirement but accel.vendor is amd"
+            ]
+        );
+        assert_eq!(
+            problems(json!({"accel.vendor": "nvidia", "accel.gfx": ["gfx942"]})),
+            ["accel.gfx is an AMD requirement but accel.vendor is nvidia"]
+        );
+        assert!(
+            problems(
+                json!({"accel.vendor": "amd", "accel.gfx": ["gfx942"], "accel.vram_bytes": 1})
+            )
+            .is_empty()
+        );
+        assert_eq!(problems(json!([])), ["requires is not an object"]);
     }
 
     #[test]
     fn the_documented_label_is_clean() {
-        let (blocks, report) = parse_compute_blocks(&spec_package());
+        let package = object(documented());
+        let (blocks, report) = parse_compute_blocks(&package);
         assert_eq!(report, CheckReport::default());
         let variant = blocks.variant.as_ref().unwrap();
-        assert_eq!(variant.key.as_deref(), Some("torch-cuda12"));
-        assert_eq!(variant.priority, Some(10));
-        assert_eq!(variant.requires.len(), 5);
-        assert_eq!(blocks.profiles.len(), 2);
-        assert_eq!(
-            blocks.default_profile().map(|p| p.key.as_str()),
-            Some("osmesa")
-        );
-        let egl = &blocks.profiles[1];
-        assert_eq!(egl.gpu_count, Some(1));
-        assert_eq!(egl.env_vars["MUJOCO_GL"], "egl");
-        // Against a CUDA 12.4 image that declares no stricter floor than 12.2.
-        let config = image(&[
-            "CUDA_VERSION=12.2.2",
-            "NVIDIA_REQUIRE_CUDA=cuda>=12.2 brand=tesla",
-        ]);
-        let report = check_compute_blocks(&spec_package(), &config);
+        assert_eq!(variant.priority, 10);
+        assert_eq!(variant.requires.as_ref().unwrap().len(), 5);
+        assert_eq!(blocks.row_keys("cuda12"), ["cuda12-osmesa", "cuda12-egl"]);
+        let config = image(&["CUDA_VERSION=12.4.1"], Some(documented()));
+        let report = check_variant(&config);
         assert_buckets(&report, &[], &[]);
-        assert_eq!(report.passed.len(), 2, "{report:#?}");
-        assert!(report.passed[0].starts_with("variant: torch-cuda12 (facets "));
-        assert!(report.passed[0].contains("accel.cuda>=12.2"), "{report:#?}");
-        assert_eq!(report.passed[1], "profiles: osmesa (default), egl");
-    }
-
-    #[test]
-    fn a_label_without_the_blocks_reports_nothing() {
-        let package = object(json!({"schemaVersion": 1, "tags": ["gpu"]}));
-        let config = image(&["CUDA_VERSION=12.4.1"]);
         assert_eq!(
-            check_compute_blocks(&package, &config),
-            CheckReport::default()
+            report.passed,
+            [
+                "variant: cuda12 (facets accel=cuda, framework=torch, render=egl; requires \
+                 accel.compute>=8.0,<10.0, accel.cuda>=12.4, accel.driver>=550, \
+                 accel.vendor=nvidia, accel.vram_bytes>=24000000000; priority 10)",
+                "rows: cuda12-osmesa (default), cuda12-egl",
+            ]
         );
     }
 
     #[test]
     fn structure_table() {
-        struct Case {
-            name: &'static str,
-            package: Value,
-            failed: &'static [&'static str],
-            warnings: &'static [&'static str],
-        }
-        let cases = [
-            Case {
-                name: "variant not an object",
-                package: json!({"variant": "torch"}),
-                failed: &["variant: must be a JSON object, got a string"],
-                warnings: &[],
-            },
-            Case {
-                name: "bad field types, unknown field, non-DNS key",
-                package: json!({"variant": {"key": "Torch_CUDA", "facets": {"gpu": 1},
-                    "priority": "high", "requires": {"accel.cuda": "~12"}, "tier": "a"}}),
-                failed: &[
-                    "variant: facets \"gpu\" must be a string",
-                    "variant: requires accel.cuda value \"~12\" is not a dotted numeric version",
-                    "variant: priority must be an integer",
+        let long = "a".repeat(33);
+        let cases: Vec<(&str, Value, Vec<&str>, Vec<&str>)> = vec![
+            (
+                "variant not an object",
+                json!({"variant": "torch"}),
+                vec!["variant: variant is not an object"],
+                vec![],
+            ),
+            (
+                "missing key",
+                json!({"variant": {"facets": {"framework": "jax"}}}),
+                vec!["variant: variant.key is required"],
+                vec![],
+            ),
+            (
+                "bad key, facets, priority, unknown field",
+                json!({"variant": {"key": "Torch_CUDA", "facets": {"accel": "nvidia", "render": "x",
+                    "framework": "Torch", "gpu": "a100"}, "priority": 2000, "tier": "a"}}),
+                vec![
+                    "variant: key \"Torch_CUDA\" is not 1-32 lowercase",
+                    "facets.accel \"nvidia\" is not cpu, cuda or rocm",
+                    "facets.framework \"Torch\" is not a lowercase token",
+                    "unknown facet \"gpu\" (allowed: framework, accel, render)",
+                    "facets.render \"x\" is not osmesa, egl or none",
+                    "variant: priority 2000 is not an integer in [-1000, 1000]",
+                    "variant: unknown key \"tier\"",
                 ],
-                warnings: &[
-                    "variant: key \"Torch_CUDA\" is not a DNS label",
-                    "unknown field \"tier\"",
+                vec![],
+            ),
+            (
+                "key too long",
+                json!({"variant": {"key": long}}),
+                vec!["is not 1-32 lowercase"],
+                vec![],
+            ),
+            (
+                "fractional priority",
+                json!({"variant": {"key": "a", "priority": 1.5}}),
+                vec!["priority 1.5 is not an integer"],
+                vec![],
+            ),
+            (
+                "accel contradicts vendor",
+                json!({"variant": {"key": "a", "facets": {"accel": "cuda"}, "requires": {"accel.vendor": "amd"}}}),
+                vec!["facets.accel cuda contradicts requires accel.vendor amd"],
+                vec![],
+            ),
+            (
+                "accel without the vendor it implies",
+                json!({"variant": {"key": "a", "facets": {"accel": "rocm"}, "requires": {}}}),
+                vec!["facets.accel rocm contradicts requires accel.vendor (none)"],
+                vec![],
+            ),
+            (
+                "cpu accel with a vendor",
+                json!({"variant": {"key": "a", "facets": {"accel": "cpu"}, "requires": {"accel.vendor": "nvidia"}}}),
+                vec!["facets.accel cpu contradicts requires accel.vendor nvidia"],
+                vec![],
+            ),
+            (
+                "profiles not a list",
+                json!({"profiles": {"key": "egl"}}),
+                vec!["profiles: profiles is not a list"],
+                vec![],
+            ),
+            (
+                "duplicate keys",
+                json!({"profiles": [{"key": "egl", "default": true}, {"key": "egl"}]}),
+                vec!["profiles: key \"egl\" appears more than once"],
+                vec![],
+            ),
+            (
+                "no default is allowed: the first is",
+                json!({"profiles": [{"key": "osmesa"}, {"key": "egl"}]}),
+                vec![],
+                vec!["the first, osmesa, is the default"],
+            ),
+            (
+                "two defaults",
+                json!({"profiles": [{"key": "osmesa", "default": true}, {"key": "egl", "default": true}]}),
+                vec!["osmesa, egl are all marked default; at most one may be"],
+                vec![],
+            ),
+            (
+                "entries, keys, defaults",
+                json!({"profiles": [{"default": true}, "egl", {"key": "Bad"}, {"key": "ok", "default": "yes"}]}),
+                vec![
+                    "profiles: profiles[0].key is required",
+                    "profiles: profiles[1] is not an object",
+                    "profiles: profiles[2].key \"Bad\" is not 1-32",
+                    "profiles: ok: default \"yes\" is not true or false",
                 ],
-            },
-            Case {
-                name: "variant without a key",
-                package: json!({"variant": {"facets": {"framework": "jax"}}}),
-                failed: &[],
-                warnings: &["variant: no key"],
-            },
-            Case {
-                name: "unknown vendor",
-                package: json!({"variant": {"key": "x", "requires": {"accel.vendor": ["nvidia", "qualcomm"]}}}),
-                failed: &[],
-                warnings: &["accel.vendor \"qualcomm\" is not one"],
-            },
-            Case {
-                name: "profiles not an array",
-                package: json!({"profiles": {"key": "egl"}}),
-                failed: &["profiles: must be a JSON array, got an object"],
-                warnings: &[],
-            },
-            Case {
-                name: "duplicate keys",
-                package: json!({"profiles": [{"key": "egl", "default": true}, {"key": "egl"}]}),
-                failed: &["profiles: key \"egl\" appears more than once"],
-                warnings: &[],
-            },
-            Case {
-                name: "no default",
-                package: json!({"profiles": [{"key": "osmesa"}, {"key": "egl"}]}),
-                failed: &["no profile is marked \"default\": true"],
-                warnings: &[],
-            },
-            Case {
-                name: "two defaults",
-                package: json!({"profiles": [{"key": "osmesa", "default": true},
-                    {"key": "egl", "default": true}]}),
-                failed: &["osmesa, egl are all marked default"],
-                warnings: &[],
-            },
-            Case {
-                name: "missing key, non-object entry, bad default",
-                package: json!({"profiles": [{"default": true}, "egl",
-                    {"key": "osmesa", "default": "yes"}]}),
-                failed: &[
-                    "profiles: entry 0 has no key",
-                    "profiles: entry 1 must be a JSON object",
-                    "profiles: osmesa: default must be true or false",
-                    "no profile is marked",
-                ],
-                warnings: &[],
-            },
-            Case {
-                name: "envVars and gpu shapes",
-                package: json!({"profiles": [{"key": "egl", "default": true,
+                vec!["the first, ok, is the default"],
+            ),
+            (
+                "envVars, gpu, requires, unknown field",
+                json!({"profiles": [{"key": "egl", "default": true,
                     "envVars": {"MUJOCO_GL": "egl", "1BAD": "x", "N": 3, "RLMESH_ADDRESS": "0.0.0.0:1"},
-                    "gpu": {"count": -1, "type": "h100"}}]}),
-                failed: &[
-                    "profiles: egl: envVars name \"1BAD\" is not a valid",
-                    "profiles: egl: envVars N must be a string",
-                    "profiles: egl: gpu.count must be a non-negative integer",
+                    "gpu": {"count": 9}, "requires": {"accel.cuda": ">=12"}, "resources": {"memory": "8Gi"},
+                    "type": "h100"}]}),
+                vec![
+                    "profiles: egl: envVars N 3 is not a string",
+                    "profiles: egl: gpu.count 9 is not in [0, 8]",
+                    "profiles: egl: requires accel.cuda needs accel.vendor",
+                    "profiles: egl: unknown key \"type\"",
                 ],
-                warnings: &[
+                vec![
+                    "profiles: egl: envVars name \"1BAD\" is not a portable",
                     "profiles: egl: envVars sets RLMESH_ADDRESS",
-                    "profiles: egl: gpu: unknown field \"type\"",
                 ],
-            },
+            ),
         ];
-        for case in cases {
-            let (_, report) = parse_compute_blocks(&object(case.package));
-            assert_eq!(
-                report.failed.len(),
-                case.failed.len(),
-                "{}: {report:#?}",
-                case.name
-            );
-            assert_eq!(
-                report.warnings.len(),
-                case.warnings.len(),
-                "{}: {report:#?}",
-                case.name
-            );
-            for (bucket, expected) in [
-                (&report.failed, case.failed),
-                (&report.warnings, case.warnings),
-            ] {
-                for (message, needle) in bucket.iter().zip(expected) {
-                    assert!(
-                        message.contains(needle),
-                        "{}: {needle:?} not in {message:?}",
-                        case.name
-                    );
-                }
+        for (name, package, failed, warnings) in cases {
+            let (_, report) = parse_compute_blocks(&object(package));
+            assert_eq!(report.failed.len(), failed.len(), "{name}: {report:#?}");
+            assert_eq!(report.warnings.len(), warnings.len(), "{name}: {report:#?}");
+            for (message, needle) in report.failed.iter().zip(&failed) {
+                assert!(
+                    message.contains(needle),
+                    "{name}: {needle:?} not in {message:?}"
+                );
+            }
+            for (message, needle) in report.warnings.iter().zip(&warnings) {
+                assert!(
+                    message.contains(needle),
+                    "{name}: {needle:?} not in {message:?}"
+                );
             }
         }
     }
 
     #[test]
-    fn requires_are_checked_against_the_image_env() {
-        let variant =
-            |requires: Value| object(json!({"variant": {"key": "v", "requires": requires}}));
-        let cuda = image(&[
-            "CUDA_VERSION=12.4.1",
-            "NVIDIA_REQUIRE_CUDA=cuda>=12.4 brand=tesla,driver>=470,driver<471",
-        ]);
-        // Consistent.
-        let report = check_compute_blocks(
-            &variant(json!({"accel.vendor": "nvidia", "accel.cuda": ">=12.4"})),
-            &cuda,
-        );
-        assert_buckets(&report, &[], &[]);
-        // Admits hosts the NVIDIA runtime refuses.
-        let report = check_compute_blocks(
-            &variant(json!({"accel.vendor": "nvidia", "accel.cuda": ">=12.2"})),
-            &cuda,
-        );
-        assert_buckets(
-            &report,
-            &[],
-            &["admits hosts below the image's NVIDIA_REQUIRE_CUDA cuda>=12.4"],
-        );
-        // No host can satisfy both.
-        let report = check_compute_blocks(
-            &variant(json!({"accel.vendor": "nvidia", "accel.cuda": "<12"})),
-            &cuda,
-        );
-        assert_buckets(
-            &report,
-            &["accel.cuda<12 but the image needs a host with CUDA >=12.4"],
-            &[],
-        );
-        // Nothing declared on a CUDA image: say what to declare.
-        let report = check_compute_blocks(&variant(json!({})), &cuda);
-        assert_buckets(
-            &report,
-            &[],
-            &[
-                "requires no accel.vendor",
-                "declare \"accel.cuda\": \">=12.4\"",
-            ],
-        );
-        // Wrong vendor and an AMD target on a CUDA image.
-        let report = check_compute_blocks(
-            &variant(
-                json!({"accel.vendor": "amd", "accel.gfx": ["gfx942"], "accel.cuda": ">=12.4"}),
+    fn inference_table() {
+        let cases: Vec<(&str, ImageConfig, Option<&str>, &str, &str)> = vec![
+            (
+                "CUDA_VERSION",
+                image(&["CUDA_VERSION=12.4.1"], None),
+                Some("cuda"),
+                "accel.cuda>=12.4, accel.vendor=nvidia",
+                "cuda12",
             ),
-            &cuda,
-        );
-        assert_buckets(
-            &report,
-            &[],
-            &[
-                "CUDA image (CUDA_VERSION=12.4.1) but requires accel.vendor=amd",
-                "accel.gfx",
-            ],
-        );
-        // CUDA_VERSION alone: its major.minor is the floor.
-        let toolkit = image(&["CUDA_VERSION=12.1.0"]);
-        let report = check_compute_blocks(
-            &variant(json!({"accel.vendor": "nvidia", "accel.cuda": ">=11.8"})),
-            &toolkit,
-        );
-        assert_buckets(
-            &report,
-            &[],
-            &["below the image's CUDA_VERSION=12.1.0; declare \">=12.1\""],
-        );
-        // ROCm.
-        let rocm = image(&["ROCM_VERSION=6.2.1"]);
-        let report = check_compute_blocks(
-            &variant(json!({"accel.vendor": "nvidia", "accel.cuda": ">=12"})),
-            &rocm,
-        );
-        assert_buckets(
-            &report,
-            &[],
-            &[
-                "ROCm image (ROCM_VERSION=6.2.1) but requires accel.vendor=nvidia",
-                "accel.cuda (an NVIDIA property)",
-            ],
-        );
-        let report = check_compute_blocks(
-            &variant(json!({"accel.vendor": "amd", "accel.gfx": ["gfx942", "gfx90a"]})),
-            &rocm,
-        );
-        assert_buckets(&report, &[], &[]);
-        // A CPU image is not judged for its requires.
-        let report = check_compute_blocks(&variant(json!({"accel.cuda": ">=12"})), &image(&[]));
-        assert_buckets(&report, &[], &[]);
+            (
+                "CUDA_VERSION wins over NVIDIA_REQUIRE_CUDA",
+                image(
+                    &["CUDA_VERSION=12.4.1", "NVIDIA_REQUIRE_CUDA=cuda>=12.2"],
+                    None,
+                ),
+                Some("cuda"),
+                "accel.cuda>=12.4, accel.vendor=nvidia",
+                "cuda12",
+            ),
+            (
+                "NVIDIA_REQUIRE_CUDA",
+                image(
+                    &["NVIDIA_REQUIRE_CUDA=brand=tesla,driver>=470 cuda>=11.8"],
+                    None,
+                ),
+                Some("cuda"),
+                "accel.cuda>=11.8, accel.vendor=nvidia",
+                "cuda11",
+            ),
+            (
+                "ROCM_VERSION",
+                image(&["ROCM_VERSION=6.2.1"], None),
+                Some("rocm"),
+                "accel.vendor=amd",
+                "rocm6",
+            ),
+            (
+                "torch +cu121",
+                with_torch(image(&[], None), json!({"torch": "2.3.0+cu121"})),
+                Some("cuda"),
+                "accel.cuda>=12.1, accel.vendor=nvidia",
+                "cuda12",
+            ),
+            (
+                "torch +cu118",
+                with_torch(image(&[], None), json!({"Torch": "2.1.0+cu118"})),
+                Some("cuda"),
+                "accel.cuda>=11.8, accel.vendor=nvidia",
+                "cuda11",
+            ),
+            (
+                "torch +rocm6.0",
+                with_torch(image(&[], None), json!({"torch": "2.3.0+rocm6.0"})),
+                Some("rocm"),
+                "accel.vendor=amd",
+                "rocm6",
+            ),
+            (
+                "torch +cpu",
+                with_torch(image(&[], None), json!({"torch": "2.3.0+cpu"})),
+                Some("cpu"),
+                "",
+                "cpu",
+            ),
+            (
+                "nothing",
+                image(&["PATH=/bin"], None),
+                Some("cpu"),
+                "",
+                "cpu",
+            ),
+            (
+                "both markers",
+                image(&["CUDA_VERSION=12.4", "ROCM_VERSION=6.2"], None),
+                None,
+                "",
+                "default",
+            ),
+        ];
+        for (name, config, accel, requires, stack) in cases {
+            let inferred = infer(&config);
+            assert_eq!(
+                inferred.facets.get("accel").map(String::as_str),
+                accel,
+                "{name}"
+            );
+            assert_eq!(format_requires(&inferred.requires), requires, "{name}");
+            assert_eq!(inferred.stack_key(), stack, "{name}");
+        }
+        // The env markers beat the torch tag; the framework facet comes from describe.
+        let inferred = infer(&with_torch(
+            image(&["ROCM_VERSION=6.2"], None),
+            json!({"jaxlib": "0.4.30", "torch": "2.3.0+cu121"}),
+        ));
+        assert_eq!(inferred.facets["accel"], "rocm");
+        assert_eq!(inferred.facets["framework"], "torch");
+        assert_eq!(inferred.evidence, "ROCM_VERSION=6.2");
     }
 
     #[test]
-    fn profiles_must_hold_together_with_the_variant() {
-        let package = object(json!({
-            "variant": {"key": "torch-rocm6", "requires": {"accel.vendor": "amd"}},
+    fn undeclared_images_report_what_is_inferred() {
+        let report = check_variant(&image(&["CUDA_VERSION=12.4.1"], None));
+        assert_buckets(&report, &[], &[]);
+        assert_eq!(
+            report.passed,
+            [
+                "variant: none declared; inferred from CUDA_VERSION=12.4.1: facets accel=cuda; \
+                 requires accel.cuda>=12.4, accel.vendor=nvidia",
+                "rows: default",
+            ]
+        );
+        let report = check_variant(&image(&[], None));
+        assert_eq!(
+            report.passed[0],
+            "variant: none declared; inferred from no CUDA or ROCm markers: facets accel=cpu; no \
+             requires (a CPU image)"
+        );
+        // A declared variant without requires gets the inferred ones.
+        let report = check_variant(&image(
+            &["ROCM_VERSION=6.2.1"],
+            Some(
+                json!({"schemaVersion": 1, "variant": {"key": "rocm6", "facets": {"framework": "torch"}}}),
+            ),
+        ));
+        assert_eq!(
+            report.passed[0],
+            "variant: rocm6 (facets accel=rocm, framework=torch; requires accel.vendor=amd); \
+             requires inferred from ROCM_VERSION=6.2.1"
+        );
+        // Profiles without a variant block are rows named for the profile.
+        let mut config = image(
+            &[],
+            Some(
+                json!({"schemaVersion": 1, "profiles": [{"key": "osmesa"}, {"key": "egl", "default": true}]}),
+            ),
+        );
+        let report = check_variant(&config);
+        assert_eq!(report.passed[1], "rows: osmesa, egl (default)");
+        // A platform the fleet cannot select is named for it and excluded.
+        config.architecture = "arm64".to_owned();
+        config.labels.clear();
+        assert_eq!(
+            check_variant(&config).passed[1],
+            "rows: default-arm64 (excluded: not linux/amd64)"
+        );
+    }
+
+    #[test]
+    fn declarations_are_checked_against_the_markers() {
+        let variant = |requires: Value, facets: Value| json!({"schemaVersion": 1, "variant": {"key": "v", "requires": requires, "facets": facets}});
+        let cuda = |package: Value| image(&["CUDA_VERSION=12.4.1"], Some(package));
+        let report = check_variant(&cuda(variant(
+            json!({"accel.vendor": "nvidia", "accel.cuda": "12.4"}),
+            json!({}),
+        )));
+        assert_buckets(&report, &[], &[]);
+        let report = check_variant(&cuda(variant(
+            json!({"accel.vendor": "nvidia", "accel.cuda": ">=12.2"}),
+            json!({}),
+        )));
+        assert_buckets(
+            &report,
+            &[],
+            &["accel.cuda>=12.2 admits drivers older than the image's CUDA 12.4 runtime needs"],
+        );
+        let report = check_variant(&cuda(variant(
+            json!({"accel.vendor": "nvidia", "accel.cuda": "<12"}),
+            json!({}),
+        )));
+        assert_buckets(
+            &report,
+            &[],
+            &["accel.cuda<12 admits no driver that can run the image's CUDA 12.4"],
+        );
+        let report = check_variant(&cuda(variant(
+            json!({"accel.vendor": "amd"}),
+            json!({"accel": "rocm"}),
+        )));
+        assert_buckets(
+            &report,
+            &[],
+            &[
+                "requires accel.vendor amd but the image carries CUDA 12.4",
+                "facets.accel rocm but the image is built on cuda",
+            ],
+        );
+        let rocm = image(
+            &["ROCM_VERSION=6.2"],
+            Some(variant(json!({"accel.vendor": "nvidia"}), json!({}))),
+        );
+        assert_buckets(
+            &check_variant(&rocm),
+            &[],
+            &["requires accel.vendor nvidia but the image carries ROCm 6.2"],
+        );
+        let jax = with_torch(
+            cuda(variant(
+                json!({"accel.vendor": "nvidia", "accel.cuda": ">=12.4"}),
+                json!({"framework": "jax"}),
+            )),
+            json!({"torch": "2.3.0"}),
+        );
+        assert_buckets(
+            &check_variant(&jax),
+            &[],
+            &["facets.framework jax is not among describe.runtime.framework_versions"],
+        );
+        // A declared stack the markers do not show keeps only its vendor.
+        let package = object(json!({"variant": {"key": "v", "facets": {"accel": "rocm"}}}));
+        let (blocks, _) = parse_compute_blocks(&package);
+        let (requires, facets) = effective(&blocks, &infer(&image(&["CUDA_VERSION=12.4.1"], None)));
+        assert_eq!(format_requires(&requires), "accel.vendor=amd");
+        assert_eq!(facets["accel"], "rocm");
+    }
+
+    #[test]
+    fn profiles_override_and_must_still_hold_together() {
+        let package = json!({
+            "schemaVersion": 1,
+            "variant": {"key": "cuda12", "requires": {"accel.vendor": "nvidia", "accel.cuda": ">=12.4"}},
             "profiles": [
                 {"key": "osmesa", "default": true},
-                {"key": "egl", "requires": {"accel.vendor": "nvidia"}},
+                {"key": "rocm", "requires": {"accel.vendor": "amd"}, "resources": {"memory": "8Gi"}},
             ]
-        }));
-        let report = check_compute_blocks(&package, &image(&[]));
+        });
+        let report = check_variant(&image(&["CUDA_VERSION=12.4.1"], Some(package)));
         assert_buckets(
             &report,
-            &[
-                "profiles: egl: requires accel.vendor=nvidia but the variant requires accel.vendor=amd",
-            ],
             &[],
+            &[
+                "profiles: rocm: with the variant's requires it inherits, accel.cuda is an NVIDIA requirement",
+                "profiles: rocm: requires accel.vendor amd but the image carries CUDA 12.4",
+            ],
         );
-        // A profile on a CUDA image that pins another vendor is called out per profile.
-        let package = object(json!({
-            "variant": {"key": "v", "requires": {"accel.vendor": ["nvidia", "amd"], "accel.cuda": ">=12.4"}},
-            "profiles": [
-                {"key": "rocm", "default": true, "requires": {"accel.vendor": "amd"}},
-                {"key": "plain"}
-            ]
-        }));
-        let report = check_compute_blocks(&package, &image(&["NVIDIA_REQUIRE_CUDA=cuda>=12.4"]));
-        // Inherited entries are judged once, at the variant; "plain" adds nothing.
-        assert_buckets(&report, &[], &["profiles: rocm: the image is a CUDA image"]);
-        assert_eq!(
-            report.passed.last().unwrap(),
-            "profiles: rocm (default), plain"
-        );
-        // A block that failed gets no summary line.
-        let package = object(json!({"variant": {"key": "v", "priority": "x"},
-            "profiles": [{"key": "a"}]}));
-        let report = check_compute_blocks(&package, &image(&[]));
-        assert_eq!(report.failed.len(), 2, "{report:#?}");
-        assert!(report.passed.is_empty(), "{report:#?}");
+        assert_eq!(report.not_checked.len(), 1, "{report:#?}");
+        assert!(report.not_checked[0].contains("resources are validated by the platform"));
     }
 
     #[test]
-    fn image_accel_reads_the_cuda_floor() {
-        let accel = ImageAccel::from_config(&image(&[
-            "NVIDIA_REQUIRE_CUDA=brand=tesla,driver>=470 cuda>=12.4",
-            "ROCM_VERSION=",
-        ]));
-        assert_eq!(accel.require_cuda.as_deref(), Some("12.4"));
-        assert_eq!(accel.cuda_version, None);
-        assert_eq!(accel.rocm_version, None);
+    fn row_keys_must_fit_the_key_pattern() {
+        let package = json!({"schemaVersion": 1, "variant": {"key": "torch-cuda12-ampere-plus"},
+            "profiles": [{"key": "osmesa-software", "default": true}]});
+        let report = check_variant(&image(&[], Some(package)));
+        assert_buckets(
+            &report,
+            &["rows: row key \"torch-cuda12-ampere-plus-osmesa-software\""],
+            &[],
+        );
+        assert!(
+            report.passed.iter().all(|m| !m.starts_with("rows:")),
+            "{report:#?}"
+        );
+    }
+
+    #[test]
+    fn synthesized_keys() {
+        let cuda = infer(&image(&["CUDA_VERSION=12.4.1"], None));
+        assert_eq!(synth_key(&cuda, "linux", "amd64", "", 1), "default");
+        assert_eq!(synth_key(&cuda, "linux", "amd64", "", 2), "cuda12");
+        assert_eq!(
+            synth_key(&cuda, "linux", "arm64", "v8", 1),
+            "default-arm64v8"
+        );
+        assert_eq!(
+            synth_key(&cuda, "linux", "arm64", "v8", 2),
+            "cuda12-arm64v8"
+        );
+    }
+
+    #[test]
+    fn index_annotation_keys() {
+        assert!(
+            index_annotation_warnings(&object(json!({"schemaVersion": 1, "rev": 2, "name": "pi0",
+            "description": "", "checkpoints": [], "compatibility": {}, "capabilities": [],
+            "inputArtifacts": []})))
+            .is_empty()
+        );
+        assert_eq!(
+            index_annotation_warnings(&object(json!({"name": "pi0", "variant": {}, "tags": []}))),
+            ["index annotation keys ignored (they belong on the child images): tags, variant"]
+        );
     }
 }
