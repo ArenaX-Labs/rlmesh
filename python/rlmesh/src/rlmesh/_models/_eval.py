@@ -13,6 +13,7 @@ names :class:`Session` resolves as module globals: connection/contract synthesis
 
 from __future__ import annotations
 
+import numbers
 import os
 import time
 import uuid
@@ -80,16 +81,45 @@ def _ema(prev: float, sample: float) -> float:
     return sample if prev <= 0.0 else 0.85 * prev + 0.15 * sample
 
 
+# Mirrors `EditionDefaults::success_info_keys` in crates/rlmesh-proto; keep in sync.
+_SUCCESS_INFO_KEYS = ("is_success", "success", "task_success")
+
+
+def _success_flag(value: object) -> bool | None:
+    """One info value as a task outcome, or ``None`` when its kind carries none.
+
+    Matches the native runtime (`success_from_final_info` in
+    crates/rlmesh-runtime `driver.rs`) over the value as it crosses the wire:
+    NumPy scalars and 0-d arrays unwrap to Python scalars first (as metadata
+    encoding does), then a bool is taken as-is and an integer or float is
+    true when non-zero. Any other kind -- a string, ``None``, a list -- is
+    skipped, so the next key decides.
+    """
+    for unwrap in ("tolist", "item"):
+        method: object = getattr(value, unwrap, None)
+        if callable(method):
+            value = method()
+            break
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, numbers.Integral):
+        return int(value) != 0
+    if isinstance(value, numbers.Real):
+        return float(value) != 0.0
+    return None
+
+
 def _episode_success(info: Mapping[str, Any]) -> bool | None:
     """Read an env-reported task outcome from a step ``info`` (Gymnasium convention).
 
-    Returns the ``is_success`` / ``success`` flag when the env emits one, else
-    ``None``: the outcome is unknown, never inferred from ``terminated``.
+    Checks ``is_success``, ``success``, then ``task_success``; the first one
+    holding a bool, integer, or float decides (numbers by non-zero). Returns
+    ``None`` when none does: the outcome is unknown, never inferred from
+    ``terminated``.
     """
-    # Mirrors `EditionDefaults::success_info_keys` in crates/rlmesh-proto; keep in sync.
-    for key in ("is_success", "success", "task_success"):
-        if key in info:
-            return bool(info[key])
+    for key in _SUCCESS_INFO_KEYS:
+        if key in info and (flag := _success_flag(info[key])) is not None:
+            return flag
     return None
 
 
@@ -127,8 +157,9 @@ class EpisodeResult:
             ``max_episode_steps`` / ``max_episode_seconds`` cap, or the built-in
             step bound).
         success: The env-reported task outcome from the final step's ``info``
-            (Gymnasium's ``is_success`` / ``success`` key), or ``None`` when the
-            env emits no such signal. Distinct from ``terminated`` (which only
+            (``is_success``, ``success``, then ``task_success``; the first
+            holding a bool or number decides), or ``None`` when the env emits
+            no such signal. Distinct from ``terminated`` (which only
             says the episode reached a terminal state, not how it ended); an
             unknown outcome is never inferred from it.
         duration_s: Wall time from reset-return to episode end, in seconds.
@@ -241,8 +272,9 @@ class RunResult:
     def success_rate(self) -> float | None:
         """Fraction of episodes the env reported as a success, or ``None``.
 
-        Counts the env-reported task outcome only (Gymnasium ``info["is_success"]``
-        / ``["success"]``, captured per episode in :attr:`EpisodeResult.success`).
+        Counts the env-reported task outcome only (the final step's
+        ``info["is_success"]`` / ``["success"]`` / ``["task_success"]``,
+        captured per episode in :attr:`EpisodeResult.success`).
         ``None`` when the run is empty or any episode lacks that signal: an
         unknown outcome is never inferred from ``terminated``. Read
         :attr:`EpisodeResult.terminated` yourself if a terminal state is the

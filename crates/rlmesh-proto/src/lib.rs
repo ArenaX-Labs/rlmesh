@@ -224,8 +224,9 @@ pub struct EditionDefaults {
     pub driver_owned_reset_modes: &'static [core::v1::AutoresetMode],
 
     /// The `final_info` keys this edition reads an episode's task outcome from,
-    /// in priority order: the first key present decides, and a numeric value
-    /// coerces by truthiness (`1`/`1.0` → true).
+    /// in priority order: the first key holding a bool, integer, or number
+    /// decides, a numeric value coercing by truthiness (`1`/`1.0` → true); a key
+    /// holding any other kind is skipped.
     ///
     /// Which keys count is an edition-governed promise — an env that reports its
     /// outcome under one of these names has it surface on the episode summary
@@ -233,8 +234,8 @@ pub struct EditionDefaults {
     /// Gymnasium's `is_success` leads; `success` and `task_success` follow as the
     /// two spellings the ecosystem also ships.
     ///
-    /// The Python `Session` loop reads the outcome from the same `info` with
-    /// `bool(info[key])` (`_success_from_info` in
+    /// The Python `Session` loop reads the outcome from the same `info` under the
+    /// same rule (`_episode_success` in
     /// `python/rlmesh/src/rlmesh/_models/_eval.py`); an edition that changes this
     /// row revisits that sweep in the same commit.
     pub success_info_keys: &'static [&'static str],

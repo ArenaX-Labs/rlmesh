@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any, cast
 
+import numpy as np
 import pytest
 import rlmesh
 import rlmesh.numpy
@@ -815,6 +816,18 @@ def test_numpy_chunk_runs_over_a_scalar_action_space() -> None:
         ({"task_success": 1.0}, True),
         ({"task_success": 0}, False),
         ({"other": True}, None),
+        # Kinds the runtime skips never decide; the next key does.
+        ({"is_success": "False", "success": True}, True),
+        ({"is_success": "True"}, None),
+        ({"is_success": None, "success": False}, False),
+        ({"is_success": [1], "task_success": 0.0}, False),
+        ({"success": b"\x01"}, None),
+        # NumPy scalars and 0-d arrays unwrap as they do on the wire.
+        ({"is_success": np.bool_(True)}, True),
+        ({"is_success": np.int64(0)}, False),
+        ({"success": np.float32(0.5)}, True),
+        ({"success": np.array(True)}, True),
+        ({"success": np.array([True]), "task_success": 1}, True),
     ],
 )
 def test_episode_success_reads_the_same_keys_as_the_runtime(
