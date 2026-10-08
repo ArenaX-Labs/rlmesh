@@ -1264,8 +1264,9 @@ struct StepOutput {
 };
 
 /// A simulation served as one RLMesh env lane. Subclass it and hand it to
-/// `EnvServer::create`. Every method runs on the one lane thread (not the
-/// thread that built it), one call at a time.
+/// `EnvServer::create`. Every method runs on its lane's thread (not the thread
+/// that built it), one call at a time; with `EnvConfig::foreground`, on the
+/// thread that calls `EnvServer::serve` instead.
 class Environment {
  public:
   virtual ~Environment() = default;
@@ -1294,20 +1295,47 @@ struct EnvConfig {
   std::string render_mode;
   /// Extra contract metadata as a JSON object; empty = none.
   std::string metadata_json;
+  /// Run every `Environment` method on the thread that calls
+  /// `EnvServer::serve` (which then serves from a helper thread): for a
+  /// simulation bound to the thread that created it (a GL / Vulkan context).
+  /// One lane only.
+  bool foreground = false;
 };
 
-/// Serves one `Environment` as an RLMesh EnvService endpoint:
+/// Serves `Environment`s as an RLMesh EnvService endpoint:
 /// `create` -> `bind` (learn the address) -> `serve` (blocks).
 class EnvServer {
  public:
   static Result<EnvServer> create(std::unique_ptr<Environment> env, const EnvConfig& config) {
-    if (!env) return Error(RLMESH_ERR_INVALID_ARGUMENT, "EnvServer::create: null environment");
+    std::vector<std::unique_ptr<Environment>> lanes;
+    lanes.push_back(std::move(env));
+    return create(std::move(lanes), config);
+  }
+
+  /// Serve each `Environment` as one lane of a `num_envs = lanes.size()`
+  /// endpoint. Every lane shares `config` but runs on its own thread,
+  /// concurrently with the others, so each must be an independent simulation.
+  /// A foreground config takes exactly one lane.
+  static Result<EnvServer> create(std::vector<std::unique_ptr<Environment>> lanes,
+                                  const EnvConfig& config) {
+    if (lanes.empty()) {
+      return Error(RLMESH_ERR_INVALID_ARGUMENT, "EnvServer::create: no environments");
+    }
     if (!config.observation_space || !config.action_space) {
       return Error(RLMESH_ERR_INVALID_ARGUMENT,
                    "EnvServer::create: observation_space and action_space are required");
     }
-    auto state = std::make_unique<State>();
-    state->env = std::move(env);
+    std::vector<std::unique_ptr<State>> states;
+    std::vector<void*> user_data;
+    states.reserve(lanes.size());
+    user_data.reserve(lanes.size());
+    for (std::unique_ptr<Environment>& env : lanes) {
+      if (!env) return Error(RLMESH_ERR_INVALID_ARGUMENT, "EnvServer::create: null environment");
+      auto state = std::make_unique<State>();
+      state->env = std::move(env);
+      user_data.push_back(state.get());
+      states.push_back(std::move(state));
+    }
     std::vector<const char*> options;
     options.reserve(config.reset_options.size());
     for (const std::string& option : config.reset_options) options.push_back(option.c_str());
@@ -1323,6 +1351,7 @@ class EnvServer {
     raw.num_reset_options = options.size();
     raw.render_mode = opt(config.render_mode);
     raw.metadata_json = opt(config.metadata_json);
+    raw.foreground = config.foreground;
 
     RlmeshEnvVtable vtable{};
     vtable.struct_size = sizeof(RlmeshEnvVtable);
@@ -1331,12 +1360,13 @@ class EnvServer {
     vtable.render = &trampoline_render;
     vtable.close = &trampoline_close;
     RlmeshEnv* handle = nullptr;
-    RlmeshStatus status = rlmesh_env_new(&vtable, &raw, state.get(), &handle);
+    RlmeshStatus status =
+        rlmesh_env_new_lanes(&vtable, &raw, user_data.data(), user_data.size(), &handle);
     if (status != RLMESH_OK) return Error::from_last(status);
-    return EnvServer(handle, std::move(state));
+    return EnvServer(handle, std::move(states));
   }
 
-  EnvServer(EnvServer&& other) noexcept : env_(other.env_), state_(std::move(other.state_)) {
+  EnvServer(EnvServer&& other) noexcept : env_(other.env_), states_(std::move(other.states_)) {
     other.env_ = nullptr;
   }
   EnvServer& operator=(EnvServer&& other) noexcept {
@@ -1344,7 +1374,7 @@ class EnvServer {
       if (env_ != nullptr) rlmesh_env_free(env_);
       env_ = other.env_;
       other.env_ = nullptr;
-      state_ = std::move(other.state_);
+      states_ = std::move(other.states_);
     }
     return *this;
   }
@@ -1376,7 +1406,8 @@ class EnvServer {
   }
 
   /// Serve until a remote shutdown, an idle timeout, or `cancel()`. Blocking;
-  /// `Environment::close` runs before it returns.
+  /// each lane's `Environment::close` runs before it returns. With
+  /// `EnvConfig::foreground`, every `Environment` method runs on this thread.
   Status serve() {
     RlmeshStatus status = rlmesh_env_serve(env_);
     if (status != RLMESH_OK) return Error::from_last(status);
@@ -1393,7 +1424,8 @@ class EnvServer {
     std::string info_json;
   };
 
-  EnvServer(RlmeshEnv* env, std::unique_ptr<State> state) : env_(env), state_(std::move(state)) {}
+  EnvServer(RlmeshEnv* env, std::vector<std::unique_ptr<State>> states)
+      : env_(env), states_(std::move(states)) {}
 
   static int fail(const Error& error) {
     rlmesh_callback_set_error(error.message().c_str(), error.is_recoverable());
@@ -1486,7 +1518,7 @@ class EnvServer {
   }
 
   RlmeshEnv* env_ = nullptr;
-  std::unique_ptr<State> state_;
+  std::vector<std::unique_ptr<State>> states_;  // one per lane
 };
 
 }  // namespace rlmesh

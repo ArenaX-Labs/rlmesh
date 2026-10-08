@@ -322,6 +322,12 @@ rlmesh::Status env_server(const std::string& address) {
   config.reset_options = {"trial_index"};
   config.render_mode = "rgb_array";
   config.metadata_json = "{}";
+  config.foreground = false;
+  std::vector<std::unique_ptr<rlmesh::Environment>> lanes;
+  lanes.push_back(std::make_unique<SurfaceEnv>());
+  lanes.push_back(std::make_unique<SurfaceEnv>());
+  auto multi = rlmesh::EnvServer::create(std::move(lanes), config);
+  if (!multi) return multi.error();
   auto server = rlmesh::EnvServer::create(std::make_unique<SurfaceEnv>(), config);
   if (!server) return server.error();
   rlmesh::ServeOptions options;

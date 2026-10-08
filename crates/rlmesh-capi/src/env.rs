@@ -1,15 +1,19 @@
 //! The environment path: a C callback vtable adapted into a core `rlmesh::Env`,
 //! plus a handle that binds and serves it as a gRPC `EnvService` endpoint.
 //!
-//! The core serves a scalar env on one dedicated lane thread, so every C
-//! callback (reset, step, render, close) runs on that same thread, one at a
-//! time, never on the thread that created the env. A callback's error is read
-//! back on that thread right after it returns and travels on as an
-//! `EnvRuntimeError` value.
+//! The core serves each lane on its own dedicated thread, so every C callback
+//! (reset, step, render, close) of a lane runs on that same thread, one at a
+//! time, never on the thread that created the env; the lanes of a multi-lane
+//! env run concurrently. A foreground env instead runs its callbacks as jobs on
+//! the thread blocked in `rlmesh_env_serve`, while the gRPC server runs on a
+//! helper thread. Either way a callback's error is read back on the thread
+//! that ran it, right after it returns, and travels on as an `EnvRuntimeError`
+//! value.
 #![allow(unsafe_code)] // FFI: raw callback pointers + repr(C) structs.
 
 use std::ffi::{CStr, c_char, c_int, c_void};
-use std::sync::Mutex;
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::{Mutex, mpsc};
 
 use async_trait::async_trait;
 use image::ExtendedColorType;
@@ -125,15 +129,44 @@ pub struct RlmeshEnvConfig {
     pub render_mode: *const c_char,
     /// Extra contract metadata as a JSON object. NULL = none.
     pub metadata_json: *const c_char,
+    /// Run every callback on the thread that calls `rlmesh_env_serve` (which
+    /// then serves from a helper thread) instead of a lane thread: for a
+    /// simulation bound to the thread that created it (a GL or Vulkan
+    /// context). One lane only.
+    pub foreground: bool,
 }
 
 /// A `*mut c_void` the C author guarantees may move to the lane thread.
 #[derive(Clone, Copy)]
 struct UserData(*mut c_void);
-// SAFETY: the C author guarantees `user_data` is thread-migration-safe, and the
-// lane runs one callback at a time, so it is never shared concurrently.
+// SAFETY: the C author guarantees `user_data` is thread-migration-safe, and
+// its lane runs one callback at a time, so it is never shared concurrently
+// (each lane of a multi-lane env has its own `user_data`).
 unsafe impl Send for UserData {}
 unsafe impl Sync for UserData {}
+
+/// What a foreground env's lane sends the thread blocked in `rlmesh_env_serve`.
+enum ForegroundJob {
+    /// Run one callback (with its last-error read-back) on this thread.
+    Run(Box<dyn FnOnce() + Send>),
+    /// The server stopped, its close hook included: the loop ends.
+    Done,
+}
+
+/// The foreground job queue of a handle, drained by `rlmesh_env_serve`.
+struct ForegroundQueue {
+    tx: mpsc::Sender<ForegroundJob>,
+    rx: mpsc::Receiver<ForegroundJob>,
+}
+
+/// Sends `Done` when the serve thread ends, panicking or not.
+struct DoneOnDrop(mpsc::Sender<ForegroundJob>);
+
+impl Drop for DoneOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.send(ForegroundJob::Done);
+    }
+}
 
 /// The C vtable as a core scalar `Env`.
 struct CEnv {
@@ -142,6 +175,30 @@ struct CEnv {
     observation_space: SpaceSpec,
     action_space: SpaceSpec,
     contract: EnvContract,
+    /// Set for a foreground env: callbacks run as jobs on the serve thread.
+    foreground: Option<mpsc::Sender<ForegroundJob>>,
+}
+
+impl CEnv {
+    /// Run one C call, with everything that reads the thread-local last error,
+    /// on the callback thread: inline on the lane thread, or as a job on the
+    /// thread blocked in `rlmesh_env_serve` for a foreground env.
+    async fn dispatch<T: Send + 'static>(
+        &self,
+        call: impl FnOnce() -> T + Send + 'static,
+    ) -> Result<T, EnvRuntimeError> {
+        let Some(jobs) = &self.foreground else {
+            return Ok(call());
+        };
+        let stopped =
+            || EnvRuntimeError::Runtime("the foreground callback thread is not serving".into());
+        let (reply, result) = tokio::sync::oneshot::channel();
+        jobs.send(ForegroundJob::Run(Box::new(move || {
+            let _ = reply.send(call());
+        })))
+        .map_err(|_| stopped())?;
+        result.await.map_err(|_| stopped())
+    }
 }
 
 fn callback_error(op: &str) -> EnvRuntimeError {
@@ -212,6 +269,102 @@ fn encode_png(frame: &SpaceValue) -> Result<Vec<u8>, EnvRuntimeError> {
     Ok(encoded)
 }
 
+/// Call `reset` and read its result back: one dispatchable unit.
+fn call_reset(
+    reset: RlmeshEnvResetFn,
+    user_data: UserData,
+    req: ResetRequest,
+) -> Result<ResetResult, EnvRuntimeError> {
+    let trial_index = req
+        .options
+        .as_ref()
+        .and_then(|options| options.get(TRIAL_INDEX_OPTION))
+        .and_then(|value| match value {
+            MetaValue::Int(index) => Some(*index),
+            _ => None,
+        });
+    let options_json = req.options.as_ref().map(|options| {
+        let map = MetaValue::Map(options.clone());
+        crate::model::cstring(&meta_to_json(&map).to_string())
+    });
+    let args = RlmeshResetArgs {
+        seeded: req.seed.is_some(),
+        seed: req.seed.unwrap_or_default(),
+        has_trial_index: trial_index.is_some(),
+        trial_index: trial_index.unwrap_or_default(),
+        options_json: options_json
+            .as_ref()
+            .map_or(std::ptr::null(), |s| s.as_ptr()),
+    };
+    let mut out = RlmeshResetResult {
+        observation: std::ptr::null_mut(),
+        info_json: std::ptr::null(),
+    };
+    clear_last_error();
+    let status = unsafe { reset(user_data.0, &args, &mut out) };
+    let observation = take_value(out.observation);
+    if status != 0 {
+        return Err(callback_error("reset"));
+    }
+    Ok(ResetResult {
+        observation,
+        info: info_map(out.info_json, "reset")?,
+        episode_id: None,
+    })
+}
+
+/// Call `step` and read its result back: one dispatchable unit.
+fn call_step(
+    step: RlmeshEnvStepFn,
+    user_data: UserData,
+    req: StepRequest,
+) -> Result<StepResult, EnvRuntimeError> {
+    // `RlmeshValue` is repr(transparent) over `SpaceValue`: lend the action.
+    let action = req.action.as_ref().map_or(std::ptr::null(), |action| {
+        std::ptr::from_ref(action).cast::<RlmeshValue>()
+    });
+    let mut out = RlmeshStepResult {
+        observation: std::ptr::null_mut(),
+        reward: 0.0,
+        terminated: false,
+        truncated: false,
+        info_json: std::ptr::null(),
+    };
+    clear_last_error();
+    let status = unsafe { step(user_data.0, action, &mut out) };
+    let observation = take_value(out.observation);
+    if status != 0 {
+        return Err(callback_error("step"));
+    }
+    Ok(StepResult {
+        observation,
+        reward: out.reward,
+        terminated: out.terminated,
+        truncated: out.truncated,
+        info: info_map(out.info_json, "step")?,
+    })
+}
+
+/// Call `render` and take its frame back (PNG encoding happens after, on the
+/// lane thread): one dispatchable unit.
+fn call_render(
+    render: RlmeshEnvRenderFn,
+    user_data: UserData,
+) -> Result<Option<SpaceValue>, EnvRuntimeError> {
+    let mut frame: *mut RlmeshValue = std::ptr::null_mut();
+    clear_last_error();
+    let status = unsafe { render(user_data.0, &mut frame) };
+    let frame = take_value(frame);
+    if status != 0 {
+        return Err(callback_error("render"));
+    }
+    Ok(frame)
+}
+
+fn call_close(close: RlmeshEnvCloseFn, user_data: UserData) {
+    unsafe { close(user_data.0) };
+}
+
 #[async_trait]
 impl Env for CEnv {
     fn observation_space(&self) -> &SpaceSpec {
@@ -230,85 +383,28 @@ impl Env for CEnv {
         let Some(reset) = self.vtable.reset else {
             return Err(EnvRuntimeError::Runtime("env vtable has no reset".into()));
         };
-        let trial_index = req
-            .options
-            .as_ref()
-            .and_then(|options| options.get(TRIAL_INDEX_OPTION))
-            .and_then(|value| match value {
-                MetaValue::Int(index) => Some(*index),
-                _ => None,
-            });
-        let options_json = req.options.as_ref().map(|options| {
-            let map = MetaValue::Map(options.clone());
-            crate::model::cstring(&meta_to_json(&map).to_string())
-        });
-        let args = RlmeshResetArgs {
-            seeded: req.seed.is_some(),
-            seed: req.seed.unwrap_or_default(),
-            has_trial_index: trial_index.is_some(),
-            trial_index: trial_index.unwrap_or_default(),
-            options_json: options_json
-                .as_ref()
-                .map_or(std::ptr::null(), |s| s.as_ptr()),
-        };
-        let mut out = RlmeshResetResult {
-            observation: std::ptr::null_mut(),
-            info_json: std::ptr::null(),
-        };
-        clear_last_error();
-        let status = unsafe { reset(self.user_data.0, &args, &mut out) };
-        let observation = take_value(out.observation);
-        if status != 0 {
-            return Err(callback_error("reset"));
-        }
-        Ok(ResetResult {
-            observation,
-            info: info_map(out.info_json, "reset")?,
-            episode_id: None,
-        })
+        let user_data = self.user_data;
+        self.dispatch(move || call_reset(reset, user_data, req))
+            .await?
     }
 
     async fn step(&mut self, req: StepRequest) -> Result<StepResult, EnvRuntimeError> {
         let Some(step) = self.vtable.step else {
             return Err(EnvRuntimeError::Runtime("env vtable has no step".into()));
         };
-        // `RlmeshValue` is repr(transparent) over `SpaceValue`: lend the action.
-        let action = req.action.as_ref().map_or(std::ptr::null(), |action| {
-            std::ptr::from_ref(action).cast::<RlmeshValue>()
-        });
-        let mut out = RlmeshStepResult {
-            observation: std::ptr::null_mut(),
-            reward: 0.0,
-            terminated: false,
-            truncated: false,
-            info_json: std::ptr::null(),
-        };
-        clear_last_error();
-        let status = unsafe { step(self.user_data.0, action, &mut out) };
-        let observation = take_value(out.observation);
-        if status != 0 {
-            return Err(callback_error("step"));
-        }
-        Ok(StepResult {
-            observation,
-            reward: out.reward,
-            terminated: out.terminated,
-            truncated: out.truncated,
-            info: info_map(out.info_json, "step")?,
-        })
+        let user_data = self.user_data;
+        self.dispatch(move || call_step(step, user_data, req))
+            .await?
     }
 
     async fn render(&mut self, _req: RenderRequest) -> Result<RenderResult, EnvRuntimeError> {
         let Some(render) = self.vtable.render else {
             return Ok(RenderResult::default());
         };
-        let mut frame: *mut RlmeshValue = std::ptr::null_mut();
-        clear_last_error();
-        let status = unsafe { render(self.user_data.0, &mut frame) };
-        let frame = take_value(frame);
-        if status != 0 {
-            return Err(callback_error("render"));
-        }
+        let user_data = self.user_data;
+        let frame = self
+            .dispatch(move || call_render(render, user_data))
+            .await??;
         Ok(RenderResult {
             frame: frame
                 .map(|frame| encode_png(&frame).map(|frame| RenderFrame { frame }))
@@ -320,22 +416,26 @@ impl Env for CEnv {
         // The core calls close once, when the server stops; take the callback so
         // a second call could never reach C.
         if let Some(close) = self.vtable.close.take() {
-            unsafe { close(self.user_data.0) };
+            let user_data = self.user_data;
+            self.dispatch(move || call_close(close, user_data)).await?;
         }
         Ok(CloseResult)
     }
 }
 
-/// An owned environment handle: the C env plus the runtime that serves it.
+/// An owned environment handle: the C env lanes plus the runtime that serves
+/// them.
 ///
 /// Lifecycle: `rlmesh_env_new` -> `rlmesh_env_bind` (learn the address) ->
 /// `rlmesh_env_serve` (blocks) -> `rlmesh_env_free`. `rlmesh_env_cancel` is the
 /// one call that may overlap a blocking serve, from any thread.
 pub struct RlmeshEnv {
     runtime: tokio::runtime::Runtime,
-    env: Mutex<Option<CEnv>>,
+    env: Mutex<Option<Vec<CEnv>>>,
     bound: Mutex<Option<BoundEnvServer>>,
     cancel: CancellationToken,
+    /// Set for a foreground env until `rlmesh_env_serve` drains it.
+    foreground: Mutex<Option<ForegroundQueue>>,
 }
 
 /// Read the caller's vtable honoring its `struct_size`.
@@ -386,6 +486,7 @@ struct EnvConfig {
     num_reset_options: usize,
     render_mode: *const c_char,
     metadata_json: *const c_char,
+    foreground: bool,
 }
 
 /// # Safety
@@ -417,6 +518,8 @@ unsafe fn read_config(ptr: *const RlmeshEnvConfig) -> Result<EnvConfig, CapiErro
         num_reset_options: field!(num_reset_options, usize, 0),
         render_mode: field!(render_mode, *const c_char, std::ptr::null()),
         metadata_json: field!(metadata_json, *const c_char, std::ptr::null()),
+        // Read as a byte: any nonzero C `bool` is true.
+        foreground: field!(foreground, u8, 0) != 0,
     })
 }
 
@@ -513,37 +616,92 @@ pub unsafe extern "C" fn rlmesh_env_new(
     user_data: *mut c_void,
     out: *mut *mut RlmeshEnv,
 ) -> RlmeshStatus {
+    guard(|| unsafe { new_env(vtable, config, &[user_data], out) })
+}
+
+/// Create an env served as `num_lanes` lanes of one `num_envs = num_lanes`
+/// endpoint. Lane `i` passes `user_data[i]` to its callbacks; the lanes run
+/// concurrently, each on its own thread, so each `user_data` must be an
+/// independent simulation. Every lane shares `vtable` and `config` (one
+/// contract). `num_lanes` must be at least 1, and a foreground config serves
+/// exactly one lane.
+///
+/// # Safety
+/// `vtable` and `config` must be valid for the call; `user_data` must point at
+/// `num_lanes` pointers; `out` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_env_new_lanes(
+    vtable: *const RlmeshEnvVtable,
+    config: *const RlmeshEnvConfig,
+    user_data: *const *mut c_void,
+    num_lanes: usize,
+    out: *mut *mut RlmeshEnv,
+) -> RlmeshStatus {
     guard(|| {
-        if vtable.is_null() {
-            return Err(CapiError::invalid_arg("null vtable"));
+        if num_lanes == 0 {
+            return Err(CapiError::invalid_arg(
+                "num_lanes is 0: an env needs at least one lane",
+            ));
         }
-        if config.is_null() {
-            return Err(CapiError::invalid_arg("null config"));
+        if user_data.is_null() {
+            return Err(CapiError::invalid_arg("null user_data"));
         }
-        let out = unsafe { out.as_mut() }.ok_or_else(|| CapiError::invalid_arg("null out"))?;
-        let vtable = unsafe { read_vtable(vtable) }?;
-        let config = unsafe { read_config(config) }?;
-        crate::abi::ignore_sigpipe();
-        let (observation_space, action_space, contract) = build_contract(&config)?;
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .map_err(|err| CapiError::internal(format!("failed to build runtime: {err}")))?;
-        let env = CEnv {
+        let user_data = unsafe { std::slice::from_raw_parts(user_data, num_lanes) };
+        unsafe { new_env(vtable, config, user_data, out) }
+    })
+}
+
+/// # Safety
+/// As `rlmesh_env_new_lanes`, with one lane per `user_data` entry.
+unsafe fn new_env(
+    vtable: *const RlmeshEnvVtable,
+    config: *const RlmeshEnvConfig,
+    user_data: &[*mut c_void],
+    out: *mut *mut RlmeshEnv,
+) -> Result<(), CapiError> {
+    if vtable.is_null() {
+        return Err(CapiError::invalid_arg("null vtable"));
+    }
+    if config.is_null() {
+        return Err(CapiError::invalid_arg("null config"));
+    }
+    let out = unsafe { out.as_mut() }.ok_or_else(|| CapiError::invalid_arg("null out"))?;
+    let vtable = unsafe { read_vtable(vtable) }?;
+    let config = unsafe { read_config(config) }?;
+    if config.foreground && user_data.len() > 1 {
+        return Err(CapiError::invalid_arg(
+            "a foreground env serves one lane: its callbacks share the serve thread",
+        ));
+    }
+    crate::abi::ignore_sigpipe();
+    let (observation_space, action_space, contract) = build_contract(&config)?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|err| CapiError::internal(format!("failed to build runtime: {err}")))?;
+    let foreground = config.foreground.then(|| {
+        let (tx, rx) = mpsc::channel();
+        ForegroundQueue { tx, rx }
+    });
+    let envs = user_data
+        .iter()
+        .map(|&user_data| CEnv {
             vtable,
             user_data: UserData(user_data),
-            observation_space,
-            action_space,
-            contract,
-        };
-        *out = Box::into_raw(Box::new(RlmeshEnv {
-            runtime,
-            env: Mutex::new(Some(env)),
-            bound: Mutex::new(None),
-            cancel: CancellationToken::new(),
-        }));
-        Ok(())
-    })
+            observation_space: observation_space.clone(),
+            action_space: action_space.clone(),
+            contract: contract.clone(),
+            foreground: foreground.as_ref().map(|queue| queue.tx.clone()),
+        })
+        .collect();
+    *out = Box::into_raw(Box::new(RlmeshEnv {
+        runtime,
+        env: Mutex::new(Some(envs)),
+        bound: Mutex::new(None),
+        cancel: CancellationToken::new(),
+        foreground: Mutex::new(foreground),
+    }));
+    Ok(())
 }
 
 /// Bind the env server to `bind_address` (`tcp://host:port`, `host:port`, or
@@ -578,7 +736,7 @@ pub unsafe extern "C" fn rlmesh_env_bind(
             .ok_or_else(|| CapiError::invalid_arg("env is already bound"))?;
         let bound = handle
             .runtime
-            .block_on(EnvServer::new(cenv).bind_with_options(bind, serve))
+            .block_on(EnvServer::lanes(cenv).bind_with_options(bind, serve))
             .map_err(CapiError::from)?;
         if !out_address.is_null() {
             let address = bound.local_addr().to_string();
@@ -590,8 +748,10 @@ pub unsafe extern "C" fn rlmesh_env_bind(
 }
 
 /// Serve the bound env until it stops: a remote shutdown request, an idle
-/// timeout, or `rlmesh_env_cancel`. Blocking. The env's `close` callback runs
-/// once, on the lane thread, before this returns. Requires `rlmesh_env_bind`.
+/// timeout, or `rlmesh_env_cancel`. Blocking. Each lane's `close` callback runs
+/// once, on its lane thread, before this returns. A foreground env runs the
+/// server on a helper thread and every callback (`close` included) on the
+/// calling thread. Requires `rlmesh_env_bind`.
 ///
 /// # Safety
 /// `env` must be a live handle.
@@ -604,20 +764,56 @@ pub unsafe extern "C" fn rlmesh_env_serve(env: *mut RlmeshEnv) -> RlmeshStatus {
             .ok_or_else(|| CapiError::invalid_arg("env is not bound (call rlmesh_env_bind)"))?;
         let trigger = bound.shutdown_trigger();
         let cancel = handle.cancel.clone();
-        handle
-            .runtime
-            .block_on(async move {
-                // Cancelling triggers the server's own graceful shutdown (drain,
-                // then the close hook) rather than dropping the serve future.
-                let watcher = tokio::spawn(async move {
-                    cancel.cancelled().await;
-                    trigger.trigger("cancelled by rlmesh_env_cancel");
-                });
-                let result = bound.serve().await;
-                watcher.abort();
-                result
+        let serve = async move {
+            // Cancelling triggers the server's own graceful shutdown (drain,
+            // then the close hook) rather than dropping the serve future.
+            let watcher = tokio::spawn(async move {
+                cancel.cancelled().await;
+                trigger.trigger("cancelled by rlmesh_env_cancel");
+            });
+            let result = bound.serve().await;
+            watcher.abort();
+            result
+        };
+        let foreground = lock(&handle.foreground).take();
+        match foreground {
+            None => handle.runtime.block_on(serve),
+            Some(queue) => serve_foreground(handle, serve, queue),
+        }
+        .map_err(CapiError::from)
+    })
+}
+
+/// Serve from a helper thread while this thread runs the env's callbacks as
+/// they arrive, until the server has stopped (its close hook included). A job
+/// that panics cancels the server rather than wedging it.
+fn serve_foreground(
+    handle: &RlmeshEnv,
+    serve: impl Future<Output = rlmesh::Result<()>> + Send,
+    queue: ForegroundQueue,
+) -> rlmesh::Result<()> {
+    let ForegroundQueue { tx, rx } = queue;
+    std::thread::scope(|scope| {
+        let server = std::thread::Builder::new()
+            .name("rlmesh-env-serve".to_string())
+            .spawn_scoped(scope, move || {
+                let _done = DoneOnDrop(tx);
+                handle.runtime.block_on(serve)
             })
-            .map_err(CapiError::from)
+            .map_err(|err| rlmesh::Error::Server(format!("spawn the serve thread: {err}")))?;
+        for job in &rx {
+            match job {
+                ForegroundJob::Run(job) => {
+                    if catch_unwind(AssertUnwindSafe(job)).is_err() {
+                        handle.cancel.cancel();
+                    }
+                }
+                ForegroundJob::Done => break,
+            }
+        }
+        server
+            .join()
+            .unwrap_or_else(|_| Err(rlmesh::Error::Internal("the serve thread panicked".into())))
     })
 }
 
@@ -693,6 +889,17 @@ mod tests {
         closes: AtomicUsize,
         steps: AtomicUsize,
         info: Mutex<CString>,
+        /// The thread each callback ran on, in call order.
+        threads: Mutex<Vec<std::thread::ThreadId>>,
+    }
+
+    impl Probe {
+        fn record_thread(&self) {
+            self.threads
+                .lock()
+                .unwrap()
+                .push(std::thread::current().id());
+        }
     }
 
     fn eef(value: f32) -> *mut RlmeshValue {
@@ -717,6 +924,7 @@ mod tests {
     ) -> c_int {
         let probe = unsafe { &*user_data.cast::<Probe>() };
         let args = unsafe { &*args };
+        probe.record_thread();
         probe.resets.lock().unwrap().push((
             args.seeded.then_some(args.seed),
             args.has_trial_index.then_some(args.trial_index),
@@ -731,6 +939,7 @@ mod tests {
         out: *mut RlmeshStepResult,
     ) -> c_int {
         let probe = unsafe { &*user_data.cast::<Probe>() };
+        probe.record_thread();
         let mut tensor = std::mem::MaybeUninit::<crate::value::tensor::RlmeshTensor>::zeroed();
         if unsafe { crate::value::handle::rlmesh_value_as_tensor(action, tensor.as_mut_ptr()) }
             != RlmeshStatus::Ok
@@ -756,7 +965,10 @@ mod tests {
         0
     }
 
-    unsafe extern "C" fn render(_user_data: *mut c_void, out: *mut *mut RlmeshValue) -> c_int {
+    unsafe extern "C" fn render(user_data: *mut c_void, out: *mut *mut RlmeshValue) -> c_int {
+        if !user_data.is_null() {
+            unsafe { &*user_data.cast::<Probe>() }.record_thread();
+        }
         let tensor =
             Tensor::from_vec(vec![200; 2 * 2 * 3], vec![2, 2, 3], DType::Uint8).expect("tensor");
         unsafe { *out = into_handle(SpaceValue::Box(tensor)) };
@@ -765,6 +977,7 @@ mod tests {
 
     unsafe extern "C" fn close(user_data: *mut c_void) {
         let probe = unsafe { &*user_data.cast::<Probe>() };
+        probe.record_thread();
         probe.closes.fetch_add(1, Ordering::SeqCst);
     }
 
@@ -795,6 +1008,16 @@ mod tests {
     }
 
     fn new_env(tags: Option<&str>, probe: &Probe) -> Result<*mut RlmeshEnv, String> {
+        create_env(tags, &[probe], false)
+    }
+
+    /// One lane per probe (`rlmesh_env_new` for one, `rlmesh_env_new_lanes`
+    /// otherwise).
+    fn create_env(
+        tags: Option<&str>,
+        probes: &[&Probe],
+        foreground: bool,
+    ) -> Result<*mut RlmeshEnv, String> {
         let (obs, act) = spaces();
         let id = CString::new("CapiEnv-test").unwrap();
         let tags = tags.map(|tags| CString::new(tags).unwrap());
@@ -811,15 +1034,25 @@ mod tests {
             num_reset_options: 1,
             render_mode: mode.as_ptr(),
             metadata_json: std::ptr::null(),
+            foreground,
         };
+        let user_data: Vec<*mut c_void> = probes
+            .iter()
+            .map(|&probe| std::ptr::from_ref(probe).cast_mut().cast())
+            .collect();
         let mut env = std::ptr::null_mut();
         let status = unsafe {
-            rlmesh_env_new(
-                &vtable(),
-                &config,
-                std::ptr::from_ref(probe).cast_mut().cast(),
-                &mut env,
-            )
+            if let [one] = user_data[..] {
+                rlmesh_env_new(&vtable(), &config, one, &mut env)
+            } else {
+                rlmesh_env_new_lanes(
+                    &vtable(),
+                    &config,
+                    user_data.as_ptr(),
+                    user_data.len(),
+                    &mut env,
+                )
+            }
         };
         unsafe {
             rlmesh_space_free(obs);
@@ -963,6 +1196,107 @@ mod tests {
     }
 
     #[test]
+    fn a_foreground_env_runs_every_callback_on_the_serve_thread() {
+        let probe = Probe::default();
+        let env = create_env(None, &[&probe], true).expect("env");
+        let address = bind(env);
+        let served = SendEnv(env);
+        let server = std::thread::spawn(move || {
+            let served = served;
+            let status = unsafe { rlmesh_env_serve(served.0) };
+            (std::thread::current().id(), status)
+        });
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let mut client = RemoteEnv::connect(&address).await.expect("connect");
+            client.reset(ResetRequest::default()).await.expect("reset");
+            client
+                .step(StepRequest {
+                    action: Some(action(0.5)),
+                    timeout_ms: 0,
+                })
+                .await
+                .expect("step");
+            let frame = client
+                .render(RenderRequest::default())
+                .await
+                .expect("render")
+                .frame
+                .expect("a frame");
+            assert_eq!(&frame.frame[..8], b"\x89PNG\r\n\x1a\n");
+        });
+        unsafe { rlmesh_env_cancel(env) };
+        let (serve_thread, status) = server.join().expect("serve thread");
+        assert_eq!(status, RlmeshStatus::Ok, "{}", last_error_message());
+        assert_eq!(probe.closes.load(Ordering::SeqCst), 1, "close runs once");
+        let threads = probe.threads.lock().unwrap().clone();
+        // reset, step, render, close: all on the thread that called serve.
+        assert_eq!(threads, vec![serve_thread; 4]);
+        unsafe { rlmesh_env_free(env) };
+    }
+
+    #[test]
+    fn lanes_serve_one_endpoint_each_on_its_own_thread() {
+        let (first, second) = (Probe::default(), Probe::default());
+        let env = create_env(None, &[&first, &second], false).expect("env");
+        let address = bind(env);
+        let served = SendEnv(env);
+        let server = std::thread::spawn(move || {
+            let served = served;
+            unsafe { rlmesh_env_serve(served.0) }
+        });
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let mut client = rlmesh::RemoteVectorEnv::connect(&address)
+                .await
+                .expect("connect");
+            assert_eq!(client.num_envs(), 2);
+            let reset = client
+                .reset(rlmesh::VectorResetRequest {
+                    seeds: vec![1, 2],
+                    ..Default::default()
+                })
+                .await
+                .expect("reset");
+            assert_eq!(reset.observations.len(), 2);
+            let step = client
+                .step(rlmesh::VectorStepRequest {
+                    actions: vec![action(0.25), action(0.75)],
+                    ..Default::default()
+                })
+                .await
+                .expect("step");
+            assert_eq!(step.rewards, vec![0.5, 0.5]);
+        });
+        unsafe { rlmesh_env_cancel(env) };
+        assert_eq!(server.join().unwrap(), RlmeshStatus::Ok);
+        // Each lane saw its own seed and action through its own user_data.
+        assert_eq!(*first.resets.lock().unwrap(), vec![(Some(1), None)]);
+        assert_eq!(*second.resets.lock().unwrap(), vec![(Some(2), None)]);
+        assert_eq!(*first.actions.lock().unwrap(), vec![0.25]);
+        assert_eq!(*second.actions.lock().unwrap(), vec![0.75]);
+        for probe in [&first, &second] {
+            assert_eq!(probe.closes.load(Ordering::SeqCst), 1, "close runs once");
+        }
+        let lane_thread = |probe: &Probe| {
+            let threads = probe.threads.lock().unwrap().clone();
+            assert!(threads.windows(2).all(|pair| pair[0] == pair[1]));
+            threads[0]
+        };
+        assert_ne!(lane_thread(&first), lane_thread(&second));
+        unsafe { rlmesh_env_free(env) };
+    }
+
+    #[test]
+    fn zero_lanes_and_foreground_lanes_are_rejected() {
+        let probe = Probe::default();
+        let err = create_env(None, &[], false).expect_err("no lanes");
+        assert!(err.contains("at least one lane"), "{err}");
+        let err = create_env(None, &[&probe, &probe], true).expect_err("foreground lanes");
+        assert!(err.contains("foreground"), "{err}");
+    }
+
+    #[test]
     fn tags_that_do_not_fit_the_spaces_fail_at_new() {
         let probe = Probe::default();
         // `camera` is not an observation key.
@@ -991,6 +1325,7 @@ mod tests {
             num_reset_options: 0,
             render_mode: std::ptr::null(),
             metadata_json: std::ptr::null(),
+            foreground: false,
         };
         let mut env = std::ptr::null_mut();
         let status = unsafe { rlmesh_env_new(&table, &config, std::ptr::null_mut(), &mut env) };

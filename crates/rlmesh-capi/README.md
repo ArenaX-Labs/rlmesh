@@ -135,13 +135,14 @@ Then `rlmesh_env_bind` (learn the address, e.g. for port 0) and
 `rlmesh_env_serve` (blocks). `rlmesh_env_cancel` from any thread drains the
 server, runs `close` once, and lets `serve` return `RLMESH_OK`.
 
-The env is served as one lane: every callback runs on one dedicated thread, one
-call at a time. `reset` gets the seed and trial index (and every reset option as
-JSON); `step` borrows the action and writes an owned observation, the reward,
-the terminated/truncated flags and an optional info JSON object; `render` writes
-an owned uint8 `[H, W, 3]` image that the capi PNG-encodes. A callback fails a
-request by returning nonzero after `rlmesh_callback_set_error`; that client's
-session ends and the env keeps serving.
+By default the env is served as one lane: every callback runs on one dedicated
+thread, one call at a time. `reset` gets the seed and trial index (and every
+reset option as JSON); `step` borrows the action and writes an owned
+observation, the reward, the terminated/truncated flags and an optional info
+JSON object; `render` writes an owned uint8 `[H, W, 3]` image that the capi
+PNG-encodes. A callback fails a request by returning nonzero after
+`rlmesh_callback_set_error`; that client's session ends and the env keeps
+serving.
 
 In C++, subclass `rlmesh::Environment` and hand it to `rlmesh::EnvServer`:
 
@@ -163,6 +164,26 @@ server->serve();
 Any model drives it, for example from Python:
 `rlmesh.numpy.Model(predict, spec=SPEC).run("127.0.0.1:50051", episodes=3)`.
 `examples/chrono/` is a full Project Chrono simulation served this way.
+
+### Lanes and the foreground thread
+
+`rlmesh_env_new_lanes(vtable, config, user_data, num_lanes, &env)` serves
+`num_lanes` independent simulations as the lanes of one `num_envs = num_lanes`
+endpoint, for a model that batches across them. Lane `i` passes `user_data[i]`
+to its callbacks; every lane shares the vtable and config (one contract) but
+runs on its own thread, concurrently with the others, so each `user_data` must
+be its own simulation. `num_lanes == 0` is rejected.
+
+A simulation bound to the thread that created it (a GL or Vulkan context, Isaac
+Sim) sets `RlmeshEnvConfig.foreground = true`: `rlmesh_env_serve` then runs the
+server on a helper thread and every callback, `close` included, on the thread
+that called it, until the server stops. `rlmesh_env_cancel` works as before,
+and PNG encoding stays off that thread. A foreground env serves exactly one
+lane: `rlmesh_env_new_lanes` rejects `foreground` with more than one.
+
+In C++, `EnvServer::create` also takes a
+`std::vector<std::unique_ptr<Environment>>`, one lane per element, and
+`EnvConfig::foreground` selects the foreground thread.
 
 ### In C++
 

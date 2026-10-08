@@ -544,8 +544,11 @@ typedef struct RlmeshStepResult {
  * Copied in at rlmesh_env_new; `user_data` is kept by pointer and must outlive
  * the env.
  *
- * The env is served as one lane: every callback runs on ONE dedicated thread
- * (not the one that created the env), one call at a time. `reset` / `step` /
+ * Each lane runs its callbacks on ONE dedicated thread (not the one that
+ * created the env), one call at a time; the lanes of a multi-lane env
+ * (rlmesh_env_new_lanes) run concurrently, each with its own `user_data`. A
+ * foreground env (RlmeshEnvConfig.foreground) runs them on the thread blocked
+ * in rlmesh_env_serve instead. `reset` / `step` /
  * `render` return 0 == RLMESH_OK, or nonzero after rlmesh_callback_set_error
  * to fail that request (the client's session ends; the env keeps serving new
  * ones). `step` gets the action
@@ -575,6 +578,11 @@ typedef struct RlmeshEnvConfig {
   size_t num_reset_options;
   const char* render_mode;   /* "rgb_array" when `render` produces frames */
   const char* metadata_json; /* extra contract metadata (JSON object); NULL = none */
+  /* Run every callback (close included) on the thread that calls
+   * rlmesh_env_serve, which then serves from a helper thread: for a simulation
+   * bound to the thread that created it (a GL / Vulkan context, Isaac Sim).
+   * One lane only. false = callbacks run on a dedicated lane thread. */
+  bool foreground;
 } RlmeshEnvConfig;
 
 /* An owned env handle. Lifecycle: rlmesh_env_new -> rlmesh_env_bind ->
@@ -584,6 +592,17 @@ typedef struct RlmeshEnv RlmeshEnv;
 
 RLMESH_API RlmeshStatus rlmesh_env_new(const RlmeshEnvVtable* vtable, const RlmeshEnvConfig* config,
                                        void* user_data, RlmeshEnv** out);
+
+/* Serve `num_lanes` independent simulations as the lanes of one endpoint
+ * (num_envs = num_lanes): lane i passes `user_data[i]` to its callbacks. Every
+ * lane shares `vtable` and `config` (one contract) but runs on its own thread,
+ * concurrently with the others, so each `user_data` must be its own simulation.
+ * `user_data` (the array) is borrowed for the call; each entry must outlive the
+ * env. num_lanes == 0 and a foreground config with num_lanes > 1 fail with
+ * RLMESH_ERR_INVALID_ARGUMENT. */
+RLMESH_API RlmeshStatus rlmesh_env_new_lanes(const RlmeshEnvVtable* vtable,
+                                             const RlmeshEnvConfig* config, void* const* user_data,
+                                             size_t num_lanes, RlmeshEnv** out);
 
 /* Bind to `bind_address` (tcp://host:port, host:port or unix:///path) without
  * serving yet; once per handle. `out_address` (may be NULL) receives the
@@ -595,7 +614,8 @@ RLMESH_API RlmeshStatus rlmesh_env_bind(RlmeshEnv* env, const char* bind_address
                                         RlmeshBytes* out_address);
 
 /* Serve the bound env until a remote shutdown, an idle timeout, or
- * rlmesh_env_cancel. Blocking. `close` runs once before this returns. */
+ * rlmesh_env_cancel. Blocking. `close` runs once per lane before this returns.
+ * A foreground env runs every callback on the calling thread until then. */
 RLMESH_API RlmeshStatus rlmesh_env_serve(RlmeshEnv* env);
 
 /* Stop a blocking rlmesh_env_serve from another thread: it drains, closes the
