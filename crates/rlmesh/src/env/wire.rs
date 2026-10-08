@@ -1763,4 +1763,48 @@ mod tests {
             ],
         );
     }
+
+    #[tokio::test]
+    async fn env_server_lanes_serve_one_endpoint_of_num_envs_lanes() {
+        let seen: Arc<Mutex<Vec<Option<spaces::MetaMap>>>> = Arc::new(Mutex::new(Vec::new()));
+        let bound = super::super::EnvServer::lanes(vec![
+            RecordingLane::new(seen.clone()),
+            RecordingLane::new(seen.clone()),
+        ])
+        .bind_with_options(
+            BindAddress::parse("tcp://127.0.0.1:0").unwrap(),
+            ServeOptions {
+                allow_remote_shutdown: true,
+                ..ServeOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+        let address = bound.local_addr().to_string();
+        let server = tokio::spawn(bound.serve());
+
+        let mut client = connect_with_retry(&address, &server).await;
+        assert_eq!(client.num_envs(), 2);
+        let reset = client
+            .reset(ResetRequest {
+                seeds: vec![1, 2],
+                ..ResetRequest::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(reset.observations.len(), 2);
+        assert_eq!(seen.lock().unwrap().len(), 2, "each lane reset once");
+        assert!(client.shutdown("done").await.unwrap());
+        shutdown_and_join(server).await;
+    }
+
+    #[tokio::test]
+    async fn env_server_without_lanes_fails_to_bind() {
+        let error = super::super::EnvServer::<RecordingLane>::lanes(Vec::new())
+            .bind(BindAddress::parse("tcp://127.0.0.1:0").unwrap())
+            .await
+            .err()
+            .expect("no lanes is rejected");
+        assert!(error.to_string().contains("at least one lane"), "{error}");
+    }
 }
