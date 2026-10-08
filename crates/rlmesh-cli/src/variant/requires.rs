@@ -6,6 +6,7 @@ use std::fmt;
 use serde_json::Value;
 
 use super::constraint::{Clause, dotted, parse_constraint};
+use super::quantity::{QuantityError, format_quantity, parse_quantity};
 
 /// The `requires` keys the platform matches hardware against.
 pub const REQUIRE_KEYS: [&str; 6] = [
@@ -14,7 +15,7 @@ pub const REQUIRE_KEYS: [&str; 6] = [
     "accel.gfx",
     "accel.cuda",
     "accel.driver",
-    "accel.vram_bytes",
+    "accel.vram",
 ];
 /// The `accel.vendor` values.
 pub const VENDORS: [&str; 2] = ["nvidia", "amd"];
@@ -39,7 +40,7 @@ pub enum Requirement {
     Targets(Vec<String>),
     /// `accel.compute`, `accel.cuda`, `accel.driver`: every clause must hold.
     Version(Vec<Clause>),
-    /// `accel.vram_bytes`: a minimum per GPU.
+    /// `accel.vram`: a minimum per GPU.
     MinBytes(u64),
 }
 
@@ -57,7 +58,7 @@ impl fmt::Display for Requirement {
                     .collect();
                 f.write_str(&clauses.join(","))
             }
-            Self::MinBytes(bytes) => write!(f, ">={bytes}"),
+            Self::MinBytes(bytes) => write!(f, ">={}", format_quantity(*bytes)),
         }
     }
 }
@@ -130,29 +131,40 @@ pub fn parse_requirement(key: &str, value: &Value) -> Result<Requirement, String
                 )),
             }
         }
-        // The platform stores the minimum as an int64.
-        "accel.vram_bytes" => value
-            .as_i64()
-            .and_then(|bytes| u64::try_from(bytes).ok())
-            .filter(|bytes| *bytes > 0)
-            .map(Requirement::MinBytes)
-            .ok_or_else(|| {
-                let hint = value
-                    .as_str()
-                    .map(|raw| {
-                        format!(
-                            " (write the minimum as a JSON number: {})",
-                            raw.trim().trim_start_matches(">=").trim()
-                        )
-                    })
-                    .unwrap_or_default();
-                format!("accel.vram_bytes {value} is not a positive integer byte count{hint}")
-            }),
+        "accel.vram" => parse_vram(value),
         _ => Err(format!(
             "unknown key {key:?} (allowed: {})",
             REQUIRE_KEYS.join(", ")
         )),
     }
+}
+
+/// `accel.vram`: a quantity string like `"16Gi"`, a positive whole number of
+/// bytes within the signed 64-bit range.
+fn parse_vram(value: &Value) -> Result<Requirement, String> {
+    let Some(raw) = value.as_str() else {
+        let hint = if value.is_number() {
+            "; write it as a quantity string, e.g. \"16Gi\""
+        } else {
+            ""
+        };
+        return Err(format!("accel.vram {value} is not a quantity string{hint}"));
+    };
+    parse_quantity(raw)
+        .map(Requirement::MinBytes)
+        .map_err(|error| match error {
+            QuantityError::Syntax => format!(
+                "accel.vram {value} is not a quantity like \"16Gi\" (digits with an optional \
+                 Ki, Mi, Gi, Ti, K, M, G or T suffix)"
+            ),
+            QuantityError::Zero => format!("accel.vram {value} is not a positive quantity"),
+            QuantityError::Fractional => {
+                format!("accel.vram {value} is not a whole number of bytes")
+            }
+            QuantityError::TooLarge => {
+                format!("accel.vram {value} is more than {} bytes", i64::MAX)
+            }
+        })
 }
 
 /// The vendor-coherence rules on one `requires` map: NVIDIA keys under `amd`,
@@ -177,7 +189,7 @@ pub(super) fn vendor_problems(keys: &BTreeSet<&str>, vendor: Option<&str>) -> Ve
         None => {
             if let Some(key) = NVIDIA_KEYS
                 .iter()
-                .chain(&["accel.gfx", "accel.vram_bytes"])
+                .chain(&["accel.gfx", "accel.vram"])
                 .find(|key| keys.contains(*key))
             {
                 problems.push(format!("{key} needs accel.vendor"));
@@ -303,14 +315,18 @@ mod tests {
             ok("accel.gfx", json!(["gfx942", "gfx90a"])),
             Requirement::Targets(vec!["gfx942".to_owned(), "gfx90a".to_owned()])
         );
-        assert_eq!(
-            ok("accel.vram_bytes", json!(24000000000_u64)),
-            Requirement::MinBytes(24000000000)
-        );
-        assert_eq!(
-            ok("accel.vram_bytes", json!(i64::MAX)),
-            Requirement::MinBytes(i64::MAX as u64)
-        );
+        for (raw, bytes) in [
+            ("16Gi", 17_179_869_184),
+            ("24G", 24_000_000_000),
+            ("1.5Gi", 1_610_612_736),
+            ("512Mi", 536_870_912),
+            ("80000000000", 80_000_000_000),
+        ] {
+            assert_eq!(ok("accel.vram", json!(raw)), Requirement::MinBytes(bytes));
+        }
+        // The minimum renders as a quantity.
+        assert_eq!(ok("accel.vram", json!("16Gi")).to_string(), ">=16Gi");
+        assert_eq!(ok("accel.vram", json!("24000M")).to_string(), ">=24G");
         assert_eq!(
             ok("accel.driver", json!("535.104.05")).to_string(),
             ">=535.104.5"
@@ -337,23 +353,36 @@ mod tests {
                 "entry \"mi300\" is not a gfx target",
             ),
             (
-                "accel.vram_bytes",
-                json!(">=24000000000"),
-                "write the minimum as a JSON number: 24000000000",
-            ),
-            ("accel.vram_bytes", json!(0), "not a positive integer"),
-            ("accel.vram_bytes", json!(-1), "not a positive integer"),
-            ("accel.vram_bytes", json!(1.5), "not a positive integer"),
-            // The platform stores an int64.
-            (
-                "accel.vram_bytes",
-                json!(i64::MAX as u64 + 1),
-                "not a positive integer",
+                "accel.vram",
+                json!(16),
+                "16 is not a quantity string; write it as a quantity string, e.g. \"16Gi\"",
             ),
             (
-                "accel.vram_bytes",
-                json!(u64::MAX),
-                "not a positive integer",
+                "accel.vram",
+                json!(["16Gi"]),
+                "[\"16Gi\"] is not a quantity string",
+            ),
+            (
+                "accel.vram",
+                json!("16 Gi"),
+                "is not a quantity like \"16Gi\"",
+            ),
+            ("accel.vram", json!("16gi"), "is not a quantity like"),
+            ("accel.vram", json!("16GB"), "is not a quantity like"),
+            ("accel.vram", json!("-1Gi"), "is not a quantity like"),
+            ("accel.vram", json!("1e9"), "is not a quantity like"),
+            ("accel.vram", json!(">=16Gi"), "is not a quantity like"),
+            ("accel.vram", json!(""), "is not a quantity like"),
+            ("accel.vram", json!("0"), "\"0\" is not a positive quantity"),
+            (
+                "accel.vram",
+                json!("1.5"),
+                "\"1.5\" is not a whole number of bytes",
+            ),
+            (
+                "accel.vram",
+                json!("9999999999Ti"),
+                "\"9999999999Ti\" is more than 9223372036854775807 bytes",
             ),
             ("accel.memory", json!(1), "unknown key \"accel.memory\""),
         ] {
@@ -370,8 +399,8 @@ mod tests {
             ["accel.cuda needs accel.vendor"]
         );
         assert_eq!(
-            problems(json!({"accel.vram_bytes": 1})),
-            ["accel.vram_bytes needs accel.vendor"]
+            problems(json!({"accel.vram": "16Gi"})),
+            ["accel.vram needs accel.vendor"]
         );
         assert_eq!(
             problems(json!({"accel.vendor": "amd", "accel.cuda": ">=12", "accel.driver": "550"})),
@@ -386,10 +415,24 @@ mod tests {
         );
         assert!(
             problems(
-                json!({"accel.vendor": "amd", "accel.gfx": ["gfx942"], "accel.vram_bytes": 1})
+                json!({"accel.vendor": "amd", "accel.gfx": ["gfx942"], "accel.vram": "192Gi"})
             )
             .is_empty()
         );
         assert_eq!(problems(json!([])), ["requires is not an object"]);
+    }
+
+    #[test]
+    fn vram_bytes_is_an_unknown_key() {
+        let error = parse_requirement("accel.vram_bytes", &json!(24000000000_u64)).unwrap_err();
+        assert_eq!(
+            error,
+            "unknown key \"accel.vram_bytes\" (allowed: accel.vendor, accel.compute, \
+             accel.gfx, accel.cuda, accel.driver, accel.vram)"
+        );
+        let (requires, problems) =
+            parse_requires(&json!({"accel.vendor": "nvidia", "accel.vram_bytes": 24000000000_u64}));
+        assert_eq!(problems, [error]);
+        assert_eq!(format_requires(&requires), "accel.vendor=nvidia");
     }
 }

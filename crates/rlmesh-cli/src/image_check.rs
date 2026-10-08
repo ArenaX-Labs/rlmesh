@@ -1216,7 +1216,7 @@ mod tests {
             serde_json::json!({
                 "schemaVersion": 1,
                 "variant": {"key": "torch-cuda12", "requires": {"accel.vendor": "nvidia",
-                    "accel.cuda": ">=12.2", "accel.vram_bytes": ">=24000000000"}},
+                    "accel.cuda": ">=12.2", "accel.vram": ">=24Gi"}},
                 "profiles": [{"key": "osmesa", "default": true}, {"key": "egl", "default": true}],
             })
             .to_string(),
@@ -1229,7 +1229,8 @@ mod tests {
             .collect();
         assert_eq!(variant.len(), 2, "{report:#?}");
         assert!(
-            variant[0].contains("accel.vram_bytes \">=24000000000\" is not a positive integer")
+            variant[0].contains("accel.vram \">=24Gi\" is not a quantity like \"16Gi\""),
+            "{variant:?}"
         );
         assert!(variant[1].contains("at most one may be"));
         assert!(

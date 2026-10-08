@@ -173,8 +173,8 @@ fn parse_variant(raw: &Map<String, Value>, report: &mut CheckReport) -> Variant 
             .failed
             .extend(problems.into_iter().map(|p| format!("variant: {p}")));
     }
-    if let Some(requires) = raw.get("requires") {
-        let (requires, problems) = parse_requires(requires);
+    if let Some(raw_requires) = raw.get("requires") {
+        let (requires, problems) = parse_requires(raw_requires);
         report.failed.extend(
             problems
                 .into_iter()
@@ -247,8 +247,8 @@ fn parse_profile(index: usize, entry: &Value, report: &mut CheckReport) -> Optio
     if let Some(gpu) = raw.get("gpu") {
         profile.gpu_count = parse_gpu(&scope, gpu, report);
     }
-    if let Some(requires) = raw.get("requires") {
-        let (requires, problems) = parse_requires(requires);
+    if let Some(raw_requires) = raw.get("requires") {
+        let (requires, problems) = parse_requires(raw_requires);
         profile.requires = requires;
         report.failed.extend(
             problems
@@ -468,6 +468,21 @@ mod tests {
                 "cpu accel with a vendor",
                 json!({"variant": {"key": "a", "facets": {"accel": "cpu"}, "requires": {"accel.vendor": "nvidia"}}}),
                 vec!["facets.accel cpu contradicts requires accel.vendor nvidia"],
+                vec![],
+            ),
+            (
+                "vram quantity",
+                json!({"variant": {"key": "a", "requires": {"accel.vendor": "amd", "accel.vram": "192Gi"}}}),
+                vec![],
+                vec![],
+            ),
+            (
+                "vram as a number",
+                json!({"variant": {"key": "a", "requires": {"accel.vendor": "amd", "accel.vram": 16}}}),
+                vec![
+                    "variant: requires accel.vram 16 is not a quantity string; write it as a \
+                      quantity string, e.g. \"16Gi\"",
+                ],
                 vec![],
             ),
             (

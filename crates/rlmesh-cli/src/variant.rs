@@ -28,10 +28,11 @@
 //! [`REQUIRE_KEYS`]: `accel.vendor` is `nvidia` or `amd`; `accel.compute`,
 //! `accel.cuda`, and `accel.driver` are comma-joined version clauses
 //! (`>=8.0,<10.0`, a bare version meaning a minimum); `accel.gfx` is a list of
-//! AMD targets; `accel.vram_bytes` is a minimum in integer bytes; every key but
-//! `accel.vendor` needs `accel.vendor`. A profile's `requires` and `facets`
-//! override the variant's key by key. An image without a variant block gets
-//! its requires inferred from its CUDA/ROCm markers ([`infer`](fn@infer)).
+//! AMD targets; `accel.vram` is the minimum VRAM per GPU as a quantity string
+//! (`"16Gi"`, [`parse_quantity`]); every key but `accel.vendor` needs
+//! `accel.vendor`. A profile's `requires` and `facets` override the variant's
+//! key by key. An image without a variant block gets its requires inferred
+//! from its CUDA/ROCm markers ([`infer`](fn@infer)).
 //!
 //! The managed platform implements exactly these rules (its
 //! `variant_requires_schema`, `variant_requires_vs_env`, and row naming), so
@@ -42,6 +43,7 @@
 mod constraint;
 mod declaration;
 mod infer;
+mod quantity;
 mod requires;
 #[cfg(test)]
 mod testing;
@@ -58,6 +60,7 @@ pub use declaration::{
     index_annotation_warnings, parse_compute_blocks,
 };
 pub use infer::{Inferred, infer};
+pub use quantity::{QuantityError, format_quantity, parse_quantity};
 pub use requires::{
     ACCEL_FACETS, FACET_KEYS, MAX_KEY_LEN, RENDER_FACETS, REQUIRE_KEYS, Requirement, Requires,
     VENDORS, format_facets, format_requires, parse_requirement, valid_key,
@@ -279,7 +282,7 @@ mod tests {
                     "accel.compute": ">=8.0,<10.0",
                     "accel.cuda": ">=12.4",
                     "accel.driver": "550",
-                    "accel.vram_bytes": 24000000000_u64
+                    "accel.vram": "24Gi"
                 },
                 "priority": 10
             },
@@ -309,7 +312,7 @@ mod tests {
             [
                 "variant: cuda12 (facets accel=cuda, framework=torch, render=egl; requires \
                  accel.compute>=8.0,<10.0, accel.cuda>=12.4, accel.driver>=550, \
-                 accel.vendor=nvidia, accel.vram_bytes>=24000000000; priority 10)",
+                 accel.vendor=nvidia, accel.vram>=24Gi; priority 10)",
                 "rows: cuda12-osmesa (default), cuda12-egl",
             ]
         );
@@ -397,6 +400,35 @@ mod tests {
             report.not_checked,
             ["profiles: big: resources are validated by the platform against its ceilings"]
         );
+    }
+
+    #[test]
+    fn profiles_override_vram() {
+        let package = |variant: Value, profile: Value| {
+            json!({
+                "schemaVersion": 1,
+                "variant": {"key": "cuda12", "requires": variant},
+                "profiles": [{"key": "big", "default": true, "requires": profile}]
+            })
+        };
+        for (variant, profile, merged) in [
+            (
+                json!({"accel.vendor": "nvidia", "accel.vram": "16G"}),
+                json!({"accel.vendor": "nvidia", "accel.vram": "80Gi"}),
+                "accel.vendor=nvidia, accel.vram>=80Gi",
+            ),
+            (
+                json!({"accel.vendor": "nvidia", "accel.vram": "16Gi"}),
+                json!({"accel.vendor": "nvidia", "accel.vram": "24Gi"}),
+                "accel.vendor=nvidia, accel.vram>=24Gi",
+            ),
+        ] {
+            let (blocks, report) = parse_compute_blocks(&object(package(variant, profile)));
+            assert!(report.failed.is_empty(), "{report:#?}");
+            let mut requires = blocks.variant.unwrap().requires.unwrap();
+            requires.extend(blocks.profiles[0].requires.clone());
+            assert_eq!(format_requires(&requires), merged);
+        }
     }
 
     #[test]
