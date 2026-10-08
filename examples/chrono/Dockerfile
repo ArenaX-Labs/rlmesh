@@ -75,9 +75,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=env /opt/app /opt/app
 # The binary's RUNPATH is $ORIGIN/../lib, so the shared libraries resolve there.
-ENV RLMESH_ADDRESS=0.0.0.0:50051
+# It serves on $RLMESH_ADDRESS, which the platform sets per pod (default
+# 0.0.0.0:50051).
 
-LABEL dev.rlmesh.package='{"schemaVersion":1,"name":"chrono-industrial-reach","description":"Project Chrono 10 six-axis industrial robot reaching a target, served natively from C++ through the RLMesh C ABI.","tags":["cpu","chrono","cpp"],"resources":{"memory":"1Gi"}}'
+LABEL dev.rlmesh.package='{"schemaVersion":1,"name":"chrono-industrial-reach","description":"Project Chrono 10 six-axis industrial robot reaching a target, served natively from C++ through the RLMesh C ABI.","tags":["chrono","cpp"],"resetOptions":["trial_index"],"resources":{"memory":"1Gi"}}'
 
 EXPOSE 50051
 ENTRYPOINT ["/opt/app/bin/chrono_reach_env"]
