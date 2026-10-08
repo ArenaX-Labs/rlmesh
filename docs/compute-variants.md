@@ -88,7 +88,7 @@ Every key other than `accel.vendor` needs `accel.vendor` in the same `requires` 
 
 Version-level data that applies to every variant can go on the index itself, as a `dev.rlmesh.package` annotation; `rlmesh registry publish --index-package version.json` sets it. It may carry only `name`, `description`, `checkpoints`, `compatibility`, `capabilities`, and `inputArtifacts`, plus `schemaVersion` (1, the default) and `rev`. The platform ignores any other key, and `publish` warns about it. Where a child's label sets one of those keys differently, the annotation wins, and `publish` warns about that too. Children's `variant` blocks remain the primary declaration: `variant` and `profiles` never belong on the index.
 
-Only an OCI image index carries annotations. docker assembles a Docker manifest list instead when every source is a Docker schema2 image, as a classic `docker build` and `docker push` produce, so `publish` refuses `--index-package` then and names the sources. Rebuild them with OCI media types: `docker buildx build --push` (its attestations make the push an OCI index), or `--provenance=false --output type=image,oci-mediatypes=true,push=true`. One OCI source among them is enough. Without `--index-package`, schema2 sources publish as a Docker manifest list, which the platform reads as a version too.
+Only an OCI image index carries annotations. docker assembles a Docker manifest list instead when every manifest the sources carry, images and attestations alike, is a Docker schema2 manifest, as a classic `docker build` and `docker push` produce, so `publish` refuses `--index-package` then and names the sources. It also checks the index docker would assemble before pushing, and the pushed one after, and fails if either is not an OCI image index carrying the annotation. Rebuild them with OCI media types: `docker buildx build --push` (its attestations make the push an OCI index), or `--provenance=false --output type=image,oci-mediatypes=true,push=true`. One OCI source among them is enough. Without `--index-package`, schema2 sources publish as a Docker manifest list, which the platform reads as a version too.
 
 A single source that is itself an index, published without `--index-package`, is republished as is, so its own `dev.rlmesh.package` annotation becomes the version's. `publish` checks it by the same rules as `--index-package` (a `schemaVersion` other than 1 fails; other keys are warned about), says that it is kept, and compares it with the child's label. Pass `--index-package` to replace it. With several sources, a source index's annotation is not carried into the version, and `publish` warns that it is dropped.
 
@@ -163,16 +163,16 @@ The first reference is the version (`REPOSITORY:TAG`); the rest are the variants
 
    A non-amd64 child is only a warning, since the platform records it as `excluded`. Every problem across all sources is reported at once, and nothing is pushed if there is one.
 
-3. Checks where each tag points now. TARGET and each `--tag` name the version, so one that already points at a different index is refused unless you pass `--force`; one that already points at this very index is left as is, so publishing again is safe. The `--channel` tag moves, which is what it is for, and the summary shows the digest it moves from. A tag that cannot be read is warned about and treated as new.
-4. Creates the index with `docker buildx imagetools create` and pushes it under TARGET, each `--tag`, and `--channel`.
+3. Checks where each tag points now, reading each manifest as the registry stores it. TARGET and each `--tag` name the version, so one that already points at a different index is refused unless you pass `--force`. One that already holds this very index (the same media type and `artifactType`, the same manifests in order with every descriptor field, the same annotations and `subject`; only whitespace and key order may differ) is left as is and not pushed again, so publishing again is safe and never moves its digest. A tag is new only when the registry says it does not exist; one that cannot be read (an authorization failure, a transport error, a registry error, output that does not parse) is refused unless you pass `--force`, with the reason. The `--channel` tag moves, which is what it is for, and the summary shows the digest it moves from, or why it could not be read; a channel that is also TARGET or a `--tag` is protected like them.
+4. Creates the index with `docker buildx imagetools create` and pushes it under every tag that does not already hold it.
 
-| Flag                   | Effect                                                                                                                                                               |
-| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--tag TAG`            | Another tag for the index in TARGET's repository; repeatable. Like TARGET, it does not move to a different index without `--force`.                                  |
-| `--channel TAG`        | A moving channel tag such as `latest`. It moves without `--force`, and the summary prints the digest it moved from.                                                  |
-| `--index-package FILE` | Version-level JSON, set as the index's `dev.rlmesh.package` annotation. `schemaVersion` defaults to 1; keys outside the version-level set are kept but warned about. |
-| `--dry-run`            | Prints the per-variant summary, the index JSON, and each tag's state without pushing; fails on a tag the real run would refuse.                                      |
-| `--force`              | Moves TARGET or a `--tag` that already points at a different index.                                                                                                  |
+| Flag                   | Effect                                                                                                                                                                              |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--tag TAG`            | Another tag for the index in TARGET's repository; repeatable. Like TARGET, it does not move to a different index, or over a state that cannot be read, without `--force`.           |
+| `--channel TAG`        | A moving channel tag such as `latest`. It moves without `--force`, and the summary prints the digest it moved from; when it is also TARGET or a `--tag`, it is protected like them. |
+| `--index-package FILE` | Version-level JSON, set as the index's `dev.rlmesh.package` annotation. `schemaVersion` defaults to 1; keys outside the version-level set are kept but warned about.                |
+| `--dry-run`            | Prints the per-variant summary, the index JSON, and each tag's state without pushing; fails on a tag the real run would refuse.                                                     |
+| `--force`              | Pushes TARGET or a `--tag` that already points at a different index, or that cannot be read.                                                                                        |
 
 The summary shows each child's effective facets and requires (marked `(inferred)` when they come from the image's markers), its row keys, the version's default row (`*`), and where each tag points now:
 
@@ -244,7 +244,7 @@ It **fails** on what the platform's `variant_requires_schema` check fails:
 - `gpu.count` outside 0 to 8
 - a derived row key that does not match the key pattern
 
-It **warns**, as the platform's `variant_requires_vs_env` check does, when a declaration contradicts the image's own markers:
+It **warns** when a declaration contradicts the image's own markers, the cases the platform's `variant_requires_vs_env` check covers. For `accel.cuda` the CLI checks the whole constraint, upper bounds included, so it can warn where the platform does not:
 
 - `accel.vendor` `amd` on a CUDA image, or `nvidia` on a ROCm image
 - `accel.cuda` that admits drivers older than the image's CUDA runtime needs, because the constraint has no lower bound (`<13`) or its lower bound sits below the runtime (`>=12.2` on CUDA 12.4); or that admits none that can run it, because an upper bound or an `==` sits below the runtime (`<12`, `==12.2`)

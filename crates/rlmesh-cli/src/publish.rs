@@ -8,9 +8,10 @@
 //! each source, create to assemble and push), so docker's own credential
 //! helpers, including `docker-credential-rlmesh`, authenticate it. Sources are
 //! pinned by digest before the index is created, so a tag moving underneath a
-//! publish cannot swap a child. A version tag (TARGET, `--tag`) already
-//! pointing at a different index is not moved without `--force`; the channel
-//! tag moves.
+//! publish cannot swap a child. A version tag (TARGET, `--tag`) is pushed
+//! only over a tag the registry says is absent, or one already holding the
+//! same index (which is left alone); a different index, or a tag that cannot
+//! be read, needs `--force`. The channel tag moves.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -33,6 +34,7 @@ const REFERENCE_DIGEST: &str = "vnd.docker.reference.digest";
 const ATTESTATION: &str = "attestation-manifest";
 /// The media-type prefix of Docker's own (non-OCI) manifests.
 const DOCKER_MEDIA_PREFIX: &str = "application/vnd.docker.";
+const OCI_INDEX: &str = "application/vnd.oci.image.index.v1+json";
 
 /// The registry operations publish needs, as `docker buildx imagetools`
 /// provides them; a test hands in canned responses instead.
@@ -43,6 +45,9 @@ pub(crate) trait Imagetools {
     /// The OCI image config of a single-image reference
     /// (`--format '{{json .Image}}'`).
     fn config(&self, reference: &str) -> Result<String>;
+    /// The manifest exactly as the registry stores it (`inspect REF --raw`),
+    /// every field included.
+    fn raw(&self, reference: &str) -> Result<String>;
     /// Run `imagetools create ARGS`, returning its stdout (the index JSON
     /// under `--dry-run`).
     fn create(&self, args: &[String]) -> Result<String>;
@@ -78,6 +83,10 @@ impl Imagetools for DockerImagetools {
 
     fn config(&self, reference: &str) -> Result<String> {
         Self::run(&["inspect", reference, "--format", "{{json .Image}}"])
+    }
+
+    fn raw(&self, reference: &str) -> Result<String> {
+        Self::run(&["inspect", reference, "--raw"])
     }
 
     fn create(&self, args: &[String]) -> Result<String> {
@@ -169,6 +178,7 @@ pub(crate) struct Child {
 #[derive(Debug, Clone)]
 pub(crate) struct Attestation {
     pub digest: String,
+    pub media_type: String,
     /// The image it describes (`vnd.docker.reference.digest`).
     pub subject: Option<String>,
 }
@@ -180,10 +190,12 @@ impl Child {
         package::selectable(parts.next().unwrap_or(""), parts.next().unwrap_or(""))
     }
 
-    /// Whether everything this child brings into the version is a Docker
-    /// schema2 manifest (attestations are always OCI).
+    /// Whether every descriptor this child brings into the version, its image
+    /// and each attestation, is a Docker (schema2) manifest.
     fn docker_media_only(&self) -> bool {
-        self.media_type.starts_with(DOCKER_MEDIA_PREFIX) && self.attestations.is_empty()
+        std::iter::once(self.media_type.as_str())
+            .chain(self.attestations.iter().map(|a| a.media_type.as_str()))
+            .all(|media_type| media_type.starts_with(DOCKER_MEDIA_PREFIX))
     }
 }
 
@@ -228,6 +240,7 @@ fn resolve_source(tools: &impl Imagetools, source: &str) -> Result<Child> {
                 if annotation(REFERENCE_TYPE) == Some(ATTESTATION) {
                     attestations.push(Attestation {
                         digest: digest.to_owned(),
+                        media_type: media_type(entry),
                         subject: annotation(REFERENCE_DIGEST).map(str::to_owned),
                     });
                     continue;
@@ -364,15 +377,17 @@ pub(crate) fn attestation_errors(children: &[Child]) -> Vec<String> {
 }
 
 /// `docker buildx imagetools create` writes a Docker manifest list, which
-/// carries no annotations, when every descriptor it assembles is a Docker
-/// schema2 manifest; the `--index-package` annotation would then be dropped.
+/// carries no annotations, when every descriptor it assembles (images and
+/// attestations alike) is a Docker schema2 manifest; the `--index-package`
+/// annotation would then be dropped.
 pub(crate) fn docker_list_error(children: &[Child]) -> Option<String> {
     (!children.is_empty() && children.iter().all(Child::docker_media_only)).then(|| {
         format!(
-            "--index-package needs an OCI image index, but every source is a Docker schema2 \
-             image ({}), so docker would publish a Docker manifest list and drop the \
-             annotation; rebuild the sources with OCI media types (docker buildx build --push, \
-             or --provenance=false --output type=image,oci-mediatypes=true,push=true)",
+            "--index-package needs an OCI image index, but every manifest the sources carry \
+             (images and attestations) is a Docker schema2 manifest ({}), so docker would \
+             publish a Docker manifest list and drop the annotation; rebuild the sources with \
+             OCI media types (docker buildx build --push, or --provenance=false --output \
+             type=image,oci-mediatypes=true,push=true)",
             children
                 .iter()
                 .map(|child| child.source.as_str())
@@ -681,74 +696,142 @@ pub(crate) fn create_args(
     args
 }
 
+/// What a tag holds before the publish.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Existing {
+    /// The registry says there is no such manifest.
+    Absent,
+    /// It could not be read (auth, transport, a registry error, output that
+    /// does not parse), so nothing is known about it; the reason.
+    Unreadable(String),
+    /// A manifest at `digest`, as stored (`raw`).
+    Found { digest: String, raw: Value },
+}
+
 /// Where a tag points before the publish, against the index being published.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TagState {
-    /// Nothing there yet (or nothing readable, which is warned about).
+    /// Nothing there yet.
     New,
-    /// Already this index.
+    /// Not readable; the reason.
+    Unreadable(String),
+    /// Already this index, at this digest: left as is.
     Unchanged(String),
     /// Another manifest, at this digest.
     Moves(String),
 }
 
-/// What a tag holds now, as the `.Manifest` JSON; `None` when it does not
-/// exist. A tag that cannot be read is treated as new, with a warning, since
-/// a registry that hides a repository from a reader would refuse the push too.
-fn existing_manifest(
-    tools: &impl Imagetools,
-    tag: &str,
-    warnings: &mut Vec<String>,
-) -> Option<Value> {
-    match tools.manifest(tag) {
-        Ok(raw) => serde_json::from_str(&raw).ok(),
+/// Whether an inspect error is the registry saying `tag` does not exist, as
+/// opposed to failing to say. Only the shapes a missing manifest takes count:
+/// containerd's `REF: not found` (what a manifest 404 becomes), the
+/// distribution `MANIFEST_UNKNOWN`/`NAME_UNKNOWN` codes, and a 404 on the
+/// manifest URL itself. A 404 from a token endpoint, a credential helper
+/// that is "not found", a 401, a 5xx, or a transport error is not absence.
+pub(crate) fn absent(tag: &str, error: &str) -> bool {
+    let error = error.trim();
+    if not_found_line(tag, error) {
+        return true;
+    }
+    // Past the exact form, a message naming credentials or a token is an
+    // access failure, whatever status it reports.
+    let lower = error.to_ascii_lowercase();
+    if [
+        "credential",
+        "authoriz",
+        "token",
+        "denied",
+        "insufficient_scope",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
+    {
+        return false;
+    }
+    [
+        "MANIFEST_UNKNOWN",
+        "NAME_UNKNOWN",
+        "manifest unknown",
+        "name unknown",
+    ]
+    .iter()
+    .any(|code| error.contains(code))
+        || error.lines().any(|line| {
+            line.contains("/v2/")
+                && line.contains("/manifests/")
+                && line.ends_with(": 404 Not Found")
+        })
+}
+
+/// Whether the error ends with containerd's `REF: not found` for `tag` (as
+/// docker normalizes it: `ns/x:v1` reads `docker.io/ns/x:v1`).
+fn not_found_line(tag: &str, error: &str) -> bool {
+    let Some(reference) = error.strip_suffix(": not found") else {
+        return false;
+    };
+    let reference = reference
+        .rsplit(char::is_whitespace)
+        .next()
+        .unwrap_or_default();
+    reference == tag || reference.ends_with(&format!("/{tag}"))
+}
+
+/// What `tag` holds now. An error that is not a confirmed absence leaves it
+/// unreadable, never new: a version tag is not pushed over what could not be
+/// checked.
+fn existing_manifest(tools: &impl Imagetools, tag: &str) -> Existing {
+    let read = || -> Result<Existing> {
+        let view: Value = serde_json::from_str(&tools.manifest(tag)?)
+            .context("docker printed a manifest that is not JSON")?;
+        let digest = view
+            .get("digest")
+            .and_then(Value::as_str)
+            .context("docker printed a manifest without a digest")?
+            .to_owned();
+        let raw = serde_json::from_str(&tools.raw(tag)?).context("its raw manifest is not JSON")?;
+        Ok(Existing::Found { digest, raw })
+    };
+    match read() {
+        Ok(existing) => existing,
         Err(error) => {
             let error = format!("{error:#}");
-            if !error.contains("not found") {
-                warnings.push(format!(
-                    "{tag}: could not read it ({error}); not checked for an existing version"
-                ));
+            if absent(tag, &error) {
+                Existing::Absent
+            } else {
+                Existing::Unreadable(error)
             }
-            None
         }
     }
 }
 
-/// Whether an existing manifest is the index about to be published: the same
-/// media type, children, and annotations.
-fn same_index(existing: &Value, index: &Value) -> bool {
-    ["mediaType", "manifests", "annotations"]
-        .iter()
-        .all(|key| existing.get(key) == index.get(key))
+/// Whether an existing manifest is the index about to be published. Both are
+/// compared as stored, field by field: the same media type and artifactType,
+/// the same manifests in the same order (digest, size, platform, annotations,
+/// every descriptor field), the same annotations and subject. Only the
+/// serialization (whitespace, key order) may differ.
+pub(crate) fn same_index(existing: &Value, index: &Value) -> bool {
+    existing == index
 }
 
 /// Each tag's state against `index`, the index `imagetools create --dry-run`
 /// assembles.
-pub(crate) fn tag_states(existing: &[Option<Value>], index: &Value) -> Vec<TagState> {
+pub(crate) fn tag_states(existing: &[Existing], index: &Value) -> Vec<TagState> {
     existing
         .iter()
-        .map(|manifest| match manifest {
-            None => TagState::New,
-            Some(manifest) => {
-                let digest = manifest
-                    .get("digest")
-                    .and_then(Value::as_str)
-                    .unwrap_or("(digest unknown)")
-                    .to_owned();
-                if same_index(manifest, index) {
-                    TagState::Unchanged(digest)
-                } else {
-                    TagState::Moves(digest)
-                }
+        .map(|existing| match existing {
+            Existing::Absent => TagState::New,
+            Existing::Unreadable(reason) => TagState::Unreadable(reason.clone()),
+            Existing::Found { digest, raw } if same_index(raw, index) => {
+                TagState::Unchanged(digest.clone())
             }
+            Existing::Found { digest, .. } => TagState::Moves(digest.clone()),
         })
         .collect()
 }
 
 /// Print each tag's state and return the refusals: TARGET and `--tag` tags
-/// name a version and do not move without `--force`; the channel tag (its
-/// full reference, unless it is also a version tag) moves, which is its
-/// purpose, and says from where.
+/// name a version and do not move, or get pushed over a state that could not
+/// be read, without `--force`; the channel tag (its full reference, unless it
+/// is also a version tag) moves, which is its purpose, and says from where.
 fn report_tags(
     stdout: &mut impl Write,
     style: Style,
@@ -769,7 +852,9 @@ fn report_tags(
         let is_channel = channel == Some(tag.as_str());
         let note = match state {
             TagState::New => style.muted("new"),
-            TagState::Unchanged(digest) => style.muted(&format!("unchanged ({digest})")),
+            TagState::Unchanged(digest) => {
+                style.muted(&format!("unchanged ({digest}), not pushed again"))
+            }
             TagState::Moves(digest) if is_channel => format!("moves from {digest} (channel)"),
             TagState::Moves(digest) if force => {
                 style.yellow(&format!("moves from {digest} (--force)"))
@@ -780,6 +865,20 @@ fn report_tags(
                      not move without --force"
                 ));
                 style.red_bold(&format!("refused: points at {digest}"))
+            }
+            TagState::Unreadable(reason) if is_channel => {
+                style.yellow(&format!("unreadable, overwritten (channel): {reason}"))
+            }
+            TagState::Unreadable(reason) if force => {
+                style.yellow(&format!("unreadable, overwritten (--force): {reason}"))
+            }
+            TagState::Unreadable(reason) => {
+                refusals.push(format!(
+                    "{tag} could not be read ({reason}), so it may already hold another \
+                     version; a version tag is pushed only where the registry says it is \
+                     absent, so fix access to it or pass --force"
+                ));
+                style.red_bold("refused: could not be read")
             }
         };
         writeln!(stdout, "  {tag:<width$}  {note}")?;
@@ -882,13 +981,6 @@ pub(crate) fn publish_with(
         writeln!(stdout)?;
         write_table(stdout, style, &variants)?;
     }
-    let existing: Vec<Option<Value>> = if errors.is_empty() {
-        tags.iter()
-            .map(|tag| existing_manifest(tools, tag, &mut warnings))
-            .collect()
-    } else {
-        Vec::new()
-    };
     if !warnings.is_empty() {
         writeln!(stdout)?;
         for warning in &warnings {
@@ -910,16 +1002,13 @@ pub(crate) fn publish_with(
         return Err(cannot_publish(&errors));
     }
 
-    // The index as docker will assemble it, to compare existing tags with
-    // (and, under --dry-run, to print). Only --index-package is passed as an
-    // annotation; an inherited one rides along with its index.
+    // The index as docker will assemble it: printed under --dry-run, checked
+    // to carry the annotation, and compared with what each tag holds. Only
+    // --index-package is passed as an annotation; an inherited one rides
+    // along with its index.
     let explicit = args.index_package.as_ref().and(annotation.as_deref());
-    let preview = if args.dry_run || existing.iter().any(Option::is_some) {
-        Some(tools.create(&create_args(&tags, explicit, &variants, true))?)
-    } else {
-        None
-    };
-    if let Some(preview) = preview.as_deref().filter(|_| args.dry_run) {
+    let preview = tools.create(&create_args(&tags, explicit, &variants, true))?;
+    if args.dry_run {
         writeln!(stdout)?;
         writeln!(
             stdout,
@@ -928,11 +1017,17 @@ pub(crate) fn publish_with(
         )?;
         writeln!(stdout, "{}", preview.trim())?;
     }
-    let index: Value = match preview.as_deref() {
-        Some(preview) => serde_json::from_str(preview)
-            .context("parsing the index docker buildx imagetools create --dry-run printed")?,
-        None => Value::Null,
-    };
+    let index: Value = serde_json::from_str(&preview)
+        .context("parsing the index docker buildx imagetools create --dry-run printed")?;
+    if explicit.is_some()
+        && let Some(error) = annotation_dropped(&index)
+    {
+        return Err(cannot_publish(&[format!("docker would assemble {error}")]));
+    }
+    let existing: Vec<Existing> = tags
+        .iter()
+        .map(|tag| existing_manifest(tools, tag))
+        .collect();
     let states = tag_states(&existing, &index);
     let channel = args
         .channel
@@ -960,10 +1055,41 @@ pub(crate) fn publish_with(
         return Ok(0);
     }
 
-    tools.create(&create_args(&tags, explicit, &variants, false))?;
+    // A tag already holding this index is not pushed again: docker would
+    // re-serialize it, and the tag could move to another digest.
+    let push: Vec<String> = tags
+        .iter()
+        .zip(&states)
+        .filter(|(_, state)| !matches!(state, TagState::Unchanged(_)))
+        .map(|(tag, _)| tag.clone())
+        .collect();
     writeln!(stdout)?;
+    let Some(first) = push.first() else {
+        let digest = match &states[0] {
+            TagState::Unchanged(digest) => digest.as_str(),
+            _ => "(digest unknown)",
+        };
+        writeln!(
+            stdout,
+            "{}",
+            style.success(&format!(
+                "Already published {}@{digest}; every tag holds this index, nothing pushed",
+                target.repository
+            ))
+        )?;
+        return Ok(0);
+    };
+    tools.create(&create_args(&push, explicit, &variants, false))?;
     let pushed: Value =
-        serde_json::from_str(&tools.manifest(&tags[0])?).context("parsing the published index")?;
+        serde_json::from_str(&tools.manifest(first)?).context("parsing the published index")?;
+    if explicit.is_some()
+        && let Some(error) = annotation_dropped(&pushed)
+    {
+        bail!(
+            "pushed {}, but the registry holds {error}; publish again from OCI sources",
+            push.join(", ")
+        );
+    }
     let digest = pushed
         .get("digest")
         .and_then(Value::as_str)
@@ -973,10 +1099,38 @@ pub(crate) fn publish_with(
         "{}",
         style.success(&format!("Published {}@{digest}", target.repository))
     )?;
-    for tag in &tags {
-        writeln!(stdout, "  {} {tag}", style.muted("tagged"))?;
+    for (tag, state) in tags.iter().zip(&states) {
+        match state {
+            TagState::Unchanged(digest) => writeln!(
+                stdout,
+                "  {} {tag} (already {digest})",
+                style.muted("unchanged")
+            )?,
+            _ => writeln!(stdout, "  {} {tag}", style.muted("tagged"))?,
+        }
     }
     Ok(0)
+}
+
+/// Why `index` would not carry the `--index-package` annotation, if it would
+/// not: it is not an OCI image index (a Docker manifest list has no
+/// annotations), or the annotation is missing from it.
+fn annotation_dropped(index: &Value) -> Option<String> {
+    let media_type = index
+        .get("mediaType")
+        .and_then(Value::as_str)
+        .unwrap_or("(no media type)");
+    if media_type != OCI_INDEX {
+        return Some(format!(
+            "a {media_type}, not an OCI image index, so the --index-package annotation is \
+             dropped; rebuild the sources with OCI media types (docker buildx build --push)"
+        ));
+    }
+    let kept = index
+        .get("annotations")
+        .and_then(|annotations| annotations.get(PACKAGE_LABEL))
+        .is_some();
+    (!kept).then(|| format!("an index without the {PACKAGE_LABEL} annotation --index-package sets"))
 }
 
 fn write_table(stdout: &mut impl Write, style: Style, variants: &[VariantImage]) -> Result<()> {
@@ -1095,14 +1249,18 @@ mod tests {
     #[derive(Default)]
     struct FakeRegistry {
         manifests: RefCell<BTreeMap<String, String>>,
+        raws: RefCell<BTreeMap<String, String>>,
         configs: BTreeMap<String, String>,
         created: RefCell<Vec<Vec<String>>>,
     }
 
     /// The index `imagetools create ARGS` assembles, reduced to what the
-    /// tests compare: one child per source, the index annotation.
-    fn assembled(args: &[String]) -> (Vec<String>, Value) {
+    /// tests compare: one child per source, the index annotation. Like
+    /// docker, it is a Docker manifest list, without annotations, when every
+    /// descriptor the sources carry is a Docker manifest.
+    fn assembled(registry: &FakeRegistry, args: &[String]) -> (Vec<String>, Value) {
         let (mut tags, mut manifests, mut annotations) = (Vec::new(), Vec::new(), Map::new());
+        let mut docker_only = true;
         let mut args = args.iter();
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -1114,12 +1272,21 @@ mod tests {
                         .unwrap();
                     annotations.insert(key.to_owned(), Value::from(value));
                 }
-                source => manifests.push(json!({"digest": source.split_once('@').unwrap().1})),
+                source => {
+                    let digest = source.split_once('@').unwrap().1;
+                    docker_only &= registry
+                        .media_types(digest)
+                        .iter()
+                        .all(|media_type| media_type.starts_with(DOCKER_MEDIA_PREFIX));
+                    manifests.push(json!({"digest": digest}));
+                }
             }
         }
-        let mut index = json!({"schemaVersion": 2,
-            "mediaType": "application/vnd.oci.image.index.v1+json", "manifests": manifests});
-        if !annotations.is_empty() {
+        let mut index = json!({"schemaVersion": 2, "mediaType": OCI_INDEX, "manifests": manifests});
+        if docker_only {
+            index["mediaType"] =
+                Value::from("application/vnd.docker.distribution.manifest.list.v2+json");
+        } else if !annotations.is_empty() {
             index["annotations"] = Value::Object(annotations);
         }
         (tags, index)
@@ -1142,9 +1309,23 @@ mod tests {
                 .ok_or_else(|| anyhow!("ERROR: {reference}: not found"))
         }
 
+        /// The canned raw manifest when one was set, else the `.Manifest`
+        /// view without the descriptor fields docker adds to it.
+        fn raw(&self, reference: &str) -> Result<String> {
+            if let Some(raw) = self.raws.borrow().get(reference) {
+                return Ok(raw.clone());
+            }
+            let mut view: Value = serde_json::from_str(&self.manifest(reference)?)?;
+            if let Some(view) = view.as_object_mut() {
+                view.remove("digest");
+                view.remove("size");
+            }
+            Ok(view.to_string())
+        }
+
         fn create(&self, args: &[String]) -> Result<String> {
             self.created.borrow_mut().push(args.to_vec());
-            let (tags, mut index) = assembled(args);
+            let (tags, mut index) = assembled(self, args);
             if args.iter().any(|a| a == "--dry-run") {
                 return Ok(serde_json::to_string_pretty(&index)?);
             }
@@ -1213,6 +1394,24 @@ mod tests {
             };
             self.insert(reference, &manifest);
             self.configs.insert(format!("{repository}@{image}"), config);
+        }
+
+        /// The media types of the descriptors the manifest at `digest`
+        /// brings into an index: its children, or itself.
+        fn media_types(&self, digest: &str) -> Vec<String> {
+            let manifests = self.manifests.borrow();
+            let Some(manifest) = manifests
+                .values()
+                .filter_map(|raw| serde_json::from_str::<Value>(raw).ok())
+                .find(|manifest| manifest["digest"] == digest)
+            else {
+                return vec![OCI_INDEX.to_owned()];
+            };
+            let media_type = |value: &Value| value["mediaType"].as_str().unwrap_or("").to_owned();
+            match manifest["manifests"].as_array() {
+                Some(children) => children.iter().map(media_type).collect(),
+                None => vec![media_type(&manifest)],
+            }
         }
 
         fn insert(&self, reference: &str, manifest: &Value) {
@@ -1407,8 +1606,11 @@ mod tests {
         let (result, out) = run(&registry, &args("reg.example/ns/pi0:v3", SOURCES));
         assert_eq!(result.unwrap(), 0, "{out}");
         let created = registry.created.borrow();
-        assert!(!created[0].contains(&"--dry-run".to_owned()));
-        assert!(!created[0].contains(&"--annotation".to_owned()));
+        // The index is assembled first (to check it), then pushed.
+        assert_eq!(created.len(), 2);
+        assert!(created[0].contains(&"--dry-run".to_owned()));
+        assert!(!created[1].contains(&"--dry-run".to_owned()));
+        assert!(!created[1].contains(&"--annotation".to_owned()));
         assert!(
             out.contains(&format!("Published reg.example/ns/pi0@{}", digest('p'))),
             "{out}"
@@ -1682,8 +1884,8 @@ mod tests {
         let (result, _) = run(&registry, &publish);
         let error = format!("{:#}", result.unwrap_err());
         for needle in [
-            "--index-package needs an OCI image index, but every source is a Docker schema2 \
-             image (r/x:a, r/x:b)",
+            "--index-package needs an OCI image index, but every manifest the sources carry \
+             (images and attestations) is a Docker schema2 manifest (r/x:a, r/x:b)",
             "drop the annotation",
             "--output type=image,oci-mediatypes=true,push=true",
         ] {
@@ -1694,6 +1896,40 @@ mod tests {
         // Without an annotation, a Docker manifest list is a whole version.
         let (result, out) = run(&registry, &args("r/x:v1", &["r/x:a", "r/x:b"]));
         assert_eq!(result.unwrap(), 0, "{out}");
+
+        // A Docker manifest list whose image and attestation are both schema2
+        // carries nothing OCI either.
+        const SCHEMA2: &str = "application/vnd.docker.distribution.manifest.v2+json";
+        registry.add("r/x:s", Some('s'), 'e', keyed("s"));
+        let mut list = buildkit_index(&digest('e'), ("linux", "amd64"));
+        list["digest"] = Value::from(digest('s'));
+        list["mediaType"] =
+            Value::from("application/vnd.docker.distribution.manifest.list.v2+json");
+        list["manifests"][0]["mediaType"] = Value::from(SCHEMA2);
+        list["manifests"][1]["mediaType"] = Value::from(SCHEMA2);
+        registry.insert("r/x:s", &list);
+        publish.target = "r/x:v3".to_owned();
+        publish.sources = vec!["r/x:a".to_owned(), "r/x:s".to_owned()];
+        let error = format!("{:#}", run(&registry, &publish).0.unwrap_err());
+        assert!(
+            error.contains("Docker schema2 manifest (r/x:a, r/x:s)"),
+            "{error}"
+        );
+        assert_eq!(
+            registry.created.borrow().len(),
+            2,
+            "nothing more is created"
+        );
+        // With an OCI attestation, docker assembles an OCI index.
+        list["manifests"][1]["mediaType"] =
+            Value::from("application/vnd.oci.image.manifest.v1+json");
+        registry.insert("r/x:s", &list);
+        let (result, out) = run(&registry, &publish);
+        assert_eq!(result.unwrap(), 0, "{out}");
+        let pushed: Value = serde_json::from_str(&registry.manifest("r/x:v3").unwrap()).unwrap();
+        assert_eq!(pushed["mediaType"], OCI_INDEX);
+        assert!(pushed["annotations"][PACKAGE_LABEL].is_string(), "{pushed}");
+        publish.sources = vec!["r/x:a".to_owned(), "r/x:b".to_owned()];
 
         // One OCI child and docker assembles an OCI index, annotation kept.
         registry.add("r/x:c", None, 'c', keyed("c"));
@@ -1897,15 +2133,23 @@ mod tests {
             tag_line(&out, "reg.example/ns/pi0:v3").ends_with(" new"),
             "{out}"
         );
-        // Publishing the same version again changes nothing and is allowed.
+        // Publishing the same version again changes nothing and is allowed;
+        // no tag is pushed again.
         let (result, out) = run(&registry, &publish);
         assert_eq!(result.unwrap(), 0, "{out}");
         assert!(
             tag_line(&out, "reg.example/ns/pi0:v3")
-                .ends_with(&format!(" unchanged ({})", digest('p'))),
+                .ends_with(&format!(" unchanged ({}), not pushed again", digest('p'))),
             "{out}"
         );
-        assert_eq!(registry.pushes(), 2);
+        assert!(
+            out.contains(&format!(
+                "Already published reg.example/ns/pi0@{}; every tag holds this index",
+                digest('p')
+            )),
+            "{out}"
+        );
+        assert_eq!(registry.pushes(), 1);
 
         // Other children under the same version tag: the dry run says what
         // would be refused, and the real run refuses it.
@@ -1939,7 +2183,7 @@ mod tests {
         );
         other.dry_run = false;
         assert!(run(&registry, &other).0.is_err());
-        assert_eq!(registry.pushes(), 2, "nothing is pushed");
+        assert_eq!(registry.pushes(), 1, "nothing is pushed");
         other.force = true;
         let (result, out) = run(&registry, &other);
         assert_eq!(result.unwrap(), 0, "{out}");
@@ -1948,7 +2192,7 @@ mod tests {
                 .ends_with(&format!("moves from {} (--force)", digest('p'))),
             "{out}"
         );
-        assert_eq!(registry.pushes(), 3);
+        assert_eq!(registry.pushes(), 2);
 
         // A new version moves only the channel, without --force.
         let mut next = args("reg.example/ns/pi0:v4", SOURCES);
@@ -1969,17 +2213,237 @@ mod tests {
         same.channel = Some("latest".to_owned());
         let error = format!("{:#}", run(&registry, &same).0.unwrap_err());
         assert!(error.contains("does not move without --force"), "{error}");
+    }
 
-        // A tag that cannot be read is not checked, and says so.
-        registry.insert_raw("reg.example/ns/pi0:v5", "ERROR: unauthorized");
-        let (result, out) = run(&registry, &args("reg.example/ns/pi0:v5", SOURCES));
-        assert_eq!(result.unwrap(), 0, "{out}");
-        assert!(
-            out.contains(
-                "reg.example/ns/pi0:v5: could not read it (ERROR: unauthorized); not checked for \
-                 an existing version"
+    /// The messages `docker buildx imagetools inspect` (0.37) prints, each
+    /// as the wrapper reports it.
+    fn inspect_error(message: &str) -> String {
+        format!("docker buildx imagetools inspect failed: ERROR: {message}")
+    }
+
+    #[test]
+    fn only_a_confirmed_absence_reads_as_a_new_tag() {
+        let tag = "localhost:5055/ns/pi0:v1";
+        for message in [
+            // A manifest 404, and a 404 with a MANIFEST_UNKNOWN body.
+            "localhost:5055/ns/pi0:v1: not found",
+            "manifest unknown: manifest unknown",
+            "unexpected status from HEAD request to http://localhost:5055/v2/ns/pi0/manifests/v1: \
+             404 Not Found",
+        ] {
+            assert!(absent(tag, &inspect_error(message)), "{message}");
+        }
+        // docker normalizes a Docker Hub reference.
+        assert!(absent(
+            "ns/pi0:v1",
+            &inspect_error("docker.io/ns/pi0:v1: not found")
+        ));
+        for message in [
+            "unexpected status from HEAD request to http://localhost:5055/v2/ns/pi0/manifests/v1: \
+             401 Unauthorized",
+            "failed to authorize: failed to fetch anonymous token: unexpected status from GET \
+             request to http://localhost:5055/token?scope=repository%3Ans%2Fpi0%3Apull: 404 Not \
+             Found",
+            "error getting credentials - err: exec: \"docker-credential-gone\": executable file \
+             not found in $PATH, out: ``",
+            "failed to do request: Head \"http://localhost:5999/v2/ns/pi0/manifests/v1\": dial \
+             tcp 127.0.0.1:5999: connect: connection refused",
+            "unexpected status from HEAD request to http://localhost:5055/v2/ns/pi0/manifests/v1: \
+             500 Internal Server Error",
+            "pull access denied, repository does not exist or may require authorization: server \
+             message: insufficient_scope: authorization failed",
+            // Another reference's absence is not this one's.
+            "localhost:5055/ns/other:v1: not found",
+        ] {
+            assert!(!absent(tag, &inspect_error(message)), "{message}");
+        }
+        // Not running docker at all is not absence either.
+        assert!(!absent(
+            tag,
+            "running docker buildx imagetools (is docker with buildx installed?): No such file \
+             or directory (os error 2)"
+        ));
+    }
+
+    #[test]
+    fn an_unreadable_version_tag_is_refused_without_force() {
+        let registry = three_variants();
+        let tag = "reg.example/ns/pi0:v5";
+        for (canned, reason) in [
+            (
+                "ERROR: unexpected status from HEAD request to \
+                 https://reg.example/v2/ns/pi0/manifests/v5: 401 Unauthorized",
+                "401 Unauthorized",
             ),
+            (
+                "ERROR: failed to do request: Head \"https://reg.example/v2/ns/pi0/manifests/v5\": \
+                 dial tcp: i/o timeout",
+                "i/o timeout",
+            ),
+            (
+                "ERROR: failed to authorize: failed to fetch oauth token: unexpected status from \
+                 GET request to https://reg.example/token: 404 Not Found",
+                "token: 404 Not Found",
+            ),
+            ("<html>bad gateway</html>", "is not JSON"),
+        ] {
+            registry.insert_raw(tag, canned);
+            let mut publish = args(tag, SOURCES);
+            publish.dry_run = true;
+            let (result, out) = run(&registry, &publish);
+            let error = format!("{:#}", result.unwrap_err());
+            assert!(
+                error.contains(&format!("{tag} could not be read (")) && error.contains(reason),
+                "{reason:?} not in:\n{error}"
+            );
+            assert!(error.contains("pass --force"), "{error}");
+            assert!(
+                tag_line(&out, tag).ends_with("refused: could not be read"),
+                "{out}"
+            );
+            publish.dry_run = false;
+            assert!(run(&registry, &publish).0.is_err());
+            assert_eq!(registry.pushes(), 0, "nothing is pushed");
+        }
+        // A real absence is new.
+        registry.manifests.borrow_mut().remove(tag);
+        let mut publish = args(tag, SOURCES);
+        publish.dry_run = true;
+        let (result, out) = run(&registry, &publish);
+        assert_eq!(result.unwrap(), 0, "{out}");
+        assert!(tag_line(&out, tag).ends_with(" new"), "{out}");
+
+        // --force pushes over it, and the channel is overwritten regardless;
+        // both say why.
+        registry.insert_raw(tag, "ERROR: unexpected status: 401 Unauthorized");
+        let channel = "reg.example/ns/pi0:latest";
+        registry.insert_raw(channel, "ERROR: unexpected status: 503 Service Unavailable");
+        publish.dry_run = false;
+        publish.channel = Some("latest".to_owned());
+        let (result, out) = run(&registry, &publish);
+        let error = format!("{:#}", result.unwrap_err());
+        assert!(
+            error.contains(&format!("{tag} could not be read")),
+            "{error}"
+        );
+        assert!(
+            !error.contains(channel),
+            "the channel is not refused: {error}"
+        );
+        publish.force = true;
+        let (result, out2) = run(&registry, &publish);
+        assert_eq!(result.unwrap(), 0, "{out2}");
+        assert!(
+            tag_line(&out2, tag).ends_with(
+                "unreadable, overwritten (--force): ERROR: unexpected status: 401 Unauthorized"
+            ),
+            "{out2}"
+        );
+        for out in [&out, &out2] {
+            assert!(
+                tag_line(out, channel).ends_with(
+                    "unreadable, overwritten (channel): ERROR: unexpected status: 503 Service \
+                     Unavailable"
+                ),
+                "{out}"
+            );
+        }
+        assert_eq!(registry.pushes(), 1);
+    }
+
+    #[test]
+    fn an_existing_index_is_unchanged_only_when_every_field_matches() {
+        let registry = three_variants();
+        let target = "reg.example/ns/pi0:v3";
+        let (result, out) = run(&registry, &args(target, SOURCES));
+        assert_eq!(result.unwrap(), 0, "{out}");
+        let stored: Value = serde_json::from_str(&registry.raw(target).unwrap()).unwrap();
+
+        // The same index, serialized differently (pretty, other key order):
+        // unchanged, and not pushed again, so its digest stays put.
+        let reordered = format!(
+            "{{\n  \"manifests\": {},\n  \"schemaVersion\": 2,\n  \"mediaType\": \"{OCI_INDEX}\"\n}}",
+            serde_json::to_string_pretty(&stored["manifests"]).unwrap()
+        );
+        registry
+            .raws
+            .borrow_mut()
+            .insert(target.to_owned(), reordered);
+        let mut publish = args(target, SOURCES);
+        publish.tags = vec!["v3.0".to_owned()];
+        let (result, out) = run(&registry, &publish);
+        assert_eq!(result.unwrap(), 0, "{out}");
+        assert!(tag_line(&out, target).contains("unchanged"), "{out}");
+        // Only the new tag is pushed.
+        let created = registry.created.borrow().last().unwrap().clone();
+        assert!(!created.contains(&target.to_owned()), "{created:?}");
+        assert!(
+            created.contains(&"reg.example/ns/pi0:v3.0".to_owned()),
+            "{created:?}"
+        );
+        assert!(
+            out.contains(&format!("unchanged {target} (already {})", digest('p'))),
             "{out}"
+        );
+        assert!(out.contains("tagged reg.example/ns/pi0:v3.0"), "{out}");
+
+        // An index carrying a subject or an artifactType the replacement would
+        // drop is a different index, though docker's .Manifest view hides both.
+        for (field, value) in [
+            (
+                "subject",
+                json!({"mediaType": "application/vnd.oci.image.manifest.v1+json",
+                       "digest": digest('s'), "size": 7}),
+            ),
+            ("artifactType", json!("application/vnd.example.sbom")),
+        ] {
+            let mut carrying = stored.clone();
+            carrying[field] = value;
+            registry
+                .raws
+                .borrow_mut()
+                .insert(target.to_owned(), carrying.to_string());
+            let error = format!(
+                "{:#}",
+                run(&registry, &args(target, SOURCES)).0.unwrap_err()
+            );
+            assert!(
+                error.contains(&format!(
+                    "{target} already points at {}, a different index",
+                    digest('p')
+                )),
+                "{field}: {error}"
+            );
+        }
+        // So is one whose manifests differ only in a descriptor's size.
+        let mut resized = stored.clone();
+        resized["manifests"][0]["size"] = Value::from(1);
+        registry
+            .raws
+            .borrow_mut()
+            .insert(target.to_owned(), resized.to_string());
+        assert!(run(&registry, &args(target, SOURCES)).0.is_err());
+    }
+
+    #[test]
+    fn the_assembled_index_must_keep_the_annotation() {
+        assert_eq!(
+            annotation_dropped(&json!({"mediaType": OCI_INDEX,
+                "annotations": {PACKAGE_LABEL: "{}"}})),
+            None
+        );
+        let list = annotation_dropped(
+            &json!({"mediaType": "application/vnd.docker.distribution.manifest.list.v2+json"}),
+        )
+        .unwrap();
+        assert!(
+            list.contains("not an OCI image index, so the --index-package annotation is dropped"),
+            "{list}"
+        );
+        let bare = annotation_dropped(&json!({"mediaType": OCI_INDEX})).unwrap();
+        assert!(
+            bare.contains("without the dev.rlmesh.package annotation"),
+            "{bare}"
         );
     }
 

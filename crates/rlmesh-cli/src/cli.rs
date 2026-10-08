@@ -109,7 +109,9 @@ pub struct PublishArgs {
     /// Another tag for the index in TARGET's repository; repeatable.
     #[arg(long = "tag", value_name = "TAG")]
     pub tags: Vec<String>,
-    /// A moving channel tag (e.g. `latest`) to point at this version too.
+    /// A moving channel tag (e.g. `latest`) to point at this version too. It
+    /// moves without `--force`, unless it is also TARGET or a `--tag`, which
+    /// keeps it protected like them.
     #[arg(long, value_name = "TAG")]
     pub channel: Option<String>,
     /// A JSON file of version-level package data (checkpoints, compatibility),
@@ -119,8 +121,9 @@ pub struct PublishArgs {
     /// Print the per-variant summary and the index JSON without pushing.
     #[arg(long)]
     pub dry_run: bool,
-    /// Move TARGET or a `--tag` that already points at a different index
-    /// (the channel tag always moves).
+    /// Push TARGET or a `--tag` that already points at a different index, or
+    /// that cannot be read (the channel tag needs no `--force`, unless it is
+    /// also TARGET or a `--tag`).
     #[arg(long)]
     pub force: bool,
 }
