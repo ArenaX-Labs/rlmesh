@@ -610,4 +610,124 @@ mod tests {
             "{bare}"
         );
     }
+
+    /// `config` (with its package label replaced by `label` when set) as the
+    /// one image of `reference`, resolved.
+    fn child(
+        registry: &mut FakeRegistry,
+        reference: &str,
+        config: String,
+        label: Option<&str>,
+    ) -> Child {
+        let mut config: Value = serde_json::from_str(&config).unwrap();
+        if let Some(label) = label {
+            config["config"]["Labels"][PACKAGE_LABEL] = Value::from(label);
+        }
+        registry.add(reference, None, 'a', config.to_string());
+        resolve_source(registry, reference).unwrap()
+    }
+
+    #[test]
+    fn a_child_label_is_a_version_1_object() {
+        let mut registry = FakeRegistry::default();
+        for (label, error) in [
+            ("[]", "r/x:a: dev.rlmesh.package must be a JSON object"),
+            (
+                "{",
+                "r/x:a: dev.rlmesh.package is not valid JSON: EOF while parsing an object at line \
+                 1 column 1",
+            ),
+            (
+                " ",
+                "r/x:a: no dev.rlmesh.package label; each child needs one declaring its \
+                 variant.key",
+            ),
+        ] {
+            let child = child(&mut registry, "r/x:a", keyed("a"), Some(label));
+            assert_eq!(package_object(&child).unwrap_err(), error, "{label:?}");
+        }
+        for (package, error) in [
+            (json!({"schemaVersion": 1}), None),
+            (
+                json!({"schemaVersion": 2}),
+                Some("r/x:a: dev.rlmesh.package schemaVersion 2 is not the supported version 1"),
+            ),
+            (
+                json!({}),
+                Some("r/x:a: dev.rlmesh.package schemaVersion null is not the supported version 1"),
+            ),
+        ] {
+            let Value::Object(package) = package else {
+                unreachable!()
+            };
+            assert_eq!(
+                unsupported_schema_version("r/x:a", &package).as_deref(),
+                error
+            );
+        }
+        // A bad schemaVersion is reported, and the child still checked.
+        let child = child(
+            &mut registry,
+            "r/x:a",
+            keyed("a"),
+            Some(r#"{"schemaVersion": 2, "variant": {"key": "a"}}"#),
+        );
+        let (variants, _, errors) = check_variants(vec![child]);
+        assert_eq!(variants.len(), 1);
+        assert_eq!(
+            errors,
+            ["r/x:a: dev.rlmesh.package schemaVersion 2 is not the supported version 1"]
+        );
+    }
+
+    #[test]
+    fn set_rules_report_each_collision_once() {
+        let mut registry = FakeRegistry::default();
+        let profiles = |key: &str| {
+            oci_config(
+                &[],
+                MODEL,
+                Some(json!({"schemaVersion": 1, "variant": {"key": key},
+                    "profiles": [{"key": "egl", "default": true}]})),
+            )
+        };
+        // Two children sharing a key share its rows: one duplicate-key error.
+        let a = child(&mut registry, "r/x:a", profiles("a"), None);
+        let b = child(&mut registry, "r/x:b", profiles("a"), None);
+        let (variants, _, errors) = check_variants(vec![a, b]);
+        assert_eq!(
+            errors,
+            [
+                "variant.key \"a\" is declared by r/x:a and r/x:b; keys must be unique within a \
+              version"
+            ]
+        );
+        assert!(colliding_rows(&variants).is_empty());
+        // An unknown kind agrees with any other.
+        let custom = child(
+            &mut registry,
+            "r/x:c",
+            oci_config(
+                &[],
+                &["./serve.sh"],
+                Some(json!({"schemaVersion": 1, "variant": {"key": "c"}})),
+            ),
+            None,
+        );
+        let env = child(
+            &mut registry,
+            "r/x:e",
+            oci_config(
+                &[],
+                ENV,
+                Some(json!({"schemaVersion": 1, "variant": {"key": "e"}})),
+            ),
+            None,
+        );
+        let (variants, _, errors) = check_variants(vec![custom, env]);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(mixed_kinds(&variants), None);
+        // No children, nothing unschedulable to report.
+        assert_eq!(unschedulable(&[]), None);
+    }
 }

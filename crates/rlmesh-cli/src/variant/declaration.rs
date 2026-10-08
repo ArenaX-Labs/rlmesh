@@ -555,4 +555,32 @@ mod tests {
             ["index annotation keys ignored (they belong on the child images): tags, variant"]
         );
     }
+
+    #[test]
+    fn profile_gpu_and_env_vars_must_be_objects() {
+        let mut report = CheckReport::default();
+        assert_eq!(parse_gpu("p:", &json!(1), &mut report), None);
+        assert_eq!(parse_gpu("p:", &json!({}), &mut report), None);
+        assert_eq!(parse_gpu("p:", &json!({"count": -1}), &mut report), None);
+        assert_eq!(parse_gpu("p:", &json!({"count": 2}), &mut report), Some(2));
+        assert_eq!(
+            parse_gpu("p:", &json!({"count": MAX_PROFILE_GPUS}), &mut report),
+            Some(MAX_PROFILE_GPUS)
+        );
+        assert!(parse_env_vars("p:", &json!(["MUJOCO_GL=egl"]), &mut report).is_empty());
+        assert_eq!(
+            parse_env_vars("p:", &json!({"MUJOCO_GL": "egl"}), &mut report),
+            BTreeMap::from([("MUJOCO_GL".to_owned(), "egl".to_owned())])
+        );
+        assert_eq!(
+            report.failed,
+            [
+                "p: gpu is not an object",
+                "p: gpu has no count",
+                "p: gpu.count -1 is not in [0, 8]",
+                "p: envVars is not an object of strings",
+            ]
+        );
+        assert!(report.warnings.is_empty(), "{report:#?}");
+    }
 }

@@ -496,4 +496,52 @@ mod tests {
         assert_eq!(format_requires(&requires), "accel.vendor=amd");
         assert_eq!(facets["accel"], "rocm");
     }
+
+    #[test]
+    fn the_cuda_floor_is_the_first_whole_one() {
+        for (value, floor) in [
+            ("cuda>=12.4", Some("12.4")),
+            (
+                "brand=tesla,driver>=470 cuda>=11.8 brand=nvidia",
+                Some("11.8"),
+            ),
+            // A floor without a minor version is skipped for the next one.
+            ("cuda>=12 cuda>=11.8", Some("11.8")),
+            ("cuda>=12.4rc1", Some("12.4")),
+            ("cuda>=12.", None),
+            ("driver>=470", None),
+            ("", None),
+        ] {
+            assert_eq!(cuda_floor(value).as_deref(), floor, "{value:?}");
+        }
+    }
+
+    #[test]
+    fn the_evidence_names_each_marker_read() {
+        for (config, evidence) in [
+            (
+                image(&["NVIDIA_REQUIRE_CUDA=cuda>=11.8"], None),
+                "NVIDIA_REQUIRE_CUDA cuda>=11.8",
+            ),
+            (
+                image(&["CUDA_VERSION=12.4", "ROCM_VERSION=6.2"], None),
+                "CUDA_VERSION=12.4, ROCM_VERSION=6.2, both CUDA and ROCm markers, so nothing",
+            ),
+            (
+                with_torch(image(&[], None), json!({"torch": "2.3.0+cu121"})),
+                "torch 2.3.0+cu121",
+            ),
+            // Tags that name no stack version are not evidence.
+            (
+                with_torch(image(&[], None), json!({"torch": "2.3.0+cu12x"})),
+                "no CUDA or ROCm markers",
+            ),
+            (
+                with_torch(image(&[], None), json!({"torch": "2.3.0"})),
+                "no CUDA or ROCm markers",
+            ),
+        ] {
+            assert_eq!(infer(&config).evidence, evidence);
+        }
+    }
 }
