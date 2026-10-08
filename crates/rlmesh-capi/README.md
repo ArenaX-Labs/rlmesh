@@ -129,7 +129,8 @@ to an environment that declares that reset option.
 options the env understands (`trial_index`), a render mode, and extra metadata.
 The tags are validated against the spaces right there, the same publish-time
 check Python's `adapters.tag()` runs, so a typo fails `rlmesh_env_new` rather
-than a model's resolve.
+than a model's resolve. The tag JSON grammar (leaf kinds, fields, defaults, and
+validation) is specified in [`docs/specs/env_tags.v1.md`](../../docs/specs/env_tags.v1.md).
 
 Then `rlmesh_env_bind` (learn the address, e.g. for port 0) and
 `rlmesh_env_serve` (blocks). `rlmesh_env_cancel` from any thread drains the

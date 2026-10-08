@@ -567,7 +567,8 @@ typedef struct RlmeshEnvVtable {
  * beyond it read as unset. Borrowed for the rlmesh_env_new call only (the
  * spaces are cloned). `adapter_tags_json` is the env's adapter EnvTags (v1
  * JSON), validated against the spaces right there: an unknown field or a tag
- * that does not fit its space fails rlmesh_env_new. */
+ * that does not fit its space fails rlmesh_env_new. The JSON grammar is in
+ * docs/specs/env_tags.v1.md. */
 typedef struct RlmeshEnvConfig {
   size_t struct_size;
   const char* id;                           /* contract id; NULL/"" = "env" */

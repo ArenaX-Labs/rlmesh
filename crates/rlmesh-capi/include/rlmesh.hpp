@@ -1287,7 +1287,7 @@ struct EnvConfig {
   std::optional<Space> observation_space;
   std::optional<Space> action_space;
   /// Adapter EnvTags (the v1 JSON wire format); empty = untagged. Validated
-  /// against the spaces at create().
+  /// against the spaces at create(); grammar in docs/specs/env_tags.v1.md.
   std::string adapter_tags_json;
   /// Reset options the env understands, e.g. {"trial_index"}.
   std::vector<std::string> reset_options;
