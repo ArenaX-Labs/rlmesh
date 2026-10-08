@@ -1,7 +1,7 @@
 //! Pure checks over a built image's OCI config, the way the managed platform's
 //! admission reads it: the serve command and the address it binds, the port it
 //! exposes, its platform, its rlmesh labels (including the package label's
-//! `variant` / `profiles` blocks, see [`crate::package`]), and whether the
+//! `variant` / `profiles` blocks, see [`crate::variant`]), and whether the
 //! rlmesh it was built with can meet a platform's workflow editions.
 //!
 //! Nothing here touches docker, the network, or Python: the caller hands in an
@@ -884,7 +884,7 @@ pub fn declared_workflow_edition(config: &ImageConfig) -> Option<Option<String>>
 }
 
 /// Run every image-config check: platform, serve command, labels, the compute
-/// variant ([`crate::package::check_variant`]: declared or inferred), and (when
+/// variant ([`crate::variant::check_variant`]: declared or inferred), and (when
 /// the describe label advertises editions) edition compatibility with
 /// `platform`, or a `not_checked` note when the caller has no platform offer
 /// to check against. A `--workflow-edition` or `ENV RLMESH_WORKFLOW_EDITION`
@@ -896,7 +896,7 @@ pub fn check_image(config: &ImageConfig, platform: Option<&SessionOffer>) -> Che
     let kind = describe.as_ref().and_then(|label| label.kind);
     report.extend(check_serve_command(config, kind));
     report.extend(labels);
-    report.extend(crate::package::check_variant(config));
+    report.extend(crate::variant::check_variant(config));
     match describe {
         Some(mut label) => {
             let command = parse_serve_command(config);

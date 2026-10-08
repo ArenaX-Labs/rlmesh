@@ -4,7 +4,6 @@ mod cli;
 mod config;
 mod helpers;
 pub mod image_check;
-pub mod package;
 mod platform;
 mod profile;
 mod publish;
@@ -12,6 +11,7 @@ mod registry;
 mod render;
 mod session;
 mod settings;
+pub mod variant;
 mod viewtest;
 
 use std::ffi::{OsStr, OsString};
