@@ -7,6 +7,7 @@
 //! a handler panics; idle shutdown then fires once the count stays at zero for
 //! `idle_timeout`.
 
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::{
     Arc, Mutex,
@@ -89,6 +90,11 @@ pub struct ServeOptions {
     /// Every server accepts compressed requests regardless. Ignored by the
     /// model server.
     pub compress_responses: bool,
+    /// Advisory entries this endpoint adds to its handshake
+    /// `PeerInfo.extra`, over the process-wide peer-info override, so two
+    /// servers in one process can each report their own (e.g. their own
+    /// describe envelope). Empty by default. Ignored by the model server.
+    pub peer_info_extra: BTreeMap<String, String>,
 }
 
 /// Default per-connection concurrency cap for pipelined model predict requests.
@@ -284,6 +290,7 @@ mod tests {
                 predict_concurrency: None,
                 workflow_edition: None,
                 compress_responses: false,
+                peer_info_extra: BTreeMap::new(),
             }
         );
     }

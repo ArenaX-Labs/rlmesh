@@ -1410,7 +1410,8 @@ class EnvServer {
 
   /// The env's describe envelope JSON (`rlmesh.describe.v1`): what to bake as
   /// the image's `dev.rlmesh.describe` label. After `bind` it declares the
-  /// bound workflow edition; `bind` also publishes it on the handshake.
+  /// bound workflow edition; `bind` also publishes it on this endpoint's
+  /// handshake.
   Result<std::string> describe_json() const {
     RLMeshBytes bytes{};
     RLMeshStatus status = rlmesh_env_describe_json(env_, &bytes);

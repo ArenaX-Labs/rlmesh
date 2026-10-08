@@ -750,11 +750,16 @@ pub unsafe extern "C" fn rlmesh_env_bind(
         let cenv = lock(&handle.env)
             .take()
             .ok_or_else(|| CapiError::invalid_arg("env is already bound"))?;
-        handle.describe.publish(serve.workflow_edition.as_deref())?;
+        let envelope = handle
+            .describe
+            .for_bind(serve.workflow_edition.as_deref())?;
+        let (key, value) = Describe::bound_extra(&envelope);
+        serve.peer_info_extra.insert(key, value);
         let bound = handle
             .runtime
             .block_on(EnvServer::lanes(cenv).bind_with_options(bind, serve))
             .map_err(CapiError::from)?;
+        handle.describe.commit(envelope);
         if !out_address.is_null() {
             let address = bound.local_addr().to_string();
             unsafe { *out_address = RLMeshBytes::from_vec(address.into_bytes()) };

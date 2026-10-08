@@ -44,6 +44,7 @@ impl PyServeOptions {
                 predict_concurrency: None,
                 workflow_edition: checked_workflow_edition(workflow_edition)?,
                 compress_responses,
+                peer_info_extra: Default::default(),
             },
         })
     }

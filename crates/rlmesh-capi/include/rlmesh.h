@@ -623,8 +623,9 @@ RLMESH_API RLMeshStatus rlmesh_env_bind(RLMeshEnv* env, const char* bind_address
  * edition handshake) as UTF-8 JSON into `out` (not NUL-terminated; free with
  * rlmesh_bytes_free). Valid before and after bind; after bind it declares the
  * workflow edition the server was bound with. rlmesh_env_bind also puts it on
- * the handshake PeerInfo.extra under "rlmesh.describe.v1" (process-wide: with
- * several envs in one process the last bound wins), which is where the managed
+ * the handshake PeerInfo.extra under "rlmesh.describe.v1" of its own endpoint
+ * (each env bound in one process reports its own; a failed bind publishes
+ * nothing), which is where the managed
  * platform reads it for an image without a baked `dev.rlmesh.describe` label.
  * Bake that label with this output to describe the image before it runs. */
 RLMESH_API RLMeshStatus rlmesh_env_describe_json(const RLMeshEnv* env, RLMeshBytes* out);
