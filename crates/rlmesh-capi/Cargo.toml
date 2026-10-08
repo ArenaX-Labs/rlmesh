@@ -23,5 +23,8 @@ image = { workspace = true, features = ["png"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
 
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
 [lints]
 workspace = true

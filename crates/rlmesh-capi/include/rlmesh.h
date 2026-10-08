@@ -50,6 +50,11 @@ RLMESH_API uint32_t rlmesh_abi_version_major(void);
 RLMESH_API uint32_t rlmesh_abi_version_minor(void);
 RLMESH_API uint32_t rlmesh_abi_version_patch(void);
 
+/* Signals: creating a model or env handle sets SIGPIPE to ignored (POSIX), unless
+ * the host already installed a handler for it. The transport's socket writes
+ * cannot opt out of SIGPIPE, and its default action would kill the host when a
+ * peer disconnects mid-write; with it ignored, that write fails with EPIPE. */
+
 /* ---- status + errors ---------------------------------------------------- */
 
 typedef enum RlmeshStatus {

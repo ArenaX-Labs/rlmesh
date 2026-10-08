@@ -581,6 +581,7 @@ pub unsafe extern "C" fn rlmesh_model_new(
             return Err(CapiError::invalid_arg("null vtable"));
         }
         let vtable = unsafe { read_vtable(vtable) }?;
+        crate::abi::ignore_sigpipe();
         let out = unsafe { out.as_mut() }.ok_or_else(|| CapiError::invalid_arg("null out"))?;
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()

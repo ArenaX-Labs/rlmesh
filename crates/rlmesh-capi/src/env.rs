@@ -523,6 +523,7 @@ pub unsafe extern "C" fn rlmesh_env_new(
         let out = unsafe { out.as_mut() }.ok_or_else(|| CapiError::invalid_arg("null out"))?;
         let vtable = unsafe { read_vtable(vtable) }?;
         let config = unsafe { read_config(config) }?;
+        crate::abi::ignore_sigpipe();
         let (observation_space, action_space, contract) = build_contract(&config)?;
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
