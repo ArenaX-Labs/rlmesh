@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ### Added
 
+- `View(hold=...)` keeps the live viewer up after the session ends, showing the final frame and HUD (marked `[held]`, with every source still selectable): `hold=True` until you quit it, or a number of seconds. The default still closes the viewer with the session, and an unbounded hold with only the terminal backend and no interactive terminal is skipped with a warning, so a non-interactive run never blocks on it.
+
+- `View(step_hz=...)` paces a viewed session's env steps to at most that rate, so a fast simulator plays back at a watchable speed (the env's control rate for real time). `View.fps` still only thins the drawing. The pacing sleep is left out of the run's step and round timings.
+
+- The HTTP viewer has a quit button (and a `/quit` route) that does what `q` does in the terminal: stop the run, or close a held viewer.
+
 - `ServeOptions(compress_responses=True)` has an env server compress its responses (zstd, else gzip) for clients that accept it; every RLMesh client and server now accepts compressed messages. It is off by default: on loopback a ~200 KB rendered-image observation shrinks to ~1.4 KB on the wire but the step takes as long, so it only pays on a slow link with compressible observations.
 
 ### Fixed
@@ -37,6 +43,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - `rlmesh check` warns on an env without `tags` instead of failing it: an untagged env runs against spec-less models; tags are what let the platform adapt a spec'd model to it.
 
 - `RemoteEnv` and `RemoteVectorEnv` log a warning, once per client, when an env's own `info` key shadows a runtime-reserved one (`episode_ids`, `completed_episodes`). The env's value is still kept.
+
+- The live viewer shows the env's first declared image role by default instead of its `render()` frame. The role rides the step response, while `render()` costs one more env round trip per drawn frame; `render` stays selectable, and `View(source="render")` asks for it.
 
 ## [0.1.0] - 2026-09-23
 

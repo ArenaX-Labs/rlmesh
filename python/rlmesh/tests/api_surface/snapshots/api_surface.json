@@ -1221,6 +1221,10 @@
             "kind": "attribute",
             "signature": "fps: int"
           },
+          "hold": {
+            "kind": "attribute",
+            "signature": "hold: bool | float"
+          },
           "port": {
             "kind": "attribute",
             "signature": "port: int"
@@ -1232,9 +1236,13 @@
           "source": {
             "kind": "attribute",
             "signature": "source: str | None"
+          },
+          "step_hz": {
+            "kind": "attribute",
+            "signature": "step_hz: float | None"
           }
         },
-        "signature": "View(backend: str = 'terminal', port: int = 8008, fps: int = 30, source: str | None = None, format: str = 'jpeg', quality: int = 75)",
+        "signature": "View(backend: str = 'terminal', port: int = 8008, fps: int = 30, source: str | None = None, format: str = 'jpeg', quality: int = 75, hold: bool | float = False, step_hz: float | None = None)",
         "stability": "Stable"
       },
       "WorkflowEditionWarning": {
