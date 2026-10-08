@@ -4,6 +4,10 @@ import hashlib
 from collections.abc import Mapping, Sequence
 
 VOLATILE_INFO_KEYS = {"episode_ids"}
+# Runtime-reserved info keys that newer clients report on every step with a
+# zero default and older ones leave out until they are nonzero. Dropping the
+# zero keeps one baseline valid across versions; a nonzero value still counts.
+ZERO_DEFAULT_INFO_KEYS = {"completed_episodes"}
 
 
 def fingerprint(value: object) -> object:
@@ -74,6 +78,7 @@ def canonical_info(info: Mapping[str, object]) -> dict[str, object]:
         str(key): fingerprint(value)
         for key, value in sorted(info.items())
         if str(key) not in VOLATILE_INFO_KEYS
+        and not (str(key) in ZERO_DEFAULT_INFO_KEYS and value == 0)
     }
 
 

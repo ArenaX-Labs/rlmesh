@@ -15,8 +15,7 @@
       "action": 0,
       "index": 0,
       "info": {
-        "action": 0,
-        "completed_episodes": 0
+        "action": 0
       },
       "observation": 1,
       "reward": 1.0,
@@ -27,8 +26,7 @@
       "action": 0,
       "index": 1,
       "info": {
-        "action": 0,
-        "completed_episodes": 0
+        "action": 0
       },
       "observation": 2,
       "reward": 2.0,

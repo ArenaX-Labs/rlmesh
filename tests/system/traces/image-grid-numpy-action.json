@@ -33,8 +33,7 @@
       },
       "index": 0,
       "info": {
-        "action": 0,
-        "completed_episodes": 0
+        "action": 0
       },
       "observation": {
         "pixels": {
