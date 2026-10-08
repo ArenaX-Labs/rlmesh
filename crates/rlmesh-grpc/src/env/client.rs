@@ -203,16 +203,17 @@ impl Shared {
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = message;
     }
 
-    /// Drop `stream` as this session's Join after a non-recoverable error
-    /// ended it, unless a clone already replaced it with a fresh one.
-    fn end_session(&self, stream: &JoinStream, message: String) {
+    /// Drop the Join stream whose waiters are `pending` after a
+    /// non-recoverable error ended it, unless it is no longer this session's
+    /// stream: a stale stream's pump must not end a newer session.
+    fn end_session(&self, pending: &Pending, message: String) {
         let mut slot = self
             .stream
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if slot
             .as_ref()
-            .is_some_and(|current| Arc::ptr_eq(&current.pending, &stream.pending))
+            .is_some_and(|current| Arc::ptr_eq(&current.pending, pending))
         {
             *slot = None;
             self.set_ended_by(Some(message));
@@ -688,7 +689,16 @@ impl EnvClient {
         let (tx, response) = self.open_join(reopening).await?;
 
         let pending = new_pending();
-        spawn_response_pump(response.into_inner(), pending.clone());
+        // The pump, not the request future, records a fatal reply: a caller
+        // that dropped its future before the reply arrived must still find the
+        // session ended, so its next reset opens a fresh one.
+        let session = Arc::downgrade(&self.shared);
+        let stream_pending = pending.clone();
+        spawn_response_pump(response.into_inner(), pending.clone(), move |message| {
+            if let Some(shared) = session.upgrade() {
+                shared.end_session(&stream_pending, message);
+            }
+        });
         self.shared.set_stream(Some(JoinStream { tx, pending }));
         if let Err(error) = self.configure_session_edition().await {
             self.shared.set_stream(None);
@@ -841,16 +851,9 @@ impl EnvClient {
         }
 
         match reply_rx.await {
-            Ok(Ok(response)) => {
-                // The server ends the Join stream after a non-recoverable
-                // error; drop it here so the next reset opens a fresh session.
-                if let Some(join_response::Kind::Error(error)) = &response.kind
-                    && !error.is_recoverable
-                {
-                    self.shared.end_session(&stream, error.message.clone());
-                }
-                Ok(response)
-            }
+            // A non-recoverable error reply already ended the session in the
+            // response pump.
+            Ok(Ok(response)) => Ok(response),
             Ok(Err(status)) => {
                 tracing::error!(
                     request_id = %request_id,
@@ -1157,6 +1160,27 @@ mod tests {
             step.await.unwrap().unwrap_err(),
             GrpcError::Transport(TransportError::ConnectionClosed)
         ));
+    }
+
+    #[tokio::test]
+    async fn a_stale_streams_fatal_error_does_not_end_a_newer_session() {
+        let (client, _request_rx, current) = ready_client_with_stream();
+
+        // A pump still draining an older stream reports its fatal error late.
+        client
+            .shared
+            .end_session(&new_pending(), "old session".to_string());
+        assert!(
+            client.shared.stream().is_some(),
+            "the newer session survives"
+        );
+        assert!(client.shared.ended_by().is_none());
+
+        client
+            .shared
+            .end_session(&current, "this session".to_string());
+        assert!(client.shared.stream().is_none());
+        assert_eq!(client.shared.ended_by().as_deref(), Some("this session"));
     }
 
     #[tokio::test]
