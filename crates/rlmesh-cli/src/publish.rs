@@ -11,7 +11,9 @@
 //! publish cannot swap a child. A version tag (TARGET, `--tag`) is pushed
 //! only over a tag the registry says is absent, or one already holding the
 //! same index (which is left alone); a different index, or a tag that cannot
-//! be read, needs `--force`. The channel tag moves.
+//! be read, needs `--force`. The channel tag moves. The index is pushed to
+//! TARGET alone and checked as the registry stores it; only then are the
+//! other tags pointed at TARGET's digest, so every tag is one manifest.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -762,8 +764,9 @@ pub(crate) fn absent(tag: &str, error: &str) -> bool {
         })
 }
 
-/// Whether the error ends with containerd's `REF: not found` for `tag` (as
-/// docker normalizes it: `ns/x:v1` reads `docker.io/ns/x:v1`).
+/// Whether the error ends with containerd's `REF: not found` for `tag`, the
+/// two compared as docker resolves them (`ubuntu:v1` reads
+/// `docker.io/library/ubuntu:v1`).
 fn not_found_line(tag: &str, error: &str) -> bool {
     let Some(reference) = error.strip_suffix(": not found") else {
         return false;
@@ -772,7 +775,45 @@ fn not_found_line(tag: &str, error: &str) -> bool {
         .rsplit(char::is_whitespace)
         .next()
         .unwrap_or_default();
-    reference == tag || reference.ends_with(&format!("/{tag}"))
+    canonical_reference(reference) == canonical_reference(tag)
+}
+
+/// `reference` the way docker resolves it: a first path component that is
+/// not a host (no `.` or `:`, and not `localhost`) means Docker Hub, as do
+/// `index.docker.io` and `registry-1.docker.io`; a one-component Docker Hub
+/// name is under `library/`; no tag and no digest means `latest`.
+pub(crate) fn canonical_reference(reference: &str) -> String {
+    let Ok(Reference {
+        repository,
+        tag,
+        digest,
+    }) = Reference::parse(reference)
+    else {
+        return reference.to_owned();
+    };
+    let (host, path) = match repository.split_once('/') {
+        Some((first, rest)) if first.contains(['.', ':']) || first == "localhost" => (first, rest),
+        _ => ("docker.io", repository.as_str()),
+    };
+    let host = match host {
+        "index.docker.io" | "registry-1.docker.io" => "docker.io",
+        host => host,
+    };
+    let mut canonical = if host == "docker.io" && !path.contains('/') {
+        format!("{host}/library/{path}")
+    } else {
+        format!("{host}/{path}")
+    };
+    if tag.is_none() && digest.is_none() {
+        canonical.push_str(":latest");
+    }
+    if let Some(tag) = tag {
+        canonical.push_str(&format!(":{tag}"));
+    }
+    if let Some(digest) = digest {
+        canonical.push_str(&format!("@{digest}"));
+    }
+    canonical
 }
 
 /// What `tag` holds now. An error that is not a confirmed absence leaves it
@@ -832,6 +873,8 @@ pub(crate) fn tag_states(existing: &[Existing], index: &Value) -> Vec<TagState> 
 /// name a version and do not move, or get pushed over a state that could not
 /// be read, without `--force`; the channel tag (its full reference, unless it
 /// is also a version tag) moves, which is its purpose, and says from where.
+/// Every tag ends at TARGET's digest, so another tag holding the same index
+/// at another digest (another serialization) is re-pointed.
 fn report_tags(
     stdout: &mut impl Write,
     style: Style,
@@ -846,15 +889,27 @@ fn report_tags(
         .map(|tag| tag.chars().count())
         .max()
         .unwrap_or(0);
+    let version = match &states[0] {
+        TagState::Unchanged(digest) => Some(digest.as_str()),
+        _ => None,
+    };
     writeln!(stdout)?;
     writeln!(stdout, "{}", style.bold("Tags:"))?;
-    for (tag, state) in tags.iter().zip(states) {
+    for (position, (tag, state)) in tags.iter().zip(states).enumerate() {
         let is_channel = channel == Some(tag.as_str());
         let note = match state {
             TagState::New => style.muted("new"),
-            TagState::Unchanged(digest) => {
+            TagState::Unchanged(digest) if position == 0 || version == Some(digest.as_str()) => {
                 style.muted(&format!("unchanged ({digest}), not pushed again"))
             }
+            TagState::Unchanged(digest) => style.muted(&match version {
+                Some(version) => {
+                    format!("same index at {digest}, re-pointed at {version} (TARGET's digest)")
+                }
+                None => format!(
+                    "same index at {digest}, re-pointed at TARGET's new digest if that differs"
+                ),
+            }),
             TagState::Moves(digest) if is_channel => format!("moves from {digest} (channel)"),
             TagState::Moves(digest) if force => {
                 style.yellow(&format!("moves from {digest} (--force)"))
@@ -1055,61 +1110,148 @@ pub(crate) fn publish_with(
         return Ok(0);
     }
 
-    // A tag already holding this index is not pushed again: docker would
-    // re-serialize it, and the tag could move to another digest.
-    let push: Vec<String> = tags
+    // The version is TARGET's digest: the one it holds when it already holds
+    // this index (never pushed again, since docker would re-serialize it),
+    // else that of the index pushed to TARGET alone and checked as stored.
+    // Only then do the other tags move, each pointed at that digest, which
+    // docker copies byte for byte, so every alias is the same manifest and a
+    // failed check leaves them where they were.
+    let repository = &target.repository;
+    let version = match &states[0] {
+        TagState::Unchanged(digest) => digest.clone(),
+        before => push_target(
+            tools, repository, &tags[0], before, explicit, &variants, &index,
+        )?,
+    };
+    let aliases: Vec<&String> = tags[1..]
         .iter()
-        .zip(&states)
-        .filter(|(_, state)| !matches!(state, TagState::Unchanged(_)))
-        .map(|(tag, _)| tag.clone())
+        .zip(&states[1..])
+        .filter(|(_, state)| **state != TagState::Unchanged(version.clone()))
+        .map(|(tag, _)| tag)
         .collect();
     writeln!(stdout)?;
-    let Some(first) = push.first() else {
-        let digest = match &states[0] {
-            TagState::Unchanged(digest) => digest.as_str(),
-            _ => "(digest unknown)",
-        };
+    if aliases.is_empty() && states[0] == TagState::Unchanged(version.clone()) {
         writeln!(
             stdout,
             "{}",
             style.success(&format!(
-                "Already published {}@{digest}; every tag holds this index, nothing pushed",
-                target.repository
+                "Already published {repository}@{version}; every tag holds this index, nothing \
+                 pushed"
             ))
         )?;
         return Ok(0);
-    };
-    tools.create(&create_args(&push, explicit, &variants, false))?;
-    let pushed: Value =
-        serde_json::from_str(&tools.manifest(first)?).context("parsing the published index")?;
-    if explicit.is_some()
-        && let Some(error) = annotation_dropped(&pushed)
-    {
-        bail!(
-            "pushed {}, but the registry holds {error}; publish again from OCI sources",
-            push.join(", ")
-        );
     }
-    let digest = pushed
-        .get("digest")
-        .and_then(Value::as_str)
-        .unwrap_or("(digest unknown)");
+    if !aliases.is_empty() {
+        let mut args = Vec::new();
+        for tag in &aliases {
+            args.push("--tag".to_owned());
+            args.push((*tag).clone());
+        }
+        args.push(format!("{repository}@{version}"));
+        tools.create(&args).with_context(|| {
+            format!(
+                "{} holds the version at {version}, but pointing {} at it failed; run the same \
+                 publish again to finish (TARGET is left as is and the other tags are pointed \
+                 at it)",
+                tags[0],
+                aliases
+                    .iter()
+                    .map(|tag| tag.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })?;
+    }
     writeln!(
         stdout,
         "{}",
-        style.success(&format!("Published {}@{digest}", target.repository))
+        style.success(&format!("Published {repository}@{version}"))
     )?;
     for (tag, state) in tags.iter().zip(&states) {
         match state {
-            TagState::Unchanged(digest) => writeln!(
+            TagState::Unchanged(digest) if *digest == version => writeln!(
                 stdout,
                 "  {} {tag} (already {digest})",
                 style.muted("unchanged")
+            )?,
+            TagState::Unchanged(digest) => writeln!(
+                stdout,
+                "  {} {tag} (same index, from {digest})",
+                style.muted("re-pointed")
             )?,
             _ => writeln!(stdout, "  {} {tag}", style.muted("tagged"))?,
         }
     }
     Ok(0)
+}
+
+/// Push the index to TARGET alone and check it as the registry stores it:
+/// the index assembled (the same manifests, annotations and media type),
+/// and, with `--index-package`, an OCI image index carrying that annotation.
+/// Returns its digest. On a failed check only TARGET has moved, and the error
+/// says how to recover from what it held `before`.
+fn push_target(
+    tools: &impl Imagetools,
+    repository: &str,
+    target: &str,
+    before: &TagState,
+    explicit: Option<&str>,
+    variants: &[VariantImage],
+    index: &Value,
+) -> Result<String> {
+    tools.create(&create_args(
+        &[target.to_owned()],
+        explicit,
+        variants,
+        false,
+    ))?;
+    let recovery = match before {
+        TagState::Moves(previous) => format!(
+            "{target} pointed at {previous} before this run; restore it with `docker buildx \
+             imagetools create --tag {target} {repository}@{previous}`, or publish again with \
+             --force once the cause is fixed"
+        ),
+        TagState::Unreadable(_) => format!(
+            "{target} could not be read before this run, so what it held is unknown; publish \
+             again with --force once the cause is fixed"
+        ),
+        TagState::New | TagState::Unchanged(_) => format!(
+            "{target} did not exist before this run, so it holds only this push: publish again \
+             with --force once the cause is fixed, or delete {target} from the registry first"
+        ),
+    };
+    let stored = || -> Result<(String, Value)> {
+        let view: Value = serde_json::from_str(&tools.manifest(target)?)
+            .context("docker printed a manifest that is not JSON")?;
+        let digest = view
+            .get("digest")
+            .and_then(Value::as_str)
+            .context("docker printed a manifest without a digest")?
+            .to_owned();
+        let raw = serde_json::from_str(&tools.raw(&format!("{repository}@{digest}"))?)
+            .context("its raw manifest is not JSON")?;
+        Ok((digest, raw))
+    };
+    let (digest, raw) = stored().map_err(|error| {
+        anyhow::anyhow!(
+            "pushed {target}, but could not read it back to check it ({error:#}); no other tag \
+             was moved. {recovery}"
+        )
+    })?;
+    let problem = explicit.and_then(|_| annotation_dropped(&raw)).or_else(|| {
+        (!same_index(&raw, index)).then(|| {
+            "an index other than the one assembled (its manifests, annotations or media \
+                 type differ)"
+                .to_owned()
+        })
+    });
+    if let Some(problem) = problem {
+        bail!(
+            "pushed {target} ({digest}), but the registry holds {problem}; no other tag was \
+             moved. {recovery}"
+        );
+    }
+    Ok(digest)
 }
 
 /// Why `index` would not carry the `--index-package` annotation, if it would
@@ -1239,10 +1381,11 @@ fn short_digest(digest: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
 
     use anyhow::anyhow;
     use serde_json::json;
+    use sha2::{Digest, Sha256};
 
     /// Canned registry contents, in the shapes `docker buildx imagetools
     /// inspect` prints for `.Manifest` and `.Image`.
@@ -1252,6 +1395,9 @@ mod tests {
         raws: RefCell<BTreeMap<String, String>>,
         configs: BTreeMap<String, String>,
         created: RefCell<Vec<Vec<String>>>,
+        /// Applied to each index a push assembles before it is stored, as a
+        /// registry or docker that loses part of it would.
+        mangle: Cell<Option<fn(&mut Value)>>,
     }
 
     /// The index `imagetools create ARGS` assembles, reduced to what the
@@ -1294,7 +1440,8 @@ mod tests {
 
     impl Imagetools for FakeRegistry {
         fn manifest(&self, reference: &str) -> Result<String> {
-            match self.manifests.borrow().get(reference) {
+            let key = self.resolve(reference);
+            match self.manifests.borrow().get(&key) {
                 // A canned failure other than "not found".
                 Some(error) if error.starts_with("ERROR:") => Err(anyhow!("{error}")),
                 Some(manifest) => Ok(manifest.clone()),
@@ -1312,7 +1459,7 @@ mod tests {
         /// The canned raw manifest when one was set, else the `.Manifest`
         /// view without the descriptor fields docker adds to it.
         fn raw(&self, reference: &str) -> Result<String> {
-            if let Some(raw) = self.raws.borrow().get(reference) {
+            if let Some(raw) = self.raws.borrow().get(&self.resolve(reference)) {
                 return Ok(raw.clone());
             }
             let mut view: Value = serde_json::from_str(&self.manifest(reference)?)?;
@@ -1323,15 +1470,44 @@ mod tests {
             Ok(view.to_string())
         }
 
+        /// Like docker: a lone index source without annotations is copied
+        /// byte for byte; anything else is assembled into a new index.
         fn create(&self, args: &[String]) -> Result<String> {
             self.created.borrow_mut().push(args.to_vec());
             let (tags, mut index) = assembled(self, args);
             if args.iter().any(|a| a == "--dry-run") {
-                return Ok(serde_json::to_string_pretty(&index)?);
+                return Ok(format!("{}\n", serde_json::to_string_pretty(&index)?));
             }
-            index["digest"] = Value::from(digest('p'));
+            let (mut sources, mut rest, mut annotated) = (Vec::new(), args.iter(), false);
+            while let Some(arg) = rest.next() {
+                match arg.as_str() {
+                    "--tag" => _ = rest.next(),
+                    "--annotation" => annotated = rest.next().is_some(),
+                    source => sources.push(source),
+                }
+            }
+            let copied = match sources.as_slice() {
+                [source] if !annotated => {
+                    let manifest: Value = serde_json::from_str(&self.manifest(source)?)?;
+                    if manifest.get("manifests").is_some() {
+                        Some(self.raw(source)?)
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            };
+            let raw = match copied {
+                Some(raw) => raw,
+                None => {
+                    if let Some(mangle) = self.mangle.get() {
+                        mangle(&mut index);
+                    }
+                    serde_json::to_string_pretty(&index)?
+                }
+            };
             for tag in tags {
-                self.manifests.borrow_mut().insert(tag, index.to_string());
+                self.store(&tag, &raw);
             }
             Ok(String::new())
         }
@@ -1339,6 +1515,15 @@ mod tests {
 
     fn digest(seed: char) -> String {
         format!("sha256:{}", seed.to_string().repeat(64))
+    }
+
+    /// The digest of a manifest stored as `raw`, as a registry computes it.
+    fn sha256(raw: &str) -> String {
+        let hex: String = Sha256::digest(raw.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        format!("sha256:{hex}")
     }
 
     /// A BuildKit push: an index of one image plus its attestation manifest.
@@ -1414,11 +1599,50 @@ mod tests {
             }
         }
 
+        /// The key `reference` is stored under: itself, or for
+        /// `repository@digest`, a tag of that repository holding the digest.
+        fn resolve(&self, reference: &str) -> String {
+            let manifests = self.manifests.borrow();
+            if manifests.contains_key(reference) {
+                return reference.to_owned();
+            }
+            let Some((repository, digest)) = reference.split_once('@') else {
+                return reference.to_owned();
+            };
+            manifests
+                .iter()
+                .find(|(key, view)| {
+                    key.starts_with(&format!("{repository}:"))
+                        && serde_json::from_str::<Value>(view)
+                            .is_ok_and(|view| view["digest"] == digest)
+                })
+                .map_or_else(|| reference.to_owned(), |(key, _)| key.clone())
+        }
+
+        /// Store `raw` under `reference` as a registry would: at the sha256
+        /// of its bytes, docker's view adding that digest and the size.
+        fn store(&self, reference: &str, raw: &str) {
+            let mut view: Value = serde_json::from_str(raw).unwrap();
+            view["digest"] = Value::from(sha256(raw));
+            view["size"] = Value::from(raw.len());
+            self.insert(reference, &view);
+            self.raws
+                .borrow_mut()
+                .insert(reference.to_owned(), raw.to_owned());
+        }
+
+        /// The digest `reference` points at.
+        fn digest_of(&self, reference: &str) -> String {
+            let view: Value = serde_json::from_str(&self.manifest(reference).unwrap()).unwrap();
+            view["digest"].as_str().unwrap().to_owned()
+        }
+
         fn insert(&self, reference: &str, manifest: &Value) {
             self.insert_raw(reference, &manifest.to_string());
         }
 
         fn insert_raw(&self, reference: &str, raw: &str) {
+            self.raws.borrow_mut().remove(reference);
             self.manifests
                 .borrow_mut()
                 .insert(reference.to_owned(), raw.to_owned());
@@ -1611,8 +1835,13 @@ mod tests {
         assert!(created[0].contains(&"--dry-run".to_owned()));
         assert!(!created[1].contains(&"--dry-run".to_owned()));
         assert!(!created[1].contains(&"--annotation".to_owned()));
+        let published = registry.digest_of("reg.example/ns/pi0:v3");
+        assert_eq!(
+            published,
+            sha256(&registry.raw("reg.example/ns/pi0:v3").unwrap())
+        );
         assert!(
-            out.contains(&format!("Published reg.example/ns/pi0@{}", digest('p'))),
+            out.contains(&format!("Published reg.example/ns/pi0@{published}")),
             "{out}"
         );
         assert!(out.contains("tagged reg.example/ns/pi0:v3"), "{out}");
@@ -2133,23 +2362,38 @@ mod tests {
             tag_line(&out, "reg.example/ns/pi0:v3").ends_with(" new"),
             "{out}"
         );
+        // TARGET is pushed alone, then the other tags point at its digest.
+        let v3 = registry.digest_of("reg.example/ns/pi0:v3");
+        for tag in ["reg.example/ns/pi0:v3.0", "reg.example/ns/pi0:latest"] {
+            assert_eq!(registry.digest_of(tag), v3, "{tag}");
+        }
+        assert_eq!(
+            registry.created.borrow()[2],
+            [
+                "--tag",
+                "reg.example/ns/pi0:v3.0",
+                "--tag",
+                "reg.example/ns/pi0:latest",
+                &format!("reg.example/ns/pi0@{v3}"),
+            ]
+        );
+        assert_eq!(registry.pushes(), 2);
         // Publishing the same version again changes nothing and is allowed;
         // no tag is pushed again.
         let (result, out) = run(&registry, &publish);
         assert_eq!(result.unwrap(), 0, "{out}");
         assert!(
             tag_line(&out, "reg.example/ns/pi0:v3")
-                .ends_with(&format!(" unchanged ({}), not pushed again", digest('p'))),
+                .ends_with(&format!(" unchanged ({v3}), not pushed again")),
             "{out}"
         );
         assert!(
             out.contains(&format!(
-                "Already published reg.example/ns/pi0@{}; every tag holds this index",
-                digest('p')
+                "Already published reg.example/ns/pi0@{v3}; every tag holds this index"
             )),
             "{out}"
         );
-        assert_eq!(registry.pushes(), 1);
+        assert_eq!(registry.pushes(), 2);
 
         // Other children under the same version tag: the dry run says what
         // would be refused, and the real run refuses it.
@@ -2160,9 +2404,8 @@ mod tests {
         let error = format!("{:#}", result.unwrap_err());
         assert!(
             error.contains(&format!(
-                "reg.example/ns/pi0:v3 already points at {}, a different index; a version tag \
-                 does not move without --force",
-                digest('p')
+                "reg.example/ns/pi0:v3 already points at {v3}, a different index; a version tag \
+                 does not move without --force"
             )),
             "{error}"
         );
@@ -2171,28 +2414,31 @@ mod tests {
             "the index is shown: {out}"
         );
         assert!(
-            tag_line(&out, "reg.example/ns/pi0:v3")
-                .ends_with(&format!("refused: points at {}", digest('p'))),
+            tag_line(&out, "reg.example/ns/pi0:v3").ends_with(&format!("refused: points at {v3}")),
             "{out}"
         );
         // The channel is not refused: moving is what it is for.
         assert!(
             tag_line(&out, "reg.example/ns/pi0:latest")
-                .ends_with(&format!("moves from {} (channel)", digest('p'))),
+                .ends_with(&format!("moves from {v3} (channel)")),
             "{out}"
         );
         other.dry_run = false;
         assert!(run(&registry, &other).0.is_err());
-        assert_eq!(registry.pushes(), 1, "nothing is pushed");
+        assert_eq!(registry.pushes(), 2, "nothing is pushed");
         other.force = true;
         let (result, out) = run(&registry, &other);
         assert_eq!(result.unwrap(), 0, "{out}");
         assert!(
             tag_line(&out, "reg.example/ns/pi0:v3")
-                .ends_with(&format!("moves from {} (--force)", digest('p'))),
+                .ends_with(&format!("moves from {v3} (--force)")),
             "{out}"
         );
-        assert_eq!(registry.pushes(), 2);
+        assert_eq!(registry.pushes(), 4);
+        assert_eq!(
+            registry.digest_of("reg.example/ns/pi0:latest"),
+            registry.digest_of("reg.example/ns/pi0:v3")
+        );
 
         // A new version moves only the channel, without --force.
         let mut next = args("reg.example/ns/pi0:v4", SOURCES);
@@ -2348,7 +2594,8 @@ mod tests {
                 "{out}"
             );
         }
-        assert_eq!(registry.pushes(), 1);
+        assert_eq!(registry.pushes(), 2);
+        assert_eq!(registry.digest_of(channel), registry.digest_of(tag));
     }
 
     #[test]
@@ -2359,33 +2606,72 @@ mod tests {
         assert_eq!(result.unwrap(), 0, "{out}");
         let stored: Value = serde_json::from_str(&registry.raw(target).unwrap()).unwrap();
 
-        // The same index, serialized differently (pretty, other key order):
-        // unchanged, and not pushed again, so its digest stays put.
+        let assembled = registry.digest_of(target);
+
+        // The same index, serialized differently (compact, other key order),
+        // so at another digest: unchanged, and not pushed again, so its
+        // digest stays put.
         let reordered = format!(
-            "{{\n  \"manifests\": {},\n  \"schemaVersion\": 2,\n  \"mediaType\": \"{OCI_INDEX}\"\n}}",
-            serde_json::to_string_pretty(&stored["manifests"]).unwrap()
+            "{{\"manifests\":{},\"schemaVersion\":2,\"mediaType\":\"{OCI_INDEX}\"}}",
+            stored["manifests"]
         );
-        registry
-            .raws
-            .borrow_mut()
-            .insert(target.to_owned(), reordered);
+        let version = sha256(&reordered);
+        assert_ne!(version, assembled);
+        // The channel already holds the same index, as docker assembles it.
+        registry.store("reg.example/ns/pi0:latest", &registry.raw(target).unwrap());
+        registry.store(target, &reordered);
         let mut publish = args(target, SOURCES);
         publish.tags = vec!["v3.0".to_owned()];
+        publish.channel = Some("latest".to_owned());
         let (result, out) = run(&registry, &publish);
         assert_eq!(result.unwrap(), 0, "{out}");
         assert!(tag_line(&out, target).contains("unchanged"), "{out}");
-        // Only the new tag is pushed.
-        let created = registry.created.borrow().last().unwrap().clone();
-        assert!(!created.contains(&target.to_owned()), "{created:?}");
         assert!(
-            created.contains(&"reg.example/ns/pi0:v3.0".to_owned()),
-            "{created:?}"
+            tag_line(&out, "reg.example/ns/pi0:latest").ends_with(&format!(
+                "same index at {assembled}, re-pointed at {version} (TARGET's digest)"
+            )),
+            "{out}"
+        );
+        // Only the other tags are pushed, pointed at TARGET's stored digest
+        // rather than assembled again, so every tag is the same manifest.
+        let created = registry.created.borrow().last().unwrap().clone();
+        assert_eq!(
+            created,
+            [
+                "--tag",
+                "reg.example/ns/pi0:v3.0",
+                "--tag",
+                "reg.example/ns/pi0:latest",
+                &format!("reg.example/ns/pi0@{version}"),
+            ]
+        );
+        for tag in [
+            target,
+            "reg.example/ns/pi0:v3.0",
+            "reg.example/ns/pi0:latest",
+        ] {
+            assert_eq!(registry.digest_of(tag), version, "{tag}");
+            assert_eq!(registry.raw(tag).unwrap(), reordered, "{tag}");
+        }
+        assert!(
+            out.contains(&format!("Published reg.example/ns/pi0@{version}")),
+            "{out}"
         );
         assert!(
-            out.contains(&format!("unchanged {target} (already {})", digest('p'))),
+            out.contains(&format!("unchanged {target} (already {version})")),
             "{out}"
         );
         assert!(out.contains("tagged reg.example/ns/pi0:v3.0"), "{out}");
+        assert!(
+            out.contains("re-pointed reg.example/ns/pi0:latest"),
+            "{out}"
+        );
+        // Now every tag holds the version's digest: nothing to push.
+        let pushes = registry.pushes();
+        let (result, out) = run(&registry, &publish);
+        assert_eq!(result.unwrap(), 0, "{out}");
+        assert!(out.contains("Already published"), "{out}");
+        assert_eq!(registry.pushes(), pushes);
 
         // An index carrying a subject or an artifactType the replacement would
         // drop is a different index, though docker's .Manifest view hides both.
@@ -2409,8 +2695,7 @@ mod tests {
             );
             assert!(
                 error.contains(&format!(
-                    "{target} already points at {}, a different index",
-                    digest('p')
+                    "{target} already points at {version}, a different index"
                 )),
                 "{field}: {error}"
             );
@@ -2423,6 +2708,147 @@ mod tests {
             .borrow_mut()
             .insert(target.to_owned(), resized.to_string());
         assert!(run(&registry, &args(target, SOURCES)).0.is_err());
+    }
+
+    #[test]
+    fn a_failed_check_after_the_push_moves_only_target_and_says_how_to_recover() {
+        let registry = three_variants();
+        let dir = tempfile::tempdir().unwrap();
+        let (target, extra, channel) = (
+            "reg.example/ns/pi0:v3",
+            "reg.example/ns/pi0:v3.0",
+            "reg.example/ns/pi0:latest",
+        );
+        let mut publish = args(target, SOURCES);
+        publish.tags = vec!["v3.0".to_owned()];
+        publish.channel = Some("latest".to_owned());
+        publish.index_package = Some(version_json(&dir, r#"{"checkpoints":[]}"#));
+
+        // The registry loses the annotation on the way in.
+        registry.mangle.set(Some(|index| {
+            index.as_object_mut().unwrap().remove("annotations");
+        }));
+        let (result, _) = run(&registry, &publish);
+        let error = format!("{:#}", result.unwrap_err());
+        let stored = registry.digest_of(target);
+        for needle in [
+            format!(
+                "pushed {target} ({stored}), but the registry holds an index without the \
+                 dev.rlmesh.package annotation --index-package sets; no other tag was moved"
+            ),
+            format!(
+                "{target} did not exist before this run, so it holds only this push: publish \
+                 again with --force once the cause is fixed"
+            ),
+        ] {
+            assert!(error.contains(&needle), "{needle:?} not in:\n{error}");
+        }
+        assert_eq!(registry.pushes(), 1, "only TARGET was pushed");
+        for tag in [extra, channel] {
+            assert!(registry.manifest(tag).is_err(), "{tag} did not move");
+        }
+
+        // A retry without --force is refused at TARGET, as the error said;
+        // with it, the version is published and every tag is its digest.
+        registry.mangle.set(None);
+        let error = format!("{:#}", run(&registry, &publish).0.unwrap_err());
+        assert!(
+            error.contains(&format!("{target} already points at {stored}")),
+            "{error}"
+        );
+        assert_eq!(registry.pushes(), 1);
+        publish.force = true;
+        let (result, out) = run(&registry, &publish);
+        assert_eq!(result.unwrap(), 0, "{out}");
+        let version = registry.digest_of(target);
+        assert_ne!(version, stored);
+        for tag in [extra, channel] {
+            assert_eq!(registry.digest_of(tag), version, "{tag}");
+        }
+        let pushed: Value = serde_json::from_str(&registry.raw(target).unwrap()).unwrap();
+        assert!(pushed["annotations"][PACKAGE_LABEL].is_string(), "{pushed}");
+
+        // Forcing over a published version: the error names the digest it
+        // held and how to put it back, and the channel stays on it.
+        registry.mangle.set(Some(|index| {
+            index["manifests"].as_array_mut().unwrap().reverse();
+        }));
+        let mut over = args(target, &SOURCES[..2]);
+        over.channel = Some("latest".to_owned());
+        over.force = true;
+        let error = format!("{:#}", run(&registry, &over).0.unwrap_err());
+        for needle in [
+            "but the registry holds an index other than the one assembled".to_owned(),
+            format!(
+                "{target} pointed at {version} before this run; restore it with `docker buildx \
+                 imagetools create --tag {target} reg.example/ns/pi0@{version}`"
+            ),
+        ] {
+            assert!(error.contains(&needle), "{needle:?} not in:\n{error}");
+        }
+        assert_eq!(registry.digest_of(channel), version);
+    }
+
+    #[test]
+    fn references_compare_as_docker_resolves_them() {
+        for (reference, canonical) in [
+            ("ubuntu", "docker.io/library/ubuntu:latest"),
+            ("ubuntu:24.04", "docker.io/library/ubuntu:24.04"),
+            ("docker.io/ubuntu:24.04", "docker.io/library/ubuntu:24.04"),
+            (
+                "index.docker.io/library/ubuntu:24.04",
+                "docker.io/library/ubuntu:24.04",
+            ),
+            (
+                "registry-1.docker.io/ubuntu:24.04",
+                "docker.io/library/ubuntu:24.04",
+            ),
+            ("ns/pi0:v1", "docker.io/ns/pi0:v1"),
+            ("index.docker.io/ns/pi0:v1", "docker.io/ns/pi0:v1"),
+            ("localhost/pi0:v1", "localhost/pi0:v1"),
+            ("localhost:5055/ns/pi0:v1", "localhost:5055/ns/pi0:v1"),
+            ("reg.example/pi0:v1", "reg.example/pi0:v1"),
+            ("reg:5000/pi0", "reg:5000/pi0:latest"),
+            (
+                "reg.example/ns/pi0@sha256:ab",
+                "reg.example/ns/pi0@sha256:ab",
+            ),
+        ] {
+            assert_eq!(canonical_reference(reference), canonical, "{reference}");
+        }
+        // buildx 0.37 names every Docker Hub spelling by its canonical form.
+        for tag in [
+            "ubuntu:rl-none",
+            "docker.io/ubuntu:rl-none",
+            "index.docker.io/library/ubuntu:rl-none",
+            "docker.io/library/ubuntu:rl-none",
+        ] {
+            assert!(
+                absent(
+                    tag,
+                    &inspect_error("docker.io/library/ubuntu:rl-none: not found")
+                ),
+                "{tag}"
+            );
+        }
+        assert!(absent(
+            "ubuntu",
+            &inspect_error("docker.io/library/ubuntu:latest: not found")
+        ));
+        for (tag, reported) in [
+            // Another repository, tag, or registry is not this tag's absence.
+            ("ns/pi0:v1", "docker.io/library/pi0:v1"),
+            ("pi0:v1", "docker.io/ns/pi0:v1"),
+            ("ubuntu:a", "docker.io/library/ubuntu:b"),
+            ("other.example/ns/pi0:v1", "docker.io/ns/pi0:v1"),
+            ("localhost/pi0:v1", "docker.io/library/pi0:v1"),
+            ("localhost:5055/ns/pi0:v1", "localhost:5056/ns/pi0:v1"),
+        ] {
+            assert!(
+                !absent(tag, &inspect_error(&format!("{reported}: not found"))),
+                "{tag} vs {reported}"
+            );
+        }
     }
 
     #[test]
