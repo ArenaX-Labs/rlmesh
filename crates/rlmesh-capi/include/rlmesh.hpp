@@ -1196,7 +1196,8 @@ class Space {
     return adopt(
         rlmesh_space_text(min_length, max_length, charset.empty() ? nullptr : charset.c_str()));
   }
-  /// Dict from owned (key, space) entries, in declaration order; keys unique.
+  /// Dict from owned (key, space) entries, in declaration order; keys
+  /// non-empty and unique.
   /// All-or-nothing ownership, as `Value::dict`.
   static Result<Space> dict(std::vector<std::pair<std::string, Space>> entries) {
     std::vector<const char*> keys;

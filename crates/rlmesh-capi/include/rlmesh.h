@@ -306,8 +306,8 @@ RLMESH_API RLMeshSpaceSpec* rlmesh_space_multi_discrete(const int64_t* nvec, siz
 RLMESH_API RLMeshSpaceSpec* rlmesh_space_text(int64_t min_length, int64_t max_length,
                                               const char* charset);
 /* The composite builders take ownership of every child on success and of
- * NOTHING on failure (NULL), the same rule as rlmesh_value_dict. Dict keys must
- * be unique. */
+ * NOTHING on failure (NULL), whatever the reason, the same rule as
+ * rlmesh_value_dict. Dict keys must be non-empty and unique. */
 RLMESH_API RLMeshSpaceSpec* rlmesh_space_dict(const char* const* keys,
                                               RLMeshSpaceSpec* const* children, size_t n);
 RLMESH_API RLMeshSpaceSpec* rlmesh_space_tuple(RLMeshSpaceSpec* const* children, size_t n);

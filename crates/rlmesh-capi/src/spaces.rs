@@ -637,28 +637,59 @@ pub unsafe extern "C" fn rlmesh_space_text(
     })
 }
 
-/// Reclaim `n` owned child handles, all or nothing: the composite builders take
-/// ownership only once every argument checks out.
+/// Clone `n` owned child handles without taking them, so a composite is built
+/// (and validated by its builder) before any ownership moves: a builder that
+/// rejects the composite leaves every child with the caller.
 ///
 /// # Safety
 /// `children` points at `n` handles from the space constructors.
-unsafe fn take_children(
+unsafe fn borrow_children(
     children: *const *mut RLMeshSpaceSpec,
     n: usize,
 ) -> Result<Vec<SpaceSpec>, CapiError> {
     let children = unsafe { slice_arg(children, n, "children") }?;
-    if children.iter().any(|child| child.is_null()) {
-        return Err(CapiError::invalid_arg("null child space"));
-    }
-    Ok(children
+    children
         .iter()
-        .map(|&child| unsafe { Box::from_raw(child) }.0)
-        .collect())
+        .map(|&child| {
+            spec_ref(child)
+                .cloned()
+                .ok_or_else(|| CapiError::invalid_arg("null child space"))
+        })
+        .collect()
+}
+
+/// Adopt (free) the `n` children a composite was built from: the composite
+/// holds its own copies, so success is the one point ownership transfers.
+///
+/// # Safety
+/// `children` points at `n` non-NULL owned handles that `borrow_children`
+/// accepted.
+unsafe fn adopt_children(children: *const *mut RLMeshSpaceSpec, n: usize) {
+    if n == 0 {
+        return;
+    }
+    for &child in unsafe { std::slice::from_raw_parts(children, n) } {
+        drop(unsafe { Box::from_raw(child) });
+    }
+}
+
+/// Build a composite from cloned children; free the originals only once it built.
+///
+/// # Safety
+/// As `borrow_children`.
+unsafe fn build_composite(
+    children: *const *mut RLMeshSpaceSpec,
+    n: usize,
+    build: impl FnOnce(Vec<SpaceSpec>) -> Result<SpaceSpec, SpaceError>,
+) -> Result<*mut RLMeshSpaceSpec, CapiError> {
+    let space = built(build(unsafe { borrow_children(children, n) }?))?;
+    unsafe { adopt_children(children, n) };
+    Ok(space)
 }
 
 /// A `Dict` space of `n` (key, child) pairs, in declaration order. Takes
-/// ownership of every child on success; on failure (NULL) takes none of them.
-/// Keys must be unique.
+/// ownership of every child on success; on failure (NULL), whatever the reason,
+/// takes none of them. Keys must be non-empty and unique.
 ///
 /// # Safety
 /// `keys` points at `n` C strings; `children` at `n` owned space handles.
@@ -685,12 +716,15 @@ pub unsafe extern "C" fn rlmesh_space_dict(
             }
             names.push(key.to_string());
         }
-        let children = unsafe { take_children(children, n) }?;
-        built(
-            DictSpaceBuilder::new()
-                .extend(names.into_iter().zip(children))
-                .build(),
-        )
+        // The builder enforces the rest (e.g. non-empty keys) and keeps the
+        // last of a duplicate, hence the explicit duplicate check above.
+        unsafe {
+            build_composite(children, n, |children| {
+                DictSpaceBuilder::new()
+                    .extend(names.into_iter().zip(children))
+                    .build()
+            })
+        }
     })
 }
 
@@ -704,9 +738,10 @@ pub unsafe extern "C" fn rlmesh_space_tuple(
     children: *const *mut RLMeshSpaceSpec,
     n: usize,
 ) -> *mut RLMeshSpaceSpec {
-    guard_ptr(|| {
-        let children = unsafe { take_children(children, n) }?;
-        built(TupleSpaceBuilder::new().extend(children).build())
+    guard_ptr(|| unsafe {
+        build_composite(children, n, |children| {
+            TupleSpaceBuilder::new().extend(children).build()
+        })
     })
 }
 
