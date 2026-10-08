@@ -136,6 +136,13 @@ Then `rlmesh_env_bind` (learn the address, e.g. for port 0) and
 `rlmesh_env_serve` (blocks). `rlmesh_env_cancel` from any thread drains the
 server, runs `close` once, and lets `serve` return `RLMESH_OK`.
 
+When `rlmesh_env_serve` (or `rlmesh_env_free`) returns, no callback is running
+and none will run again, so the callback state behind `user_data` can be freed
+right after. Serve waits for a callback still in flight, such as a `step` the
+`drain_timeout_ms` gave up on, and for every lane's `close`, however long it
+takes: a callback that never returns blocks serve. `close_timeout_ms` does not
+apply to an env.
+
 `rlmesh_env_describe_json` (C++: `EnvServer::describe_json()`) returns the env's
 `rlmesh.describe.v1` envelope: the spaces, the tags, and the edition handshake,
 the same artifact `rlmesh describe` emits for a Python env. `rlmesh_env_bind`

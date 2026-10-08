@@ -1387,7 +1387,8 @@ class EnvServer {
   }
 
   /// Bind without serving; returns the resolved address (e.g. the port the OS
-  /// picked for port 0). `predict_concurrency` does not apply to an env.
+  /// picked for port 0). `predict_concurrency` and `close_timeout` do not
+  /// apply to an env.
   Result<std::string> bind(std::string_view bind_address, const ServeOptions& options = {}) {
     std::string address(bind_address);
     RLMeshServeOptions raw{};
@@ -1421,6 +1422,9 @@ class EnvServer {
   /// Serve until a remote shutdown, an idle timeout, or `cancel()`. Blocking;
   /// each lane's `Environment::close` runs before it returns. With
   /// `EnvConfig::foreground`, every `Environment` method runs on this thread.
+  /// On return no `Environment` method is running or will run again: serve
+  /// waits for an in-flight call (one the drain timeout gave up on) and for
+  /// every `close`, however long it takes.
   Status serve() {
     RLMeshStatus status = rlmesh_env_serve(env_);
     if (status != RLMESH_OK) return Error::from_last(status);

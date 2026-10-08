@@ -482,7 +482,7 @@ typedef struct RLMeshServeOptions {
   bool allow_remote_shutdown;   /* honor a client-issued shutdown request */
   uint64_t idle_timeout_ms;     /* 0 = never idle-shutdown */
   uint64_t drain_timeout_ms;    /* 0 = unset */
-  uint64_t close_timeout_ms;    /* 0 = unset */
+  uint64_t close_timeout_ms;    /* 0 = unset; ignored by an env (see rlmesh_env_serve) */
   size_t predict_concurrency;   /* 0 = default */
   const char* workflow_edition; /* workflow edition this server declares; NULL/"" = none */
 } RLMeshServeOptions;
@@ -610,7 +610,7 @@ RLMESH_API RLMeshStatus rlmesh_env_new_lanes(const RLMeshEnvVtable* vtable,
  * serving yet; once per handle. `out_address` (may be NULL) receives the
  * resolved address, e.g. the OS-assigned port for port 0 (UTF-8, not
  * NUL-terminated; free with rlmesh_bytes_free). `options` may be NULL;
- * `predict_concurrency` does not apply to an env. */
+ * `predict_concurrency` and `close_timeout_ms` do not apply to an env. */
 RLMESH_API RLMeshStatus rlmesh_env_bind(RLMeshEnv* env, const char* bind_address,
                                         const RLMeshServeOptions* options,
                                         RLMeshBytes* out_address);
@@ -628,14 +628,20 @@ RLMESH_API RLMeshStatus rlmesh_env_describe_json(const RLMeshEnv* env, RLMeshByt
 
 /* Serve the bound env until a remote shutdown, an idle timeout, or
  * rlmesh_env_cancel. Blocking. `close` runs once per lane before this returns.
- * A foreground env runs every callback on the calling thread until then. */
+ * A foreground env runs every callback on the calling thread until then.
+ *
+ * When this returns, no callback is running and none will run again, so the
+ * `user_data` may be freed. It waits for a callback still in flight (a step the
+ * drain timeout gave up on) and for every `close`, however long: a callback
+ * that never returns blocks this forever. `close_timeout_ms` does not apply. */
 RLMESH_API RLMeshStatus rlmesh_env_serve(RLMeshEnv* env);
 
 /* Stop a blocking rlmesh_env_serve from another thread: it drains, closes the
  * env and returns RLMESH_OK. Terminal for the handle. NULL is a no-op. */
 RLMESH_API void rlmesh_env_cancel(RLMeshEnv* env);
 
-/* Free an env handle; not from inside its own callbacks. NULL is a no-op. */
+/* Free an env handle; not from inside its own callbacks. NULL is a no-op. Like
+ * rlmesh_env_serve, it returns only once no callback is running or can run. */
 RLMESH_API void rlmesh_env_free(RLMeshEnv* env);
 
 #ifdef __cplusplus
