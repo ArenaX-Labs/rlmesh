@@ -31,4 +31,13 @@ set_target_properties(chrono_reach_env PROPERTIES
   BUILD_RPATH "${RLMESH_LIBRARY_DIR}"
   INSTALL_RPATH "$ORIGIN/../lib")
 
-install(TARGETS chrono_reach_env RUNTIME DESTINATION bin)
+# The same task's model, in C++: no Python on either side of the wire.
+add_executable(chrono_reach_model src/scripted_model.cpp)
+target_include_directories(chrono_reach_model PRIVATE "${RLMESH_INCLUDE_DIR}")
+target_link_libraries(chrono_reach_model PRIVATE "${RLMESH_CAPI}" Threads::Threads ${CMAKE_DL_LIBS})
+target_compile_options(chrono_reach_model PRIVATE -Wall -Wextra)
+set_target_properties(chrono_reach_model PROPERTIES
+  BUILD_RPATH "${RLMESH_LIBRARY_DIR}"
+  INSTALL_RPATH "$ORIGIN/../lib")
+
+install(TARGETS chrono_reach_env chrono_reach_model RUNTIME DESTINATION bin)

@@ -50,6 +50,18 @@ uv run python examples/chrono/run_model.py 127.0.0.1:50051 --view http:9000
 
 Build the env and the Python package from the same checkout with `RLMESH_RELEASE_BUILD=1`, as `demo.sh` does. Otherwise each dev build pins its own per-commit workflow edition, and the handshake refuses the other.
 
+## No Python at all
+
+`chrono_reach_model` is the same scripted policy written in C++ against `rlmesh.hpp`'s `Model`, so both sides of the wire are native:
+
+```bash
+target/chrono-env/chrono_reach_env --address 127.0.0.1:50051 &
+target/chrono-env/chrono_reach_model 127.0.0.1:50051 6
+# episodes=6 steps=67 terminated=6 truncated=0 mean_reward=-0.38
+```
+
+It ignores the adapter tags and reads `eef_pos` and `target_pos` by key: the C++ model surface does not apply adapters per step yet.
+
 ## Run it as a container
 
 ```bash
@@ -70,4 +82,5 @@ docker push registry.rlmesh.dev/<namespace>/chrono-reach:v1
 - `src/reach_env.{h,cpp}`: the Chrono scene, the `rlmesh::Environment`, and its spaces and tags.
 - `src/raytracer.h`: the CPU camera.
 - `src/main.cpp`: arguments, `rlmesh::EnvServer`, and signal handling.
+- `src/scripted_model.cpp`: the scripted policy as a C++ model.
 - `run_model.py`: the Python model, with its `ModelSpec` and a scripted or random policy.
