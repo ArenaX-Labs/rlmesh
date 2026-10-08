@@ -27,7 +27,7 @@ use sha2::{Digest, Sha256};
 
 pub use error::SandboxError;
 pub use source::{EnvironmentSourceRef, GymSourceRef, HfSourceRef};
-pub(crate) use wheel::ResolvedRlmeshPackage;
+pub(crate) use wheel::ResolvedRLMeshPackage;
 
 pub const DEFAULT_BASE_IMAGE: &str = "python:3.11-slim";
 pub const DEFAULT_PACKAGE_NAME: &str = "rlmesh";
@@ -118,7 +118,7 @@ impl SandboxOptions {
             .filter(|value| !value.is_empty())
     }
 
-    fn resolved_rlmesh_package(&self, base_image: &str) -> Result<ResolvedRlmeshPackage> {
+    fn resolved_rlmesh_package(&self, base_image: &str) -> Result<ResolvedRLMeshPackage> {
         let selected = self
             .rlmesh_package
             .clone()
@@ -156,7 +156,7 @@ pub(crate) struct EffectiveSandboxSpec {
     pub requested_source: EnvironmentSourceRef,
     pub resolved_source: source::ResolvedEnvironmentSourceRef,
     pub base_image: String,
-    pub rlmesh_package: ResolvedRlmeshPackage,
+    pub rlmesh_package: ResolvedRLMeshPackage,
     pub packages: Vec<String>,
     pub imports: Vec<String>,
     pub kwargs: BTreeMap<String, serde_json::Value>,
@@ -249,7 +249,7 @@ struct BuildHashInput<'a> {
     schema_version: u32,
     source: &'a source::ResolvedEnvironmentSourceRef,
     base_image: &'a str,
-    rlmesh_package: &'a ResolvedRlmeshPackage,
+    rlmesh_package: &'a ResolvedRLMeshPackage,
     packages: &'a [String],
     imports: &'a [String],
 }

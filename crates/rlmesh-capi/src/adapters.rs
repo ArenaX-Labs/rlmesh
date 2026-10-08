@@ -2,7 +2,7 @@
 //! the env's published `EnvTags` against its own `ModelSpec` into an opaque,
 //! immutable plan handle. Specs cross as JSON (the frozen v1 wire format is the
 //! contract; the capi never mirrors the ~30 nested spec structs); the env's
-//! observation/action spaces cross as the `RlmeshSpaceSpec` handles the contract
+//! observation/action spaces cross as the `RLMeshSpaceSpec` handles the contract
 //! already exposes. Per-step apply (`transform_obs`/`transform_action`) is a
 //! separate, not-yet-implemented surface.
 #![allow(unsafe_code)] // FFI: raw pointers + C string in / owned buffer out.
@@ -15,14 +15,14 @@ use rlmesh_adapters::v1::{
 };
 use rlmesh_spaces::MetaValue;
 
-use crate::abi::status::{CapiError, RlmeshStatus, guard};
-use crate::codec::RlmeshBytes;
-use crate::spaces::{RlmeshContract, RlmeshSpaceSpec, spec_ref};
+use crate::abi::status::{CapiError, RLMeshStatus, guard};
+use crate::codec::RLMeshBytes;
+use crate::spaces::{RLMeshContract, RLMeshSpaceSpec, spec_ref};
 
 /// An opaque resolved adapter plan. Immutable; free with
 /// `rlmesh_adapter_plan_free`.
 #[repr(transparent)]
-pub struct RlmeshAdapterPlan(ResolvedAdapter);
+pub struct RLMeshAdapterPlan(ResolvedAdapter);
 
 unsafe fn cstr<'a>(ptr: *const c_char, what: &str) -> Result<&'a str, CapiError> {
     if ptr.is_null() {
@@ -33,16 +33,16 @@ unsafe fn cstr<'a>(ptr: *const c_char, what: &str) -> Result<&'a str, CapiError>
         .map_err(|_| CapiError::invalid_arg(format!("{what} is not valid UTF-8")))
 }
 
-fn plan_ref<'a>(plan: *const RlmeshAdapterPlan) -> Result<&'a ResolvedAdapter, CapiError> {
+fn plan_ref<'a>(plan: *const RLMeshAdapterPlan) -> Result<&'a ResolvedAdapter, CapiError> {
     unsafe { plan.cast::<ResolvedAdapter>().as_ref() }
         .ok_or_else(|| CapiError::invalid_arg("null adapter plan"))
 }
 
-fn write_bytes(out: *mut RlmeshBytes, bytes: Vec<u8>) -> Result<(), CapiError> {
+fn write_bytes(out: *mut RLMeshBytes, bytes: Vec<u8>) -> Result<(), CapiError> {
     if out.is_null() {
         return Err(CapiError::invalid_arg("null out"));
     }
-    unsafe { *out = RlmeshBytes::from_vec(bytes) };
+    unsafe { *out = RLMeshBytes::from_vec(bytes) };
     Ok(())
 }
 
@@ -59,7 +59,7 @@ fn top_level_key(key: &str) -> &str {
 ///
 /// `env_tags_json` is the env's `EnvTags` as JSON (see
 /// `rlmesh_contract_adapter_tags_json`); `model_spec_json` is the model's
-/// `ModelSpec`. The spaces are borrowed `RlmeshSpaceSpec` handles (e.g. from the
+/// `ModelSpec`. The spaces are borrowed `RLMeshSpaceSpec` handles (e.g. from the
 /// contract); they are not retained past the call. On success `*out_plan` owns a
 /// plan freed with `rlmesh_adapter_plan_free`.
 ///
@@ -69,12 +69,12 @@ fn top_level_key(key: &str) -> &str {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_adapter_resolve(
     env_tags_json: *const c_char,
-    observation_space: *const RlmeshSpaceSpec,
-    action_space: *const RlmeshSpaceSpec,
+    observation_space: *const RLMeshSpaceSpec,
+    action_space: *const RLMeshSpaceSpec,
     model_spec_json: *const c_char,
     trust_entrypoints: bool,
-    out_plan: *mut *mut RlmeshAdapterPlan,
-) -> RlmeshStatus {
+    out_plan: *mut *mut RLMeshAdapterPlan,
+) -> RLMeshStatus {
     guard(|| {
         if out_plan.is_null() {
             return Err(CapiError::invalid_arg("null out_plan"));
@@ -98,7 +98,7 @@ pub unsafe extern "C" fn rlmesh_adapter_resolve(
             trust_entrypoints,
         )
         .map_err(|err| CapiError::invalid_value(err.message))?;
-        unsafe { *out_plan = Box::into_raw(Box::new(RlmeshAdapterPlan(adapter))) };
+        unsafe { *out_plan = Box::into_raw(Box::new(RLMeshAdapterPlan(adapter))) };
         Ok(())
     })
 }
@@ -108,7 +108,7 @@ pub unsafe extern "C" fn rlmesh_adapter_resolve(
 /// # Safety
 /// `plan` must be a plan this thread owns and has not freed (NULL is a no-op).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_adapter_plan_free(plan: *mut RlmeshAdapterPlan) {
+pub unsafe extern "C" fn rlmesh_adapter_plan_free(plan: *mut RLMeshAdapterPlan) {
     if !plan.is_null() {
         drop(unsafe { Box::from_raw(plan) });
     }
@@ -121,9 +121,9 @@ pub unsafe extern "C" fn rlmesh_adapter_plan_free(plan: *mut RlmeshAdapterPlan) 
 /// `plan` and `out` must be valid for the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_adapter_plan_describe(
-    plan: *const RlmeshAdapterPlan,
-    out: *mut RlmeshBytes,
-) -> RlmeshStatus {
+    plan: *const RLMeshAdapterPlan,
+    out: *mut RLMeshBytes,
+) -> RLMeshStatus {
     guard(|| write_bytes(out, plan_ref(plan)?.describe().into_bytes()))
 }
 
@@ -135,9 +135,9 @@ pub unsafe extern "C" fn rlmesh_adapter_plan_describe(
 /// `plan` and `out` must be valid for the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_adapter_plan_referenced_obs_keys(
-    plan: *const RlmeshAdapterPlan,
-    out: *mut RlmeshBytes,
-) -> RlmeshStatus {
+    plan: *const RLMeshAdapterPlan,
+    out: *mut RLMeshBytes,
+) -> RLMeshStatus {
     guard(|| {
         let referenced = plan_ref(plan)?.referenced_obs_keys();
         let keys: BTreeSet<&str> = referenced.iter().map(|key| top_level_key(key)).collect();
@@ -156,11 +156,11 @@ pub unsafe extern "C" fn rlmesh_adapter_plan_referenced_obs_keys(
 /// `contract` and `out` must be valid for the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_contract_adapter_tags_json(
-    contract: *const RlmeshContract,
-    out: *mut RlmeshBytes,
-) -> RlmeshStatus {
+    contract: *const RLMeshContract,
+    out: *mut RLMeshBytes,
+) -> RLMeshStatus {
     guard(|| {
-        let contract = unsafe { RlmeshContract::as_ref(contract) }
+        let contract = unsafe { RLMeshContract::as_ref(contract) }
             .ok_or_else(|| CapiError::invalid_arg("null contract"))?;
         let json = match contract
             .metadata
@@ -266,7 +266,7 @@ mod tests {
         }
     }
 
-    fn read_bytes(bytes: &RlmeshBytes) -> String {
+    fn read_bytes(bytes: &RLMeshBytes) -> String {
         if bytes.data.is_null() {
             return String::new();
         }
@@ -281,36 +281,36 @@ mod tests {
         let model = CString::new(serde_json::to_string(&case["model_spec"]).unwrap()).unwrap();
         let expected = case["expect"]["describe"].as_str().unwrap();
 
-        let obs = RlmeshSpaceSpec(basic_obs_space());
-        let act = RlmeshSpaceSpec(box_spec(vec![7], DType::Float32));
-        let mut plan: *mut RlmeshAdapterPlan = std::ptr::null_mut();
+        let obs = RLMeshSpaceSpec(basic_obs_space());
+        let act = RLMeshSpaceSpec(box_spec(vec![7], DType::Float32));
+        let mut plan: *mut RLMeshAdapterPlan = std::ptr::null_mut();
 
         let status = unsafe {
             rlmesh_adapter_resolve(tags.as_ptr(), &obs, &act, model.as_ptr(), false, &mut plan)
         };
-        assert_eq!(status, RlmeshStatus::Ok);
+        assert_eq!(status, RLMeshStatus::Ok);
         assert!(!plan.is_null());
 
-        let mut out = RlmeshBytes {
+        let mut out = RLMeshBytes {
             data: std::ptr::null_mut(),
             len: 0,
             cap: 0,
         };
         assert_eq!(
             unsafe { rlmesh_adapter_plan_describe(plan, &mut out) },
-            RlmeshStatus::Ok
+            RLMeshStatus::Ok
         );
         assert_eq!(read_bytes(&out), expected);
         unsafe { crate::codec::rlmesh_bytes_free(out) };
 
-        let mut keys = RlmeshBytes {
+        let mut keys = RLMeshBytes {
             data: std::ptr::null_mut(),
             len: 0,
             cap: 0,
         };
         assert_eq!(
             unsafe { rlmesh_adapter_plan_referenced_obs_keys(plan, &mut keys) },
-            RlmeshStatus::Ok
+            RLMeshStatus::Ok
         );
         let parsed: BTreeSet<String> = serde_json::from_str(&read_bytes(&keys)).unwrap();
         assert!(
@@ -323,16 +323,16 @@ mod tests {
 
     #[test]
     fn resolve_rejects_invalid_model_spec_json() {
-        let obs = RlmeshSpaceSpec(basic_obs_space());
-        let act = RlmeshSpaceSpec(box_spec(vec![7], DType::Float32));
+        let obs = RLMeshSpaceSpec(basic_obs_space());
+        let act = RLMeshSpaceSpec(box_spec(vec![7], DType::Float32));
         let tags =
             CString::new(r#"{"observation":{},"action":{"clip":null,"components":[]}}"#).unwrap();
         let bad = CString::new("{ not json").unwrap();
-        let mut plan: *mut RlmeshAdapterPlan = std::ptr::null_mut();
+        let mut plan: *mut RLMeshAdapterPlan = std::ptr::null_mut();
         let status = unsafe {
             rlmesh_adapter_resolve(tags.as_ptr(), &obs, &act, bad.as_ptr(), false, &mut plan)
         };
-        assert_eq!(status, RlmeshStatus::InvalidArgument);
+        assert_eq!(status, RLMeshStatus::InvalidArgument);
         assert!(plan.is_null());
     }
 
@@ -352,10 +352,10 @@ mod tests {
                     std::ptr::null_mut(),
                 )
             },
-            RlmeshStatus::InvalidArgument
+            RLMeshStatus::InvalidArgument
         );
         // null spaces
-        let mut plan: *mut RlmeshAdapterPlan = std::ptr::null_mut();
+        let mut plan: *mut RLMeshAdapterPlan = std::ptr::null_mut();
         assert_eq!(
             unsafe {
                 rlmesh_adapter_resolve(
@@ -367,7 +367,7 @@ mod tests {
                     &mut plan,
                 )
             },
-            RlmeshStatus::InvalidArgument
+            RLMeshStatus::InvalidArgument
         );
         assert!(plan.is_null());
     }
@@ -377,19 +377,19 @@ mod tests {
         let case: serde_json::Value = serde_json::from_str(BASIC_PAIRING).unwrap();
         let mut metadata = MetaMap::new();
         metadata.insert(ENV_METADATA_KEY.to_owned(), json_to_meta(&case["env_tags"]));
-        let contract = RlmeshContract(EnvContract {
+        let contract = RLMeshContract(EnvContract {
             metadata: Some(metadata),
             ..Default::default()
         });
 
-        let mut out = RlmeshBytes {
+        let mut out = RLMeshBytes {
             data: std::ptr::null_mut(),
             len: 0,
             cap: 0,
         };
         assert_eq!(
             unsafe { rlmesh_contract_adapter_tags_json(&contract, &mut out) },
-            RlmeshStatus::Ok
+            RLMeshStatus::Ok
         );
         let tags_json = read_bytes(&out);
         unsafe { crate::codec::rlmesh_bytes_free(out) };
@@ -398,14 +398,14 @@ mod tests {
 
         let tags = CString::new(tags_json).unwrap();
         let model = CString::new(serde_json::to_string(&case["model_spec"]).unwrap()).unwrap();
-        let obs = RlmeshSpaceSpec(basic_obs_space());
-        let act = RlmeshSpaceSpec(box_spec(vec![7], DType::Float32));
-        let mut plan: *mut RlmeshAdapterPlan = std::ptr::null_mut();
+        let obs = RLMeshSpaceSpec(basic_obs_space());
+        let act = RLMeshSpaceSpec(box_spec(vec![7], DType::Float32));
+        let mut plan: *mut RLMeshAdapterPlan = std::ptr::null_mut();
         assert_eq!(
             unsafe {
                 rlmesh_adapter_resolve(tags.as_ptr(), &obs, &act, model.as_ptr(), false, &mut plan)
             },
-            RlmeshStatus::Ok
+            RLMeshStatus::Ok
         );
         assert!(!plan.is_null());
         unsafe { rlmesh_adapter_plan_free(plan) };
@@ -413,15 +413,15 @@ mod tests {
 
     #[test]
     fn contract_tags_json_empty_when_untagged() {
-        let contract = RlmeshContract(EnvContract::default());
-        let mut out = RlmeshBytes {
+        let contract = RLMeshContract(EnvContract::default());
+        let mut out = RLMeshBytes {
             data: std::ptr::null_mut(),
             len: 0,
             cap: 0,
         };
         assert_eq!(
             unsafe { rlmesh_contract_adapter_tags_json(&contract, &mut out) },
-            RlmeshStatus::Ok
+            RLMeshStatus::Ok
         );
         assert!(out.data.is_null() && out.len == 0);
         unsafe { crate::codec::rlmesh_bytes_free(out) };

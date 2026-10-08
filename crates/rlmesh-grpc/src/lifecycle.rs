@@ -77,7 +77,7 @@ pub struct ServeOptions {
     /// [`rlmesh_proto::parse_declared_edition`] accepts: a sealed release offers
     /// its bare `YYYY.MM` base, a prerelease build only its cohort spelling. The
     /// surfaces that take this from a user (the Python `ServeOptions`, the
-    /// `--workflow-edition` flag, the C API's `RlmeshServeOptions`) refuse such a
+    /// `--workflow-edition` flag, the C API's `RLMeshServeOptions`) refuse such a
     /// value where it is typed; a value set directly on this struct is only
     /// trimmed here and is refused at negotiation instead, by the refusal that
     /// names every tier's WANT and CAN.

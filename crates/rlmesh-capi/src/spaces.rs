@@ -14,17 +14,17 @@ use rlmesh_spaces::{
     BoxBounds, DType, EnvContract, SpaceKind, SpaceSpec, SpaceType, decode_scalars,
 };
 
-use crate::abi::status::{CapiError, RlmeshStatus, guard, guard_ptr, guard_value};
-use crate::value::dtype::RlmeshDType;
-use crate::value::handle::{RlmeshValueKind, write_out};
+use crate::abi::status::{CapiError, RLMeshStatus, guard, guard_ptr, guard_value};
+use crate::value::dtype::RLMeshDType;
+use crate::value::handle::{RLMeshValueKind, write_out};
 
 /// An opaque environment contract (spaces, id, num_envs, autoreset).
 #[repr(transparent)]
-pub struct RlmeshContract(pub(crate) EnvContract);
+pub struct RLMeshContract(pub(crate) EnvContract);
 
-impl RlmeshContract {
+impl RLMeshContract {
     /// # Safety
-    /// `ptr` must be NULL or a valid `*const RlmeshContract` outliving `'a`.
+    /// `ptr` must be NULL or a valid `*const RLMeshContract` outliving `'a`.
     pub(crate) unsafe fn as_ref<'a>(ptr: *const Self) -> Option<&'a EnvContract> {
         unsafe { ptr.cast::<EnvContract>().as_ref() }
     }
@@ -32,38 +32,38 @@ impl RlmeshContract {
 
 /// An opaque space specification.
 #[repr(transparent)]
-pub struct RlmeshSpaceSpec(pub(crate) SpaceSpec);
+pub struct RLMeshSpaceSpec(pub(crate) SpaceSpec);
 
 /// Borrow the observation space (valid while `contract` lives), or NULL.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_contract_observation_space(
-    contract: *const RlmeshContract,
-) -> *const RlmeshSpaceSpec {
+    contract: *const RLMeshContract,
+) -> *const RLMeshSpaceSpec {
     space_ptr(contract, |contract| contract.observation_space.as_ref())
 }
 
 /// Borrow the action space (valid while `contract` lives), or NULL.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_contract_action_space(
-    contract: *const RlmeshContract,
-) -> *const RlmeshSpaceSpec {
+    contract: *const RLMeshContract,
+) -> *const RLMeshSpaceSpec {
     space_ptr(contract, |contract| contract.action_space.as_ref())
 }
 
 /// The contract's batch size (`num_envs`), or 0 if `contract` is NULL.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_contract_num_envs(contract: *const RlmeshContract) -> u32 {
+pub unsafe extern "C" fn rlmesh_contract_num_envs(contract: *const RLMeshContract) -> u32 {
     guard_value(0, || {
-        unsafe { RlmeshContract::as_ref(contract) }.map_or(0, |contract| contract.num_envs)
+        unsafe { RLMeshContract::as_ref(contract) }.map_or(0, |contract| contract.num_envs)
     })
 }
 
 fn space_ptr(
-    contract: *const RlmeshContract,
+    contract: *const RLMeshContract,
     pick: impl FnOnce(&EnvContract) -> Option<&SpaceSpec>,
-) -> *const RlmeshSpaceSpec {
+) -> *const RLMeshSpaceSpec {
     guard_value(std::ptr::null(), || {
-        match unsafe { RlmeshContract::as_ref(contract) } {
+        match unsafe { RLMeshContract::as_ref(contract) } {
             Some(contract) => {
                 pick(contract).map_or(std::ptr::null(), |spec| (spec as *const SpaceSpec).cast())
             }
@@ -72,40 +72,40 @@ fn space_ptr(
     })
 }
 
-pub(crate) fn spec_ref<'a>(spec: *const RlmeshSpaceSpec) -> Option<&'a SpaceSpec> {
+pub(crate) fn spec_ref<'a>(spec: *const RLMeshSpaceSpec) -> Option<&'a SpaceSpec> {
     unsafe { spec.cast::<SpaceSpec>().as_ref() }
 }
 
 /// The space kind, or `Invalid` when `spec` is NULL or its kind is unspecified.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_space_type(spec: *const RlmeshSpaceSpec) -> RlmeshValueKind {
-    guard_value(RlmeshValueKind::Invalid, || {
-        spec_ref(spec).map_or(RlmeshValueKind::Invalid, |spec| match spec.space_type() {
-            SpaceType::Box => RlmeshValueKind::Box,
-            SpaceType::Discrete => RlmeshValueKind::Discrete,
-            SpaceType::MultiBinary => RlmeshValueKind::MultiBinary,
-            SpaceType::MultiDiscrete => RlmeshValueKind::MultiDiscrete,
-            SpaceType::Text => RlmeshValueKind::Text,
-            SpaceType::Dict => RlmeshValueKind::Dict,
-            SpaceType::Tuple => RlmeshValueKind::Tuple,
-            SpaceType::Unspecified => RlmeshValueKind::Invalid,
+pub unsafe extern "C" fn rlmesh_space_type(spec: *const RLMeshSpaceSpec) -> RLMeshValueKind {
+    guard_value(RLMeshValueKind::Invalid, || {
+        spec_ref(spec).map_or(RLMeshValueKind::Invalid, |spec| match spec.space_type() {
+            SpaceType::Box => RLMeshValueKind::Box,
+            SpaceType::Discrete => RLMeshValueKind::Discrete,
+            SpaceType::MultiBinary => RLMeshValueKind::MultiBinary,
+            SpaceType::MultiDiscrete => RLMeshValueKind::MultiDiscrete,
+            SpaceType::Text => RLMeshValueKind::Text,
+            SpaceType::Dict => RLMeshValueKind::Dict,
+            SpaceType::Tuple => RLMeshValueKind::Tuple,
+            SpaceType::Unspecified => RLMeshValueKind::Invalid,
         })
     })
 }
 
 /// The space's element dtype (`{0,0,0}` if unset/unsupported).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_space_dtype(spec: *const RlmeshSpaceSpec) -> RlmeshDType {
+pub unsafe extern "C" fn rlmesh_space_dtype(spec: *const RLMeshSpaceSpec) -> RLMeshDType {
     guard_value(
-        RlmeshDType {
+        RLMeshDType {
             code: 0,
             bits: 0,
             lanes: 0,
         },
         || {
             spec_ref(spec)
-                .and_then(|spec| RlmeshDType::from_core(spec.dtype))
-                .unwrap_or(RlmeshDType {
+                .and_then(|spec| RLMeshDType::from_core(spec.dtype))
+                .unwrap_or(RLMeshDType {
                     code: 0,
                     bits: 0,
                     lanes: 0,
@@ -116,17 +116,17 @@ pub unsafe extern "C" fn rlmesh_space_dtype(spec: *const RlmeshSpaceSpec) -> Rlm
 
 /// The space's rank (number of dimensions), or 0.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_space_ndim(spec: *const RlmeshSpaceSpec) -> usize {
+pub unsafe extern "C" fn rlmesh_space_ndim(spec: *const RLMeshSpaceSpec) -> usize {
     guard_value(0, || spec_ref(spec).map_or(0, |spec| spec.shape.len()))
 }
 
 /// Copy the space's shape into `out` (capacity `cap`).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_space_copy_shape(
-    spec: *const RlmeshSpaceSpec,
+    spec: *const RLMeshSpaceSpec,
     out: *mut i64,
     cap: usize,
-) -> RlmeshStatus {
+) -> RLMeshStatus {
     guard(|| {
         let spec = spec_ref(spec).ok_or_else(|| CapiError::invalid_arg("null space spec"))?;
         if spec.shape.len() > cap {
@@ -148,9 +148,9 @@ pub unsafe extern "C" fn rlmesh_space_copy_shape(
 /// `RLMESH_ERR_INVALID_VALUE`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_space_len(
-    spec: *const RlmeshSpaceSpec,
+    spec: *const RLMeshSpaceSpec,
     out: *mut usize,
-) -> RlmeshStatus {
+) -> RLMeshStatus {
     guard(|| {
         let len = match &spec_ref(spec).ok_or_else(null_spec)?.spec {
             Some(SpaceKind::Dict(dict)) => dict.spaces.len(),
@@ -164,9 +164,9 @@ pub unsafe extern "C" fn rlmesh_space_len(
 /// Borrow a `Tuple` space's child by index (valid while `spec` lives), or NULL.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_space_tuple_get(
-    spec: *const RlmeshSpaceSpec,
+    spec: *const RLMeshSpaceSpec,
     index: usize,
-) -> *const RlmeshSpaceSpec {
+) -> *const RLMeshSpaceSpec {
     guard_value(std::ptr::null(), || {
         match spec_ref(spec).map(|spec| &spec.spec) {
             Some(Some(SpaceKind::Tuple(tuple))) => child_ptr(tuple.spaces.get(index)),
@@ -178,9 +178,9 @@ pub unsafe extern "C" fn rlmesh_space_tuple_get(
 /// Borrow a `Dict` space's child by key (valid while `spec` lives), or NULL.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_space_dict_get(
-    spec: *const RlmeshSpaceSpec,
+    spec: *const RLMeshSpaceSpec,
     key: *const c_char,
-) -> *const RlmeshSpaceSpec {
+) -> *const RLMeshSpaceSpec {
     guard_value(std::ptr::null(), || {
         if key.is_null() {
             return std::ptr::null();
@@ -202,9 +202,9 @@ pub unsafe extern "C" fn rlmesh_space_dict_get(
 /// other kind or an out-of-range index.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_space_dict_get_at(
-    spec: *const RlmeshSpaceSpec,
+    spec: *const RLMeshSpaceSpec,
     index: usize,
-) -> *const RlmeshSpaceSpec {
+) -> *const RLMeshSpaceSpec {
     guard_value(std::ptr::null(), || {
         match spec_ref(spec).map(|spec| &spec.spec) {
             Some(Some(SpaceKind::Dict(dict))) => child_ptr(dict.spaces.get(index)),
@@ -218,11 +218,11 @@ pub unsafe extern "C" fn rlmesh_space_dict_get_at(
 /// parallel to the children.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_space_dict_key(
-    spec: *const RlmeshSpaceSpec,
+    spec: *const RLMeshSpaceSpec,
     index: usize,
     out_ptr: *mut *const c_char,
     out_len: *mut usize,
-) -> RlmeshStatus {
+) -> RLMeshStatus {
     guard(|| {
         let Some(SpaceKind::Dict(dict)) = &spec_ref(spec).ok_or_else(null_spec)?.spec else {
             return Err(CapiError::invalid_value("space is not a Dict"));
@@ -243,11 +243,11 @@ pub unsafe extern "C" fn rlmesh_space_dict_key(
 /// written.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_space_box_bounds(
-    spec: *const RlmeshSpaceSpec,
+    spec: *const RLMeshSpaceSpec,
     index: usize,
     out_low: *mut f64,
     out_high: *mut f64,
-) -> RlmeshStatus {
+) -> RLMeshStatus {
     guard(|| {
         let spec = spec_ref(spec).ok_or_else(null_spec)?;
         let Some(SpaceKind::Box(box_spec)) = &spec.spec else {
@@ -273,10 +273,10 @@ pub unsafe extern "C" fn rlmesh_space_box_bounds(
 /// may be NULL to skip it.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_space_discrete_n(
-    spec: *const RlmeshSpaceSpec,
+    spec: *const RLMeshSpaceSpec,
     out_n: *mut i64,
     out_start: *mut i64,
-) -> RlmeshStatus {
+) -> RLMeshStatus {
     guard(|| {
         let Some(SpaceKind::Discrete(discrete)) = &spec_ref(spec).ok_or_else(null_spec)?.spec
         else {
@@ -292,10 +292,10 @@ pub unsafe extern "C" fn rlmesh_space_discrete_n(
 /// Either out-pointer may be NULL to skip it.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_space_text_length(
-    spec: *const RlmeshSpaceSpec,
+    spec: *const RLMeshSpaceSpec,
     out_min: *mut i64,
     out_max: *mut i64,
-) -> RlmeshStatus {
+) -> RLMeshStatus {
     guard(|| {
         let Some(SpaceKind::Text(text)) = &spec_ref(spec).ok_or_else(null_spec)?.spec else {
             return Err(CapiError::invalid_value("space is not Text"));
@@ -310,10 +310,10 @@ pub unsafe extern "C" fn rlmesh_space_text_length(
 /// valid while `spec` lives. An empty charset means any character is allowed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_space_text_charset(
-    spec: *const RlmeshSpaceSpec,
+    spec: *const RLMeshSpaceSpec,
     out_ptr: *mut *const c_char,
     out_len: *mut usize,
-) -> RlmeshStatus {
+) -> RLMeshStatus {
     guard(|| {
         let Some(SpaceKind::Text(text)) = &spec_ref(spec).ok_or_else(null_spec)?.spec else {
             return Err(CapiError::invalid_value("space is not Text"));
@@ -327,10 +327,10 @@ pub unsafe extern "C" fn rlmesh_space_text_charset(
 /// (capacity `cap`, one entry per element of the shape, row-major).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_space_copy_nvec(
-    spec: *const RlmeshSpaceSpec,
+    spec: *const RLMeshSpaceSpec,
     out: *mut i64,
     cap: usize,
-) -> RlmeshStatus {
+) -> RLMeshStatus {
     guard(|| {
         let Some(SpaceKind::MultiDiscrete(md)) = &spec_ref(spec).ok_or_else(null_spec)?.spec else {
             return Err(CapiError::invalid_value("space is not MultiDiscrete"));
@@ -355,7 +355,7 @@ fn null_spec() -> CapiError {
     CapiError::invalid_arg("null space spec")
 }
 
-fn child_ptr(child: Option<&SpaceSpec>) -> *const RlmeshSpaceSpec {
+fn child_ptr(child: Option<&SpaceSpec>) -> *const RLMeshSpaceSpec {
     child.map_or(std::ptr::null(), |spec| (spec as *const SpaceSpec).cast())
 }
 
@@ -407,11 +407,11 @@ fn write_opt<T>(out: *mut T, value: T) {
 // ---- builders (the env-authoring side) -------------------------------------
 
 /// Hand a built space to C as an owned handle (free with `rlmesh_space_free`).
-fn into_space_handle(spec: SpaceSpec) -> *mut RlmeshSpaceSpec {
-    Box::into_raw(Box::new(RlmeshSpaceSpec(spec)))
+fn into_space_handle(spec: SpaceSpec) -> *mut RLMeshSpaceSpec {
+    Box::into_raw(Box::new(RLMeshSpaceSpec(spec)))
 }
 
-fn built(result: Result<SpaceSpec, SpaceError>) -> Result<*mut RlmeshSpaceSpec, CapiError> {
+fn built(result: Result<SpaceSpec, SpaceError>) -> Result<*mut RLMeshSpaceSpec, CapiError> {
     result
         .map(into_space_handle)
         .map_err(|err| CapiError::invalid_arg(format!("invalid space: {err}")))
@@ -429,7 +429,7 @@ unsafe fn slice_arg<'a, T>(ptr: *const T, len: usize, what: &str) -> Result<&'a 
     Ok(unsafe { std::slice::from_raw_parts(ptr, len) })
 }
 
-fn core_dtype(dtype: RlmeshDType) -> Result<DType, CapiError> {
+fn core_dtype(dtype: RLMeshDType) -> Result<DType, CapiError> {
     dtype
         .to_core()
         .ok_or_else(|| CapiError::invalid_arg("unsupported dtype"))
@@ -469,12 +469,12 @@ fn int_bound(value: f64) -> Result<i64, CapiError> {
 /// `shape` points at `ndim` readable `int64_t`s (NULL when `ndim == 0`).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_space_box(
-    dtype: RlmeshDType,
+    dtype: RLMeshDType,
     shape: *const i64,
     ndim: usize,
     low: f64,
     high: f64,
-) -> *mut RlmeshSpaceSpec {
+) -> *mut RLMeshSpaceSpec {
     guard_ptr(|| {
         let dtype = core_dtype(dtype)?;
         let shape = unsafe { slice_arg(shape, ndim, "shape") }?.to_vec();
@@ -500,12 +500,12 @@ pub unsafe extern "C" fn rlmesh_space_box(
 /// `shape` points at `ndim` `int64_t`s; `low`/`high` at `numel` doubles each.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_space_box_elementwise(
-    dtype: RlmeshDType,
+    dtype: RLMeshDType,
     shape: *const i64,
     ndim: usize,
     low: *const f64,
     high: *const f64,
-) -> *mut RlmeshSpaceSpec {
+) -> *mut RLMeshSpaceSpec {
     guard_ptr(|| {
         let dtype = core_dtype(dtype)?;
         let shape = unsafe { slice_arg(shape, ndim, "shape") }?.to_vec();
@@ -531,7 +531,7 @@ pub unsafe extern "C" fn rlmesh_space_box_elementwise(
 
 /// A `Discrete` space over `start ..= start + n - 1`.
 #[unsafe(no_mangle)]
-pub extern "C" fn rlmesh_space_discrete(n: i64, start: i64) -> *mut RlmeshSpaceSpec {
+pub extern "C" fn rlmesh_space_discrete(n: i64, start: i64) -> *mut RLMeshSpaceSpec {
     guard_ptr(|| built(DiscreteBuilder::new(n).start(start).build()))
 }
 
@@ -543,7 +543,7 @@ pub extern "C" fn rlmesh_space_discrete(n: i64, start: i64) -> *mut RlmeshSpaceS
 pub unsafe extern "C" fn rlmesh_space_multi_binary(
     shape: *const i64,
     ndim: usize,
-) -> *mut RlmeshSpaceSpec {
+) -> *mut RLMeshSpaceSpec {
     guard_ptr(|| {
         let shape = unsafe { slice_arg(shape, ndim, "shape") }?.to_vec();
         built(MultiBinaryBuilder::shape(shape).build())
@@ -558,7 +558,7 @@ pub unsafe extern "C" fn rlmesh_space_multi_binary(
 pub unsafe extern "C" fn rlmesh_space_multi_discrete(
     nvec: *const i64,
     n: usize,
-) -> *mut RlmeshSpaceSpec {
+) -> *mut RLMeshSpaceSpec {
     guard_ptr(|| {
         let nvec = unsafe { slice_arg(nvec, n, "nvec") }?.to_vec();
         built(MultiDiscreteBuilder::vector(nvec).build())
@@ -575,7 +575,7 @@ pub unsafe extern "C" fn rlmesh_space_text(
     min_length: i64,
     max_length: i64,
     charset: *const c_char,
-) -> *mut RlmeshSpaceSpec {
+) -> *mut RLMeshSpaceSpec {
     guard_ptr(|| {
         let mut builder = TextBuilder::new(max_length).min_length(min_length);
         if !charset.is_null() {
@@ -594,7 +594,7 @@ pub unsafe extern "C" fn rlmesh_space_text(
 /// # Safety
 /// `children` points at `n` handles from the space constructors.
 unsafe fn take_children(
-    children: *const *mut RlmeshSpaceSpec,
+    children: *const *mut RLMeshSpaceSpec,
     n: usize,
 ) -> Result<Vec<SpaceSpec>, CapiError> {
     let children = unsafe { slice_arg(children, n, "children") }?;
@@ -616,9 +616,9 @@ unsafe fn take_children(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_space_dict(
     keys: *const *const c_char,
-    children: *const *mut RlmeshSpaceSpec,
+    children: *const *mut RLMeshSpaceSpec,
     n: usize,
-) -> *mut RlmeshSpaceSpec {
+) -> *mut RLMeshSpaceSpec {
     guard_ptr(|| {
         let raw_keys = unsafe { slice_arg(keys, n, "keys") }?;
         let mut names: Vec<String> = Vec::with_capacity(n);
@@ -652,9 +652,9 @@ pub unsafe extern "C" fn rlmesh_space_dict(
 /// `children` points at `n` owned space handles.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_space_tuple(
-    children: *const *mut RlmeshSpaceSpec,
+    children: *const *mut RLMeshSpaceSpec,
     n: usize,
-) -> *mut RlmeshSpaceSpec {
+) -> *mut RLMeshSpaceSpec {
     guard_ptr(|| {
         let children = unsafe { take_children(children, n) }?;
         built(TupleSpaceBuilder::new().extend(children).build())
@@ -667,7 +667,7 @@ pub unsafe extern "C" fn rlmesh_space_tuple(
 /// # Safety
 /// `spec` is NULL or an owned handle this thread has not freed.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_space_free(spec: *mut RlmeshSpaceSpec) {
+pub unsafe extern "C" fn rlmesh_space_free(spec: *mut RLMeshSpaceSpec) {
     guard_value((), || {
         if !spec.is_null() {
             drop(unsafe { Box::from_raw(spec) });

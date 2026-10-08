@@ -9,7 +9,7 @@ use crate::{DEFAULT_PACKAGE_NAME, hex};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub(crate) enum ResolvedRlmeshPackage {
+pub(crate) enum ResolvedRLMeshPackage {
     Pip {
         spec: String,
     },
@@ -20,7 +20,7 @@ pub(crate) enum ResolvedRlmeshPackage {
     },
 }
 
-impl ResolvedRlmeshPackage {
+impl ResolvedRLMeshPackage {
     pub(crate) fn install_ref(&self) -> &str {
         match self {
             Self::Pip { spec } => spec,
@@ -50,7 +50,7 @@ impl ResolvedRlmeshPackage {
 pub(crate) fn resolve_rlmesh_package(
     value: String,
     base_image: &str,
-) -> Result<ResolvedRlmeshPackage> {
+) -> Result<ResolvedRLMeshPackage> {
     if value == "local" {
         let wheel = resolve_local_rlmesh_wheel(base_image)?;
         return resolved_wheel_package(&wheel);
@@ -61,10 +61,10 @@ pub(crate) fn resolve_rlmesh_package(
         return resolved_wheel_package(path);
     }
 
-    Ok(ResolvedRlmeshPackage::Pip { spec: value })
+    Ok(ResolvedRLMeshPackage::Pip { spec: value })
 }
 
-fn resolved_wheel_package(path: &Path) -> Result<ResolvedRlmeshPackage> {
+fn resolved_wheel_package(path: &Path) -> Result<ResolvedRLMeshPackage> {
     let source_path = fs::canonicalize(path)
         .with_context(|| format!("failed to resolve RLMesh wheel path {}", path.display()))?;
     anyhow::ensure!(
@@ -85,7 +85,7 @@ fn resolved_wheel_package(path: &Path) -> Result<ResolvedRlmeshPackage> {
         .to_string();
     let sha256 = file_sha256(&source_path)?;
 
-    Ok(ResolvedRlmeshPackage::Wheel {
+    Ok(ResolvedRLMeshPackage::Wheel {
         source_path,
         install_path: format!("/opt/rlmesh/packages/{filename}"),
         sha256,
@@ -361,7 +361,7 @@ mod tests {
             let resolved = resolve_rlmesh_package(spec.to_string(), DEFAULT_BASE_IMAGE).unwrap();
             assert_eq!(
                 resolved,
-                ResolvedRlmeshPackage::Pip {
+                ResolvedRLMeshPackage::Pip {
                     spec: spec.to_string()
                 }
             );

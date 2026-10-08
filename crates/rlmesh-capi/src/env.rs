@@ -29,20 +29,20 @@ use rlmesh_spaces::errors::EnvRuntimeError;
 use rlmesh_spaces::{DType, EnvContract, MetaMap, MetaValue, RenderFrame, SpaceSpec, SpaceValue};
 
 use crate::abi::status::{
-    CapiError, RlmeshStatus, clear_last_error, guard, guard_value, last_error_message,
+    CapiError, RLMeshStatus, clear_last_error, guard, guard_value, last_error_message,
     last_error_recoverable,
 };
 use crate::adapters::{json_to_meta, meta_to_json};
-use crate::codec::RlmeshBytes;
+use crate::codec::RLMeshBytes;
 use crate::describe::Describe;
-use crate::model::{RlmeshServeOptions, cstr_to_str, serve_options, vtable_field};
-use crate::spaces::{RlmeshSpaceSpec, spec_ref};
-use crate::value::handle::RlmeshValue;
+use crate::model::{RLMeshServeOptions, cstr_to_str, serve_options, vtable_field};
+use crate::spaces::{RLMeshSpaceSpec, spec_ref};
+use crate::value::handle::RLMeshValue;
 
 /// What `reset` receives. Every pointer is valid only for the duration of the
 /// call.
 #[repr(C)]
-pub struct RlmeshResetArgs {
+pub struct RLMeshResetArgs {
     /// Whether `seed` carries an explicit reset seed.
     pub seeded: bool,
     /// The reset seed; only meaningful when `seeded`.
@@ -59,16 +59,16 @@ pub struct RlmeshResetArgs {
 /// What `reset` writes. `observation` is an OWNED value (the capi takes it);
 /// `info_json` is a borrowed JSON object, or NULL for none.
 #[repr(C)]
-pub struct RlmeshResetResult {
-    pub observation: *mut RlmeshValue,
+pub struct RLMeshResetResult {
+    pub observation: *mut RLMeshValue,
     pub info_json: *const c_char,
 }
 
 /// What `step` writes. `observation` is an OWNED value (the capi takes it);
 /// `info_json` is a borrowed JSON object, or NULL for none.
 #[repr(C)]
-pub struct RlmeshStepResult {
-    pub observation: *mut RlmeshValue,
+pub struct RLMeshStepResult {
+    pub observation: *mut RLMeshValue,
     pub reward: f64,
     pub terminated: bool,
     pub truncated: bool,
@@ -76,50 +76,50 @@ pub struct RlmeshStepResult {
 }
 
 /// Reset callback: start a new episode and write its first observation.
-pub type RlmeshEnvResetFn = unsafe extern "C" fn(
+pub type RLMeshEnvResetFn = unsafe extern "C" fn(
     user_data: *mut c_void,
-    args: *const RlmeshResetArgs,
-    out: *mut RlmeshResetResult,
+    args: *const RLMeshResetArgs,
+    out: *mut RLMeshResetResult,
 ) -> c_int;
 /// Step callback: apply `action` (borrowed; NULL when the request carries
 /// none) and write the transition.
-pub type RlmeshEnvStepFn = unsafe extern "C" fn(
+pub type RLMeshEnvStepFn = unsafe extern "C" fn(
     user_data: *mut c_void,
-    action: *const RlmeshValue,
-    out: *mut RlmeshStepResult,
+    action: *const RLMeshValue,
+    out: *mut RLMeshStepResult,
 ) -> c_int;
 /// Render callback: write an OWNED uint8 image value (`[H, W, 3]`, `[H, W, 4]`
 /// or `[H, W]`), or leave it NULL for "no frame". The capi PNG-encodes it.
-pub type RlmeshEnvRenderFn =
-    unsafe extern "C" fn(user_data: *mut c_void, out_frame: *mut *mut RlmeshValue) -> c_int;
+pub type RLMeshEnvRenderFn =
+    unsafe extern "C" fn(user_data: *mut c_void, out_frame: *mut *mut RLMeshValue) -> c_int;
 /// Close callback: the server stopped; release the simulation.
-pub type RlmeshEnvCloseFn = unsafe extern "C" fn(user_data: *mut c_void);
+pub type RLMeshEnvCloseFn = unsafe extern "C" fn(user_data: *mut c_void);
 
 /// The environment callback vtable. Set `struct_size =
-/// sizeof(RlmeshEnvVtable)`; fields beyond that are ignored (append-only).
+/// sizeof(RLMeshEnvVtable)`; fields beyond that are ignored (append-only).
 /// `reset` and `step` are required.
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct RlmeshEnvVtable {
+pub struct RLMeshEnvVtable {
     pub struct_size: usize,
-    pub reset: Option<RlmeshEnvResetFn>,
-    pub step: Option<RlmeshEnvStepFn>,
-    pub render: Option<RlmeshEnvRenderFn>,
-    pub close: Option<RlmeshEnvCloseFn>,
+    pub reset: Option<RLMeshEnvResetFn>,
+    pub step: Option<RLMeshEnvStepFn>,
+    pub render: Option<RLMeshEnvRenderFn>,
+    pub close: Option<RLMeshEnvCloseFn>,
 }
 
 /// What the env declares: its spaces and the contract metadata a model reads.
-/// Set `struct_size = sizeof(RlmeshEnvConfig)`; fields beyond it are unset.
+/// Set `struct_size = sizeof(RLMeshEnvConfig)`; fields beyond it are unset.
 /// Everything is borrowed for the `rlmesh_env_new` call only (copied in).
 #[repr(C)]
-pub struct RlmeshEnvConfig {
+pub struct RLMeshEnvConfig {
     pub struct_size: usize,
     /// Contract id, e.g. "ChronoArmReach-v0". NULL or "" = "env".
     pub id: *const c_char,
     /// Required.
-    pub observation_space: *const RlmeshSpaceSpec,
+    pub observation_space: *const RLMeshSpaceSpec,
     /// Required.
-    pub action_space: *const RlmeshSpaceSpec,
+    pub action_space: *const RLMeshSpaceSpec,
     /// Adapter `EnvTags` (the v1 JSON wire format), validated against the
     /// spaces at `rlmesh_env_new`. NULL = untagged.
     pub adapter_tags_json: *const c_char,
@@ -172,7 +172,7 @@ impl Drop for DoneOnDrop {
 
 /// The C vtable as a core scalar `Env`.
 struct CEnv {
-    vtable: RlmeshEnvVtable,
+    vtable: RLMeshEnvVtable,
     user_data: UserData,
     observation_space: SpaceSpec,
     action_space: SpaceSpec,
@@ -218,7 +218,7 @@ fn callback_error(op: &str) -> EnvRuntimeError {
 }
 
 /// Reclaim an owned value the callback wrote (NULL = none).
-fn take_value(ptr: *mut RlmeshValue) -> Option<SpaceValue> {
+fn take_value(ptr: *mut RLMeshValue) -> Option<SpaceValue> {
     (!ptr.is_null()).then(|| unsafe { Box::from_raw(ptr) }.0)
 }
 
@@ -278,7 +278,7 @@ fn encode_png(frame: &SpaceValue) -> Result<Vec<u8>, EnvRuntimeError> {
 
 /// Call `reset` and read its result back: one dispatchable unit.
 fn call_reset(
-    reset: RlmeshEnvResetFn,
+    reset: RLMeshEnvResetFn,
     user_data: UserData,
     req: ResetRequest,
 ) -> Result<ResetResult, EnvRuntimeError> {
@@ -294,7 +294,7 @@ fn call_reset(
         let map = MetaValue::Map(options.clone());
         crate::model::cstring(&meta_to_json(&map).to_string())
     });
-    let args = RlmeshResetArgs {
+    let args = RLMeshResetArgs {
         seeded: req.seed.is_some(),
         seed: req.seed.unwrap_or_default(),
         has_trial_index: trial_index.is_some(),
@@ -303,7 +303,7 @@ fn call_reset(
             .as_ref()
             .map_or(std::ptr::null(), |s| s.as_ptr()),
     };
-    let mut out = RlmeshResetResult {
+    let mut out = RLMeshResetResult {
         observation: std::ptr::null_mut(),
         info_json: std::ptr::null(),
     };
@@ -322,15 +322,15 @@ fn call_reset(
 
 /// Call `step` and read its result back: one dispatchable unit.
 fn call_step(
-    step: RlmeshEnvStepFn,
+    step: RLMeshEnvStepFn,
     user_data: UserData,
     req: StepRequest,
 ) -> Result<StepResult, EnvRuntimeError> {
-    // `RlmeshValue` is repr(transparent) over `SpaceValue`: lend the action.
+    // `RLMeshValue` is repr(transparent) over `SpaceValue`: lend the action.
     let action = req.action.as_ref().map_or(std::ptr::null(), |action| {
-        std::ptr::from_ref(action).cast::<RlmeshValue>()
+        std::ptr::from_ref(action).cast::<RLMeshValue>()
     });
-    let mut out = RlmeshStepResult {
+    let mut out = RLMeshStepResult {
         observation: std::ptr::null_mut(),
         reward: 0.0,
         terminated: false,
@@ -355,10 +355,10 @@ fn call_step(
 /// Call `render` and take its frame back (PNG encoding happens after, on the
 /// lane thread): one dispatchable unit.
 fn call_render(
-    render: RlmeshEnvRenderFn,
+    render: RLMeshEnvRenderFn,
     user_data: UserData,
 ) -> Result<Option<SpaceValue>, EnvRuntimeError> {
-    let mut frame: *mut RlmeshValue = std::ptr::null_mut();
+    let mut frame: *mut RLMeshValue = std::ptr::null_mut();
     clear_last_error();
     let status = unsafe { render(user_data.0, &mut frame) };
     let frame = take_value(frame);
@@ -368,7 +368,7 @@ fn call_render(
     Ok(frame)
 }
 
-fn call_close(close: RlmeshEnvCloseFn, user_data: UserData) {
+fn call_close(close: RLMeshEnvCloseFn, user_data: UserData) {
     unsafe { close(user_data.0) };
 }
 
@@ -436,7 +436,7 @@ impl Env for CEnv {
 /// Lifecycle: `rlmesh_env_new` -> `rlmesh_env_bind` (learn the address) ->
 /// `rlmesh_env_serve` (blocks) -> `rlmesh_env_free`. `rlmesh_env_cancel` is the
 /// one call that may overlap a blocking serve, from any thread.
-pub struct RlmeshEnv {
+pub struct RLMeshEnv {
     runtime: tokio::runtime::Runtime,
     env: Mutex<Option<Vec<CEnv>>>,
     bound: Mutex<Option<BoundEnvServer>>,
@@ -446,7 +446,7 @@ pub struct RlmeshEnv {
     describe: Describe,
 }
 
-impl RlmeshEnv {
+impl RLMeshEnv {
     pub(crate) fn describe(&self) -> &Describe {
         &self.describe
     }
@@ -456,7 +456,7 @@ impl RlmeshEnv {
 ///
 /// # Safety
 /// `ptr` is non-NULL and its first `struct_size` bytes are valid.
-unsafe fn read_vtable(ptr: *const RlmeshEnvVtable) -> Result<RlmeshEnvVtable, CapiError> {
+unsafe fn read_vtable(ptr: *const RLMeshEnvVtable) -> Result<RLMeshEnvVtable, CapiError> {
     let base = ptr.cast::<u8>();
     let struct_size = unsafe { (*ptr).struct_size };
     if struct_size == 0 {
@@ -468,18 +468,18 @@ unsafe fn read_vtable(ptr: *const RlmeshEnvVtable) -> Result<RlmeshEnvVtable, Ca
                 vtable_field::<Option<$ty>>(
                     base,
                     struct_size,
-                    std::mem::offset_of!(RlmeshEnvVtable, $name),
+                    std::mem::offset_of!(RLMeshEnvVtable, $name),
                 )
             }
             .flatten()
         };
     }
-    let vtable = RlmeshEnvVtable {
+    let vtable = RLMeshEnvVtable {
         struct_size,
-        reset: field!(reset, RlmeshEnvResetFn),
-        step: field!(step, RlmeshEnvStepFn),
-        render: field!(render, RlmeshEnvRenderFn),
-        close: field!(close, RlmeshEnvCloseFn),
+        reset: field!(reset, RLMeshEnvResetFn),
+        step: field!(step, RLMeshEnvStepFn),
+        render: field!(render, RLMeshEnvRenderFn),
+        close: field!(close, RLMeshEnvCloseFn),
     };
     if vtable.reset.is_none() {
         return Err(CapiError::invalid_arg("env vtable reset is null"));
@@ -493,8 +493,8 @@ unsafe fn read_vtable(ptr: *const RlmeshEnvVtable) -> Result<RlmeshEnvVtable, Ca
 /// The config fields the caller's `struct_size` covers; the rest read as unset.
 struct EnvConfig {
     id: *const c_char,
-    observation_space: *const RlmeshSpaceSpec,
-    action_space: *const RlmeshSpaceSpec,
+    observation_space: *const RLMeshSpaceSpec,
+    action_space: *const RLMeshSpaceSpec,
     adapter_tags_json: *const c_char,
     reset_options: *const *const c_char,
     num_reset_options: usize,
@@ -505,7 +505,7 @@ struct EnvConfig {
 
 /// # Safety
 /// `ptr` is non-NULL and its first `struct_size` bytes are valid.
-unsafe fn read_config(ptr: *const RlmeshEnvConfig) -> Result<EnvConfig, CapiError> {
+unsafe fn read_config(ptr: *const RLMeshEnvConfig) -> Result<EnvConfig, CapiError> {
     let base = ptr.cast::<u8>();
     let struct_size = unsafe { (*ptr).struct_size };
     if struct_size == 0 {
@@ -517,7 +517,7 @@ unsafe fn read_config(ptr: *const RlmeshEnvConfig) -> Result<EnvConfig, CapiErro
                 vtable_field::<$ty>(
                     base,
                     struct_size,
-                    std::mem::offset_of!(RlmeshEnvConfig, $name),
+                    std::mem::offset_of!(RLMeshEnvConfig, $name),
                 )
             }
             .unwrap_or($default)
@@ -525,8 +525,8 @@ unsafe fn read_config(ptr: *const RlmeshEnvConfig) -> Result<EnvConfig, CapiErro
     }
     Ok(EnvConfig {
         id: field!(id, *const c_char, std::ptr::null()),
-        observation_space: field!(observation_space, *const RlmeshSpaceSpec, std::ptr::null()),
-        action_space: field!(action_space, *const RlmeshSpaceSpec, std::ptr::null()),
+        observation_space: field!(observation_space, *const RLMeshSpaceSpec, std::ptr::null()),
+        action_space: field!(action_space, *const RLMeshSpaceSpec, std::ptr::null()),
         adapter_tags_json: field!(adapter_tags_json, *const c_char, std::ptr::null()),
         reset_options: field!(reset_options, *const *const c_char, std::ptr::null()),
         num_reset_options: field!(num_reset_options, usize, 0),
@@ -625,11 +625,11 @@ fn build_contract(config: &EnvConfig) -> Result<(SpaceSpec, SpaceSpec, EnvContra
 /// `vtable` and `config` must be valid for the call; `out` writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_env_new(
-    vtable: *const RlmeshEnvVtable,
-    config: *const RlmeshEnvConfig,
+    vtable: *const RLMeshEnvVtable,
+    config: *const RLMeshEnvConfig,
     user_data: *mut c_void,
-    out: *mut *mut RlmeshEnv,
-) -> RlmeshStatus {
+    out: *mut *mut RLMeshEnv,
+) -> RLMeshStatus {
     guard(|| unsafe { new_env(vtable, config, &[user_data], out) })
 }
 
@@ -645,12 +645,12 @@ pub unsafe extern "C" fn rlmesh_env_new(
 /// `num_lanes` pointers; `out` writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_env_new_lanes(
-    vtable: *const RlmeshEnvVtable,
-    config: *const RlmeshEnvConfig,
+    vtable: *const RLMeshEnvVtable,
+    config: *const RLMeshEnvConfig,
     user_data: *const *mut c_void,
     num_lanes: usize,
-    out: *mut *mut RlmeshEnv,
-) -> RlmeshStatus {
+    out: *mut *mut RLMeshEnv,
+) -> RLMeshStatus {
     guard(|| {
         if num_lanes == 0 {
             return Err(CapiError::invalid_arg(
@@ -668,10 +668,10 @@ pub unsafe extern "C" fn rlmesh_env_new_lanes(
 /// # Safety
 /// As `rlmesh_env_new_lanes`, with one lane per `user_data` entry.
 unsafe fn new_env(
-    vtable: *const RlmeshEnvVtable,
-    config: *const RlmeshEnvConfig,
+    vtable: *const RLMeshEnvVtable,
+    config: *const RLMeshEnvConfig,
     user_data: &[*mut c_void],
-    out: *mut *mut RlmeshEnv,
+    out: *mut *mut RLMeshEnv,
 ) -> Result<(), CapiError> {
     if vtable.is_null() {
         return Err(CapiError::invalid_arg("null vtable"));
@@ -709,7 +709,7 @@ unsafe fn new_env(
             foreground: foreground.as_ref().map(|queue| queue.tx.clone()),
         })
         .collect();
-    *out = Box::into_raw(Box::new(RlmeshEnv {
+    *out = Box::into_raw(Box::new(RLMeshEnv {
         runtime,
         env: Mutex::new(Some(envs)),
         bound: Mutex::new(None),
@@ -731,11 +731,11 @@ unsafe fn new_env(
 /// or valid; `out_address` NULL or writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_env_bind(
-    env: *mut RlmeshEnv,
+    env: *mut RLMeshEnv,
     bind_address: *const c_char,
-    options: *const RlmeshServeOptions,
-    out_address: *mut RlmeshBytes,
-) -> RlmeshStatus {
+    options: *const RLMeshServeOptions,
+    out_address: *mut RLMeshBytes,
+) -> RLMeshStatus {
     guard(|| {
         let handle = unsafe { env.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null env"))?;
         let address = cstr_to_str(bind_address)?;
@@ -757,7 +757,7 @@ pub unsafe extern "C" fn rlmesh_env_bind(
             .map_err(CapiError::from)?;
         if !out_address.is_null() {
             let address = bound.local_addr().to_string();
-            unsafe { *out_address = RlmeshBytes::from_vec(address.into_bytes()) };
+            unsafe { *out_address = RLMeshBytes::from_vec(address.into_bytes()) };
         }
         *lock(&handle.bound) = Some(bound);
         Ok(())
@@ -773,7 +773,7 @@ pub unsafe extern "C" fn rlmesh_env_bind(
 /// # Safety
 /// `env` must be a live handle.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_env_serve(env: *mut RlmeshEnv) -> RlmeshStatus {
+pub unsafe extern "C" fn rlmesh_env_serve(env: *mut RLMeshEnv) -> RLMeshStatus {
     guard(|| {
         let handle = unsafe { env.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null env"))?;
         let bound = lock(&handle.bound)
@@ -805,7 +805,7 @@ pub unsafe extern "C" fn rlmesh_env_serve(env: *mut RlmeshEnv) -> RlmeshStatus {
 /// they arrive, until the server has stopped (its close hook included). A job
 /// that panics cancels the server rather than wedging it.
 fn serve_foreground(
-    handle: &RlmeshEnv,
+    handle: &RLMeshEnv,
     serve: impl Future<Output = rlmesh::Result<()>> + Send,
     queue: ForegroundQueue,
 ) -> rlmesh::Result<()> {
@@ -842,7 +842,7 @@ fn serve_foreground(
 /// # Safety
 /// `env` must be NULL or a live handle not being freed concurrently.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_env_cancel(env: *mut RlmeshEnv) {
+pub unsafe extern "C" fn rlmesh_env_cancel(env: *mut RLMeshEnv) {
     guard_value((), || {
         if let Some(handle) = unsafe { env.as_ref() } {
             handle.cancel.cancel();
@@ -856,7 +856,7 @@ pub unsafe extern "C" fn rlmesh_env_cancel(env: *mut RlmeshEnv) {
 /// # Safety
 /// `env` must be NULL or a handle this thread owns and has not freed.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_env_free(env: *mut RlmeshEnv) {
+pub unsafe extern "C" fn rlmesh_env_free(env: *mut RLMeshEnv) {
     guard_value((), || {
         if !env.is_null() {
             drop(unsafe { Box::from_raw(env) });
@@ -881,15 +881,15 @@ mod tests {
     use super::*;
     use crate::model::rlmesh_callback_set_error;
     use crate::spaces::{rlmesh_space_box, rlmesh_space_dict, rlmesh_space_free};
-    use crate::value::dtype::RlmeshDType;
+    use crate::value::dtype::RLMeshDType;
     use crate::value::handle::into_handle;
 
-    const F32: RlmeshDType = RlmeshDType {
+    const F32: RLMeshDType = RLMeshDType {
         code: 2,
         bits: 32,
         lanes: 1,
     };
-    const U8: RlmeshDType = RlmeshDType {
+    const U8: RLMeshDType = RLMeshDType {
         code: 1,
         bits: 8,
         lanes: 1,
@@ -919,7 +919,7 @@ mod tests {
         }
     }
 
-    fn eef(value: f32) -> *mut RlmeshValue {
+    fn eef(value: f32) -> *mut RLMeshValue {
         let tensor = Tensor::from_vec(value.to_le_bytes().repeat(3), vec![3], DType::Float32)
             .expect("tensor");
         into_handle(SpaceValue::Dict(
@@ -936,8 +936,8 @@ mod tests {
 
     unsafe extern "C" fn reset(
         user_data: *mut c_void,
-        args: *const RlmeshResetArgs,
-        out: *mut RlmeshResetResult,
+        args: *const RLMeshResetArgs,
+        out: *mut RLMeshResetResult,
     ) -> c_int {
         let probe = unsafe { &*user_data.cast::<Probe>() };
         let args = unsafe { &*args };
@@ -952,14 +952,14 @@ mod tests {
 
     unsafe extern "C" fn step(
         user_data: *mut c_void,
-        action: *const RlmeshValue,
-        out: *mut RlmeshStepResult,
+        action: *const RLMeshValue,
+        out: *mut RLMeshStepResult,
     ) -> c_int {
         let probe = unsafe { &*user_data.cast::<Probe>() };
         probe.record_thread();
-        let mut tensor = std::mem::MaybeUninit::<crate::value::tensor::RlmeshTensor>::zeroed();
+        let mut tensor = std::mem::MaybeUninit::<crate::value::tensor::RLMeshTensor>::zeroed();
         if unsafe { crate::value::handle::rlmesh_value_as_tensor(action, tensor.as_mut_ptr()) }
-            != RlmeshStatus::Ok
+            != RLMeshStatus::Ok
         {
             return 1;
         }
@@ -987,7 +987,7 @@ mod tests {
         0
     }
 
-    unsafe extern "C" fn render(user_data: *mut c_void, out: *mut *mut RlmeshValue) -> c_int {
+    unsafe extern "C" fn render(user_data: *mut c_void, out: *mut *mut RLMeshValue) -> c_int {
         if !user_data.is_null() {
             unsafe { &*user_data.cast::<Probe>() }.record_thread();
         }
@@ -1003,9 +1003,9 @@ mod tests {
         probe.closes.fetch_add(1, Ordering::SeqCst);
     }
 
-    fn vtable() -> RlmeshEnvVtable {
-        RlmeshEnvVtable {
-            struct_size: std::mem::size_of::<RlmeshEnvVtable>(),
+    fn vtable() -> RLMeshEnvVtable {
+        RLMeshEnvVtable {
+            struct_size: std::mem::size_of::<RLMeshEnvVtable>(),
             reset: Some(reset),
             step: Some(step),
             render: Some(render),
@@ -1014,7 +1014,7 @@ mod tests {
     }
 
     /// Owned obs (Dict{eef_pos: f32[3]}) and action (f32[1] in [-1, 1]) spaces.
-    fn spaces() -> (*mut RlmeshSpaceSpec, *mut RlmeshSpaceSpec) {
+    fn spaces() -> (*mut RLMeshSpaceSpec, *mut RLMeshSpaceSpec) {
         let shape = [3i64];
         let eef =
             unsafe { rlmesh_space_box(F32, shape.as_ptr(), 1, f64::NEG_INFINITY, f64::INFINITY) };
@@ -1029,7 +1029,7 @@ mod tests {
         })
     }
 
-    fn new_env(tags: Option<&str>, probe: &Probe) -> Result<*mut RlmeshEnv, String> {
+    fn new_env(tags: Option<&str>, probe: &Probe) -> Result<*mut RLMeshEnv, String> {
         create_env(tags, &[probe], false)
     }
 
@@ -1039,15 +1039,15 @@ mod tests {
         tags: Option<&str>,
         probes: &[&Probe],
         foreground: bool,
-    ) -> Result<*mut RlmeshEnv, String> {
+    ) -> Result<*mut RLMeshEnv, String> {
         let (obs, act) = spaces();
         let id = CString::new("CapiEnv-test").unwrap();
         let tags = tags.map(|tags| CString::new(tags).unwrap());
         let trial = CString::new("trial_index").unwrap();
         let options = [trial.as_ptr()];
         let mode = CString::new("rgb_array").unwrap();
-        let config = RlmeshEnvConfig {
-            struct_size: std::mem::size_of::<RlmeshEnvConfig>(),
+        let config = RLMeshEnvConfig {
+            struct_size: std::mem::size_of::<RLMeshEnvConfig>(),
             id: id.as_ptr(),
             observation_space: obs,
             action_space: act,
@@ -1080,24 +1080,24 @@ mod tests {
             rlmesh_space_free(obs);
             rlmesh_space_free(act);
         }
-        if status == RlmeshStatus::Ok {
+        if status == RLMeshStatus::Ok {
             Ok(env)
         } else {
             Err(last_error_message())
         }
     }
 
-    fn bind(env: *mut RlmeshEnv) -> String {
+    fn bind(env: *mut RLMeshEnv) -> String {
         let address = CString::new("127.0.0.1:0").unwrap();
-        let mut out = RlmeshBytes::from_vec(Vec::new());
+        let mut out = RLMeshBytes::from_vec(Vec::new());
         let status = unsafe { rlmesh_env_bind(env, address.as_ptr(), std::ptr::null(), &mut out) };
-        assert_eq!(status, RlmeshStatus::Ok, "{}", last_error_message());
+        assert_eq!(status, RLMeshStatus::Ok, "{}", last_error_message());
         String::from_utf8(unsafe { out.into_vec() }).expect("utf-8 address")
     }
 
     /// The env pointer, movable to the serve thread (the handle is Sync by contract:
     /// serve and cancel may overlap).
-    struct SendEnv(*mut RlmeshEnv);
+    struct SendEnv(*mut RLMeshEnv);
     unsafe impl Send for SendEnv {}
 
     #[test]
@@ -1165,7 +1165,7 @@ mod tests {
 
         unsafe { rlmesh_env_cancel(env) };
         let status = server.join().expect("serve thread");
-        assert_eq!(status, RlmeshStatus::Ok, "{}", last_error_message());
+        assert_eq!(status, RLMeshStatus::Ok, "{}", last_error_message());
         assert_eq!(probe.closes.load(Ordering::SeqCst), 1, "close runs once");
         assert_eq!(*probe.resets.lock().unwrap(), vec![(Some(11), Some(4))]);
         assert_eq!(*probe.actions.lock().unwrap(), vec![0.25]);
@@ -1239,7 +1239,7 @@ mod tests {
                 .expect("step on a new session");
         });
         unsafe { rlmesh_env_cancel(env) };
-        assert_eq!(server.join().unwrap(), RlmeshStatus::Ok);
+        assert_eq!(server.join().unwrap(), RLMeshStatus::Ok);
         unsafe { rlmesh_env_free(env) };
     }
 
@@ -1275,7 +1275,7 @@ mod tests {
         });
         unsafe { rlmesh_env_cancel(env) };
         let (serve_thread, status) = server.join().expect("serve thread");
-        assert_eq!(status, RlmeshStatus::Ok, "{}", last_error_message());
+        assert_eq!(status, RLMeshStatus::Ok, "{}", last_error_message());
         assert_eq!(probe.closes.load(Ordering::SeqCst), 1, "close runs once");
         let threads = probe.threads.lock().unwrap().clone();
         // reset, step, render, close: all on the thread that called serve.
@@ -1317,7 +1317,7 @@ mod tests {
             assert_eq!(step.rewards, vec![0.5, 0.5]);
         });
         unsafe { rlmesh_env_cancel(env) };
-        assert_eq!(server.join().unwrap(), RlmeshStatus::Ok);
+        assert_eq!(server.join().unwrap(), RLMeshStatus::Ok);
         // Each lane saw its own seed and action through its own user_data.
         assert_eq!(*first.resets.lock().unwrap(), vec![(Some(1), None)]);
         assert_eq!(*second.resets.lock().unwrap(), vec![(Some(2), None)]);
@@ -1371,7 +1371,7 @@ mod tests {
         assert_eq!(*probe.actions.lock().unwrap(), vec![0.5]);
         assert_eq!(probe.resets.lock().unwrap().len(), 1, "no second reset");
         unsafe { rlmesh_env_cancel(env) };
-        assert_eq!(server.join().unwrap(), RlmeshStatus::Ok);
+        assert_eq!(server.join().unwrap(), RLMeshStatus::Ok);
         unsafe { rlmesh_env_free(env) };
     }
 
@@ -1403,8 +1403,8 @@ mod tests {
         let mut table = vtable();
         table.step = None;
         let (obs, act) = spaces();
-        let config = RlmeshEnvConfig {
-            struct_size: std::mem::size_of::<RlmeshEnvConfig>(),
+        let config = RLMeshEnvConfig {
+            struct_size: std::mem::size_of::<RLMeshEnvConfig>(),
             id: std::ptr::null(),
             observation_space: obs,
             action_space: act,
@@ -1417,7 +1417,7 @@ mod tests {
         };
         let mut env = std::ptr::null_mut();
         let status = unsafe { rlmesh_env_new(&table, &config, std::ptr::null_mut(), &mut env) };
-        assert_eq!(status, RlmeshStatus::InvalidArgument);
+        assert_eq!(status, RLMeshStatus::InvalidArgument);
         assert!(env.is_null());
         unsafe {
             rlmesh_space_free(obs);
@@ -1442,7 +1442,7 @@ mod tests {
         let (mut low, mut high) = (0.0, 0.0);
         let status =
             unsafe { crate::spaces::rlmesh_space_box_bounds(image, 5, &mut low, &mut high) };
-        assert_eq!(status, RlmeshStatus::Ok);
+        assert_eq!(status, RLMeshStatus::Ok);
         assert_eq!((low, high), (0.0, 255.0));
         unsafe { rlmesh_space_free(image) };
         // An integer dtype has no infinite bound.

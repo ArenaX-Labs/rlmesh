@@ -13,7 +13,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 /// Integer values are stable (ABI).
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum RlmeshStatus {
+pub enum RLMeshStatus {
     Ok = 0,
     InvalidArgument = 1,
     InvalidValue = 2,
@@ -27,13 +27,13 @@ pub enum RlmeshStatus {
 }
 
 pub(crate) struct CapiError {
-    pub status: RlmeshStatus,
+    pub status: RLMeshStatus,
     pub message: String,
     pub recoverable: bool,
 }
 
 impl CapiError {
-    pub(crate) fn new(status: RlmeshStatus, message: impl Into<String>) -> Self {
+    pub(crate) fn new(status: RLMeshStatus, message: impl Into<String>) -> Self {
         Self {
             status,
             message: message.into(),
@@ -41,13 +41,13 @@ impl CapiError {
         }
     }
     pub(crate) fn invalid_arg(message: impl Into<String>) -> Self {
-        Self::new(RlmeshStatus::InvalidArgument, message)
+        Self::new(RLMeshStatus::InvalidArgument, message)
     }
     pub(crate) fn invalid_value(message: impl Into<String>) -> Self {
-        Self::new(RlmeshStatus::InvalidValue, message)
+        Self::new(RLMeshStatus::InvalidValue, message)
     }
     pub(crate) fn internal(message: impl Into<String>) -> Self {
-        Self::new(RlmeshStatus::Internal, message)
+        Self::new(RLMeshStatus::Internal, message)
     }
 }
 
@@ -55,12 +55,12 @@ impl From<rlmesh::Error> for CapiError {
     fn from(err: rlmesh::Error) -> Self {
         let recoverable = err.is_recoverable();
         let status = match &err {
-            rlmesh::Error::Address(_) => RlmeshStatus::InvalidArgument,
-            rlmesh::Error::Connection(_) | rlmesh::Error::Server(_) => RlmeshStatus::Transport,
-            rlmesh::Error::Timeout(_) => RlmeshStatus::Timeout,
-            rlmesh::Error::Environment(_) => RlmeshStatus::Environment,
-            rlmesh::Error::Model(_) => RlmeshStatus::Model,
-            _ => RlmeshStatus::Internal,
+            rlmesh::Error::Address(_) => RLMeshStatus::InvalidArgument,
+            rlmesh::Error::Connection(_) | rlmesh::Error::Server(_) => RLMeshStatus::Transport,
+            rlmesh::Error::Timeout(_) => RLMeshStatus::Timeout,
+            rlmesh::Error::Environment(_) => RLMeshStatus::Environment,
+            rlmesh::Error::Model(_) => RLMeshStatus::Model,
+            _ => RLMeshStatus::Internal,
         };
         Self {
             status,
@@ -71,10 +71,10 @@ impl From<rlmesh::Error> for CapiError {
 }
 
 thread_local! {
-    static LAST_ERROR: RefCell<Option<(CString, bool, RlmeshStatus)>> = const { RefCell::new(None) };
+    static LAST_ERROR: RefCell<Option<(CString, bool, RLMeshStatus)>> = const { RefCell::new(None) };
 }
 
-pub(crate) fn store_last_error(message: &str, recoverable: bool, status: RlmeshStatus) {
+pub(crate) fn store_last_error(message: &str, recoverable: bool, status: RLMeshStatus) {
     let safe: Vec<u8> = message.bytes().filter(|&b| b != 0).collect();
     let cstr = CString::new(safe).unwrap_or_default();
     LAST_ERROR.with(|slot| *slot.borrow_mut() = Some((cstr, recoverable, status)));
@@ -110,19 +110,19 @@ fn panic_message(payload: Box<dyn Any + Send>) -> String {
     }
 }
 
-pub(crate) fn guard<F>(f: F) -> RlmeshStatus
+pub(crate) fn guard<F>(f: F) -> RLMeshStatus
 where
     F: FnOnce() -> Result<(), CapiError>,
 {
     match catch_unwind(AssertUnwindSafe(f)) {
-        Ok(Ok(())) => RlmeshStatus::Ok,
+        Ok(Ok(())) => RLMeshStatus::Ok,
         Ok(Err(err)) => {
             store_last_error(&err.message, err.recoverable, err.status);
             err.status
         }
         Err(payload) => {
-            store_last_error(&panic_message(payload), false, RlmeshStatus::Panic);
-            RlmeshStatus::Panic
+            store_last_error(&panic_message(payload), false, RLMeshStatus::Panic);
+            RLMeshStatus::Panic
         }
     }
 }
@@ -138,7 +138,7 @@ where
             std::ptr::null_mut()
         }
         Err(payload) => {
-            store_last_error(&panic_message(payload), false, RlmeshStatus::Panic);
+            store_last_error(&panic_message(payload), false, RLMeshStatus::Panic);
             std::ptr::null_mut()
         }
     }
@@ -153,7 +153,7 @@ where
     match catch_unwind(AssertUnwindSafe(f)) {
         Ok(value) => value,
         Err(payload) => {
-            store_last_error(&panic_message(payload), false, RlmeshStatus::Panic);
+            store_last_error(&panic_message(payload), false, RLMeshStatus::Panic);
             default
         }
     }
@@ -174,11 +174,11 @@ pub extern "C" fn rlmesh_last_error_message() -> *const c_char {
 /// the pointer-returning exports have (they report failure as NULL).
 /// `RLMESH_OK` when no error is recorded.
 #[unsafe(no_mangle)]
-pub extern "C" fn rlmesh_last_error_status() -> RlmeshStatus {
+pub extern "C" fn rlmesh_last_error_status() -> RLMeshStatus {
     LAST_ERROR.with(|slot| {
         slot.borrow()
             .as_ref()
-            .map_or(RlmeshStatus::Ok, |&(_, _, status)| status)
+            .map_or(RLMeshStatus::Ok, |&(_, _, status)| status)
     })
 }
 

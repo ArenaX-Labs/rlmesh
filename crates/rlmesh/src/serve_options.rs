@@ -68,7 +68,7 @@ pub struct ServeOptions {
     /// exact moving build instead. Either must admit an edition this build offers
     /// ([`rlmesh_proto::parse_declared_edition`]); the surfaces that take this
     /// from a user — the Python `ServeOptions`, `--workflow-edition`, the C API's
-    /// `RlmeshServeOptions` — refuse any other value where it is typed, while a
+    /// `RLMeshServeOptions` — refuse any other value where it is typed, while a
     /// value set directly on this bare `pub` struct is only trimmed here and is
     /// refused at negotiation instead, by the refusal naming every tier's WANT
     /// and CAN.

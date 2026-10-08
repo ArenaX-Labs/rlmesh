@@ -11,10 +11,10 @@
 #include <string.h>
 
 /* A zero action shaped like the route's action space (Box or Discrete). */
-static RlmeshValue* zero_action(const RlmeshSpaceSpec* action) {
+static RLMeshValue* zero_action(const RLMeshSpaceSpec* action) {
   switch (rlmesh_space_type(action)) {
     case RLMESH_VALUE_BOX: {
-      RlmeshDType dtype = rlmesh_space_dtype(action);
+      RLMeshDType dtype = rlmesh_space_dtype(action);
       size_t ndim = rlmesh_space_ndim(action);
       int64_t shape[16];
       if (ndim > 16) {
@@ -30,13 +30,13 @@ static RlmeshValue* zero_action(const RlmeshSpaceSpec* action) {
       }
       size_t nbytes = numel * rlmesh_dtype_size(dtype);
       uint8_t* zeros = (uint8_t*)calloc(nbytes ? nbytes : 1, 1);
-      RlmeshTensor tensor = {0};
+      RLMeshTensor tensor = {0};
       tensor.data = zeros;
       tensor.ndim = (int32_t)ndim;
       tensor.shape = shape;
       tensor.dtype = dtype;
       tensor.device_type = RLMESH_DEVICE_CPU;
-      RlmeshValue* value = rlmesh_value_box(&tensor); /* copies */
+      RLMeshValue* value = rlmesh_value_box(&tensor); /* copies */
       free(zeros);
       return value;
     }
@@ -48,9 +48,9 @@ static RlmeshValue* zero_action(const RlmeshSpaceSpec* action) {
   }
 }
 
-static int predict(void* user_data, const RlmeshObservation* obs, RlmeshValue** out_actions) {
+static int predict(void* user_data, const RLMeshObservation* obs, RLMeshValue** out_actions) {
   (void)user_data;
-  const RlmeshSpaceSpec* action =
+  const RLMeshSpaceSpec* action =
       obs->contract ? rlmesh_contract_action_space(obs->contract) : NULL;
   if (action == NULL) {
     rlmesh_callback_set_error("no action space on contract", false);
@@ -59,7 +59,7 @@ static int predict(void* user_data, const RlmeshObservation* obs, RlmeshValue** 
   for (size_t i = 0; i < obs->num_envs; ++i) {
     /* Each row names its episode and how many times this episode has been
      * predicted; a seeded episode also carries a per-predict sampling seed. */
-    const RlmeshEpisode* episode = &obs->episodes[i];
+    const RLMeshEpisode* episode = &obs->episodes[i];
     printf("episode %s: predict %llu", episode->id, (unsigned long long)episode->predict_index);
     if (episode->seeded) {
       printf(" seed %lld", (long long)episode->predict_seed);
@@ -92,28 +92,28 @@ static void on_close(void* user_data) {
 
 int main(int argc, char** argv) {
   const char* address = argc > 1 ? argv[1] : "tcp://127.0.0.1:5555";
-  RlmeshRunOptions options = {0};
+  RLMeshRunOptions options = {0};
   options.seeded = true; /* deterministic env resets */
   options.base_seed = 7;
   if (argc > 2) {
     options.max_episodes = strtoull(argv[2], NULL, 10);
   }
 
-  RlmeshModelVtable vtable = {0};
+  RLMeshModelVtable vtable = {0};
   vtable.struct_size = sizeof(vtable);
   vtable.predict = predict;
   vtable.on_episode_end = on_episode_end;
   vtable.on_close = on_close;
 
-  RlmeshModel* model = NULL;
+  RLMeshModel* model = NULL;
   if (rlmesh_model_new(&vtable, NULL, &model) != RLMESH_OK) {
     fprintf(stderr, "failed to create model: %s\n", rlmesh_last_error_message());
     return 1;
   }
 
   printf("connecting to %s ...\n", address);
-  RlmeshRunReport report = {0};
-  RlmeshStatus status = rlmesh_model_run_local(model, address, &options, &report);
+  RLMeshRunReport report = {0};
+  RLMeshStatus status = rlmesh_model_run_local(model, address, &options, &report);
   if (status != RLMESH_OK) {
     /* Read the message BEFORE the next capi call on this thread -- including
      * rlmesh_model_free -- which invalidates it. */

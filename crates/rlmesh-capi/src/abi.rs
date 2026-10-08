@@ -34,9 +34,9 @@ pub(crate) fn ignore_sigpipe() {
 /// ONLY on a binary-incompatible change: a `repr(C)` layout change or
 /// enum-discriminant reorder, an `extern "C"` signature retype, or removing a
 /// symbol. Appending a field to a `struct_size`-guarded vtable (the model.rs
-/// pattern) is NOT a break and must not bump this — but `RlmeshServeOptions`
+/// pattern) is NOT a break and must not bump this — but `RLMeshServeOptions`
 /// carries no `struct_size`, so growing IT is a layout change and does bump this
-/// (generation 4 added `RlmeshServeOptions.workflow_edition`). A consumer gates
+/// (generation 4 added `RLMeshServeOptions.workflow_edition`). A consumer gates
 /// on it via the header's
 /// `RLMESH_ABI_VERSION` macro + `rlmesh_abi_check()`; the versioned SONAME
 /// (`librlmesh_capi.so.N`) makes the loader enforce the same generation.

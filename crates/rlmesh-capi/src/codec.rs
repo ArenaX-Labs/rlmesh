@@ -1,11 +1,11 @@
-//! `RlmeshBytes` — an owned byte buffer handed across the ABI (JSON payloads
+//! `RLMeshBytes` — an owned byte buffer handed across the ABI (JSON payloads
 //! from the adapter path). The observation/action wire codec never crosses the
 //! ABI: the model path hands C decoded values and takes typed values back.
 #![allow(unsafe_code)] // FFI: owned-buffer transfer.
 
 /// An owned byte buffer produced by the capi. Free with `rlmesh_bytes_free`.
 #[repr(C)]
-pub struct RlmeshBytes {
+pub struct RLMeshBytes {
     /// Buffer start, or NULL when empty.
     pub data: *mut u8,
     pub len: usize,
@@ -13,7 +13,7 @@ pub struct RlmeshBytes {
     pub cap: usize,
 }
 
-impl RlmeshBytes {
+impl RLMeshBytes {
     pub(crate) fn from_vec(mut bytes: Vec<u8>) -> Self {
         // An empty Vec's as_mut_ptr() is a dangling non-null sentinel; report the
         // documented NULL/empty form so a consumer can branch on `data` not `len`.
@@ -51,6 +51,6 @@ impl RlmeshBytes {
 /// # Safety
 /// `bytes` must be a buffer this thread owns and has not freed.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_bytes_free(bytes: RlmeshBytes) {
+pub unsafe extern "C" fn rlmesh_bytes_free(bytes: RLMeshBytes) {
     drop(unsafe { bytes.into_vec() });
 }

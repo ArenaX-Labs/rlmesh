@@ -4,7 +4,7 @@
 
 Tags carry only _meaning_. All _structure_ (shapes, dtypes, bounds) stays in the spaces, and the tags are checked against them.
 
-This page is the grammar for authors who write the JSON by hand: C and C++ envs (`RlmeshEnvConfig.adapter_tags_json`, `rlmesh::EnvConfig::adapter_tags_json`) and anything else that emits it directly. Python authors normally build it with `rlmesh.adapters.tag(...)`, which produces the same document. The source of truth is the Rust codec in `rlmesh-adapters` (`spec/env_tags.rs`, `spec/action.rs`, `spec/strict.rs`, `join.rs`, `roles/registry.rs`); where this page and the code disagree, the code wins.
+This page is the grammar for authors who write the JSON by hand: C and C++ envs (`RLMeshEnvConfig.adapter_tags_json`, `rlmesh::EnvConfig::adapter_tags_json`) and anything else that emits it directly. Python authors normally build it with `rlmesh.adapters.tag(...)`, which produces the same document. The source of truth is the Rust codec in `rlmesh-adapters` (`spec/env_tags.rs`, `spec/action.rs`, `spec/strict.rs`, `join.rs`, `roles/registry.rs`); where this page and the code disagree, the code wins.
 
 On the wire the tags travel in the env contract metadata under the key `rlmesh.adapters.v1.env_tags`. The v1 format grows only additively; a breaking change ships under a new key.
 

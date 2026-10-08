@@ -42,6 +42,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ### Changed
 
+- The C and C++ API's type names spell the project name `RLMesh` (`RLMeshStatus`, `RLMeshValue`, `RLMeshEpisode`, ...) instead of `Rlmesh`, matching the Python `RLMeshError`. This breaks source but not ABI: function names (`rlmesh_*`), macros (`RLMESH_*`), the `rlmesh::` C++ namespace, struct layouts, and the ABI version are unchanged.
+
 - `rlmesh check` warns on an env without `tags` instead of failing it: an untagged env runs against spec-less models; tags are what let the platform adapt a spec'd model to it.
 
 - `RemoteEnv` and `RemoteVectorEnv` log a warning, once per client, when an env's own `info` key shadows a runtime-reserved one (`episode_ids`, `completed_episodes`). The env's value is still kept.

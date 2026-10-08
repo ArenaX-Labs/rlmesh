@@ -9,7 +9,7 @@
 //! Every episode takes two steps, so the model's second predict under one
 //! episode id carries `predict_index == 1`; for each seed the env was reset
 //! with, the harness also asserts the smoke printed that predict's derived seed
-//! (`predict 1 seed <rlmesh::predict_seed(seed, 1)>`) — the `RlmeshEpisode`
+//! (`predict 1 seed <rlmesh::predict_seed(seed, 1)>`) — the `RLMeshEpisode`
 //! fields really crossed the ABI at the offsets the header declares.
 #![allow(clippy::print_stderr)]
 

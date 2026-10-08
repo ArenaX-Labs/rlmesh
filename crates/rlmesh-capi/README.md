@@ -73,16 +73,16 @@ And in C:
 ```c
 #include <rlmesh.h>
 
-static int predict(void* ud, const RlmeshObservation* obs, RlmeshValue** out) {
+static int predict(void* ud, const RLMeshObservation* obs, RLMeshValue** out) {
   for (size_t i = 0; i < obs->num_envs; ++i) out[i] = rlmesh_value_discrete(0);
   return RLMESH_OK;
 }
 
 int main(void) {
-  RlmeshModelVtable vt = {.struct_size = sizeof vt, .predict = predict};
-  RlmeshModel* model;
+  RLMeshModelVtable vt = {.struct_size = sizeof vt, .predict = predict};
+  RLMeshModel* model;
   rlmesh_model_new(&vt, NULL, &model);
-  RlmeshStatus rc = rlmesh_model_run_local(model, "tcp://127.0.0.1:5555", NULL, NULL);
+  RLMeshStatus rc = rlmesh_model_run_local(model, "tcp://127.0.0.1:5555", NULL, NULL);
   rlmesh_model_free(model);
   return rc == RLMESH_OK ? 0 : 1;
 }
@@ -91,14 +91,14 @@ int main(void) {
 ## Model contract
 
 `predict` receives `num_envs` decoded observation values (one per sub-env) plus
-routing metadata (session, env, request ids; one `RlmeshEpisode` per row). It
+routing metadata (session, env, request ids; one `RLMeshEpisode` per row). It
 writes one owned action value per row into `out_actions` and returns `RLMESH_OK`,
 or returns nonzero after `rlmesh_callback_set_error(...)` to decline. The runtime
 validates each action against the route's action space before it reaches the
 wire: a structural mismatch fails the step, a Box-bounds overshoot is left to the
 environment's own policy.
 
-Each `RlmeshEpisode` row carries the episode's `id` and reset `seed` (when
+Each `RLMeshEpisode` row carries the episode's `id` and reset `seed` (when
 `seeded`), plus the same per-predict context the Python SDK stamps on a predict:
 `predict_index`, the re-plan ordinal within the episode (0 on the first predict
 under that id, then +1 per predict), and `predict_seed`, a reproducible mix of
@@ -112,10 +112,10 @@ episode (`episode_id == NULL` means every episode of that env), and `on_close`
 once at shutdown. Callbacks run on a worker thread; `user_data` must be safe to
 use from a thread other than the one that created it, and a callback must not
 re-enter its own model handle. `rlmesh_model_run_local` fills an optional
-`RlmeshRunReport`; `rlmesh_model_cancel` stops a blocking run/serve from another
+`RLMeshRunReport`; `rlmesh_model_cancel` stops a blocking run/serve from another
 thread.
 
-`RlmeshRunOptions` bounds and seeds a run: `max_episodes`, `base_seed` (when
+`RLMeshRunOptions` bounds and seeds a run: `max_episodes`, `base_seed` (when
 `seeded`) or explicit `episode_seeds`, the per-episode step/time caps,
 `execution_horizon`, and `trial_index_base` (when `trial_indexed`) — the first
 trial ordinal the episodes walk, delivered as `reset(options={"trial_index": k})`
@@ -124,7 +124,7 @@ to an environment that declares that reset option.
 ## Environment contract
 
 `rlmesh_env_new(vtable, config, user_data, &env)` takes the callbacks and an
-`RlmeshEnvConfig`: the observation and action spaces (built with the
+`RLMeshEnvConfig`: the observation and action spaces (built with the
 `rlmesh_space_*` builders), an id, the adapter `EnvTags` as JSON, the reset
 options the env understands (`trial_index`), a render mode, and extra metadata.
 The tags are validated against the spaces right there, the same publish-time
@@ -183,7 +183,7 @@ runs on its own thread, concurrently with the others, so each `user_data` must
 be its own simulation. `num_lanes == 0` is rejected.
 
 A simulation bound to the thread that created it (a GL or Vulkan context, Isaac
-Sim) sets `RlmeshEnvConfig.foreground = true`: `rlmesh_env_serve` then runs the
+Sim) sets `RLMeshEnvConfig.foreground = true`: `rlmesh_env_serve` then runs the
 server on a helper thread and every callback, `close` included, on the thread
 that called it, until the server stops. `rlmesh_env_cancel` works as before,
 and PNG encoding stays off that thread. A foreground env serves exactly one
@@ -214,7 +214,7 @@ snapshots it. Nothing throws — `value()` / `unwrap()` abort instead, and the
 header compiles under `-fno-exceptions`. `RLMESH_TRY(expr)` propagates an error
 out of a `Result`-returning function.
 
-`run_local` takes a `RunOptions` (the C `RlmeshRunOptions` field for field, with
+`run_local` takes a `RunOptions` (the C `RLMeshRunOptions` field for field, with
 `episode_seeds` as a `std::vector`) and returns a `RunReport`; `serve` takes a
 `ServeOptions` (owned token, `std::chrono` timeouts). `Model::cancel()` is the one member callable while
 `run_local` / `serve` blocks — including from another thread; a cancelled

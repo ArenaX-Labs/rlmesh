@@ -17,10 +17,10 @@ use rlmesh_adapters::v1::{
 use rlmesh_spaces::{EnvContract, SpaceSpec};
 use serde_json::{Value, json};
 
-use crate::abi::status::{CapiError, RlmeshStatus, guard};
+use crate::abi::status::{CapiError, RLMeshStatus, guard};
 use crate::adapters::meta_to_json;
-use crate::codec::RlmeshBytes;
-use crate::env::RlmeshEnv;
+use crate::codec::RLMeshBytes;
+use crate::env::RLMeshEnv;
 
 /// Component name the envelope's `runtime` reports for a C ABI host.
 const COMPONENT: &str = "rlmesh-capi";
@@ -110,13 +110,13 @@ pub(crate) fn envelope(
 /// `env` must be a live handle; `out` writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_env_describe_json(
-    env: *const RlmeshEnv,
-    out: *mut RlmeshBytes,
-) -> RlmeshStatus {
+    env: *const RLMeshEnv,
+    out: *mut RLMeshBytes,
+) -> RLMeshStatus {
     guard(|| {
         let handle = unsafe { env.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null env"))?;
         let out = unsafe { out.as_mut() }.ok_or_else(|| CapiError::invalid_arg("null out"))?;
-        *out = RlmeshBytes::from_vec(handle.describe().json().into_bytes());
+        *out = RLMeshBytes::from_vec(handle.describe().json().into_bytes());
         Ok(())
     })
 }
@@ -214,24 +214,24 @@ mod tests {
 
     unsafe extern "C" fn reset(
         _user_data: *mut std::ffi::c_void,
-        _args: *const crate::env::RlmeshResetArgs,
-        _out: *mut crate::env::RlmeshResetResult,
+        _args: *const crate::env::RLMeshResetArgs,
+        _out: *mut crate::env::RLMeshResetResult,
     ) -> std::ffi::c_int {
         1
     }
 
     unsafe extern "C" fn step(
         _user_data: *mut std::ffi::c_void,
-        _action: *const crate::value::handle::RlmeshValue,
-        _out: *mut crate::env::RlmeshStepResult,
+        _action: *const crate::value::handle::RLMeshValue,
+        _out: *mut crate::env::RLMeshStepResult,
     ) -> std::ffi::c_int {
         1
     }
 
-    fn describe_json(env: *const RlmeshEnv) -> Value {
-        let mut out = RlmeshBytes::from_vec(Vec::new());
+    fn describe_json(env: *const RLMeshEnv) -> Value {
+        let mut out = RLMeshBytes::from_vec(Vec::new());
         let status = unsafe { rlmesh_env_describe_json(env, &mut out) };
-        assert_eq!(status, RlmeshStatus::Ok);
+        assert_eq!(status, RLMeshStatus::Ok);
         parse(&String::from_utf8(unsafe { out.into_vec() }).expect("utf-8"))
     }
 
@@ -240,13 +240,13 @@ mod tests {
         use std::ffi::CString;
 
         use crate::env::{
-            RlmeshEnvConfig, RlmeshEnvVtable, rlmesh_env_bind, rlmesh_env_free, rlmesh_env_new,
+            RLMeshEnvConfig, RLMeshEnvVtable, rlmesh_env_bind, rlmesh_env_free, rlmesh_env_new,
         };
-        use crate::model::RlmeshServeOptions;
+        use crate::model::RLMeshServeOptions;
         use crate::spaces::{rlmesh_space_box, rlmesh_space_dict, rlmesh_space_free};
-        use crate::value::dtype::RlmeshDType;
+        use crate::value::dtype::RLMeshDType;
 
-        const F32: RlmeshDType = RlmeshDType {
+        const F32: RLMeshDType = RLMeshDType {
             code: 2,
             bits: 32,
             lanes: 1,
@@ -266,8 +266,8 @@ mod tests {
                 "action": {"components": [{"role": "action/gripper", "dim": 1}]}}"#,
         )
         .unwrap();
-        let config = RlmeshEnvConfig {
-            struct_size: std::mem::size_of::<RlmeshEnvConfig>(),
+        let config = RLMeshEnvConfig {
+            struct_size: std::mem::size_of::<RLMeshEnvConfig>(),
             id: id.as_ptr(),
             observation_space: obs,
             action_space: act,
@@ -278,8 +278,8 @@ mod tests {
             metadata_json: std::ptr::null(),
             foreground: false,
         };
-        let vtable = RlmeshEnvVtable {
-            struct_size: std::mem::size_of::<RlmeshEnvVtable>(),
+        let vtable = RLMeshEnvVtable {
+            struct_size: std::mem::size_of::<RLMeshEnvVtable>(),
             reset: Some(reset),
             step: Some(step),
             render: None,
@@ -291,7 +291,7 @@ mod tests {
             rlmesh_space_free(obs);
             rlmesh_space_free(act);
         }
-        assert_eq!(status, RlmeshStatus::Ok);
+        assert_eq!(status, RLMeshStatus::Ok);
 
         let before = describe_json(env);
         assert_eq!(before["kind"], "env");
@@ -311,7 +311,7 @@ mod tests {
         // declares exactly what the server sends.
         let base = rlmesh::CURRENT_WORKFLOW_EDITION.split('-').next().unwrap();
         let edition = CString::new(base).unwrap();
-        let options = RlmeshServeOptions {
+        let options = RLMeshServeOptions {
             token: std::ptr::null(),
             allow_remote_shutdown: false,
             idle_timeout_ms: 0,
@@ -323,7 +323,7 @@ mod tests {
         let address = CString::new("127.0.0.1:0").unwrap();
         let status =
             unsafe { rlmesh_env_bind(env, address.as_ptr(), &options, std::ptr::null_mut()) };
-        assert_eq!(status, RlmeshStatus::Ok);
+        assert_eq!(status, RLMeshStatus::Ok);
         let after = describe_json(env);
         assert_eq!(after["runtime"]["preferred_workflow_edition"], base);
         let peer = rlmesh::peer_info_override().expect("an override is installed");
@@ -335,9 +335,9 @@ mod tests {
         assert_eq!(peer.os_version, "6.1", "other override fields are kept");
         unsafe { rlmesh_env_free(env) };
 
-        let mut out = RlmeshBytes::from_vec(Vec::new());
+        let mut out = RLMeshBytes::from_vec(Vec::new());
         let status = unsafe { rlmesh_env_describe_json(std::ptr::null(), &mut out) };
-        assert_eq!(status, RlmeshStatus::InvalidArgument);
+        assert_eq!(status, RLMeshStatus::InvalidArgument);
     }
 
     #[test]
