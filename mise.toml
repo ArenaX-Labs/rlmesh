@@ -323,7 +323,7 @@ export PYTHONPATH="$(python -c 'import sysconfig; print(sysconfig.get_path("pure
 # plus Python tests when they can be affected. Not a gate; see the script.
 [tasks."test:affected"]
 description = "Run tests for crates changed since origin/main (and their dependents); pass --base REF or --dry-run"
-run = 'mise run dev:heavy -- python scripts/dev/affected.py {{arg(name="args", var=true, default="")}}'
+run = 'mise run dev:heavy -- python scripts/dev/affected.py {{arg(name="args", var=true, required=false)}}'
 
 [tasks."test:python"]
 description = "Run Python unit, integration, and conformance tests plus the authoring-import guard"
