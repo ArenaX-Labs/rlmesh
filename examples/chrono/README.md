@@ -4,7 +4,7 @@
 
 - **Simulation.** Chrono integrates the robot's multibody dynamics at 200 Hz under gravity. Each env step runs 50 ms of it. The action moves the tool target, Chrono's analytic inverse kinematics turns that into joint setpoints, and the motors drive the arm there.
 - **Observation.**
-  - `image`: a 256×256 RGB camera, ray-traced on the CPU, so it works headless and in a container.
+  - `image`: a 256×256 RGB camera, ray-traced on the CPU, so it works headless and in a container. `--renderer vulkan` draws it with Vulkan instead (see [Vulkan camera](#vulkan-camera)).
   - `joint_pos`, `joint_vel`, `joint_torque`: the motors' angles, rates, and Chrono's reaction torques.
   - `eef_pos`, `target_pos`: the tool and target positions.
   - `instruction`: the task text.
@@ -50,6 +50,18 @@ uv run python examples/chrono/run_model.py 127.0.0.1:50051 --view http:9000
 
 Build the env and the Python package from the same checkout with `RLMESH_RELEASE_BUILD=1`, as `demo.sh` does. Otherwise each dev build pins its own per-commit workflow edition, and the handshake refuses the other.
 
+## Vulkan camera
+
+`--renderer vulkan` swaps the CPU ray tracer for an offscreen Vulkan rasterizer that draws the same scene: instanced sphere and cylinder meshes, a shadow map for the ray tracer's shadow rays, and the frame copied back to host memory. It needs no window or display server, and it serves both the `image` observation and `render()` frames with the same shapes and dtype, so models and viewers see no difference. Frames match the ray tracer's to within a fraction of a percent of pixels, at shadow and silhouette edges.
+
+It is opt in at build time: configure with `-DCHRONO_REACH_VULKAN=ON`, which needs the Vulkan headers and loader (`libvulkan.so`) and `glslangValidator` to compile the shaders. `demo.sh` does this with `RENDERER=vulkan`:
+
+```bash
+RENDERER=vulkan CHRONO_DIR=~/opt/chrono EIGEN_DIR=~/opt/eigen VULKAN_DIR=~/opt/vulkan examples/chrono/demo.sh
+```
+
+The renderer picks a discrete GPU, then an integrated one, then a CPU implementation. Force Mesa's lavapipe with `VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json`. The env prints the device it picked (`camera: vulkan (NVIDIA GeForce RTX 3080 Ti, discrete GPU)`), and each step's `info["observe_ms"]` times the camera.
+
 ## No Python at all
 
 `chrono_reach_model` is the same scripted policy written in C++ against `rlmesh.hpp`'s `Model`, so both sides of the wire are native:
@@ -87,10 +99,20 @@ rlmesh check-image chrono-reach:dev
 
 Generate it from the image rather than a local build: the envelope records the machine it ran on, and the platform fails a label whose `os` is not `linux`. Pass the same `--image-size`/`--max-steps` the image serves with, since they change the spaces.
 
+For the Vulkan camera, build with `--build-arg VULKAN=ON` and serve with `--renderer vulkan` (pass it to `--describe` too: the env reports its renderer in its metadata). The image carries the Vulkan loader and lavapipe, so it renders on the CPU anywhere and on the GPU when one is attached:
+
+```bash
+docker build -f examples/chrono/Dockerfile --build-arg VULKAN=ON -t chrono-reach:vulkan .
+docker run --rm --device nvidia.com/gpu=all -p 50051:50051 chrono-reach:vulkan --renderer vulkan
+```
+
 ## Layout
 
 - `src/reach_env.{h,cpp}`: the Chrono scene, the `rlmesh::Environment`, and its spaces and tags.
+- `src/scene.h`: the camera's scene, shared by both renderers.
+- `src/renderer.{h,cpp}`: the renderer interface and `--renderer` backends.
 - `src/raytracer.h`: the CPU camera.
+- `src/vulkan_renderer.cpp`, `shaders/`: the Vulkan camera.
 - `src/main.cpp`: arguments, `rlmesh::EnvServer`, `--describe`, and signal handling.
 - `src/scripted_model.cpp`: the scripted policy as a C++ model.
 - `run_model.py`: the Python model, with its `ModelSpec` and a scripted or random policy.

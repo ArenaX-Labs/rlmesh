@@ -5,9 +5,9 @@
 #include <cmath>
 #include <cstdio>
 #include <sstream>
+#include <stdexcept>
 
 #include "chrono/ChVersion.h"
-#include "raytracer.h"
 
 using chrono::ChCoordsysd;
 using chrono::ChVector3d;
@@ -46,7 +46,7 @@ double ms_since(Clock::time_point start) {
   return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
 }
 
-raytracer::Vec3 rt(const ChVector3d& v) { return {v.x(), v.y(), v.z()}; }
+scene::Vec3 rt(const ChVector3d& v) { return {v.x(), v.y(), v.z()}; }
 
 std::vector<float> to_floats(const ChVectorDynamic<>& v) {
   std::vector<float> out(static_cast<size_t>(v.size()));
@@ -68,7 +68,8 @@ bool finite(const ChVectorDynamic<>& v) {
 
 }  // namespace
 
-IndustrialReach::IndustrialReach(Options options) : options_(options) {}
+IndustrialReach::IndustrialReach(Options options, std::unique_ptr<Renderer> renderer)
+    : options_(std::move(options)), renderer_(std::move(renderer)) {}
 
 void IndustrialReach::build_world() {
   system_ = std::make_unique<chrono::ChSystemNSC>();
@@ -217,8 +218,7 @@ rlmesh::Result<rlmesh::StepOutput> IndustrialReach::step(std::optional<rlmesh::V
 
 rlmesh::Result<std::optional<rlmesh::Value>> IndustrialReach::render() {
   if (!system_) return std::optional<rlmesh::Value>();
-  const int size = options_.render_size;
-  auto frame = rlmesh::Value::box(camera(size), {size, size, 3});
+  auto frame = camera(options_.render_size);
   if (!frame) return frame.error();
   return std::optional<rlmesh::Value>(frame.unwrap());
 }
@@ -230,10 +230,10 @@ void IndustrialReach::close() {
   system_.reset();
 }
 
-std::vector<uint8_t> IndustrialReach::camera(int size) const {
-  raytracer::Scene scene;
-  const raytracer::Vec3 steel(0.93, 0.55, 0.12);  // industrial orange
-  const raytracer::Vec3 joint(0.18, 0.19, 0.22);
+rlmesh::Result<rlmesh::Value> IndustrialReach::camera(int size) const {
+  scene::Scene scene;
+  const scene::Vec3 steel(0.93, 0.55, 0.12);  // industrial orange
+  const scene::Vec3 joint(0.18, 0.19, 0.22);
 
   // The pedestal, then a capsule per link between consecutive joint frames.
   scene.capsules.push_back({{0, 0.0, 0}, {0, 0.03, 0}, 0.11, joint});
@@ -251,18 +251,22 @@ std::vector<uint8_t> IndustrialReach::camera(int size) const {
   scene.spheres.push_back({rt(tcp_position()), 0.022, {0.95, 0.95, 0.95}});
 
   // The target turns green once reached; the tool's recent path trails behind.
-  const raytracer::Vec3 target_color =
-      success_ ? raytracer::Vec3(0.2, 0.85, 0.3) : raytracer::Vec3(0.9, 0.12, 0.12);
+  const scene::Vec3 target_color =
+      success_ ? scene::Vec3(0.2, 0.85, 0.3) : scene::Vec3(0.9, 0.12, 0.12);
   scene.spheres.push_back({rt(target_), 0.03, target_color});
   for (size_t i = 0; i < trail_.size(); ++i) {
     if (i % 2 == 0) scene.spheres.push_back({rt(trail_[i]), 0.006, {0.98, 0.85, 0.2}});
   }
-  return raytracer::render(scene, raytracer::Camera{}, size, size);
+  try {
+    return rlmesh::Value::box(renderer_->render(scene, scene::Camera{}, size, size),
+                              {size, size, 3});
+  } catch (const std::exception& error) {
+    return rlmesh::Error(RLMESH_ERR_ENVIRONMENT, std::string("camera: ") + error.what());
+  }
 }
 
 rlmesh::Result<rlmesh::Value> IndustrialReach::observe() const {
-  const int size = options_.image_size;
-  auto image = rlmesh::Value::box(camera(size), {size, size, 3});
+  auto image = camera(options_.image_size);
   if (!image) return image.error();
   auto joint_pos = rlmesh::Value::box(to_floats(robot_->GetMotorsPos()), {6});
   if (!joint_pos) return joint_pos.error();
@@ -322,8 +326,8 @@ rlmesh::Result<rlmesh::EnvConfig> IndustrialReach::config(const Options& options
   config.render_mode = "rgb_array";
   std::ostringstream metadata;
   metadata << R"({"simulator": "Project Chrono )" << CHRONO_VERSION
-           << R"(", "robot": "IndustrialRobot6dof", "max_episode_steps": )" << options.max_steps
-           << "}";
+           << R"(", "robot": "IndustrialRobot6dof", "renderer": ")" << options.renderer
+           << R"(", "max_episode_steps": )" << options.max_steps << "}";
   config.metadata_json = metadata.str();
   return config;
 }

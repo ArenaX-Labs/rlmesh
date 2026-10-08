@@ -1,8 +1,6 @@
-// A tiny CPU ray tracer for the env's camera: spheres and capsules over a
-// checkered floor, one directional light with hard shadows. No GPU, no display,
-// no dependencies, so the same binary renders headless in a container.
-//
-// World convention matches the Chrono scene: Y is up, the floor is y = 0.
+// A tiny CPU ray tracer for the env's camera (see scene.h): hard shadows from
+// one directional light. No GPU, no display, no dependencies, so the same
+// binary renders headless in a container.
 #pragma once
 
 #include <algorithm>
@@ -10,50 +8,18 @@
 #include <cstdint>
 #include <vector>
 
+#include "scene.h"
+
 namespace raytracer {
 
-struct Vec3 {
-  double x = 0, y = 0, z = 0;
-  Vec3() = default;
-  Vec3(double x_, double y_, double z_) : x(x_), y(y_), z(z_) {}
-  Vec3 operator+(const Vec3& o) const { return {x + o.x, y + o.y, z + o.z}; }
-  Vec3 operator-(const Vec3& o) const { return {x - o.x, y - o.y, z - o.z}; }
-  Vec3 operator*(double s) const { return {x * s, y * s, z * s}; }
-  Vec3 operator*(const Vec3& o) const { return {x * o.x, y * o.y, z * o.z}; }
-};
-
-inline double dot(const Vec3& a, const Vec3& b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
-inline Vec3 cross(const Vec3& a, const Vec3& b) {
-  return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
-}
-inline Vec3 normalize(const Vec3& v) {
-  const double n = std::sqrt(dot(v, v));
-  return n > 0 ? v * (1.0 / n) : v;
-}
-
-struct Sphere {
-  Vec3 center;
-  double radius;
-  Vec3 color;
-};
-
-// A capsule: the segment a-b swept by `radius` (a robot link).
-struct Capsule {
-  Vec3 a, b;
-  double radius;
-  Vec3 color;
-};
-
-struct Scene {
-  std::vector<Sphere> spheres;
-  std::vector<Capsule> capsules;
-};
-
-struct Camera {
-  Vec3 eye{0.95, 0.72, 1.0};
-  Vec3 target{0.26, 0.2, 0.02};
-  double fov_deg = 42;
-};
+using scene::Camera;
+using scene::Capsule;
+using scene::cross;
+using scene::dot;
+using scene::normalize;
+using scene::Scene;
+using scene::Sphere;
+using scene::Vec3;
 
 namespace detail {
 
@@ -169,7 +135,7 @@ inline std::vector<uint8_t> render(const Scene& scene, const Camera& cam, int wi
   const Vec3 up = cross(right, forward);
   const double half = std::tan(cam.fov_deg * M_PI / 360.0);
   const double aspect = static_cast<double>(width) / height;
-  const Vec3 light = normalize(Vec3(0.5, 1.0, 0.35));
+  const Vec3 light = normalize(scene::light_direction());
 
   for (int py = 0; py < height; ++py) {
     for (int px = 0; px < width; ++px) {
