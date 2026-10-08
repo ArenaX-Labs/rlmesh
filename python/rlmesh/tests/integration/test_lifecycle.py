@@ -58,6 +58,21 @@ class SlowStepEnv(TinyEnv):
         return super().step(action)
 
 
+class FailingStepEnv(TinyEnv):
+    """Env whose step() raises the queued exception, if any, else continues."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_with: BaseException | None = None
+
+    def step(self, action: object):
+        failure, self.fail_with = self.fail_with, None
+        if failure is not None:
+            raise failure
+        self.step_count += 1
+        return 1, 1.0, False, False, {}
+
+
 class BlockingStepEnv(TinyEnv):
     """Env whose step() signals that it started, then blocks until released."""
 
@@ -710,6 +725,47 @@ def test_client_constructor_default_timeout_applies() -> None:
                 client.step(0)
         finally:
             client.close()
+    finally:
+        server.shutdown()
+
+
+def test_recoverable_env_error_keeps_the_session() -> None:
+    """A recoverable env error fails one step; a fatal one ends the session
+    until the next reset reopens it."""
+    import rlmesh
+
+    env = FailingStepEnv()
+    server = env_server(env)
+    server.start()
+    try:
+        remote = connect_with_retry(rlmesh.RemoteEnv, server.address)
+        remote.reset(seed=0)
+
+        env.fail_with = rlmesh.RecoverableEnvironmentException("solver hiccup")
+        with pytest.raises(
+            rlmesh.RecoverableEnvironmentException, match="solver hiccup"
+        ) as recoverable:
+            remote.step(0)
+        assert recoverable.value.is_recoverable is True
+        assert recoverable.value.code == "INTERNAL"
+        remote.step(0)  # same session, no reset
+
+        env.fail_with = RuntimeError("solver diverged")
+        with pytest.raises(
+            rlmesh.EnvironmentException, match="solver diverged"
+        ) as fatal:
+            remote.step(0)
+        assert fatal.value.is_recoverable is False
+        assert not isinstance(fatal.value, rlmesh.RecoverableEnvironmentException)
+        with pytest.raises(
+            rlmesh.EnvironmentException, match="reset to start a new session"
+        ):
+            remote.step(0)
+
+        remote.reset(seed=1)
+        remote.step(0)
+        assert env.step_count == 1
+        remote.close()
     finally:
         server.shutdown()
 

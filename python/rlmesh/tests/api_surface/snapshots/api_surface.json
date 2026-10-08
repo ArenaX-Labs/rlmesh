@@ -18,6 +18,7 @@
       "RLMeshException",
       "Reader",
       "Recorder",
+      "RecoverableEnvironmentException",
       "RemoteEnv",
       "RemoteModel",
       "RemoteVectorEnv",
@@ -192,6 +193,16 @@
       },
       "EnvironmentException": {
         "kind": "class",
+        "members": {
+          "code": {
+            "kind": "attribute",
+            "signature": "code: str"
+          },
+          "is_recoverable": {
+            "kind": "attribute",
+            "signature": "is_recoverable: bool"
+          }
+        },
         "stability": "Stable"
       },
       "EpisodeResult": {
@@ -428,6 +439,20 @@
           }
         },
         "signature": "Recorder(*, result_set_id: str | None = None, fps: int = DEFAULT_FPS, quality: int = DEFAULT_QUALITY)",
+        "stability": "Stable"
+      },
+      "RecoverableEnvironmentException": {
+        "kind": "class",
+        "members": {
+          "code": {
+            "kind": "attribute",
+            "signature": "code: str"
+          },
+          "is_recoverable": {
+            "kind": "attribute",
+            "signature": "is_recoverable: bool"
+          }
+        },
         "stability": "Stable"
       },
       "RemoteEnv": {

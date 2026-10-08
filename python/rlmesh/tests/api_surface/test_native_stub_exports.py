@@ -15,6 +15,7 @@ EXPECTED_NATIVE_EXPORTS = [
     "PyVectorEnvClient",
     "PyVectorEnvServer",
     "RLMeshException",
+    "RecoverableEnvironmentException",
     "ServeOptions",
     "Space",
     "SpaceSpec",
@@ -54,6 +55,9 @@ def test_native_exception_hierarchy() -> None:
     assert issubclass(native.RLMeshException, RuntimeError)
     assert issubclass(native.ProtocolException, native.RLMeshException)
     assert issubclass(native.EnvironmentException, native.RLMeshException)
+    assert issubclass(
+        native.RecoverableEnvironmentException, native.EnvironmentException
+    )
 
 
 class StubExports:

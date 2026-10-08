@@ -198,7 +198,10 @@
       "description": "Base class for every exception RLMesh raises."
     },
     "rlmesh.EnvironmentException": {
-      "description": "Raised when an environment endpoint fails a reset, step, or render."
+      "description": "Raised when an environment endpoint fails a reset, step, or render. `code` names the env error code and `is_recoverable` says whether the session is still usable."
+    },
+    "rlmesh.RecoverableEnvironmentException": {
+      "description": "An environment error that fails one request but keeps the session usable. Raise it from an env's reset or step to fail that call without ending the client's session."
     },
     "rlmesh.ProtocolException": {
       "description": "Reserved for protocol-level faults; not raised in 0.1.0."

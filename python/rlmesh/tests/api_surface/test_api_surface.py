@@ -22,6 +22,7 @@ def test_root_namespace_is_small() -> None:
         "RLMeshException",
         "Reader",
         "Recorder",
+        "RecoverableEnvironmentException",
         "RemoteEnv",
         "RemoteModel",
         "RemoteVectorEnv",
@@ -105,6 +106,9 @@ def test_exception_family_is_public() -> None:
     assert rlmesh.RLMeshException is _rlmesh.RLMeshException
     assert issubclass(rlmesh.EnvironmentException, rlmesh.RLMeshException)
     assert issubclass(rlmesh.ProtocolException, rlmesh.RLMeshException)
+    assert issubclass(
+        rlmesh.RecoverableEnvironmentException, rlmesh.EnvironmentException
+    )
 
 
 def test_spaces_namespace_contains_space_family() -> None:
