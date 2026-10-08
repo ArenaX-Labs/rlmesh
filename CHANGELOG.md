@@ -14,6 +14,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 - The HTTP viewer has a quit button (and a `/quit` route) that does what `q` does in the terminal: stop the run, or close a held viewer.
 
+- `Session.run()` fills `RunResult.telemetry`, so `format_telemetry()` works on the Python loop a served model or a viewed run drives. It reports the client-observed `rpc.total` of `model.predict`, `env.reset`, `env.step`, and `runner.round`, under the names the native `Model.run` loop uses.
+
 - `ServeOptions(compress_responses=True)` has an env server compress its responses (zstd, else gzip) for clients that accept it; every RLMesh client and server now accepts compressed messages. It is off by default: on loopback a ~200 KB rendered-image observation shrinks to ~1.4 KB on the wire but the step takes as long, so it only pays on a slow link with compressible observations.
 
 ### Fixed
