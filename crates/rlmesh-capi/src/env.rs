@@ -9,11 +9,17 @@
 //! helper thread. Either way a callback's error is read back on the thread
 //! that ran it, right after it returns, and travels on as an `EnvRuntimeError`
 //! value.
+//!
+//! Every callback runs through the handle's [`CallbackGate`], so
+//! `rlmesh_env_serve` (and `rlmesh_env_free`) return only once no callback is
+//! running, and none can start afterwards: the C host frees `user_data` right
+//! after. For the same reason a C env waits for every lane's `close`, however
+//! long it takes (`close_timeout_ms` does not apply).
 #![allow(unsafe_code)] // FFI: raw callback pointers + repr(C) structs.
 
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::{Mutex, mpsc};
+use std::sync::{Arc, Condvar, Mutex, mpsc};
 
 use async_trait::async_trait;
 use image::ExtendedColorType;
@@ -170,6 +176,81 @@ impl Drop for DoneOnDrop {
     }
 }
 
+/// Counts the callbacks running on one handle's `user_data`, so returning from
+/// `rlmesh_env_serve` / `rlmesh_env_free` can wait them out and refuse any that
+/// would start later (a request the drain timeout left running, a connection
+/// that outlived the server). The core bounds its own teardown (a close
+/// timeout, a lane join grace) and may detach a lane thread still inside a
+/// callback; that is fine for a Rust or Python env, but a C host frees the
+/// callback state as soon as serve returns.
+#[derive(Default)]
+struct CallbackGate {
+    state: Mutex<GateState>,
+    idle: Condvar,
+}
+
+#[derive(Default)]
+struct GateState {
+    running: usize,
+    shut: bool,
+}
+
+/// Leaves the gate when the callback returns (or unwinds).
+struct GateExit<'a>(&'a CallbackGate);
+
+impl Drop for GateExit<'_> {
+    fn drop(&mut self) {
+        let mut state = lock(&self.0.state);
+        state.running -= 1;
+        if state.running == 0 {
+            self.0.idle.notify_all();
+        }
+    }
+}
+
+impl CallbackGate {
+    /// Run `call` unless the gate is shut, in which case the C side is never
+    /// reached.
+    fn run<T>(
+        &self,
+        call: impl FnOnce() -> Result<T, EnvRuntimeError>,
+    ) -> Result<T, EnvRuntimeError> {
+        {
+            let mut state = lock(&self.state);
+            if state.shut {
+                return Err(EnvRuntimeError::Runtime(
+                    "the env has stopped serving".into(),
+                ));
+            }
+            state.running += 1;
+        }
+        let _exit = GateExit(self);
+        call()
+    }
+
+    /// Refuse every later callback, then block until the running ones return.
+    /// Never from inside a callback (it would wait on itself).
+    fn shut_and_wait(&self) {
+        let mut state = lock(&self.state);
+        state.shut = true;
+        while state.running > 0 {
+            state = self
+                .idle
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+}
+
+/// Shuts the gate when serve leaves, however it leaves.
+struct ShutOnDrop<'a>(&'a CallbackGate);
+
+impl Drop for ShutOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.shut_and_wait();
+    }
+}
+
 /// The C vtable as a core scalar `Env`.
 struct CEnv {
     vtable: RLMeshEnvVtable,
@@ -179,18 +260,28 @@ struct CEnv {
     contract: EnvContract,
     /// Set for a foreground env: callbacks run as jobs on the serve thread.
     foreground: Option<mpsc::Sender<ForegroundJob>>,
+    /// The handle's gate, shared by every lane.
+    gate: Arc<CallbackGate>,
+    /// This lane's `close` has run: no callback reaches its `user_data` again.
+    closed: bool,
 }
 
 impl CEnv {
     /// Run one C call, with everything that reads the thread-local last error,
-    /// on the callback thread: inline on the lane thread, or as a job on the
-    /// thread blocked in `rlmesh_env_serve` for a foreground env.
+    /// on the callback thread (inline on the lane thread, or as a job on the
+    /// thread blocked in `rlmesh_env_serve` for a foreground env), through the
+    /// handle's gate.
     async fn dispatch<T: Send + 'static>(
         &self,
-        call: impl FnOnce() -> T + Send + 'static,
+        call: impl FnOnce() -> Result<T, EnvRuntimeError> + Send + 'static,
     ) -> Result<T, EnvRuntimeError> {
+        if self.closed {
+            return Err(EnvRuntimeError::Runtime("the env lane is closed".into()));
+        }
+        let gate = Arc::clone(&self.gate);
+        let call = move || gate.run(call);
         let Some(jobs) = &self.foreground else {
-            return Ok(call());
+            return call();
         };
         let stopped =
             || EnvRuntimeError::Runtime("the foreground callback thread is not serving".into());
@@ -199,7 +290,7 @@ impl CEnv {
             let _ = reply.send(call());
         })))
         .map_err(|_| stopped())?;
-        result.await.map_err(|_| stopped())
+        result.await.map_err(|_| stopped())?
     }
 }
 
@@ -392,7 +483,7 @@ impl Env for CEnv {
         };
         let user_data = self.user_data;
         self.dispatch(move || call_reset(reset, user_data, req))
-            .await?
+            .await
     }
 
     async fn step(&mut self, req: StepRequest) -> Result<StepResult, EnvRuntimeError> {
@@ -400,8 +491,7 @@ impl Env for CEnv {
             return Err(EnvRuntimeError::Runtime("env vtable has no step".into()));
         };
         let user_data = self.user_data;
-        self.dispatch(move || call_step(step, user_data, req))
-            .await?
+        self.dispatch(move || call_step(step, user_data, req)).await
     }
 
     async fn render(&mut self, _req: RenderRequest) -> Result<RenderResult, EnvRuntimeError> {
@@ -411,7 +501,7 @@ impl Env for CEnv {
         let user_data = self.user_data;
         let frame = self
             .dispatch(move || call_render(render, user_data))
-            .await??;
+            .await?;
         Ok(RenderResult {
             frame: frame
                 .map(|frame| encode_png(&frame).map(|frame| RenderFrame { frame }))
@@ -421,11 +511,20 @@ impl Env for CEnv {
 
     async fn close(&mut self, _req: CloseRequest) -> Result<CloseResult, EnvRuntimeError> {
         // The core calls close once, when the server stops; take the callback so
-        // a second call could never reach C.
+        // a second call could never reach C, and mark the lane closed after it
+        // so no later request does either.
         if let Some(close) = self.vtable.close.take() {
             let user_data = self.user_data;
-            self.dispatch(move || call_close(close, user_data)).await?;
+            let closed = self
+                .dispatch(move || {
+                    call_close(close, user_data);
+                    Ok(())
+                })
+                .await;
+            self.closed = true;
+            closed?;
         }
+        self.closed = true;
         Ok(CloseResult)
     }
 }
@@ -443,6 +542,8 @@ pub struct RLMeshEnv {
     cancel: CancellationToken,
     /// Set for a foreground env until `rlmesh_env_serve` drains it.
     foreground: Mutex<Option<ForegroundQueue>>,
+    /// Every callback of every lane runs through it.
+    gate: Arc<CallbackGate>,
     describe: Describe,
 }
 
@@ -698,6 +799,7 @@ unsafe fn new_env(
         let (tx, rx) = mpsc::channel();
         ForegroundQueue { tx, rx }
     });
+    let gate = Arc::new(CallbackGate::default());
     let envs = user_data
         .iter()
         .map(|&user_data| CEnv {
@@ -707,6 +809,8 @@ unsafe fn new_env(
             action_space: action_space.clone(),
             contract: contract.clone(),
             foreground: foreground.as_ref().map(|queue| queue.tx.clone()),
+            gate: Arc::clone(&gate),
+            closed: false,
         })
         .collect();
     *out = Box::into_raw(Box::new(RLMeshEnv {
@@ -715,6 +819,7 @@ unsafe fn new_env(
         bound: Mutex::new(None),
         cancel: CancellationToken::new(),
         foreground: Mutex::new(foreground),
+        gate,
         describe,
     }));
     Ok(())
@@ -724,7 +829,8 @@ unsafe fn new_env(
 /// `unix:///path`) without serving yet, and write the resolved address (the
 /// OS-assigned port for port 0) to `out_address` when it is non-NULL (free with
 /// `rlmesh_bytes_free`; UTF-8, not NUL-terminated). Once per handle. `options`
-/// may be NULL for defaults; `predict_concurrency` does not apply to an env.
+/// may be NULL for defaults; `predict_concurrency` and `close_timeout_ms` do
+/// not apply to an env (serve always waits for every `close` callback).
 ///
 /// # Safety
 /// `env` must be a live handle; `bind_address` a valid C string; `options` NULL
@@ -747,6 +853,9 @@ pub unsafe extern "C" fn rlmesh_env_bind(
                 .filter(|token| !token.is_empty())
                 .map(str::to_string);
         }
+        // The C host frees `user_data` once serve returns, so serve must not
+        // give up on a `close` callback still running on it.
+        serve.close_timeout = None;
         let cenv = lock(&handle.env)
             .take()
             .ok_or_else(|| CapiError::invalid_arg("env is already bound"))?;
@@ -770,6 +879,10 @@ pub unsafe extern "C" fn rlmesh_env_bind(
 /// server on a helper thread and every callback (`close` included) on the
 /// calling thread. Requires `rlmesh_env_bind`.
 ///
+/// When this returns no callback is running and none will run again: it waits
+/// for a callback still in flight (one the drain timeout gave up on, a `close`
+/// however slow) and the handle refuses any later one.
+///
 /// # Safety
 /// `env` must be a live handle.
 #[unsafe(no_mangle)]
@@ -779,6 +892,7 @@ pub unsafe extern "C" fn rlmesh_env_serve(env: *mut RLMeshEnv) -> RLMeshStatus {
         let bound = lock(&handle.bound)
             .take()
             .ok_or_else(|| CapiError::invalid_arg("env is not bound (call rlmesh_env_bind)"))?;
+        let _shut = ShutOnDrop(&handle.gate);
         let trigger = bound.shutdown_trigger();
         let cancel = handle.cancel.clone();
         let serve = async move {
@@ -852,6 +966,8 @@ pub unsafe extern "C" fn rlmesh_env_cancel(env: *mut RLMeshEnv) {
 
 /// Free an env handle. NULL is a no-op. Must NOT be called from inside one of
 /// the env's own callbacks. A handle freed without serving never runs `close`.
+/// Like serve, it returns only once no callback is running, and none can run
+/// after.
 ///
 /// # Safety
 /// `env` must be NULL or a handle this thread owns and has not freed.
@@ -859,7 +975,9 @@ pub unsafe extern "C" fn rlmesh_env_cancel(env: *mut RLMeshEnv) {
 pub unsafe extern "C" fn rlmesh_env_free(env: *mut RLMeshEnv) {
     guard_value((), || {
         if !env.is_null() {
-            drop(unsafe { Box::from_raw(env) });
+            let handle = unsafe { Box::from_raw(env) };
+            handle.gate.shut_and_wait();
+            drop(handle);
         }
     });
 }
@@ -1040,6 +1158,20 @@ mod tests {
         probes: &[&Probe],
         foreground: bool,
     ) -> Result<*mut RLMeshEnv, String> {
+        let user_data: Vec<*mut c_void> = probes
+            .iter()
+            .map(|&probe| std::ptr::from_ref(probe).cast_mut().cast())
+            .collect();
+        create_env_from(&vtable(), tags, &user_data, foreground)
+    }
+
+    /// One lane per `user_data` entry, served by `table`.
+    fn create_env_from(
+        table: &RLMeshEnvVtable,
+        tags: Option<&str>,
+        user_data: &[*mut c_void],
+        foreground: bool,
+    ) -> Result<*mut RLMeshEnv, String> {
         let (obs, act) = spaces();
         let id = CString::new("CapiEnv-test").unwrap();
         let tags = tags.map(|tags| CString::new(tags).unwrap());
@@ -1058,17 +1190,13 @@ mod tests {
             metadata_json: std::ptr::null(),
             foreground,
         };
-        let user_data: Vec<*mut c_void> = probes
-            .iter()
-            .map(|&probe| std::ptr::from_ref(probe).cast_mut().cast())
-            .collect();
         let mut env = std::ptr::null_mut();
         let status = unsafe {
             if let [one] = user_data[..] {
-                rlmesh_env_new(&vtable(), &config, one, &mut env)
+                rlmesh_env_new(table, &config, one, &mut env)
             } else {
                 rlmesh_env_new_lanes(
-                    &vtable(),
+                    table,
                     &config,
                     user_data.as_ptr(),
                     user_data.len(),
@@ -1088,9 +1216,13 @@ mod tests {
     }
 
     fn bind(env: *mut RLMeshEnv) -> String {
+        bind_with(env, std::ptr::null())
+    }
+
+    fn bind_with(env: *mut RLMeshEnv, options: *const RLMeshServeOptions) -> String {
         let address = CString::new("127.0.0.1:0").unwrap();
         let mut out = RLMeshBytes::from_vec(Vec::new());
-        let status = unsafe { rlmesh_env_bind(env, address.as_ptr(), std::ptr::null(), &mut out) };
+        let status = unsafe { rlmesh_env_bind(env, address.as_ptr(), options, &mut out) };
         assert_eq!(status, RLMeshStatus::Ok, "{}", last_error_message());
         String::from_utf8(unsafe { out.into_vec() }).expect("utf-8 address")
     }
@@ -1448,5 +1580,243 @@ mod tests {
         // An integer dtype has no infinite bound.
         let unbounded = unsafe { rlmesh_space_box(U8, shape.as_ptr(), 3, 0.0, f64::INFINITY) };
         assert!(unbounded.is_null());
+    }
+    /// A lane whose `step` and `close` block for a while, logging when each
+    /// callback starts and ends: the C host's state the serve must outlive.
+    #[derive(Default)]
+    struct Slow {
+        step_delay: std::time::Duration,
+        close_delay: std::time::Duration,
+        /// Callbacks inside C right now.
+        running: AtomicUsize,
+        log: Mutex<Vec<&'static str>>,
+    }
+
+    impl Slow {
+        fn with(step_delay_ms: u64, close_delay_ms: u64) -> Self {
+            Self {
+                step_delay: std::time::Duration::from_millis(step_delay_ms),
+                close_delay: std::time::Duration::from_millis(close_delay_ms),
+                ..Self::default()
+            }
+        }
+
+        fn enter(&self, start: &'static str) {
+            self.running.fetch_add(1, Ordering::SeqCst);
+            self.log.lock().unwrap().push(start);
+        }
+
+        fn leave(&self, end: &'static str) {
+            self.log.lock().unwrap().push(end);
+            self.running.fetch_sub(1, Ordering::SeqCst);
+        }
+
+        fn log(&self) -> Vec<&'static str> {
+            self.log.lock().unwrap().clone()
+        }
+
+        fn wait_for(&self, entry: &str) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !self.log().contains(&entry) {
+                assert!(std::time::Instant::now() < deadline, "no {entry}");
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        }
+
+        /// Serve has returned: nothing is in C, the lane closed once after its
+        /// last step, and no callback starts later.
+        fn assert_finished(&self) {
+            assert_eq!(
+                self.running.load(Ordering::SeqCst),
+                0,
+                "a callback outlived serve"
+            );
+            let log = self.log();
+            assert_eq!(log.last(), Some(&"close:end"), "{log:?}");
+            assert_eq!(log.iter().filter(|e| **e == "close:start").count(), 1);
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            assert_eq!(self.log(), log, "a callback ran after serve returned");
+        }
+    }
+
+    unsafe extern "C" fn slow_reset(
+        user_data: *mut c_void,
+        _args: *const RLMeshResetArgs,
+        out: *mut RLMeshResetResult,
+    ) -> c_int {
+        let slow = unsafe { &*user_data.cast::<Slow>() };
+        slow.enter("reset:start");
+        unsafe { (*out).observation = eef(0.0) };
+        slow.leave("reset:end");
+        0
+    }
+
+    unsafe extern "C" fn slow_step(
+        user_data: *mut c_void,
+        _action: *const RLMeshValue,
+        out: *mut RLMeshStepResult,
+    ) -> c_int {
+        let slow = unsafe { &*user_data.cast::<Slow>() };
+        slow.enter("step:start");
+        std::thread::sleep(slow.step_delay);
+        unsafe { (*out).observation = eef(1.0) };
+        slow.leave("step:end");
+        0
+    }
+
+    unsafe extern "C" fn slow_close(user_data: *mut c_void) {
+        let slow = unsafe { &*user_data.cast::<Slow>() };
+        slow.enter("close:start");
+        std::thread::sleep(slow.close_delay);
+        slow.leave("close:end");
+    }
+
+    fn slow_env(lanes: &[&Slow], options: &RLMeshServeOptions) -> (*mut RLMeshEnv, String) {
+        let table = RLMeshEnvVtable {
+            struct_size: std::mem::size_of::<RLMeshEnvVtable>(),
+            reset: Some(slow_reset),
+            step: Some(slow_step),
+            render: None,
+            close: Some(slow_close),
+        };
+        let user_data: Vec<*mut c_void> = lanes
+            .iter()
+            .map(|&slow| std::ptr::from_ref(slow).cast_mut().cast())
+            .collect();
+        let env = create_env_from(&table, None, &user_data, false).expect("env");
+        let address = bind_with(env, options);
+        (env, address)
+    }
+
+    /// Short drain and close deadlines: the core gives up on both well before
+    /// the slow callbacks return.
+    fn impatient() -> RLMeshServeOptions {
+        RLMeshServeOptions {
+            token: std::ptr::null(),
+            allow_remote_shutdown: false,
+            idle_timeout_ms: 0,
+            drain_timeout_ms: 10,
+            close_timeout_ms: 10,
+            predict_concurrency: 0,
+            workflow_edition: std::ptr::null(),
+        }
+    }
+
+    fn spawn_serve(env: *mut RLMeshEnv) -> std::thread::JoinHandle<RLMeshStatus> {
+        let served = SendEnv(env);
+        std::thread::spawn(move || {
+            let served = served;
+            unsafe { rlmesh_env_serve(served.0) }
+        })
+    }
+
+    #[test]
+    fn serve_waits_for_a_close_callback_past_the_close_timeout() {
+        let slow = Slow::with(0, 300);
+        let (env, _address) = slow_env(&[&slow], &impatient());
+        let server = spawn_serve(env);
+        unsafe { rlmesh_env_cancel(env) };
+        let status = server.join().unwrap();
+        // The close timeout does not apply to a C env: no error, and the close
+        // callback finished before serve returned.
+        assert_eq!(status, RLMeshStatus::Ok, "{}", last_error_message());
+        slow.assert_finished();
+        unsafe { rlmesh_env_free(env) };
+    }
+
+    #[test]
+    fn cancel_waits_for_a_step_callback_still_running() {
+        let slow = Slow::with(300, 0);
+        let (env, address) = slow_env(&[&slow], &impatient());
+        let server = spawn_serve(env);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let client = runtime.spawn(async move {
+            let mut client = RemoteEnv::connect(&address).await.expect("connect");
+            client.reset(ResetRequest::default()).await.expect("reset");
+            // Cut off by the drain timeout; its outcome does not matter.
+            let _ = client
+                .step(StepRequest {
+                    action: Some(action(0.5)),
+                    timeout_ms: 0,
+                })
+                .await;
+        });
+        slow.wait_for("step:start");
+        unsafe { rlmesh_env_cancel(env) };
+        assert_eq!(
+            server.join().unwrap(),
+            RLMeshStatus::Ok,
+            "{}",
+            last_error_message()
+        );
+        slow.assert_finished();
+        assert_eq!(
+            slow.log(),
+            [
+                "reset:start",
+                "reset:end",
+                "step:start",
+                "step:end",
+                "close:start",
+                "close:end"
+            ]
+        );
+        let _ = runtime.block_on(client);
+        unsafe { rlmesh_env_free(env) };
+    }
+
+    #[test]
+    fn serve_waits_for_every_lane_when_one_is_blocked() {
+        let (fast, blocked) = (Slow::with(0, 0), Slow::with(300, 50));
+        let (env, address) = slow_env(&[&fast, &blocked], &impatient());
+        let server = spawn_serve(env);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let client = runtime.spawn(async move {
+            let mut client = rlmesh::RemoteVectorEnv::connect(&address)
+                .await
+                .expect("connect");
+            client
+                .reset(rlmesh::VectorResetRequest::default())
+                .await
+                .expect("reset");
+            let _ = client
+                .step(rlmesh::VectorStepRequest {
+                    actions: vec![action(0.5), action(0.5)],
+                    ..Default::default()
+                })
+                .await;
+        });
+        blocked.wait_for("step:start");
+        unsafe { rlmesh_env_cancel(env) };
+        assert_eq!(
+            server.join().unwrap(),
+            RLMeshStatus::Ok,
+            "{}",
+            last_error_message()
+        );
+        // Both lanes closed, the blocked one only after its step returned.
+        fast.assert_finished();
+        blocked.assert_finished();
+        let log = blocked.log();
+        let at = |entry| log.iter().position(|e| *e == entry).unwrap();
+        assert!(at("step:end") < at("close:start"), "{log:?}");
+        let _ = runtime.block_on(client);
+        unsafe { rlmesh_env_free(env) };
+    }
+
+    #[test]
+    fn a_shut_gate_never_reaches_the_callback() {
+        let gate = CallbackGate::default();
+        assert_eq!(gate.run(|| Ok(1)).unwrap(), 1);
+        gate.shut_and_wait();
+        let reached = AtomicUsize::new(0);
+        let err = gate
+            .run(|| {
+                reached.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+            .expect_err("refused after shut");
+        assert!(err.to_string().contains("stopped serving"), "{err}");
+        assert_eq!(reached.load(Ordering::SeqCst), 0);
     }
 }
