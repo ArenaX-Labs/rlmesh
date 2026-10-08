@@ -11,7 +11,7 @@ supported_editions = ["2026.06"]
 status = "sealed"
 spec = "docs/editions/2026.06.md"
 sealed_in = "0.1.0"
-spec_sha256 = "a3dcf2195f6b35819c91192396e94a445c039278d99e20db81fa2a2fe43664a2"
+spec_sha256 = "f05f788382a5b4cfaa482811d52a24ade9ee5d9ed9f9544bc39b291d84b2c8c5"
 
 [protocol]
 # Single generation, equality-only: there is no support window, so no

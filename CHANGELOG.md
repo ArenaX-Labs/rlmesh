@@ -18,9 +18,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 - `rlmesh check`, `rlmesh check-image`, and `python -m rlmesh._describe --check` join an env's tags against its spaces, per contract branch, the way `rlmesh.serve` does at startup, so tags whose widths or space classes do not fit now fail the check instead of passing it and crashing the server. A contract branch without tags fails, as the platform probe does.
 
+- `spaces.Text` accepts `min_length=0` (and `max_length=0`), as Gymnasium does, so a Gymnasium `Text(min_length=0)` converts instead of failing; only negative lengths are rejected.
+
+- `rlmesh.run()` and `Session` read an episode's success the way the runtime does. Of `is_success`, `success`, and `task_success` in the final step's `info`, the first holding a bool, integer, or float decides; a string such as `"False"`, `None`, or a list is skipped instead of counting as success or ending the search. NumPy scalars and 0-d arrays count as their values.
+
+- `rlmesh.trial_index(options)` reads a NumPy integer, and reads the per-lane list a multi-lane reset sends through the new `lane=` argument. Without `lane=` the list raises a `ValueError` saying to pass it, instead of returning `None`.
+
+- `RemoteEnv.step` reports `completed_episodes` in its `info` on every step (`0` mid-episode), as `RemoteVectorEnv.step` does; it used to appear only on the step that ended an episode.
+
+- Importing `rlmesh` in an embedded interpreter that installed no signal handlers ignores SIGPIPE, as CPython itself does, so a peer that hangs up mid-write fails that write instead of killing the host process. A handler the host installed is left alone.
+
 ### Changed
 
 - `rlmesh check` warns on an env without `tags` instead of failing it: an untagged env runs against spec-less models; tags are what let the platform adapt a spec'd model to it.
+
+- `RemoteEnv` and `RemoteVectorEnv` log a warning, once per client, when an env's own `info` key shadows a runtime-reserved one (`episode_ids`, `completed_episodes`). The env's value is still kept.
 
 ## [0.1.0] - 2026-09-23
 
