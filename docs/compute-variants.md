@@ -212,7 +212,7 @@ Every key other than `accel.vendor` needs `accel.vendor` in the same `requires` 
 
 ### Priority
 
-`variant.priority` is an integer in `[-1000, 1000]`, default 0. Among compatible, verified builds, a higher priority is preferred before the default is. Leave it at 0 unless a non-default build should beat the default on hardware where both fit; a default plus fallbacks never needs it.
+`variant.priority` is an integer in `[-1000, 1000]`, default 0. It only orders builds the rule above leaves tied: the default still wins wherever it fits, and among the remaining compatible builds a higher priority is preferred. Leave it at 0; a default plus fallbacks never needs it.
 
 ### Profiles and rendering: osmesa and EGL
 
