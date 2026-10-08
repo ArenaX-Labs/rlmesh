@@ -30,6 +30,7 @@ use rlmesh_spaces::{DType, EnvContract, MetaMap, MetaValue, RenderFrame, SpaceSp
 
 use crate::abi::status::{
     CapiError, RlmeshStatus, clear_last_error, guard, guard_value, last_error_message,
+    last_error_recoverable,
 };
 use crate::adapters::{json_to_meta, meta_to_json};
 use crate::codec::RlmeshBytes;
@@ -202,13 +203,18 @@ impl CEnv {
     }
 }
 
+/// The failed callback's error, read on the lane thread it ran on. A callback
+/// that set `recoverable` fails only this request; otherwise it ends the session.
 fn callback_error(op: &str) -> EnvRuntimeError {
-    let message = last_error_message();
-    EnvRuntimeError::Runtime(if message.is_empty() {
-        format!("environment {op} failed")
+    let mut message = last_error_message();
+    if message.is_empty() {
+        message = format!("environment {op} failed");
+    }
+    if last_error_recoverable() {
+        EnvRuntimeError::Recoverable(message)
     } else {
-        message
-    })
+        EnvRuntimeError::Runtime(message)
+    }
 }
 
 /// Reclaim an owned value the callback wrote (NULL = none).
@@ -958,6 +964,11 @@ mod tests {
             return 1;
         }
         let chosen = unsafe { *(*tensor.as_ptr()).data.cast::<f32>() };
+        if chosen <= -0.9 {
+            let message = CString::new("action at the limit, retry").unwrap();
+            unsafe { rlmesh_callback_set_error(message.as_ptr(), true) };
+            return 1;
+        }
         if chosen < 0.0 {
             let message = CString::new("negative action declined").unwrap();
             unsafe { rlmesh_callback_set_error(message.as_ptr(), false) };
@@ -1187,7 +1198,33 @@ mod tests {
                 err.to_string().contains("negative action declined"),
                 "{err}"
             );
-            // The core ends that session; the env keeps serving new ones.
+            // The core ends that session: a step on it names why, and a reset
+            // on the same client opens a fresh one.
+            let err = client
+                .step(StepRequest {
+                    action: Some(action(0.5)),
+                    timeout_ms: 0,
+                })
+                .await
+                .expect_err("step on the ended session");
+            assert!(
+                err.to_string().contains("non-recoverable env error")
+                    && err.to_string().contains("negative action declined"),
+                "{err}"
+            );
+            client
+                .reset(ResetRequest::default())
+                .await
+                .expect("reset reopens the session");
+            client
+                .step(StepRequest {
+                    action: Some(action(0.5)),
+                    timeout_ms: 0,
+                })
+                .await
+                .expect("step on the reopened session");
+            client.detach();
+            // The env keeps serving new clients too.
             let mut client = RemoteEnv::connect(&address).await.expect("reconnect");
             client
                 .reset(ResetRequest::default())
@@ -1295,6 +1332,46 @@ mod tests {
             threads[0]
         };
         assert_ne!(lane_thread(&first), lane_thread(&second));
+        unsafe { rlmesh_env_free(env) };
+    }
+
+    #[test]
+    fn a_recoverable_callback_error_keeps_the_session() {
+        let probe = Probe::default();
+        let env = new_env(None, &probe).expect("env");
+        let address = bind(env);
+        let served = SendEnv(env);
+        let server = std::thread::spawn(move || {
+            let served = served;
+            unsafe { rlmesh_env_serve(served.0) }
+        });
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let mut client = RemoteEnv::connect(&address).await.expect("connect");
+            client.reset(ResetRequest::default()).await.expect("reset");
+            // The C step fails this action but marks the error recoverable.
+            let err = client
+                .step(StepRequest {
+                    action: Some(action(-0.95)),
+                    timeout_ms: 0,
+                })
+                .await
+                .expect_err("declined step");
+            assert!(err.is_recoverable(), "{err}");
+            assert!(err.to_string().contains("action at the limit"), "{err}");
+            // Same session, no reset: the next step goes through.
+            client
+                .step(StepRequest {
+                    action: Some(action(0.5)),
+                    timeout_ms: 0,
+                })
+                .await
+                .expect("step after a recoverable error");
+        });
+        assert_eq!(*probe.actions.lock().unwrap(), vec![0.5]);
+        assert_eq!(probe.resets.lock().unwrap().len(), 1, "no second reset");
+        unsafe { rlmesh_env_cancel(env) };
+        assert_eq!(server.join().unwrap(), RlmeshStatus::Ok);
         unsafe { rlmesh_env_free(env) };
     }
 

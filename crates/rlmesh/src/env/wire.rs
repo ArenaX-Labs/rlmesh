@@ -653,6 +653,12 @@ fn gym_error_to_env_error(error: spaces::EnvRuntimeError) -> EnvError {
             EnvError::new(EnvErrorCode::InvalidAction, message)
         }
         spaces::EnvRuntimeError::Runtime(message) => EnvError::new(EnvErrorCode::Internal, message),
+        // Still an internal failure, but the env vouched that it can keep
+        // serving: the flag (not the code) keeps the session open.
+        spaces::EnvRuntimeError::Recoverable(message) => EnvError {
+            is_recoverable: true,
+            ..EnvError::new(EnvErrorCode::Internal, message)
+        },
         // EnvRuntimeError is #[non_exhaustive]; treat unknown variants as internal.
         other => EnvError::new(EnvErrorCode::Internal, other.to_string()),
     }
@@ -819,6 +825,9 @@ mod tests {
         // Real time each step spends inside the env, so a reported split is
         // contained in a measured call regardless of build profile.
         step_delay: Duration,
+        // Errors the next steps fail with, in order (shared so a test can queue
+        // them after the env moved into its server).
+        step_failures: Arc<Mutex<std::collections::VecDeque<spaces::EnvRuntimeError>>>,
     }
 
     impl DummyEnv {
@@ -850,6 +859,7 @@ mod tests {
                 closes,
                 phases: EndpointPhases::default(),
                 step_delay: Duration::ZERO,
+                step_failures: Arc::default(),
             }
         }
     }
@@ -897,6 +907,9 @@ mod tests {
             req: StepRequest,
         ) -> std::result::Result<StepResult, spaces::EnvRuntimeError> {
             std::thread::sleep(self.step_delay);
+            if let Some(error) = self.step_failures.lock().unwrap().pop_front() {
+                return Err(error);
+            }
             Ok(StepResult {
                 observations: req
                     .actions
@@ -1401,6 +1414,78 @@ mod tests {
                 .unwrap();
             assert_eq!(step.observations.len(), client.num_envs());
         }
+
+        assert!(client.shutdown("done").await.unwrap());
+        shutdown_and_join(server).await;
+    }
+
+    #[tokio::test]
+    async fn a_recoverable_env_error_keeps_the_session_and_a_fatal_one_reopens_on_reset() {
+        let env = DummyEnv::new();
+        let failures = env.step_failures.clone();
+        let bound = EnvServer::new(env)
+            .bind_with_options(
+                BindAddress::Tcp {
+                    host: "127.0.0.1".to_string(),
+                    port: 0,
+                },
+                ServeOptions {
+                    allow_remote_shutdown: true,
+                    ..ServeOptions::default()
+                },
+            )
+            .await
+            .unwrap();
+        let port = match bound.local_addr().clone() {
+            BindAddress::Tcp { port, .. } => port,
+            other => panic!("expected tcp, got {other:?}"),
+        };
+        let server = tokio::spawn(async move { bound.serve().await });
+        let mut client = RemoteEnv::connect(&format!("tcp://127.0.0.1:{port}"))
+            .await
+            .unwrap();
+        let step = || VectorStepRequest {
+            actions: vec![
+                spaces::SpaceValue::Discrete(0),
+                spaces::SpaceValue::Discrete(1),
+            ],
+            timeout_ms: 0,
+        };
+
+        client.reset(ResetRequest::default()).await.unwrap();
+        failures
+            .lock()
+            .unwrap()
+            .push_back(spaces::EnvRuntimeError::Recoverable("solver hiccup".into()));
+        let error = client.step(step()).await.expect_err("recoverable failure");
+        assert!(error.is_recoverable(), "{error}");
+        assert!(error.to_string().contains("solver hiccup"), "{error}");
+        // Same session, no reset: the next step is served.
+        client
+            .step(step())
+            .await
+            .expect("step after a recoverable error");
+
+        failures
+            .lock()
+            .unwrap()
+            .push_back(spaces::EnvRuntimeError::Runtime("solver diverged".into()));
+        let error = client.step(step()).await.expect_err("fatal failure");
+        assert!(!error.is_recoverable(), "{error}");
+        // The server ended that session: a step names the error that ended it
+        // instead of a bare closed connection.
+        let error = client.step(step()).await.expect_err("session ended");
+        let message = error.to_string();
+        assert!(
+            message.contains("non-recoverable env error") && message.contains("solver diverged"),
+            "{message}"
+        );
+        // A reset opens a fresh session on the same client.
+        client
+            .reset(ResetRequest::default())
+            .await
+            .expect("reset reopens");
+        client.step(step()).await.expect("step on the new session");
 
         assert!(client.shutdown("done").await.unwrap());
         shutdown_and_join(server).await;

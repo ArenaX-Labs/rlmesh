@@ -550,8 +550,9 @@ typedef struct RlmeshStepResult {
  * foreground env (RlmeshEnvConfig.foreground) runs them on the thread blocked
  * in rlmesh_env_serve instead. `reset` / `step` /
  * `render` return 0 == RLMESH_OK, or nonzero after rlmesh_callback_set_error
- * to fail that request (the client's session ends; the env keeps serving new
- * ones). `step` gets the action
+ * to fail that request. With `recoverable` set, only the request fails and the
+ * client's session stays usable; otherwise the session ends (the client's next
+ * reset opens a new one, and the env keeps serving). `step` gets the action
  * borrowed (NULL when the request carries none). `render` writes an OWNED uint8
  * image value of shape [H, W, 3], [H, W, 4] or [H, W] (or leaves it NULL for no
  * frame); the capi PNG-encodes it. `close` fires once, when the server stops. */

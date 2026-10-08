@@ -35,6 +35,22 @@ pub enum EnvRuntimeError {
     InvalidValue(String),
     #[error("runtime error: {0}")]
     Runtime(String),
+    /// A runtime failure the env survives: the request fails but the session
+    /// stays usable for further requests (unlike [`Self::Runtime`], which
+    /// ends it).
+    #[error("recoverable runtime error: {0}")]
+    Recoverable(String),
+}
+
+impl EnvRuntimeError {
+    /// Whether the session stays usable after this error.
+    #[must_use]
+    pub fn is_recoverable(&self) -> bool {
+        matches!(
+            self,
+            Self::InvalidSpace(_) | Self::InvalidValue(_) | Self::Recoverable(_)
+        )
+    }
 }
 
 macro_rules! err_space {

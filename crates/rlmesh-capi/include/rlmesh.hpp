@@ -1266,7 +1266,8 @@ struct StepOutput {
 /// A simulation served as one RLMesh env lane. Subclass it and hand it to
 /// `EnvServer::create`. Every method runs on its lane's thread (not the thread
 /// that built it), one call at a time; with `EnvConfig::foreground`, on the
-/// thread that calls `EnvServer::serve` instead.
+/// thread that calls `EnvServer::serve` instead. An `Error` with `recoverable`
+/// set fails only that request; any other error ends the client's session.
 class Environment {
  public:
   virtual ~Environment() = default;
