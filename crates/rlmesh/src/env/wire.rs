@@ -1535,6 +1535,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_fatal_reply_to_a_dropped_step_still_ends_the_session() {
+        let mut env = DummyEnv::new();
+        env.step_delay = Duration::from_millis(200);
+        let failures = env.step_failures.clone();
+        let bound = EnvServer::new(env)
+            .bind_with_options(
+                BindAddress::parse("tcp://127.0.0.1:0").unwrap(),
+                ServeOptions {
+                    allow_remote_shutdown: true,
+                    ..ServeOptions::default()
+                },
+            )
+            .await
+            .unwrap();
+        let address = bound.local_addr().to_string();
+        let server = tokio::spawn(bound.serve());
+        let mut client = RemoteEnv::connect(&address).await.unwrap();
+        let step = || StepRequest {
+            actions: vec![
+                spaces::SpaceValue::Discrete(0),
+                spaces::SpaceValue::Discrete(1),
+            ],
+            timeout_ms: 0,
+        };
+
+        client.reset(ResetRequest::default()).await.unwrap();
+        failures
+            .lock()
+            .unwrap()
+            .push_back(spaces::EnvRuntimeError::Runtime("solver diverged".into()));
+        // The caller gives up on the step (a Ctrl-C, a deadline) before the env
+        // answers it with the fatal error.
+        tokio::time::timeout(Duration::from_millis(20), client.step(step()))
+            .await
+            .expect_err("the step outlives its caller");
+        while !failures.lock().unwrap().is_empty() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        // Nobody awaited that reply, yet the session is recorded as ended...
+        let error = client.step(step()).await.expect_err("session ended");
+        let message = error.to_string();
+        assert!(
+            message.contains("non-recoverable env error") && message.contains("solver diverged"),
+            "{message}"
+        );
+        // ...so a reset opens a fresh one instead of reusing the closed stream.
+        client
+            .reset(ResetRequest::default())
+            .await
+            .expect("reset reopens");
+        client.step(step()).await.expect("step on the new session");
+
+        assert!(client.shutdown("done").await.unwrap());
+        shutdown_and_join(server).await;
+    }
+
+    #[tokio::test]
     async fn env_bind_resolves_port_zero_before_serving() {
         let bound = EnvServer::new(DummyEnv::new())
             .bind_with_options(

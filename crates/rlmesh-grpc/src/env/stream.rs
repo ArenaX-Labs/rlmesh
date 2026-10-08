@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::error::Error as StdError;
 use std::sync::{Arc, Mutex};
 
-use rlmesh_proto::env::v1::JoinResponse;
+use rlmesh_proto::env::v1::{JoinResponse, join_response};
 use tokio::sync::oneshot;
 use tonic::Status;
 
@@ -56,14 +56,28 @@ pub(super) fn dispatch_response(pending: &Pending, event: Option<Result<JoinResp
     }
 }
 
+/// Read `response_stream` until it ends, routing each reply to its waiter.
+///
+/// `on_fatal` sees every non-recoverable env error before its waiter does: the
+/// server ends the session after one, and that must be recorded even when no
+/// one is waiting any more (a caller that dropped its request future on an
+/// interrupt or deadline).
 pub(super) fn spawn_response_pump(
     mut response_stream: tonic::Streaming<JoinResponse>,
     pending: Pending,
+    on_fatal: impl Fn(String) + Send + 'static,
 ) {
     tokio::spawn(async move {
         loop {
             match response_stream.message().await {
-                Ok(Some(msg)) => dispatch_response(&pending, Some(Ok(msg))),
+                Ok(Some(msg)) => {
+                    if let Some(join_response::Kind::Error(error)) = &msg.kind
+                        && !error.is_recoverable
+                    {
+                        on_fatal(error.message.clone());
+                    }
+                    dispatch_response(&pending, Some(Ok(msg)));
+                }
                 Ok(None) => {
                     tracing::debug!("env join stream ended");
                     dispatch_response(&pending, None);
