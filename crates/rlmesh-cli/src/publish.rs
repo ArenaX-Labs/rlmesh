@@ -16,6 +16,7 @@
 //! other tags pointed at TARGET's digest, so every tag is one manifest.
 
 mod imagetools;
+mod media;
 mod source;
 mod table;
 mod tags;

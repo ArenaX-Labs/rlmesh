@@ -8,9 +8,9 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
 use super::imagetools::Imagetools;
+use super::media::{DOCKER_MANIFEST_LIST, DOCKER_MEDIA_PREFIX, OCI_INDEX};
 use super::publish_with;
-use super::source::{DOCKER_MEDIA_PREFIX, Reference};
-use super::validate::OCI_INDEX;
+use super::source::Reference;
 use crate::cli::PublishArgs;
 use crate::image_check::PACKAGE_LABEL;
 use crate::render::Style;
@@ -58,8 +58,7 @@ fn assembled(registry: &FakeRegistry, args: &[String]) -> (Vec<String>, Value) {
     }
     let mut index = json!({"schemaVersion": 2, "mediaType": OCI_INDEX, "manifests": manifests});
     if docker_only {
-        index["mediaType"] =
-            Value::from("application/vnd.docker.distribution.manifest.list.v2+json");
+        index["mediaType"] = Value::from(DOCKER_MANIFEST_LIST);
     } else if !annotations.is_empty() {
         index["annotations"] = Value::Object(annotations);
     }

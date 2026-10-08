@@ -96,41 +96,9 @@ const FRAMEWORK_PACKAGES: [(&str, &str); 4] = [
 /// describe label (`2.3.0+cu121`, `+rocm6.0`) decides; else a CPU image. An
 /// image with both markers gets neither accel nor requires.
 pub fn infer(config: &ImageConfig) -> Inferred {
-    let env = |key: &str| {
-        config
-            .env_value(key)
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-    };
     let mut out = Inferred::default();
     let mut evidence = Vec::new();
-    if let Some(version) = env("CUDA_VERSION") {
-        out.cuda = major_minor(version);
-        evidence.push(format!("CUDA_VERSION={version}"));
-    } else if let Some(floor) = env("NVIDIA_REQUIRE_CUDA").and_then(|value| {
-        // The first `cuda>=X.Y` anywhere in the value, as the platform reads it.
-        value.match_indices("cuda>=").find_map(|(at, _)| {
-            let rest = &value[at + "cuda>=".len()..];
-            let end = rest
-                .find(|c: char| !c.is_ascii_digit() && c != '.')
-                .unwrap_or(rest.len());
-            let mut parts = rest[..end].split('.');
-            match (parts.next(), parts.next()) {
-                (Some(major), Some(minor)) if !major.is_empty() && !minor.is_empty() => {
-                    let minor: String = minor.chars().take_while(char::is_ascii_digit).collect();
-                    Some(format!("{major}.{minor}"))
-                }
-                _ => None,
-            }
-        })
-    }) {
-        evidence.push(format!("NVIDIA_REQUIRE_CUDA cuda>={floor}"));
-        out.cuda = Some(floor);
-    }
-    if let Some(version) = env("ROCM_VERSION") {
-        out.rocm = major_minor(version);
-        evidence.push(format!("ROCM_VERSION={version}"));
-    }
+    read_toolkit_markers(config, &mut out, &mut evidence);
     let versions = framework_versions(config);
     if let Some((_, framework)) = FRAMEWORK_PACKAGES
         .iter()
@@ -142,34 +110,92 @@ pub fn infer(config: &ImageConfig) -> Inferred {
     if out.cuda.is_none()
         && out.rocm.is_none()
         && let Some(torch) = versions.get("torch")
-        && let Some((_, tag)) = torch.rsplit_once('+')
     {
-        let (stack, version) = if let Some(v) = tag.strip_prefix("cu") {
-            ("cu", v)
-        } else if let Some(v) = tag.strip_prefix("rocm") {
-            ("rocm", v)
-        } else {
-            ("", "")
-        };
-        if !version.is_empty() && version.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
-            let version = if stack == "cu" && version.len() >= 3 && !version.contains('.') {
-                // cu121 is CUDA 12.1; cu118 is 11.8.
-                format!(
-                    "{}.{}",
-                    &version[..version.len() - 1],
-                    &version[version.len() - 1..]
-                )
-            } else {
-                version.to_owned()
-            };
-            if stack == "cu" {
-                out.cuda = major_minor(&version);
-            } else if stack == "rocm" {
-                out.rocm = major_minor(&version);
-            }
-            evidence.push(format!("torch {torch}"));
-        }
+        read_torch_build_tag(torch, &mut out, &mut evidence);
     }
+    derive_accel(&mut out, &mut evidence);
+    out.evidence = evidence.join(", ");
+    out
+}
+
+/// The toolkit environment markers: `CUDA_VERSION`, else the floor in
+/// `NVIDIA_REQUIRE_CUDA`, and `ROCM_VERSION`.
+fn read_toolkit_markers(config: &ImageConfig, out: &mut Inferred, evidence: &mut Vec<String>) {
+    let env = |key: &str| {
+        config
+            .env_value(key)
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+    };
+    if let Some(version) = env("CUDA_VERSION") {
+        out.cuda = major_minor(version);
+        evidence.push(format!("CUDA_VERSION={version}"));
+    } else if let Some(floor) = env("NVIDIA_REQUIRE_CUDA").and_then(cuda_floor) {
+        evidence.push(format!("NVIDIA_REQUIRE_CUDA cuda>={floor}"));
+        out.cuda = Some(floor);
+    }
+    if let Some(version) = env("ROCM_VERSION") {
+        out.rocm = major_minor(version);
+        evidence.push(format!("ROCM_VERSION={version}"));
+    }
+}
+
+/// The first `cuda>=X.Y` anywhere in an `NVIDIA_REQUIRE_CUDA` value, as the
+/// platform reads it.
+fn cuda_floor(value: &str) -> Option<String> {
+    value.match_indices("cuda>=").find_map(|(at, _)| {
+        let rest = &value[at + "cuda>=".len()..];
+        let end = rest
+            .find(|c: char| !c.is_ascii_digit() && c != '.')
+            .unwrap_or(rest.len());
+        let mut parts = rest[..end].split('.');
+        match (parts.next(), parts.next()) {
+            (Some(major), Some(minor)) if !major.is_empty() && !minor.is_empty() => {
+                let minor: String = minor.chars().take_while(char::is_ascii_digit).collect();
+                Some(format!("{major}.{minor}"))
+            }
+            _ => None,
+        }
+    })
+}
+
+/// Without toolkit markers, a torch build tag (`+cu121`, `+rocm6.0`) names
+/// the stack.
+fn read_torch_build_tag(torch: &str, out: &mut Inferred, evidence: &mut Vec<String>) {
+    let Some((_, tag)) = torch.rsplit_once('+') else {
+        return;
+    };
+    let (stack, version) = if let Some(v) = tag.strip_prefix("cu") {
+        ("cu", v)
+    } else if let Some(v) = tag.strip_prefix("rocm") {
+        ("rocm", v)
+    } else {
+        ("", "")
+    };
+    if version.is_empty() || !version.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
+        return;
+    }
+    let version = if stack == "cu" && version.len() >= 3 && !version.contains('.') {
+        // cu121 is CUDA 12.1; cu118 is 11.8.
+        format!(
+            "{}.{}",
+            &version[..version.len() - 1],
+            &version[version.len() - 1..]
+        )
+    } else {
+        version.to_owned()
+    };
+    if stack == "cu" {
+        out.cuda = major_minor(&version);
+    } else if stack == "rocm" {
+        out.rocm = major_minor(&version);
+    }
+    evidence.push(format!("torch {torch}"));
+}
+
+/// The `accel` facet and requires from the stack found: CUDA, ROCm, neither
+/// (a CPU image), or both (nothing).
+fn derive_accel(out: &mut Inferred, evidence: &mut Vec<String>) {
     match (&out.cuda, &out.rocm) {
         (Some(cuda), None) => {
             out.facets.insert("accel".to_owned(), "cuda".to_owned());
@@ -197,8 +223,6 @@ pub fn infer(config: &ImageConfig) -> Inferred {
         // nothing reliable, so neither accel nor requires is guessed.
         (Some(_), Some(_)) => evidence.push("both CUDA and ROCm markers, so nothing".to_owned()),
     }
-    out.evidence = evidence.join(", ");
-    out
 }
 
 pub(super) fn marker_vendor_warning(

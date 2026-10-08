@@ -7,17 +7,10 @@ use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
 use super::imagetools::Imagetools;
+use super::media::{ATTESTATION, DOCKER_MEDIA_PREFIX, REFERENCE_DIGEST, REFERENCE_TYPE};
 use super::tags::check_tag;
 use crate::image_check::{ImageConfig, PACKAGE_LABEL};
 use crate::variant;
-
-/// The annotations BuildKit puts on an attestation manifest inside an index:
-/// its type, and the digest of the image it describes.
-const REFERENCE_TYPE: &str = "vnd.docker.reference.type";
-const REFERENCE_DIGEST: &str = "vnd.docker.reference.digest";
-const ATTESTATION: &str = "attestation-manifest";
-/// The media-type prefix of Docker's own (non-OCI) manifests.
-pub(super) const DOCKER_MEDIA_PREFIX: &str = "application/vnd.docker.";
 
 /// An image reference split the way docker reads it:
 /// `[host[:port]/]path[:tag][@digest]`.
@@ -108,6 +101,35 @@ impl Child {
 /// attestation manifests, nothing else.
 pub(super) fn resolve_source(tools: &impl Imagetools, source: &str) -> Result<Child> {
     let reference = Reference::parse(source)?;
+    let (manifest, digest) = read_manifest(tools, source)?;
+    let pinned = format!("{}@{digest}", reference.repository);
+    let selected = select_image(source, &manifest, digest)?;
+    let config = read_config(tools, source, &reference, &selected.digest)?;
+    let platform = checked_platform(source, selected.platform, &config)?;
+    require_linux(source, &config, &platform)?;
+    Ok(Child {
+        source: source.to_owned(),
+        pinned,
+        image_digest: selected.digest,
+        media_type: selected.media_type,
+        platform,
+        config,
+        attestations: selected.attestations,
+        index_annotation: index_annotation(&manifest),
+    })
+}
+
+/// The image a source holds, picked out of its index when it has one.
+struct Selected {
+    digest: String,
+    media_type: String,
+    /// The index descriptor's platform; `None` for a bare manifest.
+    platform: Option<String>,
+    attestations: Vec<Attestation>,
+}
+
+/// The source's manifest (an index or a bare image manifest) and its digest.
+fn read_manifest(tools: &impl Imagetools, source: &str) -> Result<(Value, String)> {
     let manifest: Value = serde_json::from_str(&tools.manifest(source)?)
         .with_context(|| format!("parsing the manifest of {source}"))?;
     let digest = manifest
@@ -115,135 +137,183 @@ pub(super) fn resolve_source(tools: &impl Imagetools, source: &str) -> Result<Ch
         .and_then(Value::as_str)
         .with_context(|| format!("the manifest of {source} carries no digest"))?
         .to_owned();
-    let media_type = |value: &Value| {
-        value
-            .get("mediaType")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned()
+    Ok((manifest, digest))
+}
+
+/// A bare manifest is its own image; an index must hold exactly one linux
+/// image, besides the attestations it carries along.
+fn select_image(source: &str, manifest: &Value, digest: String) -> Result<Selected> {
+    let Some(entries) = manifest.get("manifests").and_then(Value::as_array) else {
+        return Ok(Selected {
+            digest,
+            media_type: media_type(manifest),
+            platform: None,
+            attestations: Vec::new(),
+        });
     };
-    let pinned = format!("{}@{digest}", reference.repository);
+    let (images, attestations) = split_index(source, entries)?;
+    let image = one_image(source, images)?;
+    Ok(Selected {
+        digest: image.digest,
+        media_type: image.media_type,
+        platform: Some(image.platform),
+        attestations,
+    })
+}
+
+/// An image entry of a source's index.
+struct IndexImage {
+    digest: String,
+    media_type: String,
+    platform: String,
+}
+
+/// Sort an index's entries into images and attestations: every entry needs a
+/// digest, and every image a linux platform.
+fn split_index(source: &str, entries: &[Value]) -> Result<(Vec<IndexImage>, Vec<Attestation>)> {
+    let mut images = Vec::new();
     let mut attestations = Vec::new();
-    let (image_digest, image_media_type, platform) = match manifest
-        .get("manifests")
-        .and_then(Value::as_array)
-    {
-        None => (digest, media_type(&manifest), None),
-        Some(entries) => {
-            let mut images = Vec::new();
-            for entry in entries {
-                let annotation = |key: &str| {
-                    entry
-                        .get("annotations")
-                        .and_then(|annotations| annotations.get(key))
-                        .and_then(Value::as_str)
-                };
-                let digest = entry
-                    .get("digest")
-                    .and_then(Value::as_str)
-                    .with_context(|| format!("an entry in the index of {source} has no digest"))?;
-                if annotation(REFERENCE_TYPE) == Some(ATTESTATION) {
-                    attestations.push(Attestation {
-                        digest: digest.to_owned(),
-                        media_type: media_type(entry),
-                        subject: annotation(REFERENCE_DIGEST).map(str::to_owned),
-                    });
-                    continue;
-                }
-                let platform = entry.get("platform").map(platform_name).unwrap_or_default();
-                if !platform.starts_with("linux/") {
-                    bail!(
-                        "{source} holds a {} image; the platform runs linux images only (build \
-                             with --platform linux/amd64)",
-                        if platform.is_empty() {
-                            "platform-less"
-                        } else {
-                            platform.as_str()
-                        }
-                    );
-                }
-                images.push((digest.to_owned(), media_type(entry), platform));
-            }
-            match images.len() {
-                1 => {
-                    let (digest, media_type, platform) = images.swap_remove(0);
-                    (digest, media_type, Some(platform))
-                }
-                0 => bail!("{source} is an index with no image in it"),
-                n => bail!(
-                    "{source} is an index of {n} images ({}); each source must be one image, \
-                         since each child of the published index is one variant",
-                    images
-                        .iter()
-                        .map(|(_, _, platform)| platform.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-            }
+    for entry in entries {
+        let annotation = |key: &str| {
+            entry
+                .get("annotations")
+                .and_then(|annotations| annotations.get(key))
+                .and_then(Value::as_str)
+        };
+        let digest = entry
+            .get("digest")
+            .and_then(Value::as_str)
+            .with_context(|| format!("an entry in the index of {source} has no digest"))?;
+        if annotation(REFERENCE_TYPE) == Some(ATTESTATION) {
+            attestations.push(Attestation {
+                digest: digest.to_owned(),
+                media_type: media_type(entry),
+                subject: annotation(REFERENCE_DIGEST).map(str::to_owned),
+            });
+            continue;
         }
-    };
-    let config = ImageConfig::from_oci_config(
+        let platform = entry.get("platform").map(platform_name).unwrap_or_default();
+        if !platform.starts_with("linux/") {
+            bail!(
+                "{source} holds a {} image; the platform runs linux images only (build \
+                 with --platform linux/amd64)",
+                platform_or_less(&platform)
+            );
+        }
+        images.push(IndexImage {
+            digest: digest.to_owned(),
+            media_type: media_type(entry),
+            platform,
+        });
+    }
+    Ok((images, attestations))
+}
+
+/// Each source is one variant, so its index holds exactly one image.
+fn one_image(source: &str, mut images: Vec<IndexImage>) -> Result<IndexImage> {
+    match images.len() {
+        1 => Ok(images.swap_remove(0)),
+        0 => bail!("{source} is an index with no image in it"),
+        n => bail!(
+            "{source} is an index of {n} images ({}); each source must be one image, \
+             since each child of the published index is one variant",
+            images
+                .iter()
+                .map(|image| image.platform.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+/// The selected image's config, which must parse.
+fn read_config(
+    tools: &impl Imagetools,
+    source: &str,
+    reference: &Reference,
+    image_digest: &str,
+) -> Result<ImageConfig> {
+    ImageConfig::from_oci_config(
         &tools.config(&format!("{}@{image_digest}", reference.repository))?,
     )
     .map_err(anyhow::Error::msg)
-    .with_context(|| format!("reading the image config of {source}"))?;
+    .with_context(|| format!("reading the image config of {source}"))
+}
+
+/// The platform schedules a child by its descriptor and the runtime runs the
+/// config, so the two must name the same platform: eligibility (and the
+/// default row) is decided from it. Returns the descriptor's platform, else
+/// the config's.
+fn checked_platform(
+    source: &str,
+    declared: Option<String>,
+    config: &ImageConfig,
+) -> Result<String> {
     let configured = if config.os.is_empty() {
         String::new()
     } else {
         format!("{}/{}", config.os, config.architecture)
     };
-    // The platform schedules a child by its descriptor and the runtime runs
-    // the config, so the two must name the same platform: eligibility (and
-    // the default row) is decided from it.
-    let platform = match platform {
-        Some(declared) => {
-            let os_architecture = declared
-                .splitn(3, '/')
-                .take(2)
-                .collect::<Vec<_>>()
-                .join("/");
-            if os_architecture != configured {
-                bail!(
-                    "{source}: its index declares the image {declared}, but the image config says \
-                     {}; rebuild it so they agree",
-                    if configured.is_empty() {
-                        "no platform"
-                    } else {
-                        configured.as_str()
-                    }
-                );
-            }
-            declared
-        }
-        None => configured,
+    let Some(declared) = declared else {
+        return Ok(configured);
     };
+    let os_architecture = declared
+        .splitn(3, '/')
+        .take(2)
+        .collect::<Vec<_>>()
+        .join("/");
+    if os_architecture != configured {
+        bail!(
+            "{source}: its index declares the image {declared}, but the image config says \
+             {}; rebuild it so they agree",
+            if configured.is_empty() {
+                "no platform"
+            } else {
+                configured.as_str()
+            }
+        );
+    }
+    Ok(declared)
+}
+
+/// The platform runs linux images only.
+fn require_linux(source: &str, config: &ImageConfig, platform: &str) -> Result<()> {
     if config.os != "linux" {
         bail!(
             "{source} is a {} image; the platform runs linux images only (build with \
              --platform linux/amd64)",
-            if platform.is_empty() {
-                "platform-less"
-            } else {
-                platform.as_str()
-            }
+            platform_or_less(platform)
         );
     }
-    let index_annotation = manifest
+    Ok(())
+}
+
+/// The `dev.rlmesh.package` annotation on the source's own index; a bare
+/// manifest has none.
+fn index_annotation(manifest: &Value) -> Option<String> {
+    manifest
         .get("manifests")
         .and(manifest.get("annotations"))
         .and_then(|annotations| annotations.get(PACKAGE_LABEL))
         .and_then(Value::as_str)
-        .map(str::to_owned);
-    Ok(Child {
-        source: source.to_owned(),
-        pinned,
-        image_digest,
-        media_type: image_media_type,
-        platform,
-        config,
-        attestations,
-        index_annotation,
-    })
+        .map(str::to_owned)
+}
+
+fn media_type(value: &Value) -> String {
+    value
+        .get("mediaType")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// A platform for a message: `platform-less` when there is none.
+fn platform_or_less(platform: &str) -> &str {
+    if platform.is_empty() {
+        "platform-less"
+    } else {
+        platform
+    }
 }
 
 /// Every carried attestation must describe one of the version's children: an
@@ -314,8 +384,8 @@ fn platform_name(platform: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::publish::media::OCI_INDEX;
     use crate::publish::testing::*;
-    use crate::publish::validate::OCI_INDEX;
     use serde_json::json;
 
     #[test]

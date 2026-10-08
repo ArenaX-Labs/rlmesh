@@ -6,13 +6,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value};
 
+use super::media::OCI_INDEX;
 use super::source::Child;
 use crate::image_check::{
     self, CheckReport, DESCRIBE_LABEL, ImageConfig, Kind, PACKAGE_LABEL, parse_serve_command,
 };
 use crate::variant::{self, ComputeBlocks, Requires};
-
-pub(super) const OCI_INDEX: &str = "application/vnd.oci.image.index.v1+json";
 
 /// A child with its package label read.
 #[derive(Debug, Clone)]
@@ -67,118 +66,193 @@ pub(crate) fn check_variants(
     let mut warnings = Vec::new();
     let mut errors = Vec::new();
     for child in children {
-        let source = child.source.clone();
-        let Some(raw) = child
-            .config
-            .labels
-            .get(PACKAGE_LABEL)
-            .filter(|raw| !raw.trim().is_empty())
-        else {
-            errors.push(format!(
-                "{source}: no {PACKAGE_LABEL} label; each child needs one declaring its \
-                 variant.key"
-            ));
-            continue;
-        };
-        let package: Map<String, Value> = match serde_json::from_str(raw) {
-            Ok(Value::Object(package)) => package,
-            Ok(_) => {
-                errors.push(format!("{source}: {PACKAGE_LABEL} must be a JSON object"));
-                continue;
-            }
-            Err(err) => {
-                errors.push(format!(
-                    "{source}: {PACKAGE_LABEL} is not valid JSON: {err}"
-                ));
-                continue;
-            }
-        };
-        if package.get("schemaVersion").and_then(Value::as_u64) != Some(1) {
-            errors.push(format!(
-                "{source}: {PACKAGE_LABEL} schemaVersion {} is not the supported version 1",
-                package.get("schemaVersion").unwrap_or(&Value::Null)
-            ));
-        }
-        let report: CheckReport = variant::check_variant(&child.config);
-        errors.extend(report.failed.iter().map(|m| format!("{source}: {m}")));
-        warnings.extend(report.warnings.iter().map(|m| format!("{source}: {m}")));
-        let (blocks, _) = variant::parse_compute_blocks(&package);
-        let Some(key) = blocks.variant.as_ref().and_then(|v| v.key.clone()) else {
-            if blocks.variant.is_none() {
-                errors.push(format!(
-                    "{source}: {PACKAGE_LABEL} declares no variant block; each child of a \
-                     version is addressed by its variant.key"
-                ));
-            }
-            continue;
-        };
-        let kind = image_kind(&child.config);
-        if kind.is_none() {
-            warnings.push(format!(
-                "{source}: kind unknown (no {DESCRIBE_LABEL} label and the command does not \
-                 run -m rlmesh.serve); the platform's probe decides it"
-            ));
-        }
-        if !child.selectable() {
-            warnings.push(format!(
-                "{source}: {} image; recorded with status excluded and never selected, since \
-                 the fleet runs linux/amd64",
-                child.platform
-            ));
-        }
-        let inferred = variant::infer(&child.config);
-        let (requires, facets) = variant::effective(&blocks, &inferred);
-        let requires_inferred = blocks
-            .variant
-            .as_ref()
-            .is_some_and(|variant| variant.requires.is_none());
-        let rows = blocks.row_keys(&key);
-        variants.push(VariantImage {
-            child,
-            key,
-            kind,
-            blocks,
-            requires,
-            requires_inferred,
-            facets,
-            rows,
-        });
+        variants.extend(check_child(child, &mut warnings, &mut errors));
     }
+    errors.extend(duplicate_keys(&variants));
+    errors.extend(colliding_rows(&variants));
+    errors.extend(mixed_kinds(&variants));
+    errors.extend(unschedulable(&variants));
+    (variants, warnings, errors)
+}
+
+/// Check one child on its own, appending its problems in order; `None` when
+/// it has no usable `variant.key`.
+fn check_child(
+    child: Child,
+    warnings: &mut Vec<String>,
+    errors: &mut Vec<String>,
+) -> Option<VariantImage> {
+    let source = child.source.clone();
+    let package = match package_object(&child) {
+        Ok(package) => package,
+        Err(error) => {
+            errors.push(error);
+            return None;
+        }
+    };
+    errors.extend(unsupported_schema_version(&source, &package));
+    let report: CheckReport = variant::check_variant(&child.config);
+    errors.extend(report.failed.iter().map(|m| format!("{source}: {m}")));
+    warnings.extend(report.warnings.iter().map(|m| format!("{source}: {m}")));
+    let (blocks, _) = variant::parse_compute_blocks(&package);
+    let Some(key) = blocks.variant.as_ref().and_then(|v| v.key.clone()) else {
+        errors.extend(missing_variant_block(&source, &blocks));
+        return None;
+    };
+    let kind = image_kind(&child.config);
+    warnings.extend(unknown_kind(&source, kind));
+    warnings.extend(excluded_platform(&child));
+    Some(variant_image(child, key, kind, blocks))
+}
+
+/// Each child carries a non-empty package label holding a JSON object.
+fn package_object(child: &Child) -> Result<Map<String, Value>, String> {
+    let source = &child.source;
+    let Some(raw) = child
+        .config
+        .labels
+        .get(PACKAGE_LABEL)
+        .filter(|raw| !raw.trim().is_empty())
+    else {
+        return Err(format!(
+            "{source}: no {PACKAGE_LABEL} label; each child needs one declaring its \
+             variant.key"
+        ));
+    };
+    match serde_json::from_str(raw) {
+        Ok(Value::Object(package)) => Ok(package),
+        Ok(_) => Err(format!("{source}: {PACKAGE_LABEL} must be a JSON object")),
+        Err(err) => Err(format!(
+            "{source}: {PACKAGE_LABEL} is not valid JSON: {err}"
+        )),
+    }
+}
+
+/// The package label is `schemaVersion` 1.
+fn unsupported_schema_version(source: &str, package: &Map<String, Value>) -> Option<String> {
+    (package.get("schemaVersion").and_then(Value::as_u64) != Some(1)).then(|| {
+        format!(
+            "{source}: {PACKAGE_LABEL} schemaVersion {} is not the supported version 1",
+            package.get("schemaVersion").unwrap_or(&Value::Null)
+        )
+    })
+}
+
+/// Each child declares a `variant` block; a block without a valid key is
+/// already reported by the declaration checks.
+fn missing_variant_block(source: &str, blocks: &ComputeBlocks) -> Option<String> {
+    blocks.variant.is_none().then(|| {
+        format!(
+            "{source}: {PACKAGE_LABEL} declares no variant block; each child of a \
+             version is addressed by its variant.key"
+        )
+    })
+}
+
+/// Warn when neither the describe label nor the command says what the image
+/// serves.
+fn unknown_kind(source: &str, kind: Option<Kind>) -> Option<String> {
+    kind.is_none().then(|| {
+        format!(
+            "{source}: kind unknown (no {DESCRIBE_LABEL} label and the command does not \
+             run -m rlmesh.serve); the platform's probe decides it"
+        )
+    })
+}
+
+/// Warn that a child the fleet cannot run is recorded but never selected.
+fn excluded_platform(child: &Child) -> Option<String> {
+    (!child.selectable()).then(|| {
+        format!(
+            "{}: {} image; recorded with status excluded and never selected, since \
+             the fleet runs linux/amd64",
+            child.source, child.platform
+        )
+    })
+}
+
+/// The variant a checked child records: its requires and facets as the
+/// platform derives them, and its row keys.
+fn variant_image(
+    child: Child,
+    key: String,
+    kind: Option<Kind>,
+    blocks: ComputeBlocks,
+) -> VariantImage {
+    let inferred = variant::infer(&child.config);
+    let (requires, facets) = variant::effective(&blocks, &inferred);
+    let requires_inferred = blocks
+        .variant
+        .as_ref()
+        .is_some_and(|variant| variant.requires.is_none());
+    let rows = blocks.row_keys(&key);
+    VariantImage {
+        child,
+        key,
+        kind,
+        blocks,
+        requires,
+        requires_inferred,
+        facets,
+        rows,
+    }
+}
+
+/// `variant.key`s are unique within a version.
+fn duplicate_keys(variants: &[VariantImage]) -> Vec<String> {
     let mut by_key: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-    let mut by_row: BTreeMap<&str, Vec<&VariantImage>> = BTreeMap::new();
-    for variant in &variants {
+    for variant in variants {
         by_key
             .entry(&variant.key)
             .or_default()
             .push(&variant.child.source);
+    }
+    by_key
+        .iter()
+        .filter(|(_, sources)| sources.len() > 1)
+        .map(|(key, sources)| {
+            format!(
+                "variant.key {key:?} is declared by {}; keys must be unique within a version",
+                sources.join(" and ")
+            )
+        })
+        .collect()
+}
+
+/// Derived row keys are unique within a version: a profile row must not
+/// collide with another child's key or row.
+fn colliding_rows(variants: &[VariantImage]) -> Vec<String> {
+    let mut by_row: BTreeMap<&str, Vec<&VariantImage>> = BTreeMap::new();
+    for variant in variants {
         for row in &variant.rows {
             by_row.entry(row).or_default().push(variant);
         }
     }
-    for (key, sources) in by_key.iter().filter(|(_, sources)| sources.len() > 1) {
-        errors.push(format!(
-            "variant.key {key:?} is declared by {}; keys must be unique within a version",
-            sources.join(" and ")
-        ));
-    }
-    for (row, owners) in &by_row {
-        let keys: BTreeSet<&str> = owners.iter().map(|v| v.key.as_str()).collect();
-        // A shared variant.key was reported above; this is a profile row
-        // colliding with another child's key or row.
-        if owners.len() > 1 && keys.len() > 1 {
-            errors.push(format!(
-                "row key {row:?} is derived by {}; rows are <variant.key>-<profile.key>, so \
-                 rename a key",
-                owners
-                    .iter()
-                    .map(|v| v.child.source.as_str())
-                    .collect::<Vec<_>>()
-                    .join(" and ")
-            ));
-        }
-    }
+    by_row
+        .iter()
+        .filter_map(|(row, owners)| {
+            let keys: BTreeSet<&str> = owners.iter().map(|v| v.key.as_str()).collect();
+            // A shared variant.key is reported by `duplicate_keys`; this is a
+            // profile row colliding with another child's key or row.
+            (owners.len() > 1 && keys.len() > 1).then(|| {
+                format!(
+                    "row key {row:?} is derived by {}; rows are <variant.key>-<profile.key>, so \
+                     rename a key",
+                    owners
+                        .iter()
+                        .map(|v| v.child.source.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" and ")
+                )
+            })
+        })
+        .collect()
+}
+
+/// Every variant of a version serves the same kind (unknown kinds aside).
+fn mixed_kinds(variants: &[VariantImage]) -> Option<String> {
     let mut by_kind: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-    for variant in &variants {
+    for variant in variants {
         if let Some(kind) = variant.kind {
             by_kind
                 .entry(kind.name())
@@ -186,22 +260,22 @@ pub(crate) fn check_variants(
                 .push(&variant.child.source);
         }
     }
-    if by_kind.len() > 1 {
-        errors.push(format!(
+    (by_kind.len() > 1).then(|| {
+        format!(
             "mixed kinds: {}; every variant of a version serves the same kind",
             by_kind
                 .iter()
                 .map(|(kind, sources)| format!("{kind} ({})", sources.join(", ")))
                 .collect::<Vec<_>>()
                 .join(" vs ")
-        ));
-    }
-    if !variants.is_empty() && default_row(&variants).is_none() {
-        errors.push(
-            "no child is linux/amd64, so nothing in this version can be scheduled".to_owned(),
-        );
-    }
-    (variants, warnings, errors)
+        )
+    })
+}
+
+/// At least one child is `linux/amd64`, so the version has a default row.
+fn unschedulable(variants: &[VariantImage]) -> Option<String> {
+    (!variants.is_empty() && default_row(variants).is_none())
+        .then(|| "no child is linux/amd64, so nothing in this version can be scheduled".to_owned())
 }
 
 /// Read `--index-package`: a JSON object of version-level package data.

@@ -221,22 +221,7 @@ fn parse_profile(index: usize, entry: &Value, report: &mut CheckReport) -> Optio
             .push(format!("profiles: profiles[{index}] is not an object"));
         return None;
     };
-    let key = match raw.get("key").and_then(Value::as_str) {
-        Some(key) if valid_key(key) => key.to_owned(),
-        Some(key) if !key.is_empty() => {
-            report.failed.push(format!(
-                "profiles: profiles[{index}].key {key:?} is not 1-32 lowercase letters, digits or \
-                 dashes"
-            ));
-            return None;
-        }
-        _ => {
-            report
-                .failed
-                .push(format!("profiles: profiles[{index}].key is required"));
-            return None;
-        }
-    };
+    let key = profile_key(index, raw, report)?;
     let scope = format!("profiles: {key}:");
     let mut profile = Profile {
         key,
@@ -256,46 +241,11 @@ fn parse_profile(index: usize, entry: &Value, report: &mut CheckReport) -> Optio
             .failed
             .extend(problems.into_iter().map(|p| format!("{scope} {p}")));
     }
-    match raw.get("envVars") {
-        None => {}
-        Some(Value::Object(vars)) => {
-            for (name, value) in vars {
-                let Some(value) = value.as_str() else {
-                    report
-                        .failed
-                        .push(format!("{scope} envVars {name} {value} is not a string"));
-                    continue;
-                };
-                if !is_env_name(name) {
-                    report.warnings.push(format!(
-                        "{scope} envVars name {name:?} is not a portable environment variable name"
-                    ));
-                }
-                if name == ADDRESS_ENV {
-                    report.warnings.push(format!(
-                        "{scope} envVars sets {ADDRESS_ENV}; the platform assigns it per pod, so it \
-                         has no effect there"
-                    ));
-                }
-                profile.env_vars.insert(name.clone(), value.to_owned());
-            }
-        }
-        Some(_) => report
-            .failed
-            .push(format!("{scope} envVars is not an object of strings")),
+    if let Some(vars) = raw.get("envVars") {
+        profile.env_vars = parse_env_vars(&scope, vars, report);
     }
-    match raw.get("gpu") {
-        None => {}
-        Some(Value::Object(gpu)) => match gpu.get("count") {
-            Some(count) => match count.as_u64().filter(|n| *n <= MAX_PROFILE_GPUS) {
-                Some(count) => profile.gpu_count = Some(count),
-                None => report.failed.push(format!(
-                    "{scope} gpu.count {count} is not in [0, {MAX_PROFILE_GPUS}]"
-                )),
-            },
-            None => report.failed.push(format!("{scope} gpu has no count")),
-        },
-        Some(_) => report.failed.push(format!("{scope} gpu is not an object")),
+    if let Some(gpu) = raw.get("gpu") {
+        profile.gpu_count = parse_gpu(&scope, gpu, report);
     }
     if let Some(requires) = raw.get("requires") {
         let (requires, problems) = parse_requires(requires);
@@ -314,6 +264,78 @@ fn parse_profile(index: usize, entry: &Value, report: &mut CheckReport) -> Optio
         report.failed.push(format!("{scope} unknown key {field:?}"));
     }
     Some(profile)
+}
+
+/// A profile needs a valid `key`; without one the entry is dropped.
+fn profile_key(index: usize, raw: &Map<String, Value>, report: &mut CheckReport) -> Option<String> {
+    match raw.get("key").and_then(Value::as_str) {
+        Some(key) if valid_key(key) => Some(key.to_owned()),
+        Some(key) if !key.is_empty() => {
+            report.failed.push(format!(
+                "profiles: profiles[{index}].key {key:?} is not 1-32 lowercase letters, digits or \
+                 dashes"
+            ));
+            None
+        }
+        _ => {
+            report
+                .failed
+                .push(format!("profiles: profiles[{index}].key is required"));
+            None
+        }
+    }
+}
+
+/// `envVars` is an object of strings; names should be portable, and the
+/// platform's own address variable has no effect.
+fn parse_env_vars(scope: &str, vars: &Value, report: &mut CheckReport) -> BTreeMap<String, String> {
+    let mut env_vars = BTreeMap::new();
+    let Value::Object(vars) = vars else {
+        report
+            .failed
+            .push(format!("{scope} envVars is not an object of strings"));
+        return env_vars;
+    };
+    for (name, value) in vars {
+        let Some(value) = value.as_str() else {
+            report
+                .failed
+                .push(format!("{scope} envVars {name} {value} is not a string"));
+            continue;
+        };
+        if !is_env_name(name) {
+            report.warnings.push(format!(
+                "{scope} envVars name {name:?} is not a portable environment variable name"
+            ));
+        }
+        if name == ADDRESS_ENV {
+            report.warnings.push(format!(
+                "{scope} envVars sets {ADDRESS_ENV}; the platform assigns it per pod, so it \
+                 has no effect there"
+            ));
+        }
+        env_vars.insert(name.clone(), value.to_owned());
+    }
+    env_vars
+}
+
+/// `gpu` is an object whose `count` lies in `[0, MAX_PROFILE_GPUS]`.
+fn parse_gpu(scope: &str, gpu: &Value, report: &mut CheckReport) -> Option<u64> {
+    let Value::Object(gpu) = gpu else {
+        report.failed.push(format!("{scope} gpu is not an object"));
+        return None;
+    };
+    let Some(count) = gpu.get("count") else {
+        report.failed.push(format!("{scope} gpu has no count"));
+        return None;
+    };
+    let valid = count.as_u64().filter(|n| *n <= MAX_PROFILE_GPUS);
+    if valid.is_none() {
+        report.failed.push(format!(
+            "{scope} gpu.count {count} is not in [0, {MAX_PROFILE_GPUS}]"
+        ));
+    }
+    valid
 }
 
 fn is_env_name(name: &str) -> bool {

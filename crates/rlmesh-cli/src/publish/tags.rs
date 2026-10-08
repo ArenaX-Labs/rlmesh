@@ -201,8 +201,8 @@ pub(super) fn report_tags(
 mod tests {
     use super::*;
     use crate::publish::imagetools::Imagetools;
+    use crate::publish::media::OCI_INDEX;
     use crate::publish::testing::*;
-    use crate::publish::validate::OCI_INDEX;
     use serde_json::json;
 
     /// The `Tags:` line of `tag` in a publish's output.
