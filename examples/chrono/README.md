@@ -62,6 +62,8 @@ RENDERER=vulkan CHRONO_DIR=~/opt/chrono EIGEN_DIR=~/opt/eigen VULKAN_DIR=~/opt/v
 
 The renderer picks a discrete GPU, then an integrated one, then a CPU implementation. Force Mesa's lavapipe with `VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json`. The env prints the device it picked (`camera: vulkan (NVIDIA GeForce RTX 3080 Ti, discrete GPU)`), and each step's `info["observe_ms"]` times the camera.
 
+The Vulkan build also makes `chrono_reach_render_test` (`ctest --test-dir target/chrono-env` runs it). It renders scenes far larger than the robot's, so the instance buffer grows past its initial 256 instances three times, at several frame sizes, checks each frame against the ray tracer, and checks that refused frame sizes leave the renderer working. Run it under the Khronos validation layer with `VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation` (add `VK_ADD_LAYER_PATH` when the layer is not installed system-wide).
+
 ## No Python at all
 
 `chrono_reach_model` is the same scripted policy written in C++ against `rlmesh.hpp`'s `Model`, so both sides of the wire are native:
@@ -113,6 +115,7 @@ docker run --rm --device nvidia.com/gpu=all -p 50051:50051 chrono-reach:vulkan -
 - `src/renderer.{h,cpp}`: the renderer interface and `--renderer` backends.
 - `src/raytracer.h`: the CPU camera.
 - `src/vulkan_renderer.cpp`, `shaders/`: the Vulkan camera.
+- `src/render_test.cpp`: the Vulkan camera's test against the ray tracer.
 - `src/main.cpp`: arguments, `rlmesh::EnvServer`, `--describe`, and signal handling.
 - `src/scripted_model.cpp`: the scripted policy as a C++ model.
 - `run_model.py`: the Python model, with its `ModelSpec` and a scripted or random policy.

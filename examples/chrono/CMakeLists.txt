@@ -26,11 +26,11 @@ find_package(Threads REQUIRED)
 # headers and loader, and glslangValidator to compile the shaders to SPIR-V.
 option(CHRONO_REACH_VULKAN "Build the offscreen Vulkan renderer" OFF)
 
-add_executable(chrono_reach_env src/main.cpp src/reach_env.cpp src/renderer.cpp)
-target_include_directories(chrono_reach_env PRIVATE "${RLMESH_INCLUDE_DIR}")
-target_link_libraries(chrono_reach_env PRIVATE
-  Chrono::Chrono_core Chrono::ChronoModels_robot "${RLMESH_CAPI}" Threads::Threads ${CMAKE_DL_LIBS})
-target_compile_options(chrono_reach_env PRIVATE -Wall -Wextra)
+# The camera (renderer.cpp and its backends), shared by the env and the
+# renderer's test. It needs only scene.h: no Chrono, no RLMesh.
+add_library(chrono_reach_camera STATIC src/renderer.cpp)
+target_include_directories(chrono_reach_camera PUBLIC src)
+target_compile_options(chrono_reach_camera PRIVATE -Wall -Wextra)
 if(CHRONO_REACH_VULKAN)
   find_package(Vulkan 1.1 REQUIRED)
   find_program(GLSLANG_VALIDATOR NAMES glslangValidator REQUIRED)
@@ -54,14 +54,21 @@ if(CHRONO_REACH_VULKAN)
       VERBATIM)
     list(APPEND shader_headers "${header}")
   endforeach()
-  target_sources(chrono_reach_env PRIVATE src/vulkan_renderer.cpp ${shader_headers})
+  target_sources(chrono_reach_camera PRIVATE src/vulkan_renderer.cpp ${shader_headers})
   # `VkFooInfo info{VK_STRUCTURE_TYPE_...}` zero-fills the rest on purpose.
   set_source_files_properties(src/vulkan_renderer.cpp PROPERTIES
     COMPILE_OPTIONS -Wno-missing-field-initializers)
-  target_include_directories(chrono_reach_env PRIVATE "${shader_out}")
-  target_compile_definitions(chrono_reach_env PRIVATE CHRONO_REACH_VULKAN)
-  target_link_libraries(chrono_reach_env PRIVATE Vulkan::Vulkan)
+  target_include_directories(chrono_reach_camera PRIVATE "${shader_out}")
+  target_compile_definitions(chrono_reach_camera PRIVATE CHRONO_REACH_VULKAN)
+  target_link_libraries(chrono_reach_camera PRIVATE Vulkan::Vulkan)
 endif()
+
+add_executable(chrono_reach_env src/main.cpp src/reach_env.cpp)
+target_include_directories(chrono_reach_env PRIVATE "${RLMESH_INCLUDE_DIR}")
+target_link_libraries(chrono_reach_env PRIVATE
+  chrono_reach_camera Chrono::Chrono_core Chrono::ChronoModels_robot "${RLMESH_CAPI}"
+  Threads::Threads ${CMAKE_DL_LIBS})
+target_compile_options(chrono_reach_env PRIVATE -Wall -Wextra)
 set_target_properties(chrono_reach_env PROPERTIES
   BUILD_RPATH "${RLMESH_LIBRARY_DIR}"
   INSTALL_RPATH "$ORIGIN/../lib")
@@ -76,3 +83,13 @@ set_target_properties(chrono_reach_model PROPERTIES
   INSTALL_RPATH "$ORIGIN/../lib")
 
 install(TARGETS chrono_reach_env chrono_reach_model RUNTIME DESTINATION bin)
+
+# The Vulkan renderer's test: scenes that grow its instance buffer, several
+# frame sizes, and bad sizes, checked against the ray tracer. `ctest` runs it.
+if(CHRONO_REACH_VULKAN)
+  enable_testing()
+  add_executable(chrono_reach_render_test src/render_test.cpp)
+  target_link_libraries(chrono_reach_render_test PRIVATE chrono_reach_camera)
+  target_compile_options(chrono_reach_render_test PRIVATE -Wall -Wextra)
+  add_test(NAME render_test COMMAND chrono_reach_render_test)
+endif()

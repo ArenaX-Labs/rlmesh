@@ -18,6 +18,7 @@
 #include <pthread.h>
 #include <signal.h>
 
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -39,16 +40,60 @@ void usage() {
                "       chrono_reach_env --describe [--image-size N] [--max-steps N]\n");
 }
 
+// The stop signals, plus the signal that wakes the waiter when serve returns
+// on its own. main blocks them all before any thread exists.
+sigset_t waited_signals() {
+  sigset_t set;
+  sigemptyset(&set);
+  sigaddset(&set, SIGINT);
+  sigaddset(&set, SIGTERM);
+  sigaddset(&set, SIGUSR1);
+  return set;
+}
+
+// Waits for SIGINT / SIGTERM and cancels the server. Destroying it wakes the
+// thread and joins it, so it never outlives the server it cancels.
+class SignalWaiter {
+ public:
+  explicit SignalWaiter(rlmesh::EnvServer& server) : thread_([this, &server] { wait(server); }) {}
+  ~SignalWaiter() {
+    done_.store(true);
+    // A signal sent to the thread itself, so it reaches this waiter's sigwait
+    // and no other. Harmless if the thread already returned.
+    pthread_kill(thread_.native_handle(), SIGUSR1);
+    thread_.join();
+  }
+  SignalWaiter(const SignalWaiter&) = delete;
+  SignalWaiter& operator=(const SignalWaiter&) = delete;
+
+ private:
+  void wait(rlmesh::EnvServer& server) {
+    const sigset_t set = waited_signals();
+    for (;;) {
+      int signal = 0;
+      if (sigwait(&set, &signal) != 0) continue;
+      if (signal == SIGUSR1) {
+        if (done_.load()) return;
+        continue;  // a stray SIGUSR1 from outside: not ours
+      }
+      std::printf("received %s, shutting down\n", signal == SIGINT ? "SIGINT" : "SIGTERM");
+      std::fflush(stdout);
+      server.cancel();
+      return;
+    }
+  }
+
+  std::atomic<bool> done_{false};
+  std::thread thread_;
+};
+
 }  // namespace
 
 int main(int argc, char** argv) {
   // Block the stop signals before any thread exists, so every thread the
   // runtime spawns inherits the mask and only the waiter below receives them.
-  sigset_t stop_signals;
-  sigemptyset(&stop_signals);
-  sigaddset(&stop_signals, SIGINT);
-  sigaddset(&stop_signals, SIGTERM);
-  pthread_sigmask(SIG_BLOCK, &stop_signals, nullptr);
+  const sigset_t signals = waited_signals();
+  pthread_sigmask(SIG_BLOCK, &signals, nullptr);
 
   const char* env_address = std::getenv("RLMESH_ADDRESS");
   std::string address = env_address != nullptr ? env_address : "0.0.0.0:50051";
@@ -121,17 +166,10 @@ int main(int argc, char** argv) {
   std::printf("listening on %s\n", bound->c_str());
   std::fflush(stdout);
 
-  rlmesh::EnvServer* handle = &*server;
-  std::thread waiter([handle, stop_signals] {
-    int signal = 0;
-    sigwait(&stop_signals, &signal);
-    std::printf("received %s, shutting down\n", signal == SIGINT ? "SIGINT" : "SIGTERM");
-    std::fflush(stdout);
-    handle->cancel();
-  });
-  waiter.detach();
-
-  rlmesh::Status served = server->serve();
+  rlmesh::Status served = [&] {
+    SignalWaiter waiter(*server);
+    return server->serve();
+  }();  // the waiter is joined here, on every way serve returns
   if (!served) {
     std::fprintf(stderr, "serve failed: %s\n", served.error().message().c_str());
     return 1;

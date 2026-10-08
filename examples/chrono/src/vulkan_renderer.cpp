@@ -39,6 +39,24 @@ void check(VkResult result, const char* what) {
   }
 }
 
+// Runs `undo` when a scope exits by an exception, unless dismissed first: it
+// releases whatever a half-finished construction already created.
+template <typename F>
+class OnFailure {
+ public:
+  explicit OnFailure(F undo) : undo_(std::move(undo)) {}
+  ~OnFailure() {
+    if (armed_) undo_();
+  }
+  OnFailure(const OnFailure&) = delete;
+  OnFailure& operator=(const OnFailure&) = delete;
+  void dismiss() { armed_ = false; }
+
+ private:
+  F undo_;
+  bool armed_ = true;
+};
+
 // Column-major, as GLSL reads it.
 struct Mat4 {
   std::array<float, 16> m{};
@@ -215,11 +233,13 @@ class VulkanRenderer : public Renderer {
   VkPipeline pipeline(VkShaderModule vert, VkShaderModule frag, VkRenderPass pass, bool vertices,
                       bool depth_write, VkCompareOp depth_compare, bool depth_bias);
   Target& target(int width, int height);
+  void destroy_target(Target& t);
 
   std::string description_;
   VkInstance instance_ = VK_NULL_HANDLE;
   VkPhysicalDevice physical_ = VK_NULL_HANDLE;
   VkPhysicalDeviceMemoryProperties memory_{};
+  VkPhysicalDeviceLimits limits_{};
   uint32_t queue_family_ = 0;
   VkDevice device_ = VK_NULL_HANDLE;
   VkQueue queue_ = VK_NULL_HANDLE;
@@ -347,6 +367,7 @@ void VulkanRenderer::pick_device() {
                              std::to_string(count) + " devices found)");
   }
   vkGetPhysicalDeviceMemoryProperties(physical_, &memory_);
+  limits_ = best_props.limits;
   const char* kinds[] = {"discrete GPU", "integrated GPU", "virtual GPU", "CPU", "other"};
   description_ = std::string("vulkan (") + best_props.deviceName + ", " + kinds[best_rank] + ")";
 }
@@ -625,6 +646,7 @@ void VulkanRenderer::create_pipelines() {
       for (VkShaderModule m : all) vkDestroyShaderModule(device, m, nullptr);
     }
   } modules{device_, {}};
+  modules.all.reserve(5);  // so a push_back cannot throw and drop a module
   auto load = [&](const uint32_t* code, size_t bytes) {
     modules.all.push_back(shader(code, bytes));
     return modules.all.back();
@@ -723,6 +745,7 @@ uint32_t VulkanRenderer::memory_type(uint32_t bits,
 VulkanRenderer::Buffer VulkanRenderer::make_buffer(VkDeviceSize size, VkBufferUsageFlags usage,
                                                    bool readback) {
   Buffer out;
+  OnFailure release([&] { destroy_buffer(out); });
   out.size = size;
   VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
   info.size = size;
@@ -749,6 +772,7 @@ VulkanRenderer::Buffer VulkanRenderer::make_buffer(VkDeviceSize size, VkBufferUs
   check(vkBindBufferMemory(device_, out.buffer, out.memory, 0), "vkBindBufferMemory");
   check(vkMapMemory(device_, out.memory, 0, VK_WHOLE_SIZE, 0, &out.mapped), "vkMapMemory");
   out.coherent = (flags & coherent) != 0;
+  release.dismiss();
   return out;
 }
 
@@ -762,6 +786,7 @@ VulkanRenderer::Image VulkanRenderer::make_image(uint32_t width, uint32_t height
                                                  VkImageUsageFlags usage,
                                                  VkImageAspectFlags aspect) {
   Image out;
+  OnFailure release([&] { destroy_image(out); });
   VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
   info.imageType = VK_IMAGE_TYPE_2D;
   info.format = format;
@@ -788,6 +813,7 @@ VulkanRenderer::Image VulkanRenderer::make_image(uint32_t width, uint32_t height
   view.format = format;
   view.subresourceRange = {aspect, 0, 1, 0, 1};
   check(vkCreateImageView(device_, &view, nullptr, &out.view), "vkCreateImageView");
+  release.dismiss();
   return out;
 }
 
@@ -802,8 +828,16 @@ VulkanRenderer::Target& VulkanRenderer::target(int width, int height) {
   const auto key = std::make_pair(width, height);
   auto found = targets_.find(key);
   if (found != targets_.end()) return found->second;
-  Target& t = targets_[key];
   const auto w = static_cast<uint32_t>(width), h = static_cast<uint32_t>(height);
+  if (w > std::min(limits_.maxImageDimension2D, limits_.maxFramebufferWidth) ||
+      h > std::min(limits_.maxImageDimension2D, limits_.maxFramebufferHeight)) {
+    throw std::runtime_error("frame size " + std::to_string(width) + "x" + std::to_string(height) +
+                             " exceeds the Vulkan device's limits");
+  }
+  // Built off to the side and cached only once complete, so a failure leaves
+  // nothing behind for a later render to pick up.
+  Target t;
+  OnFailure release([&] { destroy_target(t); });
   t.color = make_image(w, h, kColorFormat,
                        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                        VK_IMAGE_ASPECT_COLOR_BIT);
@@ -820,7 +854,17 @@ VulkanRenderer::Target& VulkanRenderer::target(int width, int height) {
   check(vkCreateFramebuffer(device_, &fb, nullptr, &t.framebuffer), "vkCreateFramebuffer");
   t.readback = make_buffer(static_cast<VkDeviceSize>(w) * h * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                            /*readback=*/true);
-  return t;
+  Target& cached = targets_.emplace(key, t).first->second;
+  release.dismiss();
+  return cached;
+}
+
+void VulkanRenderer::destroy_target(Target& t) {
+  if (t.framebuffer != VK_NULL_HANDLE) vkDestroyFramebuffer(device_, t.framebuffer, nullptr);
+  destroy_image(t.color);
+  destroy_image(t.depth);
+  destroy_buffer(t.readback);
+  t = Target{};
 }
 
 std::vector<uint8_t> VulkanRenderer::render(const scene::Scene& scene, const scene::Camera& camera,
@@ -857,10 +901,17 @@ std::vector<uint8_t> VulkanRenderer::render(const scene::Scene& scene, const sce
   const uint32_t sphere_count = first_cylinder - first_sphere;
   const uint32_t cylinder_count = static_cast<uint32_t>(list.size()) - first_cylinder;
   if (list.size() * sizeof(Instance) > instances_.size) {
-    check(vkDeviceWaitIdle(device_), "vkDeviceWaitIdle");
-    destroy_buffer(instances_);
-    instances_ =
+    // Grow to twice what this frame needs. The new buffer exists before the
+    // old one goes, so a failed allocation leaves the renderer as it was.
+    Buffer grown =
         make_buffer(list.size() * 2 * sizeof(Instance), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    OnFailure release([&] { destroy_buffer(grown); });
+    // Every render waits for its own fence, but the descriptor set must not
+    // be in use by any pending work when it is rewritten.
+    check(vkDeviceWaitIdle(device_), "vkDeviceWaitIdle");
+    release.dismiss();
+    std::swap(instances_, grown);
+    destroy_buffer(grown);
     write_descriptors();
   }
   std::memcpy(instances_.mapped, list.data(), list.size() * sizeof(Instance));
@@ -981,9 +1032,11 @@ std::vector<uint8_t> VulkanRenderer::render(const scene::Scene& scene, const sce
   VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
   submit.commandBufferCount = 1;
   submit.pCommandBuffers = &commands_;
+  // Reset right before the submit, so a render that failed after its submit
+  // cannot leave the fence signaled for the next one.
+  check(vkResetFences(device_, 1, &fence_), "vkResetFences");
   check(vkQueueSubmit(queue_, 1, &submit, fence_), "vkQueueSubmit");
   check(vkWaitForFences(device_, 1, &fence_, VK_TRUE, UINT64_MAX), "vkWaitForFences");
-  check(vkResetFences(device_, 1, &fence_), "vkResetFences");
   if (!frame_target.readback.coherent) {
     VkMappedMemoryRange range{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
     range.memory = frame_target.readback.memory;
@@ -1005,13 +1058,12 @@ std::vector<uint8_t> VulkanRenderer::render(const scene::Scene& scene, const sce
 
 void VulkanRenderer::destroy() {
   if (device_ != VK_NULL_HANDLE) {
+    // Children before what they were created from: framebuffers before their
+    // images and render passes, pipelines before their layout, the
+    // descriptor pool (and its set) before the set layout, everything before
+    // the device, and the device before the instance.
     vkDeviceWaitIdle(device_);
-    for (auto& [size, t] : targets_) {
-      if (t.framebuffer != VK_NULL_HANDLE) vkDestroyFramebuffer(device_, t.framebuffer, nullptr);
-      destroy_image(t.color);
-      destroy_image(t.depth);
-      destroy_buffer(t.readback);
-    }
+    for (auto& [size, t] : targets_) destroy_target(t);
     targets_.clear();
     destroy_buffer(vertices_);
     destroy_buffer(indices_);
