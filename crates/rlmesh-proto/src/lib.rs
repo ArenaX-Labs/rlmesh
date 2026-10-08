@@ -224,8 +224,9 @@ pub struct EditionDefaults {
     pub driver_owned_reset_modes: &'static [core::v1::AutoresetMode],
 
     /// The `final_info` keys this edition reads an episode's task outcome from,
-    /// in priority order: the first key present decides, and a numeric value
-    /// coerces by truthiness (`1`/`1.0` → true).
+    /// in priority order: the first key holding a bool, integer, or number
+    /// decides, a numeric value coercing by truthiness (`1`/`1.0` → true); a key
+    /// holding any other kind is skipped.
     ///
     /// Which keys count is an edition-governed promise — an env that reports its
     /// outcome under one of these names has it surface on the episode summary
@@ -233,8 +234,8 @@ pub struct EditionDefaults {
     /// Gymnasium's `is_success` leads; `success` and `task_success` follow as the
     /// two spellings the ecosystem also ships.
     ///
-    /// The Python `Session` loop reads the outcome from the same `info` with
-    /// `bool(info[key])` (`_success_from_info` in
+    /// The Python `Session` loop reads the outcome from the same `info` under the
+    /// same rule (`_episode_success` in
     /// `python/rlmesh/src/rlmesh/_models/_eval.py`); an edition that changes this
     /// row revisits that sweep in the same commit.
     pub success_info_keys: &'static [&'static str],
@@ -531,6 +532,36 @@ impl std::fmt::Display for EditionRefusal {
 }
 
 impl std::error::Error for EditionRefusal {}
+
+/// The remedy an edition refusal carries when a local dev build took part.
+///
+/// A source build offers only its own `<base>-dev.<git>` cohort, stamped from
+/// the commit and the working-tree diff it was built from, and drops the sealed
+/// current edition from its offer (see `build.rs`). Two dev artifacts built from
+/// different tree states — a C API build and the editable Python extension, say
+/// — therefore share no edition at all.
+pub const DEV_BUILD_HINT: &str = "dev builds only interoperate with the identical build; \
+     rebuild both sides from the same tree state, or build both with RLMESH_RELEASE_BUILD=1 \
+     to speak the sealed edition";
+
+impl EditionRefusal {
+    /// Whether any tier offered a local dev cohort (`<base>-dev.<git>`).
+    pub fn involves_dev_build(&self) -> bool {
+        self.tiers
+            .iter()
+            .any(|tier| tier.can.iter().any(|edition| edition.contains("-dev.")))
+    }
+
+    /// `"; hint: ..."` with [`DEV_BUILD_HINT`] when a dev build took part, else
+    /// empty — for callers to append to their refusal message.
+    pub fn hint(&self) -> String {
+        if self.involves_dev_build() {
+            format!("; hint: {DEV_BUILD_HINT}")
+        } else {
+            String::new()
+        }
+    }
+}
 
 /// Select the one edition a whole session runs at, from every participant's
 /// WANT and CAN — the single rule both [`negotiate_workflow_edition`] (two
@@ -832,6 +863,23 @@ static PEER_INFO_OVERRIDE: RwLock<Option<PeerInfoOverride>> = RwLock::new(None);
 pub fn set_peer_info_override(info: PeerInfoOverride) {
     if let Ok(mut guard) = PEER_INFO_OVERRIDE.write() {
         *guard = Some(info);
+    }
+}
+
+/// The installed process-wide [`PeerInfoOverride`], if any.
+pub fn peer_info_override() -> Option<PeerInfoOverride> {
+    PEER_INFO_OVERRIDE
+        .read()
+        .ok()
+        .and_then(|guard| guard.clone())
+}
+
+/// Edit the process-wide [`PeerInfoOverride`] in place, starting from an empty
+/// one when none is installed, so a host can add one field (e.g. an
+/// [`extra`](PeerInfoOverride::extra) key) without clobbering the rest.
+pub fn update_peer_info_override(edit: impl FnOnce(&mut PeerInfoOverride)) {
+    if let Ok(mut guard) = PEER_INFO_OVERRIDE.write() {
+        edit(guard.get_or_insert_with(PeerInfoOverride::default));
     }
 }
 
@@ -1618,6 +1666,37 @@ mod tests {
             assert!(message.contains("runtime"), "{message}");
             assert!(message.contains(CURRENT_WORKFLOW_EDITION), "{message}");
         }
+    }
+
+    #[test]
+    fn a_refusal_involving_a_dev_cohort_carries_the_rebuild_hint() {
+        let refusal = |env: &[&str], runtime: &[&str]| {
+            negotiate_workflow_edition(&SessionOffer::new(env), &SessionOffer::new(runtime))
+                .expect_err("no mutual edition")
+        };
+
+        // Either side's dev cohort triggers the hint.
+        for (env, runtime) in [
+            (&["2026.06-dev.aaaaaaaaaaaa"][..], &["2026.06"][..]),
+            (
+                &["2026.06"][..],
+                &["2026.06-dev.bbbbbbbbbbbb.dirty.0123456789abcdef"][..],
+            ),
+            (
+                &["2026.06-dev.aaaaaaaaaaaa"][..],
+                &["2026.06-dev.bbbbbbbbbbbb"][..],
+            ),
+        ] {
+            let refusal = refusal(env, runtime);
+            assert!(refusal.involves_dev_build(), "{refusal}");
+            assert!(refusal.hint().contains(super::DEV_BUILD_HINT));
+            assert!(refusal.hint().contains("RLMESH_RELEASE_BUILD=1"));
+        }
+
+        // Release and prerelease cohorts alone get no dev-build advice.
+        let refusal = refusal(&["2025.01"], &["2026.06-0.2.0-beta.1"]);
+        assert!(!refusal.involves_dev_build(), "{refusal}");
+        assert_eq!(refusal.hint(), "");
     }
 
     #[test]

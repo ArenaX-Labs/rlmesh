@@ -9,6 +9,7 @@ __all__ = [
     "RLMeshException",
     "ProtocolException",
     "EnvironmentException",
+    "RecoverableEnvironmentException",
     "ACTION_DELTA_POS",
     "ACTION_DELTA_ROT",
     "ACTION_EEF_POS",
@@ -137,7 +138,11 @@ class RLMeshException(builtins.RuntimeError): ...
 
 class ProtocolException(RLMeshException): ...
 
-class EnvironmentException(RLMeshException): ...
+class EnvironmentException(RLMeshException):
+    code: builtins.str
+    is_recoverable: builtins.bool
+
+class RecoverableEnvironmentException(EnvironmentException): ...
 
 ResetInfo: TypeAlias = dict[str, object]
 
@@ -564,7 +569,13 @@ class ServeOptions:
     def close_timeout_seconds(self) -> typing.Optional[builtins.float]: ...
     @property
     def workflow_edition(self) -> typing.Optional[builtins.str]: ...
-    def __new__(cls, *, allow_remote_shutdown: builtins.bool = ..., idle_timeout_seconds: typing.Optional[builtins.float] = None, drain_timeout_seconds: typing.Optional[builtins.float] = None, close_timeout_seconds: typing.Optional[builtins.float] = None, workflow_edition: typing.Optional[builtins.str] = None) -> ServeOptions: ...
+    @property
+    def compress_responses(self) -> builtins.bool:
+        r"""
+        Whether an env server compresses its responses (zstd, else gzip) for a
+        client that accepts them. Off by default; it only pays on a slow link.
+        """
+    def __new__(cls, *, allow_remote_shutdown: builtins.bool = ..., idle_timeout_seconds: typing.Optional[builtins.float] = None, drain_timeout_seconds: typing.Optional[builtins.float] = None, close_timeout_seconds: typing.Optional[builtins.float] = None, workflow_edition: typing.Optional[builtins.str] = None, compress_responses: builtins.bool = ...) -> ServeOptions: ...
 
 @typing.final
 class Space:
@@ -591,6 +602,11 @@ class SpaceSpec:
     def dtype(self) -> builtins.str: ...
     def _details(self) -> object: ...
     def _to_dict(self) -> dict[str, object]: ...
+    def _to_json(self) -> builtins.str:
+        r"""
+        The describe-envelope JSON form of `_to_dict()` (non-finite bounds as
+        `null`), rendered by the same Rust function a native host uses.
+        """
     def to_space(self) -> Space: ...
     def to_gym_space(self) -> object: ...
     def __repr__(self) -> builtins.str: ...

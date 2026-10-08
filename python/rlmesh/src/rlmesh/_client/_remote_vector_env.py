@@ -118,7 +118,10 @@ class RemoteVectorEnvBase(RemoteClientBase[ValueT, ActionT]):
             options: Optional reset options forwarded to the vector environment.
 
         Returns:
-            Batched decoded observations and reset info dictionary.
+            Batched decoded observations and reset info dictionary. Besides the
+            env's own keys, the info carries the runtime-reserved
+            ``episode_ids`` (the runtime-minted episode id per lane). An env key
+            of the same name wins and shadows it; the client logs that once.
         """
         if isinstance(seed, list):
             seeds = seed
@@ -137,6 +140,11 @@ class RemoteVectorEnvBase(RemoteClientBase[ValueT, ActionT]):
 
         Returns:
             Batched observations, rewards, terminations, truncations, and info.
+            Besides the env's own keys, the info carries two runtime-reserved
+            keys on every step: ``episode_ids`` (the runtime-minted episode id
+            per lane) and ``completed_episodes`` (how many lanes' episodes
+            ended on this step, ``0`` when none did). An env key of the same
+            name wins and shadows the runtime's; the client logs that once.
         """
         obs, rewards, terminated, truncated, info = self._client.step(
             self._encode_actions(actions)

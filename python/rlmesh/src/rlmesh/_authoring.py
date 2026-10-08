@@ -11,8 +11,9 @@ from __future__ import annotations
 import functools
 import inspect
 import itertools
+import numbers
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, ClassVar, cast, final
 
 from rlmesh.types import EnvLike
@@ -51,6 +52,14 @@ class EnvFactory(ABC):
     never describe the same dimension in both ``enumerate_variants`` and
     ``enumerate_params``). Import heavy/optional deps lazily inside the method, as
     ``make`` does, so ``describe`` stays off-GPU. See :func:`rlmesh.describe`.
+
+    Reporting success: the env reports a task outcome in the ``info`` of the step
+    that ends an episode (terminated or truncated; earlier steps are not read),
+    under ``is_success``, ``success``, or ``task_success``, checked in that order.
+    The first key holding a bool, integer, or float decides -- a number counts as
+    success when non-zero -- and keys holding any other kind (a string such as
+    ``"False"``, ``None``, a list) are skipped. With none of them the outcome is
+    unknown, never inferred from ``terminated``, and ``success_rate`` is ``None``.
     """
 
     tags: ClassVar[EnvTags | None] = None
@@ -217,7 +226,9 @@ class EnvFactory(ABC):
         )
 
 
-def trial_index(options: Mapping[str, Any] | None) -> int | None:
+def trial_index(
+    options: Mapping[str, Any] | None, *, lane: int | None = None
+) -> int | None:
     """The reserved ``trial_index`` reset option, or ``None`` when absent.
 
     The ordinal of the episode a ``reset`` starts, 0-based and walked in order by
@@ -236,13 +247,59 @@ def trial_index(options: Mapping[str, Any] | None) -> int | None:
             trial = rlmesh.trial_index(options)
             n = len(self.init_states)
             state = self.init_states[(trial if trial is not None else seed or 0) % n]
+
+    The option takes one of two forms. A reset covering one lane carries a bare
+    integer; a reset covering several lanes of a vector env carries a list, one
+    ordinal per lane being reset, in the same order as the reset's seeds. A
+    vector env reads its lanes with ``lane=``, the position among the lanes
+    this reset covers (not the env index, when only some lanes are reset)::
+
+        for i in range(len(lanes_being_reset)):
+            trial = rlmesh.trial_index(options, lane=i)
+
+    Args:
+        options: The ``options`` mapping ``reset`` received, or ``None``.
+        lane: Position among the lanes this reset covers. ``None`` (the
+            default) reads the single-lane form; a bare integer also answers
+            ``lane=0``.
+
+    Returns:
+        The ordinal, or ``None`` when the key is absent or not an integer.
+
+    Raises:
+        ValueError: The option is the multi-lane list and ``lane`` was not
+            given, or ``lane`` is outside the lanes the option covers.
     """
     value = options.get("trial_index") if options is not None else None
-    return (
-        int(value)
-        if isinstance(value, (int, float)) and not isinstance(value, bool)
-        else None
-    )
+    if value is None:
+        return None
+    values: Sequence[object]
+    if isinstance(value, (list, tuple)):
+        values = cast("Sequence[object]", value)
+        if lane is None:
+            raise ValueError(
+                f"trial_index carries one ordinal per lane ({len(values)} lanes); "
+                "pass lane= to read one, e.g. rlmesh.trial_index(options, lane=0)"
+            )
+    else:
+        values = [value]
+        lane = 0 if lane is None else lane
+    if not 0 <= lane < len(values):
+        raise ValueError(
+            f"lane={lane} is outside the {len(values)} lane(s) trial_index covers"
+        )
+    return _as_ordinal(values[lane])
+
+
+def _as_ordinal(value: object) -> int | None:
+    """``value`` as an integer ordinal (any integral number, not a bool), else ``None``."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, numbers.Integral):
+        return int(value)
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return None
 
 
 def _stamp_metadata(env: object, fragment: Mapping[str, object]) -> None:

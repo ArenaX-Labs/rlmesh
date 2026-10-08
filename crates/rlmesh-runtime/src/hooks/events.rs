@@ -103,8 +103,8 @@ pub struct EpisodeCompletedEvent {
     pub duration_ms: i64,
     pub final_info: Option<MetaMap>,
     /// The env-reported task outcome from the final step's info (`is_success`,
-    /// `success`, or `task_success`, first present wins; numbers coerce by
-    /// truthiness), the same value the episode summary carries, so a hook
+    /// `success`, or `task_success`; the first holding a bool or number wins,
+    /// numbers coerce by truthiness), the same value the episode summary carries, so a hook
     /// never re-derives it. `None` when the env emits no such key.
     pub success: Option<bool>,
     pub seed: Option<i64>,

@@ -1,4 +1,4 @@
-//! `RlmeshValue` — an opaque handle bridging the 7 `SpaceValue` variants. Only
+//! `RLMeshValue` — an opaque handle bridging the 7 `SpaceValue` variants. Only
 //! `Box` carries a tensor; the scalar/array/composite kinds keep their natural
 //! shape (the C side never forces them into a tensor).
 #![allow(unsafe_code)] // FFI: raw pointers + repr(transparent) handle.
@@ -7,19 +7,19 @@ use std::ffi::{CStr, c_char, c_void};
 
 use rlmesh_spaces::{SpaceValue, Tensor, dtype_size};
 
-use super::dtype::RlmeshDType;
-use super::tensor::{RLMESH_DEVICE_CPU, RLMESH_TENSOR_FLAG_READ_ONLY, RlmeshTensor};
-use crate::abi::status::{CapiError, RlmeshStatus, guard, guard_ptr, guard_value};
+use super::dtype::RLMeshDType;
+use super::tensor::{RLMESH_DEVICE_CPU, RLMESH_TENSOR_FLAG_READ_ONLY, RLMeshTensor};
+use crate::abi::status::{CapiError, RLMeshStatus, guard, guard_ptr, guard_value};
 
 /// An owned RLMesh value. `repr(transparent)` over `SpaceValue` so a borrowed
-/// child (`&SpaceValue`) can be handed out as `*const RlmeshValue`.
+/// child (`&SpaceValue`) can be handed out as `*const RLMeshValue`.
 #[repr(transparent)]
-pub struct RlmeshValue(pub(crate) SpaceValue);
+pub struct RLMeshValue(pub(crate) SpaceValue);
 
 /// Value kind, with discriminants pinned to the core `SpaceType`.
 #[repr(i32)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum RlmeshValueKind {
+pub enum RLMeshValueKind {
     /// No kind: a NULL handle, or a space whose kind is unspecified.
     Invalid = 0,
     Box = 1,
@@ -32,24 +32,24 @@ pub enum RlmeshValueKind {
 }
 
 #[inline]
-fn value_ref<'a>(value: *const RlmeshValue) -> Result<&'a SpaceValue, CapiError> {
+fn value_ref<'a>(value: *const RLMeshValue) -> Result<&'a SpaceValue, CapiError> {
     unsafe { value.cast::<SpaceValue>().as_ref() }
         .ok_or_else(|| CapiError::invalid_arg("null value"))
 }
 
 /// The kind of `value`, or `Invalid` when `value` is NULL.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_value_kind(value: *const RlmeshValue) -> RlmeshValueKind {
-    guard_value(RlmeshValueKind::Invalid, || {
+pub unsafe extern "C" fn rlmesh_value_kind(value: *const RLMeshValue) -> RLMeshValueKind {
+    guard_value(RLMeshValueKind::Invalid, || {
         match unsafe { value.cast::<SpaceValue>().as_ref() } {
-            Some(SpaceValue::Box(_)) => RlmeshValueKind::Box,
-            Some(SpaceValue::Discrete(_)) => RlmeshValueKind::Discrete,
-            Some(SpaceValue::MultiBinary(_)) => RlmeshValueKind::MultiBinary,
-            Some(SpaceValue::MultiDiscrete(_)) => RlmeshValueKind::MultiDiscrete,
-            Some(SpaceValue::Text(_)) => RlmeshValueKind::Text,
-            Some(SpaceValue::Dict(_)) => RlmeshValueKind::Dict,
-            Some(SpaceValue::Tuple(_)) => RlmeshValueKind::Tuple,
-            None => RlmeshValueKind::Invalid,
+            Some(SpaceValue::Box(_)) => RLMeshValueKind::Box,
+            Some(SpaceValue::Discrete(_)) => RLMeshValueKind::Discrete,
+            Some(SpaceValue::MultiBinary(_)) => RLMeshValueKind::MultiBinary,
+            Some(SpaceValue::MultiDiscrete(_)) => RLMeshValueKind::MultiDiscrete,
+            Some(SpaceValue::Text(_)) => RLMeshValueKind::Text,
+            Some(SpaceValue::Dict(_)) => RLMeshValueKind::Dict,
+            Some(SpaceValue::Tuple(_)) => RLMeshValueKind::Tuple,
+            None => RLMeshValueKind::Invalid,
         }
     })
 }
@@ -58,22 +58,22 @@ pub unsafe extern "C" fn rlmesh_value_kind(value: *const RlmeshValue) -> RlmeshV
 /// lives). Returns `RLMESH_ERR_INVALID_VALUE` for any other kind.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_value_as_tensor(
-    value: *const RlmeshValue,
-    out: *mut RlmeshTensor,
-) -> RlmeshStatus {
+    value: *const RLMeshValue,
+    out: *mut RLMeshTensor,
+) -> RLMeshStatus {
     guard(|| {
         let value = value_ref(value)?;
         let out = unsafe { out.as_mut() }.ok_or_else(|| CapiError::invalid_arg("null out"))?;
         let SpaceValue::Box(tensor) = value else {
             return Err(CapiError::invalid_value("value is not a Box tensor"));
         };
-        let dtype = RlmeshDType::from_core(tensor.dtype())
+        let dtype = RLMeshDType::from_core(tensor.dtype())
             .ok_or_else(|| CapiError::invalid_value("unsupported dtype"))?;
         let storage = tensor.storage().as_slice();
         // SAFETY: `byte_offset()` is within the tensor's own storage slice, so the
         // offset pointer stays inside that allocation.
         let data = unsafe { storage.as_ptr().add(tensor.byte_offset()) } as *const c_void;
-        *out = RlmeshTensor {
+        *out = RLMeshTensor {
             data,
             ndim: tensor.shape().len() as i32,
             shape: tensor.shape().as_ptr(),
@@ -92,7 +92,7 @@ pub unsafe extern "C" fn rlmesh_value_as_tensor(
 /// Construct a `Box` value by copying a contiguous tensor (`strides == NULL`).
 /// Returns NULL on error (see `rlmesh_last_error_message`).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_value_box(tensor: *const RlmeshTensor) -> *mut RlmeshValue {
+pub unsafe extern "C" fn rlmesh_value_box(tensor: *const RLMeshTensor) -> *mut RLMeshValue {
     guard_ptr(|| {
         let tensor =
             unsafe { tensor.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null tensor"))?;
@@ -144,16 +144,16 @@ pub unsafe extern "C" fn rlmesh_value_box(tensor: *const RlmeshTensor) -> *mut R
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn rlmesh_value_discrete(value: i64) -> *mut RlmeshValue {
+pub extern "C" fn rlmesh_value_discrete(value: i64) -> *mut RLMeshValue {
     into_handle(SpaceValue::Discrete(value))
 }
 
 /// Read a `Discrete` value into `out`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_value_as_discrete(
-    value: *const RlmeshValue,
+    value: *const RLMeshValue,
     out: *mut i64,
-) -> RlmeshStatus {
+) -> RLMeshStatus {
     guard(|| {
         let out = unsafe { out.as_mut() }.ok_or_else(|| CapiError::invalid_arg("null out"))?;
         match value_ref(value)? {
@@ -168,7 +168,7 @@ pub unsafe extern "C" fn rlmesh_value_as_discrete(
 
 /// Construct a `Text` value from `len` UTF-8 bytes (not NUL-terminated).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_value_text(data: *const c_char, len: usize) -> *mut RlmeshValue {
+pub unsafe extern "C" fn rlmesh_value_text(data: *const c_char, len: usize) -> *mut RLMeshValue {
     guard_ptr(|| {
         let bytes = if len == 0 {
             &[][..]
@@ -188,10 +188,10 @@ pub unsafe extern "C" fn rlmesh_value_text(data: *const c_char, len: usize) -> *
 /// valid while `value` lives.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_value_as_text(
-    value: *const RlmeshValue,
+    value: *const RLMeshValue,
     out_ptr: *mut *const c_char,
     out_len: *mut usize,
-) -> RlmeshStatus {
+) -> RLMeshStatus {
     guard(|| {
         let out_ptr =
             unsafe { out_ptr.as_mut() }.ok_or_else(|| CapiError::invalid_arg("null out_ptr"))?;
@@ -213,7 +213,7 @@ pub unsafe extern "C" fn rlmesh_value_as_text(
 pub unsafe extern "C" fn rlmesh_value_multi_discrete(
     data: *const i64,
     n: usize,
-) -> *mut RlmeshValue {
+) -> *mut RLMeshValue {
     guard_ptr(|| {
         let values = read_slice(data, n)?.to_vec();
         Ok(into_handle(SpaceValue::MultiDiscrete(values)))
@@ -225,9 +225,9 @@ pub unsafe extern "C" fn rlmesh_value_multi_discrete(
 /// count travels with a status rather than as a sentinel).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_value_array_len(
-    value: *const RlmeshValue,
+    value: *const RLMeshValue,
     out: *mut usize,
-) -> RlmeshStatus {
+) -> RLMeshStatus {
     guard(|| {
         let len = match value_ref(value)? {
             SpaceValue::MultiBinary(bits) => bits.len(),
@@ -245,10 +245,10 @@ pub unsafe extern "C" fn rlmesh_value_array_len(
 /// Copy a `MultiDiscrete` value's integers into `out` (capacity `cap`).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_value_copy_multi_discrete(
-    value: *const RlmeshValue,
+    value: *const RLMeshValue,
     out: *mut i64,
     cap: usize,
-) -> RlmeshStatus {
+) -> RLMeshStatus {
     guard(|| {
         let SpaceValue::MultiDiscrete(values) = value_ref(value)? else {
             return Err(CapiError::invalid_value("value is not MultiDiscrete"));
@@ -259,7 +259,7 @@ pub unsafe extern "C" fn rlmesh_value_copy_multi_discrete(
 
 /// Construct a `MultiBinary` value by copying `n` bytes (each normalized to 0/1).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_value_multi_binary(data: *const u8, n: usize) -> *mut RlmeshValue {
+pub unsafe extern "C" fn rlmesh_value_multi_binary(data: *const u8, n: usize) -> *mut RLMeshValue {
     guard_ptr(|| {
         let bytes = if n == 0 {
             &[][..]
@@ -276,10 +276,10 @@ pub unsafe extern "C" fn rlmesh_value_multi_binary(data: *const u8, n: usize) ->
 /// Copy a `MultiBinary` value's bits into `out` as 0/1 bytes (capacity `cap`).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_value_copy_multi_binary(
-    value: *const RlmeshValue,
+    value: *const RLMeshValue,
     out: *mut u8,
     cap: usize,
-) -> RlmeshStatus {
+) -> RLMeshStatus {
     guard(|| {
         let SpaceValue::MultiBinary(bits) = value_ref(value)? else {
             return Err(CapiError::invalid_value("value is not MultiBinary"));
@@ -292,9 +292,9 @@ pub unsafe extern "C" fn rlmesh_value_copy_multi_binary(
 /// `RLMESH_ERR_INVALID_VALUE`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_value_len(
-    value: *const RlmeshValue,
+    value: *const RLMeshValue,
     out: *mut usize,
-) -> RlmeshStatus {
+) -> RLMeshStatus {
     guard(|| {
         let len = match value_ref(value)? {
             SpaceValue::Tuple(items) => items.len(),
@@ -308,9 +308,9 @@ pub unsafe extern "C" fn rlmesh_value_len(
 /// Borrow a `Tuple` child by index (valid while `value` lives), or NULL.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_value_tuple_get(
-    value: *const RlmeshValue,
+    value: *const RLMeshValue,
     index: usize,
-) -> *const RlmeshValue {
+) -> *const RLMeshValue {
     guard_value(std::ptr::null(), || {
         match unsafe { value.cast::<SpaceValue>().as_ref() } {
             Some(SpaceValue::Tuple(items)) => items.get(index).map_or(std::ptr::null(), |child| {
@@ -324,9 +324,9 @@ pub unsafe extern "C" fn rlmesh_value_tuple_get(
 /// Borrow a `Dict` child by key (valid while `value` lives), or NULL.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_value_dict_get(
-    value: *const RlmeshValue,
+    value: *const RLMeshValue,
     key: *const c_char,
-) -> *const RlmeshValue {
+) -> *const RLMeshValue {
     guard_value(std::ptr::null(), || {
         if key.is_null() {
             return std::ptr::null();
@@ -348,12 +348,12 @@ pub unsafe extern "C" fn rlmesh_value_dict_get(
 /// kind or an out-of-range index.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_value_dict_get_at(
-    value: *const RlmeshValue,
+    value: *const RLMeshValue,
     index: usize,
-) -> *const RlmeshValue {
+) -> *const RLMeshValue {
     guard_value(std::ptr::null(), || {
         // SAFETY: per the ABI contract `value` is NULL or a live handle, and
-        // `RlmeshValue` is `repr(transparent)` over `SpaceValue`.
+        // `RLMeshValue` is `repr(transparent)` over `SpaceValue`.
         match unsafe { value.cast::<SpaceValue>().as_ref() } {
             // `BTreeMap::values` walks the same sorted key order as `keys`.
             Some(SpaceValue::Dict(map)) => {
@@ -371,11 +371,11 @@ pub unsafe extern "C" fn rlmesh_value_dict_get_at(
 /// iterate a dict (its keys are otherwise undiscoverable from C).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_value_dict_key(
-    value: *const RlmeshValue,
+    value: *const RLMeshValue,
     index: usize,
     out_ptr: *mut *const c_char,
     out_len: *mut usize,
-) -> RlmeshStatus {
+) -> RLMeshStatus {
     guard(|| {
         let SpaceValue::Dict(map) = value_ref(value)? else {
             return Err(CapiError::invalid_value("value is not a Dict"));
@@ -394,9 +394,9 @@ pub unsafe extern "C" fn rlmesh_value_dict_key(
 /// caller's to free.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_value_tuple(
-    children: *const *mut RlmeshValue,
+    children: *const *mut RLMeshValue,
     n: usize,
-) -> *mut RlmeshValue {
+) -> *mut RLMeshValue {
     guard_ptr(|| {
         let items = take_children(children, n)?;
         Ok(into_handle(SpaceValue::Tuple(items)))
@@ -410,9 +410,9 @@ pub unsafe extern "C" fn rlmesh_value_tuple(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_value_dict(
     keys: *const *const c_char,
-    values: *const *mut RlmeshValue,
+    values: *const *mut RLMeshValue,
     n: usize,
-) -> *mut RlmeshValue {
+) -> *mut RLMeshValue {
     guard_ptr(|| {
         if n != 0 && (keys.is_null() || values.is_null()) {
             return Err(CapiError::invalid_arg("null keys or values"));
@@ -454,7 +454,7 @@ pub unsafe extern "C" fn rlmesh_value_dict(
 /// # Safety
 /// `value` must be NULL or a pointer this thread owns and has not freed.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_value_free(value: *mut RlmeshValue) {
+pub unsafe extern "C" fn rlmesh_value_free(value: *mut RLMeshValue) {
     guard_value((), || {
         if !value.is_null() {
             drop(unsafe { Box::from_raw(value) });
@@ -462,8 +462,8 @@ pub unsafe extern "C" fn rlmesh_value_free(value: *mut RlmeshValue) {
     });
 }
 
-pub(crate) fn into_handle(value: SpaceValue) -> *mut RlmeshValue {
-    Box::into_raw(Box::new(RlmeshValue(value)))
+pub(crate) fn into_handle(value: SpaceValue) -> *mut RLMeshValue {
+    Box::into_raw(Box::new(RLMeshValue(value)))
 }
 
 fn read_slice<'a>(data: *const i64, n: usize) -> Result<&'a [i64], CapiError> {
@@ -509,7 +509,7 @@ fn copy_out<T, U>(
 }
 
 fn take_children(
-    children: *const *mut RlmeshValue,
+    children: *const *mut RLMeshValue,
     n: usize,
 ) -> Result<Vec<SpaceValue>, CapiError> {
     if n != 0 && children.is_null() {

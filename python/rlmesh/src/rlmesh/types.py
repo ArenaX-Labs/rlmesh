@@ -47,7 +47,7 @@ InfoDict: TypeAlias = dict[str, Any]
 gymnasium ``info`` norm).
 
 Values are typed ``Any`` on purpose: the env author owns what goes in, the SDK
-never validates it, so strict-mode consumers can write ``info["success"] > 0.5``
+never validates it, so strict-mode consumers can write ``info["distance"] < 0.05``
 without a cast. Contrast :data:`Metadata`, which the SDK validates and therefore
 types as ``object``."""
 

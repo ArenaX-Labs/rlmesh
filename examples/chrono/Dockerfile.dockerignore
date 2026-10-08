@@ -1,0 +1,6 @@
+# The Chrono image builds from the repository root; send only what it needs.
+**/target
+**/.venv
+**/node_modules
+**/__pycache__
+.git

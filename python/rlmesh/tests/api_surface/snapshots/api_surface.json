@@ -18,6 +18,7 @@
       "RLMeshException",
       "Reader",
       "Recorder",
+      "RecoverableEnvironmentException",
       "RemoteEnv",
       "RemoteModel",
       "RemoteVectorEnv",
@@ -192,6 +193,16 @@
       },
       "EnvironmentException": {
         "kind": "class",
+        "members": {
+          "code": {
+            "kind": "attribute",
+            "signature": "code: str"
+          },
+          "is_recoverable": {
+            "kind": "attribute",
+            "signature": "is_recoverable: bool"
+          }
+        },
         "stability": "Stable"
       },
       "EpisodeResult": {
@@ -428,6 +439,20 @@
           }
         },
         "signature": "Recorder(*, result_set_id: str | None = None, fps: int = DEFAULT_FPS, quality: int = DEFAULT_QUALITY)",
+        "stability": "Stable"
+      },
+      "RecoverableEnvironmentException": {
+        "kind": "class",
+        "members": {
+          "code": {
+            "kind": "attribute",
+            "signature": "code: str"
+          },
+          "is_recoverable": {
+            "kind": "attribute",
+            "signature": "is_recoverable: bool"
+          }
+        },
         "stability": "Stable"
       },
       "RemoteEnv": {
@@ -936,6 +961,10 @@
             "kind": "property",
             "signature": "property close_timeout_seconds: Optional[float]"
           },
+          "compress_responses": {
+            "kind": "property",
+            "signature": "property compress_responses: bool"
+          },
           "drain_timeout_seconds": {
             "kind": "property",
             "signature": "property drain_timeout_seconds: Optional[float]"
@@ -949,7 +978,7 @@
             "signature": "property workflow_edition: Optional[str]"
           }
         },
-        "signature": "ServeOptions(*, allow_remote_shutdown: bool = ..., idle_timeout_seconds: Optional[float] = None, drain_timeout_seconds: Optional[float] = None, close_timeout_seconds: Optional[float] = None, workflow_edition: Optional[str] = None) -> ServeOptions",
+        "signature": "ServeOptions(*, allow_remote_shutdown: bool = ..., idle_timeout_seconds: Optional[float] = None, drain_timeout_seconds: Optional[float] = None, close_timeout_seconds: Optional[float] = None, workflow_edition: Optional[str] = None, compress_responses: bool = ...) -> ServeOptions",
         "stability": "Stable"
       },
       "Session": {
@@ -1217,6 +1246,10 @@
             "kind": "attribute",
             "signature": "fps: int"
           },
+          "hold": {
+            "kind": "attribute",
+            "signature": "hold: bool | float"
+          },
           "port": {
             "kind": "attribute",
             "signature": "port: int"
@@ -1228,9 +1261,13 @@
           "source": {
             "kind": "attribute",
             "signature": "source: str | None"
+          },
+          "step_hz": {
+            "kind": "attribute",
+            "signature": "step_hz: float | None"
           }
         },
-        "signature": "View(backend: str = 'terminal', port: int = 8008, fps: int = 30, source: str | None = None, format: str = 'jpeg', quality: int = 75)",
+        "signature": "View(backend: str = 'terminal', port: int = 8008, fps: int = 30, source: str | None = None, format: str = 'jpeg', quality: int = 75, hold: bool | float = False, step_hz: float | None = None)",
         "stability": "Stable"
       },
       "WorkflowEditionWarning": {
@@ -1305,7 +1342,7 @@
       },
       "trial_index": {
         "kind": "function",
-        "signature": "trial_index(options: Mapping[str, Any] | None) -> int | None",
+        "signature": "trial_index(options: Mapping[str, Any] | None, *, lane: int | None = None) -> int | None",
         "stability": "Stable"
       },
       "types": {

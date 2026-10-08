@@ -90,7 +90,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"examples/python/**" = ["D", "F841", "RUF012"]
+"examples/**" = ["D", "F841", "RUF012"]
 "python/rlmesh/tests/**" = ["B017", "D"]
 "python/rlmesh/tests/type_contract/fixtures/**" = ["D"]
 "tests/system/**" = ["B017", "D"]

@@ -478,6 +478,21 @@ mod tests {
     }
 
     #[test]
+    fn text_with_zero_bounds_samples_within_bounds() {
+        let empty_only = TextBuilder::new(0).min_length(0).build().unwrap();
+        assert_eq!(
+            sample_seeded(&empty_only, 7).unwrap(),
+            SpaceValue::Text(String::new())
+        );
+
+        let space = TextBuilder::new(3).min_length(0).build().unwrap();
+        for seed in 0..32 {
+            let value = sample_seeded(&space, seed).unwrap();
+            assert!(contains(&space, &value).is_ok(), "seed {seed}: {value:?}");
+        }
+    }
+
+    #[test]
     fn rng_stream_advances_across_calls() {
         // Seed once, sample twice off the *same* RNG: the second draw must come
         // from the advanced stream, not repeat the first (gym semantics). A

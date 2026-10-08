@@ -649,14 +649,19 @@ pub fn resolve(
             .into_iter()
             .filter(|role| !crate::roles::registry::is_sanctioned_role(role))
             .map(|role| {
-                Advisory::info(format!(
+                let mut message = format!(
                     "model declares ad-hoc role {} that this env does not: an ad-hoc role \
                      matches only on the exact string, so it resolves to a fill here -- use \
                      a registered role, or the {} namespace to mark it intentionally \
                      non-standard",
                     quoted(role),
                     quoted("x/"),
-                ))
+                );
+                if let Some(hint) = crate::roles::registry::kindless_hint(role) {
+                    message.push_str(". ");
+                    message.push_str(&hint);
+                }
+                Advisory::info(message)
             }),
     );
 
@@ -670,7 +675,8 @@ pub fn resolve(
             && let Some((requested, bound)) = &image.role_rebound
         {
             advisories.push(Advisory::caution(format!(
-                "model input {}: no env camera has role {}; bound to the env's                  only camera ({}) instead -- declare the matching role on one                  side to silence this",
+                "model input {}: no env camera has role {}; bound to the env's only camera ({}) \
+                 instead -- declare the matching role on one side to silence this",
                 quoted(&image.placement.to_string()),
                 quoted(requested),
                 quoted(bound),
@@ -1016,7 +1022,7 @@ mod unknown_kind_tests {
             adapter
                 .advisories()
                 .iter()
-                .any(|a| a.message.contains("only camera")),
+                .any(|a| a.message.contains("only camera") && !a.message.contains("  ")),
             "{:?}",
             adapter.advisories()
         );

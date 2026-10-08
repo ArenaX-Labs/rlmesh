@@ -12,7 +12,7 @@ use rlmesh_grpc::wire::{
 };
 use rlmesh_proto::Edition;
 
-use super::lanes::{LaneEnv, batch_infos, fold_phases};
+use super::lanes::{LaneEnv, LaneReply, batch_infos, fold_phases};
 use super::types::{
     CloseRequest, EpisodeMetadata, RenderRequest, ResetRequest as VectorResetRequest,
     ResetResult as VectorResetResult, StepRequest as VectorStepRequest,
@@ -523,8 +523,7 @@ impl Environment for WireLaneAdapter {
         let mut observations = Vec::with_capacity(lanes.len());
         let mut infos = Vec::with_capacity(lanes.len());
         let mut phases = Vec::with_capacity(lanes.len());
-        for result in results {
-            let (result, lane_phases) = result.map_err(gym_error_to_env_error)?;
+        for (result, lane_phases) in gather_lane_results(results, &lanes, "reset")? {
             observations.extend(result.observation);
             infos.push(result.info);
             phases.push(lane_phases);
@@ -582,8 +581,7 @@ impl Environment for WireLaneAdapter {
         let mut infos = Vec::with_capacity(lanes.len());
         let mut done = Vec::with_capacity(lanes.len());
         let mut phases = Vec::with_capacity(lanes.len());
-        for lane_result in results {
-            let (step, lane_phases) = lane_result.map_err(gym_error_to_env_error)?;
+        for (step, lane_phases) in gather_lane_results(results, &lanes, "step")? {
             result.observations.extend(step.observation);
             result.rewards.push(step.reward);
             result.terminated.push(step.terminated);
@@ -646,6 +644,51 @@ impl Environment for WireLaneAdapter {
     }
 }
 
+/// Fold a lane batch's per-lane results into the request's one outcome.
+///
+/// Every lane ran, so no lane's error may hide another's, and a request reported
+/// as recoverable must be safe to retry as is:
+/// - any lane failing fatally ends the session (that lane's error);
+/// - lanes that all failed recoverably fail only the request, since no lane
+///   moved;
+/// - a recoverable failure next to lanes that succeeded ends the session: those
+///   lanes moved on but their transitions never reach the client or the episode
+///   tracker, so retrying would replay them and stepping on would desync the
+///   accounting. The client's next reset opens a fresh session.
+fn gather_lane_results<T>(
+    results: Vec<LaneReply<T>>,
+    lanes: &[usize],
+    op: &str,
+) -> Result<Vec<(T, EndpointPhases)>, EnvError> {
+    if results.iter().all(Result::is_ok) {
+        return Ok(results.into_iter().filter_map(Result::ok).collect());
+    }
+    let mut failed = Vec::new();
+    let mut moved = Vec::new();
+    for (result, &lane) in results.into_iter().zip(lanes) {
+        match result {
+            Ok(_) => moved.push(lane),
+            Err(error) => failed.push((lane, gym_error_to_env_error(error))),
+        }
+    }
+    if let Some(index) = failed.iter().position(|(_, error)| !error.is_recoverable) {
+        return Err(failed.swap_remove(index).1);
+    }
+    let (lane, first) = failed.swap_remove(0);
+    if moved.is_empty() {
+        return Err(first);
+    }
+    Err(EnvError::new(
+        EnvErrorCode::Internal,
+        format!(
+            "lane {lane} {op} failed with a recoverable error ({}) while lanes {moved:?} \
+             completed theirs; a partly applied lane batch cannot be retried, so the session \
+             ends",
+            first.message
+        ),
+    ))
+}
+
 fn gym_error_to_env_error(error: spaces::EnvRuntimeError) -> EnvError {
     match error {
         spaces::EnvRuntimeError::InvalidSpace(message)
@@ -653,6 +696,12 @@ fn gym_error_to_env_error(error: spaces::EnvRuntimeError) -> EnvError {
             EnvError::new(EnvErrorCode::InvalidAction, message)
         }
         spaces::EnvRuntimeError::Runtime(message) => EnvError::new(EnvErrorCode::Internal, message),
+        // Still an internal failure, but the env vouched that it can keep
+        // serving: the flag (not the code) keeps the session open.
+        spaces::EnvRuntimeError::Recoverable(message) => EnvError {
+            is_recoverable: true,
+            ..EnvError::new(EnvErrorCode::Internal, message)
+        },
         // EnvRuntimeError is #[non_exhaustive]; treat unknown variants as internal.
         other => EnvError::new(EnvErrorCode::Internal, other.to_string()),
     }
@@ -819,6 +868,9 @@ mod tests {
         // Real time each step spends inside the env, so a reported split is
         // contained in a measured call regardless of build profile.
         step_delay: Duration,
+        // Errors the next steps fail with, in order (shared so a test can queue
+        // them after the env moved into its server).
+        step_failures: Arc<Mutex<std::collections::VecDeque<spaces::EnvRuntimeError>>>,
     }
 
     impl DummyEnv {
@@ -850,6 +902,7 @@ mod tests {
                 closes,
                 phases: EndpointPhases::default(),
                 step_delay: Duration::ZERO,
+                step_failures: Arc::default(),
             }
         }
     }
@@ -897,6 +950,9 @@ mod tests {
             req: StepRequest,
         ) -> std::result::Result<StepResult, spaces::EnvRuntimeError> {
             std::thread::sleep(self.step_delay);
+            if let Some(error) = self.step_failures.lock().unwrap().pop_front() {
+                return Err(error);
+            }
             Ok(StepResult {
                 observations: req
                     .actions
@@ -1407,6 +1463,137 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_recoverable_env_error_keeps_the_session_and_a_fatal_one_reopens_on_reset() {
+        let env = DummyEnv::new();
+        let failures = env.step_failures.clone();
+        let bound = EnvServer::new(env)
+            .bind_with_options(
+                BindAddress::Tcp {
+                    host: "127.0.0.1".to_string(),
+                    port: 0,
+                },
+                ServeOptions {
+                    allow_remote_shutdown: true,
+                    ..ServeOptions::default()
+                },
+            )
+            .await
+            .unwrap();
+        let port = match bound.local_addr().clone() {
+            BindAddress::Tcp { port, .. } => port,
+            other => panic!("expected tcp, got {other:?}"),
+        };
+        let server = tokio::spawn(async move { bound.serve().await });
+        let mut client = RemoteEnv::connect(&format!("tcp://127.0.0.1:{port}"))
+            .await
+            .unwrap();
+        let step = || VectorStepRequest {
+            actions: vec![
+                spaces::SpaceValue::Discrete(0),
+                spaces::SpaceValue::Discrete(1),
+            ],
+            timeout_ms: 0,
+        };
+
+        client.reset(ResetRequest::default()).await.unwrap();
+        failures
+            .lock()
+            .unwrap()
+            .push_back(spaces::EnvRuntimeError::Recoverable("solver hiccup".into()));
+        let error = client.step(step()).await.expect_err("recoverable failure");
+        assert!(error.is_recoverable(), "{error}");
+        assert!(error.to_string().contains("solver hiccup"), "{error}");
+        // Same session, no reset: the next step is served.
+        client
+            .step(step())
+            .await
+            .expect("step after a recoverable error");
+
+        failures
+            .lock()
+            .unwrap()
+            .push_back(spaces::EnvRuntimeError::Runtime("solver diverged".into()));
+        let error = client.step(step()).await.expect_err("fatal failure");
+        assert!(!error.is_recoverable(), "{error}");
+        // The server ended that session: a step names the error that ended it
+        // instead of a bare closed connection.
+        let error = client.step(step()).await.expect_err("session ended");
+        let message = error.to_string();
+        assert!(
+            message.contains("non-recoverable env error") && message.contains("solver diverged"),
+            "{message}"
+        );
+        // A reset opens a fresh session on the same client.
+        client
+            .reset(ResetRequest::default())
+            .await
+            .expect("reset reopens");
+        client.step(step()).await.expect("step on the new session");
+
+        assert!(client.shutdown("done").await.unwrap());
+        shutdown_and_join(server).await;
+    }
+
+    #[tokio::test]
+    async fn a_fatal_reply_to_a_dropped_step_still_ends_the_session() {
+        let mut env = DummyEnv::new();
+        env.step_delay = Duration::from_millis(200);
+        let failures = env.step_failures.clone();
+        let bound = EnvServer::new(env)
+            .bind_with_options(
+                BindAddress::parse("tcp://127.0.0.1:0").unwrap(),
+                ServeOptions {
+                    allow_remote_shutdown: true,
+                    ..ServeOptions::default()
+                },
+            )
+            .await
+            .unwrap();
+        let address = bound.local_addr().to_string();
+        let server = tokio::spawn(bound.serve());
+        let mut client = RemoteEnv::connect(&address).await.unwrap();
+        let step = || StepRequest {
+            actions: vec![
+                spaces::SpaceValue::Discrete(0),
+                spaces::SpaceValue::Discrete(1),
+            ],
+            timeout_ms: 0,
+        };
+
+        client.reset(ResetRequest::default()).await.unwrap();
+        failures
+            .lock()
+            .unwrap()
+            .push_back(spaces::EnvRuntimeError::Runtime("solver diverged".into()));
+        // The caller gives up on the step (a Ctrl-C, a deadline) before the env
+        // answers it with the fatal error.
+        tokio::time::timeout(Duration::from_millis(20), client.step(step()))
+            .await
+            .expect_err("the step outlives its caller");
+        while !failures.lock().unwrap().is_empty() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        // Nobody awaited that reply, yet the session is recorded as ended...
+        let error = client.step(step()).await.expect_err("session ended");
+        let message = error.to_string();
+        assert!(
+            message.contains("non-recoverable env error") && message.contains("solver diverged"),
+            "{message}"
+        );
+        // ...so a reset opens a fresh one instead of reusing the closed stream.
+        client
+            .reset(ResetRequest::default())
+            .await
+            .expect("reset reopens");
+        client.step(step()).await.expect("step on the new session");
+
+        assert!(client.shutdown("done").await.unwrap());
+        shutdown_and_join(server).await;
+    }
+
+    #[tokio::test]
     async fn env_bind_resolves_port_zero_before_serving() {
         let bound = EnvServer::new(DummyEnv::new())
             .bind_with_options(
@@ -1550,12 +1737,17 @@ mod tests {
         shutdown_and_join(server).await;
     }
 
+    type Failures = Arc<Mutex<std::collections::VecDeque<spaces::EnvRuntimeError>>>;
+
     /// One lane of a [`WireLaneAdapter`] that records the reset options it saw.
     struct RecordingLane {
         obs_space: spaces::SpaceSpec,
         action_space: spaces::SpaceSpec,
         env_contract: spaces::EnvContract,
         seen: Arc<Mutex<Vec<Option<spaces::MetaMap>>>>,
+        // Errors the next resets / steps fail with, in order.
+        reset_failures: Failures,
+        step_failures: Failures,
     }
 
     impl RecordingLane {
@@ -1579,6 +1771,8 @@ mod tests {
                 action_space,
                 env_contract,
                 seen,
+                reset_failures: Failures::default(),
+                step_failures: Failures::default(),
             }
         }
 
@@ -1607,6 +1801,9 @@ mod tests {
             &mut self,
             req: spaces::request::ResetRequest,
         ) -> std::result::Result<spaces::request::ResetResult, spaces::EnvRuntimeError> {
+            if let Some(error) = self.reset_failures.lock().unwrap().pop_front() {
+                return Err(error);
+            }
             self.seen.lock().unwrap().push(req.options);
             Ok(spaces::request::ResetResult {
                 observation: Some(Self::observation()),
@@ -1619,6 +1816,9 @@ mod tests {
             &mut self,
             _req: spaces::request::StepRequest,
         ) -> std::result::Result<spaces::request::StepResult, spaces::EnvRuntimeError> {
+            if let Some(error) = self.step_failures.lock().unwrap().pop_front() {
+                return Err(error);
+            }
             Ok(spaces::request::StepResult {
                 observation: Some(Self::observation()),
                 ..Default::default()
@@ -1762,5 +1962,229 @@ mod tests {
                 Some(spaces::MetaValue::Int(12)),
             ],
         );
+    }
+
+    #[tokio::test]
+    async fn env_server_lanes_serve_one_endpoint_of_num_envs_lanes() {
+        let seen: Arc<Mutex<Vec<Option<spaces::MetaMap>>>> = Arc::new(Mutex::new(Vec::new()));
+        let bound = super::super::EnvServer::lanes(vec![
+            RecordingLane::new(seen.clone()),
+            RecordingLane::new(seen.clone()),
+        ])
+        .bind_with_options(
+            BindAddress::parse("tcp://127.0.0.1:0").unwrap(),
+            ServeOptions {
+                allow_remote_shutdown: true,
+                ..ServeOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+        let address = bound.local_addr().to_string();
+        let server = tokio::spawn(bound.serve());
+
+        let mut client = connect_with_retry(&address, &server).await;
+        assert_eq!(client.num_envs(), 2);
+        let reset = client
+            .reset(ResetRequest {
+                seeds: vec![1, 2],
+                ..ResetRequest::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(reset.observations.len(), 2);
+        assert_eq!(seen.lock().unwrap().len(), 2, "each lane reset once");
+        assert!(client.shutdown("done").await.unwrap());
+        shutdown_and_join(server).await;
+    }
+
+    #[tokio::test]
+    async fn env_server_without_lanes_fails_to_bind() {
+        let error = super::super::EnvServer::<RecordingLane>::lanes(Vec::new())
+            .bind(BindAddress::parse("tcp://127.0.0.1:0").unwrap())
+            .await
+            .err()
+            .expect("no lanes is rejected");
+        assert!(error.to_string().contains("at least one lane"), "{error}");
+    }
+
+    fn lane_step_request(adapter: &WireLaneAdapter) -> ProtoStepRequest {
+        let actions = vec![
+            spaces::SpaceValue::Discrete(0),
+            spaces::SpaceValue::Discrete(1),
+        ];
+        ProtoStepRequest {
+            action: Some(encode_batched_partial_values(&actions, adapter.action_space()).unwrap()),
+            ..Default::default()
+        }
+    }
+
+    /// Two recording lanes and their (reset, step) failure queues.
+    fn two_failing_lanes() -> (Vec<RecordingLane>, [(Failures, Failures); 2]) {
+        let seen: Arc<Mutex<Vec<Option<spaces::MetaMap>>>> = Arc::default();
+        let lanes = vec![RecordingLane::new(seen.clone()), RecordingLane::new(seen)];
+        let failures = [0, 1].map(|lane| {
+            (
+                lanes[lane].reset_failures.clone(),
+                lanes[lane].step_failures.clone(),
+            )
+        });
+        (lanes, failures)
+    }
+
+    fn recoverable(message: &str) -> spaces::EnvRuntimeError {
+        spaces::EnvRuntimeError::Recoverable(message.to_string())
+    }
+
+    fn fatal(message: &str) -> spaces::EnvRuntimeError {
+        spaces::EnvRuntimeError::Runtime(message.to_string())
+    }
+
+    #[tokio::test]
+    async fn a_lane_batch_reports_a_fatal_lane_error_over_a_recoverable_one() {
+        let (lanes, [(reset0, step0), (reset1, step1)]) = two_failing_lanes();
+        let adapter = WireLaneAdapter::new(lanes).unwrap();
+
+        step0
+            .lock()
+            .unwrap()
+            .push_back(recoverable("lane 0 hiccup"));
+        step1.lock().unwrap().push_back(fatal("lane 1 diverged"));
+        let error = adapter.step(lane_step_request(&adapter)).await.unwrap_err();
+        assert!(!error.is_recoverable, "{error}");
+        assert!(error.message.contains("lane 1 diverged"), "{error}");
+
+        reset0
+            .lock()
+            .unwrap()
+            .push_back(recoverable("lane 0 hiccup"));
+        reset1
+            .lock()
+            .unwrap()
+            .push_back(fatal("lane 1 lost its assets"));
+        let error = adapter
+            .reset(ProtoResetRequest::default())
+            .await
+            .unwrap_err();
+        assert!(!error.is_recoverable, "{error}");
+        assert!(error.message.contains("lane 1 lost its assets"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_lane_batch_is_recoverable_only_when_no_lane_moved() {
+        let (lanes, [(reset0, step0), (_, step1)]) = two_failing_lanes();
+        let adapter = WireLaneAdapter::new(lanes).unwrap();
+
+        // Every lane failed recoverably: nothing moved, so a retry is safe.
+        step0
+            .lock()
+            .unwrap()
+            .push_back(recoverable("lane 0 hiccup"));
+        step1
+            .lock()
+            .unwrap()
+            .push_back(recoverable("lane 1 hiccup"));
+        let error = adapter.step(lane_step_request(&adapter)).await.unwrap_err();
+        assert!(error.is_recoverable, "{error}");
+        assert!(error.message.contains("lane 0 hiccup"), "{error}");
+
+        // Lane 1 stepped while lane 0 failed: its transition is lost, so the
+        // batch ends the session rather than invite a retry that replays it.
+        step0
+            .lock()
+            .unwrap()
+            .push_back(recoverable("lane 0 hiccup"));
+        let error = adapter.step(lane_step_request(&adapter)).await.unwrap_err();
+        assert!(!error.is_recoverable, "{error}");
+        assert!(
+            error.message.contains("lane 0 step failed")
+                && error.message.contains("lane 0 hiccup")
+                && error.message.contains("lanes [1]"),
+            "{error}"
+        );
+
+        // The reset path folds the same way.
+        reset0
+            .lock()
+            .unwrap()
+            .push_back(recoverable("lane 0 hiccup"));
+        let error = adapter
+            .reset(ProtoResetRequest::default())
+            .await
+            .unwrap_err();
+        assert!(!error.is_recoverable, "{error}");
+        assert!(error.message.contains("lane 0 reset failed"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_fatal_lane_error_beside_a_recoverable_one_ends_the_served_session() {
+        let (lanes, [(reset0, step0), (reset1, step1)]) = two_failing_lanes();
+        let bound = super::super::EnvServer::lanes(lanes)
+            .bind_with_options(
+                BindAddress::parse("tcp://127.0.0.1:0").unwrap(),
+                ServeOptions {
+                    allow_remote_shutdown: true,
+                    ..ServeOptions::default()
+                },
+            )
+            .await
+            .unwrap();
+        let address = bound.local_addr().to_string();
+        let server = tokio::spawn(bound.serve());
+        let mut client = connect_with_retry(&address, &server).await;
+        let step = || StepRequest {
+            actions: vec![
+                spaces::SpaceValue::Discrete(0),
+                spaces::SpaceValue::Discrete(1),
+            ],
+            timeout_ms: 0,
+        };
+
+        client.reset(ResetRequest::default()).await.unwrap();
+        step0
+            .lock()
+            .unwrap()
+            .push_back(recoverable("lane 0 hiccup"));
+        step1.lock().unwrap().push_back(fatal("lane 1 diverged"));
+        let error = client.step(step()).await.expect_err("fatal lane");
+        assert!(!error.is_recoverable(), "{error}");
+        assert!(error.to_string().contains("lane 1 diverged"), "{error}");
+        let error = client.step(step()).await.expect_err("session ended");
+        assert!(
+            error.to_string().contains("non-recoverable env error"),
+            "{error}"
+        );
+
+        // A reset reopens; a reset batch with a fatal lane ends that session too.
+        reset0
+            .lock()
+            .unwrap()
+            .push_back(recoverable("lane 0 hiccup"));
+        reset1
+            .lock()
+            .unwrap()
+            .push_back(fatal("lane 1 lost its assets"));
+        let error = client
+            .reset(ResetRequest::default())
+            .await
+            .expect_err("fatal lane reset");
+        assert!(!error.is_recoverable(), "{error}");
+        assert!(
+            error.to_string().contains("lane 1 lost its assets"),
+            "{error}"
+        );
+        let error = client.step(step()).await.expect_err("session ended");
+        assert!(
+            error.to_string().contains("non-recoverable env error"),
+            "{error}"
+        );
+
+        client
+            .reset(ResetRequest::default())
+            .await
+            .expect("reset reopens");
+        client.step(step()).await.expect("step on the new session");
+        assert!(client.shutdown("done").await.unwrap());
+        shutdown_and_join(server).await;
     }
 }

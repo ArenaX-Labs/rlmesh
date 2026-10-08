@@ -5,6 +5,8 @@
 mod abi;
 mod adapters;
 mod codec;
+mod describe;
+mod env;
 mod model;
 mod spaces;
 mod value;

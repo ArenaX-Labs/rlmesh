@@ -209,12 +209,17 @@ fn role_registry_advisory(role: &str) -> Option<Advisory> {
     if crate::roles::registry::is_sanctioned_role(role) {
         return None;
     }
-    Some(Advisory::info(format!(
+    let mut message = format!(
         "role {role:?} is not in the role registry; it resolves only when the env and \
          model agree on its exact string. Prefer a blessed role, mark it intentionally \
          non-standard with an `x/` prefix, or -- for dims no model reads -- use a \
          role-less (opaque) actuator"
-    )))
+    );
+    if let Some(hint) = crate::roles::registry::kindless_hint(role) {
+        message.push_str(". ");
+        message.push_str(&hint);
+    }
+    Some(Advisory::info(message))
 }
 
 /// Plausible image channel-axis length (RGBA=4, RGB=3, grayscale=1, ...). A
@@ -907,6 +912,39 @@ mod tests {
         assert_eq!(nudges.len(), 1, "{:?}", features.advisories);
         assert!(nudges[0].message.contains("action/wiggle"), "{}", nudges[0]);
         assert_eq!(nudges[0].severity, crate::advisory::AdvisorySeverity::Info);
+        assert!(
+            !nudges[0].message.contains("names no kind"),
+            "{}",
+            nudges[0]
+        );
+    }
+
+    #[test]
+    fn join_nudges_a_kindless_role_toward_a_kind_prefix() {
+        let obs = dict_view(vec![("instruction", text_view())]);
+        let action_space = box_view(vec![1], None, None);
+        let mut observation = BTreeMap::new();
+        observation.insert(
+            "instruction".to_owned(),
+            ObsNode::Leaf(ObsLeaf::Text(TextTag {
+                role: "text/instruction".to_owned(),
+                unknown: Default::default(),
+            })),
+        );
+        let tags = EnvTags {
+            observation: ObsNode::Dict(observation),
+            action: action_layout(vec![component("wiggle", 1, None)]),
+        };
+        // Still accepted: a kind-less role is advised, never refused.
+        let features = join(&tags, &obs, &action_space).expect("join");
+        let nudge = features
+            .advisories
+            .iter()
+            .find(|note| note.message.contains("names no kind"))
+            .unwrap_or_else(|| panic!("{:?}", features.advisories));
+        assert!(nudge.message.contains("e.g. x/wiggle"), "{nudge}");
+        assert!(!nudge.message.contains("  "), "{nudge}");
+        assert_eq!(nudge.severity, crate::advisory::AdvisorySeverity::Info);
     }
 
     #[test]

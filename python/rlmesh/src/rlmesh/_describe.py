@@ -515,12 +515,16 @@ def _make_kwargs(
 
 
 def _space_dict(space: object) -> dict[str, object]:
-    """Serialize a space via the Rust-canonical ``spec_to_dict`` codec."""
+    """Serialize a space via the Rust-canonical ``spec_to_json`` codec.
+
+    The same Rust function renders a native (C/C++) host's spaces, so both
+    producers embed byte-identical space JSON.
+    """
     from .spaces import Space, from_gymnasium_space  # lazy: keep module import light
-    from .spaces._internals import spec_to_dict
+    from .spaces._internals import spec_to_json
 
     spec = space.spec if isinstance(space, Space) else from_gymnasium_space(space).spec
-    return spec_to_dict(spec)
+    return cast("dict[str, object]", json.loads(spec_to_json(spec)))
 
 
 def _collect_peer_info() -> Mapping[str, Any]:

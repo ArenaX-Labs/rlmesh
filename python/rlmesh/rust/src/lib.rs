@@ -115,9 +115,35 @@ impl std::io::Write for PyStream {
     }
 }
 
+/// Ignore SIGPIPE unless the host installed its own handler (the same guard as
+/// `rlmesh-capi`'s `ignore_sigpipe`).
+///
+/// CPython ignores SIGPIPE at startup, but an embedded interpreter initialized
+/// without signal handlers (`Py_InitializeEx(0)`) keeps the default action:
+/// terminate. The gRPC transport's vectored writes cannot opt out of the
+/// signal, so a peer hanging up mid-write would kill that host process instead
+/// of failing the write with `EPIPE`.
+// The libc signal calls are the only way to read and set the disposition; the
+// workspace otherwise denies `unsafe_code`.
+#[allow(unsafe_code)]
+fn ignore_sigpipe() {
+    #[cfg(unix)]
+    // SAFETY: querying and then setting the process signal disposition; both
+    // calls take valid pointers or constants.
+    unsafe {
+        let mut current: libc::sigaction = std::mem::zeroed();
+        if libc::sigaction(libc::SIGPIPE, std::ptr::null(), &mut current) == 0
+            && current.sa_sigaction == libc::SIG_DFL
+        {
+            libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+        }
+    }
+}
+
 #[pymodule]
 #[pyo3(name = "_rlmesh")]
 pub fn rlmesh(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    ignore_sigpipe();
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     m.add("__build__", rlmesh_proto::CURRENT_WORKFLOW_EDITION)?;
 

@@ -53,6 +53,16 @@ pub mod wire;
 pub const MAX_MESSAGE_SIZE: usize = 256 * 1024 * 1024;
 
 /// Configure endpoint timeouts and keepalives.
+/// Message encodings every RLMesh client and server decodes. Accepting costs
+/// nothing when a peer sends identity; a server compresses a response only
+/// when the client advertised the encoding and the server opted in
+/// ([`ServeOptions::compress_responses`]). Zstd is listed first, so it is the
+/// one an opted-in server picks when a client offers both.
+pub const ACCEPTED_COMPRESSION: [tonic::codec::CompressionEncoding; 2] = [
+    tonic::codec::CompressionEncoding::Zstd,
+    tonic::codec::CompressionEncoding::Gzip,
+];
+
 pub(crate) fn configure_endpoint(
     endpoint: tonic::transport::Endpoint,
 ) -> tonic::transport::Endpoint {

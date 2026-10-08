@@ -98,8 +98,11 @@ fn reject_role(role: &str, locus: &str, policy: RolePolicy) -> Result<(), String
         } else {
             "use a blessed role, or the `x/` escape namespace for an intentionally non-standard one"
         };
+        let kindless = crate::roles::registry::kindless_hint(role)
+            .map(|hint| format!(". {hint}"))
+            .unwrap_or_default();
         return Err(format!(
-            "{locus} declares unregistered role {role:?}; {hint}"
+            "{locus} declares unregistered role {role:?}; {hint}{kindless}"
         ));
     }
     Ok(())
@@ -649,6 +652,22 @@ mod tests {
         .unwrap();
         let err = reject_unsanctioned_roles_model(&bad_model, RolePolicy::Strict).unwrap_err();
         assert!(err.contains("proprio/made_up"), "{err}");
+        assert!(!err.contains("names no kind"), "{err}");
+
+        // A kind-less role passes the open default (the join nudges it) but
+        // the strict tier names the missing kind prefix.
+        let kindless: EnvTags = serde_json::from_str(
+            r#"{"observation": {"cam": {"type": "image", "role": "image/primary"}},
+                "action": {"components": [{"role": "wiggle", "dim": 1}]}}"#,
+        )
+        .unwrap();
+        assert!(reject_unknowns_env(&kindless).is_ok());
+        let err = reject_unsanctioned_roles_env(&kindless, RolePolicy::Strict).unwrap_err();
+        assert!(
+            err.contains("names no kind") && err.contains("e.g. x/wiggle"),
+            "{err}"
+        );
+        assert!(!err.contains("  "), "{err:?}");
     }
 
     #[test]

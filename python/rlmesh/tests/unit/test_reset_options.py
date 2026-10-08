@@ -165,6 +165,33 @@ def test_trial_index_helper_reads_the_reserved_key() -> None:
     assert rlmesh.trial_index({"other": 1}) is None
     assert rlmesh.trial_index({"trial_index": True}) is None
     assert rlmesh.trial_index(None) is None
+    assert rlmesh.trial_index({"trial_index": 12.5}) is None
+    assert rlmesh.trial_index({"trial_index": "12"}) is None
+
+
+def test_trial_index_helper_accepts_any_integral_number() -> None:
+    np = pytest.importorskip("numpy")
+
+    value = rlmesh.trial_index({"trial_index": np.int64(7)})
+    assert value == 7
+    assert type(value) is int
+    assert rlmesh.trial_index({"trial_index": np.uint32(3)}) == 3
+    assert rlmesh.trial_index({"trial_index": np.bool_(True)}) is None
+
+
+def test_trial_index_helper_reads_the_multi_lane_list_by_lane() -> None:
+    options = {"trial_index": [4, 5, 6]}
+    assert [rlmesh.trial_index(options, lane=i) for i in range(3)] == [4, 5, 6]
+    with pytest.raises(ValueError, match="pass lane="):
+        rlmesh.trial_index(options)
+    with pytest.raises(ValueError, match="lane=3"):
+        rlmesh.trial_index(options, lane=3)
+    # The single-lane form is lane 0 of a one-lane reset.
+    assert rlmesh.trial_index({"trial_index": 9}, lane=0) == 9
+    with pytest.raises(ValueError, match="lane=1"):
+        rlmesh.trial_index({"trial_index": 9}, lane=1)
+    # Absent stays None whatever the lane.
+    assert rlmesh.trial_index({}, lane=2) is None
 
 
 class _NoOptionsEnv:

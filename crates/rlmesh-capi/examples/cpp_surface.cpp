@@ -4,6 +4,7 @@
 // linked or run — the calls below are not meant to succeed at runtime.
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <rlmesh.hpp>
 #include <string>
@@ -247,6 +248,96 @@ rlmesh::Status drive(const std::string& address) {
   rlmesh::Model moved = std::move(*model);
   moved.cancel();
   return moved.serve(address, serve_options);
+}
+
+// Env side: every Space builder, the Environment hooks, EnvConfig, EnvServer.
+rlmesh::Result<rlmesh::Space> spaces() {
+  auto image = rlmesh::Space::box<uint8_t>({8, 8, 3}, 0, 255);
+  if (!image) return image.error();
+  auto bounded =
+      rlmesh::Space::box(RLMESH_F32, {2}, std::vector<double>{-1, -2}, std::vector<double>{1, 2});
+  if (!bounded) return bounded.error();
+  auto raw = rlmesh::Space::box(RLMESH_F64, {3}, -1.0, 1.0);
+  if (!raw) return raw.error();
+  auto discrete = rlmesh::Space::discrete(4, 1);
+  if (!discrete) return discrete.error();
+  auto bits = rlmesh::Space::multi_binary({5});
+  if (!bits) return bits.error();
+  auto counts = rlmesh::Space::multi_discrete({2, 3});
+  if (!counts) return counts.error();
+  auto text = rlmesh::Space::text(1, 32, "abc");
+  if (!text) return text.error();
+  std::vector<rlmesh::Space> children;
+  children.push_back(discrete.unwrap());
+  children.push_back(bits.unwrap());
+  auto tuple = rlmesh::Space::tuple(std::move(children));
+  if (!tuple) return tuple.error();
+  std::vector<std::pair<std::string, rlmesh::Space>> fields;
+  fields.emplace_back("image", image.unwrap());
+  fields.emplace_back("bounded", bounded.unwrap());
+  fields.emplace_back("raw", raw.unwrap());
+  fields.emplace_back("counts", counts.unwrap());
+  fields.emplace_back("text", text.unwrap());
+  fields.emplace_back("tuple", tuple.unwrap());
+  auto dict = rlmesh::Space::dict(std::move(fields));
+  if (!dict) return dict.error();
+  (void)dict->raw();
+  (void)dict->ref().kind();
+  rlmesh::Space moved = dict.unwrap();
+  return moved;
+}
+
+class SurfaceEnv : public rlmesh::Environment {
+ public:
+  rlmesh::Result<rlmesh::ResetOutput> reset(const rlmesh::ResetArgs& args) override {
+    (void)args.seed;
+    (void)args.trial_index;
+    (void)args.options_json;
+    auto observation = rlmesh::Value::discrete(0);
+    if (!observation) return observation.error();
+    return rlmesh::ResetOutput{observation.unwrap(), "{}"};
+  }
+  rlmesh::Result<rlmesh::StepOutput> step(std::optional<rlmesh::ValueRef> action) override {
+    (void)action;
+    auto observation = rlmesh::Value::discrete(1);
+    if (!observation) return observation.error();
+    return rlmesh::StepOutput{observation.unwrap(), 1.0, true, false, ""};
+  }
+  rlmesh::Result<std::optional<rlmesh::Value>> render() override {
+    return std::optional<rlmesh::Value>();
+  }
+  void close() override {}
+};
+
+rlmesh::Status env_server(const std::string& address) {
+  rlmesh::EnvConfig config;
+  config.id = "Surface-v0";
+  auto observation = rlmesh::Space::discrete(2);
+  if (!observation) return observation.error();
+  auto action = spaces();
+  if (!action) return action.error();
+  config.observation_space = observation.unwrap();
+  config.action_space = action.unwrap();
+  config.adapter_tags_json = "";
+  config.reset_options = {"trial_index"};
+  config.render_mode = "rgb_array";
+  config.metadata_json = "{}";
+  config.foreground = false;
+  std::vector<std::unique_ptr<rlmesh::Environment>> lanes;
+  lanes.push_back(std::make_unique<SurfaceEnv>());
+  lanes.push_back(std::make_unique<SurfaceEnv>());
+  auto multi = rlmesh::EnvServer::create(std::move(lanes), config);
+  if (!multi) return multi.error();
+  auto server = rlmesh::EnvServer::create(std::make_unique<SurfaceEnv>(), config);
+  if (!server) return server.error();
+  rlmesh::Result<std::string> describe = server->describe_json();
+  if (!describe) return describe.error();
+  rlmesh::ServeOptions options;
+  auto bound = server->bind(address, options);
+  if (!bound) return bound.error();
+  rlmesh::EnvServer moved = std::move(*server);
+  moved.cancel();
+  return moved.serve();
 }
 
 }  // namespace surface

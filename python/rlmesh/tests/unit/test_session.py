@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any, cast
 
+import numpy as np
 import pytest
 import rlmesh
 import rlmesh.numpy
@@ -105,6 +106,9 @@ class _SkipDriver:
 
     def quit_requested(self) -> bool:
         return False
+
+    def pace(self) -> float:
+        return 0.0
 
     def close(self) -> None:
         pass
@@ -815,6 +819,18 @@ def test_numpy_chunk_runs_over_a_scalar_action_space() -> None:
         ({"task_success": 1.0}, True),
         ({"task_success": 0}, False),
         ({"other": True}, None),
+        # Kinds the runtime skips never decide; the next key does.
+        ({"is_success": "False", "success": True}, True),
+        ({"is_success": "True"}, None),
+        ({"is_success": None, "success": False}, False),
+        ({"is_success": [1], "task_success": 0.0}, False),
+        ({"success": b"\x01"}, None),
+        # NumPy scalars and 0-d arrays unwrap as they do on the wire.
+        ({"is_success": np.bool_(True)}, True),
+        ({"is_success": np.int64(0)}, False),
+        ({"success": np.float32(0.5)}, True),
+        ({"success": np.array(True)}, True),
+        ({"success": np.array([True]), "task_success": 1}, True),
     ],
 )
 def test_episode_success_reads_the_same_keys_as_the_runtime(
@@ -1037,3 +1053,64 @@ def test_adapted_session_refuses_an_action_the_env_int_box_cannot_hold(
             session.predict(obs)
     with pytest.raises(Exception):
         model.run(adapt.tag(Env(), tags), episodes=1)
+
+
+class _PacedDriver(_SkipDriver):
+    """A stand-in ViewerDriver whose pacing reports a fixed sleep per step."""
+
+    def consume_skip(self) -> bool:
+        return False
+
+    def pace(self) -> float:
+        return 5.0  # seconds "slept"; never actually sleeps
+
+
+def test_session_run_reports_telemetry_under_native_row_names() -> None:
+    result = rlmesh.session(rlmesh.Model(lambda obs: 0), _TinyEnv()).run(
+        seeds=[0, 1, 2]
+    )
+    rows = {(r.op, r.component, r.metric): r for r in result.telemetry}
+    assert list(rows) == [
+        ("model.predict", "model", "rpc.total"),
+        ("env.reset", "env", "rpc.total"),
+        ("env.step", "env", "rpc.total"),
+        ("runner.round", "runner", "rpc.total"),
+    ]
+    for row in rows.values():
+        assert row.unit == "ms"
+        assert row.count == 3  # one step (and one predict, one reset) per episode
+        assert 0.0 <= row.p50 <= row.p95 <= row.p99
+        assert row.avg >= 0.0
+    table = result.format_telemetry()
+    assert "env.step" in table and "runner.round" in table
+
+
+def test_session_run_telemetry_leaves_pacing_sleep_out() -> None:
+    sess = rlmesh.session(rlmesh.Model(lambda obs: 0), _TinyEnv())
+    sess._view_driver = cast(ViewerDriver, _PacedDriver())
+    result = sess.run(seeds=[0])
+    rounds = next(r for r in result.telemetry if r.op == "runner.round")
+    assert rounds.avg < 1000.0  # the 5 s the pacer reports is not charged
+    assert result.episodes[0].step_ms is not None
+    assert result.episodes[0].step_ms < 1000.0
+    sess.close()
+
+
+def test_hand_driven_steps_record_no_run_telemetry() -> None:
+    sess = rlmesh.session(rlmesh.Model(lambda obs: 0), _TinyEnv())
+    obs, _ = sess.reset()
+    sess.step(sess.predict(obs))
+    result = sess.run(seeds=[0])
+    assert all(r.count == 1 for r in result.telemetry)
+    sess.close()
+
+
+def test_run_end_hook_sees_the_telemetry() -> None:
+    seen: list[rlmesh.RunResult] = []
+
+    class Hooks(rlmesh.RunHooks):
+        def on_run_end(self, result: rlmesh.RunResult) -> None:
+            seen.append(result)
+
+    result = rlmesh.session(rlmesh.Model(lambda obs: 0), _TinyEnv()).run(hooks=Hooks())
+    assert seen and seen[0].telemetry == result.telemetry != ()

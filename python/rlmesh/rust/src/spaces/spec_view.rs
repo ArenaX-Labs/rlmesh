@@ -5,6 +5,7 @@ use pyo3::types::{PyAny, PyDict, PyModule};
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 use rand::SeedableRng;
+use rlmesh_adapters::v1::space_spec_to_json;
 use rlmesh_spaces::ChaCha12Rng;
 use rlmesh_spaces::spaces::{
     BoxSpaceBuilder, DictSpaceBuilder, DiscreteBuilder, MultiBinaryBuilder, MultiDiscreteBuilder,
@@ -58,6 +59,14 @@ impl PySpaceSpec {
     #[gen_stub(override_return_type(type_repr = "dict[str, object]", imports = ()))]
     fn _to_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         space_spec_to_pydict(py, &self.inner)
+    }
+
+    /// The describe-envelope JSON form of `_to_dict()` (non-finite bounds as
+    /// `null`), rendered by the same Rust function a native host uses.
+    fn _to_json(&self) -> PyResult<String> {
+        space_spec_to_json(&self.inner)
+            .map(|value| value.to_string())
+            .map_err(|err| pyo3::exceptions::PyValueError::new_err(err.to_string()))
     }
 
     #[gen_stub(override_return_type(type_repr = "Space", imports = ()))]

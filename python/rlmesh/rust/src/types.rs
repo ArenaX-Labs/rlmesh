@@ -28,6 +28,13 @@ create_exception!(
     "Environment-level errors (from the spaces environment)"
 );
 
+create_exception!(
+    _rlmesh,
+    RecoverableEnvironmentException,
+    EnvironmentException,
+    "An environment error that fails one request but leaves the session usable"
+);
+
 /// Convert rlmesh facade Error to Python exception.
 ///
 /// Note: We can't implement `From<Error> for PyErr` due to orphan rules,
@@ -48,33 +55,50 @@ pub fn to_py_err(err: Error) -> PyErr {
     }
 }
 
-/// Convert environment error to Python exception.
+/// Convert environment error to Python exception, carrying its `code` and
+/// `is_recoverable` as attributes.
 fn env_error_to_py(err: EnvironmentError) -> PyErr {
     let msg = format!("[{}] {}", err.code, err.message);
+    let env_exception = |msg: String| {
+        if err.is_recoverable {
+            RecoverableEnvironmentException::new_err(msg)
+        } else {
+            EnvironmentException::new_err(msg)
+        }
+    };
 
-    match err.code {
+    let py_err = match err.code {
         ErrorCode::Timeout => PyTimeoutError::new_err(msg),
         ErrorCode::InvalidAction => PyValueError::new_err(msg),
-        ErrorCode::NotReady => EnvironmentException::new_err(msg),
-        ErrorCode::Busy => EnvironmentException::new_err(msg),
-        ErrorCode::Internal => EnvironmentException::new_err(msg),
-        ErrorCode::Crashed => EnvironmentException::new_err(msg),
         ErrorCode::Cancelled => PyRuntimeError::new_err(msg),
-        ErrorCode::Closed => EnvironmentException::new_err(msg),
-        ErrorCode::Unspecified => EnvironmentException::new_err(msg),
-        // rlmesh::ErrorCode is #[non_exhaustive].
-        _ => EnvironmentException::new_err(msg),
-    }
+        // NotReady, Busy, Internal, Crashed, Closed, Unspecified, and any code
+        // added later (rlmesh::ErrorCode is #[non_exhaustive]).
+        _ => env_exception(msg),
+    };
+    Python::attach(|py| {
+        let value = py_err.value(py);
+        // Builtin exception instances take attributes too; a failure only
+        // loses the annotation, never the error itself.
+        let _ = value.setattr("code", err.code.to_string());
+        let _ = value.setattr("is_recoverable", err.is_recoverable);
+    });
+    py_err
 }
 
 /// Register exception types with the Python module.
 pub fn register_exceptions(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add("RLMeshException", m.py().get_type::<RLMeshException>())?;
-    m.add("ProtocolException", m.py().get_type::<ProtocolException>())?;
-    m.add(
-        "EnvironmentException",
-        m.py().get_type::<EnvironmentException>(),
-    )?;
+    let py = m.py();
+    m.add("RLMeshException", py.get_type::<RLMeshException>())?;
+    m.add("ProtocolException", py.get_type::<ProtocolException>())?;
+    // Class-level defaults for an exception an env author raises; one the
+    // client raises carries the server's values on the instance.
+    let environment = py.get_type::<EnvironmentException>();
+    environment.setattr("code", ErrorCode::Internal.to_string())?;
+    environment.setattr("is_recoverable", false)?;
+    m.add("EnvironmentException", environment)?;
+    let recoverable = py.get_type::<RecoverableEnvironmentException>();
+    recoverable.setattr("is_recoverable", true)?;
+    m.add("RecoverableEnvironmentException", recoverable)?;
     Ok(())
 }
 

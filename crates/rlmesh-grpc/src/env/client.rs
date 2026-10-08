@@ -24,7 +24,9 @@ use rlmesh_proto::{
     Edition, EndpointPhases, SessionOffer, negotiate_workflow_edition, parse_retained_edition,
 };
 
-use crate::error::{ClientError, Error as GrpcError, ProtocolError, TransportError};
+use crate::error::{
+    ClientError, EnvError, EnvErrorCode, Error as GrpcError, ProtocolError, TransportError,
+};
 use crate::helpers::address::parse_env_connect_target;
 use crate::states::ClientState;
 
@@ -121,6 +123,11 @@ struct Shared {
     /// `ConfigureEnvRequest`): the env-leg selection from the handshake, or the
     /// session floor a model leg lowered it to. Empty until the handshake.
     pinned_workflow_edition: std::sync::Mutex<String>,
+    /// The message of the non-recoverable env error that ended the last Join
+    /// session, until a reset opens a fresh one. The server closes the stream
+    /// after such an error, so later ops on it could only report a closed
+    /// connection; this names the real cause instead.
+    ended_by: std::sync::Mutex<Option<String>>,
 }
 
 /// The Join bidi stream: where requests go, and who is waiting for a reply.
@@ -138,6 +145,7 @@ impl Shared {
             open_lock: tokio::sync::Mutex::new(()),
             request_counter: AtomicU64::new(0),
             pinned_workflow_edition: std::sync::Mutex::new(String::new()),
+            ended_by: std::sync::Mutex::new(None),
         }
     }
 
@@ -180,6 +188,64 @@ impl Shared {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = stream;
     }
+
+    fn ended_by(&self) -> Option<String> {
+        self.ended_by
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    fn set_ended_by(&self, message: Option<String>) {
+        *self
+            .ended_by
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = message;
+    }
+
+    /// Drop the Join stream whose waiters are `pending` after a
+    /// non-recoverable error ended it, unless it is no longer this session's
+    /// stream: a stale stream's pump must not end a newer session.
+    fn end_session(&self, pending: &Pending, message: String) {
+        let mut slot = self
+            .stream
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if slot
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(&current.pending, pending))
+        {
+            *slot = None;
+            self.set_ended_by(Some(message));
+        }
+    }
+
+    /// The error for an op on a Join stream that has gone away: the fatal env
+    /// error that ended the session, when that is why, else a closed connection.
+    fn stream_gone_error(&self) -> GrpcError {
+        match self.ended_by() {
+            Some(message) => session_ended_error(&message),
+            None => TransportError::ConnectionClosed.into(),
+        }
+    }
+}
+
+/// How long a reset that reopens a session after a fatal error waits for the
+/// server to release the previous session's slot. The server frees it only
+/// after the ended session's in-flight work drains.
+const REOPEN_SLOT_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+fn session_ended_error(message: &str) -> GrpcError {
+    EnvError {
+        code: EnvErrorCode::Closed,
+        message: format!(
+            "env session ended after a non-recoverable env error: {message}; reset to start a \
+             new session"
+        ),
+        is_recoverable: false,
+        debug_info: None,
+    }
+    .into()
 }
 
 impl EnvClient {
@@ -235,9 +301,12 @@ impl EnvClient {
         };
 
         Ok(Self {
-            client: EnvServiceClient::new(channel)
-                .max_decoding_message_size(crate::MAX_MESSAGE_SIZE)
-                .max_encoding_message_size(crate::MAX_MESSAGE_SIZE),
+            client: crate::ACCEPTED_COMPRESSION.into_iter().fold(
+                EnvServiceClient::new(channel)
+                    .max_decoding_message_size(crate::MAX_MESSAGE_SIZE)
+                    .max_encoding_message_size(crate::MAX_MESSAGE_SIZE),
+                |client, encoding| client.accept_compressed(encoding),
+            ),
             address: target.display_address().to_string(),
             token: token.to_string(),
             shared: Arc::new(Shared::new(ClientState::Connected, None)),
@@ -350,7 +419,8 @@ impl EnvClient {
         let selected =
             negotiate_workflow_edition(&env_offer, &runtime_offer).map_err(|refusal| {
                 ProtocolError::HandshakeFailed(format!(
-                    "no mutual workflow edition with the env: {refusal}"
+                    "no mutual workflow edition with the env: {refusal}{}",
+                    refusal.hint()
                 ))
             })?;
         // The wire carries a name; the session carries the typed edition. This is
@@ -412,6 +482,9 @@ impl EnvClient {
         skip_all,
         fields(address = %self.address)
     )]
+    ///
+    /// After a non-recoverable env error ended the session, this opens a fresh
+    /// Join session, so the env is usable again.
     pub async fn reset(&mut self, req: ResetRequest) -> Result<ResetResponse, GrpcError> {
         self.ensure_ready()?;
         self.ensure_join_stream().await?;
@@ -444,6 +517,7 @@ impl EnvClient {
     )]
     pub async fn step(&mut self, req: StepRequest) -> Result<StepResponse, GrpcError> {
         self.ensure_ready()?;
+        self.ensure_session_not_ended()?;
         self.ensure_join_stream().await?;
 
         let env_req = JoinRequest {
@@ -474,6 +548,7 @@ impl EnvClient {
     )]
     pub async fn render(&mut self, req: RenderRequest) -> Result<RenderResponse, GrpcError> {
         self.ensure_ready()?;
+        self.ensure_session_not_ended()?;
         self.ensure_join_stream().await?;
 
         let env_req = JoinRequest {
@@ -610,21 +685,72 @@ impl EnvClient {
         if self.shared.stream().is_some() {
             return Ok(());
         }
-        let (tx, rx) = mpsc::channel::<JoinRequest>(32);
-        let request_stream = ReceiverStream::new(rx);
-
-        let response = self
-            .client
-            .join(self.authorized_request(request_stream)?)
-            .await
-            .map_err(crate::error::status_to_grpc_error)?;
+        let reopening = self.shared.ended_by().is_some();
+        let (tx, response) = self.open_join(reopening).await?;
 
         let pending = new_pending();
-        spawn_response_pump(response.into_inner(), pending.clone());
+        // The pump, not the request future, records a fatal reply: a caller
+        // that dropped its future before the reply arrived must still find the
+        // session ended, so its next reset opens a fresh one.
+        let session = Arc::downgrade(&self.shared);
+        let stream_pending = pending.clone();
+        spawn_response_pump(response.into_inner(), pending.clone(), move |message| {
+            if let Some(shared) = session.upgrade() {
+                shared.end_session(&stream_pending, message);
+            }
+        });
         self.shared.set_stream(Some(JoinStream { tx, pending }));
         if let Err(error) = self.configure_session_edition().await {
             self.shared.set_stream(None);
             return Err(error);
+        }
+        self.shared.set_ended_by(None);
+        Ok(())
+    }
+
+    /// Open a Join stream. Reopening after a fatal error retries while the
+    /// server still holds the ended session's slot (it answers
+    /// `FailedPrecondition` until that session's teardown finishes).
+    async fn open_join(
+        &self,
+        reopening: bool,
+    ) -> Result<
+        (
+            mpsc::Sender<JoinRequest>,
+            tonic::Response<tonic::Streaming<JoinResponse>>,
+        ),
+        GrpcError,
+    > {
+        let deadline = tokio::time::Instant::now() + REOPEN_SLOT_WAIT;
+        loop {
+            let (tx, rx) = mpsc::channel::<JoinRequest>(32);
+            let request_stream = ReceiverStream::new(rx);
+            match self
+                .client
+                .clone()
+                .join(self.authorized_request(request_stream)?)
+                .await
+            {
+                Ok(response) => return Ok((tx, response)),
+                Err(status)
+                    if reopening
+                        && status.code() == tonic::Code::FailedPrecondition
+                        && tokio::time::Instant::now() < deadline =>
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+                Err(status) => return Err(crate::error::status_to_grpc_error(status)),
+            }
+        }
+    }
+
+    /// Refuse a step/render once a non-recoverable error ended the session:
+    /// only a reset starts a new one.
+    fn ensure_session_not_ended(&self) -> Result<(), GrpcError> {
+        if self.shared.stream().is_none()
+            && let Some(message) = self.shared.ended_by()
+        {
+            return Err(session_ended_error(&message));
         }
         Ok(())
     }
@@ -702,7 +828,7 @@ impl EnvClient {
                     request_kind,
                     "env join stream already ended; cannot send request"
                 );
-                GrpcError::from(TransportError::ConnectionClosed)
+                self.shared.stream_gone_error()
             })?;
             map.insert(request_id.clone(), reply_tx);
         }
@@ -721,10 +847,12 @@ impl EnvClient {
             {
                 map.remove(&request_id);
             }
-            return Err(TransportError::ConnectionClosed.into());
+            return Err(self.shared.stream_gone_error());
         }
 
         match reply_rx.await {
+            // A non-recoverable error reply already ended the session in the
+            // response pump.
             Ok(Ok(response)) => Ok(response),
             Ok(Err(status)) => {
                 tracing::error!(
@@ -742,7 +870,7 @@ impl EnvClient {
                     request_kind,
                     "env join stream closed while waiting for response"
                 );
-                Err(TransportError::ConnectionClosed.into())
+                Err(self.shared.stream_gone_error())
             }
         }
     }
@@ -1032,6 +1160,27 @@ mod tests {
             step.await.unwrap().unwrap_err(),
             GrpcError::Transport(TransportError::ConnectionClosed)
         ));
+    }
+
+    #[tokio::test]
+    async fn a_stale_streams_fatal_error_does_not_end_a_newer_session() {
+        let (client, _request_rx, current) = ready_client_with_stream();
+
+        // A pump still draining an older stream reports its fatal error late.
+        client
+            .shared
+            .end_session(&new_pending(), "old session".to_string());
+        assert!(
+            client.shared.stream().is_some(),
+            "the newer session survives"
+        );
+        assert!(client.shared.ended_by().is_none());
+
+        client
+            .shared
+            .end_session(&current, "this session".to_string());
+        assert!(client.shared.stream().is_none());
+        assert_eq!(client.shared.ended_by().as_deref(), Some("this session"));
     }
 
     #[tokio::test]
