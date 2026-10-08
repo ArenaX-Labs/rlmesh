@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+#MISE description="Run the CI 'fast' job (check + test:ci + packaging) on Depot with local changes; extra args go to `depot ci run`"
+#MISE dir="{{ config_root }}"
+# `depot ci run` uploads `git diff` against the remote branch (or the default
+# branch), which leaves out untracked files. Mark them intent-to-add for the
+# upload so new files reach the job, then put them back to untracked.
+set -euo pipefail
+
+mapfile -d '' untracked < <(git ls-files -z --others --exclude-standard)
+if [ "${#untracked[@]}" -gt 0 ]; then
+  git add --intent-to-add -- "${untracked[@]}"
+  trap 'git reset -q -- "${untracked[@]}"' EXIT
+fi
+
+depot ci run --workflow .github/workflows/ci.yml --job fast --follow "$@"

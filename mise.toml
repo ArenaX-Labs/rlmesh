@@ -39,14 +39,29 @@ fnox = "1.36"
 # `mise watch <task>` (e.g. `mise watch test:rust`) reruns a task on file change.
 watchexec = "2.7"
 
+# Build speed: sccache caches compiled crates (RUSTC_WRAPPER below), and nextest
+# runs the Rust tests (process per test, per-test timeouts, filtersets).
+sccache = "0.18"
+"github:nextest-rs/nextest" = { version = "0.9", version_prefix = "cargo-nextest-" }
+
 [settings]
 python.uv_venv_auto = "create|source"
 task.run_auto_install = false
 
 [env]
 UV_PYTHON = { value = "{{ tools.python.path }}", tools = true }
-UV_CACHE_DIR = "target/uv-cache"
+# One uv cache per user, shared by every worktree: uv hardlinks from it, so a
+# fresh worktree's sync is near-instant and settling a worktree keeps it.
+UV_CACHE_DIR = "{{ env.XDG_CACHE_HOME | default(value=env.HOME ~ '/.cache') }}/uv"
 CARGO_HTTP_MULTIPLEXING = "false"
+# Every rustc call (cargo, clippy, maturin) goes through sccache. Locally it
+# caches on disk, shared by all worktrees; Depot runners preset
+# SCCACHE_WEBDAV_* so CI caches in Depot Cache. RLMESH_SCCACHE=0 turns it off:
+# release.yml sets it so published artifacts never come from a shared cache.
+RUSTC_WRAPPER = "{% if env.RLMESH_SCCACHE | default(value='1') != '0' %}sccache{% endif %}"
+# With RLMESH_BUILDER=depot (set per machine), point sccache at Depot Cache
+# using the `depot login` credentials, so local builds share CI's cache.
+_.source = "scripts/dev/depot-cache-env.sh"
 
 # ──────────────────────────────────────────────
 # Setup
@@ -300,9 +315,15 @@ file = "scripts/test-cxx-pkg.sh"
 description = "Run Rust workspace tests and doctests"
 run = '''
 export PYTHONPATH="$(python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')" &&
-  cargo test --workspace --all-targets &&
+  cargo nextest run --workspace --all-targets &&
   cargo test --workspace --doc
 '''
+
+# The fast local loop: Rust tests for changed crates and their dependents,
+# plus Python tests when they can be affected. Not a gate; see the script.
+[tasks."test:affected"]
+description = "Run tests for crates changed since origin/main (and their dependents); pass --base REF or --dry-run"
+run = 'mise run dev:heavy -- python scripts/dev/affected.py {{arg(name="args", var=true, default="")}}'
 
 [tasks."test:python"]
 description = "Run Python unit, integration, and conformance tests plus the authoring-import guard"

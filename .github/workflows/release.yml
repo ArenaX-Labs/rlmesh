@@ -14,6 +14,11 @@ on:
 permissions:
   contents: read
 
+# Build published artifacts from source, never from the shared compile cache
+# that developer machines also write to (RUSTC_WRAPPER in mise.toml).
+env:
+  RLMESH_SCCACHE: "0"
+
 jobs:
   wheels-linux:
     name: Linux + Windows wheels

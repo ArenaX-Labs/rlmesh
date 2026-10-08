@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+#MISE description="Run a CPU/memory-heavy command once no other heavy job runs on this machine: dev:heavy -- <command...>"
+#MISE dir="{{ config_root }}"
+set -euo pipefail
+
+[ "$#" -gt 0 ] || { echo 'usage: mise run dev:heavy -- <command...>' >&2; exit 64; }
+exec python scripts/dev/machine_lock.py heavy "$@"
