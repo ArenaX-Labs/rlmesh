@@ -104,6 +104,15 @@ Build the linux-glibc wheel pair consumed by container images (skips when the wh
 mise run build:python:docker
 ```
 
+### Dev Builds and the Dev Cohort
+
+A build from this checkout is a **dev build**: `crates/rlmesh-proto/build.rs` stamps its workflow edition with a dev cohort, `<base>-dev.<git>`, where `<git>` is the 12-character HEAD sha, suffixed `.dirty.<fingerprint>` (a hash of `git diff HEAD` plus untracked files) when the tree has uncommitted changes. `rlmesh.build_info()` reports it as `workflow_edition`, with `build_source == "git"`. A dev build offers only that cohort: it drops the sealed current edition from its offer so a moving build never claims the release contract (see [workflow editions](editions/index.md#negotiation)).
+
+So two dev artifacts interoperate only when they were built from the identical tree state. This bites when the two sides of a session come from separate builds, for example a C or C++ env linked against `rlmesh-capi` and the editable Python extension, or an env server built before you edited a file and a runtime built after. The build script reruns only when HEAD, `rlmesh.toml`, the protos, or `RLMESH_RELEASE_BUILD` change, so even an artifact that cargo considers fresh can carry an older dirty fingerprint. The session then fails at the runtime's floor with `no mutual workflow edition`, and the message ends with a hint naming the remedy:
+
+- Rebuild both sides from the same tree state (commit or stash first, then rebuild each artifact).
+- Or build both with `RLMESH_RELEASE_BUILD=1`, which stamps the release cohort instead, so both sides speak the sealed edition however dirty the checkout is. Set it for every build that takes part, for example `RLMESH_RELEASE_BUILD=1 cargo build -p rlmesh-capi --release` and `RLMESH_RELEASE_BUILD=1 mise run build:python:develop`. `examples/chrono/demo.sh` does this.
+
 ## Docs
 
 The user docs and the Python API reference are published at [rlmesh.dev/docs](https://rlmesh.dev/docs/) and built from the managed platform repo, which snapshots this package's API surface (`rlmesh-api-surface docs-api-surface`) on each release. This `docs/` directory keeps the maintainer docs and the specs the tooling reads: the workflow editions, compatibility and versioning policy, and the describe envelope.

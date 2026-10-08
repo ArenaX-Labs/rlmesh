@@ -37,7 +37,8 @@ pub fn env_floor(
             GrpcError::from(ProtocolError::HandshakeFailed(format!(
                 "no mutual workflow edition across env, model, and runtime: {refusal}; the \
              runtime re-frames env<->model traffic, so a session can only run at an edition all \
-             three support"
+             three support{}",
+                refusal.hint()
             )))
         })?;
     match floor.runtime_cap {
@@ -62,4 +63,27 @@ pub fn env_floor(
         None => {}
     }
     Ok(floor)
+}
+
+#[cfg(test)]
+mod tests {
+    use rlmesh_proto::{DEV_BUILD_HINT, SessionOffer};
+
+    use super::env_floor;
+
+    #[test]
+    fn a_floor_refused_by_a_dev_cohort_names_the_rebuild_remedy() {
+        // Two dev artifacts built from different tree states: neither shares an
+        // edition with the other, nor with this runtime.
+        let env = SessionOffer::new(&["2026.06-dev.aaaaaaaaaaaa"]);
+        let model = SessionOffer::new(&["2026.06-dev.bbbbbbbbbbbb.dirty.0123456789abcdef"]);
+        let message = env_floor(&env, &model, None)
+            .expect_err("differing dev cohorts share no edition")
+            .to_string();
+        assert!(
+            message.contains("no mutual workflow edition across env, model, and runtime"),
+            "{message}"
+        );
+        assert!(message.contains(DEV_BUILD_HINT), "{message}");
+    }
 }

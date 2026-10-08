@@ -350,7 +350,8 @@ impl EnvClient {
         let selected =
             negotiate_workflow_edition(&env_offer, &runtime_offer).map_err(|refusal| {
                 ProtocolError::HandshakeFailed(format!(
-                    "no mutual workflow edition with the env: {refusal}"
+                    "no mutual workflow edition with the env: {refusal}{}",
+                    refusal.hint()
                 ))
             })?;
         // The wire carries a name; the session carries the typed edition. This is
