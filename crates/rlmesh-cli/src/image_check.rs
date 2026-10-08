@@ -1,7 +1,8 @@
 //! Pure checks over a built image's OCI config, the way the managed platform's
 //! admission reads it: the serve command and the address it binds, the port it
-//! exposes, its platform, its rlmesh labels, and whether the rlmesh it was
-//! built with can meet a platform's workflow editions.
+//! exposes, its platform, its rlmesh labels (including the package label's
+//! `variant` / `profiles` blocks, see [`crate::variant`]), and whether the
+//! rlmesh it was built with can meet a platform's workflow editions.
 //!
 //! Nothing here touches docker, the network, or Python: the caller hands in an
 //! [`ImageConfig`] (parsed from `docker image inspect`, a registry manifest, ...)
@@ -84,7 +85,8 @@ impl Kind {
         }
     }
 
-    fn name(self) -> &'static str {
+    /// The describe envelope's spelling: `env` or `model`.
+    pub fn name(self) -> &'static str {
         match self {
             Self::Env => "env",
             Self::Model => "model",
@@ -130,10 +132,32 @@ impl ImageConfig {
         };
         let inspect: Inspect =
             serde_json::from_value(entry).map_err(|err| format!("docker inspect JSON: {err}"))?;
-        let config = inspect.config.unwrap_or_default();
-        Ok(Self {
-            os: inspect.os.unwrap_or_default(),
-            architecture: inspect.architecture.unwrap_or_default(),
+        Ok(Self::from_parts(
+            inspect.os,
+            inspect.architecture,
+            inspect.config,
+        ))
+    }
+
+    /// Parse an OCI image config as a registry serves it (what
+    /// `docker buildx imagetools inspect REF --format '{{json .Image}}'`
+    /// prints): lowercase `os` / `architecture` / `config`, with the
+    /// `config` keys spelled as in `docker image inspect`.
+    pub fn from_oci_config(json: &str) -> Result<Self, String> {
+        let oci: OciConfig =
+            serde_json::from_str(json).map_err(|err| format!("OCI image config JSON: {err}"))?;
+        Ok(Self::from_parts(oci.os, oci.architecture, oci.config))
+    }
+
+    fn from_parts(
+        os: Option<String>,
+        architecture: Option<String>,
+        config: Option<InspectConfig>,
+    ) -> Self {
+        let config = config.unwrap_or_default();
+        Self {
+            os: os.unwrap_or_default(),
+            architecture: architecture.unwrap_or_default(),
             entrypoint: config.entrypoint.unwrap_or_default(),
             cmd: config.cmd.unwrap_or_default(),
             env: config.env.unwrap_or_default(),
@@ -143,7 +167,7 @@ impl ImageConfig {
                 .into_keys()
                 .collect(),
             labels: config.labels.unwrap_or_default(),
-        })
+        }
     }
 
     /// The value of the `KEY=value` entry in `env`, when set.
@@ -164,6 +188,16 @@ impl ImageConfig {
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct Inspect {
+    #[serde(default)]
+    os: Option<String>,
+    #[serde(default)]
+    architecture: Option<String>,
+    #[serde(default)]
+    config: Option<InspectConfig>,
+}
+
+#[derive(Deserialize)]
+struct OciConfig {
     #[serde(default)]
     os: Option<String>,
     #[serde(default)]
@@ -849,7 +883,8 @@ pub fn declared_workflow_edition(config: &ImageConfig) -> Option<Option<String>>
     })
 }
 
-/// Run every image-config check: platform, serve command, labels, and (when
+/// Run every image-config check: platform, serve command, labels, the compute
+/// variant ([`crate::variant::check_variant`]: declared or inferred), and (when
 /// the describe label advertises editions) edition compatibility with
 /// `platform`, or a `not_checked` note when the caller has no platform offer
 /// to check against. A `--workflow-edition` or `ENV RLMESH_WORKFLOW_EDITION`
@@ -861,6 +896,7 @@ pub fn check_image(config: &ImageConfig, platform: Option<&SessionOffer>) -> Che
     let kind = describe.as_ref().and_then(|label| label.kind);
     report.extend(check_serve_command(config, kind));
     report.extend(labels);
+    report.extend(crate::variant::check_variant(config));
     match describe {
         Some(mut label) => {
             let command = parse_serve_command(config);
@@ -1146,6 +1182,77 @@ mod tests {
         assert!(config.exposes_port("50051"));
         assert_eq!(config.env_value("PATH"), Some("/usr/bin"));
         assert!(ImageConfig::from_docker_inspect("[]").is_err());
+    }
+
+    #[test]
+    fn oci_config_parses_like_docker_inspect() {
+        // What `docker buildx imagetools inspect REF --format '{{json .Image}}'` prints.
+        let json = r#"{"architecture":"amd64","os":"linux","config":{"ExposedPorts":
+            {"50051/tcp":{}},"Env":["CUDA_VERSION=12.4.1"],"Cmd":["python","-m",
+            "rlmesh.serve","pkg:Policy"],"Labels":{"dev.rlmesh.package":"{}"}},
+            "rootfs":{"type":"layers","diff_ids":[]}}"#;
+        let config = ImageConfig::from_oci_config(json).unwrap();
+        assert_eq!(
+            (config.os.as_str(), config.architecture.as_str()),
+            ("linux", "amd64")
+        );
+        assert_eq!(config.env_value("CUDA_VERSION"), Some("12.4.1"));
+        assert!(config.exposes_port(SERVE_PORT));
+        assert_eq!(config.labels[PACKAGE_LABEL], "{}");
+        assert_eq!(parse_serve_command(&config).kind(), Some(Kind::Model));
+        assert!(ImageConfig::from_oci_config("\"linux\"").is_err());
+    }
+
+    #[test]
+    fn check_image_validates_the_variant_blocks() {
+        let mut config = image(
+            &["python", "-m", "rlmesh.serve", "pkg:Policy"],
+            &[],
+            &["CUDA_VERSION=12.4.1", "NVIDIA_REQUIRE_CUDA=cuda>=12.4"],
+            &["50051/tcp"],
+        );
+        config.labels.insert(
+            PACKAGE_LABEL.to_owned(),
+            serde_json::json!({
+                "schemaVersion": 1,
+                "variant": {"key": "torch-cuda12", "requires": {"accel.vendor": "nvidia",
+                    "accel.cuda": ">=12.2", "accel.vram_bytes": ">=24000000000"}},
+                "profiles": [{"key": "osmesa", "default": true}, {"key": "egl", "default": true}],
+            })
+            .to_string(),
+        );
+        let report = check_image(&config, None);
+        let variant: Vec<&String> = report
+            .failed
+            .iter()
+            .filter(|m| m.starts_with("variant:") || m.starts_with("profiles:"))
+            .collect();
+        assert_eq!(variant.len(), 2, "{report:#?}");
+        assert!(
+            variant[0].contains("accel.vram_bytes \">=24000000000\" is not a positive integer")
+        );
+        assert!(variant[1].contains("at most one may be"));
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|m| m.contains("admits drivers older than the image's CUDA 12.4")),
+            "{report:#?}"
+        );
+        // An image without a variant block reports what the platform infers.
+        config.labels.clear();
+        let report = check_image(&config, None);
+        assert!(
+            report
+                .passed
+                .iter()
+                .any(|m| m.starts_with("variant: none declared; inferred from CUDA_VERSION=12.4.1")),
+            "{report:#?}"
+        );
+        assert!(
+            report.passed.iter().any(|m| m == "rows: default"),
+            "{report:#?}"
+        );
     }
 
     fn label(kind: &str, runtime: serde_json::Value) -> String {

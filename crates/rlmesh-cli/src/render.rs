@@ -17,6 +17,15 @@ impl Style {
         }
     }
 
+    /// A style that paints whatever the terminal, for tests that pin it.
+    #[cfg(test)]
+    pub(crate) fn colored() -> Self {
+        Self {
+            color: true,
+            interactive: true,
+        }
+    }
+
     pub(crate) fn interactive(self) -> bool {
         self.interactive
     }
