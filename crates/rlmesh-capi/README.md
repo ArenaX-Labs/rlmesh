@@ -1,9 +1,15 @@
 # rlmesh-capi
 
-Experimental C ABI for RLMesh, plus a header-only C++17 wrapper. A C or C++
-program implements `predict`, and the RLMesh runtime does the rest: connect to an
-environment, decode observations, encode actions, run episodes, or serve the
-model as a gRPC `ModelService` endpoint.
+Experimental C ABI for RLMesh, plus a header-only C++17 wrapper, for both sides
+of the wire:
+
+- **Models.** A C or C++ program implements `predict`, and the RLMesh runtime
+  does the rest: connect to an environment, decode observations, encode actions,
+  run episodes, or serve the model as a gRPC `ModelService` endpoint.
+- **Environments.** A C or C++ simulator implements `reset` / `step` (and
+  optionally `render` / `close`), declares its spaces and adapter tags, and is
+  served as a gRPC `EnvService` endpoint that any RLMesh model — Python, Rust,
+  C++ — drives.
 
 Status: alpha. The ABI (`RLMESH_ABI_VERSION`) will break before 1.0.
 
@@ -12,6 +18,7 @@ Status: alpha. The ABI (`RLMESH_ABI_VERSION`) will break before 1.0.
 - `include/rlmesh.h` — the C ABI (C11). Hand-authored; the single header authority.
 - `include/rlmesh.hpp` — RAII C++ wrapper over the C ABI (no exceptions, `Result<T>`).
 - `examples/c_model.c`, `examples/cpp_model.cpp` — a zero-action model in each language.
+- `examples/cpp_env.cpp` — a tagged C++ env (a point reaching a target, with a camera).
 - `examples/cpp_surface.cpp` — compile-only: names every wrapper type so a broken template fails CI.
 - `examples/consumer/` — a CMake project consuming the packaged library via `find_package(rlmesh)`.
 - `src/` — the Rust side: `extern "C"` projections over the core `rlmesh` crate.
@@ -114,6 +121,49 @@ thread.
 trial ordinal the episodes walk, delivered as `reset(options={"trial_index": k})`
 to an environment that declares that reset option.
 
+## Environment contract
+
+`rlmesh_env_new(vtable, config, user_data, &env)` takes the callbacks and an
+`RlmeshEnvConfig`: the observation and action spaces (built with the
+`rlmesh_space_*` builders), an id, the adapter `EnvTags` as JSON, the reset
+options the env understands (`trial_index`), a render mode, and extra metadata.
+The tags are validated against the spaces right there, the same publish-time
+check Python's `adapters.tag()` runs, so a typo fails `rlmesh_env_new` rather
+than a model's resolve.
+
+Then `rlmesh_env_bind` (learn the address, e.g. for port 0) and
+`rlmesh_env_serve` (blocks). `rlmesh_env_cancel` from any thread drains the
+server, runs `close` once, and lets `serve` return `RLMESH_OK`.
+
+The env is served as one lane: every callback runs on one dedicated thread, one
+call at a time. `reset` gets the seed and trial index (and every reset option as
+JSON); `step` borrows the action and writes an owned observation, the reward,
+the terminated/truncated flags and an optional info JSON object; `render` writes
+an owned uint8 `[H, W, 3]` image that the capi PNG-encodes. A callback fails a
+request by returning nonzero after `rlmesh_callback_set_error`; that client's
+session ends and the env keeps serving.
+
+In C++, subclass `rlmesh::Environment` and hand it to `rlmesh::EnvServer`:
+
+```cpp
+class Reach : public rlmesh::Environment {
+  rlmesh::Result<rlmesh::ResetOutput> reset(const rlmesh::ResetArgs& args) override;
+  rlmesh::Result<rlmesh::StepOutput> step(std::optional<rlmesh::ValueRef> action) override;
+};
+
+rlmesh::EnvConfig config;
+config.observation_space = rlmesh::Space::box<float>({3}, -1, 1).unwrap();
+config.action_space = rlmesh::Space::box<float>({3}, -1, 1).unwrap();
+config.adapter_tags_json = R"({"observation": {...}, "action": {...}})";
+auto server = rlmesh::EnvServer::create(std::make_unique<Reach>(), config);
+std::printf("listening on %s\n", server->bind("0.0.0.0:50051")->c_str());
+server->serve();
+```
+
+Any model drives it, for example from Python:
+`rlmesh.numpy.Model(predict, spec=SPEC).run("127.0.0.1:50051", episodes=3)`.
+`examples/chrono/` is a full Project Chrono simulation served this way.
+
 ### In C++
 
 `Model::from_predict` takes a single-env policy — `Result<Value>(const Request&)`,
@@ -145,7 +195,8 @@ out of a `Result`-returning function.
 ## Tasks
 
 - `mise run test:cxx` — compile the headers as C11 and C++17 under `-Werror`,
-  build both examples, run each end-to-end against a live env.
+  build the examples, run each model end-to-end against a live env, and drive
+  the C++ env with a model (`e2e_env_harness`).
 - `mise run test:cxx:pkg` — package (`release:cxx:package`) and build the C++
   example against the installed package via pkg-config and CMake `find_package`.
 - `mise run fmt:cxx` — clang-format the headers and examples.

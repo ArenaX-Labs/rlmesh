@@ -199,6 +199,13 @@ impl BoundEnvServer {
         &self.local_addr
     }
 
+    /// A handle that stops [`serve`](Self::serve) from outside (a signal, a host
+    /// shutdown), draining in-flight requests first. The environment close hook
+    /// still runs.
+    pub fn shutdown_trigger(&self) -> rlmesh_grpc::lifecycle::ShutdownTrigger {
+        self.shutdown.clone()
+    }
+
     /// Serve until shutdown, then run the environment close hook.
     pub async fn serve(self) -> Result<()> {
         let serve_result = self

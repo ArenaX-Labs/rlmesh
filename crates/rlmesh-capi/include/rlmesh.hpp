@@ -1,5 +1,6 @@
-// RLMesh C++ wrapper — experimental, header-only, C++17, v1 model path. A thin
-// RAII layer over the C ABI (rlmesh.h).
+// RLMesh C++ wrapper — experimental, header-only, C++17. A thin RAII layer over
+// the C ABI (rlmesh.h): a `Model` driving or serving a policy, and an
+// `EnvServer` serving an `Environment` you subclass.
 //
 // Error handling, in one place — there is exactly one model:
 //   * A capi call reports failure by status (or a NULL return) and has ALREADY
@@ -13,8 +14,9 @@
 //     `RLMESH_TRY(expr)` to propagate. `value()` / `unwrap()` abort on an error
 //     rather than throw — this header advertises no exceptions and compiles
 //     under `-fno-exceptions`.
-//   * A callback declines by returning an `Error` through its `Result`. The
-//     wrapper forwards it to `rlmesh_callback_set_error` and returns its code.
+//   * A callback (predict, or an env's reset / step / render) declines by
+//     returning an `Error` through its `Result`. The wrapper forwards it to
+//     `rlmesh_callback_set_error` and returns its code.
 #ifndef RLMESH_HPP
 #define RLMESH_HPP
 
@@ -1126,6 +1128,364 @@ class Model {
   }
 
   RlmeshModel* model_ = nullptr;
+  std::unique_ptr<State> state_;
+};
+
+/// An owned space spec (move-only), built env-side to declare an
+/// `Environment`'s observation / action spaces. `ref()` reads it back.
+class Space {
+ public:
+  explicit Space(RlmeshSpaceSpec* ptr) : ptr_(ptr) {}
+  Space(Space&& other) noexcept : ptr_(other.ptr_) { other.ptr_ = nullptr; }
+  Space& operator=(Space&& other) noexcept {
+    if (this != &other) {
+      reset();
+      ptr_ = other.ptr_;
+      other.ptr_ = nullptr;
+    }
+    return *this;
+  }
+  Space(const Space&) = delete;
+  Space& operator=(const Space&) = delete;
+  ~Space() { reset(); }
+
+  const RlmeshSpaceSpec* raw() const { return ptr_; }
+  SpaceRef ref() const { return SpaceRef(ptr_); }
+  /// Give up ownership (a composite builder adopts it).
+  RlmeshSpaceSpec* release() {
+    RlmeshSpaceSpec* out = ptr_;
+    ptr_ = nullptr;
+    return out;
+  }
+
+  /// A Box with one bound pair for every element. A float dtype takes
+  /// +-INFINITY for an unbounded side; an integer one needs finite whole bounds.
+  static Result<Space> box(RlmeshDType dtype, const std::vector<int64_t>& shape, double low,
+                           double high) {
+    return adopt(rlmesh_space_box(dtype, shape.data(), shape.size(), low, high));
+  }
+  /// Box with the dtype following T (see `dtype_of`).
+  template <class T>
+  static Result<Space> box(const std::vector<int64_t>& shape, double low, double high) {
+    return box(dtype_of<T>(), shape, low, high);
+  }
+  /// A Box with per-element bounds (`low` / `high` hold the element count each).
+  static Result<Space> box(RlmeshDType dtype, const std::vector<int64_t>& shape,
+                           const std::vector<double>& low, const std::vector<double>& high) {
+    size_t numel = 1;
+    for (int64_t dim : shape) numel *= static_cast<size_t>(dim < 0 ? 0 : dim);
+    if (low.size() != numel || high.size() != numel) {
+      return Error(RLMESH_ERR_INVALID_ARGUMENT, "Box bounds must hold one value per element");
+    }
+    return adopt(
+        rlmesh_space_box_elementwise(dtype, shape.data(), shape.size(), low.data(), high.data()));
+  }
+  static Result<Space> discrete(int64_t n, int64_t start = 0) {
+    return adopt(rlmesh_space_discrete(n, start));
+  }
+  static Result<Space> multi_binary(const std::vector<int64_t>& shape) {
+    return adopt(rlmesh_space_multi_binary(shape.data(), shape.size()));
+  }
+  static Result<Space> multi_discrete(const std::vector<int64_t>& nvec) {
+    return adopt(rlmesh_space_multi_discrete(nvec.data(), nvec.size()));
+  }
+  /// `charset` empty allows any character.
+  static Result<Space> text(int64_t min_length, int64_t max_length,
+                            const std::string& charset = {}) {
+    return adopt(
+        rlmesh_space_text(min_length, max_length, charset.empty() ? nullptr : charset.c_str()));
+  }
+  /// Dict from owned (key, space) entries, in declaration order; keys unique.
+  /// All-or-nothing ownership, as `Value::dict`.
+  static Result<Space> dict(std::vector<std::pair<std::string, Space>> entries) {
+    std::vector<const char*> keys;
+    std::vector<RlmeshSpaceSpec*> raw;
+    keys.reserve(entries.size());
+    raw.reserve(entries.size());
+    for (auto& entry : entries) {
+      keys.push_back(entry.first.c_str());
+      raw.push_back(entry.second.release());
+    }
+    RlmeshSpaceSpec* space = rlmesh_space_dict(keys.data(), raw.data(), raw.size());
+    if (space == nullptr) return disown(raw);
+    return Space(space);
+  }
+  static Result<Space> tuple(std::vector<Space> children) {
+    std::vector<RlmeshSpaceSpec*> raw;
+    raw.reserve(children.size());
+    for (Space& child : children) raw.push_back(child.release());
+    RlmeshSpaceSpec* space = rlmesh_space_tuple(raw.data(), raw.size());
+    if (space == nullptr) return disown(raw);
+    return Space(space);
+  }
+
+ private:
+  static Result<Space> adopt(RlmeshSpaceSpec* ptr) {
+    if (ptr == nullptr) return Error::from_last(rlmesh_last_error_status());
+    return Space(ptr);
+  }
+  static Error disown(const std::vector<RlmeshSpaceSpec*>& children) {
+    Error error = Error::from_last(rlmesh_last_error_status());
+    for (RlmeshSpaceSpec* child : children) rlmesh_space_free(child);
+    return error;
+  }
+  void reset() {
+    if (ptr_ != nullptr) {
+      rlmesh_space_free(ptr_);
+      ptr_ = nullptr;
+    }
+  }
+
+  RlmeshSpaceSpec* ptr_;
+};
+
+/// What `Environment::reset` receives.
+struct ResetArgs {
+  std::optional<int64_t> seed;
+  /// Set only when the env declared the "trial_index" reset option.
+  std::optional<int64_t> trial_index;
+  /// Every reset option as a JSON object; empty when there are none.
+  std::string_view options_json;
+};
+
+/// What `Environment::reset` returns. `info_json` is a JSON object or empty.
+struct ResetOutput {
+  Value observation;
+  std::string info_json;
+};
+
+/// What `Environment::step` returns. `info_json` is a JSON object or empty.
+struct StepOutput {
+  Value observation;
+  double reward = 0;
+  bool terminated = false;
+  bool truncated = false;
+  std::string info_json;
+};
+
+/// A simulation served as one RLMesh env lane. Subclass it and hand it to
+/// `EnvServer::create`. Every method runs on the one lane thread (not the
+/// thread that built it), one call at a time.
+class Environment {
+ public:
+  virtual ~Environment() = default;
+  virtual Result<ResetOutput> reset(const ResetArgs& args) = 0;
+  /// `action` is borrowed for the call; nullopt when the request carries none.
+  virtual Result<StepOutput> step(std::optional<ValueRef> action) = 0;
+  /// A uint8 image Value ([H, W, 3], [H, W, 4] or [H, W]), or nullopt for no
+  /// frame. Declare `render_mode = "rgb_array"` in the EnvConfig to advertise it.
+  virtual Result<std::optional<Value>> render() { return std::optional<Value>(); }
+  /// The server stopped (once).
+  virtual void close() {}
+};
+
+/// What an env declares (the C RlmeshEnvConfig with owned fields). The spaces
+/// are cloned at `EnvServer::create`, so this need not outlive it.
+struct EnvConfig {
+  std::string id;
+  std::optional<Space> observation_space;
+  std::optional<Space> action_space;
+  /// Adapter EnvTags (the v1 JSON wire format); empty = untagged. Validated
+  /// against the spaces at create().
+  std::string adapter_tags_json;
+  /// Reset options the env understands, e.g. {"trial_index"}.
+  std::vector<std::string> reset_options;
+  /// "rgb_array" when `render()` produces frames.
+  std::string render_mode;
+  /// Extra contract metadata as a JSON object; empty = none.
+  std::string metadata_json;
+};
+
+/// Serves one `Environment` as an RLMesh EnvService endpoint:
+/// `create` -> `bind` (learn the address) -> `serve` (blocks).
+class EnvServer {
+ public:
+  static Result<EnvServer> create(std::unique_ptr<Environment> env, const EnvConfig& config) {
+    if (!env) return Error(RLMESH_ERR_INVALID_ARGUMENT, "EnvServer::create: null environment");
+    if (!config.observation_space || !config.action_space) {
+      return Error(RLMESH_ERR_INVALID_ARGUMENT,
+                   "EnvServer::create: observation_space and action_space are required");
+    }
+    auto state = std::make_unique<State>();
+    state->env = std::move(env);
+    std::vector<const char*> options;
+    options.reserve(config.reset_options.size());
+    for (const std::string& option : config.reset_options) options.push_back(option.c_str());
+    auto opt = [](const std::string& text) { return text.empty() ? nullptr : text.c_str(); };
+
+    RlmeshEnvConfig raw{};
+    raw.struct_size = sizeof(RlmeshEnvConfig);
+    raw.id = opt(config.id);
+    raw.observation_space = config.observation_space->raw();
+    raw.action_space = config.action_space->raw();
+    raw.adapter_tags_json = opt(config.adapter_tags_json);
+    raw.reset_options = options.empty() ? nullptr : options.data();
+    raw.num_reset_options = options.size();
+    raw.render_mode = opt(config.render_mode);
+    raw.metadata_json = opt(config.metadata_json);
+
+    RlmeshEnvVtable vtable{};
+    vtable.struct_size = sizeof(RlmeshEnvVtable);
+    vtable.reset = &trampoline_reset;
+    vtable.step = &trampoline_step;
+    vtable.render = &trampoline_render;
+    vtable.close = &trampoline_close;
+    RlmeshEnv* handle = nullptr;
+    RlmeshStatus status = rlmesh_env_new(&vtable, &raw, state.get(), &handle);
+    if (status != RLMESH_OK) return Error::from_last(status);
+    return EnvServer(handle, std::move(state));
+  }
+
+  EnvServer(EnvServer&& other) noexcept : env_(other.env_), state_(std::move(other.state_)) {
+    other.env_ = nullptr;
+  }
+  EnvServer& operator=(EnvServer&& other) noexcept {
+    if (this != &other) {
+      if (env_ != nullptr) rlmesh_env_free(env_);
+      env_ = other.env_;
+      other.env_ = nullptr;
+      state_ = std::move(other.state_);
+    }
+    return *this;
+  }
+  EnvServer(const EnvServer&) = delete;
+  EnvServer& operator=(const EnvServer&) = delete;
+  /// Frees the handle; never from inside one of the env's own callbacks.
+  ~EnvServer() {
+    if (env_ != nullptr) rlmesh_env_free(env_);
+  }
+
+  /// Bind without serving; returns the resolved address (e.g. the port the OS
+  /// picked for port 0). `predict_concurrency` does not apply to an env.
+  Result<std::string> bind(std::string_view bind_address, const ServeOptions& options = {}) {
+    std::string address(bind_address);
+    RlmeshServeOptions raw{};
+    raw.token = options.token.empty() ? nullptr : options.token.c_str();
+    raw.allow_remote_shutdown = options.allow_remote_shutdown;
+    raw.idle_timeout_ms = static_cast<uint64_t>(options.idle_timeout.count());
+    raw.drain_timeout_ms = static_cast<uint64_t>(options.drain_timeout.count());
+    raw.close_timeout_ms = static_cast<uint64_t>(options.close_timeout.count());
+    raw.workflow_edition =
+        options.workflow_edition.empty() ? nullptr : options.workflow_edition.c_str();
+    RlmeshBytes resolved{};
+    RlmeshStatus status = rlmesh_env_bind(env_, address.c_str(), &raw, &resolved);
+    if (status != RLMESH_OK) return Error::from_last(status);
+    std::string out(reinterpret_cast<const char*>(resolved.data), resolved.len);
+    rlmesh_bytes_free(resolved);
+    return out;
+  }
+
+  /// Serve until a remote shutdown, an idle timeout, or `cancel()`. Blocking;
+  /// `Environment::close` runs before it returns.
+  Status serve() {
+    RlmeshStatus status = rlmesh_env_serve(env_);
+    if (status != RLMESH_OK) return Error::from_last(status);
+    return ok();
+  }
+
+  /// Stop a blocking serve from any thread. Terminal.
+  void cancel() { rlmesh_env_cancel(env_); }
+
+ private:
+  struct State {
+    std::unique_ptr<Environment> env;
+    // Borrowed by the capi until the next callback (the C info_json contract).
+    std::string info_json;
+  };
+
+  EnvServer(RlmeshEnv* env, std::unique_ptr<State> state) : env_(env), state_(std::move(state)) {}
+
+  static int fail(const Error& error) {
+    rlmesh_callback_set_error(error.message().c_str(), error.is_recoverable());
+    return static_cast<int>(error.code() == RLMESH_OK ? RLMESH_ERR_ENVIRONMENT : error.code());
+  }
+
+  static const char* keep_info(State* state, std::string info) {
+    state->info_json = std::move(info);
+    return state->info_json.empty() ? nullptr : state->info_json.c_str();
+  }
+
+  static int trampoline_reset(void* user_data, const RlmeshResetArgs* args,
+                              RlmeshResetResult* out) noexcept {
+    auto* state = static_cast<State*>(user_data);
+    ResetArgs request;
+    if (args->seeded) request.seed = args->seed;
+    if (args->has_trial_index) request.trial_index = args->trial_index;
+    request.options_json = detail::sv(args->options_json);
+#if defined(__cpp_exceptions)
+    try {
+#endif
+      Result<ResetOutput> result = state->env->reset(request);
+      if (!result) return fail(result.error());
+      out->observation = result->observation.release();
+      out->info_json = keep_info(state, std::move(result->info_json));
+      return RLMESH_OK;
+#if defined(__cpp_exceptions)
+    } catch (const std::exception& error) {
+      return fail(Error(RLMESH_ERR_ENVIRONMENT, error.what()));
+    } catch (...) {
+      return fail(Error(RLMESH_ERR_ENVIRONMENT, "unknown C++ exception in reset"));
+    }
+#endif
+  }
+
+  static int trampoline_step(void* user_data, const RlmeshValue* action,
+                             RlmeshStepResult* out) noexcept {
+    auto* state = static_cast<State*>(user_data);
+    std::optional<ValueRef> borrowed;
+    if (action != nullptr) borrowed = ValueRef(action);
+#if defined(__cpp_exceptions)
+    try {
+#endif
+      Result<StepOutput> result = state->env->step(borrowed);
+      if (!result) return fail(result.error());
+      out->observation = result->observation.release();
+      out->reward = result->reward;
+      out->terminated = result->terminated;
+      out->truncated = result->truncated;
+      out->info_json = keep_info(state, std::move(result->info_json));
+      return RLMESH_OK;
+#if defined(__cpp_exceptions)
+    } catch (const std::exception& error) {
+      return fail(Error(RLMESH_ERR_ENVIRONMENT, error.what()));
+    } catch (...) {
+      return fail(Error(RLMESH_ERR_ENVIRONMENT, "unknown C++ exception in step"));
+    }
+#endif
+  }
+
+  static int trampoline_render(void* user_data, RlmeshValue** out_frame) noexcept {
+    auto* state = static_cast<State*>(user_data);
+#if defined(__cpp_exceptions)
+    try {
+#endif
+      Result<std::optional<Value>> frame = state->env->render();
+      if (!frame) return fail(frame.error());
+      if (frame->has_value()) *out_frame = (*frame)->release();
+      return RLMESH_OK;
+#if defined(__cpp_exceptions)
+    } catch (const std::exception& error) {
+      return fail(Error(RLMESH_ERR_ENVIRONMENT, error.what()));
+    } catch (...) {
+      return fail(Error(RLMESH_ERR_ENVIRONMENT, "unknown C++ exception in render"));
+    }
+#endif
+  }
+
+  static void trampoline_close(void* user_data) noexcept {
+    auto* state = static_cast<State*>(user_data);
+#if defined(__cpp_exceptions)
+    try {
+#endif
+      state->env->close();
+#if defined(__cpp_exceptions)
+    } catch (...) {
+      // A shutdown hook has nowhere to report.
+    }
+#endif
+  }
+
+  RlmeshEnv* env_ = nullptr;
   std::unique_ptr<State> state_;
 };
 

@@ -506,7 +506,11 @@ impl ModelHandler for CModelHandler {
 ///
 /// # Safety
 /// `base` points at the caller's vtable allocation of at least `struct_size` bytes.
-unsafe fn vtable_field<T: Copy>(base: *const u8, struct_size: usize, offset: usize) -> Option<T> {
+pub(crate) unsafe fn vtable_field<T: Copy>(
+    base: *const u8,
+    struct_size: usize,
+    offset: usize,
+) -> Option<T> {
     (struct_size >= offset.saturating_add(std::mem::size_of::<T>()))
         .then(|| unsafe { base.add(offset).cast::<T>().read_unaligned() })
 }
@@ -777,12 +781,25 @@ fn serve_model_options(
     options: *const RlmeshServeOptions,
 ) -> Result<ServeModelOptions, CapiError> {
     let mut model_options = ServeModelOptions::new(bind);
-    let Some(options) = (unsafe { options.as_ref() }) else {
+    let Some(c_options) = (unsafe { options.as_ref() }) else {
         return Ok(model_options);
     };
-    if !options.token.is_null() {
-        model_options = model_options.token(cstr_to_str(options.token)?);
+    if !c_options.token.is_null() {
+        model_options = model_options.token(cstr_to_str(c_options.token)?);
     }
+    Ok(model_options.serve_options(serve_options(options)?))
+}
+
+/// The core [`ServeOptions`] an `RlmeshServeOptions` names (NULL = defaults),
+/// shared by the model and environment servers. The token is left to each
+/// caller: the model server carries it on `ServeModelOptions`, the environment
+/// server on `ServeOptions::token`.
+pub(crate) fn serve_options(options: *const RlmeshServeOptions) -> Result<ServeOptions, CapiError> {
+    // SAFETY: the exports' contract is that `options` is NULL or a valid
+    // `RlmeshServeOptions` for the duration of the call.
+    let Some(options) = (unsafe { options.as_ref() }) else {
+        return Ok(ServeOptions::default());
+    };
     let ms = |value: u64| (value != 0).then(|| Duration::from_millis(value));
     let workflow_edition = if options.workflow_edition.is_null() {
         None
@@ -799,7 +816,7 @@ fn serve_model_options(
             Some(declared.to_string())
         }
     };
-    model_options = model_options.serve_options(ServeOptions {
+    Ok(ServeOptions {
         allow_remote_shutdown: options.allow_remote_shutdown,
         idle_timeout: ms(options.idle_timeout_ms),
         drain_timeout: ms(options.drain_timeout_ms),
@@ -808,8 +825,7 @@ fn serve_model_options(
             .then_some(options.predict_concurrency),
         workflow_edition,
         ..ServeOptions::default()
-    });
-    Ok(model_options)
+    })
 }
 
 /// Serve the model as a `ModelService` endpoint at `bind_address` (e.g.
@@ -898,12 +914,12 @@ pub unsafe extern "C" fn rlmesh_model_free(model: *mut RlmeshModel) {
     });
 }
 
-fn cstring(text: &str) -> CString {
+pub(crate) fn cstring(text: &str) -> CString {
     let bytes: Vec<u8> = text.bytes().filter(|&byte| byte != 0).collect();
     CString::new(bytes).unwrap_or_default()
 }
 
-fn cstr_to_str<'a>(ptr: *const c_char) -> Result<&'a str, CapiError> {
+pub(crate) fn cstr_to_str<'a>(ptr: *const c_char) -> Result<&'a str, CapiError> {
     if ptr.is_null() {
         return Err(CapiError::invalid_arg("null string"));
     }

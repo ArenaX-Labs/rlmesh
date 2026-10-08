@@ -1,6 +1,6 @@
-/* RLMesh C ABI — experimental, v1 model path (a C/C++ model driving a remote
- * environment). Hand-authored; cbindgen-verifiable (a header-drift CI gate is a
- * follow-up). */
+/* RLMesh C ABI — experimental. Both v1 paths: a C/C++ model driving a remote
+ * environment, and a C/C++ environment served to remote models. Hand-authored;
+ * cbindgen-verifiable (a header-drift CI gate is a follow-up). */
 #ifndef RLMESH_H
 #define RLMESH_H
 
@@ -217,7 +217,7 @@ RLMESH_API RlmeshValue* rlmesh_value_dict(const char* const* keys, RlmeshValue* 
  * predict observation row, or a tensor view. */
 RLMESH_API void rlmesh_value_free(RlmeshValue* value);
 
-/* ---- spaces + contract (read-only; builders are env-side, not yet here) -- */
+/* ---- spaces + contract ------------------------------------------------- */
 
 typedef struct RlmeshSpaceSpec RlmeshSpaceSpec;
 typedef struct RlmeshContract RlmeshContract;
@@ -280,6 +280,31 @@ RLMESH_API RlmeshStatus rlmesh_space_text_charset(const RlmeshSpaceSpec* spec, c
  * count, for a multi-dimensional MultiBinary too. */
 RLMESH_API RlmeshStatus rlmesh_space_copy_nvec(const RlmeshSpaceSpec* spec, int64_t* out,
                                                size_t cap);
+
+/* Space builders (the env-authoring side). Each returns an OWNED space, or NULL
+ * on error (detail in rlmesh_last_error_message()); free with rlmesh_space_free
+ * unless a composite builder adopted it. A float Box takes +-INFINITY for an
+ * unbounded side; an integer-dtype Box needs finite whole-number bounds. */
+RLMESH_API RlmeshSpaceSpec* rlmesh_space_box(RlmeshDType dtype, const int64_t* shape, size_t ndim,
+                                             double low, double high);
+/* Per-element bounds: `low` / `high` each hold the shape's element count. */
+RLMESH_API RlmeshSpaceSpec* rlmesh_space_box_elementwise(RlmeshDType dtype, const int64_t* shape,
+                                                         size_t ndim, const double* low,
+                                                         const double* high);
+RLMESH_API RlmeshSpaceSpec* rlmesh_space_discrete(int64_t n, int64_t start);
+RLMESH_API RlmeshSpaceSpec* rlmesh_space_multi_binary(const int64_t* shape, size_t ndim);
+RLMESH_API RlmeshSpaceSpec* rlmesh_space_multi_discrete(const int64_t* nvec, size_t n);
+/* `charset` NULL or "" allows any character. */
+RLMESH_API RlmeshSpaceSpec* rlmesh_space_text(int64_t min_length, int64_t max_length,
+                                              const char* charset);
+/* The composite builders take ownership of every child on success and of
+ * NOTHING on failure (NULL), the same rule as rlmesh_value_dict. Dict keys must
+ * be unique. */
+RLMESH_API RlmeshSpaceSpec* rlmesh_space_dict(const char* const* keys,
+                                              RlmeshSpaceSpec* const* children, size_t n);
+RLMESH_API RlmeshSpaceSpec* rlmesh_space_tuple(RlmeshSpaceSpec* const* children, size_t n);
+/* Free an owned space. Not for a borrowed contract space or child. */
+RLMESH_API void rlmesh_space_free(RlmeshSpaceSpec* spec);
 
 /* ---- bytes -------------------------------------------------------------- */
 
@@ -369,7 +394,8 @@ typedef struct RlmeshObservation {
   const RlmeshEpisode* episodes; /* num_envs entries */
 } RlmeshObservation;
 
-/* Set this call's error message + recoverability before returning nonzero. */
+/* Set this call's error message + recoverability before returning nonzero (any
+ * callback: a model's predict or an env's reset / step / render). */
 RLMESH_API void rlmesh_callback_set_error(const char* message, bool recoverable);
 
 /* The model callback vtable. Set struct_size = sizeof(RlmeshModelVtable); fields
@@ -479,6 +505,100 @@ RLMESH_API void rlmesh_model_cancel(RlmeshModel* model);
  * this model's own callbacks (it drops the runtime the callback is running on);
  * doing so is contained rather than fatal, but leaves the handle undefined. */
 RLMESH_API void rlmesh_model_free(RlmeshModel* model);
+
+/* ---- environment ------------------------------------------------------- */
+
+/* What `reset` receives; pointers are valid for the call only. `trial_index`
+ * arrives only when the env declared the "trial_index" reset option. */
+typedef struct RlmeshResetArgs {
+  bool seeded; /* whether `seed` carries an explicit reset seed */
+  int64_t seed;
+  bool has_trial_index; /* whether `trial_index` is set */
+  int64_t trial_index;
+  const char* options_json; /* every reset option as a JSON object; NULL = none */
+} RlmeshResetArgs;
+
+/* What `reset` / `step` write. `observation` is OWNED (the capi takes it).
+ * `info_json` is a borrowed JSON object (NULL = none) that must stay valid
+ * until the callback's next call on this env (e.g. a std::string member). */
+typedef struct RlmeshResetResult {
+  RlmeshValue* observation;
+  const char* info_json;
+} RlmeshResetResult;
+
+typedef struct RlmeshStepResult {
+  RlmeshValue* observation;
+  double reward;
+  bool terminated;
+  bool truncated;
+  const char* info_json;
+} RlmeshStepResult;
+
+/* The environment callback vtable. Set struct_size = sizeof(RlmeshEnvVtable);
+ * fields beyond it are ignored (append-only). `reset` and `step` are required.
+ * Copied in at rlmesh_env_new; `user_data` is kept by pointer and must outlive
+ * the env.
+ *
+ * The env is served as one lane: every callback runs on ONE dedicated thread
+ * (not the one that created the env), one call at a time. `reset` / `step` /
+ * `render` return 0 == RLMESH_OK, or nonzero after rlmesh_callback_set_error
+ * to fail that request (the client's session ends; the env keeps serving new
+ * ones). `step` gets the action
+ * borrowed (NULL when the request carries none). `render` writes an OWNED uint8
+ * image value of shape [H, W, 3], [H, W, 4] or [H, W] (or leaves it NULL for no
+ * frame); the capi PNG-encodes it. `close` fires once, when the server stops. */
+typedef struct RlmeshEnvVtable {
+  size_t struct_size;
+  int (*reset)(void* user_data, const RlmeshResetArgs* args, RlmeshResetResult* out);
+  int (*step)(void* user_data, const RlmeshValue* action, RlmeshStepResult* out);
+  int (*render)(void* user_data, RlmeshValue** out_frame);
+  void (*close)(void* user_data);
+} RlmeshEnvVtable;
+
+/* What the env declares. Set struct_size = sizeof(RlmeshEnvConfig); fields
+ * beyond it read as unset. Borrowed for the rlmesh_env_new call only (the
+ * spaces are cloned). `adapter_tags_json` is the env's adapter EnvTags (v1
+ * JSON), validated against the spaces right there: an unknown field or a tag
+ * that does not fit its space fails rlmesh_env_new. */
+typedef struct RlmeshEnvConfig {
+  size_t struct_size;
+  const char* id;                           /* contract id; NULL/"" = "env" */
+  const RlmeshSpaceSpec* observation_space; /* required */
+  const RlmeshSpaceSpec* action_space;      /* required */
+  const char* adapter_tags_json;            /* NULL = untagged */
+  const char* const* reset_options;         /* e.g. {"trial_index"}; NULL = none */
+  size_t num_reset_options;
+  const char* render_mode;   /* "rgb_array" when `render` produces frames */
+  const char* metadata_json; /* extra contract metadata (JSON object); NULL = none */
+} RlmeshEnvConfig;
+
+/* An owned env handle. Lifecycle: rlmesh_env_new -> rlmesh_env_bind ->
+ * rlmesh_env_serve (blocks) -> rlmesh_env_free. rlmesh_env_cancel is the only
+ * call that may overlap a running serve, from any thread. */
+typedef struct RlmeshEnv RlmeshEnv;
+
+RLMESH_API RlmeshStatus rlmesh_env_new(const RlmeshEnvVtable* vtable, const RlmeshEnvConfig* config,
+                                       void* user_data, RlmeshEnv** out);
+
+/* Bind to `bind_address` (tcp://host:port, host:port or unix:///path) without
+ * serving yet; once per handle. `out_address` (may be NULL) receives the
+ * resolved address, e.g. the OS-assigned port for port 0 (UTF-8, not
+ * NUL-terminated; free with rlmesh_bytes_free). `options` may be NULL;
+ * `predict_concurrency` does not apply to an env. */
+RLMESH_API RlmeshStatus rlmesh_env_bind(RlmeshEnv* env, const char* bind_address,
+                                        const RlmeshServeOptions* options,
+                                        RlmeshBytes* out_address);
+
+/* Serve the bound env until a remote shutdown, an idle timeout, or
+ * rlmesh_env_cancel. Blocking. `close` runs once before this returns. */
+RLMESH_API RlmeshStatus rlmesh_env_serve(RlmeshEnv* env);
+
+/* Stop a blocking rlmesh_env_serve from another thread: it drains, closes the
+ * env and returns RLMESH_OK. Terminal for the handle. NULL is a no-op. */
+RLMESH_API void rlmesh_env_cancel(RlmeshEnv* env);
+
+/* Free an env handle; not from inside its own callbacks. NULL is a no-op. */
+RLMESH_API void rlmesh_env_free(RlmeshEnv* env);
 
 #ifdef __cplusplus
 } /* extern "C" */

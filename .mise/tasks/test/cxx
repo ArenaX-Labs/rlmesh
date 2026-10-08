@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Compile the rlmesh-capi C/C++ ABI (C11 + C++17) and run the C and C++ model smokes against a live env"
+#MISE description="Compile the rlmesh-capi C/C++ ABI (C11 + C++17), run the C and C++ model smokes against a live env, and drive the C++ env smoke with a model"
 #MISE dir="{{ config_root }}"
 
 # The C/C++ analogue of the Python build+typecheck+test gates: the cdylib + the
@@ -33,7 +33,7 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 # 1. Build the cdylib (the consumer links it) + the end-to-end harness.
-cargo build -p rlmesh-capi --lib --bin e2e_harness
+cargo build -p rlmesh-capi --lib --bin e2e_harness --bin e2e_env_harness
 
 # 2. Typecheck the public surface in BOTH languages (the basedpyright analogue):
 #    a compile catches C-vs-C++ / extern "C" divergence in the header.
@@ -51,12 +51,14 @@ $CXX -std=c++17 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" \
 
 # 3. Compile + link the C and C++ smokes against the cdylib (the build + link gate:
 #    a missing / renamed / wrong-signature export fails right here).
-echo "==> build the C and C++ model smokes"
+echo "==> build the C and C++ model smokes and the C++ env smoke"
 link=(-L "$target" -lrlmesh_capi -Wl,-rpath,"$repo_root/$target" -lpthread -ldl -lm)
 $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/c_model.c "${link[@]}" -o "$target/c_model_smoke"
 $CXX -std=c++17 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/cpp_model.cpp "${link[@]}" -o "$target/cpp_model_smoke"
+$CXX -std=c++17 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" \
+  crates/rlmesh-capi/examples/cpp_env.cpp "${link[@]}" -o "$target/cpp_env_smoke"
 
 # 4. Run each smoke against a live env over real gRPC (the pytest analogue).
 #    Both print the same run report; assert the real numbers, not just exit 0.
@@ -67,4 +69,9 @@ echo "==> C model end-to-end vs a live env"
 "$target/e2e_harness" "$target/c_model_smoke" "run report: episodes=3 steps=6"
 echo "==> C++ model end-to-end vs a live env"
 "$target/e2e_harness" "$target/cpp_model_smoke" "run report: episodes=3 steps=6"
+
+# 5. The env side, inverted: the C++ env serves, a model drives it, and closing
+#    its stdin must drain it, run its close hook and exit 0.
+echo "==> C++ env end-to-end vs a live model"
+"$target/e2e_env_harness" "$target/cpp_env_smoke"
 echo "==> test:cxx OK"

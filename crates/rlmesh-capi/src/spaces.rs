@@ -1,15 +1,20 @@
-//! Opaque `SpaceSpec` and `EnvContract` handles, plus the read accessors a C
-//! model needs to find the spaces it must decode/encode against. Space *builders*
-//! (the env-authoring side) are a separate, not-yet-implemented module.
+//! Opaque `SpaceSpec` and `EnvContract` handles: the read accessors a C model
+//! needs to find the spaces it must decode/encode against, and the builders a C
+//! environment declares its spaces with.
 #![allow(unsafe_code)] // FFI: raw pointers + repr(transparent) handles.
 
 use std::ffi::{CStr, c_char};
 
+use rlmesh_spaces::errors::SpaceError;
+use rlmesh_spaces::spaces::{
+    BoxSpaceBuilder, DictSpaceBuilder, DiscreteBuilder, MultiBinaryBuilder, MultiDiscreteBuilder,
+    TextBuilder, TupleSpaceBuilder,
+};
 use rlmesh_spaces::{
     BoxBounds, DType, EnvContract, SpaceKind, SpaceSpec, SpaceType, decode_scalars,
 };
 
-use crate::abi::status::{CapiError, RlmeshStatus, guard, guard_value};
+use crate::abi::status::{CapiError, RlmeshStatus, guard, guard_ptr, guard_value};
 use crate::value::dtype::RlmeshDType;
 use crate::value::handle::{RlmeshValueKind, write_out};
 
@@ -397,4 +402,275 @@ fn write_opt<T>(out: *mut T, value: T) {
     if let Some(slot) = unsafe { out.as_mut() } {
         *slot = value;
     }
+}
+
+// ---- builders (the env-authoring side) -------------------------------------
+
+/// Hand a built space to C as an owned handle (free with `rlmesh_space_free`).
+fn into_space_handle(spec: SpaceSpec) -> *mut RlmeshSpaceSpec {
+    Box::into_raw(Box::new(RlmeshSpaceSpec(spec)))
+}
+
+fn built(result: Result<SpaceSpec, SpaceError>) -> Result<*mut RlmeshSpaceSpec, CapiError> {
+    result
+        .map(into_space_handle)
+        .map_err(|err| CapiError::invalid_arg(format!("invalid space: {err}")))
+}
+
+/// # Safety
+/// `ptr` is NULL only when `len == 0`; otherwise it points at `len` readable `T`s.
+unsafe fn slice_arg<'a, T>(ptr: *const T, len: usize, what: &str) -> Result<&'a [T], CapiError> {
+    if len == 0 {
+        return Ok(&[]);
+    }
+    if ptr.is_null() {
+        return Err(CapiError::invalid_arg(format!("null {what}")));
+    }
+    Ok(unsafe { std::slice::from_raw_parts(ptr, len) })
+}
+
+fn core_dtype(dtype: RlmeshDType) -> Result<DType, CapiError> {
+    dtype
+        .to_core()
+        .ok_or_else(|| CapiError::invalid_arg("unsupported dtype"))
+}
+
+fn is_signed_int(dtype: DType) -> bool {
+    matches!(
+        dtype,
+        DType::Int8 | DType::Int16 | DType::Int32 | DType::Int64
+    )
+}
+
+fn is_unsigned_int(dtype: DType) -> bool {
+    matches!(
+        dtype,
+        DType::Uint8 | DType::Uint16 | DType::Uint32 | DType::Uint64
+    )
+}
+
+/// An integer dtype's bound must be a finite whole number.
+fn int_bound(value: f64) -> Result<i64, CapiError> {
+    if value.is_finite() && value.fract() == 0.0 {
+        #[allow(clippy::cast_possible_truncation)]
+        Ok(value as i64)
+    } else {
+        Err(CapiError::invalid_arg(format!(
+            "integer Box bound {value} is not a finite whole number"
+        )))
+    }
+}
+
+/// A `Box` space with one bound pair for every element. `low`/`high` may be
+/// infinite for a float dtype (unbounded on that side); an integer dtype needs
+/// finite whole-number bounds. Returns an owned space, or NULL on error.
+///
+/// # Safety
+/// `shape` points at `ndim` readable `int64_t`s (NULL when `ndim == 0`).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_space_box(
+    dtype: RlmeshDType,
+    shape: *const i64,
+    ndim: usize,
+    low: f64,
+    high: f64,
+) -> *mut RlmeshSpaceSpec {
+    guard_ptr(|| {
+        let dtype = core_dtype(dtype)?;
+        let shape = unsafe { slice_arg(shape, ndim, "shape") }?.to_vec();
+        let builder = if is_unsigned_int(dtype) {
+            let low = u64::try_from(int_bound(low)?)
+                .map_err(|_| CapiError::invalid_arg("unsigned Box bound is negative"))?;
+            let high = u64::try_from(int_bound(high)?)
+                .map_err(|_| CapiError::invalid_arg("unsigned Box bound is negative"))?;
+            BoxSpaceBuilder::uint_scalar(low, high, shape)
+        } else if is_signed_int(dtype) {
+            BoxSpaceBuilder::int_scalar(int_bound(low)?, int_bound(high)?, shape)
+        } else {
+            BoxSpaceBuilder::scalar(low, high, shape)
+        };
+        built(builder.dtype(dtype).build())
+    })
+}
+
+/// A `Box` space with per-element bounds: `low`/`high` each hold the shape's
+/// element count, row-major. Same dtype rules as `rlmesh_space_box`.
+///
+/// # Safety
+/// `shape` points at `ndim` `int64_t`s; `low`/`high` at `numel` doubles each.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_space_box_elementwise(
+    dtype: RlmeshDType,
+    shape: *const i64,
+    ndim: usize,
+    low: *const f64,
+    high: *const f64,
+) -> *mut RlmeshSpaceSpec {
+    guard_ptr(|| {
+        let dtype = core_dtype(dtype)?;
+        let shape = unsafe { slice_arg(shape, ndim, "shape") }?.to_vec();
+        let numel = shape.iter().try_fold(1usize, |acc, &dim| {
+            usize::try_from(dim)
+                .ok()
+                .and_then(|dim| acc.checked_mul(dim))
+                .ok_or_else(|| CapiError::invalid_arg("Box shape has a negative dimension"))
+        })?;
+        let low = unsafe { slice_arg(low, numel, "low") }?;
+        let high = unsafe { slice_arg(high, numel, "high") }?;
+        let builder = if is_signed_int(dtype) || is_unsigned_int(dtype) {
+            let ints = |bounds: &[f64]| -> Result<Vec<i64>, CapiError> {
+                bounds.iter().map(|&b| int_bound(b)).collect()
+            };
+            BoxSpaceBuilder::int_tensor(ints(low)?, ints(high)?, shape)
+        } else {
+            BoxSpaceBuilder::tensor(low.to_vec(), high.to_vec(), shape)
+        };
+        built(builder.dtype(dtype).build())
+    })
+}
+
+/// A `Discrete` space over `start ..= start + n - 1`.
+#[unsafe(no_mangle)]
+pub extern "C" fn rlmesh_space_discrete(n: i64, start: i64) -> *mut RlmeshSpaceSpec {
+    guard_ptr(|| built(DiscreteBuilder::new(n).start(start).build()))
+}
+
+/// A `MultiBinary` space of the given shape (`[n]` for the usual flat one).
+///
+/// # Safety
+/// `shape` points at `ndim` readable `int64_t`s.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_space_multi_binary(
+    shape: *const i64,
+    ndim: usize,
+) -> *mut RlmeshSpaceSpec {
+    guard_ptr(|| {
+        let shape = unsafe { slice_arg(shape, ndim, "shape") }?.to_vec();
+        built(MultiBinaryBuilder::shape(shape).build())
+    })
+}
+
+/// A flat `MultiDiscrete` space with one category count per element.
+///
+/// # Safety
+/// `nvec` points at `n` readable `int64_t`s.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_space_multi_discrete(
+    nvec: *const i64,
+    n: usize,
+) -> *mut RlmeshSpaceSpec {
+    guard_ptr(|| {
+        let nvec = unsafe { slice_arg(nvec, n, "nvec") }?.to_vec();
+        built(MultiDiscreteBuilder::vector(nvec).build())
+    })
+}
+
+/// A `Text` space of `min_length ..= max_length` characters drawn from
+/// `charset` (NUL-terminated UTF-8; NULL or "" allows any character).
+///
+/// # Safety
+/// `charset` is NULL or a valid C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_space_text(
+    min_length: i64,
+    max_length: i64,
+    charset: *const c_char,
+) -> *mut RlmeshSpaceSpec {
+    guard_ptr(|| {
+        let mut builder = TextBuilder::new(max_length).min_length(min_length);
+        if !charset.is_null() {
+            let charset = unsafe { CStr::from_ptr(charset) }
+                .to_str()
+                .map_err(|_| CapiError::invalid_arg("charset is not UTF-8"))?;
+            builder = builder.charset(charset);
+        }
+        built(builder.build())
+    })
+}
+
+/// Reclaim `n` owned child handles, all or nothing: the composite builders take
+/// ownership only once every argument checks out.
+///
+/// # Safety
+/// `children` points at `n` handles from the space constructors.
+unsafe fn take_children(
+    children: *const *mut RlmeshSpaceSpec,
+    n: usize,
+) -> Result<Vec<SpaceSpec>, CapiError> {
+    let children = unsafe { slice_arg(children, n, "children") }?;
+    if children.iter().any(|child| child.is_null()) {
+        return Err(CapiError::invalid_arg("null child space"));
+    }
+    Ok(children
+        .iter()
+        .map(|&child| unsafe { Box::from_raw(child) }.0)
+        .collect())
+}
+
+/// A `Dict` space of `n` (key, child) pairs, in declaration order. Takes
+/// ownership of every child on success; on failure (NULL) takes none of them.
+/// Keys must be unique.
+///
+/// # Safety
+/// `keys` points at `n` C strings; `children` at `n` owned space handles.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_space_dict(
+    keys: *const *const c_char,
+    children: *const *mut RlmeshSpaceSpec,
+    n: usize,
+) -> *mut RlmeshSpaceSpec {
+    guard_ptr(|| {
+        let raw_keys = unsafe { slice_arg(keys, n, "keys") }?;
+        let mut names: Vec<String> = Vec::with_capacity(n);
+        for &key in raw_keys {
+            if key.is_null() {
+                return Err(CapiError::invalid_arg("null dict key"));
+            }
+            let key = unsafe { CStr::from_ptr(key) }
+                .to_str()
+                .map_err(|_| CapiError::invalid_arg("dict key is not UTF-8"))?;
+            if names.iter().any(|seen| seen == key) {
+                return Err(CapiError::invalid_arg(format!(
+                    "duplicate dict key {key:?}"
+                )));
+            }
+            names.push(key.to_string());
+        }
+        let children = unsafe { take_children(children, n) }?;
+        built(
+            DictSpaceBuilder::new()
+                .extend(names.into_iter().zip(children))
+                .build(),
+        )
+    })
+}
+
+/// A `Tuple` space of `n` children. Takes ownership of every child on success;
+/// on failure (NULL) takes none of them.
+///
+/// # Safety
+/// `children` points at `n` owned space handles.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_space_tuple(
+    children: *const *mut RlmeshSpaceSpec,
+    n: usize,
+) -> *mut RlmeshSpaceSpec {
+    guard_ptr(|| {
+        let children = unsafe { take_children(children, n) }?;
+        built(TupleSpaceBuilder::new().extend(children).build())
+    })
+}
+
+/// Free an owned space (from a constructor). Not for a borrowed contract space
+/// or child. NULL is a no-op.
+///
+/// # Safety
+/// `spec` is NULL or an owned handle this thread has not freed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_space_free(spec: *mut RlmeshSpaceSpec) {
+    guard_value((), || {
+        if !spec.is_null() {
+            drop(unsafe { Box::from_raw(spec) });
+        }
+    });
 }

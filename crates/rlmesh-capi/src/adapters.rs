@@ -198,6 +198,27 @@ pub(crate) fn meta_to_json(value: &MetaValue) -> serde_json::Value {
     }
 }
 
+/// The inverse of [`meta_to_json`]: JSON as contract metadata. Integers stay
+/// `Int` (the representable ones), every other number is a `Float`.
+pub(crate) fn json_to_meta(value: &serde_json::Value) -> MetaValue {
+    use serde_json::Value as Json;
+    match value {
+        Json::Null => MetaValue::Null,
+        Json::Bool(value) => MetaValue::Bool(*value),
+        Json::Number(number) => number.as_i64().map_or_else(
+            || MetaValue::Float(number.as_f64().unwrap_or(f64::NAN)),
+            MetaValue::Int,
+        ),
+        Json::String(value) => MetaValue::String(value.clone()),
+        Json::Array(items) => MetaValue::List(items.iter().map(json_to_meta).collect()),
+        Json::Object(map) => MetaValue::Map(
+            map.iter()
+                .map(|(k, v)| (k.clone(), json_to_meta(v)))
+                .collect(),
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::CString;
@@ -216,27 +237,6 @@ mod tests {
             shape,
             dtype,
             spec: Some(SpaceKind::Box(BoxSpec { bounds: None })),
-        }
-    }
-
-    // Inverse of meta_to_json, to stage env tags into a contract as the env side
-    // would have published them (EnvTags.to_metadata stores to_dict() verbatim).
-    fn json_to_meta(value: &serde_json::Value) -> MetaValue {
-        use serde_json::Value as Json;
-        match value {
-            Json::Null => MetaValue::Null,
-            Json::Bool(value) => MetaValue::Bool(*value),
-            Json::Number(number) => number.as_i64().map_or_else(
-                || MetaValue::Float(number.as_f64().unwrap()),
-                MetaValue::Int,
-            ),
-            Json::String(value) => MetaValue::String(value.clone()),
-            Json::Array(items) => MetaValue::List(items.iter().map(json_to_meta).collect()),
-            Json::Object(map) => MetaValue::Map(
-                map.iter()
-                    .map(|(k, v)| (k.clone(), json_to_meta(v)))
-                    .collect(),
-            ),
         }
     }
 
