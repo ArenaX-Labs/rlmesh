@@ -9,7 +9,9 @@
 //! may set `facets`, `priority`, its own build keys, and a `package` table
 //! overriding top-level package keys for that build. `[profile.KEY]` tables
 //! are shared by every variant. A file with no `[variant.*]` table is one
-//! build, keyed `default`, whose `accel.*` keys sit at the top level.
+//! build, keyed `default`, whose `accel.*` keys sit at the top level; with
+//! none, its label has no variant block at all, as a hand-written one need
+//! not.
 //!
 //! Each variant's label is rendered as JSON and checked by the same
 //! [`parse_compute_blocks`] that checks a hand-written label, so the TOML
@@ -137,6 +139,10 @@ pub fn parse(raw: &str, dir: &Path, origin: &str) -> Result<(Manifest, Vec<Strin
         }
     };
 
+    // A single build that declares no requirements writes no variant block,
+    // as a hand-written label would: the platform keys it `default` and
+    // names its profiles' rows by their bare keys (`egl`, not `default-egl`).
+    let undeclared = variants.is_none() && top_accel.is_none();
     let tables: Vec<(String, toml::Table)> = match variants {
         None => {
             let mut table = toml::Table::new();
@@ -206,7 +212,9 @@ pub fn parse(raw: &str, dir: &Path, origin: &str) -> Result<(Manifest, Vec<Strin
         if let Some(accel) = table.remove("accel") {
             variant.insert("requires".to_owned(), requires(&at, accel, &mut errors));
         }
-        label.insert("variant".to_owned(), Value::Object(variant));
+        if !undeclared {
+            label.insert("variant".to_owned(), Value::Object(variant));
+        }
         if !profiles.is_empty() {
             label.insert("profiles".to_owned(), Value::Array(profiles.clone()));
         }
@@ -521,9 +529,18 @@ gpu.count = 1
         let (manifest, _) = ok("");
         assert_eq!(
             Value::Object(manifest.variants[0].label.clone()),
-            json!({"schemaVersion": 1, "variant": {"key": "default"}})
+            json!({"schemaVersion": 1})
         );
         assert!(manifest.version.is_empty());
+    }
+
+    #[test]
+    fn a_single_build_without_requirements_keeps_bare_profile_rows() {
+        let (manifest, _) = ok("[profile.osmesa]\ndefault = true\n[profile.egl]\ngpu.count = 1\n");
+        let only = &manifest.variants[0];
+        assert_eq!(only.key, "default");
+        assert!(!only.label.contains_key("variant"), "{:?}", only.label);
+        assert_eq!(only.blocks.row_keys(&only.key), ["osmesa", "egl"]);
     }
 
     #[test]

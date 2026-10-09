@@ -132,7 +132,7 @@ The top level of `rlmesh.toml` is the image's `dev.rlmesh.package` label written
 | `[variant.KEY.package]` | Package keys for this build only, each replacing the top level's (`tags`, `resources`, ...). Version-level keys cannot be set here.    |
 | `[profile.KEY]`         | A runtime profile every build carries, in order: `default`, `accel.*` (its `requires`), `facets`, `envVars`, `gpu.count`, `resources`. |
 
-Version-level keys (`name`, `description`, `checkpoints`, `compatibility`, `capabilities`, `inputArtifacts`) set at the top level also become the [index annotation](#the-index-annotation---index-package). A file with no `[variant.*]` table is a single build, keyed `default`, whose `accel.*` keys sit at the top level. Unknown keys in a variant or profile table fail, and every problem is reported against its place in the file (`variant.cuda12: requires accel.cuda: ...`).
+Version-level keys (`name`, `description`, `checkpoints`, `compatibility`, `capabilities`, `inputArtifacts`) set at the top level also become the [index annotation](#the-index-annotation---index-package). A file with no `[variant.*]` table is a single build, keyed `default`, whose `accel.*` keys sit at the top level; when it declares none, its label has no `variant` block, so its profiles' rows are their bare keys (`egl`, see [Row keys](#row-keys)). Unknown keys in a variant or profile table fail, and every problem is reported against its place in the file (`variant.cuda12: requires accel.cuda: ...`).
 
 ### Without `rlmesh.toml`: the label by hand
 
@@ -152,7 +152,7 @@ rlmesh check-image ns/pi0:v3-cuda12   # after building it with --load
 rlmesh registry publish ns/pi0:v3 ns/pi0:v3-cuda12 ns/pi0:v3-cpu
 ```
 
-The first reference is the version (`REPOSITORY:TAG`); the rest are the builds, default first. Every build must carry a `variant` block.
+The first reference is the version (`REPOSITORY:TAG`); the rest are the builds, default first. Every build must carry a `variant` block, unless it is the only one.
 
 ### Full label schema
 
@@ -190,7 +190,7 @@ The `variant` block has fields beyond `key` and `requires`, and an image can als
 }
 ```
 
-Each block is optional. A `variant` block needs a `key`, and `rlmesh registry publish` requires a `variant` block on every child, because a variant block is how a child is meant to declare itself. An image without one still runs: the platform infers what it needs (see [Inference](#inference-without-a-variant-block)).
+Each block is optional. A `variant` block needs a `key`, and `rlmesh registry publish` requires a `variant` block on every child of a version with several, because a variant block is how a child is addressed. A lone child may leave it out and is keyed `default`. An image without one still runs: the platform infers what it needs (see [Inference](#inference-without-a-variant-block)).
 
 | Field                  | Meaning                                                                                                                                                            |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -343,7 +343,7 @@ Publishing:
 
 1. Resolves each source and pins it by digest, so a tag that moves mid-publish cannot swap a child. Each source must be one linux image. A BuildKit push is an index of the image plus its attestation manifests, and the attestations are carried into the version. Each carried attestation must describe an image of the version (its `vnd.docker.reference.digest`); a source whose attestation names another image, or none, fails, and naming that source's image by digest (`ns/pi0@sha256:…`) leaves its attestations behind. When a source is an index, the platform its index declares for the image must match the image config's `os`/`architecture`, since the platform schedules by the one and runs the other.
 2. Reads each image's config and runs the version's checks:
-   - every child carries a `dev.rlmesh.package` label with a `variant` block that passes the same checks as `check-image`
+   - every child carries a `dev.rlmesh.package` label with a `variant` block (a lone child may leave it out) that passes the same checks as `check-image`
    - variant keys and derived row keys are unique
    - every child serves the same kind (env or model, from the describe label or the `rlmesh.serve` command)
    - at least one child is `linux/amd64`

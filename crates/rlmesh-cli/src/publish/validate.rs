@@ -55,7 +55,8 @@ pub(crate) fn default_row(variants: &[VariantImage]) -> Option<(usize, usize)> {
 }
 
 /// Read and check each child's package label, and the set as a whole: every
-/// child needs a label with a `variant.key`, its declaration must pass the
+/// child needs a label with a `variant.key` (a lone child may leave it out,
+/// and is keyed `default` as the platform keys it), its declaration must pass the
 /// platform's checks, row keys are unique, kinds agree, and at least one
 /// child is `linux/amd64`. Returns the variants, the warnings worth printing,
 /// and every error found (all of them, so one run reports everything to fix).
@@ -65,8 +66,9 @@ pub(crate) fn check_variants(
     let mut variants = Vec::new();
     let mut warnings = Vec::new();
     let mut errors = Vec::new();
+    let lone = children.len() == 1;
     for child in children {
-        variants.extend(check_child(child, &mut warnings, &mut errors));
+        variants.extend(check_child(child, lone, &mut warnings, &mut errors));
     }
     errors.extend(duplicate_keys(&variants));
     errors.extend(colliding_rows(&variants));
@@ -76,9 +78,11 @@ pub(crate) fn check_variants(
 }
 
 /// Check one child on its own, appending its problems in order; `None` when
-/// it has no usable `variant.key`.
+/// it has no usable `variant.key`. A `lone` child without a variant block is
+/// keyed `default`, and its profiles' rows are their bare keys.
 fn check_child(
     child: Child,
+    lone: bool,
     warnings: &mut Vec<String>,
     errors: &mut Vec<String>,
 ) -> Option<VariantImage> {
@@ -95,9 +99,15 @@ fn check_child(
     errors.extend(report.failed.iter().map(|m| format!("{source}: {m}")));
     warnings.extend(report.warnings.iter().map(|m| format!("{source}: {m}")));
     let (blocks, _) = variant::parse_compute_blocks(&package);
-    let Some(key) = blocks.variant.as_ref().and_then(|v| v.key.clone()) else {
-        errors.extend(missing_variant_block(&source, &blocks));
-        return None;
+    let key = match blocks.variant.as_ref().map(|v| v.key.clone()) {
+        Some(Some(key)) => key,
+        // A malformed key is already reported by the declaration checks.
+        Some(None) => return None,
+        None if lone => variant::DEFAULT_VARIANT_KEY.to_owned(),
+        None => {
+            errors.extend(missing_variant_block(&source, &blocks));
+            return None;
+        }
     };
     let kind = image_kind(&child.config);
     warnings.extend(unknown_kind(&source, kind));
@@ -184,7 +194,7 @@ fn variant_image(
     let requires_inferred = blocks
         .variant
         .as_ref()
-        .is_some_and(|variant| variant.requires.is_none());
+        .is_none_or(|variant| variant.requires.is_none());
     let rows = blocks.row_keys(&key);
     VariantImage {
         child,
