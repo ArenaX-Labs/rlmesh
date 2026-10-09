@@ -87,8 +87,9 @@ pub struct RegistryArgs {
 pub enum RegistryCommand {
     /// Log Docker in to the platform's image registry using the current session.
     Login(ProfileArgs),
-    /// Assemble pushed per-variant images into one OCI image index (a version
-    /// whose children are compute variants) and push it under TARGET.
+    /// Assemble per-variant images into one OCI image index (a version whose
+    /// children are compute variants) and push it under TARGET: the pushed
+    /// SOURCE images, or each variant of `rlmesh.toml`, built and pushed first.
     Publish(PublishArgs),
     /// Docker credential-helper protocol endpoint (invoked by docker as
     /// docker-credential-rlmesh, not by hand).
@@ -103,9 +104,14 @@ pub struct PublishArgs {
     pub target: String,
     /// The per-variant images, already pushed (e.g. `ns/pi0:v3-cuda12`). Each must
     /// be one linux image (attestations are carried along) whose
-    /// `dev.rlmesh.package` label declares a unique `variant.key`.
-    #[arg(required = true, value_name = "SOURCE")]
+    /// `dev.rlmesh.package` label declares a unique `variant.key`. Without
+    /// any, each variant of `rlmesh.toml` is built and pushed first.
+    #[arg(value_name = "SOURCE")]
     pub sources: Vec<String>,
+    /// The manifest to build from when no SOURCE is given (`-` reads stdin);
+    /// defaults to `rlmesh.toml` in the current directory.
+    #[arg(long, value_name = "FILE", conflicts_with_all = ["sources", "index_package"])]
+    pub config: Option<std::path::PathBuf>,
     /// Another tag for the index in TARGET's repository; repeatable.
     #[arg(long = "tag", value_name = "TAG")]
     pub tags: Vec<String>,
@@ -118,9 +124,14 @@ pub struct PublishArgs {
     /// set as the index's `dev.rlmesh.package` annotation.
     #[arg(long, value_name = "FILE")]
     pub index_package: Option<std::path::PathBuf>,
-    /// Print the per-variant summary and the index JSON without pushing.
+    /// Print the per-variant summary and the index JSON without pushing (with
+    /// `rlmesh.toml`, without building).
     #[arg(long)]
     pub dry_run: bool,
+    /// With `--dry-run` and `rlmesh.toml`, print each variant's build and
+    /// rendered `dev.rlmesh.package` label, and the index annotation, as JSON.
+    #[arg(long, requires = "dry_run", conflicts_with = "sources")]
+    pub json: bool,
     /// Push TARGET or a `--tag` that already points at a different index, or
     /// that cannot be read (the channel tag needs no `--force`, unless it is
     /// also TARGET or a `--tag`).

@@ -6,6 +6,7 @@ use anyhow::Result;
 
 use super::validate::{VariantImage, default_row};
 use crate::image_check::Kind;
+use crate::manifest::VariantBuild;
 use crate::render::Style;
 use crate::variant;
 
@@ -18,7 +19,7 @@ pub(super) fn write_table(
         "VARIANT", "KIND", "PLATFORM", "PRIORITY", "FACETS", "REQUIRES", "ROWS", "IMAGE",
     ];
     let default = default_row(variants);
-    let rows: Vec<[String; 8]> = variants
+    let rows: Vec<Vec<String>> = variants
         .iter()
         .enumerate()
         .map(|(index, variant)| {
@@ -73,8 +74,91 @@ pub(super) fn write_table(
                     short_digest(&variant.child.image_digest)
                 ),
             ]
+            .into()
         })
         .collect();
+    write_columns(stdout, style, &headers, &rows)?;
+    if default.is_some() {
+        writeln!(
+            stdout,
+            "{}",
+            style.muted(
+                "* the version's default row: the first linux/amd64 child, at its default profile"
+            )
+        )?;
+    }
+    Ok(())
+}
+
+/// The builds a publish from `rlmesh.toml` would run, before any exists.
+pub(super) fn write_build_table(
+    stdout: &mut impl Write,
+    style: Style,
+    variants: &[VariantBuild],
+) -> Result<()> {
+    let rows: Vec<Vec<String>> = variants
+        .iter()
+        .enumerate()
+        .map(|(index, build)| {
+            let declared = build.blocks.variant.as_ref();
+            let requires = declared
+                .and_then(|variant| variant.requires.as_ref())
+                .map(variant::format_requires)
+                .filter(|requires| !requires.is_empty())
+                .unwrap_or_else(|| "(inferred from the image)".to_owned());
+            let mut rows = build.blocks.row_keys(&build.key);
+            if index == 0 {
+                let default = build.blocks.default_profile().unwrap_or(0);
+                rows[default].push('*');
+            }
+            let args = build
+                .build_args
+                .iter()
+                .map(|(key, value)| format!("{key}={value}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            vec![
+                build.key.clone(),
+                declared.map_or(0, |variant| variant.priority).to_string(),
+                requires,
+                rows.join(", "),
+                build.dockerfile.display().to_string(),
+                if args.is_empty() {
+                    "-".to_owned()
+                } else {
+                    args
+                },
+            ]
+        })
+        .collect();
+    write_columns(
+        stdout,
+        style,
+        &[
+            "VARIANT",
+            "PRIORITY",
+            "REQUIRES",
+            "ROWS",
+            "DOCKERFILE",
+            "BUILD ARGS",
+        ],
+        &rows,
+    )?;
+    writeln!(
+        stdout,
+        "{}",
+        style.muted("* the version's default row: the first variant, at its default profile")
+    )?;
+    Ok(())
+}
+
+/// Left-aligned columns under a bold header.
+fn write_columns(
+    stdout: &mut impl Write,
+    style: Style,
+    headers: &[&str],
+    rows: &[Vec<String>],
+) -> Result<()> {
     let widths: Vec<usize> = (0..headers.len())
         .map(|column| {
             rows.iter()
@@ -96,17 +180,8 @@ pub(super) fn write_table(
     };
     let header: Vec<String> = headers.iter().map(|h| (*h).to_owned()).collect();
     writeln!(stdout, "{}", style.bold(&line(&header)))?;
-    for row in &rows {
+    for row in rows {
         writeln!(stdout, "{}", line(row))?;
-    }
-    if default.is_some() {
-        writeln!(
-            stdout,
-            "{}",
-            style.muted(
-                "* the version's default row: the first linux/amd64 child, at its default profile"
-            )
-        )?;
     }
     Ok(())
 }

@@ -25,7 +25,10 @@ curl -H "Authorization: Bearer $(rlmesh token)" https://api.rlmesh.dev/v1/evalua
 # Register the rlmesh credential helper for the platform registry
 rlmesh registry login
 
-# Publish per-variant images (CUDA, ROCm, JAX builds) as one version
+# Build each variant declared in ./rlmesh.toml and publish them as one version
+rlmesh registry publish ns/pi0:v3 --dry-run
+
+# Or publish per-variant images built elsewhere (CUDA, ROCm, JAX builds)
 rlmesh registry publish ns/pi0:v3 ns/pi0:v3-cuda12 ns/pi0:v3-rocm6 ns/pi0:v3-jax --dry-run
 
 # List and switch between platform profiles and organizations
@@ -54,7 +57,7 @@ rlmesh version
 
 Run `rlmesh --help` or `rlmesh <command> --help` for the complete command reference.
 
-`rlmesh registry login` registers the bundled `docker-credential-rlmesh` helper for the platform's registry host, so docker requests a fresh short-lived token from the CLI on every pull and push instead of storing a static password. `rlmesh registry publish` assembles already-pushed per-variant images into one OCI image index, a version whose children are compute variants. It checks each child's `dev.rlmesh.package` variant block by the platform's rules, and that variant and row keys are unique, all children serve the same kind, and each is a linux image. Then it pushes the index with `docker buildx imagetools create`, refusing without `--force` to move an existing version tag to a different index or to push over one it cannot read, and leaving a tag that already holds the same index untouched. See [Publishing compute variants](https://github.com/ArenaX-Labs/rlmesh/blob/main/docs/compute-variants.md).
+`rlmesh registry login` registers the bundled `docker-credential-rlmesh` helper for the platform's registry host, so docker requests a fresh short-lived token from the CLI on every pull and push instead of storing a static password. `rlmesh registry publish` assembles per-variant images into one OCI image index, a version whose children are compute variants: those declared in `rlmesh.toml`, which it builds with `docker buildx build` and labels from the file, or already-pushed images. It checks each child's `dev.rlmesh.package` variant block by the platform's rules, and that variant and row keys are unique, all children serve the same kind, and each is a linux image. Then it pushes the index with `docker buildx imagetools create`, refusing without `--force` to move an existing version tag to a different index or to push over one it cannot read, and leaving a tag that already holds the same index untouched. See [Publishing compute variants](https://github.com/ArenaX-Labs/rlmesh/blob/main/docs/compute-variants.md).
 
 `rlmesh check` runs the Python describe on a class and fails on what the platform would refuse (a model without a `spec`, an env without `tags`, a spec that does not resolve); `rlmesh check-image` reads `docker image inspect` and checks the serve command, the exposed port, the platform, the rlmesh labels, the compute variant (declared in the package label, or inferred from the image's CUDA/ROCm markers), and whether the image's rlmesh shares a workflow edition with the target platform. Both print three buckets, failed, warnings, and not checked, and exit 1 only on a failure. `rlmesh describe --label` prints the `dev.rlmesh.describe` label for an image with a custom entrypoint, and is meant to run inside that image (`docker run --rm --entrypoint rlmesh IMAGE describe ... --label`), since the envelope carries the OS, architecture, package versions, editions, and env spaces of wherever it ran and the platform fails a label made on a Mac; a plain `python -m rlmesh.serve` image needs no label.
 

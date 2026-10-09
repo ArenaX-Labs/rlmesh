@@ -7,6 +7,7 @@ use anyhow::{Result, anyhow};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
+use super::build::Builder;
 use super::imagetools::Imagetools;
 use super::media::{DOCKER_MANIFEST_LIST, DOCKER_MEDIA_PREFIX, OCI_INDEX};
 use super::publish_with;
@@ -333,15 +334,23 @@ pub(super) fn args(target: &str, sources: &[&str]) -> PublishArgs {
         sources: sources.iter().map(|s| (*s).to_owned()).collect(),
         tags: Vec::new(),
         channel: None,
+        config: None,
         index_package: None,
         dry_run: false,
+        json: false,
         force: false,
     }
 }
 
 pub(super) fn run(registry: &FakeRegistry, args: &PublishArgs) -> (Result<i32>, String) {
     let mut out = Vec::new();
-    let result = publish_with(registry, args, &mut out, Style::for_terminal(false));
+    let result = publish_with(
+        registry,
+        &FakeBuilder::default(),
+        args,
+        &mut out,
+        Style::for_terminal(false),
+    );
     (result, String::from_utf8(out).unwrap())
 }
 
@@ -364,4 +373,44 @@ pub(super) fn version_json(dir: &tempfile::TempDir, raw: &str) -> std::path::Pat
     let path = dir.path().join("version.json");
     std::fs::write(&path, raw).unwrap();
     path
+}
+
+/// Builds nothing: answers each build with the digest seeded for its
+/// variant key (read off the label argument), recording the arguments.
+#[derive(Default)]
+pub(super) struct FakeBuilder {
+    pub(super) digests: BTreeMap<String, char>,
+    pub(super) builds: RefCell<Vec<Vec<String>>>,
+}
+
+impl Builder for FakeBuilder {
+    fn build(&self, args: &[String]) -> Result<String> {
+        self.builds.borrow_mut().push(args.to_vec());
+        let label = args
+            .iter()
+            .find_map(|arg| arg.strip_prefix(&format!("{PACKAGE_LABEL}=")))
+            .ok_or_else(|| anyhow!("no label argument"))?;
+        let label: Value = serde_json::from_str(label)?;
+        let key = label["variant"]["key"].as_str().unwrap_or_default();
+        match self.digests.get(key) {
+            Some(seed) => Ok(digest(*seed)),
+            None => Err(anyhow!("ERROR: failed to build {key}")),
+        }
+    }
+}
+
+pub(super) fn run_with(
+    registry: &FakeRegistry,
+    builder: &FakeBuilder,
+    args: &PublishArgs,
+) -> (Result<i32>, String) {
+    let mut out = Vec::new();
+    let result = publish_with(
+        registry,
+        builder,
+        args,
+        &mut out,
+        Style::for_terminal(false),
+    );
+    (result, String::from_utf8(out).unwrap())
 }

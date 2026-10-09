@@ -4,6 +4,7 @@ mod cli;
 mod config;
 mod helpers;
 pub mod image_check;
+mod manifest;
 mod platform;
 mod profile;
 mod publish;

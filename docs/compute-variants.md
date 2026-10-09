@@ -10,47 +10,53 @@ Who needs what:
 
 ## The six concepts
 
-1. **Build key.** Each build names itself with `variant.key` (`cuda12`, `cpu`).
-2. **Requirements.** Each build says what hardware it needs in `variant.requires`: `accel.vendor`, `accel.compute`, `accel.cuda`, `accel.driver`, `accel.vram`.
+1. **Build key.** Each build is a `[variant.KEY]` table in `rlmesh.toml` (`cuda12`, `cpu`).
+2. **Requirements.** Each build says what hardware it needs with `accel.*` keys: `accel.vendor`, `accel.compute`, `accel.cuda`, `accel.driver`, `accel.vram`.
 3. **Constraint syntax.** Versions are constraints such as `">=12.4"`; VRAM is a quantity such as `"16Gi"`.
-4. **One version is one OCI index.** The builds are pushed separately, then published together as one image index under one tag.
+4. **One version is one OCI index.** `rlmesh registry publish` builds each variant, then publishes them together as one image index under one tag.
 5. **A default build with fallback.** The first build is the default. The others are fallbacks for hardware the default cannot run on.
-6. **Check, publish, promote.** `rlmesh check-image` each build, `rlmesh registry publish` the version, then move a channel such as `latest` onto it.
+6. **Check, publish, promote.** `rlmesh registry publish --dry-run` the version, publish it, then move a channel such as `latest` onto it.
 
-The walk-through below publishes `ns/pi0:v3` with two builds: `cuda12`, the default, for NVIDIA GPUs with at least 16Gi of VRAM, and `cpu`, which runs anywhere.
+The walk-through below publishes `ns/pi0:v3` with two builds: `cuda12`, the default, for NVIDIA GPUs with at least 16Gi of VRAM, and `cpu`, which runs anywhere. The whole declaration is one file next to your Dockerfiles; the Dockerfiles stay as they are:
+
+```toml
+# rlmesh.toml
+name = "pi0"
+
+[[checkpoints]]
+name = "base"
+uri = "hf://model/acme/pi0"
+default = true
+
+[variant.cuda12]
+dockerfile = "Dockerfile.cuda"
+accel.vendor = "nvidia"
+accel.cuda = ">=12.4"
+accel.vram = "16Gi"
+
+[variant.cpu]
+dockerfile = "Dockerfile.cpu"
+```
 
 ### 1. Build key
 
-Each build declares a `variant` block inside its `dev.rlmesh.package` image label, next to the label's other keys (`schemaVersion`, `name`, `checkpoints`, ...). The one required field is `key`:
-
-```json
-{ "schemaVersion": 1, "variant": { "key": "cpu" } }
-```
-
-A key is 1-32 lowercase letters, digits, or dashes, starting with a letter or digit (`^[a-z0-9][a-z0-9-]{0,31}$`), and unique within the version. It is how the platform, its reports, and an optional pin name the build.
+Each `[variant.KEY]` table is one build, and its name is the build's key. A key is 1-32 lowercase letters, digits, or dashes, starting with a letter or digit (`^[a-z0-9][a-z0-9-]{0,31}$`), and unique within the version. It is how the platform, its reports, and an optional pin name the build.
 
 ### 2. Requirements
 
-`requires` lists what the hardware must offer. A build without it runs anywhere (or gets requirements [inferred](#inference-without-a-variant-block) from its CUDA markers):
+`accel.*` keys list what the hardware must offer. A build without them runs anywhere (or gets requirements [inferred](#inference-without-a-variant-block) from its CUDA markers). They are written as TOML dotted keys, under the same names the platform, its API, and its dashboard use:
 
-```json
-{
-  "schemaVersion": 1,
-  "variant": {
-    "key": "cuda12",
-    "requires": {
-      "accel.vendor": "nvidia",
-      "accel.compute": ">=8.0",
-      "accel.cuda": ">=12.4",
-      "accel.vram": "16Gi"
-    }
-  }
-}
+```toml
+[variant.cuda12]
+accel.vendor = "nvidia"
+accel.compute = ">=8.0"
+accel.cuda = ">=12.4"
+accel.vram = "16Gi"
 ```
 
 | Key             | Value                                                                     |
 | --------------- | ------------------------------------------------------------------------- |
-| `accel.vendor`  | `"nvidia"` or `"amd"`. Every other key needs it in the same `requires`.   |
+| `accel.vendor`  | `"nvidia"` or `"amd"`. Every other key needs it in the same table.        |
 | `accel.compute` | NVIDIA compute capability, a version constraint (`">=8.0,<10.0"`).        |
 | `accel.cuda`    | The CUDA version the host driver supports, a version constraint.          |
 | `accel.driver`  | The NVIDIA driver version, a version constraint (`"550"`, `">=535.104"`). |
@@ -62,50 +68,31 @@ AMD builds use `accel.gfx` instead of the NVIDIA keys; see [AMD and ROCm](#amd-r
 
 A version constraint is a string of comma-joined clauses that must all hold. Each clause is an optional `>=`, `>`, `<=`, `<`, `==`, or `=` followed by a dotted version of up to three parts. A bare version means a minimum, so `"12.4"` is `">=12.4"`, and `">=8.0,<10.0"` is a range. Versions compare numerically part by part, so `12` equals `12.0`.
 
-`accel.vram` is a quantity, the way Kubernetes writes memory: digits, an optional fraction, and an optional suffix, `Ki`, `Mi`, `Gi`, `Ti` (powers of 1024) or `K`, `M`, `G`, `T` (powers of 1000), no suffix meaning bytes. `"16Gi"`, `"24G"`, `"1.5Gi"`, and `"80000000000"` are quantities. It is always a minimum, so it takes no comparator (`">=24Gi"` fails), and it has no exponent (`"1e9"`), no milli suffix (`"100m"`), no space (`"24 Gi"`), and no other unit (`"24GB"`, `"24gi"`). It must be a positive whole number of bytes (`"1.5"` fails, `"1.5Gi"` does not) that fits a signed 64-bit integer. A JSON number such as `24` fails; write it as a quantity string. A value the platform cannot decode costs the image its whole variant declaration.
+`accel.vram` is a quantity, the way Kubernetes writes memory: digits, an optional fraction, and an optional suffix, `Ki`, `Mi`, `Gi`, `Ti` (powers of 1024) or `K`, `M`, `G`, `T` (powers of 1000), no suffix meaning bytes. `"16Gi"`, `"24G"`, `"1.5Gi"`, and `"80000000000"` are quantities. It is always a minimum, so it takes no comparator (`">=24Gi"` fails), and it has no exponent (`"1e9"`), no milli suffix (`"100m"`), no space (`"24 Gi"`), and no other unit (`"24GB"`, `"24gi"`). It must be a positive whole number of bytes (`"1.5"` fails, `"1.5Gi"` does not) that fits a signed 64-bit integer. A bare number such as `24` fails; write it as a quantity string. A value the platform cannot decode costs the image its whole variant declaration.
 
 ### 4. One version is one OCI index
 
-Build each variant for `linux/amd64` and push it under its own tag. Keeping each label in a JSON file, passed in as a build argument, lets one Dockerfile serve every build:
-
-```dockerfile
-ARG RLMESH_PACKAGE
-LABEL dev.rlmesh.package=${RLMESH_PACKAGE}
-```
-
 ```bash
-docker buildx build --platform linux/amd64 --push -t ns/pi0:v3-cuda12 \
-  --build-arg RLMESH_PACKAGE="$(jq -c . variants/cuda12.json)" -f Dockerfile.cuda .
-docker buildx build --platform linux/amd64 --push -t ns/pi0:v3-cpu \
-  --build-arg RLMESH_PACKAGE="$(jq -c . variants/cpu.json)" -f Dockerfile.cpu .
+rlmesh registry publish ns/pi0:v3
 ```
 
-`rlmesh registry publish` then assembles them into one OCI image index, the version, tagged `ns/pi0:v3`. Its children are the builds; the per-build tags are only how you hand them to `publish`.
+With no images named, `publish` reads `rlmesh.toml` in the current directory and builds each variant with `docker buildx build` for `linux/amd64`, from its `dockerfile` (default `Dockerfile`) and `context` (default the file's directory). It pushes each build as `ns/pi0:v3-<key>` (`ns/pi0:v3-cuda12`), with the declaration rendered into the build's `dev.rlmesh.package` label, then assembles the builds into one OCI image index, the version, tagged `ns/pi0:v3`. Its children are the builds; the per-build tags are only how they are handed over. Building and pushing authenticate the way `docker push` does; against the RLMesh platform's registry, run `rlmesh registry login` first.
 
 ### 5. A default build with fallback
 
-The first build listed is the version's default. Put the build you want wherever it can run first, and add the others for hardware it cannot run on. In the example, an NVIDIA node with 16Gi of VRAM or more runs `cuda12`; a CPU-only node, or a GPU with less VRAM, falls back to `cpu`. Where both fit, the platform prefers the default, so a fallback only runs where the default cannot (see [selection](#how-the-platform-picks-a-build)).
+The first `[variant.*]` table is the version's default. Put the build you want wherever it can run first, and add the others for hardware it cannot run on. In the example, an NVIDIA node with 16Gi of VRAM or more runs `cuda12`; a CPU-only node, or a GPU with less VRAM, falls back to `cpu`. Where both fit, the platform prefers the default, so a fallback only runs where the default cannot (see [selection](#how-the-platform-picks-a-build)).
 
 ### 6. Check, publish, promote
 
-**Check** each build before pushing it: build it with `--load` and run
+**Check** the declaration before building anything. `--dry-run` validates `rlmesh.toml` by the platform's rules, every problem at once, and prints each build, its requirements, its [row keys](#row-keys), and the build commands it would run:
 
 ```bash
-rlmesh check-image ns/pi0:v3-cuda12
+rlmesh registry publish --dry-run ns/pi0:v3
 ```
 
-It validates the `variant` block by the platform's rules and warns where it contradicts the image (an `accel.cuda` older than the image's CUDA runtime, say). See [What check-image validates](#what-check-image-validates).
+**Publish** the version. Every check that can run before pushing runs first; a TARGET tag that already holds a version is refused before anything is built, since a new build would replace it (publish under a new tag, or pass `--force`). After building, each build's image is checked the way [`rlmesh check-image`](#what-check-image-validates) checks it, including warnings where the declaration contradicts the image (an `accel.cuda` older than the image's CUDA runtime, say).
 
-**Publish** the version once both builds are pushed. `--dry-run` shows the plan without pushing:
-
-```bash
-rlmesh registry publish --dry-run ns/pi0:v3 ns/pi0:v3-cuda12 ns/pi0:v3-cpu
-rlmesh registry publish ns/pi0:v3 ns/pi0:v3-cuda12 ns/pi0:v3-cpu
-```
-
-The first reference is the version (`REPOSITORY:TAG`); the rest are the builds, default first. Every build must carry a `variant` block, and every check runs before anything is pushed. Publishing authenticates the way `docker push` does; against the RLMesh platform's registry, run `rlmesh registry login` first.
-
-**Promote** the version by moving a channel tag onto it, once the platform has probed each build and the results look right. Run the same publish with `--channel`:
+**Promote** the version by moving a channel tag onto it, once the platform has probed each build and the results look right. Publish the same builds again, by their per-build tags, with `--channel`:
 
 ```bash
 rlmesh registry publish --channel latest ns/pi0:v3 ns/pi0:v3-cuda12 ns/pi0:v3-cpu
@@ -128,6 +115,44 @@ Most evaluations never pin. Pin only to compare builds, or to reproduce a run on
 ## Advanced
 
 Nothing here is needed for the two-build path above.
+
+### The `rlmesh.toml` reference
+
+The top level of `rlmesh.toml` is the image's `dev.rlmesh.package` label written in TOML, under the label's own key names (`name`, `description`, `[[checkpoints]]`, `envVars`, `resources`, ...), plus three build keys. Each variant's label is the top level, its own `variant` block, and the shared `profiles`; `rlmesh registry publish --dry-run --json` prints every label exactly as it will be built.
+
+| Key                     | Meaning                                                                                                                                |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `dockerfile`            | The Dockerfile to build, relative to `rlmesh.toml`. Default `Dockerfile`. A variant may set its own.                                   |
+| `context`               | The build context, relative to `rlmesh.toml`. Default its directory. A variant may set its own.                                        |
+| `build_args.NAME`       | A string build argument. A variant's `build_args` add to the top level's, key by key, so one Dockerfile can serve every build.         |
+| `[variant.KEY]`         | One build, keyed `KEY`, in order: the first is the default.                                                                            |
+| `variant.KEY.accel.*`   | Its `requires`, under the same names (`accel.vendor = "nvidia"` is `"accel.vendor": "nvidia"`).                                        |
+| `variant.KEY.facets.*`  | Its `facets`. See [Facets](#facets).                                                                                                   |
+| `variant.KEY.priority`  | Its `priority`. See [Priority](#priority).                                                                                             |
+| `[variant.KEY.package]` | Package keys for this build only, each replacing the top level's (`tags`, `resources`, ...). Version-level keys cannot be set here.    |
+| `[profile.KEY]`         | A runtime profile every build carries, in order: `default`, `accel.*` (its `requires`), `facets`, `envVars`, `gpu.count`, `resources`. |
+
+Version-level keys (`name`, `description`, `checkpoints`, `compatibility`, `capabilities`, `inputArtifacts`) set at the top level also become the [index annotation](#the-index-annotation---index-package). A file with no `[variant.*]` table is a single build, keyed `default`, whose `accel.*` keys sit at the top level; when it declares none, its label has no `variant` block, so its profiles' rows are their bare keys (`egl`, see [Row keys](#row-keys)). Unknown keys in a variant or profile table fail, and every problem is reported against its place in the file (`variant.cuda12: requires accel.cuda: ...`).
+
+### Without `rlmesh.toml`: the label by hand
+
+`rlmesh.toml` is a way to write the label; the label is what the platform reads. A build pipeline of your own can set it directly and hand `publish` the pushed builds instead of building them. Keeping each label in a JSON file, passed in as a build argument, lets one Dockerfile serve every build:
+
+```dockerfile
+ARG RLMESH_PACKAGE
+LABEL dev.rlmesh.package=${RLMESH_PACKAGE}
+```
+
+```bash
+docker buildx build --platform linux/amd64 --push -t ns/pi0:v3-cuda12 \
+  --build-arg RLMESH_PACKAGE="$(jq -c . variants/cuda12.json)" -f Dockerfile.cuda .
+docker buildx build --platform linux/amd64 --push -t ns/pi0:v3-cpu \
+  --build-arg RLMESH_PACKAGE="$(jq -c . variants/cpu.json)" -f Dockerfile.cpu .
+rlmesh check-image ns/pi0:v3-cuda12   # after building it with --load
+rlmesh registry publish ns/pi0:v3 ns/pi0:v3-cuda12 ns/pi0:v3-cpu
+```
+
+The first reference is the version (`REPOSITORY:TAG`); the rest are the builds, default first. Every build must carry a `variant` block, unless it is the only one.
 
 ### Full label schema
 
@@ -165,7 +190,7 @@ The `variant` block has fields beyond `key` and `requires`, and an image can als
 }
 ```
 
-Each block is optional. A `variant` block needs a `key`, and `rlmesh registry publish` requires a `variant` block on every child, because a variant block is how a child is meant to declare itself. An image without one still runs: the platform infers what it needs (see [Inference](#inference-without-a-variant-block)).
+Each block is optional. A `variant` block needs a `key`, and `rlmesh registry publish` requires a `variant` block on every child of a version with several, because a variant block is how a child is addressed. A lone child may leave it out and is keyed `default`. An image without one still runs: the platform infers what it needs (see [Inference](#inference-without-a-variant-block)).
 
 | Field                  | Meaning                                                                                                                                                            |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -199,6 +224,16 @@ When a variant block declares both `facets.accel` and `requires`, they must agre
 
 Every key other than `accel.vendor` needs `accel.vendor` in the same `requires` object. A profile that adds `accel.cuda` repeats `"accel.vendor": "nvidia"`. The NVIDIA keys (`accel.compute`, `accel.cuda`, `accel.driver`) cannot sit under `amd`, and `accel.gfx` cannot sit under `nvidia`. A ROCm build is declared like a CUDA one:
 
+```toml
+[variant.rocm6]
+facets.framework = "torch"
+facets.accel = "rocm"
+accel.vendor = "amd"
+accel.gfx = ["gfx942", "gfx90a"]
+```
+
+which renders as:
+
 ```json
 {
   "schemaVersion": 1,
@@ -217,6 +252,24 @@ Every key other than `accel.vendor` needs `accel.vendor` in the same `requires` 
 ### Profiles and rendering: osmesa and EGL
 
 A MuJoCo environment that renders headless on a CPU with osmesa, or on an NVIDIA GPU with EGL, is one image with two profiles:
+
+```toml
+[variant.mujoco]
+facets.accel = "cpu"
+
+[profile.osmesa]
+default = true
+facets.render = "osmesa"
+envVars.MUJOCO_GL = "osmesa"
+
+[profile.egl]
+facets.render = "egl"
+envVars.MUJOCO_GL = "egl"
+gpu.count = 1
+accel.vendor = "nvidia"
+```
+
+which renders as this label:
 
 ```json
 {
@@ -278,7 +331,7 @@ A derived row key must still match the key pattern, so a long variant key and a 
 
 ### The index annotation (`--index-package`)
 
-Version-level data that applies to every variant can go on the index itself, as a `dev.rlmesh.package` annotation; `rlmesh registry publish --index-package version.json` sets it. It may carry only `name`, `description`, `checkpoints`, `compatibility`, `capabilities`, and `inputArtifacts`, plus `schemaVersion` (1, the default) and `rev`. The platform ignores any other key, and `publish` warns about it. Where a child's label sets one of those keys differently, the annotation wins, and `publish` warns about that too. Children's `variant` blocks remain the primary declaration: `variant` and `profiles` never belong on the index.
+Version-level data that applies to every variant can go on the index itself, as a `dev.rlmesh.package` annotation. Publishing from `rlmesh.toml` sets it from the file's top-level version-level keys; publishing pushed builds, `rlmesh registry publish --index-package version.json` sets it. It may carry only `name`, `description`, `checkpoints`, `compatibility`, `capabilities`, and `inputArtifacts`, plus `schemaVersion` (1, the default) and `rev`. The platform ignores any other key, and `publish` warns about it. Where a child's label sets one of those keys differently, the annotation wins, and `publish` warns about that too. Children's `variant` blocks remain the primary declaration: `variant` and `profiles` never belong on the index.
 
 Only an OCI image index carries annotations. docker assembles a Docker manifest list instead when every manifest the sources carry, images and attestations alike, is a Docker schema2 manifest, as a classic `docker build` and `docker push` produce, so `publish` refuses `--index-package` then and names the sources. It also checks the index docker would assemble before pushing, and the pushed one after, and fails if either is not an OCI image index carrying the annotation. Rebuild them with OCI media types: `docker buildx build --push` (its attestations make the push an OCI index), or `--provenance=false --output type=image,oci-mediatypes=true,push=true`. One OCI source among them is enough. Without `--index-package`, schema2 sources publish as a Docker manifest list, which the platform reads as a version too.
 
@@ -290,7 +343,7 @@ Publishing:
 
 1. Resolves each source and pins it by digest, so a tag that moves mid-publish cannot swap a child. Each source must be one linux image. A BuildKit push is an index of the image plus its attestation manifests, and the attestations are carried into the version. Each carried attestation must describe an image of the version (its `vnd.docker.reference.digest`); a source whose attestation names another image, or none, fails, and naming that source's image by digest (`ns/pi0@sha256:…`) leaves its attestations behind. When a source is an index, the platform its index declares for the image must match the image config's `os`/`architecture`, since the platform schedules by the one and runs the other.
 2. Reads each image's config and runs the version's checks:
-   - every child carries a `dev.rlmesh.package` label with a `variant` block that passes the same checks as `check-image`
+   - every child carries a `dev.rlmesh.package` label with a `variant` block (a lone child may leave it out) that passes the same checks as `check-image`
    - variant keys and derived row keys are unique
    - every child serves the same kind (env or model, from the describe label or the `rlmesh.serve` command)
    - at least one child is `linux/amd64`
@@ -303,13 +356,15 @@ Publishing:
 
 If the check in step 4 fails, only TARGET has moved; the other tags still point where they did. The error says what TARGET pointed at before and how to recover: put that digest back with `docker buildx imagetools create --tag TARGET REPOSITORY@DIGEST`, or, once the cause is fixed, publish again with `--force`, since TARGET now holds a different index. If pointing the other tags fails, TARGET holds the version and running the same publish again finishes the job.
 
-| Flag                   | Effect                                                                                                                                                                              |
-| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--tag TAG`            | Another tag for the index in TARGET's repository; repeatable. Like TARGET, it does not move to a different index, or over a state that cannot be read, without `--force`.           |
-| `--channel TAG`        | A moving channel tag such as `latest`. It moves without `--force`, and the summary prints the digest it moved from; when it is also TARGET or a `--tag`, it is protected like them. |
-| `--index-package FILE` | Version-level JSON, set as the index's `dev.rlmesh.package` annotation. `schemaVersion` defaults to 1; keys outside the version-level set are kept but warned about.                |
-| `--dry-run`            | Prints the per-variant summary, the index JSON, and each tag's state without pushing; fails on a tag the real run would refuse.                                                     |
-| `--force`              | Pushes TARGET or a `--tag` that already points at a different index, or that cannot be read.                                                                                        |
+| Flag                   | Effect                                                                                                                                                                                    |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--tag TAG`            | Another tag for the index in TARGET's repository; repeatable. Like TARGET, it does not move to a different index, or over a state that cannot be read, without `--force`.                 |
+| `--channel TAG`        | A moving channel tag such as `latest`. It moves without `--force`, and the summary prints the digest it moved from; when it is also TARGET or a `--tag`, it is protected like them.       |
+| `--index-package FILE` | Version-level JSON, set as the index's `dev.rlmesh.package` annotation. `schemaVersion` defaults to 1; keys outside the version-level set are kept but warned about.                      |
+| `--dry-run`            | Prints the per-variant summary, the index JSON, and each tag's state without pushing; fails on a tag the real run would refuse. From `rlmesh.toml`, prints the builds and builds nothing. |
+| `--json`               | With `--dry-run` and `rlmesh.toml`: prints each build (key, tag, Dockerfile, context, build args, rendered label), the index annotation, and the warnings as JSON.                        |
+| `--config FILE`        | The manifest to build from instead of `./rlmesh.toml` (`-` reads stdin). Not with SOURCE images or `--index-package`.                                                                     |
+| `--force`              | Pushes TARGET or a `--tag` that already points at a different index, or that cannot be read.                                                                                              |
 
 The summary shows each child's effective facets and requires (marked `(inferred)` when they come from the image's markers), its row keys, the version's default row (`*`), and where each tag points now:
 
