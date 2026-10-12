@@ -72,6 +72,17 @@ python -m venv /tmp/rlmesh-smoke
 /tmp/rlmesh-smoke/bin/python -c "import rlmesh; print(rlmesh.__version__)"
 ```
 
+## Publish the docs
+
+rlmesh.dev/docs is built from the platform repo, which keeps a frozen copy of the docs for the latest release at `/docs/` and the working copy for `main` at `/docs/dev/`. After a final `X.Y.Z` release, cut the docs there with this checkout at the tag:
+
+```bash
+RLMESH_OSS_DIR=/path/to/rlmesh mise run docs:cut -- X.Y.Z   # OSS checkout at vX.Y.Z
+RLMESH_OSS_DIR=/path/to/rlmesh mise run gen:api-snapshot:dev   # OSS checkout back on main
+```
+
+Open the result as a `docs: cut X.Y.Z` PR in the platform repo. It goes live on the next platform promote. Skip this for pre-releases.
+
 ## Recovery
 
 - A bad crates.io or PyPI publish cannot be deleted, only yanked. Yank it and ship a fixed patch release.
