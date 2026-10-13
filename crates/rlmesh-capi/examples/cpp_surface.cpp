@@ -323,6 +323,7 @@ rlmesh::Status env_server(const std::string& address) {
   config.render_mode = "rgb_array";
   config.metadata_json = "{}";
   config.foreground = false;
+  config.variants_catalog_json = R"([{"id": "a", "params": {"k": 1}}])";
   std::vector<std::unique_ptr<rlmesh::Environment>> lanes;
   lanes.push_back(std::make_unique<SurfaceEnv>());
   lanes.push_back(std::make_unique<SurfaceEnv>());

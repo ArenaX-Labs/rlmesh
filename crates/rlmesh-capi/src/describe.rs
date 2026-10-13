@@ -1,9 +1,9 @@
 //! The describe envelope for a native env: the `rlmesh.describe.v1` artifact a
 //! Python env gets from `rlmesh describe`, built here from the env's contract.
 //!
-//! A native host has no signature to reflect and no variant catalog, so its
-//! envelope carries the target, the spaces, the published tags, and the runtime
-//! edition handshake. The managed platform reads it off a baked
+//! A native host has no signature to reflect, so its envelope carries the
+//! target, the spaces, the published tags, the variant catalog the config
+//! declares (if any), and the runtime edition handshake. The managed platform reads it off a baked
 //! `dev.rlmesh.describe` image label, or, for an image without one, off the
 //! handshake `PeerInfo.extra` the server stamps at bind, as `rlmesh.serve` does
 //! for a Python env. Each bound env stamps its own server, so several envs in
@@ -30,14 +30,17 @@ const COMPONENT: &str = "rlmesh-capi";
 /// edition, rebuilt at bind with the edition the server declares.
 pub(crate) struct Describe {
     contract: EnvContract,
+    /// The config's `variants_catalog_json`, checked: `variants.catalog`.
+    catalog: Option<Value>,
     envelope: Mutex<String>,
 }
 
 impl Describe {
-    pub(crate) fn new(contract: &EnvContract) -> Result<Self, CapiError> {
+    pub(crate) fn new(contract: &EnvContract, catalog: Option<Value>) -> Result<Self, CapiError> {
         Ok(Self {
-            envelope: Mutex::new(envelope(contract, None)?),
+            envelope: Mutex::new(envelope(contract, catalog.as_ref(), None)?),
             contract: contract.clone(),
+            catalog,
         })
     }
 
@@ -51,7 +54,7 @@ impl Describe {
     /// [`Describe::bound_extra`]). Nothing changes until bind succeeds and
     /// calls [`Describe::commit`].
     pub(crate) fn for_bind(&self, workflow_edition: Option<&str>) -> Result<String, CapiError> {
-        envelope(&self.contract, workflow_edition)
+        envelope(&self.contract, self.catalog.as_ref(), workflow_edition)
     }
 
     /// The handshake `PeerInfo.extra` entry carrying `envelope`, set per server
@@ -66,10 +69,12 @@ impl Describe {
     }
 }
 
-/// Build the env envelope. `workflow_edition` is the declaration the server
-/// sends (None or blank: the build's newest edition, as the handshake spells it).
+/// Build the env envelope. `catalog` is the declared variant catalog;
+/// `workflow_edition` is the declaration the server sends (None or blank: the
+/// build's newest edition, as the handshake spells it).
 pub(crate) fn envelope(
     contract: &EnvContract,
+    catalog: Option<&Value>,
     workflow_edition: Option<&str>,
 ) -> Result<String, CapiError> {
     let space = |space: Option<&SpaceSpec>, which: &str| match space {
@@ -86,7 +91,7 @@ pub(crate) fn envelope(
         .map(str::trim)
         .filter(|edition| !edition.is_empty())
         .unwrap_or(rlmesh::CURRENT_WORKFLOW_EDITION);
-    let pieces = json!({
+    let mut pieces = json!({
         "target": {"entrypoint": null, "qualname": format!("native:{}", contract.id)},
         "env_spec": {
             "observation_space": space(contract.observation_space.as_ref(), "observation_space")?,
@@ -104,6 +109,9 @@ pub(crate) fn envelope(
             "preferred_workflow_edition": preferred,
         },
     });
+    if let Some(catalog) = catalog {
+        pieces["variants"] = json!({"catalog": catalog});
+    }
     build_describe_envelope("env", &pieces.to_string(), None)
         .map_err(|err| CapiError::internal(format!("invalid describe envelope: {err}")))
 }
@@ -184,7 +192,7 @@ mod tests {
                 .into_iter()
                 .collect(),
         );
-        let text = built(envelope(&contract(Some(tags)), None));
+        let text = built(envelope(&contract(Some(tags)), None, None));
         assert!(text.starts_with(r#"{"schema_version":1,"kind":"env","#));
         let value = parse(&text);
         assert_eq!(
@@ -212,10 +220,18 @@ mod tests {
 
     #[test]
     fn untagged_env_has_null_tags_and_a_declared_edition_is_preferred() {
-        let text = built(envelope(&contract(None), Some(" 2026.06 ")));
+        let text = built(envelope(&contract(None), None, Some(" 2026.06 ")));
         let value = parse(&text);
         assert_eq!(value["env_tags"], Value::Null);
         assert_eq!(value["runtime"]["preferred_workflow_edition"], "2026.06");
+        assert!(value.get("variants").is_none(), "no catalog, no variants");
+    }
+
+    #[test]
+    fn a_declared_catalog_is_the_envelopes_variants_catalog() {
+        let catalog = json!([{"id": "viper/firm", "params": {"vehicle": "viper"}}]);
+        let value = parse(&built(envelope(&contract(None), Some(&catalog), None)));
+        assert_eq!(value["variants"], json!({"catalog": catalog}));
     }
 
     unsafe extern "C" fn reset(
@@ -249,6 +265,15 @@ mod tests {
 
     /// A C env `id` whose observation is Dict{eef_pos: f32[3] in [-bound, bound]}.
     fn native_env(id: &str, bound: f64) -> *mut RLMeshEnv {
+        native_env_with(id, bound, None).expect("rlmesh_env_new")
+    }
+
+    /// [`native_env`] declaring `catalog` as its `variants_catalog_json`.
+    fn native_env_with(
+        id: &str,
+        bound: f64,
+        catalog: Option<&str>,
+    ) -> Result<*mut RLMeshEnv, RLMeshStatus> {
         use std::ffi::CString;
 
         use crate::env::{RLMeshEnvConfig, RLMeshEnvVtable, rlmesh_env_new};
@@ -266,6 +291,7 @@ mod tests {
                 "action": {"components": [{"role": "action/gripper", "dim": 1}]}}"#,
         )
         .unwrap();
+        let catalog = catalog.map(|catalog| CString::new(catalog).unwrap());
         let config = RLMeshEnvConfig {
             struct_size: std::mem::size_of::<RLMeshEnvConfig>(),
             id: id.as_ptr(),
@@ -277,6 +303,7 @@ mod tests {
             render_mode: std::ptr::null(),
             metadata_json: std::ptr::null(),
             foreground: false,
+            variants_catalog_json: catalog.as_ref().map_or(std::ptr::null(), |c| c.as_ptr()),
         };
         let vtable = RLMeshEnvVtable {
             struct_size: std::mem::size_of::<RLMeshEnvVtable>(),
@@ -291,8 +318,11 @@ mod tests {
             rlmesh_space_free(obs);
             rlmesh_space_free(act);
         }
-        assert_eq!(status, RLMeshStatus::Ok);
-        env
+        if status == RLMeshStatus::Ok {
+            Ok(env)
+        } else {
+            Err(status)
+        }
     }
 
     /// Bind `env` at `address` declaring `edition`; the bound address on success.
@@ -397,10 +427,38 @@ mod tests {
     }
 
     #[test]
+    fn the_c_export_describes_a_declared_catalog_and_refuses_a_malformed_one() {
+        use crate::env::rlmesh_env_free;
+
+        let catalog = r#"[{"id": "viper/firm", "params": {"vehicle": "viper", "soil": "firm"},
+                           "metadata": {"name": "Viper rover on firm soil"}},
+                          {"id": "hmmwv/firm", "params": {"vehicle": "hmmwv"}}]"#;
+        let env = native_env_with("Catalog-v0", 1.0, Some(catalog)).expect("rlmesh_env_new");
+        let value = describe_json(env);
+        assert_eq!(value["variants"]["catalog"], parse(catalog));
+        unsafe { rlmesh_env_free(env) };
+
+        for bad in [
+            r#"{"id": "a"}"#,
+            r#"[{"params": {}}]"#,
+            r#"[{"id": "a"}, {"id": "a"}]"#,
+            r#"[{"id": "a", "params": [1]}]"#,
+            r#"[{"id": "a", "name": "typo"}]"#,
+            "not json",
+        ] {
+            assert_eq!(
+                native_env_with("Catalog-v0", 1.0, Some(bad)).err(),
+                Some(RLMeshStatus::InvalidArgument),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
     fn a_contract_without_spaces_is_refused() {
         let mut bare = contract(None);
         bare.action_space = None;
-        let Err(err) = envelope(&bare, None) else {
+        let Err(err) = envelope(&bare, None, None) else {
             panic!("a spaceless contract built an envelope");
         };
         assert!(err.message.contains("action_space"), "{}", err.message);

@@ -589,6 +589,11 @@ typedef struct RLMeshEnvConfig {
    * bound to the thread that created it (a GL / Vulkan context, Isaac Sim).
    * One lane only. false = callbacks run on a dedicated lane thread. */
   bool foreground;
+  /* The named variants (scenarios) one image serves, as the describe
+   * envelope's variants.catalog: a JSON array of {"id", "params", "metadata"},
+   * e.g. [{"id": "viper/firm", "params": {"vehicle": "viper"}, "metadata":
+   * {"name": "Viper on firm soil"}}]. Ids must be unique. NULL = none. */
+  const char* variants_catalog_json;
 } RLMeshEnvConfig;
 
 /* An owned env handle. Lifecycle: rlmesh_env_new -> rlmesh_env_bind ->

@@ -142,6 +142,10 @@ pub struct RLMeshEnvConfig {
     /// simulation bound to the thread that created it (a GL or Vulkan
     /// context). One lane only.
     pub foreground: bool,
+    /// The named variants (scenarios) this image serves, as the describe
+    /// envelope's `variants.catalog`: a JSON array of `{"id", "params",
+    /// "metadata"}` with unique ids. NULL = none.
+    pub variants_catalog_json: *const c_char,
 }
 
 /// A `*mut c_void` the C author guarantees may move to the lane thread.
@@ -602,6 +606,7 @@ struct EnvConfig {
     render_mode: *const c_char,
     metadata_json: *const c_char,
     foreground: bool,
+    variants_catalog_json: *const c_char,
 }
 
 /// # Safety
@@ -635,6 +640,7 @@ unsafe fn read_config(ptr: *const RLMeshEnvConfig) -> Result<EnvConfig, CapiErro
         metadata_json: field!(metadata_json, *const c_char, std::ptr::null()),
         // Read as a byte: any nonzero C `bool` is true.
         foreground: field!(foreground, u8, 0) != 0,
+        variants_catalog_json: field!(variants_catalog_json, *const c_char, std::ptr::null()),
     })
 }
 
@@ -645,6 +651,44 @@ fn opt_str<'a>(ptr: *const c_char, what: &str) -> Result<Option<&'a str>, CapiEr
     cstr_to_str(ptr)
         .map(Some)
         .map_err(|_| CapiError::invalid_arg(format!("{what} is not UTF-8")))
+}
+
+/// Parse and check `variants_catalog_json`: an array of objects, each with a
+/// unique non-empty string `id` and optional `params` / `metadata` objects.
+fn variants_catalog(text: &str) -> Result<serde_json::Value, CapiError> {
+    let invalid =
+        |message: String| CapiError::invalid_arg(format!("variants_catalog_json: {message}"));
+    let catalog: serde_json::Value =
+        serde_json::from_str(text).map_err(|err| invalid(err.to_string()))?;
+    let entries = catalog
+        .as_array()
+        .ok_or_else(|| invalid("expected a JSON array".into()))?;
+    let mut ids = std::collections::HashSet::new();
+    for (index, entry) in entries.iter().enumerate() {
+        let entry = entry
+            .as_object()
+            .ok_or_else(|| invalid(format!("entry {index} is not an object")))?;
+        let id = entry
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| invalid(format!("entry {index} has no string id")))?;
+        if !ids.insert(id) {
+            return Err(invalid(format!("duplicate id {id:?}")));
+        }
+        for key in ["params", "metadata"] {
+            if entry.get(key).is_some_and(|value| !value.is_object()) {
+                return Err(invalid(format!("{id}: {key} is not an object")));
+            }
+        }
+        if let Some(key) = entry
+            .keys()
+            .find(|key| !matches!(key.as_str(), "id" | "params" | "metadata"))
+        {
+            return Err(invalid(format!("{id}: unknown field {key:?}")));
+        }
+    }
+    Ok(catalog)
 }
 
 /// Build the served contract from a config, validating the adapter tags.
@@ -790,7 +834,10 @@ unsafe fn new_env(
     }
     crate::abi::ignore_sigpipe();
     let (observation_space, action_space, contract) = build_contract(&config)?;
-    let describe = Describe::new(&contract)?;
+    let catalog = opt_str(config.variants_catalog_json, "variants_catalog_json")?
+        .map(variants_catalog)
+        .transpose()?;
+    let describe = Describe::new(&contract, catalog)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -1194,6 +1241,7 @@ mod tests {
             render_mode: mode.as_ptr(),
             metadata_json: std::ptr::null(),
             foreground,
+            variants_catalog_json: std::ptr::null(),
         };
         let mut env = std::ptr::null_mut();
         let status = unsafe {
@@ -1551,6 +1599,7 @@ mod tests {
             render_mode: std::ptr::null(),
             metadata_json: std::ptr::null(),
             foreground: false,
+            variants_catalog_json: std::ptr::null(),
         };
         let mut env = std::ptr::null_mut();
         let status = unsafe { rlmesh_env_new(&table, &config, std::ptr::null_mut(), &mut env) };
