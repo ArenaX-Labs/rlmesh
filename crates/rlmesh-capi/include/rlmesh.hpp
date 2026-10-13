@@ -1303,6 +1303,10 @@ struct EnvConfig {
   /// simulation bound to the thread that created it (a GL / Vulkan context).
   /// One lane only.
   bool foreground = false;
+  /// The named variants (scenarios) this image serves, as the describe
+  /// envelope's `variants.catalog`: a JSON array of {"id", "params",
+  /// "metadata"} with unique ids; empty = none.
+  std::string variants_catalog_json;
 };
 
 /// Serves `Environment`s as an RLMesh EnvService endpoint:
@@ -1355,6 +1359,7 @@ class EnvServer {
     raw.render_mode = opt(config.render_mode);
     raw.metadata_json = opt(config.metadata_json);
     raw.foreground = config.foreground;
+    raw.variants_catalog_json = opt(config.variants_catalog_json);
 
     RLMeshEnvVtable vtable{};
     vtable.struct_size = sizeof(RLMeshEnvVtable);

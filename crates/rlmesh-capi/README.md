@@ -151,6 +151,13 @@ its own), so the managed platform can read an image without a label; bake it
 as the image's `dev.rlmesh.describe` label to describe the image before it
 runs.
 
+An image that serves several named scenarios (each picked by the make kwargs or
+environment variables a `dev.rlmesh.package` scenario sets) lists them in
+`RLMeshEnvConfig.variants_catalog_json` (C++: `EnvConfig::variants_catalog_json`),
+a JSON array of `{"id", "params", "metadata"}` with unique ids. The envelope
+carries it as `variants.catalog`, as `enumerate_variants` does for a Python env,
+so the platform can match the label's scenarios to it.
+
 By default the env is served as one lane: every callback runs on one dedicated
 thread, one call at a time. `reset` gets the seed and trial index (and every
 reset option as JSON); `step` borrows the action and writes an owned
