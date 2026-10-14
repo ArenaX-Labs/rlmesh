@@ -91,7 +91,29 @@ sed -i "s/@ABI@/$abi_gen/" "$stage/lib/cmake/rlmesh/rlmesh-config-version.cmake"
 #    interpolate) — copied verbatim so it stays reviewable as a normal source file.
 cp "$crate/packaging/rlmesh-config.cmake" "$stage/lib/cmake/rlmesh/"
 
-# 7. Terse consume note.
+# 7. Root CMakeLists.txt, so FetchContent_MakeAvailable / add_subdirectory can
+#    consume the tarball by URL. It loads the same config find_package does, then
+#    promotes the imported targets it created to GLOBAL: a subdirectory's imported
+#    targets are otherwise invisible to the parent project that links them. A
+#    target that already existed (the parent's own find_package(rlmesh) or Threads)
+#    is already visible, and CMake refuses to promote it outside its directory.
+cat > "$stage/CMakeLists.txt" <<'EOF'
+cmake_minimum_required(VERSION 3.20)
+set(_rlmesh_created "")
+foreach(_rlmesh_target IN ITEMS Threads::Threads rlmesh::rlmesh rlmesh::rlmesh_static)
+  if(NOT TARGET ${_rlmesh_target})
+    list(APPEND _rlmesh_created ${_rlmesh_target})
+  endif()
+endforeach()
+include("${CMAKE_CURRENT_LIST_DIR}/lib/cmake/rlmesh/rlmesh-config.cmake")
+foreach(_rlmesh_target IN LISTS _rlmesh_created)
+  if(TARGET ${_rlmesh_target})
+    set_target_properties(${_rlmesh_target} PROPERTIES IMPORTED_GLOBAL TRUE)
+  endif()
+endforeach()
+EOF
+
+# 8. Terse consume note.
 cat > "$stage/README.md" <<EOF
 # rlmesh $version ($triple)
 
@@ -101,6 +123,12 @@ Prebuilt RLMesh C/C++ ABI — drop-in, no Rust toolchain required.
     find_package(rlmesh CONFIG REQUIRED)
     target_link_libraries(app PRIVATE rlmesh::rlmesh)
 Point -Drlmesh_DIR=<this>/lib/cmake/rlmesh, or add <this> to CMAKE_PREFIX_PATH.
+
+Or fetch the release tarball at configure time:
+    include(FetchContent)
+    FetchContent_Declare(rlmesh URL <tarball URL> URL_HASH SHA256=<its .sha256>)
+    FetchContent_MakeAvailable(rlmesh)
+    target_link_libraries(app PRIVATE rlmesh::rlmesh)
 
 ## pkg-config
     export PKG_CONFIG_PATH=<this>/lib/pkgconfig
@@ -112,6 +140,8 @@ Point -Drlmesh_DIR=<this>/lib/cmake/rlmesh, or add <this> to CMAKE_PREFIX_PATH.
   your binary or add <this>/lib.
 EOF
 
-# 8. Tar from \$out so the archive's single root is the versioned dir.
+# 9. Tar from \$out so the archive's single root is the versioned dir, plus the
+#    checksum a FetchContent URL_HASH pins.
 tar -C "$out" -czf "$out/$name.tar.gz" "$name"
+(cd "$out" && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
 echo "==> wrote $out/$name.tar.gz"

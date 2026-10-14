@@ -62,7 +62,7 @@ The publish job runs `release.py --publish-crates`, which publishes the crates i
 
 ## GitHub Releases
 
-Every release gets a GitHub Release built from its tag. Pre-releases (`-beta.N`, `-rc.N`) are marked `--prerelease` so they stay out of "Latest"; a final `X.Y.Z` release becomes Latest. `release.py` sets this automatically from the version string.
+Every release gets a GitHub Release built from its tag, with the C/C++ package (`rlmesh-X.Y.Z-x86_64-unknown-linux-gnu.tar.gz` and its `.sha256`, from `release:cxx:package` on the Linux wheel runner) attached. A re-run uploads only missing assets and never replaces one, since CMake `FetchContent` users pin the tarball's SHA-256. A break-glass `--github-release` needs `mise run release:cxx:package` run first. Pre-releases (`-beta.N`, `-rc.N`) are marked `--prerelease` so they stay out of "Latest"; a final `X.Y.Z` release becomes Latest. `release.py` sets this automatically from the version string.
 
 ## Post-publish smoke
 

@@ -25,12 +25,15 @@ Usage:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
+import tempfile
 import tomllib
+from collections.abc import Callable
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -173,16 +176,95 @@ def publish_crates(version: str) -> None:
     print(f"crates.io publish complete for {version}")
 
 
+def capi_tarballs(version: str) -> list[Path]:
+    """The C/C++ package tarballs `release:cxx:package` built for this version."""
+    pkg = ROOT / "target" / "capi-pkg"
+    tarballs = sorted(pkg.glob(f"rlmesh-{version}-*.tar.gz"))
+    if not tarballs:
+        sys.exit(
+            f"no C/C++ package for {version} in {pkg}: run `mise run release:cxx:package` "
+            "(CI downloads it from the wheels-linux job)"
+        )
+    return tarballs
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _checksum_path(tarball: Path) -> Path:
+    return tarball.with_name(tarball.name + ".sha256")
+
+
+def _write_checksum(tarball: Path, digest: str) -> Path:
+    checksum = _checksum_path(tarball)
+    checksum.write_text(f"{digest}  {tarball.name}\n", encoding="utf-8")
+    return checksum
+
+
+def capi_uploads(
+    tarball: Path, present: set[str], fetch_published: Callable[[str], Path]
+) -> list[Path]:
+    """What a re-run uploads for one tarball so the release's tarball and checksum agree.
+
+    A published tarball is never replaced (FetchContent users pin its SHA-256), and
+    this run's tarball is a rebuild whose bytes can differ (archive timestamps), so
+    a missing half is derived from the published half, never from the rebuild.
+    """
+    checksum = _checksum_path(tarball)
+    has_tarball, has_checksum = tarball.name in present, checksum.name in present
+    if has_tarball and has_checksum:
+        return []
+    if has_tarball:
+        return [_write_checksum(tarball, _sha256(fetch_published(tarball.name)))]
+    if has_checksum:
+        published = fetch_published(checksum.name).read_text(encoding="utf-8").split()[0]
+        if published != _sha256(tarball):
+            # Nobody can have fetched a tarball that was never published, so the
+            # orphan checksum is safe to delete.
+            sys.exit(
+                f"{checksum.name} on the release does not describe this build's "
+                f"{tarball.name}: delete that asset and re-run, so both come from one build"
+            )
+        return [tarball]
+    return [tarball, _write_checksum(tarball, _sha256(tarball))]
+
+
 def github_release(version: str) -> None:
     tag = f"v{version}"
+    tarballs = capi_tarballs(version)
     if (
         subprocess.run(
             ["gh", "release", "view", tag], cwd=ROOT, capture_output=True
         ).returncode
         == 0
     ):
+        # Re-run after a partial failure: attach only what is missing.
+        present = set(
+            out(
+                "gh", "release", "view", tag, "--json", "assets", "-q", ".assets[].name"
+            ).split()
+        )
+        with tempfile.TemporaryDirectory() as downloads:
+
+            def fetch_published(name: str) -> Path:
+                run("gh", "release", "download", tag, "--pattern", name, "--dir", downloads)
+                return Path(downloads) / name
+
+            missing = [
+                str(asset)
+                for tarball in tarballs
+                for asset in capi_uploads(tarball, present, fetch_published)
+            ]
+        if missing:
+            run("gh", "release", "upload", tag, *missing)
         print(f"skip: GitHub Release {tag} already exists")
         return
+    assets = [
+        str(asset)
+        for tarball in tarballs
+        for asset in (tarball, _write_checksum(tarball, _sha256(tarball)))
+    ]
     args = [
         "gh",
         "release",
@@ -195,7 +277,7 @@ def github_release(version: str) -> None:
     ]
     if is_prerelease(version):
         args.append("--prerelease")
-    run(*args)
+    run(*args, *assets)
     print(f"cut GitHub Release {tag}")
 
 
@@ -207,7 +289,38 @@ def selfcheck() -> None:
         re.DOTALL | re.MULTILINE,
     )
     assert "http" not in m.group(1), "changelog_section leaked link-reference lines"
+    _selfcheck_capi_uploads()
     print("release self-check passed")
+
+
+def _selfcheck_capi_uploads() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        tarball = root / "rlmesh-1.0.0-x.tar.gz"
+        tarball.write_bytes(b"rebuilt bytes")
+        published = root / "published"
+        published.mkdir()
+        (published / tarball.name).write_bytes(b"published bytes")
+        (published / f"{tarball.name}.sha256").write_text(f"{'0' * 64}  {tarball.name}\n")
+
+        def fetch(name: str) -> Path:
+            return published / name
+
+        name, checksum = tarball.name, f"{tarball.name}.sha256"
+        assert capi_uploads(tarball, {name, checksum}, fetch) == []
+        # Tarball published, checksum lost: the checksum describes the published bytes.
+        (uploaded,) = capi_uploads(tarball, {name}, fetch)
+        assert uploaded.read_text().split()[0] == hashlib.sha256(b"published bytes").hexdigest()
+        # Checksum published for other bytes: refuse rather than pair it with a rebuild.
+        try:
+            capi_uploads(tarball, {checksum}, fetch)
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("a mismatched published checksum must be refused")
+        both = capi_uploads(tarball, set(), fetch)
+        assert both[0] == tarball
+        assert both[1].read_text().split()[0] == hashlib.sha256(b"rebuilt bytes").hexdigest()
 
 
 def main() -> None:
