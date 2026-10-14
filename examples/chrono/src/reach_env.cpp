@@ -224,8 +224,8 @@ rlmesh::Result<std::optional<rlmesh::Value>> IndustrialReach::render() {
 }
 
 void IndustrialReach::close() {
-  std::printf("closing after %d episodes\n", episodes_);
-  std::fflush(stdout);
+  // stderr: close also runs for `--describe`, whose stdout is the label JSON.
+  std::fprintf(stderr, "closing after %d episodes\n", episodes_);
   robot_.reset();
   system_.reset();
 }

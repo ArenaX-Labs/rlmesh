@@ -528,9 +528,16 @@ typedef struct RLMeshResetArgs {
   const char* options_json; /* every reset option as a JSON object; NULL = none */
 } RLMeshResetArgs;
 
-/* What `reset` / `step` write. `observation` is OWNED (the capi takes it).
- * `info_json` is a borrowed JSON object (NULL = none) that must stay valid
- * until the callback's next call on this env (e.g. a std::string member). */
+/* What `reset` / `step` write. `observation` is OWNED: the capi takes and
+ * frees whatever it holds when the callback returns, even when the callback
+ * returns nonzero, so a callback that frees it on an error path must set it
+ * back to NULL. It must be a value the callback owns (from a constructor),
+ * never a borrowed one such as the step's action or a rlmesh_value_tuple_get /
+ * rlmesh_value_dict_get child: freeing that is undefined behaviour. There is no
+ * value copy function; build a fresh value with the constructors (e.g.
+ * rlmesh_value_as_tensor + rlmesh_value_box copies a Box). `info_json` is a
+ * borrowed JSON object (NULL = none) that must stay valid until the callback's
+ * next call on this env (e.g. a std::string member). */
 typedef struct RLMeshResetResult {
   RLMeshValue* observation;
   const char* info_json;
@@ -560,7 +567,18 @@ typedef struct RLMeshStepResult {
  * reset opens a new one, and the env keeps serving). `step` gets the action
  * borrowed (NULL when the request carries none). `render` writes an OWNED uint8
  * image value of shape [H, W, 3], [H, W, 4] or [H, W] (or leaves it NULL for no
- * frame); the capi PNG-encodes it. `close` fires once, when the server stops. */
+ * frame); the capi PNG-encodes it. `close` fires once per lane: when the server
+ * stops, or in rlmesh_env_free for an env that never served.
+ *
+ * Out-parameter ownership: the capi takes ownership of any value left in an
+ * out-parameter (`out->observation`, `*out_frame`) when the callback returns,
+ * WHETHER OR NOT it returns 0. A callback that fails after building a value
+ * either leaves it for the capi to free or frees it itself and sets the field
+ * back to NULL; freeing it without clearing the field is a double free. Never
+ * return a borrowed value (the step's action, a rlmesh_value_tuple_get /
+ * rlmesh_value_dict_get / rlmesh_value_dict_get_at child) as an observation or
+ * frame: the capi frees it, which is undefined behaviour. Build an owned copy
+ * with the constructors instead (no value copy function exists). */
 typedef struct RLMeshEnvVtable {
   size_t struct_size;
   int (*reset)(void* user_data, const RLMeshResetArgs* args, RLMeshResetResult* out);
@@ -757,7 +775,9 @@ RLMESH_API RLMeshStatus rlmesh_env_new_lanes(const RLMeshEnvVtable* vtable,
  * serving yet; once per handle. `out_address` (may be NULL) receives the
  * resolved address, e.g. the OS-assigned port for port 0 (UTF-8, not
  * NUL-terminated; free with rlmesh_bytes_free). `options` may be NULL;
- * `predict_concurrency` and `close_timeout_ms` do not apply to an env. */
+ * `predict_concurrency` and `close_timeout_ms` do not apply to an env. A failed
+ * bind (an address in use, a bad RLMESH_ENV_ENDPOINT_TOKEN) leaves the handle
+ * as it was: bind may be retried, and `close` still runs once per lane. */
 RLMESH_API RLMeshStatus rlmesh_env_bind(RLMeshEnv* env, const char* bind_address,
                                         const RLMeshServeOptions* options,
                                         RLMeshBytes* out_address);
@@ -789,7 +809,11 @@ RLMESH_API RLMeshStatus rlmesh_env_serve(RLMeshEnv* env);
 RLMESH_API void rlmesh_env_cancel(RLMeshEnv* env);
 
 /* Free an env handle; not from inside its own callbacks. NULL is a no-op. Like
- * rlmesh_env_serve, it returns only once no callback is running or can run. */
+ * rlmesh_env_serve, it returns only once no callback is running or can run.
+ * For a handle that never served it runs each lane's `close` first: a bound
+ * one stops its server (closing on the lane threads), an unbound one (a failed
+ * bind included) closes on the calling thread. `close` runs once per lane over
+ * the handle's life; `user_data` may be freed once this returns. */
 RLMESH_API void rlmesh_env_free(RLMeshEnv* env);
 
 #ifdef __cplusplus

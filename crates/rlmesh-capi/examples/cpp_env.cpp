@@ -34,6 +34,10 @@ constexpr const char* kTags = R"({
 
 class PointReach : public rlmesh::Environment {
  public:
+  // `close` runs even for an env that never served (e.g. `--describe`), whose
+  // stdout must be the label JSON alone.
+  explicit PointReach(bool announce_close) : announce_close_(announce_close) {}
+
   rlmesh::Result<rlmesh::ResetOutput> reset(const rlmesh::ResetArgs& args) override {
     step_ = 0;
     pos_ = {0.0f, 0.0f, 0.0f};
@@ -72,11 +76,14 @@ class PointReach : public rlmesh::Environment {
   }
 
   void close() override {
+    if (!announce_close_) return;
     std::printf("env closed\n");
     std::fflush(stdout);
   }
 
  private:
+  bool announce_close_;
+
   float distance() const {
     float sum = 0;
     for (int i = 0; i < 3; ++i) sum += (pos_[i] - target_[i]) * (pos_[i] - target_[i]);
@@ -170,12 +177,13 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "invalid env config: %s\n", env_config.error().message().c_str());
     return 1;
   }
-  auto server = rlmesh::EnvServer::create(std::make_unique<PointReach>(), *env_config);
+  const bool describe = address == "--describe";
+  auto server = rlmesh::EnvServer::create(std::make_unique<PointReach>(!describe), *env_config);
   if (!server) {
     std::fprintf(stderr, "failed to create env: %s\n", server.error().message().c_str());
     return 1;
   }
-  if (address == "--describe") {
+  if (describe) {
     auto description = server->describe_json();
     if (!description) {
       std::fprintf(stderr, "describe failed: %s\n", description.error().message().c_str());
