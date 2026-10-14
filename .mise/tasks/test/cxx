@@ -80,7 +80,7 @@ done
 
 echo "==> C config helper detects a C++17 translation unit"
 $CXX -std=c++17 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" -x c++ \
-  crates/rlmesh-capi/examples/c_env.c -x none "${link[@]}" -o "$tmp/c_header_cpp"
+  crates/rlmesh-capi/examples/c_env.c "${link[@]}" -o "$tmp/c_header_cpp"
 "$tmp/c_header_cpp" | python scripts/check-native-runtime.py c++ 17
 
 echo "==> legacy C++ empty declaration equals the old C ABI output byte-for-byte"
