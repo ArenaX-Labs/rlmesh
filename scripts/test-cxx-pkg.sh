@@ -2,8 +2,8 @@
 # Builds the native examples against the INSTALLED package: a consumer that
 # knows only the unpacked tarball runs cpp_model over real gRPC and checks the
 # C and C++ env describe runtimes. Local/release check — deliberately not in the `test` /
-# `check` aggregates. The pkg-config leg always runs; find_package runs if cmake
-# is on PATH.
+# `check` aggregates. The pkg-config leg always runs; the find_package and
+# FetchContent legs run if cmake is on PATH.
 set -euo pipefail
 
 CC="${CC:-zig cc}"
@@ -47,6 +47,19 @@ if command -v cmake >/dev/null 2>&1; then
   echo "==> cmake find_package: native env describe runtimes"
   "$tmp/build/cpp_env" --describe | python scripts/check-native-runtime.py c++ 17
   "$tmp/build/c_env" | python scripts/check-native-runtime.py c 11
+
+  # 5. FetchContent leg: the tarball by URL and its published checksum, the way a
+  #    project pinning a release consumes it. No CMAKE_BUILD_RPATH: CMake's own
+  #    build rpath must find the fetched .so.
+  echo "==> cmake FetchContent: configure + build native examples from the tarball URL"
+  sha="$(cut -d' ' -f1 "$tarball.sha256")"
+  cmake -S crates/rlmesh-capi/examples/consumer -B "$tmp/build-fetch" \
+    -DRLMESH_PACKAGE_URL="file://$PWD/$tarball" -DRLMESH_PACKAGE_SHA256="$sha" \
+    -DCMAKE_C_COMPILER="${CC// /;}" -DCMAKE_CXX_COMPILER="${CXX// /;}" >/dev/null
+  cmake --build "$tmp/build-fetch" >/dev/null
+  echo "==> cmake FetchContent: end-to-end vs a live env"
+  target/debug/e2e_harness "$tmp/build-fetch/cpp_model"
+  "$tmp/build-fetch/c_env" | python scripts/check-native-runtime.py c 11
 else
   echo "==> cmake not found — skipping find_package leg (pkg-config leg proved the package)"
 fi

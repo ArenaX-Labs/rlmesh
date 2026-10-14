@@ -173,14 +173,39 @@ def publish_crates(version: str) -> None:
     print(f"crates.io publish complete for {version}")
 
 
+def capi_assets(version: str) -> list[Path]:
+    """The C/C++ package tarballs (and checksums) `release:cxx:package` built for this version."""
+    pkg = ROOT / "target" / "capi-pkg"
+    assets = sorted(pkg.glob(f"rlmesh-{version}-*.tar.gz")) + sorted(
+        pkg.glob(f"rlmesh-{version}-*.tar.gz.sha256")
+    )
+    if not assets:
+        sys.exit(
+            f"no C/C++ package for {version} in {pkg}: run `mise run release:cxx:package` "
+            "(CI downloads it from the wheels-linux job)"
+        )
+    return assets
+
+
 def github_release(version: str) -> None:
     tag = f"v{version}"
+    assets = capi_assets(version)
     if (
         subprocess.run(
             ["gh", "release", "view", tag], cwd=ROOT, capture_output=True
         ).returncode
         == 0
     ):
+        # Re-run after a partial failure: attach only what is missing. A published
+        # tarball is never replaced, since FetchContent users pin its SHA-256.
+        present = set(
+            out(
+                "gh", "release", "view", tag, "--json", "assets", "-q", ".assets[].name"
+            ).split()
+        )
+        missing = [str(a) for a in assets if a.name not in present]
+        if missing:
+            run("gh", "release", "upload", tag, *missing)
         print(f"skip: GitHub Release {tag} already exists")
         return
     args = [
@@ -195,7 +220,7 @@ def github_release(version: str) -> None:
     ]
     if is_prerelease(version):
         args.append("--prerelease")
-    run(*args)
+    run(*args, *(str(a) for a in assets))
     print(f"cut GitHub Release {tag}")
 
 

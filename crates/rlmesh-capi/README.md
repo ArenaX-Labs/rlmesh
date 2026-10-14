@@ -89,6 +89,41 @@ int main(void) {
 }
 ```
 
+## Using it from CMake
+
+Each GitHub Release from 0.1.1 on carries a prebuilt package,
+`rlmesh-<version>-x86_64-unknown-linux-gnu.tar.gz` (Linux x86_64, glibc 2.34 or
+newer), and its `.sha256`. It holds both headers, the shared and static
+libraries, and CMake and pkg-config metadata, so no Rust toolchain is needed.
+
+Fetch it at configure time:
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(rlmesh
+  URL https://github.com/ArenaX-Labs/rlmesh/releases/download/v0.1.1/rlmesh-0.1.1-x86_64-unknown-linux-gnu.tar.gz
+  URL_HASH SHA256=<the release's .sha256>
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+FetchContent_MakeAvailable(rlmesh)
+
+target_link_libraries(my_sim PRIVATE rlmesh::rlmesh)
+```
+
+Or unpack it anywhere and use `find_package`:
+
+```cmake
+find_package(rlmesh CONFIG REQUIRED)  # -Drlmesh_DIR=<unpacked>/lib/cmake/rlmesh
+target_link_libraries(my_sim PRIVATE rlmesh::rlmesh)
+```
+
+`rlmesh::rlmesh` links the shared library, which CMake's build rpath finds;
+install your binary beside it or set an install rpath. `rlmesh::rlmesh_static`
+is for fully static targets with no other Rust library linked in. The package
+version is the ABI generation (`RLMESH_ABI_VERSION`), so
+`find_package(rlmesh 4)` refuses a package of another ABI generation; call
+`rlmesh_abi_check()` at startup to catch a header and library from different
+releases.
+
 ## Model contract
 
 `predict` receives `num_envs` decoded observation values (one per sub-env) plus
@@ -309,6 +344,7 @@ not currently emit a describe envelope and have no model config to extend.
   the C++ env with a model (`e2e_env_harness`), and check C11/C17 and C++17/C++20
   describe runtimes and byte-for-byte legacy defaults.
 - `mise run test:cxx:pkg` — package (`release:cxx:package`) and build the C++
-  model against the installed package via pkg-config and CMake `find_package`,
-  plus both native env describe runtimes through the CMake consumer.
+  model against the installed package via pkg-config, CMake `find_package`, and
+  CMake `FetchContent` from the tarball URL, plus the native env describe
+  runtimes through the CMake consumer.
 - `mise run fmt:cxx` — clang-format the headers and examples.
