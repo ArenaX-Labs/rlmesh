@@ -34,7 +34,7 @@ int main(void) {
     fprintf(stderr, "create failed: %s\n", rlmesh_last_error_message());
     return 1;
   }
-  RLMeshBytes description = {0};
+  RLMeshBytes description = {NULL, 0, 0};
   status = rlmesh_env_describe_json(env, &description);
   if (status == RLMESH_OK) {
     fwrite(description.data, 1, description.len, stdout);

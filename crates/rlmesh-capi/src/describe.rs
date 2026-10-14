@@ -34,30 +34,72 @@ pub(crate) fn host_runtime(text: &str) -> Result<Value, CapiError> {
     let object = value
         .as_object()
         .ok_or_else(|| invalid("expected a JSON object".into()))?;
+    let non_empty = |value: &Value, field: &str| {
+        value
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| invalid(format!("{field} must be a non-empty string")))
+    };
+    let mut normalized = serde_json::Map::new();
     for (key, value) in object {
-        match key.as_str() {
-            "language" | "language_version" => {
-                if value.as_str().is_none_or(|s| s.trim().is_empty()) {
-                    return Err(invalid(format!("{key} must be a non-empty string")));
-                }
-            }
+        let value = match key.as_str() {
+            "language" | "language_version" => Value::String(non_empty(value, key)?),
             "framework_versions" => {
                 let versions = value
                     .as_object()
                     .ok_or_else(|| invalid("framework_versions must be an object".into()))?;
-                if versions.iter().any(|(name, version)| {
-                    name.trim().is_empty() || version.as_str().is_none_or(|s| s.trim().is_empty())
-                }) {
+                let mut normalized_versions = serde_json::Map::new();
+                for (name, version) in versions {
+                    let name = name.trim();
+                    if name.is_empty() {
+                        return Err(invalid("framework names must be non-empty".into()));
+                    }
+                    let version = non_empty(version, "framework version")?;
+                    if normalized_versions
+                        .insert(name.to_owned(), Value::String(version))
+                        .is_some()
+                    {
+                        return Err(invalid(format!(
+                            "duplicate framework name {name:?} after trimming"
+                        )));
+                    }
+                }
+                Value::Object(normalized_versions)
+            }
+            "toolchain" => {
+                let toolchain = value
+                    .as_object()
+                    .ok_or_else(|| invalid("toolchain must be an object".into()))?;
+                if toolchain.len() != 2
+                    || !toolchain.contains_key("name")
+                    || !toolchain.contains_key("version")
+                {
                     return Err(invalid(
-                        "framework_versions must map non-empty names to non-empty version strings"
-                            .into(),
+                        "toolchain must contain only name and version".into(),
                     ));
                 }
+                let name = non_empty(&toolchain["name"], "toolchain.name")?;
+                let version = non_empty(&toolchain["version"], "toolchain.version")?;
+                if !matches!(name.as_str(), "gcc" | "clang" | "msvc") {
+                    return Err(invalid("toolchain.name must be gcc, clang or msvc".into()));
+                }
+                if !version.split_once('.').is_some_and(|(major, minor)| {
+                    !major.is_empty()
+                        && !minor.is_empty()
+                        && major.bytes().all(|b| b.is_ascii_digit())
+                        && minor.bytes().all(|b| b.is_ascii_digit())
+                }) {
+                    return Err(invalid("toolchain.version must be major.minor".into()));
+                }
+                json!({"name": name, "version": version})
             }
             _ => return Err(invalid(format!("unknown field {key:?}"))),
-        }
+        };
+        normalized.insert(key.clone(), value);
     }
-    Ok(value)
+    Ok(Value::Object(normalized))
 }
 
 /// An env's describe envelope: built at `rlmesh_env_new` with the build's own
@@ -169,7 +211,7 @@ pub(crate) fn envelope(
         pieces["variants"] = json!({"catalog": catalog});
     }
     build_describe_envelope("env", &pieces.to_string(), None)
-        .map_err(|err| CapiError::internal(format!("invalid describe envelope: {err}")))
+        .map_err(|err| CapiError::invalid_arg(format!("invalid describe envelope: {err}")))
 }
 
 /// Write the env's describe envelope (UTF-8 JSON, not NUL-terminated) to `out`;
@@ -300,7 +342,7 @@ mod tests {
     #[test]
     fn host_runtime_overrides_only_declared_fields_and_survives_bind() {
         let runtime = host_runtime(
-            r#"{"language":"c++","language_version":"20","framework_versions":{"clang":"19.1"}}"#,
+            r#"{"language":"c++","language_version":"20","toolchain":{"name":"clang","version":"19.1"}}"#,
         )
         .unwrap_or_else(|err| panic!("{}", err.message));
         let describe = Describe::new(&contract(None), None, Some(runtime))
@@ -312,8 +354,8 @@ mod tests {
             assert_eq!(value["runtime"]["language"], "c++");
             assert_eq!(value["runtime"]["language_version"], "20");
             assert_eq!(
-                value["runtime"]["framework_versions"],
-                json!({"clang":"19.1"})
+                value["runtime"]["toolchain"],
+                json!({"name":"clang","version":"19.1"})
             );
             assert_eq!(value["runtime"]["component"], COMPONENT);
             assert_eq!(
@@ -387,6 +429,16 @@ mod tests {
         bound: f64,
         catalog: Option<&str>,
         runtime: Option<&str>,
+        old_config: bool,
+    ) -> Result<*mut RLMeshEnv, RLMeshStatus> {
+        native_env_runtime_bytes(id, bound, catalog, runtime.map(str::as_bytes), old_config)
+    }
+
+    fn native_env_runtime_bytes(
+        id: &str,
+        bound: f64,
+        catalog: Option<&str>,
+        runtime: Option<&[u8]>,
         old_config: bool,
     ) -> Result<*mut RLMeshEnv, RLMeshStatus> {
         use std::ffi::CString;
@@ -602,7 +654,7 @@ mod tests {
             1.0,
             None,
             Some(
-                r#"{"language":"c++","language_version":"17","framework_versions":{"gcc":"14.2"}}"#,
+                r#"{"language":"c++","language_version":"17","toolchain":{"name":"gcc","version":"14.2"}}"#,
             ),
             false,
         )
@@ -612,7 +664,7 @@ mod tests {
             1.0,
             None,
             Some(
-                r#"{"language":"c","language_version":"11","framework_versions":{"clang":"19.1"}}"#,
+                r#"{"language":"c","language_version":"11","toolchain":{"name":"clang","version":"19.1"}}"#,
             ),
             false,
         )
@@ -625,8 +677,8 @@ mod tests {
         assert_eq!(before["runtime"]["language"], "c++");
         assert_eq!(before["runtime"]["language_version"], "17");
         assert_eq!(
-            before["runtime"]["framework_versions"],
-            json!({"gcc":"14.2"})
+            before["runtime"]["toolchain"],
+            json!({"name":"gcc","version":"14.2"})
         );
         bind(cpp, "127.0.0.1:0", rlmesh::CURRENT_WORKFLOW_EDITION).expect("bind C++ env");
         assert_eq!(
@@ -656,10 +708,34 @@ mod tests {
             r#"{"language_version":null}"#,
             r#"{"component":"host"}"#,
             r#"{"package_version":"1"}"#,
+            r#"{"os":"host"}"#,
+            r#"{"arch":"host"}"#,
+            r#"{"protocol_generation":"host"}"#,
+            r#"{"supported_workflow_editions":[]}"#,
+            r#"{"preferred_workflow_edition":"host"}"#,
+            r#"{"workflow_edition_error":"host"}"#,
+            r#"{"toolchain":[]}"#,
+            r#"{"toolchain":{}}"#,
+            r#"{"toolchain":{"name":"gcc"}}"#,
+            r#"{"toolchain":{"version":"16.2"}}"#,
+            r#"{"toolchain":{"name":"gcc","version":"16.2","extra":"x"}}"#,
+            r#"{"toolchain":{"name":42,"version":"16.2"}}"#,
+            r#"{"toolchain":{"name":"gcc","version":42}}"#,
+            r#"{"toolchain":{"name":" ","version":"16.2"}}"#,
+            r#"{"toolchain":{"name":"gcc","version":" "}}"#,
+            r#"{"toolchain":{"name":"unknown","version":"16.2"}}"#,
+            r#"{"toolchain":{"name":"gcc","version":"16"}}"#,
+            r#"{"toolchain":{"name":"gcc","version":"16.2.1"}}"#,
+            r#"{"toolchain":{"name":"gcc","version":"16.x"}}"#,
+            r#"{"toolchain":{"name":"gcc","version":".2"}}"#,
+            r#"{"toolchain":{"name":"gcc","version":"16."}}"#,
+            r#"{"framework_versions":{"torch":"1"," torch ":"2"}}"#,
             r#"{"framework_versions":[]}"#,
             r#"{"framework_versions":{"gcc":14}}"#,
             r#"{"framework_versions":{"":"1"}}"#,
             r#"{"framework_versions":{"gcc":""}}"#,
+            r#"{"framework_versions":{"  ":"1"}}"#,
+            r#"{"framework_versions":{"gcc":"  "}}"#,
         ] {
             assert_eq!(
                 native_env_runtime("Bad-v0", 1.0, None, Some(bad), false).err(),
@@ -667,6 +743,40 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn host_runtime_trims_all_declared_strings() {
+        use crate::env::rlmesh_env_free;
+
+        let env = native_env_runtime("Trim-v0", 1.0, None, Some(
+            r#"{"language":" c++ ","language_version":" 17 ","framework_versions":{" torch ":" 2.1 "},"toolchain":{"name":" gcc ","version":" 16.2 "}}"#
+        ), false).expect("trimmed declaration");
+        let runtime = &describe_json(env)["runtime"];
+        assert_eq!(runtime["language"], "c++");
+        assert_eq!(runtime["language_version"], "17");
+        assert_eq!(runtime["framework_versions"], json!({"torch":"2.1"}));
+        assert_eq!(runtime["toolchain"], json!({"name":"gcc","version":"16.2"}));
+        unsafe { rlmesh_env_free(env) };
+    }
+
+    #[test]
+    fn c_config_refuses_invalid_utf8_and_oversized_declarations() {
+        assert_eq!(
+            native_env_runtime_bytes("Bad-v0", 1.0, None, Some(b"\xff"), false).err(),
+            Some(RLMeshStatus::InvalidArgument)
+        );
+        let big = "x".repeat(4 * 1024 * 1024);
+        let runtime = json!({"framework_versions":{"torch":big}}).to_string();
+        assert_eq!(
+            native_env_runtime("Big-v0", 1.0, None, Some(&runtime), false).err(),
+            Some(RLMeshStatus::InvalidArgument)
+        );
+        let catalog = json!([{"id":"big","metadata":{"data":big}}]).to_string();
+        assert_eq!(
+            native_env_with("Big-v0", 1.0, Some(&catalog)).err(),
+            Some(RLMeshStatus::InvalidArgument)
+        );
     }
 
     #[test]

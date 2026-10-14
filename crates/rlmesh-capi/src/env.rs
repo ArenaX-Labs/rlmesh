@@ -146,7 +146,7 @@ pub struct RLMeshEnvConfig {
     /// envelope's `variants.catalog`: a JSON array of `{"id", "params",
     /// "metadata"}` with unique ids. NULL = none.
     pub variants_catalog_json: *const c_char,
-    /// Host language, language_version and compiler framework_versions JSON.
+    /// Host language, language_version, frameworks and toolchain JSON.
     /// NULL or outside struct_size = legacy runtime. Copied at creation.
     pub host_runtime_json: *const c_char,
 }

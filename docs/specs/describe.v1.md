@@ -84,6 +84,10 @@ _format_ is shared.
 }
 ```
 
+- Native C ABI hosts may also report `runtime.toolchain`, an object with exactly
+  `name` (`gcc`, `clang`, or `msvc`) and `version` (a `major.minor` string), such
+  as `{"name": "gcc", "version": "16.2"}`. This identifies the host compiler;
+  `framework_versions` remains reserved for frameworks the host declares.
 - `runtime` is the machine and rlmesh build that generated the envelope: the
   advisory `PeerInfo` fields (language, versions, `os`, `arch`, framework
   versions) plus the **edition handshake** the served peer will send, under the
