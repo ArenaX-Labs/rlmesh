@@ -980,3 +980,78 @@ def test_check_fails_a_contract_branch_without_tags() -> None:
     failed = _failed(_UntaggedBranchFactory)
     assert any("default branch has no tags" in m for m in failed), failed
     assert sum("branch has no tags" in m for m in failed) == 4, failed
+
+
+class _BrokenBranchTagsFactory(_BranchedFactory):
+    """``tags_for`` raises on the ``abs`` branches, so the envelope badges them.
+
+    Armed after the class statement: authoring calls ``tags_for`` on every
+    branch at class creation, and describe must meet the failure instead.
+    """
+
+    broken = False
+
+    @classmethod
+    def tags_for(cls, **params: Any) -> Any:
+        if cls.broken and params["action_type"] == "abs":
+            raise RuntimeError("abs tags need the calibration file")
+        return _BRANCH_DELTA
+
+
+_BrokenBranchTagsFactory.broken = True
+
+
+def test_check_fails_a_contract_branch_whose_tags_are_a_badge() -> None:
+    from rlmesh._describe import check_target
+
+    failed = _failed(_BrokenBranchTagsFactory)
+    assert len(failed) == 2, failed  # the two abs branches (widths 256, 128)
+    assert all(
+        "'action_type': 'abs'" in m
+        and "tags could not be read (abs tags need the calibration file)" in m
+        for m in failed
+    ), failed
+    # Failed once, not repeated as a best-effort badge warning. (Building the
+    # branch's env also calls tags_for, so its env_spec badge does warn.)
+    warnings = check_target(_BrokenBranchTagsFactory).warnings
+    assert not any(".env_tags" in w for w in warnings), warnings
+
+
+def _half_bounded_tags(positive_range: tuple[float, float] | None = None) -> Any:
+    import rlmesh.adapters as adapt
+
+    return adapt.EnvTags(
+        observation={
+            "cart": adapt.StateTag("x/cart"),
+            "positive": adapt.StateTag("x/positive", range=positive_range),
+        },
+        action=adapt.Action(adapt.Actuator(role=None, dim=1)),
+    )
+
+
+class _HalfBoundedTaggedFactory(_HalfBoundedFactory):
+    tags = _half_bounded_tags()
+
+
+def test_check_joins_partly_infinite_box_bounds() -> None:
+    # The envelope writes the infinite edges of the nested Dict's Boxes as null;
+    # check reads them as -inf/+inf, as rlmesh.serve does, and passes the tags.
+    assert _failed(_HalfBoundedTaggedFactory) == []
+
+
+def test_envelope_bounds_join_like_the_live_spaces() -> None:
+    import json
+
+    from rlmesh._rlmesh import adapters_join_check
+
+    live = _HalfBoundedEnv()
+    spaces = rlmesh.describe(_HalfBoundedTaggedFactory)["env_spec"]
+    for tags in (_half_bounded_tags(), _half_bounded_tags((0.0, 5.0))):
+        tags_json = json.dumps(tags.to_dict())
+        from_envelope = adapters_join_check(
+            tags_json, spaces["observation_space"], spaces["action_space"]
+        )
+        from_live = adapters_join_check(
+            tags_json, live.observation_space, live.action_space
+        )
+        assert [str(a) for a in from_envelope] == [str(a) for a in from_live]

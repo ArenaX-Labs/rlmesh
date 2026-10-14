@@ -856,12 +856,25 @@ fn envelope_space_view(space: &Bound<'_, PyDict>) -> PyResult<SpaceView> {
         Some(details) if !details.is_none() => details.cast_into::<PyDict>()?,
         _ => PyDict::new(space.py()),
     };
-    let bound = |key: &str| -> PyResult<Option<Vec<f64>>> {
+    // The envelope renders a non-finite edge as `null` (strict JSON), so a
+    // present-but-null edge, uniform or elementwise, is the infinity `unbounded`
+    // stands for on that side: the bounds `rlmesh.serve` joins against. Only an
+    // absent key (an `unbounded` Box) means no bounds at all.
+    let bound = |key: &str, infinity: f64| -> PyResult<Option<Vec<f64>>> {
         match details.get_item(key)? {
-            Some(value) if kind == SpaceViewKind::Box && !value.is_none() => {
+            Some(value) if kind == SpaceViewKind::Box => {
+                if value.is_none() {
+                    return Ok(Some(vec![infinity]));
+                }
                 match value.extract::<f64>() {
                     Ok(uniform) => Ok(Some(vec![uniform])),
-                    Err(_) => value.extract().map(Some),
+                    Err(_) => Ok(Some(
+                        value
+                            .extract::<Vec<Option<f64>>>()?
+                            .into_iter()
+                            .map(|edge| edge.unwrap_or(infinity))
+                            .collect(),
+                    )),
                 }
             }
             _ => Ok(None),
@@ -884,8 +897,8 @@ fn envelope_space_view(space: &Bound<'_, PyDict>) -> PyResult<SpaceView> {
         kind,
         shape: required("shape")?.extract()?,
         dtype: required("dtype")?.extract()?,
-        low: bound("low")?,
-        high: bound("high")?,
+        low: bound("low", f64::NEG_INFINITY)?,
+        high: bound("high", f64::INFINITY)?,
         keys,
         children,
     })
