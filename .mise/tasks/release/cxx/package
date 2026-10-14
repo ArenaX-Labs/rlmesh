@@ -93,18 +93,20 @@ cp "$crate/packaging/rlmesh-config.cmake" "$stage/lib/cmake/rlmesh/"
 
 # 7. Root CMakeLists.txt, so FetchContent_MakeAvailable / add_subdirectory can
 #    consume the tarball by URL. It loads the same config find_package does, then
-#    promotes the imported targets to GLOBAL: a subdirectory's imported targets are
-#    otherwise invisible to the parent project that links them.
+#    promotes the imported targets it created to GLOBAL: a subdirectory's imported
+#    targets are otherwise invisible to the parent project that links them. A
+#    target that already existed (the parent's own find_package(rlmesh) or Threads)
+#    is already visible, and CMake refuses to promote it outside its directory.
 cat > "$stage/CMakeLists.txt" <<'EOF'
 cmake_minimum_required(VERSION 3.20)
-if(NOT TARGET Threads::Threads)
-  set(_rlmesh_promote_threads TRUE)
-endif()
+set(_rlmesh_created "")
+foreach(_rlmesh_target IN ITEMS Threads::Threads rlmesh::rlmesh rlmesh::rlmesh_static)
+  if(NOT TARGET ${_rlmesh_target})
+    list(APPEND _rlmesh_created ${_rlmesh_target})
+  endif()
+endforeach()
 include("${CMAKE_CURRENT_LIST_DIR}/lib/cmake/rlmesh/rlmesh-config.cmake")
-if(_rlmesh_promote_threads)
-  set_target_properties(Threads::Threads PROPERTIES IMPORTED_GLOBAL TRUE)
-endif()
-foreach(_rlmesh_target IN ITEMS rlmesh::rlmesh rlmesh::rlmesh_static)
+foreach(_rlmesh_target IN LISTS _rlmesh_created)
   if(TARGET ${_rlmesh_target})
     set_target_properties(${_rlmesh_target} PROPERTIES IMPORTED_GLOBAL TRUE)
   endif()

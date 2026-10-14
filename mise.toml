@@ -254,7 +254,11 @@ run = "cargo run --manifest-path python/rlmesh/rust/Cargo.toml --features stub-g
 # ──────────────────────────────────────────────
 [tasks."policy:check"]
 description = "Check rlmesh.toml, artifact versions, and compatibility constants"
-run = ["python scripts/check_rlmesh_policy.py --selfcheck", "python scripts/check_rlmesh_policy.py"]
+run = [
+  "python scripts/check_rlmesh_policy.py --selfcheck",
+  "python scripts/check_rlmesh_policy.py",
+  "python scripts/release.py --check",
+]
 
 [tasks."protocol:baseline-regen"]
 description = "Re-snapshot the frozen proto baseline for the current protocol generation"
