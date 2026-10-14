@@ -76,7 +76,7 @@ A version constraint is a string of comma-joined clauses that must all hold. Eac
 rlmesh registry publish ns/pi0:v3
 ```
 
-With no images named, `publish` reads `rlmesh.toml` in the current directory and builds each variant with `docker buildx build` for `linux/amd64`, from its `dockerfile` (default `Dockerfile`) and `context` (default the file's directory). It pushes each build as `ns/pi0:v3-<key>` (`ns/pi0:v3-cuda12`), with the declaration rendered into the build's `dev.rlmesh.package` label, then assembles the builds into one OCI image index, the version, tagged `ns/pi0:v3`. Its children are the builds; the per-build tags are only how they are handed over. Building and pushing authenticate the way `docker push` does; against the RLMesh platform's registry, run `rlmesh registry login` first.
+With no images named, `publish` reads `rlmesh.toml` in the current directory and builds each variant with `docker buildx build` for `linux/amd64`, from its `dockerfile` (default `Dockerfile`), `target` stage (default the last) and `context` (default the file's directory). It pushes each build as `ns/pi0:v3-<key>` (`ns/pi0:v3-cuda12`), with the declaration rendered into the build's `dev.rlmesh.package` label, then assembles the builds into one OCI image index, the version, tagged `ns/pi0:v3`. Its children are the builds; the per-build tags are only how they are handed over. Building and pushing authenticate the way `docker push` does; against the RLMesh platform's registry, run `rlmesh registry login` first.
 
 ### 5. A default build with fallback
 
@@ -123,6 +123,7 @@ The top level of `rlmesh.toml` is the image's `dev.rlmesh.package` label written
 | Key                     | Meaning                                                                                                                                |
 | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | `dockerfile`            | The Dockerfile to build, relative to `rlmesh.toml`. Default `Dockerfile`. A variant may set its own.                                   |
+| `target`                | The Dockerfile stage to build (`--target`). Default its last stage. A variant may set its own, so one Dockerfile can hold every build. |
 | `context`               | The build context, relative to `rlmesh.toml`. Default its directory. A variant may set its own.                                        |
 | `build_args.NAME`       | A string build argument. A variant's `build_args` add to the top level's, key by key, so one Dockerfile can serve every build.         |
 | `[variant.KEY]`         | One build, keyed `KEY`, in order: the first is the default.                                                                            |

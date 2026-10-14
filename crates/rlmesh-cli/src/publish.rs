@@ -146,6 +146,7 @@ fn publish_manifest(
                     "key": variant.key,
                     "tag": names[index],
                     "dockerfile": variant.dockerfile,
+                    "target": variant.target,
                     "context": variant.context,
                     "buildArgs": variant.build_args,
                     "label": variant.label,
@@ -816,6 +817,7 @@ uri = "hf://org/pi0"
 default = true
 
 [variant.cuda12]
+target = "cuda"
 build_args.TORCH_INDEX = "https://download.pytorch.org/whl/cu124"
 accel.vendor = "nvidia"
 accel.cuda = ">=12.4"
@@ -868,6 +870,11 @@ dockerfile = "Dockerfile.cpu"
             dir.path().join("Dockerfile").display().to_string()
         );
         assert_eq!(after("--platform"), "linux/amd64");
+        assert_eq!(after("--target"), "cuda");
+        assert!(
+            !builds[1].contains(&"--target".to_owned()),
+            "the cpu build takes the last stage"
+        );
         assert_eq!(
             after("--build-arg"),
             "TORCH_INDEX=https://download.pytorch.org/whl/cu124"
