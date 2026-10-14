@@ -199,19 +199,14 @@ impl<E: Environment> GrpcEnvServer<E> {
 }
 
 /// Build a tonic `EnvServiceServer` hosting `env`, with the RLMesh message-size
-/// limits applied.
+/// limits applied. Like every RLMesh server it refuses compressed requests
+/// (see [`crate::ACCEPTED_COMPRESSION`]) and answers uncompressed.
 pub fn env_service<E: Environment + 'static>(
     env: E,
 ) -> rlmesh_proto::env::v1::env_service_server::EnvServiceServer<GrpcEnvServer<E>> {
-    let service =
-        rlmesh_proto::env::v1::env_service_server::EnvServiceServer::new(GrpcEnvServer::new(env))
-            .max_decoding_message_size(crate::MAX_MESSAGE_SIZE)
-            .max_encoding_message_size(crate::MAX_MESSAGE_SIZE);
-    crate::ACCEPTED_COMPRESSION
-        .into_iter()
-        .fold(service, |service, encoding| {
-            service.accept_compressed(encoding)
-        })
+    rlmesh_proto::env::v1::env_service_server::EnvServiceServer::new(GrpcEnvServer::new(env))
+        .max_decoding_message_size(crate::MAX_MESSAGE_SIZE)
+        .max_encoding_message_size(crate::MAX_MESSAGE_SIZE)
 }
 
 #[doc(hidden)]
@@ -227,15 +222,15 @@ pub fn env_service_from_shared<E: Environment + 'static>(
     )
     .max_decoding_message_size(crate::MAX_MESSAGE_SIZE)
     .max_encoding_message_size(crate::MAX_MESSAGE_SIZE);
+    // Responses only: a request is never decompressed (see
+    // `crate::ACCEPTED_COMPRESSION`).
+    if !compress_responses {
+        return service;
+    }
     crate::ACCEPTED_COMPRESSION
         .into_iter()
         .fold(service, |service, encoding| {
-            let service = service.accept_compressed(encoding);
-            if compress_responses {
-                service.send_compressed(encoding)
-            } else {
-                service
-            }
+            service.send_compressed(encoding)
         })
 }
 
@@ -1645,8 +1640,9 @@ mod tests {
     }
 
     /// `compress_responses` compresses only for a client that advertises the
-    /// encoding; every server accepts compressed requests, and the RLMesh
-    /// client round-trips through a compressing server unchanged.
+    /// encoding, and the RLMesh client round-trips through a compressing server
+    /// unchanged. Requests are never compressed: see
+    /// `compressed_requests_are_refused_before_decompression`.
     #[tokio::test]
     async fn opted_in_server_compresses_responses_for_accepting_clients() {
         use crate::lifecycle::{ServeOptions, ShutdownTrigger};
@@ -1701,13 +1697,13 @@ mod tests {
         let (addr, _compressing) = serve(true);
         let mut accepting = raw_client(addr)
             .await
-            .accept_compressed(CompressionEncoding::Zstd)
-            .send_compressed(CompressionEncoding::Zstd);
+            .accept_compressed(CompressionEncoding::Zstd);
         let response = accepting.handshake(request()).await.expect("handshake");
         assert_eq!(encoding_of(&response).as_deref(), Some("zstd"));
         assert!(response.into_inner().env_contract.is_some());
 
-        // A client that never advertised an encoding is answered uncompressed.
+        // A client that never advertised an encoding, such as a wire-v1 client
+        // from before compression existed, is answered uncompressed.
         let mut plain = raw_client(addr).await;
         let response = plain.handshake(request()).await.expect("handshake");
         assert_eq!(encoding_of(&response), None);
@@ -1723,15 +1719,139 @@ mod tests {
         client.handshake().await.expect("handshake");
         client.reset(ResetRequest::default()).await.expect("reset");
 
-        // The default stays off even for a client that accepts compression,
-        // and still accepts a compressed request.
+        // The default stays off even for a client that accepts compression.
         let (addr, _default) = serve(false);
         let mut accepting = raw_client(addr)
             .await
-            .accept_compressed(CompressionEncoding::Zstd)
-            .send_compressed(CompressionEncoding::Gzip);
+            .accept_compressed(CompressionEncoding::Zstd);
         let response = accepting.handshake(request()).await.expect("handshake");
         assert_eq!(encoding_of(&response), None);
+    }
+
+    /// A zstd frame of a few KB that inflates past [`crate::MAX_MESSAGE_SIZE`].
+    /// It is built and checked in 1 MiB chunks, so the test itself never holds
+    /// the expanded bytes either.
+    fn zstd_bomb() -> Vec<u8> {
+        use std::io::Write;
+        const EXPANDED: usize = crate::MAX_MESSAGE_SIZE + (16 << 20);
+        let chunk = vec![0u8; 1 << 20];
+        let mut encoder = zstd::stream::write::Encoder::new(Vec::new(), 1).unwrap();
+        for _ in 0..EXPANDED / chunk.len() {
+            encoder.write_all(&chunk).unwrap();
+        }
+        let bomb = encoder.finish().unwrap();
+        let inflated = std::io::copy(
+            &mut zstd::stream::read::Decoder::new(bomb.as_slice()).unwrap(),
+            &mut std::io::sink(),
+        )
+        .unwrap();
+        assert_eq!(inflated, EXPANDED as u64);
+        assert!(bomb.len() < 64 << 10, "bomb is {} bytes", bomb.len());
+        bomb
+    }
+
+    /// POST one length-prefixed gRPC message with the compressed flag set and
+    /// the given `grpc-encoding`, and return the gRPC status the server sent
+    /// (a refusal arrives as a trailers-only response, in the headers).
+    async fn post_compressed(
+        addr: std::net::SocketAddr,
+        method: &str,
+        encoding: &str,
+        compressed: &[u8],
+    ) -> (String, String) {
+        use tower::ServiceExt;
+        let mut frame = Vec::with_capacity(5 + compressed.len());
+        frame.push(1);
+        frame.extend_from_slice(&u32::try_from(compressed.len()).unwrap().to_be_bytes());
+        frame.extend_from_slice(compressed);
+        let channel = loop {
+            match tonic::transport::Endpoint::from_shared(format!("http://{addr}"))
+                .unwrap()
+                .connect()
+                .await
+            {
+                Ok(channel) => break channel,
+                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+            }
+        };
+        let request = tonic::codegen::http::Request::post(format!("http://{addr}{method}"))
+            .header("content-type", "application/grpc")
+            .header("te", "trailers")
+            .header("grpc-encoding", encoding)
+            .body(tonic::body::Body::new(http_body_util::Full::new(
+                tonic::codegen::Bytes::from(frame),
+            )))
+            .unwrap();
+        let response =
+            tokio::time::timeout(std::time::Duration::from_secs(5), channel.oneshot(request))
+                .await
+                .expect("a refusal needs no body, so it is immediate")
+                .unwrap();
+        let header = |name: &str| {
+            response
+                .headers()
+                .get(name)
+                .map(|value| value.to_str().unwrap().to_string())
+                .unwrap_or_default()
+        };
+        (header("grpc-status"), header("grpc-message"))
+    }
+
+    /// A peer without the endpoint token cannot make a token-protected server
+    /// inflate a compressed request: tonic refuses an encoding the service did
+    /// not enable from the `grpc-encoding` header alone, before reading the
+    /// body and so before the token check, instead of decompressing a few KB
+    /// toward the 256 MB message cap. `UNIMPLEMENTED` (not `UNAUTHENTICATED`,
+    /// and not a message-size error) shows the body was never decoded.
+    #[tokio::test]
+    async fn compressed_requests_are_refused_before_decompression() {
+        use crate::lifecycle::{ServeOptions, ShutdownTrigger};
+
+        let bomb = zstd_bomb();
+        let serve = |service| {
+            let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let addr = listener.local_addr().unwrap();
+            drop(listener);
+            let server = tokio::spawn(
+                tonic::transport::Server::builder()
+                    .add_service(service)
+                    .serve(addr),
+            );
+            (addr, server)
+        };
+        let token_protected = |compress_responses| {
+            super::env_service_from_shared(
+                std::sync::Arc::new(ScriptedVectorEnv::handshake_only()),
+                ShutdownTrigger::new(),
+                ServeOptions {
+                    token: Some("secret-token".to_string()),
+                    compress_responses,
+                    ..ServeOptions::default()
+                },
+                None,
+            )
+        };
+        for (addr, server) in [
+            serve(token_protected(false)),
+            serve(token_protected(true)),
+            serve(super::env_service(ScriptedVectorEnv::handshake_only())),
+        ] {
+            for method in [
+                "/rlmesh.env.v1.EnvService/Handshake",
+                "/rlmesh.env.v1.EnvService/Join",
+            ] {
+                for encoding in ["zstd", "gzip"] {
+                    let (status, message) = post_compressed(addr, method, encoding, &bomb).await;
+                    assert_eq!(
+                        status,
+                        (tonic::Code::Unimplemented as i32).to_string(),
+                        "{method} {encoding}: {message}"
+                    );
+                    assert!(message.contains(encoding), "{message}");
+                }
+            }
+            server.abort();
+        }
     }
 
     #[tokio::test]

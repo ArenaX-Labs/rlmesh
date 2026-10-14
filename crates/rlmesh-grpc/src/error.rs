@@ -320,6 +320,11 @@ pub enum ClientError {
     /// Handshake not completed
     #[error("handshake not completed")]
     NotHandshaked,
+
+    /// The configured endpoint token cannot be sent as an `authorization`
+    /// header value. The message names the problem, never the token.
+    #[error("the endpoint token cannot be sent in the authorization header: it {0}")]
+    InvalidToken(&'static str),
 }
 
 /// Result type alias for rlmesh-grpc operations.

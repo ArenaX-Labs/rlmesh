@@ -198,7 +198,9 @@ where
     H: ModelHandler + 'static,
 {
     let declared_workflow_edition = declared_workflow_edition_of(&serve_options);
-    let service = ModelServiceServer::new(ServedModelServer {
+    // No `accept_compressed`: a compressed request is refused before it is
+    // decompressed, ahead of the token check (see `ACCEPTED_COMPRESSION`).
+    ModelServiceServer::new(ServedModelServer {
         handler,
         route_setup,
         route_configs: Arc::new(Mutex::new(HashMap::new())),
@@ -209,12 +211,7 @@ where
         declared_workflow_edition,
     })
     .max_decoding_message_size(rlmesh_grpc::MAX_MESSAGE_SIZE)
-    .max_encoding_message_size(rlmesh_grpc::MAX_MESSAGE_SIZE);
-    rlmesh_grpc::ACCEPTED_COMPRESSION
-        .into_iter()
-        .fold(service, |service, encoding| {
-            service.accept_compressed(encoding)
-        })
+    .max_encoding_message_size(rlmesh_grpc::MAX_MESSAGE_SIZE)
 }
 
 #[tonic::async_trait]

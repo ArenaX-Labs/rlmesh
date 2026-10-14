@@ -49,6 +49,9 @@ tonic-health = "0.14"
 tonic-prost = "0.14"
 tonic-prost-build = "0.14"
 hyper-util = "0.1"
+# Test-only: raw gRPC request bodies and a zstd decompression bomb.
+http-body-util = "0.1"
+zstd = "0.13"
 
 # Async Runtime
 async-trait = "0.1"

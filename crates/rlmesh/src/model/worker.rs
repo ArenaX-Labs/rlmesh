@@ -352,7 +352,10 @@ impl<H: ModelHandler + 'static> ModelWorker<H> {
     /// non-empty, otherwise from `options.token`, so auth configured either way
     /// is enforced. `RLMESH_MODEL_ENDPOINT_TOKEN`, when set, overrides both
     /// options. An empty, whitespace-only, or non-Unicode environment value
-    /// fails startup instead of disabling authentication. The token is captured
+    /// fails startup instead of disabling authentication, as does a token that
+    /// cannot travel in an HTTP header value (leading or trailing whitespace
+    /// such as a secret file's newline, control or non-ASCII characters). The
+    /// token is captured
     /// at bind time and is required on Handshake, Join, and Shutdown.
     pub async fn bind_async(
         self,
@@ -434,5 +437,19 @@ mod tests {
         .unwrap_err();
         assert!(error.to_string().contains("valid Unicode"));
         assert!(!error.to_string().contains("private-value"));
+    }
+
+    #[test]
+    fn model_endpoint_token_with_trailing_newline_fails_startup() {
+        let options = ServeModelOptions::parse("tcp://127.0.0.1:0")
+            .unwrap()
+            .token("fallback-must-not-be-used");
+        let error = model_endpoint_token(&options, Ok("private-value\n".to_string()))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("RLMESH_MODEL_ENDPOINT_TOKEN"), "{error}");
+        assert!(error.contains("trailing whitespace"), "{error}");
+        assert!(!error.contains("private-value"), "{error}");
+        assert!(!error.contains("fallback-must-not-be-used"), "{error}");
     }
 }
