@@ -7,6 +7,11 @@ on:
 
 permissions: {}
 
+# The audit compiles nothing, so it skips the compile cache mise.toml wires in
+# (RUSTC_WRAPPER=sccache), which this job does not install.
+env:
+  RLMESH_SCCACHE: "0"
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
