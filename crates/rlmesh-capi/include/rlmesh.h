@@ -30,7 +30,8 @@ extern "C" {
 /* Binary ABI generation — bumped ONLY on a binary-incompatible change (a
  * repr(C) layout/enum-discriminant change, an extern "C" signature retype, or a
  * symbol removal). Decoupled from the package semver below, which can't express
- * an ABI break. Appending a struct_size-guarded vtable field is NOT a break. */
+ * an ABI break. Appending a struct_size-guarded vtable/config field is NOT a
+ * break. */
 #define RLMESH_ABI_VERSION 4
 
 RLMESH_API uint32_t rlmesh_abi_version(void);
@@ -568,6 +569,123 @@ typedef struct RLMeshEnvVtable {
   void (*close)(void* user_data);
 } RLMeshEnvVtable;
 
+/* Runtime of the translation unit including this header, not of the Rust
+ * library behind the ABI. Used by rlmesh_env_config_init and rlmesh.hpp. */
+#define RLMESH_DETAIL_STRINGIFY_IMPL(x) #x
+#define RLMESH_DETAIL_STRINGIFY(x) RLMESH_DETAIL_STRINGIFY_IMPL(x)
+#ifdef __cplusplus
+#define RLMESH_DETAIL_HOST_LANGUAGE "c++"
+#if defined(_MSVC_LANG) && _MSVC_LANG > __cplusplus
+#define RLMESH_DETAIL_CXX_STANDARD _MSVC_LANG
+#else
+#define RLMESH_DETAIL_CXX_STANDARD __cplusplus
+#endif
+#if RLMESH_DETAIL_CXX_STANDARD > 202302L
+#define RLMESH_DETAIL_HOST_VERSION "26"
+#define RLMESH_DETAIL_HOST_VERSION_CHARS '2', '6'
+#elif RLMESH_DETAIL_CXX_STANDARD > 202002L
+#define RLMESH_DETAIL_HOST_VERSION "23"
+#define RLMESH_DETAIL_HOST_VERSION_CHARS '2', '3'
+#elif RLMESH_DETAIL_CXX_STANDARD >= 202002L
+#define RLMESH_DETAIL_HOST_VERSION "20"
+#define RLMESH_DETAIL_HOST_VERSION_CHARS '2', '0'
+#elif RLMESH_DETAIL_CXX_STANDARD >= 201703L
+#define RLMESH_DETAIL_HOST_VERSION "17"
+#define RLMESH_DETAIL_HOST_VERSION_CHARS '1', '7'
+#elif RLMESH_DETAIL_CXX_STANDARD >= 201402L
+#define RLMESH_DETAIL_HOST_VERSION "14"
+#define RLMESH_DETAIL_HOST_VERSION_CHARS '1', '4'
+#elif RLMESH_DETAIL_CXX_STANDARD >= 201103L
+#define RLMESH_DETAIL_HOST_VERSION "11"
+#define RLMESH_DETAIL_HOST_VERSION_CHARS '1', '1'
+#else
+#define RLMESH_DETAIL_HOST_VERSION "98"
+#define RLMESH_DETAIL_HOST_VERSION_CHARS '9', '8'
+#endif
+#else
+#define RLMESH_DETAIL_HOST_LANGUAGE "c"
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ > 201710L
+#define RLMESH_DETAIL_HOST_VERSION "23"
+#define RLMESH_DETAIL_HOST_VERSION_CHARS '2', '3'
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201710L
+#define RLMESH_DETAIL_HOST_VERSION "17"
+#define RLMESH_DETAIL_HOST_VERSION_CHARS '1', '7'
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+#define RLMESH_DETAIL_HOST_VERSION "11"
+#define RLMESH_DETAIL_HOST_VERSION_CHARS '1', '1'
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L
+#define RLMESH_DETAIL_HOST_VERSION "99"
+#define RLMESH_DETAIL_HOST_VERSION_CHARS '9', '9'
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199409L
+#define RLMESH_DETAIL_HOST_VERSION "95"
+#define RLMESH_DETAIL_HOST_VERSION_CHARS '9', '5'
+#else
+/* No standard macro: leave the language version undeclared. */
+#endif
+#endif
+
+/* Clang defines GNU compatibility macros too, so check it first. */
+#if defined(__clang_major__) && defined(__clang_minor__)
+#define RLMESH_DETAIL_HOST_COMPILER                                            \
+  ",\"toolchain\":{\"name\":\"clang\",\"version\":\"" RLMESH_DETAIL_STRINGIFY( \
+      __clang_major__) "." RLMESH_DETAIL_STRINGIFY(__clang_minor__) "\"}"
+#elif defined(__GNUC__) && defined(__GNUC_MINOR__)
+#define RLMESH_DETAIL_HOST_COMPILER                                          \
+  ",\"toolchain\":{\"name\":\"gcc\",\"version\":\"" RLMESH_DETAIL_STRINGIFY( \
+      __GNUC__) "." RLMESH_DETAIL_STRINGIFY(__GNUC_MINOR__) "\"}"
+#else
+#define RLMESH_DETAIL_HOST_COMPILER ""
+#endif
+
+/* MSVC's packed _MSC_VER (e.g. 1944) becomes 19.44. An immutable
+ * character array keeps this safe in C and C++98 without runtime initialization. */
+#if defined(_MSC_VER) && !defined(__clang_major__) && !defined(__GNUC__)
+static inline const char* rlmesh_detail_msvc_host_runtime(void) {
+  /* clang-format off */
+  static const char runtime[] = {
+    '{', '"',
+    'l', 'a', 'n', 'g', 'u', 'a', 'g', 'e', '"',
+    ':', '"',
+#ifdef __cplusplus
+    'c', '+', '+',
+#else
+    'c',
+#endif
+    '"',
+#ifdef RLMESH_DETAIL_HOST_VERSION
+    ',', '"',
+    'l', 'a', 'n', 'g', 'u', 'a', 'g', 'e', '_', 'v', 'e', 'r', 's', 'i', 'o', 'n', '"',
+    ':', '"',
+    RLMESH_DETAIL_HOST_VERSION_CHARS, '"',
+#endif
+    ',', '"',
+    't', 'o', 'o', 'l', 'c', 'h', 'a', 'i', 'n', '"',
+    ':', '{', '"',
+    'n', 'a', 'm', 'e', '"',
+    ':', '"',
+    'm', 's', 'v', 'c', '"',
+    ',', '"',
+    'v', 'e', 'r', 's', 'i', 'o', 'n', '"',
+    ':', '"',
+    '0' + (_MSC_VER / 1000) % 10, '0' + (_MSC_VER / 100) % 10, '.', '0' + (_MSC_VER / 10) % 10, '0' + _MSC_VER % 10,
+    '"',
+    '}', '}', '\0'
+  };
+  /* clang-format on */
+  return runtime;
+}
+#define RLMESH_HOST_RUNTIME_JSON rlmesh_detail_msvc_host_runtime()
+#else
+#ifdef RLMESH_DETAIL_HOST_VERSION
+#define RLMESH_DETAIL_HOST_STANDARD ",\"language_version\":\"" RLMESH_DETAIL_HOST_VERSION "\""
+#else
+#define RLMESH_DETAIL_HOST_STANDARD ""
+#endif
+#define RLMESH_HOST_RUNTIME_JSON                 \
+  "{\"language\":\"" RLMESH_DETAIL_HOST_LANGUAGE \
+  "\"" RLMESH_DETAIL_HOST_STANDARD RLMESH_DETAIL_HOST_COMPILER "}"
+#endif
+
 /* What the env declares. Set struct_size = sizeof(RLMeshEnvConfig); fields
  * beyond it read as unset. Borrowed for the rlmesh_env_new call only (the
  * spaces are cloned). `adapter_tags_json` is the env's adapter EnvTags (v1
@@ -594,7 +712,27 @@ typedef struct RLMeshEnvConfig {
    * e.g. [{"id": "viper/firm", "params": {"vehicle": "viper"}, "metadata":
    * {"name": "Viper on firm soil"}}]. Ids must be unique. NULL = none. */
   const char* variants_catalog_json;
+  /* Optional host runtime: JSON object with language / language_version strings,
+   * framework_versions (framework name -> version strings), and toolchain
+   * {"name": "gcc"/"clang"/"msvc", "version": "major.minor"}. No other keys.
+   * Strings and framework names are trimmed and must remain non-empty.
+   * Copied at creation; NULL = legacy runtime (language "c", no version/compiler).
+   * Use rlmesh_env_config_init() to detect the host automatically. */
+  const char* host_runtime_json;
 } RLMeshEnvConfig;
+
+/* Zero defaults plus struct_size and the host translation unit's runtime.
+ * Fill the required spaces afterward; override host_runtime_json if needed. */
+static inline RLMeshEnvConfig rlmesh_env_config_init(void) {
+#ifdef __cplusplus
+  RLMeshEnvConfig config = RLMeshEnvConfig();
+#else
+  RLMeshEnvConfig config = {0};
+#endif
+  config.struct_size = sizeof(RLMeshEnvConfig);
+  config.host_runtime_json = RLMESH_HOST_RUNTIME_JSON;
+  return config;
+}
 
 /* An owned env handle. Lifecycle: rlmesh_env_new -> rlmesh_env_bind ->
  * rlmesh_env_serve (blocks) -> rlmesh_env_free. rlmesh_env_cancel is the only

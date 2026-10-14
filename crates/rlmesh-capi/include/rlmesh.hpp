@@ -1307,6 +1307,9 @@ struct EnvConfig {
   /// envelope's `variants.catalog`: a JSON array of {"id", "params",
   /// "metadata"} with unique ids; empty = none.
   std::string variants_catalog_json;
+  /// Host language, standard, and compiler detected by the header. Override
+  /// with a runtime JSON object, or empty for the legacy C-only runtime.
+  std::string host_runtime_json = RLMESH_HOST_RUNTIME_JSON;
 };
 
 /// Serves `Environment`s as an RLMesh EnvService endpoint:
@@ -1348,8 +1351,7 @@ class EnvServer {
     for (const std::string& option : config.reset_options) options.push_back(option.c_str());
     auto opt = [](const std::string& text) { return text.empty() ? nullptr : text.c_str(); };
 
-    RLMeshEnvConfig raw{};
-    raw.struct_size = sizeof(RLMeshEnvConfig);
+    RLMeshEnvConfig raw = rlmesh_env_config_init();
     raw.id = opt(config.id);
     raw.observation_space = config.observation_space->raw();
     raw.action_space = config.action_space->raw();
@@ -1360,6 +1362,7 @@ class EnvServer {
     raw.metadata_json = opt(config.metadata_json);
     raw.foreground = config.foreground;
     raw.variants_catalog_json = opt(config.variants_catalog_json);
+    raw.host_runtime_json = opt(config.host_runtime_json);
 
     RLMeshEnvVtable vtable{};
     vtable.struct_size = sizeof(RLMeshEnvVtable);

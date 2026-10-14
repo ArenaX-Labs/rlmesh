@@ -18,7 +18,8 @@ Status: alpha. The ABI (`RLMESH_ABI_VERSION`) will break before 1.0.
 - `include/rlmesh.h` — the C ABI (C11). Hand-authored; the single header authority.
 - `include/rlmesh.hpp` — RAII C++ wrapper over the C ABI (no exceptions, `Result<T>`).
 - `examples/c_model.c`, `examples/cpp_model.cpp` — a zero-action model in each language.
-- `examples/cpp_env.cpp` — a tagged C++ env (a point reaching a target, with a camera).
+- `examples/cpp_env.cpp` — a tagged C++ env (a point reaching a target, with a camera); `--describe` prints its image-label envelope.
+- `examples/c_env.c` — a minimal C env printing its describe envelope.
 - `examples/cpp_surface.cpp` — compile-only: names every wrapper type so a broken template fails CI.
 - `examples/consumer/` — a CMake project consuming the packaged library via `find_package(rlmesh)`.
 - `src/` — the Rust side: `extern "C"` projections over the core `rlmesh` crate.
@@ -236,11 +237,78 @@ out of a `Result`-returning function.
 `serve` returns cleanly, a cancelled `run_local` fails with
 `Error::is_cancelled()`. Never destroy a `Model` from inside its own callback.
 
+## Host runtime in describe
+
+`rlmesh.hpp` fills `EnvConfig::host_runtime_json` automatically from the host's
+translation unit: `language: "c++"`, the standard (`"17"`, `"20"`, `"23"`, etc.)
+from `__cplusplus` (or `_MSVC_LANG`), and the compiler under
+`toolchain: {"name": "gcc", "version": "16.2"}`. Names are `gcc`, `clang`, or
+`msvc`; versions use `major.minor`, including MSVC (`_MSC_VER` 1944 becomes
+`"19.44"`). Detection does not populate `framework_versions`; that map is for
+frameworks the host explicitly declares, such as Torch.
+Clang is detected before its GNU compatibility macros. An unknown compiler is
+omitted. This reports the compiler that built the host, rather than Rust's
+compiler that built the ABI library.
+
+The C++ `EnvConfig` default is inline. A binary that mixes C++ standards across
+translation units has differing inline definitions (an ODR violation); the
+reported standard may be whichever definition the linker keeps, depending on
+link order. Use one standard throughout the binary, or explicitly declare the
+runtime in each config instead of relying on that default.
+
+In C, initialize the config with the header helper, then fill its spaces:
+
+```c
+RLMeshEnvConfig config = rlmesh_env_config_init();
+config.observation_space = observation;
+config.action_space = action;
+```
+
+The helper sets `struct_size`, zeroes other fields, and declares `"c"` with the
+standard from `__STDC_VERSION__` (`"11"`, `"17"`, etc.). When that macro is
+absent (including MSVC's default C mode), `language_version` is omitted.
+It also detects C++ when the C header is included from a C++ translation unit.
+`RLMESH_HOST_RUNTIME_JSON` exposes the detected declaration as a `const char*`.
+
+For an explicit declaration, set `RLMeshEnvConfig.host_runtime_json` (C++:
+`EnvConfig::host_runtime_json`) to a JSON object like:
+
+```json
+{
+  "language": "c++",
+  "language_version": "20",
+  "toolchain": { "name": "clang", "version": "19.1" },
+  "framework_versions": { "torch": "2.1" }
+}
+```
+
+Only these four optional keys are accepted: `language` and `language_version`
+are strings; `framework_versions` maps framework names to version strings;
+`toolchain` is an object containing exactly the string fields `name` and
+`version`, with the compiler names and `major.minor` format above. All strings
+and framework names are trimmed, then rejected if empty. Framework names that
+collide after trimming are rejected. The declaration is copied at creation and
+remains on the envelope after bind, including its per-server handshake copy. Component,
+package version, OS/architecture, and protocol/edition fields remain owned by
+the library. Invalid declarations fail creation with `RLMESH_ERR_INVALID_ARGUMENT`.
+
+`NULL` (C++: an empty string) preserves the legacy runtime exactly: `"c"` with
+no language version or compiler. Hosts built against older headers also keep
+that output. A new header with an old library silently emits the old `"c"`
+output too, even though both use ABI 4 and `rlmesh_abi_check()` passes: the old
+library ignores the appended field. The field is guarded by `struct_size`, so
+ABI generation 4 is unchanged. Existing C callers that zero-initialize a config
+can adopt `rlmesh_env_config_init()` to opt into detection. Native models do
+not currently emit a describe envelope and have no model config to extend.
+
 ## Tasks
 
-- `mise run test:cxx` — compile the headers as C11 and C++17 under `-Werror`,
+- `mise run test:cxx` — compile the headers as C11 and C++17 under `-Werror`
+  (the C header also compiles as C++98 under `-pedantic`),
   build the examples, run each model end-to-end against a live env, and drive
-  the C++ env with a model (`e2e_env_harness`).
+  the C++ env with a model (`e2e_env_harness`), and check C11/C17 and C++17/C++20
+  describe runtimes and byte-for-byte legacy defaults.
 - `mise run test:cxx:pkg` — package (`release:cxx:package`) and build the C++
-  example against the installed package via pkg-config and CMake `find_package`.
+  model against the installed package via pkg-config and CMake `find_package`,
+  plus both native env describe runtimes through the CMake consumer.
 - `mise run fmt:cxx` — clang-format the headers and examples.

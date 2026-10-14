@@ -146,6 +146,9 @@ pub struct RLMeshEnvConfig {
     /// envelope's `variants.catalog`: a JSON array of `{"id", "params",
     /// "metadata"}` with unique ids. NULL = none.
     pub variants_catalog_json: *const c_char,
+    /// Host language, language_version, frameworks and toolchain JSON.
+    /// NULL or outside struct_size = legacy runtime. Copied at creation.
+    pub host_runtime_json: *const c_char,
 }
 
 /// A `*mut c_void` the C author guarantees may move to the lane thread.
@@ -607,6 +610,7 @@ struct EnvConfig {
     metadata_json: *const c_char,
     foreground: bool,
     variants_catalog_json: *const c_char,
+    host_runtime_json: *const c_char,
 }
 
 /// # Safety
@@ -641,6 +645,7 @@ unsafe fn read_config(ptr: *const RLMeshEnvConfig) -> Result<EnvConfig, CapiErro
         // Read as a byte: any nonzero C `bool` is true.
         foreground: field!(foreground, u8, 0) != 0,
         variants_catalog_json: field!(variants_catalog_json, *const c_char, std::ptr::null()),
+        host_runtime_json: field!(host_runtime_json, *const c_char, std::ptr::null()),
     })
 }
 
@@ -837,7 +842,10 @@ unsafe fn new_env(
     let catalog = opt_str(config.variants_catalog_json, "variants_catalog_json")?
         .map(variants_catalog)
         .transpose()?;
-    let describe = Describe::new(&contract, catalog)?;
+    let host_runtime = opt_str(config.host_runtime_json, "host_runtime_json")?
+        .map(crate::describe::host_runtime)
+        .transpose()?;
+    let describe = Describe::new(&contract, catalog, host_runtime)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -1242,6 +1250,7 @@ mod tests {
             metadata_json: std::ptr::null(),
             foreground,
             variants_catalog_json: std::ptr::null(),
+            host_runtime_json: std::ptr::null(),
         };
         let mut env = std::ptr::null_mut();
         let status = unsafe {
@@ -1600,6 +1609,7 @@ mod tests {
             metadata_json: std::ptr::null(),
             foreground: false,
             variants_catalog_json: std::ptr::null(),
+            host_runtime_json: std::ptr::null(),
         };
         let mut env = std::ptr::null_mut();
         let status = unsafe { rlmesh_env_new(&table, &config, std::ptr::null_mut(), &mut env) };

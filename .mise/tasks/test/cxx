@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Compile the rlmesh-capi C/C++ ABI (C11 + C++17), run the C and C++ model smokes against a live env, and drive the C++ env smoke with a model"
+#MISE description="Compile the C/C++ ABI, build C and C++ env/model smokes, check native runtime declarations and legacy defaults, and run model/env gRPC flows"
 #MISE dir="{{ config_root }}"
 
 # The C/C++ analogue of the Python build+typecheck+test gates: the cdylib + the
@@ -42,6 +42,9 @@ printf '#include <rlmesh.h>\n' |
   $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" -c -x c - -o "$tmp/header_c.o"
 printf '#include <rlmesh.hpp>\n' |
   $CXX -std=c++17 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" -c -x c++ - -o "$tmp/header_cxx.o"
+echo "==> C header stays warning-free in C++98"
+printf '#include <rlmesh.h>\n' |
+  $CXX -std=c++98 "${warn[@]}" -pedantic "${cxx_quiet[@]}" -I "$inc" -c -x c++ - -o "$tmp/header_cxx98.o"
 # The wrapper is header-only templates: including it instantiates almost nothing.
 # cpp_surface.cpp names every public type and member, so a template that stops
 # compiling fails here instead of in a downstream build. Compiled, never linked.
@@ -51,7 +54,7 @@ $CXX -std=c++17 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" \
 
 # 3. Compile + link the C and C++ smokes against the cdylib (the build + link gate:
 #    a missing / renamed / wrong-signature export fails right here).
-echo "==> build the C and C++ model smokes and the C++ env smoke"
+echo "==> build the C and C++ model and env smokes"
 link=(-L "$target" -lrlmesh_capi -Wl,-rpath,"$repo_root/$target" -lpthread -ldl -lm)
 $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/c_model.c "${link[@]}" -o "$target/c_model_smoke"
@@ -59,6 +62,31 @@ $CXX -std=c++17 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/cpp_model.cpp "${link[@]}" -o "$target/cpp_model_smoke"
 $CXX -std=c++17 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/cpp_env.cpp "${link[@]}" -o "$target/cpp_env_smoke"
+$CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
+  crates/rlmesh-capi/examples/c_env.c "${link[@]}" -o "$target/c_env_smoke"
+
+# Assert runtime comes from the host translation unit, including after changing
+# the language standard. Each run goes through the real ABI describe export.
+for standard in 11 17; do
+  $CC -std=c$standard "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
+    crates/rlmesh-capi/examples/c_env.c "${link[@]}" -o "$tmp/c_env_$standard"
+  "$tmp/c_env_$standard" | python scripts/check-native-runtime.py c "$standard"
+done
+for standard in 17 20; do
+  $CXX -std=c++$standard "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" \
+    crates/rlmesh-capi/examples/cpp_env.cpp "${link[@]}" -o "$tmp/cpp_env_$standard"
+  "$tmp/cpp_env_$standard" --describe | python scripts/check-native-runtime.py c++ "$standard"
+done
+
+echo "==> C config helper detects a C++17 translation unit"
+$CXX -std=c++17 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" -x c++ \
+  crates/rlmesh-capi/examples/c_env.c -x none "${link[@]}" -o "$tmp/c_header_cpp"
+"$tmp/c_header_cpp" | python scripts/check-native-runtime.py c++ 17
+
+echo "==> legacy C++ empty declaration equals the old C ABI output byte-for-byte"
+$CXX -std=c++17 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" \
+  crates/rlmesh-capi/examples/cpp_runtime.cpp "${link[@]}" -o "$tmp/cpp_runtime"
+"$tmp/cpp_runtime"
 
 # 4. Run each smoke against a live env over real gRPC (the pytest analogue).
 #    Both print the same run report; assert the real numbers, not just exit 0.
