@@ -51,7 +51,7 @@ $CXX -std=c++17 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" \
 
 # 3. Compile + link the C and C++ smokes against the cdylib (the build + link gate:
 #    a missing / renamed / wrong-signature export fails right here).
-echo "==> build the C and C++ model smokes and the C++ env smoke"
+echo "==> build the C and C++ model and env smokes"
 link=(-L "$target" -lrlmesh_capi -Wl,-rpath,"$repo_root/$target" -lpthread -ldl -lm)
 $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/c_model.c "${link[@]}" -o "$target/c_model_smoke"
@@ -59,6 +59,21 @@ $CXX -std=c++17 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/cpp_model.cpp "${link[@]}" -o "$target/cpp_model_smoke"
 $CXX -std=c++17 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/cpp_env.cpp "${link[@]}" -o "$target/cpp_env_smoke"
+$CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
+  crates/rlmesh-capi/examples/c_env.c "${link[@]}" -o "$target/c_env_smoke"
+
+# Assert runtime comes from the host translation unit, including after changing
+# the language standard. Each run goes through the real ABI describe export.
+for standard in 11 17; do
+  $CC -std=c$standard "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
+    crates/rlmesh-capi/examples/c_env.c "${link[@]}" -o "$tmp/c_env_$standard"
+  "$tmp/c_env_$standard" | python scripts/check-native-runtime.py c "$standard"
+done
+for standard in 17 20; do
+  $CXX -std=c++$standard "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" \
+    crates/rlmesh-capi/examples/cpp_env.cpp "${link[@]}" -o "$tmp/cpp_env_$standard"
+  "$tmp/cpp_env_$standard" --describe | python scripts/check-native-runtime.py c++ "$standard"
+done
 
 # 4. Run each smoke against a live env over real gRPC (the pytest analogue).
 #    Both print the same run report; assert the real numbers, not just exit 0.

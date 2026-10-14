@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Builds the C++ smoke against the INSTALLED package, not the source tree: a
-# consumer that knows only the unpacked tarball builds cpp_model and runs an
-# episode over real gRPC. Local/release check — deliberately not in the `test` /
+# Builds the native examples against the INSTALLED package: a consumer that
+# knows only the unpacked tarball runs cpp_model over real gRPC and checks the
+# C and C++ env describe runtimes. Local/release check — deliberately not in the `test` /
 # `check` aggregates. The pkg-config leg always runs; find_package runs if cmake
 # is on PATH.
 set -euo pipefail
 
+CC="${CC:-zig cc}"
 CXX="${CXX:-zig c++}"
 # zig's bundled libc++ emits -Wnullability-completeness noise on <variant> etc.;
 # this smoke isn't a -Werror gate (test:cxx is), so just keep zig output clean.
@@ -36,13 +37,16 @@ target/debug/e2e_harness "$tmp/cpp_model_pc"
 
 # 4. find_package leg: only when cmake is available (the box / CI may lack it).
 if command -v cmake >/dev/null 2>&1; then
-  echo "==> cmake find_package: configure + build cpp_model against the package"
+  echo "==> cmake find_package: configure + build native examples against the package"
   cmake -S crates/rlmesh-capi/examples/consumer -B "$tmp/build" \
     -DCMAKE_PREFIX_PATH="$pkg" -DCMAKE_BUILD_RPATH="$pkg/lib" \
-    -DCMAKE_CXX_COMPILER="${CXX// /;}" >/dev/null
+    -DCMAKE_C_COMPILER="${CC// /;}" -DCMAKE_CXX_COMPILER="${CXX// /;}" >/dev/null
   cmake --build "$tmp/build" >/dev/null
   echo "==> cmake find_package: end-to-end vs a live env"
   target/debug/e2e_harness "$tmp/build/cpp_model"
+  echo "==> cmake find_package: native env describe runtimes"
+  "$tmp/build/cpp_env" --describe | python scripts/check-native-runtime.py c++ 17
+  "$tmp/build/c_env" | python scripts/check-native-runtime.py c 11
 else
   echo "==> cmake not found — skipping find_package leg (pkg-config leg proved the package)"
 fi

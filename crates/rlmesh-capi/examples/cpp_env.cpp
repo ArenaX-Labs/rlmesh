@@ -175,6 +175,15 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "failed to create env: %s\n", server.error().message().c_str());
     return 1;
   }
+  if (address == "--describe") {
+    auto description = server->describe_json();
+    if (!description) {
+      std::fprintf(stderr, "describe failed: %s\n", description.error().message().c_str());
+      return 1;
+    }
+    std::puts(description->c_str());
+    return 0;
+  }
   auto bound = server->bind(address);
   if (!bound) {
     std::fprintf(stderr, "failed to bind: %s\n", bound.error().message().c_str());

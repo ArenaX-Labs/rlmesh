@@ -18,7 +18,8 @@ Status: alpha. The ABI (`RLMESH_ABI_VERSION`) will break before 1.0.
 - `include/rlmesh.h` — the C ABI (C11). Hand-authored; the single header authority.
 - `include/rlmesh.hpp` — RAII C++ wrapper over the C ABI (no exceptions, `Result<T>`).
 - `examples/c_model.c`, `examples/cpp_model.cpp` — a zero-action model in each language.
-- `examples/cpp_env.cpp` — a tagged C++ env (a point reaching a target, with a camera).
+- `examples/cpp_env.cpp` — a tagged C++ env (a point reaching a target, with a camera); `--describe` prints its image-label envelope.
+- `examples/c_env.c` — a minimal C env printing its describe envelope.
 - `examples/cpp_surface.cpp` — compile-only: names every wrapper type so a broken template fails CI.
 - `examples/consumer/` — a CMake project consuming the packaged library via `find_package(rlmesh)`.
 - `src/` — the Rust side: `extern "C"` projections over the core `rlmesh` crate.
@@ -236,11 +237,57 @@ out of a `Result`-returning function.
 `serve` returns cleanly, a cancelled `run_local` fails with
 `Error::is_cancelled()`. Never destroy a `Model` from inside its own callback.
 
+## Host runtime in describe
+
+`rlmesh.hpp` fills `EnvConfig::host_runtime_json` automatically from the host's
+translation unit: `language: "c++"`, the standard (`"17"`, `"20"`, `"23"`, etc.)
+from `__cplusplus` (or `_MSVC_LANG`), and the compiler under `framework_versions`.
+Clang and GCC versions use `major.minor`; MSVC uses `_MSC_VER` (e.g. `"1944"`).
+Clang is detected before its GNU compatibility macros. An unknown compiler is
+omitted. This reports the compiler that built the host, rather than Rust's
+compiler that built the ABI library.
+
+In C, initialize the config with the header helper, then fill its spaces:
+
+```c
+RLMeshEnvConfig config = rlmesh_env_config_init();
+config.observation_space = observation;
+config.action_space = action;
+```
+
+The helper sets `struct_size`, zeroes other fields, and declares `"c"` with the
+standard from `__STDC_VERSION__` (`"11"`, `"17"`, etc.; `"90"` when absent).
+It also detects C++ when the C header is included from a C++ translation unit.
+`RLMESH_HOST_RUNTIME_JSON` exposes the detected declaration as a string literal.
+
+For an explicit declaration, set `RLMeshEnvConfig.host_runtime_json` (C++:
+`EnvConfig::host_runtime_json`) to a JSON object like:
+
+```json
+{ "language": "c++", "language_version": "20", "framework_versions": { "clang": "19.1" } }
+```
+
+Only these three optional keys are accepted: language and version must be
+non-empty strings, and `framework_versions` maps non-empty compiler names to
+non-empty version strings. The declaration is copied at creation and remains
+on the envelope after bind, including its per-server handshake copy. Component,
+package version, OS/architecture, and protocol/edition fields remain owned by
+the library. Invalid declarations fail creation with `RLMESH_ERR_INVALID_ARGUMENT`.
+
+`NULL` (C++: an empty string) preserves the legacy runtime exactly: `"c"` with
+no language version or compiler. Hosts built against older headers also keep
+that output. The field is appended and guarded by `struct_size`, so ABI
+generation 4 is unchanged. Existing C callers that zero-initialize a config
+can adopt `rlmesh_env_config_init()` to opt into detection. Native models do
+not currently emit a describe envelope and have no model config to extend.
+
 ## Tasks
 
 - `mise run test:cxx` — compile the headers as C11 and C++17 under `-Werror`,
   build the examples, run each model end-to-end against a live env, and drive
-  the C++ env with a model (`e2e_env_harness`).
+  the C++ env with a model (`e2e_env_harness`), and check C11/C17 and C++17/C++20
+  describe runtimes.
 - `mise run test:cxx:pkg` — package (`release:cxx:package`) and build the C++
-  example against the installed package via pkg-config and CMake `find_package`.
+  model against the installed package via pkg-config and CMake `find_package`,
+  plus both native env describe runtimes through the CMake consumer.
 - `mise run fmt:cxx` — clang-format the headers and examples.

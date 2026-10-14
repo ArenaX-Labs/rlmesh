@@ -26,21 +26,66 @@ use crate::env::RLMeshEnv;
 /// Component name the envelope's `runtime` reports for a C ABI host.
 const COMPONENT: &str = "rlmesh-capi";
 
+/// Validate the optional host declaration before it can override runtime fields.
+/// Component, package, OS/arch and protocol/edition remain library-owned.
+pub(crate) fn host_runtime(text: &str) -> Result<Value, CapiError> {
+    let invalid = |message: String| CapiError::invalid_arg(format!("host_runtime_json: {message}"));
+    let value: Value = serde_json::from_str(text).map_err(|err| invalid(err.to_string()))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| invalid("expected a JSON object".into()))?;
+    for (key, value) in object {
+        match key.as_str() {
+            "language" | "language_version" => {
+                if value.as_str().is_none_or(|s| s.trim().is_empty()) {
+                    return Err(invalid(format!("{key} must be a non-empty string")));
+                }
+            }
+            "framework_versions" => {
+                let versions = value
+                    .as_object()
+                    .ok_or_else(|| invalid("framework_versions must be an object".into()))?;
+                if versions.iter().any(|(name, version)| {
+                    name.trim().is_empty() || version.as_str().is_none_or(|s| s.trim().is_empty())
+                }) {
+                    return Err(invalid(
+                        "framework_versions must map non-empty names to non-empty version strings"
+                            .into(),
+                    ));
+                }
+            }
+            _ => return Err(invalid(format!("unknown field {key:?}"))),
+        }
+    }
+    Ok(value)
+}
+
 /// An env's describe envelope: built at `rlmesh_env_new` with the build's own
 /// edition, rebuilt at bind with the edition the server declares.
 pub(crate) struct Describe {
     contract: EnvContract,
     /// The config's `variants_catalog_json`, checked: `variants.catalog`.
     catalog: Option<Value>,
+    host_runtime: Option<Value>,
     envelope: Mutex<String>,
 }
 
 impl Describe {
-    pub(crate) fn new(contract: &EnvContract, catalog: Option<Value>) -> Result<Self, CapiError> {
+    pub(crate) fn new(
+        contract: &EnvContract,
+        catalog: Option<Value>,
+        host_runtime: Option<Value>,
+    ) -> Result<Self, CapiError> {
         Ok(Self {
-            envelope: Mutex::new(envelope(contract, catalog.as_ref(), None)?),
+            envelope: Mutex::new(envelope(
+                contract,
+                catalog.as_ref(),
+                host_runtime.as_ref(),
+                None,
+            )?),
             contract: contract.clone(),
             catalog,
+            host_runtime,
         })
     }
 
@@ -54,7 +99,12 @@ impl Describe {
     /// [`Describe::bound_extra`]). Nothing changes until bind succeeds and
     /// calls [`Describe::commit`].
     pub(crate) fn for_bind(&self, workflow_edition: Option<&str>) -> Result<String, CapiError> {
-        envelope(&self.contract, self.catalog.as_ref(), workflow_edition)
+        envelope(
+            &self.contract,
+            self.catalog.as_ref(),
+            self.host_runtime.as_ref(),
+            workflow_edition,
+        )
     }
 
     /// The handshake `PeerInfo.extra` entry carrying `envelope`, set per server
@@ -75,6 +125,7 @@ impl Describe {
 pub(crate) fn envelope(
     contract: &EnvContract,
     catalog: Option<&Value>,
+    host_runtime: Option<&Value>,
     workflow_edition: Option<&str>,
 ) -> Result<String, CapiError> {
     let space = |space: Option<&SpaceSpec>, which: &str| match space {
@@ -109,6 +160,11 @@ pub(crate) fn envelope(
             "preferred_workflow_edition": preferred,
         },
     });
+    if let Some(host_runtime) = host_runtime {
+        for (key, value) in host_runtime.as_object().expect("validated host runtime") {
+            pieces["runtime"][key] = value.clone();
+        }
+    }
     if let Some(catalog) = catalog {
         pieces["variants"] = json!({"catalog": catalog});
     }
@@ -192,7 +248,7 @@ mod tests {
                 .into_iter()
                 .collect(),
         );
-        let text = built(envelope(&contract(Some(tags)), None, None));
+        let text = built(envelope(&contract(Some(tags)), None, None, None));
         assert!(text.starts_with(r#"{"schema_version":1,"kind":"env","#));
         let value = parse(&text);
         assert_eq!(
@@ -207,6 +263,8 @@ mod tests {
         assert_eq!(value["env_tags"], json!({"observation": {}}));
         let runtime = &value["runtime"];
         assert_eq!(runtime["language"], "c");
+        assert!(runtime.get("language_version").is_none());
+        assert!(runtime.get("framework_versions").is_none());
         assert_eq!(runtime["protocol_generation"], rlmesh::PROTOCOL_GENERATION);
         assert_eq!(
             runtime["preferred_workflow_edition"],
@@ -220,7 +278,7 @@ mod tests {
 
     #[test]
     fn untagged_env_has_null_tags_and_a_declared_edition_is_preferred() {
-        let text = built(envelope(&contract(None), None, Some(" 2026.06 ")));
+        let text = built(envelope(&contract(None), None, None, Some(" 2026.06 ")));
         let value = parse(&text);
         assert_eq!(value["env_tags"], Value::Null);
         assert_eq!(value["runtime"]["preferred_workflow_edition"], "2026.06");
@@ -230,8 +288,55 @@ mod tests {
     #[test]
     fn a_declared_catalog_is_the_envelopes_variants_catalog() {
         let catalog = json!([{"id": "viper/firm", "params": {"vehicle": "viper"}}]);
-        let value = parse(&built(envelope(&contract(None), Some(&catalog), None)));
+        let value = parse(&built(envelope(
+            &contract(None),
+            Some(&catalog),
+            None,
+            None,
+        )));
         assert_eq!(value["variants"], json!({"catalog": catalog}));
+    }
+
+    #[test]
+    fn host_runtime_overrides_only_declared_fields_and_survives_bind() {
+        let runtime = host_runtime(
+            r#"{"language":"c++","language_version":"20","framework_versions":{"clang":"19.1"}}"#,
+        )
+        .unwrap_or_else(|err| panic!("{}", err.message));
+        let describe = Describe::new(&contract(None), None, Some(runtime))
+            .unwrap_or_else(|err| panic!("{}", err.message));
+        for value in [
+            parse(&describe.json()),
+            parse(&built(describe.for_bind(Some("2026.06")))),
+        ] {
+            assert_eq!(value["runtime"]["language"], "c++");
+            assert_eq!(value["runtime"]["language_version"], "20");
+            assert_eq!(
+                value["runtime"]["framework_versions"],
+                json!({"clang":"19.1"})
+            );
+            assert_eq!(value["runtime"]["component"], COMPONENT);
+            assert_eq!(
+                value["runtime"]["package_version"],
+                env!("CARGO_PKG_VERSION")
+            );
+        }
+        let partial = host_runtime(r#"{"language_version":"17"}"#)
+            .unwrap_or_else(|err| panic!("{}", err.message));
+        let value = parse(&built(envelope(
+            &contract(None),
+            None,
+            Some(&partial),
+            None,
+        )));
+        assert_eq!(value["runtime"]["language"], "c");
+        assert_eq!(value["runtime"]["language_version"], "17");
+        assert!(value["runtime"].get("framework_versions").is_none());
+        let empty = host_runtime("{}").unwrap_or_else(|err| panic!("{}", err.message));
+        assert_eq!(
+            built(envelope(&contract(None), None, Some(&empty), None)),
+            built(envelope(&contract(None), None, None, None))
+        );
     }
 
     unsafe extern "C" fn reset(
@@ -274,6 +379,16 @@ mod tests {
         bound: f64,
         catalog: Option<&str>,
     ) -> Result<*mut RLMeshEnv, RLMeshStatus> {
+        native_env_runtime(id, bound, catalog, None, false)
+    }
+
+    fn native_env_runtime(
+        id: &str,
+        bound: f64,
+        catalog: Option<&str>,
+        runtime: Option<&str>,
+        old_config: bool,
+    ) -> Result<*mut RLMeshEnv, RLMeshStatus> {
         use std::ffi::CString;
 
         use crate::env::{RLMeshEnvConfig, RLMeshEnvVtable, rlmesh_env_new};
@@ -292,8 +407,14 @@ mod tests {
         )
         .unwrap();
         let catalog = catalog.map(|catalog| CString::new(catalog).unwrap());
+        let runtime = runtime.map(|runtime| CString::new(runtime).unwrap());
+        let config_size = if old_config {
+            std::mem::offset_of!(RLMeshEnvConfig, host_runtime_json)
+        } else {
+            std::mem::size_of::<RLMeshEnvConfig>()
+        };
         let config = RLMeshEnvConfig {
-            struct_size: std::mem::size_of::<RLMeshEnvConfig>(),
+            struct_size: config_size,
             id: id.as_ptr(),
             observation_space: obs,
             action_space: act,
@@ -304,6 +425,7 @@ mod tests {
             metadata_json: std::ptr::null(),
             foreground: false,
             variants_catalog_json: catalog.as_ref().map_or(std::ptr::null(), |c| c.as_ptr()),
+            host_runtime_json: runtime.as_ref().map_or(std::ptr::null(), |r| r.as_ptr()),
         };
         let vtable = RLMeshEnvVtable {
             struct_size: std::mem::size_of::<RLMeshEnvVtable>(),
@@ -313,7 +435,24 @@ mod tests {
             close: None,
         };
         let mut env = std::ptr::null_mut();
-        let status = unsafe { rlmesh_env_new(&vtable, &config, std::ptr::null_mut(), &mut env) };
+        // Allocate exactly the declared prefix, aligned like the config. An old
+        // host never allocated the appended field; the library must not read it.
+        let mut storage = vec![0usize; config_size / std::mem::size_of::<usize>()];
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                (&raw const config).cast::<u8>(),
+                storage.as_mut_ptr().cast::<u8>(),
+                config_size,
+            );
+        }
+        let status = unsafe {
+            rlmesh_env_new(
+                &vtable,
+                storage.as_ptr().cast(),
+                std::ptr::null_mut(),
+                &mut env,
+            )
+        };
         unsafe {
             rlmesh_space_free(obs);
             rlmesh_space_free(act);
@@ -455,10 +594,86 @@ mod tests {
     }
 
     #[test]
+    fn c_config_runtime_is_copied_per_env_and_old_configs_keep_the_default() {
+        use crate::env::rlmesh_env_free;
+
+        let cpp = native_env_runtime(
+            "Cpp-v0",
+            1.0,
+            None,
+            Some(
+                r#"{"language":"c++","language_version":"17","framework_versions":{"gcc":"14.2"}}"#,
+            ),
+            false,
+        )
+        .expect("C++ runtime");
+        let c = native_env_runtime(
+            "C-v0",
+            1.0,
+            None,
+            Some(
+                r#"{"language":"c","language_version":"11","framework_versions":{"clang":"19.1"}}"#,
+            ),
+            false,
+        )
+        .expect("C runtime");
+        // The field beyond the old config's allocation is ignored, even if the
+        // new source config had a malformed declaration there.
+        let old =
+            native_env_runtime("Old-v0", 1.0, None, Some("not json"), true).expect("old config");
+        let before = describe_json(cpp);
+        assert_eq!(before["runtime"]["language"], "c++");
+        assert_eq!(before["runtime"]["language_version"], "17");
+        assert_eq!(
+            before["runtime"]["framework_versions"],
+            json!({"gcc":"14.2"})
+        );
+        bind(cpp, "127.0.0.1:0", rlmesh::CURRENT_WORKFLOW_EDITION).expect("bind C++ env");
+        assert_eq!(
+            describe_json(cpp),
+            before,
+            "bind retained the copied runtime"
+        );
+        assert_eq!(describe_json(c)["runtime"]["language"], "c");
+        assert_eq!(describe_json(c)["runtime"]["language_version"], "11");
+        let legacy = describe_json(old);
+        assert_eq!(legacy["runtime"]["language"], "c");
+        assert!(legacy["runtime"].get("language_version").is_none());
+        assert!(legacy["runtime"].get("framework_versions").is_none());
+        for env in [cpp, c, old] {
+            unsafe { rlmesh_env_free(env) };
+        }
+    }
+
+    #[test]
+    fn c_config_refuses_malformed_host_runtime() {
+        for bad in [
+            "not json",
+            "null",
+            "[]",
+            r#"{"language":42}"#,
+            r#"{"language":" "}"#,
+            r#"{"language_version":null}"#,
+            r#"{"component":"host"}"#,
+            r#"{"package_version":"1"}"#,
+            r#"{"framework_versions":[]}"#,
+            r#"{"framework_versions":{"gcc":14}}"#,
+            r#"{"framework_versions":{"":"1"}}"#,
+            r#"{"framework_versions":{"gcc":""}}"#,
+        ] {
+            assert_eq!(
+                native_env_runtime("Bad-v0", 1.0, None, Some(bad), false).err(),
+                Some(RLMeshStatus::InvalidArgument),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
     fn a_contract_without_spaces_is_refused() {
         let mut bare = contract(None);
         bare.action_space = None;
-        let Err(err) = envelope(&bare, None, None) else {
+        let Err(err) = envelope(&bare, None, None, None) else {
             panic!("a spaceless contract built an envelope");
         };
         assert!(err.message.contains("action_space"), "{}", err.message);
