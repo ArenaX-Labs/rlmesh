@@ -29,6 +29,10 @@ pub(crate) fn build_args(variant: &VariantBuild, name: &str, metadata: &Path) ->
         .map(str::to_owned)
         .into();
     args.push(variant.dockerfile.display().to_string());
+    if let Some(target) = &variant.target {
+        args.push("--target".to_owned());
+        args.push(target.clone());
+    }
     for (key, value) in &variant.build_args {
         args.push("--build-arg".to_owned());
         args.push(format!("{key}={value}"));

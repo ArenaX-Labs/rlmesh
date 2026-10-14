@@ -3,7 +3,7 @@
 //!
 //! The top level is the package label itself, under the label's own key
 //! names (`name`, `[[checkpoints]]`, `envVars`, ...), plus the build keys
-//! `dockerfile`, `context` and `build_args`. Each `[variant.KEY]` table is one
+//! `dockerfile`, `target`, `context` and `build_args`. Each `[variant.KEY]` table is one
 //! build, in priority order (the first is the version's default): its
 //! `accel.*` keys are the variant's `requires`, under the same names, and it
 //! may set `facets`, `priority`, its own build keys, and a `package` table
@@ -30,9 +30,10 @@ use crate::variant::{
 /// The file `rlmesh registry publish` reads when given no SOURCE.
 pub const FILE_NAME: &str = "rlmesh.toml";
 
-const BUILD_KEYS: [&str; 3] = ["dockerfile", "context", "build_args"];
-const VARIANT_KEYS: [&str; 7] = [
+const BUILD_KEYS: [&str; 4] = ["dockerfile", "target", "context", "build_args"];
+const VARIANT_KEYS: [&str; 8] = [
     "dockerfile",
+    "target",
     "context",
     "build_args",
     "accel",
@@ -58,6 +59,8 @@ pub struct VariantBuild {
     pub key: String,
     /// Resolved against the manifest's directory.
     pub dockerfile: PathBuf,
+    /// The Dockerfile stage to build (`--target`); its last stage when unset.
+    pub target: Option<String>,
     /// Resolved against the manifest's directory.
     pub context: PathBuf,
     pub build_args: BTreeMap<String, String>,
@@ -239,6 +242,7 @@ pub fn parse(raw: &str, dir: &Path, origin: &str) -> Result<(Manifest, Vec<Strin
         built.push(VariantBuild {
             key,
             dockerfile: build.dockerfile,
+            target: build.target,
             context: build.context,
             build_args: build.args,
             label,
@@ -280,6 +284,7 @@ pub fn parse(raw: &str, dir: &Path, origin: &str) -> Result<(Manifest, Vec<Strin
 /// which falls back to the top level's, key by key for `build_args`.
 struct Build {
     dockerfile: PathBuf,
+    target: Option<String>,
     context: PathBuf,
     args: BTreeMap<String, String>,
 }
@@ -310,6 +315,14 @@ impl Build {
         let dockerfile = path("dockerfile", errors)
             .or_else(|| defaults.map(|d| d.dockerfile.clone()))
             .unwrap_or_else(|| dir.join("Dockerfile"));
+        let target = match table.get("target") {
+            None => defaults.and_then(|d| d.target.clone()),
+            Some(toml::Value::String(stage)) if !stage.is_empty() => Some(stage.clone()),
+            Some(_) => {
+                errors.push(format!("{}: must be a stage name", name("target")));
+                None
+            }
+        };
         let context = path("context", errors)
             .or_else(|| defaults.map(|d| d.context.clone()))
             .unwrap_or_else(|| {
@@ -336,6 +349,7 @@ impl Build {
         }
         Build {
             dockerfile,
+            target,
             context,
             args,
         }
@@ -510,6 +524,29 @@ gpu.count = 1
         assert_eq!(
             cpu.build_args,
             BTreeMap::from([("PYTHON".to_owned(), "3.11".to_owned())])
+        );
+    }
+
+    #[test]
+    fn a_target_picks_the_stage_and_falls_back_to_the_top_level() {
+        let (manifest, _) = ok(r#"
+name = "chrono"
+target = "terrain"
+
+[variant.terrain]
+
+[variant.blind]
+target = "blind"
+"#);
+        let targets: Vec<Option<&str>> = manifest
+            .variants
+            .iter()
+            .map(|v| v.target.as_deref())
+            .collect();
+        assert_eq!(targets, [Some("terrain"), Some("blind")]);
+        assert_eq!(ok("name = \"pi0\"\n").0.variants[0].target, None);
+        assert!(
+            problems("name = \"pi0\"\ntarget = \"\"\n").contains("target: must be a stage name")
         );
     }
 
