@@ -9,9 +9,11 @@
 //! helpers, including `docker-credential-rlmesh`, authenticate it. Sources are
 //! pinned by digest before the index is created, so a tag moving underneath a
 //! publish cannot swap a child. A version tag (TARGET, `--tag`) is pushed
-//! only over a tag the registry says is absent, or one already holding the
-//! same index (which is left alone); a different index, or a tag that cannot
-//! be read, needs `--force`. The channel tag moves. The index is pushed to
+//! only over a tag the registry said was absent when checked, or one already
+//! holding the same index (which is left alone); a different index, or a tag
+//! that cannot be read, needs `--force`. (The check and the push are separate
+//! registry calls, so a tag created between them is not caught.) The channel
+//! tag moves. The index is pushed to
 //! TARGET alone and checked as the registry stores it; only then are the
 //! other tags pointed at TARGET's digest, so every tag is one manifest.
 
@@ -33,11 +35,11 @@ use serde_json::{Value, json};
 
 use crate::cli::PublishArgs;
 use crate::image_check::PACKAGE_LABEL;
-use crate::manifest;
+use crate::manifest::{self, VariantBuild};
 use crate::render::Style;
 use build::{Builder, DockerBuilder, build_args};
 use imagetools::{DockerImagetools, Imagetools, existing_manifest};
-use source::{attestation_errors, docker_list_error, resolve_source};
+use source::{Child, attestation_errors, docker_list_error, resolve_source};
 use table::{write_build_table, write_table};
 use tags::{
     Existing, TagState, check_tag, create_args, report_tags, same_index, tag_states, target_tags,
@@ -71,7 +73,16 @@ pub(crate) fn publish_with(
         }
         None => None,
     };
-    assemble(tools, args, &args.sources, index, warnings, stdout, style)
+    assemble(
+        tools,
+        args,
+        &args.sources,
+        index,
+        warnings,
+        false,
+        stdout,
+        style,
+    )
 }
 
 /// Build each variant of `rlmesh.toml` with its rendered label, push it to
@@ -175,6 +186,44 @@ fn publish_manifest(
     )?;
     writeln!(stdout)?;
     write_build_table(stdout, style, &manifest.variants)?;
+
+    // What the version and build tags hold decides, before anything is built
+    // (and under --dry-run too), whether this publish builds, finishes an
+    // earlier one from its builds, or is refused.
+    if !args.force {
+        let plan = manifest_plan(
+            tools,
+            args,
+            &repository,
+            &tags[0],
+            &manifest.variants,
+            &names,
+            index.as_deref(),
+            &origin,
+        )
+        .map_err(|refusals| cannot_publish(&args.target, &refusals))?;
+        if let ManifestPlan::Finish(sources) = plan {
+            writeln!(stdout)?;
+            writeln!(
+                stdout,
+                "{}",
+                style.muted(&format!(
+                    "{} already holds the index of the builds at {}, whose labels match {origin}: \
+                     {} it from them and build nothing (to publish a new build, use a new tag or \
+                     pass --force)",
+                    tags[0],
+                    names.join(", "),
+                    if args.dry_run {
+                        "would finish"
+                    } else {
+                        "finishing"
+                    },
+                ))
+            )?;
+            writeln!(stdout)?;
+            return assemble(tools, args, &sources, index, warnings, true, stdout, style);
+        }
+    }
     if args.dry_run {
         if !warnings.is_empty() {
             writeln!(stdout)?;
@@ -200,30 +249,6 @@ fn publish_manifest(
         return Ok(0);
     }
 
-    // A fresh build differs from any index already published, so a version
-    // tag in use (or unreadable) would only be refused after building; say
-    // so first. The channel is not a version tag.
-    if !args.force {
-        let protected = std::iter::once(tags[0].clone()).chain(
-            args.tags
-                .iter()
-                .map(|tag| format!("{repository}:{}", tag.trim())),
-        );
-        for tag in protected {
-            match existing_manifest(tools, &tag) {
-                Existing::Absent => {}
-                Existing::Found { digest, .. } => bail!(
-                    "{tag} already holds a version ({digest}), and a new build would replace \
-                     it: publish under a new tag, or pass --force"
-                ),
-                Existing::Unreadable(reason) => bail!(
-                    "{tag} could not be read ({reason}), so nothing says it is free: fix \
-                     access to it, or pass --force"
-                ),
-            }
-        }
-    }
-
     writeln!(stdout)?;
     let mut sources = Vec::new();
     for (variant, name) in manifest.variants.iter().zip(&names) {
@@ -234,17 +259,167 @@ fn publish_manifest(
         sources.push(format!("{repository}@{digest}"));
     }
     writeln!(stdout)?;
-    assemble(tools, args, &sources, index, warnings, stdout, style)
+    assemble(tools, args, &sources, index, warnings, true, stdout, style)
+}
+
+/// What a publish from `rlmesh.toml` does, absent `--force`.
+#[derive(Debug)]
+enum ManifestPlan {
+    /// Build every variant, then publish.
+    Build,
+    /// TARGET already holds the index assembled from the builds at the build
+    /// tags (each labelled as the file renders it), as an earlier publish
+    /// that stopped before pointing every tag leaves it: publish from those
+    /// builds, pinned here, without building.
+    Finish(Vec<String>),
+}
+
+/// Read the version tags (TARGET, each `--tag`) and the build tags before
+/// building. A fresh build differs from any index already published, and
+/// overwrites its build tag, so each refusal is known now, not after
+/// building: a version tag holding any manifest, a build tag holding an image
+/// other than a build of its variant from this file (a separately published
+/// `1.0-cpu`, say), or either unreadable. A build tag holding an earlier
+/// build of the same variant (the same rendered label) is rebuilt over. When
+/// TARGET already holds exactly the index of the builds at the build tags,
+/// the publish is finished from them instead (the channel and `--tag` tags are
+/// then checked as in a SOURCE publish). Returns every refusal at once.
+#[allow(clippy::too_many_arguments)]
+fn manifest_plan(
+    tools: &impl Imagetools,
+    args: &PublishArgs,
+    repository: &str,
+    target: &str,
+    variants: &[VariantBuild],
+    names: &[String],
+    index: Option<&str>,
+    origin: &str,
+) -> std::result::Result<ManifestPlan, Vec<String>> {
+    enum Build {
+        Absent,
+        Unreadable(String),
+        /// An earlier build of this variant, from the same label.
+        Ours(Box<Child>),
+        /// Something else, at this digest.
+        Other(String),
+    }
+    let builds: Vec<Build> = variants
+        .iter()
+        .zip(names)
+        .map(|(variant, name)| match existing_manifest(tools, name) {
+            Existing::Absent => Build::Absent,
+            Existing::Unreadable(reason) => Build::Unreadable(reason),
+            Existing::Found { digest, .. } => {
+                match resolve_source(tools, &format!("{repository}@{digest}")) {
+                    Ok(child) if built_from(&child, variant) => Build::Ours(Box::new(child)),
+                    _ => Build::Other(digest),
+                }
+            }
+        })
+        .collect();
+    let target_state = existing_manifest(tools, target);
+
+    if let Existing::Found { raw, .. } = &target_state {
+        let children: Option<Vec<Child>> = builds
+            .iter()
+            .map(|build| match build {
+                Build::Ours(child) => Some((**child).clone()),
+                _ => None,
+            })
+            .collect();
+        if let Some(children) = children {
+            let sources: Vec<String> = children.iter().map(|c| c.pinned.clone()).collect();
+            let (checked, _, errors) = check_variants(children);
+            let assembled = errors
+                .is_empty()
+                .then(|| tools.create(&create_args(&[target.to_owned()], index, &checked, true)))
+                .and_then(Result::ok)
+                .and_then(|preview| serde_json::from_str::<Value>(&preview).ok());
+            if assembled.is_some_and(|assembled| same_index(raw, &assembled)) {
+                return Ok(ManifestPlan::Finish(sources));
+            }
+        }
+    }
+
+    let mut refusals = Vec::new();
+    let others = args
+        .tags
+        .iter()
+        .map(|tag| format!("{repository}:{}", tag.trim()))
+        .map(|tag| {
+            let state = existing_manifest(tools, &tag);
+            (tag, state)
+        });
+    for (tag, state) in std::iter::once((target.to_owned(), target_state)).chain(others) {
+        match state {
+            Existing::Absent => {}
+            Existing::Found { digest, .. } => refusals.push(format!(
+                "{tag} already holds a version ({digest}), and a new build would replace it: \
+                 publish under a new tag, or pass --force"
+            )),
+            Existing::Unreadable(reason) => refusals.push(format!(
+                "{tag} could not be read ({reason}), so nothing says it is free: fix access to \
+                 it, or pass --force"
+            )),
+        }
+    }
+    for ((variant, name), build) in variants.iter().zip(names).zip(builds) {
+        match build {
+            Build::Absent | Build::Ours(_) => {}
+            Build::Other(digest) => refusals.push(format!(
+                "{name} already holds {digest}, which is not a build of variant {} from {origin} \
+                 (its {PACKAGE_LABEL} label differs), and building the variant would overwrite \
+                 it: publish under a new tag, or pass --force",
+                variant.key
+            )),
+            Build::Unreadable(reason) => refusals.push(format!(
+                "{name} could not be read ({reason}), so nothing says building variant {} would \
+                 not overwrite another image there: fix access to it, or pass --force",
+                variant.key
+            )),
+        }
+    }
+    if refusals.is_empty() {
+        Ok(ManifestPlan::Build)
+    } else {
+        Err(refusals)
+    }
+}
+
+/// Whether `child` is a build of `variant`: its package label is the one the
+/// manifest renders for it.
+fn built_from(child: &Child, variant: &VariantBuild) -> bool {
+    child
+        .config
+        .labels
+        .get(PACKAGE_LABEL)
+        .and_then(|label| serde_json::from_str::<Value>(label).ok())
+        .is_some_and(|label| label == Value::Object(variant.label.clone()))
+}
+
+/// The error for a publish refused before pushing, listing every reason.
+fn cannot_publish(target: &str, errors: &[String]) -> anyhow::Error {
+    anyhow::anyhow!(
+        "cannot publish {target}:\n{}",
+        errors
+            .iter()
+            .map(|error| format!("  - {error}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    )
 }
 
 /// Assemble `sources` into the version and push it under every tag, with
-/// `index` (when set) as its annotation.
+/// `index` (when set) as its annotation. `from_manifest` says the sources are
+/// the builds of `rlmesh.toml`, which changes how a rerun recovers.
+#[allow(clippy::too_many_arguments)]
 fn assemble(
     tools: &impl Imagetools,
     args: &PublishArgs,
     sources: &[String],
     index: Option<String>,
     mut warnings: Vec<String>,
+    from_manifest: bool,
     stdout: &mut impl Write,
     style: Style,
 ) -> Result<i32> {
@@ -333,17 +508,7 @@ fn assemble(
             writeln!(stdout, "{}  {warning}", style.yellow("warn"))?;
         }
     }
-    let cannot_publish = |errors: &[String]| {
-        anyhow::anyhow!(
-            "cannot publish {}:\n{}",
-            args.target,
-            errors
-                .iter()
-                .map(|error| format!("  - {error}"))
-                .collect::<Vec<_>>()
-                .join("\n")
-        )
-    };
+    let cannot_publish = |errors: &[String]| cannot_publish(&args.target, errors);
     if !errors.is_empty() {
         return Err(cannot_publish(&errors));
     }
@@ -433,23 +598,55 @@ fn assemble(
         return Ok(0);
     }
     if !aliases.is_empty() {
-        let mut args = Vec::new();
+        let mut create = Vec::new();
         for tag in &aliases {
-            args.push("--tag".to_owned());
-            args.push((*tag).clone());
+            create.push("--tag".to_owned());
+            create.push((*tag).clone());
         }
-        args.push(format!("{repository}@{version}"));
-        tools.create(&args).with_context(|| {
-            format!(
-                "{} holds the version at {version}, but pointing {} at it failed; run the same \
-                 publish again to finish (TARGET is left as is and the other tags are pointed \
-                 at it)",
-                tags[0],
-                aliases
-                    .iter()
+        create.push(format!("{repository}@{version}"));
+        tools.create(&create).with_context(|| {
+            let names = |tags: &[&String]| {
+                tags.iter()
                     .map(|tag| tag.as_str())
                     .collect::<Vec<_>>()
                     .join(", ")
+            };
+            // The version tags this run moved only because of --force.
+            let forced: Vec<&String> = tags[1..]
+                .iter()
+                .zip(&states[1..])
+                .filter(|(tag, state)| {
+                    channel.as_deref() != Some(tag.as_str())
+                        && matches!(state, TagState::Moves(_) | TagState::Unreadable(_))
+                })
+                .map(|(tag, _)| tag)
+                .collect();
+            let rerun = if !from_manifest {
+                ", or run the same publish again: TARGET already holds this index, so it is not \
+                 pushed again and only the other tags are pointed at it"
+                    .to_owned()
+            } else if !args.force {
+                ", or run the same publish again: TARGET already holds the index of the builds \
+                 just pushed, so nothing is rebuilt and only the other tags are pointed at it"
+                    .to_owned()
+            } else if forced.is_empty() {
+                ", or run the same publish again without --force (with it, every variant is \
+                 rebuilt): TARGET already holds the index of the builds just pushed, so nothing \
+                 is rebuilt and only the other tags are pointed at it"
+                    .to_owned()
+            } else {
+                format!(
+                    "; rerunning the publish would not finish it (without --force it refuses to \
+                     move {}, and with it every variant is rebuilt)",
+                    names(&forced)
+                )
+            };
+            format!(
+                "{} holds the version at {version}, but pointing {} at it failed. To finish, \
+                 point them yourself with `docker buildx imagetools create {}`{rerun}",
+                tags[0],
+                names(&aliases),
+                create.join(" ")
             )
         })?;
     }
@@ -1004,6 +1201,189 @@ dockerfile = "Dockerfile.cpu"
 
         args.force = true;
         let (result, out) = run_with(&registry, &builder, &args);
+        assert_eq!(result.unwrap(), 0, "{out}");
+        assert_eq!(builder.builds.borrow().len(), 2);
+    }
+
+    /// Put each build `manifest_setup` seeds under its build tag
+    /// (`TARGET-KEY`), as pushing the builds of `target` does.
+    fn land_builds(registry: &FakeRegistry, target: &str) {
+        for key in ["cuda12", "cpu"] {
+            let view = registry.manifest(&format!("reg.example/ns/pi0:built-{key}"));
+            registry.insert_raw(&format!("{target}-{key}"), &view.unwrap());
+        }
+    }
+
+    #[test]
+    fn a_manifest_publish_stopped_after_target_finishes_on_a_rerun_without_rebuilding() {
+        let (_dir, registry, builder, mut publish) = manifest_setup();
+        let (target, extra, channel) = (
+            "reg.example/ns/pi0:v3",
+            "reg.example/ns/pi0:v3.0",
+            "reg.example/ns/pi0:latest",
+        );
+        publish.tags = vec!["v3.0".to_owned()];
+        publish.channel = Some("latest".to_owned());
+        registry.failing.borrow_mut().push(extra.to_owned());
+        let (result, _) = run_with(&registry, &builder, &publish);
+        land_builds(&registry, target);
+        let error = format!("{:#}", result.unwrap_err());
+        let version = registry.digest_of(target);
+        for needle in [
+            format!(
+                "{target} holds the version at {version}, but pointing {extra}, {channel} at it failed"
+            ),
+            format!(
+                "point them yourself with `docker buildx imagetools create --tag {extra} --tag \
+                 {channel} reg.example/ns/pi0@{version}`, or run the same publish again: TARGET \
+                 already holds the index of the builds just pushed, so nothing is rebuilt"
+            ),
+        ] {
+            assert!(error.contains(&needle), "{needle:?} not in:\n{error}");
+        }
+        assert_eq!(builder.builds.borrow().len(), 2);
+
+        // The rerun the error names: TARGET is not rebuilt or pushed again;
+        // only the remaining tags are pointed at it.
+        registry.failing.borrow_mut().clear();
+        let pushes = registry.pushes();
+        let (result, out) = run_with(&registry, &builder, &publish);
+        assert_eq!(result.unwrap(), 0, "{out}");
+        assert!(
+            out.contains(&format!(
+                "{target} already holds the index of the builds at {target}-cuda12, \
+                 {target}-cpu, whose labels match"
+            )),
+            "{out}"
+        );
+        assert_eq!(builder.builds.borrow().len(), 2, "nothing rebuilt");
+        assert_eq!(registry.pushes(), pushes + 1, "only the other tags");
+        for tag in [target, extra, channel] {
+            assert_eq!(registry.digest_of(tag), version, "{tag}");
+        }
+
+        // Finished, it is already published; a dry run says so too.
+        let (result, out) = run_with(&registry, &builder, &publish);
+        assert_eq!(result.unwrap(), 0, "{out}");
+        assert!(out.contains("Already published"), "{out}");
+        publish.dry_run = true;
+        let (result, out) = run_with(&registry, &builder, &publish);
+        assert_eq!(result.unwrap(), 0, "{out}");
+        assert!(out.contains("would finish it from them"), "{out}");
+        publish.dry_run = false;
+
+        // --force still rebuilds.
+        publish.force = true;
+        let (result, out) = run_with(&registry, &builder, &publish);
+        assert_eq!(result.unwrap(), 0, "{out}");
+        assert_eq!(builder.builds.borrow().len(), 4);
+    }
+
+    #[test]
+    fn builds_whose_labels_no_longer_match_the_file_do_not_finish_a_publish() {
+        let (_dir, registry, builder, publish) = manifest_setup();
+        let target = "reg.example/ns/pi0:v3";
+        let (result, out) = run_with(&registry, &builder, &publish);
+        assert_eq!(result.unwrap(), 0, "{out}");
+        land_builds(&registry, target);
+
+        // The file changed since: its cpu build is not the one at v3-cpu,
+        // so TARGET is a version in use, and v3-cpu another image.
+        let path = publish.config.clone().unwrap();
+        std::fs::write(
+            &path,
+            MANIFEST.replace("[variant.cpu]", "[variant.cpu]\npriority = 1"),
+        )
+        .unwrap();
+        let (result, out) = run_with(&registry, &builder, &publish);
+        let error = format!("{:#}", result.unwrap_err());
+        for needle in [
+            format!("{target} already holds a version"),
+            format!(
+                "{target}-cpu already holds {}, which is not a build of variant cpu",
+                digest('p')
+            ),
+        ] {
+            assert!(
+                error.contains(&needle),
+                "{needle:?} not in:\n{error}\n{out}"
+            );
+        }
+        assert!(!error.contains("v3-cuda12 already holds"), "{error}");
+        assert_eq!(builder.builds.borrow().len(), 2);
+    }
+
+    #[test]
+    fn a_manifest_dry_run_fails_on_a_version_tag_the_real_run_refuses() {
+        let (_dir, registry, builder, mut publish) = manifest_setup();
+        publish.dry_run = true;
+        publish.tags = vec!["v3.0".to_owned()];
+        registry.insert(
+            "reg.example/ns/pi0:v3.0",
+            &json!({"mediaType": "application/vnd.oci.image.index.v1+json",
+                    "digest": digest('x')}),
+        );
+        registry.insert_raw(
+            "reg.example/ns/pi0:v3",
+            "ERROR: unexpected status from HEAD request: 401 Unauthorized",
+        );
+        let (result, out) = run_with(&registry, &builder, &publish);
+        let error = format!("{:#}", result.unwrap_err());
+        for needle in [
+            "cannot publish reg.example/ns/pi0:v3:",
+            "reg.example/ns/pi0:v3 could not be read (ERROR: unexpected status from HEAD \
+             request: 401 Unauthorized)",
+            "reg.example/ns/pi0:v3.0 already holds a version",
+        ] {
+            assert!(error.contains(needle), "{needle:?} not in:\n{error}");
+        }
+        assert!(out.starts_with("Dry run: would build and publish"), "{out}");
+        assert!(builder.builds.borrow().is_empty());
+        assert!(registry.created.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_build_tag_holding_another_image_is_refused_before_anything_is_built() {
+        let (_dir, mut registry, builder, mut publish) = manifest_setup();
+        // A separately published v3-cpu, labelled for another variant.
+        registry.add("reg.example/ns/pi0:v3-cpu", None, 'o', keyed("other"));
+        registry.insert_raw(
+            "reg.example/ns/pi0:v3-cuda12",
+            "ERROR: unexpected status from HEAD request: 500 Internal Server Error",
+        );
+        for dry_run in [true, false] {
+            publish.dry_run = dry_run;
+            let (result, _) = run_with(&registry, &builder, &publish);
+            let error = format!("{:#}", result.unwrap_err());
+            for needle in [
+                format!(
+                    "reg.example/ns/pi0:v3-cpu already holds {}, which is not a build of \
+                     variant cpu",
+                    digest('o')
+                ),
+                "building the variant would overwrite it: publish under a new tag, or pass \
+                 --force"
+                    .to_owned(),
+                "reg.example/ns/pi0:v3-cuda12 could not be read".to_owned(),
+            ] {
+                assert!(error.contains(&needle), "{needle:?} not in:\n{error}");
+            }
+            assert!(builder.builds.borrow().is_empty());
+        }
+
+        // An earlier build of the same variant (a build that failed later,
+        // say) is rebuilt over without --force.
+        land_builds(&registry, "reg.example/ns/pi0:v3");
+        publish.dry_run = false;
+        let (result, out) = run_with(&registry, &builder, &publish);
+        assert_eq!(result.unwrap(), 0, "{out}");
+        assert_eq!(builder.builds.borrow().len(), 2);
+
+        // --force overwrites another image.
+        let (_dir, mut registry, builder, mut publish) = manifest_setup();
+        registry.add("reg.example/ns/pi0:v3-cpu", None, 'o', keyed("other"));
+        publish.force = true;
+        let (result, out) = run_with(&registry, &builder, &publish);
         assert_eq!(result.unwrap(), 0, "{out}");
         assert_eq!(builder.builds.borrow().len(), 2);
     }

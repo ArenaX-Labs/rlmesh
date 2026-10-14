@@ -165,29 +165,39 @@ pub(crate) fn canonical_reference(reference: &str) -> String {
 
 /// What `tag` holds now. An error that is not a confirmed absence leaves it
 /// unreadable, never new: a version tag is not pushed over what could not be
-/// checked.
+/// checked. The raw manifest is read by the digest the tag resolved to, not
+/// by the tag again, so a tag that moves between the two reads cannot pair
+/// one manifest's digest with another's contents. Only the tag's own read can
+/// say it is absent: once it resolved, failing to read that digest is not.
 pub(super) fn existing_manifest(tools: &impl Imagetools, tag: &str) -> Existing {
-    let read = || -> Result<Existing> {
+    let resolve = || -> Result<String> {
         let view: Value = serde_json::from_str(&tools.manifest(tag)?)
             .context("docker printed a manifest that is not JSON")?;
-        let digest = view
+        Ok(view
             .get("digest")
             .and_then(Value::as_str)
             .context("docker printed a manifest without a digest")?
-            .to_owned();
-        let raw = serde_json::from_str(&tools.raw(tag)?).context("its raw manifest is not JSON")?;
-        Ok(Existing::Found { digest, raw })
+            .to_owned())
     };
-    match read() {
-        Ok(existing) => existing,
+    let digest = match resolve() {
+        Ok(digest) => digest,
         Err(error) => {
             let error = format!("{error:#}");
-            if absent(tag, &error) {
+            return if absent(tag, &error) {
                 Existing::Absent
             } else {
                 Existing::Unreadable(error)
-            }
+            };
         }
+    };
+    let read_raw = || -> Result<Value> {
+        let repository = Reference::parse(tag)?.repository;
+        serde_json::from_str(&tools.raw(&format!("{repository}@{digest}"))?)
+            .context("its raw manifest is not JSON")
+    };
+    match read_raw() {
+        Ok(raw) => Existing::Found { digest, raw },
+        Err(error) => Existing::Unreadable(format!("{error:#}")),
     }
 }
 
@@ -199,6 +209,64 @@ mod tests {
     /// as the wrapper reports it.
     fn inspect_error(message: &str) -> String {
         format!("docker buildx imagetools inspect failed: ERROR: {message}")
+    }
+
+    /// A tag resolved to `sha256:old`, which then moves: reading by tag
+    /// would give the new index, while the old one is still readable by
+    /// digest; `raw` fails with `raw_error` when set.
+    struct MovingTag {
+        raw_error: Option<&'static str>,
+        raws: std::cell::RefCell<Vec<String>>,
+    }
+
+    impl Imagetools for MovingTag {
+        fn manifest(&self, _reference: &str) -> Result<String> {
+            Ok(r#"{"digest": "sha256:old", "manifests": []}"#.to_owned())
+        }
+        fn config(&self, reference: &str) -> Result<String> {
+            bail!("no config for {reference}")
+        }
+        fn raw(&self, reference: &str) -> Result<String> {
+            self.raws.borrow_mut().push(reference.to_owned());
+            if let Some(error) = self.raw_error {
+                bail!("{error}");
+            }
+            Ok(match reference {
+                "reg.example/ns/pi0@sha256:old" => r#"{"manifests": ["old"]}"#,
+                _ => r#"{"manifests": ["new"]}"#,
+            }
+            .to_owned())
+        }
+        fn create(&self, _args: &[String]) -> Result<String> {
+            bail!("nothing is created")
+        }
+    }
+
+    #[test]
+    fn what_a_tag_holds_is_read_by_the_digest_it_resolved_to() {
+        let tools = MovingTag {
+            raw_error: None,
+            raws: Default::default(),
+        };
+        assert_eq!(
+            existing_manifest(&tools, "reg.example/ns/pi0:v3"),
+            Existing::Found {
+                digest: "sha256:old".to_owned(),
+                raw: serde_json::json!({"manifests": ["old"]}),
+            }
+        );
+        assert_eq!(*tools.raws.borrow(), ["reg.example/ns/pi0@sha256:old"]);
+
+        // Once the tag resolved, a digest the registry no longer knows is
+        // not the tag's absence.
+        let tools = MovingTag {
+            raw_error: Some("ERROR: manifest unknown: manifest unknown"),
+            raws: Default::default(),
+        };
+        assert!(matches!(
+            existing_manifest(&tools, "reg.example/ns/pi0:v3"),
+            Existing::Unreadable(_)
+        ));
     }
 
     #[test]
