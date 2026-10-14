@@ -184,9 +184,10 @@ class _HeaderCollector:
     def _record(self, cursor: ci.Cursor, name: str) -> None:
         if not cursor.is_definition():
             return  # a forward declaration; the typedef (C) or definition documents it
-        if name in self.seen:
-            # An explicit specialization (`Result<void>`): note it on the primary.
-            return
+        if name in self.seen and "<" in cursor.displayname:
+            # An explicit specialization (`Result<void>`) has its own members, so it
+            # documents as its own entry under its full name.
+            name = cursor.displayname
         keyword = {
             "CLASS_DECL": "class",
             "CLASS_TEMPLATE": "class",
@@ -411,6 +412,8 @@ class _HeaderCollector:
                     in_block_comment = False
                 index -= 1
                 continue
+            if _is_trailing_comment(stripped):
+                break  # code with a comment after it documents itself, not this
             if stripped.endswith("*/") and not _DIVIDER.match(stripped):
                 block.insert(0, self.lines[index])
                 in_block_comment = not stripped.startswith("/*")
@@ -433,17 +436,21 @@ class _HeaderCollector:
         return "\n".join(parts)
 
     def _declaration_text(self, cursor: ci.Cursor) -> str:
-        """A function's declaration: its text up to the body, minus any init list."""
-        text = _strip_line_comments(self._text(cursor))
+        """A function's declaration: its text up to the body, minus any init list.
+
+        Read from the source rather than the cursor's extent, which libclang can
+        end at the name when it skips bodies (`template <class F> auto and_then`).
+        """
+        start = cursor.extent.start
+        # A declaration ends well within this many lines; the bound keeps a comment
+        # or string far below from reaching back into it.
+        rest = self.lines[start.line : start.line + 40]
+        source = "\n".join([self.lines[start.line - 1][start.column - 1 :], *rest])
+        text = _strip_line_comments(source)
         cut = _top_level_cut(text, "{;")
         text = text[:cut]
-        close = _last_top_level_paren(text)
-        if close is not None:
-            rest = text[close + 1 :]
-            init = re.search(r"(?<!:):(?!:)", rest)
-            if init is not None:
-                text = text[: close + 1 + init.start()]
-        return _normalize(text)
+        init = _init_list_start(text)
+        return _normalize(text if init is None else text[:init])
 
     def _statement_text(self, cursor: ci.Cursor) -> str:
         return _normalize(_strip_line_comments(self._text(cursor)))
@@ -474,7 +481,16 @@ def _is_deleted(text: str) -> bool:
 
 
 def _is_comment_line(stripped: str) -> bool:
+    if _is_trailing_comment(stripped):
+        return False
     return stripped.startswith(("/*", "*", "//")) or stripped.endswith("*/")
+
+
+def _is_trailing_comment(stripped: str) -> bool:
+    """Code followed by a comment on its line (`int x; /* why */`, `int x;  // why`)."""
+    if stripped.startswith(("/*", "*", "//")):
+        return False
+    return "//" in stripped or ("/*" in stripped and stripped.endswith("*/"))
 
 
 def _clean_comment(block: list[str]) -> str:
@@ -507,17 +523,27 @@ def _top_level_cut(text: str, stops: str) -> int:
     return len(text)
 
 
-def _last_top_level_paren(text: str) -> int | None:
+def _init_list_start(text: str) -> int | None:
+    """Where a constructor's member-initializer list starts: the first single `:`
+    at the top level after the parameter list, or None."""
     depth = 0
-    last = None
+    after_params = False
     for index, char in enumerate(text):
-        if char == "(":
+        if char in "([":
             depth += 1
-        elif char == ")":
+        elif char in ")]":
             depth -= 1
             if depth == 0:
-                last = index
-    return last
+                after_params = True
+        elif (
+            char == ":"
+            and depth == 0
+            and after_params
+            and text[index - 1 : index] != ":"
+            and text[index + 1 : index + 2] != ":"
+        ):
+            return index
+    return None
 
 
 def _normalize(text: str) -> str:

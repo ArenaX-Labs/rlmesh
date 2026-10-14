@@ -288,7 +288,7 @@ class _FacadeWalker:
             if placement.use_item is not None
             else None
         )
-        signature = _item_signature(item, placement.name)
+        signature = _item_signature(item, placement.name, crate)
         if kind == "constant" and not self._value_in_source(item):
             # A value computed at build time (`env!`, `concat!`) varies per build;
             # the snapshot keeps only the type.
@@ -582,11 +582,27 @@ def _first_sentence(docs: str) -> str:
 # ---- signatures ------------------------------------------------------------
 
 
-def _item_signature(item: dict[str, Any], name: str) -> str:
+def _item_signature(item: dict[str, Any], name: str, crate: _Crate) -> str:
     kind = _kind(item)
     inner = item["inner"][kind]
     if kind == "function":
         return _function_signature(name, inner)
+    if (
+        kind == "struct"
+        and isinstance(inner["kind"], dict)
+        and "tuple" in inner["kind"]
+    ):
+        # A tuple struct's fields are its constructor, so they belong in the
+        # signature; rustdoc nulls out the ones it stripped as private.
+        params, where = _generics(inner.get("generics"))
+        fields = []
+        for field_id in inner["kind"]["tuple"]:
+            field = crate.item(field_id) if field_id is not None else None
+            if field is None or field["visibility"] != "public":
+                fields.append("/* private field */")
+            else:
+                fields.append(f"pub {_ty(field['inner']['struct_field'])}")
+        return f"struct {name}{params}({', '.join(fields)}){where}"
     if kind in ("struct", "enum", "union"):
         params, where = _generics(inner.get("generics"))
         return f"{kind} {name}{params}{where}"
@@ -673,7 +689,9 @@ def _generics(generics: dict[str, Any] | None) -> tuple[str, str]:
     for predicate in generics.get("where_predicates", []):
         if "bound_predicate" in predicate:
             bound = predicate["bound_predicate"]
-            predicates.append(f"{_ty(bound['type'])}: {_bounds(bound['bounds'])}")
+            # `for<'a> &'a T: Trait` carries its binder on the predicate itself.
+            hrtb = _hrtb(bound.get("generic_params", []))
+            predicates.append(f"{hrtb}{_ty(bound['type'])}: {_bounds(bound['bounds'])}")
         elif "lifetime_predicate" in predicate:
             bound = predicate["lifetime_predicate"]
             predicates.append(f"{bound['lifetime']}: {' + '.join(bound['outlives'])}")

@@ -12,10 +12,95 @@ from rlmesh_api_surface.header_surface import (
 from rlmesh_api_surface.rust_surface import (
     RUSTDOC_FORMAT_VERSION,
     _canonical_path,
+    _Crate,
     _function_signature,
+    _generics,
+    _item_signature,
     _ty,
     _unwrap_intra_doc_links,
 )
+
+
+def test_c_field_keeps_its_own_trailing_comment() -> None:
+    # The previous field's `/* required */` must not read as the end of a block
+    # comment and drag the struct's docs (and source lines) onto this field.
+    _, exports = _header("rlmesh.h", "c", "c11", None)
+    fields = {member.name: member for member in exports["RLMeshEnvConfig"].members}
+    assert fields["observation_space"].documentation == "required"
+    assert fields["action_space"].documentation == "required"
+
+
+def test_cpp_signatures_read_past_a_truncated_extent() -> None:
+    # libclang ends this template's extent at its name when skipping bodies.
+    _, exports = _header("rlmesh.hpp", "c++", "c++17", "rlmesh")
+    (and_then,) = [m for m in exports["Result"].members if m.name == "and_then"]
+    assert and_then.signature.startswith("template <class F> auto and_then(F&& fn) &&")
+    # A constructor stops before its member-initializer list.
+    (error,) = [m for m in exports["Error"].members if m.kind == "constructor"]
+    assert error.signature == (
+        "Error(RLMeshStatus code, std::string message, bool recoverable = false)"
+    )
+
+
+def test_cpp_explicit_specialization_documents_separately() -> None:
+    _, exports = _header("rlmesh.hpp", "c++", "c++17", "rlmesh")
+    void = exports["Result<void>"]
+    assert void.qualified_name == "rlmesh::Result<void>"
+    assert "Result() = default" in [member.signature for member in void.members]
+    assert (
+        exports["Result"].signature == "template <class T> class [[nodiscard]] Result"
+    )
+
+
+def test_rust_tuple_struct_shows_its_fields() -> None:
+    crate = _Crate(_minimal_rustdoc())
+    generics = {"params": [], "where_predicates": []}
+    crate.index["5"] = {
+        "id": 5,
+        "name": "0",
+        "visibility": "public",
+        "inner": {"struct_field": {"primitive": "i32"}},
+    }
+    tuple_struct = {
+        "inner": {
+            "struct": {"kind": {"tuple": [5, None]}, "generics": generics, "impls": []}
+        }
+    }
+    assert (
+        _item_signature(tuple_struct, "Mode", crate)
+        == "struct Mode(pub i32, /* private field */)"
+    )
+
+
+def test_rust_higher_ranked_where_predicate_keeps_its_binder() -> None:
+    lifetime = {"name": "'a", "kind": {"lifetime": {"outlives": []}}}
+    reference = {
+        "borrowed_ref": {
+            "lifetime": "'a",
+            "is_mutable": False,
+            "type": {"generic": "T"},
+        }
+    }
+    bound = {
+        "trait_bound": {
+            "trait": {"path": "IntoIterator", "id": 9, "args": None},
+            "generic_params": [],
+            "modifier": "none",
+        }
+    }
+    generics = {
+        "params": [],
+        "where_predicates": [
+            {
+                "bound_predicate": {
+                    "type": reference,
+                    "bounds": [bound],
+                    "generic_params": [lifetime],
+                }
+            }
+        ],
+    }
+    assert _generics(generics) == ("", " where for<'a> &'a T: IntoIterator")
 
 
 def _header(header: str, language: str, standard: str, namespace: str | None):
