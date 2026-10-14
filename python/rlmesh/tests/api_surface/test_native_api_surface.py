@@ -362,3 +362,73 @@ def test_rust_rejects_an_unknown_rustdoc_format(tmp_path: Path) -> None:
             check=False,
             rustdoc_json_dir=tmp_path,
         )
+
+
+def _fixture(tmp_path: Path, source: str, language: str = "c++"):
+    name = "fixture.hpp" if language == "c++" else "fixture.h"
+    (tmp_path / name).write_text(source, encoding="utf-8")
+    modules = collect_header_api_surface(
+        repo_root=tmp_path,
+        config=HeaderSurfaceConfig(
+            header=name,
+            language=language,
+            standard="c++17" if language == "c++" else "c11",
+            stability="Experimental",
+            namespace="ns" if language == "c++" else None,
+            source_repo="ArenaX-Labs/rlmesh",
+            source_commit=None,
+        ),
+    )
+    return {export.name: export for module in modules for export in module.exports}
+
+
+def test_specialization_naming_ignores_declaration_order(tmp_path: Path) -> None:
+    exports = _fixture(
+        tmp_path,
+        "namespace ns {\n"
+        "template <class T> class Result;\n"
+        "/// The void result.\n"
+        "template <> class Result<void> { public: bool ok() const; };\n"
+        "/// A value or an error.\n"
+        "template <class T> class Result { public: T value() const; };\n"
+        "}\n",
+    )
+    assert exports["Result"].qualified_name == "ns::Result"
+    assert [m.name for m in exports["Result"].members] == ["value"]
+    assert exports["Result<void>"].qualified_name == "ns::Result<void>"
+    assert [m.name for m in exports["Result<void>"].members] == ["ok"]
+
+
+def test_url_ending_a_block_comment_keeps_the_docs(tmp_path: Path) -> None:
+    exports = _fixture(
+        tmp_path,
+        "/* Opens a session.\n   See https://rlmesh.dev */\nint open_session(void);\n",
+        language="c",
+    )
+    assert (
+        exports["open_session"].documentation
+        == "Opens a session.\nSee https://rlmesh.dev"
+    )
+
+
+def test_long_declaration_is_read_to_its_end(tmp_path: Path) -> None:
+    params = ",\n".join(f"    int p{i}" for i in range(46))
+    exports = _fixture(tmp_path, f"/// Many.\nint many(\n{params});\n", language="c")
+    assert exports["many"].signature.endswith("int p44, int p45)")
+
+
+def test_only_constructors_lose_an_initializer_list(tmp_path: Path) -> None:
+    exports = _fixture(
+        tmp_path,
+        "#include <type_traits>\nnamespace ns {\n/// A thing.\nclass Thing {\n public:\n"
+        "  /// Builds.\n  Thing(int v) : v_(v) {}\n"
+        "  /// Picks.\n  auto pick() -> std::integral_constant<int, true ? 1 : 2>;\n"
+        '  /// Greets.\n  void greet(const char* url = "https://x;{") const;\n'
+        " private:\n  int v_;\n};\n}\n",
+    )
+    signatures = {m.name: m.signature for m in exports["Thing"].members}
+    assert signatures["Thing"] == "Thing(int v)"
+    assert (
+        signatures["pick"] == "auto pick() -> std::integral_constant<int, true ? 1 : 2>"
+    )
+    assert signatures["greet"] == 'void greet(const char* url = "https://x;{") const'

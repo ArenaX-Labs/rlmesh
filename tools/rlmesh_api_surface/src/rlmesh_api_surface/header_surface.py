@@ -155,7 +155,13 @@ class _HeaderCollector:
             if name.startswith("operator"):
                 return
             self._add(cursor, name, "function", self._declaration_text(cursor))
-        elif kind in ("STRUCT_DECL", "CLASS_DECL", "CLASS_TEMPLATE", "UNION_DECL"):
+        elif kind in (
+            "STRUCT_DECL",
+            "CLASS_DECL",
+            "CLASS_TEMPLATE",
+            "CLASS_TEMPLATE_PARTIAL_SPECIALIZATION",
+            "UNION_DECL",
+        ):
             self._record(cursor, name)
         elif kind == "ENUM_DECL":
             self._enum(cursor, name)
@@ -184,13 +190,15 @@ class _HeaderCollector:
     def _record(self, cursor: ci.Cursor, name: str) -> None:
         if not cursor.is_definition():
             return  # a forward declaration; the typedef (C) or definition documents it
-        if name in self.seen and "<" in cursor.displayname:
-            # An explicit specialization (`Result<void>`) has its own members, so it
-            # documents as its own entry under its full name.
+        if cursor.kind.name != "CLASS_TEMPLATE" and "<" in cursor.displayname:
+            # An explicit or partial specialization (`Result<void>`) has its own
+            # members, so it documents as its own entry under its full name. Its
+            # kind says so whichever of it and the primary is declared first.
             name = cursor.displayname
         keyword = {
             "CLASS_DECL": "class",
             "CLASS_TEMPLATE": "class",
+            "CLASS_TEMPLATE_PARTIAL_SPECIALIZATION": "class",
             "UNION_DECL": "union",
         }.get(cursor.kind.name, "struct")
         if (
@@ -259,7 +267,7 @@ class _HeaderCollector:
             if _is_deleted(self._statement_text(child)):
                 return None
             return self._member_entry(
-                child, "constructor", self._declaration_text(child)
+                child, "constructor", self._declaration_text(child, constructor=True)
             )
         if kind in ("CXX_METHOD", "FUNCTION_TEMPLATE", "CONVERSION_FUNCTION"):
             text = self._declaration_text(child)
@@ -435,22 +443,35 @@ class _HeaderCollector:
         parts.append(self.lines[end.line - 1][: end.column - 1])
         return "\n".join(parts)
 
-    def _declaration_text(self, cursor: ci.Cursor) -> str:
-        """A function's declaration: its text up to the body, minus any init list.
+    def _declaration_text(self, cursor: ci.Cursor, *, constructor: bool = False) -> str:
+        """A function's declaration: its text up to the body or `;`.
 
         Read from the source rather than the cursor's extent, which libclang can
-        end at the name when it skips bodies (`template <class F> auto and_then`).
+        end at the name when it skips bodies (`template <class F> auto and_then`),
+        line by line until the declaration's own terminator, however long it is.
+        Only a constructor has a member-initializer list to drop; elsewhere a
+        top-level `:` is an expression (`-> std::integral_constant<int, c ? 1 : 2>`).
         """
         start = cursor.extent.start
-        # A declaration ends well within this many lines; the bound keeps a comment
-        # or string far below from reaching back into it.
-        rest = self.lines[start.line : start.line + 40]
-        source = "\n".join([self.lines[start.line - 1][start.column - 1 :], *rest])
-        text = _strip_line_comments(source)
-        cut = _top_level_cut(text, "{;")
+        source = self.lines[start.line - 1][start.column - 1 :]
+        index = start.line
+        while True:
+            text = _strip_line_comments(source)
+            masked = _mask_strings(text)
+            cut = _top_level_cut(masked, "{;")
+            # A terminator inside a block comment still open at its line isn't one.
+            if (cut < len(text) and "/*" not in masked[:cut]) or index >= len(
+                self.lines
+            ):
+                break
+            source += "\n" + self.lines[index]
+            index += 1
         text = text[:cut]
-        init = _init_list_start(text)
-        return _normalize(text if init is None else text[:init])
+        if constructor:
+            init = _init_list_start(_mask_strings(text))
+            if init is not None:
+                text = text[:init]
+        return _normalize(text)
 
     def _statement_text(self, cursor: ci.Cursor) -> str:
         return _normalize(_strip_line_comments(self._text(cursor)))
@@ -490,7 +511,12 @@ def _is_trailing_comment(stripped: str) -> bool:
     """Code followed by a comment on its line (`int x; /* why */`, `int x;  // why`)."""
     if stripped.startswith(("/*", "*", "//")):
         return False
-    return "//" in stripped or ("/*" in stripped and stripped.endswith("*/"))
+    code = _mask_strings(stripped)
+    if code.endswith("*/"):
+        # A block comment's last line (`See https://rlmesh.dev */`) unless this
+        # same line opened it after some code.
+        return "/*" in code
+    return "//" in code
 
 
 def _clean_comment(block: list[str]) -> str:
@@ -506,9 +532,27 @@ def _clean_comment(block: list[str]) -> str:
     return re.sub(r"\n{3,}", "\n\n", text)
 
 
+# A string or character literal, or a comment: matched together so a `//` or
+# `/*` inside a literal (a URL in a default argument) stays code.
+_LITERAL_OR_COMMENT = re.compile(
+    r'"(?:\\.|[^"\\\n])*"' + r"|'(?:\\.|[^'\\\n])*'" + r"|/\*.*?\*/|//[^\n]*", re.S
+)
+
+
 def _strip_line_comments(text: str) -> str:
-    text = re.sub(r"/\*.*?\*/", " ", text, flags=re.S)
-    return re.sub(r"//[^\n]*", " ", text)
+    return _LITERAL_OR_COMMENT.sub(
+        lambda m: m.group(0) if m.group(0)[0] in "\"'" else " ", text
+    )
+
+
+def _mask_strings(text: str) -> str:
+    """`text` with each literal's contents blanked, same length, for punctuation scans."""
+    return _LITERAL_OR_COMMENT.sub(
+        lambda m: m.group(0)[0] + "_" * (len(m.group(0)) - 2) + m.group(0)[-1]
+        if m.group(0)[0] in "\"'"
+        else m.group(0),
+        text,
+    )
 
 
 def _top_level_cut(text: str, stops: str) -> int:
