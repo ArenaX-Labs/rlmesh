@@ -55,6 +55,43 @@ package_artifact = "pypi:rlmesh"
 metadata = "tools/rlmesh_api_surface/src/rlmesh_api_surface/api_metadata.json"
 contract_snapshot = "python/rlmesh/tests/api_surface/snapshots/api_surface.json"
 
+# Early-access references for the docs site. `access` and `summary` label every
+# page; `stability` is the compatibility.md label every item carries. Only the
+# `rlmesh` facade crate is documented: the other crates are internal.
+[api_surface.rust]
+kind = "rlmesh.rust-api-surface"
+manifest_kind = "rlmesh.rust-api-surface-manifest"
+package_artifact = "cargo:rlmesh"
+package_name = "rlmesh"
+crate = "rlmesh"
+skipped_modules = ["prelude"]
+access = "early-access"
+stability = "Preview"
+summary = "Early access. The rlmesh crate is intended to become stable but may still change; a breaking change ships in a minor release with a migration note. Build on the Python package for anything long-lived."
+
+[api_surface.c]
+kind = "rlmesh.c-api-surface"
+manifest_kind = "rlmesh.c-api-surface-manifest"
+package_artifact = "cargo:rlmesh"
+package_name = "rlmesh-capi"
+header = "crates/rlmesh-capi/include/rlmesh.h"
+standard = "c11"
+access = "early-access"
+stability = "Experimental"
+summary = "Early access. The C ABI is experimental and will break before 1.0; RLMESH_ABI_VERSION changes with every break, and find_package(rlmesh N) refuses another generation."
+
+[api_surface.cpp]
+kind = "rlmesh.cpp-api-surface"
+manifest_kind = "rlmesh.cpp-api-surface-manifest"
+package_artifact = "cargo:rlmesh"
+package_name = "rlmesh-capi"
+header = "crates/rlmesh-capi/include/rlmesh.hpp"
+standard = "c++17"
+namespace = "rlmesh"
+access = "early-access"
+stability = "Experimental"
+summary = "Early access. The header-only C++17 wrapper over the C ABI is experimental and will break before 1.0, together with the C ABI it wraps."
+
 [[artifact]]
 id = "pypi:rlmesh"
 ecosystem = "pypi"

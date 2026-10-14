@@ -273,6 +273,141 @@ def write_docs_api_surface(
     return 0
 
 
+NATIVE_LANGUAGES = ("rust", "c", "cpp")
+
+
+def write_native_docs_api_surface(
+    *,
+    language: str,
+    output_dir: Path,
+    repo_root: Path,
+    manifest_path: Path,
+    package_version: str | None,
+    check: bool,
+    rustdoc_json_dir: Path | None = None,
+) -> int:
+    """Write a Rust, C, or C++ docs snapshot: the Python envelope plus `access`.
+
+    These references are early access: `access` carries the label and summary the
+    docs site shows on every page, from `[api_surface.<language>]` in rlmesh.toml.
+    """
+    manifest = _load_manifest(manifest_path)
+    policy = _api_surface_policy(manifest, language)
+    version = package_version or _artifact_version(manifest, policy["package_artifact"])
+    modules = _collect_native_modules(language, policy, repo_root, rustdoc_json_dir)
+    package: dict[str, object] = {"name": policy["package_name"], "version": version}
+    if "header" in policy:
+        # Both headers share the C ABI generation, which rlmesh.h defines.
+        package["abiVersion"] = _abi_version(
+            repo_root / Path(policy["header"]).parent / "rlmesh.h"
+        )
+    payload = {
+        "schemaVersion": DOCS_API_SURFACE_SCHEMA_VERSION,
+        "kind": policy["kind"],
+        "language": language,
+        "release": _release_policy(manifest),
+        "access": {
+            "level": policy["access"],
+            "stability": policy["stability"],
+            "summary": policy["summary"],
+        },
+        "package": package,
+        "surface": {"modules": [module.to_docs_api_surface() for module in modules]},
+        "features": {},
+    }
+    for module in modules:
+        for export in module.exports:
+            if not export.documentation:
+                print(
+                    f"warning: undocumented {language} API: {export.qualified_name or export.name}"
+                )
+
+    snapshot_text = _json_dumps(payload)
+    docs_manifest_text = _docs_manifest_json(
+        output_dir, latest=version, language=language, kind=policy["manifest_kind"]
+    )
+    snapshot_path = output_dir / f"{version}.json"
+    docs_manifest_path = output_dir / "manifest.json"
+    if check:
+        failed = _check_text(snapshot_path, snapshot_text)
+        failed |= _check_text(docs_manifest_path, docs_manifest_text)
+        return 1 if failed else 0
+    output_dir.mkdir(parents=True, exist_ok=True)
+    snapshot_path.write_text(snapshot_text, encoding="utf-8")
+    docs_manifest_path.write_text(docs_manifest_text, encoding="utf-8")
+    return 0
+
+
+def _collect_native_modules(
+    language: str,
+    policy: dict[str, Any],
+    repo_root: Path,
+    rustdoc_json_dir: Path | None,
+) -> list[ApiModule]:
+    commit = _git_commit(repo_root)
+    # Imported here so the Python extractor never needs libclang or cargo.
+    if language == "rust":
+        from rlmesh_api_surface.rust_surface import (
+            RustSurfaceConfig,
+            collect_rust_api_surface,
+        )
+
+        modules = collect_rust_api_surface(
+            repo_root=repo_root,
+            json_dir=rustdoc_json_dir,
+            config=RustSurfaceConfig(
+                crate=policy["crate"],
+                stability=policy["stability"],
+                skipped_modules=tuple(policy.get("skipped_modules", [])),
+                source_repo=SOURCE_REPO,
+                source_commit=commit,
+            ),
+        )
+    else:
+        from rlmesh_api_surface.header_surface import (
+            HeaderSurfaceConfig,
+            collect_header_api_surface,
+        )
+
+        modules = collect_header_api_surface(
+            repo_root=repo_root,
+            config=HeaderSurfaceConfig(
+                header=policy["header"],
+                language="c++" if language == "cpp" else "c",
+                standard=policy["standard"],
+                stability=policy["stability"],
+                namespace=policy.get("namespace"),
+                source_repo=SOURCE_REPO,
+                source_commit=commit,
+            ),
+        )
+    # A module whose items all document elsewhere would render as an empty page.
+    return [module for module in modules if module.exports]
+
+
+def _api_surface_policy(manifest: dict[str, Any], language: str) -> dict[str, Any]:
+    policy = manifest.get("api_surface", {}).get(language)
+    if not isinstance(policy, dict):
+        raise ValueError(f"missing [api_surface.{language}] table in rlmesh manifest")
+    return policy
+
+
+def _artifact_version(manifest: dict[str, Any], artifact_id: str) -> str:
+    for artifact in manifest.get("artifact", []):
+        if isinstance(artifact, dict) and artifact.get("id") == artifact_id:
+            return str(artifact["version"])
+    raise ValueError(f"missing artifact {artifact_id!r} in rlmesh manifest")
+
+
+def _abi_version(header: Path) -> int:
+    match = re.search(
+        r"^#define RLMESH_ABI_VERSION (\d+)$", header.read_text(encoding="utf-8"), re.M
+    )
+    if match is None:
+        raise ValueError(f"{header}: no RLMESH_ABI_VERSION")
+    return int(match.group(1))
+
+
 class _Collector:
     def __init__(self, repo_root: Path, metadata: dict[str, Any]) -> None:
         self.repo_root = repo_root
@@ -519,7 +654,13 @@ def _read_project_version(path: Path) -> str:
     raise ValueError(f"missing [project].version in {path}")
 
 
-def _docs_manifest_json(output_dir: Path, *, latest: str) -> str:
+def _docs_manifest_json(
+    output_dir: Path,
+    *,
+    latest: str,
+    language: str = "python",
+    kind: str = DOCS_API_SURFACE_MANIFEST_KIND,
+) -> str:
     versions: list[str] = []
     manifest_path = output_dir / "manifest.json"
     if manifest_path.exists():
@@ -531,8 +672,8 @@ def _docs_manifest_json(output_dir: Path, *, latest: str) -> str:
         versions.append(latest)
     manifest = {
         "schemaVersion": DOCS_API_SURFACE_SCHEMA_VERSION,
-        "kind": DOCS_API_SURFACE_MANIFEST_KIND,
-        "language": "python",
+        "kind": kind,
+        "language": language,
         "latest": latest,
         "versions": versions,
     }
@@ -851,8 +992,29 @@ def main() -> int:
         action="store_true",
         help="validate generated files without writing them",
     )
+    docs_parser.add_argument(
+        "--language",
+        choices=("python", *NATIVE_LANGUAGES),
+        default="python",
+        help="which API reference to extract (rust, c, and cpp are early access)",
+    )
+    docs_parser.add_argument(
+        "--rustdoc-json-dir",
+        type=Path,
+        help="read prebuilt rustdoc JSON from here instead of running cargo rustdoc",
+    )
     args = parser.parse_args()
 
+    if args.command == "docs-api-surface" and args.language in NATIVE_LANGUAGES:
+        return write_native_docs_api_surface(
+            language=args.language,
+            output_dir=args.output_dir,
+            repo_root=args.repo_root,
+            manifest_path=args.manifest,
+            package_version=args.version,
+            check=args.check,
+            rustdoc_json_dir=args.rustdoc_json_dir,
+        )
     if args.command == "docs-api-surface":
         return write_docs_api_surface(
             output_dir=args.output_dir,

@@ -28,18 +28,26 @@ RUST_SEMVER_RE = re.compile(
     r"(?:-(?P<channel>alpha|beta|rc)\.(?P<number>\d+))?$"
 )
 STABLE_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
-STR_CONST_RE = re.compile(r'pub const (?P<name>[A-Z0-9_]+): &str =\s*"(?P<value>[^"]+)";')
+STR_CONST_RE = re.compile(
+    r'pub const (?P<name>[A-Z0-9_]+): &str =\s*"(?P<value>[^"]+)";'
+)
 PY_STR_CONST_RE = re.compile(r'(?P<name>[A-Z0-9_]+)\s*=\s*"(?P<value>[^"]+)"')
 INT_CONST_RE = re.compile(r"(?P<name>[A-Z0-9_]+)\s*=\s*(?P<value>\d+)")
 # A proto package path: `rlmesh.<pkg>.vN`. The generation token must NOT match
 # this shape (it is an opaque handshake value, not a package namespace).
 PACKAGE_PATH_TOKEN_RE = re.compile(r"^rlmesh\.[a-z]+\.v\d+$")
-PROTO_PACKAGE_RE = re.compile(r"^\s*package\s+(?P<package>[A-Za-z0-9_.]+)\s*;", re.MULTILINE)
+PROTO_PACKAGE_RE = re.compile(
+    r"^\s*package\s+(?P<package>[A-Za-z0-9_.]+)\s*;", re.MULTILINE
+)
 PROTO_BLOCK_RE = re.compile(r"^(?P<kind>message|enum|oneof)\s+(?P<name>\w+)\s*\{")
 # An enum value (`NAME = 1;`) or a field/oneof arm (`Type name = 1;`), with any
 # label words and an optional `[option]` block; `reserved` lines never match.
-PROTO_ENTRY_RE = re.compile(r"^(?:[\w.]+(?:<[^>]*>)?\s+)*\w+\s*=\s*\d+\s*(?:\[.*\])?\s*;")
-MAX_MESSAGE_SIZE_RE = re.compile(r"pub const MAX_MESSAGE_SIZE: usize = (?P<expr>[^;]+);")
+PROTO_ENTRY_RE = re.compile(
+    r"^(?:[\w.]+(?:<[^>]*>)?\s+)*\w+\s*=\s*\d+\s*(?:\[.*\])?\s*;"
+)
+MAX_MESSAGE_SIZE_RE = re.compile(
+    r"pub const MAX_MESSAGE_SIZE: usize = (?P<expr>[^;]+);"
+)
 # Oneofs whose new arm an old peer cannot refuse: `MetaValue.kind` reads as null
 # and `SpaceSpec.spec` as an unset spec, so their arm counts stay manifest-pinned.
 FROZEN_ONEOFS = ("rlmesh.spaces.v1.MetaValue.kind", "rlmesh.spaces.v1.SpaceSpec.spec")
@@ -48,9 +56,7 @@ FROZEN_ONEOFS = ("rlmesh.spaces.v1.MetaValue.kind", "rlmesh.spaces.v1.SpaceSpec.
 # prerelease cohort (`YYYY.MM-X.Y.Z-{alpha,beta,rc}.N`). Local dev cohorts are
 # generated at build time and are not committed to `rlmesh.toml`.
 EDITION_BASE_RE = re.compile(r"^[0-9]{4}\.[0-9]{2}$")
-EDITION_PRERELEASE_SUFFIX_RE = re.compile(
-    r"^\d+\.\d+\.\d+-(?:alpha|beta|rc)\.\d+$"
-)
+EDITION_PRERELEASE_SUFFIX_RE = re.compile(r"^\d+\.\d+\.\d+-(?:alpha|beta|rc)\.\d+$")
 # A prerelease version literal in prose: `X.Y.Z-rc.N` (SemVer) or `X.Y.ZrcN`
 # (PEP 440). Bare stable `X.Y.Z` is intentionally NOT matched — forward/historical
 # references to stable versions are fine; only the moving prerelease cohort must
@@ -81,7 +87,9 @@ def _edition_sort_key(name: str) -> tuple[str, bool, str]:
     return (base, suffix is not None, suffix or "")
 
 
-def _current_edition_not_highest(current_edition: str, supported: list[str]) -> str | None:
+def _current_edition_not_highest(
+    current_edition: str, supported: list[str]
+) -> str | None:
     """The error when ``current_edition`` does not sort highest among ``supported``.
 
     A build declares ``current_edition`` as its WANT and offers ``supported`` as
@@ -185,7 +193,9 @@ def selfcheck() -> None:
     # list then carries an edition rlmesh.toml does not retain.
     assert _check_generated_supported_editions(rc1, ["2026.06"], lib, build)
     # A repeat would be offered twice on the wire.
-    assert _check_generated_supported_editions(rc1, [rc1, "2026.06", "2026.06"], lib, build)
+    assert _check_generated_supported_editions(
+        rc1, [rc1, "2026.06", "2026.06"], lib, build
+    )
 
     # The crate's edition file is current_edition first, then the other retained
     # editions; a crates.io build takes its base edition from that first line.
@@ -195,9 +205,10 @@ def selfcheck() -> None:
         f"{rc1}\n2026.06\n", rc1, ["2026.06", rc1]
     )
     assert _check_packaged_supported_editions(f"{rc1}\n", rc1, retained)
-    assert "must start with" in _check_packaged_supported_editions(
-        f"2026.06\n{rc1}\n", rc1, retained
-    )[0]
+    assert (
+        "must start with"
+        in _check_packaged_supported_editions(f"2026.06\n{rc1}\n", rc1, retained)[0]
+    )
     assert "must start with" in _check_packaged_supported_editions("", rc1, retained)[0]
 
     previous = """[workflow]
@@ -293,7 +304,9 @@ service S {
     ]
     assert _check_wire_vocabulary(wire, {**enums, "rlmesh.t.v1.New": 1}, live_oneofs)
     assert _check_wire_vocabulary(wire, {"rlmesh.t.v1.Top": 3}, live_oneofs)
-    assert _check_wire_vocabulary(wire, enums, {**live_oneofs, "rlmesh.t.v1.Outer.kind": 3})
+    assert _check_wire_vocabulary(
+        wire, enums, {**live_oneofs, "rlmesh.t.v1.Outer.kind": 3}
+    )
     # An error-code enum names the silent fold in its message.
     fold = _check_wire_vocabulary(
         {**wire, "enums": {**wire["enums"], "rlmesh.t.v1.EnvErrorCode": 2}},
@@ -375,12 +388,16 @@ def validate_rlmesh_policy(*, repo_root: Path, manifest_path: Path) -> list[str]
 
     errors.extend(_validate_release_crate_order(repo_root, artifacts))
     errors.extend(_validate_protocol_and_workflow(repo_root, protocol))
-    errors.extend(_validate_workflow_editions(repo_root, workflow, release, workspace_version))
+    errors.extend(
+        _validate_workflow_editions(repo_root, workflow, release, workspace_version)
+    )
     errors.extend(
         _validate_generated_supported_editions(repo_root, manifest_path, workflow)
     )
     errors.extend(_validate_packaged_supported_editions(repo_root, workflow))
-    errors.extend(_validate_sealed_edition_retention(repo_root, manifest_path, workflow))
+    errors.extend(
+        _validate_sealed_edition_retention(repo_root, manifest_path, workflow)
+    )
     errors.extend(_validate_wire(repo_root, _required_table(manifest, "wire", errors)))
     errors.extend(_validate_adapters(repo_root))
     errors.extend(_validate_python_public_modules(repo_root))
@@ -517,7 +534,9 @@ def _validate_python_public_modules(repo_root: Path) -> list[str]:
     return errors
 
 
-def _validate_release_crate_order(repo_root: Path, artifacts: list[Artifact]) -> list[str]:
+def _validate_release_crate_order(
+    repo_root: Path, artifacts: list[Artifact]
+) -> list[str]:
     """Cross-check the [[artifact]] cargo inventory against release.py CRATE_ORDER.
 
     Every crate the release driver publishes must be a declared artifact (so its
@@ -552,7 +571,9 @@ def _release_crate_order(path: Path) -> list[str] | None:
     for node in tree.body:
         if not isinstance(node, ast.Assign):
             continue
-        if not any(isinstance(t, ast.Name) and t.id == "CRATE_ORDER" for t in node.targets):
+        if not any(
+            isinstance(t, ast.Name) and t.id == "CRATE_ORDER" for t in node.targets
+        ):
             continue
         value = ast.literal_eval(node.value)
         if isinstance(value, list) and all(isinstance(v, str) for v in value):
@@ -574,7 +595,9 @@ def _defines_dunder_all(path: Path) -> bool:
     return False
 
 
-def _validate_protocol_and_workflow(repo_root: Path, protocol: dict[str, Any]) -> list[str]:
+def _validate_protocol_and_workflow(
+    repo_root: Path, protocol: dict[str, Any]
+) -> list[str]:
     errors: list[str] = []
     source = repo_root / "crates/rlmesh-proto/src/lib.rs"
     source_text = source.read_text(encoding="utf-8")
@@ -638,9 +661,7 @@ def _validate_protocol_and_workflow(repo_root: Path, protocol: dict[str, Any]) -
         errors.append("buf.yaml is required for proto lint and breaking-change policy")
     else:
         buf_lines = buf_config.read_text(encoding="utf-8").splitlines()
-        if not any(
-            line.split("#", 1)[0].strip() == "breaking:" for line in buf_lines
-        ):
+        if not any(line.split("#", 1)[0].strip() == "breaking:" for line in buf_lines):
             errors.append(
                 "buf.yaml must include an active (uncommented) breaking-change policy"
             )
@@ -674,7 +695,9 @@ def _validate_workflow_editions(
     if workspace_version is not None and base_edition:
         expected_current = _official_current_edition(base_edition, workspace_version)
         if expected_current is None:
-            errors.append(f"workspace version {workspace_version!r} is not valid Rust SemVer")
+            errors.append(
+                f"workspace version {workspace_version!r} is not valid Rust SemVer"
+            )
         elif current_edition and current_edition != expected_current:
             errors.append(
                 f"[workflow].current_edition is {current_edition!r}, expected "
@@ -688,7 +711,9 @@ def _validate_workflow_editions(
         errors.append("[workflow].supported_editions must be a list of strings")
         supported = []
     elif current_edition and current_edition not in supported:
-        errors.append("[workflow].supported_editions must include [workflow].current_edition")
+        errors.append(
+            "[workflow].supported_editions must include [workflow].current_edition"
+        )
 
     if current_edition and supported:
         not_highest = _current_edition_not_highest(current_edition, supported)
@@ -705,7 +730,9 @@ def _validate_workflow_editions(
     if workspace_version is not None:
         expected_status = _release_status_for_version(workspace_version)
         if expected_status is None:
-            errors.append(f"workspace version {workspace_version!r} is not valid Rust SemVer")
+            errors.append(
+                f"workspace version {workspace_version!r} is not valid Rust SemVer"
+            )
         elif release_status != expected_status:
             errors.append(
                 f"[release].status is {release_status!r}, expected {expected_status!r} "
@@ -763,7 +790,9 @@ def _validate_workflow_editions(
                     "(retained forever, never pruned)"
                 )
         elif sealed_in is not None:
-            errors.append(f"{prefix}.sealed_in is only recorded once the edition is sealed")
+            errors.append(
+                f"{prefix}.sealed_in is only recorded once the edition is sealed"
+            )
 
         spec = entry.get("spec")
         if not isinstance(spec, str):
@@ -850,7 +879,9 @@ def _scan_manifest_string_list(text: str, key: str) -> list[str]:
     return values
 
 
-def _generated_supported_editions(current_edition: str, supported: list[str]) -> list[str]:
+def _generated_supported_editions(
+    current_edition: str, supported: list[str]
+) -> list[str]:
     """The list ``build.rs`` generates: this build's cohort first, then the rest.
 
     Mirrors ``supported_workflow_editions`` in ``crates/rlmesh-proto/build.rs``. A
@@ -881,7 +912,9 @@ def _check_generated_supported_editions(
 
     generated = _generated_supported_editions(current_edition, supported)
     if len(set(generated)) != len(generated):
-        errors.append(f"generated SUPPORTED_WORKFLOW_EDITIONS {generated} repeats an edition")
+        errors.append(
+            f"generated SUPPORTED_WORKFLOW_EDITIONS {generated} repeats an edition"
+        )
     if set(generated) != set(supported):
         errors.append(
             f"generated SUPPORTED_WORKFLOW_EDITIONS {generated} does not match "
@@ -946,7 +979,9 @@ def _check_packaged_supported_editions(
     expected = _generated_supported_editions(current_edition, supported)
     if packaged == expected:
         return []
-    return [f"{PACKAGED_SUPPORTED_EDITIONS} lists {packaged}, expected {expected}; {fix}"]
+    return [
+        f"{PACKAGED_SUPPORTED_EDITIONS} lists {packaged}, expected {expected}; {fix}"
+    ]
 
 
 def _validate_packaged_supported_editions(
@@ -984,7 +1019,9 @@ def _sealed_editions(manifest_text: str) -> set[str]:
     }
 
 
-def _dropped_sealed_editions(previous_manifest_text: str, supported: list[str]) -> list[str]:
+def _dropped_sealed_editions(
+    previous_manifest_text: str, supported: list[str]
+) -> list[str]:
     return sorted(_sealed_editions(previous_manifest_text) - set(supported))
 
 
@@ -1093,12 +1130,14 @@ def _check_wire_vocabulary(
     errors: list[str] = []
     recorded_enums = wire.get("enums")
     if not isinstance(recorded_enums, dict):
-        errors.append("[wire.enums] must be a table of `\"<package>.<Enum>\" = <value count>`")
+        errors.append(
+            '[wire.enums] must be a table of `"<package>.<Enum>" = <value count>`'
+        )
         recorded_enums = {}
     recorded_oneofs = wire.get("oneofs")
     if not isinstance(recorded_oneofs, dict):
         errors.append(
-            "[wire.oneofs] must be a table of `\"<package>.<Message>.<oneof>\" = <arm count>`"
+            '[wire.oneofs] must be a table of `"<package>.<Message>.<oneof>" = <arm count>`'
         )
         recorded_oneofs = {}
     for name in FROZEN_ONEOFS:
@@ -1124,7 +1163,9 @@ def _check_wire_vocabulary(
                 continue
             pinned = recorded[name]
             if not isinstance(pinned, int):
-                errors.append(f'[wire.{table}]."{name}" must be an integer {noun} count')
+                errors.append(
+                    f'[wire.{table}]."{name}" must be an integer {noun} count'
+                )
             elif pinned != count:
                 errors.append(
                     f'[wire.{table}]."{name}" is {pinned}, the proto declares {count} '
@@ -1286,6 +1327,49 @@ def _validate_api_surface(
     if package_family and not package_family.startswith("0."):
         errors.append("[release].package_family must be 0.minor before 1.0")
 
+    errors.extend(_validate_native_api_surfaces(repo_root, api_surface, artifact_ids))
+    return errors
+
+
+# The early-access references: none may claim Stable, and each names what it reads.
+NATIVE_API_SURFACES = {
+    "rust": ("crate",),
+    "c": ("header", "standard"),
+    "cpp": ("header", "standard", "namespace"),
+}
+
+
+def _validate_native_api_surfaces(
+    repo_root: Path, api_surface: dict[str, Any], artifact_ids: set[str]
+) -> list[str]:
+    errors: list[str] = []
+    for language, source_keys in NATIVE_API_SURFACES.items():
+        table = api_surface.get(language)
+        if table is None:
+            continue
+        prefix = f"[api_surface.{language}]"
+        if not isinstance(table, dict):
+            errors.append(f"{prefix} must be a table")
+            continue
+        for key, expected in (
+            ("kind", f"rlmesh.{language}-api-surface"),
+            ("manifest_kind", f"rlmesh.{language}-api-surface-manifest"),
+            ("access", "early-access"),
+        ):
+            if table.get(key) != expected:
+                errors.append(f"{prefix}.{key} must be {expected!r}")
+        if table.get("stability") not in {"Preview", "Experimental"}:
+            errors.append(f"{prefix}.stability must be Preview or Experimental")
+        if table.get("package_artifact") not in artifact_ids:
+            errors.append(
+                f"{prefix}.package_artifact does not match any [[artifact]].id"
+            )
+        for key in ("package_name", "summary", *source_keys):
+            if not isinstance(table.get(key), str) or not table[key]:
+                errors.append(f"{prefix}.{key} must be a non-empty string")
+        header = table.get("header")
+        if isinstance(header, str) and not (repo_root / header).exists():
+            errors.append(f"{prefix}.header does not exist: {header}")
     return errors
 
 
@@ -1346,7 +1430,9 @@ def _declared_proto_packages(repo_root: Path) -> set[str]:
         return packages
     for proto_file in proto_root.rglob("*.proto"):
         text = proto_file.read_text(encoding="utf-8")
-        packages.update(match.group("package") for match in PROTO_PACKAGE_RE.finditer(text))
+        packages.update(
+            match.group("package") for match in PROTO_PACKAGE_RE.finditer(text)
+        )
     return packages
 
 
@@ -1447,7 +1533,9 @@ def _validate_doc_versions(repo_root: Path, workspace_version: str | None) -> li
 
 def _validate_rust_version(repo_root: Path) -> list[str]:
     mise_rust = _read_toml(repo_root / "mise.toml").get("tools", {}).get("rust")
-    package = _read_toml(repo_root / "Cargo.toml").get("workspace", {}).get("package", {})
+    package = (
+        _read_toml(repo_root / "Cargo.toml").get("workspace", {}).get("package", {})
+    )
     return _check_rust_version(mise_rust, package.get("rust-version"))
 
 

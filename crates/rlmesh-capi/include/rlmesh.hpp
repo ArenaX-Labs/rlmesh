@@ -39,6 +39,8 @@
 
 namespace rlmesh {
 
+// ---- errors + results -------------------------------------------------------
+
 /// A failure: a status code plus an owned message snapshot.
 class Error {
  public:
@@ -188,6 +190,8 @@ inline Status ok() { return Status(); }
   })
 #endif
 
+// ---- dtype + tensor ---------------------------------------------------------
+
 /// The RLMeshDType of a C++ element type (float, double, int32_t, int64_t,
 /// uint8_t, bool).
 template <class T>
@@ -237,6 +241,8 @@ class Tensor {
  private:
   RLMeshTensor raw_;
 };
+
+// ---- values -----------------------------------------------------------------
 
 /// A borrowed value view (valid only while its owner lives — for an observation
 /// row, the duration of the predict call). Reads every value kind.
@@ -479,6 +485,8 @@ class Value {
 
   RLMeshValue* ptr_;
 };
+
+// ---- spaces -----------------------------------------------------------------
 
 /// A borrowed space spec (valid while its contract lives) — the ValueRef of the
 /// space side: every leaf parameter an encoder needs, plus a composite walk.
@@ -792,6 +800,8 @@ inline Result<Value> zeros_for(SpaceRef space) {
       return Error(RLMESH_ERR_INVALID_VALUE, "no value fits an unspecified space");
   }
 }
+
+// ---- model ------------------------------------------------------------------
 
 /// One row's episode identity. `id` is runtime-minted and never repeats, so a
 /// stateful model keys per-episode state by it. `predict_index` is the
@@ -1131,6 +1141,8 @@ class Model {
   std::unique_ptr<State> state_;
 };
 
+// ---- spaces (env side) ------------------------------------------------------
+
 /// An owned space spec (move-only), built env-side to declare an
 /// `Environment`'s observation / action spaces. `ref()` reads it back.
 class Space {
@@ -1240,6 +1252,8 @@ class Space {
 
   RLMeshSpaceSpec* ptr_;
 };
+
+// ---- environment ------------------------------------------------------------
 
 /// What `Environment::reset` receives.
 struct ResetArgs {
