@@ -57,9 +57,29 @@ integer/float conversion and per-lane validation directly from the facade.
 
 The C env/model/run and remote interfaces below use the facade surface.
 The fenced compatibility sections document the old paths still needed by
-the C++ wrapper. The facade on this branch has no native DLPack import/export
-methods, and C does not expose them. C++ receives only compatibility changes;
+the C++ wrapper. C++ receives only compatibility changes;
 its full parity API is a separate wave.
+
+`rlmesh_tensor_from_dlpack` and `rlmesh_tensor_to_dlpack` use versioned
+`struct DLManagedTensorVersioned` descriptors through the Rust facade.
+Import copies CPU data and calls the producer's deleter only on success;
+on error the caller still owns the descriptor. Export shares read-only
+storage by default; `RLMeshToDlpackOptions options = RLMESH_TO_DLPACK_OPTIONS_INIT`
+with `options.copy = true` exports independent writable storage. Pass NULL
+for default options. The only supported `dl_device` is `(kDLCPU, 0)`, also
+reported by `rlmesh_tensor_dlpack_device`. Options require `struct_size`,
+zero reserved fields and zero unknown trailing bytes. All failed exchange
+calls set a provided output pointer to NULL; an invalid output cannot consume
+an import. An exported descriptor owns its data and metadata after the
+source tensor is freed; release it exactly once with `exported->deleter(exported)`.
+See [`examples/c_dlpack.c`](examples/c_dlpack.c) for imports, exports and ownership.
+
+`rlmesh.h` embeds the complete, unchanged upstream DLPack v1.0 header under
+`DLPACK_DLPACK_H_`, with its Apache-2.0 license in `include/dlpack.LICENSE`.
+It supports either include order with DLPack 1.x headers and rejects a
+pre-1.0 DLPack header included first. The native API has no legacy descriptor,
+stream or Python capsule negotiation parameters. The C++ DLPack wrapper is
+deferred to the C++20 wave.
 
 ## Describe
 

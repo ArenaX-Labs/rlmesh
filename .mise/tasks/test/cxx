@@ -45,6 +45,39 @@ printf '#include <rlmesh.hpp>\n' |
 echo "==> C header stays warning-free in C++98"
 printf '#include <rlmesh.h>\n' |
   $CXX -std=c++98 "${warn[@]}" -pedantic "${cxx_quiet[@]}" -I "$inc" -c -x c++ - -o "$tmp/header_cxx98.o"
+echo "==> vendored DLPack v1.0 is verbatim and accepts either include order"
+python - "$inc/rlmesh.h" "$tmp/dlpack.h" <<'PY'
+import hashlib
+import pathlib
+import sys
+
+header = pathlib.Path(sys.argv[1]).read_text()
+start = header.index("/*!\n *  Copyright (c) 2017 by Contributors")
+end_marker = "#endif  // DLPACK_DLPACK_H_\n"
+end = header.index(end_marker, start) + len(end_marker)
+upstream = header[start:end].encode()
+assert hashlib.sha256(upstream).hexdigest() == (
+    "99996dc5c822604961efa190a033f146bfcb8d81d664005a402e0d976b56f600"
+), "vendored DLPack must match upstream dmlc/dlpack v1.0 verbatim"
+pathlib.Path(sys.argv[2]).write_bytes(upstream)
+PY
+for first in dlpack.h rlmesh.h; do
+  second=rlmesh.h
+  if [ "$first" = rlmesh.h ]; then second=dlpack.h; fi
+  printf '#include <%s>\n#include <%s>\n' "$first" "$second" |
+    $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" -I "$tmp" -c -x c - \
+      -o "$tmp/dlpack_order_c.o"
+  printf '#include <%s>\n#include <%s>\n' "$first" "$second" |
+    $CXX -std=c++17 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" -I "$tmp" -c -x c++ - \
+      -o "$tmp/dlpack_order_cxx.o"
+done
+if printf '#define DLPACK_DLPACK_H_\n#include <rlmesh.h>\n' |
+  $CC -std=c11 "${cc_quiet[@]}" -I "$inc" -c -x c - -o "$tmp/old_dlpack.o" \
+    >"$tmp/old_dlpack.log" 2>&1; then
+  echo "ERROR: a pre-1.0 DLPack header was accepted" >&2
+  exit 1
+fi
+rg -q 'RLMesh requires DLPack 1.0 or newer' "$tmp/old_dlpack.log"
 # Compile-only layout assertions cover both 32-bit double-alignment conventions.
 # Other compilers still check their native layout when c_adapters runs below.
 case "$CC" in *zig*)
@@ -53,6 +86,10 @@ case "$CC" in *zig*)
     -c crates/rlmesh-capi/examples/c_adapters.c -o "$tmp/layout_x86.o"
   $CC -target arm-linux-musleabihf -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
     -c crates/rlmesh-capi/examples/c_adapters.c -o "$tmp/layout_arm.o"
+  for triple in x86-linux-musl arm-linux-musleabihf; do
+    $CC -target "$triple" -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
+      -c crates/rlmesh-capi/examples/c_dlpack.c -o "$tmp/dlpack_$triple.o"
+  done
 ;; esac
 # The wrapper is header-only templates: including it instantiates almost nothing.
 # cpp_surface.cpp names every public type and member, so a template that stops
@@ -95,6 +132,10 @@ echo "==> C spaces API: build, seed, sample, contains, typed bounds, error class
 $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/c_spaces.c "${link[@]}" -o "$tmp/c_spaces"
 "$tmp/c_spaces"
+echo "==> C DLPack import/export ownership, source lifetimes and sized options"
+$CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
+  crates/rlmesh-capi/examples/c_dlpack.c "${link[@]}" -o "$tmp/c_dlpack"
+"$tmp/c_dlpack"
 echo "==> C ABI 5 env authoring, server lifecycle and sized inputs"
 $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/c_env_api.c "${link[@]}" -o "$tmp/c_env_api"

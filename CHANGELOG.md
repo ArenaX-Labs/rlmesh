@@ -10,6 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ### Added
 
+- C ABI 5 tensors import and export versioned CPU DLPack through the Rust facade. Imports copy and consume the producer only on success; shared read-only or copied writable exports retain their data and metadata after the source is freed. Sized `RLMeshToDlpackOptions` and device queries match the shared surface. The C header vendors the complete upstream DLPack v1.0 header and Apache-2.0 license, with include-order and ownership tests.
+
 - C ABI 5 completes adapter-dependent running APIs: copied read items, facade readers, session/context/event reads, observation roles, owner-borrowing frame sources and render callbacks, instruction injection on runs/sessions, and typed copied/lent result advisories. Authored RunContext vtables now require all four protocol slots.
 
 - C ABI 5 exposes Stable typed adapter trees and vocabularies, immutable EnvTags/ModelSpec values, shared transform callbacks, transactional env tagging, facade resolution and per-step execution, advisories/history, AdapterBase vtables and reusable owned wrapped-predict handles. C models retain attached typed specs and trusted custom-input entrypoints use the fenced facade registry; obsolete JSON plan exports are removed.
