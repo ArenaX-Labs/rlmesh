@@ -784,15 +784,13 @@ impl Shared {
             match state.phase {
                 Phase::Closed => return Ok(()),
                 Phase::Closing => {
+                    // Another close is running (a user close stopping this
+                    // serve, or a detached Drop close): it owns the hook and
+                    // its errors, so wait for it and succeed.
                     drop(state);
-                    return if self
-                        .life
-                        .wait_until(timeout, |state| state.phase == Phase::Closed)
-                    {
-                        Ok(())
-                    } else {
-                        Err(Error::Timeout(timeout.unwrap_or_default()))
-                    };
+                    self.life
+                        .wait_until(None, |state| state.phase == Phase::Closed);
+                    return Ok(());
                 }
                 Phase::Open => {
                     state.phase = Phase::Closing;

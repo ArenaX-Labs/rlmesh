@@ -196,7 +196,7 @@ fn a_closure_is_a_policy_and_with_context_reads_the_context() {
 }
 
 #[test]
-fn options_hooks_replace_the_policys() {
+fn options_hooks_replace_the_policy_hooks() {
     let (server, address) = served_env();
     let log = Arc::new(Mutex::new(Log::default()));
     let ended = Arc::new(AtomicUsize::new(0));

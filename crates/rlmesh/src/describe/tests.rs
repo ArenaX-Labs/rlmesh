@@ -88,7 +88,7 @@ fn a_model_type_construction_refuses_is_refused() {
 }
 
 #[test]
-fn a_built_model_reports_its_policys_items_and_its_own_spec() {
+fn a_built_model_reports_the_policy_items_and_its_own_spec() {
     let model = Model::new(
         |_obs: Value| Ok(Value::Int(0)),
         ModelOptions {
