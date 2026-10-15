@@ -3621,8 +3621,9 @@ RLMESH_API RLMeshStatus rlmesh_run_context_read(const RLMeshRunContext*, const R
                                                 const RLMeshReadItem*, RLMeshValue** out);
 RLMESH_API RLMeshStatus rlmesh_step_event_read(const RLMeshStepEvent*, const RLMeshReadItem*,
                                                RLMeshValue** out);
-/* Library-made frame sources borrow their session/context for render; free the
- * source before freeing that owner. Calls retain facade closed/busy/dispatch checks. */
+/* Session-made sources retain weak state: render after session free returns
+ * ERR_RUNTIME. Context-made sources retain the context. Facade closed/busy/
+ * dispatch checks remain in force, including after a C callback transfers sources. */
 typedef RLMeshStatus (*RLMeshRenderFn)(void* user_data, RLMeshValue** out);
 RLMESH_API RLMeshStatus rlmesh_frame_sources_new(const char* const* roles, size_t roles_len,
                                                  const char* render_label, RLMeshRenderFn render,

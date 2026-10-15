@@ -360,37 +360,12 @@ pub unsafe extern "C" fn rlmesh_session_frame_sources(
                 sources.render.is_some(),
             ))
         })?;
-        let owner = p as usize;
-        let render = has.then(|| {
-            RenderFn::new(move || {
-                let p = owner as *mut RLMeshSession;
-                if let Some(context) = session_api::own_hook(p) {
-                    let mut sources = context.0.frame_sources()?;
-                    return sources
-                        .render
-                        .as_mut()
-                        .ok_or_else(|| {
-                            rlmesh::Error::Runtime("session render is unreachable".into())
-                        })?
-                        .call();
-                }
-                // Keep authored errors as facade errors, without formatting and
-                // reconstructing their model/env payloads at this inner boundary.
-                session_api::with(p, |s| {
-                    Ok((|| -> rlmesh::Result<Value> {
-                        let mut sources = s.frame_sources()?;
-                        sources
-                            .render
-                            .as_mut()
-                            .ok_or_else(|| {
-                                rlmesh::Error::Runtime("session render is unreachable".into())
-                            })?
-                            .call()
-                    })())
-                })
-                .map_err(|e| crate::abi::status::error_of_class(e.class, &e.message))?
-            })
-        });
+        let render = if has {
+            let owner = unsafe { session_api::SessionRender::new(p) }?;
+            Some(RenderFn::new(move || owner.call()))
+        } else {
+            None
+        };
         write_out(
             out,
             Box::into_raw(Box::new(RLMeshFrameSources::library(roles, label, render))),

@@ -19,7 +19,7 @@ use rlmesh::{RunContext, RunHooks};
 use std::cell::RefCell;
 use std::ffi::c_char;
 use std::sync::{
-    Arc, Mutex,
+    Arc, Mutex, Weak,
     atomic::{AtomicBool, Ordering},
 };
 
@@ -177,9 +177,55 @@ impl Drop for State {
 }
 pub struct RLMeshSession {
     pub(crate) roles: std::sync::OnceLock<crate::run_read::RolesView>,
-    state: Mutex<State>,
+    state: Arc<Mutex<State>>,
     done: AtomicBool,
     cancel: rlmesh::ext::CancelToken,
+}
+/// A render source must not keep a session's env lease alive, or dereference a
+/// freed/reused C handle. Upgrading this weak allocation pins the state only
+/// for the duration of one render, including callbacks it dispatches.
+pub(crate) struct SessionRender {
+    state: Weak<Mutex<State>>,
+    identity: usize,
+}
+impl SessionRender {
+    /// # Safety
+    /// `p` is NULL or a live session for this call.
+    pub(crate) unsafe fn new(p: *const RLMeshSession) -> Result<Self, CapiError> {
+        let session =
+            unsafe { p.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null session"))?;
+        Ok(Self {
+            state: Arc::downgrade(&session.state),
+            identity: p as usize,
+        })
+    }
+    pub(crate) fn call(&self) -> rlmesh::Result<rlmesh::Value> {
+        let state = self
+            .state
+            .upgrade()
+            .ok_or_else(|| rlmesh::Error::Runtime("session has been freed".into()))?;
+        // This address is only an identity comparison in own_hook, never a
+        // dereference. Upgrade first so a reused C address cannot match here.
+        if let Some(context) = own_hook(self.identity as *const RLMeshSession) {
+            let mut sources = context.0.frame_sources()?;
+            return sources
+                .render
+                .as_mut()
+                .ok_or_else(|| rlmesh::Error::Runtime("session render is unreachable".into()))?
+                .call();
+        }
+        let mut state = state
+            .try_lock()
+            .map_err(|_| rlmesh::Error::Runtime("session operation is already active".into()))?;
+        let _scope = state.backing.scope();
+        let session = state.session.as_mut().expect("live state owns its facade");
+        let mut sources = session.frame_sources()?;
+        sources
+            .render
+            .as_mut()
+            .ok_or_else(|| rlmesh::Error::Runtime("session render is unreachable".into()))?
+            .call()
+    }
 }
 thread_local! {static HOOKS:RefCell<Vec<(usize,RLMeshRunContext)>>=const{RefCell::new(Vec::new())};}
 struct HookScope;
@@ -297,10 +343,10 @@ pub unsafe extern "C" fn rlmesh_session_new(
             out,
             Box::into_raw(Box::new(RLMeshSession {
                 roles: std::sync::OnceLock::new(),
-                state: Mutex::new(State {
+                state: Arc::new(Mutex::new(State {
                     session: Some(session),
                     backing,
-                }),
+                })),
                 done: AtomicBool::new(done),
                 cancel,
             })),

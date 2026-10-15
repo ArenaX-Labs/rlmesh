@@ -248,8 +248,10 @@ including on failure.
 FrameSources owns its roles and labels. A library-made render source borrows
 its session/context and preserves the facade's closed, busy and hook-thread
 checks. A local context reaches render only during its hook dispatch; direct
-Session frame sources can render while the session is idle. Free frame sources
-before their session/context. Missing optional outputs set `out_has=false` and
+Session frame sources can render while the session is idle. Session-made sources
+retain weak state: render returns RuntimeError after the session is freed, without
+prolonging its env lease. Context-made sources retain the context, including
+sources transferred from C callbacks. Missing optional outputs set `out_has=false` and
 leave the value/bytes output untouched. Equality compares callable sources as
 specified, and repr uses the facade formatter.
 

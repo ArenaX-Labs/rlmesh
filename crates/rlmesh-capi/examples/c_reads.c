@@ -20,6 +20,7 @@ typedef struct State {
   RLMeshFrameSources* kept_sources;
   RLMeshReadItem* item;
   RLMeshSession* session;
+  RLMeshFrameSources* transfer_source;
 } State;
 static RLMeshValue* vector(float n) {
   const size_t shape[] = {1};
@@ -131,6 +132,11 @@ static RLMeshStatus context_read(void* user, const RLMeshValue* observation,
 static RLMeshStatus context_sources(void* user, RLMeshFrameSources** out) {
   State* state = (State*)user;
   ++state->sources_calls;
+  if (state->transfer_source) {
+    *out = state->transfer_source;
+    state->transfer_source = NULL;
+    return RLMESH_OK;
+  }
   if (state->counted_sources)
     return rlmesh_frame_sources_new(NULL, 0, "render", render, user, free_state, out);
   return rlmesh_frame_sources_new(NULL, 0, NULL, NULL, NULL, NULL, out);
@@ -353,6 +359,14 @@ int main(void) {
         observed.states_len == 1 && strcmp(observed.states[0], tag.role) == 0);
   RLMeshFrameSources* direct = NULL;
   CHECK(rlmesh_session_frame_sources(state.session, &direct) == RLMESH_OK);
+  State transfer_state = {0};
+  CHECK(rlmesh_session_frame_sources(state.session, &transfer_state.transfer_source) == RLMESH_OK);
+  RLMeshRunContext* transfer_context = NULL;
+  CHECK(rlmesh_run_context_new(&context_vt, &transfer_state, &transfer_context) == RLMESH_OK);
+  RLMeshFrameSources* transferred = NULL;
+  CHECK(rlmesh_run_context_frame_sources(transfer_context, &transferred) == RLMESH_OK);
+  CHECK(transfer_state.transfer_source == NULL);
+  rlmesh_run_context_free(transfer_context); /* transferred source retains the context */
   out = NULL;
   CHECK(rlmesh_frame_sources_render(direct, &out, &has) == RLMESH_OK && has);
   rlmesh_value_free(out);
@@ -375,10 +389,19 @@ int main(void) {
   rlmesh_value_free(out);
   rlmesh_value_free(observation);
   rlmesh_reader_free(reader);
-  rlmesh_frame_sources_free(direct);
   rlmesh_frame_sources_free(state.kept_sources);
   rlmesh_run_context_free(state.kept);
   rlmesh_session_free(state.session);
+  state.session = NULL;
+  out = NULL;
+  CHECK(rlmesh_frame_sources_render(direct, &out, &has) == RLMESH_ERR_RUNTIME && !out);
+  CHECK(strstr(rlmesh_last_error_message(), "session has been freed") != NULL);
+  CHECK(rlmesh_frame_sources_render(transferred, &out, &has) == RLMESH_ERR_RUNTIME && !out);
+  CHECK(strstr(rlmesh_last_error_message(), "session has been freed") != NULL);
+  CHECK(transfer_state.frees == 0);
+  rlmesh_frame_sources_free(transferred);
+  CHECK(transfer_state.frees == 1);
+  rlmesh_frame_sources_free(direct);
   rlmesh_run_hooks_free(hooks);
   rlmesh_model_free(model);
   rlmesh_env_free(env);
