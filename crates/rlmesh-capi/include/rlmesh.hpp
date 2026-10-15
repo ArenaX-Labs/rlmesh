@@ -5685,15 +5685,19 @@ std::string describe_json(const DescribeJsonOptions& options = {}) {
 }
 template <class P>
   requires Policy<P> && (!std::same_as<P, Model>)
-Metadata describe(P& policy, const DescribeOptions& options = {}) {
-  Model model(std::shared_ptr<P>(&policy, [](P*) {}));
-  return describe(model, options);
+Metadata describe(P&, const DescribeOptions& options = {}) {
+  detail::PolicyTable<P> vt;
+  auto c = options.raw();
+  RLMeshValue* p = nullptr;
+  detail::check(rlmesh_model_vtable_describe(&vt.table, &c, &p));
+  return Value::adopt(p).as_dict();
 }
 template <class P>
   requires Policy<P> && (!std::same_as<P, Model>)
-std::string describe_json(P& policy, const DescribeJsonOptions& options = {}) {
-  Model model(std::shared_ptr<P>(&policy, [](P*) {}));
-  return describe_json(model, options);
+std::string describe_json(P&, const DescribeJsonOptions& options = {}) {
+  detail::PolicyTable<P> vt;
+  auto c = options.raw();
+  return detail::text(rlmesh_model_vtable_describe_json, &vt.table, &c);
 }
 inline std::string to_string(NoAdapter) { return "NO_ADAPTER"; }
 inline std::ostream& operator<<(std::ostream& s, NoAdapter) { return s << "NO_ADAPTER"; }

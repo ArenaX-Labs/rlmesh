@@ -374,6 +374,19 @@ void vector_and_chunks() {
   server.shutdown();
 }
 void factories_remote_describe() {
+  struct LifecyclePolicy {
+    int loads = 0, closes = 0, predictions = 0;
+    void load() { ++loads; }
+    void close() { ++closes; }
+    Value predict(const Value&) {
+      ++predictions;
+      return 0;
+    }
+  } policy;
+  assert(!describe(policy).empty());
+  assert(policy.loads == 0 && policy.closes == 0 && policy.predictions == 0);
+  assert(!describe_json(policy).empty());
+  assert(policy.loads == 0 && policy.closes == 0 && policy.predictions == 0);
   Factory factory;
   auto made = factory.make_env();
   assert(factory.builds == 1);
