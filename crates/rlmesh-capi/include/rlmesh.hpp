@@ -1571,9 +1571,8 @@ inline spaces::Box box_elementwise(const std::vector<spaces::Bound>& low,
   RLMeshStatus status = rlmesh_ext_box_elementwise_new(
       raw_low.data(), raw_high.data(), raw_low.size(), shape.data(), shape.size(), &raw, &out);
   if (status != RLMESH_OK) spaces::detail::last(status);
-  spaces::Box box = spaces::Box::from_spec(spaces::SpaceSpec::copy_of(rlmesh_space_spec(out)));
-  rlmesh_space_free(out);
-  return box;
+  auto owned = detail::own<RLMeshSpace, rlmesh_space_free>(out);
+  return spaces::Box::from_spec(spaces::SpaceSpec::copy_of(rlmesh_space_spec(owned.get())));
 }
 
 }  // namespace ext
