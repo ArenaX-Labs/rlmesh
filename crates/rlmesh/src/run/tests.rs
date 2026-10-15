@@ -687,3 +687,160 @@ fn results_print_as_python_does() {
          avg=1.0, p50=1.0, p95=2.5, p99=2.5)"
     );
 }
+
+/// Two lanes that each end after three steps and restart on the next step
+/// (`NEXT_STEP` autoreset).
+struct Lanes {
+    counts: Vec<i64>,
+    ended: Vec<bool>,
+}
+
+impl crate::VectorEnv for Lanes {
+    fn num_envs(&self) -> u64 {
+        self.counts.len() as u64
+    }
+    fn single_observation_space(&self) -> Space {
+        Discrete::new(5, DiscreteOptions::default()).unwrap().into()
+    }
+    fn single_action_space(&self) -> Space {
+        Discrete::new(2, DiscreteOptions::default()).unwrap().into()
+    }
+    fn reset(
+        &mut self,
+        _seed: Option<crate::VectorSeed>,
+        _options: Option<&InfoDict>,
+    ) -> Result<(Value, InfoDict)> {
+        self.counts.iter_mut().for_each(|count| *count = 0);
+        self.ended.iter_mut().for_each(|ended| *ended = false);
+        Ok((self.observations(), InfoDict::new()))
+    }
+    fn step(
+        &mut self,
+        _actions: Value,
+    ) -> Result<(Value, Vec<f64>, Vec<bool>, Vec<bool>, InfoDict)> {
+        let mut rewards = Vec::new();
+        let mut terminated = Vec::new();
+        for lane in 0..self.counts.len() {
+            if self.ended[lane] {
+                self.counts[lane] = 0;
+                self.ended[lane] = false;
+                rewards.push(0.0);
+                terminated.push(false);
+            } else {
+                self.counts[lane] += 1;
+                self.ended[lane] = self.counts[lane] >= 3;
+                rewards.push(1.0);
+                terminated.push(self.ended[lane]);
+            }
+        }
+        let truncated = vec![false; self.counts.len()];
+        Ok((
+            self.observations(),
+            rewards,
+            terminated,
+            truncated,
+            InfoDict::new(),
+        ))
+    }
+    fn metadata(&self) -> Option<Metadata> {
+        let mut metadata = Metadata::new();
+        metadata.insert("autoreset_mode", Value::Text("NextStep".into()));
+        Some(metadata)
+    }
+}
+
+impl Lanes {
+    fn observations(&self) -> Value {
+        Value::List(self.counts.iter().map(|count| Value::Int(*count)).collect())
+    }
+}
+
+#[test]
+fn a_borrowed_vector_env_runs_its_lanes_on_the_native_loop() {
+    // A batch of observations takes one action per lane.
+    let model = Model::new(
+        |observation: Value| {
+            let lanes = match &observation {
+                Value::Tensor(tensor) => tensor.shape().first().copied().unwrap_or(1) as usize,
+                Value::List(items) => items.len(),
+                _ => return Ok(Value::Int(1)),
+            };
+            Ok(Value::List(vec![Value::Int(1); lanes]))
+        },
+        ModelOptions::default(),
+    )
+    .unwrap();
+    let mut env = Lanes {
+        counts: vec![0; 2],
+        ended: vec![false; 2],
+    };
+    let result = model
+        .run(
+            EnvTarget::vector(&mut env),
+            RunOptions {
+                episodes: Some(2),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(result.num_episodes(), 2);
+    assert!(result.episodes.iter().all(|episode| episode.steps == 3));
+    assert!(
+        result
+            .episodes
+            .iter()
+            .all(|episode| episode.trial.is_none())
+    );
+}
+
+#[test]
+fn a_session_has_async_twins_and_closes_a_factory_built_env() {
+    let model = ones();
+    let mut factory = Factory {
+        closes: Arc::default(),
+        made: 0,
+    };
+    let closes = Arc::clone(&factory.closes);
+    futures::executor::block_on(async {
+        let mut session = model
+            .session_async(EnvTarget::factory(&mut factory), SessionOptions::default())
+            .await
+            .unwrap();
+        let (observation, _) = session.reset_async(Some(1), None).await.unwrap();
+        let action = session.predict_async(observation).await.unwrap();
+        let (_, reward, ..) = session.step_async(action).await.unwrap();
+        assert_eq!(reward, 1.0);
+        let mut log = Log::default();
+        let result = session
+            .run_async(SessionRunOptions {
+                hooks: Some(&mut log),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(result.num_episodes(), 1);
+        assert!(log.async_context.iter().all(|inside| *inside));
+        session.close_async().await.unwrap();
+    });
+    assert_eq!(factory.made, 1);
+    assert_eq!(
+        closes.load(Ordering::SeqCst),
+        1,
+        "a built env closes with the session"
+    );
+}
+
+#[test]
+fn a_session_refuses_a_vector_env() {
+    let model = ones();
+    let mut env = Lanes {
+        counts: vec![0; 2],
+        ended: vec![false; 2],
+    };
+    let mut session = model
+        .session(EnvTarget::vector(&mut env), SessionOptions::default())
+        .unwrap();
+    let error = session.reset(None, None).unwrap_err();
+    assert_eq!(error.class(), ErrorClass::ValueError);
+    assert!(error.to_string().contains("num_envs=2"), "{error}");
+}
