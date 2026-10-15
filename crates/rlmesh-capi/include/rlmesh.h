@@ -2368,12 +2368,19 @@ RLMESH_API RLMeshStatus rlmesh_obs_transform_new(RLMeshObsTransformFn fn, void* 
                                                  RLMeshObsTransform** out);
 RLMESH_API RLMeshObsTransform* rlmesh_obs_transform_clone(const RLMeshObsTransform* transform);
 RLMESH_API void rlmesh_obs_transform_free(RLMeshObsTransform* transform);
+/* Callable identity survives cloning; hashes are process-local. NULL equals NULL and hashes to 0. */
+RLMESH_API bool rlmesh_obs_transform_equals(const RLMeshObsTransform*, const RLMeshObsTransform*);
+RLMESH_API uint64_t rlmesh_obs_transform_hash(const RLMeshObsTransform*);
 RLMESH_API RLMeshStatus rlmesh_rotation_transform_new(RLMeshRotationTransformFn fn, void* user_data,
                                                       void (*free_user_data)(void*),
                                                       RLMeshRotationTransform** out);
 RLMESH_API RLMeshRotationTransform* rlmesh_rotation_transform_clone(
     const RLMeshRotationTransform* transform);
 RLMESH_API void rlmesh_rotation_transform_free(RLMeshRotationTransform* transform);
+/* Callable identity survives cloning; hashes are process-local. NULL equals NULL and hashes to 0. */
+RLMESH_API bool rlmesh_rotation_transform_equals(const RLMeshRotationTransform*,
+                                                const RLMeshRotationTransform*);
+RLMESH_API uint64_t rlmesh_rotation_transform_hash(const RLMeshRotationTransform*);
 RLMESH_API RLMeshStatus rlmesh_model_spec_new(const RLMeshInputNode* input,
                                               const RLMeshAction* output, RLMeshModelSpec** out);
 RLMESH_API const RLMeshInputNode* rlmesh_model_spec_input(const RLMeshModelSpec* spec);

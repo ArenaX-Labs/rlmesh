@@ -498,6 +498,30 @@ void adapter_axis_presence() {
                                    .offset = std::vector<double>{1}},
                               Action{.components = {actuator}}));
 }
+void adapter_callable_identity() {
+  using namespace adapters;
+  ObsTransform observation([](const Value& value) { return value; });
+  RotationTransform rotation([](const Value& value) { return value; });
+  Custom input{.transform = observation};
+  CustomEncoding encoding{.base = RotationEncoding::EulerXyz,
+                          .from_base = rotation, .to_base = rotation};
+  Action action{.components = {{.role = ACTION_JOINT_POS, .dim = 3, .encoding = encoding}}};
+  ModelSpec spec(input, action);
+  Model model([](const Value&) { return 0; }, {.spec = spec});
+  const auto& reconstructed = std::get<ModelSpec>(*model.spec());
+  detail_adapter::Arena arena;
+  auto raw_input = reconstructed.input().raw(arena);
+  auto clone = Custom::from_raw(*static_cast<const RLMeshCustom*>(raw_input.leaf));
+  assert(clone.transform->raw() != observation.raw());
+  assert(clone == input);
+  assert(reconstructed.input() == spec.input());
+  assert(reconstructed.output() == action);
+  const auto& cloned_encoding = std::get<CustomEncoding>(*reconstructed.output().components[0].encoding);
+  assert(std::get<RotationTransform>(*cloned_encoding.from_base).raw() != rotation.raw());
+  assert(cloned_encoding == encoding);
+  assert(ObsTransform([](const Value& value) { return value; }) != observation);
+  assert(RotationTransform([](const Value& value) { return value; }) != rotation);
+}
 Value vector(float f) { return Tensor(&f, sizeof(f), {1}, DType::Float32); }
 struct Tagged {
   std::optional<std::string> render_mode() const { return "rgb_array"; }
@@ -579,6 +603,7 @@ int main() try {
   exceptions();
   factories_remote_describe();
   adapter_axis_presence();
+  adapter_callable_identity();
   adapters_readers_recorder();
   std::cout << "cpp_parity OK\n";
 } catch (const std::exception& e) {

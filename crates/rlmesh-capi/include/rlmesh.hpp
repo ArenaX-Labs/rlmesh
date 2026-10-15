@@ -1757,7 +1757,7 @@ class ObsTransform {
     handle_ = {p, rlmesh_obs_transform_free};
   }
   const RLMeshObsTransform* raw() const { return handle_.get(); }
-  bool operator==(const ObsTransform& v) const { return handle_ == v.handle_; }
+  bool operator==(const ObsTransform& v) const { return rlmesh_obs_transform_equals(raw(), v.raw()); }
 };
 class RotationTransform {
   std::shared_ptr<RLMeshRotationTransform> handle_{};
@@ -1780,7 +1780,9 @@ class RotationTransform {
     handle_ = {p, rlmesh_rotation_transform_free};
   }
   const RLMeshRotationTransform* raw() const { return handle_.get(); }
-  bool operator==(const RotationTransform& v) const { return handle_ == v.handle_; }
+  bool operator==(const RotationTransform& v) const {
+    return rlmesh_rotation_transform_equals(raw(), v.raw());
+  }
 };
 using EncodingArm = std::variant<RotationTransform, std::string>;
 struct Rotation {
