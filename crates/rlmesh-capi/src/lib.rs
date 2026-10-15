@@ -15,6 +15,7 @@ mod env_factory;
 mod env_server;
 mod ffi;
 mod model;
+mod model_api;
 mod space_handle;
 mod spaces;
 mod value;

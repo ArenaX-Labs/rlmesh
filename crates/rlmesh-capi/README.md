@@ -94,6 +94,29 @@ Variant lists lend items until the list is freed. A reusable
 `examples/c_factory.c` covers these contracts, including live serving and
 cancellation. Factory serving drains all C callbacks before it returns.
 
+## Policy and Model
+
+`RLMeshModelVtable` defines any of the four prediction corners. NULL slots
+are absent, and `context_corners` marks only the slots that receive a
+`RLMeshPredictContext`. `rlmesh_model_new` delegates declarations, loading,
+corner synthesis, serialization and the episode store to the facade Model.
+`rlmesh_model_from_config` checks declared load keys before calling load.
+The loaded native chunk is read once. Context state uses borrowed
+`RLMeshEpisodeState` handles with owned `void*` values and deleters.
+
+Use `RLMESH_MODEL_VTABLE_INIT`, `RLMESH_MODEL_OPTIONS_INIT` and
+`RLMESH_MODEL_SERVE_OPTIONS_INIT`; zero initialization is refused. On a
+constructor error neither policy nor hook state is adopted, no close hook
+runs, and the output is NULL. Clone shares the model. Close is terminal,
+serialized and idempotent; the last C model free drains callbacks and releases
+policy and hook state once. Getter data remains valid while any C clone
+lives. Serve uses the shared ServeOptions and reusable cancellation token.
+An already-fired token refuses serving without closing the model.
+
+`examples/c_policy.c` covers the modern API. The older model-driving example
+and the C++ wrapper use the `rlmesh_ext_legacy_model_*` bridge below until
+the run/session and C++ migrations replace that consumer path.
+
 ## Layout
 
 - `include/rlmesh.h` — the C ABI (C11). Hand-authored; the single header authority.
@@ -155,7 +178,7 @@ And in C:
 ```c
 #include <rlmesh.h>
 
-static int predict(void* ud, const RLMeshObservation* obs, RLMeshValue** out) {
+static int predict(void* ud, const RLMeshExtLegacyObservation* obs, RLMeshValue** out) {
   for (size_t i = 0; i < obs->num_envs; ++i) {
     RLMeshStatus status = rlmesh_value_int(0, &out[i]);
     if (status != RLMESH_OK) return status;
@@ -164,11 +187,11 @@ static int predict(void* ud, const RLMeshObservation* obs, RLMeshValue** out) {
 }
 
 int main(void) {
-  RLMeshModelVtable vt = {.struct_size = sizeof vt, .predict = predict};
-  RLMeshModel* model;
-  rlmesh_model_new(&vt, NULL, &model);
-  RLMeshStatus rc = rlmesh_model_run_local(model, "tcp://127.0.0.1:5555", NULL, NULL);
-  rlmesh_model_free(model);
+  RLMeshExtLegacyModelVtable vt = {.struct_size = sizeof vt, .predict = predict};
+  RLMeshExtLegacyModel* model;
+  rlmesh_ext_legacy_model_new(&vt, NULL, &model);
+  RLMeshStatus rc = rlmesh_ext_legacy_model_run_local(model, "tcp://127.0.0.1:5555", NULL, NULL);
+  rlmesh_ext_legacy_model_free(model);
   return rc == RLMESH_OK ? 0 : 1;
 }
 ```
@@ -211,14 +234,14 @@ releases.
 ## Model contract
 
 `predict` receives `num_envs` decoded observation values (one per sub-env) plus
-routing metadata (session, env, request ids; one `RLMeshEpisode` per row). It
+routing metadata (session, env, request ids; one `RLMeshExtLegacyEpisode` per row). It
 writes one owned action value per row into `out_actions` and returns `RLMESH_OK`,
 or returns nonzero after `rlmesh_callback_set_error(...)` to decline. The runtime
 validates each action against the route's action space before it reaches the
 wire: a structural mismatch fails the step, a Box-bounds overshoot is left to the
 environment's own policy.
 
-Each `RLMeshEpisode` row carries the episode's `id` and reset `seed` (when
+Each `RLMeshExtLegacyEpisode` row carries the episode's `id` and reset `seed` (when
 `seeded`), plus the same per-predict context the Python SDK stamps on a predict:
 `predict_index`, the re-plan ordinal within the episode (0 on the first predict
 under that id, then +1 per predict), and `predict_seed`, a reproducible mix of
@@ -231,14 +254,14 @@ callback runs.
 
 Optional hooks: `on_episode_end(env_id, episode_id)` when the runtime drops an
 episode (`episode_id == NULL` means every episode of that env), and `on_close`
-once per handle: when a serve stops, or at `rlmesh_model_free`. A run borrows
+once per handle: when a serve stops, or at `rlmesh_ext_legacy_model_free`. A run borrows
 the model and never closes it, as Python's `Model.run` does. Callbacks run on a worker thread; `user_data` must be safe to
 use from a thread other than the one that created it, and a callback must not
-re-enter its own model handle. `rlmesh_model_run_local` fills an optional
-`RLMeshRunReport`; `rlmesh_model_cancel` stops a blocking run/serve from another
+re-enter its own model handle. `rlmesh_ext_legacy_model_run_local` fills an optional
+`RLMeshExtLegacyRunReport`; `rlmesh_ext_legacy_model_cancel` stops a blocking run/serve from another
 thread.
 
-`RLMeshRunOptions` bounds and seeds a run: `max_episodes` (the exact episode
+`RLMeshExtLegacyRunOptions` bounds and seeds a run: `max_episodes` (the exact episode
 count, as in the Python SDK's `run(episodes=...)`; 0 runs one episode, or one per
 seed when `episode_seeds` is given, never "until the env ends"), `base_seed` (when
 `seeded`) or explicit `episode_seeds`, the per-episode step/time caps,
@@ -355,7 +378,7 @@ snapshots it. Nothing throws — `value()` / `unwrap()` abort instead, and the
 header compiles under `-fno-exceptions`. `RLMESH_TRY(expr)` propagates an error
 out of a `Result`-returning function.
 
-`run_local` takes a `RunOptions` (the C `RLMeshRunOptions` field for field, with
+`run_local` takes a `RunOptions` (the C `RLMeshExtLegacyRunOptions` field for field, with
 `episode_seeds` as a `std::vector`) and returns a `RunReport`; `serve` takes a
 `ServeOptions` (owned token, `std::chrono` timeouts). `Model::cancel()` is the one member callable while
 `run_local` / `serve` blocks — including from another thread; a cancelled

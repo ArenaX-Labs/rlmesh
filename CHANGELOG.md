@@ -10,6 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ### Added
 
+- C `RLMeshModel` wraps the facade Model through a four-corner Policy vtable with per-corner context opt-in, checked load keys, config construction, loaded native chunks, shared clones, hook overrides, close/serve and reusable cancellation. PredictContext exposes facade-owned episode state with C value deleters. Constructor failures retain caller ownership; the last C reference drains callbacks and releases policy/hook state once. The C++ wrapper's prior worker-based model path is fenced under legacy extension names.
+
 - C `RLMeshEnvFactory`, TagParam lists and mutable Variant catalogs use the facade's default binding, branch checks, metadata stamping and serving pipeline. Factory hooks are exclusive and report re-entry as RuntimeError; callback state transfers only on successful construction, and free never closes the factory. Reusable C cancellation tokens stop serving and all C env callbacks are drained before return.
 
 - C env authoring and serving now project through the Rust facade: separate `RLMeshEnv`, `RLMeshVectorEnv` and `RLMeshEnvServer` handles, Gymnasium-shaped callbacks with typed info, owned callback state, exclusive borrowing, close-once behavior, and server start/serve/wait/shutdown. New options and vtables use ABI-5 `struct_size`/`INIT`/`MIN_SIZE` rules; ServeOptions uses seconds and explicit optional fields. Server free drains C callbacks beyond a shutdown deadline. The existing C++ wrapper's combined env/server path uses a fenced legacy bridge until its separate parity wave.

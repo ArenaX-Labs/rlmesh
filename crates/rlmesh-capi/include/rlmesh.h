@@ -1043,6 +1043,156 @@ RLMESH_API RLMeshStatus rlmesh_variant_sink_push(RLMeshVariantSink* sink, RLMesh
 
 #define RLMESH_VARIANT_OPTIONS_MIN_SIZE sizeof(RLMeshVariantOptions)
 
+/* ---- Policy / Model (facade) --------------------------------------------- */
+typedef struct RLMeshModel RLMeshModel;
+typedef struct RLMeshModelSpec RLMeshModelSpec;
+typedef enum RLMeshSpecKind {
+  RLMESH_SPEC_KIND_INVALID = 0,
+  RLMESH_SPEC_KIND_NONE = 1,
+  RLMESH_SPEC_KIND_MODEL_SPEC = 2,
+  RLMESH_SPEC_KIND_NO_ADAPTER = 3
+} RLMeshSpecKind;
+typedef struct RLMeshSpecArg { /* by value, frozen per ABI generation (R-19) */
+  RLMeshSpecKind kind;
+  const RLMeshModelSpec* spec; /* MODEL_SPEC only; deep-copied by the consumer */
+} RLMeshSpecArg;
+
+#define RLMESH_CORNER_PREDICT 1u
+#define RLMESH_CORNER_PREDICT_CHUNK 2u
+#define RLMESH_CORNER_PREDICT_BATCH 4u
+#define RLMESH_CORNER_PREDICT_CHUNK_BATCH 8u
+
+typedef struct RLMeshEpisodeState RLMeshEpisodeState; /* borrowed, valid for the call */
+/* true and *out = value when present (a stored NULL is a value); false when missing. */
+RLMESH_API bool rlmesh_episode_state_get(const RLMeshEpisodeState*, const char* key, void** out);
+/* R-20: on RLMESH_OK value (and free_value, NULL = none) pass to the state, and replacing
+ * a key frees the old value first; on nonzero free_value is not called, the caller still
+ * owns value, and the state is unchanged. */
+RLMESH_API RLMeshStatus rlmesh_episode_state_set(RLMeshEpisodeState*, const char* key, void* value,
+                                                 void (*free_value)(void* value));
+RLMESH_API bool rlmesh_episode_state_remove(RLMeshEpisodeState*, const char* key);
+RLMESH_API size_t rlmesh_episode_state_len(const RLMeshEpisodeState*);
+
+typedef struct RLMeshPredictContext { /* struct_size = the library's sizeof */
+  size_t struct_size;
+  const char* episode_id;
+  bool has_episode_seed;
+  uint8_t _reserved0[7];
+  int64_t episode_seed;
+  uint64_t predict_index;
+  bool has_predict_seed;
+  uint8_t _reserved1[7];
+  int64_t predict_seed;
+  RLMeshEpisodeState* state;
+} RLMeshPredictContext;
+/* Lent (R-19): a reader treats any field struct_size does not cover as this value. */
+#define RLMESH_PREDICT_CONTEXT_INIT \
+  {sizeof(RLMeshPredictContext), "", false, {0}, 0, 0, false, {0}, 0, NULL}
+
+typedef struct RLMeshLoadKey { /* by value, frozen per ABI generation (R-19) */
+  const char* name;            /* nonempty, unique */
+  bool required;
+  uint8_t _reserved[sizeof(size_t) - 1]; /* no default in load */
+} RLMeshLoadKey;
+
+/* Corners write OWNED values into pre-zeroed out slots. On nonzero the library
+ * frees rows already written. context(s) is NULL unless the corner's bit is set
+ * in context_corners. */
+typedef struct RLMeshModelVtable {
+  size_t struct_size;
+  RLMeshStatus (*predict)(void* user_data, const RLMeshValue* observation,
+                          const RLMeshPredictContext* context, RLMeshValue** out_action);
+  RLMeshStatus (*predict_chunk)(void* user_data, const RLMeshValue* observation,
+                                uint32_t execution_horizon, const RLMeshPredictContext* context,
+                                RLMeshValue** out_chunk);
+  RLMeshStatus (*predict_batch)(void* user_data, const RLMeshValue* const* observations,
+                                size_t count, const RLMeshPredictContext* const* contexts,
+                                RLMeshValue** out_actions);
+  RLMeshStatus (*predict_chunk_batch)(void* user_data, const RLMeshValue* const* observations,
+                                      size_t count, uint32_t execution_horizon,
+                                      const RLMeshPredictContext* const* contexts,
+                                      RLMeshValue** out_chunks);
+  RLMeshStatus (*on_episode_end)(void* user_data, const char* episode_id);
+  RLMeshStatus (*close)(void* user_data);
+  RLMeshStatus (*load)(void* user_data, const RLMeshValue* config);
+  RLMeshStatus (*loaded_native_chunk)(void* user_data, bool* out_has, uint32_t* out);
+  void (*free_user_data)(void* user_data);
+  uint32_t context_corners; /* 0; bits of non-NULL slots only, else RLMESH_ERR_TYPE */
+  uint32_t _reserved0;
+  RLMeshSpecArg spec; /* {RLMESH_SPEC_KIND_NONE, NULL} */
+  bool allow_fusion;  /* true */
+  bool has_native_chunk;
+  uint8_t _reserved1[2]; /* false */
+  uint32_t native_chunk; /* static K for describe; 0 with has_native_chunk: ValueError class */
+  const char* workflow_edition;   /* NULL = None */
+  const RLMeshLoadKey* load_keys; /* NULL = None: every key reaches load (MDL-19); R-13 */
+  size_t
+      load_keys_len; /* entries, deep-copied; non-NULL with 0 = []; NULL with >0: RLMESH_ERR_TYPE */
+} RLMeshModelVtable;
+#define RLMESH_MODEL_VTABLE_INIT                                                               \
+  {sizeof(RLMeshModelVtable),     NULL, NULL,  NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, \
+   {RLMESH_SPEC_KIND_NONE, NULL}, true, false, {0},  0,    NULL, NULL, 0}
+
+typedef struct RLMeshModelOptions {
+  size_t struct_size;
+  RLMeshSpecArg spec; /* NONE = vtable's */
+  RLMeshStatus (*on_episode_end)(void* hook_user_data,
+                                 const char* episode_id); /* NULL = vtable's */
+  RLMeshStatus (*on_close)(void* hook_user_data);         /* NULL = vtable's close */
+  void* hook_user_data;
+  void (*free_hook_user_data)(void* hook_user_data);
+  bool trust_entrypoints;
+  uint8_t _reserved[sizeof(size_t) - 1]; /* false */
+} RLMeshModelOptions;
+#define RLMESH_MODEL_OPTIONS_INIT \
+  {sizeof(RLMeshModelOptions), {RLMESH_SPEC_KIND_NONE, NULL}, NULL, NULL, NULL, NULL, false, {0}}
+
+typedef struct RLMeshExtModelServeOptions {
+  size_t struct_size;
+  const char* token;
+  size_t predict_concurrency;
+  bool has_predict_concurrency;
+  uint8_t _reserved[sizeof(size_t) - 1];
+} RLMeshExtModelServeOptions;
+#define RLMESH_EXT_MODEL_SERVE_OPTIONS_INIT \
+  {sizeof(RLMeshExtModelServeOptions), NULL, 0, false, {0}}
+
+typedef struct RLMeshModelServeOptions {
+  size_t struct_size;
+  const RLMeshServeOptions* options;     /* NULL = None (Env) */
+  RLMeshExtCancelToken* cancel;          /* NULL = none, borrowed (R-18) */
+  const RLMeshExtModelServeOptions* ext; /* NULL = none */
+} RLMeshModelServeOptions;
+#define RLMESH_MODEL_SERVE_OPTIONS_INIT {sizeof(RLMeshModelServeOptions), NULL, NULL, NULL}
+
+RLMESH_API RLMeshStatus
+rlmesh_model_serve(RLMeshModel* model, const char* address,
+                   const RLMeshModelServeOptions* options /* NULL = INIT */);
+
+RLMESH_API RLMeshStatus rlmesh_model_new(const RLMeshModelVtable*, void* user_data,
+                                         const RLMeshModelOptions*, RLMeshModel** out);
+RLMESH_API RLMeshStatus rlmesh_model_from_config(const RLMeshModelVtable*, void* user_data,
+                                                 const RLMeshValue* config, RLMeshModel** out);
+RLMESH_API RLMeshStatus rlmesh_model_clone(const RLMeshModel*, RLMeshModel** out);
+RLMESH_API RLMeshStatus rlmesh_model_close(RLMeshModel*);
+RLMESH_API void rlmesh_model_free(RLMeshModel*);
+RLMESH_API RLMeshStatus rlmesh_model_spec(const RLMeshModel*, RLMeshSpecArg* out);
+RLMESH_API bool rlmesh_model_allow_fusion(const RLMeshModel*);
+RLMESH_API void rlmesh_model_native_chunk(const RLMeshModel*, bool* out_has, uint32_t* out);
+RLMESH_API RLMeshStatus rlmesh_model_workflow_edition(const RLMeshModel*, bool* out_has,
+                                                      RLMeshBytes* out);
+RLMESH_API int64_t rlmesh_predict_seed(int64_t episode_seed, uint64_t predict_index);
+
+#define RLMESH_MODEL_VTABLE_MIN_SIZE sizeof(RLMeshModelVtable)
+
+#define RLMESH_MODEL_OPTIONS_MIN_SIZE sizeof(RLMeshModelOptions)
+
+#define RLMESH_PREDICT_CONTEXT_MIN_SIZE sizeof(RLMeshPredictContext)
+
+#define RLMESH_MODEL_SERVE_OPTIONS_MIN_SIZE sizeof(RLMeshModelServeOptions)
+
+#define RLMESH_EXT_MODEL_SERVE_OPTIONS_MIN_SIZE sizeof(RLMeshExtModelServeOptions)
+
 /* ---- model -------------------------------------------------------------- */
 
 /* Error convention for every call below: on a nonzero RLMeshStatus (or a NULL
@@ -1063,18 +1213,18 @@ RLMESH_API RLMeshStatus rlmesh_variant_sink_push(RLMeshVariantSink* sink, RLMesh
  * otherwise. The capi holds at most 65536 live episodes and never evicts one:
  * a predict that would start a new episode past that fails with
  * RLMESH_ERR_INTERNAL (Python raises RuntimeError) before the callback runs. */
-typedef struct RLMeshEpisode {
+typedef struct RLMeshExtLegacyEpisode {
   const char* id;
   bool seeded; /* whether `seed` carries an explicit reset seed */
   int64_t seed;
   uint64_t predict_index; /* re-plan ordinal within the episode, from 0 */
   int64_t predict_seed;   /* predict_seed(seed, predict_index); only when `seeded` */
-} RLMeshEpisode;
+} RLMeshExtLegacyEpisode;
 
 /* What a predict callback receives. Every pointer is valid only for the
  * duration of the call. Row i of `observations` belongs to `episodes[i]`;
  * `episodes` always has exactly num_envs entries. */
-typedef struct RLMeshObservation {
+typedef struct RLMeshExtLegacyObservation {
   /* num_envs decoded values, or NULL when this request carries no observation
    * or the contract declares no observation space (both are legal routes). */
   const RLMeshValue* const* observations;
@@ -1086,8 +1236,8 @@ typedef struct RLMeshObservation {
   const char* session_id;
   const char* env_id;
   const char* request_id;
-  const RLMeshEpisode* episodes; /* num_envs entries */
-} RLMeshObservation;
+  const RLMeshExtLegacyEpisode* episodes; /* num_envs entries */
+} RLMeshExtLegacyObservation;
 
 /* Set this call's error message + recoverability before returning nonzero (any
  * callback: a model's predict or an env's reset / step / render). */
@@ -1103,15 +1253,15 @@ RLMESH_API void rlmesh_callback_set_error(const char* message, bool recoverable)
  * before the callback returns wins. */
 RLMESH_API void rlmesh_callback_set_error_class(RLMeshErrorClass error_class, const char* message);
 
-/* The model callback vtable. Set struct_size = sizeof(RLMeshModelVtable); fields
+/* The model callback vtable. Set struct_size = sizeof(RLMeshExtLegacyModelVtable); fields
  * beyond that are ignored (append-only). `predict` is required. The vtable is
- * COPIED into the model at rlmesh_model_new, so the caller's struct need not
+ * COPIED into the model at rlmesh_ext_legacy_model_new, so the caller's struct need not
  * outlive the model; `user_data` is kept by pointer and must.
  *
  * Callbacks run on a worker thread, so `user_data` must be thread-migration-safe.
  * A callback must not re-enter the model handle that invoked it (no
- * rlmesh_model_run_local / _serve / _free on it from inside a callback);
- * rlmesh_model_cancel is the one exception and is safe from anywhere.
+ * rlmesh_ext_legacy_model_run_local / _serve / _free on it from inside a callback);
+ * rlmesh_ext_legacy_model_cancel is the one exception and is safe from anywhere.
  *
  * `predict` writes one OWNED action value per row into `out_actions` (num_envs
  * slots, pre-zeroed; the capi takes ownership) and returns 0 == RLMESH_OK, or
@@ -1123,25 +1273,25 @@ RLMESH_API void rlmesh_callback_set_error_class(RLMeshErrorClass error_class, co
  *
  * `on_episode_end` fires when the runtime drops an episode; `episode_id` NULL
  * means every episode of `env_id`. `on_close` fires once per handle: when a
- * serve stops, or at rlmesh_model_free; a run_local borrows the model and
+ * serve stops, or at rlmesh_ext_legacy_model_free; a run_local borrows the model and
  * never fires it. */
-typedef struct RLMeshModelVtable {
+typedef struct RLMeshExtLegacyModelVtable {
   size_t struct_size;
-  int (*predict)(void* user_data, const RLMeshObservation* obs, RLMeshValue** out_actions);
+  int (*predict)(void* user_data, const RLMeshExtLegacyObservation* obs, RLMeshValue** out_actions);
   void (*on_episode_end)(void* user_data, const char* env_id, const char* episode_id);
   void (*on_close)(void* user_data);
-} RLMeshModelVtable;
+} RLMeshExtLegacyModelVtable;
 
 /* An owned model handle. It is not a concurrency primitive: run at most one
- * rlmesh_model_run_local / rlmesh_model_serve on a handle at a time, and free it
- * only from a thread that is not executing it. rlmesh_model_cancel is the only
- * call that may overlap a running one, from any thread. */
-typedef struct RLMeshModel RLMeshModel;
+ * rlmesh_ext_legacy_model_run_local / rlmesh_ext_legacy_model_serve on a handle at a time, and free
+ * it only from a thread that is not executing it. rlmesh_ext_legacy_model_cancel is the only call
+ * that may overlap a running one, from any thread. */
+typedef struct RLMeshExtLegacyModel RLMeshExtLegacyModel;
 
-RLMESH_API RLMeshStatus rlmesh_model_new(const RLMeshModelVtable* vtable, void* user_data,
-                                         RLMeshModel** out);
+RLMESH_API RLMeshStatus rlmesh_ext_legacy_model_new(const RLMeshExtLegacyModelVtable* vtable,
+                                                    void* user_data, RLMeshExtLegacyModel** out);
 
-/* Run options for rlmesh_model_run_local. NULL == defaults (one episode,
+/* Run options for rlmesh_ext_legacy_model_run_local. NULL == defaults (one episode,
  * unseeded, no caps). Every field is "unset" at 0 / NULL.
  *
  * Episode budget (Python's run(episodes=...)): max_episodes is the exact
@@ -1150,7 +1300,7 @@ RLMESH_API RLMeshStatus rlmesh_model_new(const RLMeshModelVtable* vtable, void* 
  * (RLMESH_ERR_INVALID_ARGUMENT otherwise). There is no unbounded run.
  * TODO(docs/specs/language-parity/running.md): Python's episodes=0 (run
  * nothing) is not expressible here, since 0 means unset. */
-typedef struct RLMeshRunOptions {
+typedef struct RLMeshExtLegacyRunOptions {
   uint64_t max_episodes;        /* exact episode count; 0 = unset (1, or the seed count) */
   bool seeded;                  /* whether base_seed is set */
   int64_t base_seed;            /* seed for episode 0; later episodes derive from it */
@@ -1164,26 +1314,27 @@ typedef struct RLMeshRunOptions {
   uint64_t trial_index_base;    /* first trial ordinal the episodes walk (base, base+1, ...);
                                    delivered as reset(options={"trial_index": k}) to an env
                                    that declares that reset option */
-} RLMeshRunOptions;
+} RLMeshExtLegacyRunOptions;
 
 /* What a finished run reports. Plain scalars: copy what you need. */
-typedef struct RLMeshRunReport {
+typedef struct RLMeshExtLegacyRunReport {
   int64_t total_episodes;      /* episodes completed during the run */
   int64_t total_steps;         /* env steps across the whole run */
   double total_reward;         /* summed episode reward */
   double mean_reward;          /* mean episode reward (0 if none completed) */
   int64_t terminated_episodes; /* completed episodes that ended terminated */
   int64_t truncated_episodes;  /* completed episodes that hit a step/time cap */
-} RLMeshRunReport;
+} RLMeshExtLegacyRunReport;
 
 /* Drive the model against the env at `env_address` (tcp://host:port,
  * host:port, or unix:///path). Blocking — returns when the run ends.
  * `out_report` may be NULL; it is written only on RLMESH_OK. */
-RLMESH_API RLMeshStatus rlmesh_model_run_local(RLMeshModel* model, const char* env_address,
-                                               const RLMeshRunOptions* options,
-                                               RLMeshRunReport* out_report);
+RLMESH_API RLMeshStatus rlmesh_ext_legacy_model_run_local(RLMeshExtLegacyModel* model,
+                                                          const char* env_address,
+                                                          const RLMeshExtLegacyRunOptions* options,
+                                                          RLMeshExtLegacyRunReport* out_report);
 
-/* Serve options for rlmesh_model_serve. Pass NULL for all defaults (no auth, no
+/* Serve options for rlmesh_ext_legacy_model_serve. Pass NULL for all defaults (no auth, no
  * remote shutdown, no timeouts — serves until the process is killed). A 0 timeout
  * / concurrency means "unset". */
 typedef struct RLMeshExtLegacyServeOptions {
@@ -1198,30 +1349,31 @@ typedef struct RLMeshExtLegacyServeOptions {
 
 /* Serve the model as a ModelService endpoint at `bind_address` (tcp://host:port
  * or unix:///path). Blocking — returns when the server stops: a remote shutdown
- * request, an idle timeout, or rlmesh_model_cancel. The same vtable backs every
- * predict, exactly as rlmesh_model_run_local. `options` may be NULL for
+ * request, an idle timeout, or rlmesh_ext_legacy_model_cancel. The same vtable backs every
+ * predict, exactly as rlmesh_ext_legacy_model_run_local. `options` may be NULL for
  * defaults. */
-RLMESH_API RLMeshStatus rlmesh_model_serve(RLMeshModel* model, const char* bind_address,
-                                           const RLMeshExtLegacyServeOptions* options);
+RLMESH_API RLMeshStatus rlmesh_ext_legacy_model_serve(RLMeshExtLegacyModel* model,
+                                                      const char* bind_address,
+                                                      const RLMeshExtLegacyServeOptions* options);
 
-/* Stop a blocking rlmesh_model_run_local / rlmesh_model_serve on `model`. Call
- * it from another thread (a signal handler's worker, a UI thread); it returns
- * immediately and the blocked call unwinds shortly after. NULL is a no-op.
+/* Stop a blocking rlmesh_ext_legacy_model_run_local / rlmesh_ext_legacy_model_serve on `model`.
+ * Call it from another thread (a signal handler's worker, a UI thread); it returns immediately and
+ * the blocked call unwinds shortly after. NULL is a no-op.
  *
  * Cancellation is terminal for the handle: a cancelled model refuses further
  * runs. A cancelled serve returns RLMESH_OK after running on_close -- once, and
  * only after any predict still inside the C callback has returned; a cancelled
  * run_local (this one, or any later one on the handle) returns
  * RLMESH_ERR_CANCELLED, since it has no report to give. */
-RLMESH_API void rlmesh_model_cancel(RLMeshModel* model);
+RLMESH_API void rlmesh_ext_legacy_model_cancel(RLMeshExtLegacyModel* model);
 
 /* Free a model handle. NULL is a no-op. Freeing closes the model: on_close
  * fires here, on the calling thread, unless a serve already fired it
- * (rlmesh_model_run_local borrows the model and never closes it, as Python's
+ * (rlmesh_ext_legacy_model_run_local borrows the model and never closes it, as Python's
  * Model.run does). Must NOT be called from inside one of
  * this model's own callbacks (it drops the runtime the callback is running on);
  * doing so is contained rather than fatal, but leaves the handle undefined. */
-RLMESH_API void rlmesh_model_free(RLMeshModel* model);
+RLMESH_API void rlmesh_ext_legacy_model_free(RLMeshExtLegacyModel* model);
 
 /* ---- environment ------------------------------------------------------- */
 

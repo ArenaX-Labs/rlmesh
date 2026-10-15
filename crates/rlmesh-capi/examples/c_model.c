@@ -55,7 +55,8 @@ static RLMeshValue* zero_action(const RLMeshSpaceSpec* action) {
   }
 }
 
-static int predict(void* user_data, const RLMeshObservation* obs, RLMeshValue** out_actions) {
+static int predict(void* user_data, const RLMeshExtLegacyObservation* obs,
+                   RLMeshValue** out_actions) {
   (void)user_data;
   if (obs->contract != NULL) {
     RLMeshValue* details = NULL;
@@ -71,7 +72,7 @@ static int predict(void* user_data, const RLMeshObservation* obs, RLMeshValue** 
   for (size_t i = 0; i < obs->num_envs; ++i) {
     /* Each row names its episode and how many times this episode has been
      * predicted; a seeded episode also carries a per-predict sampling seed. */
-    const RLMeshEpisode* episode = &obs->episodes[i];
+    const RLMeshExtLegacyEpisode* episode = &obs->episodes[i];
     printf("episode %s: predict %llu", episode->id, (unsigned long long)episode->predict_index);
     if (episode->seeded) {
       printf(" seed %lld", (long long)episode->predict_seed);
@@ -104,36 +105,36 @@ static void on_close(void* user_data) {
 
 int main(int argc, char** argv) {
   const char* address = argc > 1 ? argv[1] : "tcp://127.0.0.1:5555";
-  RLMeshRunOptions options = {0};
+  RLMeshExtLegacyRunOptions options = {0};
   options.seeded = true; /* deterministic env resets */
   options.base_seed = 7;
   if (argc > 2) {
     options.max_episodes = strtoull(argv[2], NULL, 10);
   }
 
-  RLMeshModelVtable vtable = {0};
+  RLMeshExtLegacyModelVtable vtable = {0};
   vtable.struct_size = sizeof(vtable);
   vtable.predict = predict;
   vtable.on_episode_end = on_episode_end;
   vtable.on_close = on_close;
 
-  RLMeshModel* model = NULL;
-  if (rlmesh_model_new(&vtable, NULL, &model) != RLMESH_OK) {
+  RLMeshExtLegacyModel* model = NULL;
+  if (rlmesh_ext_legacy_model_new(&vtable, NULL, &model) != RLMESH_OK) {
     fprintf(stderr, "failed to create model: %s\n", rlmesh_last_error_message());
     return 1;
   }
 
   printf("connecting to %s ...\n", address);
-  RLMeshRunReport report = {0};
-  RLMeshStatus status = rlmesh_model_run_local(model, address, &options, &report);
+  RLMeshExtLegacyRunReport report = {0};
+  RLMeshStatus status = rlmesh_ext_legacy_model_run_local(model, address, &options, &report);
   if (status != RLMESH_OK) {
     /* Read the message BEFORE the next capi call on this thread -- including
-     * rlmesh_model_free -- which invalidates it. */
+     * rlmesh_ext_legacy_model_free -- which invalidates it. */
     fprintf(stderr, "run failed: %s\n", rlmesh_last_error_message());
-    rlmesh_model_free(model);
+    rlmesh_ext_legacy_model_free(model);
     return 1;
   }
-  rlmesh_model_free(model);
+  rlmesh_ext_legacy_model_free(model);
 
   printf("run report: episodes=%lld steps=%lld reward=%.1f mean=%.1f\n",
          (long long)report.total_episodes, (long long)report.total_steps, report.total_reward,

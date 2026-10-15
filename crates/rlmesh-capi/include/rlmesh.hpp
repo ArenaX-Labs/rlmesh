@@ -1353,7 +1353,7 @@ struct Episode {
 /// observation per sub-env, all borrowed for the duration of the call.
 class Batch {
  public:
-  explicit Batch(const RLMeshObservation* raw) : raw_(raw) {}
+  explicit Batch(const RLMeshExtLegacyObservation* raw) : raw_(raw) {}
 
   /// Rows in this request (the route's `num_envs`).
   size_t size() const { return raw_->num_envs; }
@@ -1373,7 +1373,7 @@ class Batch {
   /// Row `i`'s episode; an empty Episode when `i` is out of range.
   Episode episode(size_t i) const {
     if (raw_->episodes == nullptr || i >= raw_->num_envs) return Episode{};
-    const RLMeshEpisode& row = raw_->episodes[i];
+    const RLMeshExtLegacyEpisode& row = raw_->episodes[i];
     return Episode{detail::sv(row.id), row.seeded ? std::optional<int64_t>(row.seed) : std::nullopt,
                    row.predict_index,
                    row.seeded ? std::optional<int64_t>(row.predict_seed) : std::nullopt};
@@ -1393,7 +1393,7 @@ class Batch {
   }
 
  private:
-  const RLMeshObservation* raw_;
+  const RLMeshExtLegacyObservation* raw_;
 };
 
 /// The single-env view a `Model::from_predict` policy receives: one
@@ -1419,7 +1419,7 @@ class Request {
   Episode episode_;
 };
 
-/// Options for Model::run_local — the C RLMeshRunOptions, field for field.
+/// Options for Model::run_local — the C RLMeshExtLegacyRunOptions, field for field.
 /// Default-constructed == the C defaults (one episode, no caps).
 struct RunOptions {
   /// The exact episode count, resolved like Python's run(episodes=...).
@@ -1446,7 +1446,7 @@ struct RunOptions {
   uint64_t trial_index_base = 0;
 };
 
-/// What a finished run reports (the C RLMeshRunReport).
+/// What a finished run reports (the C RLMeshExtLegacyRunReport).
 struct RunReport {
   int64_t total_episodes = 0;
   int64_t total_steps = 0;
@@ -1527,7 +1527,7 @@ class Model {
   }
   Model& operator=(Model&& other) noexcept {
     if (this != &other) {
-      if (model_ != nullptr) rlmesh_model_free(model_);
+      if (model_ != nullptr) rlmesh_ext_legacy_model_free(model_);
       model_ = other.model_;
       other.model_ = nullptr;
       state_ = std::move(other.state_);
@@ -1544,13 +1544,13 @@ class Model {
   /// callback is running on. Destroy it from a thread that is not executing it,
   /// after run_local / serve has returned.
   ~Model() {
-    if (model_ != nullptr) rlmesh_model_free(model_);
+    if (model_ != nullptr) rlmesh_ext_legacy_model_free(model_);
   }
 
   /// Drive against a remote environment. Blocking; returns the run's report.
   Result<RunReport> run_local(std::string_view env_address, const RunOptions& options = {}) {
     std::string address(env_address);
-    RLMeshRunOptions raw{};
+    RLMeshExtLegacyRunOptions raw{};
     raw.max_episodes = options.max_episodes;
     raw.seeded = options.seeded;
     raw.base_seed = options.base_seed;
@@ -1562,8 +1562,8 @@ class Model {
     raw.num_episode_seeds = options.episode_seeds.size();
     raw.trial_indexed = options.trial_indexed;
     raw.trial_index_base = options.trial_index_base;
-    RLMeshRunReport report{};
-    RLMeshStatus status = rlmesh_model_run_local(model_, address.c_str(), &raw, &report);
+    RLMeshExtLegacyRunReport report{};
+    RLMeshStatus status = rlmesh_ext_legacy_model_run_local(model_, address.c_str(), &raw, &report);
     if (status != RLMESH_OK) return Error::from_last(status);
     return RunReport{report.total_episodes, report.total_steps,         report.total_reward,
                      report.mean_reward,    report.terminated_episodes, report.truncated_episodes};
@@ -1582,7 +1582,7 @@ class Model {
     raw.predict_concurrency = options.predict_concurrency;
     raw.workflow_edition =
         options.workflow_edition.empty() ? nullptr : options.workflow_edition.c_str();
-    RLMeshStatus status = rlmesh_model_serve(model_, address.c_str(), &raw);
+    RLMeshStatus status = rlmesh_ext_legacy_model_serve(model_, address.c_str(), &raw);
     if (status != RLMESH_OK) return Error::from_last(status);
     return ok();
   }
@@ -1590,7 +1590,7 @@ class Model {
   /// Stop a blocking run_local / serve. Thread-safe and the one member callable
   /// while the model is running (including from inside a callback); terminal —
   /// a cancelled model refuses further runs.
-  void cancel() { rlmesh_model_cancel(model_); }
+  void cancel() { rlmesh_ext_legacy_model_cancel(model_); }
 
  private:
   struct State {
@@ -1599,19 +1599,19 @@ class Model {
     CloseFn on_close;
   };
 
-  Model(RLMeshModel* model, std::unique_ptr<State> state)
+  Model(RLMeshExtLegacyModel* model, std::unique_ptr<State> state)
       : model_(model), state_(std::move(state)) {}
 
   static Result<Model> create(PredictBatchFn predict) {
     auto state = std::make_unique<State>();
     state->predict = std::move(predict);
-    RLMeshModelVtable vtable{};
-    vtable.struct_size = sizeof(RLMeshModelVtable);
+    RLMeshExtLegacyModelVtable vtable{};
+    vtable.struct_size = sizeof(RLMeshExtLegacyModelVtable);
     vtable.predict = &trampoline_predict;
     vtable.on_episode_end = &trampoline_episode_end;
     vtable.on_close = &trampoline_close;
-    RLMeshModel* raw = nullptr;
-    RLMeshStatus status = rlmesh_model_new(&vtable, state.get(), &raw);
+    RLMeshExtLegacyModel* raw = nullptr;
+    RLMeshStatus status = rlmesh_ext_legacy_model_new(&vtable, state.get(), &raw);
     if (status != RLMESH_OK) return Error::from_last(status);
     return Model(raw, std::move(state));
   }
@@ -1623,7 +1623,7 @@ class Model {
     return static_cast<int>(error.code() == RLMESH_OK ? RLMESH_ERR_MODEL : error.code());
   }
 
-  static int trampoline_predict(void* user_data, const RLMeshObservation* obs,
+  static int trampoline_predict(void* user_data, const RLMeshExtLegacyObservation* obs,
                                 RLMeshValue** out_actions) noexcept {
     auto* state = static_cast<State*>(user_data);
     Batch batch(obs);
@@ -1679,7 +1679,7 @@ class Model {
 #endif
   }
 
-  RLMeshModel* model_ = nullptr;
+  RLMeshExtLegacyModel* model_ = nullptr;
   std::unique_ptr<State> state_;
 };
 
