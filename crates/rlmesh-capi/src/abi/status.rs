@@ -257,11 +257,16 @@ pub(crate) struct CallbackFrame {
 }
 impl CallbackFrame {
     pub(crate) fn enter() -> Self {
-        Self {
+        let frame = Self {
             message: CALLBACK_MESSAGE.with(|s| s.borrow_mut().take()),
             class: CALLBACK_CLASS.with(|s| s.take()),
             payload: CALLBACK_PAYLOAD.with(|s| s.borrow_mut().take()),
-        }
+        };
+        // A new callback must not observe an earlier request's last error.
+        // Drop its host payload outside the TLS borrow so deleters may reenter.
+        let previous = LAST_ERROR.with(|slot| slot.borrow_mut().take());
+        drop(previous);
+        frame
     }
 }
 impl Drop for CallbackFrame {

@@ -99,7 +99,8 @@ pub unsafe extern "C" fn rlmesh_multi_discrete_nvec(
         let Some(SpaceKind::MultiDiscrete(v)) = &spec.spec else {
             return Err(CapiError::type_error("not MultiDiscrete"));
         };
-        write_out(len, v.nvec.len())?;
+        // SAFETY: the caller provides writable output storage for this call.
+        unsafe { write_out(len, v.nvec.len()) }?;
         if out.is_null() && cap == 0 {
             return Ok(());
         }
@@ -125,9 +126,12 @@ pub unsafe extern "C" fn rlmesh_text_limits(
         let Some(SpaceKind::Text(v)) = &spec.spec else {
             return Err(CapiError::type_error("not Text"));
         };
-        write_out(min, v.min_length)?;
-        write_out(max, v.max_length)?;
-        write_out(charset, RLMeshStr::borrowed(&v.charset))
+        // SAFETY: the caller provides writable output storage for this call.
+        unsafe {
+            write_out(min, v.min_length)?;
+            write_out(max, v.max_length)?;
+            write_out(charset, RLMeshStr::borrowed(&v.charset))
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -141,7 +145,8 @@ pub unsafe extern "C" fn rlmesh_tuple_len(
         let Some(SpaceKind::Tuple(v)) = &spec.spec else {
             return Err(CapiError::type_error("not Tuple"));
         };
-        write_out(out, v.spaces.len())
+        // SAFETY: the caller provides writable output storage for this call.
+        unsafe { write_out(out, v.spaces.len()) }
     })
 }
 #[unsafe(no_mangle)]

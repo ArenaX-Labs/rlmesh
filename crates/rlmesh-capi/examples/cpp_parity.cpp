@@ -15,6 +15,8 @@ static_assert(!std::is_copy_constructible_v<Session>);
 static_assert(!std::is_copy_constructible_v<RemoteEnv>);
 static_assert(std::is_copy_constructible_v<Model>);
 static_assert(std::is_copy_constructible_v<RemoteModel>);
+static_assert(std::is_copy_constructible_v<ext::CancelToken>);
+static_assert(std::is_nothrow_move_constructible_v<ext::CancelToken>);
 static_assert(!std::is_constructible_v<Value, std::nullptr_t>);
 static_assert(!std::is_constructible_v<Value, char>);
 static_assert(std::is_constructible_v<Value, unsigned char>);
@@ -171,15 +173,52 @@ void runs_sessions() {
     assert(reward == 1 && !terminated && !truncated);
     assert(s.contract().id() == "CppCounter-v0");
     assert(s.num_envs() == 1);
-    auto token = s.cancel_handle();
-    auto token_copy = token;
+    auto token_copy = [&] {
+      auto token = s.cancel_handle();
+      auto copy = token;
+      assert(copy.raw() != token.raw());
+      return copy;
+    }();  // The copied C handle survives the original handle's destruction.
     token_copy.cancel();
+    token_copy.cancel();  // Pending fires coalesce.
     try {
       s.predict(obs);
       assert(false);
     } catch (const ext::CancelledError&) {
     }
     assert(s.predict(obs) == Value(0));
+    ext::CancelToken assigned;
+    assigned = token_copy;
+    assert(assigned.raw() != token_copy.raw());
+    auto* raw = assigned.raw();
+    auto moved = std::move(assigned);
+    assert(!assigned.raw() && moved.raw() == raw);
+    assigned = std::move(moved);
+    assert(!moved.raw() && assigned.raw() == raw);
+    assigned.cancel();  // The cloned token observes the re-armed shared state.
+    try {
+      s.predict(obs);
+      assert(false);
+    } catch (const ext::CancelledError&) {
+    }
+    assert(s.predict(obs) == Value(0));
+    try {
+      moved.cancel();
+      assert(false);
+    } catch (const ValueError&) {
+    }
+    struct RefuseFree : RunHooks {
+      Session& session;
+      bool called = false;
+      explicit RefuseFree(Session& s) : session(s) {}
+      void on_step(const StepEvent&) override {
+        rlmesh_session_free(session.raw());
+        assert(rlmesh_last_error_status() == RLMESH_ERR_RUNTIME);
+        called = true;
+      }
+    } refuse(s);
+    assert(s.run({.hooks = &refuse}).num_episodes() == 1);
+    assert(refuse.called && s.done());
   }
   assert(object->closes == 0);
   moved.close();

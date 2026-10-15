@@ -556,15 +556,34 @@ struct DlpackDeleter {
 };
 using DlpackPtr = std::unique_ptr<DLManagedTensorVersioned, DlpackDeleter>;
 class CancelToken {
-  std::shared_ptr<RLMeshExtCancelToken> handle_{};
+  detail::Owned<RLMeshExtCancelToken, rlmesh_ext_cancel_token_free> handle_{
+      nullptr, rlmesh_ext_cancel_token_free};
 
  public:
-  CancelToken() : CancelToken(rlmesh_ext_cancel_token_new()) {
-    if (!raw()) detail::check(rlmesh_last_error_status());
+  CancelToken() {
+    RLMeshExtCancelToken* p = nullptr;
+    detail::check(rlmesh_ext_cancel_token_new(&p));
+    handle_.reset(p);
   }
   explicit CancelToken(RLMeshExtCancelToken* p) : handle_(p, rlmesh_ext_cancel_token_free) {}
+  CancelToken(const CancelToken& other) {
+    if (other.raw()) {
+      RLMeshExtCancelToken* p = nullptr;
+      detail::check(rlmesh_ext_cancel_token_clone(other.raw(), &p));
+      handle_.reset(p);
+    }
+  }
+  CancelToken& operator=(const CancelToken& other) {
+    if (this != &other) {
+      CancelToken copy(other);
+      handle_.swap(copy.handle_);
+    }
+    return *this;
+  }
+  CancelToken(CancelToken&&) noexcept = default;
+  CancelToken& operator=(CancelToken&&) noexcept = default;
   RLMeshExtCancelToken* raw() const { return handle_.get(); }
-  void cancel() const { rlmesh_ext_cancel_token_cancel(raw()); }
+  void cancel() const { detail::check(rlmesh_ext_cancel_token_cancel(raw())); }
 };
 }  // namespace ext
 struct ToDlpackOptions {
