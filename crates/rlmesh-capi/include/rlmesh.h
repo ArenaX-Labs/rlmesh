@@ -16,6 +16,7 @@
 /* clang-format off */
 #if defined(__cplusplus) && __cplusplus < 201103L && defined(__GNUC__)
 #pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
 #pragma GCC diagnostic ignored "-Wc++11-extensions"
 #endif
 /*!

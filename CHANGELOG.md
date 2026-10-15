@@ -99,6 +99,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ### Fixed
 
+- The C header compiles warning-free as C++98 under GCC as well as Clang. Pedantic diagnostics are suppressed only around the unchanged vendored DLPack header.
+
 - C ABI 5 cancellation now follows R-18's status/out-parameter constructor and shared-clone API. Run hooks clear stale callback errors; setting episode state to the same pointer updates its deleter without freeing the value.
 - C input structs reject invalid bool bytes before typed reads. Output slots are initialized without reading or dropping their previous bytes, and raw handle/output helpers carry explicit Rust safety contracts. Session destruction from its own hooks is refused; retained frame sources use weak session state and report RuntimeError after destruction, including sources transferred through C contexts.
 
