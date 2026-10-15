@@ -85,16 +85,16 @@ impl Drop for Handle {
             return;
         }
         let shared = Arc::clone(&self.shared);
-        if shared.on_worker() || crate::env::server::in_async_context() {
-            // Never wait for our own call or block an executor: the close
-            // runs on a detached library thread, after the current call.
-            let _ = std::thread::Builder::new()
-                .name("rlmesh-model-close".to_string())
-                .spawn(move || {
-                    let _ = shared.close(None);
-                });
-        } else {
-            let _ = shared.close(None);
+        let wait = !shared.on_worker() && !crate::env::server::in_async_context();
+        let (done, finished) = mpsc::sync_channel(1);
+        let _ = std::thread::Builder::new()
+            .name("rlmesh-model-close".to_string())
+            .spawn(move || {
+                let _ = shared.close(None);
+                let _ = done.send(());
+            });
+        if wait {
+            let _ = finished.recv_timeout(SERVE_GRACE);
         }
     }
 }
@@ -733,9 +733,15 @@ impl Shared {
         f: impl FnOnce(&mut Core) -> Result<R> + Send + 'static,
     ) -> Result<mpsc::Receiver<Result<R>>> {
         let (tx, rx) = mpsc::sync_channel(1);
+        let work = crate::warnings::work_context();
         let job: Job = Box::new(move |core: &mut Core| {
-            let out = std::panic::catch_unwind(AssertUnwindSafe(|| f(core)))
-                .unwrap_or_else(|payload| Err(panic_error(payload)));
+            let out = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                crate::warnings::with_work(work, || {
+                    crate::warnings::check_cancelled()?;
+                    f(core)
+                })
+            }))
+            .unwrap_or_else(|payload| Err(panic_error(payload)));
             let _ = tx.send(out);
         });
         self.queue
@@ -750,6 +756,7 @@ impl Shared {
         f: impl FnOnce(&mut Core) -> Result<R> + Send + 'static,
     ) -> Result<R> {
         self.check_not_reentrant("a corner call")?;
+        let admission = self.life.lock();
         if self.refuse.load(Ordering::SeqCst) {
             return Err(closed_error());
         }
@@ -759,6 +766,7 @@ impl Shared {
             }
             f(core)
         })?;
+        drop(admission);
         rx.recv()
             .map_err(|_| Error::Internal("the model call was dropped".to_string()))?
     }
@@ -826,19 +834,27 @@ impl Shared {
             trigger.trigger("model closed");
         }
         self.life.wait_until(None, |state| state.serves.is_empty());
+        let admission = self.life.lock();
         self.refuse.store(true, Ordering::SeqCst);
         let life = Arc::clone(&self.life);
         let rx = match self.submit(move |core| {
-            let result = core.close_hook();
-            life.set_closed();
-            result
+            struct Complete(Arc<Life>);
+            impl Drop for Complete {
+                fn drop(&mut self) {
+                    self.0.set_closed();
+                }
+            }
+            let _complete = Complete(life);
+            core.close_hook()
         }) {
             Ok(rx) => rx,
             Err(err) => {
+                drop(admission);
                 self.life.set_closed();
                 return Err(err);
             }
         };
+        drop(admission);
         match timeout {
             None => rx
                 .recv()
@@ -1167,13 +1183,8 @@ fn serve_blocking(
     serve.drain_timeout = Some(serve.drain_timeout.unwrap_or(SERVE_GRACE));
     let close_timeout = serve.close_timeout.unwrap_or(SERVE_GRACE);
     serve.close_timeout = Some(close_timeout);
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .thread_name("rlmesh-model-serve")
-        .build()
-        .map_err(|err| Error::Internal(format!("failed to create tokio runtime: {err}")))?;
     let handler = super::bridge::engine_handler(Arc::clone(shared));
-    let bound = runtime.block_on(super::server::bind_model_with_options(
+    let bound = crate::run::drive::block_on_library(super::server::bind_model_with_options(
         handler,
         address,
         &token,
@@ -1185,8 +1196,7 @@ fn serve_blocking(
     let signals = foreground.then(|| crate::env::signals::enter(trigger.clone()));
     let tokens: Vec<_> = cancel.into_iter().chain(dropped).collect();
     let watcher = CancelWatcher::start(tokens, trigger);
-    let result = runtime.block_on(bound.serve());
-    drop(runtime);
+    let result = crate::run::drive::block_on_library(bound.serve());
     shared.deregister_serve(serve_id);
     let cancelled = watcher.stop();
     let interrupted = signals.as_ref().is_some_and(|scope| scope.interrupted());
@@ -1224,4 +1234,13 @@ pub(crate) async fn run_local(
     }
     let mut handler = super::bridge::engine_handler(Arc::clone(shared));
     super::local::run_local(&mut handler, options, cancellation, hooks).await
+}
+
+impl Drop for CancelWatcher {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }

@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 use pyo3::prelude::*;
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pymethods};
-use rlmesh::binding::env::{WireEnvAdapter, WireLaneAdapter};
 use rlmesh::ServeOptions;
+use rlmesh::binding::env::{WireEnvAdapter, WireLaneAdapter};
 use rlmesh::ext::BindAddress;
 use rlmesh_grpc::env::{Environment, env_service_from_shared};
 use rlmesh_grpc::lifecycle::{
@@ -217,7 +217,7 @@ fn construct_server(
                 // Unlink only a socket we can prove is dead: a live socket is
                 // refused and a non-socket file is left for `bind` to reject,
                 // matching the Rust facade's bind path exactly.
-                rlmesh::remove_stale_socket(&socket_path).map_err(|e| {
+                rlmesh::ext::remove_stale_socket(&socket_path).map_err(|e| {
                     PyErr::new::<pyo3::exceptions::PyConnectionError, _>(e.to_string())
                 })?;
 
@@ -380,6 +380,10 @@ impl PyEnvServer {
         // drain: joining here would wait on this very callback (ENV-P2). The
         // owner's wait() or shutdown() then observes the stop.
         if super::py_environment::in_server_callback(self.id) {
+            let mut state = self.state.lock().expect("server state mutex poisoned");
+            if matches!(*state, ServerState::RunningForeground) {
+                *state = ServerState::Stopped;
+            }
             return Ok(());
         }
 

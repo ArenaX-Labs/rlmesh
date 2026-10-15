@@ -1309,3 +1309,43 @@ fn native_adapter_instruction_and_kept_context_read() {
             .is_ok()
     );
 }
+
+#[test]
+fn short_chunk_warnings_run_on_the_polling_thread_and_can_abort() {
+    let _lock = crate::warnings::tests::HANDLER_LOCK.lock().unwrap();
+    struct Chunk;
+    impl crate::Policy for Chunk {
+        const CORNERS: crate::Corners =
+            crate::Corners::PREDICT.union(crate::Corners::PREDICT_CHUNK);
+        fn predict(&mut self, _: Value) -> Result<Value> {
+            Ok(Value::Int(0))
+        }
+        fn predict_chunk(&mut self, _: Value, _: u32) -> Result<Value> {
+            Ok(Value::List(vec![Value::Int(0)]))
+        }
+    }
+    let model = Model::new(Chunk, ModelOptions::default()).unwrap();
+    let mut env = Steps::new();
+    let mut session = model
+        .session(
+            &mut env,
+            SessionOptions {
+                execution_horizon: 2,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    session.reset(None, None).unwrap();
+    let caller = std::thread::current().id();
+    crate::set_warning_handler(Some(Box::new(move |warning| {
+        if warning.category == crate::WarningCategory::RuntimeWarning {
+            assert_eq!(std::thread::current().id(), caller);
+            return Err(crate::Error::Runtime("warning refused".into()));
+        }
+        Ok(())
+    })));
+    let error = session.predict(Value::Int(0)).unwrap_err();
+    crate::set_warning_handler(None);
+    assert_eq!(error, crate::Error::Runtime("warning refused".into()));
+}
+

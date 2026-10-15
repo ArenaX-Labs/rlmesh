@@ -4,12 +4,12 @@ use pyo3::prelude::*;
 use pyo3_stub_gen::derive::{gen_methods_from_python, gen_stub_pyclass, gen_stub_pyfunction};
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::inventory::submit;
+use rlmesh::Error as RLMeshError;
 use rlmesh::binding::model::{
     AdaptedModelHandler, EpisodeInfo, ModelObservation, ModelWorker, PredictFn, PredictFrames,
     RouteConfig, RouteResolver, RunLocalOptions, ServeModelOptions,
 };
 use rlmesh::binding::model::{ModelClient, ModelConnect};
-use rlmesh::Error as RLMeshError;
 use rlmesh::ext::{BindAddress, ConnectAddress};
 use rlmesh_adapters::v1::Value;
 use rlmesh_spaces::{EnvContract, SpaceValue, spaces::SpaceSpec};
@@ -111,6 +111,7 @@ impl PyPredict {
 
 impl PredictFn for PyPredict {
     fn predict(&self, model_input: Value, episode: Option<&EpisodeInfo>) -> rlmesh::Result<Value> {
+        rlmesh::binding::check_model_call()?;
         Python::attach(|py| -> PyResult<Value> {
             // The assembled input is now a Value tree (a nested dict/list/leaf
             // matching the model spec's InputNode shape).
@@ -128,6 +129,7 @@ impl PredictFn for PyPredict {
         horizon: u32,
         episode: Option<&EpisodeInfo>,
     ) -> rlmesh::Result<Option<Value>> {
+        rlmesh::binding::check_model_call()?;
         let Some(predict_chunk_fn) = self.predict_chunk_fn.as_ref() else {
             return Ok(None);
         };
@@ -155,8 +157,9 @@ impl PredictFn for PyPredict {
         inputs: Vec<Value>,
         episodes: &[EpisodeInfo],
     ) -> rlmesh::Result<Vec<Value>> {
+        rlmesh::binding::check_model_call()?;
         match self.predict_batch_fn.as_ref() {
-            Some(f) => call_batched(f, inputs, None, episodes),
+            Some(f) => call_batched(f, inputs, None, episodes).map_err(|err| self.internal(err)),
             None => Err(RLMeshError::Internal(
                 "predict_batch not implemented".to_string(),
             )),
@@ -173,8 +176,11 @@ impl PredictFn for PyPredict {
         horizon: u32,
         episodes: &[EpisodeInfo],
     ) -> rlmesh::Result<Vec<Value>> {
+        rlmesh::binding::check_model_call()?;
         match self.predict_chunk_batch_fn.as_ref() {
-            Some(f) => call_batched(f, inputs, Some(horizon), episodes),
+            Some(f) => {
+                call_batched(f, inputs, Some(horizon), episodes).map_err(|err| self.internal(err))
+            }
             None => Err(RLMeshError::Internal(
                 "predict_chunk_batch not implemented".to_string(),
             )),
@@ -195,6 +201,7 @@ impl PredictFn for PyPredict {
     }
 
     fn predict_spec_less(&self, observation: ModelObservation) -> rlmesh::Result<Vec<SpaceValue>> {
+        rlmesh::binding::check_model_call()?;
         // A spec-less route hands the raw observation straight to the model,
         // batched, preserving the pre-relocation path exactly (no adapter).
         let lanes = if observation.observation.is_some() {
@@ -309,6 +316,7 @@ impl PredictFn for PyPredict {
         observation: ModelObservation,
         execution_horizon: u32,
     ) -> rlmesh::Result<PredictFrames> {
+        rlmesh::binding::check_model_call()?;
         let horizon = execution_horizon.max(1) as usize;
         if horizon <= 1 || self.predict_chunk_fn.is_none() || observation.num_envs != 1 {
             return Ok(PredictFrames {
@@ -383,19 +391,19 @@ impl PredictFn for PyPredict {
                     .expect("short-chunk set poisoned")
                     .insert(key);
                 if first {
-                    let message = std::ffi::CString::new(format!(
+                    let message = format!(
                         "the model returned {} actions for execution_horizon={horizon}; \
                          replaying what there is and re-planning early. Declare \
                          Model.native_chunk so the horizon can be validated up front.",
                         frames.len()
-                    ))
-                    .expect("no interior NUL");
-                    PyErr::warn(
-                        py,
-                        &py.get_type::<pyo3::exceptions::PyRuntimeWarning>(),
-                        &message,
-                        1,
-                    )?;
+                    );
+                    py.detach(|| {
+                        rlmesh::binding::emit_warning(
+                            rlmesh::WarningCategory::RuntimeWarning,
+                            message,
+                        )
+                    })
+                    .map_err(to_py_err)?;
                 }
             }
             let mut frames = frames.into_iter().take(horizon);
@@ -533,7 +541,7 @@ fn call_batched(
     inputs: Vec<Value>,
     horizon: Option<u32>,
     episodes: &[EpisodeInfo],
-) -> rlmesh::Result<Vec<Value>> {
+) -> PyResult<Vec<Value>> {
     Python::attach(|py| -> PyResult<Vec<Value>> {
         let list = pyo3::types::PyList::empty(py);
         for model_input in &inputs {
@@ -554,7 +562,6 @@ fn call_batched(
         }
         Ok(out)
     })
-    .map_err(|err| RLMeshError::Internal(err.to_string()))
 }
 
 /// The in-process run's report as a Python dict: `episodes` (the per-episode
@@ -1291,4 +1298,61 @@ fn native_env_contract_from_py(contract: &Bound<'_, PyAny>) -> PyResult<EnvContr
         // affect the client route, so the contract default is fine here.
         autoreset_mode: Default::default(),
     })
+}
+
+#[cfg(test)]
+mod review_regressions {
+    use super::*;
+    use pyo3::types::PyDictMethods;
+    use rlmesh::binding::model::PredictFn;
+
+    fn batch_corner_error_regression(chunked: bool) {
+        Python::attach(|py| {
+            let exception = crate::types::ModelException::new_err("batch refused");
+            exception.value(py).setattr("is_recoverable", true).unwrap();
+            let globals = pyo3::types::PyDict::new(py);
+            globals.set_item("failure", exception.value(py)).unwrap();
+            py.run(c"def fail(*args):\n    raise failure", Some(&globals), None)
+                .unwrap();
+            let fail = globals.get_item("fail").unwrap().unwrap().unbind();
+            let predict = PyPredict {
+                predict_fn: fail.clone_ref(py),
+                predict_chunk_fn: None,
+                predict_batch_fn: Some(fail.clone_ref(py)),
+                predict_chunk_batch_fn: Some(fail),
+                allow_fusion: true,
+                native_chunk: None,
+                on_episode_end: None,
+                on_close: None,
+                on_route_drop: None,
+                short_warned: Default::default(),
+                last_error: Default::default(),
+            };
+            {
+                let error = if chunked {
+                    predict.predict_chunk_batch(vec![Value::Number(0.)], 2, &[])
+                } else {
+                    predict.predict_batch(vec![Value::Number(0.)], &[])
+                }
+                .unwrap_err();
+                assert_eq!(error.class(), rlmesh::ErrorClass::ModelException);
+                assert!(error.is_recoverable());
+                let RLMeshError::Model(error) = error else {
+                    panic!()
+                };
+                assert_eq!(error.message, "batch refused");
+                let original = predict.last_error.lock().unwrap().take().unwrap();
+                assert!(original.value(py).is(exception.value(py)));
+            }
+        });
+    }
+    #[test]
+    fn batch_preserves_model_error_identity_and_wire_text() {
+        batch_corner_error_regression(false);
+    }
+
+    #[test]
+    fn chunk_batch_preserves_model_error_identity_and_wire_text() {
+        batch_corner_error_regression(true);
+    }
 }

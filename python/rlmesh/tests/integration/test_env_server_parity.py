@@ -122,3 +122,25 @@ def test_a_background_vector_env_runs_on_one_thread():
     assert len(env.threads) == 7
     assert len(set(env.threads)) == 1
     assert env.threads[0] != threading.get_ident()
+
+
+def test_foreground_callback_shutdown_marks_stopped_before_serve_finishes():
+    class Stops(_Env):
+        def reset(self, *, seed=None, options=None):
+            self.server.shutdown()
+            assert self.server.wait(0) is True
+            return 0, {}
+
+    env = Stops()
+    server = rlmesh.EnvServer(env, "127.0.0.1:0")
+    env.server = server
+    worker = threading.Thread(target=server.serve)
+    worker.start()
+    remote = _connect(server.address)
+    try:
+        remote.reset()
+    finally:
+        remote.close()
+        server.shutdown()
+        worker.join(5)
+    assert not worker.is_alive()

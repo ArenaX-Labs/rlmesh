@@ -576,6 +576,10 @@ impl EnvServer {
         refuse_in_async_context("shutdown")?;
         self.shared.shutdown.trigger("local shutdown");
         if IN_CALLBACK.with(std::cell::Cell::get) == self.shared.id {
+            let mut state = lock(&self.shared.state);
+            if matches!(*state, State::Foreground) {
+                *state = State::Stopped;
+            }
             return Ok(());
         }
         let previous = std::mem::replace(&mut *lock(&self.shared.state), State::Stopped);

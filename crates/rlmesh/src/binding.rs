@@ -203,3 +203,57 @@ pub fn encode_render_frame(frame: &Value) -> Result<Option<Vec<u8>>> {
 pub fn adapter_json_format(value: &serde_json::Value) -> Result<String> {
     crate::adapters::format_json(value)
 }
+
+/// An error carrying an in-process binding payload across worker threads.
+#[derive(Clone)]
+pub struct AttachedError {
+    pub(crate) error: Box<Error>,
+    payload: std::sync::Arc<dyn std::any::Any + Send + Sync>,
+}
+
+impl std::fmt::Debug for AttachedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(f)
+    }
+}
+
+impl AttachedError {
+    /// Attach a host exception without changing its native classification.
+    pub fn attach(error: Error, payload: impl std::any::Any + Send + Sync) -> Error {
+        let error = match error {
+            Error::Attached(attached) => attached.error,
+            error => Box::new(error),
+        };
+        Error::Attached(Self {
+            error,
+            payload: std::sync::Arc::new(payload),
+        })
+    }
+
+    /// Read the host's payload at its outer boundary.
+    pub fn payload<T: std::any::Any>(&self) -> Option<&T> {
+        self.payload.downcast_ref()
+    }
+
+    /// The error without its host payload.
+    pub fn error(&self) -> &Error {
+        &self.error
+    }
+}
+
+/// Refuse an authored callback whose awaiting operation was dropped.
+pub fn check_model_call() -> Result<()> {
+    crate::warnings::check_cancelled()
+}
+
+impl PartialEq for AttachedError {
+    fn eq(&self, other: &Self) -> bool {
+        self.error == other.error && std::sync::Arc::ptr_eq(&self.payload, &other.payload)
+    }
+}
+impl Eq for AttachedError {}
+
+/// Emit a native warning through the caller-thread warning machinery.
+pub fn emit_warning(category: crate::WarningCategory, message: String) -> Result<()> {
+    crate::warnings::warn(category, message)
+}

@@ -717,3 +717,86 @@ async fn dropping_a_polled_serve_async_future_closes_the_model() {
     model.close_async().await.unwrap();
     assert_eq!(closed.load(Ordering::SeqCst), 1);
 }
+
+#[test]
+fn panicking_close_completes_the_lifecycle() {
+    let model = Model::new(
+        |_: Value| Ok(Value::Int(0)),
+        ModelOptions {
+            on_close: Some(Box::new(|| panic!("close boom"))),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(
+        model
+            .close()
+            .unwrap_err()
+            .to_string()
+            .contains("close boom")
+    );
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(model.close());
+    });
+    rx.recv_timeout(Duration::from_secs(1))
+        .expect("second close must finish")
+        .unwrap();
+}
+
+#[test]
+fn serving_from_a_callers_runtime_root_does_not_nest_runtimes() {
+    let model = Model::new(|_: Value| Ok(Value::Int(0)), ModelOptions::default()).unwrap();
+    let cancel = crate::ext::CancelToken::new();
+    let token = cancel.clone();
+    let stop = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(100));
+        token.cancel();
+    });
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let out = runtime.block_on(async { model.serve("127.0.0.1:0", quick_serve(Some(cancel))) });
+    stop.join().unwrap();
+    assert_eq!(out.unwrap_err(), crate::Error::Cancelled);
+}
+
+#[test]
+fn dropping_a_cancel_watcher_stops_consuming_the_token() {
+    let token = crate::ext::CancelToken::new();
+    let trigger = rlmesh_grpc::lifecycle::ShutdownTrigger::new();
+    let watcher = super::facade::CancelWatcher::start(vec![token.clone()], trigger.clone());
+    drop(watcher);
+    token.cancel();
+    std::thread::sleep(Duration::from_millis(60));
+    assert_eq!(trigger.reason(), None);
+    assert!(
+        token.take(),
+        "a dropped watcher must not consume an idle cancel"
+    );
+}
+
+#[test]
+fn final_model_drop_is_bounded_even_when_close_is_unresponsive() {
+    let (release, blocked) = std::sync::mpsc::channel();
+    let model = Model::new(
+        |_: Value| Ok(Value::Int(0)),
+        ModelOptions {
+            on_close: Some(Box::new(move || {
+                blocked.recv().unwrap();
+                Ok(())
+            })),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        drop(model);
+        let _ = done.send(());
+    });
+    let out = finished.recv_timeout(Duration::from_secs(6));
+    release.send(()).unwrap();
+    out.expect("Drop must give up after its five-second bound");
+}
