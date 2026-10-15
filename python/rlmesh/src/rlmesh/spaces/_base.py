@@ -42,8 +42,12 @@ class Space(Generic[OutputT]):
         """Element dtype reported by the native spec."""
         return self._spec.dtype
 
-    def seed(self, seed: int | None = None) -> int | None:
-        """Seed the native sampler for this space."""
+    def seed(self, seed: int | None = None) -> int:
+        """Seed this space's sampler and return the seed used.
+
+        ``seed=None`` draws a fresh seed from OS entropy, applies it and
+        returns it; an explicit seed restarts the sample stream.
+        """
         return self._native_space().seed(seed)
 
     def sample(self) -> OutputT:

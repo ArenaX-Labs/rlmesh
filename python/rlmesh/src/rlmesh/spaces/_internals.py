@@ -60,6 +60,17 @@ def dtype_name(dtype: object) -> str:
     return name if isinstance(name, str) else str(dtype).rsplit(".", 1)[-1]
 
 
+def require_spec_kind(spec: SpaceSpec, kind: str) -> SpaceSpec:
+    """Return ``spec`` when it is of ``kind``, else raise ``ValueError``.
+
+    The one ``Box(spec)`` / ``Discrete(spec)`` / ... rule: a spec of another
+    kind is refused, never wrapped or read as the wrong kind.
+    """
+    if spec.kind != kind:
+        raise ValueError(f"expected {kind} SpaceSpec, got {spec.kind!r}")
+    return spec
+
+
 def spec_details(spec: SpaceSpec) -> Mapping[str, object]:
     return cast(Mapping[str, object], spec._details())
 

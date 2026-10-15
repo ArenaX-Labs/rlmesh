@@ -11,7 +11,7 @@ from .._value_conversion import ValueBridge
 from ..specs import SpaceSpec
 from ..types import Value
 from ._base import NewOutputT, Space
-from ._internals import EMPTY_SPACE_MAPPING, spec_details
+from ._internals import EMPTY_SPACE_MAPPING, require_spec_kind, spec_details
 
 
 @final
@@ -36,9 +36,7 @@ class Dict(Space[Value]):
         self, spaces: Mapping[str, Space[Any] | SpaceSpec] | SpaceSpec
     ) -> None:
         if isinstance(spaces, SpaceSpec):
-            if spaces.kind != "dict":
-                raise ValueError(f"expected dict SpaceSpec, got {spaces.kind!r}")
-            spec = spaces
+            spec = require_spec_kind(spaces, "dict")
         else:
             entries: dict[str, object] = {key: child for key, child in spaces.items()}
             spec = dict_space_spec(entries)

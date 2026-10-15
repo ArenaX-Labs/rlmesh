@@ -68,7 +68,7 @@ impl PyTensor {
                     "tensor byte length mismatch: expected {expected} bytes for shape {shape:?} and dtype {dtype:?}, got {actual}"
                 )))
             }
-            Err(TensorError::Overflow) => Err(pyo3::exceptions::PyOverflowError::new_err(
+            Err(TensorError::Overflow) => Err(pyo3::exceptions::PyValueError::new_err(
                 "tensor element count overflow",
             )),
             Err(err) => Err(pyo3::exceptions::PyValueError::new_err(err.to_string())),

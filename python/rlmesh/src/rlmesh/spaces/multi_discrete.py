@@ -9,7 +9,7 @@ from .._rlmesh import multi_discrete_space_spec
 from ..specs import SpaceSpec
 from ..types import Value
 from ._base import Space
-from ._internals import dtype_name, spec_details
+from ._internals import dtype_name, require_spec_kind, spec_details
 from ._literals import IntDTypeLike
 
 
@@ -29,7 +29,7 @@ class MultiDiscrete(Space[Value]):
         self, nvec: Sequence[int] | SpaceSpec, dtype: IntDTypeLike = "int64"
     ) -> None:
         spec = (
-            nvec
+            require_spec_kind(nvec, "multi_discrete")
             if isinstance(nvec, SpaceSpec)
             else multi_discrete_space_spec(list(nvec), dtype_name(dtype))
         )

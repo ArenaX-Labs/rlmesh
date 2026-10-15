@@ -215,10 +215,8 @@ def _box_to_gymnasium(gym_spaces: Any, spec: SpaceSpec) -> object:
         high = np.full(shape, details["high"], dtype=dtype)
     elif bounds_kind == "typed_uniform":
         # A single dtype-typed scalar (decoded exactly) broadcast to the shape.
-        typed_low = cast("list[Any]", details["low"])
-        typed_high = cast("list[Any]", details["high"])
-        low = np.full(shape, typed_low[0], dtype=dtype)
-        high = np.full(shape, typed_high[0], dtype=dtype)
+        low = np.full(shape, details["low"], dtype=dtype)
+        high = np.full(shape, details["high"], dtype=dtype)
     else:
         # "elementwise" / "typed_elementwise": one bound per element, row-major.
         low_flat: Any = np.asarray(details["low"], dtype=dtype)

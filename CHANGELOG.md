@@ -79,6 +79,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 - Adapter resolution errors for a missing role now suggest near matches among the roles the other side offers (`did you mean "x/goal_body"?`), and, when an `x/` role is involved, say that `x/` roles bind only to the identical string. The suggestion is only a hint: binding still matches roles exactly, and one registered role is never suggested for another. The zero-fill caution for an optional state input names the absent role and part (`zero-filled because the env offers no match for "proprio/eef_pos" (part "right_arm")`) instead of only counting components.
 
+- `Space.seed()` is annotated `-> int`: it always returned the seed it applied (one drawn from OS entropy for `seed=None`), never `None`.
+
+- `Box(spec)`, `Discrete(spec)` and the experimental `MultiBinary(spec)`, `MultiDiscrete(spec)` and `Text(spec)` raise `ValueError` for a spec of another kind, as `Dict(spec)` and `Tuple(spec)` already did. `Box` and `MultiBinary`/`MultiDiscrete` used to wrap any kind, and `Discrete` and `Text` failed with `KeyError`.
+
+- `Discrete`'s `dtype` is annotated with the three dtypes it accepts, `"int64"`, `"int32"` and `"uint8"`; the runtime check is unchanged.
+
+- A `Box` with integer bounds on an integer or bool dtype (`bounds_kind == "typed_uniform"`) reads `low` and `high` as one number, as a float Box does, instead of a one-element list. `Box(0, 255, [2], "uint8").high` is `255`. The describe envelope's space JSON is unchanged.
+
+- `Box` refuses a fractional bound on an integer or bool dtype with `ValueError` instead of truncating it: `Box(0.5, 3.7, [2], "int32")` was the range 0..3. Integral floats (`Box(0.0, 10.0, [1], "int64")`) are accepted and stored exactly.
+
+- `Box.contains` requires the space's exact shape, as Gymnasium does: a `(6,)` value is not a member of a `(2, 3)` Box, and a bare number is not a member of a `(1,)` Box. Before, only the element count and dtype were checked. Dict and Tuple members check their Box children the same way.
+
+- `RANDOM_SAMPLE` seeds the action-space sampler with each episode's reset seed, so a seeded run reproduces its actions; an episode without a seed keeps the running stream. Before, the sampler always drew from OS entropy.
+
+- `Tensor(buffer, shape, dtype)` raises `ValueError` instead of `OverflowError` when the element or byte count overflows, like its other invalid arguments.
+
 - C API errors follow the Python classes: a wrong-kind value or space read returns `RLMESH_ERR_TYPE` instead of `RLMESH_ERR_INVALID_VALUE`, which is deprecated and no longer returned; a malformed tensor or non-UTF-8 text is `RLMESH_ERR_INVALID_ARGUMENT`; a server-side failure (a failed bind) is `RLMESH_ERR_INTERNAL` instead of `RLMESH_ERR_TRANSPORT`, which is renamed `RLMESH_ERR_CONNECTION` and kept as a deprecated alias; a protocol failure is `RLMESH_ERR_PROTOCOL` instead of `RLMESH_ERR_INTERNAL`. `rlmesh_last_error_message` is Python's `str(exc)`: the `connection error:`, `environment error:`, `model error:` and `internal error:` prefixes are gone, environment and model errors read `[CODE] message`, and a timeout reads `operation timed out after 5s`. `rlmesh_last_error_is_recoverable` is nonzero only for a recoverable environment or model error, no longer for a timeout or connection failure.
 
 - Every error an env reports raises `EnvironmentException` (or `RecoverableEnvironmentException`) with its `code`, including the codes `TIMEOUT`, `INVALID_ACTION` and `CANCELLED`, which raised `TimeoutError`, `ValueError` and `RuntimeError`. This breaks an `except TimeoutError` or `except ValueError` around an env call; catch `EnvironmentException` and read `code`. A client-side deadline still raises `TimeoutError`.
