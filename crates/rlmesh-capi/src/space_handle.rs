@@ -598,6 +598,7 @@ fn box_bound_entries(bound: Option<BoxBound>) -> Vec<RLMeshBound> {
         None => Vec::new(),
         Some(BoxBound::Uniform(bound)) => vec![RLMeshBound::write(bound)],
         Some(BoxBound::Elementwise(bounds)) => bounds.into_iter().map(RLMeshBound::write).collect(),
+        Some(_) => Vec::new(),
     }
 }
 
@@ -733,7 +734,8 @@ pub extern "C" fn rlmesh_dict_len(space: *const RLMeshSpace, out: *mut usize) ->
     guard(|| write_out(out, typed(space, Space::as_dict, "dict")?.len()))
 }
 
-/// The `i`-th key in declaration order, borrowed from the Dict.
+/// The `i`-th key in declaration order, borrowed from the Dict; past the end
+/// reads as absent (`RLMESH_OK`, `{NULL, 0}`).
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_dict_key_at(
     space: *const RLMeshSpace,
@@ -742,15 +744,19 @@ pub extern "C" fn rlmesh_dict_key_at(
 ) -> RLMeshStatus {
     guard(|| {
         let dict = typed(space, Space::as_dict, "dict")?;
-        let key = dict
-            .keys()
-            .nth(i)
-            .ok_or_else(|| CapiError::invalid_arg(format!("index {i} out of range")))?;
-        write_out(out, RLMeshStr::borrowed(key))
+        let key = dict.keys().nth(i).map_or(
+            RLMeshStr {
+                data: std::ptr::null(),
+                len: 0,
+            },
+            RLMeshStr::borrowed,
+        );
+        write_out(out, key)
     })
 }
 
-/// The `i`-th child space in declaration order, borrowed from the Dict.
+/// The `i`-th child space in declaration order, borrowed from the Dict; past
+/// the end reads as absent (`RLMESH_OK`, `*out = NULL`).
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_dict_value_at(
     space: *const RLMeshSpace,
@@ -762,8 +768,8 @@ pub extern "C" fn rlmesh_dict_value_at(
         let child = dict
             .values()
             .nth(i)
-            .ok_or_else(|| CapiError::invalid_arg(format!("index {i} out of range")))?;
-        write_out(out, (child as *const Space).cast())
+            .map_or(std::ptr::null(), |child| (child as *const Space).cast());
+        write_out(out, child)
     })
 }
 
@@ -787,7 +793,8 @@ pub unsafe extern "C" fn rlmesh_dict_get(
     })
 }
 
-/// `key in d`; false for NULL or another kind.
+/// `key in d` into `*out`: `RLMESH_ERR_TYPE` on another kind,
+/// `RLMESH_ERR_INVALID_ARGUMENT` on a malformed key.
 ///
 /// # Safety
 /// `key` holds `key.len` readable bytes.
@@ -795,12 +802,12 @@ pub unsafe extern "C" fn rlmesh_dict_get(
 pub unsafe extern "C" fn rlmesh_dict_contains_key(
     space: *const RLMeshSpace,
     key: RLMeshStr,
-) -> bool {
-    guard_value(false, || {
-        let Some(dict) = space_ref(space).and_then(Space::as_dict) else {
-            return false;
-        };
-        unsafe { key.read("dict key") }.is_ok_and(|key| dict.contains_key(key))
+    out: *mut bool,
+) -> RLMeshStatus {
+    guard(|| {
+        let dict = typed(space, Space::as_dict, "dict")?;
+        let key = unsafe { key.read("dict key") }?;
+        write_out(out, dict.contains_key(key))
     })
 }
 

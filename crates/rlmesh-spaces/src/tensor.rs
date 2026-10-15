@@ -36,12 +36,6 @@ impl std::fmt::Display for Device {
     }
 }
 
-impl From<Device> for i32 {
-    fn from(value: Device) -> Self {
-        value as i32
-    }
-}
-
 /// Errors raised by [`Tensor`] constructors and transformations.
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
 pub enum TensorError {

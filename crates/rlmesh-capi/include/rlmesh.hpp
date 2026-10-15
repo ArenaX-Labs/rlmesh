@@ -2003,7 +2003,8 @@ class Dict : public Space {
   }
 #endif
   bool contains_key(std::string_view key) const {
-    return rlmesh_dict_contains_key(ptr_, detail::str(key));
+    bool out = false;
+    return rlmesh_dict_contains_key(ptr_, detail::str(key), &out) == RLMESH_OK && out;
   }
 
  private:

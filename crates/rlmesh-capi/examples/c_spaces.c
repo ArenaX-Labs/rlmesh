@@ -71,8 +71,13 @@ int main(void) {
   CHECK(rlmesh_dict_get(obs, rlmesh_str("missing"), &child) == RLMESH_OK && child == NULL);
   CHECK(rlmesh_dict_get(obs, rlmesh_str("pos"), &child) == RLMESH_OK && child != NULL);
   CHECK(rlmesh_space_equals(child, pos));
-  CHECK(rlmesh_dict_contains_key(obs, rlmesh_str("id")));
-  CHECK(!rlmesh_dict_contains_key(obs, rlmesh_str("nope")));
+  bool present = false;
+  CHECK(rlmesh_dict_contains_key(obs, rlmesh_str("id"), &present) == RLMESH_OK && present);
+  CHECK(rlmesh_dict_contains_key(obs, rlmesh_str("nope"), &present) == RLMESH_OK && !present);
+  CHECK(rlmesh_dict_contains_key(pos, rlmesh_str("id"), &present) == RLMESH_ERR_TYPE);
+  /* Past the end reads as absent. */
+  CHECK(rlmesh_dict_key_at(obs, 2, &key) == RLMESH_OK && key.data == NULL && key.len == 0);
+  CHECK(rlmesh_dict_value_at(obs, 2, &child) == RLMESH_OK && child == NULL);
 
   /* Typed bounds read back in the dtype's domain, by the buffer rule. */
   RLMeshBox* u = NULL;

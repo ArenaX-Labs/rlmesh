@@ -656,14 +656,17 @@ RLMESH_API RLMeshStatus rlmesh_dict_new(const RLMeshStr* keys, const RLMeshSpace
 RLMESH_API RLMeshStatus rlmesh_dict_from_spec(const RLMeshSpaceSpec* spec, RLMeshDict** out);
 RLMESH_API RLMeshStatus rlmesh_dict_len(const RLMeshDict* dict, size_t* out);
 /* Declaration order; both borrowed while any handle sharing the Dict lives. A
- * child is the same space (and sampler) on every read. */
+ * child is the same space (and sampler) on every read. An index past the end
+ * reads as absent: RLMESH_OK with *out = {NULL, 0} / NULL (a present key's
+ * `data` is never NULL). */
 RLMESH_API RLMeshStatus rlmesh_dict_key_at(const RLMeshDict* dict, size_t i, RLMeshStr* out);
 RLMESH_API RLMeshStatus rlmesh_dict_value_at(const RLMeshDict* dict, size_t i,
                                              const RLMeshSpace** out);
 /* d[key], borrowed; *out = NULL (and RLMESH_OK) when absent. */
 RLMESH_API RLMeshStatus rlmesh_dict_get(const RLMeshDict* dict, RLMeshStr key,
                                         const RLMeshSpace** out);
-RLMESH_API bool rlmesh_dict_contains_key(const RLMeshDict* dict, RLMeshStr key);
+/* key in d, into *out; RLMESH_ERR_TYPE on another kind. */
+RLMESH_API RLMeshStatus rlmesh_dict_contains_key(const RLMeshDict* dict, RLMeshStr key, bool* out);
 
 /* ---- adapters (experimental) -------------------------------------------- */
 

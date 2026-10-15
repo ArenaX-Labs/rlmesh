@@ -204,7 +204,7 @@ impl PyTensor {
             ));
         }
         if let Some(device) = dl_device
-            && device != (i32::from(self.inner.device()), 0)
+            && device != (super::dlpack::dl_device_type(self.inner.device()), 0)
         {
             return Err(pyo3::exceptions::PyBufferError::new_err(format!(
                 "cannot export to device {device:?}; only CPU (1, 0) is supported",
@@ -234,7 +234,7 @@ impl PyTensor {
 
     /// DLPack device of the tensor data: `(kDLCPU, 0)`.
     fn __dlpack_device__(&self) -> (i32, i32) {
-        (i32::from(self.inner.device()), 0)
+        (super::dlpack::dl_device_type(self.inner.device()), 0)
     }
 
     /// Import a tensor from a DLPack capsule or any object implementing

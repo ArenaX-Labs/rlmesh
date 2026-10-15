@@ -83,6 +83,7 @@ impl fmt::Display for Bound {
 /// A Box's `low` or `high`: one bound for every element, or one per element
 /// (row-major).
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum BoxBound {
     /// One bound for every element (`uniform` and `typed_uniform`).
     Uniform(Bound),
