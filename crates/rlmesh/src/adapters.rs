@@ -1,106 +1,262 @@
-//! Python's `rlmesh.adapters`, as far as env and model authoring need it: the
-//! [`EnvTags`] an env publishes and the [`ModelSpec`] a model declares. The
-//! typed tag and spec leaves, `tag` and `resolve` arrive with the adapters
-//! surface; until then Rust builds both from their wire JSON with
-//! [`crate::ext::env_tags_from_json`] and [`crate::ext::model_spec_from_json`].
-
-use std::fmt;
-
-use rlmesh_adapters::v1::{ENV_METADATA_KEY, SpaceView, join, reject_unknowns_env};
-
+//! Declarative adapter specifications, resolution and per-step transforms.
+mod callable;
+mod codec;
+mod leaves;
+mod repr;
+mod tree;
+mod validation;
+mod values;
+mod vocabulary;
 use crate::spaces::Space;
-use crate::specs::{json_to_value, value_to_json};
-use crate::{Error, Metadata, Result};
+use crate::specs::value_to_json;
+use crate::{Error, Metadata, Result, Value};
+pub use callable::*;
+pub use leaves::*;
+use rlmesh_adapters::v1 as core;
+use serde_json::{Value as Json, json};
+use std::fmt;
+pub use tree::*;
+pub use values::*;
+pub use vocabulary::*;
 
-/// The semantic tags an env publishes for its spaces: Python's
-/// `adapters.EnvTags`.
-#[derive(Clone, PartialEq)]
-pub struct EnvTags(rlmesh_adapters::v1::EnvTags);
+pub const ENV_METADATA_KEY: &str = core::ENV_METADATA_KEY;
+pub const MODEL_METADATA_KEY: &str = core::MODEL_METADATA_KEY;
+pub const DESCRIBE_METADATA_KEY: &str = core::DESCRIBE_METADATA_KEY;
+pub const IMAGE_PRIMARY: &str = "image/primary";
+pub const IMAGE_SECONDARY: &str = "image/secondary";
+pub const INSTRUCTION: &str = "text/instruction";
+pub const JOINT_POS: &str = "proprio/joint_pos";
+pub const JOINT_VEL: &str = "proprio/joint_vel";
+pub const ACTION_JOINT_POS: &str = "action/joint_pos";
+pub const ACTION_JOINT_VEL: &str = "action/joint_vel";
+pub const IMAGE_WRIST: &str = "image/wrist";
+pub const EEF_POS: &str = "proprio/eef_pos";
+pub const EEF_ROT: &str = "proprio/eef_rot";
+pub const GRIPPER_POS: &str = "proprio/gripper";
+pub const EEF_WRENCH: &str = "proprio/eef_wrench";
+pub const ACTION_DELTA_POS: &str = "action/delta_eef_pos";
+pub const ACTION_DELTA_ROT: &str = "action/delta_eef_rot";
+pub const ACTION_GRIPPER: &str = "action/gripper";
+pub const ACTION_EEF_POS: &str = "action/eef_pos";
+pub const ACTION_EEF_ROT: &str = "action/eef_rot";
+pub const BASE_ANG_VEL: &str = "proprio/base_ang_vel";
+pub const BASE_ROT: &str = "proprio/base_rot";
+pub const COMMAND_BASE_VEL: &str = "command/base_vel";
+pub const LEFT_ARM: &str = "left_arm";
+pub const RIGHT_ARM: &str = "right_arm";
+pub const HEAD: &str = "head";
+pub const TORSO: &str = "torso";
+pub const BASE: &str = "base";
+pub const LEFT_LEG: &str = "left_leg";
+pub const RIGHT_LEG: &str = "right_leg";
+pub const PARTS: &[&str] = &[LEFT_ARM, RIGHT_ARM, HEAD, TORSO, BASE, LEFT_LEG, RIGHT_LEG];
 
-impl EnvTags {
-    pub(crate) fn from_json(text: &str) -> Result<EnvTags> {
-        let tags: rlmesh_adapters::v1::EnvTags = serde_json::from_str(text)
-            .map_err(|err| Error::invalid_argument(format!("invalid adapter tags: {err}")))?;
-        reject_unknowns_env(&tags).map_err(|message| {
-            Error::invalid_argument(format!("invalid adapter tags: {message}"))
-        })?;
-        Ok(EnvTags(tags))
+/// A validated immutable model input tree and action layout.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModelSpec {
+    input: InputNode,
+    output: Action,
+}
+impl ModelSpec {
+    pub fn new(input: impl Into<InputNode>, output: Action) -> Result<Self> {
+        let input = input.into();
+        validation::input(&input)?;
+        validation::action(&output)?;
+        Ok(Self { input, output })
     }
-
-    pub(crate) fn to_json(&self) -> serde_json::Value {
-        serde_json::to_value(&self.0).unwrap_or(serde_json::Value::Null)
+    pub fn input(&self) -> &InputNode {
+        &self.input
     }
-
-    /// The tags an env's metadata publishes under `ENV_METADATA_KEY`, if any.
-    pub(crate) fn from_metadata(metadata: &Metadata) -> Result<Option<EnvTags>> {
-        let Some(value) = metadata.get(ENV_METADATA_KEY) else {
-            return Ok(None);
-        };
-        if value.is_none() {
-            return Ok(None);
-        }
-        let json = value_to_json(value)?;
-        EnvTags::from_json(&json.to_string()).map(Some)
+    pub fn output(&self) -> &Action {
+        &self.output
     }
-
-    /// Validate these tags against the spaces they describe, with Python's
-    /// `AdapterResolutionError` class.
-    pub(crate) fn validate(&self, observation: &Space, action: &Space) -> Result<()> {
-        join(
-            &self.0,
-            &SpaceView::from(observation.spec().wire()),
-            &SpaceView::from(action.spec().wire()),
+    pub(crate) fn wire(&self) -> Result<core::ModelSpec> {
+        serde_json::from_value(
+            json!({"input":self.input.wire_json()?,"output":codec::action_json(&self.output)?}),
         )
-        .map(|_| ())
-        .map_err(|err| {
-            Error::adapter_resolution(format!("adapter tags do not fit the spaces: {err}"))
+        .map_err(|e| Error::invalid_argument(e.to_string()))
+    }
+    pub(crate) fn wire_json(&self) -> Result<Json> {
+        serde_json::to_value(self.wire()?).map_err(|e| Error::invalid_argument(e.to_string()))
+    }
+    pub fn to_dict(&self) -> Result<Metadata> {
+        if has_custom(&self.input) {
+            return Err(Error::invalid_argument(
+                "custom input cannot be published in v1 contract metadata",
+            ));
+        }
+        let spec = self.wire()?;
+        core::reject_unknowns_model(&spec).map_err(Error::invalid_argument)?;
+        codec::metadata(
+            serde_json::to_value(spec).map_err(|e| Error::invalid_argument(e.to_string()))?,
+        )
+    }
+    pub fn to_json(&self) -> Result<String> {
+        codec::format_json(&value_to_json(&Value::Dict(self.to_dict()?))?)
+    }
+    pub fn to_metadata(&self) -> Result<Metadata> {
+        let mut m = Metadata::new();
+        m.insert(MODEL_METADATA_KEY, self.to_dict()?);
+        Ok(m)
+    }
+    pub fn from_dict(data: &Metadata) -> Result<Self> {
+        Self::from_json(&value_to_json(&Value::Dict(data.clone()))?.to_string())
+    }
+    pub fn from_json(text: &str) -> Result<Self> {
+        let raw: Json =
+            serde_json::from_str(text).map_err(|e| Error::invalid_argument(e.to_string()))?;
+        let wire: core::ModelSpec = serde_json::from_value(raw.clone())
+            .map_err(|e| Error::invalid_argument(e.to_string()))?;
+        core::reject_unknowns_model(&wire).map_err(Error::invalid_argument)?;
+        Self::new(
+            codec::input_from(raw["input"].clone())?,
+            codec::action_from(
+                serde_json::to_value(wire.output)
+                    .map_err(|e| Error::invalid_argument(e.to_string()))?,
+            )?,
+        )
+    }
+    pub fn from_metadata(m: &Metadata) -> Result<Option<Self>> {
+        metadata_payload(m, MODEL_METADATA_KEY)?
+            .map(Self::from_dict)
+            .transpose()
+    }
+}
+fn has_custom(n: &InputNode) -> bool {
+    match n {
+        InputNode::Leaf(ModelLeaf::Custom(_)) => true,
+        InputNode::Leaf(_) => false,
+        InputNode::Dict(v) => v.iter().any(|(_, n)| has_custom(n)),
+        InputNode::Tuple(v) => v.iter().any(has_custom),
+    }
+}
+/// The semantic tags an env publishes for its observation and action spaces.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EnvTags {
+    observation: ObsNode,
+    action: Action,
+}
+impl EnvTags {
+    pub fn new(observation: impl Into<ObsNode>, action: Action) -> Result<Self> {
+        let observation = observation.into();
+        validation::obs(&observation)?;
+        validation::action(&action)?;
+        let mut keys = Vec::new();
+        validation::identities(&observation, &mut keys);
+        let mut seen = std::collections::HashSet::new();
+        if keys.iter().any(|k| !seen.insert(k)) {
+            return Err(Error::invalid_argument(
+                "env tags declare a role more than once",
+            ));
+        }
+        Ok(Self {
+            observation,
+            action,
         })
     }
-
-    /// Stamp these tags into `metadata` under `ENV_METADATA_KEY`.
+    pub fn observation(&self) -> &ObsNode {
+        &self.observation
+    }
+    pub fn action(&self) -> &Action {
+        &self.action
+    }
+    pub(crate) fn wire(&self) -> Result<core::EnvTags> {
+        serde_json::from_value(json!({"observation":self.observation.wire_json()?,"action":codec::action_json(&self.action)?})).map_err(|e|Error::invalid_argument(e.to_string()))
+    }
+    pub(crate) fn wire_json(&self) -> Result<Json> {
+        serde_json::to_value(self.wire()?).map_err(|e| Error::invalid_argument(e.to_string()))
+    }
+    pub fn to_dict(&self) -> Result<Metadata> {
+        let wire = self.wire()?;
+        core::reject_unknowns_env(&wire).map_err(Error::invalid_argument)?;
+        codec::metadata(
+            serde_json::to_value(wire).map_err(|e| Error::invalid_argument(e.to_string()))?,
+        )
+    }
+    pub fn to_json(&self) -> Result<String> {
+        codec::format_json(&value_to_json(&Value::Dict(self.to_dict()?))?)
+    }
+    pub fn to_metadata(&self) -> Result<Metadata> {
+        let mut m = Metadata::new();
+        m.insert(ENV_METADATA_KEY, self.to_dict()?);
+        Ok(m)
+    }
+    pub fn from_dict(data: &Metadata) -> Result<Self> {
+        Self::from_json(&value_to_json(&Value::Dict(data.clone()))?.to_string())
+    }
+    pub fn from_json(text: &str) -> Result<Self> {
+        let raw: Json =
+            serde_json::from_str(text).map_err(|e| Error::invalid_argument(e.to_string()))?;
+        let wire: core::EnvTags = serde_json::from_value(raw.clone())
+            .map_err(|e| Error::invalid_argument(e.to_string()))?;
+        core::reject_unknowns_env(&wire).map_err(Error::invalid_argument)?;
+        Self::new(
+            codec::obs_from(raw["observation"].clone())?,
+            codec::action_from(
+                serde_json::to_value(wire.action)
+                    .map_err(|e| Error::invalid_argument(e.to_string()))?,
+            )?,
+        )
+    }
+    pub fn from_metadata(m: &Metadata) -> Result<Option<Self>> {
+        metadata_payload(m, ENV_METADATA_KEY)?
+            .map(Self::from_dict)
+            .transpose()
+    }
+    pub fn observation_roles(&self) -> ObservationRoles {
+        let mut keys = Vec::new();
+        validation::identities(&self.observation, &mut keys);
+        let mut r = ObservationRoles::default();
+        for (kind, role, _, _) in keys {
+            match kind {
+                0 => r.images.push(role),
+                1 => r.states.push(role),
+                _ => r.texts.push(role),
+            }
+        }
+        r
+    }
+    pub(crate) fn validate(&self, observation: &Space, action: &Space) -> Result<()> {
+        core::join(
+            &self.wire().map_err(resolution_error)?,
+            &core::SpaceView::from(observation.spec().wire()),
+            &core::SpaceView::from(action.spec().wire()),
+        )
+        .map(|_| ())
+        .map_err(|e| Error::adapter_resolution(e.to_string()))
+    }
     pub(crate) fn stamp(&self, metadata: &mut Metadata) {
-        metadata.insert(ENV_METADATA_KEY, json_to_value(self.to_json()));
+        if let Ok(tags) = self.to_dict() {
+            metadata.insert(ENV_METADATA_KEY, tags);
+        }
     }
 }
-
-impl fmt::Debug for EnvTags {
+fn metadata_payload<'a>(m: &'a Metadata, key: &str) -> Result<Option<&'a Metadata>> {
+    match m.get(key) {
+        None | Some(Value::None) => Ok(None),
+        Some(Value::Dict(m)) => Ok(Some(m)),
+        _ => Err(Error::adapter_resolution(format!(
+            "metadata key {key:?} must hold a mapping"
+        ))),
+    }
+}
+pub(crate) fn resolution_error(e: impl fmt::Display) -> Error {
+    Error::adapter_resolution(e.to_string())
+}
+impl fmt::Display for ModelSpec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "EnvTags({})", self.to_json())
+        write!(f, "ModelSpec(input={}, output={})", self.input, self.output)
     }
 }
-
-impl EnvTags {
-    pub(crate) fn wire(&self) -> &rlmesh_adapters::v1::EnvTags {
-        &self.0
-    }
-}
-
-/// A model's declared input tree and action layout: Python's
-/// `adapters.ModelSpec`. A model with a spec has its adapter resolved per
-/// route from the env's [`EnvTags`].
-#[derive(Clone, PartialEq)]
-pub struct ModelSpec(rlmesh_adapters::v1::ModelSpec);
-
-impl ModelSpec {
-    pub(crate) fn from_json(text: &str) -> Result<ModelSpec> {
-        let spec: rlmesh_adapters::v1::ModelSpec = serde_json::from_str(text)
-            .map_err(|err| Error::invalid_argument(format!("invalid model spec: {err}")))?;
-        rlmesh_adapters::v1::reject_unknowns_model(&spec)
-            .map_err(|message| Error::invalid_argument(format!("invalid model spec: {message}")))?;
-        Ok(ModelSpec(spec))
-    }
-
-    pub(crate) fn to_json(&self) -> serde_json::Value {
-        serde_json::to_value(&self.0).unwrap_or(serde_json::Value::Null)
-    }
-
-    pub(crate) fn wire(&self) -> &rlmesh_adapters::v1::ModelSpec {
-        &self.0
-    }
-}
-
-impl fmt::Debug for ModelSpec {
+impl fmt::Display for EnvTags {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "ModelSpec({})", self.to_json())
+        write!(
+            f,
+            "EnvTags(observation={}, action={})",
+            self.observation, self.action
+        )
     }
 }
+
+#[cfg(test)]
+mod tests;

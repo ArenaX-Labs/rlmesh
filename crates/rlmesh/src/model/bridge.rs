@@ -606,10 +606,10 @@ impl RouteResolver for SpecResolver {
             .clone()
             .ok_or_else(|| Error::invalid_argument("env contract missing action_space"))?;
         let adapter = resolve(
-            tags.wire(),
+            &tags.wire()?,
             &SpaceView::from(&observation_space),
             &SpaceView::from(&action_space),
-            spec.wire(),
+            &spec.wire()?,
             self.trust_entrypoints,
         )
         .map_err(|err| Error::adapter_resolution(err.message))?;
