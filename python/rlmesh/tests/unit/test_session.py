@@ -110,7 +110,7 @@ class _SkipDriver:
     def pace(self) -> float:
         return 0.0
 
-    def close(self) -> None:
+    def close(self, *, hold: bool = True) -> None:
         pass
 
 

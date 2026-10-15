@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import threading
 import time
+from typing import Any
 
 import numpy as np
 import pytest
@@ -332,6 +333,7 @@ def test_viewer_hold_redraws_on_source_switch_and_ends_on_quit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     driver, pv = _driver(monkeypatch, View(backend="http", hold=True))
+    monkeypatch.setattr("sys.stdin", _Tty())
 
     def user() -> None:
         time.sleep(0.15)
@@ -355,6 +357,144 @@ def test_unbounded_hold_without_a_way_to_quit_does_not_block(
     with pytest.warns(UserWarning, match="hold=True needs an interactive terminal"):
         driver.close()
     assert pv.closed
+
+
+def test_unbounded_http_hold_without_a_tty_does_not_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The http page has a quit button, but with no interactive stdin (CI, a
+    # detached job) nobody is watching it: hold=True must not hang the process.
+    driver, pv = _driver(monkeypatch, View(backend="http", hold=True))
+    monkeypatch.setattr("sys.stdin", io.StringIO())
+    _hold_quits_on_first_wait(monkeypatch, pv)
+    with pytest.warns(UserWarning, match="hold=True needs an interactive terminal"):
+        driver.close()
+    assert pv.closed
+    assert not _held(pv)
+
+
+def test_bounded_http_hold_runs_without_a_tty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver, pv = _driver(monkeypatch, View(backend="http", hold=30.0))
+    monkeypatch.setattr("sys.stdin", io.StringIO())
+    _hold_quits_on_first_wait(monkeypatch, pv)
+    driver.close()
+    assert pv.closed and pv.outcomes[-1] == "success [held]"
+
+
+def _held(pv: _FakePV) -> bool:
+    return any(o.endswith("[held]") for o in pv.outcomes)
+
+
+class _Tty(io.StringIO):
+    """A stdin that reports an interactive terminal."""
+
+    def isatty(self) -> bool:
+        return True
+
+
+def _hold_quits_on_first_wait(monkeypatch: pytest.MonkeyPatch, pv: _FakePV) -> None:
+    """Make the hold loop's first wait press quit instead of sleeping."""
+
+    def sleep(_: float) -> None:
+        pv.quit = True
+
+    monkeypatch.setattr(_view.time, "sleep", sleep)
+
+
+class _CrashEnv:
+    """A local env whose step raises, like an env process crashing mid-run."""
+
+    def __init__(self) -> None:
+        from rlmesh import spaces
+
+        self.observation_space = spaces.Discrete(1)
+        self.action_space = spaces.Discrete(1)
+
+    def reset(
+        self, *, seed: object = None, options: object = None
+    ) -> tuple[int, dict[str, object]]:
+        return 0, {}
+
+    def step(self, action: object) -> tuple[int, float, bool, bool, dict[str, object]]:
+        raise RuntimeError("env crashed")
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _DoneEnv(_CrashEnv):
+    """A local env that terminates after one step."""
+
+    def step(self, action: object) -> tuple[int, float, bool, bool, dict[str, object]]:
+        return 0, 1.0, True, False, {}
+
+
+def _held_session(
+    monkeypatch: pytest.MonkeyPatch, env: _CrashEnv | None = None
+) -> tuple[Session[Any, Any], _FakePV]:
+    """A session whose viewer would hold (http, hold=True, an interactive stdin).
+
+    The hold never really waits: its first wait presses quit, so a test that
+    wrongly holds still finishes, and ``[held]`` on the HUD shows it held.
+    """
+    import rlmesh
+
+    driver, pv = _driver(monkeypatch, View(backend="http", hold=True))
+    # Show only render(), so the session's own feeds draw without adapter tags
+    # (a feed error would disable the viewer and make every hold vacuous).
+    pv.sources, pv.selected = ["render"], 0
+    monkeypatch.setattr("sys.stdin", _Tty())
+    _hold_quits_on_first_wait(monkeypatch, pv)
+    sess = rlmesh.session(rlmesh.Model(lambda obs: 0), env or _CrashEnv())
+    sess._view_driver = driver  # pyright: ignore[reportPrivateUsage]
+    return sess, pv
+
+
+@pytest.mark.parametrize("error", [RuntimeError("boom"), KeyboardInterrupt()])
+def test_session_exiting_on_an_error_skips_the_hold(
+    monkeypatch: pytest.MonkeyPatch, error: BaseException
+) -> None:
+    sess, pv = _held_session(monkeypatch)
+    with pytest.raises(type(error)):
+        with sess:
+            raise error
+    assert pv.closed
+    assert not _held(pv)
+
+
+def test_session_exiting_on_a_crashed_run_skips_the_hold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = _CrashEnv()
+    sess, pv = _held_session(monkeypatch, env)
+    with pytest.raises(RuntimeError, match="env crashed"):
+        with sess:
+            sess.run(seeds=[0])
+    assert pv.closed and not _held(pv)
+
+
+def test_close_after_a_failed_run_skips_the_hold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The try/finally shape: close() itself sees no exception, but the run raised.
+    sess, pv = _held_session(monkeypatch)
+    with pytest.raises(RuntimeError, match="env crashed"):
+        try:
+            sess.run(seeds=[0])
+        finally:
+            sess.close()
+    assert pv.closed and not _held(pv)
+
+
+def test_session_ending_normally_still_holds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sess, pv = _held_session(monkeypatch, _DoneEnv())
+    with sess:
+        sess.run(seeds=[0])
+    assert pv.closed and _held(pv)
 
 
 def test_hold_is_skipped_after_the_user_quit(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -734,6 +734,7 @@ class Session(Generic[ObsT, ActT]):
     _workflow_edition: str | None
     _telemetry: _RunTelemetry | None
     _paced_s: float
+    _run_failed: bool
 
     def __init__(self) -> None:
         raise TypeError(
@@ -863,6 +864,9 @@ class Session(Generic[ObsT, ActT]):
         #: Seconds the last `step` slept for `View.step_hz` pacing, so `run`
         #: leaves the deliberate idle out of its step and round timings.
         self._paced_s = 0.0
+        #: Whether the last `run` ended by raising (an env crash, Ctrl-C), so a
+        #: later close skips the viewer's `View.hold` and releases at once.
+        self._run_failed = False
         return self
 
     def _new_replay(self) -> ChunkReplay:
@@ -1373,6 +1377,7 @@ class Session(Generic[ObsT, ActT]):
         # only for an env that declared the option -- everyone else keeps today's
         # seed-only reset and no warning.
         walks_trials = declares_reset_option(self._contract, "trial_index")
+        self._run_failed = True
         try:
             if hooks is not None:
                 hooks.on_run_start(self)
@@ -1460,6 +1465,7 @@ class Session(Generic[ObsT, ActT]):
                 # Ctrl-C still raises KeyboardInterrupt out of the loop above.
                 if self._view_driver is not None and self._view_driver.quit_requested():
                     break
+            self._run_failed = False
         finally:
             self._telemetry = None
             result = RunResult(episodes=tuple(results), telemetry=telemetry.rows())
@@ -1470,6 +1476,7 @@ class Session(Generic[ObsT, ActT]):
                     run_end_error = exc
             self._end_episode()
         if run_end_error is not None:
+            self._run_failed = True
             raise run_end_error
         return result
 
@@ -1483,9 +1490,19 @@ class Session(Generic[ObsT, ActT]):
         instance is the caller's and is never closed here (one the session built
         from a class is closed exactly once).
 
+        A viewer with :attr:`View.hold <rlmesh.View.hold>` holds first, but only
+        after a session that ended normally: when the last :meth:`run` raised, or
+        the ``with`` block is exiting on an exception (``KeyboardInterrupt``
+        included), the hold is skipped so everything is released and the error
+        propagates at once.
+
         Idempotent: later calls are no-ops, and any other use of a closed session
         raises ``RuntimeError``.
         """
+        self._close(failed=self._run_failed)
+
+    def _close(self, *, failed: bool) -> None:
+        """Close; ``failed`` (the session is ending on an error) skips the hold."""
         if self._closed:
             return
         self._closed = True
@@ -1493,7 +1510,11 @@ class Session(Generic[ObsT, ActT]):
         # `on_episode_end` must not leak the env); the first error propagates.
         first_error: BaseException | None = None
         for release in (
-            self._view_driver.close if self._view_driver is not None else None,
+            (
+                partial(self._view_driver.close, hold=not failed)
+                if self._view_driver is not None
+                else None
+            ),
             # End an episode left open by a hand-driven loop, so a stateful model's
             # `on_episode_end` fires for the last episode even without a reset().
             self._end_episode,
@@ -1547,9 +1568,13 @@ class Session(Generic[ObsT, ActT]):
     def __enter__(self) -> Session[ObsT, ActT]:
         return self
 
-    def __exit__(self, *exc: object) -> None:
-        _ = exc
-        self.close()
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: object,
+    ) -> None:
+        self._close(failed=exc_type is not None or self._run_failed)
 
 
 class NativeRunContext:

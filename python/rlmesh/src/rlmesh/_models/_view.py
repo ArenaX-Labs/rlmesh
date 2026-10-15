@@ -105,9 +105,13 @@ class View:
             and HUD: ``True`` until you quit it (``q`` / ``Esc`` in the
             terminal, the quit button on the HTTP page, or Ctrl-C), a number of
             seconds to hold at most that long. ``False`` (the default) closes
-            the viewer with the session. An unbounded hold needs a way to quit:
-            with only the terminal backend and no interactive terminal it is
-            skipped with a warning rather than blocking forever.
+            the viewer with the session. The hold follows only a session that
+            ended normally: one closing on an error or ``KeyboardInterrupt``
+            skips it and raises at once. An unbounded hold needs someone to
+            quit it: with no interactive terminal (stdin not a tty, as in CI;
+            the terminal backend also needs stdout to be one) it is skipped
+            with a warning rather than blocking forever, on every backend. A
+            number of seconds is bounded and holds regardless.
         step_hz: Pace the session's env steps to at most this many per second,
             so a fast sim plays back at a watchable rate (set it to the env's
             control rate for real time). The session sleeps after each
@@ -427,12 +431,17 @@ class ViewerDriver:
         except Exception:
             return False
 
-    def close(self) -> None:
-        """Tear the viewer down, after the :attr:`View.hold` wait when one is set."""
+    def close(self, *, hold: bool = True) -> None:
+        """Tear the viewer down, after the :attr:`View.hold` wait when one is set.
+
+        ``hold=False`` skips that wait: the session passes it when it is closing
+        because the run failed or was interrupted, so the error is not held back.
+        """
         self._disabled = True
         if self._pv is not None:
             try:
-                self._hold()
+                if hold:
+                    self._hold()
             finally:
                 try:
                     self._pv.close()
@@ -445,7 +454,8 @@ class ViewerDriver:
         Redraws the last observation once (its frame may have been throttled)
         and again whenever the user switches source, so every source stays
         browsable. Skipped when the user already quit the run, and an unbounded
-        hold is skipped (with a warning) when nobody could quit it. Ctrl-C ends
+        hold is skipped (with a warning) when nobody could quit it (see
+        :meth:`_quittable`). Ctrl-C ends
         the hold; any other failure warns and lets the viewer close.
         """
         hold = self._view.hold
@@ -453,8 +463,9 @@ class ViewerDriver:
             return
         if hold is True and not self._quittable():
             warnings.warn(
-                "rlmesh view: hold=True needs an interactive terminal or the http "
-                "backend to quit from; closing the viewer instead.",
+                "rlmesh view: hold=True needs an interactive terminal to quit "
+                "from (pass a number of seconds to hold without one); closing "
+                "the viewer instead.",
                 stacklevel=3,
             )
             return
@@ -481,10 +492,16 @@ class ViewerDriver:
             warnings.warn(f"rlmesh view: hold ended after error: {exc}", stacklevel=3)
 
     def _quittable(self) -> bool:
-        """Whether a user can end an unbounded hold (an http page or a real tty)."""
-        if self._view.backend in ("http", "both"):
-            return True
+        """Whether someone is there to end an unbounded hold.
+
+        The terminal backend reads ``q`` from stdin and draws on stdout, so it
+        needs both to be a tty. The http page has its own quit button, but a
+        process with no interactive stdin (CI, a detached job) has nobody
+        watching it either, so it needs a tty on stdin.
+        """
         try:
+            if self._view.backend in ("http", "both"):
+                return sys.stdin.isatty()
             return sys.stdin.isatty() and sys.stdout.isatty()
         except (AttributeError, ValueError):
             return False

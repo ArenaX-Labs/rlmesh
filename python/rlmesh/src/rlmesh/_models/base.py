@@ -1831,7 +1831,7 @@ def run(
         )
     except BaseException:
         with contextlib.suppress(Exception):
-            sess.close()
+            sess._close(failed=True)  # pyright: ignore[reportPrivateUsage]
         raise
     sess.close()
     return result
