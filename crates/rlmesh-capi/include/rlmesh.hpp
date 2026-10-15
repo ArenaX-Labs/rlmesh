@@ -3426,14 +3426,19 @@ class VectorEnv {
     requires detail::BatchedEnv<E>
   explicit VectorEnv(std::shared_ptr<E> e) {
     if (!e) throw TypeError("env must not be null");
-    auto state = std::make_unique<std::shared_ptr<E>>(std::move(e));
-    auto& object = **state;
+    struct State {
+      std::shared_ptr<E> object;
+      uint64_t num_envs;
+    };
+    const auto num_envs = static_cast<uint64_t>(e->num_envs());
+    auto state = std::make_unique<State>(State{std::move(e), num_envs});
+    auto& object = *state->object;
     auto obs = object.single_observation_space();
     auto action = object.single_action_space();
     RLMeshVectorEnvAttributes attrs = RLMESH_VECTOR_ENV_ATTRIBUTES_INIT;
     attrs.single_observation_space = obs.raw();
     attrs.single_action_space = action.raw();
-    attrs.num_envs = object.num_envs();
+    attrs.num_envs = num_envs;
     std::optional<std::string> id, render_mode;
     std::optional<Metadata> metadata;
     std::optional<Value> metadata_value;
@@ -3457,7 +3462,7 @@ class VectorEnv {
                   RLMeshValue** obs, RLMeshValue** info) noexcept {
       return detail::callback(
           [&] {
-            auto& e = **static_cast<std::shared_ptr<E>*>(u);
+            auto& e = *static_cast<State*>(u)->object;
             std::optional<VectorSeed> seeds;
             if (seed) {
               if (seed_len == 1)
@@ -3475,9 +3480,14 @@ class VectorEnv {
                  bool* terminated, bool* truncated, RLMeshValue** info) noexcept {
       return detail::callback(
           [&] {
-            auto& e = **static_cast<std::shared_ptr<E>*>(u);
+            const auto& state = *static_cast<State*>(u);
+            auto& e = *state.object;
+            if (e.num_envs() != state.num_envs)
+              throw ValueError("vector num_envs changed after construction");
             auto [o, r, t, tr, i] = e.step(detail::optional_value(action));
-            const auto n = static_cast<size_t>(e.num_envs());
+            if (e.num_envs() != state.num_envs)
+              throw ValueError("vector num_envs changed during step");
+            const auto n = static_cast<size_t>(state.num_envs);
             if (r.size() != n || t.size() != n || tr.size() != n)
               throw ValueError("vector step result length must equal num_envs");
             for (size_t lane = 0; lane < n; ++lane) {
@@ -3494,17 +3504,17 @@ class VectorEnv {
       vt.render = [](void* u, RLMeshValue** out) noexcept {
         return detail::callback(
             [&] {
-              auto v = (**static_cast<std::shared_ptr<E>*>(u)).render();
+              auto v = (*static_cast<State*>(u)->object).render();
               if (v) *out = v->clone_raw();
             },
             RLMESH_ERR_ENVIRONMENT);
       };
     if constexpr (requires(E& e) { e.close(); })
       vt.close = [](void* u) noexcept {
-        return detail::callback([&] { (**static_cast<std::shared_ptr<E>*>(u)).close(); },
+        return detail::callback([&] { (*static_cast<State*>(u)->object).close(); },
                                 RLMESH_ERR_ENVIRONMENT);
       };
-    vt.free_user_data = detail::delete_state<std::shared_ptr<E>>;
+    vt.free_user_data = detail::delete_state<State>;
     RLMeshVectorEnv* p = nullptr;
     detail::check(rlmesh_vector_env_new(&vt, state.get(), &attrs, &p));
     state.release();

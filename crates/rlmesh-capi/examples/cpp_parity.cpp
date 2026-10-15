@@ -447,6 +447,38 @@ struct ChunkPolicy {
     return Value::list(std::vector<Value>(horizon, 0));
   }
 };
+void vector_lane_count_is_fixed() {
+  struct ChangingBatch : BatchCounter {
+    uint64_t count = 2;
+    bool grow_in_step = false;
+    uint64_t num_envs() const { return count; }
+    VectorStepResult step(std::optional<Value>) {
+      if (grow_in_step) count = 3;
+      return {observations(),
+              std::vector<double>(count, 1),
+              std::vector<bool>(count, true),
+              std::vector<bool>(count, false),
+              {}};
+    }
+  };
+  for (bool during_step : {false, true}) {
+    auto object = std::make_shared<ChangingBatch>();
+    VectorEnv env(object);
+    if (during_step)
+      object->grow_in_step = true;
+    else
+      object->count = 3;
+    Model model([](const Value&) { return BatchCounter{}.observations(); });
+    bool rejected = false;
+    try {
+      model.run(env);
+    } catch (const EnvironmentException& error) {
+      assert(std::string(error.what()).find("num_envs changed") != std::string::npos);
+      rejected = true;
+    }
+    assert(rejected);
+  }
+}
 void policy_context_precedence() {
   struct BothForms {
     int predicts = 0, calls = 0;
@@ -758,6 +790,7 @@ void adapters_readers_recorder() {
 int main() try {
   values_spaces();
   vector_and_chunks();
+  vector_lane_count_is_fixed();
   policy_context_precedence();
   runs_sessions();
   session_target_lifetimes();
