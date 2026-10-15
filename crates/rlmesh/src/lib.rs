@@ -136,6 +136,8 @@ pub mod prelude;
 pub mod serve_options;
 pub mod spaces;
 mod tensor;
+pub mod types;
+mod value;
 
 #[cfg(unix)]
 pub use address::remove_stale_socket;
@@ -182,6 +184,7 @@ pub use rlmesh_runtime::{ENV_RESET_OPTIONS_KEY, PeerCeiling, RuntimeReport, TRIA
 pub use serve_options::{ENV_ENDPOINT_TOKEN_ENV, MODEL_ENDPOINT_TOKEN_ENV, ServeOptions};
 pub use tensor::Tensor;
 pub use tokio_util::sync::CancellationToken;
+pub use value::{InfoDict, Kwargs, Metadata, MetadataIter, Value, ValueKind};
 
 /// Mint one fresh routing/episode id (UUIDv7 — time-ordered, sortable by creation,
 /// never repeats). The single id-format home for this crate's id authorities (the

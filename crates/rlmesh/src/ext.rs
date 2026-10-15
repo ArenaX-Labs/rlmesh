@@ -3,9 +3,10 @@
 //! Nothing here is inherent on a shared type: these are extension traits and
 //! free items, so the shared types keep exactly Python's members.
 
-use crate::spaces::{Space, SpaceValue};
+use crate::spaces::Space;
 use crate::tensor::{dims_i64, tensor_error};
-use crate::{DType, Error, Result, Tensor};
+use crate::value::space_codec;
+use crate::{DType, Error, Result, Tensor, Value};
 
 /// Reference-counted byte storage shared by tensors.
 pub use rlmesh_spaces::Storage;
@@ -109,12 +110,21 @@ impl TensorExt for Tensor {
 pub trait SpaceExt {
     /// `Ok(())` exactly when `contains(value)` is true; otherwise the reason,
     /// as the ValueError class.
-    fn contains_detail(&self, value: &SpaceValue) -> Result<()>;
+    fn contains_detail(&self, value: &Value) -> Result<()>;
 }
 
 impl SpaceExt for Space {
-    fn contains_detail(&self, value: &SpaceValue) -> Result<()> {
-        rlmesh_spaces::contains(self.spec().wire(), value)
-            .map_err(|err| Error::invalid_argument(err.to_string()))
+    fn contains_detail(&self, value: &Value) -> Result<()> {
+        if space_codec::space_contains(self.spec().wire(), value) {
+            return Ok(());
+        }
+        let encoded = space_codec::value_to_space(self.spec().wire(), value)
+            .map_err(|err| Error::invalid_argument(err.to_string()))?;
+        rlmesh_spaces::contains(self.spec().wire(), &encoded)
+            .map_err(|err| Error::invalid_argument(err.to_string()))?;
+        Err(Error::invalid_argument(format!(
+            "value shape does not match the space shape {:?}",
+            self.shape()
+        )))
     }
 }

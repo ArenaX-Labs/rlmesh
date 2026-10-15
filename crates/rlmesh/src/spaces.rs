@@ -22,7 +22,8 @@
 //! This module is not in the prelude: [`spaces::Box`](Box) shadows `std`'s
 //! `Box`.
 //!
-//! Values are the wire [`SpaceValue`] until the shared `Value` type lands.
+//! Values are [`Value`]s: a Box samples a `Tensor`, a Discrete an `Int`, a
+//! Dict a dict in its declaration order, a Text a `Text`.
 
 use std::fmt;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -31,7 +32,8 @@ use rand::SeedableRng;
 use rlmesh_spaces::types::SpaceKind as WireKind;
 use rlmesh_spaces::{ChaCha12Rng, SpaceSpec as WireSpec, SpaceType};
 
-use crate::{DType, Error, Result};
+use crate::value::space_codec;
+use crate::{DType, Error, Result, Value};
 
 pub(crate) mod box_space;
 mod cast;
@@ -41,9 +43,6 @@ mod discrete;
 pub use box_space::{Bound, BoundsKind, Box, BoxBound, BoxOptions};
 pub use dict::{Dict, DictItems, DictKeys, DictSpaces, DictValues};
 pub use discrete::{Discrete, DiscreteOptions};
-/// A value a space samples and checks (the wire value until the shared
-/// `Value` type lands).
-pub use rlmesh_spaces::SpaceValue;
 
 /// A space's kind: Python's `kind` strings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -210,14 +209,23 @@ impl Space {
 
     /// Draw a value. Fails (ValueError class) for a spec that cannot be
     /// sampled, such as one with no payload.
-    pub fn sample(&self) -> Result<SpaceValue> {
-        rlmesh_spaces::sample_with(self.0.spec.wire(), &mut *self.rng())
-            .map_err(|err| Error::invalid_argument(err.to_string()))
+    pub fn sample(&self) -> Result<Value> {
+        let wire = self.sample_wire()?;
+        Ok(space_codec::value_from_space(self.0.spec.wire(), wire))
     }
 
-    /// Whether `value` is a member of this space; never fails.
-    pub fn contains(&self, value: &SpaceValue) -> bool {
-        rlmesh_spaces::contains(self.0.spec.wire(), value).is_ok()
+    /// Whether `value` is a member of this space; never fails. A Box takes a
+    /// `Tensor` of its dtype or a number or nested list of numbers of its
+    /// exact shape; a Discrete an `Int`, a `Bool`, an integral `Float` or a
+    /// one-element `Tensor`; a Dict a dict holding every key (others are
+    /// ignored); a Tuple a tuple or list.
+    pub fn contains(&self, value: &Value) -> bool {
+        space_codec::space_contains(self.0.spec.wire(), value)
+    }
+
+    pub(crate) fn sample_wire(&self) -> Result<rlmesh_spaces::SpaceValue> {
+        rlmesh_spaces::sample_with(self.0.spec.wire(), &mut *self.rng())
+            .map_err(|err| Error::invalid_argument(err.to_string()))
     }
 
     /// This space as a `Box`, when it is one.

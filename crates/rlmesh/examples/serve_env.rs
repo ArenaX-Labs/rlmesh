@@ -11,8 +11,9 @@
 //! ```
 #![allow(clippy::print_stdout)]
 
+use rlmesh::SpaceValue;
 use rlmesh::prelude::*;
-use rlmesh::spaces::{Discrete, DiscreteOptions, SpaceValue};
+use rlmesh::spaces::{Discrete, DiscreteOptions};
 
 /// The `Env` trait takes the wire spec until it takes `spaces::Space`.
 fn wire_spec(space: Discrete) -> SpaceSpec {
