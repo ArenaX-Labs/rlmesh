@@ -96,6 +96,10 @@ static RLMeshStatus start(void* ud, const RLMeshRunContext* ctx) {
     RLMeshBytes edition = {NULL, 0, 0};
     CHECK(rlmesh_session_selected_workflow_edition(s->session, &edition) == RLMESH_ERR_RUNTIME);
     CHECK(rlmesh_session_close(s->session) == RLMESH_ERR_RUNTIME);
+    rlmesh_session_free(s->session);
+    CHECK(rlmesh_last_error_status() == RLMESH_ERR_RUNTIME);
+    CHECK(rlmesh_last_error_class() == RLMESH_ERROR_CLASS_RUNTIME_ERROR);
+    CHECK(strstr(rlmesh_last_error_message(), "cannot free a session") != NULL);
   }
   return RLMESH_OK;
 }

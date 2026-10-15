@@ -3434,6 +3434,8 @@ RLMESH_API RLMeshStatus rlmesh_session_run_context(RLMeshSession*, RLMeshRunCont
 RLMESH_API RLMeshStatus rlmesh_session_cancel_handle(const RLMeshSession*,
                                                      RLMeshExtCancelToken** out);
 RLMESH_API RLMeshStatus rlmesh_session_close(RLMeshSession*);
+/* NULL no-op. From the session's own run hook, refuses to release the handle
+ * and records ERR_RUNTIME in last error; the caller must free it after the run. */
 RLMESH_API void rlmesh_session_free(RLMeshSession*);
 
 /* ---- Remote clients ----------------------------------------------------- */

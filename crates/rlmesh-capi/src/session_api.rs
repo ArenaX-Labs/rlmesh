@@ -2,7 +2,7 @@
 #![allow(unsafe_code)]
 use crate::abi::{
     sizing,
-    status::{CapiError, RLMeshStatus, guard, guard_value},
+    status::{CapiError, RLMeshStatus, guard},
 };
 use crate::cancel::RLMeshExtCancelToken;
 use crate::codec::RLMeshBytes;
@@ -511,9 +511,13 @@ pub extern "C" fn rlmesh_session_close(p: *mut RLMeshSession) -> RLMeshStatus {
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_session_free(p: *mut RLMeshSession) {
-    guard_value((), || {
+    let _ = guard(|| {
+        if own_hook(p).is_some() {
+            return Err(runtime("cannot free a session from its own run hooks"));
+        }
         if !p.is_null() {
             drop(unsafe { Box::from_raw(p) });
         }
+        Ok(())
     });
 }
