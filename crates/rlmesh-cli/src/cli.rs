@@ -125,16 +125,20 @@ pub struct PublishArgs {
     #[arg(long, value_name = "FILE")]
     pub index_package: Option<std::path::PathBuf>,
     /// Print the per-variant summary and the index JSON without pushing (with
-    /// `rlmesh.toml`, without building).
+    /// `rlmesh.toml`, without building); fails on a tag the real run would
+    /// refuse.
     #[arg(long)]
     pub dry_run: bool,
     /// With `--dry-run` and `rlmesh.toml`, print each variant's build and
     /// rendered `dev.rlmesh.package` label, and the index annotation, as JSON.
+    /// Only renders: no tag is read or checked.
     #[arg(long, requires = "dry_run", conflicts_with = "sources")]
     pub json: bool,
     /// Push TARGET or a `--tag` that already points at a different index, or
     /// that cannot be read (the channel tag needs no `--force`, unless it is
-    /// also TARGET or a `--tag`).
+    /// also TARGET or a `--tag`). With `rlmesh.toml`, also build over a
+    /// per-variant tag holding another image, and rebuild even where TARGET
+    /// already holds the index of the builds at those tags.
     #[arg(long)]
     pub force: bool,
 }

@@ -497,10 +497,7 @@ mod tests {
         ] {
             let mut carrying = stored.clone();
             carrying[field] = value;
-            registry
-                .raws
-                .borrow_mut()
-                .insert(target.to_owned(), carrying.to_string());
+            registry.set_raw_at_digest(target, &carrying.to_string());
             let error = format!(
                 "{:#}",
                 run(&registry, &args(target, SOURCES)).0.unwrap_err()
@@ -515,10 +512,7 @@ mod tests {
         // So is one whose manifests differ only in a descriptor's size.
         let mut resized = stored.clone();
         resized["manifests"][0]["size"] = Value::from(1);
-        registry
-            .raws
-            .borrow_mut()
-            .insert(target.to_owned(), resized.to_string());
+        registry.set_raw_at_digest(target, &resized.to_string());
         assert!(run(&registry, &args(target, SOURCES)).0.is_err());
     }
 

@@ -27,6 +27,9 @@ pub(super) struct FakeRegistry {
     /// Applied to each index a push assembles before it is stored, as a
     /// registry or docker that loses part of it would.
     pub(super) mangle: Cell<Option<fn(&mut Value)>>,
+    /// Tags a push fails on (recorded, nothing stored), as a registry that
+    /// rejects or drops the request would.
+    pub(super) failing: RefCell<Vec<String>>,
 }
 
 /// The index `imagetools create ARGS` assembles, reduced to what the
@@ -105,6 +108,11 @@ impl Imagetools for FakeRegistry {
         let (tags, mut index) = assembled(self, args);
         if args.iter().any(|a| a == "--dry-run") {
             return Ok(format!("{}\n", serde_json::to_string_pretty(&index)?));
+        }
+        if let Some(tag) = tags.iter().find(|tag| self.failing.borrow().contains(tag)) {
+            return Err(anyhow!(
+                "ERROR: failed to push {tag}: 503 Service Unavailable"
+            ));
         }
         let (mut sources, mut rest, mut annotated) = (Vec::new(), args.iter(), false);
         while let Some(arg) = rest.next() {
@@ -257,6 +265,28 @@ impl FakeRegistry {
         self.raws
             .borrow_mut()
             .insert(reference.to_owned(), raw.to_owned());
+    }
+
+    /// Make the manifest at the digest `tag` points at read as `raw`, for
+    /// every tag holding that digest (they are one manifest), while docker's
+    /// view, digest included, stays as it was.
+    pub(super) fn set_raw_at_digest(&self, tag: &str, raw: &str) {
+        let digest = self.digest_of(tag);
+        let repository = Reference::parse(tag).unwrap().repository;
+        let holders: Vec<String> = self
+            .manifests
+            .borrow()
+            .iter()
+            .filter(|(key, view)| {
+                key.starts_with(&format!("{repository}:"))
+                    && serde_json::from_str::<Value>(view)
+                        .is_ok_and(|view| view["digest"] == digest)
+            })
+            .map(|(key, _)| key.clone())
+            .collect();
+        for holder in holders {
+            self.raws.borrow_mut().insert(holder, raw.to_owned());
+        }
     }
 
     /// The digest `reference` points at.
