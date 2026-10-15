@@ -209,6 +209,8 @@ def test_cpp_header_classes_and_members() -> None:
         exports["adapters::ModelSpec"].qualified_name == "rlmesh::adapters::ModelSpec"
     )
     assert exports["recorder::SCHEMA"].kind == "constant"
+    assert exports["adapters::PARTS"].kind == "function"
+    assert exports["adapters::ROTATION_DIMS"].kind == "function"
     assert "Result" not in exports
     assert "Error" not in exports
     # Internal namespaces stay out, including those reopened later in the header.

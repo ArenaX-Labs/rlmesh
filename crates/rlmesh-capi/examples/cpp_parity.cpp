@@ -282,11 +282,11 @@ void session_target_lifetimes() {
   }
   assert(closed == 3);
   Model served([](const Value&) { return 0; });
-  const auto path =
-      std::filesystem::temp_directory_path() /
-      ("rlmesh-cpp-model-" +
-       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".sock");
-  const auto address = "unix:" + path.string();
+  const auto address = [] {
+    // Reserve an OS-selected TCP port, then release it for the model server.
+    EnvServer reservation(Counter{}, {.address = "tcp://127.0.0.1:0"});
+    return reservation.address();
+  }();
   ext::CancelToken stop;
   auto server = std::async(std::launch::async, [&] {
     try {
@@ -295,23 +295,24 @@ void session_target_lifetimes() {
     }
   });
   try {
-    for (int retry = 0; retry < 5000 && !std::filesystem::exists(path); ++retry)
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    assert(std::filesystem::exists(path));
+    if (server.wait_for(std::chrono::milliseconds(100)) == std::future_status::ready) {
+      server.get();
+      throw RuntimeError("model server stopped before startup");
+    }
     {
-      auto s = rlmesh::session(RemoteModel({.address = address}), env);
+      auto s = rlmesh::session(RemoteModel({.address = address}), make_server());
       auto [obs, info] = s.reset();
       (void)info;
       assert(s.predict(obs) == Value(0));
       assert(std::get<1>(s.step(0)) == 1);
     }
     {
-      auto s = RemoteModel({.address = address}).session(env);
+      auto s = RemoteModel({.address = address}).session(make_server());
       assert(s.run().total_steps() == 2);
     }
   } catch (...) {
     stop.cancel();
-    server.get();
+    if (server.valid()) server.get();
     throw;
   }
   stop.cancel();

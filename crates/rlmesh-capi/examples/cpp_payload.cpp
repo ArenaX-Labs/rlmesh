@@ -20,4 +20,17 @@ int main() {
     assert(std::string(error.what()) == "plugin exception");
   }
   assert(cpp_payload_plugin_frees() == 1);
+  vt.load = [](void*, const RLMeshValue*) noexcept {
+    return rlmesh::detail::callback([] { throw std::logic_error("main exception"); },
+                                    RLMESH_ERR_MODEL);
+  };
+  status = rlmesh_model_new(&vt, nullptr, nullptr, &model);
+  assert(status == RLMESH_ERR_MODEL && !model);
+  try {
+    rlmesh::detail::check(status);
+    assert(false);
+  } catch (const std::logic_error& error) {
+    assert(std::string(error.what()) == "main exception");
+  }
+  assert(cpp_payload_plugin_frees() == 1);
 }

@@ -248,7 +248,11 @@ const T* ptr(const std::optional<T>& v) {
 [[gnu::visibility("hidden")]]
 #endif
 inline const unsigned char exception_payload_tag{};
+#if defined(__GNUC__) || defined(__clang__)
+struct [[gnu::visibility("hidden")]] ExceptionPayload {
+#else
 struct ExceptionPayload {
+#endif
   static constexpr uint64_t MAGIC = 0x524c4d4350503230ULL;
   uint64_t magic = MAGIC;
   const void* tag = &exception_payload_tag;
