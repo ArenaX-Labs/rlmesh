@@ -311,6 +311,7 @@ pub(crate) struct Hooks {
     v: RLMeshRunHooksVtable,
     user: usize,
     context: Option<RLMeshRunContext>,
+    native: Option<Box<dyn RunHooks>>,
 }
 impl Drop for Hooks {
     fn drop(&mut self) {
@@ -328,6 +329,9 @@ fn callback(s: i32) -> rlmesh::Result<()> {
 }
 impl RunHooks for Hooks {
     fn on_run_start(&mut self, context: Arc<dyn RunContext>) -> rlmesh::Result<()> {
+        if let Some(h) = &mut self.native {
+            return h.on_run_start(context);
+        }
         self.context = Some(RLMeshRunContext(context));
         if let Some(f) = self.v.on_run_start {
             callback(unsafe {
@@ -340,6 +344,9 @@ impl RunHooks for Hooks {
         Ok(())
     }
     fn on_episode_start(&mut self, e: i64, s: Option<i64>) -> rlmesh::Result<()> {
+        if let Some(h) = &mut self.native {
+            return h.on_episode_start(e, s);
+        }
         if let Some(f) = self.v.on_episode_start {
             callback(unsafe {
                 f(
@@ -352,6 +359,9 @@ impl RunHooks for Hooks {
         Ok(())
     }
     fn on_step(&mut self, e: &StepEvent) -> rlmesh::Result<()> {
+        if let Some(h) = &mut self.native {
+            return h.on_step(e);
+        }
         let obs = RLMeshValue::new(e.observation.clone());
         let action = RLMeshValue::new(e.action.clone());
         let info = RLMeshValue::new(Value::Dict(e.info.clone()));
@@ -380,12 +390,18 @@ impl RunHooks for Hooks {
         Ok(())
     }
     fn on_episode_end(&mut self, e: &rlmesh::EpisodeResult) -> rlmesh::Result<()> {
+        if let Some(h) = &mut self.native {
+            return h.on_episode_end(e);
+        }
         if let Some(f) = self.v.on_episode_end {
             callback(unsafe { f(self.user as *mut c_void, &RLMeshEpisodeResult::from_core(e)) })?;
         }
         Ok(())
     }
     fn on_run_end(&mut self, r: &rlmesh::RunResult) -> rlmesh::Result<()> {
+        if let Some(h) = &mut self.native {
+            return h.on_run_end(r);
+        }
         if let Some(f) = self.v.on_run_end {
             callback(unsafe { f(self.user as *mut c_void, &RLMeshRunResult::new(r.clone())) })?;
         }
@@ -421,9 +437,26 @@ pub unsafe extern "C" fn rlmesh_run_hooks_new(
                 v,
                 user: user as usize,
                 context: None,
+                native: None,
             })))),
         )
     })
+}
+pub(crate) fn native(hooks: Box<dyn RunHooks>) -> RLMeshRunHooks {
+    RLMeshRunHooks(Mutex::new(Hooks {
+        v: RLMeshRunHooksVtable {
+            struct_size: std::mem::size_of::<RLMeshRunHooksVtable>(),
+            on_run_start: None,
+            on_episode_start: None,
+            on_step: None,
+            on_episode_end: None,
+            on_run_end: None,
+            free_user_data: None,
+        },
+        user: 0,
+        context: None,
+        native: Some(hooks),
+    }))
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_run_hooks_free(p: *mut RLMeshRunHooks) {

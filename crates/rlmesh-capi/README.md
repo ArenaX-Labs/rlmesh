@@ -249,8 +249,54 @@ specified, and repr uses the facade formatter.
 
 RunResult constructors copy typed Advisory records. Returned advisory messages
 are borrowed while a shared result handle lives. Advisory lists from the engine
-are available on real runs and sessions. Viewer/recorder integration remains
-outside this adapter-dependent follow-up. See `examples/c_reads.c`.
+are available on real runs and sessions. See `examples/c_reads.c`.
+
+## View and Recorder
+
+`RLMeshView view = RLMESH_VIEW_INIT` supplies Python's defaults: terminal,
+port 8008, 30 fps, JPEG quality 75, no selected source, hold or stepping rate.
+`rlmesh_view_parse` accepts Python's shorthand (`term`, `tty`, `http:PORT`,
+`both`), ignoring surrounding whitespace and ASCII case. Initialize its
+output with `RLMESH_VIEW_INIT`; the parser sets `source` to NULL, preserves
+the caller's `struct_size`, and leaves unknown output bytes untouched.
+`rlmesh_view_validate`, `_equals` and `_repr` use the facade. Invalid enum
+discriminants and undersized structs are refused.
+
+Set `RunOptions.view` or `SessionOptions.view` to a View pointer; the consuming
+call copies its fields and source string. A local `rlmesh_model_run` refuses
+a set view as Python does; use a session for local model viewing. The facade
+owns terminal/HTTP rendering, pacing, hold, skip and quit behavior. C++ View
+and Recorder wrappers remain part of the separate C++20 wave.
+
+`rlmesh_recorder_new(NULL, &recorder)` uses 30 fps, quality 60 and a generated
+result-set id. `rlmesh_recorder_add` records completed runs;
+`rlmesh_recorder_capture` returns an ordinary owned `RLMeshRunHooks` handle
+for runs, sessions or manual `rlmesh_run_hooks_on_*` dispatch. Captures retain
+their explicit context and the recorder's shared state until hooks are freed.
+NULL `cameras` discovers sources; a non-NULL list with length zero records
+metrics only and permits vector envs. NULL `video_info_keys` selects Python's
+default pair; a non-NULL empty list disables video-path discovery. Camera and
+video-key strings, task/model/env labels and config Dict values are copied.
+The facade writes AV1 media and delivers best-effort capture warnings.
+
+Calls on a recorder serialize internally. `rlmesh_recorder_close` is
+idempotent and removes staged media. `rlmesh_recorder_free` closes with errors
+swallowed, as required by the C API; retained capture hooks can still record
+metrics, while further media staging needs an open recorder. Folder and ZIP
+exports use the facade's writer. Refused targets and filesystem failures
+return `RLMESH_ERR_OS`; exporting removed staged media after close returns
+`RLMESH_ERR_RUNTIME` before writing. Metric-only exports still work after close.
+
+WorkloadRecord, EpisodeRecord and MediaRef are immutable snapshot handles.
+Constructors copy their inputs, `_get` returns an independently owned snapshot,
+and `_free` releases each handle. Scalar/length reads of NULL return zero;
+optional accessors return false for None, and out-of-range `_get` calls return
+`RLMESH_ERR_INVALID_ARGUMENT`. Record construction follows Python's dataclasses
+without adding numeric validation. Typed Dict conversion, equality, repr and
+workload aggregates come from the facade. Every new options type has
+`RLMESH_*_INIT`, `_MIN_SIZE` and the ABI-5 size/tail checks; NULL options use
+the defaults, while `{0}` is refused. See `examples/c_recorder.c` for ownership,
+real capture, exports, manual dispatch and sized-input tests.
 
 ## Env authoring and servers
 

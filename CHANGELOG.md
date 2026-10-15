@@ -10,6 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ### Added
 
+- C View/Recorder parity projects through the Rust facade: sized View parsing, validation, equality and repr; copied run/session viewing options; serialized Recorder calls, live capture hooks, folder/ZIP export and immutable WorkloadRecord/EpisodeRecord/MediaRef snapshots. Capture hooks retain contexts and recorder state, work with manual hook dispatch, and share the facade's AV1 capture and warning behavior. New options follow ABI-5 sizing rules with Python defaults and C ownership tests.
+
 - C ABI 5 tensors import and export versioned CPU DLPack through the Rust facade. Imports copy and consume the producer only on success; shared read-only or copied writable exports retain their data and metadata after the source is freed. Sized `RLMeshToDlpackOptions` and device queries match the shared surface. The C header vendors the complete upstream DLPack v1.0 header and Apache-2.0 license, with include-order and ownership tests.
 
 - C ABI 5 completes adapter-dependent running APIs: copied read items, facade readers, session/context/event reads, observation roles, owner-borrowing frame sources and render callbacks, instruction injection on runs/sessions, and typed copied/lent result advisories. Authored RunContext vtables now require all four protocol slots.
@@ -35,8 +37,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - `rlmesh.FrameSources` is now a Stable root export. `rlmesh.recorder` and its `WorkloadRecord`, `EpisodeRecord`, `MediaRef`, and `SCHEMA` exports are Stable; `ResultSet` and `EpisodeRecord.from_result` remain Internal (RUN-P5 / RUN-17).
 
 - The Rust facade exposes `View` on run/session options, with shorthand parsing, validation, terminal/HTTP display, pacing, skip/quit and successful-close hold. A local `Model.run` refuses a set view. `Recorder` adds completed-run recording, live capture hooks, record snapshots, and portable folder/ZIP export; filesystem operations have async twins, and capture hooks retain shared state independently of the recorder handle.
-
-- Rust `Tensor::from_dlpack`, `to_dlpack(ToDlpackOptions)` and `dlpack_device` share Python's CPU DLPack implementation. Imports copy and consume the producer only on success; versioned exports retain shared read-only storage or own a writable copy, with raw ownership helpers in `ext::dlpack`.
 
 - Rust `Tensor::from_dlpack`, `to_dlpack(ToDlpackOptions)` and `dlpack_device` share Python's CPU DLPack implementation. Imports copy and consume the producer only on success; versioned exports retain shared read-only storage or own a writable copy, with raw ownership helpers in `ext::dlpack`.
 

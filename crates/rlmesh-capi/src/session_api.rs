@@ -35,6 +35,7 @@ pub struct RLMeshSessionOptions {
     pub trust_entrypoints: bool,
     pub _reserved: u8,
     pub instruction: *const c_char,
+    pub view: *const crate::view::RLMeshView,
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -283,6 +284,7 @@ pub unsafe extern "C" fn rlmesh_session_new(
             options.execution_horizon = o.execution_horizon;
             options.workflow_edition = unsafe { ffi::text(o.workflow_edition) }?;
             options.instruction = unsafe { ffi::text(o.instruction) }?;
+            options.view = unsafe { crate::view::read(o.view) }?;
             options.cancel = unsafe { o.cancel.as_ref() }.map(|c| c.0.clone());
         }
         let model = unsafe { crate::run_api::model(m) }?;

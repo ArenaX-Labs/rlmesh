@@ -86,6 +86,7 @@ pub struct RLMeshRunOptions {
     pub trust_entrypoints: bool,
     pub _reserved: [u8; 6],
     pub instruction: *const c_char,
+    pub view: *const crate::view::RLMeshView,
 }
 pub(crate) fn seconds(v: f64) -> Result<Option<Duration>, CapiError> {
     if v.is_nan() || v <= 0.0 {
@@ -130,6 +131,7 @@ pub(crate) unsafe fn options(
         r.prefetch_lead = o.prefetch_lead;
         r.workflow_edition = unsafe { ffi::text(o.workflow_edition) }?;
         r.instruction = unsafe { ffi::text(o.instruction) }?;
+        r.view = unsafe { crate::view::read(o.view) }?;
         r.trial_index_base = o.trial_index_base;
         r.cancel = unsafe { o.cancel.as_ref() }.map(|c| c.0.clone());
     }

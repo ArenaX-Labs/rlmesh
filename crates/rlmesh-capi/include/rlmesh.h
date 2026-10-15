@@ -3250,6 +3250,58 @@ RLMESH_API RLMeshStatus rlmesh_run_hooks_on_episode_end(RLMeshRunHooks*,
                                                         const RLMeshEpisodeResult*);
 RLMESH_API RLMeshStatus rlmesh_run_hooks_on_run_end(RLMeshRunHooks*, const RLMeshRunResult*);
 
+/* Plain View configuration. Strings are borrowed here, copied by a consuming
+ * run/session call. Parse writes no string allocation (source is NULL).
+ * Initialize both inputs and parse outputs with RLMESH_VIEW_INIT. */
+typedef enum RLMeshViewBackend {
+  RLMESH_VIEW_BACKEND_INVALID = 0,
+  RLMESH_VIEW_BACKEND_TERMINAL = 1,
+  RLMESH_VIEW_BACKEND_HTTP = 2,
+  RLMESH_VIEW_BACKEND_BOTH = 3
+} RLMeshViewBackend;
+typedef enum RLMeshViewFormat {
+  RLMESH_VIEW_FORMAT_INVALID = 0,
+  RLMESH_VIEW_FORMAT_JPEG = 1,
+  RLMESH_VIEW_FORMAT_PNG = 2
+} RLMeshViewFormat;
+typedef enum RLMeshViewHold {
+  RLMESH_VIEW_HOLD_INVALID = 0,
+  RLMESH_VIEW_HOLD_OFF = 1,
+  RLMESH_VIEW_HOLD_UNTIL_QUIT = 2,
+  RLMESH_VIEW_HOLD_SECONDS = 3
+} RLMeshViewHold;
+typedef struct RLMeshView {
+  size_t struct_size;
+  const char* source;
+  uint64_t fps;
+  double hold_seconds;
+  double step_hz;
+  RLMeshViewBackend backend;
+  RLMeshViewFormat format;
+  RLMeshViewHold hold;
+  uint16_t port;
+  uint8_t quality;
+  bool has_step_hz;
+} RLMeshView;
+#define RLMESH_VIEW_MIN_SIZE sizeof(RLMeshView)
+#define RLMESH_VIEW_INIT            \
+  {                                 \
+      sizeof(RLMeshView),           \
+      NULL,                         \
+      30,                           \
+      0.0,                          \
+      0.0,                          \
+      RLMESH_VIEW_BACKEND_TERMINAL, \
+      RLMESH_VIEW_FORMAT_JPEG,      \
+      RLMESH_VIEW_HOLD_OFF,         \
+      8008,                         \
+      75,                           \
+      false}
+RLMESH_API RLMeshStatus rlmesh_view_validate(const RLMeshView*);
+RLMESH_API RLMeshStatus rlmesh_view_parse(const char* text, RLMeshView* out);
+RLMESH_API RLMeshStatus rlmesh_view_equals(const RLMeshView*, const RLMeshView*, bool* out);
+RLMESH_API RLMeshStatus rlmesh_view_repr(const RLMeshView*, RLMeshBytes* out);
+
 typedef struct RLMeshRunOptions {
   size_t struct_size;
   const int64_t* seeds;
@@ -3271,6 +3323,7 @@ typedef struct RLMeshRunOptions {
   bool trust_entrypoints;
   uint8_t _reserved[6];
   const char* instruction; /* NULL = None; copied. */
+  const RLMeshView* view;  /* NULL = None; copied and validated by the facade. */
 } RLMeshRunOptions;
 #define RLMESH_RUN_OPTIONS_MIN_SIZE sizeof(RLMeshRunOptions)
 #define RLMESH_RUN_OPTIONS_INIT \
@@ -3293,10 +3346,11 @@ typedef struct RLMeshRunOptions {
    false,                       \
    false,                       \
    {0, 0},                      \
+   NULL,                        \
    NULL}
 /* NULL options means INIT; zero-initialized options are refused. Result remains
  * NULL on failure. Hooks/targets are borrowed until the call returns. Instruction
- * is copied. Viewer/recorder integration remains a separate surface. */
+ * is copied. A local Model.run refuses view; use a session for local viewing. */
 RLMESH_API RLMeshStatus rlmesh_run(RLMeshModelTarget, RLMeshEnvTarget, const RLMeshRunOptions*,
                                    RLMeshRunResult** out);
 RLMESH_API RLMeshStatus rlmesh_model_run(RLMeshModel*, RLMeshEnvTarget, const RLMeshRunOptions*,
@@ -3315,10 +3369,11 @@ typedef struct RLMeshSessionOptions {
   bool trust_entrypoints;
   uint8_t _reserved;
   const char* instruction; /* NULL = None; copied. */
+  const RLMeshView* view;  /* NULL = None; copied. */
 } RLMeshSessionOptions;
 #define RLMESH_SESSION_OPTIONS_MIN_SIZE sizeof(RLMeshSessionOptions)
 #define RLMESH_SESSION_OPTIONS_INIT \
-  {sizeof(RLMeshSessionOptions), NULL, NULL, 1, false, false, false, 0, NULL}
+  {sizeof(RLMeshSessionOptions), NULL, NULL, 1, false, false, false, 0, NULL, NULL}
 typedef struct RLMeshSessionRunOptions {
   size_t struct_size;
   const int64_t* seeds;
@@ -4065,6 +4120,194 @@ RLMESH_API void rlmesh_ext_legacy_env_cancel(RLMeshExtLegacyEnv* env);
  * bind included) closes on the calling thread. `close` runs once per lane over
  * the handle's life; `user_data` may be freed once this returns. */
 RLMESH_API void rlmesh_ext_legacy_env_free(RLMeshExtLegacyEnv* env);
+
+/* ---- Recorder and immutable recorder records ---------------------------- */
+#define RLMESH_RECORDER_SCHEMA "rlmesh.result.v1"
+typedef struct RLMeshRecorder RLMeshRecorder;
+typedef struct RLMeshMediaRef RLMeshMediaRef;
+typedef struct RLMeshEpisodeRecord RLMeshEpisodeRecord;
+typedef struct RLMeshWorkloadRecord RLMeshWorkloadRecord;
+/* Options are copied. NULL = INIT, undersized structs are refused, reserved and
+ * unknown trailing bytes must be zero. configs are DICT Values, NULL = {}.
+ * Calls on one recorder serialize. Free must not overlap another call.
+ * Record snapshots own their data independently of recorders and input handles. */
+typedef struct RLMeshRecorderOptions {
+  size_t struct_size;
+  const char* result_set_id;
+  uint64_t fps;
+  uint8_t quality;
+  uint8_t _reserved[7];
+} RLMeshRecorderOptions;
+#define RLMESH_RECORDER_OPTIONS_MIN_SIZE sizeof(RLMeshRecorderOptions)
+#define RLMESH_RECORDER_OPTIONS_INIT {sizeof(RLMeshRecorderOptions), NULL, 30, 60, {0}}
+typedef struct RLMeshRecorderAddOptions {
+  size_t struct_size;
+  const char* task;
+  const RLMeshValue* config;
+  bool included_in_metrics;
+  uint8_t _reserved[sizeof(size_t) - 1];
+} RLMeshRecorderAddOptions;
+#define RLMESH_RECORDER_ADD_OPTIONS_MIN_SIZE sizeof(RLMeshRecorderAddOptions)
+#define RLMESH_RECORDER_ADD_OPTIONS_INIT {sizeof(RLMeshRecorderAddOptions), NULL, NULL, true, {0}}
+typedef struct RLMeshRecorderCaptureOptions {
+  size_t struct_size;
+  const char* task;
+  const RLMeshValue* config;
+  const char* const* cameras;
+  size_t cameras_len;
+  const RLMeshRunContext* session;
+  const char* const* video_info_keys;
+  size_t video_info_keys_len;
+  bool included_in_metrics;
+  uint8_t _reserved[sizeof(size_t) - 1];
+} RLMeshRecorderCaptureOptions;
+#define RLMESH_RECORDER_CAPTURE_OPTIONS_MIN_SIZE sizeof(RLMeshRecorderCaptureOptions)
+#define RLMESH_RECORDER_CAPTURE_OPTIONS_INIT \
+  {sizeof(RLMeshRecorderCaptureOptions), NULL, NULL, NULL, 0, NULL, NULL, 0, true, {0}}
+/* NULL cameras = discover all; non-NULL/0 = metrics only. NULL video_info_keys
+ * = ["video_artifact_path", "video_url"]; non-NULL/0 = empty. A nonzero count
+ * with a NULL list, or a NULL list element, is refused. Capture retains session
+ * and recorder state through run_hooks_free, even after recorder_free.
+ * Returned hooks work with run/session and all run_hooks_on_* calls. */
+typedef struct RLMeshRecorderToDictOptions {
+  size_t struct_size;
+  const char* recorded_at;
+} RLMeshRecorderToDictOptions;
+#define RLMESH_RECORDER_TO_DICT_OPTIONS_MIN_SIZE sizeof(RLMeshRecorderToDictOptions)
+#define RLMESH_RECORDER_TO_DICT_OPTIONS_INIT {sizeof(RLMeshRecorderToDictOptions), NULL}
+typedef struct RLMeshRecorderExportOptions {
+  size_t struct_size;
+  const char* recorded_at;
+  bool has_archive;
+  bool archive;
+  uint8_t _reserved[sizeof(size_t) - 2];
+} RLMeshRecorderExportOptions;
+#define RLMESH_RECORDER_EXPORT_OPTIONS_MIN_SIZE sizeof(RLMeshRecorderExportOptions)
+#define RLMESH_RECORDER_EXPORT_OPTIONS_INIT \
+  {sizeof(RLMeshRecorderExportOptions), NULL, false, false, {0}}
+RLMESH_API RLMeshStatus rlmesh_recorder_new(const RLMeshRecorderOptions*, RLMeshRecorder** out);
+RLMESH_API RLMeshStatus rlmesh_recorder_add(RLMeshRecorder*, const RLMeshRunResult*,
+                                            const char* model, const char* env,
+                                            const RLMeshRecorderAddOptions*,
+                                            RLMeshWorkloadRecord** out);
+RLMESH_API RLMeshStatus rlmesh_recorder_capture(RLMeshRecorder*, const char* model, const char* env,
+                                                const RLMeshRecorderCaptureOptions*,
+                                                RLMeshRunHooks** out);
+RLMESH_API RLMeshStatus rlmesh_recorder_to_dict(const RLMeshRecorder*,
+                                                const RLMeshRecorderToDictOptions*,
+                                                RLMeshValue** out);
+/* export returns owned UTF-8 path bytes. Refused targets and I/O fail
+ * with ERR_OS. After close, exporting removed staged media fails ERR_RUNTIME;
+ * exporting metrics without staged media still works. */
+RLMESH_API RLMeshStatus rlmesh_recorder_export(const RLMeshRecorder*, const char* path,
+                                               const RLMeshRecorderExportOptions*,
+                                               RLMeshBytes* out_path);
+RLMESH_API RLMeshStatus rlmesh_recorder_result_set_id(const RLMeshRecorder*, RLMeshBytes* out);
+RLMESH_API size_t rlmesh_recorder_workloads_len(const RLMeshRecorder*);
+RLMESH_API RLMeshStatus rlmesh_recorder_workloads_get(const RLMeshRecorder*, size_t i,
+                                                      RLMeshWorkloadRecord** out);
+RLMESH_API RLMeshStatus rlmesh_recorder_close(RLMeshRecorder*);
+/* Closes with errors swallowed; NULL no-op. Captures retain the shared state. */
+RLMESH_API void rlmesh_recorder_free(RLMeshRecorder*);
+
+typedef struct RLMeshMediaRefOptions {
+  size_t struct_size;
+  bool has_frame_count;
+  int64_t frame_count;
+  bool has_width;
+  int64_t width;
+  bool has_height;
+  int64_t height;
+  bool has_fps;
+  double fps;
+} RLMeshMediaRefOptions;
+#define RLMESH_MEDIA_REF_OPTIONS_MIN_SIZE sizeof(RLMeshMediaRefOptions)
+#define RLMESH_MEDIA_REF_OPTIONS_INIT \
+  {sizeof(RLMeshMediaRefOptions), false, 0, false, 0, false, 0, false, 0.0}
+typedef struct RLMeshEpisodeRecordOptions {
+  size_t struct_size;
+  bool has_success;
+  bool success;
+  double duration_s;
+  bool included_in_metrics;
+  const RLMeshMediaRef* const* media;
+  size_t media_len;
+} RLMeshEpisodeRecordOptions;
+#define RLMESH_EPISODE_RECORD_OPTIONS_MIN_SIZE sizeof(RLMeshEpisodeRecordOptions)
+#define RLMESH_EPISODE_RECORD_OPTIONS_INIT \
+  {sizeof(RLMeshEpisodeRecordOptions), false, false, 0.0, true, NULL, 0}
+typedef struct RLMeshWorkloadRecordOptions {
+  size_t struct_size;
+  const RLMeshValue* config;
+  const RLMeshEpisodeRecord* const* episodes;
+  size_t episodes_len;
+} RLMeshWorkloadRecordOptions;
+#define RLMESH_WORKLOAD_RECORD_OPTIONS_MIN_SIZE sizeof(RLMeshWorkloadRecordOptions)
+#define RLMESH_WORKLOAD_RECORD_OPTIONS_INIT {sizeof(RLMeshWorkloadRecordOptions), NULL, NULL, 0}
+/* Required strings cannot be NULL. Records copy values without adding
+ * validation beyond C representation (matching Python's dataclasses).
+ * Child lists: NULL/0 = empty, NULL/nonzero or a NULL element is refused.
+ * _get returns a new owned snapshot; i >= len is ERR_INVALID_ARGUMENT.
+ * Scalars/lengths return zero on NULL. Optional reads return false for None.
+ * _to_dict returns an owned DICT; _repr returns owned UTF-8 bytes. */
+RLMESH_API RLMeshStatus rlmesh_media_ref_new(const char* camera, const char* kind, const char* path,
+                                             const char* format, const RLMeshMediaRefOptions*,
+                                             RLMeshMediaRef** out);
+RLMESH_API RLMeshStatus rlmesh_media_ref_camera(const RLMeshMediaRef*, RLMeshBytes* out);
+RLMESH_API RLMeshStatus rlmesh_media_ref_kind(const RLMeshMediaRef*, RLMeshBytes* out);
+RLMESH_API RLMeshStatus rlmesh_media_ref_path(const RLMeshMediaRef*, RLMeshBytes* out);
+RLMESH_API RLMeshStatus rlmesh_media_ref_format(const RLMeshMediaRef*, RLMeshBytes* out);
+RLMESH_API bool rlmesh_media_ref_frame_count(const RLMeshMediaRef*, int64_t* out);
+RLMESH_API bool rlmesh_media_ref_width(const RLMeshMediaRef*, int64_t* out);
+RLMESH_API bool rlmesh_media_ref_height(const RLMeshMediaRef*, int64_t* out);
+RLMESH_API bool rlmesh_media_ref_fps(const RLMeshMediaRef*, double* out);
+RLMESH_API RLMeshStatus rlmesh_media_ref_to_dict(const RLMeshMediaRef*, RLMeshValue** out);
+RLMESH_API bool rlmesh_media_ref_equals(const RLMeshMediaRef*, const RLMeshMediaRef*);
+RLMESH_API RLMeshStatus rlmesh_media_ref_repr(const RLMeshMediaRef*, RLMeshBytes* out);
+RLMESH_API void rlmesh_media_ref_free(RLMeshMediaRef*);
+RLMESH_API RLMeshStatus rlmesh_episode_record_new(int64_t index, const int64_t* seed, int64_t steps,
+                                                  double reward, bool terminated, bool truncated,
+                                                  const RLMeshEpisodeRecordOptions*,
+                                                  RLMeshEpisodeRecord** out);
+RLMESH_API int64_t rlmesh_episode_record_index(const RLMeshEpisodeRecord*);
+RLMESH_API bool rlmesh_episode_record_seed(const RLMeshEpisodeRecord*, int64_t* out);
+RLMESH_API int64_t rlmesh_episode_record_steps(const RLMeshEpisodeRecord*);
+RLMESH_API double rlmesh_episode_record_reward(const RLMeshEpisodeRecord*);
+RLMESH_API bool rlmesh_episode_record_terminated(const RLMeshEpisodeRecord*);
+RLMESH_API bool rlmesh_episode_record_truncated(const RLMeshEpisodeRecord*);
+RLMESH_API bool rlmesh_episode_record_success(const RLMeshEpisodeRecord*, bool* out);
+RLMESH_API double rlmesh_episode_record_duration_s(const RLMeshEpisodeRecord*);
+RLMESH_API bool rlmesh_episode_record_included_in_metrics(const RLMeshEpisodeRecord*);
+RLMESH_API size_t rlmesh_episode_record_media_len(const RLMeshEpisodeRecord*);
+RLMESH_API RLMeshStatus rlmesh_episode_record_media_get(const RLMeshEpisodeRecord*, size_t i,
+                                                        RLMeshMediaRef** out);
+RLMESH_API RLMeshStatus rlmesh_episode_record_to_dict(const RLMeshEpisodeRecord*,
+                                                      RLMeshValue** out);
+RLMESH_API bool rlmesh_episode_record_equals(const RLMeshEpisodeRecord*,
+                                             const RLMeshEpisodeRecord*);
+RLMESH_API RLMeshStatus rlmesh_episode_record_repr(const RLMeshEpisodeRecord*, RLMeshBytes* out);
+RLMESH_API void rlmesh_episode_record_free(RLMeshEpisodeRecord*);
+RLMESH_API RLMeshStatus rlmesh_workload_record_new(const char* model, const char* env,
+                                                   const char* task,
+                                                   const RLMeshWorkloadRecordOptions*,
+                                                   RLMeshWorkloadRecord** out);
+RLMESH_API RLMeshStatus rlmesh_workload_record_model(const RLMeshWorkloadRecord*, RLMeshBytes* out);
+RLMESH_API RLMeshStatus rlmesh_workload_record_env(const RLMeshWorkloadRecord*, RLMeshBytes* out);
+RLMESH_API RLMeshStatus rlmesh_workload_record_task(const RLMeshWorkloadRecord*, RLMeshBytes* out);
+RLMESH_API RLMeshStatus rlmesh_workload_record_config(const RLMeshWorkloadRecord*,
+                                                      RLMeshValue** out);
+RLMESH_API size_t rlmesh_workload_record_episodes_len(const RLMeshWorkloadRecord*);
+RLMESH_API RLMeshStatus rlmesh_workload_record_episodes_get(const RLMeshWorkloadRecord*, size_t i,
+                                                            RLMeshEpisodeRecord** out);
+RLMESH_API double rlmesh_workload_record_mean_reward(const RLMeshWorkloadRecord*);
+RLMESH_API bool rlmesh_workload_record_success_rate(const RLMeshWorkloadRecord*, double* out);
+RLMESH_API int64_t rlmesh_workload_record_total_steps(const RLMeshWorkloadRecord*);
+RLMESH_API RLMeshStatus rlmesh_workload_record_to_dict(const RLMeshWorkloadRecord*,
+                                                       RLMeshValue** out);
+RLMESH_API bool rlmesh_workload_record_equals(const RLMeshWorkloadRecord*,
+                                              const RLMeshWorkloadRecord*);
+RLMESH_API RLMeshStatus rlmesh_workload_record_repr(const RLMeshWorkloadRecord*, RLMeshBytes* out);
+RLMESH_API void rlmesh_workload_record_free(RLMeshWorkloadRecord*);
 
 #ifdef __cplusplus
 } /* extern "C" */

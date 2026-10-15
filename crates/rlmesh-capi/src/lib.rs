@@ -17,6 +17,7 @@ mod env_server;
 mod ffi;
 mod model;
 mod model_api;
+mod recorder;
 mod remote_api;
 mod run_api;
 mod run_hooks;
@@ -27,6 +28,7 @@ mod space_handle;
 mod spaces;
 mod value;
 mod variant;
+mod view;
 
 #[cfg(test)]
 mod tests;
