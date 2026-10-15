@@ -748,6 +748,9 @@ def test_recoverable_env_error_keeps_the_session() -> None:
             remote.step(0)
         assert recoverable.value.is_recoverable is True
         assert recoverable.value.code == "INTERNAL"
+        # The code prefixes the text once, though the author's own exception
+        # already reads "[INTERNAL] solver hiccup" (COR-P8).
+        assert str(recoverable.value).count("[INTERNAL]") == 1, str(recoverable.value)
         remote.step(0)  # same session, no reset
 
         env.fail_with = RuntimeError("solver diverged")

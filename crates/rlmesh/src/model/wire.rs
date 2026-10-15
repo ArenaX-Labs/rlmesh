@@ -34,13 +34,19 @@ pub(super) fn model_error(message: impl Into<String>) -> join_response::Kind {
 /// `ModelError` per group inside `GroupedPredictResult`) and wrapped by
 /// [`model_error_from_error`] for the single-predict `JoinResponse.error` arm.
 pub(super) fn model_error_value(error: &Error) -> ModelError {
-    let (code, is_recoverable) = match error {
-        Error::Model(model) => (ModelErrorCode::Internal, model.is_recoverable),
-        _ => (ModelErrorCode::Internal, false),
+    // A model error's own message: the client prefixes the code once
+    // (`[INTERNAL] message`), so its `Display` would carry it twice.
+    let (code, is_recoverable, message) = match error {
+        Error::Model(model) => (
+            ModelErrorCode::Internal,
+            model.is_recoverable,
+            model.message.clone(),
+        ),
+        _ => (ModelErrorCode::Internal, false, error.to_string()),
     };
     ModelError {
         code: code as i32,
-        message: error.to_string(),
+        message,
         is_recoverable,
         debug_info: String::new(),
     }
@@ -254,7 +260,8 @@ mod tests {
         )));
         assert!(recoverable.is_recoverable);
         assert_eq!(recoverable.code, ModelErrorCode::Internal as i32);
-        assert!(recoverable.message.contains("retry me"));
+        // The raw message: the client adds the `[INTERNAL]` prefix once.
+        assert_eq!(recoverable.message, "retry me");
 
         let permanent = unwrap_error(model_error_from_error(&Error::model("bad observation")));
         assert!(!permanent.is_recoverable);

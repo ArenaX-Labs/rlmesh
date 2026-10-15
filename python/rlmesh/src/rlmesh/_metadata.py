@@ -66,7 +66,57 @@ def _unwrap(value: Any) -> Any:
         unwrapper = getattr(value, method, None)
         if callable(unwrapper):
             return unwrapper()
+    from ._rlmesh import Tensor  # lazy: the native module loads on first use
+
+    if isinstance(value, Tensor):
+        return _tensor_tolist(value)
     return value
+
+
+#: ``struct`` codes of the tensor dtypes, little-endian as tensor bytes are.
+_STRUCT_CODES = {
+    "bool": "?",
+    "uint8": "B",
+    "int8": "b",
+    "uint16": "H",
+    "int16": "h",
+    "uint32": "I",
+    "int32": "i",
+    "uint64": "Q",
+    "int64": "q",
+    "float16": "e",
+    "float32": "f",
+    "float64": "d",
+}
+
+
+def _tensor_tolist(tensor: Any) -> Any:
+    """An ``rlmesh.Tensor`` as the codec encodes it, NumPy's ``tolist`` form.
+
+    Nested lists by shape in C order; a 0-d tensor is its bare element.
+    """
+    import struct
+
+    shape = list(tensor.shape)
+    count = 1
+    for dim in shape:
+        count *= dim
+    flat: list[Any] = list(
+        struct.unpack(f"<{count}{_STRUCT_CODES[tensor.dtype]}", tensor.tobytes())
+    )
+    if not shape:
+        return flat[0]
+
+    def nest(start: int, dims: list[int]) -> tuple[list[Any], int]:
+        if len(dims) == 1:
+            return flat[start : start + dims[0]], start + dims[0]
+        rows: list[Any] = []
+        for _ in range(dims[0]):
+            row, start = nest(start, dims[1:])
+            rows.append(row)
+        return rows, start
+
+    return nest(0, shape)[0]
 
 
 def _sanitize(

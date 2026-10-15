@@ -59,6 +59,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 - A `Model(policy)` wrapping a policy object reads its workflow edition from the policy's class (`type(policy).workflow_edition`) for `run`, `session` and `serve`, and, when that class declares none, warns once with `WorkflowEditionWarning` as a `Model` subclass does. Before, it read the `rlmesh.Model` wrapper's `None` and never warned. A `Model` wrapping a bare predict callable still floats quietly.
 
+- `describe(rlmesh.Model(policy))` describes what `describe(policy)` does: the target qualname, the edition declaration, the `load` params, the variants, the predict corners and a class-level `native_chunk` come from the wrapped policy (only `model_spec` is the model's own). Before, they came from the `rlmesh.Model` wrapper class (`rlmesh._native:Model`, no corners).
+
+- `describe` reads `native_chunk` from the class, never from an instance, so describing a `Model` subclass instance no longer reports a K that `load()` set from a checkpoint.
+
+- `describe_json(..., served_env=[])` raises `ValueError` instead of `IndexError`.
+
+- An `rlmesh.Tensor` in an env's `info`, reset `options` or any other metadata is sent as the nested list of its elements, as a NumPy array is, and `sanitize_metadata` turns it into that list too; before, the codec raised `TypeError` and `sanitize_metadata` stringified it.
+
+- A served model's failure reads `[INTERNAL] message` at the client in every language, instead of `[INTERNAL] [INTERNAL] message`.
+
 - An integer `Box` samples in its dtype's exact integer domain instead of through `float`: a `uint64` Box with bounds above 2^63 no longer saturates at 2^63 - 1, and `int64`/`uint64` bounds beyond 2^53 no longer round. Samples of integer Boxes whose bounds are exact as floats, and of bool Boxes, are unchanged.
 
 - Model and env servers disable Nagle's algorithm on accepted TCP connections, which removed a ~40 ms stall on some env steps.
@@ -92,6 +102,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - A C or C++ model tracks up to 65,536 live episodes, as a Python model does, and refuses a new episode past that instead of evicting the least recently predicted one through `on_episode_end`: the predict fails with `RLMESH_ERR_RUNTIME` (Python's `RuntimeError`) before the callback runs, and every live episode keeps its count.
 
 ### Changed
+
+- `str()` of an authored env or model exception gains its code prefix: `EnvironmentException("bad")`, `RecoverableEnvironmentException("bad")` and `ModelException("bad")` read `[INTERNAL] bad`, as the same error reads in Rust, C and C++ and once it crosses the wire. `args[0]` is the raw message, including on the exceptions the clients raise, whose `str()` is unchanged.
+
+- `describe` and `describe_json` raise `ValueError` when an explicit `kind` contradicts the object (`kind="env"` on a model with no `make`, `kind="model"` on a factory with no `predict`) instead of describing it the wrong way; a bare callable still takes the kind it is given. Describing a model whose class declares `native_chunk` without a `predict_chunk`/`predict_chunk_batch` corner raises `TypeError`, and one below 1 raises `ValueError`, as building the model would, instead of recording it.
 
 - The experimental C API's `rlmesh_model_serve` and `rlmesh_env_bind` resolve the served edition as Python does: an `RLMeshServeOptions.workflow_edition` wins, else `RLMESH_WORKFLOW_EDITION` (a set-but-blank value floats deliberately); a server that declares neither prints one `rlmesh: WorkflowEditionWarning: ...` line to stderr per process.
 

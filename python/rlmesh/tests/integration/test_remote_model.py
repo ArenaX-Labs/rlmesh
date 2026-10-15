@@ -362,7 +362,7 @@ def test_served_model_failure_raises_model_exception(recoverable: bool) -> None:
         assert isinstance(raised.value, RuntimeError)
         assert raised.value.code == "INTERNAL"
         assert raised.value.is_recoverable is recoverable
-        assert str(raised.value).startswith("[INTERNAL] ")
+        assert str(raised.value) == "[INTERNAL] out of memory"
         sess.close()
         env.close()
     finally:
@@ -373,7 +373,13 @@ def test_model_exception_authoring_constructor() -> None:
     import rlmesh
 
     plain = rlmesh.ModelException("declined")
-    assert str(plain) == "declined"
+    # str() is the R-22 text, as Rust, C and C++ spell an authored failure;
+    # args keep the raw message (COR-P8).
+    assert str(plain) == "[INTERNAL] declined"
+    assert plain.args == ("declined",)
+    env_error = rlmesh.EnvironmentException("bad")
+    assert str(env_error) == "[INTERNAL] bad"
+    assert str(rlmesh.RecoverableEnvironmentException("bad")) == "[INTERNAL] bad"
     assert plain.code == "INTERNAL"
     assert plain.is_recoverable is False
     assert rlmesh.ModelException("retry", is_recoverable=True).is_recoverable is True

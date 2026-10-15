@@ -457,7 +457,12 @@ where
                 .map_err(|_| into_err(format!("{phase}: the serving thread has stopped"), false))?
         }
     };
-    result.map_err(|e: PyErr| into_err(format!("{phase} failed: {e}"), py_err_is_recoverable(&e)))
+    result.map_err(|e: PyErr| {
+        into_err(
+            format!("{phase} failed: {}", crate::types::py_err_text(&e)),
+            py_err_is_recoverable(&e),
+        )
+    })
 }
 
 /// Reset `options` reached an env whose `reset` takes no such parameter; latched
