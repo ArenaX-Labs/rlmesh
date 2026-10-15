@@ -1,6 +1,7 @@
 /* Full ABI-5 input minima, unknown tails and unchanged extended out fields. */
 #include <rlmesh.h>
 #include <stdio.h>
+#include <string.h>
 static int failures;
 #define CHECK(x)                                              \
   do {                                                        \
@@ -15,7 +16,41 @@ static int predict(void* u, const RLMeshExtLegacyObservation* o, RLMeshValue** o
   (void)out;
   return RLMESH_OK;
 }
+static void invalid_bool_inputs(void) {
+  RLMeshView view = RLMESH_VIEW_INIT;
+  ((unsigned char*)&view)[offsetof(RLMeshView, has_step_hz)] = 2;
+  CHECK(rlmesh_view_validate(&view) == RLMESH_ERR_INVALID_ARGUMENT);
+  CHECK(strstr(rlmesh_last_error_message(), "invalid bool byte") != NULL);
+  RLMeshToDlpackOptions dlpack = RLMESH_TO_DLPACK_OPTIONS_INIT;
+  ((unsigned char*)&dlpack)[offsetof(RLMeshToDlpackOptions, copy)] = 2;
+  struct DLManagedTensorVersioned* exported = NULL;
+  CHECK(rlmesh_tensor_to_dlpack(NULL, &dlpack, &exported) == RLMESH_ERR_INVALID_ARGUMENT);
+  CHECK(strstr(rlmesh_last_error_message(), "invalid bool byte") != NULL && !exported);
+  RLMeshEpisodeResult episode = RLMESH_EPISODE_RESULT_INIT;
+  const size_t flags[] = {
+      offsetof(RLMeshEpisodeResult, has_seed),    offsetof(RLMeshEpisodeResult, terminated),
+      offsetof(RLMeshEpisodeResult, truncated),   offsetof(RLMeshEpisodeResult, has_success),
+      offsetof(RLMeshEpisodeResult, success),     offsetof(RLMeshEpisodeResult, has_predict_ms),
+      offsetof(RLMeshEpisodeResult, has_step_ms), offsetof(RLMeshEpisodeResult, has_trial)};
+  const RLMeshEpisodeResult* episodes[] = {&episode};
+  RLMeshRunResultOptions options = RLMESH_RUN_RESULT_OPTIONS_INIT;
+  options.episodes = episodes;
+  options.episodes_len = 1;
+  RLMeshRunResult* result = NULL;
+  for (size_t i = 0; i < sizeof(flags) / sizeof(flags[0]); ++i) {
+    ((unsigned char*)&episode)[flags[i]] = 2;
+    CHECK(rlmesh_run_result_new(&options, &result) == RLMESH_ERR_INVALID_ARGUMENT && !result);
+    CHECK(strstr(rlmesh_last_error_message(), "invalid bool byte") != NULL);
+    ((unsigned char*)&episode)[flags[i]] = 0;
+  }
+  RLMeshImage image = RLMESH_IMAGE_INIT;
+  ((unsigned char*)&image)[offsetof(RLMeshImage, optional)] = 2;
+  RLMeshReadItem* item = NULL;
+  CHECK(rlmesh_read_item_image(&image, &item) == RLMESH_ERR_INVALID_ARGUMENT && !item);
+  CHECK(strstr(rlmesh_last_error_message(), "invalid bool byte") != NULL);
+}
 int main(void) {
+  invalid_bool_inputs();
   CHECK(rlmesh_abi_check() && RLMESH_ABI_VERSION == 5);
   RLMeshExtLegacyModelVtable zero = {0};
   RLMeshExtLegacyModel* model = NULL;

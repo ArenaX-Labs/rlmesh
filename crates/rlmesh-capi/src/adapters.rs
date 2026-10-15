@@ -41,7 +41,7 @@ impl RLMeshEnvTags {
 pub(crate) unsafe fn required(p: *const c_char, name: &str) -> Result<String, CapiError> {
     unsafe { ffi::text(p) }?.ok_or_else(|| CapiError::type_error(format!("{name} is required")))
 }
-unsafe fn sized<T: Copy>(p: *const T, name: &str) -> Result<T, CapiError> {
+unsafe fn sized<T: sizing::SizedInput>(p: *const T, name: &str) -> Result<T, CapiError> {
     unsafe { sizing::read(p, name) }?.ok_or_else(|| CapiError::invalid_arg(format!("null {name}")))
 }
 unsafe fn optional_slice<T: Copy>(

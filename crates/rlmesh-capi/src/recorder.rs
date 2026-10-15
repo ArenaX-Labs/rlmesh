@@ -1,6 +1,6 @@
 //! Serialized recorder calls; capture hooks own the facade's shared state.
 #![allow(unsafe_code)]
-mod records;
+pub(crate) mod records;
 use crate::abi::{
     sizing,
     status::{CapiError, RLMeshStatus, guard, guard_value},

@@ -124,7 +124,7 @@ pub struct RLMeshDiscreteOptions {
 ///
 /// # Safety
 /// `ptr` is NULL or points at `struct_size` readable bytes.
-unsafe fn read_options<T: Copy>(
+unsafe fn read_options<T: crate::abi::sizing::SizedInput>(
     ptr: *const T,
     min_size: usize,
     name: &str,
