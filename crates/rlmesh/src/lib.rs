@@ -127,6 +127,7 @@ mod address;
 #[doc(hidden)]
 pub mod binding;
 mod bound;
+mod build_info;
 mod dtype;
 mod editions;
 pub mod env;
@@ -149,8 +150,17 @@ pub use async_trait::async_trait;
 /// [`spaces::Space`]; the shared spec type is [`spaces::SpaceSpec`].
 pub use binding::spaces::SpaceSpec;
 pub use binding::spaces::{EnvContract, EnvRuntimeError, RenderFrame, SpaceValue};
+pub use build_info::{BuildInfo, BuildSource, VERSION, build_info};
 pub use dtype::{DType, Device};
 pub use editions::current_workflow_edition;
+
+/// The key a serialized describe envelope travels under (`rlmesh.describe.v1`):
+/// Python's `rlmesh.DESCRIBE_METADATA_KEY`.
+pub const DESCRIBE_METADATA_KEY: &str = rlmesh_adapters::v1::DESCRIBE_METADATA_KEY;
+
+/// The describe envelope's schema version: Python's
+/// `rlmesh.DESCRIBE_SCHEMA_VERSION`.
+pub const DESCRIBE_SCHEMA_VERSION: i64 = rlmesh_adapters::v1::DESCRIBE_SCHEMA_VERSION as i64;
 pub use env::{
     BoundEnvServer, CloseRequest, CloseResult, EndpointPhases, Env, EnvServer, EpisodeMetadata,
     RemoteEnv, RemoteVectorEnv, RenderRequest, RenderResult, ResetRequest, ResetResult,

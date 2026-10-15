@@ -41,8 +41,14 @@ RLMESH_API uint32_t rlmesh_abi_version(void);
  * (librlmesh_capi.so.N); this is for dlopen / raw-path consumers that bypass it. */
 static inline int rlmesh_abi_check(void) { return RLMESH_ABI_VERSION == rlmesh_abi_version(); }
 
-/* Package (marketing) semver — informational only. Do NOT gate ABI
- * compatibility on these; use RLMESH_ABI_VERSION / rlmesh_abi_check(). */
+/* This header's package version, SemVer (Python's __version__ is the PEP 440
+ * spelling of the same release). rlmesh_build_info() reports the linked
+ * library's. */
+#define RLMESH_VERSION "0.1.0"
+
+/* Deprecated: package (marketing) semver — informational only; use
+ * RLMESH_VERSION and rlmesh_build_info(). Do NOT gate ABI compatibility on
+ * these; use RLMESH_ABI_VERSION / rlmesh_abi_check(). */
 #define RLMESH_ABI_VERSION_MAJOR 0
 #define RLMESH_ABI_VERSION_MINOR 1
 #define RLMESH_ABI_VERSION_PATCH 0
@@ -162,6 +168,91 @@ RLMESH_API const char* rlmesh_model_error_code_str(RLMeshModelErrorCode code);
  * subclasses of RLMESH_EXCEPTION. */
 RLMESH_API const char* rlmesh_error_class_name(RLMeshErrorClass cls);
 RLMESH_API bool rlmesh_error_class_is_subclass(RLMeshErrorClass cls, RLMeshErrorClass base);
+
+/* ---- build info, editions, warnings -------------------------------------- */
+
+/* Where a build's cohort came from: Python's BuildInfo.build_source. */
+typedef enum RLMeshBuildSource {
+  RLMESH_BUILD_SOURCE_INVALID = 0,
+  RLMESH_BUILD_SOURCE_RELEASE = 1, /* "release" */
+  RLMESH_BUILD_SOURCE_PACKAGE = 2, /* "package" */
+  RLMESH_BUILD_SOURCE_GIT = 3      /* "git" */
+} RLMeshBuildSource;
+
+/* Python's spelling ("release"), static; NULL for INVALID or an unknown value. */
+RLMESH_API const char* rlmesh_build_source_str(RLMeshBuildSource source);
+
+/* The linked library's identity: Python's rlmesh.build_info(). Every string is
+ * static, NUL-terminated UTF-8 with process lifetime; nothing is freed.
+ * supported_workflow_editions lists supported_workflow_editions_len editions,
+ * newest first; git is NULL when the build was not stamped from git. */
+typedef struct RLMeshBuildInfo {
+  size_t struct_size;
+  const char* version;
+  const char* protocol_generation;
+  const char* workflow_edition;      /* the exact spelling this build advertises */
+  const char* workflow_edition_base; /* its bare YYYY.MM base */
+  const char* const* supported_workflow_editions;
+  size_t supported_workflow_editions_len;
+  const char* build_cohort;
+  RLMeshBuildSource build_source;
+  uint32_t _reserved;
+  const char* git;
+} RLMeshBuildInfo;
+#define RLMESH_BUILD_INFO_INIT                                         \
+  {sizeof(RLMeshBuildInfo),     NULL, NULL, NULL, NULL, NULL, 0, NULL, \
+   RLMESH_BUILD_SOURCE_INVALID, 0,    NULL}
+#define RLMESH_BUILD_INFO_MIN_SIZE (offsetof(RLMeshBuildInfo, git) + sizeof(const char*))
+
+/* Fill `*out` (initialized with RLMESH_BUILD_INFO_INIT). */
+RLMESH_API RLMeshStatus rlmesh_build_info(RLMeshBuildInfo* out);
+struct RLMeshBytes; /* defined below */
+/* Python's repr(build_info()) into `out` (UTF-8, not NUL-terminated; free with
+ * rlmesh_bytes_free). */
+RLMESH_API RLMeshStatus rlmesh_build_info_repr(struct RLMeshBytes* out);
+
+/* The bare YYYY.MM workflow edition this build runs at (static): the value to
+ * declare. A served model or env resolves its edition from
+ * RLMeshServeOptions.workflow_edition, else the RLMESH_WORKFLOW_EDITION
+ * environment variable (set but blank: float deliberately, quietly); one that
+ * declares neither floats to the newest edition and warns once per process. */
+RLMESH_API const char* rlmesh_current_workflow_edition(void);
+
+/* The describe envelope's metadata key and schema version, and the reset
+ * option key an env declares its reset options under. */
+#define RLMESH_DESCRIBE_METADATA_KEY "rlmesh.describe.v1"
+#define RLMESH_DESCRIBE_SCHEMA_VERSION 1
+#define RLMESH_ENV_RESET_OPTIONS_KEY "rlmesh.env.v1.reset_options"
+
+/* A warning's category: Python's warning classes. */
+typedef enum RLMeshWarningCategory {
+  RLMESH_WARNING_CATEGORY_INVALID = 0,
+  RLMESH_WARNING_CATEGORY_USER_WARNING = 1,
+  RLMESH_WARNING_CATEGORY_RUNTIME_WARNING = 2,
+  RLMESH_WARNING_CATEGORY_WORKFLOW_EDITION_WARNING = 3 /* a USER_WARNING */
+} RLMeshWarningCategory;
+
+/* Python's class name ("UserWarning"), static; NULL for INVALID or an unknown
+ * value. rlmesh_warning_category_is_subclass is Python's issubclass. */
+RLMESH_API const char* rlmesh_warning_category_name(RLMeshWarningCategory category);
+RLMESH_API bool rlmesh_warning_category_is_subclass(RLMeshWarningCategory cls,
+                                                    RLMeshWarningCategory base);
+
+/* A warning handler: `message` is NUL-terminated UTF-8, borrowed for the call.
+ * Return RLMESH_OK, or nonzero (after rlmesh_callback_set_error for the text)
+ * to fail the call that warned with that error. Called on the thread that
+ * warned; it must be thread-safe. */
+typedef RLMeshStatus (*RLMeshWarningHandlerFn)(void* user_data, RLMeshWarningCategory category,
+                                               const char* message);
+
+/* Install the process-wide warning handler; a NULL `fn` restores the default,
+ * one line to stderr ("rlmesh: <Category>: <message>") per distinct warning.
+ * A NULL `fn` with a non-NULL `user_data` or `free_user_data` is
+ * RLMESH_ERR_INVALID_ARGUMENT and keeps the installed handler. On RLMESH_OK the
+ * library owns `user_data` and calls `free_user_data` (NULL = none) once,
+ * after the handler is replaced and every call of it has returned. */
+RLMESH_API RLMeshStatus rlmesh_set_warning_handler(RLMeshWarningHandlerFn fn, void* user_data,
+                                                   void (*free_user_data)(void*));
 
 /* ---- dtype + tensor ----------------------------------------------------- */
 

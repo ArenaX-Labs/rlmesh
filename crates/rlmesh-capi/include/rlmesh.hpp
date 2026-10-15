@@ -475,6 +475,165 @@ inline Status ok() { return Status(); }
   })
 #endif
 
+// ---- build info, editions, warnings -----------------------------------------
+
+/// This header's package version, SemVer (`RLMESH_VERSION`); `build_info()`
+/// reports the linked library's.
+inline constexpr std::string_view VERSION = RLMESH_VERSION;
+
+/// The describe envelope's metadata key and schema version, and the env reset
+/// options key: Python's `rlmesh.DESCRIBE_METADATA_KEY`, ...
+inline constexpr std::string_view DESCRIBE_METADATA_KEY = RLMESH_DESCRIBE_METADATA_KEY;
+inline constexpr int64_t DESCRIBE_SCHEMA_VERSION = RLMESH_DESCRIBE_SCHEMA_VERSION;
+inline constexpr std::string_view ENV_RESET_OPTIONS_KEY = RLMESH_ENV_RESET_OPTIONS_KEY;
+
+/// Where a build's cohort came from (Python's `BuildInfo.build_source`).
+enum class BuildSource : int32_t {
+  Release = RLMESH_BUILD_SOURCE_RELEASE,
+  Package = RLMESH_BUILD_SOURCE_PACKAGE,
+  Git = RLMESH_BUILD_SOURCE_GIT,
+};
+
+/// Python's spelling (`"release"`).
+inline std::string_view to_string(BuildSource source) {
+  return detail::sv(rlmesh_build_source_str(static_cast<RLMeshBuildSource>(source)));
+}
+
+/// The linked library's identity: Python's `rlmesh.BuildInfo`. Every view is
+/// static, with process lifetime.
+struct BuildInfo {
+  std::string_view version;
+  std::string_view protocol_generation;
+  std::string_view workflow_edition;
+  std::string_view workflow_edition_base;
+  std::vector<std::string_view> supported_workflow_editions;  ///< newest first
+  std::string_view build_cohort;
+  BuildSource build_source = BuildSource::Package;
+  std::optional<std::string_view> git;
+};
+
+/// This library's build identity (`rlmesh.build_info()`).
+inline BuildInfo build_info() {
+  RLMeshBuildInfo raw = RLMESH_BUILD_INFO_INIT;
+  RLMeshStatus status = rlmesh_build_info(&raw);
+  if (status != RLMESH_OK) detail::die("rlmesh_build_info", Error::from_last(status));
+  BuildInfo info;
+  info.version = detail::sv(raw.version);
+  info.protocol_generation = detail::sv(raw.protocol_generation);
+  info.workflow_edition = detail::sv(raw.workflow_edition);
+  info.workflow_edition_base = detail::sv(raw.workflow_edition_base);
+  for (size_t i = 0; i < raw.supported_workflow_editions_len; ++i) {
+    info.supported_workflow_editions.push_back(detail::sv(raw.supported_workflow_editions[i]));
+  }
+  info.build_cohort = detail::sv(raw.build_cohort);
+  info.build_source = static_cast<BuildSource>(raw.build_source);
+  if (raw.git != nullptr) info.git = detail::sv(raw.git);
+  return info;
+}
+
+/// Python's `repr(build_info())` (`BuildInfo(version="0.1.0", ...)`), as the
+/// library spells it. `info` is a `build_info()` result.
+inline std::string to_string(const BuildInfo& info) {
+  (void)info;  // the static identity: there is only the one
+  RLMeshBytes bytes = {nullptr, 0, 0};
+  RLMeshStatus status = rlmesh_build_info_repr(&bytes);
+  if (status != RLMESH_OK) detail::die("rlmesh_build_info_repr", Error::from_last(status));
+  std::string text(reinterpret_cast<const char*>(bytes.data), bytes.len);
+  rlmesh_bytes_free(bytes);
+  return text;
+}
+
+template <class Stream>
+auto operator<<(Stream& out, const BuildInfo& info) -> decltype(out << std::string()) {
+  return out << to_string(info);
+}
+
+/// The bare `YYYY.MM` workflow edition this build runs at: the value to declare.
+inline std::string_view current_workflow_edition() {
+  return detail::sv(rlmesh_current_workflow_edition());
+}
+
+/// A warning's category: Python's warning classes (values of the C enum).
+enum class WarningCategory : int32_t {
+  UserWarning = RLMESH_WARNING_CATEGORY_USER_WARNING,
+  RuntimeWarning = RLMESH_WARNING_CATEGORY_RUNTIME_WARNING,
+  WorkflowEditionWarning = RLMESH_WARNING_CATEGORY_WORKFLOW_EDITION_WARNING,
+};
+
+/// Python's class name (`"WorkflowEditionWarning"`).
+inline std::string_view name(WarningCategory category) {
+  return detail::sv(rlmesh_warning_category_name(static_cast<RLMeshWarningCategory>(category)));
+}
+
+/// Python's `issubclass(cls, base)`.
+inline bool is_subclass_of(WarningCategory cls, WarningCategory base) {
+  return rlmesh_warning_category_is_subclass(static_cast<RLMeshWarningCategory>(cls),
+                                             static_cast<RLMeshWarningCategory>(base));
+}
+
+/// One warning.
+struct Warning {
+  WarningCategory category;
+  std::string message;
+
+  bool operator==(const Warning& other) const {
+    return category == other.category && message == other.message;
+  }
+  bool operator!=(const Warning& other) const { return !(*this == other); }
+};
+
+/// `<Category>: <message>`.
+template <class Stream>
+auto operator<<(Stream& out, const Warning& warning) -> decltype(out << std::string()) {
+  return out << std::string(name(warning.category)) + ": " + warning.message;
+}
+
+namespace detail {
+
+using WarningHandler = std::function<void(const Warning&)>;
+
+inline RLMeshStatus warning_trampoline(void* user_data, RLMeshWarningCategory category,
+                                       const char* message) {
+  auto* handler = static_cast<WarningHandler*>(user_data);
+#if defined(__cpp_exceptions)
+  try {
+    (*handler)(Warning{static_cast<WarningCategory>(category), std::string(sv(message))});
+  } catch (const std::exception& error) {
+    rlmesh_callback_set_error(error.what(), false);
+    return RLMESH_ERR_INTERNAL;
+  } catch (...) {
+    rlmesh_callback_set_error("unknown C++ exception", false);
+    return RLMESH_ERR_INTERNAL;
+  }
+#else
+  (*handler)(Warning{static_cast<WarningCategory>(category), std::string(sv(message))});
+#endif
+  return RLMESH_OK;
+}
+
+inline void free_warning_handler(void* user_data) {
+  delete static_cast<WarningHandler*>(user_data);
+}
+
+}  // namespace detail
+
+/// Install the process-wide warning handler; an empty `handler` restores the
+/// default (stderr, each distinct warning once). A handler that throws fails
+/// the call that warned, with the exception's `what()` as an `RLMeshException`.
+inline void set_warning_handler(std::function<void(const Warning&)> handler) {
+  if (!handler) {
+    (void)rlmesh_set_warning_handler(nullptr, nullptr, nullptr);
+    return;
+  }
+  auto* owned = new detail::WarningHandler(std::move(handler));
+  RLMeshStatus status =
+      rlmesh_set_warning_handler(&detail::warning_trampoline, owned, &detail::free_warning_handler);
+  if (status != RLMESH_OK) {
+    delete owned;
+    detail::die("rlmesh_set_warning_handler", Error::from_last(status));
+  }
+}
+
 // ---- dtype + tensor ---------------------------------------------------------
 
 /// The RLMeshDLPackDType of a C++ element type (float, double, int32_t, int64_t,

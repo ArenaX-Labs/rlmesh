@@ -110,13 +110,13 @@ impl PyBuildInfo {
     /// The `rlmesh` package version the native core was built as.
     #[getter]
     fn version(&self) -> &'static str {
-        env!("CARGO_PKG_VERSION")
+        rlmesh::build_info().version
     }
 
     /// The wire protocol generation this build speaks (`rlmesh-wire-v1`).
     #[getter]
     fn protocol_generation(&self) -> &'static str {
-        rlmesh_proto::PROTOCOL_GENERATION
+        rlmesh::build_info().protocol_generation
     }
 
     /// The exact workflow edition spelling this build advertises: the sealed
@@ -124,14 +124,14 @@ impl PyBuildInfo {
     /// source build.
     #[getter]
     fn workflow_edition(&self) -> &'static str {
-        rlmesh_proto::CURRENT_WORKFLOW_EDITION
+        rlmesh::build_info().workflow_edition
     }
 
     /// The sealed `YYYY.MM` base of `workflow_edition`, the same on every build
     /// of the edition; what `current_workflow_edition()` returns.
     #[getter]
     fn workflow_edition_base(&self) -> &'static str {
-        rlmesh_proto::WORKFLOW_EDITION_BASE
+        rlmesh::build_info().workflow_edition_base
     }
 
     /// Every workflow edition this build can drive a session at, newest first:
@@ -140,7 +140,11 @@ impl PyBuildInfo {
     /// handshake will.
     #[getter]
     fn supported_workflow_editions(&self) -> Vec<String> {
-        rlmesh_proto::supported_workflow_editions()
+        rlmesh::build_info()
+            .supported_workflow_editions
+            .iter()
+            .map(|edition| (*edition).to_string())
+            .collect()
     }
 
     /// The cohort that spells `workflow_edition`: `stable` on a sealed release,
@@ -148,7 +152,7 @@ impl PyBuildInfo {
     /// source build.
     #[getter]
     fn build_cohort(&self) -> &'static str {
-        rlmesh_proto::BUILD_COHORT
+        rlmesh::build_info().build_cohort
     }
 
     /// Where the cohort came from: `release` (a release build), `package` (a
@@ -156,7 +160,7 @@ impl PyBuildInfo {
     /// stamped from its commit).
     #[getter]
     fn build_source(&self) -> &'static str {
-        rlmesh_proto::BUILD_SOURCE
+        rlmesh::build_info().build_source.as_str()
     }
 
     /// The git state a source build was stamped from — the short commit sha,
@@ -164,22 +168,11 @@ impl PyBuildInfo {
     /// or `None` when the build was not stamped from git.
     #[getter]
     fn git(&self) -> Option<&'static str> {
-        rlmesh_proto::BUILD_COHORT.strip_prefix("dev.")
+        rlmesh::build_info().git
     }
 
     fn __repr__(&self) -> String {
-        format!(
-            "BuildInfo(version={:?}, protocol_generation={:?}, workflow_edition={:?}, \
-             workflow_edition_base={:?}, build_cohort={:?}, build_source={:?}, git={})",
-            self.version(),
-            self.protocol_generation(),
-            self.workflow_edition(),
-            self.workflow_edition_base(),
-            self.build_cohort(),
-            self.build_source(),
-            self.git()
-                .map_or("None".to_string(), |git| format!("{git:?}")),
-        )
+        rlmesh::build_info().to_string()
     }
 }
 
