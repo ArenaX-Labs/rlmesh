@@ -558,7 +558,7 @@ fn call_batched(
 /// The in-process run's report as a Python dict: `episodes` (the per-episode
 /// summaries), `telemetry` (the session metric aggregate), and `advisories`
 /// (the relay's `Advisory` objects).
-fn report_to_py(py: Python<'_>, report: &rlmesh::RuntimeReport) -> PyResult<Py<PyAny>> {
+fn report_to_py(py: Python<'_>, report: &rlmesh::binding::RuntimeReport) -> PyResult<Py<PyAny>> {
     let out = pyo3::types::PyDict::new(py);
     out.set_item("episodes", report_episodes_to_py(py, report)?)?;
     out.set_item("telemetry", report_telemetry_to_py(py, report)?)?;
@@ -574,8 +574,11 @@ fn report_to_py(py: Python<'_>, report: &rlmesh::RuntimeReport) -> PyResult<Py<P
 /// The session telemetry aggregate as a `list[dict]`: one row per
 /// (op, component, metric) with count/avg/p50/p95/p99 in the metric's unit
 /// (`ms` for durations), keys matching the SDK's `TelemetryRow` fields.
-fn report_telemetry_to_py(py: Python<'_>, report: &rlmesh::RuntimeReport) -> PyResult<Py<PyAny>> {
-    use rlmesh::telemetry::Kind;
+fn report_telemetry_to_py(
+    py: Python<'_>,
+    report: &rlmesh::binding::RuntimeReport,
+) -> PyResult<Py<PyAny>> {
+    use rlmesh::binding::telemetry::Kind;
     let rows = pyo3::types::PyList::empty(py);
     for row in &report.telemetry.rows {
         let entry = pyo3::types::PyDict::new(py);
@@ -603,7 +606,10 @@ fn report_telemetry_to_py(py: Python<'_>, report: &rlmesh::RuntimeReport) -> PyR
 /// The in-process run's per-episode results as a Python `list[dict]` (keys
 /// matching the SDK's `EpisodeResult` fields), from the runtime report's
 /// episode summaries, each episode's own latency means included.
-fn report_episodes_to_py(py: Python<'_>, report: &rlmesh::RuntimeReport) -> PyResult<Py<PyAny>> {
+fn report_episodes_to_py(
+    py: Python<'_>,
+    report: &rlmesh::binding::RuntimeReport,
+) -> PyResult<Py<PyAny>> {
     let episodes = pyo3::types::PyList::empty(py);
     for episode in &report.episodes {
         let entry = pyo3::types::PyDict::new(py);
@@ -636,19 +642,19 @@ fn run_local_blocking(
     options: RunLocalOptions,
     relay: Option<Py<PyAny>>,
     last_error: &LastPyError,
-) -> PyResult<rlmesh::RuntimeReport> {
+) -> PyResult<rlmesh::binding::RuntimeReport> {
     enum RunOutcome {
-        Done(rlmesh::Result<rlmesh::RuntimeReport>),
+        Done(rlmesh::Result<rlmesh::binding::RuntimeReport>),
         Signal(PyErr),
     }
-    let cancellation = rlmesh::CancellationToken::new();
+    let cancellation = rlmesh::binding::CancellationToken::new();
     let run_token = cancellation.clone();
     // A hook exception cancels the run through this same token; the relay keeps
     // the exception so it, not the cancellation, is what the caller sees.
     let hooks = relay.map(|relay| Arc::new(PyRunHooks::new(relay, cancellation.clone())));
-    let runtime_hooks: Arc<dyn rlmesh::RuntimeHooks> = match &hooks {
-        Some(hooks) => Arc::clone(hooks) as Arc<dyn rlmesh::RuntimeHooks>,
-        None => Arc::new(rlmesh::NoopRuntimeHooks),
+    let runtime_hooks: Arc<dyn rlmesh::binding::RuntimeHooks> = match &hooks {
+        Some(hooks) => Arc::clone(hooks) as Arc<dyn rlmesh::binding::RuntimeHooks>,
+        None => Arc::new(rlmesh::binding::NoopRuntimeHooks),
     };
     let outcome = py.detach(|| {
         model_runtime().block_on(async move {
