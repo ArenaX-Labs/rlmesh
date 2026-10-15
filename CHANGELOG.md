@@ -129,7 +129,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 - `rlmesh.trial_index(options)` returns `None` for an integral float outside `[-2**63, 2**63)` (`1e19`), as the native languages do, instead of an integer past int64.
 
-
 - The experimental C++ wrapper's authored `rlmesh::EnvironmentException("bad")`, `RecoverableEnvironmentException("bad")` and `ModelException("bad")` read `[INTERNAL] bad` from `what()`, as Python's `str()` and Rust's `Display` of the same error; thrown from a callback, the peer still receives the message once prefixed.
 
 - `str()` of an authored env or model exception gains its code prefix: `EnvironmentException("bad")`, `RecoverableEnvironmentException("bad")` and `ModelException("bad")` read `[INTERNAL] bad`, as the same error reads in Rust, C and C++ and once it crosses the wire. `args[0]` is the raw message, including on the exceptions the clients raise, whose `str()` is unchanged.

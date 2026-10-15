@@ -22,9 +22,6 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 
 use async_trait::async_trait;
-use image::ExtendedColorType;
-use image::ImageEncoder;
-use image::codecs::png::PngEncoder;
 use rlmesh::binding::TRIAL_INDEX_OPTION;
 use rlmesh::binding::env::{
     BoundWireEnvServer as BoundEnvServer, CloseRequest, CloseResult, Env, RenderRequest,
@@ -33,7 +30,7 @@ use rlmesh::binding::env::{
 use rlmesh::{BindAddress, CancellationToken, ENV_RESET_OPTIONS_KEY};
 use rlmesh_adapters::v1::{ENV_METADATA_KEY, EnvTags, SpaceView, join, reject_unknowns_env};
 use rlmesh_spaces::errors::EnvRuntimeError;
-use rlmesh_spaces::{DType, EnvContract, MetaMap, MetaValue, RenderFrame, SpaceSpec, SpaceValue};
+use rlmesh_spaces::{EnvContract, MetaMap, MetaValue, RenderFrame, SpaceSpec, SpaceValue};
 
 use crate::abi::status::{
     CapiError, RLMeshStatus, clear_last_error, guard, guard_value, last_error_message,
@@ -1091,6 +1088,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use rlmesh::RemoteEnv;
+    use rlmesh_spaces::DType;
     use rlmesh_spaces::Tensor;
 
     use super::*;
