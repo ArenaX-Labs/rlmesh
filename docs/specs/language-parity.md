@@ -1,6 +1,6 @@
 # Language parity
 
-Status: Draft — reviewed round 6.
+Status: Reviewed (Opus rounds 2–6); user decisions settled 2026-10-15; implementation in progress.
 
 RLMesh is one library in four languages: Python (the reference), Rust (the
 `rlmesh` facade crate), C (`crates/rlmesh-capi/include/rlmesh.h`) and C++
@@ -29,7 +29,7 @@ this spec does not change it.
    `<AREA>-n` for decisions and `<AREA>-Pn` for Python changes (`COR`, `SPC`,
    `ENV`, `MDL`, `RUN`, `RMT`, `ADP`). Cite them in code review and commit
    messages.
-4. "Default — pending user" marks a choice applied everywhere until the user
+4. "User (accepted default)" marks a choice applied everywhere until the user
    settles it. Every one is listed under [Pending decisions](#pending-decisions).
 
 ## Files
@@ -45,11 +45,10 @@ this spec does not change it.
 | [remote.md](language-parity/remote.md)     | `RemoteEnv`, `RemoteVectorEnv`, `RemoteModel`, their options, sandbox clients                                                             |
 | [adapters.md](language-parity/adapters.md) | `EnvTags`, `ModelSpec`, `ObservationRoles`, transforms, `tag`, `resolve`, `Adapter`                                                       |
 
-## Pending decisions
+## Decisions accepted by the user
 
-Each is applied everywhere as stated in its row until the user answers. The
-default is the spec as written; a "no" answer takes the alternative named in
-the decision.
+On 2026-10-15 the user accepted every default below as implemented. They are
+settled; reversing one is a spec change.
 
 | ID     | Question                                                                                                                         | Default                                     |
 | ------ | -------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
