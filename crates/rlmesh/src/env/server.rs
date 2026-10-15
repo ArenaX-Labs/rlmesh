@@ -102,11 +102,10 @@ impl Default for EnvServerOptions {
     }
 }
 
-/// A factory serve's describe publication (the envelope's target and
-/// catalog).
+/// A factory serve's describe publication: the factory's full envelope, or
+/// why it could not be built (step 5 is best-effort).
 pub(crate) struct Publish {
-    pub(crate) qualname: String,
-    pub(crate) catalog: Option<serde_json::Value>,
+    pub(crate) envelope: Result<String>,
 }
 
 #[allow(clippy::print_stderr)]
@@ -369,17 +368,11 @@ impl EnvServer {
         let mut peer_info_extra: BTreeMap<String, String> = ext.peer_info_extra.clone();
         match &factory {
             // A factory serve's describe is best-effort (step 5).
-            Some(publish) => match env_envelope(
-                &contract,
-                Some(&publish.qualname),
-                publish.catalog.as_ref(),
-                &DescribingHost::rust(),
-                edition.as_deref(),
-            ) {
+            Some(publish) => match &publish.envelope {
                 Ok(envelope) => {
-                    peer_info_extra.insert(DESCRIBE_METADATA_KEY.to_string(), envelope);
+                    peer_info_extra.insert(DESCRIBE_METADATA_KEY.to_string(), envelope.clone());
                 }
-                Err(err) => describe_failed(&err),
+                Err(err) => describe_failed(err),
             },
             None if ext.publish_describe => {
                 let envelope = env_envelope(

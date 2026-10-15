@@ -10,10 +10,11 @@
 pub(crate) mod batch;
 mod client;
 pub(crate) mod envelope;
-mod factory;
+pub(crate) mod factory;
 pub(crate) mod lanes;
 pub(crate) mod legacy;
 pub(crate) mod legacy_server;
+pub(crate) mod served;
 pub(crate) mod server;
 pub(crate) mod signals;
 mod single_lane;
@@ -28,6 +29,7 @@ pub use client::{RemoteEnv, RemoteVectorEnv};
 pub use factory::{
     EnvFactory, EnvFactoryExt, EnvFactoryServeOptions, MadeEnv, TagParam, Variant, VariantOptions,
 };
+pub use served::ServedEnv;
 pub use server::{EnvServer, EnvServerOptions, Transport};
 pub use trial::trial_index;
 

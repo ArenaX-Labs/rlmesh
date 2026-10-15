@@ -381,7 +381,6 @@ impl Row {
 
 /// The model's resolved declarations, read once after `load`.
 #[derive(Debug)]
-#[allow(dead_code)] // The static declarations are describe's.
 pub(crate) struct Resolved {
     pub(crate) corners: Corners,
     pub(crate) context: Corners,

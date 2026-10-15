@@ -182,6 +182,22 @@ pub trait EnvFactoryExt: EnvFactory + sealed::Sealed {
         Ok(stamp(made, tags, fragment))
     }
 
+    /// This factory type's describe envelope: Python's `EnvFactory.describe()`
+    /// classmethod. Best-effort: each build default-constructs a factory,
+    /// and a failed build or space read is an `env_spec` badge.
+    fn describe() -> Result<Metadata>
+    where
+        Self: Default,
+    {
+        crate::describe::describe(
+            crate::describe::Describable::env_factory::<Self>(),
+            crate::describe::DescribeOptions {
+                kind: Some(crate::describe::DescribeKind::Env),
+                ..Default::default()
+            },
+        )
+    }
+
     /// Host this factory's env on `address`, blocking: Python's `serve`.
     /// Runs the branch check and `prepare()`, makes one env (or `num_envs`
     /// lanes), resolves the edition, publishes the describe envelope on the
@@ -269,17 +285,29 @@ fn prepare_serve<F: EnvFactory>(
         },
         ..EnvServerOptions::default()
     };
-    let publish = Publish {
-        qualname: format!("rust:{}", std::any::type_name::<F>()),
-        catalog: catalog::<F>(),
+    // Step 5: the full describe envelope, read off the served env (its
+    // default branch) and the resolved edition; best-effort.
+    let describe_with = |factory: &mut F, served: crate::env::ServedEnv<'_>| {
+        crate::describe::describe_json(
+            factory,
+            crate::describe::DescribeJsonOptions {
+                served_env: Some(served),
+                workflow_edition: Some(edition.clone().unwrap_or_default()),
+                ..Default::default()
+            },
+        )
     };
     let server = if num_envs == 1 {
-        match factory.make_env(&options.make_kwargs)? {
+        let made = factory.make_env(&options.make_kwargs)?;
+        let publish = Publish {
+            envelope: describe_with(factory, crate::env::ServedEnv::from(&made)),
+        };
+        match made {
             MadeEnv::Env(env) => EnvServer::lanes_resolved(vec![env], server_options, publish)?,
             MadeEnv::Vector(env) => EnvServer::vector_resolved(env, server_options, publish)?,
         }
     } else {
-        let mut lanes = Vec::with_capacity(num_envs as usize);
+        let mut lanes: Vec<Box<dyn Env + Send>> = Vec::with_capacity(num_envs as usize);
         for _ in 0..num_envs {
             match factory.make_env(&options.make_kwargs)? {
                 MadeEnv::Env(env) => lanes.push(env),
@@ -292,24 +320,39 @@ fn prepare_serve<F: EnvFactory>(
                 }
             }
         }
+        let served = crate::env::ServedEnv::Lanes(
+            lanes.iter().map(|lane| lane.as_ref() as &dyn Env).collect(),
+        );
+        let publish = Publish {
+            envelope: describe_with(factory, served),
+        };
         EnvServer::lanes_resolved(lanes, server_options, publish)?
     };
     print_serving(server.address(), started);
     Ok(server)
 }
 
-/// The factory's variant catalog for its describe envelope, if it defines
-/// one and it encodes.
-fn catalog<F: EnvFactory>() -> Option<serde_json::Value> {
-    match F::enumerate_variants() {
-        Ok(Some(variants)) => variants
-            .iter()
-            .map(variant_json)
-            .collect::<Result<Vec<_>>>()
-            .ok()
-            .map(serde_json::Value::Array),
-        _ => None,
+/// A variant catalog as describe's `variants.catalog`: `{id, params,
+/// metadata}` entries; a missing or repeated id is the ValueError class
+/// (describe records it as `catalog_error`).
+pub(crate) fn catalog_entries(variants: &[Variant]) -> Result<serde_json::Value> {
+    let mut seen = std::collections::HashSet::new();
+    let mut entries = Vec::with_capacity(variants.len());
+    for variant in variants {
+        if variant.id.is_empty() {
+            return Err(Error::invalid_argument(
+                "variant id must be a non-empty str; got ''",
+            ));
+        }
+        if !seen.insert(variant.id.as_str()) {
+            return Err(Error::invalid_argument(format!(
+                "duplicate variant id '{}'",
+                variant.id
+            )));
+        }
+        entries.push(variant_json(variant)?);
     }
+    Ok(serde_json::Value::Array(entries))
 }
 
 #[allow(clippy::print_stdout)]

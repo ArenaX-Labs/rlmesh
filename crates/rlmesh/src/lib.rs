@@ -117,6 +117,7 @@ mod address;
 pub mod binding;
 mod bound;
 mod build_info;
+mod describe;
 mod dtype;
 mod editions;
 pub mod env;
@@ -136,6 +137,9 @@ mod warnings;
 pub use address::remove_stale_socket;
 pub use address::{BindAddress, ConnectAddress};
 pub use build_info::{BuildInfo, BuildSource, VERSION, build_info};
+pub use describe::{
+    Describable, DescribeJsonOptions, DescribeKind, DescribeOptions, describe, describe_json,
+};
 pub use dtype::{DType, Device};
 pub use editions::current_workflow_edition;
 
@@ -148,7 +152,7 @@ pub const DESCRIBE_METADATA_KEY: &str = rlmesh_adapters::v1::DESCRIBE_METADATA_K
 pub const DESCRIBE_SCHEMA_VERSION: i64 = rlmesh_adapters::v1::DESCRIBE_SCHEMA_VERSION as i64;
 pub use env::{
     Env, EnvFactory, EnvFactoryExt, EnvFactoryServeOptions, EnvServer, EnvServerOptions, MadeEnv,
-    RemoteEnv, RemoteVectorEnv, TagParam, Transport, Variant, VariantOptions, VectorEnv,
+    RemoteEnv, RemoteVectorEnv, ServedEnv, TagParam, Transport, Variant, VariantOptions, VectorEnv,
     VectorSeed, trial_index,
 };
 pub use error::{
