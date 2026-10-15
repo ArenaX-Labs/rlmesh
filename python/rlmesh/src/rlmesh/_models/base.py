@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import contextlib
-import math
 import contextvars
 import functools
 import inspect
+import math
 import os
 import threading
 import warnings

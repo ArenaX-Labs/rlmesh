@@ -3,7 +3,7 @@ from __future__ import annotations
 import io
 import threading
 import time
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pytest
@@ -557,6 +557,6 @@ def test_run_with_a_local_model_takes_view_false_as_none() -> None:
     with pytest.raises(TypeError, match="session\\(\\) option"):
         rlmesh.run(rlmesh.Model(lambda obs: 0), _Env(), view=True)
     with pytest.raises(TypeError, match="view must be"):
-        rlmesh.run(rlmesh.Model(lambda obs: 0), _Env(), view=3)
+        rlmesh.run(rlmesh.Model(lambda obs: 0), _Env(), view=cast("Any", 3))
     result = rlmesh.run(rlmesh.Model(lambda obs: 0), _Env(), view=False)
     assert result.num_episodes == 1

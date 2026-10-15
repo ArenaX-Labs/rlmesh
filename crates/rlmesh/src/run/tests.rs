@@ -761,7 +761,7 @@ fn a_borrowed_vector_env_runs_its_lanes_on_the_native_loop() {
     let model = Model::new(
         |observation: Value| {
             let lanes = match &observation {
-                Value::Tensor(tensor) => tensor.shape().first().copied().unwrap_or(1) as usize,
+                Value::Tensor(tensor) => tensor.shape().first().copied().unwrap_or(1),
                 Value::List(items) => items.len(),
                 _ => return Ok(Value::Int(1)),
             };
