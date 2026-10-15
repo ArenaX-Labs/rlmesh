@@ -125,6 +125,7 @@ mod error;
 pub mod ext;
 mod model;
 pub mod prelude;
+mod run;
 pub mod serve_options;
 pub mod spaces;
 pub mod specs;
@@ -172,6 +173,11 @@ pub use rlmesh_runtime::{
 };
 #[doc(no_inline)]
 pub use rlmesh_runtime::{ENV_RESET_OPTIONS_KEY, PeerCeiling, RuntimeReport};
+pub use run::{
+    EnvTarget, EpisodeResult, ModelTarget, RANDOM_SAMPLE, RandomSample, RunContext, RunHooks,
+    RunOptions, RunResult, Session, SessionOptions, SessionRunOptions, StepEvent, TelemetryRow,
+    run, run_async, session, session_async,
+};
 pub use serve_options::{ENV_ENDPOINT_TOKEN_ENV, MODEL_ENDPOINT_TOKEN_ENV, ServeOptions};
 pub use specs::EnvContract;
 pub use tensor::Tensor;

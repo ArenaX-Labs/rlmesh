@@ -711,7 +711,7 @@ pub(crate) fn py_repr(value: &Value) -> String {
     }
 }
 
-fn py_float(float: f64) -> String {
+pub(crate) fn py_float(float: f64) -> String {
     if float.is_nan() {
         "nan".to_string()
     } else if float.is_infinite() {
@@ -732,7 +732,7 @@ fn py_float(float: f64) -> String {
     }
 }
 
-fn py_str(text: &str) -> String {
+pub(crate) fn py_str(text: &str) -> String {
     let quote = if text.contains('\'') && !text.contains('"') {
         '"'
     } else {
