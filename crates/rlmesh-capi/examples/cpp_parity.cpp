@@ -522,6 +522,22 @@ void adapter_callable_identity() {
   assert(ObsTransform([](const Value& value) { return value; }) != observation);
   assert(RotationTransform([](const Value& value) { return value; }) != rotation);
 }
+void adapter_dict_equality() {
+  using namespace adapters;
+  auto check = []<class Node>(Node a, Node b) {
+    auto first = Node::dict({{"a", a}, {"b", b}});
+    auto reversed = Node::dict({{"b", b}, {"a", a}});
+    assert(first == reversed && reversed == first);
+    assert(Node::dict({{"outer", first}}) == Node::dict({{"outer", reversed}}));
+    assert(first != Node::dict({{"a", b}, {"b", a}}));
+    assert(first != Node::dict({{"a", a}, {"c", b}}));
+    assert(first != Node::dict({{"a", a}}));
+    assert(Node::tuple({a, b}) != Node::tuple({b, a}));
+    assert(Node::dict({}) != Node::tuple({}));
+  };
+  check(InputNode(Text{.role = "a"}), InputNode(Text{.role = "b"}));
+  check(ObsNode(TextTag{.role = "a"}), ObsNode(TextTag{.role = "b"}));
+}
 Value vector(float f) { return Tensor(&f, sizeof(f), {1}, DType::Float32); }
 struct Tagged {
   std::optional<std::string> render_mode() const { return "rgb_array"; }
@@ -604,6 +620,7 @@ int main() try {
   factories_remote_describe();
   adapter_axis_presence();
   adapter_callable_identity();
+  adapter_dict_equality();
   adapters_readers_recorder();
   std::cout << "cpp_parity OK\n";
 } catch (const std::exception& e) {

@@ -1724,6 +1724,14 @@ struct Arena {
     return array(std::move(p));
   }
 };
+template <class Node>
+bool dict_equal(const std::vector<std::pair<std::string, Node>>& left,
+                const std::vector<std::pair<std::string, Node>>& right) {
+  return left.size() == right.size() &&
+         std::all_of(left.begin(), left.end(), [&](const auto& entry) {
+           return std::find(right.begin(), right.end(), entry) != right.end();
+         });
+}
 template <class E, class C>
 C tolerant(const Tolerant<E>& v, const char*& other, Arena& a) {
   auto k = v.known();
@@ -2718,7 +2726,13 @@ class InputNode {
 
  public:
   friend std::string to_string(const InputNode&);
-  bool operator==(const InputNode&) const = default;
+  bool operator==(const InputNode& other) const {
+    if (auto left = std::get_if<1>(&value_)) {
+      auto right = std::get_if<1>(&other.value_);
+      return right && detail_adapter::dict_equal(*left, *right);
+    }
+    return value_ == other.value_;
+  }
   template <class T>
     requires std::constructible_from<ModelLeaf, T>
   InputNode(T v) : value_(ModelLeaf(std::move(v))) {}
@@ -2795,7 +2809,13 @@ class ObsNode {
 
  public:
   friend std::string to_string(const ObsNode&);
-  bool operator==(const ObsNode&) const = default;
+  bool operator==(const ObsNode& other) const {
+    if (auto left = std::get_if<1>(&value_)) {
+      auto right = std::get_if<1>(&other.value_);
+      return right && detail_adapter::dict_equal(*left, *right);
+    }
+    return value_ == other.value_;
+  }
   template <class T>
     requires std::constructible_from<ObsLeaf, T>
   ObsNode(T v) : value_(ObsLeaf(std::move(v))) {}
