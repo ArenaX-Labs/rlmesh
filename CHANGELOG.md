@@ -99,6 +99,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ### Fixed
 
+- C View holds now accept every finite nonnegative number of seconds, saturating values too large for Rust's `Duration` to `Duration::MAX`. Negative, NaN and infinite holds remain ValueError-class failures at validation and consuming calls.
+
 - C `rlmesh_env_server_wait` now sets its stopped output before returning a background serve error, while misuse and invalid inputs leave the output untouched. The facade keeps these outcomes distinct through a binding seam, without polling the server a second time.
 
 - C callbacks setting `ADAPTER_RESOLUTION_ERROR` now preserve that exact last-error class while returning `RLMESH_ERR_INVALID_ARGUMENT`, instead of collapsing to ValueError.

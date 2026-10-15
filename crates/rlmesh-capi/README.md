@@ -261,6 +261,8 @@ output with `RLMESH_VIEW_INIT`; the parser sets `source` to NULL, preserves
 the caller's `struct_size`, and leaves unknown output bytes untouched.
 `rlmesh_view_validate`, `_equals` and `_repr` use the facade. Invalid enum
 discriminants and undersized structs are refused.
+Seconds holds accept every finite nonnegative value, saturating overflow to
+Rust's `Duration::MAX`; negative, NaN and infinite values are refused.
 
 Set `RunOptions.view` or `SessionOptions.view` to a View pointer; the consuming
 call copies its fields and source string. A local `rlmesh_model_run` refuses

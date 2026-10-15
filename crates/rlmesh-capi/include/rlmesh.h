@@ -3255,7 +3255,8 @@ RLMESH_API RLMeshStatus rlmesh_run_hooks_on_run_end(RLMeshRunHooks*, const RLMes
 
 /* Plain View configuration. Strings are borrowed here, copied by a consuming
  * run/session call. Parse writes no string allocation (source is NULL).
- * Initialize both inputs and parse outputs with RLMESH_VIEW_INIT. */
+ * Initialize both inputs and parse outputs with RLMESH_VIEW_INIT. Seconds holds
+ * require finite nonnegative values; overflow saturates to Duration::MAX. */
 typedef enum RLMeshViewBackend {
   RLMESH_VIEW_BACKEND_INVALID = 0,
   RLMESH_VIEW_BACKEND_TERMINAL = 1,

@@ -1,5 +1,6 @@
 /* ABI 5 View / Recorder: facade semantics, owned snapshots and capture hooks. */
 #include <assert.h>
+#include <float.h>
 #include <math.h>
 #include <rlmesh.h>
 #include <stdio.h>
@@ -54,6 +55,23 @@ static void view_values(void) {
   other.quality = 76;
   OK(rlmesh_view_equals(&view, &other, &equal));
   assert(!equal);
+  RLMeshView hold = RLMESH_VIEW_INIT;
+  hold.hold = RLMESH_VIEW_HOLD_SECONDS;
+  hold.hold_seconds = DBL_MAX;
+  OK(rlmesh_view_validate(&hold));
+  RLMeshView saturated = hold;
+  saturated.hold_seconds = ldexp(1.0, 64); /* also beyond Duration::MAX */
+  OK(rlmesh_view_equals(&hold, &saturated, &equal));
+  assert(equal);
+  saturated.hold_seconds = 0.0;
+  OK(rlmesh_view_equals(&hold, &saturated, &equal));
+  assert(!equal);
+  const double invalid_holds[] = {INFINITY, -INFINITY, NAN, -1.0};
+  for (size_t i = 0; i < sizeof(invalid_holds) / sizeof(invalid_holds[0]); ++i) {
+    hold.hold_seconds = invalid_holds[i];
+    assert(rlmesh_view_validate(&hold) == RLMESH_ERR_INVALID_ARGUMENT);
+    assert(rlmesh_last_error_class() == RLMESH_ERROR_CLASS_VALUE_ERROR);
+  }
   RLMeshBytes repr = {0};
   OK(rlmesh_view_repr(&view, &repr));
   assert(repr.len > 20);
@@ -461,6 +479,21 @@ static void recorder_and_runs(const char* root) {
   RLMeshRunResult* result = NULL;
   assert(rlmesh_model_run(model, rlmesh_env_target(env), &ro, &result) == RLMESH_ERR_TYPE &&
          !result);
+  view.hold = RLMESH_VIEW_HOLD_SECONDS;
+  view.hold_seconds = DBL_MAX;
+  /* Conversion succeeds: the facade then rejects local Model.run viewing.
+   * No viewer is opened and the saturated hold is never actually waited on. */
+  assert(rlmesh_model_run(model, rlmesh_env_target(env), &ro, &result) == RLMESH_ERR_TYPE &&
+         !result);
+  const double invalid_holds[] = {INFINITY, NAN, -1.0};
+  for (size_t i = 0; i < sizeof(invalid_holds) / sizeof(invalid_holds[0]); ++i) {
+    view.hold_seconds = invalid_holds[i];
+    assert(rlmesh_model_run(model, rlmesh_env_target(env), &ro, &result) ==
+               RLMESH_ERR_INVALID_ARGUMENT &&
+           !result);
+  }
+  view.hold = RLMESH_VIEW_HOLD_OFF;
+  view.hold_seconds = 0.0;
   view.fps = 0;
   assert(rlmesh_run(RLMESH_RANDOM_SAMPLE, rlmesh_env_target(env), &ro, &result) ==
              RLMESH_ERR_INVALID_ARGUMENT &&

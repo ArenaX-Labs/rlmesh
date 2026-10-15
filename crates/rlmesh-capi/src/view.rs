@@ -8,6 +8,7 @@ use crate::codec::RLMeshBytes;
 use crate::{ffi, value::handle::write_out};
 use rlmesh::{View, ViewBackend, ViewFormat, ViewHold};
 use std::ffi::c_char;
+use std::time::Duration;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -43,7 +44,14 @@ pub(crate) unsafe fn read(ptr: *const RLMeshView) -> Result<Option<View>, CapiEr
         hold: match v.hold {
             1 => ViewHold::Off,
             2 => ViewHold::UntilQuit,
-            3 => ViewHold::For(ffi::duration(v.hold_seconds, "hold_seconds")?),
+            3 => {
+                if !v.hold_seconds.is_finite() || v.hold_seconds < 0.0 {
+                    return Err(CapiError::invalid_arg(
+                        "hold_seconds must be finite and non-negative",
+                    ));
+                }
+                ViewHold::For(Duration::try_from_secs_f64(v.hold_seconds).unwrap_or(Duration::MAX))
+            }
             _ => return Err(CapiError::invalid_arg("invalid View hold")),
         },
         source: unsafe { ffi::text(v.source) }?,
