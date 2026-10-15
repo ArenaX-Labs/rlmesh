@@ -72,7 +72,18 @@ impl RLMeshEpisodeResult {
     }
 }
 #[derive(Clone)]
-pub struct RLMeshRunResult(pub(crate) Arc<RunResult>);
+pub struct RLMeshRunResult(pub(crate) Arc<RunResult>, Arc<Vec<std::ffi::CString>>);
+impl RLMeshRunResult {
+    pub(crate) fn new(result: RunResult) -> Self {
+        let messages = result
+            .advisories
+            .iter()
+            .map(|a| std::ffi::CString::new(a.message.as_str()).unwrap_or_default())
+            .collect();
+        Self(Arc::new(result), Arc::new(messages))
+    }
+}
+
 pub struct RLMeshTelemetryRow(pub(crate) Arc<TelemetryRow>);
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -82,7 +93,7 @@ pub struct RLMeshRunResultOptions {
     pub episodes_len: usize,
     pub telemetry: *const *const RLMeshTelemetryRow,
     pub telemetry_len: usize,
-    pub advisories: *const *const std::ffi::c_void,
+    pub advisories: *const *const crate::adapters::RLMeshAdvisory,
     pub advisories_len: usize,
 }
 pub(crate) fn require<'a>(p: *const RLMeshRunResult) -> Result<&'a RunResult, CapiError> {
@@ -94,10 +105,7 @@ pub(crate) fn output(out: *mut *mut RLMeshRunResult, result: RunResult) -> Resul
     if out.is_null() {
         return Err(CapiError::invalid_arg("null out"));
     }
-    write_out(
-        out,
-        Box::into_raw(Box::new(RLMeshRunResult(Arc::new(result)))),
-    )
+    write_out(out, Box::into_raw(Box::new(RLMeshRunResult::new(result))))
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_run_result_new(
@@ -108,10 +116,12 @@ pub unsafe extern "C" fn rlmesh_run_result_new(
         write_out(out, std::ptr::null_mut())?;
         let mut result = RunResult::default();
         if let Some(o) = unsafe { sizing::read(options, "RLMeshRunResultOptions") }? {
-            if o.advisories_len != 0 {
-                return Err(CapiError::type_error(
-                    "advisories require the adapters wave",
-                ));
+            for &p in
+                unsafe { crate::spaces::slice_arg(o.advisories, o.advisories_len, "advisories") }?
+            {
+                result
+                    .advisories
+                    .push(unsafe { crate::adapters::parse_advisory(p) }?);
             }
             for &p in unsafe { crate::spaces::slice_arg(o.episodes, o.episodes_len, "episodes") }? {
                 result
@@ -364,4 +374,27 @@ pub unsafe extern "C" fn rlmesh_telemetry_row_free(p: *mut RLMeshTelemetryRow) {
             drop(unsafe { Box::from_raw(p) });
         }
     });
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_run_result_advisories_len(p: *const RLMeshRunResult) -> usize {
+    guard_value(0, || require(p).map_or(0, |r| r.advisories.len()))
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_run_result_advisories_get(
+    p: *const RLMeshRunResult,
+    i: usize,
+    out: *mut crate::adapters::RLMeshAdvisory,
+) -> RLMeshStatus {
+    guard(|| {
+        let h = unsafe { p.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null run result"))?;
+        let note =
+            h.0.advisories
+                .get(i)
+                .ok_or_else(|| CapiError::invalid_arg("advisory index out of range"))?;
+        let mut arena = crate::adapters::Arena::default();
+        let mut view = crate::adapters::view_advisory(&mut arena, note);
+        view.message = h.1[i].as_ptr();
+        unsafe { crate::adapters::out_struct(out, view, "RLMeshAdvisory") }
+    })
 }

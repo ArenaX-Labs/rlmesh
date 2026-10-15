@@ -58,8 +58,10 @@ static RLMeshStatus predict(void* user, const RLMeshValue* obs, const RLMeshPred
   return identity(user, obs, out);
 }
 static void layouts(void);
+static void rotations(void);
 int main(void) {
   layouts();
+  rotations();
   bool equal = false;
   CHECK(rlmesh_adapters_parts_len() == 7 &&
         strcmp(rlmesh_adapters_parts_get(0), RLMESH_ADAPTERS_LEFT_ARM) == 0 &&
@@ -163,6 +165,13 @@ int main(void) {
   CHECK(rlmesh_rotation_from_matrix(matrix, rotation_values, &rotation) == RLMESH_OK &&
         rotation.encoding == RLMESH_ROTATION_ENCODING_ROT6D && rotation.value == rotation_values &&
         rotation.value_len == 6 && rotation_values[0] == 1 && rotation_values[4] == 1);
+  struct FutureRotation {
+    RLMeshRotation head;
+    uint64_t tail;
+  } future_rotation = {RLMESH_ROTATION_INIT, 123};
+  future_rotation.head.struct_size = sizeof(future_rotation);
+  CHECK(rlmesh_rotation_from_matrix(matrix, rotation_values, &future_rotation.head) == RLMESH_OK &&
+        future_rotation.tail == 123 && future_rotation.head.struct_size == sizeof(future_rotation));
   RLMeshCustomEncoding encoding_spec = RLMESH_CUSTOM_ENCODING_INIT;
   encoding_spec.base = RLMESH_ROTATION_ENCODING_ROT6D;
   CHECK(rlmesh_custom_encoding_width(&encoding_spec, &dims) == RLMESH_OK && dims == 6);
@@ -184,6 +193,15 @@ int main(void) {
   rlmesh_bytes_free(json);
   advisory.message = NULL;
   CHECK(rlmesh_advisory_equals(&advisory, &advisory, &equal) == RLMESH_ERR_TYPE);
+  RLMeshValue* malformed = NULL;
+  CHECK(rlmesh_value_int(1, &malformed) == RLMESH_OK);
+  RLMeshStr metadata_key = rlmesh_str(RLMESH_ADAPTERS_MODEL_METADATA_KEY);
+  const RLMeshValue* malformed_values[] = {malformed};
+  CHECK(rlmesh_value_dict(&metadata_key, malformed_values, 1, &metadata) == RLMESH_OK);
+  CHECK(rlmesh_model_spec_from_metadata(metadata, &parsed) == RLMESH_ERR_INVALID_ARGUMENT &&
+        !parsed && rlmesh_last_error_class() == RLMESH_ERROR_CLASS_ADAPTER_RESOLUTION_ERROR);
+  rlmesh_value_free(malformed);
+  rlmesh_value_free(metadata);
   /* Tolerant spelling and binary-safe dict keys survive typed and JSON round trips. */
   state.dtype = RLMESH_DTYPE_OTHER;
   state.dtype_other = "future-float";
@@ -251,6 +269,10 @@ int main(void) {
   CHECK(calls == 2);
   rlmesh_wrapped_predict_free(wrapped);
   CHECK(calls == 3);
+  RLMeshInputNode cycle = rlmesh_input_node_tuple(NULL, 0);
+  cycle.children = &cycle;
+  cycle.children_len = 1;
+  CHECK(rlmesh_model_spec_new(&cycle, &action, &future) == RLMESH_ERR_INVALID_ARGUMENT && !future);
   /* Invalid R-19 input, zero/nonzero future tails, and no ownership on refusal. */
   RLMeshState bad = {0};
   RLMeshInputNode bad_node = rlmesh_input_node_state(&bad);
@@ -303,6 +325,7 @@ int main(void) {
   RLMeshInputNode custom_input = rlmesh_input_node_custom(&custom);
   RLMeshModelSpec* custom_spec = NULL;
   CHECK(rlmesh_model_spec_new(&custom_input, &action, &custom_spec) == RLMESH_OK);
+  CHECK(rlmesh_ext_register_entrypoint("abi5:identity", transform) == RLMESH_OK);
   rlmesh_obs_transform_free(transform);
   CHECK(transform_frees == 0);
   CHECK(rlmesh_model_spec_to_dict(custom_spec, &converted) == RLMESH_ERR_INVALID_ARGUMENT &&
@@ -315,7 +338,27 @@ int main(void) {
   rlmesh_model_spec_free(custom_spec);
   CHECK(transform_frees == 1);
   rlmesh_adapter_free(alias);
-  CHECK(transform_frees == 2);
+  CHECK(transform_frees == 1); /* registry retains the final reference */
+  custom.transform = NULL;
+  custom.entrypoint = "abi5:identity";
+  CHECK(rlmesh_model_spec_new(&custom_input, &action, &custom_spec) == RLMESH_OK);
+  CHECK(rlmesh_adapters_resolve(tags, rlmesh_space_spec(space), rlmesh_space_spec(space),
+                                custom_spec, NULL, &alias) == RLMESH_ERR_INVALID_ARGUMENT &&
+        !alias && rlmesh_last_error_class() == RLMESH_ERROR_CLASS_ADAPTER_RESOLUTION_ERROR);
+  RLMeshResolveOptions trusted = RLMESH_RESOLVE_OPTIONS_INIT;
+  trusted.trust_entrypoints = true;
+  CHECK(rlmesh_adapters_resolve(tags, rlmesh_space_spec(space), rlmesh_space_spec(space),
+                                custom_spec, &trusted, &alias) == RLMESH_OK);
+  CHECK(rlmesh_adapter_transform_obs(alias, raw, &converted) == RLMESH_OK && transform_frees == 2);
+  rlmesh_value_free(converted);
+  rlmesh_adapter_free(alias);
+  rlmesh_model_spec_free(custom_spec);
+  RLMeshObsTransform* replacement = NULL;
+  CHECK(rlmesh_obs_transform_new(identity, NULL, NULL, &replacement) == RLMESH_OK);
+  CHECK(rlmesh_ext_register_entrypoint("abi5:identity", replacement) == RLMESH_OK &&
+        transform_frees == 3);
+  rlmesh_obs_transform_free(replacement);
+
   /* Real model attachment and tag mutate the original env; NO_ADAPTER bypasses. */
   RLMeshEnvVtable ev = RLMESH_ENV_VTABLE_INIT;
   ev.reset = reset;
@@ -365,95 +408,185 @@ int main(void) {
   return 0;
 }
 
+static void rotations(void) {
+  int calls = 0;
+  RLMeshRotationTransform* transform = NULL;
+  CHECK(rlmesh_rotation_transform_new(identity, &calls, counted_free, &transform) == RLMESH_OK);
+  RLMeshRotationTransform* clone = rlmesh_rotation_transform_clone(transform);
+  RLMeshCustomEncoding encoding = RLMESH_CUSTOM_ENCODING_INIT;
+  encoding.base = RLMESH_ROTATION_ENCODING_AXIS_ANGLE;
+  encoding.from_base.transform = transform;
+  encoding.to_base.transform = clone;
+  RLMeshActuator actuator = RLMESH_ACTUATOR_INIT;
+  actuator.role = RLMESH_ADAPTERS_ACTION_JOINT_POS;
+  actuator.dim = 1;
+  const RLMeshActuator* components[] = {&actuator};
+  RLMeshAction action = RLMESH_ACTION_INIT;
+  action.components = components;
+  action.components_len = 1;
+  RLMeshState state = RLMESH_STATE_INIT;
+  state.role = RLMESH_ADAPTERS_EEF_ROT;
+  state.custom_encoding = &encoding;
+  RLMeshInputNode input = rlmesh_input_node_state(&state);
+  RLMeshModelSpec* spec = NULL;
+  CHECK(rlmesh_model_spec_new(&input, &action, &spec) == RLMESH_OK);
+  const RLMeshRotationEncoding rotations[] = {RLMESH_ROTATION_ENCODING_AXIS_ANGLE};
+  RLMeshStateTag state_tag = RLMESH_STATE_TAG_INIT;
+  state_tag.role = state.role;
+  state_tag.encoding = rotations;
+  state_tag.encoding_len = 1;
+  RLMeshObsNode tag = rlmesh_obs_node_state_tag(&state_tag);
+  RLMeshEnvTags* tags = NULL;
+  CHECK(rlmesh_env_tags_new(&tag, &action, &tags) == RLMESH_OK);
+  const int64_t obs_shape[] = {3}, act_shape[] = {1};
+  RLMeshBox* obs_space = NULL;
+  RLMeshBox* act_space = NULL;
+  CHECK(rlmesh_box_new(rlmesh_bound_float(-10), rlmesh_bound_float(10), obs_shape, 1, NULL,
+                       &obs_space) == RLMESH_OK);
+  CHECK(rlmesh_box_new(rlmesh_bound_float(-10), rlmesh_bound_float(10), act_shape, 1, NULL,
+                       &act_space) == RLMESH_OK);
+  RLMeshAdapter* adapter = NULL;
+  CHECK(rlmesh_adapters_resolve(tags, rlmesh_space_spec(obs_space), rlmesh_space_spec(act_space),
+                                spec, NULL, &adapter) == RLMESH_OK &&
+        calls == 2);
+  rlmesh_rotation_transform_free(transform);
+  rlmesh_rotation_transform_free(clone);
+  rlmesh_model_spec_free(spec);
+  CHECK(calls == 2);
+  const float numbers[] = {0.1f, -0.2f, 0.3f};
+  const size_t shape[] = {3};
+  RLMeshTensor* tensor = NULL;
+  RLMeshValue* raw = NULL;
+  RLMeshValue* output = NULL;
+  CHECK(rlmesh_tensor_new(numbers, sizeof(numbers), shape, 1, RLMESH_DTYPE_FLOAT32, &tensor) ==
+        RLMESH_OK);
+  CHECK(rlmesh_value_tensor(tensor, &raw) == RLMESH_OK);
+  rlmesh_tensor_free(tensor);
+  CHECK(rlmesh_adapter_transform_obs(adapter, raw, &output) == RLMESH_OK && calls == 3);
+  rlmesh_value_free(output);
+  rlmesh_value_free(raw);
+  rlmesh_adapter_free(adapter);
+  CHECK(calls == 4);
+  encoding.from_base.transform = NULL;
+  encoding.to_base.transform = NULL;
+  encoding.from_base.entrypoint = "module:rotation";
+  CHECK(rlmesh_model_spec_new(&input, &action, &spec) == RLMESH_OK);
+  CHECK(rlmesh_adapters_resolve(tags, rlmesh_space_spec(obs_space), rlmesh_space_spec(act_space),
+                                spec, NULL, &adapter) == RLMESH_ERR_INVALID_ARGUMENT &&
+        !adapter && rlmesh_last_error_class() == RLMESH_ERROR_CLASS_ADAPTER_RESOLUTION_ERROR);
+  rlmesh_model_spec_free(spec);
+  rlmesh_env_tags_free(tags);
+  rlmesh_space_free(obs_space);
+  rlmesh_space_free(act_space);
+}
+
 static void layouts(void) {
 #if UINTPTR_MAX > UINT32_MAX
-  CHECK(sizeof(RLMeshRotation) ==
-        sizeof(((RLMeshRotation*)0)->struct_size) + sizeof(((RLMeshRotation*)0)->encoding) +
-            sizeof(((RLMeshRotation*)0)->_reserved) + sizeof(((RLMeshRotation*)0)->value) +
-            sizeof(((RLMeshRotation*)0)->value_len));
-  CHECK(sizeof(RLMeshCustomEncoding) ==
-        sizeof(((RLMeshCustomEncoding*)0)->struct_size) + sizeof(((RLMeshCustomEncoding*)0)->base) +
-            sizeof(((RLMeshCustomEncoding*)0)->_reserved0) +
-            sizeof(((RLMeshCustomEncoding*)0)->from_base) +
-            sizeof(((RLMeshCustomEncoding*)0)->to_base) + sizeof(((RLMeshCustomEncoding*)0)->name));
-  CHECK(sizeof(RLMeshImage) ==
-        sizeof(((RLMeshImage*)0)->struct_size) + sizeof(((RLMeshImage*)0)->role) +
-            sizeof(((RLMeshImage*)0)->has_height) + sizeof(((RLMeshImage*)0)->_reserved0) +
-            sizeof(((RLMeshImage*)0)->height) + sizeof(((RLMeshImage*)0)->has_width) +
-            sizeof(((RLMeshImage*)0)->_reserved1) + sizeof(((RLMeshImage*)0)->width) +
-            sizeof(((RLMeshImage*)0)->layout) + sizeof(((RLMeshImage*)0)->has_channels) +
-            sizeof(((RLMeshImage*)0)->_reserved2) + sizeof(((RLMeshImage*)0)->channels) +
-            sizeof(((RLMeshImage*)0)->dtype) + sizeof(((RLMeshImage*)0)->dtype_other) +
-            sizeof(((RLMeshImage*)0)->normalize) + sizeof(((RLMeshImage*)0)->_reserved3) +
-            sizeof(((RLMeshImage*)0)->normalize_range) + sizeof(((RLMeshImage*)0)->lead_dims) +
-            sizeof(((RLMeshImage*)0)->upside_down) + sizeof(((RLMeshImage*)0)->_reserved4) +
-            sizeof(((RLMeshImage*)0)->resample) + sizeof(((RLMeshImage*)0)->_reserved5) +
-            sizeof(((RLMeshImage*)0)->resample_other) + sizeof(((RLMeshImage*)0)->allow_upscale) +
-            sizeof(((RLMeshImage*)0)->_reserved6) + sizeof(((RLMeshImage*)0)->fit) +
-            sizeof(((RLMeshImage*)0)->fit_len) + sizeof(((RLMeshImage*)0)->fit_other) +
-            sizeof(((RLMeshImage*)0)->optional) + sizeof(((RLMeshImage*)0)->has_fill) +
-            sizeof(((RLMeshImage*)0)->fill) + sizeof(((RLMeshImage*)0)->_reserved7) +
-            sizeof(((RLMeshImage*)0)->stack) + sizeof(((RLMeshImage*)0)->has_crop) +
-            sizeof(((RLMeshImage*)0)->_reserved8) + sizeof(((RLMeshImage*)0)->crop) +
-            sizeof(((RLMeshImage*)0)->has_crop_area) + sizeof(((RLMeshImage*)0)->_reserved9) +
-            sizeof(((RLMeshImage*)0)->crop_area) + sizeof(((RLMeshImage*)0)->crop_mode) +
-            sizeof(((RLMeshImage*)0)->_reserved10) + sizeof(((RLMeshImage*)0)->crop_mode_other) +
-            sizeof(((RLMeshImage*)0)->has_jpeg_quality) + sizeof(((RLMeshImage*)0)->jpeg_quality) +
-            sizeof(((RLMeshImage*)0)->_reserved11) + sizeof(((RLMeshImage*)0)->channel_order) +
-            sizeof(((RLMeshImage*)0)->channel_order_other) + sizeof(((RLMeshImage*)0)->has_render) +
-            sizeof(((RLMeshImage*)0)->_reserved12) + sizeof(((RLMeshImage*)0)->render) +
-            sizeof(((RLMeshImage*)0)->_reserved13) + sizeof(((RLMeshImage*)0)->offsets) +
-            sizeof(((RLMeshImage*)0)->offsets_len) + sizeof(((RLMeshImage*)0)->stack_pad) +
-            sizeof(((RLMeshImage*)0)->_reserved14) + sizeof(((RLMeshImage*)0)->part) +
-            sizeof(((RLMeshImage*)0)->has_stride) + sizeof(((RLMeshImage*)0)->_reserved15) +
-            sizeof(((RLMeshImage*)0)->stride));
-  CHECK(sizeof(RLMeshState) ==
-        sizeof(((RLMeshState*)0)->struct_size) + sizeof(((RLMeshState*)0)->role) +
-            sizeof(((RLMeshState*)0)->encoding) + sizeof(((RLMeshState*)0)->encoding_len) +
-            sizeof(((RLMeshState*)0)->encoding_other) + sizeof(((RLMeshState*)0)->custom_encoding) +
-            sizeof(((RLMeshState*)0)->has_dim) + sizeof(((RLMeshState*)0)->_reserved0) +
-            sizeof(((RLMeshState*)0)->dim) + sizeof(((RLMeshState*)0)->has_index) +
-            sizeof(((RLMeshState*)0)->_reserved1) + sizeof(((RLMeshState*)0)->index) +
-            sizeof(((RLMeshState*)0)->optional) + sizeof(((RLMeshState*)0)->has_range) +
-            sizeof(((RLMeshState*)0)->_reserved2) + sizeof(((RLMeshState*)0)->range) +
-            sizeof(((RLMeshState*)0)->has_pad_to) + sizeof(((RLMeshState*)0)->_reserved3) +
-            sizeof(((RLMeshState*)0)->pad_to) + sizeof(((RLMeshState*)0)->dtype) +
-            sizeof(((RLMeshState*)0)->_reserved4) + sizeof(((RLMeshState*)0)->dtype_other) +
-            sizeof(((RLMeshState*)0)->reshape) + sizeof(((RLMeshState*)0)->reshape_len) +
-            sizeof(((RLMeshState*)0)->container) + sizeof(((RLMeshState*)0)->_reserved5) +
-            sizeof(((RLMeshState*)0)->fill) + sizeof(((RLMeshState*)0)->post_rotate) +
-            sizeof(((RLMeshState*)0)->has_scale) + sizeof(((RLMeshState*)0)->_reserved6) +
-            sizeof(((RLMeshState*)0)->scale) + sizeof(((RLMeshState*)0)->axis_scale) +
-            sizeof(((RLMeshState*)0)->axis_scale_len) + sizeof(((RLMeshState*)0)->has_offset) +
-            sizeof(((RLMeshState*)0)->_reserved7) + sizeof(((RLMeshState*)0)->offset) +
-            sizeof(((RLMeshState*)0)->axis_offset) + sizeof(((RLMeshState*)0)->axis_offset_len) +
-            sizeof(((RLMeshState*)0)->has_frame) + sizeof(((RLMeshState*)0)->_reserved8) +
-            sizeof(((RLMeshState*)0)->frame) + sizeof(((RLMeshState*)0)->frame_other) +
-            sizeof(((RLMeshState*)0)->provenance) + sizeof(((RLMeshState*)0)->provenance_len) +
-            sizeof(((RLMeshState*)0)->provenance_other) + sizeof(((RLMeshState*)0)->part) +
-            sizeof(((RLMeshState*)0)->labels) + sizeof(((RLMeshState*)0)->labels_len) +
-            sizeof(((RLMeshState*)0)->source) + sizeof(((RLMeshState*)0)->has_clip) +
-            sizeof(((RLMeshState*)0)->_reserved9) + sizeof(((RLMeshState*)0)->clip));
-  CHECK(sizeof(RLMeshConcat) ==
-        sizeof(((RLMeshConcat*)0)->struct_size) + sizeof(((RLMeshConcat*)0)->parts) +
-            sizeof(((RLMeshConcat*)0)->parts_len) + sizeof(((RLMeshConcat*)0)->has_pad_to) +
-            sizeof(((RLMeshConcat*)0)->_reserved0) + sizeof(((RLMeshConcat*)0)->pad_to) +
-            sizeof(((RLMeshConcat*)0)->dtype) + sizeof(((RLMeshConcat*)0)->_reserved1) +
-            sizeof(((RLMeshConcat*)0)->dtype_other) + sizeof(((RLMeshConcat*)0)->reshape) +
-            sizeof(((RLMeshConcat*)0)->reshape_len) + sizeof(((RLMeshConcat*)0)->container) +
-            sizeof(((RLMeshConcat*)0)->has_clip) + sizeof(((RLMeshConcat*)0)->_reserved2) +
-            sizeof(((RLMeshConcat*)0)->clip));
-  CHECK(sizeof(RLMeshConstant) ==
-        sizeof(((RLMeshConstant*)0)->struct_size) + sizeof(((RLMeshConstant*)0)->dim) +
-            sizeof(((RLMeshConstant*)0)->_reserved0) + sizeof(((RLMeshConstant*)0)->fill));
-  CHECK(sizeof(RLMeshAdaptersText) ==
-        sizeof(((RLMeshAdaptersText*)0)->struct_size) + sizeof(((RLMeshAdaptersText*)0)->role) +
-            sizeof(((RLMeshAdaptersText*)0)->container) +
-            sizeof(((RLMeshAdaptersText*)0)->has_fill) +
-            sizeof(((RLMeshAdaptersText*)0)->_reserved0) + sizeof(((RLMeshAdaptersText*)0)->fill));
-  CHECK(sizeof(RLMeshCustom) == sizeof(((RLMeshCustom*)0)->struct_size) +
-                                    sizeof(((RLMeshCustom*)0)->transform) +
-                                    sizeof(((RLMeshCustom*)0)->entrypoint));
+  _Static_assert(sizeof(RLMeshRotation) == sizeof(((RLMeshRotation*)0)->struct_size) +
+                                               sizeof(((RLMeshRotation*)0)->encoding) +
+                                               sizeof(((RLMeshRotation*)0)->_reserved) +
+                                               sizeof(((RLMeshRotation*)0)->value) +
+                                               sizeof(((RLMeshRotation*)0)->value_len),
+                 "RLMeshRotation must have no implicit padding");
+  _Static_assert(
+      sizeof(RLMeshCustomEncoding) == sizeof(((RLMeshCustomEncoding*)0)->struct_size) +
+                                          sizeof(((RLMeshCustomEncoding*)0)->base) +
+                                          sizeof(((RLMeshCustomEncoding*)0)->_reserved0) +
+                                          sizeof(((RLMeshCustomEncoding*)0)->from_base) +
+                                          sizeof(((RLMeshCustomEncoding*)0)->to_base) +
+                                          sizeof(((RLMeshCustomEncoding*)0)->name),
+      "RLMeshCustomEncoding must have no implicit padding");
+  _Static_assert(
+      sizeof(RLMeshImage) ==
+          sizeof(((RLMeshImage*)0)->struct_size) + sizeof(((RLMeshImage*)0)->role) +
+              sizeof(((RLMeshImage*)0)->has_height) + sizeof(((RLMeshImage*)0)->_reserved0) +
+              sizeof(((RLMeshImage*)0)->height) + sizeof(((RLMeshImage*)0)->has_width) +
+              sizeof(((RLMeshImage*)0)->_reserved1) + sizeof(((RLMeshImage*)0)->width) +
+              sizeof(((RLMeshImage*)0)->layout) + sizeof(((RLMeshImage*)0)->has_channels) +
+              sizeof(((RLMeshImage*)0)->_reserved2) + sizeof(((RLMeshImage*)0)->channels) +
+              sizeof(((RLMeshImage*)0)->dtype) + sizeof(((RLMeshImage*)0)->dtype_other) +
+              sizeof(((RLMeshImage*)0)->normalize) + sizeof(((RLMeshImage*)0)->_reserved3) +
+              sizeof(((RLMeshImage*)0)->normalize_range) + sizeof(((RLMeshImage*)0)->lead_dims) +
+              sizeof(((RLMeshImage*)0)->upside_down) + sizeof(((RLMeshImage*)0)->_reserved4) +
+              sizeof(((RLMeshImage*)0)->resample) + sizeof(((RLMeshImage*)0)->_reserved5) +
+              sizeof(((RLMeshImage*)0)->resample_other) + sizeof(((RLMeshImage*)0)->allow_upscale) +
+              sizeof(((RLMeshImage*)0)->_reserved6) + sizeof(((RLMeshImage*)0)->fit) +
+              sizeof(((RLMeshImage*)0)->fit_len) + sizeof(((RLMeshImage*)0)->fit_other) +
+              sizeof(((RLMeshImage*)0)->optional) + sizeof(((RLMeshImage*)0)->has_fill) +
+              sizeof(((RLMeshImage*)0)->fill) + sizeof(((RLMeshImage*)0)->_reserved7) +
+              sizeof(((RLMeshImage*)0)->stack) + sizeof(((RLMeshImage*)0)->has_crop) +
+              sizeof(((RLMeshImage*)0)->_reserved8) + sizeof(((RLMeshImage*)0)->crop) +
+              sizeof(((RLMeshImage*)0)->has_crop_area) + sizeof(((RLMeshImage*)0)->_reserved9) +
+              sizeof(((RLMeshImage*)0)->crop_area) + sizeof(((RLMeshImage*)0)->crop_mode) +
+              sizeof(((RLMeshImage*)0)->_reserved10) + sizeof(((RLMeshImage*)0)->crop_mode_other) +
+              sizeof(((RLMeshImage*)0)->has_jpeg_quality) +
+              sizeof(((RLMeshImage*)0)->jpeg_quality) + sizeof(((RLMeshImage*)0)->_reserved11) +
+              sizeof(((RLMeshImage*)0)->channel_order) +
+              sizeof(((RLMeshImage*)0)->channel_order_other) +
+              sizeof(((RLMeshImage*)0)->has_render) + sizeof(((RLMeshImage*)0)->_reserved12) +
+              sizeof(((RLMeshImage*)0)->render) + sizeof(((RLMeshImage*)0)->_reserved13) +
+              sizeof(((RLMeshImage*)0)->offsets) + sizeof(((RLMeshImage*)0)->offsets_len) +
+              sizeof(((RLMeshImage*)0)->stack_pad) + sizeof(((RLMeshImage*)0)->_reserved14) +
+              sizeof(((RLMeshImage*)0)->part) + sizeof(((RLMeshImage*)0)->has_stride) +
+              sizeof(((RLMeshImage*)0)->_reserved15) + sizeof(((RLMeshImage*)0)->stride),
+      "RLMeshImage must have no implicit padding");
+  _Static_assert(
+      sizeof(RLMeshState) ==
+          sizeof(((RLMeshState*)0)->struct_size) + sizeof(((RLMeshState*)0)->role) +
+              sizeof(((RLMeshState*)0)->encoding) + sizeof(((RLMeshState*)0)->encoding_len) +
+              sizeof(((RLMeshState*)0)->encoding_other) +
+              sizeof(((RLMeshState*)0)->custom_encoding) + sizeof(((RLMeshState*)0)->has_dim) +
+              sizeof(((RLMeshState*)0)->_reserved0) + sizeof(((RLMeshState*)0)->dim) +
+              sizeof(((RLMeshState*)0)->has_index) + sizeof(((RLMeshState*)0)->_reserved1) +
+              sizeof(((RLMeshState*)0)->index) + sizeof(((RLMeshState*)0)->optional) +
+              sizeof(((RLMeshState*)0)->has_range) + sizeof(((RLMeshState*)0)->_reserved2) +
+              sizeof(((RLMeshState*)0)->range) + sizeof(((RLMeshState*)0)->has_pad_to) +
+              sizeof(((RLMeshState*)0)->_reserved3) + sizeof(((RLMeshState*)0)->pad_to) +
+              sizeof(((RLMeshState*)0)->dtype) + sizeof(((RLMeshState*)0)->_reserved4) +
+              sizeof(((RLMeshState*)0)->dtype_other) + sizeof(((RLMeshState*)0)->reshape) +
+              sizeof(((RLMeshState*)0)->reshape_len) + sizeof(((RLMeshState*)0)->container) +
+              sizeof(((RLMeshState*)0)->_reserved5) + sizeof(((RLMeshState*)0)->fill) +
+              sizeof(((RLMeshState*)0)->post_rotate) + sizeof(((RLMeshState*)0)->has_scale) +
+              sizeof(((RLMeshState*)0)->_reserved6) + sizeof(((RLMeshState*)0)->scale) +
+              sizeof(((RLMeshState*)0)->axis_scale) + sizeof(((RLMeshState*)0)->axis_scale_len) +
+              sizeof(((RLMeshState*)0)->has_offset) + sizeof(((RLMeshState*)0)->_reserved7) +
+              sizeof(((RLMeshState*)0)->offset) + sizeof(((RLMeshState*)0)->axis_offset) +
+              sizeof(((RLMeshState*)0)->axis_offset_len) + sizeof(((RLMeshState*)0)->has_frame) +
+              sizeof(((RLMeshState*)0)->_reserved8) + sizeof(((RLMeshState*)0)->frame) +
+              sizeof(((RLMeshState*)0)->frame_other) + sizeof(((RLMeshState*)0)->provenance) +
+              sizeof(((RLMeshState*)0)->provenance_len) +
+              sizeof(((RLMeshState*)0)->provenance_other) + sizeof(((RLMeshState*)0)->part) +
+              sizeof(((RLMeshState*)0)->labels) + sizeof(((RLMeshState*)0)->labels_len) +
+              sizeof(((RLMeshState*)0)->source) + sizeof(((RLMeshState*)0)->has_clip) +
+              sizeof(((RLMeshState*)0)->_reserved9) + sizeof(((RLMeshState*)0)->clip),
+      "RLMeshState must have no implicit padding");
+  _Static_assert(
+      sizeof(RLMeshConcat) ==
+          sizeof(((RLMeshConcat*)0)->struct_size) + sizeof(((RLMeshConcat*)0)->parts) +
+              sizeof(((RLMeshConcat*)0)->parts_len) + sizeof(((RLMeshConcat*)0)->has_pad_to) +
+              sizeof(((RLMeshConcat*)0)->_reserved0) + sizeof(((RLMeshConcat*)0)->pad_to) +
+              sizeof(((RLMeshConcat*)0)->dtype) + sizeof(((RLMeshConcat*)0)->_reserved1) +
+              sizeof(((RLMeshConcat*)0)->dtype_other) + sizeof(((RLMeshConcat*)0)->reshape) +
+              sizeof(((RLMeshConcat*)0)->reshape_len) + sizeof(((RLMeshConcat*)0)->container) +
+              sizeof(((RLMeshConcat*)0)->has_clip) + sizeof(((RLMeshConcat*)0)->_reserved2) +
+              sizeof(((RLMeshConcat*)0)->clip),
+      "RLMeshConcat must have no implicit padding");
+  _Static_assert(sizeof(RLMeshConstant) == sizeof(((RLMeshConstant*)0)->struct_size) +
+                                               sizeof(((RLMeshConstant*)0)->dim) +
+                                               sizeof(((RLMeshConstant*)0)->_reserved0) +
+                                               sizeof(((RLMeshConstant*)0)->fill),
+                 "RLMeshConstant must have no implicit padding");
+  _Static_assert(sizeof(RLMeshAdaptersText) == sizeof(((RLMeshAdaptersText*)0)->struct_size) +
+                                                   sizeof(((RLMeshAdaptersText*)0)->role) +
+                                                   sizeof(((RLMeshAdaptersText*)0)->container) +
+                                                   sizeof(((RLMeshAdaptersText*)0)->has_fill) +
+                                                   sizeof(((RLMeshAdaptersText*)0)->_reserved0) +
+                                                   sizeof(((RLMeshAdaptersText*)0)->fill),
+                 "RLMeshAdaptersText must have no implicit padding");
+  _Static_assert(sizeof(RLMeshCustom) == sizeof(((RLMeshCustom*)0)->struct_size) +
+                                             sizeof(((RLMeshCustom*)0)->transform) +
+                                             sizeof(((RLMeshCustom*)0)->entrypoint),
+                 "RLMeshCustom must have no implicit padding");
   CHECK(
       sizeof(RLMeshActuator) ==
       sizeof(((RLMeshActuator*)0)->struct_size) + sizeof(((RLMeshActuator*)0)->role) +
@@ -477,228 +610,286 @@ static void layouts(void) {
           sizeof(((RLMeshActuator*)0)->offset) + sizeof(((RLMeshActuator*)0)->axis_offset) +
           sizeof(((RLMeshActuator*)0)->axis_offset_len) + sizeof(((RLMeshActuator*)0)->labels) +
           sizeof(((RLMeshActuator*)0)->labels_len));
-  CHECK(sizeof(RLMeshAction) ==
-        sizeof(((RLMeshAction*)0)->struct_size) + sizeof(((RLMeshAction*)0)->components) +
-            sizeof(((RLMeshAction*)0)->components_len) + sizeof(((RLMeshAction*)0)->has_clip) +
-            sizeof(((RLMeshAction*)0)->_reserved0) + sizeof(((RLMeshAction*)0)->clip));
-  CHECK(sizeof(RLMeshImageTag) ==
-        sizeof(((RLMeshImageTag*)0)->struct_size) + sizeof(((RLMeshImageTag*)0)->role) +
-            sizeof(((RLMeshImageTag*)0)->layout) + sizeof(((RLMeshImageTag*)0)->upside_down) +
-            sizeof(((RLMeshImageTag*)0)->_reserved0) + sizeof(((RLMeshImageTag*)0)->part));
-  CHECK(sizeof(RLMeshStateTag) ==
-        sizeof(((RLMeshStateTag*)0)->struct_size) + sizeof(((RLMeshStateTag*)0)->role) +
-            sizeof(((RLMeshStateTag*)0)->encoding) + sizeof(((RLMeshStateTag*)0)->encoding_len) +
-            sizeof(((RLMeshStateTag*)0)->encoding_other) + sizeof(((RLMeshStateTag*)0)->has_range) +
-            sizeof(((RLMeshStateTag*)0)->_reserved0) + sizeof(((RLMeshStateTag*)0)->range) +
-            sizeof(((RLMeshStateTag*)0)->has_frame) + sizeof(((RLMeshStateTag*)0)->_reserved1) +
-            sizeof(((RLMeshStateTag*)0)->frame) + sizeof(((RLMeshStateTag*)0)->frame_other) +
-            sizeof(((RLMeshStateTag*)0)->has_provenance) +
-            sizeof(((RLMeshStateTag*)0)->_reserved2) + sizeof(((RLMeshStateTag*)0)->provenance) +
-            sizeof(((RLMeshStateTag*)0)->provenance_other) + sizeof(((RLMeshStateTag*)0)->part) +
-            sizeof(((RLMeshStateTag*)0)->labels) + sizeof(((RLMeshStateTag*)0)->labels_len));
-  CHECK(sizeof(RLMeshTextTag) ==
-        sizeof(((RLMeshTextTag*)0)->struct_size) + sizeof(((RLMeshTextTag*)0)->role));
-  CHECK(sizeof(RLMeshField) ==
-        sizeof(((RLMeshField*)0)->struct_size) + sizeof(((RLMeshField*)0)->role) +
-            sizeof(((RLMeshField*)0)->dim) + sizeof(((RLMeshField*)0)->_reserved0) +
-            sizeof(((RLMeshField*)0)->encoding) + sizeof(((RLMeshField*)0)->encoding_len) +
-            sizeof(((RLMeshField*)0)->encoding_other) + sizeof(((RLMeshField*)0)->has_range) +
-            sizeof(((RLMeshField*)0)->_reserved1) + sizeof(((RLMeshField*)0)->range) +
-            sizeof(((RLMeshField*)0)->has_frame) + sizeof(((RLMeshField*)0)->_reserved2) +
-            sizeof(((RLMeshField*)0)->frame) + sizeof(((RLMeshField*)0)->frame_other) +
-            sizeof(((RLMeshField*)0)->has_provenance) + sizeof(((RLMeshField*)0)->_reserved3) +
-            sizeof(((RLMeshField*)0)->provenance) + sizeof(((RLMeshField*)0)->provenance_other) +
-            sizeof(((RLMeshField*)0)->part) + sizeof(((RLMeshField*)0)->labels) +
-            sizeof(((RLMeshField*)0)->labels_len));
-  CHECK(sizeof(RLMeshSplit) == sizeof(((RLMeshSplit*)0)->struct_size) +
-                                   sizeof(((RLMeshSplit*)0)->fields) +
-                                   sizeof(((RLMeshSplit*)0)->fields_len));
-  CHECK(sizeof(RLMeshPreviousOptions) == sizeof(((RLMeshPreviousOptions*)0)->struct_size) +
-                                             sizeof(((RLMeshPreviousOptions*)0)->part) +
-                                             sizeof(((RLMeshPreviousOptions*)0)->fill));
-  CHECK(sizeof(RLMeshObservationRoles) == sizeof(((RLMeshObservationRoles*)0)->struct_size) +
-                                              sizeof(((RLMeshObservationRoles*)0)->images) +
-                                              sizeof(((RLMeshObservationRoles*)0)->images_len) +
-                                              sizeof(((RLMeshObservationRoles*)0)->states) +
-                                              sizeof(((RLMeshObservationRoles*)0)->states_len) +
-                                              sizeof(((RLMeshObservationRoles*)0)->texts) +
-                                              sizeof(((RLMeshObservationRoles*)0)->texts_len));
-  CHECK(sizeof(RLMeshAdvisory) ==
-        sizeof(((RLMeshAdvisory*)0)->struct_size) + sizeof(((RLMeshAdvisory*)0)->severity) +
-            sizeof(((RLMeshAdvisory*)0)->_reserved) + sizeof(((RLMeshAdvisory*)0)->message));
-  CHECK(sizeof(RLMeshTagOptions) == sizeof(((RLMeshTagOptions*)0)->struct_size) +
-                                        sizeof(((RLMeshTagOptions*)0)->validate) +
-                                        sizeof(((RLMeshTagOptions*)0)->_reserved0) +
-                                        sizeof(((RLMeshTagOptions*)0)->_reserved1) +
-                                        sizeof(((RLMeshTagOptions*)0)->_reserved2));
-  CHECK(sizeof(RLMeshResolveOptions) == sizeof(((RLMeshResolveOptions*)0)->struct_size) +
-                                            sizeof(((RLMeshResolveOptions*)0)->trust_entrypoints) +
-                                            sizeof(((RLMeshResolveOptions*)0)->check_inverse) +
-                                            sizeof(((RLMeshResolveOptions*)0)->_reserved0) +
-                                            sizeof(((RLMeshResolveOptions*)0)->_reserved1));
+  _Static_assert(
+      sizeof(RLMeshAction) ==
+          sizeof(((RLMeshAction*)0)->struct_size) + sizeof(((RLMeshAction*)0)->components) +
+              sizeof(((RLMeshAction*)0)->components_len) + sizeof(((RLMeshAction*)0)->has_clip) +
+              sizeof(((RLMeshAction*)0)->_reserved0) + sizeof(((RLMeshAction*)0)->clip),
+      "RLMeshAction must have no implicit padding");
+  _Static_assert(
+      sizeof(RLMeshImageTag) ==
+          sizeof(((RLMeshImageTag*)0)->struct_size) + sizeof(((RLMeshImageTag*)0)->role) +
+              sizeof(((RLMeshImageTag*)0)->layout) + sizeof(((RLMeshImageTag*)0)->upside_down) +
+              sizeof(((RLMeshImageTag*)0)->_reserved0) + sizeof(((RLMeshImageTag*)0)->part),
+      "RLMeshImageTag must have no implicit padding");
+  _Static_assert(
+      sizeof(RLMeshStateTag) ==
+          sizeof(((RLMeshStateTag*)0)->struct_size) + sizeof(((RLMeshStateTag*)0)->role) +
+              sizeof(((RLMeshStateTag*)0)->encoding) + sizeof(((RLMeshStateTag*)0)->encoding_len) +
+              sizeof(((RLMeshStateTag*)0)->encoding_other) +
+              sizeof(((RLMeshStateTag*)0)->has_range) + sizeof(((RLMeshStateTag*)0)->_reserved0) +
+              sizeof(((RLMeshStateTag*)0)->range) + sizeof(((RLMeshStateTag*)0)->has_frame) +
+              sizeof(((RLMeshStateTag*)0)->_reserved1) + sizeof(((RLMeshStateTag*)0)->frame) +
+              sizeof(((RLMeshStateTag*)0)->frame_other) +
+              sizeof(((RLMeshStateTag*)0)->has_provenance) +
+              sizeof(((RLMeshStateTag*)0)->_reserved2) + sizeof(((RLMeshStateTag*)0)->provenance) +
+              sizeof(((RLMeshStateTag*)0)->provenance_other) + sizeof(((RLMeshStateTag*)0)->part) +
+              sizeof(((RLMeshStateTag*)0)->labels) + sizeof(((RLMeshStateTag*)0)->labels_len),
+      "RLMeshStateTag must have no implicit padding");
+  _Static_assert(sizeof(RLMeshTextTag) ==
+                     sizeof(((RLMeshTextTag*)0)->struct_size) + sizeof(((RLMeshTextTag*)0)->role),
+                 "RLMeshTextTag must have no implicit padding");
+  _Static_assert(
+      sizeof(RLMeshField) ==
+          sizeof(((RLMeshField*)0)->struct_size) + sizeof(((RLMeshField*)0)->role) +
+              sizeof(((RLMeshField*)0)->dim) + sizeof(((RLMeshField*)0)->_reserved0) +
+              sizeof(((RLMeshField*)0)->encoding) + sizeof(((RLMeshField*)0)->encoding_len) +
+              sizeof(((RLMeshField*)0)->encoding_other) + sizeof(((RLMeshField*)0)->has_range) +
+              sizeof(((RLMeshField*)0)->_reserved1) + sizeof(((RLMeshField*)0)->range) +
+              sizeof(((RLMeshField*)0)->has_frame) + sizeof(((RLMeshField*)0)->_reserved2) +
+              sizeof(((RLMeshField*)0)->frame) + sizeof(((RLMeshField*)0)->frame_other) +
+              sizeof(((RLMeshField*)0)->has_provenance) + sizeof(((RLMeshField*)0)->_reserved3) +
+              sizeof(((RLMeshField*)0)->provenance) + sizeof(((RLMeshField*)0)->provenance_other) +
+              sizeof(((RLMeshField*)0)->part) + sizeof(((RLMeshField*)0)->labels) +
+              sizeof(((RLMeshField*)0)->labels_len),
+      "RLMeshField must have no implicit padding");
+  _Static_assert(sizeof(RLMeshSplit) == sizeof(((RLMeshSplit*)0)->struct_size) +
+                                            sizeof(((RLMeshSplit*)0)->fields) +
+                                            sizeof(((RLMeshSplit*)0)->fields_len),
+                 "RLMeshSplit must have no implicit padding");
+  _Static_assert(sizeof(RLMeshPreviousOptions) == sizeof(((RLMeshPreviousOptions*)0)->struct_size) +
+                                                      sizeof(((RLMeshPreviousOptions*)0)->part) +
+                                                      sizeof(((RLMeshPreviousOptions*)0)->fill),
+                 "RLMeshPreviousOptions must have no implicit padding");
+  _Static_assert(
+      sizeof(RLMeshObservationRoles) == sizeof(((RLMeshObservationRoles*)0)->struct_size) +
+                                            sizeof(((RLMeshObservationRoles*)0)->images) +
+                                            sizeof(((RLMeshObservationRoles*)0)->images_len) +
+                                            sizeof(((RLMeshObservationRoles*)0)->states) +
+                                            sizeof(((RLMeshObservationRoles*)0)->states_len) +
+                                            sizeof(((RLMeshObservationRoles*)0)->texts) +
+                                            sizeof(((RLMeshObservationRoles*)0)->texts_len),
+      "RLMeshObservationRoles must have no implicit padding");
+  _Static_assert(sizeof(RLMeshAdvisory) == sizeof(((RLMeshAdvisory*)0)->struct_size) +
+                                               sizeof(((RLMeshAdvisory*)0)->severity) +
+                                               sizeof(((RLMeshAdvisory*)0)->_reserved) +
+                                               sizeof(((RLMeshAdvisory*)0)->message),
+                 "RLMeshAdvisory must have no implicit padding");
+  _Static_assert(sizeof(RLMeshTagOptions) == sizeof(((RLMeshTagOptions*)0)->struct_size) +
+                                                 sizeof(((RLMeshTagOptions*)0)->validate) +
+                                                 sizeof(((RLMeshTagOptions*)0)->_reserved0) +
+                                                 sizeof(((RLMeshTagOptions*)0)->_reserved1) +
+                                                 sizeof(((RLMeshTagOptions*)0)->_reserved2),
+                 "RLMeshTagOptions must have no implicit padding");
+  _Static_assert(
+      sizeof(RLMeshResolveOptions) == sizeof(((RLMeshResolveOptions*)0)->struct_size) +
+                                          sizeof(((RLMeshResolveOptions*)0)->trust_entrypoints) +
+                                          sizeof(((RLMeshResolveOptions*)0)->check_inverse) +
+                                          sizeof(((RLMeshResolveOptions*)0)->_reserved0) +
+                                          sizeof(((RLMeshResolveOptions*)0)->_reserved1),
+      "RLMeshResolveOptions must have no implicit padding");
 #else
-  CHECK(sizeof(RLMeshRotation) ==
-        sizeof(((RLMeshRotation*)0)->struct_size) + sizeof(((RLMeshRotation*)0)->encoding) +
-            sizeof(((RLMeshRotation*)0)->_reserved) + sizeof(((RLMeshRotation*)0)->value) +
-            sizeof(((RLMeshRotation*)0)->value_len));
-  CHECK(sizeof(RLMeshCustomEncoding) ==
-        sizeof(((RLMeshCustomEncoding*)0)->struct_size) + sizeof(((RLMeshCustomEncoding*)0)->base) +
-            sizeof(((RLMeshCustomEncoding*)0)->from_base) +
-            sizeof(((RLMeshCustomEncoding*)0)->to_base) + sizeof(((RLMeshCustomEncoding*)0)->name));
-  CHECK(sizeof(RLMeshImage) ==
-        sizeof(((RLMeshImage*)0)->struct_size) + sizeof(((RLMeshImage*)0)->role) +
-            sizeof(((RLMeshImage*)0)->has_height) + sizeof(((RLMeshImage*)0)->_reserved0) +
-            sizeof(((RLMeshImage*)0)->height) + sizeof(((RLMeshImage*)0)->has_width) +
-            sizeof(((RLMeshImage*)0)->_reserved1) + sizeof(((RLMeshImage*)0)->width) +
-            sizeof(((RLMeshImage*)0)->layout) + sizeof(((RLMeshImage*)0)->has_channels) +
-            sizeof(((RLMeshImage*)0)->_reserved2) + sizeof(((RLMeshImage*)0)->channels) +
-            sizeof(((RLMeshImage*)0)->dtype) + sizeof(((RLMeshImage*)0)->dtype_other) +
-            sizeof(((RLMeshImage*)0)->normalize) + sizeof(((RLMeshImage*)0)->normalize_range) +
-            sizeof(((RLMeshImage*)0)->lead_dims) + sizeof(((RLMeshImage*)0)->upside_down) +
-            sizeof(((RLMeshImage*)0)->_reserved3) + sizeof(((RLMeshImage*)0)->resample) +
-            sizeof(((RLMeshImage*)0)->resample_other) + sizeof(((RLMeshImage*)0)->allow_upscale) +
-            sizeof(((RLMeshImage*)0)->_reserved4) + sizeof(((RLMeshImage*)0)->fit) +
-            sizeof(((RLMeshImage*)0)->fit_len) + sizeof(((RLMeshImage*)0)->fit_other) +
-            sizeof(((RLMeshImage*)0)->optional) + sizeof(((RLMeshImage*)0)->has_fill) +
-            sizeof(((RLMeshImage*)0)->fill) + sizeof(((RLMeshImage*)0)->_reserved5) +
-            sizeof(((RLMeshImage*)0)->stack) + sizeof(((RLMeshImage*)0)->has_crop) +
-            sizeof(((RLMeshImage*)0)->_reserved6) + sizeof(((RLMeshImage*)0)->crop) +
-            sizeof(((RLMeshImage*)0)->has_crop_area) + sizeof(((RLMeshImage*)0)->_reserved7) +
-            sizeof(((RLMeshImage*)0)->crop_area) + sizeof(((RLMeshImage*)0)->crop_mode) +
-            sizeof(((RLMeshImage*)0)->crop_mode_other) +
-            sizeof(((RLMeshImage*)0)->has_jpeg_quality) + sizeof(((RLMeshImage*)0)->jpeg_quality) +
-            sizeof(((RLMeshImage*)0)->_reserved8) + sizeof(((RLMeshImage*)0)->channel_order) +
-            sizeof(((RLMeshImage*)0)->channel_order_other) + sizeof(((RLMeshImage*)0)->has_render) +
-            sizeof(((RLMeshImage*)0)->_reserved9) + sizeof(((RLMeshImage*)0)->render) +
-            sizeof(((RLMeshImage*)0)->offsets) + sizeof(((RLMeshImage*)0)->offsets_len) +
-            sizeof(((RLMeshImage*)0)->stack_pad) + sizeof(((RLMeshImage*)0)->part) +
-            sizeof(((RLMeshImage*)0)->has_stride) + sizeof(((RLMeshImage*)0)->_reserved10) +
-            sizeof(((RLMeshImage*)0)->stride));
-  CHECK(sizeof(RLMeshState) ==
-        sizeof(((RLMeshState*)0)->struct_size) + sizeof(((RLMeshState*)0)->role) +
-            sizeof(((RLMeshState*)0)->encoding) + sizeof(((RLMeshState*)0)->encoding_len) +
-            sizeof(((RLMeshState*)0)->encoding_other) + sizeof(((RLMeshState*)0)->custom_encoding) +
-            sizeof(((RLMeshState*)0)->has_dim) + sizeof(((RLMeshState*)0)->_reserved0) +
-            sizeof(((RLMeshState*)0)->dim) + sizeof(((RLMeshState*)0)->has_index) +
-            sizeof(((RLMeshState*)0)->_reserved1) + sizeof(((RLMeshState*)0)->index) +
-            sizeof(((RLMeshState*)0)->optional) + sizeof(((RLMeshState*)0)->has_range) +
-            sizeof(((RLMeshState*)0)->_reserved2) + sizeof(((RLMeshState*)0)->range) +
-            sizeof(((RLMeshState*)0)->has_pad_to) + sizeof(((RLMeshState*)0)->_reserved3) +
-            sizeof(((RLMeshState*)0)->pad_to) + sizeof(((RLMeshState*)0)->dtype) +
-            sizeof(((RLMeshState*)0)->dtype_other) + sizeof(((RLMeshState*)0)->reshape) +
-            sizeof(((RLMeshState*)0)->reshape_len) + sizeof(((RLMeshState*)0)->container) +
-            sizeof(((RLMeshState*)0)->fill) + sizeof(((RLMeshState*)0)->post_rotate) +
-            sizeof(((RLMeshState*)0)->has_scale) + sizeof(((RLMeshState*)0)->_reserved4) +
-            sizeof(((RLMeshState*)0)->scale) + sizeof(((RLMeshState*)0)->axis_scale) +
-            sizeof(((RLMeshState*)0)->axis_scale_len) + sizeof(((RLMeshState*)0)->has_offset) +
-            sizeof(((RLMeshState*)0)->_reserved5) + sizeof(((RLMeshState*)0)->offset) +
-            sizeof(((RLMeshState*)0)->axis_offset) + sizeof(((RLMeshState*)0)->axis_offset_len) +
-            sizeof(((RLMeshState*)0)->has_frame) + sizeof(((RLMeshState*)0)->_reserved6) +
-            sizeof(((RLMeshState*)0)->frame) + sizeof(((RLMeshState*)0)->frame_other) +
-            sizeof(((RLMeshState*)0)->provenance) + sizeof(((RLMeshState*)0)->provenance_len) +
-            sizeof(((RLMeshState*)0)->provenance_other) + sizeof(((RLMeshState*)0)->part) +
-            sizeof(((RLMeshState*)0)->labels) + sizeof(((RLMeshState*)0)->labels_len) +
-            sizeof(((RLMeshState*)0)->source) + sizeof(((RLMeshState*)0)->has_clip) +
-            sizeof(((RLMeshState*)0)->_reserved7) + sizeof(((RLMeshState*)0)->clip));
-  CHECK(sizeof(RLMeshConcat) ==
-        sizeof(((RLMeshConcat*)0)->struct_size) + sizeof(((RLMeshConcat*)0)->parts) +
-            sizeof(((RLMeshConcat*)0)->parts_len) + sizeof(((RLMeshConcat*)0)->has_pad_to) +
-            sizeof(((RLMeshConcat*)0)->_reserved0) + sizeof(((RLMeshConcat*)0)->pad_to) +
-            sizeof(((RLMeshConcat*)0)->dtype) + sizeof(((RLMeshConcat*)0)->dtype_other) +
-            sizeof(((RLMeshConcat*)0)->reshape) + sizeof(((RLMeshConcat*)0)->reshape_len) +
-            sizeof(((RLMeshConcat*)0)->container) + sizeof(((RLMeshConcat*)0)->has_clip) +
-            sizeof(((RLMeshConcat*)0)->_reserved1) + sizeof(((RLMeshConcat*)0)->clip));
-  CHECK(sizeof(RLMeshConstant) == sizeof(((RLMeshConstant*)0)->struct_size) +
-                                      sizeof(((RLMeshConstant*)0)->dim) +
-                                      sizeof(((RLMeshConstant*)0)->fill));
-  CHECK(sizeof(RLMeshAdaptersText) ==
-        sizeof(((RLMeshAdaptersText*)0)->struct_size) + sizeof(((RLMeshAdaptersText*)0)->role) +
-            sizeof(((RLMeshAdaptersText*)0)->container) +
-            sizeof(((RLMeshAdaptersText*)0)->has_fill) +
-            sizeof(((RLMeshAdaptersText*)0)->_reserved0) + sizeof(((RLMeshAdaptersText*)0)->fill));
-  CHECK(sizeof(RLMeshCustom) == sizeof(((RLMeshCustom*)0)->struct_size) +
-                                    sizeof(((RLMeshCustom*)0)->transform) +
-                                    sizeof(((RLMeshCustom*)0)->entrypoint));
-  CHECK(sizeof(RLMeshActuator) ==
-        sizeof(((RLMeshActuator*)0)->struct_size) + sizeof(((RLMeshActuator*)0)->role) +
-            sizeof(((RLMeshActuator*)0)->dim) + sizeof(((RLMeshActuator*)0)->has_encoding) +
-            sizeof(((RLMeshActuator*)0)->_reserved0) + sizeof(((RLMeshActuator*)0)->encoding) +
-            sizeof(((RLMeshActuator*)0)->custom_encoding) +
-            sizeof(((RLMeshActuator*)0)->has_range) + sizeof(((RLMeshActuator*)0)->_reserved1) +
-            sizeof(((RLMeshActuator*)0)->range) + sizeof(((RLMeshActuator*)0)->binary) +
-            sizeof(((RLMeshActuator*)0)->has_scale) + sizeof(((RLMeshActuator*)0)->_reserved2) +
-            sizeof(((RLMeshActuator*)0)->scale) + sizeof(((RLMeshActuator*)0)->axis_scale) +
-            sizeof(((RLMeshActuator*)0)->axis_scale_len) + sizeof(((RLMeshActuator*)0)->invert) +
-            sizeof(((RLMeshActuator*)0)->has_threshold) + sizeof(((RLMeshActuator*)0)->_reserved3) +
-            sizeof(((RLMeshActuator*)0)->threshold) + sizeof(((RLMeshActuator*)0)->clip) +
-            sizeof(((RLMeshActuator*)0)->_reserved4) + sizeof(((RLMeshActuator*)0)->fill) +
-            sizeof(((RLMeshActuator*)0)->optional) + sizeof(((RLMeshActuator*)0)->has_frame) +
-            sizeof(((RLMeshActuator*)0)->_reserved5) + sizeof(((RLMeshActuator*)0)->frame) +
-            sizeof(((RLMeshActuator*)0)->frame_other) +
-            sizeof(((RLMeshActuator*)0)->has_reference) + sizeof(((RLMeshActuator*)0)->_reserved6) +
-            sizeof(((RLMeshActuator*)0)->reference) +
-            sizeof(((RLMeshActuator*)0)->reference_other) + sizeof(((RLMeshActuator*)0)->part) +
-            sizeof(((RLMeshActuator*)0)->has_offset) + sizeof(((RLMeshActuator*)0)->_reserved7) +
-            sizeof(((RLMeshActuator*)0)->offset) + sizeof(((RLMeshActuator*)0)->axis_offset) +
-            sizeof(((RLMeshActuator*)0)->axis_offset_len) + sizeof(((RLMeshActuator*)0)->labels) +
-            sizeof(((RLMeshActuator*)0)->labels_len));
-  CHECK(sizeof(RLMeshAction) ==
-        sizeof(((RLMeshAction*)0)->struct_size) + sizeof(((RLMeshAction*)0)->components) +
-            sizeof(((RLMeshAction*)0)->components_len) + sizeof(((RLMeshAction*)0)->has_clip) +
-            sizeof(((RLMeshAction*)0)->_reserved0) + sizeof(((RLMeshAction*)0)->clip));
-  CHECK(sizeof(RLMeshImageTag) ==
-        sizeof(((RLMeshImageTag*)0)->struct_size) + sizeof(((RLMeshImageTag*)0)->role) +
-            sizeof(((RLMeshImageTag*)0)->layout) + sizeof(((RLMeshImageTag*)0)->upside_down) +
-            sizeof(((RLMeshImageTag*)0)->_reserved0) + sizeof(((RLMeshImageTag*)0)->part));
-  CHECK(sizeof(RLMeshStateTag) ==
-        sizeof(((RLMeshStateTag*)0)->struct_size) + sizeof(((RLMeshStateTag*)0)->role) +
-            sizeof(((RLMeshStateTag*)0)->encoding) + sizeof(((RLMeshStateTag*)0)->encoding_len) +
-            sizeof(((RLMeshStateTag*)0)->encoding_other) + sizeof(((RLMeshStateTag*)0)->has_range) +
-            sizeof(((RLMeshStateTag*)0)->_reserved0) + sizeof(((RLMeshStateTag*)0)->range) +
-            sizeof(((RLMeshStateTag*)0)->has_frame) + sizeof(((RLMeshStateTag*)0)->_reserved1) +
-            sizeof(((RLMeshStateTag*)0)->frame) + sizeof(((RLMeshStateTag*)0)->frame_other) +
-            sizeof(((RLMeshStateTag*)0)->has_provenance) +
-            sizeof(((RLMeshStateTag*)0)->_reserved2) + sizeof(((RLMeshStateTag*)0)->provenance) +
-            sizeof(((RLMeshStateTag*)0)->provenance_other) + sizeof(((RLMeshStateTag*)0)->part) +
-            sizeof(((RLMeshStateTag*)0)->labels) + sizeof(((RLMeshStateTag*)0)->labels_len));
-  CHECK(sizeof(RLMeshTextTag) ==
-        sizeof(((RLMeshTextTag*)0)->struct_size) + sizeof(((RLMeshTextTag*)0)->role));
-  CHECK(sizeof(RLMeshField) ==
-        sizeof(((RLMeshField*)0)->struct_size) + sizeof(((RLMeshField*)0)->role) +
-            sizeof(((RLMeshField*)0)->dim) + sizeof(((RLMeshField*)0)->encoding) +
-            sizeof(((RLMeshField*)0)->encoding_len) + sizeof(((RLMeshField*)0)->encoding_other) +
-            sizeof(((RLMeshField*)0)->has_range) + sizeof(((RLMeshField*)0)->_reserved0) +
-            sizeof(((RLMeshField*)0)->range) + sizeof(((RLMeshField*)0)->has_frame) +
-            sizeof(((RLMeshField*)0)->_reserved1) + sizeof(((RLMeshField*)0)->frame) +
-            sizeof(((RLMeshField*)0)->frame_other) + sizeof(((RLMeshField*)0)->has_provenance) +
-            sizeof(((RLMeshField*)0)->_reserved2) + sizeof(((RLMeshField*)0)->provenance) +
-            sizeof(((RLMeshField*)0)->provenance_other) + sizeof(((RLMeshField*)0)->part) +
-            sizeof(((RLMeshField*)0)->labels) + sizeof(((RLMeshField*)0)->labels_len));
-  CHECK(sizeof(RLMeshSplit) == sizeof(((RLMeshSplit*)0)->struct_size) +
-                                   sizeof(((RLMeshSplit*)0)->fields) +
-                                   sizeof(((RLMeshSplit*)0)->fields_len));
-  CHECK(sizeof(RLMeshPreviousOptions) == sizeof(((RLMeshPreviousOptions*)0)->struct_size) +
-                                             sizeof(((RLMeshPreviousOptions*)0)->part) +
-                                             sizeof(((RLMeshPreviousOptions*)0)->fill));
-  CHECK(sizeof(RLMeshObservationRoles) == sizeof(((RLMeshObservationRoles*)0)->struct_size) +
-                                              sizeof(((RLMeshObservationRoles*)0)->images) +
-                                              sizeof(((RLMeshObservationRoles*)0)->images_len) +
-                                              sizeof(((RLMeshObservationRoles*)0)->states) +
-                                              sizeof(((RLMeshObservationRoles*)0)->states_len) +
-                                              sizeof(((RLMeshObservationRoles*)0)->texts) +
-                                              sizeof(((RLMeshObservationRoles*)0)->texts_len));
-  CHECK(sizeof(RLMeshAdvisory) ==
-        sizeof(((RLMeshAdvisory*)0)->struct_size) + sizeof(((RLMeshAdvisory*)0)->severity) +
-            sizeof(((RLMeshAdvisory*)0)->_reserved) + sizeof(((RLMeshAdvisory*)0)->message));
-  CHECK(sizeof(RLMeshTagOptions) == sizeof(((RLMeshTagOptions*)0)->struct_size) +
-                                        sizeof(((RLMeshTagOptions*)0)->validate) +
-                                        sizeof(((RLMeshTagOptions*)0)->_reserved0) +
-                                        sizeof(((RLMeshTagOptions*)0)->_reserved1) +
-                                        sizeof(((RLMeshTagOptions*)0)->_reserved2));
-  CHECK(sizeof(RLMeshResolveOptions) == sizeof(((RLMeshResolveOptions*)0)->struct_size) +
-                                            sizeof(((RLMeshResolveOptions*)0)->trust_entrypoints) +
-                                            sizeof(((RLMeshResolveOptions*)0)->check_inverse) +
-                                            sizeof(((RLMeshResolveOptions*)0)->_reserved0) +
-                                            sizeof(((RLMeshResolveOptions*)0)->_reserved1));
+  _Static_assert(sizeof(RLMeshRotation) == sizeof(((RLMeshRotation*)0)->struct_size) +
+                                               sizeof(((RLMeshRotation*)0)->encoding) +
+                                               sizeof(((RLMeshRotation*)0)->_reserved) +
+                                               sizeof(((RLMeshRotation*)0)->value) +
+                                               sizeof(((RLMeshRotation*)0)->value_len),
+                 "RLMeshRotation must have no implicit padding");
+  _Static_assert(sizeof(RLMeshCustomEncoding) == sizeof(((RLMeshCustomEncoding*)0)->struct_size) +
+                                                     sizeof(((RLMeshCustomEncoding*)0)->base) +
+                                                     sizeof(((RLMeshCustomEncoding*)0)->from_base) +
+                                                     sizeof(((RLMeshCustomEncoding*)0)->to_base) +
+                                                     sizeof(((RLMeshCustomEncoding*)0)->name),
+                 "RLMeshCustomEncoding must have no implicit padding");
+  _Static_assert(
+      sizeof(RLMeshImage) ==
+          sizeof(((RLMeshImage*)0)->struct_size) + sizeof(((RLMeshImage*)0)->role) +
+              sizeof(((RLMeshImage*)0)->has_height) + sizeof(((RLMeshImage*)0)->_reserved0) +
+              sizeof(((RLMeshImage*)0)->height) + sizeof(((RLMeshImage*)0)->has_width) +
+              sizeof(((RLMeshImage*)0)->_reserved1) + sizeof(((RLMeshImage*)0)->width) +
+              sizeof(((RLMeshImage*)0)->layout) + sizeof(((RLMeshImage*)0)->has_channels) +
+              sizeof(((RLMeshImage*)0)->_reserved2) + sizeof(((RLMeshImage*)0)->channels) +
+              sizeof(((RLMeshImage*)0)->dtype) + sizeof(((RLMeshImage*)0)->dtype_other) +
+              sizeof(((RLMeshImage*)0)->normalize) + sizeof(((RLMeshImage*)0)->normalize_range) +
+              sizeof(((RLMeshImage*)0)->lead_dims) + sizeof(((RLMeshImage*)0)->upside_down) +
+              sizeof(((RLMeshImage*)0)->_reserved3) + sizeof(((RLMeshImage*)0)->resample) +
+              sizeof(((RLMeshImage*)0)->resample_other) + sizeof(((RLMeshImage*)0)->allow_upscale) +
+              sizeof(((RLMeshImage*)0)->_reserved4) + sizeof(((RLMeshImage*)0)->fit) +
+              sizeof(((RLMeshImage*)0)->fit_len) + sizeof(((RLMeshImage*)0)->fit_other) +
+              sizeof(((RLMeshImage*)0)->optional) + sizeof(((RLMeshImage*)0)->has_fill) +
+              sizeof(((RLMeshImage*)0)->fill) + sizeof(((RLMeshImage*)0)->_reserved5) +
+              sizeof(((RLMeshImage*)0)->stack) + sizeof(((RLMeshImage*)0)->has_crop) +
+              sizeof(((RLMeshImage*)0)->_reserved6) + sizeof(((RLMeshImage*)0)->crop) +
+              sizeof(((RLMeshImage*)0)->has_crop_area) + sizeof(((RLMeshImage*)0)->_reserved7) +
+              sizeof(((RLMeshImage*)0)->crop_area) + sizeof(((RLMeshImage*)0)->crop_mode) +
+              sizeof(((RLMeshImage*)0)->crop_mode_other) +
+              sizeof(((RLMeshImage*)0)->has_jpeg_quality) +
+              sizeof(((RLMeshImage*)0)->jpeg_quality) + sizeof(((RLMeshImage*)0)->_reserved8) +
+              sizeof(((RLMeshImage*)0)->channel_order) +
+              sizeof(((RLMeshImage*)0)->channel_order_other) +
+              sizeof(((RLMeshImage*)0)->has_render) + sizeof(((RLMeshImage*)0)->_reserved9) +
+              sizeof(((RLMeshImage*)0)->render) + sizeof(((RLMeshImage*)0)->offsets) +
+              sizeof(((RLMeshImage*)0)->offsets_len) + sizeof(((RLMeshImage*)0)->stack_pad) +
+              sizeof(((RLMeshImage*)0)->part) + sizeof(((RLMeshImage*)0)->has_stride) +
+              sizeof(((RLMeshImage*)0)->_reserved10) + sizeof(((RLMeshImage*)0)->stride),
+      "RLMeshImage must have no implicit padding");
+  _Static_assert(
+      sizeof(RLMeshState) ==
+          sizeof(((RLMeshState*)0)->struct_size) + sizeof(((RLMeshState*)0)->role) +
+              sizeof(((RLMeshState*)0)->encoding) + sizeof(((RLMeshState*)0)->encoding_len) +
+              sizeof(((RLMeshState*)0)->encoding_other) +
+              sizeof(((RLMeshState*)0)->custom_encoding) + sizeof(((RLMeshState*)0)->has_dim) +
+              sizeof(((RLMeshState*)0)->_reserved0) + sizeof(((RLMeshState*)0)->dim) +
+              sizeof(((RLMeshState*)0)->has_index) + sizeof(((RLMeshState*)0)->_reserved1) +
+              sizeof(((RLMeshState*)0)->index) + sizeof(((RLMeshState*)0)->optional) +
+              sizeof(((RLMeshState*)0)->has_range) + sizeof(((RLMeshState*)0)->_reserved2) +
+              sizeof(((RLMeshState*)0)->range) + sizeof(((RLMeshState*)0)->has_pad_to) +
+              sizeof(((RLMeshState*)0)->_reserved3) + sizeof(((RLMeshState*)0)->pad_to) +
+              sizeof(((RLMeshState*)0)->dtype) + sizeof(((RLMeshState*)0)->dtype_other) +
+              sizeof(((RLMeshState*)0)->reshape) + sizeof(((RLMeshState*)0)->reshape_len) +
+              sizeof(((RLMeshState*)0)->container) + sizeof(((RLMeshState*)0)->_reserved4) +
+              sizeof(((RLMeshState*)0)->fill) + sizeof(((RLMeshState*)0)->post_rotate) +
+              sizeof(((RLMeshState*)0)->has_scale) + sizeof(((RLMeshState*)0)->_reserved5) +
+              sizeof(((RLMeshState*)0)->scale) + sizeof(((RLMeshState*)0)->axis_scale) +
+              sizeof(((RLMeshState*)0)->axis_scale_len) + sizeof(((RLMeshState*)0)->has_offset) +
+              sizeof(((RLMeshState*)0)->_reserved6) + sizeof(((RLMeshState*)0)->offset) +
+              sizeof(((RLMeshState*)0)->axis_offset) + sizeof(((RLMeshState*)0)->axis_offset_len) +
+              sizeof(((RLMeshState*)0)->has_frame) + sizeof(((RLMeshState*)0)->_reserved7) +
+              sizeof(((RLMeshState*)0)->frame) + sizeof(((RLMeshState*)0)->frame_other) +
+              sizeof(((RLMeshState*)0)->provenance) + sizeof(((RLMeshState*)0)->provenance_len) +
+              sizeof(((RLMeshState*)0)->provenance_other) + sizeof(((RLMeshState*)0)->part) +
+              sizeof(((RLMeshState*)0)->labels) + sizeof(((RLMeshState*)0)->labels_len) +
+              sizeof(((RLMeshState*)0)->source) + sizeof(((RLMeshState*)0)->has_clip) +
+              sizeof(((RLMeshState*)0)->_reserved8) + sizeof(((RLMeshState*)0)->clip),
+      "RLMeshState must have no implicit padding");
+  _Static_assert(
+      sizeof(RLMeshConcat) ==
+          sizeof(((RLMeshConcat*)0)->struct_size) + sizeof(((RLMeshConcat*)0)->parts) +
+              sizeof(((RLMeshConcat*)0)->parts_len) + sizeof(((RLMeshConcat*)0)->has_pad_to) +
+              sizeof(((RLMeshConcat*)0)->_reserved0) + sizeof(((RLMeshConcat*)0)->pad_to) +
+              sizeof(((RLMeshConcat*)0)->dtype) + sizeof(((RLMeshConcat*)0)->dtype_other) +
+              sizeof(((RLMeshConcat*)0)->reshape) + sizeof(((RLMeshConcat*)0)->reshape_len) +
+              sizeof(((RLMeshConcat*)0)->container) + sizeof(((RLMeshConcat*)0)->has_clip) +
+              sizeof(((RLMeshConcat*)0)->_reserved1) + sizeof(((RLMeshConcat*)0)->clip),
+      "RLMeshConcat must have no implicit padding");
+  _Static_assert(sizeof(RLMeshConstant) == sizeof(((RLMeshConstant*)0)->struct_size) +
+                                               sizeof(((RLMeshConstant*)0)->dim) +
+                                               sizeof(((RLMeshConstant*)0)->fill),
+                 "RLMeshConstant must have no implicit padding");
+  _Static_assert(sizeof(RLMeshAdaptersText) == sizeof(((RLMeshAdaptersText*)0)->struct_size) +
+                                                   sizeof(((RLMeshAdaptersText*)0)->role) +
+                                                   sizeof(((RLMeshAdaptersText*)0)->container) +
+                                                   sizeof(((RLMeshAdaptersText*)0)->has_fill) +
+                                                   sizeof(((RLMeshAdaptersText*)0)->_reserved0) +
+                                                   sizeof(((RLMeshAdaptersText*)0)->fill),
+                 "RLMeshAdaptersText must have no implicit padding");
+  _Static_assert(sizeof(RLMeshCustom) == sizeof(((RLMeshCustom*)0)->struct_size) +
+                                             sizeof(((RLMeshCustom*)0)->transform) +
+                                             sizeof(((RLMeshCustom*)0)->entrypoint),
+                 "RLMeshCustom must have no implicit padding");
+  _Static_assert(
+      sizeof(RLMeshActuator) ==
+          sizeof(((RLMeshActuator*)0)->struct_size) + sizeof(((RLMeshActuator*)0)->role) +
+              sizeof(((RLMeshActuator*)0)->dim) + sizeof(((RLMeshActuator*)0)->has_encoding) +
+              sizeof(((RLMeshActuator*)0)->_reserved0) + sizeof(((RLMeshActuator*)0)->encoding) +
+              sizeof(((RLMeshActuator*)0)->custom_encoding) +
+              sizeof(((RLMeshActuator*)0)->has_range) + sizeof(((RLMeshActuator*)0)->_reserved1) +
+              sizeof(((RLMeshActuator*)0)->range) + sizeof(((RLMeshActuator*)0)->binary) +
+              sizeof(((RLMeshActuator*)0)->has_scale) + sizeof(((RLMeshActuator*)0)->_reserved2) +
+              sizeof(((RLMeshActuator*)0)->scale) + sizeof(((RLMeshActuator*)0)->axis_scale) +
+              sizeof(((RLMeshActuator*)0)->axis_scale_len) + sizeof(((RLMeshActuator*)0)->invert) +
+              sizeof(((RLMeshActuator*)0)->has_threshold) +
+              sizeof(((RLMeshActuator*)0)->_reserved3) + sizeof(((RLMeshActuator*)0)->threshold) +
+              sizeof(((RLMeshActuator*)0)->clip) + sizeof(((RLMeshActuator*)0)->_reserved4) +
+              sizeof(((RLMeshActuator*)0)->fill) + sizeof(((RLMeshActuator*)0)->optional) +
+              sizeof(((RLMeshActuator*)0)->has_frame) + sizeof(((RLMeshActuator*)0)->_reserved5) +
+              sizeof(((RLMeshActuator*)0)->frame) + sizeof(((RLMeshActuator*)0)->frame_other) +
+              sizeof(((RLMeshActuator*)0)->has_reference) +
+              sizeof(((RLMeshActuator*)0)->_reserved6) + sizeof(((RLMeshActuator*)0)->reference) +
+              sizeof(((RLMeshActuator*)0)->reference_other) + sizeof(((RLMeshActuator*)0)->part) +
+              sizeof(((RLMeshActuator*)0)->has_offset) + sizeof(((RLMeshActuator*)0)->_reserved7) +
+              sizeof(((RLMeshActuator*)0)->offset) + sizeof(((RLMeshActuator*)0)->axis_offset) +
+              sizeof(((RLMeshActuator*)0)->axis_offset_len) + sizeof(((RLMeshActuator*)0)->labels) +
+              sizeof(((RLMeshActuator*)0)->labels_len),
+      "RLMeshActuator must have no implicit padding");
+  _Static_assert(
+      sizeof(RLMeshAction) ==
+          sizeof(((RLMeshAction*)0)->struct_size) + sizeof(((RLMeshAction*)0)->components) +
+              sizeof(((RLMeshAction*)0)->components_len) + sizeof(((RLMeshAction*)0)->has_clip) +
+              sizeof(((RLMeshAction*)0)->_reserved0) + sizeof(((RLMeshAction*)0)->clip),
+      "RLMeshAction must have no implicit padding");
+  _Static_assert(
+      sizeof(RLMeshImageTag) ==
+          sizeof(((RLMeshImageTag*)0)->struct_size) + sizeof(((RLMeshImageTag*)0)->role) +
+              sizeof(((RLMeshImageTag*)0)->layout) + sizeof(((RLMeshImageTag*)0)->upside_down) +
+              sizeof(((RLMeshImageTag*)0)->_reserved0) + sizeof(((RLMeshImageTag*)0)->part),
+      "RLMeshImageTag must have no implicit padding");
+  _Static_assert(
+      sizeof(RLMeshStateTag) ==
+          sizeof(((RLMeshStateTag*)0)->struct_size) + sizeof(((RLMeshStateTag*)0)->role) +
+              sizeof(((RLMeshStateTag*)0)->encoding) + sizeof(((RLMeshStateTag*)0)->encoding_len) +
+              sizeof(((RLMeshStateTag*)0)->encoding_other) +
+              sizeof(((RLMeshStateTag*)0)->has_range) + sizeof(((RLMeshStateTag*)0)->_reserved0) +
+              sizeof(((RLMeshStateTag*)0)->range) + sizeof(((RLMeshStateTag*)0)->has_frame) +
+              sizeof(((RLMeshStateTag*)0)->_reserved1) + sizeof(((RLMeshStateTag*)0)->frame) +
+              sizeof(((RLMeshStateTag*)0)->frame_other) +
+              sizeof(((RLMeshStateTag*)0)->has_provenance) +
+              sizeof(((RLMeshStateTag*)0)->_reserved2) + sizeof(((RLMeshStateTag*)0)->provenance) +
+              sizeof(((RLMeshStateTag*)0)->provenance_other) + sizeof(((RLMeshStateTag*)0)->part) +
+              sizeof(((RLMeshStateTag*)0)->labels) + sizeof(((RLMeshStateTag*)0)->labels_len) +
+              sizeof(((RLMeshStateTag*)0)->_reserved3),
+      "RLMeshStateTag must have no implicit padding");
+  _Static_assert(sizeof(RLMeshTextTag) ==
+                     sizeof(((RLMeshTextTag*)0)->struct_size) + sizeof(((RLMeshTextTag*)0)->role),
+                 "RLMeshTextTag must have no implicit padding");
+  _Static_assert(
+      sizeof(RLMeshField) ==
+          sizeof(((RLMeshField*)0)->struct_size) + sizeof(((RLMeshField*)0)->role) +
+              sizeof(((RLMeshField*)0)->dim) + sizeof(((RLMeshField*)0)->encoding) +
+              sizeof(((RLMeshField*)0)->encoding_len) + sizeof(((RLMeshField*)0)->encoding_other) +
+              sizeof(((RLMeshField*)0)->has_range) + sizeof(((RLMeshField*)0)->_reserved0) +
+              sizeof(((RLMeshField*)0)->range) + sizeof(((RLMeshField*)0)->has_frame) +
+              sizeof(((RLMeshField*)0)->_reserved1) + sizeof(((RLMeshField*)0)->frame) +
+              sizeof(((RLMeshField*)0)->frame_other) + sizeof(((RLMeshField*)0)->has_provenance) +
+              sizeof(((RLMeshField*)0)->_reserved2) + sizeof(((RLMeshField*)0)->provenance) +
+              sizeof(((RLMeshField*)0)->provenance_other) + sizeof(((RLMeshField*)0)->part) +
+              sizeof(((RLMeshField*)0)->labels) + sizeof(((RLMeshField*)0)->labels_len) +
+              sizeof(((RLMeshField*)0)->_reserved3),
+      "RLMeshField must have no implicit padding");
+  _Static_assert(sizeof(RLMeshSplit) == sizeof(((RLMeshSplit*)0)->struct_size) +
+                                            sizeof(((RLMeshSplit*)0)->fields) +
+                                            sizeof(((RLMeshSplit*)0)->fields_len),
+                 "RLMeshSplit must have no implicit padding");
+  _Static_assert(sizeof(RLMeshPreviousOptions) == sizeof(((RLMeshPreviousOptions*)0)->struct_size) +
+                                                      sizeof(((RLMeshPreviousOptions*)0)->part) +
+                                                      sizeof(((RLMeshPreviousOptions*)0)->fill),
+                 "RLMeshPreviousOptions must have no implicit padding");
+  _Static_assert(
+      sizeof(RLMeshObservationRoles) == sizeof(((RLMeshObservationRoles*)0)->struct_size) +
+                                            sizeof(((RLMeshObservationRoles*)0)->images) +
+                                            sizeof(((RLMeshObservationRoles*)0)->images_len) +
+                                            sizeof(((RLMeshObservationRoles*)0)->states) +
+                                            sizeof(((RLMeshObservationRoles*)0)->states_len) +
+                                            sizeof(((RLMeshObservationRoles*)0)->texts) +
+                                            sizeof(((RLMeshObservationRoles*)0)->texts_len),
+      "RLMeshObservationRoles must have no implicit padding");
+  _Static_assert(sizeof(RLMeshAdvisory) == sizeof(((RLMeshAdvisory*)0)->struct_size) +
+                                               sizeof(((RLMeshAdvisory*)0)->severity) +
+                                               sizeof(((RLMeshAdvisory*)0)->_reserved) +
+                                               sizeof(((RLMeshAdvisory*)0)->message),
+                 "RLMeshAdvisory must have no implicit padding");
+  _Static_assert(sizeof(RLMeshTagOptions) == sizeof(((RLMeshTagOptions*)0)->struct_size) +
+                                                 sizeof(((RLMeshTagOptions*)0)->validate) +
+                                                 sizeof(((RLMeshTagOptions*)0)->_reserved0) +
+                                                 sizeof(((RLMeshTagOptions*)0)->_reserved1) +
+                                                 sizeof(((RLMeshTagOptions*)0)->_reserved2),
+                 "RLMeshTagOptions must have no implicit padding");
+  _Static_assert(
+      sizeof(RLMeshResolveOptions) == sizeof(((RLMeshResolveOptions*)0)->struct_size) +
+                                          sizeof(((RLMeshResolveOptions*)0)->trust_entrypoints) +
+                                          sizeof(((RLMeshResolveOptions*)0)->check_inverse) +
+                                          sizeof(((RLMeshResolveOptions*)0)->_reserved0) +
+                                          sizeof(((RLMeshResolveOptions*)0)->_reserved1),
+      "RLMeshResolveOptions must have no implicit padding");
 #endif
 }

@@ -150,7 +150,7 @@ pub(crate) fn view_state(arena: &mut Arena, f: &a::State) -> RLMeshState {
     v.has_frame = f.frame.is_some();
     if v.has_frame {
         let (number, other) =
-            arena.tolerant(&f.frame.as_ref().expect("present value"), number_frame);
+            arena.tolerant(f.frame.as_ref().expect("present value"), number_frame);
         v.frame = number;
         v.frame_other = other;
     }
@@ -265,14 +265,14 @@ pub(crate) fn view_actuator(arena: &mut Arena, f: &a::Actuator) -> RLMeshActuato
     v.has_frame = f.frame.is_some();
     if v.has_frame {
         let (number, other) =
-            arena.tolerant(&f.frame.as_ref().expect("present value"), number_frame);
+            arena.tolerant(f.frame.as_ref().expect("present value"), number_frame);
         v.frame = number;
         v.frame_other = other;
     }
     v.has_reference = f.reference.is_some();
     if v.has_reference {
         let (number, other) = arena.tolerant(
-            &f.reference.as_ref().expect("present value"),
+            f.reference.as_ref().expect("present value"),
             number_reference,
         );
         v.reference = number;
@@ -340,14 +340,14 @@ pub(crate) fn view_state_tag(arena: &mut Arena, f: &a::StateTag) -> RLMeshStateT
     v.has_frame = f.frame.is_some();
     if v.has_frame {
         let (number, other) =
-            arena.tolerant(&f.frame.as_ref().expect("present value"), number_frame);
+            arena.tolerant(f.frame.as_ref().expect("present value"), number_frame);
         v.frame = number;
         v.frame_other = other;
     }
     v.has_provenance = f.provenance.is_some();
     if v.has_provenance {
         let (number, other) = arena.tolerant(
-            &f.provenance.as_ref().expect("present value"),
+            f.provenance.as_ref().expect("present value"),
             number_provenance,
         );
         v.provenance = number;
@@ -383,14 +383,14 @@ pub(crate) fn view_field(arena: &mut Arena, f: &a::Field) -> RLMeshField {
     v.has_frame = f.frame.is_some();
     if v.has_frame {
         let (number, other) =
-            arena.tolerant(&f.frame.as_ref().expect("present value"), number_frame);
+            arena.tolerant(f.frame.as_ref().expect("present value"), number_frame);
         v.frame = number;
         v.frame_other = other;
     }
     v.has_provenance = f.provenance.is_some();
     if v.has_provenance {
         let (number, other) = arena.tolerant(
-            &f.provenance.as_ref().expect("present value"),
+            f.provenance.as_ref().expect("present value"),
             number_provenance,
         );
         v.provenance = number;

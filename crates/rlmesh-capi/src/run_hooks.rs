@@ -20,6 +20,17 @@ pub struct RLMeshRunContextVtable {
     pub struct_size: usize,
     pub contract: Option<unsafe extern "C" fn(*mut c_void, *mut *mut RLMeshEnvContract) -> i32>,
     pub num_envs: Option<unsafe extern "C" fn(*mut c_void, *mut u64) -> i32>,
+    pub read: Option<
+        unsafe extern "C" fn(
+            *mut c_void,
+            *const RLMeshValue,
+            *const crate::run_read::RLMeshReadItem,
+            *mut *mut RLMeshValue,
+        ) -> i32,
+    >,
+    pub frame_sources: Option<
+        unsafe extern "C" fn(*mut c_void, *mut *mut crate::run_read::RLMeshFrameSources) -> i32,
+    >,
     pub free_user_data: Option<unsafe extern "C" fn(*mut c_void)>,
 }
 struct Context {
@@ -36,33 +47,52 @@ impl Drop for Context {
 }
 impl RunContext for Context {
     fn read(&self, observation: &Value, item: &rlmesh::ReadItem) -> rlmesh::Result<Value> {
-        let contract = self
-            .contract()?
-            .ok_or_else(|| rlmesh::Error::Runtime("context has no connected contract".into()))?;
-        let reader = rlmesh::binding::reader_from_contract(&contract, std::slice::from_ref(item))?;
-        let values = reader.call(observation)?;
-        Ok(values
-            .get(&reader.roles()[0])
-            .cloned()
-            .unwrap_or(Value::None))
+        let _lock = self
+            .busy
+            .try_lock()
+            .map_err(|_| rlmesh::Error::Runtime("context callback is already active".into()))?;
+        let observation = RLMeshValue::new(observation.clone());
+        let item = crate::run_read::RLMeshReadItem(item.clone());
+        let mut out = std::ptr::null_mut();
+        crate::abi::status::clear_last_error();
+        let status = unsafe {
+            self.v.read.expect("validated read slot")(
+                self.user as *mut c_void,
+                &observation,
+                &item,
+                &mut out,
+            )
+        };
+        let value = unsafe { ffi::take(out) };
+        if status != 0 {
+            return Err(ffi::callback_error("context"));
+        }
+        value.ok_or_else(|| rlmesh::Error::Type("read callback returned no Value".into()))
     }
     fn frame_sources(&self) -> rlmesh::Result<rlmesh::FrameSources<'_>> {
-        let roles = self
-            .contract()?
-            .map(|c| {
-                rlmesh::adapters::EnvTags::from_metadata(
-                    c.metadata().unwrap_or(&rlmesh::Metadata::new()),
-                )
-            })
-            .transpose()?
-            .flatten()
-            .map(|tags| tags.observation_roles().images)
-            .unwrap_or_default();
-        Ok(rlmesh::FrameSources {
-            roles,
-            render_label: None,
-            render: None,
-        })
+        let _lock = self
+            .busy
+            .try_lock()
+            .map_err(|_| rlmesh::Error::Runtime("context callback is already active".into()))?;
+        let mut out = std::ptr::null_mut();
+        crate::abi::status::clear_last_error();
+        let status = unsafe {
+            self.v.frame_sources.expect("validated frame_sources slot")(
+                self.user as *mut c_void,
+                &mut out,
+            )
+        };
+        let value = if out.is_null() {
+            None
+        } else {
+            Some(unsafe { Box::from_raw(out) })
+        };
+        if status != 0 {
+            return Err(ffi::callback_error("context"));
+        }
+        Ok(value
+            .ok_or_else(|| rlmesh::Error::Type("frame_sources callback returned no handle".into()))?
+            .into_facade())
     }
     fn contract(&self) -> rlmesh::Result<Option<rlmesh::EnvContract>> {
         let _lock = self
@@ -70,6 +100,7 @@ impl RunContext for Context {
             .try_lock()
             .map_err(|_| rlmesh::Error::Runtime("context callback is already active".into()))?;
         let mut out = std::ptr::null_mut();
+        crate::abi::status::clear_last_error();
         let status = unsafe {
             self.v.contract.expect("validated context callback")(self.user as *mut c_void, &mut out)
         };
@@ -94,6 +125,7 @@ impl RunContext for Context {
             .try_lock()
             .map_err(|_| rlmesh::Error::Runtime("context callback is already active".into()))?;
         let mut n = 0;
+        crate::abi::status::clear_last_error();
         if unsafe {
             self.v.num_envs.expect("validated context callback")(self.user as *mut c_void, &mut n)
         } != 0
@@ -113,9 +145,13 @@ pub unsafe extern "C" fn rlmesh_run_context_new(
         write_out(out, std::ptr::null_mut())?;
         let v = unsafe { sizing::read(v, "RLMeshRunContextVtable") }?
             .ok_or_else(|| CapiError::invalid_arg("null vtable"))?;
-        if v.contract.is_none() || v.num_envs.is_none() {
-            return Err(CapiError::type_error(
-                "context requires contract and num_envs callbacks",
+        if v.contract.is_none()
+            || v.num_envs.is_none()
+            || v.read.is_none()
+            || v.frame_sources.is_none()
+        {
+            return Err(CapiError::invalid_arg(
+                "context requires contract, num_envs, read and frame_sources callbacks",
             ));
         }
         write_out(
@@ -351,12 +387,7 @@ impl RunHooks for Hooks {
     }
     fn on_run_end(&mut self, r: &rlmesh::RunResult) -> rlmesh::Result<()> {
         if let Some(f) = self.v.on_run_end {
-            callback(unsafe {
-                f(
-                    self.user as *mut c_void,
-                    &RLMeshRunResult(Arc::new(r.clone())),
-                )
-            })?;
+            callback(unsafe { f(self.user as *mut c_void, &RLMeshRunResult::new(r.clone())) })?;
         }
         Ok(())
     }

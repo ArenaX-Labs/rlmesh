@@ -84,7 +84,8 @@ pub struct RLMeshRunOptions {
     pub close_env: bool,
     pub has_trust_entrypoints: bool,
     pub trust_entrypoints: bool,
-    pub _reserved: [u8; 2],
+    pub _reserved: [u8; 6],
+    pub instruction: *const c_char,
 }
 pub(crate) fn seconds(v: f64) -> Result<Option<Duration>, CapiError> {
     if v.is_nan() || v <= 0.0 {
@@ -103,7 +104,7 @@ pub(crate) unsafe fn options(
 ) -> Result<rlmesh::RunOptions<'static>, CapiError> {
     let mut r = rlmesh::RunOptions::default();
     if let Some(o) = unsafe { sizing::read(p, "RLMeshRunOptions") }? {
-        if o._reserved != [0; 2] {
+        if o._reserved != [0; 6] {
             return Err(CapiError::type_error(
                 "reserved run option bytes must be zero",
             ));
@@ -128,6 +129,7 @@ pub(crate) unsafe fn options(
         r.execution_horizon = o.execution_horizon;
         r.prefetch_lead = o.prefetch_lead;
         r.workflow_edition = unsafe { ffi::text(o.workflow_edition) }?;
+        r.instruction = unsafe { ffi::text(o.instruction) }?;
         r.trial_index_base = o.trial_index_base;
         r.cancel = unsafe { o.cancel.as_ref() }.map(|c| c.0.clone());
     }

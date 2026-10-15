@@ -34,6 +34,7 @@ pub struct RLMeshSessionOptions {
     pub has_trust_entrypoints: bool,
     pub trust_entrypoints: bool,
     pub _reserved: u8,
+    pub instruction: *const c_char,
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -174,6 +175,7 @@ impl Drop for State {
     }
 }
 pub struct RLMeshSession {
+    pub(crate) roles: std::sync::OnceLock<crate::run_read::RolesView>,
     state: Mutex<State>,
     done: AtomicBool,
     cancel: rlmesh::ext::CancelToken,
@@ -185,7 +187,7 @@ impl Drop for HookScope {
         HOOKS.with(|s| s.borrow_mut().pop());
     }
 }
-fn own_hook(p: *const RLMeshSession) -> Option<RLMeshRunContext> {
+pub(crate) fn own_hook(p: *const RLMeshSession) -> Option<RLMeshRunContext> {
     HOOKS.with(|s| {
         s.borrow()
             .iter()
@@ -197,7 +199,7 @@ fn own_hook(p: *const RLMeshSession) -> Option<RLMeshRunContext> {
 fn runtime(message: &str) -> CapiError {
     rlmesh::Error::Runtime(message.into()).into()
 }
-fn with<R>(
+pub(crate) fn with<R>(
     p: *const RLMeshSession,
     f: impl FnOnce(&mut rlmesh::Session<'static>) -> Result<R, CapiError>,
 ) -> Result<R, CapiError> {
@@ -280,6 +282,7 @@ pub unsafe extern "C" fn rlmesh_session_new(
             options.trust_entrypoints = o.has_trust_entrypoints.then_some(o.trust_entrypoints);
             options.execution_horizon = o.execution_horizon;
             options.workflow_edition = unsafe { ffi::text(o.workflow_edition) }?;
+            options.instruction = unsafe { ffi::text(o.instruction) }?;
             options.cancel = unsafe { o.cancel.as_ref() }.map(|c| c.0.clone());
         }
         let model = unsafe { crate::run_api::model(m) }?;
@@ -291,6 +294,7 @@ pub unsafe extern "C" fn rlmesh_session_new(
         write_out(
             out,
             Box::into_raw(Box::new(RLMeshSession {
+                roles: std::sync::OnceLock::new(),
                 state: Mutex::new(State {
                     session: Some(session),
                     backing,

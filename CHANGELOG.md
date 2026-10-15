@@ -10,6 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ### Added
 
+- C ABI 5 completes adapter-dependent running APIs: copied read items, facade readers, session/context/event reads, observation roles, owner-borrowing frame sources and render callbacks, instruction injection on runs/sessions, and typed copied/lent result advisories. Authored RunContext vtables now require all four protocol slots.
+
 - C ABI 5 exposes Stable typed adapter trees and vocabularies, immutable EnvTags/ModelSpec values, shared transform callbacks, transactional env tagging, facade resolution and per-step execution, advisories/history, AdapterBase vtables and reusable owned wrapped-predict handles. C models retain attached typed specs and trusted custom-input entrypoints use the fenced facade registry; obsolete JSON plan exports are removed.
 
 - The C Describe family now uses the Rust facade: sized options/kind, model vtable/type and instance forms, and factory branch/catalog descriptions with typed dict or canonical JSON output. Type forms never call policy slots; declaration checks match Model construction, instance descriptions retain static chunk declarations, and C native identity/runtime and edition refusal rules match the spec. COR-16's fenced EnvServer shorthand caches the resolved host/edition snapshot, readable even after shutdown or with publication disabled. C factory serving publishes the same native Describe identity.

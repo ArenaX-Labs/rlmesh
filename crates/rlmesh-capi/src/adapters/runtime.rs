@@ -13,10 +13,10 @@ struct Owner {
 }
 impl Drop for Owner {
     fn drop(&mut self) {
-        if self.owned.load(Ordering::Acquire) {
-            if let Some(f) = self.free {
-                unsafe { f(self.user as *mut c_void) }
-            }
+        if self.owned.load(Ordering::Acquire)
+            && let Some(f) = self.free
+        {
+            unsafe { f(self.user as *mut c_void) }
         }
     }
 }
@@ -157,7 +157,7 @@ enum Kind {
     Custom(CustomAdapter),
 }
 struct Shared {
-    resolved: bool,
+    resolved: Option<a::Adapter>,
     inner: Mutex<Kind>,
     notes: Vec<a::Advisory>,
     messages: Vec<std::ffi::CString>,
@@ -167,6 +167,12 @@ struct Shared {
 #[derive(Clone)]
 pub struct RLMeshAdapter(Arc<Shared>);
 impl RLMeshAdapter {
+    pub(crate) fn native(&self) -> Result<a::Adapter, CapiError> {
+        self.0
+            .resolved
+            .clone()
+            .ok_or_else(|| CapiError::type_error("Reader requires a resolved Adapter"))
+    }
     fn resolved(value: a::Adapter) -> Self {
         let notes = value.advisories();
         let keys = value.history_keys();
@@ -176,7 +182,7 @@ impl RLMeshAdapter {
             .map(|n| std::ffi::CString::new(n.message.as_str()).unwrap_or_default())
             .collect();
         Self(Arc::new(Shared {
-            resolved: true,
+            resolved: Some(value.clone()),
             inner: Mutex::new(Kind::Resolved(value)),
             notes,
             messages,
@@ -213,7 +219,7 @@ impl RLMeshAdapter {
         }
     }
     fn resolved_only(&self) -> Result<&Shared, CapiError> {
-        if !self.0.resolved {
+        if self.0.resolved.is_none() {
             return Err(CapiError::type_error(
                 "operation requires a resolved Adapter",
             ));
@@ -256,7 +262,7 @@ pub unsafe extern "C" fn rlmesh_adapter_new(
             ));
         }
         let value = RLMeshAdapter(Arc::new(Shared {
-            resolved: false,
+            resolved: None,
             inner: Mutex::new(Kind::Custom(CustomAdapter {
                 v,
                 owner: Owner {

@@ -134,7 +134,9 @@ reads can change a state leaf's representation, as in Python's codec.
 Every sized leaf and options record requires its `RLMESH_*_INIT` minimum,
 zero reserved bytes and zero unknown input tails. Frozen node arrays retain
 their stride; Action components and Split fields are arrays of leaf pointers.
-The C fixture checks that every sized adapter record has explicit padding.
+The C fixture asserts that every sized adapter record has explicit padding.
+The Zig gate compiles those assertions for both 32-bit x86 and ARM, including
+their different double alignments.
 Tolerant vocabulary values use `OTHER` plus text; closed enums refuse it.
 Image stride is expanded when a spec consumes the leaf, and lent images carry
 offsets rather than stride sugar.
@@ -204,14 +206,31 @@ Results, telemetry, equality, repr and aggregates use facade result types.
 Reset, predict, step, run, context access, cancellation and close keep the
 facade's state machine. A session leases local envs/factories until free;
 its borrowed model and server handles must outlive it. Within its own hooks,
-only the RunContext members contract/num_envs can query the session; stateful
+only the RunContext members contract/num_envs/read/frame_sources can query the session; stateful
 re-entry fails with RuntimeError. Closing/freeing a session never closes its
 model. Cancellation tokens are retained independently from the caller's token
 handle. Free drains local callbacks before releasing the lease.
 
-Instruction/view, context read/frame sources and advisories await their
-facade types in the separate adapters wave. Nonempty advisory constructor
-inputs are explicitly refused rather than discarded.
+`RunOptions.instruction` and `SessionOptions.instruction` copy the optional
+text and use the facade's input injection. Read items copy a semantic role or
+an Image/State/Text leaf. Session readers retain a facade adapter independently
+of the session and return Value dicts; roles keep declaration order. Direct
+session/context/event reads return the selected value. An authored RunContext
+vtable must provide all four protocol slots; slot outputs transfer ownership,
+including on failure.
+
+FrameSources owns its roles and labels. A library-made render source borrows
+its session/context and preserves the facade's closed, busy and hook-thread
+checks. A local context reaches render only during its hook dispatch; direct
+Session frame sources can render while the session is idle. Free frame sources
+before their session/context. Missing optional outputs set `out_has=false` and
+leave the value/bytes output untouched. Equality compares callable sources as
+specified, and repr uses the facade formatter.
+
+RunResult constructors copy typed Advisory records. Returned advisory messages
+are borrowed while a shared result handle lives. Advisory lists from the engine
+are available on real runs and sessions. Viewer/recorder integration remains
+outside this adapter-dependent follow-up. See `examples/c_reads.c`.
 
 ## Env authoring and servers
 

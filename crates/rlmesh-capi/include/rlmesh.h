@@ -1092,10 +1092,10 @@ struct RLMeshImage {
   uint8_t _reserved5[1];
   uint32_t stack;
   bool has_crop;
-  uint8_t _reserved6[3];
+  uint8_t _reserved6[7];
   double crop;
   bool has_crop_area;
-  uint8_t _reserved7[3];
+  uint8_t _reserved7[7];
   double crop_area;
   RLMeshCropMode crop_mode;
   const char* crop_mode_other;
@@ -1296,7 +1296,7 @@ struct RLMeshState {
   uint32_t index;
   bool optional;
   bool has_range;
-  uint8_t _reserved2[2];
+  uint8_t _reserved2[6];
   double range[2];
   bool has_pad_to;
   uint8_t _reserved3[3];
@@ -1306,20 +1306,21 @@ struct RLMeshState {
   const int64_t* reshape;
   size_t reshape_len;
   RLMeshStateContainer container;
+  uint8_t _reserved4[4];
   double fill;
   const RLMeshRotation* post_rotate;
   bool has_scale;
-  uint8_t _reserved4[3];
+  uint8_t _reserved5[3];
   double scale;
   const double* axis_scale;
   size_t axis_scale_len;
   bool has_offset;
-  uint8_t _reserved5[3];
+  uint8_t _reserved6[7];
   double offset;
   const double* axis_offset;
   size_t axis_offset_len;
   bool has_frame;
-  uint8_t _reserved6[3];
+  uint8_t _reserved7[3];
   RLMeshFrame frame;
   const char* frame_other;
   const RLMeshProvenance* provenance;
@@ -1330,7 +1331,7 @@ struct RLMeshState {
   size_t labels_len;
   RLMeshStateSource source;
   bool has_clip;
-  uint8_t _reserved7[3];
+  uint8_t _reserved8[7];
   double clip[2];
 };
 #define RLMESH_STATE_INIT   \
@@ -1358,6 +1359,7 @@ struct RLMeshState {
    NULL,                    \
    0,                       \
    (RLMeshStateContainer)1, \
+   {0},                     \
    0,                       \
    NULL,                    \
    0,                       \
@@ -1421,7 +1423,7 @@ struct RLMeshConcat {
   size_t reshape_len;
   RLMeshStateContainer container;
   bool has_clip;
-  uint8_t _reserved1[3];
+  uint8_t _reserved1[7];
   double clip[2];
 };
 #define RLMESH_CONCAT_INIT                                                            \
@@ -1582,20 +1584,20 @@ struct RLMeshActuator {
   RLMeshRotationEncoding encoding;
   const RLMeshCustomEncoding* custom_encoding;
   bool has_range;
-  uint8_t _reserved1[3];
+  uint8_t _reserved1[7];
   double range[2];
   bool binary;
   bool has_scale;
-  uint8_t _reserved2[2];
+  uint8_t _reserved2[6];
   double scale;
   const double* axis_scale;
   size_t axis_scale_len;
   bool invert;
   bool has_threshold;
-  uint8_t _reserved3[2];
+  uint8_t _reserved3[6];
   double threshold;
   bool clip;
-  uint8_t _reserved4[3];
+  uint8_t _reserved4[7];
   double fill;
   bool optional;
   bool has_frame;
@@ -1765,6 +1767,7 @@ struct RLMeshStateTag {
   const char* part;
   const char* const* labels;
   size_t labels_len;
+  uint8_t _reserved3[4];
 };
 #define RLMESH_STATE_TAG_INIT \
   {sizeof(RLMeshStateTag),    \
@@ -1785,7 +1788,8 @@ struct RLMeshStateTag {
    NULL,                      \
    NULL,                      \
    NULL,                      \
-   0}
+   0,                         \
+   {0}}
 #endif
 #define RLMESH_STATE_TAG_MIN_SIZE sizeof(RLMeshStateTag)
 #if UINTPTR_MAX > UINT32_MAX
@@ -1857,7 +1861,7 @@ struct RLMeshField {
   size_t encoding_len;
   const char* const* encoding_other;
   bool has_range;
-  uint8_t _reserved0[3];
+  uint8_t _reserved0[7];
   double range[2];
   bool has_frame;
   uint8_t _reserved1[3];
@@ -1870,6 +1874,7 @@ struct RLMeshField {
   const char* part;
   const char* const* labels;
   size_t labels_len;
+  uint8_t _reserved3[4];
 };
 #define RLMESH_FIELD_INIT \
   {sizeof(RLMeshField),   \
@@ -1891,7 +1896,8 @@ struct RLMeshField {
    NULL,                  \
    NULL,                  \
    NULL,                  \
-   0}
+   0,                     \
+   {0}}
 #endif
 #define RLMESH_FIELD_MIN_SIZE sizeof(RLMeshField)
 #if UINTPTR_MAX > UINT32_MAX
@@ -2672,7 +2678,7 @@ typedef struct RLMeshRunResult RLMeshRunResult;
 typedef struct RLMeshTelemetryRow RLMeshTelemetryRow;
 typedef struct RLMeshRunHooks RLMeshRunHooks;
 typedef struct RLMeshRunContext RLMeshRunContext;
-/* Read/frame-source and advisory authoring belongs to the adapters wave. */
+/* Typed advisories and read/frame-source APIs are declared below. */
 typedef struct RLMeshAdvisory RLMeshAdvisory;
 typedef enum RLMeshModelTargetKind {
   RLMESH_MODEL_TARGET_KIND_INVALID = 0,
@@ -2797,16 +2803,22 @@ RLMESH_API RLMeshStatus rlmesh_telemetry_row_repr(const RLMeshTelemetryRow*, RLM
 RLMESH_API bool rlmesh_telemetry_row_equals(const RLMeshTelemetryRow*, const RLMeshTelemetryRow*);
 RLMESH_API void rlmesh_telemetry_row_free(RLMeshTelemetryRow*);
 
-/* Contexts are shared, retained independently from the hook invocation. The
- * adapters wave adds read/frame_sources to the facade and these APIs. */
+/* Contexts are shared and retained independently from hook invocation. Every
+ * protocol slot is required; NULL slots fail with INVALID_ARGUMENT. */
+typedef struct RLMeshReadItem RLMeshReadItem;
+typedef struct RLMeshReader RLMeshReader;
+typedef struct RLMeshFrameSources RLMeshFrameSources;
 typedef struct RLMeshRunContextVtable {
   size_t struct_size;
   RLMeshStatus (*contract)(void*, RLMeshEnvContract** out);
   RLMeshStatus (*num_envs)(void*, uint64_t* out);
+  RLMeshStatus (*read)(void*, const RLMeshValue*, const RLMeshReadItem*, RLMeshValue** out);
+  RLMeshStatus (*frame_sources)(void*, RLMeshFrameSources** out);
   void (*free_user_data)(void*);
 } RLMeshRunContextVtable;
 #define RLMESH_RUN_CONTEXT_VTABLE_MIN_SIZE sizeof(RLMeshRunContextVtable)
-#define RLMESH_RUN_CONTEXT_VTABLE_INIT {sizeof(RLMeshRunContextVtable), NULL, NULL, NULL}
+#define RLMESH_RUN_CONTEXT_VTABLE_INIT \
+  {sizeof(RLMeshRunContextVtable), NULL, NULL, NULL, NULL, NULL}
 RLMESH_API RLMeshStatus rlmesh_run_context_new(const RLMeshRunContextVtable*, void*,
                                                RLMeshRunContext** out);
 RLMESH_API RLMeshRunContext* rlmesh_run_context_clone(const RLMeshRunContext*);
@@ -2877,7 +2889,8 @@ typedef struct RLMeshRunOptions {
   bool close_env;
   bool has_trust_entrypoints;
   bool trust_entrypoints;
-  uint8_t _reserved[2];
+  uint8_t _reserved[6];
+  const char* instruction; /* NULL = None; copied. */
 } RLMeshRunOptions;
 #define RLMESH_RUN_OPTIONS_MIN_SIZE sizeof(RLMeshRunOptions)
 #define RLMESH_RUN_OPTIONS_INIT \
@@ -2899,10 +2912,11 @@ typedef struct RLMeshRunOptions {
    false,                       \
    false,                       \
    false,                       \
-   {0, 0}}
+   {0, 0},                      \
+   NULL}
 /* NULL options means INIT; zero-initialized options are refused. Result remains
- * NULL on failure. Hooks/targets are borrowed until the call returns. Instruction,
- * view and advisory support arrive with adapters, matching the Rust facade. */
+ * NULL on failure. Hooks/targets are borrowed until the call returns. Instruction
+ * is copied. Viewer/recorder integration remains a separate surface. */
 RLMESH_API RLMeshStatus rlmesh_run(RLMeshModelTarget, RLMeshEnvTarget, const RLMeshRunOptions*,
                                    RLMeshRunResult** out);
 RLMESH_API RLMeshStatus rlmesh_model_run(RLMeshModel*, RLMeshEnvTarget, const RLMeshRunOptions*,
@@ -2920,10 +2934,11 @@ typedef struct RLMeshSessionOptions {
   bool has_trust_entrypoints;
   bool trust_entrypoints;
   uint8_t _reserved;
+  const char* instruction; /* NULL = None; copied. */
 } RLMeshSessionOptions;
 #define RLMESH_SESSION_OPTIONS_MIN_SIZE sizeof(RLMeshSessionOptions)
 #define RLMESH_SESSION_OPTIONS_INIT \
-  {sizeof(RLMeshSessionOptions), NULL, NULL, 1, false, false, false, 0}
+  {sizeof(RLMeshSessionOptions), NULL, NULL, 1, false, false, false, 0, NULL}
 typedef struct RLMeshSessionRunOptions {
   size_t struct_size;
   const int64_t* seeds;
@@ -3138,6 +3153,59 @@ RLMESH_API RLMeshStatus rlmesh_remote_vector_env_step(RLMeshRemoteVectorEnv*, co
  * otherwise. The capi holds at most 65536 live episodes and never evicts one:
  * a predict that would start a new episode past that fails with
  * RLMESH_ERR_INTERNAL (Python raises RuntimeError) before the callback runs. */
+
+/* Read items copy leaves. Readers retain a resolved adapter and own their roles. */
+RLMESH_API RLMeshStatus rlmesh_read_item_role(const char* role, RLMeshReadItem** out);
+RLMESH_API RLMeshStatus rlmesh_read_item_image(const RLMeshImage*, RLMeshReadItem** out);
+RLMESH_API RLMeshStatus rlmesh_read_item_state(const RLMeshState*, RLMeshReadItem** out);
+RLMESH_API RLMeshStatus rlmesh_read_item_text(const RLMeshAdaptersText*, RLMeshReadItem** out);
+RLMESH_API void rlmesh_read_item_free(RLMeshReadItem*);
+RLMESH_API RLMeshStatus rlmesh_reader_new(const RLMeshAdapter*, const char* const* roles,
+                                          size_t roles_len, RLMeshReader** out);
+RLMESH_API void rlmesh_reader_free(RLMeshReader*);
+RLMESH_API size_t rlmesh_reader_roles_len(const RLMeshReader*);
+RLMESH_API RLMeshStatus rlmesh_reader_roles_get(const RLMeshReader*, size_t i, RLMeshBytes* out);
+RLMESH_API RLMeshStatus rlmesh_reader_call(const RLMeshReader*, const RLMeshValue*,
+                                           RLMeshValue** out);
+RLMESH_API RLMeshStatus rlmesh_session_reader(RLMeshSession*, const RLMeshReadItem* const* items,
+                                              size_t items_len, RLMeshReader** out);
+RLMESH_API RLMeshStatus rlmesh_session_read(RLMeshSession*, const RLMeshValue*,
+                                            const RLMeshReadItem*, RLMeshValue** out);
+RLMESH_API RLMeshStatus rlmesh_session_observation_roles(RLMeshSession*,
+                                                         RLMeshObservationRoles* out);
+RLMESH_API RLMeshStatus rlmesh_run_context_read(const RLMeshRunContext*, const RLMeshValue*,
+                                                const RLMeshReadItem*, RLMeshValue** out);
+RLMESH_API RLMeshStatus rlmesh_step_event_read(const RLMeshStepEvent*, const RLMeshReadItem*,
+                                               RLMeshValue** out);
+/* Library-made frame sources borrow their session/context for render; free the
+ * source before freeing that owner. Calls retain facade closed/busy/dispatch checks. */
+typedef RLMeshStatus (*RLMeshRenderFn)(void* user_data, RLMeshValue** out);
+RLMESH_API RLMeshStatus rlmesh_frame_sources_new(const char* const* roles, size_t roles_len,
+                                                 const char* render_label, RLMeshRenderFn render,
+                                                 void* user_data, void (*free_user_data)(void*),
+                                                 RLMeshFrameSources** out);
+RLMESH_API RLMeshStatus rlmesh_session_frame_sources(RLMeshSession*, RLMeshFrameSources** out);
+RLMESH_API RLMeshStatus rlmesh_run_context_frame_sources(const RLMeshRunContext*,
+                                                         RLMeshFrameSources** out);
+RLMESH_API size_t rlmesh_frame_sources_roles_len(const RLMeshFrameSources*);
+RLMESH_API RLMeshStatus rlmesh_frame_sources_roles_get(const RLMeshFrameSources*, size_t i,
+                                                       RLMeshBytes* out);
+RLMESH_API RLMeshStatus rlmesh_frame_sources_render_label(const RLMeshFrameSources*,
+                                                          RLMeshBytes* out, bool* out_has);
+RLMESH_API RLMeshStatus rlmesh_frame_sources_render(const RLMeshFrameSources*, RLMeshValue** out,
+                                                    bool* out_has);
+RLMESH_API size_t rlmesh_frame_sources_labels_len(const RLMeshFrameSources*);
+RLMESH_API RLMeshStatus rlmesh_frame_sources_labels_get(const RLMeshFrameSources*, size_t i,
+                                                        RLMeshBytes* out);
+RLMESH_API RLMeshStatus rlmesh_frame_sources_default_label(const RLMeshFrameSources*,
+                                                           RLMeshBytes* out, bool* out_has);
+RLMESH_API bool rlmesh_frame_sources_equals(const RLMeshFrameSources*, const RLMeshFrameSources*);
+RLMESH_API RLMeshStatus rlmesh_frame_sources_repr(const RLMeshFrameSources*, RLMeshBytes* out);
+RLMESH_API void rlmesh_frame_sources_free(RLMeshFrameSources*);
+RLMESH_API size_t rlmesh_run_result_advisories_len(const RLMeshRunResult*);
+RLMESH_API RLMeshStatus rlmesh_run_result_advisories_get(const RLMeshRunResult*, size_t i,
+                                                         RLMeshAdvisory* out);
+
 typedef struct RLMeshExtLegacyEpisode {
   const char* id;
   bool seeded; /* whether `seed` carries an explicit reset seed */

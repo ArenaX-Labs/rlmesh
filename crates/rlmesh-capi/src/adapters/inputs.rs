@@ -344,6 +344,12 @@ pub(crate) unsafe fn parse_state(p: *const RLMeshState) -> Result<a::State, Capi
             "RLMeshState reserved bytes must be zero",
         ));
     }
+    #[cfg(target_pointer_width = "32")]
+    if v._reserved8.iter().any(|&b| b != 0) {
+        return Err(CapiError::type_error(
+            "RLMeshState reserved bytes must be zero",
+        ));
+    }
     let value = a::State {
         role: unsafe { required(v.role, "role") }?,
         encoding: unsafe {
@@ -729,6 +735,12 @@ pub(crate) unsafe fn parse_state_tag(p: *const RLMeshStateTag) -> Result<a::Stat
             "RLMeshStateTag reserved bytes must be zero",
         ));
     }
+    #[cfg(target_pointer_width = "32")]
+    if v._reserved3.iter().any(|&b| b != 0) {
+        return Err(CapiError::type_error(
+            "RLMeshStateTag reserved bytes must be zero",
+        ));
+    }
     let value = a::StateTag {
         role: unsafe { required(v.role, "role") }?,
         encoding: unsafe {
@@ -802,6 +814,12 @@ pub(crate) unsafe fn parse_field(p: *const RLMeshField) -> Result<a::Field, Capi
     }
     #[cfg(target_pointer_width = "32")]
     if v._reserved2.iter().any(|&b| b != 0) {
+        return Err(CapiError::type_error(
+            "RLMeshField reserved bytes must be zero",
+        ));
+    }
+    #[cfg(target_pointer_width = "32")]
+    if v._reserved3.iter().any(|&b| b != 0) {
         return Err(CapiError::type_error(
             "RLMeshField reserved bytes must be zero",
         ));
@@ -1043,13 +1061,14 @@ pub(crate) unsafe fn parse_part(p: *const RLMeshConcatPart) -> Result<a::ConcatP
 }
 pub(crate) unsafe fn parse_input(
     p: *const RLMeshInputNode,
-    depth: usize,
+    active: &mut Vec<usize>,
 ) -> Result<a::InputNode, CapiError> {
-    if depth > 256 {
-        return Err(CapiError::invalid_arg("input tree is too deep or cyclic"));
+    if active.contains(&(p as usize)) {
+        return Err(CapiError::invalid_arg("cyclic InputNode tree"));
     }
+    active.push(p as usize);
     let p = unsafe { p.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null InputNode"))?;
-    Ok(match p.kind {
+    let node = match p.kind {
         1 => unsafe { parse_image(p.leaf.cast()) }?.into(),
         2 => unsafe { parse_state(p.leaf.cast()) }?.into(),
         3 => unsafe { parse_concat(p.leaf.cast()) }?.into(),
@@ -1059,7 +1078,7 @@ pub(crate) unsafe fn parse_input(
             let nodes = unsafe { slice_arg(p.children, p.children_len, "children") }?;
             let children = nodes
                 .iter()
-                .map(|n| unsafe { parse_input(n, depth + 1) })
+                .map(|n| unsafe { parse_input(n, active) })
                 .collect::<Result<Vec<_>, _>>()?;
             if p.kind == 7 {
                 a::InputNode::tuple(children)
@@ -1073,19 +1092,20 @@ pub(crate) unsafe fn parse_input(
             }
         }
         _ => return Err(CapiError::invalid_arg("invalid InputNode kind")),
-    })
+    };
+    active.pop();
+    Ok(node)
 }
 pub(crate) unsafe fn parse_obs(
     p: *const RLMeshObsNode,
-    depth: usize,
+    active: &mut Vec<usize>,
 ) -> Result<a::ObsNode, CapiError> {
-    if depth > 256 {
-        return Err(CapiError::invalid_arg(
-            "observation tree is too deep or cyclic",
-        ));
+    if active.contains(&(p as usize)) {
+        return Err(CapiError::invalid_arg("cyclic ObsNode tree"));
     }
+    active.push(p as usize);
     let p = unsafe { p.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null ObsNode"))?;
-    Ok(match p.kind {
+    let node = match p.kind {
         1 => unsafe { parse_image_tag(p.leaf.cast()) }?.into(),
         2 => unsafe { parse_state_tag(p.leaf.cast()) }?.into(),
         3 => unsafe { parse_text_tag(p.leaf.cast()) }?.into(),
@@ -1094,7 +1114,7 @@ pub(crate) unsafe fn parse_obs(
             let nodes = unsafe { slice_arg(p.children, p.children_len, "children") }?;
             let children = nodes
                 .iter()
-                .map(|n| unsafe { parse_obs(n, depth + 1) })
+                .map(|n| unsafe { parse_obs(n, active) })
                 .collect::<Result<Vec<_>, _>>()?;
             if p.kind == 6 {
                 a::ObsNode::tuple(children)
@@ -1108,5 +1128,7 @@ pub(crate) unsafe fn parse_obs(
             }
         }
         _ => return Err(CapiError::invalid_arg("invalid ObsNode kind")),
-    })
+    };
+    active.pop();
+    Ok(node)
 }

@@ -2,7 +2,7 @@
 #![allow(unsafe_code)] // C callbacks, borrowed immutable trees and owned handles.
 mod inputs;
 mod records;
-mod runtime;
+pub(crate) mod runtime;
 mod views;
 use crate::abi::{
     sizing,
@@ -38,7 +38,7 @@ impl RLMeshEnvTags {
         Self(value, Arc::new(view))
     }
 }
-unsafe fn required(p: *const c_char, name: &str) -> Result<String, CapiError> {
+pub(crate) unsafe fn required(p: *const c_char, name: &str) -> Result<String, CapiError> {
     unsafe { ffi::text(p) }?.ok_or_else(|| CapiError::type_error(format!("{name} is required")))
 }
 unsafe fn sized<T: Copy>(p: *const T, name: &str) -> Result<T, CapiError> {
@@ -52,7 +52,10 @@ unsafe fn optional_slice<T: Copy>(
     let values = unsafe { slice_arg(p, n, name) }?;
     Ok((!p.is_null()).then(|| values.to_vec()))
 }
-unsafe fn strings(p: *const *const c_char, n: usize) -> Result<Option<Vec<String>>, CapiError> {
+pub(crate) unsafe fn strings(
+    p: *const *const c_char,
+    n: usize,
+) -> Result<Option<Vec<String>>, CapiError> {
     let values = unsafe { slice_arg(p, n, "strings") }?;
     if p.is_null() {
         return Ok(None);
@@ -308,7 +311,7 @@ pub unsafe extern "C" fn rlmesh_model_spec_new(
 ) -> RLMeshStatus {
     guard(|| {
         write_out(out, std::ptr::null_mut())?;
-        let value = a::ModelSpec::new(unsafe { parse_input(input, 0) }?, unsafe {
+        let value = a::ModelSpec::new(unsafe { parse_input(input, &mut Vec::new()) }?, unsafe {
             parse_action(output)
         }?)?;
         write_out(out, Box::into_raw(Box::new(RLMeshModelSpec::new(value))))
@@ -322,7 +325,7 @@ pub unsafe extern "C" fn rlmesh_env_tags_new(
 ) -> RLMeshStatus {
     guard(|| {
         write_out(out, std::ptr::null_mut())?;
-        let value = a::EnvTags::new(unsafe { parse_obs(input, 0) }?, unsafe {
+        let value = a::EnvTags::new(unsafe { parse_obs(input, &mut Vec::new()) }?, unsafe {
             parse_action(output)
         }?)?;
         write_out(out, Box::into_raw(Box::new(RLMeshEnvTags::new(value))))
@@ -505,10 +508,12 @@ pub unsafe extern "C" fn rlmesh_rotation_from_matrix(
         if rows.is_null() || values.is_null() || out.is_null() {
             return Err(CapiError::invalid_arg("null matrix, value or out"));
         }
-        let original = unsafe { sized(out, "RLMeshRotation") }?;
         let rows = unsafe { [rows.read(), rows.add(1).read(), rows.add(2).read()] };
         let value = a::Rotation::from_matrix(rows);
-        let mut v = original;
+        // This is an output record: inspect only its size, and leave future
+        // caller fields untouched rather than applying input-tail validation.
+        let mut v: RLMeshRotation = unsafe { std::mem::zeroed() };
+        v.struct_size = std::mem::size_of_val(&v);
         v.encoding = number_rotation_encoding(value.encoding);
         v.value = values;
         v.value_len = 6;
