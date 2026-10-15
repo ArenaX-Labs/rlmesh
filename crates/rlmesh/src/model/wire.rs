@@ -84,6 +84,7 @@ pub(super) fn model_observation_from_endpoint_request(
         .map(|info| crate::model::types::EpisodeInfo {
             episode_id: info.episode_id,
             seed: info.seed,
+            env_id: context.env_id.clone(),
         })
         .collect();
     let route = ModelRouteContext {
@@ -94,6 +95,7 @@ pub(super) fn model_observation_from_endpoint_request(
     };
     validate_predict_route(&route)?;
     let num_envs = route.episodes.len();
+    let route_env_id = route.env_id.clone();
     let history = request
         .history
         .into_iter()
@@ -105,6 +107,7 @@ pub(super) fn model_observation_from_endpoint_request(
                 .map(|info| crate::model::types::EpisodeInfo {
                     episode_id: info.episode_id,
                     seed: info.seed,
+                    env_id: route_env_id.clone(),
                 })
                 .collect(),
             step: frame.step,

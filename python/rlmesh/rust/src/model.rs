@@ -4,11 +4,11 @@ use pyo3::prelude::*;
 use pyo3_stub_gen::derive::{gen_methods_from_python, gen_stub_pyclass, gen_stub_pyfunction};
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::inventory::submit;
-use rlmesh::{
-    AdaptedModelHandler, BindAddress, ConnectAddress, EpisodeInfo, Error as RLMeshError,
-    ModelObservation, ModelWorker, PredictFn, RemoteModel, RouteConfig, RouteResolver,
-    RunLocalOptions, ServeModelOptions,
+use rlmesh::binding::model::{
+    AdaptedModelHandler, EpisodeInfo, ModelObservation, ModelWorker, PredictFn, PredictFrames,
+    RouteConfig, RouteResolver, RunLocalOptions, ServeModelOptions,
 };
+use rlmesh::{BindAddress, ConnectAddress, Error as RLMeshError, RemoteModel};
 use rlmesh_adapters::v1::Value;
 use rlmesh_spaces::{EnvContract, SpaceValue, spaces::SpaceSpec};
 use std::collections::HashMap;
@@ -301,10 +301,10 @@ impl PredictFn for PyPredict {
         &self,
         observation: ModelObservation,
         execution_horizon: u32,
-    ) -> rlmesh::Result<rlmesh::PredictFrames> {
+    ) -> rlmesh::Result<PredictFrames> {
         let horizon = execution_horizon.max(1) as usize;
         if horizon <= 1 || self.predict_chunk_fn.is_none() || observation.num_envs != 1 {
-            return Ok(rlmesh::PredictFrames {
+            return Ok(PredictFrames {
                 actions: self.predict_spec_less(observation)?,
                 replay: Vec::new(),
             });
@@ -316,7 +316,7 @@ impl PredictFn for PyPredict {
         let lanes = observation
             .decoded_lanes()
             .map_err(|err| RLMeshError::Internal(err.to_string()))?;
-        Python::attach(|py| -> PyResult<rlmesh::PredictFrames> {
+        Python::attach(|py| -> PyResult<PredictFrames> {
             let contract = observation.env_contract.as_ref();
             let observation_space = contract
                 .and_then(|contract| contract.observation_space.as_ref())
@@ -367,7 +367,7 @@ impl PredictFn for PyPredict {
                     "predict_chunk returned an empty chunk; return at least one action",
                 )
             })?;
-            Ok(rlmesh::PredictFrames {
+            Ok(PredictFrames {
                 actions: vec![first],
                 replay: frames.map(|frame| vec![frame]).collect(),
             })

@@ -192,7 +192,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 /// R-16's condition: the thread is polling a tokio task.
-fn in_async_context() -> bool {
+pub(crate) fn in_async_context() -> bool {
     tokio::task::try_id().is_some()
 }
 

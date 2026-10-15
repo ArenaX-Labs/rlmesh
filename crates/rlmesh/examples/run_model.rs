@@ -1,9 +1,10 @@
 //! Drive a model against a running environment server.
 //!
 //! This is the Rust side of the quickstart loop. Start `serve_env` first, then
-//! run this: the worker connects to the environment, calls `predict` on every
-//! observation, and returns one action per step until the episode budget runs
-//! out. The same worker can drive an environment served from any language.
+//! run this: the model connects to the environment, `predict` runs on every
+//! observation, and one action goes back per step until the episode budget
+//! runs out. The same model can drive an environment served from any
+//! language.
 //!
 //! ```bash
 //! cargo run -p rlmesh --example serve_env    # in one terminal
@@ -11,33 +12,33 @@
 //! ```
 #![allow(clippy::print_stdout)]
 
-use rlmesh::SpaceValue;
 use rlmesh::prelude::*;
+use rlmesh::{Model, ModelOptions};
 
-/// A model that always takes action 0, one per lane. The codec encodes the
-/// typed value against the route's action space, so the same `predict` works
-/// for any discrete env without hand-packing bytes.
-struct ConstantModel;
+/// A policy that always takes action 0. The codec encodes the value against
+/// the env's action space, so the same `predict` works for any discrete env.
+struct ConstantPolicy;
 
-#[rlmesh::async_trait]
-impl ModelHandler for ConstantModel {
-    async fn predict(&mut self, obs: ModelObservation) -> rlmesh::Result<Vec<SpaceValue>> {
-        Ok((0..obs.num_envs).map(|_| SpaceValue::Discrete(0)).collect())
+impl Policy for ConstantPolicy {
+    fn predict(&mut self, _observation: Value) -> rlmesh::Result<Value> {
+        Ok(Value::Int(0))
     }
 }
 
-#[tokio::main]
-async fn main() -> rlmesh::Result<()> {
+fn main() -> rlmesh::Result<()> {
     let address = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "127.0.0.1:5555".to_string());
 
-    let model = ConstantModel;
+    let model = Model::new(ConstantPolicy, ModelOptions::default())?;
 
     println!("driving model against {address} for 3 episodes");
-    ModelWorker::new(model)
-        .run_local_async(RunLocalOptions::parse(&address)?.for_episodes(3))
-        .await?;
+    // The in-process run path until `rlmesh::run` lands.
+    rlmesh::binding::model::run_model_local(
+        &model,
+        rlmesh::binding::model::RunLocalOptions::parse(&address)?.for_episodes(3),
+    )?;
+    model.close()?;
     println!("done");
     Ok(())
 }

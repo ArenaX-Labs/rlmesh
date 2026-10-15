@@ -1,7 +1,7 @@
 //! Served model endpoint: the tonic `ModelService` implementation.
 //!
 //! This implementation stays in the facade because it is parameterized over the
-//! public [`crate::ModelHandler`] family. Moving it into `rlmesh-grpc` would
+//! public [`crate::binding::model::ModelHandler`] family. Moving it into `rlmesh-grpc` would
 //! introduce a dependency cycle or force a new lower-level model trait.
 
 use std::collections::HashMap;
@@ -40,7 +40,7 @@ use crate::{BindAddress, Error, Result, ServeOptions, binding::spaces};
 
 /// A model server that has bound its listener but not yet started serving.
 ///
-/// Created by [`crate::ModelWorker::bind_async`]. Use
+/// Created by [`crate::binding::model::ModelWorker::bind_async`]. Use
 /// [`BoundModelServer::local_addr`]
 /// to read the resolved bind address (e.g. the OS-assigned port for TCP port
 /// 0), then [`BoundModelServer::serve`] to run until shutdown.

@@ -43,7 +43,7 @@ use crate::{ConnectAddress, Error, Result, binding::spaces};
 /// ```
 ///
 /// Use this when your code owns the loop; to hand the loop to rlmesh instead,
-/// see [`ModelWorker::run_local`](crate::ModelWorker).
+/// see [`ModelWorker::run_local`](crate::binding::model::ModelWorker).
 ///
 /// A `RemoteModel` drives a single env lane (`env_index = 0`): it configures one
 /// route from the env contract and sends one observation per `predict`.

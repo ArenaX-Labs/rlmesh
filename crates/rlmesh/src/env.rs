@@ -14,7 +14,7 @@ mod factory;
 pub(crate) mod lanes;
 pub(crate) mod legacy;
 pub(crate) mod legacy_server;
-mod server;
+pub(crate) mod server;
 pub(crate) mod signals;
 mod single_lane;
 mod sync_wire;

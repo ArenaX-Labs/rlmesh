@@ -1153,7 +1153,7 @@ async fn public_env_runtime_adapter_drives_a_remote_env_with_telemetry() {
 
     // The public adapter lets external RuntimeDriver embedders drive a remote
     // env without re-implementing the take_last_endpoint_total_ns choreography.
-    let mut adapter = crate::EnvClientRuntimeEnv::new(client);
+    let mut adapter = super::local::EnvClientRuntimeEnv::new(client);
     let reset = adapter
         .reset(rlmesh_proto::env::v1::ResetRequest {
             seeds: vec![7],
