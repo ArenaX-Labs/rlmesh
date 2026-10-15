@@ -2691,6 +2691,9 @@ RLMESH_API RLMeshStatus rlmesh_env_server_address(const RLMeshEnvServer*, RLMesh
 RLMESH_API const RLMeshEnvContract* rlmesh_env_server_env_contract(const RLMeshEnvServer*);
 RLMESH_API RLMeshStatus rlmesh_env_server_start(RLMeshEnvServer*);
 RLMESH_API RLMeshStatus rlmesh_env_server_serve(RLMeshEnvServer*);
+/* timeout is seconds (NULL = no deadline). A stopped server sets out_stopped
+ * true even when returning its background serve error, which is returned once.
+ * Timeout expiry sets false; misuse and invalid inputs leave it untouched. */
 RLMESH_API RLMeshStatus rlmesh_env_server_wait(RLMeshEnvServer*, const double* timeout,
                                                bool* out_stopped);
 RLMESH_API RLMeshStatus rlmesh_env_server_shutdown(RLMeshEnvServer*);

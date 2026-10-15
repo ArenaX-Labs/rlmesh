@@ -566,17 +566,25 @@ impl EnvServer {
     /// first, `Ok(true)` once it has stopped. The call that observes the stop
     /// returns the serve error, once. `timeout` may be zero.
     pub fn wait(&self, timeout: Option<Duration>) -> Result<bool> {
+        self.wait_outcome(timeout)?
+            .transpose()
+            .map(|stopped| stopped.is_some())
+    }
+
+    /// Keep a stopped server's serve result separate from wait misuse, so
+    /// bindings can report the stopped flag even when serving failed.
+    pub(crate) fn wait_outcome(&self, timeout: Option<Duration>) -> Result<Option<Result<()>>> {
         refuse_in_async_context("wait")?;
         let started = Instant::now();
         loop {
             if let Some(result) = self.poll_wait()? {
-                return result.map(|()| true);
+                return Ok(Some(result));
             }
             let nap = match timeout {
                 Some(timeout) => {
                     let elapsed = started.elapsed();
                     if elapsed >= timeout {
-                        return Ok(false);
+                        return Ok(None);
                     }
                     (timeout - elapsed).min(Duration::from_millis(10))
                 }

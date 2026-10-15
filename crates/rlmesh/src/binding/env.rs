@@ -21,6 +21,16 @@ pub use rlmesh_proto::{EndpointPhases, lane_skew_ns};
 /// it dials, and its edition cell (RMT-20).
 pub use crate::env::client::{CoreConnect, EditionCell, EnvClientCore};
 
+/// Wait without flattening a stopped server's serve error into a misuse error.
+/// `None` means timeout; `Some(result)` means stopped, even when `result` is an
+/// error. C writes its stopped output before propagating that serve result.
+pub fn env_server_wait(
+    server: &crate::EnvServer,
+    timeout: Option<std::time::Duration>,
+) -> crate::Result<Option<crate::Result<()>>> {
+    server.wait_outcome(timeout)
+}
+
 /// The core behind a [`crate::RemoteEnv`] (the Runtime class while a session
 /// borrows it).
 pub fn env_core(env: &crate::RemoteEnv) -> crate::Result<&EnvClientCore> {

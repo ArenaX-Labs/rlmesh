@@ -334,7 +334,13 @@ pub unsafe extern "C" fn rlmesh_env_server_wait(
         let timeout = unsafe { timeout.as_ref() }
             .map(|&v| ffi::duration(v, "timeout"))
             .transpose()?;
-        write_out(out_stopped, require(server)?.server.wait(timeout)?)
+        match rlmesh::binding::env::env_server_wait(&require(server)?.server, timeout)? {
+            None => write_out(out_stopped, false),
+            Some(result) => {
+                write_out(out_stopped, true)?;
+                result.map_err(Into::into)
+            }
+        }
     })
 }
 #[unsafe(no_mangle)]
