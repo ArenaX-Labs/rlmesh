@@ -598,11 +598,18 @@ pub unsafe extern "C" fn rlmesh_model_new(
     })
 }
 
-/// Options for `rlmesh_model_run_local`. Pass NULL for defaults (one unbounded,
-/// unseeded run until the environment ends). Every field is unset at 0 / NULL.
+/// Options for `rlmesh_model_run_local`. Pass NULL for defaults (one unseeded
+/// episode, Python's `run()` default). Every field is unset at 0 / NULL.
 #[repr(C)]
 pub struct RLMeshRunOptions {
-    /// Stop after this many episodes (0 = until the env ends).
+    /// The exact number of episodes to run, resolved like Python's
+    /// `run(episodes=...)`. 0 = unset: one episode, or one per seed when
+    /// `episode_seeds` is given. A non-zero count with `episode_seeds` must
+    /// match the seed count (`RLMESH_ERR_INVALID_ARGUMENT` otherwise). There is
+    /// no unbounded run.
+    // TODO(docs/specs/language-parity/running.md): Python's `episodes=0` (run
+    // nothing) is not expressible here, since 0 means unset; it needs the
+    // planned `has_episodes` field rather than a sentinel.
     pub max_episodes: u64,
     /// Whether `base_seed` is set.
     pub seeded: bool,
@@ -726,6 +733,10 @@ pub unsafe extern "C" fn rlmesh_model_run_local(
             .map_err(|err| CapiError::invalid_arg(format!("invalid env address: {err}")))?;
         let handler = CModelHandler::new(model);
         let run = run_local_options(address, options);
+        // Python raises ValueError for a seed count that disagrees with the
+        // episode count; refuse it here as an argument error, before dialing.
+        run.episode_budget()
+            .map_err(|err| CapiError::invalid_arg(err.to_string()))?;
         let cancel = model.cancel.clone();
         let report = model
             .runtime
@@ -1769,6 +1780,58 @@ mod tests {
         assert_eq!(
             cancelled,
             RLMeshStatus::Cancelled,
+            "{}",
+            last_error_message()
+        );
+        unsafe { rlmesh_model_free(model) };
+    }
+
+    /// A zeroed `max_episodes` is unset, not unbounded: Python's default budget
+    /// of one episode, or one per seed; a count that disagrees with the seeds
+    /// is an argument error, refused before the env is dialed.
+    #[test]
+    fn run_local_budget_defaults_like_python() {
+        let env = EnvHarness::start();
+        let counters = Counters::default();
+        let model = new_model(&counting_vtable(), counters.user_data());
+        let address = CString::new(env.address.clone()).expect("address");
+
+        // NULL options and a zeroed struct both run exactly one episode.
+        let mut report = RLMeshRunReport::default();
+        let status = unsafe {
+            rlmesh_model_run_local(model, address.as_ptr(), std::ptr::null(), &mut report)
+        };
+        assert_eq!(status, RLMeshStatus::Ok, "{}", last_error_message());
+        assert_eq!(report.total_episodes, 1);
+        let unset = unset_run_options();
+        let status =
+            unsafe { rlmesh_model_run_local(model, address.as_ptr(), &unset, &mut report) };
+        assert_eq!(status, RLMeshStatus::Ok, "{}", last_error_message());
+        assert_eq!(report.total_episodes, 1);
+
+        // Seeds alone set the count.
+        let seeds = [5_i64, 6];
+        let seeded = RLMeshRunOptions {
+            episode_seeds: seeds.as_ptr(),
+            num_episode_seeds: seeds.len(),
+            ..unset_run_options()
+        };
+        let status =
+            unsafe { rlmesh_model_run_local(model, address.as_ptr(), &seeded, &mut report) };
+        assert_eq!(status, RLMeshStatus::Ok, "{}", last_error_message());
+        assert_eq!(report.total_episodes, 2);
+
+        // A count that disagrees with the seeds is refused.
+        let mismatched = RLMeshRunOptions {
+            max_episodes: 3,
+            ..seeded
+        };
+        let status = unsafe {
+            rlmesh_model_run_local(model, address.as_ptr(), &mismatched, std::ptr::null_mut())
+        };
+        assert_eq!(status, RLMeshStatus::InvalidArgument);
+        assert!(
+            last_error_message().contains("does not match"),
             "{}",
             last_error_message()
         );

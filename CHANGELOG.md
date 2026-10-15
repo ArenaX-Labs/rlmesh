@@ -61,6 +61,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 - Importing `rlmesh` in an embedded interpreter that installed no signal handlers ignores SIGPIPE, as CPython itself does, so a peer that hangs up mid-write fails that write instead of killing the host process. A handler the host installed is left alone.
 
+- A C or C++ `rlmesh_model_run_local` / `Model::run_local` (and the Rust `ModelWorker::run_local`) runs the same number of episodes as Python's `Model.run`: one by default, or one per seed when `episode_seeds` is given, instead of running until the env ends. A `max_episodes` that disagrees with the seed count fails with `RLMESH_ERR_INVALID_ARGUMENT`. In Rust, `for_episodes(0)` runs nothing; C and C++ cannot ask for zero episodes yet, since `max_episodes = 0` means unset.
+
 ### Changed
 
 - Adapter resolution errors for a missing role now suggest near matches among the roles the other side offers (`did you mean "x/goal_body"?`), and, when an `x/` role is involved, say that `x/` roles bind only to the identical string. The suggestion is only a hint: binding still matches roles exactly, and one registered role is never suggested for another. The zero-fill caution for an optional state input names the absent role and part (`zero-filled because the env offers no match for "proprio/eef_pos" (part "right_arm")`) instead of only counting components.

@@ -444,10 +444,17 @@ typedef struct RLMeshModel RLMeshModel;
 RLMESH_API RLMeshStatus rlmesh_model_new(const RLMeshModelVtable* vtable, void* user_data,
                                          RLMeshModel** out);
 
-/* Run options for rlmesh_model_run_local. NULL == defaults (run until the env
- * ends, unseeded, no caps). Every field is "unset" at 0 / NULL. */
+/* Run options for rlmesh_model_run_local. NULL == defaults (one episode,
+ * unseeded, no caps). Every field is "unset" at 0 / NULL.
+ *
+ * Episode budget (Python's run(episodes=...)): max_episodes is the exact
+ * episode count. 0 = unset: one episode, or one per seed when episode_seeds is
+ * given. A non-zero count with episode_seeds must equal num_episode_seeds
+ * (RLMESH_ERR_INVALID_ARGUMENT otherwise). There is no unbounded run.
+ * TODO(docs/specs/language-parity/running.md): Python's episodes=0 (run
+ * nothing) is not expressible here, since 0 means unset. */
 typedef struct RLMeshRunOptions {
-  uint64_t max_episodes;        /* 0 = until the env ends */
+  uint64_t max_episodes;        /* exact episode count; 0 = unset (1, or the seed count) */
   bool seeded;                  /* whether base_seed is set */
   int64_t base_seed;            /* seed for episode 0; later episodes derive from it */
   int64_t max_episode_steps;    /* truncate an episode after this many steps; 0 = unset */

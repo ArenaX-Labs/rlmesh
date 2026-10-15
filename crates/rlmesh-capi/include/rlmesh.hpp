@@ -885,9 +885,12 @@ class Request {
 };
 
 /// Options for Model::run_local — the C RLMeshRunOptions, field for field.
-/// Default-constructed == the C defaults (run until the env ends, no caps).
+/// Default-constructed == the C defaults (one episode, no caps).
 struct RunOptions {
-  /// Stop after this many episodes (0 = until the env ends).
+  /// The exact episode count, resolved like Python's run(episodes=...).
+  /// 0 = unset: one episode, or one per seed when `episode_seeds` is given; a
+  /// non-zero count with `episode_seeds` must match the seed count. There is no
+  /// unbounded run, and 0 cannot mean "run nothing" (see rlmesh.h).
   uint64_t max_episodes = 0;
   /// Seed episode 0 with `base_seed`; later episodes derive from it.
   bool seeded = false;

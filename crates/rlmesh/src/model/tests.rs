@@ -229,6 +229,86 @@ async fn user_set_base_seed_reaches_the_env_reset_seeds() {
 }
 
 #[test]
+fn episode_budget_resolves_like_python() {
+    let base = RunLocalOptions::parse("tcp://env:1").unwrap();
+    // Neither given: one episode (Python's `episodes=None`).
+    assert_eq!(base.episode_budget().unwrap(), 1);
+    // Seeds only: one episode per seed.
+    let seeded = base.clone().episode_seeds(vec![3, 4, 5]);
+    assert_eq!(seeded.episode_budget().unwrap(), 3);
+    // An explicit count wins, zero included (runs nothing).
+    assert_eq!(base.clone().for_episodes(7).episode_budget().unwrap(), 7);
+    assert_eq!(base.clone().for_episodes(0).episode_budget().unwrap(), 0);
+    // Both given: the counts must match.
+    assert_eq!(seeded.clone().for_episodes(3).episode_budget().unwrap(), 3);
+    let error = seeded.for_episodes(2).episode_budget().unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("does not match len(episode_seeds)=3"),
+        "{error}"
+    );
+}
+
+/// A run with no explicit budget runs one episode, not "until the env ends".
+#[tokio::test]
+async fn run_local_defaults_to_one_episode() {
+    let bound = crate::EnvServer::new(SmokeEnv::new())
+        .bind(BindAddress::Tcp {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+        })
+        .await
+        .unwrap();
+    let address = bound.local_addr().to_string();
+    let server = tokio::spawn(async move { bound.serve().await });
+
+    let report = ModelWorker::new(SmokeModel {
+        predicts: Arc::new(AtomicUsize::new(0)),
+        closes: Arc::new(AtomicUsize::new(0)),
+    })
+    .run_local_async(RunLocalOptions::parse(&address).unwrap())
+    .await
+    .unwrap();
+    server.abort();
+    assert_eq!(report.total_episodes, 1);
+    assert_eq!(report.episodes.len(), 1);
+}
+
+/// `for_episodes(0)` runs nothing and never dials the env, like Python's
+/// `run(episodes=0)`; a mismatched seed count is refused before dialing.
+#[tokio::test]
+async fn run_local_zero_episodes_runs_nothing() {
+    // Nothing listens on port 1: dialing would fail the run.
+    let unreachable = "tcp://127.0.0.1:1";
+    let predicts = Arc::new(AtomicUsize::new(0));
+    let report = ModelWorker::new(SmokeModel {
+        predicts: Arc::clone(&predicts),
+        closes: Arc::new(AtomicUsize::new(0)),
+    })
+    .run_local_async(RunLocalOptions::parse(unreachable).unwrap().for_episodes(0))
+    .await
+    .unwrap();
+    assert_eq!(report.total_episodes, 0);
+    assert!(report.episodes.is_empty());
+    assert_eq!(predicts.load(Ordering::SeqCst), 0);
+
+    let error = ModelWorker::new(SmokeModel {
+        predicts: Arc::clone(&predicts),
+        closes: Arc::new(AtomicUsize::new(0)),
+    })
+    .run_local_async(
+        RunLocalOptions::parse(unreachable)
+            .unwrap()
+            .for_episodes(2)
+            .episode_seeds(vec![1]),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("does not match"), "{error}");
+}
+
+#[test]
 fn run_local_and_serve_options_cover_all_axes() {
     let run = RunLocalOptions::parse("tcp://env:50051")
         .unwrap()

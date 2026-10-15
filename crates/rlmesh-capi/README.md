@@ -151,7 +151,9 @@ re-enter its own model handle. `rlmesh_model_run_local` fills an optional
 `RLMeshRunReport`; `rlmesh_model_cancel` stops a blocking run/serve from another
 thread.
 
-`RLMeshRunOptions` bounds and seeds a run: `max_episodes`, `base_seed` (when
+`RLMeshRunOptions` bounds and seeds a run: `max_episodes` (the exact episode
+count, as in the Python SDK's `run(episodes=...)`; 0 runs one episode, or one per
+seed when `episode_seeds` is given, never "until the env ends"), `base_seed` (when
 `seeded`) or explicit `episode_seeds`, the per-episode step/time caps,
 `execution_horizon`, and `trial_index_base` (when `trial_indexed`) — the first
 trial ordinal the episodes walk, delivered as `reset(options={"trial_index": k})`
