@@ -119,6 +119,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ### Changed
 
+- Inside its own `Session.run` hooks a session offers only the `RunContext` protocol: `contract`, `num_envs`, `read` and `frame_sources` keep working, and `reset`, `step`, `predict`, `run`, `close`, `reader`, `observation_roles`, `selected_workflow_edition` and `done` raise `RuntimeError`. Before, a hook could step or close the session under its own loop and corrupt it. Outside the hooks every member works as before.
+
+- When `Session.run` fails, the run's own exception is raised even if the model's `on_episode_end` for the last episode also fails, as `Model.run` does; before, that `on_episode_end` error replaced it. On success, an `on_run_end` error now wins over the last episode end's.
+
+- A native `Model.run` step event without its action is an internal `RLMeshException` instead of a `StepEvent` whose `action` is `None`: `StepEvent.action` is never `None`.
+
 - A second `Model.run` on a model while one is in progress, from any thread (a hook included), fails at once with `RuntimeError`; before, the two runs shared the model's per-run instruction, trust override and hook context. Predicts from other sessions on the model still run, one at a time.
 
 - `Model.run` checks its options before dialing anything, with `ValueError`, also when `episodes=0`: `execution_horizon` above 1024 or above the model's `native_chunk` (before, a model error at route resolution), `max_episode_steps` below 1 or above `2**63 - 1`, `max_episode_seconds` not above 0, and `prefetch_lead` above `2**32 - 1` (before, an `OverflowError` or a runtime error). `max_episode_seconds=float("nan")` is a `ValueError` on both loops instead of meaning no cap; `float("inf")` stays no cap and is now accepted by a `NEXT_STEP` env on the native loop, as `None` is. A `NEXT_STEP` env's refusal of seeds, caps or a trial base, a lockstep vector env's refusal of `execution_horizon > 1`, and a vector env without a lane endpoint under driver-owned resets raise `ValueError` at connect instead of `RuntimeError`. `Session.run` resolves the episode budget and checks `max_episode_steps` (now also its upper bound) before connecting; `rlmesh.run` on the session loop (`RANDOM_SAMPLE`, a served model) checks the budget, caps and `trial_index_base` before the session dials; and `RemoteModel.session` checks `execution_horizon` (1 to 1024) and resolves `view` before dialing the env or the model.
