@@ -424,58 +424,62 @@ RLMESH_API RLMeshStatus rlmesh_trial_index(const RLMeshValue* options, const siz
  * space: shape + dtype + bounds for Box, n/start for Discrete, the length limits
  * for Text, the per-element category counts for MultiDiscrete, and a child walk
  * for Dict/Tuple. RLMESH_SPACE_KIND_UNKNOWN when `spec` is NULL or unspecified. */
-RLMESH_API RLMeshSpaceKind rlmesh_space_type(const RLMeshSpaceSpec* spec);
-RLMESH_API RLMeshDType rlmesh_space_dtype(const RLMeshSpaceSpec* spec);
+RLMESH_API RLMeshSpaceKind rlmesh_ext_legacy_space_type(const RLMeshSpaceSpec* spec);
+RLMESH_API RLMeshDType rlmesh_ext_legacy_space_dtype(const RLMeshSpaceSpec* spec);
 /* Rank; 0 for a scalar shape or a NULL spec. */
-RLMESH_API size_t rlmesh_space_ndim(const RLMeshSpaceSpec* spec);
+RLMESH_API size_t rlmesh_ext_legacy_space_ndim(const RLMeshSpaceSpec* spec);
 /* Shape into `out` (capacity `cap`); a NULL `out` is OK for a rank-0 space. */
-RLMESH_API RLMeshStatus rlmesh_space_copy_shape(const RLMeshSpaceSpec* spec, int64_t* out,
-                                                size_t cap);
+RLMESH_API RLMeshStatus rlmesh_ext_legacy_space_copy_shape(const RLMeshSpaceSpec* spec,
+                                                           int64_t* out, size_t cap);
 
 /* Composite walk: child count into `*out`, then children by index (Tuple) or by
  * key (Dict). The borrow accessors return NULL for the wrong kind or an absent
  * index/key; children stay valid while `spec` lives. */
-RLMESH_API RLMeshStatus rlmesh_space_len(const RLMeshSpaceSpec* spec, size_t* out);
-RLMESH_API const RLMeshSpaceSpec* rlmesh_space_tuple_get(const RLMeshSpaceSpec* spec, size_t index);
-RLMESH_API const RLMeshSpaceSpec* rlmesh_space_dict_get(const RLMeshSpaceSpec* spec,
-                                                        const char* key);
+RLMESH_API RLMeshStatus rlmesh_ext_legacy_space_len(const RLMeshSpaceSpec* spec, size_t* out);
+RLMESH_API const RLMeshSpaceSpec* rlmesh_ext_legacy_space_tuple_get(const RLMeshSpaceSpec* spec,
+                                                                    size_t index);
+RLMESH_API const RLMeshSpaceSpec* rlmesh_ext_legacy_space_dict_get(const RLMeshSpaceSpec* spec,
+                                                                   const char* key);
 /* The `index`-th dict key (declaration order, parallel to the children, and the
  * order the wire encodes the dict's leaves in): `*out_len` UTF-8 bytes, NOT
  * NUL-terminated, valid while `spec` lives. A Value dict preserves insertion order;
  * pair a space child with a value child by key. */
-RLMESH_API RLMeshStatus rlmesh_space_dict_key(const RLMeshSpaceSpec* spec, size_t index,
-                                              const char** out_ptr, size_t* out_len);
+RLMESH_API RLMeshStatus rlmesh_ext_legacy_space_dict_key(const RLMeshSpaceSpec* spec, size_t index,
+                                                         const char** out_ptr, size_t* out_len);
 /* The `index`-th dict child, in the SAME declaration order as
- * rlmesh_space_dict_key — so key(i) names get_at(i). NULL when `spec` is not a
+ * rlmesh_ext_legacy_space_dict_key — so key(i) names get_at(i). NULL when `spec` is not a
  * Dict or `index` is out of range. */
-RLMESH_API const RLMeshSpaceSpec* rlmesh_space_dict_get_at(const RLMeshSpaceSpec* spec,
-                                                           size_t index);
+RLMESH_API const RLMeshSpaceSpec* rlmesh_ext_legacy_space_dict_get_at(const RLMeshSpaceSpec* spec,
+                                                                      size_t index);
 
-/* Leaf parameters. `rlmesh_space_box_bounds` reports the `index`-th element's
+/* Leaf parameters. `rlmesh_ext_legacy_space_box_bounds` reports the `index`-th element's
  * inclusive bounds in row-major order (a uniform bound broadcasts; an undeclared
  * one reads as -inf/+inf); `index` must be below the element count.
  * A Discrete space's valid values are `start ..= start + n - 1`. For the paired
  * out-params, either may be NULL to skip it. */
-RLMESH_API RLMeshStatus rlmesh_space_box_bounds(const RLMeshSpaceSpec* spec, size_t index,
-                                                double* out_low, double* out_high);
-RLMESH_API RLMeshStatus rlmesh_space_discrete_n(const RLMeshSpaceSpec* spec, int64_t* out_n,
-                                                int64_t* out_start);
-RLMESH_API RLMeshStatus rlmesh_space_text_length(const RLMeshSpaceSpec* spec, int64_t* out_min,
-                                                 int64_t* out_max);
+RLMESH_API RLMeshStatus rlmesh_ext_legacy_space_box_bounds(const RLMeshSpaceSpec* spec,
+                                                           size_t index, double* out_low,
+                                                           double* out_high);
+RLMESH_API RLMeshStatus rlmesh_ext_legacy_space_discrete_n(const RLMeshSpaceSpec* spec,
+                                                           int64_t* out_n, int64_t* out_start);
+RLMESH_API RLMeshStatus rlmesh_ext_legacy_space_text_length(const RLMeshSpaceSpec* spec,
+                                                            int64_t* out_min, int64_t* out_max);
 /* A Text space's allowed characters: `*out_len` UTF-8 bytes, NOT NUL-terminated,
  * valid while `spec` lives. An EMPTY charset means any character is allowed. */
-RLMESH_API RLMeshStatus rlmesh_space_text_charset(const RLMeshSpaceSpec* spec, const char** out_ptr,
-                                                  size_t* out_len);
+RLMESH_API RLMeshStatus rlmesh_ext_legacy_space_text_charset(const RLMeshSpaceSpec* spec,
+                                                             const char** out_ptr, size_t* out_len);
 /* One category count per element of the shape, row-major (capacity `cap`).
  * A MultiBinary space has no such table and no `n` field of its own: its
- * dimensions live entirely in the shape (rlmesh_space_ndim /
- * rlmesh_space_copy_shape), so MultiBinary([n]) reads as shape `[n]` and a
+ * dimensions live entirely in the shape (rlmesh_ext_legacy_space_ndim /
+ * rlmesh_ext_legacy_space_copy_shape), so MultiBinary([n]) reads as shape `[n]` and a
  * value for it carries exactly `n` elements — the shape's row-major element
  * count, for a multi-dimensional MultiBinary too. */
-RLMESH_API RLMeshStatus rlmesh_space_copy_nvec(const RLMeshSpaceSpec* spec, int64_t* out,
-                                               size_t cap);
+RLMESH_API RLMeshStatus rlmesh_ext_legacy_space_copy_nvec(const RLMeshSpaceSpec* spec, int64_t* out,
+                                                          size_t cap);
 
-/* Deprecated space builders: use rlmesh_box_new, rlmesh_discrete_new,
+/* Legacy C++ compatibility only (not the shared surface). Old ABI-4 builder
+ * names are removed. These fenced helpers will disappear with the C++ wave.
+ * Use rlmesh_box_new, rlmesh_discrete_new,
  * rlmesh_dict_new and rlmesh_ext_box_elementwise_new below, and lend their spec
  * with rlmesh_space_spec(). Each returns an OWNED spec, or NULL on error (detail
  * in rlmesh_last_error_message()); free it with rlmesh_space_spec_free unless a
@@ -484,25 +488,28 @@ RLMESH_API RLMeshStatus rlmesh_space_copy_nvec(const RLMeshSpaceSpec* spec, int6
  * dtype can represent (none negative for an unsigned dtype): an out-of-range
  * bound is RLMESH_ERR_INVALID_ARGUMENT, never clamped. A double holds every
  * integer only up to 2^53: a larger 64-bit bound is the double's exact value. */
-RLMESH_API RLMeshSpaceSpec* rlmesh_space_box(RLMeshDType dtype, const int64_t* shape, size_t ndim,
-                                             double low, double high);
+RLMESH_API RLMeshSpaceSpec* rlmesh_ext_legacy_space_box(RLMeshDType dtype, const int64_t* shape,
+                                                        size_t ndim, double low, double high);
 /* Per-element bounds: `low` / `high` each hold the shape's element count. */
-RLMESH_API RLMeshSpaceSpec* rlmesh_space_box_elementwise(RLMeshDType dtype, const int64_t* shape,
-                                                         size_t ndim, const double* low,
-                                                         const double* high);
-RLMESH_API RLMeshSpaceSpec* rlmesh_space_discrete(int64_t n, int64_t start);
-RLMESH_API RLMeshSpaceSpec* rlmesh_space_multi_binary(const int64_t* shape, size_t ndim);
-RLMESH_API RLMeshSpaceSpec* rlmesh_space_multi_discrete(const int64_t* nvec, size_t n);
+RLMESH_API RLMeshSpaceSpec* rlmesh_ext_legacy_space_box_elementwise(RLMeshDType dtype,
+                                                                    const int64_t* shape,
+                                                                    size_t ndim, const double* low,
+                                                                    const double* high);
+RLMESH_API RLMeshSpaceSpec* rlmesh_ext_legacy_space_discrete(int64_t n, int64_t start);
+RLMESH_API RLMeshSpaceSpec* rlmesh_ext_legacy_space_multi_binary(const int64_t* shape, size_t ndim);
+RLMESH_API RLMeshSpaceSpec* rlmesh_ext_legacy_space_multi_discrete(const int64_t* nvec, size_t n);
 /* `charset` NULL or "" allows any character. */
-RLMESH_API RLMeshSpaceSpec* rlmesh_space_text(int64_t min_length, int64_t max_length,
-                                              const char* charset);
+RLMESH_API RLMeshSpaceSpec* rlmesh_ext_legacy_space_text(int64_t min_length, int64_t max_length,
+                                                         const char* charset);
 /* The composite builders take ownership of every child on success and of
  * NOTHING on failure (NULL), whatever the reason, the same rule as
  * rlmesh_value_dict. Dict keys must be non-empty and unique; the built space
  * stores them sorted by key, whatever order they are passed in. */
-RLMESH_API RLMeshSpaceSpec* rlmesh_space_dict(const char* const* keys,
-                                              RLMeshSpaceSpec* const* children, size_t n);
-RLMESH_API RLMeshSpaceSpec* rlmesh_space_tuple(RLMeshSpaceSpec* const* children, size_t n);
+RLMESH_API RLMeshSpaceSpec* rlmesh_ext_legacy_space_dict(const char* const* keys,
+                                                         RLMeshSpaceSpec* const* children,
+                                                         size_t n);
+RLMESH_API RLMeshSpaceSpec* rlmesh_ext_legacy_space_tuple(RLMeshSpaceSpec* const* children,
+                                                          size_t n);
 /* Free an owned spec (a builder's or rlmesh_space_spec_clone's). Not for a
  * borrowed contract space, child or rlmesh_space_spec() result. NULL is a no-op. */
 RLMESH_API void rlmesh_space_spec_free(RLMeshSpaceSpec* spec);
@@ -616,15 +623,15 @@ RLMESH_API RLMeshStatus rlmesh_space_spec_repr(const RLMeshSpaceSpec* spec, RLMe
 RLMESH_API RLMeshStatus rlmesh_spaces_space_from_spec(const RLMeshSpaceSpec* spec,
                                                       RLMeshSpace** out);
 
-/* Space(spec), clone (shares the sampler), free. rlmesh_space_free also frees
- * an owned spec, as it did before RLMeshSpace existed; new code frees specs with
- * rlmesh_space_spec_free. */
+/* Space(spec), clone (shares the sampler), free. Free an owned spec with
+ * rlmesh_space_spec_free; the two opaque handle types are distinct. */
 RLMESH_API RLMeshStatus rlmesh_space_new(const RLMeshSpaceSpec* spec, RLMeshSpace** out);
 RLMESH_API RLMeshSpace* rlmesh_space_clone(const RLMeshSpace* space);
 RLMESH_API void rlmesh_space_free(RLMeshSpace* space);
 /* The space's spec, borrowed while any handle sharing the space lives. */
 RLMESH_API const RLMeshSpaceSpec* rlmesh_space_spec(const RLMeshSpace* space);
 RLMESH_API RLMeshSpaceKind rlmesh_space_kind(const RLMeshSpace* space);
+RLMESH_API RLMeshDType rlmesh_space_dtype(const RLMeshSpace* space);
 RLMESH_API RLMeshStatus rlmesh_space_shape(const RLMeshSpace* space, int64_t* out, size_t cap,
                                            size_t* out_len);
 /* seed(seed): `seed` NULL draws one from OS entropy; the seed applied goes to
@@ -1704,8 +1711,8 @@ RLMESH_API void rlmesh_callback_set_error(const char* message, bool recoverable)
  * before the callback returns wins. */
 RLMESH_API void rlmesh_callback_set_error_class(RLMeshErrorClass error_class, const char* message);
 
-/* The model callback vtable. Set struct_size = sizeof(RLMeshExtLegacyModelVtable); fields
- * beyond that are ignored (append-only). `predict` is required. The vtable is
+/* The model callback vtable. Set struct_size = sizeof(RLMeshExtLegacyModelVtable); unknown
+ * trailing bytes must be zero. `predict` is required. The vtable is
  * COPIED into the model at rlmesh_ext_legacy_model_new, so the caller's struct need not
  * outlive the model; `user_data` is kept by pointer and must.
  *
@@ -1732,6 +1739,8 @@ typedef struct RLMeshExtLegacyModelVtable {
   void (*on_episode_end)(void* user_data, const char* env_id, const char* episode_id);
   void (*on_close)(void* user_data);
 } RLMeshExtLegacyModelVtable;
+#define RLMESH_EXT_LEGACY_MODEL_VTABLE_MIN_SIZE sizeof(RLMeshExtLegacyModelVtable)
+#define RLMESH_EXT_LEGACY_MODEL_VTABLE_INIT {sizeof(RLMeshExtLegacyModelVtable), NULL, NULL, NULL}
 
 /* An owned model handle. It is not a concurrency primitive: run at most one
  * rlmesh_ext_legacy_model_run_local / rlmesh_ext_legacy_model_serve on a handle at a time, and free
@@ -1752,6 +1761,7 @@ RLMESH_API RLMeshStatus rlmesh_ext_legacy_model_new(const RLMeshExtLegacyModelVt
  * TODO(docs/specs/language-parity/running.md): Python's episodes=0 (run
  * nothing) is not expressible here, since 0 means unset. */
 typedef struct RLMeshExtLegacyRunOptions {
+  size_t struct_size;
   uint64_t max_episodes;        /* exact episode count; 0 = unset (1, or the seed count) */
   bool seeded;                  /* whether base_seed is set */
   int64_t base_seed;            /* seed for episode 0; later episodes derive from it */
@@ -1766,6 +1776,9 @@ typedef struct RLMeshExtLegacyRunOptions {
                                    delivered as reset(options={"trial_index": k}) to an env
                                    that declares that reset option */
 } RLMeshExtLegacyRunOptions;
+#define RLMESH_EXT_LEGACY_RUN_OPTIONS_MIN_SIZE sizeof(RLMeshExtLegacyRunOptions)
+#define RLMESH_EXT_LEGACY_RUN_OPTIONS_INIT \
+  {sizeof(RLMeshExtLegacyRunOptions), 0, false, 0, 0, 0.0, 0, false, NULL, 0, false, 0}
 
 /* What a finished run reports. Plain scalars: copy what you need. */
 typedef struct RLMeshExtLegacyRunReport {
@@ -1789,6 +1802,7 @@ RLMESH_API RLMeshStatus rlmesh_ext_legacy_model_run_local(RLMeshExtLegacyModel* 
  * remote shutdown, no timeouts — serves until the process is killed). A 0 timeout
  * / concurrency means "unset". */
 typedef struct RLMeshExtLegacyServeOptions {
+  size_t struct_size;
   const char* token;            /* NULL/"" disables auth */
   bool allow_remote_shutdown;   /* honor a client-issued shutdown request */
   uint64_t idle_timeout_ms;     /* 0 = never idle-shutdown */
@@ -1797,6 +1811,9 @@ typedef struct RLMeshExtLegacyServeOptions {
   size_t predict_concurrency;   /* 0 = default */
   const char* workflow_edition; /* workflow edition this server declares; NULL/"" = none */
 } RLMeshExtLegacyServeOptions;
+#define RLMESH_EXT_LEGACY_SERVE_OPTIONS_MIN_SIZE sizeof(RLMeshExtLegacyServeOptions)
+#define RLMESH_EXT_LEGACY_SERVE_OPTIONS_INIT \
+  {sizeof(RLMeshExtLegacyServeOptions), NULL, false, 0, 0, 0, 0, NULL}
 
 /* Serve the model as a ModelService endpoint at `bind_address` (tcp://host:port
  * or unix:///path). Blocking — returns when the server stops: a remote shutdown
@@ -1900,6 +1917,8 @@ typedef struct RLMeshExtLegacyEnvVtable {
   int (*render)(void* user_data, RLMeshValue** out_frame);
   void (*close)(void* user_data);
 } RLMeshExtLegacyEnvVtable;
+#define RLMESH_EXT_LEGACY_ENV_VTABLE_MIN_SIZE sizeof(RLMeshExtLegacyEnvVtable)
+#define RLMESH_EXT_LEGACY_ENV_VTABLE_INIT {sizeof(RLMeshExtLegacyEnvVtable), NULL, NULL, NULL, NULL}
 
 /* Runtime of the translation unit including this header, not of the Rust
  * library behind the ABI. Used by rlmesh_ext_legacy_env_config_init and rlmesh.hpp. */
@@ -2052,6 +2071,9 @@ typedef struct RLMeshExtLegacyEnvConfig {
    * Use rlmesh_ext_legacy_env_config_init() to detect the host automatically. */
   const char* host_runtime_json;
 } RLMeshExtLegacyEnvConfig;
+#define RLMESH_EXT_LEGACY_ENV_CONFIG_MIN_SIZE sizeof(RLMeshExtLegacyEnvConfig)
+#define RLMESH_EXT_LEGACY_ENV_CONFIG_INIT \
+  {sizeof(RLMeshExtLegacyEnvConfig), NULL, NULL, NULL, NULL, NULL, 0, NULL, NULL, false, NULL, NULL}
 
 /* Zero defaults plus struct_size and the host translation unit's runtime.
  * Fill the required spaces afterward; override host_runtime_json if needed. */

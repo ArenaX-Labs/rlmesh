@@ -28,13 +28,13 @@ pub(crate) fn spec_ref<'a>(spec: *const RLMeshSpaceSpec) -> Option<&'a SpaceSpec
 
 /// The space kind, or `Invalid` when `spec` is NULL or its kind is unspecified.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_space_type(spec: *const RLMeshSpaceSpec) -> i32 {
+pub unsafe extern "C" fn rlmesh_ext_legacy_space_type(spec: *const RLMeshSpaceSpec) -> i32 {
     crate::space_handle::rlmesh_space_spec_kind(spec)
 }
 
 /// The facade dtype enum; INVALID for NULL or an unspecified dtype.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_space_dtype(spec: *const RLMeshSpaceSpec) -> i32 {
+pub unsafe extern "C" fn rlmesh_ext_legacy_space_dtype(spec: *const RLMeshSpaceSpec) -> i32 {
     guard_value(0, || {
         spec_ref(spec)
             .and_then(|s| dtype_from_c(s.dtype as i32))
@@ -44,13 +44,13 @@ pub unsafe extern "C" fn rlmesh_space_dtype(spec: *const RLMeshSpaceSpec) -> i32
 
 /// The space's rank (number of dimensions), or 0.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_space_ndim(spec: *const RLMeshSpaceSpec) -> usize {
+pub unsafe extern "C" fn rlmesh_ext_legacy_space_ndim(spec: *const RLMeshSpaceSpec) -> usize {
     guard_value(0, || spec_ref(spec).map_or(0, |spec| spec.shape.len()))
 }
 
 /// Copy the space's shape into `out` (capacity `cap`).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_space_copy_shape(
+pub unsafe extern "C" fn rlmesh_ext_legacy_space_copy_shape(
     spec: *const RLMeshSpaceSpec,
     out: *mut i64,
     cap: usize,
@@ -75,7 +75,7 @@ pub unsafe extern "C" fn rlmesh_space_copy_shape(
 /// Write the child count of a `Dict`/`Tuple` space to `out`. Any other kind is
 /// `RLMESH_ERR_INVALID_VALUE`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_space_len(
+pub unsafe extern "C" fn rlmesh_ext_legacy_space_len(
     spec: *const RLMeshSpaceSpec,
     out: *mut usize,
 ) -> RLMeshStatus {
@@ -91,7 +91,7 @@ pub unsafe extern "C" fn rlmesh_space_len(
 
 /// Borrow a `Tuple` space's child by index (valid while `spec` lives), or NULL.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_space_tuple_get(
+pub unsafe extern "C" fn rlmesh_ext_legacy_space_tuple_get(
     spec: *const RLMeshSpaceSpec,
     index: usize,
 ) -> *const RLMeshSpaceSpec {
@@ -105,7 +105,7 @@ pub unsafe extern "C" fn rlmesh_space_tuple_get(
 
 /// Borrow a `Dict` space's child by key (valid while `spec` lives), or NULL.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_space_dict_get(
+pub unsafe extern "C" fn rlmesh_ext_legacy_space_dict_get(
     spec: *const RLMeshSpaceSpec,
     key: *const c_char,
 ) -> *const RLMeshSpaceSpec {
@@ -126,10 +126,10 @@ pub unsafe extern "C" fn rlmesh_space_dict_get(
 }
 
 /// Borrow a `Dict` space's `index`-th child in declaration order -- the same
-/// order as `rlmesh_space_dict_key`, so `key(i)` names `get_at(i)`. NULL for any
+/// order as `rlmesh_ext_legacy_space_dict_key`, so `key(i)` names `get_at(i)`. NULL for any
 /// other kind or an out-of-range index.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_space_dict_get_at(
+pub unsafe extern "C" fn rlmesh_ext_legacy_space_dict_get_at(
     spec: *const RLMeshSpaceSpec,
     index: usize,
 ) -> *const RLMeshSpaceSpec {
@@ -145,7 +145,7 @@ pub unsafe extern "C" fn rlmesh_space_dict_get_at(
 /// NUL-terminated, valid while `spec` lives. Keys are in declaration order,
 /// parallel to the children.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_space_dict_key(
+pub unsafe extern "C" fn rlmesh_ext_legacy_space_dict_key(
     spec: *const RLMeshSpaceSpec,
     index: usize,
     out_ptr: *mut *const c_char,
@@ -170,7 +170,7 @@ pub unsafe extern "C" fn rlmesh_space_dict_key(
 /// count. Either out-pointer may be NULL to skip it; on failure neither is
 /// written.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_space_box_bounds(
+pub unsafe extern "C" fn rlmesh_ext_legacy_space_box_bounds(
     spec: *const RLMeshSpaceSpec,
     index: usize,
     out_low: *mut f64,
@@ -200,7 +200,7 @@ pub unsafe extern "C" fn rlmesh_space_box_bounds(
 /// `out_start` (valid values are `start ..= start + n - 1`). Either out-pointer
 /// may be NULL to skip it.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_space_discrete_n(
+pub unsafe extern "C" fn rlmesh_ext_legacy_space_discrete_n(
     spec: *const RLMeshSpaceSpec,
     out_n: *mut i64,
     out_start: *mut i64,
@@ -219,7 +219,7 @@ pub unsafe extern "C" fn rlmesh_space_discrete_n(
 /// Write a `Text` space's length limits (in characters) to `out_min`/`out_max`.
 /// Either out-pointer may be NULL to skip it.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_space_text_length(
+pub unsafe extern "C" fn rlmesh_ext_legacy_space_text_length(
     spec: *const RLMeshSpaceSpec,
     out_min: *mut i64,
     out_max: *mut i64,
@@ -237,7 +237,7 @@ pub unsafe extern "C" fn rlmesh_space_text_length(
 /// Borrow a `Text` space's charset: `*out_len` UTF-8 bytes, NOT NUL-terminated,
 /// valid while `spec` lives. An empty charset means any character is allowed.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_space_text_charset(
+pub unsafe extern "C" fn rlmesh_ext_legacy_space_text_charset(
     spec: *const RLMeshSpaceSpec,
     out_ptr: *mut *const c_char,
     out_len: *mut usize,
@@ -254,7 +254,7 @@ pub unsafe extern "C" fn rlmesh_space_text_charset(
 /// Copy a `MultiDiscrete` space's per-element category counts into `out`
 /// (capacity `cap`, one entry per element of the shape, row-major).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_space_copy_nvec(
+pub unsafe extern "C" fn rlmesh_ext_legacy_space_copy_nvec(
     spec: *const RLMeshSpaceSpec,
     out: *mut i64,
     cap: usize,
@@ -446,7 +446,7 @@ fn bounds_vec<T>(
 /// # Safety
 /// `shape` points at `ndim` readable `int64_t`s (NULL when `ndim == 0`).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_space_box(
+pub unsafe extern "C" fn rlmesh_ext_legacy_space_box(
     dtype: i32,
     shape: *const i64,
     ndim: usize,
@@ -468,12 +468,12 @@ pub unsafe extern "C" fn rlmesh_space_box(
 }
 
 /// A `Box` space with per-element bounds: `low`/`high` each hold the shape's
-/// element count, row-major. Same dtype rules as `rlmesh_space_box`.
+/// element count, row-major. Same dtype rules as `rlmesh_ext_legacy_space_box`.
 ///
 /// # Safety
 /// `shape` points at `ndim` `int64_t`s; `low`/`high` at `numel` doubles each.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_space_box_elementwise(
+pub unsafe extern "C" fn rlmesh_ext_legacy_space_box_elementwise(
     dtype: i32,
     shape: *const i64,
     ndim: usize,
@@ -512,7 +512,7 @@ pub unsafe extern "C" fn rlmesh_space_box_elementwise(
 
 /// A `Discrete` space over `start ..= start + n - 1`.
 #[unsafe(no_mangle)]
-pub extern "C" fn rlmesh_space_discrete(n: i64, start: i64) -> *mut RLMeshSpaceSpec {
+pub extern "C" fn rlmesh_ext_legacy_space_discrete(n: i64, start: i64) -> *mut RLMeshSpaceSpec {
     guard_ptr(|| built(DiscreteBuilder::new(n).start(start).build()))
 }
 
@@ -521,7 +521,7 @@ pub extern "C" fn rlmesh_space_discrete(n: i64, start: i64) -> *mut RLMeshSpaceS
 /// # Safety
 /// `shape` points at `ndim` readable `int64_t`s.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_space_multi_binary(
+pub unsafe extern "C" fn rlmesh_ext_legacy_space_multi_binary(
     shape: *const i64,
     ndim: usize,
 ) -> *mut RLMeshSpaceSpec {
@@ -536,7 +536,7 @@ pub unsafe extern "C" fn rlmesh_space_multi_binary(
 /// # Safety
 /// `nvec` points at `n` readable `int64_t`s.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_space_multi_discrete(
+pub unsafe extern "C" fn rlmesh_ext_legacy_space_multi_discrete(
     nvec: *const i64,
     n: usize,
 ) -> *mut RLMeshSpaceSpec {
@@ -552,7 +552,7 @@ pub unsafe extern "C" fn rlmesh_space_multi_discrete(
 /// # Safety
 /// `charset` is NULL or a valid C string.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_space_text(
+pub unsafe extern "C" fn rlmesh_ext_legacy_space_text(
     min_length: i64,
     max_length: i64,
     charset: *const c_char,
@@ -627,7 +627,7 @@ unsafe fn build_composite(
 /// # Safety
 /// `keys` points at `n` C strings; `children` at `n` owned space handles.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_space_dict(
+pub unsafe extern "C" fn rlmesh_ext_legacy_space_dict(
     keys: *const *const c_char,
     children: *const *mut RLMeshSpaceSpec,
     n: usize,
@@ -667,7 +667,7 @@ pub unsafe extern "C" fn rlmesh_space_dict(
 /// # Safety
 /// `children` points at `n` owned space handles.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_space_tuple(
+pub unsafe extern "C" fn rlmesh_ext_legacy_space_tuple(
     children: *const *mut RLMeshSpaceSpec,
     n: usize,
 ) -> *mut RLMeshSpaceSpec {

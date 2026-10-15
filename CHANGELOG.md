@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ## [Unreleased]
 
-- C ABI generation 5 rebases `RLMeshValue` on the Rust facade's core Value and Metadata, with all ten value kinds, strict typed reads, insertion-ordered dicts, length-bearing text and shared immutable handles. Composite constructors retain their children. `RLMeshTensor` becomes an opaque facade handle with copying construction, shared clones and reshapes, byte strides, read-only buffers and explicit deep copies. Removes the tensor POD, DLPack dtype triple, old value projection and package-semver ABI accessors; packaging now selects SONAME 5. C and C++ examples use the new C calls; the full C env/model/run/remote parity surface and native DLPack support remain pending.
+- C ABI generation 5 rebases `RLMeshValue` on the Rust facade's core Value and Metadata, with all ten value kinds, strict typed reads, insertion-ordered dicts, length-bearing text and shared immutable handles. Composite constructors retain their children. `RLMeshTensor` becomes an opaque facade handle with copying construction, shared clones and reshapes, byte strides, read-only buffers and explicit deep copies. Removes the tensor POD, DLPack dtype triple, old value projection and package-semver ABI accessors; packaging now selects SONAME 5. C and C++ examples use the new C calls; native DLPack support remains deferred.
 
 ### Added
 
@@ -176,6 +176,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 ### Changed
 
 - Integer Box bounds must fit together in a signed or unsigned 64-bit range (SPC-P6). Bound pairs such as `Box(-1, 2**63, [1], "int64")` and `Box(0, 2**64, [1], "uint64")` raise `ValueError` instead of rounding or saturating.
+
+- C ABI 5 removes old unfenced space builder/reader names and makes `rlmesh_space_dtype` take the Space handle; specs use `rlmesh_space_spec_dtype`. The separate C++ wave temporarily retains its previous spec helpers under explicit legacy extension names. Legacy compatibility input vtables/config now enforce ABI-5 minima and zero unknown tails; run/serve options gain `struct_size`, INIT and MIN_SIZE macros. Older ABI-4 prefixes are refused, with C tests for zero initialization, unknown settings and extended output boundaries.
 
 - `Model.run`'s hooks run on the thread that called `Model.run`, between the native loop's steps, instead of on a worker thread of the extension's blocking pool; they still run one at a time with the env idle, and the first exception still aborts the run. A hook's own sync rlmesh calls (a `RemoteModel` session's `predict`, a `RemoteEnv.render`) and thread-bound state (a GL context, `threading.local`) now see the caller's thread.
 

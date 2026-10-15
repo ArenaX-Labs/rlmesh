@@ -12,11 +12,14 @@ use rlmesh_spaces::{
 
 use crate::abi::status::RLMeshStatus;
 use crate::spaces::{
-    RLMeshSpaceSpec, rlmesh_space_box, rlmesh_space_box_bounds, rlmesh_space_box_elementwise,
-    rlmesh_space_copy_nvec, rlmesh_space_dict, rlmesh_space_dict_get, rlmesh_space_dict_get_at,
-    rlmesh_space_dict_key, rlmesh_space_discrete, rlmesh_space_discrete_n, rlmesh_space_len,
-    rlmesh_space_spec_free, rlmesh_space_text_charset, rlmesh_space_text_length,
-    rlmesh_space_tuple, rlmesh_space_tuple_get, rlmesh_space_type,
+    RLMeshSpaceSpec, rlmesh_ext_legacy_space_box, rlmesh_ext_legacy_space_box_bounds,
+    rlmesh_ext_legacy_space_box_elementwise, rlmesh_ext_legacy_space_copy_nvec,
+    rlmesh_ext_legacy_space_dict, rlmesh_ext_legacy_space_dict_get,
+    rlmesh_ext_legacy_space_dict_get_at, rlmesh_ext_legacy_space_dict_key,
+    rlmesh_ext_legacy_space_discrete, rlmesh_ext_legacy_space_discrete_n,
+    rlmesh_ext_legacy_space_len, rlmesh_ext_legacy_space_text_charset,
+    rlmesh_ext_legacy_space_text_length, rlmesh_ext_legacy_space_tuple,
+    rlmesh_ext_legacy_space_tuple_get, rlmesh_ext_legacy_space_type, rlmesh_space_spec_free,
 };
 
 const HEADER: &str = include_str!("../include/rlmesh.h");
@@ -94,9 +97,12 @@ fn header_status_and_class_values_match_crate() {
 
 #[test]
 fn space_type_is_invalid_for_null_and_unspecified() {
-    assert_eq!(unsafe { rlmesh_space_type(std::ptr::null()) }, 0);
+    assert_eq!(unsafe { rlmesh_ext_legacy_space_type(std::ptr::null()) }, 0);
     let unspecified = SpaceSpec::default();
-    assert_eq!(unsafe { rlmesh_space_type(spec_ptr(&unspecified)) }, 0);
+    assert_eq!(
+        unsafe { rlmesh_ext_legacy_space_type(spec_ptr(&unspecified)) },
+        0
+    );
 }
 
 #[test]
@@ -116,7 +122,7 @@ fn box_bounds_broadcast_uniform_and_report_per_element() {
     let mut low = 0.0;
     let mut high = 0.0;
     assert_eq!(
-        unsafe { rlmesh_space_box_bounds(spec_ptr(&uniform), 2, &mut low, &mut high) },
+        unsafe { rlmesh_ext_legacy_space_box_bounds(spec_ptr(&uniform), 2, &mut low, &mut high) },
         RLMeshStatus::InvalidArgument
     );
 
@@ -137,7 +143,7 @@ fn box_bounds_broadcast_uniform_and_report_per_element() {
     // The wrong kind is rejected.
     let discrete = discrete_spec();
     assert_eq!(
-        unsafe { rlmesh_space_box_bounds(spec_ptr(&discrete), 0, &mut low, &mut high) },
+        unsafe { rlmesh_ext_legacy_space_box_bounds(spec_ptr(&discrete), 0, &mut low, &mut high) },
         RLMeshStatus::Type
     );
 
@@ -145,17 +151,31 @@ fn box_bounds_broadcast_uniform_and_report_per_element() {
     // through neither.
     let (mut low, mut high) = (7.0, 7.0);
     assert_eq!(
-        unsafe { rlmesh_space_box_bounds(spec_ptr(&uniform), 0, std::ptr::null_mut(), &mut high) },
+        unsafe {
+            rlmesh_ext_legacy_space_box_bounds(
+                spec_ptr(&uniform),
+                0,
+                std::ptr::null_mut(),
+                &mut high,
+            )
+        },
         RLMeshStatus::Ok
     );
     assert_eq!(
-        unsafe { rlmesh_space_box_bounds(spec_ptr(&uniform), 0, &mut low, std::ptr::null_mut()) },
+        unsafe {
+            rlmesh_ext_legacy_space_box_bounds(
+                spec_ptr(&uniform),
+                0,
+                &mut low,
+                std::ptr::null_mut(),
+            )
+        },
         RLMeshStatus::Ok
     );
     assert_eq!((low, high), (-1.0, 1.0));
     let (mut low, mut high) = (7.0, 7.0);
     assert_eq!(
-        unsafe { rlmesh_space_box_bounds(spec_ptr(&uniform), 2, &mut low, &mut high) },
+        unsafe { rlmesh_ext_legacy_space_box_bounds(spec_ptr(&uniform), 2, &mut low, &mut high) },
         RLMeshStatus::InvalidArgument
     );
     assert_eq!((low, high), (7.0, 7.0), "a failed call writes nothing");
@@ -167,13 +187,15 @@ fn discrete_text_and_nvec_expose_what_an_action_needs() {
     let mut n = 0i64;
     let mut start = 0i64;
     assert_eq!(
-        unsafe { rlmesh_space_discrete_n(spec_ptr(&discrete), &mut n, &mut start) },
+        unsafe { rlmesh_ext_legacy_space_discrete_n(spec_ptr(&discrete), &mut n, &mut start) },
         RLMeshStatus::Ok
     );
     assert_eq!((n, start), (8, 2));
     // Either out-param may be skipped.
     assert_eq!(
-        unsafe { rlmesh_space_discrete_n(spec_ptr(&discrete), &mut n, std::ptr::null_mut()) },
+        unsafe {
+            rlmesh_ext_legacy_space_discrete_n(spec_ptr(&discrete), &mut n, std::ptr::null_mut())
+        },
         RLMeshStatus::Ok
     );
 
@@ -188,7 +210,7 @@ fn discrete_text_and_nvec_expose_what_an_action_needs() {
     };
     let (mut min, mut max) = (0i64, 0i64);
     assert_eq!(
-        unsafe { rlmesh_space_text_length(spec_ptr(&text), &mut min, &mut max) },
+        unsafe { rlmesh_ext_legacy_space_text_length(spec_ptr(&text), &mut min, &mut max) },
         RLMeshStatus::Ok
     );
     assert_eq!((min, max), (1, 16));
@@ -204,7 +226,11 @@ fn discrete_text_and_nvec_expose_what_an_action_needs() {
     let mut charset_len = 0usize;
     assert_eq!(
         unsafe {
-            rlmesh_space_text_charset(spec_ptr(&discrete), &mut charset_ptr, &mut charset_len)
+            rlmesh_ext_legacy_space_text_charset(
+                spec_ptr(&discrete),
+                &mut charset_ptr,
+                &mut charset_len,
+            )
         },
         RLMeshStatus::Type
     );
@@ -218,16 +244,18 @@ fn discrete_text_and_nvec_expose_what_an_action_needs() {
     };
     let mut nvec = [0i64; 3];
     assert_eq!(
-        unsafe { rlmesh_space_copy_nvec(spec_ptr(&multi), nvec.as_mut_ptr(), nvec.len()) },
+        unsafe {
+            rlmesh_ext_legacy_space_copy_nvec(spec_ptr(&multi), nvec.as_mut_ptr(), nvec.len())
+        },
         RLMeshStatus::Ok
     );
     assert_eq!(nvec, [2, 3, 4]);
     assert_eq!(
-        unsafe { rlmesh_space_copy_nvec(spec_ptr(&multi), nvec.as_mut_ptr(), 2) },
+        unsafe { rlmesh_ext_legacy_space_copy_nvec(spec_ptr(&multi), nvec.as_mut_ptr(), 2) },
         RLMeshStatus::InvalidArgument
     );
     assert_eq!(
-        unsafe { rlmesh_space_copy_nvec(spec_ptr(&text), nvec.as_mut_ptr(), 3) },
+        unsafe { rlmesh_ext_legacy_space_copy_nvec(spec_ptr(&text), nvec.as_mut_ptr(), 3) },
         RLMeshStatus::Type
     );
 }
@@ -262,7 +290,7 @@ fn composite_spaces_are_walkable_from_c() {
 
     let mut len = 0usize;
     assert_eq!(
-        unsafe { rlmesh_space_len(root, &mut len) },
+        unsafe { rlmesh_ext_legacy_space_len(root, &mut len) },
         RLMeshStatus::Ok
     );
     assert_eq!(len, 2);
@@ -270,41 +298,42 @@ fn composite_spaces_are_walkable_from_c() {
     assert_eq!(space_key(root, 0), "pos");
     assert_eq!(space_key(root, 1), "extra");
 
-    let extra = unsafe { rlmesh_space_dict_get(root, c"extra".as_ptr()) };
-    assert_eq!(unsafe { rlmesh_space_type(extra) }, 11);
+    let extra = unsafe { rlmesh_ext_legacy_space_dict_get(root, c"extra".as_ptr()) };
+    assert_eq!(unsafe { rlmesh_ext_legacy_space_type(extra) }, 11);
     assert_eq!(
-        unsafe { rlmesh_space_len(extra, &mut len) },
+        unsafe { rlmesh_ext_legacy_space_len(extra, &mut len) },
         RLMeshStatus::Ok
     );
     assert_eq!(len, 2);
     assert_eq!(
-        unsafe { rlmesh_space_type(rlmesh_space_tuple_get(extra, 0)) },
+        unsafe { rlmesh_ext_legacy_space_type(rlmesh_ext_legacy_space_tuple_get(extra, 0)) },
         2
     );
     assert_eq!(
-        unsafe { rlmesh_space_type(rlmesh_space_tuple_get(extra, 1)) },
+        unsafe { rlmesh_ext_legacy_space_type(rlmesh_ext_legacy_space_tuple_get(extra, 1)) },
         5
     );
     // Children by index walk the SAME declaration order as the keys, so key(i)
     // names get_at(i) without copying the key into a NUL-terminated buffer.
     assert_eq!(
-        unsafe { rlmesh_space_type(rlmesh_space_dict_get_at(root, 0)) },
+        unsafe { rlmesh_ext_legacy_space_type(rlmesh_ext_legacy_space_dict_get_at(root, 0)) },
         1
     );
-    assert_eq!(unsafe { rlmesh_space_dict_get_at(root, 1) }, unsafe {
-        rlmesh_space_dict_get(root, c"extra".as_ptr())
-    });
-    assert!(unsafe { rlmesh_space_dict_get_at(root, 2) }.is_null());
-    assert!(unsafe { rlmesh_space_dict_get_at(extra, 0) }.is_null());
-    assert!(unsafe { rlmesh_space_dict_get_at(std::ptr::null(), 0) }.is_null());
+    assert_eq!(
+        unsafe { rlmesh_ext_legacy_space_dict_get_at(root, 1) },
+        unsafe { rlmesh_ext_legacy_space_dict_get(root, c"extra".as_ptr()) }
+    );
+    assert!(unsafe { rlmesh_ext_legacy_space_dict_get_at(root, 2) }.is_null());
+    assert!(unsafe { rlmesh_ext_legacy_space_dict_get_at(extra, 0) }.is_null());
+    assert!(unsafe { rlmesh_ext_legacy_space_dict_get_at(std::ptr::null(), 0) }.is_null());
     // Absent key, out-of-range index and wrong kind all read as "no such child".
-    assert!(unsafe { rlmesh_space_dict_get(root, c"nope".as_ptr()) }.is_null());
-    assert!(unsafe { rlmesh_space_tuple_get(extra, 2) }.is_null());
-    assert!(unsafe { rlmesh_space_tuple_get(root, 0) }.is_null());
+    assert!(unsafe { rlmesh_ext_legacy_space_dict_get(root, c"nope".as_ptr()) }.is_null());
+    assert!(unsafe { rlmesh_ext_legacy_space_tuple_get(extra, 2) }.is_null());
+    assert!(unsafe { rlmesh_ext_legacy_space_tuple_get(root, 0) }.is_null());
     // A leaf space has no children.
     let leaf = box_spec();
     assert_eq!(
-        unsafe { rlmesh_space_len(spec_ptr(&leaf), &mut len) },
+        unsafe { rlmesh_ext_legacy_space_len(spec_ptr(&leaf), &mut len) },
         RLMeshStatus::Type
     );
 }
@@ -326,7 +355,7 @@ fn discrete_spec() -> SpaceSpec {
 fn bounds(spec: &SpaceSpec, index: usize) -> (f64, f64) {
     let (mut low, mut high) = (0.0, 0.0);
     assert_eq!(
-        unsafe { rlmesh_space_box_bounds(spec_ptr(spec), index, &mut low, &mut high) },
+        unsafe { rlmesh_ext_legacy_space_box_bounds(spec_ptr(spec), index, &mut low, &mut high) },
         RLMeshStatus::Ok
     );
     (low, high)
@@ -337,7 +366,7 @@ fn read_charset(spec: *const RLMeshSpaceSpec) -> String {
     let mut ptr: *const c_char = std::ptr::null();
     let mut len = 0usize;
     assert_eq!(
-        unsafe { rlmesh_space_text_charset(spec, &mut ptr, &mut len) },
+        unsafe { rlmesh_ext_legacy_space_text_charset(spec, &mut ptr, &mut len) },
         RLMeshStatus::Ok
     );
     if len == 0 {
@@ -352,7 +381,7 @@ fn space_key(spec: *const RLMeshSpaceSpec, index: usize) -> String {
     let mut ptr: *const c_char = std::ptr::null();
     let mut len = 0usize;
     assert_eq!(
-        unsafe { rlmesh_space_dict_key(spec, index, &mut ptr, &mut len) },
+        unsafe { rlmesh_ext_legacy_space_dict_key(spec, index, &mut ptr, &mut len) },
         RLMeshStatus::Ok
     );
     let bytes = unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), len) };
@@ -373,23 +402,23 @@ fn built_spec<'a>(spec: *mut RLMeshSpaceSpec) -> &'a SpaceSpec {
 fn a_dict_space_the_builder_rejects_takes_none_of_its_children() {
     // An empty key passes the capi's own key checks and is refused only by the
     // Dict builder; both children must still be the caller's afterwards.
-    let first = rlmesh_space_discrete(2, 0);
-    let second = rlmesh_space_discrete(3, 0);
+    let first = rlmesh_ext_legacy_space_discrete(2, 0);
+    let second = rlmesh_ext_legacy_space_discrete(3, 0);
     let keys: [*const c_char; 2] = [c"ok".as_ptr(), c"".as_ptr()];
     let children = [first, second];
-    assert!(unsafe { rlmesh_space_dict(keys.as_ptr(), children.as_ptr(), 2) }.is_null());
+    assert!(unsafe { rlmesh_ext_legacy_space_dict(keys.as_ptr(), children.as_ptr(), 2) }.is_null());
     assert_eq!(
         crate::abi::status::rlmesh_last_error_status(),
         RLMeshStatus::InvalidArgument
     );
-    assert_eq!(unsafe { rlmesh_space_type(first) }, 2);
-    assert_eq!(unsafe { rlmesh_space_type(second) }, 2);
+    assert_eq!(unsafe { rlmesh_ext_legacy_space_type(first) }, 2);
+    assert_eq!(unsafe { rlmesh_ext_legacy_space_type(second) }, 2);
     // The same children still build a valid Dict, which then owns them.
     let keys: [*const c_char; 2] = [c"a".as_ptr(), c"b".as_ptr()];
-    let dict = unsafe { rlmesh_space_dict(keys.as_ptr(), children.as_ptr(), 2) };
+    let dict = unsafe { rlmesh_ext_legacy_space_dict(keys.as_ptr(), children.as_ptr(), 2) };
     let mut len = 0usize;
     assert_eq!(
-        unsafe { rlmesh_space_len(dict, &mut len) },
+        unsafe { rlmesh_ext_legacy_space_len(dict, &mut len) },
         RLMeshStatus::Ok
     );
     assert_eq!(len, 2);
@@ -398,12 +427,12 @@ fn a_dict_space_the_builder_rejects_takes_none_of_its_children() {
 
 #[test]
 fn a_tuple_space_with_a_null_child_takes_none_of_the_others() {
-    let child = rlmesh_space_discrete(2, 0);
+    let child = rlmesh_ext_legacy_space_discrete(2, 0);
     let children = [child, std::ptr::null_mut()];
-    assert!(unsafe { rlmesh_space_tuple(children.as_ptr(), 2) }.is_null());
-    assert_eq!(unsafe { rlmesh_space_type(child) }, 2);
-    let tuple = unsafe { rlmesh_space_tuple([child].as_ptr(), 1) };
-    assert_eq!(unsafe { rlmesh_space_type(tuple) }, 11);
+    assert!(unsafe { rlmesh_ext_legacy_space_tuple(children.as_ptr(), 2) }.is_null());
+    assert_eq!(unsafe { rlmesh_ext_legacy_space_type(child) }, 2);
+    let tuple = unsafe { rlmesh_ext_legacy_space_tuple([child].as_ptr(), 1) };
+    assert_eq!(unsafe { rlmesh_ext_legacy_space_type(tuple) }, 11);
     unsafe { rlmesh_space_spec_free(tuple) };
 }
 
@@ -411,14 +440,15 @@ fn a_tuple_space_with_a_null_child_takes_none_of_the_others() {
 fn integer_box_bounds_outside_the_dtype_are_refused_not_clamped() {
     let shape = [2i64];
     let refused = |dtype: DType, low: f64, high: f64| {
-        let spec = unsafe { rlmesh_space_box(capi_dtype(dtype), shape.as_ptr(), 1, low, high) };
+        let spec =
+            unsafe { rlmesh_ext_legacy_space_box(capi_dtype(dtype), shape.as_ptr(), 1, low, high) };
         assert!(spec.is_null(), "{dtype:?} [{low}, {high}] built");
         assert_eq!(
             crate::abi::status::rlmesh_last_error_status(),
             RLMeshStatus::InvalidArgument
         );
         let elementwise = unsafe {
-            rlmesh_space_box_elementwise(
+            rlmesh_ext_legacy_space_box_elementwise(
                 capi_dtype(dtype),
                 shape.as_ptr(),
                 1,
@@ -462,7 +492,7 @@ fn unsigned_box_bounds_above_i64_max_round_trip_exactly() {
     };
     let shape = [1i64];
     let uniform = unsafe {
-        rlmesh_space_box(
+        rlmesh_ext_legacy_space_box(
             capi_dtype(DType::Uint64),
             shape.as_ptr(),
             1,
@@ -475,7 +505,7 @@ fn unsigned_box_bounds_above_i64_max_round_trip_exactly() {
 
     let shape = [2i64];
     let elementwise = unsafe {
-        rlmesh_space_box_elementwise(
+        rlmesh_ext_legacy_space_box_elementwise(
             capi_dtype(DType::Uint64),
             shape.as_ptr(),
             1,
@@ -502,7 +532,7 @@ fn unsigned_box_bounds_above_i64_max_round_trip_exactly() {
     // The signed edge still builds: i64::MIN is exactly -2^63.
     let shape = [1i64];
     let signed = unsafe {
-        rlmesh_space_box(
+        rlmesh_ext_legacy_space_box(
             capi_dtype(DType::Int64),
             shape.as_ptr(),
             1,
@@ -519,4 +549,38 @@ fn box_spec() -> SpaceSpec {
         .dtype(DType::Float32)
         .build()
         .expect("box")
+}
+
+#[test]
+fn abi5_removes_the_old_space_symbol_names() {
+    let header = include_str!("../include/rlmesh.h");
+    for name in [
+        "type",
+        "ndim",
+        "copy_shape",
+        "len",
+        "tuple_get",
+        "dict_get",
+        "dict_get_at",
+        "dict_key",
+        "box_bounds",
+        "discrete_n",
+        "text_length",
+        "text_charset",
+        "copy_nvec",
+        "box",
+        "box_elementwise",
+        "discrete",
+        "multi_binary",
+        "multi_discrete",
+        "text",
+        "dict",
+        "tuple",
+    ] {
+        assert!(
+            !header.contains(&format!("rlmesh_space_{name}(")),
+            "old space symbol {name}"
+        );
+    }
+    assert!(header.contains("rlmesh_space_dtype(const RLMeshSpace* space)"));
 }

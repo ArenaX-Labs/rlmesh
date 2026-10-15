@@ -193,7 +193,7 @@ pub struct RLMeshExtLegacyObservation {
 }
 
 /// The model callback vtable. Set `struct_size = sizeof(RLMeshExtLegacyModelVtable)`;
-/// fields beyond that are ignored (append-only). `predict` is required.
+/// unknown trailing bytes must be zero. `predict` is required.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct RLMeshExtLegacyModelVtable {
@@ -528,69 +528,19 @@ impl ModelHandler for CModelHandler {
     }
 }
 
-/// Read field `T` at `offset` only when `struct_size` covers it (else None), so a
-/// caller that compiled against a smaller header is never read past.
-///
-/// # Safety
-/// `base` points at the caller's vtable allocation of at least `struct_size` bytes.
-pub(crate) unsafe fn vtable_field<T: Copy>(
-    base: *const u8,
-    struct_size: usize,
-    offset: usize,
-) -> Option<T> {
-    (struct_size >= offset.saturating_add(std::mem::size_of::<T>()))
-        .then(|| unsafe { base.add(offset).cast::<T>().read_unaligned() })
-}
-
-/// Read the caller's vtable honoring its `struct_size` (append-only contract):
-/// callbacks past `struct_size` are absent, not garbage read out of bounds.
+/// Read an ABI-5 input vtable with its full minimum and checked zero tail.
 ///
 /// # Safety
 /// `ptr` is non-NULL and points at a vtable whose first `struct_size` bytes are valid.
 unsafe fn read_vtable(
     ptr: *const RLMeshExtLegacyModelVtable,
 ) -> Result<RLMeshExtLegacyModelVtable, CapiError> {
-    let base = ptr.cast::<u8>();
-    // struct_size is the first repr(C) field (offset 0); the caller set it.
-    let struct_size = unsafe { (*ptr).struct_size };
-    if struct_size == 0 {
-        return Err(CapiError::invalid_arg("vtable struct_size is 0"));
+    let v = unsafe { crate::abi::sizing::read(ptr, "RLMeshExtLegacyModelVtable") }?
+        .ok_or_else(|| CapiError::invalid_arg("null vtable"))?;
+    if v.predict.is_none() {
+        return Err(CapiError::invalid_arg("vtable predict is null"));
     }
-    let predict = match unsafe {
-        vtable_field::<Option<RLMeshExtLegacyPredictFn>>(
-            base,
-            struct_size,
-            std::mem::offset_of!(RLMeshExtLegacyModelVtable, predict),
-        )
-    } {
-        None => {
-            return Err(CapiError::invalid_arg(
-                "vtable struct_size too small for predict",
-            ));
-        }
-        Some(None) => return Err(CapiError::invalid_arg("vtable predict is null")),
-        some => some.flatten(),
-    };
-    Ok(RLMeshExtLegacyModelVtable {
-        struct_size,
-        predict,
-        on_episode_end: unsafe {
-            vtable_field::<Option<RLMeshExtLegacyEpisodeEndFn>>(
-                base,
-                struct_size,
-                std::mem::offset_of!(RLMeshExtLegacyModelVtable, on_episode_end),
-            )
-        }
-        .flatten(),
-        on_close: unsafe {
-            vtable_field::<Option<RLMeshExtLegacyLifecycleFn>>(
-                base,
-                struct_size,
-                std::mem::offset_of!(RLMeshExtLegacyModelVtable, on_close),
-            )
-        }
-        .flatten(),
-    })
+    Ok(v)
 }
 
 /// Create a model from a callback vtable. `predict` and `struct_size` are
@@ -631,7 +581,9 @@ pub unsafe extern "C" fn rlmesh_ext_legacy_model_new(
 /// Options for `rlmesh_ext_legacy_model_run_local`. Pass NULL for defaults (one unseeded
 /// episode, Python's `run()` default). Every field is unset at 0 / NULL.
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct RLMeshExtLegacyRunOptions {
+    pub struct_size: usize,
     /// The exact number of episodes to run, resolved like Python's
     /// `run(episodes=...)`. 0 = unset: one episode, or one per seed when
     /// `episode_seeds` is given. A non-zero count with `episode_seeds` must
@@ -765,6 +717,7 @@ pub unsafe extern "C" fn rlmesh_ext_legacy_model_run_local(
         let address = ConnectAddress::parse(address)
             .map_err(|err| CapiError::invalid_arg(format!("invalid env address: {err}")))?;
         let handler = CModelHandler::new(model);
+        unsafe { crate::abi::sizing::read(options, "RLMeshExtLegacyRunOptions") }?;
         let run = run_local_options(address, options);
         // Python raises ValueError for a seed count that disagrees with the
         // episode count; refuse it here as an argument error, before dialing.
@@ -800,7 +753,9 @@ pub unsafe extern "C" fn rlmesh_ext_legacy_model_run_local(
 /// auth, no remote shutdown, no timeouts — serves until the process is killed). A
 /// 0 timeout / concurrency means "unset".
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct RLMeshExtLegacyServeOptions {
+    pub struct_size: usize,
     /// Bearer token required on requests; NULL or "" disables auth.
     pub token: *const c_char,
     /// Honor a client-issued shutdown request.
@@ -827,7 +782,9 @@ fn serve_model_options(
     options: *const RLMeshExtLegacyServeOptions,
 ) -> Result<ServeModelOptions, CapiError> {
     let mut model_options = ServeModelOptions::new(bind);
-    let Some(c_options) = (unsafe { options.as_ref() }) else {
+    let Some(c_options) =
+        unsafe { crate::abi::sizing::read(options, "RLMeshExtLegacyServeOptions") }?
+    else {
         return Ok(model_options);
     };
     if !c_options.token.is_null() {
@@ -849,8 +806,8 @@ pub(crate) fn serve_options(
 ) -> Result<ServeOptions, CapiError> {
     // SAFETY: the exports' contract is that `options` is NULL or a valid
     // `RLMeshExtLegacyServeOptions` for the duration of the call.
-    let options = unsafe { options.as_ref() };
-    let call = match options {
+    let options = unsafe { crate::abi::sizing::read(options, "RLMeshExtLegacyServeOptions") }?;
+    let call = match &options {
         Some(options) if !options.workflow_edition.is_null() => {
             Some(cstr_to_str(options.workflow_edition)?)
         }
@@ -1282,6 +1239,7 @@ mod tests {
     /// Every field of `RLMeshExtLegacyRunOptions` unset, the way a C caller's `{0}` is.
     fn unset_run_options() -> RLMeshExtLegacyRunOptions {
         RLMeshExtLegacyRunOptions {
+            struct_size: std::mem::size_of::<RLMeshExtLegacyRunOptions>(),
             max_episodes: 0,
             seeded: false,
             base_seed: 0,
@@ -1584,18 +1542,10 @@ mod tests {
     }
 
     #[test]
-    fn read_vtable_honors_truncated_struct_size() {
-        // A caller that compiled against only {struct_size, predict} reports a
-        // smaller size; the later callbacks must read as None even though they are
-        // non-null in this fully-allocated struct (the OOB-read regression guard).
+    fn read_vtable_rejects_abi4_prefix() {
         let mut vtable = full_vtable();
         vtable.struct_size = std::mem::offset_of!(RLMeshExtLegacyModelVtable, on_episode_end);
-        let Ok(read) = (unsafe { read_vtable(&vtable) }) else {
-            panic!("predict must be covered");
-        };
-        assert!(read.predict.is_some());
-        assert!(read.on_episode_end.is_none());
-        assert!(read.on_close.is_none());
+        assert!(unsafe { read_vtable(&vtable) }.is_err());
     }
 
     #[test]
@@ -1800,6 +1750,7 @@ mod tests {
         let address = CString::new(env.address.clone()).expect("address");
         let seeds = [11_i64, 22, 33];
         let options = RLMeshExtLegacyRunOptions {
+            struct_size: std::mem::size_of::<RLMeshExtLegacyRunOptions>(),
             max_episodes: 3,
             episode_seeds: seeds.as_ptr(),
             num_episode_seeds: seeds.len(),
@@ -1922,6 +1873,7 @@ mod tests {
         // Seeds alone set the count.
         let seeds = [5_i64, 6];
         let seeded = RLMeshExtLegacyRunOptions {
+            struct_size: std::mem::size_of::<RLMeshExtLegacyRunOptions>(),
             episode_seeds: seeds.as_ptr(),
             num_episode_seeds: seeds.len(),
             ..unset_run_options()
@@ -1934,6 +1886,7 @@ mod tests {
 
         // A count that disagrees with the seeds is refused.
         let mismatched = RLMeshExtLegacyRunOptions {
+            struct_size: std::mem::size_of::<RLMeshExtLegacyRunOptions>(),
             max_episodes: 3,
             ..seeded
         };
@@ -2036,6 +1989,7 @@ mod tests {
         let current = rlmesh::binding::CURRENT_WORKFLOW_EDITION;
         let declared = CString::new(current).expect("edition cstr");
         let options = RLMeshExtLegacyServeOptions {
+            struct_size: std::mem::size_of::<RLMeshExtLegacyServeOptions>(),
             workflow_edition: declared.as_ptr(),
             ..serve_options(false)
         };
@@ -2046,6 +2000,7 @@ mod tests {
 
         for blank in [std::ptr::null(), c"".as_ptr(), c"   ".as_ptr()] {
             let options = RLMeshExtLegacyServeOptions {
+                struct_size: std::mem::size_of::<RLMeshExtLegacyServeOptions>(),
                 workflow_edition: blank,
                 ..serve_options(false)
             };
@@ -2057,6 +2012,7 @@ mod tests {
 
         let unknown = CString::new("2099.01").expect("edition cstr");
         let options = RLMeshExtLegacyServeOptions {
+            struct_size: std::mem::size_of::<RLMeshExtLegacyServeOptions>(),
             workflow_edition: unknown.as_ptr(),
             ..serve_options(false)
         };
@@ -2087,6 +2043,7 @@ mod tests {
         assert_eq!(resolved.workflow_edition.as_deref(), Some(current));
         let explicit = CString::new(rlmesh::binding::CURRENT_WORKFLOW_EDITION).expect("cstr");
         let options = RLMeshExtLegacyServeOptions {
+            struct_size: std::mem::size_of::<RLMeshExtLegacyServeOptions>(),
             workflow_edition: explicit.as_ptr(),
             ..serve_options(false)
         };
@@ -2124,6 +2081,7 @@ mod tests {
 
     fn serve_options(allow_remote_shutdown: bool) -> RLMeshExtLegacyServeOptions {
         RLMeshExtLegacyServeOptions {
+            struct_size: std::mem::size_of::<RLMeshExtLegacyServeOptions>(),
             token: std::ptr::null(),
             allow_remote_shutdown,
             idle_timeout_ms: 0,

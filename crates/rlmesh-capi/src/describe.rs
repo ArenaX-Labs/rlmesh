@@ -445,14 +445,17 @@ mod tests {
         use crate::env::{
             RLMeshExtLegacyEnvConfig, RLMeshExtLegacyEnvVtable, rlmesh_ext_legacy_env_new,
         };
-        use crate::spaces::{rlmesh_space_box, rlmesh_space_dict, rlmesh_space_spec_free};
+        use crate::spaces::{
+            rlmesh_ext_legacy_space_box, rlmesh_ext_legacy_space_dict, rlmesh_space_spec_free,
+        };
 
         let three = [3i64];
-        let eef = unsafe { rlmesh_space_box(F32, three.as_ptr(), 1, -bound, bound) };
+        let eef = unsafe { rlmesh_ext_legacy_space_box(F32, three.as_ptr(), 1, -bound, bound) };
         let key = CString::new("eef_pos").unwrap();
-        let obs = unsafe { rlmesh_space_dict([key.as_ptr()].as_ptr(), [eef].as_ptr(), 1) };
+        let obs =
+            unsafe { rlmesh_ext_legacy_space_dict([key.as_ptr()].as_ptr(), [eef].as_ptr(), 1) };
         let one = [1i64];
-        let act = unsafe { rlmesh_space_box(F32, one.as_ptr(), 1, -1.0, 1.0) };
+        let act = unsafe { rlmesh_ext_legacy_space_box(F32, one.as_ptr(), 1, -1.0, 1.0) };
         let id = CString::new(id).unwrap();
         let tags = CString::new(
             r#"{"observation": {"eef_pos": {"type": "state", "role": "proprio/eef_pos"}},
@@ -530,6 +533,7 @@ mod tests {
 
         let edition = CString::new(edition).unwrap();
         let options = RLMeshExtLegacyServeOptions {
+            struct_size: std::mem::size_of::<RLMeshExtLegacyServeOptions>(),
             token: std::ptr::null(),
             allow_remote_shutdown: false,
             idle_timeout_ms: 0,
@@ -660,7 +664,7 @@ mod tests {
     }
 
     #[test]
-    fn c_config_runtime_is_copied_per_env_and_old_configs_keep_the_default() {
+    fn c_config_runtime_is_copied_and_abi4_prefixes_are_refused() {
         use crate::env::rlmesh_ext_legacy_env_free;
 
         let cpp = native_env_runtime(
@@ -683,10 +687,12 @@ mod tests {
             false,
         )
         .expect("C runtime");
-        // The field beyond the old config's allocation is ignored, even if the
-        // new source config had a malformed declaration there.
-        let old =
-            native_env_runtime("Old-v0", 1.0, None, Some("not json"), true).expect("old config");
+        assert_eq!(
+            native_env_runtime("Old-v0", 1.0, None, Some("not json"), true).err(),
+            Some(RLMeshStatus::InvalidArgument)
+        );
+        let old = native_env_runtime("Legacy-v0", 1.0, None, None, false)
+            .expect("full ABI5 legacy config");
         let before = describe_json(cpp);
         assert_eq!(before["runtime"]["language"], "c++");
         assert_eq!(before["runtime"]["language_version"], "17");

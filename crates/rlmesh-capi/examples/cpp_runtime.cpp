@@ -40,6 +40,7 @@ int main() {
   raw.action_space = action->raw();
   raw.struct_size = offsetof(RLMeshExtLegacyEnvConfig, host_runtime_json);
   auto old = describe(raw);
+  if (old || old.error().code() != RLMESH_ERR_INVALID_ARGUMENT) return 1;
   raw.struct_size = sizeof(RLMeshExtLegacyEnvConfig);
   raw.host_runtime_json = nullptr;
   auto null_runtime = describe(raw);
@@ -49,12 +50,12 @@ int main() {
   config.action_space = action.unwrap();
   config.host_runtime_json.clear();
   auto server = rlmesh::EnvServer::create(std::make_unique<UnusedEnv>(), config);
-  if (!old || !null_runtime || !server) return 1;
+  if (!null_runtime || !server) return 1;
   auto empty_runtime = server->describe_json();
-  if (!empty_runtime || *old != *null_runtime || *old != *empty_runtime) {
+  if (!empty_runtime || *null_runtime != *empty_runtime) {
     std::fprintf(stderr, "legacy describe output changed\n");
     return 1;
   }
-  std::puts("C++ empty and NULL declarations match the old config byte-for-byte");
+  std::puts("C++ empty and NULL declarations match byte-for-byte; ABI-4 prefix refused");
   return 0;
 }

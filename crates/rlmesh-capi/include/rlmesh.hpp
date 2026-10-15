@@ -1059,14 +1059,14 @@ class SpaceRef {
 
   const RLMeshSpaceSpec* raw() const { return ptr_; }
   bool valid() const { return ptr_ != nullptr; }
-  RLMeshSpaceKind kind() const { return rlmesh_space_type(ptr_); }
+  RLMeshSpaceKind kind() const { return rlmesh_ext_legacy_space_type(ptr_); }
 
-  RLMeshDType dtype() const { return rlmesh_space_dtype(ptr_); }
-  size_t ndim() const { return rlmesh_space_ndim(ptr_); }
+  RLMeshDType dtype() const { return rlmesh_ext_legacy_space_dtype(ptr_); }
+  size_t ndim() const { return rlmesh_ext_legacy_space_ndim(ptr_); }
 
   Result<std::vector<int64_t>> shape() const {
     std::vector<int64_t> out(ndim());
-    if (RLMeshStatus status = rlmesh_space_copy_shape(ptr_, out.data(), out.size());
+    if (RLMeshStatus status = rlmesh_ext_legacy_space_copy_shape(ptr_, out.data(), out.size());
         status != RLMESH_OK) {
       return Error::from_last(status);
     }
@@ -1086,7 +1086,7 @@ class SpaceRef {
   /// undeclared bound reads as -inf / +inf.
   Result<Bounds> bounds(size_t index) const {
     Bounds out{0, 0};
-    if (RLMeshStatus status = rlmesh_space_box_bounds(ptr_, index, &out.low, &out.high);
+    if (RLMeshStatus status = rlmesh_ext_legacy_space_box_bounds(ptr_, index, &out.low, &out.high);
         status != RLMESH_OK) {
       return Error::from_last(status);
     }
@@ -1096,7 +1096,7 @@ class SpaceRef {
   /// A Discrete space's category count and first value (`start ..= start+n-1`).
   Result<DiscreteRange> discrete() const {
     DiscreteRange out{0, 0};
-    if (RLMeshStatus status = rlmesh_space_discrete_n(ptr_, &out.n, &out.start);
+    if (RLMeshStatus status = rlmesh_ext_legacy_space_discrete_n(ptr_, &out.n, &out.start);
         status != RLMESH_OK) {
       return Error::from_last(status);
     }
@@ -1106,7 +1106,7 @@ class SpaceRef {
   /// A Text space's length limits, in characters.
   Result<TextLength> text_length() const {
     TextLength out{0, 0};
-    if (RLMeshStatus status = rlmesh_space_text_length(ptr_, &out.min, &out.max);
+    if (RLMeshStatus status = rlmesh_ext_legacy_space_text_length(ptr_, &out.min, &out.max);
         status != RLMESH_OK) {
       return Error::from_last(status);
     }
@@ -1118,7 +1118,8 @@ class SpaceRef {
   Result<std::string_view> charset() const {
     const char* data = nullptr;
     size_t len = 0;
-    if (RLMeshStatus status = rlmesh_space_text_charset(ptr_, &data, &len); status != RLMESH_OK) {
+    if (RLMeshStatus status = rlmesh_ext_legacy_space_text_charset(ptr_, &data, &len);
+        status != RLMESH_OK) {
       return Error::from_last(status);
     }
     return std::string_view(data, len);
@@ -1129,7 +1130,7 @@ class SpaceRef {
     auto count = numel();
     if (!count) return count.error();
     std::vector<int64_t> out(*count);
-    if (RLMeshStatus status = rlmesh_space_copy_nvec(ptr_, out.data(), out.size());
+    if (RLMeshStatus status = rlmesh_ext_legacy_space_copy_nvec(ptr_, out.data(), out.size());
         status != RLMESH_OK) {
       return Error::from_last(status);
     }
@@ -1139,7 +1140,7 @@ class SpaceRef {
   /// Child count of a Dict / Tuple space.
   Result<size_t> size() const {
     size_t out = 0;
-    if (RLMeshStatus status = rlmesh_space_len(ptr_, &out); status != RLMESH_OK) {
+    if (RLMeshStatus status = rlmesh_ext_legacy_space_len(ptr_, &out); status != RLMESH_OK) {
       return Error::from_last(status);
     }
     return out;
@@ -1147,7 +1148,7 @@ class SpaceRef {
 
   /// Tuple child `index`; nullopt when this is not a Tuple or `index` is absent.
   std::optional<SpaceRef> at(size_t index) const {
-    const RLMeshSpaceSpec* child = rlmesh_space_tuple_get(ptr_, index);
+    const RLMeshSpaceSpec* child = rlmesh_ext_legacy_space_tuple_get(ptr_, index);
     if (child == nullptr) return std::nullopt;
     return SpaceRef(child);
   }
@@ -1156,7 +1157,7 @@ class SpaceRef {
   Result<std::string_view> key(size_t index) const {
     const char* data = nullptr;
     size_t len = 0;
-    if (RLMeshStatus status = rlmesh_space_dict_key(ptr_, index, &data, &len);
+    if (RLMeshStatus status = rlmesh_ext_legacy_space_dict_key(ptr_, index, &data, &len);
         status != RLMESH_OK) {
       return Error::from_last(status);
     }
@@ -1165,7 +1166,7 @@ class SpaceRef {
 
   /// Dict child by key; nullopt when this is not a Dict or the key is absent.
   std::optional<SpaceRef> get(const std::string& key) const {
-    const RLMeshSpaceSpec* child = rlmesh_space_dict_get(ptr_, key.c_str());
+    const RLMeshSpaceSpec* child = rlmesh_ext_legacy_space_dict_get(ptr_, key.c_str());
     if (child == nullptr) return std::nullopt;
     return SpaceRef(child);
   }
@@ -1173,7 +1174,7 @@ class SpaceRef {
   /// Dict child `index`, in the same declaration order as `key(index)`; nullopt
   /// when this is not a Dict or `index` is out of range.
   std::optional<SpaceRef> at_key(size_t index) const {
-    const RLMeshSpaceSpec* child = rlmesh_space_dict_get_at(ptr_, index);
+    const RLMeshSpaceSpec* child = rlmesh_ext_legacy_space_dict_get_at(ptr_, index);
     if (child == nullptr) return std::nullopt;
     return SpaceRef(child);
   }
@@ -1550,7 +1551,7 @@ class Model {
   /// Drive against a remote environment. Blocking; returns the run's report.
   Result<RunReport> run_local(std::string_view env_address, const RunOptions& options = {}) {
     std::string address(env_address);
-    RLMeshExtLegacyRunOptions raw{};
+    RLMeshExtLegacyRunOptions raw = RLMESH_EXT_LEGACY_RUN_OPTIONS_INIT;
     raw.max_episodes = options.max_episodes;
     raw.seeded = options.seeded;
     raw.base_seed = options.base_seed;
@@ -1573,7 +1574,7 @@ class Model {
   /// idle timeout, or `cancel()`.
   Status serve(std::string_view bind_address, const ServeOptions& options = {}) {
     std::string address(bind_address);
-    RLMeshExtLegacyServeOptions raw{};
+    RLMeshExtLegacyServeOptions raw = RLMESH_EXT_LEGACY_SERVE_OPTIONS_INIT;
     raw.token = options.token.empty() ? nullptr : options.token.c_str();
     raw.allow_remote_shutdown = options.allow_remote_shutdown;
     raw.idle_timeout_ms = static_cast<uint64_t>(options.idle_timeout.count());
@@ -1717,7 +1718,7 @@ class Space {
   /// the dtype can represent (out of range is an error, never clamped).
   static Result<Space> box(RLMeshDType dtype, const std::vector<int64_t>& shape, double low,
                            double high) {
-    return adopt(rlmesh_space_box(dtype, shape.data(), shape.size(), low, high));
+    return adopt(rlmesh_ext_legacy_space_box(dtype, shape.data(), shape.size(), low, high));
   }
   /// Box with the dtype following T (see `dtype_of`).
   template <class T>
@@ -1732,23 +1733,23 @@ class Space {
     if (low.size() != numel || high.size() != numel) {
       return Error(RLMESH_ERR_INVALID_ARGUMENT, "Box bounds must hold one value per element");
     }
-    return adopt(
-        rlmesh_space_box_elementwise(dtype, shape.data(), shape.size(), low.data(), high.data()));
+    return adopt(rlmesh_ext_legacy_space_box_elementwise(dtype, shape.data(), shape.size(),
+                                                         low.data(), high.data()));
   }
   static Result<Space> discrete(int64_t n, int64_t start = 0) {
-    return adopt(rlmesh_space_discrete(n, start));
+    return adopt(rlmesh_ext_legacy_space_discrete(n, start));
   }
   static Result<Space> multi_binary(const std::vector<int64_t>& shape) {
-    return adopt(rlmesh_space_multi_binary(shape.data(), shape.size()));
+    return adopt(rlmesh_ext_legacy_space_multi_binary(shape.data(), shape.size()));
   }
   static Result<Space> multi_discrete(const std::vector<int64_t>& nvec) {
-    return adopt(rlmesh_space_multi_discrete(nvec.data(), nvec.size()));
+    return adopt(rlmesh_ext_legacy_space_multi_discrete(nvec.data(), nvec.size()));
   }
   /// `charset` empty allows any character.
   static Result<Space> text(int64_t min_length, int64_t max_length,
                             const std::string& charset = {}) {
-    return adopt(
-        rlmesh_space_text(min_length, max_length, charset.empty() ? nullptr : charset.c_str()));
+    return adopt(rlmesh_ext_legacy_space_text(min_length, max_length,
+                                              charset.empty() ? nullptr : charset.c_str()));
   }
   /// Dict from owned (key, space) entries, stored sorted by key; keys
   /// non-empty and unique.
@@ -1762,7 +1763,7 @@ class Space {
       keys.push_back(entry.first.c_str());
       raw.push_back(entry.second.release());
     }
-    RLMeshSpaceSpec* space = rlmesh_space_dict(keys.data(), raw.data(), raw.size());
+    RLMeshSpaceSpec* space = rlmesh_ext_legacy_space_dict(keys.data(), raw.data(), raw.size());
     if (space == nullptr) return disown(raw);
     return Space(space);
   }
@@ -1770,7 +1771,7 @@ class Space {
     std::vector<RLMeshSpaceSpec*> raw;
     raw.reserve(children.size());
     for (Space& child : children) raw.push_back(child.release());
-    RLMeshSpaceSpec* space = rlmesh_space_tuple(raw.data(), raw.size());
+    RLMeshSpaceSpec* space = rlmesh_ext_legacy_space_tuple(raw.data(), raw.size());
     if (space == nullptr) return disown(raw);
     return Space(space);
   }
@@ -2472,7 +2473,7 @@ class EnvServer {
   /// apply to an env.
   Result<std::string> bind(std::string_view bind_address, const ServeOptions& options = {}) {
     std::string address(bind_address);
-    RLMeshExtLegacyServeOptions raw{};
+    RLMeshExtLegacyServeOptions raw = RLMESH_EXT_LEGACY_SERVE_OPTIONS_INIT;
     raw.token = options.token.empty() ? nullptr : options.token.c_str();
     raw.allow_remote_shutdown = options.allow_remote_shutdown;
     raw.idle_timeout_ms = static_cast<uint64_t>(options.idle_timeout.count());

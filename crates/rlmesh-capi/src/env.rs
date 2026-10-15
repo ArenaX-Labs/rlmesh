@@ -41,7 +41,7 @@ use crate::abi::status::{
 use crate::adapters::{json_to_meta, meta_to_json};
 use crate::codec::RLMeshBytes;
 use crate::describe::Describe;
-use crate::model::{RLMeshExtLegacyServeOptions, cstr_to_str, serve_options, vtable_field};
+use crate::model::{RLMeshExtLegacyServeOptions, cstr_to_str, serve_options};
 use crate::spaces::{RLMeshSpaceSpec, spec_ref};
 use crate::value::handle::RLMeshValue;
 
@@ -105,7 +105,7 @@ pub type RLMeshExtLegacyEnvRenderFn =
 pub type RLMeshExtLegacyEnvCloseFn = unsafe extern "C" fn(user_data: *mut c_void);
 
 /// The environment callback vtable. Set `struct_size =
-/// sizeof(RLMeshExtLegacyEnvVtable)`; fields beyond that are ignored (append-only).
+/// sizeof(RLMeshExtLegacyEnvVtable)`; unknown trailing bytes must be zero.
 /// `reset` and `step` are required.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -118,9 +118,10 @@ pub struct RLMeshExtLegacyEnvVtable {
 }
 
 /// What the env declares: its spaces and the contract metadata a model reads.
-/// Set `struct_size = sizeof(RLMeshExtLegacyEnvConfig)`; fields beyond it are unset.
+/// Set `struct_size = sizeof(RLMeshExtLegacyEnvConfig)`; unknown trailing bytes must be zero.
 /// Everything is borrowed for the `rlmesh_ext_legacy_env_new` call only (copied in).
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct RLMeshExtLegacyEnvConfig {
     pub struct_size: usize,
     /// Contract id, e.g. "ChronoArmReach-v0". NULL or "" = "UnknownEnv-v1".
@@ -589,30 +590,8 @@ impl RLMeshExtLegacyEnv {
 unsafe fn read_vtable(
     ptr: *const RLMeshExtLegacyEnvVtable,
 ) -> Result<RLMeshExtLegacyEnvVtable, CapiError> {
-    let base = ptr.cast::<u8>();
-    let struct_size = unsafe { (*ptr).struct_size };
-    if struct_size == 0 {
-        return Err(CapiError::invalid_arg("vtable struct_size is 0"));
-    }
-    macro_rules! field {
-        ($name:ident, $ty:ty) => {
-            unsafe {
-                vtable_field::<Option<$ty>>(
-                    base,
-                    struct_size,
-                    std::mem::offset_of!(RLMeshExtLegacyEnvVtable, $name),
-                )
-            }
-            .flatten()
-        };
-    }
-    let vtable = RLMeshExtLegacyEnvVtable {
-        struct_size,
-        reset: field!(reset, RLMeshExtLegacyEnvResetFn),
-        step: field!(step, RLMeshExtLegacyEnvStepFn),
-        render: field!(render, RLMeshExtLegacyEnvRenderFn),
-        close: field!(close, RLMeshExtLegacyEnvCloseFn),
-    };
+    let vtable = unsafe { crate::abi::sizing::read(ptr, "RLMeshExtLegacyEnvVtable") }?
+        .ok_or_else(|| CapiError::invalid_arg("null vtable"))?;
     if vtable.reset.is_none() {
         return Err(CapiError::invalid_arg("env vtable reset is null"));
     }
@@ -622,7 +601,7 @@ unsafe fn read_vtable(
     Ok(vtable)
 }
 
-/// The config fields the caller's `struct_size` covers; the rest read as unset.
+/// The validated legacy config copied into the internal server options.
 struct EnvConfig {
     id: *const c_char,
     observation_space: *const RLMeshSpaceSpec,
@@ -640,36 +619,20 @@ struct EnvConfig {
 /// # Safety
 /// `ptr` is non-NULL and its first `struct_size` bytes are valid.
 unsafe fn read_config(ptr: *const RLMeshExtLegacyEnvConfig) -> Result<EnvConfig, CapiError> {
-    let base = ptr.cast::<u8>();
-    let struct_size = unsafe { (*ptr).struct_size };
-    if struct_size == 0 {
-        return Err(CapiError::invalid_arg("config struct_size is 0"));
-    }
-    macro_rules! field {
-        ($name:ident, $ty:ty, $default:expr) => {
-            unsafe {
-                vtable_field::<$ty>(
-                    base,
-                    struct_size,
-                    std::mem::offset_of!(RLMeshExtLegacyEnvConfig, $name),
-                )
-            }
-            .unwrap_or($default)
-        };
-    }
+    let c = unsafe { crate::abi::sizing::read(ptr, "RLMeshExtLegacyEnvConfig") }?
+        .ok_or_else(|| CapiError::invalid_arg("null config"))?;
     Ok(EnvConfig {
-        id: field!(id, *const c_char, std::ptr::null()),
-        observation_space: field!(observation_space, *const RLMeshSpaceSpec, std::ptr::null()),
-        action_space: field!(action_space, *const RLMeshSpaceSpec, std::ptr::null()),
-        adapter_tags_json: field!(adapter_tags_json, *const c_char, std::ptr::null()),
-        reset_options: field!(reset_options, *const *const c_char, std::ptr::null()),
-        num_reset_options: field!(num_reset_options, usize, 0),
-        render_mode: field!(render_mode, *const c_char, std::ptr::null()),
-        metadata_json: field!(metadata_json, *const c_char, std::ptr::null()),
-        // Read as a byte: any nonzero C `bool` is true.
-        foreground: field!(foreground, u8, 0) != 0,
-        variants_catalog_json: field!(variants_catalog_json, *const c_char, std::ptr::null()),
-        host_runtime_json: field!(host_runtime_json, *const c_char, std::ptr::null()),
+        id: c.id,
+        observation_space: c.observation_space,
+        action_space: c.action_space,
+        adapter_tags_json: c.adapter_tags_json,
+        reset_options: c.reset_options,
+        num_reset_options: c.num_reset_options,
+        render_mode: c.render_mode,
+        metadata_json: c.metadata_json,
+        foreground: c.foreground,
+        variants_catalog_json: c.variants_catalog_json,
+        host_runtime_json: c.host_runtime_json,
     })
 }
 
@@ -1118,7 +1081,9 @@ mod tests {
 
     use super::*;
     use crate::model::rlmesh_callback_set_error;
-    use crate::spaces::{rlmesh_space_box, rlmesh_space_dict, rlmesh_space_spec_free};
+    use crate::spaces::{
+        rlmesh_ext_legacy_space_box, rlmesh_ext_legacy_space_dict, rlmesh_space_spec_free,
+    };
 
     fn into_handle(value: SpaceValue) -> *mut RLMeshValue {
         crate::value::handle::into_handle(rlmesh::binding::value_from_space(
@@ -1309,16 +1274,17 @@ mod tests {
     /// Owned obs (Dict{eef_pos: f32[3]}) and action (f32[1] in [-1, 1]) spaces.
     fn spaces() -> (*mut RLMeshSpaceSpec, *mut RLMeshSpaceSpec) {
         let shape = [3i64];
-        let eef =
-            unsafe { rlmesh_space_box(F32, shape.as_ptr(), 1, f64::NEG_INFINITY, f64::INFINITY) };
+        let eef = unsafe {
+            rlmesh_ext_legacy_space_box(F32, shape.as_ptr(), 1, f64::NEG_INFINITY, f64::INFINITY)
+        };
         let key = CString::new("eef_pos").unwrap();
         let keys = [key.as_ptr()];
         let children = [eef];
-        let obs = unsafe { rlmesh_space_dict(keys.as_ptr(), children.as_ptr(), 1) };
+        let obs = unsafe { rlmesh_ext_legacy_space_dict(keys.as_ptr(), children.as_ptr(), 1) };
         assert!(!obs.is_null());
         let one = [1i64];
         (obs, unsafe {
-            rlmesh_space_box(F32, one.as_ptr(), 1, -1.0, 1.0)
+            rlmesh_ext_legacy_space_box(F32, one.as_ptr(), 1, -1.0, 1.0)
         })
     }
 
@@ -1771,16 +1737,18 @@ mod tests {
     #[test]
     fn integer_box_bounds_round_trip_through_the_builders() {
         let shape = [8i64, 8, 3];
-        let image = unsafe { rlmesh_space_box(U8, shape.as_ptr(), 3, 0.0, 255.0) };
+        let image = unsafe { rlmesh_ext_legacy_space_box(U8, shape.as_ptr(), 3, 0.0, 255.0) };
         assert!(!image.is_null(), "{}", last_error_message());
         let (mut low, mut high) = (0.0, 0.0);
-        let status =
-            unsafe { crate::spaces::rlmesh_space_box_bounds(image, 5, &mut low, &mut high) };
+        let status = unsafe {
+            crate::spaces::rlmesh_ext_legacy_space_box_bounds(image, 5, &mut low, &mut high)
+        };
         assert_eq!(status, RLMeshStatus::Ok);
         assert_eq!((low, high), (0.0, 255.0));
         unsafe { rlmesh_space_spec_free(image) };
         // An integer dtype has no infinite bound.
-        let unbounded = unsafe { rlmesh_space_box(U8, shape.as_ptr(), 3, 0.0, f64::INFINITY) };
+        let unbounded =
+            unsafe { rlmesh_ext_legacy_space_box(U8, shape.as_ptr(), 3, 0.0, f64::INFINITY) };
         assert!(unbounded.is_null());
     }
     /// A lane whose `step` and `close` block for a while, logging when each
@@ -1897,6 +1865,7 @@ mod tests {
     /// the slow callbacks return.
     fn impatient() -> RLMeshExtLegacyServeOptions {
         RLMeshExtLegacyServeOptions {
+            struct_size: std::mem::size_of::<RLMeshExtLegacyServeOptions>(),
             token: std::ptr::null(),
             allow_remote_shutdown: false,
             idle_timeout_ms: 0,

@@ -54,6 +54,26 @@ the facade on this branch has no native DLPack import/export methods, and
 C does not expose them. C++ receives only compatibility changes for the new C
 value and tensor calls; its full parity API is a separate wave.
 
+## ABI 5 sizing and space names
+
+Every shared sized input uses its ABI-5 sizeof as MIN_SIZE: NULL options use
+INIT, below-minimum sizes fail with InvalidArgument, and nonzero unknown tail
+bytes fail with TypeError naming the struct and byte offset. Current fields
+are all within that minimum; future appended fields need whole-field checks.
+Sized outputs preserve the caller's struct_size and leave unknown fields at
+the caller's INIT values.
+The same minimum/tail checks now apply to compatibility input vtables/config,
+RunOptions and ServeOptions; the latter two gained struct_size and INIT macros.
+ABI-4 prefix layouts are refused, including a config missing host_runtime_json.
+
+`rlmesh_space_dtype` now takes a Space handle; use `rlmesh_space_spec_dtype`
+for a spec. The old unfenced space builders/readers are removed. The separate
+C++ wave still needs its previous spec builder/read API, retained temporarily
+as `rlmesh_ext_legacy_space_*`; new C code uses typed Box/Discrete/Dict
+constructors and their readers. Experimental MultiBinary/MultiDiscrete/Text/
+Tuple authoring is not yet exposed by the Rust facade and remains on that
+compatibility path. `examples/c_abi5.c` covers strict sizes and output bounds.
+
 ## Remote clients
 
 `rlmesh_remote_env_new` and `rlmesh_remote_vector_env_new` connect through
@@ -323,7 +343,7 @@ to an environment that declares that reset option.
 ## Environment contract
 
 `rlmesh_env_new(vtable, config, user_data, &env)` takes the callbacks and an
-`RLMeshEnvConfig`: the observation and action spaces (built with
+`RLMeshExtLegacyEnvConfig`: the observation and action spaces (built with
 `rlmesh_box_new`, `rlmesh_discrete_new` or `rlmesh_dict_new` and lent with
 `rlmesh_space_spec(space)`), an id, the adapter `EnvTags` as JSON, the reset
 options the env understands (`trial_index`), a render mode, and extra metadata.
@@ -353,7 +373,7 @@ runs.
 
 An image that serves several named scenarios (each picked by the make kwargs or
 environment variables a `dev.rlmesh.package` scenario sets) lists them in
-`RLMeshEnvConfig.variants_catalog_json` (C++: `EnvConfig::variants_catalog_json`),
+`RLMeshExtLegacyEnvConfig.variants_catalog_json` (C++: `EnvConfig::variants_catalog_json`),
 a JSON array of `{"id", "params", "metadata"}` with unique ids. The envelope
 carries it as `variants.catalog`, as `enumerate_variants` does for a Python env,
 so the platform can match the label's scenarios to it.
@@ -398,7 +418,7 @@ runs on its own thread, concurrently with the others, so each `user_data` must
 be its own simulation. `num_lanes == 0` is rejected.
 
 A simulation bound to the thread that created it (a GL or Vulkan context, Isaac
-Sim) sets `RLMeshEnvConfig.foreground = true`: `rlmesh_env_serve` then runs the
+Sim) sets `RLMeshExtLegacyEnvConfig.foreground = true`: `rlmesh_env_serve` then runs the
 server on a helper thread and every callback, `close` included, on the thread
 that called it, until the server stops. `rlmesh_env_cancel` works as before,
 and PNG encoding stays off that thread. A foreground env serves exactly one
@@ -458,7 +478,7 @@ runtime in each config instead of relying on that default.
 In C, initialize the config with the header helper, then fill its spaces:
 
 ```c
-RLMeshEnvConfig config = rlmesh_env_config_init();
+RLMeshExtLegacyEnvConfig config = rlmesh_ext_legacy_env_config_init();
 config.observation_space = observation;
 config.action_space = action;
 ```
@@ -469,7 +489,7 @@ absent (including MSVC's default C mode), `language_version` is omitted.
 It also detects C++ when the C header is included from a C++ translation unit.
 `RLMESH_HOST_RUNTIME_JSON` exposes the detected declaration as a `const char*`.
 
-For an explicit declaration, set `RLMeshEnvConfig.host_runtime_json` (C++:
+For an explicit declaration, set `RLMeshExtLegacyEnvConfig.host_runtime_json` (C++:
 `EnvConfig::host_runtime_json`) to a JSON object like:
 
 ```json
@@ -493,11 +513,8 @@ the library. Invalid declarations fail creation with `RLMESH_ERR_INVALID_ARGUMEN
 
 `NULL` (C++: an empty string) preserves the legacy runtime exactly: `"c"` with
 no language version or compiler. Hosts built against older headers also keep
-that output. A new header with an old library silently emits the old `"c"`
-output too: the old
-library ignores the appended field. The field is guarded by `struct_size`, so
-For the legacy env config below, C callers that zero-initialize a config
-can adopt `rlmesh_env_config_init()` to opt into detection. Native models do
+that output. ABI 5 refuses older config prefixes. For the legacy env config below, callers
+can adopt `rlmesh_ext_legacy_env_config_init()` to opt into detection. Native models do
 not currently emit a describe envelope and have no model config to extend.
 
 ## Tasks

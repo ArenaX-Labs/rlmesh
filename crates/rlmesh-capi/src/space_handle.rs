@@ -423,6 +423,14 @@ pub extern "C" fn rlmesh_space_kind(space: *const RLMeshSpace) -> i32 {
     })
 }
 
+/// The facade space's dtype; INVALID for NULL.
+#[unsafe(no_mangle)]
+pub extern "C" fn rlmesh_space_dtype(space: *const RLMeshSpace) -> i32 {
+    guard_value(0, || {
+        space_ref(space).map_or(0, |space| dtype_to_c(space.dtype()))
+    })
+}
+
 /// The space's shape (SPC-20 buffer rule).
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_space_shape(

@@ -27,6 +27,8 @@ int main(void) {
   const int64_t shape[] = {3};
   CHECK(rlmesh_box_new(rlmesh_bound_float(-1.0), rlmesh_bound_float(1.0), shape, 1, NULL, &pos) ==
         RLMESH_OK);
+  CHECK(rlmesh_space_dtype(pos) == RLMESH_DTYPE_FLOAT32);
+  CHECK(rlmesh_space_dtype(NULL) == RLMESH_DTYPE_INVALID);
   RLMeshDiscreteOptions dopt = RLMESH_DISCRETE_OPTIONS_INIT;
   dopt.start = 1;
   RLMeshDiscrete* id = NULL;
@@ -141,7 +143,7 @@ int main(void) {
   rlmesh_space_free(per);
 
   /* An ABI 4 binary frees a builder's spec with rlmesh_space_free. */
-  RLMeshSpaceSpec* legacy = rlmesh_space_discrete(3, 0);
+  RLMeshSpaceSpec* legacy = rlmesh_ext_legacy_space_discrete(3, 0);
   RLMeshSpace* from_legacy = NULL;
   CHECK(rlmesh_space_new(legacy, &from_legacy) == RLMESH_OK);
   rlmesh_space_free((RLMeshSpace*)legacy);
