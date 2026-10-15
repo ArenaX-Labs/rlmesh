@@ -1010,7 +1010,9 @@ fn serve_foreground(
                 let _done = DoneOnDrop(tx);
                 handle.runtime.block_on(serve)
             })
-            .map_err(|err| rlmesh::Error::Server(format!("spawn the serve thread: {err}")))?;
+            .map_err(|err| {
+                rlmesh::Error::Internal(format!("server error: spawn the serve thread: {err}"))
+            })?;
         for job in &rx {
             match job {
                 ForegroundJob::Run(job) => {

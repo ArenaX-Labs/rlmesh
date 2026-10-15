@@ -47,11 +47,11 @@ where
         &options.token,
     )
     .await
-    .map_err(Error::from)?;
+    .map_err(Error::from_grpc)?;
     // The runtime tier's WANT rides this leg's handshake and caps the env-leg
     // negotiation, so it has to be declared before the handshake goes out.
     env.declare_workflow_edition(options.workflow_edition.clone());
-    let handshake = env.handshake().await.map_err(Error::from)?;
+    let handshake = env.handshake().await.map_err(Error::from_grpc)?;
     let env_ceiling = env_ceiling(&handshake);
     // A lane endpoint steps/resets lanes individually, so a num_envs > 1
     // session can run driver-owned (DISABLED) resets lane by lane.
@@ -60,7 +60,7 @@ where
         rlmesh_proto::capabilities::ENV_SUBSET_STEP,
     );
     let env_contract = env_contract_from_proto(handshake.env_contract)
-        .map_err(|err| Error::Internal(format!("invalid spaces spec from env: {err}")))?;
+        .map_err(|err| Error::Protocol(format!("invalid spaces spec from env: {err}")))?;
     // The handler returns typed actions the runtime encodes against this space;
     // a missing one would fail every predict, so reject at connect, not mid-run.
     if env_contract.action_space.is_none() {
@@ -169,7 +169,7 @@ pub(super) fn env_ceiling(handshake: &rlmesh_grpc::EnvHandshake) -> PeerCeiling 
 /// recoverable flag (the default `model_rpc` constructor drops it, so a
 /// recoverable handler decline used to reach the caller as permanent).
 fn model_rpc(error: Error) -> RuntimeError {
-    RuntimeError::model_rpc_with_recoverability("local-model", error.is_recoverable(), error)
+    RuntimeError::model_rpc_with_recoverability("local-model", error.is_transient(), error)
 }
 
 /// Map the driver's error back onto the facade taxonomy. Flattening every
@@ -197,7 +197,7 @@ fn run_error(error: RuntimeError) -> Error {
         // the classification from the structured source.
         RuntimeError::EnvRpc { source, .. } => match source
             .and_then(|source| source.downcast::<rlmesh_grpc::error::Error>().ok())
-            .map(|error| Error::from(*error))
+            .map(|error| Error::from_grpc(*error))
         {
             Some(Error::Connection(_)) => Error::Connection(message),
             Some(Error::Timeout(timeout)) => Error::Timeout(timeout),
@@ -211,6 +211,7 @@ fn run_error(error: RuntimeError) -> Error {
             }),
         },
         RuntimeError::OperationTimeout { timeout, .. } => Error::Timeout(timeout),
+        RuntimeError::Protocol(_) => Error::Protocol(message),
         _ => Error::Internal(message),
     }
 }

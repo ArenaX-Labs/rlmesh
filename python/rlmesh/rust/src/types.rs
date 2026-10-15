@@ -41,14 +41,13 @@ create_exception!(
 /// so we use this helper function instead.
 pub fn to_py_err(err: Error) -> PyErr {
     match err {
-        Error::Address(message) => PyValueError::new_err(format!("invalid address: {message}")),
+        Error::InvalidArgument(e) => PyValueError::new_err(e.message),
         Error::Connection(message) => PyConnectionError::new_err(message),
         Error::Timeout(duration) => {
             PyTimeoutError::new_err(format!("operation timed out after {:?}", duration))
         }
         Error::Environment(e) => env_error_to_py(e),
         Error::Model(e) => PyRuntimeError::new_err(format!("model error: {}", e.message)),
-        Error::Server(message) => PyRuntimeError::new_err(format!("server error: {message}")),
         Error::Internal(message) => PyRuntimeError::new_err(message),
         // rlmesh::Error is #[non_exhaustive].
         other => PyRuntimeError::new_err(other.to_string()),

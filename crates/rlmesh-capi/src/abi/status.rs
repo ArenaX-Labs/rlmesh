@@ -55,8 +55,8 @@ impl From<rlmesh::Error> for CapiError {
     fn from(err: rlmesh::Error) -> Self {
         let recoverable = err.is_recoverable();
         let status = match &err {
-            rlmesh::Error::Address(_) => RLMeshStatus::InvalidArgument,
-            rlmesh::Error::Connection(_) | rlmesh::Error::Server(_) => RLMeshStatus::Transport,
+            rlmesh::Error::InvalidArgument(_) => RLMeshStatus::InvalidArgument,
+            rlmesh::Error::Connection(_) => RLMeshStatus::Transport,
             rlmesh::Error::Timeout(_) => RLMeshStatus::Timeout,
             rlmesh::Error::Environment(_) => RLMeshStatus::Environment,
             rlmesh::Error::Model(_) => RLMeshStatus::Model,

@@ -57,7 +57,7 @@ impl<E: Env + 'static> EnvServer<E> {
         options: ServeOptions,
     ) -> Result<BoundEnvServer> {
         if self.envs.is_empty() {
-            return Err(Error::Server(
+            return Err(Error::server(
                 "an env server needs at least one lane".to_string(),
             ));
         }
@@ -218,7 +218,7 @@ async fn close_env(
         env.close()
             .await
             .map(|_| ())
-            .map_err(|err| Error::Environment(EnvironmentError::from(err)))
+            .map_err(|err| Error::Environment(EnvironmentError::from_wire(err)))
     };
     await_close_with_timeout(close, close_timeout)
         .await

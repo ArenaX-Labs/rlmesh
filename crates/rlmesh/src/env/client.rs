@@ -97,13 +97,13 @@ impl RemoteVectorEnv {
     ) -> Result<Self> {
         let mut inner = rlmesh_grpc::EnvClient::connect_with_token(&address.to_string(), token)
             .await
-            .map_err(Error::from)?;
+            .map_err(Error::from_grpc)?;
         inner.declare_workflow_edition(declared.map(str::to_string));
-        let handshake = inner.handshake().await.map_err(Error::from)?;
+        let handshake = inner.handshake().await.map_err(Error::from_grpc)?;
         let session_offer = handshake.session_offer();
         let env_contract = rlmesh_grpc::wire::env_contract_from_proto(handshake.env_contract)
             .map_err(|error| {
-                Error::Internal(format!("invalid spaces spec from remote env: {error}"))
+                Error::Protocol(format!("invalid spaces spec from remote env: {error}"))
             })?;
         validate_env_contract(&env_contract)?;
         let observation_space = std::sync::Arc::new(
@@ -254,7 +254,7 @@ impl RemoteVectorEnv {
                 episode_ids: pushed_ids,
             })
             .await
-            .map_err(Error::from)?;
+            .map_err(Error::from_grpc)?;
 
         let observations = decode_batched_partial_values(
             response.observation.as_ref(),
@@ -263,7 +263,7 @@ impl RemoteVectorEnv {
         )
         .map_err(protocol_error_to_error)?;
         validate_count(&observations, self.num_envs, "observations")
-            .map_err(|error| Error::Environment(error.into()))?;
+            .map_err(|error| Error::Environment(EnvironmentError::from_wire(error)))?;
 
         Ok(VectorResetResult {
             observations,
@@ -286,7 +286,7 @@ impl RemoteVectorEnv {
         let observation_space = std::sync::Arc::clone(&self.observation_space);
 
         validate_action_count(&req.actions, self.num_envs)
-            .map_err(|error| Error::Environment(error.into()))?;
+            .map_err(|error| Error::Environment(EnvironmentError::from_wire(error)))?;
         let response = self
             .inner
             .step(ProtoStepRequest {
@@ -304,7 +304,7 @@ impl RemoteVectorEnv {
                 episode_ids: self.episode_ids.clone(),
             })
             .await
-            .map_err(Error::from)?;
+            .map_err(Error::from_grpc)?;
 
         let observations = decode_batched_partial_values(
             response.observation.as_ref(),
@@ -331,13 +331,13 @@ impl RemoteVectorEnv {
 
         let env_count = self.num_envs;
         validate_count(&observations, env_count, "observations")
-            .map_err(|error| Error::Environment(error.into()))?;
+            .map_err(|error| Error::Environment(EnvironmentError::from_wire(error)))?;
         validate_count(&terminated, env_count, "terminated values")
-            .map_err(|error| Error::Environment(error.into()))?;
+            .map_err(|error| Error::Environment(EnvironmentError::from_wire(error)))?;
         validate_count(&truncated, env_count, "truncated values")
-            .map_err(|error| Error::Environment(error.into()))?;
+            .map_err(|error| Error::Environment(EnvironmentError::from_wire(error)))?;
         validate_count(&response.rewards, env_count, "rewards values")
-            .map_err(|error| Error::Environment(error.into()))?;
+            .map_err(|error| Error::Environment(EnvironmentError::from_wire(error)))?;
 
         // Surface the ids as-of this step (the terminal obs of a completing lane
         // still belongs to the episode that just ended).
@@ -370,7 +370,7 @@ impl RemoteVectorEnv {
             .inner
             .render(render_request_to_proto(&req))
             .await
-            .map_err(Error::from)?;
+            .map_err(Error::from_grpc)?;
         render_result_from_proto(response).map_err(protocol_error_to_error)
     }
 
@@ -379,7 +379,7 @@ impl RemoteVectorEnv {
     /// This does not shut down the server. Use [`RemoteVectorEnv::shutdown`] when
     /// remote shutdown is enabled.
     pub async fn close(&mut self) -> Result<VectorCloseResult> {
-        let response = self.inner.close().await.map_err(Error::from)?;
+        let response = self.inner.close().await.map_err(Error::from_grpc)?;
         Ok(VectorCloseResult {
             final_episodes: response
                 .final_episodes
@@ -401,7 +401,7 @@ impl RemoteVectorEnv {
             .inner
             .shutdown(reason.into())
             .await
-            .map_err(Error::from)?;
+            .map_err(Error::from_grpc)?;
         Ok(response.accepted)
     }
 }

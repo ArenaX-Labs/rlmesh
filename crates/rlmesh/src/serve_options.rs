@@ -149,18 +149,18 @@ pub(crate) fn endpoint_token(
     let header_safe = |source: &str, token: String| match rlmesh_grpc::helpers::token_header_problem(
         &token,
     ) {
-        Some(problem) => Err(Error::Server(format!(
+        Some(problem) => Err(Error::server(format!(
             "{source} {problem}; a token must be printable ASCII without surrounding whitespace, since clients send it in an HTTP header"
         ))),
         None => Ok(token),
     };
     match environment {
-        Ok(token) if token.trim().is_empty() => Err(Error::Server(format!(
+        Ok(token) if token.trim().is_empty() => Err(Error::server(format!(
             "{variable} must not be empty or whitespace-only"
         ))),
         Ok(token) => header_safe(variable, token),
         Err(std::env::VarError::NotUnicode(_)) => {
-            Err(Error::Server(format!("{variable} must be valid Unicode")))
+            Err(Error::server(format!("{variable} must be valid Unicode")))
         }
         Err(std::env::VarError::NotPresent) if configured.is_empty() => Ok(configured),
         Err(std::env::VarError::NotPresent) => {

@@ -206,13 +206,13 @@ impl RemoteModel {
             env_contract
                 .observation_space
                 .clone()
-                .ok_or_else(|| Error::Internal("env contract missing observation_space".into()))?,
+                .ok_or_else(|| Error::Protocol("env contract missing observation_space".into()))?,
         );
         let action_space = Arc::new(
             env_contract
                 .action_space
                 .clone()
-                .ok_or_else(|| Error::Internal("env contract missing action_space".into()))?,
+                .ok_or_else(|| Error::Protocol("env contract missing action_space".into()))?,
         );
         let env_contract = single_lane_contract(env_contract)?;
 
@@ -221,9 +221,9 @@ impl RemoteModel {
         // narrows the floor here.)
         let mut inner = rlmesh_grpc::ModelClient::connect(&address.to_string(), token)
             .await
-            .map_err(Error::from)?;
+            .map_err(Error::from_grpc)?;
         inner.declare_workflow_edition(declared.map(str::to_string));
-        inner.handshake().await.map_err(Error::from)?;
+        inner.handshake().await.map_err(Error::from_grpc)?;
         let model_offer = inner.model_session_offer();
 
         // Reconcile the 3-way floor (env + model + this runtime) via the shared
@@ -232,10 +232,10 @@ impl RemoteModel {
         // helper lives in rlmesh-grpc so the production runtime computes the same
         // floor; here the facade just consumes it.
         let selected_workflow_edition = rlmesh_grpc::env_floor(&env_offer, &model_offer, declared)
-            .map_err(Error::from)?
+            .map_err(Error::from_grpc)?
             .selected_workflow_edition;
         let session_edition = rlmesh_proto::parse_retained_edition(&selected_workflow_edition)
-            .map_err(Error::Internal)?;
+            .map_err(Error::Protocol)?;
         let ceiling = PeerCeiling::wire_v1(
             PeerCeiling::highest_shared_edition(&model_offer.editions).unwrap_or(session_edition),
             inner.server_capabilities().clone(),
@@ -345,7 +345,7 @@ impl RemoteModel {
         let episode_id = self
             .episode_id
             .clone()
-            .ok_or_else(|| Error::Internal("call reset() before predict()".into()))?;
+            .ok_or_else(|| Error::Runtime("call reset() before predict()".into()))?;
 
         if !self.configured {
             self.resolve_adapter().await?;
@@ -408,7 +408,11 @@ impl RemoteModel {
                 step: self.history_on.then_some(step),
             };
 
-            let response = self.inner.predict(request).await.map_err(Error::from)?;
+            let response = self
+                .inner
+                .predict(request)
+                .await
+                .map_err(Error::from_grpc)?;
 
             if response.actions.is_empty() {
                 return Err(Error::Internal(
@@ -461,7 +465,7 @@ impl RemoteModel {
                 reason: "remote model session complete".to_string(),
             })
             .await
-            .map_err(Error::from)
+            .map_err(Error::from_grpc)
     }
 
     /// Send the stashed `ResetAdapter` for the episode `reset` left behind, if
@@ -484,7 +488,7 @@ impl RemoteModel {
                 episode_ids: std::mem::take(&mut self.pending_end),
             })
             .await
-            .map_err(Error::from)
+            .map_err(Error::from_grpc)
     }
 
     async fn resolve_adapter(&mut self) -> Result<()> {
@@ -509,7 +513,7 @@ impl RemoteModel {
                 delivers_history: self.inner.server_ingests_history(),
             })
             .await
-            .map_err(Error::from)?;
+            .map_err(Error::from_grpc)?;
         // The declared native chunk needs nothing here (this client replays
         // exactly the frames the engine emitted); whether the route wants
         // history decides what the replay branch buffers.

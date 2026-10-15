@@ -344,18 +344,24 @@ fn assemble_route_inputs_inner(
             })?;
         let step = stamped.unwrap_or_else(|| buffers.next_step(episode_id));
         if stamped.is_some() || counted {
-            buffers.advance_step(episode_id, step)?;
+            buffers
+                .advance_step(episode_id, step)
+                .map_err(Error::from_apply)?;
         }
-        let raw = space_value_to_obs_map(lane, &config.observation_space, &referenced)?;
-        inputs.push(assemble_obs(
-            &config.adapter,
-            &raw,
-            episode_id,
-            step,
-            buffers,
-            customs,
-            encodings,
-        )?);
+        let raw = space_value_to_obs_map(lane, &config.observation_space, &referenced)
+            .map_err(Error::from_apply)?;
+        inputs.push(
+            assemble_obs(
+                &config.adapter,
+                &raw,
+                episode_id,
+                step,
+                buffers,
+                customs,
+                encodings,
+            )
+            .map_err(Error::from_apply)?,
+        );
     }
     Ok(inputs)
 }
@@ -387,9 +393,13 @@ fn ingest_history(
                     frame.step
                 )));
             }
-            buffers.advance_step(&episode.episode_id, frame.step)?;
-            let raw = space_value_to_obs_map(lane, &config.observation_space, referenced)?;
-            observe_obs(&config.adapter, &raw, &episode.episode_id, buffers)?;
+            buffers
+                .advance_step(&episode.episode_id, frame.step)
+                .map_err(Error::from_apply)?;
+            let raw = space_value_to_obs_map(lane, &config.observation_space, referenced)
+                .map_err(Error::from_apply)?;
+            observe_obs(&config.adapter, &raw, &episode.episode_id, buffers)
+                .map_err(Error::from_apply)?;
         }
     }
     Ok(())
@@ -524,7 +534,7 @@ fn dispatch_corners(
             .into_iter()
             .map(|chunk| {
                 take_prefix(
-                    split_chunk(chunk)?,
+                    split_chunk(chunk).map_err(Error::from_apply)?,
                     horizon,
                     native_chunk,
                     short_chunk_warned,
@@ -545,7 +555,7 @@ fn dispatch_corners(
                         )
                     })?;
                 take_prefix(
-                    split_chunk(chunk)?,
+                    split_chunk(chunk).map_err(Error::from_apply)?,
                     horizon,
                     native_chunk,
                     short_chunk_warned,
@@ -720,7 +730,8 @@ fn finish_route_frames_inner(
                     step + frame as i64,
                 )
             })
-            .collect::<std::result::Result<Vec<SpaceValue>, _>>()?
+            .collect::<std::result::Result<Vec<SpaceValue>, _>>()
+            .map_err(Error::from_apply)?
             .into_iter();
         let first = applied
             .next()
