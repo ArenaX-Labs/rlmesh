@@ -275,6 +275,44 @@ async fn run_local_defaults_to_one_episode() {
     assert_eq!(report.episodes.len(), 1);
 }
 
+/// A run borrows the model, as Python's `Model.run` does: `on_close` fires
+/// only when the caller asks with `close_model(true)`.
+#[tokio::test]
+async fn run_local_borrows_the_model_unless_asked_to_close_it() {
+    let bound = crate::EnvServer::new(SmokeEnv::new())
+        .bind(BindAddress::Tcp {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+        })
+        .await
+        .unwrap();
+    let address = bound.local_addr().to_string();
+    let server = tokio::spawn(async move { bound.serve().await });
+
+    assert!(!RunLocalOptions::parse(&address).unwrap().close_model);
+    let closes = Arc::new(AtomicUsize::new(0));
+    for (close_model, expected) in [(None, 0), (Some(false), 0), (Some(true), 1)] {
+        closes.store(0, Ordering::SeqCst);
+        let mut options = RunLocalOptions::parse(&address).unwrap();
+        if let Some(close_model) = close_model {
+            options = options.close_model(close_model);
+        }
+        ModelWorker::new(SmokeModel {
+            predicts: Arc::new(AtomicUsize::new(0)),
+            closes: Arc::clone(&closes),
+        })
+        .run_local_async(options)
+        .await
+        .unwrap();
+        assert_eq!(
+            closes.load(Ordering::SeqCst),
+            expected,
+            "close_model={close_model:?}"
+        );
+    }
+    server.abort();
+}
+
 /// `for_episodes(0)` runs nothing and never dials the env, like Python's
 /// `run(episodes=0)`; a mismatched seed count is refused before dialing.
 #[tokio::test]

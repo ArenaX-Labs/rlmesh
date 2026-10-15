@@ -427,7 +427,9 @@ RLMESH_API void rlmesh_callback_set_error(const char* message, bool recoverable)
  * outside a Box's bounds is left to the environment's own policy.
  *
  * `on_episode_end` fires when the runtime drops an episode; `episode_id` NULL
- * means every episode of `env_id`. `on_close` fires once at shutdown. */
+ * means every episode of `env_id`. `on_close` fires once per handle: when a
+ * serve stops, or at rlmesh_model_free; a run_local borrows the model and
+ * never fires it. */
 typedef struct RLMeshModelVtable {
   size_t struct_size;
   int (*predict)(void* user_data, const RLMeshObservation* obs, RLMeshValue** out_actions);
@@ -518,7 +520,10 @@ RLMESH_API RLMeshStatus rlmesh_model_serve(RLMeshModel* model, const char* bind_
  * RLMESH_ERR_CANCELLED, since it has no report to give. */
 RLMESH_API void rlmesh_model_cancel(RLMeshModel* model);
 
-/* Free a model handle. NULL is a no-op. Must NOT be called from inside one of
+/* Free a model handle. NULL is a no-op. Freeing closes the model: on_close
+ * fires here, on the calling thread, unless a serve already fired it
+ * (rlmesh_model_run_local borrows the model and never closes it, as Python's
+ * Model.run does). Must NOT be called from inside one of
  * this model's own callbacks (it drops the runtime the callback is running on);
  * doing so is contained rather than fatal, but leaves the handle undefined. */
 RLMESH_API void rlmesh_model_free(RLMeshModel* model);

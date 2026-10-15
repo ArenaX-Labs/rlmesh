@@ -249,6 +249,23 @@ pub struct RLMeshModel {
     user_data: UserData,
     runtime: tokio::runtime::Runtime,
     cancel: CancellationToken,
+    /// The handle's one `on_close` gate, shared by every handler built over it:
+    /// a run borrows the model (never closes it), a serve closes it when it
+    /// stops, and `rlmesh_model_free` closes it if nothing did.
+    close: Arc<CloseGate>,
+}
+
+impl Drop for RLMeshModel {
+    /// Free is the C caller's close: fire `on_close` here unless a serve
+    /// already did. Runs on the freeing thread; no run is active by contract.
+    fn drop(&mut self) {
+        if self.close.fired.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        if let Some(callback) = self.vtable.on_close {
+            unsafe { callback(self.user_data.0) };
+        }
+    }
 }
 
 struct CModelHandler {
@@ -260,11 +277,11 @@ struct CModelHandler {
     close: Arc<CloseGate>,
 }
 
-/// Keeps the C `on_close` to one call, ordered after any predict still inside
-/// the C callback. `rlmesh_model_serve`'s cancel arm shares one gate with the
-/// handler the server owns: cancelling drops the server future, so its own
-/// close path never runs, while the connection tasks tonic spawned can still be
-/// in a callback.
+/// Keeps the C `on_close` to one call per handle, ordered after any predict
+/// still inside the C callback. `rlmesh_model_serve`'s cancel arm shares the
+/// gate with the handler the server owns: cancelling drops the server future,
+/// so its own close path never runs, while the connection tasks tonic spawned
+/// can still be in a callback.
 #[derive(Default)]
 struct CloseGate {
     /// Held for the length of a predict and of the close hook.
@@ -274,19 +291,14 @@ struct CloseGate {
 
 impl CModelHandler {
     /// A handler over `model`'s vtable. The vtable is `Copy` (the capi took its
-    /// own copy at `rlmesh_model_new`), so this is free.
+    /// own copy at `rlmesh_model_new`), so this is free. Every handler over one
+    /// model shares its close gate, so only one of them runs the C `on_close`.
     fn new(model: &RLMeshModel) -> Self {
-        Self::with_close_gate(model, Arc::default())
-    }
-
-    /// [`CModelHandler::new`] sharing `close` with another handler over the same
-    /// model, so only one of them runs the C `on_close`.
-    fn with_close_gate(model: &RLMeshModel, close: Arc<CloseGate>) -> Self {
         Self {
             vtable: model.vtable,
             user_data: model.user_data,
             episodes: EpisodeStore::with_capacity(EPISODE_STORE_CAPACITY),
-            close,
+            close: Arc::clone(&model.close),
         }
     }
 }
@@ -592,6 +604,7 @@ pub unsafe extern "C" fn rlmesh_model_new(
             user_data: UserData(user_data),
             runtime,
             cancel: CancellationToken::new(),
+            close: Arc::default(),
         });
         *out = Box::into_raw(model);
         Ok(())
@@ -866,9 +879,8 @@ pub unsafe extern "C" fn rlmesh_model_serve(
         // normal shutdown path runs -- so fire it here instead, through the gate
         // the served handler shares: once, and after any in-flight predict has
         // left the C callback.
-        let close = Arc::<CloseGate>::default();
-        let handler = CModelHandler::with_close_gate(model, Arc::clone(&close));
-        let mut closer = CModelHandler::with_close_gate(model, close);
+        let handler = CModelHandler::new(model);
+        let mut closer = CModelHandler::new(model);
         let cancel = model.cancel.clone();
         model
             .runtime
@@ -907,6 +919,10 @@ pub unsafe extern "C" fn rlmesh_model_cancel(model: *mut RLMeshModel) {
 }
 
 /// Free a model handle. NULL is a no-op.
+///
+/// Freeing closes the model: `on_close` fires here, on the calling thread,
+/// unless a serve already fired it. `rlmesh_model_run_local` borrows the model
+/// and never closes it.
 ///
 /// Must NOT be called from inside one of the model's own callbacks: freeing the
 /// handle drops its tokio runtime, and dropping a runtime from a thread that
@@ -1744,8 +1760,8 @@ mod tests {
         assert_eq!(report.terminated_episodes, 3);
         assert_eq!(report.truncated_episodes, 0);
         assert_eq!(counters.predicts.load(Ordering::SeqCst), 3);
-        // The close hook fires exactly once at the end of the run.
-        assert_eq!(counters.closes.load(Ordering::SeqCst), 1);
+        // The run borrows the model: its close hook waits for the free.
+        assert_eq!(counters.closes.load(Ordering::SeqCst), 0);
         // The explicit per-episode seeds reached the env's resets in order, and
         // the trial ordinals walked from the base — the env declared the option.
         let resets = env.resets.lock().expect("reset log");
@@ -1783,7 +1799,35 @@ mod tests {
             "{}",
             last_error_message()
         );
+        // A cancelled run does not close the model either; the free does, once.
+        assert_eq!(counters.closes.load(Ordering::SeqCst), 0);
         unsafe { rlmesh_model_free(model) };
+        assert_eq!(counters.closes.load(Ordering::SeqCst), 1);
+    }
+
+    /// Runs borrow the model: two runs on one handle leave it open (no
+    /// `on_close` between or after them), and freeing it closes it exactly once.
+    #[test]
+    fn run_local_borrows_the_model_and_free_closes_it() {
+        let env = EnvHarness::start();
+        let counters = Counters::default();
+        let model = new_model(&counting_vtable(), counters.user_data());
+        let address = CString::new(env.address.clone()).expect("address");
+        for _ in 0..2 {
+            let status = unsafe {
+                rlmesh_model_run_local(
+                    model,
+                    address.as_ptr(),
+                    std::ptr::null(),
+                    std::ptr::null_mut(),
+                )
+            };
+            assert_eq!(status, RLMeshStatus::Ok, "{}", last_error_message());
+            assert_eq!(counters.closes.load(Ordering::SeqCst), 0);
+        }
+        assert_eq!(counters.predicts.load(Ordering::SeqCst), 2);
+        unsafe { rlmesh_model_free(model) };
+        assert_eq!(counters.closes.load(Ordering::SeqCst), 1);
     }
 
     /// A zeroed `max_episodes` is unset, not unbounded: Python's default budget
@@ -2006,6 +2050,8 @@ mod tests {
         assert_eq!(counters.predicts.load(Ordering::SeqCst), 1);
         assert_eq!(counters.closes.load(Ordering::SeqCst), 1);
         unsafe { rlmesh_model_free(model) };
+        // The serve already closed the model; the free does not close it again.
+        assert_eq!(counters.closes.load(Ordering::SeqCst), 1);
     }
 
     #[test]

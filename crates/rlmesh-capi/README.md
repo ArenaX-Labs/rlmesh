@@ -145,7 +145,8 @@ recently predicted one is evicted through `on_episode_end`.
 
 Optional hooks: `on_episode_end(env_id, episode_id)` when the runtime drops an
 episode (`episode_id == NULL` means every episode of that env), and `on_close`
-once at shutdown. Callbacks run on a worker thread; `user_data` must be safe to
+once per handle: when a serve stops, or at `rlmesh_model_free`. A run borrows
+the model and never closes it, as Python's `Model.run` does. Callbacks run on a worker thread; `user_data` must be safe to
 use from a thread other than the one that created it, and a callback must not
 re-enter its own model handle. `rlmesh_model_run_local` fills an optional
 `RLMeshRunReport`; `rlmesh_model_cancel` stops a blocking run/serve from another

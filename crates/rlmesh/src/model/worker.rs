@@ -73,9 +73,9 @@ pub struct RunLocalOptions {
     pub max_episode_seconds: Option<f64>,
     /// Ask the env to close when the run ends.
     pub close_env: bool,
-    /// Fire the handler's `on_close` when the run ends (the default: the
-    /// worker is consumed, so the model is done). Off when the handler
-    /// outlives the run -- a borrowed model the caller closes itself.
+    /// Fire the handler's `on_close` when the run ends. Off by default: like
+    /// Python's `Model.run`, a run borrows the model and the caller closes it.
+    /// Turn it on when the run is the model's last use and should close it.
     pub close_model: bool,
     /// How many actions of each predicted chunk the runtime executes before
     /// re-planning (1 = no chunking). Pinned onto the route at resolve, exactly
@@ -113,7 +113,7 @@ impl RunLocalOptions {
             max_episode_steps: None,
             max_episode_seconds: None,
             close_env: false,
-            close_model: true,
+            close_model: false,
             execution_horizon: 1,
             prefetch_lead: 0,
             workflow_edition: None,
@@ -220,7 +220,8 @@ impl RunLocalOptions {
         self
     }
 
-    /// Keep the handler open after the run (see [`close_model`](Self::close_model)).
+    /// Fire the handler's `on_close` when the run ends (off by default: the
+    /// run borrows the model; see [`close_model`](Self::close_model)).
     pub fn close_model(mut self, close_model: bool) -> Self {
         self.close_model = close_model;
         self

@@ -1002,7 +1002,9 @@ class Model {
   Model(const Model&) = delete;
   Model& operator=(const Model&) = delete;
 
-  /// Frees the handle. NEVER destroy a Model from inside one of its own
+  /// Frees the handle, which closes the model: the on_close hook runs here
+  /// unless a serve already ran it (run_local borrows the model and never
+  /// closes it). NEVER destroy a Model from inside one of its own
   /// callbacks (predict / on_episode_end / on_close): that drops the runtime the
   /// callback is running on. Destroy it from a thread that is not executing it,
   /// after run_local / serve has returned.
