@@ -54,11 +54,17 @@ pub(crate) fn adapter_advisories(adapter: &ResolvedAdapter) -> Vec<Advisory> {
                 let absent: Vec<String> = state
                     .pieces
                     .iter()
-                    .filter_map(|piece| piece.absent_role.as_deref().map(quoted))
+                    .filter_map(|piece| {
+                        let role = quoted(piece.absent_role.as_deref()?);
+                        Some(match piece.part.as_deref() {
+                            Some(part) => format!("{role} (part {})", quoted(part)),
+                            None => role,
+                        })
+                    })
                     .collect();
                 if !absent.is_empty() {
                     notes.push(Advisory::caution(format!(
-                        "state {}: {} component(s) zero-filled because the env offers no {}",
+                        "state {}: {} component(s) zero-filled because the env offers no match for {}",
                         quoted(&state.placement.to_string()),
                         absent.len(),
                         absent.join(", ")

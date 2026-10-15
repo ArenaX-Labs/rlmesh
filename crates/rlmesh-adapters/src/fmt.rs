@@ -8,6 +8,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::roles::registry::is_known_role;
 use crate::spec::{AcceptSet, RotationEncoding};
 
 /// A quoted string, for keys and roles in messages.
@@ -81,7 +82,9 @@ pub(crate) fn quoted_leaf_keys<V>(
 /// counts as any kind, so `x/base_rot` points at `proprio/base_rot`) whose name
 /// shares a `_`-separated word with the missing one, starts with it or is its
 /// start (`steer`/`steering`), or is within two edits of it; at most three,
-/// closest first.
+/// closest first. Two *registered* roles are never offered for each other: the
+/// registry defines them as distinct quantities, and `proprio/joint_vel` fed to
+/// a `proprio/joint_pos` input is a mis-binding, not a typo.
 pub(crate) fn missing_role_hint<'a>(
     missing: &str,
     offered: impl IntoIterator<Item = &'a str>,
@@ -98,6 +101,9 @@ pub(crate) fn missing_role_hint<'a>(
         .filter_map(|role| {
             let (other_kind, other_name) = split_role(role);
             if kind != other_kind && kind != "x" && other_kind != "x" {
+                return None;
+            }
+            if is_known_role(missing) && is_known_role(role) {
                 return None;
             }
             let distance = edit_distance(name, other_name);
@@ -175,11 +181,22 @@ mod tests {
     #[test]
     fn hint_keeps_kinds_apart_and_is_empty_without_a_lead() {
         assert_eq!(missing_role_hint("action/gripper", ["proprio/gripper"]), "");
+        assert_eq!(missing_role_hint("proprio/eef_pos", ["image/primary"]), "");
+    }
+
+    #[test]
+    fn hint_never_swaps_one_registered_quantity_for_another() {
         assert_eq!(
             missing_role_hint("proprio/joint_pos", ["proprio/joint_vel"]),
-            "; did you mean \"proprio/joint_vel\"?"
+            ""
         );
-        assert_eq!(missing_role_hint("proprio/eef_pos", ["image/primary"]), "");
+        assert_eq!(
+            missing_role_hint(
+                "proprio/joint_pos",
+                ["proprio/joint_vel", "proprio/joint_angles"]
+            ),
+            "; did you mean \"proprio/joint_angles\"?"
+        );
     }
 
     #[test]

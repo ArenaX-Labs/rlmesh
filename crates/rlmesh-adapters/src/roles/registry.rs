@@ -134,9 +134,11 @@ pub fn is_known_role(name: &str) -> bool {
 /// vocabulary is never a hard gate for a not-yet-blessed domain or local
 /// experimentation. Escape roles are never nudged (no advisory) and pass the
 /// `Strict` publish gate; only `Forbid`, which admits registered roles alone,
-/// rejects them. They declare "I know this isn't standard": an `x/` role binds
-/// only to the identical string, so it is a contract between an env and the
-/// models written against it, not a shared one.
+/// rejects them. They declare "I know this isn't standard": an `x/` state or
+/// action role binds only to the identical string, so it is a contract between
+/// an env and the models written against it, not a shared one. (A required,
+/// unparted camera is the one exception: it may bind an env's lone camera under
+/// another role, with a caution.)
 pub fn is_escape_role(name: &str) -> bool {
     name.starts_with("x/")
 }

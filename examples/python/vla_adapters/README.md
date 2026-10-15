@@ -27,8 +27,8 @@ vla_adapters/
 
 This works because every env and model here is single-arm tabletop manipulation, and they meet on **registered** roles: cameras, the instruction, end-effector pose and gripper state, and end-effector and gripper actions. Two limits to keep in mind:
 
-- A role binds only on the identical string. An env that publishes its own `x/` roles (a navigation goal, an object pose) binds only to models written against those same `x/` names; the resolver error lists what the env offers and suggests near matches.
-- Binding guarantees the payload is the right shape, encoding and frame. It does not make a checkpoint good at a task it was not trained for: a LIBERO fine-tune still needs evaluating on MetaWorld.
+- State and action roles bind only on the identical string (a required camera may fall back to an env's only camera, with a caution). An env that publishes its own `x/` roles (a navigation goal, an object pose) binds only to models written against those same `x/` names; the resolver error lists what the env offers and suggests near matches.
+- Binding checks shape and encoding, and checks frames where both sides declare one; when only the model declares a frame, it resolves with a caution that the env cannot confirm it. None of this makes a checkpoint good at a task it was not trained for: a LIBERO fine-tune still needs evaluating on MetaWorld.
 
 There are two custom-adapter escape hatches, used at different scopes:
 
