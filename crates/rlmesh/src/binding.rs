@@ -272,3 +272,8 @@ pub fn env_server_binding_host(
 ) -> Result<()> {
     server.binding_host(component, language, extra)
 }
+
+/// Validate a binding's factory attributes through the shared branch checker.
+pub fn env_factory_check<F: crate::EnvFactory>() -> Result<()> {
+    crate::env::factory::check_branch_table::<F>()
+}

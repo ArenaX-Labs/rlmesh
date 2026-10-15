@@ -151,11 +151,11 @@ pub(crate) struct CVectorEnv {
     closed: bool,
 }
 pub struct RLMeshEnv {
-    pub(crate) inner: Arc<Mutex<CEnv>>,
+    pub(crate) inner: Arc<Mutex<Box<dyn Env + Send>>>,
     pub(crate) leased: Arc<AtomicBool>,
 }
 pub struct RLMeshVectorEnv {
-    pub(crate) inner: Arc<Mutex<CVectorEnv>>,
+    pub(crate) inner: Arc<Mutex<Box<dyn VectorEnv + Send>>>,
     pub(crate) leased: Arc<AtomicBool>,
 }
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -376,7 +376,7 @@ pub unsafe extern "C" fn rlmesh_env_new(
         }?;
         crate::abi::ignore_sigpipe();
         let value = RLMeshEnv {
-            inner: Arc::new(Mutex::new(CEnv {
+            inner: Arc::new(Mutex::new(Box::new(CEnv {
                 vt,
                 ud: UserData {
                     ptr: user_data,
@@ -384,7 +384,7 @@ pub unsafe extern "C" fn rlmesh_env_new(
                 },
                 attrs,
                 closed: false,
-            })),
+            }))),
             leased: Arc::new(AtomicBool::new(false)),
         };
         write_out(out, Box::into_raw(Box::new(value)))
@@ -421,7 +421,7 @@ pub unsafe extern "C" fn rlmesh_vector_env_new(
         }?;
         crate::abi::ignore_sigpipe();
         let value = RLMeshVectorEnv {
-            inner: Arc::new(Mutex::new(CVectorEnv {
+            inner: Arc::new(Mutex::new(Box::new(CVectorEnv {
                 vt,
                 ud: UserData {
                     ptr: user_data,
@@ -430,7 +430,7 @@ pub unsafe extern "C" fn rlmesh_vector_env_new(
                 attrs,
                 num_envs: a.num_envs,
                 closed: false,
-            })),
+            }))),
             leased: Arc::new(AtomicBool::new(false)),
         };
         write_out(out, Box::into_raw(Box::new(value)))
@@ -494,22 +494,28 @@ impl Drop for Claim {
 /// starting after the C server has been freed. Free also drains each mutex.
 #[derive(Clone)]
 pub(crate) struct BorrowedEnv {
-    pub(crate) inner: Arc<Mutex<CEnv>>,
+    pub(crate) inner: Arc<Mutex<Box<dyn Env + Send>>>,
     pub(crate) stopped: Arc<AtomicBool>,
 }
 #[derive(Clone)]
 pub(crate) struct BorrowedVectorEnv {
-    pub(crate) inner: Arc<Mutex<CVectorEnv>>,
+    pub(crate) inner: Arc<Mutex<Box<dyn VectorEnv + Send>>>,
     pub(crate) stopped: Arc<AtomicBool>,
 }
 impl BorrowedEnv {
-    pub(crate) fn drain(&self) {
-        drop(lock(&self.inner));
+    pub(crate) fn finish(&self, close_env: bool) {
+        let mut env = lock(&self.inner);
+        if close_env {
+            let _ = env.close();
+        }
     }
 }
 impl BorrowedVectorEnv {
-    pub(crate) fn drain(&self) {
-        drop(lock(&self.inner));
+    pub(crate) fn finish(&self, close_env: bool) {
+        let mut env = lock(&self.inner);
+        if close_env {
+            let _ = env.close();
+        }
     }
 }
 macro_rules! borrowed_attrs {
@@ -600,6 +606,7 @@ mod tests {
         closes: AtomicUsize,
         frees: AtomicUsize,
         seed: Mutex<Option<i64>>,
+        slow_close: AtomicBool,
     }
     unsafe extern "C" fn reset(
         ud: *mut c_void,
@@ -642,6 +649,12 @@ mod tests {
         0
     }
     unsafe extern "C" fn close(ud: *mut c_void) -> i32 {
+        if unsafe { &*ud.cast::<Probe>() }
+            .slow_close
+            .load(Ordering::Relaxed)
+        {
+            std::thread::sleep(std::time::Duration::from_millis(80));
+        }
         unsafe { &*ud.cast::<Probe>() }
             .closes
             .fetch_add(1, Ordering::Relaxed);
@@ -723,13 +736,9 @@ mod tests {
     #[test]
     fn server_free_drains_a_callback_past_its_facade_close_deadline() {
         use std::time::{Duration, Instant};
-        unsafe extern "C" fn slow_close(ud: *mut c_void) -> i32 {
-            std::thread::sleep(Duration::from_millis(80));
-            unsafe { close(ud) }
-        }
         let p = Probe::default();
+        p.slow_close.store(true, Ordering::Relaxed);
         let env = new_env(&p);
-        lock(&unsafe { &*env }.inner).vt.close = Some(slow_close);
         let serve = RLMeshServeOptions {
             struct_size: std::mem::size_of::<RLMeshServeOptions>(),
             allow_remote_shutdown: false,

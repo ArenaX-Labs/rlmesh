@@ -895,6 +895,154 @@ RLMESH_API RLMeshStatus rlmesh_env_server_shutdown(RLMeshEnvServer*);
 RLMESH_API RLMeshStatus rlmesh_env_server_repr(const RLMeshEnvServer*, RLMeshBytes* out);
 RLMESH_API void rlmesh_env_server_free(RLMeshEnvServer*);
 
+/* EnvFactory callbacks run on the calling thread and are exclusive. Attribute
+ * getters are concurrent reads of copied attributes. Free never calls close.
+ * Each make callback output is owned, even on failure; exactly one env kind
+ * must be returned on success. Returned handles remain the caller's to free. */
+typedef struct RLMeshEnvFactory RLMeshEnvFactory;
+typedef struct RLMeshVariant RLMeshVariant;
+typedef struct RLMeshVariantSink RLMeshVariantSink;
+typedef struct RLMeshVariantList RLMeshVariantList;
+typedef struct RLMeshTagParamList RLMeshTagParamList;
+typedef struct RLMeshExtCancelToken RLMeshExtCancelToken;
+RLMESH_API RLMeshExtCancelToken* rlmesh_ext_cancel_token_new(void);
+RLMESH_API void rlmesh_ext_cancel_token_cancel(const RLMeshExtCancelToken*);
+RLMESH_API void rlmesh_ext_cancel_token_free(RLMeshExtCancelToken*);
+
+typedef struct RLMeshEnvFactoryServeOptions {
+  size_t struct_size;
+  int64_t num_envs;               /* 1; <= 1 serves one env */
+  const char* workflow_edition;   /* NULL/""/blank = None */
+  const RLMeshValue* make_kwargs; /* DICT; NULL = {} */
+  RLMeshExtCancelToken* cancel;   /* NULL = none, borrowed for the call (R-18, ENV-33) */
+} RLMeshEnvFactoryServeOptions;
+#define RLMESH_ENV_FACTORY_SERVE_OPTIONS_INIT \
+  {sizeof(RLMeshEnvFactoryServeOptions), 1, NULL, NULL, NULL}
+
+typedef struct RLMeshTagParam {
+  size_t struct_size;
+  const char* name;            /* required */
+  const RLMeshValue* default_; /* required; one of choices */
+  const RLMeshValue* choices;  /* LIST, non-empty */
+} RLMeshTagParam;
+#define RLMESH_TAG_PARAM_INIT {sizeof(RLMeshTagParam), NULL, NULL, NULL}
+
+typedef struct RLMeshEnvFactoryAttributes { /* deep-copied at rlmesh_env_factory_new */
+  size_t struct_size;
+  const RLMeshEnvTags* tags; /* NULL = None */
+  const RLMeshTagParam* const* tag_params;
+  size_t tag_params_len; /* () */
+  const char* const* reset_options;
+  size_t reset_options_len;     /* () */
+  const char* workflow_edition; /* NULL = None */
+} RLMeshEnvFactoryAttributes;
+#define RLMESH_ENV_FACTORY_ATTRIBUTES_INIT \
+  {sizeof(RLMeshEnvFactoryAttributes), NULL, NULL, 0, NULL, 0, NULL}
+
+typedef struct RLMeshEnvFactoryVtable {
+  size_t struct_size;
+  RLMeshStatus (*prepare)(void* user_data); /* NULL = no-op */
+  RLMeshStatus (*make)(void* user_data, const RLMeshValue* kwargs /* DICT, discriminants bound */,
+                       RLMeshEnv** out_env,
+                       RLMeshVectorEnv** out_vector_env); /* required; exactly one set */
+  RLMeshStatus (*tags_for)(void* user_data, const RLMeshValue* params,
+                           RLMeshEnvTags** out); /* NULL = tags */
+  RLMeshStatus (*enumerate_variants)(void* user_data,
+                                     RLMeshVariantSink* sink); /* NULL = not defined */
+  RLMeshStatus (*close)(void* user_data);                      /* NULL = no-op */
+  void (*free_user_data)(void* user_data);                     /* NULL = none */
+} RLMeshEnvFactoryVtable;
+#define RLMESH_ENV_FACTORY_VTABLE_INIT \
+  {sizeof(RLMeshEnvFactoryVtable), NULL, NULL, NULL, NULL, NULL, NULL}
+
+/* Factory. new runs the branch-table check; attributes NULL = INIT (R-20). */
+RLMESH_API RLMeshStatus rlmesh_env_factory_new(const RLMeshEnvFactoryVtable* vtable,
+                                               void* user_data,
+                                               const RLMeshEnvFactoryAttributes* attributes,
+                                               RLMeshEnvFactory** out);
+RLMESH_API void rlmesh_env_factory_free(
+    RLMeshEnvFactory* factory); /* never calls close; NULL no-op */
+RLMESH_API RLMeshStatus rlmesh_env_factory_prepare(RLMeshEnvFactory* factory);
+/* Stamps (ENV-17). On RLMESH_OK exactly one of *out_env / *out_vector_env is non-NULL (the
+ * caller's) and the other is set to NULL; on any other status neither is written. */
+RLMESH_API RLMeshStatus rlmesh_env_factory_make(RLMeshEnvFactory* factory,
+                                                const RLMeshValue* kwargs /* DICT; NULL = {} */,
+                                                RLMeshEnv** out_env,
+                                                RLMeshVectorEnv** out_vector_env);
+RLMESH_API RLMeshStatus rlmesh_env_factory_tags_for(RLMeshEnvFactory* factory,
+                                                    const RLMeshValue* params /* DICT; NULL = {} */,
+                                                    RLMeshEnvTags** out /* NULL = None */);
+RLMESH_API RLMeshStatus rlmesh_env_factory_enumerate_variants(
+    RLMeshEnvFactory* factory, RLMeshVariantList** out /* NULL = not defined */);
+RLMESH_API RLMeshStatus rlmesh_env_factory_close(RLMeshEnvFactory* factory);
+RLMESH_API RLMeshStatus
+rlmesh_env_factory_serve(RLMeshEnvFactory* factory, const char* address,
+                         const RLMeshEnvFactoryServeOptions* options /* NULL = INIT */);
+/* rlmesh_env_factory_describe / _describe_json: Core (COR-10); rlmesh_ext_env_server_describe_json:
+ * COR-16. */
+
+/* Factory class-attribute getters (Stable in Python); they read the copied attributes. */
+RLMESH_API RLMeshStatus rlmesh_env_factory_tags(const RLMeshEnvFactory*,
+                                                RLMeshEnvTags** out /* NULL = None */);
+RLMESH_API RLMeshStatus rlmesh_env_factory_reset_options(const RLMeshEnvFactory*,
+                                                         RLMeshValue** out /* LIST of TEXT */);
+RLMESH_API RLMeshStatus rlmesh_env_factory_tag_params(const RLMeshEnvFactory*,
+                                                      RLMeshTagParamList** out);
+RLMESH_API RLMeshStatus rlmesh_env_factory_workflow_edition(const RLMeshEnvFactory*, bool* out_has,
+                                                            RLMeshBytes* out);
+
+/* Lists (R-20): items are borrowed until the list is freed. */
+RLMESH_API size_t rlmesh_variant_list_len(const RLMeshVariantList*);
+RLMESH_API const RLMeshVariant* rlmesh_variant_list_get(const RLMeshVariantList*,
+                                                        size_t index); /* NULL past the end */
+RLMESH_API void rlmesh_variant_list_free(RLMeshVariantList*);
+RLMESH_API size_t rlmesh_tag_param_list_len(const RLMeshTagParamList*);
+/* A lent struct (R-19): struct_size is the library's own sizeof; read a field only if
+ * offsetof(field) + sizeof(field) <= p->struct_size, else treat it as its _INIT value.
+ * NULL past the end. */
+RLMESH_API const RLMeshTagParam* rlmesh_tag_param_list_get(const RLMeshTagParamList*, size_t index);
+RLMESH_API void rlmesh_tag_param_list_free(RLMeshTagParamList*);
+
+/* Variant (a value handle; R-11). */
+typedef struct RLMeshVariantOptions {
+  size_t struct_size;
+  const RLMeshValue* metadata; /* DICT, copied; NULL = {} (Python's **metadata) */
+} RLMeshVariantOptions;
+#define RLMESH_VARIANT_OPTIONS_INIT {sizeof(RLMeshVariantOptions), NULL}
+RLMESH_API RLMeshStatus rlmesh_variant_new(const char* id,
+                                           const RLMeshValue* params /* DICT, copied */,
+                                           const RLMeshVariantOptions* options /* NULL = INIT */,
+                                           RLMeshVariant** out);
+RLMESH_API void rlmesh_variant_free(RLMeshVariant*);
+RLMESH_API RLMeshStatus rlmesh_variant_id(const RLMeshVariant*, RLMeshBytes* out);
+RLMESH_API const RLMeshValue* rlmesh_variant_params(
+    const RLMeshVariant*); /* DICT; borrowed until the next setter or _free */
+RLMESH_API const RLMeshValue* rlmesh_variant_metadata(
+    const RLMeshVariant*); /* DICT; borrowed likewise */
+RLMESH_API RLMeshStatus rlmesh_variant_repr(const RLMeshVariant*, RLMeshBytes* out);
+RLMESH_API bool rlmesh_variant_equals(const RLMeshVariant*, const RLMeshVariant*);
+/* Variant fields are mutable, as Python's slots are (py/_variants.py:39-49). */
+RLMESH_API RLMeshStatus rlmesh_variant_set_id(RLMeshVariant*, const char* id);
+RLMESH_API RLMeshStatus rlmesh_variant_set_params(RLMeshVariant*,
+                                                  const RLMeshValue* params /* DICT, copied */);
+RLMESH_API RLMeshStatus rlmesh_variant_set_metadata(RLMeshVariant*,
+                                                    const RLMeshValue* metadata /* DICT, copied */);
+
+/* RLMeshVariantSink is lent to enumerate_variants for that callback only; never stored or freed. */
+/* Takes `variant` only on RLMESH_OK; on any other status the caller still owns it
+ * and frees it (R-20's ownership rule, applied to a pushed handle). */
+RLMESH_API RLMeshStatus rlmesh_variant_sink_push(RLMeshVariantSink* sink, RLMeshVariant* variant);
+
+#define RLMESH_ENV_FACTORY_SERVE_OPTIONS_MIN_SIZE sizeof(RLMeshEnvFactoryServeOptions)
+
+#define RLMESH_TAG_PARAM_MIN_SIZE sizeof(RLMeshTagParam)
+
+#define RLMESH_ENV_FACTORY_ATTRIBUTES_MIN_SIZE sizeof(RLMeshEnvFactoryAttributes)
+
+#define RLMESH_ENV_FACTORY_VTABLE_MIN_SIZE sizeof(RLMeshEnvFactoryVtable)
+
+#define RLMESH_VARIANT_OPTIONS_MIN_SIZE sizeof(RLMeshVariantOptions)
+
 /* ---- model -------------------------------------------------------------- */
 
 /* Error convention for every call below: on a nonzero RLMeshStatus (or a NULL

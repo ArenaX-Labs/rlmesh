@@ -86,6 +86,10 @@ echo "==> C ABI 5 env authoring, server lifecycle and sized inputs"
 $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/c_env_api.c "${link[@]}" -o "$tmp/c_env_api"
 "$tmp/c_env_api"
+echo "==> C ABI 5 factories, discriminants, variants and cancellation"
+$CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
+  crates/rlmesh-capi/examples/c_factory.c "${link[@]}" -o "$tmp/c_factory"
+"$tmp/c_factory"
 echo "==> C++ spaces wrapper (C++20 designated initializers, as the parity spec's examples)"
 $CXX -std=c++20 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/cpp_spaces.cpp "${link[@]}" -o "$tmp/cpp_spaces"

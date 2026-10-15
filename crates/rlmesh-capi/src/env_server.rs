@@ -175,16 +175,17 @@ pub struct RLMeshEnvServer {
     lanes: Vec<BorrowedEnv>,
     vector: Option<BorrowedVectorEnv>,
     _claims: Vec<Claim>,
+    close_env_on_shutdown: bool,
 }
 impl Drop for RLMeshEnvServer {
     fn drop(&mut self) {
         let _ = self.server.shutdown();
         self.stopped.store(true, Ordering::Release);
         for lane in &self.lanes {
-            lane.drain();
+            lane.finish(self.close_env_on_shutdown);
         }
         if let Some(v) = &self.vector {
-            v.drain();
+            v.finish(self.close_env_on_shutdown);
         }
     }
 }
@@ -197,6 +198,7 @@ fn output(
     lanes: Vec<BorrowedEnv>,
     vector: Option<BorrowedVectorEnv>,
     claims: Vec<Claim>,
+    close_env_on_shutdown: bool,
     out: *mut *mut RLMeshEnvServer,
 ) -> Result<(), CapiError> {
     let contract = RLMeshEnvContract::new(rlmesh::binding::env_contract_to_wire(
@@ -211,6 +213,7 @@ fn output(
             lanes,
             vector,
             _claims: claims,
+            close_env_on_shutdown,
         })),
     )
 }
@@ -242,9 +245,18 @@ pub unsafe extern "C" fn rlmesh_env_server_new(
                 stopped: Arc::clone(&stopped),
             });
         }
+        let close_env_on_shutdown = opts.close_env_on_shutdown;
         let server = EnvServer::lanes(lanes.clone(), opts)?;
         rlmesh::binding::env_server_binding_host(&server, "rlmesh-capi", "c", host)?;
-        output(server, stopped, lanes, None, claims, out)
+        output(
+            server,
+            stopped,
+            lanes,
+            None,
+            claims,
+            close_env_on_shutdown,
+            out,
+        )
     })
 }
 #[unsafe(no_mangle)]
@@ -265,9 +277,18 @@ pub unsafe extern "C" fn rlmesh_env_server_new_vector(
             inner: Arc::clone(&e.inner),
             stopped: Arc::clone(&stopped),
         };
+        let close_env_on_shutdown = opts.close_env_on_shutdown;
         let server = EnvServer::vector(v.clone(), opts)?;
         rlmesh::binding::env_server_binding_host(&server, "rlmesh-capi", "c", host)?;
-        output(server, stopped, Vec::new(), Some(v), claims, out)
+        output(
+            server,
+            stopped,
+            Vec::new(),
+            Some(v),
+            claims,
+            close_env_on_shutdown,
+            out,
+        )
     })
 }
 #[unsafe(no_mangle)]

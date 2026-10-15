@@ -5,17 +5,20 @@
 mod abi;
 mod adapters;
 mod build;
+mod cancel;
 mod codec;
 mod contract;
 mod describe;
 mod env;
 mod env_api;
+mod env_factory;
 mod env_server;
 mod ffi;
 mod model;
 mod space_handle;
 mod spaces;
 mod value;
+mod variant;
 
 #[cfg(test)]
 mod tests;

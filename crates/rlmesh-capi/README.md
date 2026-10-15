@@ -81,6 +81,19 @@ options use seconds and explicit `has_*` fields, including for zero.
 combined env/server path now calls the fenced `rlmesh_ext_legacy_*` bridge;
 its full C++ parity migration remains separate.
 
+`RLMeshEnvFactory` takes a sized vtable and copied attributes (tags,
+TagParam discriminants, reset options and workflow edition). All hooks use
+the facade's branch checks, default binding, stamping and serving pipeline.
+Hooks are exclusive, including re-entry from a callback; attribute getters
+can run concurrently. Factory free releases state without calling close.
+`rlmesh_env_factory_make` returns one owned scalar or vector handle, with
+typed metadata stamped by the facade. A Variant catalog uses an owned sink;
+Variant fields are mutable and mapping fields are Value dicts. TagParam and
+Variant lists lend items until the list is freed. A reusable
+`RLMeshExtCancelToken` can cancel factory serving from another thread.
+`examples/c_factory.c` covers these contracts, including live serving and
+cancellation. Factory serving drains all C callbacks before it returns.
+
 ## Layout
 
 - `include/rlmesh.h` — the C ABI (C11). Hand-authored; the single header authority.
