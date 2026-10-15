@@ -788,14 +788,7 @@ impl EnvClient {
     /// metadata header when a token is configured.
     fn authorized_request<T>(&self, message: T) -> Result<tonic::Request<T>, GrpcError> {
         let mut request = tonic::Request::new(message);
-        if !self.token.is_empty() {
-            request.metadata_mut().insert(
-                "authorization",
-                self.token
-                    .parse()
-                    .map_err(|_| TransportError::InvalidAddress("invalid token".to_string()))?,
-            );
-        }
+        crate::helpers::auth::authorize(&mut request, &self.token)?;
         Ok(request)
     }
 

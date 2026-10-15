@@ -35,8 +35,10 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+http-body-util = { workspace = true }
 proptest = { workspace = true }
 tokio = { workspace = true, features = ["macros"] }
+zstd = { workspace = true }
 
 [lints]
 workspace = true

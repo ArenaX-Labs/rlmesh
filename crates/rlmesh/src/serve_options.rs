@@ -78,8 +78,8 @@ pub struct ServeOptions {
     /// advertises it accepts them. Off by default: observation leaves are raw
     /// tensor bytes, so compression spends CPU on both ends and only pays on a
     /// slow link with compressible payloads such as rendered images. Servers
-    /// accept compressed requests either way. Has no effect on the model
-    /// server.
+    /// refuse compressed requests either way, before reading them. Has no
+    /// effect on the model server.
     pub compress_responses: bool,
     /// Advisory entries this endpoint adds to its handshake `PeerInfo.extra`,
     /// over the process-wide peer-info override, so several servers in one
@@ -110,8 +110,10 @@ impl From<ServeOptions> for rlmesh_grpc::ServeOptions {
 impl ServeOptions {
     /// Apply `RLMESH_ENV_ENDPOINT_TOKEN` to these options: when set it replaces
     /// [`token`](Self::token), and an empty, whitespace-only, or non-Unicode
-    /// value fails instead of disabling authentication. Every environment server
-    /// entry point calls this before binding.
+    /// value fails instead of disabling authentication. A token (from either
+    /// source) that cannot travel in an HTTP header value, such as one with a
+    /// trailing newline, fails too. Every environment server entry point calls
+    /// this before binding.
     #[doc(hidden)]
     pub fn with_env_endpoint_token(self) -> Result<Self> {
         self.with_env_endpoint_token_from(std::env::var(ENV_ENDPOINT_TOKEN_ENV))
@@ -132,20 +134,38 @@ impl ServeOptions {
 /// falling back to `configured` only when the variable is unset. The reading is
 /// passed in so precedence and invalid values can be tested without mutating
 /// the process environment.
+///
+/// Either token must be one a client can send in an HTTP header value: one
+/// with leading or trailing whitespace (a secret file's trailing newline),
+/// control characters, or non-ASCII characters fails here, naming its source
+/// and the problem, instead of serving an endpoint no client can authenticate
+/// to. It is never trimmed: a token is a secret, so a malformed one fails
+/// closed rather than being guessed at.
 pub(crate) fn endpoint_token(
     variable: &str,
     configured: String,
     environment: std::result::Result<String, std::env::VarError>,
 ) -> Result<String> {
+    let header_safe = |source: &str, token: String| match rlmesh_grpc::helpers::token_header_problem(
+        &token,
+    ) {
+        Some(problem) => Err(Error::Server(format!(
+            "{source} {problem}; a token must be printable ASCII without surrounding whitespace, since clients send it in an HTTP header"
+        ))),
+        None => Ok(token),
+    };
     match environment {
         Ok(token) if token.trim().is_empty() => Err(Error::Server(format!(
             "{variable} must not be empty or whitespace-only"
         ))),
-        Ok(token) => Ok(token),
+        Ok(token) => header_safe(variable, token),
         Err(std::env::VarError::NotUnicode(_)) => {
             Err(Error::Server(format!("{variable} must be valid Unicode")))
         }
-        Err(std::env::VarError::NotPresent) => Ok(configured),
+        Err(std::env::VarError::NotPresent) if configured.is_empty() => Ok(configured),
+        Err(std::env::VarError::NotPresent) => {
+            header_safe("the configured endpoint token", configured)
+        }
     }
 }
 
@@ -282,5 +302,42 @@ mod tests {
             .unwrap_err();
         assert!(error.to_string().contains("valid Unicode"));
         assert!(!error.to_string().contains("private-value"));
+    }
+
+    /// A secret mounted from a file usually ends in a newline, which no client
+    /// can send in a header: startup fails naming the variable and the
+    /// problem, never trimming the value or echoing it.
+    #[test]
+    fn env_endpoint_token_a_header_cannot_carry_fails_startup() {
+        for (value, problem) in [
+            ("private-value\n", "trailing whitespace"),
+            ("private-value\r\n", "trailing whitespace"),
+            (" private-value", "leading or trailing whitespace"),
+            ("private\u{1b}value", "control character"),
+            ("private-v\u{e4}lue", "non-ASCII"),
+        ] {
+            let error = ServeOptions::default()
+                .with_env_endpoint_token_from(Ok(value.to_string()))
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(ENV_ENDPOINT_TOKEN_ENV), "{error}");
+            assert!(error.contains(problem), "{error}");
+            assert!(!error.contains("private"), "{error}");
+        }
+        // A configured token is held to the same rule, named as such.
+        let error = ServeOptions {
+            token: Some("private-value\n".to_string()),
+            ..ServeOptions::default()
+        }
+        .with_env_endpoint_token_from(Err(std::env::VarError::NotPresent))
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("configured endpoint token"), "{error}");
+        assert!(!error.contains("private"), "{error}");
+        // Interior spaces travel in a header and stay accepted.
+        let resolved = ServeOptions::default()
+            .with_env_endpoint_token_from(Ok("a b".to_string()))
+            .unwrap();
+        assert_eq!(resolved.token.as_deref(), Some("a b"));
     }
 }

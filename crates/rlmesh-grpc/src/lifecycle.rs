@@ -87,8 +87,8 @@ pub struct ServeOptions {
     /// accepts them. Off by default: an observation's large leaves are raw
     /// tensor bytes, so compression costs CPU on both ends and only pays on a
     /// slow link with compressible payloads (rendered images, sparse tensors).
-    /// Every server accepts compressed requests regardless. Ignored by the
-    /// model server.
+    /// Responses only: every server refuses compressed requests regardless
+    /// (see [`crate::ACCEPTED_COMPRESSION`]). Ignored by the model server.
     pub compress_responses: bool,
     /// Advisory entries this endpoint adds to its handshake
     /// `PeerInfo.extra`, over the process-wide peer-info override, so two

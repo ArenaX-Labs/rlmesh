@@ -33,15 +33,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 - `Session.run()` fills `RunResult.telemetry`, so `format_telemetry()` works on the Python loop a served model or a viewed run drives. It reports the client-observed `rpc.total` of `model.predict`, `env.reset`, `env.step`, and `runner.round`, under the names the native `Model.run` loop uses.
 
-- `ServeOptions(compress_responses=True)` has an env server compress its responses (zstd, else gzip) for clients that accept it; every RLMesh client and server now accepts compressed messages. It is off by default: on loopback a ~200 KB rendered-image observation shrinks to ~1.4 KB on the wire but the step takes as long, so it only pays on a slow link with compressible observations.
+- `ServeOptions(compress_responses=True)` has an env server compress its responses (zstd, else gzip) for clients that accept it; every RLMesh client now accepts compressed responses. Compression is responses-only: RLMesh clients never compress requests, and servers refuse a compressed request (`UNIMPLEMENTED`) before reading it, so a peer without the endpoint token cannot make a server decompress one. It is off by default: on loopback a ~200 KB rendered-image observation shrinks to ~1.4 KB on the wire but the step takes as long, so it only pays on a slow link with compressible observations.
 
 ### Fixed
 
 - Model and env servers disable Nagle's algorithm on accepted TCP connections, which removed a ~40 ms stall on some env steps.
 
-- Served model endpoints enforce `RLMESH_MODEL_ENDPOINT_TOKEN` when set, taking precedence over token options. Empty or invalid environment values fail startup instead of disabling authentication.
+- Served model endpoints enforce `RLMESH_MODEL_ENDPOINT_TOKEN` when set, taking precedence over token options. Empty or invalid environment values fail startup instead of disabling authentication, as does a token no client could send in an HTTP header (leading or trailing whitespace such as a secret file's trailing newline, or control or non-ASCII characters): the error names the variable and the problem, and the value is never trimmed.
 
 - Served environment endpoints enforce `RLMESH_ENV_ENDPOINT_TOKEN` the same way, from both Rust `EnvServer`/`VectorEnvServer` and Python `EnvServer`.
+
+- An endpoint token that cannot be sent in an HTTP header no longer locks every client out silently: a model or env server given one through its token option fails startup naming the problem, and a model or env client given one fails with an error naming the problem instead of `invalid address: invalid token`.
 
 - Model and environment servers accept the endpoint token as `authorization: Bearer <token>` as well as the raw token.
 

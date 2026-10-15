@@ -2423,6 +2423,78 @@ async fn grouped_predict_carries_chunk_replay_frames() {
     }
 }
 
+/// A served model refuses a compressed request from its `grpc-encoding` header,
+/// before decompressing the body and so before the token check: a peer
+/// without the token gets `UNIMPLEMENTED`, not `UNAUTHENTICATED`, on every
+/// RPC. An uncompressed client (every RLMesh client, and wire-v1 clients from
+/// before compression existed) is unaffected. The env server's equivalent,
+/// with a real decompression bomb, is in `rlmesh-grpc`.
+#[tokio::test]
+async fn model_server_refuses_compressed_requests_before_auth() {
+    use rlmesh_proto::model::v1::model_service_client::ModelServiceClient;
+    use tonic::codec::CompressionEncoding;
+
+    let predicts = Arc::new(AtomicUsize::new(0));
+    let bound = ModelWorker::new(SmokeModel {
+        predicts: Arc::clone(&predicts),
+        closes: Arc::new(AtomicUsize::new(0)),
+    })
+    .bind_async(
+        ServeModelOptions::new(BindAddress::Tcp {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+        })
+        .token("route-token"),
+    )
+    .await
+    .unwrap();
+    let (port, server) = spawn_bound_server(bound);
+    let channel = tonic::transport::Endpoint::from_shared(format!("http://127.0.0.1:{port}"))
+        .unwrap()
+        .connect()
+        .await
+        .unwrap();
+
+    for encoding in [CompressionEncoding::Zstd, CompressionEncoding::Gzip] {
+        let mut client = ModelServiceClient::new(channel.clone()).send_compressed(encoding);
+        let status = client
+            .handshake(rlmesh_proto::model::v1::HandshakeRequest::default())
+            .await
+            .unwrap_err();
+        assert_eq!(status.code(), tonic::Code::Unimplemented, "{status:?}");
+        let status = client
+            .join(tokio_stream::iter([resolve_adapter_request("env", "r1")]))
+            .await
+            .unwrap_err();
+        assert_eq!(status.code(), tonic::Code::Unimplemented, "{status:?}");
+        let status = client
+            .shutdown(rlmesh_proto::model::v1::ShutdownRequest::default())
+            .await
+            .unwrap_err();
+        assert_eq!(status.code(), tonic::Code::Unimplemented, "{status:?}");
+    }
+
+    // An uncompressed request still reaches the token check.
+    let status = ModelServiceClient::new(channel)
+        .handshake(rlmesh_proto::model::v1::HandshakeRequest::default())
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), tonic::Code::Unauthenticated, "{status:?}");
+
+    // The RLMesh client (uncompressed requests) works end to end.
+    let mut model = crate::RemoteModel::connect_with_token(
+        &format!("tcp://127.0.0.1:{port}"),
+        "route-token",
+        SmokeEnv::new().env_contract,
+    )
+    .await
+    .unwrap();
+    model.reset(None);
+    drop(model);
+    assert_eq!(predicts.load(Ordering::SeqCst), 0);
+    server.abort();
+}
+
 /// `ServeOptions::token` documents itself as the auth knob for an endpoint, so a
 /// model bound with the token set only there must reject an untokened client:
 /// `bind_async` resolves the effective token from both `ServeModelOptions::token`

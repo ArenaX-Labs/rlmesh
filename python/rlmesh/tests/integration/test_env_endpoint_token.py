@@ -44,6 +44,23 @@ def test_env_server_rejects_blank_environment_token(token: str) -> None:
     assert "RLMESH_ENV_ENDPOINT_TOKEN must not be empty" in result.stderr
 
 
+@pytest.mark.parametrize(
+    ("token", "problem"),
+    [
+        ("private-value\n", "has leading or trailing whitespace"),
+        ("private\x1bvalue", "contains a control character"),
+    ],
+)
+def test_env_server_rejects_token_a_header_cannot_carry(
+    token: str, problem: str
+) -> None:
+    """A secret file's trailing newline fails startup instead of locking clients out."""
+    result = _run_child('rlmesh.EnvServer(Env(), "127.0.0.1:0")', token)
+    assert result.returncode != 0
+    assert f"RLMESH_ENV_ENDPOINT_TOKEN {problem}" in result.stderr
+    assert "private" not in result.stderr
+
+
 def test_environment_token_is_enforced_and_reaches_run_loopback() -> None:
     result = _run_child(
         """

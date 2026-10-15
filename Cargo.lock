@@ -2854,6 +2854,7 @@ dependencies = [
  "async-trait",
  "futures",
  "half",
+ "http-body-util",
  "hyper-util",
  "proptest",
  "prost",
@@ -2868,6 +2869,7 @@ dependencies = [
  "tonic-health",
  "tower",
  "tracing",
+ "zstd",
 ]
 
 [[package]]
