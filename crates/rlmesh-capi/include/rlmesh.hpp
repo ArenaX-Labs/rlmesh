@@ -3910,7 +3910,7 @@ template <class P>
 inline constexpr bool has_predict =
     predict_c<P> || predict_plain<P> || callable_c<P> || callable_plain<P>;
 template <class P>
-inline constexpr bool context_predict = predict_c<P> || callable_c<P>;
+inline constexpr bool context_predict = predict_c<P> || (!predict_plain<P> && callable_c<P>);
 template <class P>
 concept predict_chunk_hc = requires(P& p, const Value& o, uint32_t h, const PredictContext& c) {
   { p.predict_chunk(o, h, c) } -> std::same_as<Value>;

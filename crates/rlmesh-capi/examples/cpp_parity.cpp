@@ -330,6 +330,35 @@ struct ChunkPolicy {
     return Value::list(std::vector<Value>(horizon, 0));
   }
 };
+void policy_context_precedence() {
+  struct BothForms {
+    int predicts = 0, calls = 0;
+    Value predict(const Value&) {
+      ++predicts;
+      return 1;
+    }
+    Value operator()(const Value&, const PredictContext&) {
+      ++calls;
+      return 2;
+    }
+  };
+  detail::PolicyTable<BothForms> table;
+  assert(table.table.context_corners == 0);
+  auto policy = std::make_shared<BothForms>();
+  Model model(policy);
+  Env env(Counter{});
+  auto session = model.session(env);
+  auto [obs, info] = session.reset();
+  (void)info;
+  assert(session.predict(obs) == Value(1));
+  assert(session.predict(obs) == Value(1));
+  assert(policy->predicts == 2 && policy->calls == 0);
+  struct CallableOnly {
+    Value operator()(const Value&, const PredictContext&) { return 0; }
+  };
+  detail::PolicyTable<CallableOnly> callable;
+  assert(callable.table.context_corners == RLMESH_CORNER_PREDICT);
+}
 void vector_and_chunks() {
   int calls = 0;
   Env env(Counter{});
@@ -545,6 +574,7 @@ void adapters_readers_recorder() {
 int main() try {
   values_spaces();
   vector_and_chunks();
+  policy_context_precedence();
   runs_sessions();
   exceptions();
   factories_remote_describe();
