@@ -376,8 +376,9 @@ RLMESH_API RLMeshStatus rlmesh_contract_adapter_tags_json(const RLMeshContract* 
  * not send it). `predict_seed` mixes the episode's reset seed with that ordinal
  * (rlmesh.predict_seed in the SDK) so a stochastic policy can seed each forward
  * reproducibly under interleaving; it is meaningful only when `seeded`, 0
- * otherwise. The capi holds at most 4096 live episodes: past that the least
- * recently predicted one is evicted through on_episode_end. */
+ * otherwise. The capi holds at most 65536 live episodes and never evicts one:
+ * a predict that would start a new episode past that fails with
+ * RLMESH_ERR_INTERNAL (Python raises RuntimeError) before the callback runs. */
 typedef struct RLMeshEpisode {
   const char* id;
   bool seeded; /* whether `seed` carries an explicit reset seed */

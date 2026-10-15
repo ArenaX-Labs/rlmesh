@@ -6,7 +6,7 @@
 //! its own thread and folded into an `Error` value that travels back to the caller.
 #![allow(unsafe_code)] // FFI: raw callback pointers + repr(C) structs.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -65,21 +65,20 @@ pub struct RLMeshEpisode {
     pub predict_seed: i64,
 }
 
-/// Live episodes a model tracks before the least-recently-used one is evicted.
-/// Comfortably above the env workers any one model server admits at once, so a
-/// real eviction means episode ends are being missed, not that the fleet is
-/// large. (The Python SDK's store no longer evicts at its own ceiling — it
-/// refuses the new episode instead; this one still evicts.)
-const EPISODE_STORE_CAPACITY: usize = 4096;
+/// Live episodes a model tracks before a NEW episode is refused -- the Python
+/// SDK's `EPISODE_STATE_CAPACITY`. A ceiling, not an eviction threshold: an
+/// entry only leaves at its end edge. Far above the lanes any one model server
+/// legitimately admits at once, so reaching it means episode ends are not
+/// arriving.
+const EPISODE_STORE_CAPACITY: usize = 65_536;
 
 /// One held episode's bookkeeping: the env it belongs to (so an env-wide
-/// `on_episode_end` can drop it), the seed it was first seen with, how many
-/// predicts it has had, and its recency stamp in [`EpisodeStore::order`].
+/// `on_episode_end` can drop it), the seed it was first seen with, and how many
+/// predicts it has had.
 struct HeldEpisode {
     env_id: String,
     seed: Option<i64>,
     index: u64,
-    stamp: u64,
 }
 
 /// The capi's bounded per-episode store, keyed by episode id — the same keying
@@ -87,15 +86,12 @@ struct HeldEpisode {
 /// `predict_index` / `predict_seed` off the row instead of counting itself.
 ///
 /// Entries are dropped at the episode-end edge (`reset_adapter`, on both the
-/// local and the served path). A run that never signals an end still cannot
-/// grow without bound: past `capacity` the least-recently-used entry is evicted
-/// through the *same* `on_episode_end` callback, so a model that mirrors the
-/// store gets the drop edge either way.
+/// local and the served path). Live state is never evicted: a run that never
+/// signals an end still cannot grow without bound, because past `capacity` a
+/// NEW episode's predict fails instead of silently dropping another episode's
+/// state, as in Python.
 struct EpisodeStore {
     episodes: HashMap<String, HeldEpisode>,
-    /// Recency stamp -> episode id; the smallest stamp is the LRU entry.
-    order: BTreeMap<u64, String>,
-    clock: u64,
     capacity: usize,
 }
 
@@ -103,75 +99,73 @@ impl EpisodeStore {
     fn with_capacity(capacity: usize) -> Self {
         Self {
             episodes: HashMap::new(),
-            order: BTreeMap::new(),
-            clock: 0,
             capacity: capacity.max(1),
         }
     }
 
-    /// Hand out `episode`'s next `(predict_index, predict_seed)` and advance it,
-    /// appending any `(env_id, episode_id)` this insertion evicted to `evicted`.
+    /// Hand out each row's next `(predict_index, predict_seed)` and advance it.
     ///
     /// A row with no identity (an anonymous spec-less lane) gets a throwaway
-    /// `(0, None)` that is never stored: there is nothing to key it by.
+    /// `(0, None)` that is never stored: there is nothing to key it by. A batch
+    /// whose new episodes would take the store past capacity is refused whole,
+    /// before any row advances.
     fn next(
         &mut self,
         env_id: &str,
-        episode: &EpisodeInfo,
-        evicted: &mut Vec<(String, String)>,
-    ) -> (u64, Option<i64>) {
-        if episode.episode_id.is_empty() {
-            return (0, None);
-        }
-        self.clock += 1;
-        let stamp = self.clock;
-        let held = self
-            .episodes
-            .entry(episode.episode_id.clone())
-            .or_insert_with(|| HeldEpisode {
-                env_id: env_id.to_string(),
-                seed: episode.seed,
-                index: 0,
-                stamp,
-            });
-        // A re-seen episode moves to the recent end; a new one lands there.
-        self.order.remove(&held.stamp);
-        held.stamp = stamp;
-        self.order.insert(stamp, episode.episode_id.clone());
-        let index = held.index;
-        held.index += 1;
-        let seed = held.seed.map(|seed| predict_seed(seed, index));
-        while self.episodes.len() > self.capacity {
-            let Some((_, oldest)) = self.order.pop_first() else {
-                break;
-            };
-            if let Some(held) = self.episodes.remove(&oldest) {
-                evicted.push((held.env_id, oldest));
+        episodes: &[EpisodeInfo],
+    ) -> Result<Vec<(u64, Option<i64>)>, Error> {
+        let mut new_ids: Vec<&str> = Vec::new();
+        for episode in episodes {
+            let id = episode.episode_id.as_str();
+            if !id.is_empty() && !self.episodes.contains_key(id) && !new_ids.contains(&id) {
+                if self.episodes.len() + new_ids.len() >= self.capacity {
+                    // Python raises the builtin `RuntimeError` for this local
+                    // refusal (`_models/_episodes.py`). The C ABI has no
+                    // runtime-misuse status yet (`RLMESH_ERR_RUNTIME` is
+                    // planned, docs/specs/language-parity/rules.md R-21), so it
+                    // reports as `Error::Internal` -> `RLMESH_ERR_INTERNAL`, not
+                    // as a model decline.
+                    return Err(Error::Internal(format!(
+                        "model already tracks {} live episodes; refusing episode {id} rather \
+                         than evicting another episode's live state. Episode ends are not \
+                         reaching this model, or the deployment runs more concurrent \
+                         episodes than it allows",
+                        self.capacity
+                    )));
+                }
+                new_ids.push(id);
             }
         }
-        (index, seed)
+        Ok(episodes
+            .iter()
+            .map(|episode| {
+                if episode.episode_id.is_empty() {
+                    return (0, None);
+                }
+                let held = self
+                    .episodes
+                    .entry(episode.episode_id.clone())
+                    .or_insert_with(|| HeldEpisode {
+                        env_id: env_id.to_string(),
+                        seed: episode.seed,
+                        index: 0,
+                    });
+                let index = held.index;
+                held.index += 1;
+                (index, held.seed.map(|seed| predict_seed(seed, index)))
+            })
+            .collect())
     }
 
     /// Drop the given episodes of `env_id`; an empty list means every episode
     /// of that env (the `episode_id == NULL` form of `on_episode_end`).
     fn end(&mut self, env_id: &str, episode_ids: &[String]) {
         if episode_ids.is_empty() {
-            let mut ended = Vec::new();
-            self.episodes.retain(|id, held| {
-                if held.env_id == env_id {
-                    ended.push((held.stamp, id.clone()));
-                }
-                held.env_id != env_id
-            });
-            for (stamp, _) in ended {
-                self.order.remove(&stamp);
-            }
+            self.episodes.retain(|_, held| held.env_id != env_id);
             return;
         }
         for id in episode_ids {
-            if let Some(held) = self.episodes.remove(id) {
-                self.order.remove(&held.stamp);
-            }
+            self.episodes.remove(id);
         }
     }
 }
@@ -363,27 +357,14 @@ impl ModelHandler for CModelHandler {
         let contract = observation.env_contract;
         let route = observation.route;
         // Stamp each row's re-plan ordinal + derived seed here, on the handler's
-        // own thread: the store is plain `&mut self` state, no lock needed. An
-        // overflow eviction is handed to the C side as an `on_episode_end` before
-        // the predict, so a model mirroring the store drops that episode first.
-        let mut evicted: Vec<(String, String)> = Vec::new();
-        let contexts: Vec<(u64, Option<i64>)> = route
-            .episodes
-            .iter()
-            .map(|episode| self.episodes.next(&route.env_id, episode, &mut evicted))
-            .collect();
-        let on_episode_end = self.vtable.on_episode_end;
+        // own thread: the store is plain `&mut self` state, no lock needed. A
+        // batch with a new episode past capacity fails here, before the C
+        // predict runs.
+        let contexts = self.episodes.next(&route.env_id, &route.episodes)?;
 
         tokio::task::spawn_blocking(move || -> Result<Vec<SpaceValue>, Error> {
             // Capture the whole (`Send`) `UserData`, not just the bare pointer field.
             let user_data = user_data;
-            if let Some(on_episode_end) = on_episode_end {
-                for (env_id, episode_id) in &evicted {
-                    let env = cstring(env_id);
-                    let id = cstring(episode_id);
-                    unsafe { on_episode_end(user_data.0, env.as_ptr(), id.as_ptr()) };
-                }
-            }
             let session = cstring(&route.session_id);
             let env = cstring(&route.env_id);
             let request = cstring(&route.request_id);
@@ -1459,7 +1440,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn episode_store_evicts_the_least_recent_past_capacity_through_on_episode_end() {
+    async fn episode_store_refuses_a_new_episode_past_capacity_without_evicting() {
+        assert_eq!(EPISODE_STORE_CAPACITY, 65_536, "Python's default capacity");
         let counters = Counters::default();
         let mut handler = counting_handler(&counters);
         handler.episodes = EpisodeStore::with_capacity(2);
@@ -1467,26 +1449,40 @@ mod tests {
 
         handler.predict(single("ep-a")).await.expect("predict");
         handler.predict(single("ep-b")).await.expect("predict");
-        // Re-seeing ep-a makes ep-b the least recently used ...
-        handler.predict(single("ep-a")).await.expect("predict");
-        // ... so the third episode evicts ep-b, and says so through the hook.
-        handler.predict(single("ep-c")).await.expect("predict");
-        assert_eq!(
-            *counters.ended_ids.lock().expect("ended ids"),
-            vec!["ep-b".to_string()]
+        // A third live episode is refused before the C predict runs ...
+        let error = handler
+            .predict(single("ep-c"))
+            .await
+            .expect_err("past capacity");
+        assert!(matches!(error, Error::Internal(_)), "{error:?}");
+        assert!(
+            error.to_string().contains("refusing episode ep-c"),
+            "{error}"
         );
-        assert_eq!(counters.episode_ends.load(Ordering::SeqCst), 1);
+        assert_eq!(counters.predicts.load(Ordering::SeqCst), 2);
+        // ... and nothing was evicted: no end hook, both counts intact.
+        assert_eq!(counters.episode_ends.load(Ordering::SeqCst), 0);
+        handler.predict(single("ep-a")).await.expect("predict");
+        assert_eq!(last_context(&counters), (1, predict_seed(1, 1)));
+        handler.predict(single("ep-b")).await.expect("predict");
+        assert_eq!(last_context(&counters), (1, predict_seed(1, 1)));
 
-        // ep-a survived with its count intact; the evicted ep-b restarts at 0
-        // (and its return pushes out ep-c, now the least recent).
+        // A batch that would overflow is refused whole: its known row does not
+        // advance either.
+        let mut batch = discrete_observation(&[1, 1]);
+        batch.route.env_id = "env-1".to_string();
+        batch.route.episodes = vec![episode("ep-a", Some(1)), episode("ep-d", Some(1))];
+        handler.predict(batch).await.expect_err("past capacity");
+
+        // An episode end frees its slot for a new one.
+        handler
+            .reset_adapter("env-1", vec!["ep-b".to_string()])
+            .await
+            .expect("end ep-b");
+        handler.predict(single("ep-c")).await.expect("predict");
+        assert_eq!(last_context(&counters), (0, predict_seed(1, 0)));
         handler.predict(single("ep-a")).await.expect("predict");
         assert_eq!(last_context(&counters), (2, predict_seed(1, 2)));
-        handler.predict(single("ep-b")).await.expect("predict");
-        assert_eq!(last_context(&counters), (0, predict_seed(1, 0)));
-        assert_eq!(
-            *counters.ended_ids.lock().expect("ended ids"),
-            vec!["ep-b".to_string(), "ep-c".to_string()]
-        );
         assert_eq!(handler.episodes.episodes.len(), 2);
     }
 

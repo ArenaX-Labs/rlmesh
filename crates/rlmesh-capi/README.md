@@ -140,8 +140,10 @@ Each `RLMeshEpisode` row carries the episode's `id` and reset `seed` (when
 under that id, then +1 per predict), and `predict_seed`, a reproducible mix of
 the episode seed and that ordinal (`rlmesh.predict_seed` in the SDK; meaningful
 only when `seeded`). The capi counts these per episode id and drops the counter
-when the episode ends, holding at most 4096 live episodes — past that the least
-recently predicted one is evicted through `on_episode_end`.
+when the episode ends, holding at most 65,536 live episodes as the Python SDK
+does. It never evicts one: a predict that would start a new episode past that
+fails (`RLMESH_ERR_INTERNAL`, where Python raises `RuntimeError`) before the
+callback runs.
 
 Optional hooks: `on_episode_end(env_id, episode_id)` when the runtime drops an
 episode (`episode_id == NULL` means every episode of that env), and `on_close`
