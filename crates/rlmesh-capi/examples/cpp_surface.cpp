@@ -1,6 +1,20 @@
 // Compile-only Shapes and optional authoring signatures. Runtime cases live in
 // cpp_parity.cpp. This translation unit also instantiates every policy corner.
 #include <rlmesh.hpp>
+#include <unordered_set>
+
+void hashable_leaves() {
+  std::unordered_set<rlmesh::adapters::Text> text;
+  std::unordered_set<rlmesh::adapters::Custom> custom;
+  std::unordered_set<rlmesh::adapters::CustomEncoding> encodings;
+  std::unordered_set<rlmesh::adapters::ImageTag> images;
+  std::unordered_set<rlmesh::adapters::TextTag> text_tags;
+  (void)text;
+  (void)custom;
+  (void)encodings;
+  (void)images;
+  (void)text_tags;
+}
 
 rlmesh::adapters::ModelSpec model_spec();
 struct Planner {

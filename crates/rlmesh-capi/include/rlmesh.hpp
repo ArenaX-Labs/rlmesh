@@ -1765,7 +1765,9 @@ class ObsTransform {
     handle_ = {p, rlmesh_obs_transform_free};
   }
   const RLMeshObsTransform* raw() const { return handle_.get(); }
-  bool operator==(const ObsTransform& v) const { return rlmesh_obs_transform_equals(raw(), v.raw()); }
+  bool operator==(const ObsTransform& v) const {
+    return rlmesh_obs_transform_equals(raw(), v.raw());
+  }
 };
 class RotationTransform {
   std::shared_ptr<RLMeshRotationTransform> handle_{};
@@ -6141,7 +6143,51 @@ inline std::string to_string(const ObsNode& n) {
 inline std::ostream& operator<<(std::ostream& s, const ObsNode& v) { return s << to_string(v); }
 }  // namespace adapters
 }  // namespace rlmesh
+namespace rlmesh::detail {
+template <class... T>
+size_t hash_fields(const T&... fields) {
+  size_t result = 0;
+  ((result ^= std::hash<T>{}(fields) + 0x9e3779b9U + (result << 6) + (result >> 2)), ...);
+  return result;
+}
+}  // namespace rlmesh::detail
 namespace std {
+template <>
+struct hash<rlmesh::adapters::Text> {
+  size_t operator()(const rlmesh::adapters::Text& v) const {
+    return rlmesh::detail::hash_fields(v.role, v.container, v.fill);
+  }
+};
+template <>
+struct hash<rlmesh::adapters::Custom> {
+  size_t operator()(const rlmesh::adapters::Custom& v) const {
+    return rlmesh::detail::hash_fields(
+        v.transform.has_value(),
+        v.transform ? rlmesh_obs_transform_hash(v.transform->raw()) : uint64_t{0}, v.entrypoint);
+  }
+};
+template <>
+struct hash<rlmesh::adapters::CustomEncoding> {
+  size_t operator()(const rlmesh::adapters::CustomEncoding& v) const {
+    auto arm = [](const optional<rlmesh::adapters::EncodingArm>& value) -> size_t {
+      if (!value) return 0;
+      if (auto transform = get_if<rlmesh::adapters::RotationTransform>(&*value))
+        return rlmesh::detail::hash_fields(1, rlmesh_rotation_transform_hash(transform->raw()));
+      return rlmesh::detail::hash_fields(2, get<string>(*value));
+    };
+    return rlmesh::detail::hash_fields(v.base, arm(v.from_base), arm(v.to_base), v.name);
+  }
+};
+template <>
+struct hash<rlmesh::adapters::ImageTag> {
+  size_t operator()(const rlmesh::adapters::ImageTag& v) const {
+    return rlmesh::detail::hash_fields(v.role, v.layout, v.upside_down, v.part);
+  }
+};
+template <>
+struct hash<rlmesh::adapters::TextTag> {
+  size_t operator()(const rlmesh::adapters::TextTag& v) const { return hash<string>{}(v.role); }
+};
 template <class E>
 struct hash<rlmesh::adapters::Tolerant<E>> {
   size_t operator()(const rlmesh::adapters::Tolerant<E>& v) const {

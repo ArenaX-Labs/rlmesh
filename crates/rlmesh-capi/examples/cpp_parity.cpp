@@ -6,6 +6,7 @@
 #include <rlmesh.hpp>
 #include <thread>
 #include <type_traits>
+#include <unordered_set>
 using namespace rlmesh;
 using namespace rlmesh::spaces;
 namespace {
@@ -125,10 +126,10 @@ void values_spaces() {
   dict["id"].seed(42);
   assert(first == child.sample());
   assert(dict.contains(dict.sample()));
-  assert(Text(4).contains(Value("ok")));
+  assert(spaces::Text(4).contains(Value("ok")));
   assert(MultiBinary({2}).shape() == std::vector<int64_t>{2});
   assert(MultiDiscrete({2, 3}).nvec() == (std::vector<int64_t>{2, 3}));
-  assert(Tuple({Discrete(2), Text(4)}).spaces().size() == 2);
+  assert(Tuple({Discrete(2), spaces::Text(4)}).spaces().size() == 2);
 }
 void runs_sessions() {
   int closed = 0;
@@ -342,7 +343,7 @@ void policy_context_precedence() {
       return 2;
     }
   };
-  detail::PolicyTable<BothForms> table;
+  rlmesh::detail::PolicyTable<BothForms> table;
   assert(table.table.context_corners == 0);
   auto policy = std::make_shared<BothForms>();
   Model model(policy);
@@ -356,7 +357,7 @@ void policy_context_precedence() {
   struct CallableOnly {
     Value operator()(const Value&, const PredictContext&) { return 0; }
   };
-  detail::PolicyTable<CallableOnly> callable;
+  rlmesh::detail::PolicyTable<CallableOnly> callable;
   assert(callable.table.context_corners == RLMESH_CORNER_PREDICT);
 }
 void vector_and_chunks() {
@@ -493,9 +494,10 @@ void adapter_axis_presence() {
   actuator.scale = std::vector<double>{2};
   actuator.offset = std::vector<double>{1};
   ModelSpec present(state, Action{.components = {actuator}});
-  assert(present == ModelSpec(State{.role = JOINT_POS, .dim = 1,
-                                   .scale = std::vector<double>{2},
-                                   .offset = std::vector<double>{1}},
+  assert(present == ModelSpec(State{.role = JOINT_POS,
+                                    .dim = 1,
+                                    .scale = std::vector<double>{2},
+                                    .offset = std::vector<double>{1}},
                               Action{.components = {actuator}}));
 }
 void adapter_callable_identity() {
@@ -503,8 +505,8 @@ void adapter_callable_identity() {
   ObsTransform observation([](const Value& value) { return value; });
   RotationTransform rotation([](const Value& value) { return value; });
   Custom input{.transform = observation};
-  CustomEncoding encoding{.base = RotationEncoding::EulerXyz,
-                          .from_base = rotation, .to_base = rotation};
+  CustomEncoding encoding{
+      .base = RotationEncoding::EulerXyz, .from_base = rotation, .to_base = rotation};
   Action action{.components = {{.role = ACTION_JOINT_POS, .dim = 3, .encoding = encoding}}};
   ModelSpec spec(input, action);
   Model model([](const Value&) { return 0; }, {.spec = spec});
@@ -514,11 +516,14 @@ void adapter_callable_identity() {
   auto clone = Custom::from_raw(*static_cast<const RLMeshCustom*>(raw_input.leaf));
   assert(clone.transform->raw() != observation.raw());
   assert(clone == input);
+  assert(std::unordered_set<Custom>{input}.contains(clone));
   assert(reconstructed.input() == spec.input());
   assert(reconstructed.output() == action);
-  const auto& cloned_encoding = std::get<CustomEncoding>(*reconstructed.output().components[0].encoding);
+  const auto& cloned_encoding =
+      std::get<CustomEncoding>(*reconstructed.output().components[0].encoding);
   assert(std::get<RotationTransform>(*cloned_encoding.from_base).raw() != rotation.raw());
   assert(cloned_encoding == encoding);
+  assert(std::unordered_set<CustomEncoding>{encoding}.contains(cloned_encoding));
   assert(ObsTransform([](const Value& value) { return value; }) != observation);
   assert(RotationTransform([](const Value& value) { return value; }) != rotation);
 }
@@ -535,8 +540,25 @@ void adapter_dict_equality() {
     assert(Node::tuple({a, b}) != Node::tuple({b, a}));
     assert(Node::dict({}) != Node::tuple({}));
   };
-  check(InputNode(Text{.role = "a"}), InputNode(Text{.role = "b"}));
+  check(InputNode(adapters::Text{.role = "a"}), InputNode(adapters::Text{.role = "b"}));
   check(ObsNode(TextTag{.role = "a"}), ObsNode(TextTag{.role = "b"}));
+}
+void adapter_hashes() {
+  using namespace adapters;
+  adapters::Text text{.role = "instruction", .container = TextContainer::Str, .fill = ""};
+  assert(std::unordered_set<adapters::Text>{text}.contains(adapters::Text(text)));
+  assert(!std::unordered_set<adapters::Text>{text}.contains(adapters::Text{.role = "instruction"}));
+  ImageTag image{
+      .role = IMAGE_PRIMARY, .layout = ImageLayout::Chw, .upside_down = true, .part = "left"};
+  assert(std::unordered_set<ImageTag>{image}.contains(ImageTag(image)));
+  assert(!std::unordered_set<ImageTag>{image}.contains(ImageTag{.role = IMAGE_PRIMARY}));
+  assert(std::unordered_set<TextTag>{{.role = "instruction"}}.contains(
+      TextTag{.role = "instruction"}));
+  Custom entrypoint{.entrypoint = "example:transform"};
+  assert(std::unordered_set<Custom>{entrypoint}.contains(Custom(entrypoint)));
+  CustomEncoding encoding{
+      .base = RotationEncoding::EulerXyz, .from_base = "example:from", .to_base = "example:to"};
+  assert(std::unordered_set<CustomEncoding>{encoding}.contains(CustomEncoding(encoding)));
 }
 Value vector(float f) { return Tensor(&f, sizeof(f), {1}, DType::Float32); }
 struct Tagged {
@@ -621,6 +643,7 @@ int main() try {
   adapter_axis_presence();
   adapter_callable_identity();
   adapter_dict_equality();
+  adapter_hashes();
   adapters_readers_recorder();
   std::cout << "cpp_parity OK\n";
 } catch (const std::exception& e) {
