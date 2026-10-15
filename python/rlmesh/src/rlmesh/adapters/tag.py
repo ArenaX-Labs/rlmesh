@@ -28,6 +28,10 @@ def tag(env: EnvT, tags: EnvTags, *, validate: bool = True) -> EnvT:
     observation/action spaces via the native ``join``, raising
     :class:`AdapterResolutionError` if a role or width cannot be reconciled.
     """
+    try:
+        fragment = tags.to_metadata()
+    except ValueError as exc:
+        raise AdapterResolutionError(str(exc)) from None
     if validate:
         _validate(env, tags)
     existing = getattr(env, "metadata", None)
@@ -36,7 +40,7 @@ def tag(env: EnvT, tags: EnvTags, *, validate: bool = True) -> EnvT:
         if isinstance(existing, Mapping)
         else {}
     )
-    merged.update(tags.to_metadata())
+    merged.update(fragment)
     # ``metadata`` is typically a class attribute on gymnasium envs; assigning
     # here shadows it with an instance attribute, the standard override path.
     env.metadata = merged  # type: ignore[attr-defined]
@@ -44,8 +48,11 @@ def tag(env: EnvT, tags: EnvTags, *, validate: bool = True) -> EnvT:
 
 
 def _validate(env: object, tags: EnvTags) -> None:
-    observation_space = getattr(env, "observation_space", None)
-    action_space = getattr(env, "action_space", None)
+    from .._server import _is_vector_env
+
+    prefix = "single_" if _is_vector_env(env) else ""
+    observation_space = getattr(env, f"{prefix}observation_space", None)
+    action_space = getattr(env, f"{prefix}action_space", None)
     if observation_space is None or action_space is None:
         raise AdapterResolutionError(
             "cannot validate tags: env exposes no observation_space/"

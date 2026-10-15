@@ -367,11 +367,11 @@ def _check_inverses(model_spec: ModelSpec) -> None:
     install.
     """
     checkable: list[CustomEncoding] = []
-    seen: set[int] = set()
+    seen: list[CustomEncoding] = []
     for encoding in _custom_encodings(model_spec):
-        if id(encoding) in seen:
+        if encoding in seen:
             continue
-        seen.add(id(encoding))
+        seen.append(encoding)
         if (
             encoding.is_entrypoint
             or encoding.from_base is None

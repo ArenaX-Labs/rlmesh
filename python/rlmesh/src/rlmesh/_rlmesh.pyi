@@ -274,7 +274,7 @@ class Advisory:
     `str(advisory)` is the message.
     """
     @property
-    def severity(self) -> builtins.str:
+    def severity(self) -> typing.Literal["info", "caution"]:
         r"""
         The severity tier: `"info"` or `"caution"`.
         """
@@ -283,6 +283,8 @@ class Advisory:
         r"""
         The human-readable note.
         """
+    def __eq__(self, other: builtins.object, /) -> builtins.bool: ...
+    def __hash__(self) -> builtins.int: ...
     def __str__(self) -> builtins.str: ...
     def __repr__(self) -> builtins.str: ...
 

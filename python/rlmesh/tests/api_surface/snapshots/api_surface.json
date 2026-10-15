@@ -1573,6 +1573,11 @@
       "Adapter": {
         "kind": "class",
         "members": {
+          "__init__": {
+            "kind": "function",
+            "signature": "__init__(plan: AdapterPlan, customs: Mapping[Placement, ObsTransform], obs_enc_shims: tuple[ObsEncShim, ...] = (), action_enc_shims: tuple[ActEncShim, ...] = ()) -> None",
+            "stability": "Internal"
+          },
           "advisories": {
             "kind": "function",
             "signature": "advisories() -> list[Advisory]"
@@ -1599,7 +1604,8 @@
           },
           "serve_route": {
             "kind": "function",
-            "signature": "serve_route(bridge: ValueBridge) -> dict[str, object]"
+            "signature": "serve_route(bridge: ValueBridge) -> dict[str, object]",
+            "stability": "Internal"
           },
           "transform_action": {
             "kind": "function",
@@ -1607,7 +1613,8 @@
           },
           "transform_action_value": {
             "kind": "function",
-            "signature": "transform_action_value(raw_action: object, *, action_bridge: ValueBridge | None = None) -> Value"
+            "signature": "transform_action_value(raw_action: object, *, action_bridge: ValueBridge | None = None) -> Value",
+            "stability": "Bridge"
           },
           "transform_obs": {
             "kind": "function",
@@ -1615,7 +1622,8 @@
           },
           "transform_obs_value": {
             "kind": "function",
-            "signature": "transform_obs_value(raw_obs: RawObs, *, input_bridge: ValueBridge | None = None, custom_bridge: ValueBridge | None = None) -> Value"
+            "signature": "transform_obs_value(raw_obs: RawObs, *, input_bridge: ValueBridge | None = None, custom_bridge: ValueBridge | None = None) -> Value",
+            "stability": "Bridge"
           },
           "wrap_predict": {
             "kind": "function",
@@ -1668,7 +1676,7 @@
           },
           "severity": {
             "kind": "property",
-            "signature": "property severity: str"
+            "signature": "property severity: Literal['info', 'caution']"
           }
         },
         "stability": "Stable"
@@ -2434,7 +2442,8 @@
         "stability": "Stable"
       },
       "tag": {
-        "kind": "module",
+        "kind": "function",
+        "signature": "tag(env: EnvT, tags: EnvTags, *, validate: bool = True) -> EnvT",
         "stability": "Stable"
       }
     }

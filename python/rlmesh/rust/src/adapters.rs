@@ -470,7 +470,8 @@ impl PyAdapterPlan {
 /// zero-filled frame) — the tier an eval harness may want to hard-fail on.
 /// `str(advisory)` is the message.
 #[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
-#[pyclass(module = "rlmesh._rlmesh", name = "Advisory", frozen)]
+#[pyclass(module = "rlmesh._rlmesh", name = "Advisory", frozen, eq, hash)]
+#[derive(PartialEq, Eq, Hash)]
 pub struct PyAdvisory {
     advisory: Advisory,
 }
@@ -481,6 +482,7 @@ pub struct PyAdvisory {
 impl PyAdvisory {
     /// The severity tier: `"info"` or `"caution"`.
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "typing.Literal[\"info\", \"caution\"]", imports = ("typing")))]
     fn severity(&self) -> &'static str {
         self.advisory.severity.as_str()
     }
@@ -975,9 +977,11 @@ pub fn adapters_spec_normalize(
             }
             reject_unframed_roles_env(&tags, frame_gate)
                 .map_err(|message| PyValueError::new_err(format!("invalid env tags: {message}")))?;
-            serde_json::to_string(&tags).map_err(|err| {
-                PyValueError::new_err(format!("could not serialize env tags: {err}"))
-            })
+            rlmesh::binding::adapter_json_format(
+                &serde_json::to_value(&tags)
+                    .map_err(|err| PyValueError::new_err(err.to_string()))?,
+            )
+            .map_err(|err| PyValueError::new_err(format!("could not serialize env tags: {err}")))
         }
         "model" => {
             let spec: ModelSpec = de_spec("model spec", spec_json)?;
@@ -1002,9 +1006,11 @@ pub fn adapters_spec_normalize(
             if !allow_custom {
                 reject_custom_leaves(&spec.input)?;
             }
-            serde_json::to_string(&spec).map_err(|err| {
-                PyValueError::new_err(format!("could not serialize model spec: {err}"))
-            })
+            rlmesh::binding::adapter_json_format(
+                &serde_json::to_value(&spec)
+                    .map_err(|err| PyValueError::new_err(err.to_string()))?,
+            )
+            .map_err(|err| PyValueError::new_err(format!("could not serialize model spec: {err}")))
         }
         other => Err(PyValueError::new_err(format!(
             "unknown spec side {other:?}; expected \"env\" or \"model\""

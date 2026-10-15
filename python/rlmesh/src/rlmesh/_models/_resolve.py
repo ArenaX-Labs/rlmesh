@@ -42,8 +42,8 @@ def resolve_adapter(
     probe instead.)
     """
     from ..adapters import (
+        ENV_METADATA_KEY,
         AdapterResolutionError,
-        EnvTags,
         ModelSpec,
         resolve_from_contract,
     )
@@ -51,7 +51,7 @@ def resolve_adapter(
     if spec is NO_ADAPTER:
         return None
     metadata = contract.metadata if contract is not None else None
-    tagged = EnvTags.from_metadata(metadata or {}) is not None
+    tagged = ENV_METADATA_KEY in (metadata or {})
     if spec is None:
         if tagged:
             raise AdapterResolutionError(

@@ -544,6 +544,22 @@
     },
     "rlmesh.adapters.UR5E": {
       "description": "Embodiment profile for the Universal Robots UR5e: the six URDF arm joints, shoulder_pan_joint through wrist_3_joint; a gripper is its own leaf."
+    },
+    "rlmesh.adapters.Adapter": {
+      "members": {
+        "__init__": {
+          "stability": "Internal"
+        },
+        "serve_route": {
+          "stability": "Internal"
+        },
+        "transform_obs_value": {
+          "stability": "Bridge"
+        },
+        "transform_action_value": {
+          "stability": "Bridge"
+        }
+      }
     }
   },
   "native": {
