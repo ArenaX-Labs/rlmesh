@@ -22,12 +22,15 @@ from rlmesh_api_surface.rust_surface import (
 
 
 def test_c_field_keeps_its_own_trailing_comment() -> None:
-    # The previous field's `/* required */` must not read as the end of a block
+    # The previous field's trailing comment must not read as the end of a block
     # comment and drag the struct's docs (and source lines) onto this field.
     _, exports = _header("rlmesh.h", "c", "c11", None)
-    fields = {member.name: member for member in exports["RLMeshEnvConfig"].members}
-    assert fields["observation_space"].documentation == "required"
-    assert fields["action_space"].documentation == "required"
+    fields = {member.name: member for member in exports["RLMeshRunOptions"].members}
+    assert fields["instruction"].documentation == "NULL = None; copied."
+    assert (
+        fields["view"].documentation
+        == "NULL = None; copied and validated by the facade."
+    )
 
 
 def test_cpp_signatures_read_past_a_truncated_extent() -> None:
@@ -146,8 +149,25 @@ def test_c_header_sections_and_declarations() -> None:
         "Most recent failing call"
     )
     tensor = exports["RLMeshTensor"]
-    assert tensor.kind == "struct"
-    assert "const void* data" in [member.signature for member in tensor.members]
+    assert tensor.kind == "opaque type"
+    assert tensor.members == []
+    options = exports["RLMeshToDlpackOptions"]
+    assert options.kind == "struct"
+    assert {member.signature for member in options.members} >= {
+        "size_t struct_size",
+        "bool copy",
+        "int32_t dl_device_type",
+    }
+    assert exports["RLMESH_TO_DLPACK_OPTIONS_INIT"].kind == "macro"
+    sections = {
+        export.name: module.name for module in modules for export in module.exports
+    }
+    assert sections["RLMeshTensor"] == "rlmesh.h: dtype + tensor"
+    assert sections["RLMeshToDlpackOptions"] == "rlmesh.h: dtype + tensor"
+    assert (
+        sections["RLMeshRunOptions"]
+        == "rlmesh.h: Running: facade targets, observers and results"
+    )
     # Header plumbing stays out of the reference.
     assert "RLMESH_API" not in exports
     assert "RLMESH_H" not in exports
