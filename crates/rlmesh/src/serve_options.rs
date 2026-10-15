@@ -7,10 +7,10 @@ use std::time::Duration;
 use crate::{Error, Result};
 
 /// Environment variable holding the token a served model endpoint requires.
-pub const MODEL_ENDPOINT_TOKEN_ENV: &str = "RLMESH_MODEL_ENDPOINT_TOKEN";
+pub(crate) use crate::ext::MODEL_ENDPOINT_TOKEN_ENV;
 
 /// Environment variable holding the token a served environment endpoint requires.
-pub const ENV_ENDPOINT_TOKEN_ENV: &str = "RLMESH_ENV_ENDPOINT_TOKEN";
+pub(crate) use crate::ext::ENV_ENDPOINT_TOKEN_ENV;
 
 /// Transport lifecycle policy for a server: Python's `ServeOptions`.
 ///

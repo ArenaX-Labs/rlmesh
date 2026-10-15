@@ -9,7 +9,8 @@ use rlmesh::binding::model::{
     RouteConfig, RouteResolver, RunLocalOptions, ServeModelOptions,
 };
 use rlmesh::binding::model::{ModelClient, ModelConnect};
-use rlmesh::{BindAddress, ConnectAddress, Error as RLMeshError};
+use rlmesh::Error as RLMeshError;
+use rlmesh::ext::{BindAddress, ConnectAddress};
 use rlmesh_adapters::v1::Value;
 use rlmesh_spaces::{EnvContract, SpaceValue, spaces::SpaceSpec};
 use std::collections::HashMap;

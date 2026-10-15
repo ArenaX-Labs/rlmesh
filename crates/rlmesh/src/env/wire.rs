@@ -1768,7 +1768,7 @@ mod tests {
                     "--nocapture",
                 ])
                 .env(CHILD, "1")
-                .env(crate::ENV_ENDPOINT_TOKEN_ENV, "deployment-token")
+                .env(crate::ext::ENV_ENDPOINT_TOKEN_ENV, "deployment-token")
                 .status()
                 .unwrap();
             assert!(status.success(), "environment token subprocess failed");

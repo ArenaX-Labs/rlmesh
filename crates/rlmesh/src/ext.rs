@@ -3,6 +3,31 @@
 //! Nothing here is inherent on a shared type: these are extension traits and
 //! free items, so the shared types keep exactly Python's members.
 
+//! Native endpoint helpers are fenced here, not on the shared root.
+//!
+//! ```compile_fail
+//! use rlmesh::BindAddress;
+//! ```
+//! ```compile_fail
+//! use rlmesh::ConnectAddress;
+//! ```
+//! ```compile_fail
+//! use rlmesh::ENV_ENDPOINT_TOKEN_ENV;
+//! ```
+//! ```compile_fail
+//! use rlmesh::MODEL_ENDPOINT_TOKEN_ENV;
+//! ```
+//! ```compile_fail
+//! use rlmesh::serve_options::ENV_ENDPOINT_TOKEN_ENV;
+//! ```
+//! ```compile_fail
+//! use rlmesh::serve_options::MODEL_ENDPOINT_TOKEN_ENV;
+//! ```
+//! On Unix, stale-socket cleanup is fenced too.
+//! ```compile_fail
+//! use rlmesh::remove_stale_socket;
+//! ```
+//!
 use crate::spaces::Space;
 use crate::tensor::{dims_i64, tensor_error};
 use crate::value::space_codec;
@@ -290,3 +315,13 @@ impl CancelToken {
 pub fn register_entrypoint(name: &str, transform: crate::adapters::ObsTransform) -> Result<()> {
     crate::adapters::register(name, transform)
 }
+
+#[cfg(unix)]
+pub use crate::address::remove_stale_socket;
+/// Native endpoint parsing and stale Unix socket cleanup.
+pub use crate::address::{BindAddress, ConnectAddress};
+/// Environment variable names for native endpoint authentication.
+pub const ENV_ENDPOINT_TOKEN_ENV: &str = "RLMESH_ENV_ENDPOINT_TOKEN";
+/// Environment variable name for model endpoint authentication.
+pub const MODEL_ENDPOINT_TOKEN_ENV: &str = "RLMESH_MODEL_ENDPOINT_TOKEN";
+

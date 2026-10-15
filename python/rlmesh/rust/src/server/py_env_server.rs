@@ -10,7 +10,8 @@ use pyo3::prelude::*;
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pymethods};
 use rlmesh::binding::env::{WireEnvAdapter, WireLaneAdapter};
-use rlmesh::{BindAddress, ServeOptions};
+use rlmesh::ServeOptions;
+use rlmesh::ext::BindAddress;
 use rlmesh_grpc::env::{Environment, env_service_from_shared};
 use rlmesh_grpc::lifecycle::{
     ShutdownTrigger, await_close_with_timeout, await_server_shutdown, start_idle_shutdown,
