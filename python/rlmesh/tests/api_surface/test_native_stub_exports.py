@@ -8,6 +8,7 @@ EXPECTED_NATIVE_EXPORTS = [
     "BuildInfo",
     "EnvContract",
     "EnvironmentException",
+    "ModelException",
     "ProtocolException",
     "PyEnvClient",
     "PyEnvServer",
@@ -58,6 +59,7 @@ def test_native_exception_hierarchy() -> None:
     assert issubclass(
         native.RecoverableEnvironmentException, native.EnvironmentException
     )
+    assert issubclass(native.ModelException, native.RLMeshException)
 
 
 class StubExports:

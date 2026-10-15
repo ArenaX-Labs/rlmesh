@@ -1,9 +1,15 @@
 //! Python exception types, error conversions, and payload-size accounting.
 
 use pyo3::create_exception;
-use pyo3::exceptions::{PyConnectionError, PyRuntimeError, PyTimeoutError, PyValueError};
+use pyo3::exceptions::{
+    PyConnectionError, PyKeyboardInterrupt, PyOSError, PyRuntimeError, PyTimeoutError, PyTypeError,
+    PyValueError,
+};
 use pyo3::prelude::*;
-use rlmesh::{EnvironmentError, Error, ErrorCode};
+use pyo3::types::PyDict;
+use rlmesh::{
+    EnvironmentError, Error, ErrorCode, InvalidArgumentError, ModelError, ModelErrorCode,
+};
 use rlmesh_spaces::SpaceValue;
 
 // Custom exception types for RLMesh-specific errors
@@ -35,53 +41,122 @@ create_exception!(
     "An environment error that fails one request but leaves the session usable"
 );
 
+create_exception!(
+    _rlmesh,
+    ModelException,
+    RLMeshException,
+    "A failure the model reported; carries `code` and `is_recoverable`.\n\n\
+     Raise `ModelException(message, is_recoverable=True)` from a model to fail \
+     one request as recoverable."
+);
+
+/// `ModelException(message, *, is_recoverable=False)`: the authoring
+/// constructor. Exception types made by `create_exception!` take positional
+/// arguments only, so the keyword is added as a Python `__init__`.
+const MODEL_EXCEPTION_INIT: &std::ffi::CStr = cr#"
+def __init__(self, message, *, is_recoverable=False):
+    RLMeshException.__init__(self, message)
+    self.is_recoverable = bool(is_recoverable)
+
+__init__.__qualname__ = "ModelException.__init__"
+ModelException.__init__ = __init__
+"#;
+
 /// Convert rlmesh facade Error to Python exception.
 ///
 /// Note: We can't implement `From<Error> for PyErr` due to orphan rules,
 /// so we use this helper function instead.
 pub fn to_py_err(err: Error) -> PyErr {
     match err {
-        Error::InvalidArgument(e) => PyValueError::new_err(e.message),
-        Error::Connection(message) => PyConnectionError::new_err(message),
-        Error::Timeout(duration) => {
-            PyTimeoutError::new_err(format!("operation timed out after {:?}", duration))
-        }
+        Error::Internal(message) => RLMeshException::new_err(message),
+        Error::Protocol(message) => ProtocolException::new_err(message),
         Error::Environment(e) => env_error_to_py(e),
-        Error::Model(e) => PyRuntimeError::new_err(format!("model error: {}", e.message)),
-        Error::Internal(message) => PyRuntimeError::new_err(message),
+        Error::Model(e) => model_error_to_py(e),
+        Error::InvalidArgument(e) => invalid_argument_to_py(e),
+        Error::Type(message) => PyTypeError::new_err(message),
+        Error::Runtime(message) => PyRuntimeError::new_err(message),
+        Error::Os(message) => PyOSError::new_err(message),
+        Error::Connection(message) => PyConnectionError::new_err(message),
+        error @ Error::Timeout(_) => PyTimeoutError::new_err(error.to_string()),
+        error @ Error::Cancelled => PyKeyboardInterrupt::new_err(error.to_string()),
         // rlmesh::Error is #[non_exhaustive].
-        other => PyRuntimeError::new_err(other.to_string()),
+        other => RLMeshException::new_err(other.to_string()),
     }
 }
 
 /// Convert environment error to Python exception, carrying its `code` and
-/// `is_recoverable` as attributes.
+/// `is_recoverable` as attributes. Every code raises the Environment family,
+/// including `TIMEOUT`, `INVALID_ACTION` and `CANCELLED`.
 fn env_error_to_py(err: EnvironmentError) -> PyErr {
-    let msg = format!("[{}] {}", err.code, err.message);
-    let env_exception = |msg: String| {
-        if err.is_recoverable {
-            RecoverableEnvironmentException::new_err(msg)
-        } else {
-            EnvironmentException::new_err(msg)
-        }
+    let msg = err.to_string();
+    let py_err = if err.is_recoverable {
+        RecoverableEnvironmentException::new_err(msg)
+    } else {
+        EnvironmentException::new_err(msg)
     };
+    annotate(&py_err, err.code.as_str(), err.is_recoverable);
+    py_err
+}
 
-    let py_err = match err.code {
-        ErrorCode::Timeout => PyTimeoutError::new_err(msg),
-        ErrorCode::InvalidAction => PyValueError::new_err(msg),
-        ErrorCode::Cancelled => PyRuntimeError::new_err(msg),
-        // NotReady, Busy, Internal, Crashed, Closed, Unspecified, and any code
-        // added later (rlmesh::ErrorCode is #[non_exhaustive]).
-        _ => env_exception(msg),
-    };
+/// Convert a model error to `ModelException`, carrying its `code` and
+/// `is_recoverable` as attributes.
+fn model_error_to_py(err: ModelError) -> PyErr {
+    let py_err = ModelException::new_err(err.to_string());
+    annotate(&py_err, err.code.as_str(), err.is_recoverable);
+    py_err
+}
+
+fn annotate(py_err: &PyErr, code: &str, is_recoverable: bool) {
     Python::attach(|py| {
         let value = py_err.value(py);
-        // Builtin exception instances take attributes too; a failure only
-        // loses the annotation, never the error itself.
-        let _ = value.setattr("code", err.code.to_string());
-        let _ = value.setattr("is_recoverable", err.is_recoverable);
+        // A failure only loses the annotation, never the error itself.
+        let _ = value.setattr("code", code);
+        let _ = value.setattr("is_recoverable", is_recoverable);
     });
-    py_err
+}
+
+/// `ValueError`, or `rlmesh.adapters.AdapterResolutionError` (a `ValueError`)
+/// for an adapter-resolution failure.
+fn invalid_argument_to_py(err: InvalidArgumentError) -> PyErr {
+    if err.adapter_resolution.is_some() {
+        let adapter_error = Python::attach(|py| {
+            py.import("rlmesh.adapters")
+                .and_then(|module| module.getattr("AdapterResolutionError"))
+                .and_then(|class| class.call1((err.message.as_str(),)))
+                .map(PyErr::from_value)
+                .ok()
+        });
+        if let Some(py_err) = adapter_error {
+            return py_err;
+        }
+    }
+    PyValueError::new_err(err.message)
+}
+
+/// The facade error a Python exception raised by a model callback becomes:
+/// a `ModelException` keeps its recoverable flag as a model failure with code
+/// `INTERNAL`; anything else is an internal failure with the exception's text.
+pub(crate) fn model_callback_error(err: &PyErr) -> Error {
+    Python::attach(|py| {
+        let value = err.value(py);
+        if value.is_instance_of::<ModelException>() {
+            let message = value
+                .str()
+                .map(|text| text.to_string())
+                .unwrap_or_else(|_| err.to_string());
+            let is_recoverable = value
+                .getattr("is_recoverable")
+                .and_then(|flag| flag.is_truthy())
+                .unwrap_or(false);
+            Error::Model(ModelError {
+                code: ModelErrorCode::Internal,
+                message,
+                is_recoverable,
+            })
+        } else {
+            Error::Internal(err.to_string())
+        }
+    })
 }
 
 /// Register exception types with the Python module.
@@ -92,12 +167,20 @@ pub fn register_exceptions(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Class-level defaults for an exception an env author raises; one the
     // client raises carries the server's values on the instance.
     let environment = py.get_type::<EnvironmentException>();
-    environment.setattr("code", ErrorCode::Internal.to_string())?;
+    environment.setattr("code", ErrorCode::Internal.as_str())?;
     environment.setattr("is_recoverable", false)?;
     m.add("EnvironmentException", environment)?;
     let recoverable = py.get_type::<RecoverableEnvironmentException>();
     recoverable.setattr("is_recoverable", true)?;
     m.add("RecoverableEnvironmentException", recoverable)?;
+    let model = py.get_type::<ModelException>();
+    model.setattr("code", ModelErrorCode::Internal.as_str())?;
+    model.setattr("is_recoverable", false)?;
+    let globals = PyDict::new(py);
+    globals.set_item("RLMeshException", py.get_type::<RLMeshException>())?;
+    globals.set_item("ModelException", &model)?;
+    py.run(MODEL_EXCEPTION_INIT, Some(&globals), None)?;
+    m.add("ModelException", model)?;
     Ok(())
 }
 
@@ -117,6 +200,93 @@ pub(crate) fn space_value_size(value: &SpaceValue) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn env_error(code: ErrorCode, is_recoverable: bool) -> Error {
+        Error::Environment(EnvironmentError {
+            code,
+            message: "boom".into(),
+            is_recoverable,
+        })
+    }
+
+    /// (class name, str(exc), code, is_recoverable) of the raised exception.
+    fn raised(err: Error) -> (String, String, Option<String>, Option<bool>) {
+        let py_err = to_py_err(err);
+        Python::attach(|py| {
+            let value = py_err.value(py);
+            let class = value.get_type().name().unwrap().to_string();
+            let text = value.str().unwrap().to_string();
+            let code = value
+                .getattr("code")
+                .ok()
+                .map(|code| code.extract::<String>().unwrap());
+            let recoverable = value
+                .getattr("is_recoverable")
+                .ok()
+                .map(|flag| flag.extract::<bool>().unwrap());
+            (class, text, code, recoverable)
+        })
+    }
+
+    #[test]
+    fn every_env_code_raises_the_environment_family() {
+        for code in [
+            ErrorCode::Timeout,
+            ErrorCode::InvalidAction,
+            ErrorCode::Cancelled,
+            ErrorCode::Unsupported,
+            ErrorCode::Busy,
+        ] {
+            let (class, text, got, recoverable) = raised(env_error(code, false));
+            assert_eq!(class, "EnvironmentException", "{code}");
+            assert_eq!(text, format!("[{code}] boom"));
+            assert_eq!(got.as_deref(), Some(code.as_str()));
+            assert_eq!(recoverable, Some(false));
+            let (class, ..) = raised(env_error(code, true));
+            assert_eq!(class, "RecoverableEnvironmentException", "{code}");
+        }
+    }
+
+    #[test]
+    fn model_failures_raise_model_exception() {
+        let (class, text, code, recoverable) = raised(Error::model_recoverable("declined"));
+        assert_eq!(class, "ModelException");
+        assert_eq!(text, "[INTERNAL] declined");
+        assert_eq!(code.as_deref(), Some("INTERNAL"));
+        assert_eq!(recoverable, Some(true));
+        Python::attach(|py| {
+            let value = to_py_err(Error::model("x")).into_value(py);
+            assert!(value.bind(py).is_instance_of::<RLMeshException>());
+            assert!(value.bind(py).is_instance_of::<PyRuntimeError>());
+        });
+    }
+
+    #[test]
+    fn each_variant_raises_its_python_class() {
+        let cases = [
+            (Error::Internal("boom".into()), "RLMeshException", "boom"),
+            (Error::Protocol("bad".into()), "ProtocolException", "bad"),
+            (Error::invalid_argument("bad"), "ValueError", "bad"),
+            (Error::Type("kind".into()), "TypeError", "kind"),
+            (Error::Runtime("closed".into()), "RuntimeError", "closed"),
+            (Error::Os("exists".into()), "OSError", "exists"),
+            (
+                Error::Connection("reset".into()),
+                "ConnectionError",
+                "reset",
+            ),
+            (
+                Error::Timeout(std::time::Duration::from_secs(5)),
+                "TimeoutError",
+                "operation timed out after 5s",
+            ),
+            (Error::Cancelled, "KeyboardInterrupt", "cancelled"),
+        ];
+        for (error, class, text) in cases {
+            let (got_class, got_text, ..) = raised(error);
+            assert_eq!((got_class.as_str(), got_text.as_str()), (class, text));
+        }
+    }
 
     #[test]
     fn env_error_code_formats_with_label() {

@@ -12,6 +12,7 @@
       "EnvironmentException",
       "EpisodeResult",
       "Model",
+      "ModelException",
       "Param",
       "ParamSpec",
       "ProtocolException",
@@ -333,6 +334,21 @@
           }
         },
         "signature": "Model(source: Callable[..., object] | object | None = None, *, spec: object | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, trust_entrypoints: bool = False) -> None",
+        "stability": "Stable"
+      },
+      "ModelException": {
+        "kind": "class",
+        "members": {
+          "code": {
+            "kind": "attribute",
+            "signature": "code: str"
+          },
+          "is_recoverable": {
+            "kind": "attribute",
+            "signature": "is_recoverable: bool"
+          }
+        },
+        "signature": "ModelException(message: str, *, is_recoverable: bool = False)",
         "stability": "Stable"
       },
       "NO_ADAPTER": {

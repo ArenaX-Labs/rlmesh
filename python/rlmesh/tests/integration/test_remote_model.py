@@ -336,3 +336,46 @@ def test_served_model_reads_its_previous_action_through_remote_model_replay() ->
         env.close()
     finally:
         env_server.shutdown()
+
+
+@pytest.mark.parametrize("recoverable", [True, False])
+def test_served_model_failure_raises_model_exception(recoverable: bool) -> None:
+    """A model's failure reaches the client as ModelException carrying the
+    author's recoverable flag and code INTERNAL (D-10, COR-P4)."""
+    import rlmesh
+
+    class Policy(rlmesh.Model):
+        def predict(self, observation: object, context: dict[str, Any]) -> int:
+            _ = observation, context
+            raise rlmesh.ModelException("out of memory", is_recoverable=recoverable)
+
+    env_server = _serve_env(ThreeStepEnv())
+    model_address = f"127.0.0.1:{_free_port()}"
+    _serve_policy(model_address, Policy())
+    try:
+        env = rlmesh.RemoteEnv(env_server.address)
+        sess = _connect_model_with_retry(model_address, env)
+        obs, _info = sess.reset(seed=0)
+        with pytest.raises(rlmesh.ModelException, match="out of memory") as raised:
+            sess.predict(obs)
+        assert isinstance(raised.value, rlmesh.RLMeshException)
+        assert isinstance(raised.value, RuntimeError)
+        assert raised.value.code == "INTERNAL"
+        assert raised.value.is_recoverable is recoverable
+        assert str(raised.value).startswith("[INTERNAL] ")
+        sess.close()
+        env.close()
+    finally:
+        env_server.shutdown()
+
+
+def test_model_exception_authoring_constructor() -> None:
+    import rlmesh
+
+    plain = rlmesh.ModelException("declined")
+    assert str(plain) == "declined"
+    assert plain.code == "INTERNAL"
+    assert plain.is_recoverable is False
+    assert rlmesh.ModelException("retry", is_recoverable=True).is_recoverable is True
+    assert issubclass(rlmesh.ModelException, rlmesh.RLMeshException)
+    assert not issubclass(rlmesh.ModelException, rlmesh.EnvironmentException)
