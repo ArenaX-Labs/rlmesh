@@ -249,6 +249,9 @@ mod tests {
     fn raised(err: Error) -> (String, String, Option<String>, Option<bool>) {
         let py_err = to_py_err(err);
         Python::attach(|py| {
+            // The class attributes and `__str__` the module installs.
+            let module = PyModule::new(py, "_rlmesh_test").unwrap();
+            register_exceptions(&module).unwrap();
             let value = py_err.value(py);
             let class = value.get_type().name().unwrap().to_string();
             let text = value.str().unwrap().to_string();
@@ -292,6 +295,9 @@ mod tests {
         assert_eq!(recoverable, Some(true));
         Python::attach(|py| {
             let value = to_py_err(Error::model("x")).into_value(py);
+            // The raw message is the argument; `str()` adds the code (COR-P8).
+            let args = value.bind(py).getattr("args").unwrap();
+            assert_eq!(args.get_item(0).unwrap().extract::<String>().unwrap(), "x");
             assert!(value.bind(py).is_instance_of::<RLMeshException>());
             assert!(value.bind(py).is_instance_of::<PyRuntimeError>());
         });
