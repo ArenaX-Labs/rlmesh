@@ -110,6 +110,19 @@ static RLMeshStatus end(void* ud, const RLMeshRunResult* r) {
   return RLMESH_OK;
 }
 static void free_hooks(void* ud) { ++((State*)ud)->frees; }
+static RLMeshStatus poison_error(void* user, const RLMeshRunContext* context) {
+  (void)user;
+  (void)context;
+  rlmesh_callback_set_error_class(RLMESH_ERROR_CLASS_OS_ERROR, "unrelated stale error");
+  return RLMESH_OK;
+}
+static RLMeshStatus silent_hook_failure(void* user, int64_t episode, const int64_t* seed) {
+  (void)user;
+  (void)episode;
+  (void)seed;
+  CHECK(rlmesh_last_error_message() == NULL);
+  return RLMESH_ERR_MODEL;
+}
 int main(void) {
   State s = {0};
   RLMeshDiscrete* space = NULL;
@@ -257,6 +270,17 @@ int main(void) {
   CHECK(rlmesh_session_reset(s.session, NULL, NULL, &obs, &info) == RLMESH_ERR_CANCELLED);
   rlmesh_session_free(s.session);
   s.session = NULL;
+  RLMeshRunHooksVtable stale_vt = RLMESH_RUN_HOOKS_VTABLE_INIT;
+  stale_vt.on_run_start = poison_error;
+  stale_vt.on_episode_start = silent_hook_failure;
+  RLMeshRunHooks* stale_hooks = NULL;
+  CHECK(rlmesh_run_hooks_new(&stale_vt, NULL, &stale_hooks) == RLMESH_OK);
+  o.hooks = stale_hooks;
+  CHECK(rlmesh_run(RLMESH_RANDOM_SAMPLE, rlmesh_env_target(env), &o, &result) ==
+        RLMESH_ERR_INTERNAL);
+  CHECK(result == NULL && rlmesh_last_error_class() == RLMESH_ERROR_CLASS_RLMESH_EXCEPTION);
+  CHECK(strcmp(rlmesh_last_error_message(), "hook callback failed") == 0);
+  rlmesh_run_hooks_free(stale_hooks);
   o.close_env = true;
   o.hooks = NULL;
   CHECK(rlmesh_run(RLMESH_RANDOM_SAMPLE, rlmesh_env_target(env), &o, &result) == RLMESH_OK &&
