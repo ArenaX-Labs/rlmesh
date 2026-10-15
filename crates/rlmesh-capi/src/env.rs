@@ -62,16 +62,16 @@ pub struct RLMeshResetArgs {
     pub options_json: *const c_char,
 }
 
-/// What `reset` writes. `observation` is an OWNED value (the capi takes it);
-/// `info_json` is a borrowed JSON object, or NULL for none.
+/// What `reset` writes. `observation` is an OWNED value the capi takes
+/// even when the callback fails (never a borrowed one); `info_json` is a borrowed JSON object, or NULL for none.
 #[repr(C)]
 pub struct RLMeshResetResult {
     pub observation: *mut RLMeshValue,
     pub info_json: *const c_char,
 }
 
-/// What `step` writes. `observation` is an OWNED value (the capi takes it);
-/// `info_json` is a borrowed JSON object, or NULL for none.
+/// What `step` writes. `observation` is an OWNED value the capi takes
+/// even when the callback fails (never a borrowed one); `info_json` is a borrowed JSON object, or NULL for none.
 #[repr(C)]
 pub struct RLMeshStepResult {
     pub observation: *mut RLMeshValue,
@@ -95,10 +95,12 @@ pub type RLMeshEnvStepFn = unsafe extern "C" fn(
     out: *mut RLMeshStepResult,
 ) -> c_int;
 /// Render callback: write an OWNED uint8 image value (`[H, W, 3]`, `[H, W, 4]`
-/// or `[H, W]`), or leave it NULL for "no frame". The capi PNG-encodes it.
+/// or `[H, W]`), or leave it NULL for "no frame". The capi PNG-encodes it,
+/// and takes it even when the callback fails.
 pub type RLMeshEnvRenderFn =
     unsafe extern "C" fn(user_data: *mut c_void, out_frame: *mut *mut RLMeshValue) -> c_int;
-/// Close callback: the server stopped; release the simulation.
+/// Close callback: the server stopped (or a never-served handle is being
+/// freed); release the simulation. Runs once per lane.
 pub type RLMeshEnvCloseFn = unsafe extern "C" fn(user_data: *mut c_void);
 
 /// The environment callback vtable. Set `struct_size =
@@ -258,7 +260,9 @@ impl Drop for ShutOnDrop<'_> {
     }
 }
 
-/// The C vtable as a core scalar `Env`.
+/// The C vtable as a core scalar `Env`. A bind serves clones, so the handle
+/// keeps its lanes until one succeeds (a failed bind can be retried).
+#[derive(Clone)]
 struct CEnv {
     vtable: RLMeshEnvVtable,
     user_data: UserData,
@@ -315,7 +319,8 @@ fn callback_error(op: &str) -> EnvRuntimeError {
     }
 }
 
-/// Reclaim an owned value the callback wrote (NULL = none).
+/// Reclaim an owned value the callback wrote (NULL = none), before its status
+/// is read: the header promises the capi takes it on failure too.
 fn take_value(ptr: *mut RLMeshValue) -> Option<SpaceValue> {
     (!ptr.is_null()).then(|| unsafe { Box::from_raw(ptr) }.0)
 }
@@ -885,7 +890,8 @@ unsafe fn new_env(
 /// OS-assigned port for port 0) to `out_address` when it is non-NULL (free with
 /// `rlmesh_bytes_free`; UTF-8, not NUL-terminated). Once per handle. `options`
 /// may be NULL for defaults; `predict_concurrency` and `close_timeout_ms` do
-/// not apply to an env (serve always waits for every `close` callback).
+/// not apply to an env (serve always waits for every `close` callback). A failed
+/// bind leaves the handle as it was, so it may be retried.
 ///
 /// # Safety
 /// `env` must be a live handle; `bind_address` a valid C string; `options` NULL
@@ -911,9 +917,15 @@ pub unsafe extern "C" fn rlmesh_env_bind(
         // The C host frees `user_data` once serve returns, so serve must not
         // give up on a `close` callback still running on it.
         serve.close_timeout = None;
-        let cenv = lock(&handle.env)
-            .take()
-            .ok_or_else(|| CapiError::invalid_arg("env is already bound"))?;
+        // Held for the whole bind: the lanes leave the handle only once a bind
+        // succeeds. The server gets clones (a failed bind drops them, never
+        // having run a callback), so a failed bind leaves the handle as it was:
+        // it can bind again, and `close` still runs once, in serve or free.
+        let mut lanes = lock(&handle.env);
+        let cenv = lanes
+            .as_ref()
+            .ok_or_else(|| CapiError::invalid_arg("env is already bound"))?
+            .clone();
         let envelope = handle
             .describe
             .for_bind(serve.workflow_edition.as_deref())?;
@@ -923,6 +935,8 @@ pub unsafe extern "C" fn rlmesh_env_bind(
             .runtime
             .block_on(EnvServer::lanes(cenv).bind_with_options(bind, serve))
             .map_err(CapiError::from)?;
+        *lanes = None;
+        drop(lanes);
         handle.describe.commit(envelope);
         if !out_address.is_null() {
             let address = bound.local_addr().to_string();
@@ -949,30 +963,35 @@ pub unsafe extern "C" fn rlmesh_env_bind(
 pub unsafe extern "C" fn rlmesh_env_serve(env: *mut RLMeshEnv) -> RLMeshStatus {
     guard(|| {
         let handle = unsafe { env.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null env"))?;
-        let bound = lock(&handle.bound)
-            .take()
-            .ok_or_else(|| CapiError::invalid_arg("env is not bound (call rlmesh_env_bind)"))?;
-        let _shut = ShutOnDrop(&handle.gate);
-        let trigger = bound.shutdown_trigger();
-        let cancel = handle.cancel.clone();
-        let serve = async move {
-            // Cancelling triggers the server's own graceful shutdown (drain,
-            // then the close hook) rather than dropping the serve future.
-            let watcher = tokio::spawn(async move {
-                cancel.cancelled().await;
-                trigger.trigger("cancelled by rlmesh_env_cancel");
-            });
-            let result = bound.serve().await;
-            watcher.abort();
-            result
-        };
-        let foreground = lock(&handle.foreground).take();
-        match foreground {
-            None => handle.runtime.block_on(serve),
-            Some(queue) => serve_foreground(handle, serve, queue),
-        }
-        .map_err(CapiError::from)
+        serve_handle(handle)
     })
+}
+
+/// Serve a bound handle until it stops; `rlmesh_env_serve`'s body.
+fn serve_handle(handle: &RLMeshEnv) -> Result<(), CapiError> {
+    let bound = lock(&handle.bound)
+        .take()
+        .ok_or_else(|| CapiError::invalid_arg("env is not bound (call rlmesh_env_bind)"))?;
+    let _shut = ShutOnDrop(&handle.gate);
+    let trigger = bound.shutdown_trigger();
+    let cancel = handle.cancel.clone();
+    let serve = async move {
+        // Cancelling triggers the server's own graceful shutdown (drain,
+        // then the close hook) rather than dropping the serve future.
+        let watcher = tokio::spawn(async move {
+            cancel.cancelled().await;
+            trigger.trigger("cancelled by rlmesh_env_cancel");
+        });
+        let result = bound.serve().await;
+        watcher.abort();
+        result
+    };
+    let foreground = lock(&handle.foreground).take();
+    match foreground {
+        None => handle.runtime.block_on(serve),
+        Some(queue) => serve_foreground(handle, serve, queue),
+    }
+    .map_err(CapiError::from)
 }
 
 /// Serve from a helper thread while this thread runs the env's callbacks as
@@ -1025,9 +1044,11 @@ pub unsafe extern "C" fn rlmesh_env_cancel(env: *mut RLMeshEnv) {
 }
 
 /// Free an env handle. NULL is a no-op. Must NOT be called from inside one of
-/// the env's own callbacks. A handle freed without serving never runs `close`.
-/// Like serve, it returns only once no callback is running, and none can run
-/// after.
+/// the env's own callbacks. Each lane's `close` runs exactly once over the
+/// handle's life: a handle that never served runs it here (a bound one stops
+/// its server, closing each lane on its lane thread; an unbound one, a failed
+/// bind included, closes each lane on this thread). Like serve, it returns only
+/// once no callback is running, and none can run after.
 ///
 /// # Safety
 /// `env` must be NULL or a handle this thread owns and has not freed.
@@ -1036,6 +1057,23 @@ pub unsafe extern "C" fn rlmesh_env_free(env: *mut RLMeshEnv) {
     guard_value((), || {
         if !env.is_null() {
             let handle = unsafe { Box::from_raw(env) };
+            if lock(&handle.bound).is_some() {
+                // Bound, never served: a pre-cancelled serve stops at once and
+                // runs the server's close hook, as a served handle would.
+                handle.cancel.cancel();
+                let _ = serve_handle(&handle);
+            }
+            let unbound = lock(&handle.env).take();
+            if let Some(lanes) = unbound {
+                for lane in lanes {
+                    if let Some(close) = lane.vtable.close {
+                        let _ = handle.gate.run(|| {
+                            call_close(close, lane.user_data);
+                            Ok(())
+                        });
+                    }
+                }
+            }
             handle.gate.shut_and_wait();
             drop(handle);
         }
@@ -1882,5 +1920,83 @@ mod tests {
             .expect_err("refused after shut");
         assert!(err.to_string().contains("stopped serving"), "{err}");
         assert_eq!(reached.load(Ordering::SeqCst), 0);
+    }
+
+    /// Bind `env` to `address`; the error message on failure.
+    fn try_bind(env: *mut RLMeshEnv, address: &str) -> Result<String, String> {
+        let address = CString::new(address).unwrap();
+        let mut out = RLMeshBytes::from_vec(Vec::new());
+        let status = unsafe { rlmesh_env_bind(env, address.as_ptr(), std::ptr::null(), &mut out) };
+        if status != RLMeshStatus::Ok {
+            return Err(last_error_message());
+        }
+        Ok(String::from_utf8(unsafe { out.into_vec() }).expect("utf-8 address"))
+    }
+
+    #[test]
+    fn a_failed_bind_can_be_retried_and_still_closes_once() {
+        let probe = Probe::default();
+        let env = new_env(None, &probe).expect("env");
+        let taken = std::net::TcpListener::bind("127.0.0.1:0").expect("occupy a port");
+        let occupied = taken.local_addr().unwrap().to_string();
+        try_bind(env, &occupied).expect_err("the port is taken");
+        assert_eq!(probe.closes.load(Ordering::SeqCst), 0);
+
+        // The lanes are still on the handle: a bind elsewhere serves them.
+        let address = try_bind(env, "127.0.0.1:0").expect("retry on a free port");
+        let err = try_bind(env, "127.0.0.1:0").expect_err("bound once");
+        assert!(err.contains("already bound"), "{err}");
+        let server = spawn_serve(env);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let mut client = RemoteEnv::connect(&address).await.expect("connect");
+            client
+                .reset(ResetRequest::default())
+                .await
+                .expect("reset after the retried bind");
+        });
+        unsafe { rlmesh_env_cancel(env) };
+        assert_eq!(server.join().unwrap(), RLMeshStatus::Ok);
+        assert_eq!(probe.closes.load(Ordering::SeqCst), 1, "serve closed it");
+        unsafe { rlmesh_env_free(env) };
+        assert_eq!(probe.closes.load(Ordering::SeqCst), 1, "close runs once");
+        drop(taken);
+    }
+
+    #[test]
+    fn freeing_an_env_that_never_served_closes_each_lane_once() {
+        let taken = std::net::TcpListener::bind("127.0.0.1:0").expect("occupy a port");
+        let occupied = taken.local_addr().unwrap().to_string();
+
+        // A failed bind, then free: closed here, on the freeing thread.
+        let (first, second) = (Probe::default(), Probe::default());
+        let env = create_env(None, &[&first, &second], false).expect("env");
+        try_bind(env, &occupied).expect_err("the port is taken");
+        unsafe { rlmesh_env_free(env) };
+        for probe in [&first, &second] {
+            assert_eq!(probe.closes.load(Ordering::SeqCst), 1, "close runs once");
+            assert_eq!(
+                *probe.threads.lock().unwrap(),
+                vec![std::thread::current().id()]
+            );
+        }
+
+        // Never bound, foreground or not.
+        for foreground in [false, true] {
+            let probe = Probe::default();
+            let env = create_env(None, &[&probe], foreground).expect("env");
+            unsafe { rlmesh_env_free(env) };
+            assert_eq!(probe.closes.load(Ordering::SeqCst), 1, "close runs once");
+        }
+
+        // Bound but never served: the server stops and closes its lanes.
+        for foreground in [false, true] {
+            let probe = Probe::default();
+            let env = create_env(None, &[&probe], foreground).expect("env");
+            bind(env);
+            unsafe { rlmesh_env_free(env) };
+            assert_eq!(probe.closes.load(Ordering::SeqCst), 1, "close runs once");
+        }
+        drop(taken);
     }
 }

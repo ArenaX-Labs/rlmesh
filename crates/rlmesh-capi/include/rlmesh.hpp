@@ -1293,7 +1293,8 @@ class Environment {
   /// A uint8 image Value ([H, W, 3], [H, W, 4] or [H, W]), or nullopt for no
   /// frame. Declare `render_mode = "rgb_array"` in the EnvConfig to advertise it.
   virtual Result<std::optional<Value>> render() { return std::optional<Value>(); }
-  /// The server stopped (once).
+  /// The server stopped, or the EnvServer was destroyed without serving
+  /// (once).
   virtual void close() {}
 };
 
