@@ -508,10 +508,16 @@ void adapter_callable_identity() {
   CustomEncoding encoding{
       .base = RotationEncoding::EulerXyz, .from_base = rotation, .to_base = rotation};
   Action action{.components = {{.role = ACTION_JOINT_POS, .dim = 3, .encoding = encoding}}};
+  detail_adapter::Arena arena;
+  auto custom_action = action.components[0].raw(arena);
+  assert(!custom_action.has_encoding && custom_action.custom_encoding);
+  auto native_action =
+      Actuator{.role = ACTION_JOINT_POS, .dim = 3, .encoding = RotationEncoding::EulerXyz}.raw(
+          arena);
+  assert(native_action.has_encoding && !native_action.custom_encoding);
   ModelSpec spec(input, action);
   Model model([](const Value&) { return 0; }, {.spec = spec});
   const auto& reconstructed = std::get<ModelSpec>(*model.spec());
-  detail_adapter::Arena arena;
   auto raw_input = reconstructed.input().raw(arena);
   auto clone = Custom::from_raw(*static_cast<const RLMeshCustom*>(raw_input.leaf));
   assert(clone.transform->raw() != observation.raw());

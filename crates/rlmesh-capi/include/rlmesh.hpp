@@ -2308,11 +2308,12 @@ struct Actuator {
     c.role = detail::ptr(role);
     c.dim = dim;
     if (encoding) {
-      c.has_encoding = true;
-      if (auto p = std::get_if<RotationEncoding>(&*encoding))
+      if (auto p = std::get_if<RotationEncoding>(&*encoding)) {
+        c.has_encoding = true;
         c.encoding = static_cast<RLMeshRotationEncoding>(*p);
-      else
+      } else {
         c.custom_encoding = a.keep(std::get<CustomEncoding>(*encoding).raw(a));
+      }
     }
     if (range) {
       c.has_range = true;
