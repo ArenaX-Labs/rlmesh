@@ -178,6 +178,7 @@ pub fn env_describe_envelope(
             extra: host_runtime,
         },
         workflow_edition,
+        contract.num_envs() > 1,
     )
 }
 
@@ -278,4 +279,63 @@ pub fn env_server_binding_host(
 /// Validate a binding's factory attributes through the shared branch checker.
 pub fn env_factory_check<F: crate::EnvFactory>() -> Result<()> {
     crate::env::factory::check_branch_table::<F>()
+}
+
+/// Describe a C/C++ binding's instance with the shared facade and native identity.
+pub fn describe_native<'a>(
+    obj: impl Into<crate::Describable<'a>>,
+    options: crate::DescribeOptions,
+) -> Result<crate::Metadata> {
+    crate::describe::metadata(
+        obj.into(),
+        options,
+        &crate::describe::Host {
+            component: "rlmesh-capi",
+            language: "c",
+            extra: Default::default(),
+        },
+    )
+}
+/// The JSON form of [`describe_native`].
+pub fn describe_native_json<'a>(
+    obj: impl Into<crate::Describable<'a>>,
+    options: crate::DescribeJsonOptions<'a>,
+) -> Result<String> {
+    crate::describe::envelope(
+        obj.into(),
+        options,
+        &crate::describe::Host {
+            component: "rlmesh-capi",
+            language: "c",
+            extra: Default::default(),
+        },
+    )
+}
+/// A binding's model type form: declaration validation without constructing a policy.
+pub fn model_declaration_describable(
+    decl: crate::binding::model::PolicyDecl,
+) -> Result<crate::Describable<'static>> {
+    crate::describe::Describable::from_declaration(decl)
+}
+/// COR-16's cached C/C++ server shorthand (no public Rust extra).
+pub fn env_server_native_describe_json(server: &crate::EnvServer) -> Result<String> {
+    server.binding_description()
+}
+
+/// Factory serving with the same C/C++ Describe identity as [`describe_native`].
+pub fn env_factory_native_serve<F: crate::EnvFactory>(
+    factory: &mut F,
+    address: &str,
+    options: crate::EnvFactoryServeOptions,
+) -> Result<()> {
+    crate::env::factory::serve_host(
+        factory,
+        address,
+        options,
+        &crate::describe::Host {
+            component: "rlmesh-capi",
+            language: "c",
+            extra: Default::default(),
+        },
+    )
 }

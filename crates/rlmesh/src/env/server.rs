@@ -145,6 +145,7 @@ struct Shared {
     id: u64,
     address: String,
     contract: EnvContract,
+    binding_description: Mutex<Option<String>>,
     token: Option<String>,
     shutdown: ShutdownTrigger,
     state: Mutex<State>,
@@ -271,28 +272,36 @@ impl EnvServer {
         let State::Ready(resources) = &mut *state else {
             return Err(Error::Runtime("server has already started".into()));
         };
+        let envelope = env_envelope(
+            &self.shared.contract,
+            None,
+            None,
+            &DescribingHost {
+                component,
+                language,
+                extra,
+            },
+            resources.grpc.workflow_edition.as_deref(),
+            matches!(resources.served, Served::Vector(_)),
+        )?;
+        *lock(&self.shared.binding_description) = Some(envelope.clone());
         if resources
             .grpc
             .peer_info_extra
             .contains_key(DESCRIBE_METADATA_KEY)
         {
-            let envelope = env_envelope(
-                &self.shared.contract,
-                None,
-                None,
-                &DescribingHost {
-                    component,
-                    language,
-                    extra,
-                },
-                resources.grpc.workflow_edition.as_deref(),
-            )?;
             resources
                 .grpc
                 .peer_info_extra
                 .insert(DESCRIBE_METADATA_KEY.into(), envelope);
         }
         Ok(())
+    }
+
+    pub(crate) fn binding_description(&self) -> Result<String> {
+        lock(&self.shared.binding_description)
+            .clone()
+            .ok_or_else(|| Error::Runtime("server has no binding description".into()))
     }
 
     /// The loopback server a run or session stands up in front of a local
@@ -449,6 +458,7 @@ impl EnvServer {
                     None,
                     &DescribingHost::rust(),
                     edition.as_deref(),
+                    matches!(served, Served::Vector(_)),
                 )?;
                 peer_info_extra.insert(DESCRIBE_METADATA_KEY.to_string(), envelope);
             }
@@ -482,6 +492,7 @@ impl EnvServer {
                 id: NEXT_SERVER.fetch_add(1, Ordering::Relaxed),
                 address,
                 contract,
+                binding_description: Mutex::new(None),
                 token: checked_token,
                 shutdown: ShutdownTrigger::new(),
                 state: Mutex::new(State::Ready(Box::new(Resources {

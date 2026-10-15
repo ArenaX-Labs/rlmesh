@@ -10,6 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ### Added
 
+- The C Describe family now uses the Rust facade: sized options/kind, model vtable/type and instance forms, and factory branch/catalog descriptions with typed dict or canonical JSON output. Type forms never call policy slots; declaration checks match Model construction, instance descriptions retain static chunk declarations, and C native identity/runtime and edition refusal rules match the spec. COR-16's fenced EnvServer shorthand caches the resolved host/edition snapshot, readable even after shutdown or with publication disabled. C factory serving publishes the same native Describe identity.
+
 - ABI-5 C/C++ regression coverage for facade space membership (extra Dict keys and one-element integer tensors), sampled Dict declaration order from nonalphabetical remote specs, length-bearing embedded-NUL dict construction/lookup, and tensor copies retaining storage after their source Value dies. These behaviors are already provided by the Value/tensor rebase; C++ Tensor copies share the opaque owned handle.
 
 - C RemoteEnv, RemoteVectorEnv and shared RemoteModel handles now use facade clients, sized constructor options and token extensions. Remote env accessors retain cache identity and remain usable during exclusive I/O/session borrows; selected editions read the facade's shared pin cell. Typed reset/step/render/shutdown/close, retained cancellation, remote run/session targets, and vector buffers with pre-I/O capacity checks are covered by live C gRPC tests.

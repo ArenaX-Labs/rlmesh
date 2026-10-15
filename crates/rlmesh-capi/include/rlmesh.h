@@ -1200,6 +1200,64 @@ RLMESH_API int64_t rlmesh_predict_seed(int64_t episode_seed, uint64_t predict_in
 
 #define RLMESH_EXT_MODEL_SERVE_OPTIONS_MIN_SIZE sizeof(RLMeshExtModelServeOptions)
 
+/* ---- Describe (facade) -------------------------------------------------- */
+typedef enum RLMeshDescribeKind {
+  RLMESH_DESCRIBE_KIND_INVALID = 0,
+  RLMESH_DESCRIBE_KIND_ENV = 1,
+  RLMESH_DESCRIBE_KIND_MODEL = 2
+} RLMeshDescribeKind;
+typedef struct RLMeshDescribeOptions {
+  size_t struct_size;
+  const char* generated_at;
+  RLMeshDescribeKind kind;
+  bool has_kind;
+  uint8_t _reserved[3];
+} RLMeshDescribeOptions;
+#define RLMESH_DESCRIBE_OPTIONS_MIN_SIZE sizeof(RLMeshDescribeOptions)
+#define RLMESH_DESCRIBE_OPTIONS_INIT \
+  {sizeof(RLMeshDescribeOptions), NULL, RLMESH_DESCRIBE_KIND_INVALID, false, {0, 0, 0}}
+typedef struct RLMeshDescribeJsonOptions {
+  size_t struct_size;
+  const char* generated_at;
+  const RLMeshEnv* const* served_env;
+  size_t served_env_len;
+  const RLMeshVectorEnv* served_vector_env;
+  const char* workflow_edition;
+  RLMeshDescribeKind kind;
+  bool has_kind;
+  uint8_t _reserved[3];
+} RLMeshDescribeJsonOptions;
+#define RLMESH_DESCRIBE_JSON_OPTIONS_MIN_SIZE sizeof(RLMeshDescribeJsonOptions)
+#define RLMESH_DESCRIBE_JSON_OPTIONS_INIT                             \
+  {sizeof(RLMeshDescribeJsonOptions), NULL,  NULL,     0, NULL, NULL, \
+   RLMESH_DESCRIBE_KIND_INVALID,      false, {0, 0, 0}}
+/* NULL options means INIT. Type forms call no vtable slot. Instance forms
+ * use the facade's static declarations and model spec/representative factory
+ * builds. The Value result is an owned Dict, JSON is owned RLMeshBytes.
+ * served_env NULL/0 = None; non-NULL/0 is an invalid empty list. At most one
+ * served form may be set. It replaces the default build and is never closed.
+ * workflow_edition NULL resolves/records refusal; "" explicitly declares none. */
+RLMESH_API RLMeshStatus rlmesh_model_vtable_describe(const RLMeshModelVtable*,
+                                                     const RLMeshDescribeOptions*,
+                                                     RLMeshValue** out);
+RLMESH_API RLMeshStatus rlmesh_model_vtable_describe_json(const RLMeshModelVtable*,
+                                                          const RLMeshDescribeJsonOptions*,
+                                                          RLMeshBytes* out);
+RLMESH_API RLMeshStatus rlmesh_model_describe(const RLMeshModel*, const RLMeshDescribeOptions*,
+                                              RLMeshValue** out);
+RLMESH_API RLMeshStatus rlmesh_model_describe_json(const RLMeshModel*,
+                                                   const RLMeshDescribeJsonOptions*,
+                                                   RLMeshBytes* out);
+RLMESH_API RLMeshStatus rlmesh_env_factory_describe(RLMeshEnvFactory*, const RLMeshDescribeOptions*,
+                                                    RLMeshValue** out);
+RLMESH_API RLMeshStatus rlmesh_env_factory_describe_json(RLMeshEnvFactory*,
+                                                         const RLMeshDescribeJsonOptions*,
+                                                         RLMeshBytes* out);
+/* Fenced served-env shorthand (COR-16): reads the server's resolved snapshot,
+ * including its host declaration, before/after start and shutdown. */
+RLMESH_API RLMeshStatus rlmesh_ext_env_server_describe_json(const RLMeshEnvServer*,
+                                                            RLMeshBytes* out);
+
 /* ---- Running: facade targets, observers and results ---------------------- */
 typedef struct RLMeshRunResult RLMeshRunResult;
 typedef struct RLMeshTelemetryRow RLMeshTelemetryRow;

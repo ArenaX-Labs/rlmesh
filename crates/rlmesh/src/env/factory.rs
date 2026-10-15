@@ -203,20 +203,7 @@ pub trait EnvFactoryExt: EnvFactory + sealed::Sealed {
     /// lanes), resolves the edition, publishes the describe envelope on the
     /// handshake, and serves in the foreground. The factory is not closed.
     fn serve(&mut self, address: &str, options: EnvFactoryServeOptions) -> Result<()> {
-        if tokio::task::try_id().is_some() {
-            return Err(Error::Runtime(
-                "EnvFactoryExt::serve() blocks; call serve_async() from async code".to_string(),
-            ));
-        }
-        let cancel = options.cancel.clone();
-        let server = prepare_serve(self, address, &options)?;
-        let watcher = cancel.map(|cancel| CancelWatcher::start(cancel, &server));
-        let result = server.serve();
-        let cancelled = watcher.is_some_and(|watcher| watcher.stop());
-        match result {
-            Ok(()) if cancelled => Err(Error::Cancelled),
-            other => other,
-        }
+        serve_host(self, address, options, &crate::describe::Host::rust())
     }
 
     /// The async twin of [`serve`](Self::serve): the pre-serve hooks run on
@@ -230,7 +217,7 @@ pub trait EnvFactoryExt: EnvFactory + sealed::Sealed {
     ) -> impl std::future::Future<Output = Result<()>> {
         async move {
             let cancel = options.cancel.clone();
-            let server = prepare_serve(self, address, &options)?;
+            let server = prepare_serve(self, address, &options, &crate::describe::Host::rust())?;
             let watcher = cancel.map(|cancel| CancelWatcher::start(cancel, &server));
             let result = server.serve_async().await;
             let cancelled = watcher.is_some_and(|watcher| watcher.stop());
@@ -244,11 +231,35 @@ pub trait EnvFactoryExt: EnvFactory + sealed::Sealed {
 
 impl<F: EnvFactory> EnvFactoryExt for F {}
 
+/// The in-repo bindings select their describing host without duplicating serve.
+pub(crate) fn serve_host<F: EnvFactory>(
+    factory: &mut F,
+    address: &str,
+    options: EnvFactoryServeOptions,
+    host: &crate::describe::Host,
+) -> Result<()> {
+    if tokio::task::try_id().is_some() {
+        return Err(Error::Runtime(
+            "EnvFactoryExt::serve() blocks; call serve_async() from async code".to_string(),
+        ));
+    }
+    let cancel = options.cancel.clone();
+    let server = prepare_serve(factory, address, &options, host)?;
+    let watcher = cancel.map(|cancel| CancelWatcher::start(cancel, &server));
+    let result = server.serve();
+    let cancelled = watcher.is_some_and(|watcher| watcher.stop());
+    match result {
+        Ok(()) if cancelled => Err(Error::Cancelled),
+        other => other,
+    }
+}
+
 /// Steps 0 to 5 of a factory serve: the built, bound server.
 fn prepare_serve<F: EnvFactory>(
     factory: &mut F,
     address: &str,
     options: &EnvFactoryServeOptions,
+    host: &crate::describe::Host,
 ) -> Result<EnvServer> {
     let started = Instant::now();
     if options
@@ -288,13 +299,14 @@ fn prepare_serve<F: EnvFactory>(
     // Step 5: the full describe envelope, read off the served env (its
     // default branch) and the resolved edition; best-effort.
     let describe_with = |factory: &mut F, served: crate::env::ServedEnv<'_>| {
-        crate::describe::describe_json(
-            factory,
+        crate::describe::envelope(
+            factory.into(),
             crate::describe::DescribeJsonOptions {
                 served_env: Some(served),
                 workflow_edition: Some(edition.clone().unwrap_or_default()),
                 ..Default::default()
             },
+            host,
         )
     };
     let server = if num_envs == 1 {

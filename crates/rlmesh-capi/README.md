@@ -61,6 +61,37 @@ the facade on this branch has no native DLPack import/export methods, and
 C does not expose them. C++ receives only compatibility changes for the new C
 value and tensor calls; its full parity API is a separate wave.
 
+## Describe
+
+`rlmesh_model_vtable_describe` / `_describe_json` describe static policy
+fields without constructing a Model or invoking any slot, including load and
+loaded_native_chunk. They use the same declaration checks as Model construction.
+`rlmesh_model_describe` / `_describe_json` describe an instance, keeping the
+static native_chunk and declarations while reading the model's current spec.
+`rlmesh_env_factory_describe` / `_describe_json` use the facade's representative
+branch builds, badges, discriminants and variant catalogs. Factory hooks are
+exclusive; each representative env is closed and freed before return.
+
+Use `RLMESH_DESCRIBE_OPTIONS_INIT` or `RLMESH_DESCRIBE_JSON_OPTIONS_INIT`;
+NULL means INIT. `has_kind` cross-checks ENV or MODEL, and generated_at is
+validated by the facade. Describe returns an owned Value dict; describe_json
+returns owned bytes. JSON options can borrow scalar lanes (only lane zero is
+read) or a native vector env in place of the default build. A present empty
+lane list, NULL lane, or both served forms fails with InvalidArgument. The
+borrowed env is never closed. An env leased by a server uses the shorthand below.
+
+C identity is `native:<id>` (UnknownEnv-v1 for a failed/unnamed default build)
+or `native:model`, with the C runtime and declared parameter order. Factory
+serving publishes that same native identity. A NULL workflow_edition resolves
+and records an edition refusal; a non-NULL value bypasses resolution and
+validation, including an explicit empty string.
+
+`rlmesh_ext_env_server_describe_json` (COR-16) reads the facade's cached
+served-env envelope with the server's resolved edition and host declaration,
+including when publication is disabled. It remains readable after start and
+shutdown, never rebuilds an env, and never re-resolves the edition. It adds no
+public Rust extra. `examples/c_describe.c` exercises the family and sizing rules.
+
 ## ABI 5 sizing and space names
 
 Every shared sized input uses its ABI-5 sizeof as MIN_SIZE: NULL options use
@@ -370,7 +401,8 @@ right after. Serve waits for a callback still in flight, such as a `step` the
 takes: a callback that never returns blocks serve. `close_timeout_ms` does not
 apply to an env.
 
-`rlmesh_env_describe_json` (C++: `EnvServer::describe_json()`) returns the env's
+The compatibility `rlmesh_ext_legacy_env_describe_json` (C++:
+`EnvServer::describe_json()`) returns the env's
 `rlmesh.describe.v1` envelope: the spaces, the tags, and the edition handshake,
 the same artifact `rlmesh describe` emits for a Python env. `rlmesh_env_bind`
 puts it on that endpoint's handshake too (each env bound in a process reports

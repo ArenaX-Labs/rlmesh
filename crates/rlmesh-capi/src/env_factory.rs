@@ -537,7 +537,7 @@ pub unsafe extern "C" fn rlmesh_env_factory_serve(
             },
         };
         let _drain = ServeDrain::new(Arc::clone(&f.data));
-        Factory.serve(&address, opts)?;
+        rlmesh::binding::env_factory_native_serve(&mut Factory, &address, opts)?;
         Ok(())
     })
 }
@@ -660,6 +660,9 @@ impl FactoryBorrow {
     }
     pub(crate) unsafe fn target_static(ptr: *mut Self) -> rlmesh::EnvTarget<'static> {
         rlmesh::EnvTarget::factory(unsafe { &mut (*ptr).factory })
+    }
+    pub(crate) fn describable(&mut self) -> rlmesh::Describable<'_> {
+        (&mut self.factory).into()
     }
     pub(crate) fn target(&mut self) -> rlmesh::EnvTarget<'_> {
         rlmesh::EnvTarget::factory(&mut self.factory)

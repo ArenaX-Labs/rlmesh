@@ -9,6 +9,7 @@ mod cancel;
 mod codec;
 mod contract;
 mod describe;
+mod describe_api;
 mod env;
 mod env_api;
 mod env_factory;

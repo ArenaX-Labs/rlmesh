@@ -462,7 +462,7 @@ pub struct RLMeshModel {
 pub(crate) fn require<'a>(ptr: *const RLMeshModel) -> Result<&'a RLMeshModel, CapiError> {
     unsafe { ptr.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null model"))
 }
-unsafe fn declaration(vt: RLMeshModelVtable) -> Result<PolicyDecl, CapiError> {
+pub(crate) unsafe fn declaration(vt: RLMeshModelVtable) -> Result<PolicyDecl, CapiError> {
     let bits = u32::from(vt.predict.is_some())
         | u32::from(vt.predict_chunk.is_some()) << 1
         | u32::from(vt.predict_batch.is_some()) << 2
