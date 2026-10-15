@@ -211,6 +211,17 @@ pub async fn remote_vector_env_with_token_async(
     crate::run::drive::in_library(crate::RemoteVectorEnv::new_in(options, token)).await
 }
 
+/// A [`RemoteModel`](crate::RemoteModel) whose sessions send `token` on
+/// every model request (RMT-5). `""` sends none; a token a header cannot
+/// carry is the ValueError class here, before any dial. No I/O.
+pub fn remote_model_with_token(
+    options: crate::RemoteModelOptions,
+    token: &str,
+) -> Result<crate::RemoteModel> {
+    crate::env::client::check_token(token)?;
+    crate::RemoteModel::with_token(options, token.to_string())
+}
+
 /// Partial reset (RMT-14): reset the listed lanes (an empty slice resets
 /// all of them; a per-lane seed list aligns with `env_indices`) and return
 /// the batched observation of every lane and the info with every lane's

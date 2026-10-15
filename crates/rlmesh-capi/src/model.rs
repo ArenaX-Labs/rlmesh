@@ -2128,7 +2128,7 @@ mod tests {
             let env_contract = SmokeEnv::new(Arc::new(std::sync::Mutex::new(ResetLog::default())))
                 .env_contract
                 .clone();
-            let mut remote = rlmesh::RemoteModel::connect(&address, env_contract)
+            let mut remote = rlmesh::binding::model::ModelClient::connect(&address, env_contract)
                 .await
                 .expect("remote model");
             remote.reset(None);
@@ -2228,9 +2228,10 @@ mod tests {
                     SmokeEnv::new(Arc::new(std::sync::Mutex::new(ResetLog::default())))
                         .env_contract
                         .clone();
-                let mut remote = rlmesh::RemoteModel::connect(&client_address, env_contract)
-                    .await
-                    .expect("remote model");
+                let mut remote =
+                    rlmesh::binding::model::ModelClient::connect(&client_address, env_contract)
+                        .await
+                        .expect("remote model");
                 remote.reset(None);
                 // The server goes away mid-call, so the predict itself may fail.
                 let _ = remote.predict(u8_box(3)).await;

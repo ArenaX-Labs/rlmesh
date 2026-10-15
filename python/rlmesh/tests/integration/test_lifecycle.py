@@ -702,7 +702,9 @@ def test_client_constructor_default_timeout_applies() -> None:
         client = PyEnvClient(server.address, request_timeout_seconds=0.2)
         try:
             client.reset()
-            with pytest.raises(TimeoutError, match=r"^operation timed out after 200ms$"):
+            with pytest.raises(
+                TimeoutError, match=r"^operation timed out after 200ms$"
+            ):
                 client.step(0)
         finally:
             client.close()

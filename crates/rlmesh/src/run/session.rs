@@ -21,8 +21,10 @@ use super::options::{check_caps, check_horizon, episode_budget};
 use super::results::{EpisodeResult, RunResult, StepEvent, TelemetryRow};
 use super::targets::{EnvKind, EnvTarget, ErasedFactory};
 use super::{RunContext, RunHooks, SessionOptions, SessionRunOptions};
+use crate::RemoteModel;
 use crate::binding::env::{CoreConnect, EnvClientCore};
 use crate::binding::model::{EpisodeInfo, HistoryFrame, ModelObservation, ModelRouteContext};
+use crate::binding::model::{ModelClient, ModelConnect};
 use crate::env::client::Lendable;
 use crate::model::engine::AdaptedModelHandler;
 use crate::model::handler::{ModelHandler, PredictFrames, ResolveOptions};
@@ -126,6 +128,8 @@ struct LocalModel {
 
 enum ModelPort {
     Local(Box<LocalModel>),
+    /// A served model's per-env client, dialed at session creation.
+    Remote(Box<ModelClient>),
     Random(Option<Space>),
 }
 
@@ -222,7 +226,7 @@ impl Core {
     fn check_model_open(&self) -> Result<()> {
         match &self.model {
             ModelPort::Local(model) => model.shared.admit(),
-            ModelPort::Random(_) => Ok(()),
+            ModelPort::Remote(_) | ModelPort::Random(_) => Ok(()),
         }
     }
 
@@ -286,6 +290,16 @@ impl Core {
         let observation = contract.observation_space().wire().clone();
         let action = contract.action_space().wire().clone();
         match &mut self.model {
+            // The env leg runs at the three-way floor the model leg settled
+            // on: pin it before the first reset (RMT-20).
+            ModelPort::Remote(model) => {
+                if let EnvPort::Remote {
+                    client: Some(core), ..
+                } = &mut self.env
+                {
+                    core.pin_workflow_edition(model.selected_workflow_edition());
+                }
+            }
             ModelPort::Random(space) => {
                 *space = Some(
                     action_space.unwrap_or_else(|| Space::new(contract.action_space().clone())),
@@ -472,6 +486,7 @@ impl Core {
                 }
             }
             ModelPort::Random(None) => {}
+            ModelPort::Remote(model) => model.reset(seed),
             ModelPort::Local(model) => {
                 model.replay.clear();
                 model.history.clear();
@@ -502,6 +517,14 @@ impl Core {
                     telemetry.record("model.predict", "model", ms_since(started));
                 }
                 return Ok(action);
+            }
+            ModelPort::Remote(model) => {
+                let lane = space_codec::value_to_space(&connected.observation, &observation)?;
+                let action = cancellable(&self.cancel, model.predict(lane)).await?;
+                if let Some(telemetry) = &mut self.telemetry {
+                    telemetry.record("model.predict", "model", ms_since(started));
+                }
+                return Ok(space_codec::value_from_space(&connected.action, action));
             }
             ModelPort::Local(model) => model,
         };
@@ -738,6 +761,10 @@ impl Core {
     }
 
     async fn selected_workflow_edition(&mut self) -> Result<String> {
+        // A served model's session runs at the floor settled at creation.
+        if let ModelPort::Remote(model) = &self.model {
+            return Ok(model.selected_workflow_edition().to_string());
+        }
         self.ensure_connected().await?;
         match &self.env {
             EnvPort::Remote {
@@ -757,6 +784,11 @@ impl Core {
     /// error wins; every step runs.
     async fn release(&mut self, close_env: bool) -> Result<()> {
         let mut first: Result<()> = self.end_episode().await;
+        // A served model's route closes with the session (its last episode
+        // end flushes first).
+        if let ModelPort::Remote(model) = &mut self.model {
+            first = first.and(model.close().await);
+        }
         if let ModelPort::Local(model) = &mut self.model
             && self.connected.is_some()
             && let Some(route_setup) = model.handler.route_setup()
@@ -998,6 +1030,193 @@ impl<'a> Session<'a> {
             close_env,
             closed: false,
             cancel: cancel.unwrap_or_default(),
+            _model: PhantomData,
+        })
+    }
+
+    /// Bind a served model to `env` and dial it (RMT-P1, RMT-P7, RMT-P12,
+    /// RMT-P13): options and the target's kind and arity are checked before
+    /// anything dials; an address is dialed before the model and closed again
+    /// if the model dial fails.
+    pub(crate) async fn create_remote(
+        model: &'a RemoteModel,
+        env: EnvTarget<'a>,
+        options: SessionOptions,
+    ) -> Result<Session<'a>> {
+        let SessionOptions {
+            close_env,
+            trust_entrypoints,
+            execution_horizon,
+            workflow_edition,
+            cancel,
+        } = options;
+        if trust_entrypoints.is_some() {
+            return Err(Error::invalid_argument(
+                "trust_entrypoints= applies to local model sources; it is not supported for \
+                 RemoteModel sessions",
+            ));
+        }
+        check_horizon(execution_horizon, None)?;
+        let edition = crate::editions::resolve_native(
+            crate::editions::EditionSources {
+                call: workflow_edition.as_deref(),
+                option: None,
+                declared: None,
+            },
+            false,
+        )?;
+        let single_lane = |num_envs: u64| -> Result<()> {
+            if num_envs > 1 {
+                return Err(Error::invalid_argument(format!(
+                    "RemoteModel drives a single env, but the env contract reports \
+                     num_envs={num_envs}; use num_envs=1 (this client sends one observation \
+                     per predict on lane 0)"
+                )));
+            }
+            Ok(())
+        };
+        let cancel = cancel.unwrap_or_default();
+        if cancel.take() {
+            return Err(Error::Cancelled);
+        }
+        // What the session's env is, and the contract and offer the model is
+        // bound with.
+        let mut lent = None;
+        let mut server = None;
+        let (env_port, contract, env_offer) = match env.0 {
+            EnvKind::Env(_) | EnvKind::Vector(_) | EnvKind::Factory(_) => {
+                return Err(Error::Type(
+                    "a served model runs against an env client exposing `env_contract` \
+                     (RemoteEnv, an EnvServer, or an address to dial); got a local env"
+                        .to_string(),
+                ));
+            }
+            EnvKind::Server(served) => {
+                let contract = served.env_contract();
+                single_lane(contract.num_envs())?;
+                server = Some(served);
+                (
+                    EnvPort::Remote {
+                        address: served.address().to_string(),
+                        token: served.token().unwrap_or_default().to_string(),
+                        client: None,
+                        borrowed: false,
+                    },
+                    contract.to_wire()?,
+                    None,
+                )
+            }
+            EnvKind::Remote(handle) => {
+                let core = handle.lend()?;
+                if let Err(err) = single_lane(core.num_envs() as u64) {
+                    handle.give_back(core);
+                    return Err(err);
+                }
+                let contract = core.env_contract().clone();
+                let offer = core.session_offer().clone();
+                lent = Some(handle);
+                (
+                    EnvPort::Remote {
+                        address: core.address().to_string(),
+                        token: String::new(),
+                        client: Some(core),
+                        borrowed: true,
+                    },
+                    contract,
+                    Some(offer),
+                )
+            }
+            EnvKind::Address(address) => {
+                let mut core = EnvClientCore::connect_with(
+                    &address,
+                    CoreConnect {
+                        declared: edition.as_deref(),
+                        ..CoreConnect::default()
+                    },
+                )
+                .await?;
+                if let Err(err) = core.require_single() {
+                    let _ = core.close().await;
+                    return Err(err);
+                }
+                let contract = core.env_contract().clone();
+                let offer = core.session_offer().clone();
+                (
+                    EnvPort::Remote {
+                        address,
+                        token: String::new(),
+                        client: Some(Box::new(core)),
+                        borrowed: false,
+                    },
+                    contract,
+                    Some(offer),
+                )
+            }
+        };
+        let dialed = ModelClient::connect_with(
+            model.address(),
+            contract,
+            ModelConnect {
+                token: model.token(),
+                env_offer,
+                declared: edition.as_deref(),
+                connect_timeout: model.connect_timeout(),
+                request_timeout: model.request_timeout(),
+            },
+        )
+        .await;
+        // A cancel fired during the uncancellable dial fails this call once
+        // it returns (RMT-6).
+        let dialed = match dialed {
+            Ok(_) if cancel.take() => Err(Error::Cancelled),
+            other => other,
+        };
+        let mut env_port = env_port;
+        let mut client = match dialed {
+            Ok(client) => client,
+            Err(err) => {
+                // Release what this call took: a lent core goes back, a
+                // dialed one closes (RMT-P7).
+                if let EnvPort::Remote {
+                    client, borrowed, ..
+                } = &mut env_port
+                    && let Some(mut core) = client.take()
+                {
+                    match lent.as_mut() {
+                        Some(handle) if *borrowed => handle.give_back(core),
+                        _ => {
+                            if let Err(close) = core.close().await {
+                                tracing::warn!(
+                                    "closing the env a failed session dialed failed: {close}"
+                                );
+                            }
+                        }
+                    }
+                }
+                return Err(err);
+            }
+        };
+        client.set_execution_horizon(execution_horizon);
+        let (port, queue) = caller_channel();
+        Ok(Session {
+            core: Core {
+                model: ModelPort::Remote(Box::new(client)),
+                env: env_port,
+                port,
+                context: LibraryContext::new(),
+                edition,
+                connected: None,
+                episode: Episode::default(),
+                telemetry: None,
+                cancel: CancellationToken::new(),
+            },
+            env: CallerEnv::None,
+            queue,
+            server,
+            lent,
+            close_env,
+            closed: false,
+            cancel,
             _model: PhantomData,
         })
     }

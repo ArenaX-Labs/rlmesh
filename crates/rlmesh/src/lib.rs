@@ -166,8 +166,8 @@ pub use error::{
     ModelErrorCode, Result,
 };
 pub use model::{
-    Corners, Model, ModelOptions, ModelServeOptions, NO_ADAPTER, Policy, RemoteModel, WithContext,
-    predict_seed, with_context,
+    Corners, Model, ModelOptions, ModelServeOptions, NO_ADAPTER, Policy, RemoteModel,
+    RemoteModelOptions, WithContext, predict_seed, with_context,
 };
 #[doc(no_inline)]
 pub use rlmesh_runtime::ENV_RESET_OPTIONS_KEY;

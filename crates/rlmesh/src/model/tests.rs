@@ -1524,7 +1524,7 @@ async fn a_declared_edition_no_peer_can_run_is_refused_at_the_session_floor() {
     .unwrap();
     let (port, server) = spawn_bound_server(bound);
 
-    let connect = crate::RemoteModel::connect(
+    let connect = crate::binding::model::ModelClient::connect(
         &format!("tcp://127.0.0.1:{port}"),
         SmokeEnv::new().env_contract,
     )
@@ -1577,7 +1577,7 @@ async fn remote_model_connects_resets_and_predicts() {
 
     let address = format!("tcp://127.0.0.1:{port}");
     let env_contract = SmokeEnv::new().env_contract;
-    let mut model = crate::RemoteModel::connect(&address, env_contract)
+    let mut model = crate::binding::model::ModelClient::connect(&address, env_contract)
         .await
         .expect("model server did not start");
 
@@ -1666,9 +1666,10 @@ async fn remote_reset_emits_reset_adapter() {
     let (port, server) = spawn_bound_server(bound);
 
     let address = format!("tcp://127.0.0.1:{port}");
-    let mut model = crate::RemoteModel::connect(&address, SmokeEnv::new().env_contract)
-        .await
-        .expect("model server did not start");
+    let mut model =
+        crate::binding::model::ModelClient::connect(&address, SmokeEnv::new().env_contract)
+            .await
+            .expect("model server did not start");
     let observe = || {
         spaces::SpaceValue::Box(
             spaces::Tensor::from_vec(vec![5u8], vec![1], spaces::DType::Uint8).unwrap(),
@@ -1728,7 +1729,7 @@ async fn remote_model_reconciles_three_way_floor_and_pins_route() {
     let address = format!("tcp://127.0.0.1:{port}");
     // An env that offers exactly this build's edition.
     let env_offer = rlmesh_proto::SessionOffer::new(&[rlmesh_proto::CURRENT_WORKFLOW_EDITION]);
-    let mut model = crate::RemoteModel::connect_with_env_offer(
+    let mut model = crate::binding::model::ModelClient::connect_with_env_offer(
         &address,
         "",
         SmokeEnv::new().env_contract,
@@ -1789,7 +1790,7 @@ async fn remote_model_fails_fast_when_no_mutual_edition() {
     let address = format!("tcp://127.0.0.1:{port}");
     // The env offers only a future edition no peer here implements.
     let env_offer = rlmesh_proto::SessionOffer::new(&["2099.01"]);
-    let message = match crate::RemoteModel::connect_with_env_offer(
+    let message = match crate::binding::model::ModelClient::connect_with_env_offer(
         &address,
         "",
         SmokeEnv::new().env_contract,
@@ -1831,9 +1832,10 @@ async fn remote_model_predict_requires_reset() {
     let (port, server) = spawn_bound_server(bound);
 
     let address = format!("tcp://127.0.0.1:{port}");
-    let mut model = crate::RemoteModel::connect(&address, SmokeEnv::new().env_contract)
-        .await
-        .unwrap();
+    let mut model =
+        crate::binding::model::ModelClient::connect(&address, SmokeEnv::new().env_contract)
+            .await
+            .unwrap();
 
     let err = model
         .predict(spaces::SpaceValue::Box(
@@ -1900,12 +1902,14 @@ async fn two_remote_models_in_one_process_use_distinct_env_keys() {
         )
     };
 
-    let mut first = crate::RemoteModel::connect(&address, SmokeEnv::new().env_contract)
-        .await
-        .unwrap();
-    let mut second = crate::RemoteModel::connect(&address, SmokeEnv::new().env_contract)
-        .await
-        .unwrap();
+    let mut first =
+        crate::binding::model::ModelClient::connect(&address, SmokeEnv::new().env_contract)
+            .await
+            .unwrap();
+    let mut second =
+        crate::binding::model::ModelClient::connect(&address, SmokeEnv::new().env_contract)
+            .await
+            .unwrap();
 
     first.reset(None);
     first.predict(observe()).await.unwrap();
@@ -2602,7 +2606,7 @@ async fn model_server_refuses_compressed_requests_before_auth() {
     assert_eq!(status.code(), tonic::Code::Unauthenticated, "{status:?}");
 
     // The RLMesh client (uncompressed requests) works end to end.
-    let mut model = crate::RemoteModel::connect_with_token(
+    let mut model = crate::binding::model::ModelClient::connect_with_token(
         &format!("tcp://127.0.0.1:{port}"),
         "route-token",
         SmokeEnv::new().env_contract,
@@ -2692,7 +2696,7 @@ async fn model_endpoint_environment_token_is_enforced() {
     }
     assert_eq!(predicts.load(Ordering::SeqCst), 0);
 
-    let mut model = crate::RemoteModel::connect_with_token(
+    let mut model = crate::binding::model::ModelClient::connect_with_token(
         &address,
         "deployment-token",
         SmokeEnv::new().env_contract,
@@ -2901,9 +2905,10 @@ async fn probe_history_offer(capabilities: &[&str]) -> (Option<bool>, Vec<usize>
             .unwrap()
     });
 
-    let mut model = crate::RemoteModel::connect(&address, SmokeEnv::new().env_contract)
-        .await
-        .unwrap();
+    let mut model =
+        crate::binding::model::ModelClient::connect(&address, SmokeEnv::new().env_contract)
+            .await
+            .unwrap();
     model.set_execution_horizon(2);
     model.reset(None);
     let observe = || {
@@ -2977,7 +2982,7 @@ async fn served_legs_learn_this_builds_ceilings() {
     .await
     .unwrap();
     let (port, model_server) = spawn_bound_server(bound);
-    let model = crate::RemoteModel::connect(
+    let model = crate::binding::model::ModelClient::connect(
         &format!("tcp://127.0.0.1:{port}"),
         SmokeEnv::new().env_contract,
     )

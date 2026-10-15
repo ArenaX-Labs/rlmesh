@@ -24,17 +24,25 @@ impl fmt::Display for RandomSample {
 }
 
 /// The model argument of [`run`](crate::run) and [`session`](crate::session):
-/// a borrowed [`Model`] or [`RANDOM_SAMPLE`].
+/// a borrowed [`Model`], a borrowed [`RemoteModel`](crate::RemoteModel) or
+/// [`RANDOM_SAMPLE`].
 pub struct ModelTarget<'a>(pub(crate) ModelKind<'a>);
 
 pub(crate) enum ModelKind<'a> {
     Model(&'a Model),
+    Remote(&'a crate::RemoteModel),
     Random,
 }
 
 impl<'a> From<&'a Model> for ModelTarget<'a> {
     fn from(model: &'a Model) -> Self {
         ModelTarget(ModelKind::Model(model))
+    }
+}
+
+impl<'a> From<&'a crate::RemoteModel> for ModelTarget<'a> {
+    fn from(model: &'a crate::RemoteModel) -> Self {
+        ModelTarget(ModelKind::Remote(model))
     }
 }
 
@@ -48,6 +56,7 @@ impl fmt::Debug for ModelTarget<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.0 {
             ModelKind::Model(model) => f.debug_tuple("ModelTarget").field(model).finish(),
+            ModelKind::Remote(model) => f.debug_tuple("ModelTarget").field(model).finish(),
             ModelKind::Random => f.write_str("ModelTarget(RANDOM_SAMPLE)"),
         }
     }

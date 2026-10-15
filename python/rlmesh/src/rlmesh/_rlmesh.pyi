@@ -74,6 +74,7 @@ __all__ = [
     "adapters_spec_normalize",
     "box_space_spec",
     "build_info",
+    "check_remote_model_options",
     "current_workflow_edition",
     "describe_envelope_normalize",
     "dict_space_spec",
@@ -708,6 +709,13 @@ def build_info() -> BuildInfo:
     r"""
     This build's identity: the package version, the protocol generation, and
     the workflow edition it advertises with the cohort behind that spelling.
+    """
+
+def check_remote_model_options(address: builtins.str, *, connect_timeout_seconds: typing.Optional[builtins.float] = None, request_timeout_seconds: typing.Optional[builtins.float] = None) -> None:
+    r"""
+    Check a `RemoteModel`'s address and timeouts as the native constructor
+    does (RMT-P6): an address that does not parse (`invalid address: ...`)
+    or a negative or non-finite timeout is ValueError. No I/O.
     """
 
 def current_workflow_edition() -> builtins.str:

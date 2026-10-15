@@ -82,8 +82,9 @@ impl Model {
 }
 
 /// Drive `model` against `env` to completion: Python's `rlmesh.run`. A
-/// [`Model`] runs on the native loop ([`Model::run`]); [`RANDOM_SAMPLE`]
-/// runs through a session it opens and closes.
+/// [`Model`] runs on the native loop ([`Model::run`]); a
+/// [`RemoteModel`](crate::RemoteModel) and [`RANDOM_SAMPLE`] run through a
+/// session it opens and closes.
 pub fn run<'a>(
     model: impl Into<ModelTarget<'a>>,
     env: impl Into<EnvTarget<'a>>,
@@ -91,9 +92,18 @@ pub fn run<'a>(
 ) -> Result<RunResult> {
     match model.into().0 {
         ModelKind::Model(model) => model.run(env, options),
+        ModelKind::Remote(model) => {
+            drive::refuse_in_async_context("run")?;
+            drive::run_sync(run_session_loop(
+                Some(model),
+                env.into(),
+                options,
+                Mode::Sync,
+            ))
+        }
         ModelKind::Random => {
             drive::refuse_in_async_context("run")?;
-            drive::run_sync(run_session_loop(env.into(), options, Mode::Sync))
+            drive::run_sync(run_session_loop(None, env.into(), options, Mode::Sync))
         }
     }
 }
@@ -106,13 +116,17 @@ pub async fn run_async<'a>(
 ) -> Result<RunResult> {
     match model.into().0 {
         ModelKind::Model(model) => model.run_async(env, options).await,
-        ModelKind::Random => run_session_loop(env.into(), options, Mode::Async).await,
+        ModelKind::Remote(model) => {
+            run_session_loop(Some(model), env.into(), options, Mode::Async).await
+        }
+        ModelKind::Random => run_session_loop(None, env.into(), options, Mode::Async).await,
     }
 }
 
 /// `rlmesh.run` on the session loop: validate, open, run, close.
-async fn run_session_loop(
-    env: EnvTarget<'_>,
+async fn run_session_loop<'a>(
+    remote: Option<&'a crate::RemoteModel>,
+    env: EnvTarget<'a>,
     options: RunOptions<'_>,
     mode: Mode,
 ) -> Result<RunResult> {
@@ -140,17 +154,20 @@ async fn run_session_loop(
     // RUN-P6: what the options alone decide, before the session dials.
     options::episode_budget(episodes, seeds.as_deref())?;
     options::check_caps(max_episode_steps, max_episode)?;
-    let mut session = Session::create(
-        None,
-        env,
-        SessionOptions {
-            close_env,
-            trust_entrypoints,
-            execution_horizon,
-            workflow_edition,
-            cancel: None,
+    let session_options = SessionOptions {
+        close_env,
+        trust_entrypoints,
+        execution_horizon,
+        workflow_edition,
+        cancel: None,
+    };
+    let mut session = match remote {
+        Some(model) => match mode {
+            Mode::Sync => model.session(env, session_options)?,
+            Mode::Async => model.session_async(env, session_options).await?,
         },
-    )?;
+        None => Session::create(None, env, session_options)?,
+    };
     let run_options = SessionRunOptions {
         episodes,
         seeds,
@@ -185,6 +202,7 @@ pub fn session<'a>(
 ) -> Result<Session<'a>> {
     match model.into().0 {
         ModelKind::Model(model) => model.session(env, options),
+        ModelKind::Remote(model) => model.session(env, options),
         ModelKind::Random => Session::create(None, env.into(), options),
     }
 }
@@ -195,5 +213,9 @@ pub async fn session_async<'a>(
     env: impl Into<EnvTarget<'a>>,
     options: SessionOptions,
 ) -> Result<Session<'a>> {
-    session(model, env, options)
+    match model.into().0 {
+        ModelKind::Remote(model) => model.session_async(env, options).await,
+        ModelKind::Model(model) => model.session(env, options),
+        ModelKind::Random => Session::create(None, env.into(), options),
+    }
 }

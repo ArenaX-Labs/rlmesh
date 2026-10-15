@@ -63,6 +63,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 - `ServeOptions(compress_responses=True)` has an env server compress its responses (zstd, else gzip) for clients that accept it; every RLMesh client now accepts compressed responses. Compression is responses-only: RLMesh clients never compress requests, and servers refuse a compressed request (`UNIMPLEMENTED`) before reading it, so a peer without the endpoint token cannot make a server decompress one. It is off by default: on loopback a ~200 KB rendered-image observation shrinks to ~1.4 KB on the wire but the step takes as long, so it only pays on a slow link with compressible observations.
 - The Rust crate's `RemoteEnv` and `RemoteVectorEnv` take Python's constructor keywords as `RemoteEnvOptions` (`address`, `host`, `port`, `path`, `transport`, `connect_timeout`, `request_timeout`, `workflow_edition`; a zero timeout is no timeout) and connect at `new`, with Python's Gymnasium calls: `reset(seed, options)`, `step(action)`, `render(env_index)` decoding the frame to a uint8 tensor, `close()` (bounded, detaching on a lost peer, idempotent) and `shutdown(reason)`, each with an `_async` twin that runs on any executor. Spaces are built once per client, `info` carries `episode_ids` and `completed_episodes`, I/O after `close` is the `RuntimeError` class, `cancel_handle()` cancels a call, and dropping an unclosed client closes it. A session or run takes `&mut RemoteEnv` / `&mut RemoteVectorEnv` as its env. Endpoint tokens and partial resets are Rust-only extras (`ext::remote_env_with_token`, `ext::reset_lanes`).
+- The Rust crate's `RemoteModel` is Python's env-agnostic handle: `RemoteModel::new(RemoteModelOptions)` checks the address and timeouts without I/O (clones share it), and `session(env, SessionOptions)` / `session_async` dial the model and bind it to an address, an `EnvServer` or a borrowed `RemoteEnv`, pinning the env to the session's edition floor. `rlmesh::run` and `rlmesh::session` take `&RemoteModel` as their model and drive it on the session loop. `ext::remote_model_with_token` is the Rust-only token form.
 
 ### Fixed
 
@@ -121,6 +122,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - The `env_id` and `selected_workflow_edition` of a `RemoteEnv` or `RemoteVectorEnv`, and `RemoteVectorEnv.num_envs`, answer while another thread is inside a call on the same client; before, they raised `RuntimeError: Already borrowed`.
 - `render(env_index=...)` above `2**32 - 1` raises `ValueError` before any request; before, the index was truncated and another lane was rendered.
 - A `reset`, `step` or `render` that outlives its `request_timeout_seconds` always raises `TimeoutError`: a reply that arrives at or after the deadline is discarded, and the deadline sent to the server is rounded up to whole milliseconds. Before, a reply landing within the client's 100 ms check interval past the deadline was returned, and a server-side expiry could surface as `TimeoutError("[TIMEOUT] env.step timed out after ...")`.
+- `RemoteModel(...)` raises `ValueError` for an address that does not parse or a negative or non-finite timeout, as `RemoteEnv` does; before, the handle was built and every `session()` raised it, for an address target after its env had been dialed.
+- A `RemoteModel.session(address)` whose model dial or handshake fails closes the env connection it dialed before raising, instead of leaving it to the garbage collector.
+- `RemoteModel.session(env, workflow_edition=...)` declares that edition on the env connection it dials for an address or an `EnvServer`, as its docstring says, ahead of `RLMESH_WORKFLOW_EDITION` and the project; before, the dialed env resolved its own declaration and could be refused although the call named an edition it runs.
+- Ctrl-C during a served model's `predict` or route close (a `RemoteModel` session) raises `KeyboardInterrupt` promptly, as it does during an env call, instead of after the request returns.
 
 ### Changed
 
@@ -227,6 +232,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - Calling `reset`, `step`, `render` or `shutdown` on a `RemoteEnv` or `RemoteVectorEnv` after `close()` (or after an accepted `shutdown()`) raises `RuntimeError("RemoteEnv is closed")` (`RemoteVectorEnv is closed`) instead of `ConnectionError("not connected")`; `close()` stays idempotent and the accessors keep working.
 - A render frame that does not decode raises `ProtocolException` (a `RuntimeError` subclass) instead of builtin `RuntimeError`.
 - A remote env client's timeouts read `operation timed out after 5s` (the `Duration` of the bound) instead of `remote environment call timed out after 5.000s` / `remote environment connect timed out after 5.000s`.
+- `RemoteModel.session` over a multi-lane target (a `RemoteVectorEnv`, or an `EnvServer` whose contract reports `num_envs > 1`) raises `ValueError` instead of `RuntimeError`, with the same text and still before the model is dialed.
+- A served model's timeouts read `operation timed out after 5s` instead of `remote model connect timed out after 5.000s` / `remote model request timed out after 5.000s`.
 
 ## [0.1.0] - 2026-09-23
 

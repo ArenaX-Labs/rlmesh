@@ -195,13 +195,63 @@ def test_remote_model_timeouts_pass_through_to_native(
         captured.update(kwargs)
         raise _DialAbortedError
 
-    monkeypatch.setattr(load_native_mod, "load_native", lambda name: fake_client)
-
     model = RemoteModel(
         "127.0.0.1:5556", connect_timeout_seconds=1.5, request_timeout_seconds=2.5
     )
+    monkeypatch.setattr(load_native_mod, "load_native", lambda name: fake_client)
     env = SimpleNamespace(env_contract=object())
     with pytest.raises(_DialAbortedError):
         model.session(cast("Any", env))
     assert captured["connect_timeout_seconds"] == 1.5
     assert captured["request_timeout_seconds"] == 2.5
+
+
+def test_remote_model_checks_its_address_and_timeouts_at_construction() -> None:
+    # RMT-P6: no session() needed to learn the handle is unusable.
+    from rlmesh._native import RemoteModel
+
+    with pytest.raises(ValueError, match=r"^invalid address: "):
+        RemoteModel("bogus://x")
+    with pytest.raises(ValueError, match="connect_timeout_seconds"):
+        RemoteModel("127.0.0.1:5556", connect_timeout_seconds=-1.0)
+    with pytest.raises(ValueError, match="request_timeout_seconds"):
+        RemoteModel("127.0.0.1:5556", request_timeout_seconds=float("nan"))
+    assert RemoteModel("127.0.0.1:5556", connect_timeout_seconds=0.0).address == (
+        "127.0.0.1:5556"
+    )
+
+
+def test_a_failed_remote_model_session_closes_the_env_it_dialed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # RMT-P7 / RMT-P12: the address target is dialed with the call's edition,
+    # and closed again when the model dial fails.
+    import rlmesh._load_native as load_native_mod
+    import rlmesh._native as native_mod
+
+    dialed: list[Any] = []
+
+    class _FakeEnv:
+        env_contract = SimpleNamespace(num_envs=1)
+
+        def __init__(self, address: str, *, workflow_edition: str | None) -> None:
+            self.address = address
+            self.workflow_edition = workflow_edition
+            self.closed = False
+            dialed.append(self)
+
+        def close(self) -> None:
+            self.closed = True
+
+    model = native_mod.RemoteModel("127.0.0.1:5556")
+    monkeypatch.setattr(native_mod, "RemoteEnv", _FakeEnv)
+
+    def refuse(*args: Any, **kwargs: Any) -> Any:
+        raise ConnectionError("could not connect to a model")
+
+    monkeypatch.setattr(load_native_mod, "load_native", lambda name: refuse)
+    with pytest.raises(ConnectionError):
+        model.session("tcp://127.0.0.1:5555", workflow_edition="2026.06")
+    assert len(dialed) == 1
+    assert dialed[0].workflow_edition == "2026.06"
+    assert dialed[0].closed is True
