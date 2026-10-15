@@ -30,3 +30,13 @@ def test_adapter_function_and_plumbing_labels() -> None:
     assert members["serve_route"]["stability"] == "Internal"
     assert members["transform_obs_value"]["stability"] == "Bridge"
     assert members["transform_action_value"]["stability"] == "Bridge"
+
+
+def test_recording_types_are_stable_with_internal_helpers() -> None:
+    contract = collect_python_api_surface().to_contract()
+    assert contract["rlmesh"]["objects"]["FrameSources"]["stability"] == "Stable"
+    objects = contract["rlmesh.recorder"]["objects"]
+    for name in ("SCHEMA", "MediaRef", "EpisodeRecord", "WorkloadRecord", "Recorder"):
+        assert objects[name]["stability"] == "Stable"
+    assert objects["ResultSet"]["stability"] == "Internal"
+    assert objects["EpisodeRecord"]["members"]["from_result"]["stability"] == "Internal"

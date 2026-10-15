@@ -1727,3 +1727,193 @@ fn cancellation_wins_over_a_failed_env_dial_too() {
     peer.join().unwrap();
     assert_eq!(result.unwrap_err(), crate::Error::Cancelled);
 }
+
+struct ViewedSteps(Steps);
+impl Env for ViewedSteps {
+    fn observation_space(&self) -> Space {
+        self.0.observation_space()
+    }
+    fn action_space(&self) -> Space {
+        self.0.action_space()
+    }
+    fn reset(
+        &mut self,
+        seed: Option<i64>,
+        options: Option<&InfoDict>,
+    ) -> Result<(Value, InfoDict)> {
+        self.0.reset(seed, options)
+    }
+    fn step(&mut self, action: Option<Value>) -> Result<(Value, f64, bool, bool, InfoDict)> {
+        self.0.step(action)
+    }
+    fn render_mode(&self) -> Option<String> {
+        Some("rgb_array".into())
+    }
+    fn render(&mut self) -> Result<Option<Value>> {
+        Ok(Some(Value::Tensor(crate::Tensor::new(
+            &[128; 48],
+            &[4, 4, 3],
+            crate::DType::Uint8,
+        )?)))
+    }
+}
+fn http_view() -> crate::View {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    crate::View {
+        backend: crate::ViewBackend::Http,
+        port: listener.local_addr().unwrap().port(),
+        ..Default::default()
+    }
+}
+fn viewer_request(port: u16, route: &str) -> String {
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    write!(
+        stream,
+        "GET {route} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+    )
+    .unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    response
+}
+#[test]
+fn native_run_refuses_view_and_session_validates_before_env_use() {
+    let model = ones();
+    let mut env = ViewedSteps(Steps::new());
+    let err = model
+        .run(
+            &mut env,
+            RunOptions {
+                view: Some(crate::View::default()),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+    assert_eq!(err.class(), ErrorClass::TypeError);
+    assert!(env.0.resets.lock().unwrap().is_empty());
+    let err = model
+        .session(
+            &mut env,
+            SessionOptions {
+                view: Some(crate::View {
+                    fps: 0,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+    assert_eq!(err.class(), ErrorClass::ValueError);
+}
+#[test]
+fn viewer_skip_truncates_and_quit_returns_a_partial_success() {
+    let view = http_view();
+    let port = view.port;
+    let mut env = ViewedSteps(Steps::new());
+    let model = ones();
+    let mut session = model
+        .session(
+            &mut env,
+            SessionOptions {
+                view: Some(view),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    session.reset(None, None).unwrap();
+    assert!(viewer_request(port, "/skip").contains("200 OK"));
+    let (_, _, terminated, truncated, _) = session.step(Value::Int(1)).unwrap();
+    assert!(!terminated && truncated);
+    assert!(session.done());
+    assert!(viewer_request(port, "/quit").contains("200 OK"));
+    let result = session
+        .run(SessionRunOptions {
+            episodes: Some(5),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(result.num_episodes(), 1);
+    assert!(result.episodes[0].truncated);
+    session.close().unwrap();
+}
+#[test]
+fn view_paces_steps_without_charging_telemetry_and_holds_only_success() {
+    let mut view = http_view();
+    view.step_hz = Some(5.);
+    view.hold = crate::ViewHold::For(Duration::from_millis(70));
+    let mut env = ViewedSteps(Steps::new());
+    let model = ones();
+    let mut session = model
+        .session(
+            &mut env,
+            SessionOptions {
+                view: Some(view),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let started = std::time::Instant::now();
+    let result = session.run(SessionRunOptions::default()).unwrap();
+    assert!(started.elapsed() >= Duration::from_millis(300));
+    for row in &result.telemetry {
+        assert!(row.avg < 100., "{} included pacing: {}", row.op, row.avg);
+    }
+    let started = std::time::Instant::now();
+    session.close().unwrap();
+    assert!(started.elapsed() >= Duration::from_millis(70));
+
+    let mut view = http_view();
+    view.hold = crate::ViewHold::For(Duration::from_secs(5));
+    let mut env = ViewedSteps(Steps::new());
+    let mut session = model
+        .session(
+            &mut env,
+            SessionOptions {
+                view: Some(view),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let mut hooks = Log {
+        fail_on_step: Some(0),
+        ..Default::default()
+    };
+    assert!(
+        session
+            .run(SessionRunOptions {
+                hooks: Some(&mut hooks),
+                ..Default::default()
+            })
+            .is_err()
+    );
+    let started = std::time::Instant::now();
+    session.close().unwrap();
+    assert!(started.elapsed() < Duration::from_secs(2));
+}
+#[tokio::test]
+async fn async_view_run_and_dropping_a_pacing_future_leave_session_usable() {
+    let mut view = http_view();
+    view.step_hz = Some(0.1);
+    let mut env = ViewedSteps(Steps::new());
+    let model = ones();
+    let mut session = model
+        .session(
+            &mut env,
+            SessionOptions {
+                view: Some(view),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    session.reset_async(None, None).await.unwrap();
+    session.step_async(Value::Int(1)).await.unwrap();
+    let mut step = Box::pin(session.step_async(Value::Int(1)));
+    assert!(futures::poll!(&mut step).is_pending());
+    drop(step);
+    session.reset_async(None, None).await.unwrap();
+    session.close_async().await.unwrap();
+}

@@ -1,0 +1,358 @@
+//! Portable evaluation bundles: Python's `rlmesh.recorder`.
+mod capture;
+mod export;
+mod records;
+#[cfg(test)]
+mod tests;
+use crate::{Error, Metadata, Result, RunContext, RunHooks, RunResult, Value};
+pub use records::{EpisodeRecord, MediaRef, WorkloadRecord};
+use std::{
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+};
+
+/// The portable result bundle schema tag.
+pub const SCHEMA: &str = "rlmesh.result.v1";
+/// Recorder construction keywords.
+#[derive(Clone, Debug)]
+pub struct RecorderOptions {
+    /// Bundle identity; a fresh UUID hex when absent or empty.
+    pub result_set_id: Option<String>,
+    /// Playback rate, at least one frame per second.
+    pub fps: u64,
+    /// AV1 quality in 1..100.
+    pub quality: u8,
+}
+impl Default for RecorderOptions {
+    fn default() -> Self {
+        Self {
+            result_set_id: None,
+            fps: 30,
+            quality: 60,
+        }
+    }
+}
+/// Keywords for recording a completed run.
+#[derive(Clone, Debug)]
+pub struct RecorderAddOptions {
+    /// Task label; defaults to the env name.
+    pub task: Option<String>,
+    /// Caller metadata, copied into the workload.
+    pub config: Option<Metadata>,
+    /// Include the episodes in reward and success aggregates.
+    pub included_in_metrics: bool,
+}
+impl Default for RecorderAddOptions {
+    fn default() -> Self {
+        Self {
+            task: None,
+            config: None,
+            included_in_metrics: true,
+        }
+    }
+}
+/// Keywords for live recording.
+#[derive(Clone)]
+pub struct RecorderCaptureOptions {
+    /// Task label; defaults to the env name.
+    pub task: Option<String>,
+    /// Caller metadata, copied into the workload.
+    pub config: Option<Metadata>,
+    /// Sources to record; absent discovers all, empty records metrics only.
+    pub cameras: Option<Vec<String>>,
+    /// Explicit context for hand-driven hooks; otherwise adopted from the run.
+    pub session: Option<Arc<dyn RunContext>>,
+    /// Step-info keys containing an env-produced video path.
+    pub video_info_keys: Vec<String>,
+    /// Include the episodes in reward and success aggregates.
+    pub included_in_metrics: bool,
+}
+impl Default for RecorderCaptureOptions {
+    fn default() -> Self {
+        Self {
+            task: None,
+            config: None,
+            cameras: None,
+            session: None,
+            video_info_keys: vec!["video_artifact_path".into(), "video_url".into()],
+            included_in_metrics: true,
+        }
+    }
+}
+impl std::fmt::Debug for RecorderCaptureOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RecorderCaptureOptions")
+            .field("task", &self.task)
+            .field("config", &self.config)
+            .field("cameras", &self.cameras)
+            .field("session", &self.session.as_ref().map(|_| "<context>"))
+            .field("video_info_keys", &self.video_info_keys)
+            .field("included_in_metrics", &self.included_in_metrics)
+            .finish()
+    }
+}
+/// Keywords for a recorder document snapshot.
+#[derive(Clone, Debug, Default)]
+pub struct RecorderToDictOptions {
+    /// Timestamp; otherwise current UTC ISO-8601 time.
+    pub recorded_at: Option<String>,
+}
+/// Keywords for exporting a bundle.
+#[derive(Clone, Debug, Default)]
+pub struct RecorderExportOptions {
+    /// ZIP when true, folder when false; otherwise infer from `.zip`.
+    pub archive: Option<bool>,
+    /// Timestamp; otherwise current UTC ISO-8601 time.
+    pub recorded_at: Option<String>,
+}
+struct State {
+    workloads: Vec<WorkloadRecord>,
+    staging: Option<tempfile::TempDir>,
+    assets: Vec<(PathBuf, String)>,
+    used: std::collections::HashSet<String>,
+    closed: bool,
+    fps: u64,
+    quality: u8,
+}
+impl Drop for State {
+    fn drop(&mut self) {
+        // A live capture retains State. The last owner's cleanup must not do
+        // recursive filesystem I/O on an async executor's thread (R-17).
+        if crate::run::drive::in_async_context()
+            && let Some(dir) = self.staging.take()
+        {
+            crate::run::drive::runtime().spawn_blocking(move || drop(dir));
+        }
+    }
+}
+impl State {
+    fn stage(&mut self, prefix: &str, index: i64, filename: &str) -> Result<(PathBuf, String)> {
+        if self.closed {
+            return Err(Error::Runtime("Recorder is closed".into()));
+        }
+        if self.staging.is_none() {
+            self.staging = Some(
+                tempfile::Builder::new()
+                    .prefix("rlmesh-recorder-")
+                    .tempdir()
+                    .map_err(os)?,
+            );
+        }
+        let mut rel = format!("media/{prefix}/ep{index:05}/{filename}");
+        let (stem, ext) = filename.rsplit_once('.').unwrap_or((filename, ""));
+        let mut n = 2;
+        while !self.used.insert(rel.clone()) {
+            rel = format!("media/{prefix}/ep{index:05}/{stem}-{n}.{ext}");
+            n += 1;
+        }
+        let path = self
+            .staging
+            .as_ref()
+            .expect("staging was initialized above")
+            .path()
+            .join(uuid::Uuid::new_v4().simple().to_string());
+        Ok((path, rel))
+    }
+    fn workload(
+        &mut self,
+        model: &str,
+        env: &str,
+        task: Option<String>,
+        config: Option<Metadata>,
+    ) -> usize {
+        let ordinal = self.workloads.len();
+        self.workloads.push(WorkloadRecord {
+            model: model.into(),
+            env: env.into(),
+            task: task.unwrap_or_else(|| env.into()),
+            config: config.unwrap_or_default(),
+            episodes: Vec::new(),
+        });
+        ordinal
+    }
+}
+fn os(err: impl std::fmt::Display) -> Error {
+    Error::Os(err.to_string())
+}
+fn lock(state: &Mutex<State>) -> std::sync::MutexGuard<'_, State> {
+    state.lock().unwrap_or_else(|err| err.into_inner())
+}
+fn now() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, false)
+}
+fn document(id: &str, state: &State, recorded_at: Option<String>) -> Metadata {
+    [
+        ("schema", SCHEMA.into()),
+        ("resultSetId", id.into()),
+        (
+            "recordedAt",
+            recorded_at
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(now)
+                .into(),
+        ),
+        (
+            "workloads",
+            Value::List(
+                state
+                    .workloads
+                    .iter()
+                    .map(|w| Value::Dict(w.to_dict()))
+                    .collect(),
+            ),
+        ),
+    ]
+    .into_iter()
+    .collect()
+}
+/// Accumulate workloads and export a portable result bundle.
+///
+/// Capture hooks retain shared state independently of this handle. Returned
+/// workload values are snapshots; a hook can accumulate several runs (RUN-18).
+/// Explicit `close` removes staged assets; dropping a handle leaves live
+/// capture hooks valid and the last owner removes staging.
+pub struct Recorder {
+    id: String,
+    state: Arc<Mutex<State>>,
+}
+impl std::fmt::Debug for Recorder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Recorder")
+            .field("result_set_id", &self.id)
+            .finish_non_exhaustive()
+    }
+}
+impl Recorder {
+    /// Construct with Python's defaults and validation.
+    pub fn new(options: RecorderOptions) -> Result<Self> {
+        if options.fps == 0 {
+            return Err(Error::invalid_argument(
+                "Recorder.fps must be an integer >= 1; got 0",
+            ));
+        }
+        if !(1..=100).contains(&options.quality) {
+            return Err(Error::invalid_argument(format!(
+                "Recorder.quality must be an integer in 1..=100; got {}",
+                options.quality
+            )));
+        }
+        Ok(Self {
+            id: options
+                .result_set_id
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string()),
+            state: Arc::new(Mutex::new(State {
+                workloads: Vec::new(),
+                staging: None,
+                assets: Vec::new(),
+                used: Default::default(),
+                closed: false,
+                fps: options.fps,
+                quality: options.quality,
+            })),
+        })
+    }
+    /// Bundle identity (re-upload deduplication key).
+    pub fn result_set_id(&self) -> &str {
+        &self.id
+    }
+    /// Snapshot every workload in insertion order.
+    pub fn workloads(&self) -> Vec<WorkloadRecord> {
+        lock(&self.state).workloads.clone()
+    }
+    /// Record a completed run, without media.
+    pub fn add(
+        &mut self,
+        result: &RunResult,
+        model: &str,
+        env: &str,
+        options: RecorderAddOptions,
+    ) -> Result<WorkloadRecord> {
+        let mut state = lock(&self.state);
+        let index = state.workload(model, env, options.task, options.config);
+        let workload = &mut state.workloads[index];
+        workload
+            .episodes
+            .extend(result.episodes.iter().enumerate().map(|(i, e)| {
+                EpisodeRecord::from_result(e, i as i64, options.included_in_metrics, Vec::new())
+            }));
+        Ok(workload.clone())
+    }
+    /// Start a workload and return independent, shareable-lifetime capture hooks.
+    pub fn capture(
+        &mut self,
+        model: &str,
+        env: &str,
+        options: RecorderCaptureOptions,
+    ) -> Result<Box<dyn RunHooks>> {
+        let mut state = lock(&self.state);
+        let index = state.workload(model, env, options.task.clone(), options.config.clone());
+        let prefix = format!(
+            "w{index:03}-{}/{}",
+            capture::sanitize(model),
+            capture::sanitize(&state.workloads[index].task)
+        );
+        Ok(Box::new(capture::Capture::new(
+            self.state.clone(),
+            index,
+            prefix,
+            options,
+        )))
+    }
+    /// Snapshot the `rlmesh.result.v1` document.
+    pub fn to_dict(&self, options: RecorderToDictOptions) -> Metadata {
+        document(&self.id, &lock(&self.state), options.recorded_at)
+    }
+    /// Write a folder or ZIP bundle. Filesystem failures have the OSError class.
+    pub fn export_(
+        &self,
+        path: impl AsRef<Path>,
+        options: RecorderExportOptions,
+    ) -> Result<PathBuf> {
+        if crate::run::drive::in_async_context() {
+            return Err(Error::Runtime(
+                "Recorder::export_() blocks; call Recorder::export_async() from async code".into(),
+            ));
+        }
+        crate::run::drive::block_on_library(self.export_async(path, options))
+    }
+    /// The async twin of `export_`. Dropping it stops further file operations.
+    pub async fn export_async(
+        &self,
+        path: impl AsRef<Path>,
+        options: RecorderExportOptions,
+    ) -> Result<PathBuf> {
+        let path = path.as_ref().to_path_buf();
+        let state = self.state.clone();
+        let id = self.id.clone();
+        crate::run::drive::in_library(crate::warnings::blocking(move || {
+            let state = lock(&state);
+            export::write(
+                &path,
+                &document(&id, &state, options.recorded_at),
+                &state,
+                options.archive,
+            )
+        }))
+        .await?
+    }
+    /// Remove staged media. Idempotent; metric-only exports still work afterwards.
+    pub fn close(&mut self) -> Result<()> {
+        crate::run::drive::refuse_in_async_context("Recorder::close")?;
+        crate::run::drive::block_on_library(self.close_async())
+    }
+    /// The async twin of `close`.
+    pub async fn close_async(&mut self) -> Result<()> {
+        let state = self.state.clone();
+        crate::run::drive::in_library(crate::warnings::blocking(move || {
+            let mut state = lock(&state);
+            crate::warnings::check_cancelled()?;
+            state.closed = true;
+            if let Some(dir) = state.staging.take() {
+                dir.close().map_err(os)?;
+            }
+            Ok(())
+        }))
+        .await?
+    }
+}

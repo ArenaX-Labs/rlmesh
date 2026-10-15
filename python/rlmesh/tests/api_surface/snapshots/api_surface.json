@@ -11,6 +11,7 @@
       "EnvServer",
       "EnvironmentException",
       "EpisodeResult",
+      "FrameSources",
       "Model",
       "ModelException",
       "Param",
@@ -255,6 +256,33 @@
           }
         },
         "signature": "EpisodeResult(index: int, seed: int | None, steps: int, reward: float, terminated: bool, truncated: bool, success: bool | None = None, duration_s: float = 0.0, predict_ms: float | None = None, step_ms: float | None = None, trial: int | None = None)",
+        "stability": "Stable"
+      },
+      "FrameSources": {
+        "kind": "class",
+        "members": {
+          "default_label": {
+            "kind": "property",
+            "signature": "property default_label: str | None"
+          },
+          "labels": {
+            "kind": "property",
+            "signature": "property labels: tuple[str, ...]"
+          },
+          "render": {
+            "kind": "attribute",
+            "signature": "render: Callable[[], object] | None"
+          },
+          "render_label": {
+            "kind": "attribute",
+            "signature": "render_label: str | None"
+          },
+          "roles": {
+            "kind": "attribute",
+            "signature": "roles: tuple[str, ...]"
+          }
+        },
+        "signature": "FrameSources(roles: tuple[str, ...], render_label: str | None, render: Callable[[], object] | None)",
         "stability": "Stable"
       },
       "Model": {
@@ -3840,6 +3868,219 @@
         "kind": "function",
         "signature": "scenario_tasks(env: str, scenario: str, *, tasks: int | list[int] | None = None, task_ids: list[str] | None = None, episodes: int = 10, seed: int = 0, workers: int = 1) -> list[dict[str, Any]]",
         "stability": "Experimental"
+      }
+    }
+  },
+  "rlmesh.recorder": {
+    "exports": [
+      "SCHEMA",
+      "EpisodeRecord",
+      "MediaRef",
+      "Recorder",
+      "ResultSet",
+      "WorkloadRecord"
+    ],
+    "objects": {
+      "EpisodeRecord": {
+        "kind": "class",
+        "members": {
+          "duration_s": {
+            "kind": "attribute",
+            "signature": "duration_s: float"
+          },
+          "from_result": {
+            "kind": "function",
+            "signature": "from_result(result: EpisodeResult, *, index: int | None = None, included_in_metrics: bool = True, media: tuple[MediaRef, ...] = ()) -> EpisodeRecord",
+            "stability": "Internal"
+          },
+          "included_in_metrics": {
+            "kind": "attribute",
+            "signature": "included_in_metrics: bool"
+          },
+          "index": {
+            "kind": "attribute",
+            "signature": "index: int"
+          },
+          "media": {
+            "kind": "attribute",
+            "signature": "media: tuple[MediaRef, ...]"
+          },
+          "reward": {
+            "kind": "attribute",
+            "signature": "reward: float"
+          },
+          "seed": {
+            "kind": "attribute",
+            "signature": "seed: int | None"
+          },
+          "steps": {
+            "kind": "attribute",
+            "signature": "steps: int"
+          },
+          "success": {
+            "kind": "attribute",
+            "signature": "success: bool | None"
+          },
+          "terminated": {
+            "kind": "attribute",
+            "signature": "terminated: bool"
+          },
+          "to_dict": {
+            "kind": "function",
+            "signature": "to_dict() -> dict[str, Any]"
+          },
+          "truncated": {
+            "kind": "attribute",
+            "signature": "truncated: bool"
+          }
+        },
+        "signature": "EpisodeRecord(index: int, seed: int | None, steps: int, reward: float, terminated: bool, truncated: bool, success: bool | None = None, duration_s: float = 0.0, included_in_metrics: bool = True, media: tuple[MediaRef, ...] = ())",
+        "stability": "Stable"
+      },
+      "MediaRef": {
+        "kind": "class",
+        "members": {
+          "camera": {
+            "kind": "attribute",
+            "signature": "camera: str"
+          },
+          "format": {
+            "kind": "attribute",
+            "signature": "format: str"
+          },
+          "fps": {
+            "kind": "attribute",
+            "signature": "fps: float | None"
+          },
+          "frame_count": {
+            "kind": "attribute",
+            "signature": "frame_count: int | None"
+          },
+          "height": {
+            "kind": "attribute",
+            "signature": "height: int | None"
+          },
+          "kind": {
+            "kind": "attribute",
+            "signature": "kind: str"
+          },
+          "path": {
+            "kind": "attribute",
+            "signature": "path: str"
+          },
+          "to_dict": {
+            "kind": "function",
+            "signature": "to_dict() -> dict[str, Any]"
+          },
+          "width": {
+            "kind": "attribute",
+            "signature": "width: int | None"
+          }
+        },
+        "signature": "MediaRef(camera: str, kind: str, path: str, format: str, frame_count: int | None = None, width: int | None = None, height: int | None = None, fps: float | None = None)",
+        "stability": "Stable"
+      },
+      "Recorder": {
+        "kind": "class",
+        "members": {
+          "add": {
+            "kind": "function",
+            "signature": "add(result: RunResult, *, model: str, env: str, task: str | None = None, config: dict[str, Any] | None = None, included_in_metrics: bool = True) -> WorkloadRecord"
+          },
+          "capture": {
+            "kind": "function",
+            "signature": "capture(*, model: str, env: str, task: str | None = None, config: dict[str, Any] | None = None, cameras: list[str] | None = None, session: RunContext | None = None, video_info_keys: tuple[str, ...] = DEFAULT_VIDEO_INFO_KEYS, included_in_metrics: bool = True) -> RunHooks"
+          },
+          "close": {
+            "kind": "function",
+            "signature": "close() -> None"
+          },
+          "export": {
+            "kind": "function",
+            "signature": "export(path: str | Path, *, archive: bool | str | None = None, recorded_at: str | None = None) -> Path"
+          },
+          "result_set_id": {
+            "kind": "property",
+            "signature": "property result_set_id: str"
+          },
+          "to_dict": {
+            "kind": "function",
+            "signature": "to_dict(*, recorded_at: str | None = None) -> dict[str, Any]"
+          },
+          "workloads": {
+            "kind": "property",
+            "signature": "property workloads: tuple[WorkloadRecord, ...]"
+          }
+        },
+        "signature": "Recorder(*, result_set_id: str | None = None, fps: int = DEFAULT_FPS, quality: int = DEFAULT_QUALITY)",
+        "stability": "Stable"
+      },
+      "ResultSet": {
+        "kind": "class",
+        "members": {
+          "result_set_id": {
+            "kind": "attribute",
+            "signature": "result_set_id: str"
+          },
+          "to_dict": {
+            "kind": "function",
+            "signature": "to_dict(*, recorded_at: str) -> dict[str, Any]"
+          },
+          "workloads": {
+            "kind": "attribute",
+            "signature": "workloads: list[WorkloadRecord]"
+          }
+        },
+        "signature": "ResultSet(result_set_id: str, workloads: list[WorkloadRecord] = list())",
+        "stability": "Internal"
+      },
+      "SCHEMA": {
+        "kind": "type alias",
+        "signature": "SCHEMA = 'rlmesh.result.v1'",
+        "stability": "Stable"
+      },
+      "WorkloadRecord": {
+        "kind": "class",
+        "members": {
+          "config": {
+            "kind": "attribute",
+            "signature": "config: dict[str, Any]"
+          },
+          "env": {
+            "kind": "attribute",
+            "signature": "env: str"
+          },
+          "episodes": {
+            "kind": "attribute",
+            "signature": "episodes: list[EpisodeRecord]"
+          },
+          "mean_reward": {
+            "kind": "property",
+            "signature": "property mean_reward: float"
+          },
+          "model": {
+            "kind": "attribute",
+            "signature": "model: str"
+          },
+          "success_rate": {
+            "kind": "property",
+            "signature": "property success_rate: float | None"
+          },
+          "task": {
+            "kind": "attribute",
+            "signature": "task: str"
+          },
+          "to_dict": {
+            "kind": "function",
+            "signature": "to_dict() -> dict[str, Any]"
+          },
+          "total_steps": {
+            "kind": "property",
+            "signature": "property total_steps: int"
+          }
+        },
+        "signature": "WorkloadRecord(model: str, env: str, task: str, config: dict[str, Any] = dict(), episodes: list[EpisodeRecord] = list())",
+        "stability": "Stable"
       }
     }
   },

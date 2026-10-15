@@ -27,6 +27,10 @@ rlmesh-adapters = { workspace = true }
 rlmesh-grpc = { workspace = true }
 rlmesh-proto = { workspace = true }
 rlmesh-runtime = { workspace = true }
+rlmesh-viewer = { workspace = true }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+tempfile = { workspace = true }
+zip = { version = "2", default-features = false }
 futures = { workspace = true }
 image = { workspace = true, features = ["png"] }
 indexmap = { workspace = true }
