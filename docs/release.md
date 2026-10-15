@@ -85,6 +85,8 @@ Open the result as a `docs: cut X.Y.Z` PR in the platform repo. It goes live on 
 
 The Rust, C, and C++ API references are early access and come from the same extractor: `uv run rlmesh-api-surface docs-api-surface --language rust|c|cpp --output-dir <dir>`. Rust documents the `rlmesh` facade crate from rustdoc JSON (it runs `cargo rustdoc` itself); C and C++ parse `rlmesh.h` and `rlmesh.hpp` with libclang, one page per `---- section ----` divider. Each snapshot carries the `access` label and summary from `[api_surface.<language>]` in `rlmesh.toml`, and the extractor warns about every undocumented item.
 
+The C++ reference uses C++20. Header extraction discovers system include paths through `CC` or `CXX` (defaulting to `cc` or `c++`); select a compiler whose standard-library headers the pinned libclang can parse.
+
 ## Recovery
 
 - A bad crates.io or PyPI publish cannot be deleted, only yanked. Yank it and ship a fixed patch release.

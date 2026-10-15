@@ -8,7 +8,9 @@ comment starts a section, and each section becomes one module page.
 
 from __future__ import annotations
 
+import os
 import re
+import shlex
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,7 +35,7 @@ _PLUMBING_MACRO = re.compile(
 class HeaderSurfaceConfig:
     header: str  # repo-relative
     language: str  # "c" or "c++"
-    standard: str  # "c11", "c++17"
+    standard: str  # "c11", "c++20"
     stability: str
     namespace: str | None  # the C++ namespace to document; None for C
     source_repo: str
@@ -76,10 +78,13 @@ def _parse(path: Path, config: HeaderSurfaceConfig) -> ci.TranslationUnit:
 
 
 def _system_includes(language: str) -> list[str]:
-    """The host compiler's include search path, which the libclang wheel lacks."""
-    compiler = "c++" if language == "c++" else "cc"
+    """The selected CC/CXX's include search path, which the libclang wheel lacks."""
+    compiler = shlex.split(
+        os.environ.get("CXX" if language == "c++" else "CC")
+        or ("c++" if language == "c++" else "cc")
+    )
     stderr = subprocess.run(
-        [compiler, "-E", "-v", "-x", language, "/dev/null"],
+        [*compiler, "-E", "-v", "-x", language, "/dev/null"],
         capture_output=True,
         text=True,
         check=True,
@@ -88,7 +93,7 @@ def _system_includes(language: str) -> list[str]:
         r"#include <\.\.\.> search starts here:\n(.*?)End of search list", stderr, re.S
     )
     if match is None:
-        raise ValueError(f"could not read {compiler}'s include search path")
+        raise ValueError(f"could not read {shlex.join(compiler)}'s include search path")
     return [
         line.strip().split(" (")[0]
         for line in match.group(1).splitlines()
@@ -114,15 +119,24 @@ class _HeaderCollector:
         self.seen: set[str] = set()
 
     def collect(self, tu: ci.TranslationUnit) -> list[ApiModule]:
-        scope = tu.cursor
+        scopes = [tu.cursor]
         if self.config.namespace is not None:
-            scope = next(
+            scopes = [
                 c
                 for c in tu.cursor.get_children()
                 if c.kind.name == "NAMESPACE"
                 and c.spelling == self.config.namespace
                 and self._here(c)
-            )
+            ]
+        for scope in scopes:
+            self._scope(scope)
+        if self.config.namespace is None:
+            for cursor in tu.cursor.get_children():
+                if cursor.kind.name == "MACRO_DEFINITION" and self._here(cursor):
+                    self._macro(cursor)
+        return self._modules()
+
+    def _scope(self, scope: ci.Cursor) -> None:
         typedef_names = {
             c.underlying_typedef_type.get_declaration().spelling: c
             for c in scope.get_children()
@@ -131,11 +145,6 @@ class _HeaderCollector:
         for cursor in scope.get_children():
             if self._here(cursor):
                 self._top_level(cursor, typedef_names)
-        if self.config.namespace is None:
-            for cursor in tu.cursor.get_children():
-                if cursor.kind.name == "MACRO_DEFINITION" and self._here(cursor):
-                    self._macro(cursor)
-        return self._modules()
 
     def _here(self, cursor: ci.Cursor) -> bool:
         location = cursor.location
@@ -149,9 +158,11 @@ class _HeaderCollector:
     def _top_level(self, cursor: ci.Cursor, typedefs: dict[str, ci.Cursor]) -> None:
         kind = cursor.kind.name
         name = cursor.spelling
-        if not name or name.startswith("_") or name == "detail":
+        if not name or name.startswith(("_", "detail")):
             return
-        if kind in ("FUNCTION_DECL", "FUNCTION_TEMPLATE"):
+        if kind == "NAMESPACE":
+            self._scope(cursor)
+        elif kind in ("FUNCTION_DECL", "FUNCTION_TEMPLATE"):
             if name.startswith("operator"):
                 return
             self._add(cursor, name, "function", self._declaration_text(cursor))
@@ -182,8 +193,10 @@ class _HeaderCollector:
                 )
             else:
                 self._add(cursor, name, "type alias", self._statement_text(cursor))
-        elif kind == "TYPE_ALIAS_DECL":
+        elif kind in ("TYPE_ALIAS_DECL", "TYPE_ALIAS_TEMPLATE_DECL", "NAMESPACE_ALIAS"):
             self._add(cursor, name, "type alias", self._statement_text(cursor))
+        elif kind == "CONCEPT_DECL":
+            self._add(cursor, name, "concept", self._statement_text(cursor))
         elif kind == "VAR_DECL":
             self._add(cursor, name, "constant", self._statement_text(cursor))
 
@@ -270,10 +283,19 @@ class _HeaderCollector:
                 child, "constructor", self._declaration_text(child, constructor=True)
             )
         if kind in ("CXX_METHOD", "FUNCTION_TEMPLATE", "CONVERSION_FUNCTION"):
-            text = self._declaration_text(child)
+            constructor = child.spelling == owner
+            text = self._declaration_text(child, constructor=constructor)
             if _is_deleted(text) or (child.spelling.startswith("operator=")):
                 return None
             member_kind = "static method" if child.is_static_method() else "method"
+            if kind == "FUNCTION_TEMPLATE" and any(
+                token.spelling == "static"
+                and token.location.offset < child.location.offset
+                for token in child.get_tokens()
+            ):
+                member_kind = "static method"
+            if constructor:
+                member_kind = "constructor"
             if kind == "CONVERSION_FUNCTION" or child.spelling.startswith("operator"):
                 member_kind = "operator"
             return self._member_entry(child, member_kind, text)
@@ -307,6 +329,15 @@ class _HeaderCollector:
         *,
         members: list[ApiMember] | None = None,
     ) -> None:
+        if self.config.namespace is not None:
+            namespaces: list[str] = []
+            parent = cursor.semantic_parent
+            while parent is not None and parent.kind.name == "NAMESPACE":
+                if parent.spelling == self.config.namespace:
+                    break
+                namespaces.insert(0, parent.spelling)
+                parent = parent.semantic_parent
+            name = "::".join([*namespaces, name])
         if name in self.seen:
             return
         self.seen.add(name)
