@@ -426,7 +426,12 @@ impl Error {
     /// An adapter-apply failure is the model declining a malformed
     /// observation/action, not a transport fault: surface it as a model error.
     pub(crate) fn from_apply(value: rlmesh_adapters::v1::ApplyError) -> Self {
-        Self::model(value.message)
+        value
+            .source
+            .as_ref()
+            .and_then(|source| source.downcast_ref::<Error>())
+            .cloned()
+            .unwrap_or_else(|| Self::invalid_argument(value.message))
     }
 
     /// Map a gRPC client/server error onto the facade taxonomy.

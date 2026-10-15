@@ -1,8 +1,10 @@
 //! Declarative adapter specifications, resolution and per-step transforms.
 mod callable;
 mod codec;
+mod execute;
 mod leaves;
 mod repr;
+mod tag;
 mod tree;
 mod validation;
 mod values;
@@ -11,10 +13,15 @@ use crate::spaces::Space;
 use crate::specs::value_to_json;
 use crate::{Error, Metadata, Result, Value};
 pub use callable::*;
+pub use execute::{
+    Adapter, AdapterBase, ResolveOptions, WrappedPredict, resolve, resolve_from_contract,
+};
+pub(crate) use execute::{contract_tags, resolve_parts, restore_shape};
 pub use leaves::*;
 use rlmesh_adapters::v1 as core;
 use serde_json::{Value as Json, json};
 use std::fmt;
+pub use tag::{TagError, TagOptions, Tagged, tag, tag_vector};
 pub use tree::*;
 pub use values::*;
 pub use vocabulary::*;
@@ -260,3 +267,5 @@ impl fmt::Display for EnvTags {
 
 #[cfg(test)]
 mod tests;
+
+pub(crate) use execute::register;

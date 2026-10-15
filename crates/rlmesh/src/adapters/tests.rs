@@ -192,3 +192,173 @@ fn state_encodings_and_axis_values_round_trip() {
     let text = spec.to_json().unwrap();
     assert_eq!(ModelSpec::from_json(&text).unwrap(), spec);
 }
+
+fn box_spec(width: usize) -> crate::spaces::SpaceSpec {
+    crate::spaces::Box::new(
+        -100.0,
+        100.0,
+        vec![width as i64],
+        crate::spaces::BoxOptions {
+            dtype: crate::DType::Float32,
+            ..Default::default()
+        },
+    )
+    .unwrap()
+    .spec()
+    .clone()
+}
+fn floats(v: &[f32]) -> Value {
+    Value::Tensor(
+        crate::Tensor::new(
+            &v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<_>>(),
+            &[v.len()],
+            crate::DType::Float32,
+        )
+        .unwrap(),
+    )
+}
+fn flat_tags() -> EnvTags {
+    EnvTags::new(StateTag::new(GRIPPER_POS), action()).unwrap()
+}
+#[test]
+fn adapter_previous_action_and_clone_state_are_shared_and_reset() {
+    let spec = ModelSpec::new(
+        Concat::new([
+            ConcatPart::Role(GRIPPER_POS.into()),
+            Previous(ACTION_GRIPPER, Default::default()).into(),
+        ]),
+        action(),
+    )
+    .unwrap();
+    let mut a = resolve(
+        &flat_tags(),
+        &box_spec(1),
+        &box_spec(1),
+        &spec,
+        Default::default(),
+    )
+    .unwrap();
+    assert_eq!(a.transform_obs(floats(&[2.])).unwrap(), floats(&[2., 0.]));
+    a.transform_action(floats(&[7.])).unwrap();
+    let mut shared = a.clone();
+    assert_eq!(
+        shared.transform_obs(floats(&[3.])).unwrap(),
+        floats(&[3., 7.])
+    );
+    shared.reset().unwrap();
+    assert_eq!(a.transform_obs(floats(&[4.])).unwrap(), floats(&[4., 0.]));
+}
+#[test]
+fn custom_input_gets_full_envelope_and_preserves_authored_errors() {
+    let spec = ModelSpec::new(
+        Custom {
+            transform: Some(ObsTransform::from(|v: &Value| {
+                assert!(v.as_dict()?.contains_key("<obs>"));
+                Err(Error::Runtime("authored callback".into()))
+            })),
+            entrypoint: None,
+        },
+        action(),
+    )
+    .unwrap();
+    let mut a = resolve(
+        &flat_tags(),
+        &box_spec(1),
+        &box_spec(1),
+        &spec,
+        Default::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        a.transform_obs(floats(&[1.])).unwrap_err(),
+        Error::Runtime("authored callback".into())
+    );
+}
+#[test]
+fn registry_resolves_once_and_replacement_affects_only_later_adapters() {
+    crate::ext::register_entrypoint(
+        "parity:test:input",
+        ObsTransform::from(|_: &Value| Ok(Value::Int(1))),
+    )
+    .unwrap();
+    let spec = ModelSpec::new(
+        Custom {
+            transform: None,
+            entrypoint: Some("parity:test:input".into()),
+        },
+        action(),
+    )
+    .unwrap();
+    assert_eq!(
+        resolve(
+            &flat_tags(),
+            &box_spec(1),
+            &box_spec(1),
+            &spec,
+            Default::default()
+        )
+        .err()
+        .unwrap()
+        .class(),
+        ErrorClass::AdapterResolutionError
+    );
+    let mut a = resolve(
+        &flat_tags(),
+        &box_spec(1),
+        &box_spec(1),
+        &spec,
+        ResolveOptions::default().trust_entrypoints(true),
+    )
+    .unwrap();
+    crate::ext::register_entrypoint(
+        "parity:test:input",
+        ObsTransform::from(|_: &Value| Ok(Value::Int(2))),
+    )
+    .unwrap();
+    assert_eq!(a.transform_obs(floats(&[1.])).unwrap(), Value::Float(1.));
+    let mut b = resolve(
+        &flat_tags(),
+        &box_spec(1),
+        &box_spec(1),
+        &spec,
+        ResolveOptions::default().trust_entrypoints(true),
+    )
+    .unwrap();
+    assert_eq!(b.transform_obs(floats(&[1.])).unwrap(), Value::Float(2.));
+}
+#[test]
+fn inverse_checks_are_value_distinct_and_fail_with_resolution_class() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let calls = Arc::new(AtomicUsize::new(0));
+    let count = calls.clone();
+    let t = RotationTransform::from(move |v: &Value| {
+        count.fetch_add(1, Ordering::SeqCst);
+        Ok(v.clone())
+    });
+    let c = CustomEncoding {
+        from_base: Some(EncodingArm::Transform(t.clone())),
+        to_base: Some(EncodingArm::Transform(t)),
+        ..CustomEncoding::new(RotationEncoding::QuatXyzw)
+    };
+    let s = State {
+        encoding: Some(StateEncoding::Custom(c)),
+        ..State::new(EEF_ROT)
+    };
+    let spec = ModelSpec::new(InputNode::tuple([s.clone().into(), s.into()]), action()).unwrap();
+    let tags = EnvTags::new(
+        StateTag {
+            encoding: Some(vec![RotationEncoding::QuatXyzw.into()]),
+            ..StateTag::new(EEF_ROT)
+        },
+        action(),
+    )
+    .unwrap();
+    let mut adapter =
+        resolve(&tags, &box_spec(4), &box_spec(1), &spec, Default::default()).unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    let value = adapter.transform_obs(floats(&[0., 0., 0., 1.])).unwrap();
+    assert!(matches!(value, Value::Tuple(_)));
+}

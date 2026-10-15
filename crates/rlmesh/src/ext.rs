@@ -284,3 +284,9 @@ impl CancelToken {
         self.0.swap(false, std::sync::atomic::Ordering::SeqCst)
     }
 }
+
+/// Register a trusted custom-input entrypoint for subsequent adapter resolves.
+/// Re-registering replaces it; existing routes retain their transform.
+pub fn register_entrypoint(name: &str, transform: crate::adapters::ObsTransform) -> Result<()> {
+    crate::adapters::register(name, transform)
+}
