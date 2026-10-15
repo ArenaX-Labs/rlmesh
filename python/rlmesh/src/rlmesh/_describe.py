@@ -803,7 +803,7 @@ def check_target(target: object, *, kind: str | None = None) -> CheckReport:
     and rides the handshake, but a baked label will not carry it; the managed
     probe cannot synthesize inputs without a ``ModelSpec``), on ad hoc roles a
     curated publish gate would refuse, and on best-effort badges elsewhere in
-    the envelope (variants, non-default contract branches). ``not_checked``
+    the envelope (variants, a non-default contract branch's spaces). ``not_checked``
     when building the env for its spaces needed a GPU, a display, or assets
     this machine lacks.
     """
@@ -1007,6 +1007,9 @@ def _check_branches(
 ) -> None:
     """Each non-default contract branch needs tags that fit its own spaces.
 
+    A branch without tags, or whose tags are an error badge, fails: the platform
+    probe fails a branch without EnvTags.
+
     The default branch is the top-level ``env_tags``/``env_spec`` pair, checked
     by :func:`_check_specs`.
     """
@@ -1027,7 +1030,13 @@ def _check_branches(
                 f"{where}{key}: this contract branch has no tags; the platform "
                 "probe fails a branch without EnvTags"
             )
-        elif isinstance(tags, Mapping) and "error" not in tags:
+        elif isinstance(tags, Mapping) and "error" in tags:
+            badge = cast("Mapping[str, object]", tags)["error"]
+            report.failed.append(
+                f"{where}{key}: this contract branch's tags could not be read "
+                f"({badge}); the platform probe fails a branch without EnvTags"
+            )
+        elif isinstance(tags, Mapping):
             _check_join(
                 key, json.dumps(tags), branch_map.get("env_spec"), report, where
             )
@@ -1104,14 +1113,15 @@ def _describe_badges(envelope: Mapping[str, Any]) -> list[tuple[str, str]]:
             # The default branch's badges are already reported against the
             # top-level env_spec/env_tags (same objects), so only the non-default
             # branches -- the ones a branch-blind reader never sees -- are added,
-            # each named by its own binding.
+            # each named by its own binding. A branch's env_tags badge is not a
+            # best-effort note: _check_branches fails it.
             for branch in cast("list[object]", branches):
                 if not isinstance(branch, Mapping):
                     continue
                 branch_map = cast("Mapping[str, object]", branch)
                 if branch_map.get("default"):
                     continue
-                for key in ("env_spec", "env_tags"):
+                for key in ("env_spec",):
                     value = branch_map.get(key)
                     if isinstance(value, Mapping) and "error" in value:
                         badge = cast("Mapping[str, object]", value)["error"]
