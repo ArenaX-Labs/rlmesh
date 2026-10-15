@@ -43,6 +43,13 @@ static RLMeshStatus decline_load(void* ud, const RLMeshValue* config) {
   rlmesh_callback_set_error("load failed", false);
   return RLMESH_ERR_MODEL;
 }
+static RLMeshStatus decline_adapter_load(void* ud, const RLMeshValue* config) {
+  (void)ud;
+  (void)config;
+  rlmesh_callback_set_error_class(RLMESH_ERROR_CLASS_ADAPTER_RESOLUTION_ERROR,
+                                  "adapter unavailable");
+  return RLMESH_ERR_INVALID_ARGUMENT;
+}
 int main(void) {
   State state = {0};
   RLMeshModelVtable vt = RLMESH_MODEL_VTABLE_INIT;
@@ -94,6 +101,12 @@ int main(void) {
   State failure = {0};
   vt.load = decline_load;
   CHECK(rlmesh_model_new(&vt, &failure, NULL, &model) == RLMESH_ERR_MODEL && model == NULL);
+  CHECK(failure.frees == 0 && failure.closes == 0);
+  vt.load = decline_adapter_load;
+  CHECK(rlmesh_model_new(&vt, &failure, NULL, &model) == RLMESH_ERR_INVALID_ARGUMENT &&
+        model == NULL);
+  CHECK(rlmesh_last_error_class() == RLMESH_ERROR_CLASS_ADAPTER_RESOLUTION_ERROR);
+  CHECK(strcmp(rlmesh_last_error_message(), "adapter unavailable") == 0);
   CHECK(failure.frees == 0 && failure.closes == 0);
   vt.load = load;
   RLMeshValue* config = NULL;

@@ -99,6 +99,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ### Fixed
 
+- C callbacks setting `ADAPTER_RESOLUTION_ERROR` now preserve that exact last-error class while returning `RLMESH_ERR_INVALID_ARGUMENT`, instead of collapsing to ValueError.
+
 - DLPack 1.0 exports requested with `copy=True` now set the standard `IS_COPIED` flag as well as exposing writable, independent storage. DLPack imports reject overflowing sizes and strides before accessing producer data.
 
 - Native model batch and chunk-batch failures preserve `ModelException` identity, recoverability, and wire message text. Engine warnings run on the calling thread, point to the Python caller, and retain their original warning class under an `"error"` warnings filter.

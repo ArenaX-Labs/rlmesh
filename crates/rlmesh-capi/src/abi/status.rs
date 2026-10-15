@@ -365,9 +365,8 @@ pub(crate) fn error_of_class(class: RLMeshErrorClass, message: &str) -> rlmesh::
             Error::environment_recoverable(message)
         }
         RLMeshErrorClass::ModelException => Error::model(message),
-        RLMeshErrorClass::ValueError | RLMeshErrorClass::AdapterResolutionError => {
-            Error::invalid_argument(message)
-        }
+        RLMeshErrorClass::ValueError => Error::invalid_argument(message),
+        RLMeshErrorClass::AdapterResolutionError => Error::adapter_resolution(message),
         RLMeshErrorClass::TypeError => Error::Type(message),
         RLMeshErrorClass::RuntimeError => Error::Runtime(message),
         RLMeshErrorClass::OSError => Error::Os(message),
