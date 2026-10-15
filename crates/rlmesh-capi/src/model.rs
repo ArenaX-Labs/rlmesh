@@ -408,10 +408,20 @@ impl ModelHandler for CModelHandler {
                     },
                 )
                 .collect();
+            let lanes: Option<Vec<RLMeshValue>> = lanes.map(|lanes| {
+                let spec = contract
+                    .as_ref()
+                    .and_then(|c| c.observation_space.as_ref())
+                    .expect("decoded lanes have a spec");
+                lanes
+                    .into_iter()
+                    .map(|v| RLMeshValue::new(rlmesh::binding::value_from_space(spec, v)))
+                    .collect()
+            });
             let lane_ptrs: Option<Vec<*const RLMeshValue>> = lanes.as_ref().map(|lanes| {
                 lanes
                     .iter()
-                    .map(|value| std::ptr::from_ref(value).cast::<RLMeshValue>())
+                    .map(|value| std::ptr::from_ref(value))
                     .collect()
             });
             // `RLMeshContract` is repr(transparent) over `EnvContract`: borrow the
@@ -438,9 +448,9 @@ impl ModelHandler for CModelHandler {
             let status = unsafe { predict(user_data.0, &view, out.as_mut_ptr()) };
             // Reclaim every written handle whatever the status: on success they are
             // the actions, on failure they must not leak.
-            let actions: Vec<Option<SpaceValue>> = out
+            let actions: Vec<Option<rlmesh::Value>> = out
                 .into_iter()
-                .map(|ptr| (!ptr.is_null()).then(|| unsafe { Box::from_raw(ptr) }.0))
+                .map(|ptr| (!ptr.is_null()).then(|| unsafe { Box::from_raw(ptr) }.value().clone()))
                 .collect();
             if status != 0 {
                 return Err(callback_error("model predict declined"));
@@ -455,9 +465,17 @@ impl ModelHandler for CModelHandler {
                 .into_iter()
                 .enumerate()
                 .map(|(row, action)| {
-                    action.ok_or_else(|| {
+                    let action = action.ok_or_else(|| {
                         Error::model(format!("predict returned OK but left action {row} unset"))
-                    })
+                    })?;
+                    match contract.as_ref().and_then(|c| c.action_space.as_ref()) {
+                        Some(spec) => rlmesh::binding::value_to_space(spec, &action),
+                        // The legacy handler permits routes with no contract. A
+                        // tensor already carries the wire layout in that case.
+                        None => Ok(SpaceValue::Box(
+                            rlmesh::binding::tensor_core(action.as_tensor()?).clone(),
+                        )),
+                    }
                 })
                 .collect()
         })
@@ -978,7 +996,9 @@ mod tests {
 
     use super::*;
     use crate::abi::status::rlmesh_last_error_is_recoverable;
-    use crate::value::handle::rlmesh_value_discrete;
+    fn rlmesh_value_discrete(n: i64) -> *mut RLMeshValue {
+        crate::value::handle::into_handle(rlmesh::Value::Int(n))
+    }
 
     /// A distinctive allocation size nothing else in the test binary requests, so
     /// "the capi freed the row" is observable without sampling ambient churn:
@@ -1053,7 +1073,10 @@ mod tests {
     }
 
     fn owned(value: SpaceValue) -> *mut RLMeshValue {
-        Box::into_raw(Box::new(RLMeshValue(value)))
+        crate::value::handle::into_handle(rlmesh::binding::value_from_space(
+            &rlmesh_spaces::SpaceSpec::default(),
+            value,
+        ))
     }
 
     fn u8_box(byte: u8) -> SpaceValue {
@@ -1152,7 +1175,7 @@ mod tests {
         let obs = unsafe { &*obs };
         for row in 0..obs.num_envs {
             let value = unsafe { &**obs.observations.add(row) };
-            let SpaceValue::Discrete(n) = &value.0 else {
+            let rlmesh::Value::Int(n) = value.value() else {
                 return RLMeshStatus::Type as c_int;
             };
             unsafe { *out.add(row) = rlmesh_value_discrete(*n) };

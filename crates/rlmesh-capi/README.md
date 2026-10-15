@@ -13,6 +13,40 @@ of the wire:
 
 Status: alpha. The ABI (`RLMESH_ABI_VERSION`) will break before 1.0.
 
+## ABI 5 values and tensors
+
+ABI 5 replaces the space-specific value projection with immutable core
+`RLMeshValue` handles: None, Bool, Int, Float, Text, Bytes, Tensor, List,
+Tuple and Dict. A Discrete action is an Int; a Box observation and a
+MultiBinary or MultiDiscrete sample are Tensors. Constructors return a
+status and fill an owned handle. `rlmesh_value_clone` shares a reference;
+`rlmesh_value_free` releases it. Composite constructors retain references to
+children, so callers still free their own handles after success or failure.
+Dicts preserve insertion order, permit empty and embedded-NUL keys, and
+replace repeated keys in place. Metadata and InfoDict use the same Dict kind.
+
+Text and dict keys use length-bearing `RLMeshStr`. Reads of another kind
+return `RLMESH_ERR_TYPE`; numeric reads are strict. Missing keys and indices
+succeed with NULL, while present empty strings have non-NULL data. Borrowed
+children and bytes remain valid while a handle sharing their parent lives.
+
+`RLMeshTensor` is now opaque. `rlmesh_tensor_new` copies a buffer using the
+`RLMeshDType` enum; shape and strides use `(out, cap, out_len)` buffers,
+with NULL/0 for a length query and no partial writes for a short buffer.
+Strides are in bytes. Clone, Value conversion and contiguous reshape share
+read-only storage; `rlmesh_tensor_copy` makes independent storage. An
+`rlmesh_value_as_tensor` result is an owned shared reference to free with
+`rlmesh_tensor_free`. The old tensor POD, DLPack dtype triple, tensor release
+function and package-semver ABI accessors are removed. Use
+`rlmesh_build_info` for package identity. Package SONAME generation is read
+from `RLMESH_ABI_VERSION`, now 5.
+
+The rest of the C parity migration is ongoing: the legacy env/model/run
+interfaces below have not yet become the full facade surface. In particular,
+the facade on this branch has no native DLPack import/export methods, and
+C does not expose them. C++ receives only compatibility changes for the new C
+value and tensor calls; its full parity API is a separate wave.
+
 ## Layout
 
 - `include/rlmesh.h` — the C ABI (C11). Hand-authored; the single header authority.
@@ -75,7 +109,10 @@ And in C:
 #include <rlmesh.h>
 
 static int predict(void* ud, const RLMeshObservation* obs, RLMeshValue** out) {
-  for (size_t i = 0; i < obs->num_envs; ++i) out[i] = rlmesh_value_discrete(0);
+  for (size_t i = 0; i < obs->num_envs; ++i) {
+    RLMeshStatus status = rlmesh_value_int(0, &out[i]);
+    if (status != RLMESH_OK) return status;
+  }
   return RLMESH_OK;
 }
 
@@ -120,7 +157,7 @@ target_link_libraries(my_sim PRIVATE rlmesh::rlmesh)
 install your binary beside it or set an install rpath. `rlmesh::rlmesh_static`
 is for fully static targets with no other Rust library linked in. The package
 version is the ABI generation (`RLMESH_ABI_VERSION`), so
-`find_package(rlmesh 4)` refuses a package of another ABI generation; call
+`find_package(rlmesh 5)` refuses a package of another ABI generation; call
 `rlmesh_abi_check()` at startup to catch a header and library from different
 releases.
 
@@ -336,9 +373,9 @@ the library. Invalid declarations fail creation with `RLMESH_ERR_INVALID_ARGUMEN
 `NULL` (C++: an empty string) preserves the legacy runtime exactly: `"c"` with
 no language version or compiler. Hosts built against older headers also keep
 that output. A new header with an old library silently emits the old `"c"`
-output too, even though both use ABI 4 and `rlmesh_abi_check()` passes: the old
+output too: the old
 library ignores the appended field. The field is guarded by `struct_size`, so
-ABI generation 4 is unchanged. Existing C callers that zero-initialize a config
+For the legacy env config below, C callers that zero-initialize a config
 can adopt `rlmesh_env_config_init()` to opt into detection. Native models do
 not currently emit a describe envelope and have no model config to extend.
 

@@ -6,14 +6,14 @@
 static int reset(void* data, const RLMeshResetArgs* args, RLMeshResetResult* out) {
   (void)data;
   (void)args;
-  out->observation = rlmesh_value_discrete(0);
+  rlmesh_value_int(0, &out->observation);
   return out->observation ? 0 : 1;
 }
 
 static int step(void* data, const RLMeshValue* action, RLMeshStepResult* out) {
   (void)data;
   (void)action;
-  out->observation = rlmesh_value_discrete(0);
+  rlmesh_value_int(0, &out->observation);
   out->terminated = true;
   return out->observation ? 0 : 1;
 }

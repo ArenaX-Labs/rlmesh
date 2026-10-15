@@ -32,7 +32,7 @@ pub struct RLMeshStr {
 }
 
 impl RLMeshStr {
-    fn borrowed(text: &str) -> Self {
+    pub(crate) fn borrowed(text: &str) -> Self {
         Self {
             data: text.as_ptr().cast(),
             len: text.len(),
@@ -41,7 +41,7 @@ impl RLMeshStr {
 
     /// # Safety
     /// `data` points at `len` readable bytes (or `len` is 0).
-    unsafe fn read<'a>(self, what: &str) -> Result<&'a str, CapiError> {
+    pub(crate) unsafe fn read<'a>(self, what: &str) -> Result<&'a str, CapiError> {
         let bytes = unsafe { slice_arg(self.data.cast::<u8>(), self.len, what) }?;
         std::str::from_utf8(bytes)
             .map_err(|_| CapiError::invalid_arg(format!("{what} is not UTF-8")))
@@ -134,24 +134,8 @@ unsafe fn read_options<T: Copy>(
     if ptr.is_null() {
         return Ok(None);
     }
-    let struct_size = unsafe { ptr.cast::<usize>().read_unaligned() };
-    if struct_size < min_size {
-        return Err(CapiError::invalid_arg(format!(
-            "{name}.struct_size {struct_size} is below its minimum {min_size}"
-        )));
-    }
-    let own = std::mem::size_of::<T>();
-    if struct_size > own {
-        let tail =
-            unsafe { std::slice::from_raw_parts(ptr.cast::<u8>().add(own), struct_size - own) };
-        if let Some(offset) = tail.iter().position(|&byte| byte != 0) {
-            return Err(CapiError::type_error(format!(
-                "{name} sets byte {} past the {own} this library knows",
-                own + offset
-            )));
-        }
-    }
-    Ok(Some(unsafe { ptr.read_unaligned() }))
+    debug_assert_eq!(min_size, std::mem::size_of::<T>());
+    unsafe { crate::abi::sizing::read(ptr, name) }
 }
 
 fn space_dtype(value: i32, field: &str) -> Result<rlmesh::DType, CapiError> {
@@ -218,7 +202,7 @@ fn typed<'a, T>(
 
 /// SPC-20's buffer rule: `*out_len` always gets the full length; `out == NULL`
 /// with `cap == 0` is a length query; a short `cap` writes nothing.
-fn copy_buffer<T: Copy>(
+pub(crate) fn copy_buffer<T: Copy>(
     src: &[T],
     out: *mut T,
     cap: usize,
@@ -481,7 +465,7 @@ pub extern "C" fn rlmesh_space_sample(
         if out.is_null() {
             return Err(CapiError::invalid_arg("null out"));
         }
-        let value = rlmesh::binding::space_sample_wire(require_space(space)?)?;
+        let value = require_space(space)?.sample()?;
         write_out(out, into_handle(value))
     })
 }
@@ -493,10 +477,10 @@ pub extern "C" fn rlmesh_space_contains(
     value: *const RLMeshValue,
 ) -> bool {
     guard_value(false, || {
-        // SAFETY: RLMeshValue is repr(transparent) over the value.
+        // SAFETY: value is NULL or a live immutable value handle.
         let value = unsafe { value.as_ref() };
         match (space_ref(space), value) {
-            (Some(space), Some(value)) => rlmesh::binding::space_contains_wire(space, &value.0),
+            (Some(space), Some(value)) => space.contains(value.value()),
             _ => false,
         }
     })

@@ -720,54 +720,66 @@ inline void set_warning_handler(std::function<void(const Warning&)> handler) {
 
 // ---- dtype + tensor ---------------------------------------------------------
 
-/// The RLMeshDLPackDType of a C++ element type (float, double, int32_t, int64_t,
+/// The RLMeshDType of a C++ element type (float, double, int32_t, int64_t,
 /// uint8_t, bool).
 template <class T>
-constexpr RLMeshDLPackDType dtype_of() {
+constexpr RLMeshDType dtype_of() {
   static_assert(std::is_same<T, float>::value || std::is_same<T, double>::value ||
                     std::is_same<T, int32_t>::value || std::is_same<T, int64_t>::value ||
                     std::is_same<T, uint8_t>::value || std::is_same<T, bool>::value,
                 "rlmesh::dtype_of: unsupported element type");
   if constexpr (std::is_same<T, float>::value) {
-    return RLMESH_F32;
+    return RLMESH_DTYPE_FLOAT32;
   } else if constexpr (std::is_same<T, double>::value) {
-    return RLMESH_F64;
+    return RLMESH_DTYPE_FLOAT64;
   } else if constexpr (std::is_same<T, int32_t>::value) {
-    return RLMESH_I32;
+    return RLMESH_DTYPE_INT32;
   } else if constexpr (std::is_same<T, int64_t>::value) {
-    return RLMESH_I64;
+    return RLMESH_DTYPE_INT64;
   } else if constexpr (std::is_same<T, bool>::value) {
-    return RLMESH_BOOL;
+    return RLMESH_DTYPE_BOOL;
   } else {
-    return RLMESH_U8;
+    return RLMESH_DTYPE_UINT8;
   }
 }
 
-/// A borrowed, DLPack-shaped tensor view (valid while its source value lives).
+/// Compatibility view over an owned ABI 5 tensor reference.
 class Tensor {
  public:
-  explicit Tensor(const RLMeshTensor& raw) : raw_(raw) {}
-
-  const void* data() const { return raw_.data; }
-  RLMeshDLPackDType dtype() const { return raw_.dtype; }
-  int32_t ndim() const { return raw_.ndim; }
-  const int64_t* shape() const { return raw_.shape; }
-  const int64_t* strides() const { return raw_.strides; }
-  bool is_contiguous() const { return raw_.strides == nullptr; }
+  explicit Tensor(RLMeshTensor* raw) : raw_(raw, rlmesh_tensor_free) {
+    size_t n = 0;
+    rlmesh_tensor_ndim(raw, &n);
+    std::vector<size_t> shape(n), strides(n);
+    rlmesh_tensor_shape(raw, shape.data(), n, &n);
+    rlmesh_tensor_strides(raw, strides.data(), n, &n);
+    shape_.assign(shape.begin(), shape.end());
+    size_t width = rlmesh_ext_dtype_size(rlmesh_tensor_dtype(raw));
+    for (size_t stride : strides) strides_.push_back(static_cast<int64_t>(stride / width));
+  }
+  const void* data() const {
+    const void* out = nullptr;
+    size_t n = 0;
+    rlmesh_tensor_buffer(raw_.get(), &out, &n);
+    return out;
+  }
+  RLMeshDType dtype() const { return rlmesh_tensor_dtype(raw_.get()); }
+  int32_t ndim() const { return static_cast<int32_t>(shape_.size()); }
+  const int64_t* shape() const { return shape_.data(); }
+  const int64_t* strides() const { return is_contiguous() ? nullptr : strides_.data(); }
+  bool is_contiguous() const { return rlmesh_tensor_is_contiguous(raw_.get()); }
   size_t numel() const {
-    size_t n = 1;
-    for (int32_t i = 0; i < raw_.ndim; ++i) n *= static_cast<size_t>(raw_.shape[i]);
+    size_t n = 0;
+    rlmesh_tensor_size(raw_.get(), &n);
     return n;
   }
-  /// Flat element pointer for `[0, numel())` — valid only when `is_contiguous()`;
-  /// nullptr for a strided view (walk `shape()`/`strides()` instead).
   template <class T>
   const T* as() const {
-    return is_contiguous() ? static_cast<const T*>(raw_.data) : nullptr;
+    return is_contiguous() ? static_cast<const T*>(data()) : nullptr;
   }
 
  private:
-  RLMeshTensor raw_;
+  std::shared_ptr<RLMeshTensor> raw_;
+  std::vector<int64_t> shape_, strides_;
 };
 
 // ---- values -----------------------------------------------------------------
@@ -782,7 +794,7 @@ class ValueRef {
   RLMeshValueKind kind() const { return rlmesh_value_kind(ptr_); }
 
   Result<Tensor> as_tensor() const {
-    RLMeshTensor out{};
+    RLMeshTensor* out = nullptr;
     if (RLMeshStatus status = rlmesh_value_as_tensor(ptr_, &out); status != RLMESH_OK) {
       return Error::from_last(status);
     }
@@ -791,7 +803,7 @@ class ValueRef {
 
   Result<int64_t> as_discrete() const {
     int64_t out = 0;
-    if (RLMeshStatus status = rlmesh_value_as_discrete(ptr_, &out); status != RLMESH_OK) {
+    if (RLMeshStatus status = rlmesh_value_as_int(ptr_, &out); status != RLMESH_OK) {
       return Error::from_last(status);
     }
     return out;
@@ -799,43 +811,35 @@ class ValueRef {
 
   /// Borrowed UTF-8 bytes (NOT NUL-terminated), valid while the value lives.
   Result<std::string_view> as_text() const {
-    const char* data = nullptr;
-    size_t len = 0;
-    if (RLMeshStatus status = rlmesh_value_as_text(ptr_, &data, &len); status != RLMESH_OK) {
+    RLMeshStr out{};
+    if (RLMeshStatus status = rlmesh_value_as_text(ptr_, &out); status != RLMESH_OK)
       return Error::from_last(status);
-    }
-    return std::string_view(data, len);
+    return std::string_view(out.data, out.len);
   }
 
-  /// Element count of a MultiBinary / MultiDiscrete value.
+  /// Compatibility reads for the tensor representation of array spaces.
   Result<size_t> array_len() const {
-    size_t out = 0;
-    if (RLMeshStatus status = rlmesh_value_array_len(ptr_, &out); status != RLMESH_OK) {
-      return Error::from_last(status);
-    }
-    return out;
+    auto t = as_tensor();
+    if (!t) return t.error();
+    return t->numel();
   }
-
   Result<std::vector<uint8_t>> as_multi_binary() const {
-    auto len = array_len();
-    if (!len) return len.error();
-    std::vector<uint8_t> out(*len);
-    if (RLMeshStatus status = rlmesh_value_copy_multi_binary(ptr_, out.data(), out.size());
-        status != RLMESH_OK) {
-      return Error::from_last(status);
-    }
-    return out;
+    auto t = as_tensor();
+    if (!t) return t.error();
+    if (!t->is_contiguous() ||
+        (t->dtype() != RLMESH_DTYPE_INT8 && t->dtype() != RLMESH_DTYPE_UINT8 &&
+         t->dtype() != RLMESH_DTYPE_BOOL))
+      return Error(RLMESH_ERR_TYPE, "expected a contiguous byte tensor");
+    auto p = t->as<uint8_t>();
+    return std::vector<uint8_t>(p, p + t->numel());
   }
-
   Result<std::vector<int64_t>> as_multi_discrete() const {
-    auto len = array_len();
-    if (!len) return len.error();
-    std::vector<int64_t> out(*len);
-    if (RLMeshStatus status = rlmesh_value_copy_multi_discrete(ptr_, out.data(), out.size());
-        status != RLMESH_OK) {
-      return Error::from_last(status);
-    }
-    return out;
+    auto t = as_tensor();
+    if (!t) return t.error();
+    if (!t->is_contiguous() || t->dtype() != RLMESH_DTYPE_INT64)
+      return Error(RLMESH_ERR_TYPE, "expected a contiguous int64 tensor");
+    auto p = t->as<int64_t>();
+    return std::vector<int64_t>(p, p + t->numel());
   }
 
   /// Child count of a Dict / Tuple value.
@@ -849,25 +853,25 @@ class ValueRef {
 
   /// Tuple child `index`; nullopt when this is not a Tuple or `index` is absent.
   std::optional<ValueRef> at(size_t index) const {
-    const RLMeshValue* child = rlmesh_value_tuple_get(ptr_, index);
+    const RLMeshValue* child = nullptr;
+    if (rlmesh_value_get(ptr_, index, &child) != RLMESH_OK) return std::nullopt;
     if (child == nullptr) return std::nullopt;
     return ValueRef(child);
   }
 
-  /// Dict key `index`, in sorted key order (borrowed, NOT NUL-terminated).
+  /// Dict key `index`, in insertion order (borrowed, NOT NUL-terminated).
   Result<std::string_view> key(size_t index) const {
-    const char* data = nullptr;
-    size_t len = 0;
-    if (RLMeshStatus status = rlmesh_value_dict_key(ptr_, index, &data, &len);
-        status != RLMESH_OK) {
+    RLMeshStr out{};
+    if (RLMeshStatus status = rlmesh_value_dict_key_at(ptr_, index, &out); status != RLMESH_OK)
       return Error::from_last(status);
-    }
-    return std::string_view(data, len);
+    return std::string_view(out.data ? out.data : "", out.len);
   }
 
   /// Dict child by key; nullopt when this is not a Dict or the key is absent.
   std::optional<ValueRef> get(const std::string& key) const {
-    const RLMeshValue* child = rlmesh_value_dict_get(ptr_, key.c_str());
+    const RLMeshValue* child = nullptr;
+    RLMeshStr name{key.data(), key.size()};
+    if (rlmesh_value_dict_get(ptr_, name, &child) != RLMESH_OK) return std::nullopt;
     if (child == nullptr) return std::nullopt;
     return ValueRef(child);
   }
@@ -875,12 +879,13 @@ class ValueRef {
   /// Dict child `index`, in the same sorted key order as `key(index)`; nullopt
   /// when this is not a Dict or `index` is out of range.
   std::optional<ValueRef> at_key(size_t index) const {
-    const RLMeshValue* child = rlmesh_value_dict_get_at(ptr_, index);
+    const RLMeshValue* child = nullptr;
+    if (rlmesh_value_dict_value_at(ptr_, index, &child) != RLMESH_OK) return std::nullopt;
     if (child == nullptr) return std::nullopt;
     return ValueRef(child);
   }
 
-  /// Every (key, child) of a Dict, in sorted key order — NOT the declaration
+  /// Every (key, child) of a Dict, in insertion order — NOT the declaration
   /// order `SpaceRef::items()` walks. Pair a value child with its space by key.
   Result<std::vector<std::pair<std::string_view, ValueRef>>> items() const {
     auto count = size();
@@ -928,22 +933,42 @@ class Value {
   }
   ValueRef ref() const { return ValueRef(ptr_); }
 
-  static Result<Value> discrete(int64_t value) { return adopt(rlmesh_value_discrete(value)); }
+  static Result<Value> discrete(int64_t value) {
+    RLMeshValue* out = nullptr;
+    auto status = rlmesh_value_int(value, &out);
+    if (status != RLMESH_OK) return Error::from_last(status);
+    return Value(out);
+  }
 
   static Result<Value> text(std::string_view text) {
-    return adopt(rlmesh_value_text(text.data(), text.size()));
+    RLMeshValue* out = nullptr;
+    RLMeshStr view{text.data(), text.size()};
+    auto status = rlmesh_value_text(view, &out);
+    if (status != RLMESH_OK) return Error::from_last(status);
+    return Value(out);
   }
 
   /// Copy a contiguous row-major buffer into a Box value.
-  static Result<Value> box(const void* data, RLMeshDLPackDType dtype, std::vector<int64_t> shape) {
-    RLMeshTensor tensor{};
-    tensor.data = data;
-    tensor.ndim = static_cast<int32_t>(shape.size());
-    tensor.shape = shape.data();
-    tensor.strides = nullptr;
-    tensor.dtype = dtype;
-    tensor.device_type = RLMESH_DEVICE_CPU;
-    return adopt(rlmesh_value_box(&tensor));
+  static Result<Value> box(const void* data, RLMeshDType dtype, std::vector<int64_t> shape) {
+    std::vector<size_t> dims;
+    size_t nbytes = rlmesh_ext_dtype_size(dtype);
+    for (int64_t dim : shape) {
+      if (dim < 0) return Error(RLMESH_ERR_INVALID_ARGUMENT, "negative shape");
+      dims.push_back(static_cast<size_t>(dim));
+      nbytes *= static_cast<size_t>(dim);
+    }
+    RLMeshTensor* tensor = nullptr;
+    auto status = rlmesh_tensor_new(data, nbytes, dims.data(), dims.size(), dtype, &tensor);
+    if (status != RLMESH_OK) return Error::from_last(status);
+    RLMeshValue* out = nullptr;
+    status = rlmesh_value_tensor(tensor, &out);
+    if (status != RLMESH_OK) {
+      Error e = Error::from_last(status);
+      rlmesh_tensor_free(tensor);
+      return e;
+    }
+    rlmesh_tensor_free(tensor);
+    return Value(out);
   }
 
   /// Box from typed elements; the dtype follows T (see `dtype_of`).
@@ -953,38 +978,35 @@ class Value {
   }
 
   static Result<Value> multi_binary(const std::vector<uint8_t>& bits) {
-    return adopt(rlmesh_value_multi_binary(bits.data(), bits.size()));
+    std::vector<uint8_t> normalized;
+    for (uint8_t bit : bits) normalized.push_back(bit != 0);
+    return box(normalized.data(), RLMESH_DTYPE_INT8, {static_cast<int64_t>(bits.size())});
   }
 
   static Result<Value> multi_discrete(const std::vector<int64_t>& values) {
-    return adopt(rlmesh_value_multi_discrete(values.data(), values.size()));
+    return box(values.data(), RLMESH_DTYPE_INT64, {static_cast<int64_t>(values.size())});
   }
 
-  /// Tuple from owned children. On success the capi adopts every child; on
-  /// failure it adopts none, so this frees them all before returning.
+  /// Composite constructors retain child references in ABI 5.
   static Result<Value> tuple(std::vector<Value> children) {
-    std::vector<RLMeshValue*> raw;
-    raw.reserve(children.size());
-    for (Value& child : children) raw.push_back(child.release());
-    RLMeshValue* value = rlmesh_value_tuple(raw.data(), raw.size());
-    if (value == nullptr) return disown(raw);
-    return Value(value);
+    std::vector<const RLMeshValue*> raw;
+    for (auto& child : children) raw.push_back(child.raw());
+    RLMeshValue* out = nullptr;
+    auto status = rlmesh_value_tuple(raw.data(), raw.size(), &out);
+    if (status != RLMESH_OK) return Error::from_last(status);
+    return Value(out);
   }
-
-  /// Dict from owned (key, value) entries; keys must be unique. Same
-  /// all-or-nothing ownership as `tuple`.
   static Result<Value> dict(std::vector<std::pair<std::string, Value>> entries) {
-    std::vector<const char*> keys;
-    std::vector<RLMeshValue*> raw;
-    keys.reserve(entries.size());
-    raw.reserve(entries.size());
+    std::vector<RLMeshStr> keys;
+    std::vector<const RLMeshValue*> raw;
     for (auto& entry : entries) {
-      keys.push_back(entry.first.c_str());
-      raw.push_back(entry.second.release());
+      keys.push_back({entry.first.data(), entry.first.size()});
+      raw.push_back(entry.second.raw());
     }
-    RLMeshValue* value = rlmesh_value_dict(keys.data(), raw.data(), raw.size());
-    if (value == nullptr) return disown(raw);
-    return Value(value);
+    RLMeshValue* out = nullptr;
+    auto status = rlmesh_value_dict(keys.data(), raw.data(), raw.size(), &out);
+    if (status != RLMESH_OK) return Error::from_last(status);
+    return Value(out);
   }
 
  private:
@@ -1037,9 +1059,9 @@ class SpaceRef {
 
   const RLMeshSpaceSpec* raw() const { return ptr_; }
   bool valid() const { return ptr_ != nullptr; }
-  RLMeshValueKind kind() const { return rlmesh_space_type(ptr_); }
+  RLMeshSpaceKind kind() const { return rlmesh_space_type(ptr_); }
 
-  RLMeshDLPackDType dtype() const { return rlmesh_space_dtype(ptr_); }
+  RLMeshDType dtype() const { return rlmesh_space_dtype(ptr_); }
   size_t ndim() const { return rlmesh_space_ndim(ptr_); }
 
   Result<std::vector<int64_t>> shape() const {
@@ -1180,50 +1202,34 @@ class SpaceRef {
 namespace detail {
 
 /// Store `scalar` into `dst` as `dtype`; false for a dtype we cannot encode.
-inline bool store_scalar(uint8_t* dst, RLMeshDLPackDType dtype, double scalar) {
+inline bool store_scalar(uint8_t* dst, RLMeshDType dtype, double scalar) {
   auto put = [&](auto typed) {
     std::memcpy(dst, &typed, sizeof(typed));
     return true;
   };
-  if (dtype.lanes != 1) return false;
-  switch (dtype.code) {
-    case 0:  // int
-      switch (dtype.bits) {
-        case 8:
-          return put(static_cast<int8_t>(scalar));
-        case 16:
-          return put(static_cast<int16_t>(scalar));
-        case 32:
-          return put(static_cast<int32_t>(scalar));
-        case 64:
-          return put(static_cast<int64_t>(scalar));
-        default:
-          return false;
-      }
-    case 1:  // uint
-      switch (dtype.bits) {
-        case 8:
-          return put(static_cast<uint8_t>(scalar));
-        case 16:
-          return put(static_cast<uint16_t>(scalar));
-        case 32:
-          return put(static_cast<uint32_t>(scalar));
-        case 64:
-          return put(static_cast<uint64_t>(scalar));
-        default:
-          return false;
-      }
-    case 2:  // float
-      switch (dtype.bits) {
-        case 32:
-          return put(static_cast<float>(scalar));
-        case 64:
-          return put(scalar);
-        default:
-          return false;
-      }
-    case 6:  // bool
-      return dtype.bits == 8 && put(static_cast<uint8_t>(scalar != 0.0 ? 1 : 0));
+  switch (dtype) {
+    case RLMESH_DTYPE_INT8:
+      return put(static_cast<int8_t>(scalar));
+    case RLMESH_DTYPE_INT16:
+      return put(static_cast<int16_t>(scalar));
+    case RLMESH_DTYPE_INT32:
+      return put(static_cast<int32_t>(scalar));
+    case RLMESH_DTYPE_INT64:
+      return put(static_cast<int64_t>(scalar));
+    case RLMESH_DTYPE_UINT8:
+      return put(static_cast<uint8_t>(scalar));
+    case RLMESH_DTYPE_UINT16:
+      return put(static_cast<uint16_t>(scalar));
+    case RLMESH_DTYPE_UINT32:
+      return put(static_cast<uint32_t>(scalar));
+    case RLMESH_DTYPE_UINT64:
+      return put(static_cast<uint64_t>(scalar));
+    case RLMESH_DTYPE_FLOAT32:
+      return put(static_cast<float>(scalar));
+    case RLMESH_DTYPE_FLOAT64:
+      return put(scalar);
+    case RLMESH_DTYPE_BOOL:
+      return put(static_cast<uint8_t>(scalar != 0.0));
     default:
       return false;
   }
@@ -1238,9 +1244,9 @@ inline bool store_scalar(uint8_t* dst, RLMeshDLPackDType dtype, double scalar) {
 /// `n` for MultiBinary([n]) — and Dict / Tuple recursed.
 inline Result<Value> zeros_for(SpaceRef space) {
   switch (space.kind()) {
-    case RLMESH_VALUE_BOX: {
-      RLMeshDLPackDType dtype = space.dtype();
-      size_t stride = rlmesh_dtype_size(dtype);
+    case RLMESH_SPACE_KIND_BOX: {
+      RLMeshDType dtype = space.dtype();
+      size_t stride = rlmesh_ext_dtype_size(dtype);
       if (stride == 0) return Error(RLMESH_ERR_TYPE, "unsupported Box dtype");
       auto shape = space.shape();
       if (!shape) return shape.error();
@@ -1259,12 +1265,12 @@ inline Result<Value> zeros_for(SpaceRef space) {
       }
       return Value::box(bytes.data(), dtype, std::move(*shape));
     }
-    case RLMESH_VALUE_DISCRETE: {
+    case RLMESH_SPACE_KIND_DISCRETE: {
       auto range = space.discrete();
       if (!range) return range.error();
       return Value::discrete(range->start);
     }
-    case RLMESH_VALUE_TEXT: {
+    case RLMESH_SPACE_KIND_TEXT: {
       auto length = space.text_length();
       if (!length) return length.error();
       size_t min = length->min > 0 ? static_cast<size_t>(length->min) : 0;
@@ -1287,17 +1293,17 @@ inline Result<Value> zeros_for(SpaceRef space) {
       for (size_t i = 0; i < min; ++i) text.append(fill);
       return Value::text(text);
     }
-    case RLMESH_VALUE_MULTI_BINARY: {
+    case RLMESH_SPACE_KIND_MULTI_BINARY: {
       auto count = space.numel();
       if (!count) return count.error();
       return Value::multi_binary(std::vector<uint8_t>(*count, 0));
     }
-    case RLMESH_VALUE_MULTI_DISCRETE: {
+    case RLMESH_SPACE_KIND_MULTI_DISCRETE: {
       auto counts = space.nvec();
       if (!counts) return counts.error();
       return Value::multi_discrete(std::vector<int64_t>(counts->size(), 0));
     }
-    case RLMESH_VALUE_TUPLE: {
+    case RLMESH_SPACE_KIND_TUPLE: {
       auto count = space.size();
       if (!count) return count.error();
       std::vector<Value> children;
@@ -1311,7 +1317,7 @@ inline Result<Value> zeros_for(SpaceRef space) {
       }
       return Value::tuple(std::move(children));
     }
-    case RLMESH_VALUE_DICT: {
+    case RLMESH_SPACE_KIND_DICT: {
       auto fields = space.items();
       if (!fields) return fields.error();
       std::vector<std::pair<std::string, Value>> entries;
@@ -1323,7 +1329,7 @@ inline Result<Value> zeros_for(SpaceRef space) {
       }
       return Value::dict(std::move(entries));
     }
-    case RLMESH_VALUE_INVALID:
+    case RLMESH_SPACE_KIND_UNKNOWN:
     default:
       return Error(RLMESH_ERR_INVALID_ARGUMENT, "no value fits an unspecified space");
   }
@@ -1708,7 +1714,7 @@ class Space {
   /// A Box with one bound pair for every element. A float dtype takes
   /// +-INFINITY for an unbounded side; an integer one needs finite whole bounds
   /// the dtype can represent (out of range is an error, never clamped).
-  static Result<Space> box(RLMeshDLPackDType dtype, const std::vector<int64_t>& shape, double low,
+  static Result<Space> box(RLMeshDType dtype, const std::vector<int64_t>& shape, double low,
                            double high) {
     return adopt(rlmesh_space_box(dtype, shape.data(), shape.size(), low, high));
   }
@@ -1718,7 +1724,7 @@ class Space {
     return box(dtype_of<T>(), shape, low, high);
   }
   /// A Box with per-element bounds (`low` / `high` hold the element count each).
-  static Result<Space> box(RLMeshDLPackDType dtype, const std::vector<int64_t>& shape,
+  static Result<Space> box(RLMeshDType dtype, const std::vector<int64_t>& shape,
                            const std::vector<double>& low, const std::vector<double>& high) {
     size_t numel = 1;
     for (int64_t dim : shape) numel *= static_cast<size_t>(dim < 0 ? 0 : dim);

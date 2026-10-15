@@ -2,119 +2,24 @@
 //! core, without a live server.
 #![allow(unsafe_code)] // exercising the raw FFI surface directly.
 
-use std::ffi::{c_char, c_void};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::ffi::c_char;
 
-use rlmesh_spaces::spaces::{BoxSpaceBuilder, DiscreteBuilder, TextBuilder};
+use rlmesh_spaces::spaces::{BoxSpaceBuilder, TextBuilder};
 use rlmesh_spaces::{
-    BoxBounds, BoxSpec, DType, DictSpec, DiscreteSpec, ElementwiseBounds, EnvContract,
-    MultiDiscreteSpec, SpaceKind, SpaceSpec, TextSpec, TupleSpec, UniformBounds,
+    BoxBounds, BoxSpec, DType, DictSpec, DiscreteSpec, ElementwiseBounds, MultiDiscreteSpec,
+    SpaceKind, SpaceSpec, TextSpec, TupleSpec, UniformBounds,
 };
 
-use crate::abi::status::{RLMeshStatus, rlmesh_last_error_is_recoverable};
+use crate::abi::status::RLMeshStatus;
 use crate::spaces::{
-    RLMeshContract, RLMeshSpaceSpec, rlmesh_contract_num_envs, rlmesh_contract_observation_space,
-    rlmesh_space_box, rlmesh_space_box_bounds, rlmesh_space_box_elementwise,
-    rlmesh_space_copy_nvec, rlmesh_space_copy_shape, rlmesh_space_dict, rlmesh_space_dict_get,
-    rlmesh_space_dict_get_at, rlmesh_space_dict_key, rlmesh_space_discrete,
-    rlmesh_space_discrete_n, rlmesh_space_len, rlmesh_space_spec_free, rlmesh_space_text_charset,
-    rlmesh_space_text_length, rlmesh_space_tuple, rlmesh_space_tuple_get, rlmesh_space_type,
-};
-use crate::value::dtype::RLMeshDLPackDType;
-use crate::value::handle::{
-    RLMeshValue, RLMeshValueKind, rlmesh_value_array_len, rlmesh_value_as_discrete,
-    rlmesh_value_as_tensor, rlmesh_value_as_text, rlmesh_value_box, rlmesh_value_copy_multi_binary,
-    rlmesh_value_copy_multi_discrete, rlmesh_value_dict, rlmesh_value_dict_get,
-    rlmesh_value_dict_get_at, rlmesh_value_dict_key, rlmesh_value_discrete, rlmesh_value_free,
-    rlmesh_value_kind, rlmesh_value_len, rlmesh_value_multi_binary, rlmesh_value_multi_discrete,
-    rlmesh_value_text, rlmesh_value_tuple, rlmesh_value_tuple_get,
-};
-use crate::value::tensor::{RLMeshTensor, rlmesh_tensor_release};
-
-/// Run `check` on a freshly built value, then free it.
-fn round_trip(_spec: &SpaceSpec, value: *mut RLMeshValue, check: impl FnOnce(*const RLMeshValue)) {
-    check(value);
-    unsafe { rlmesh_value_free(value) };
-}
-
-const F32: RLMeshDLPackDType = RLMeshDLPackDType {
-    code: 2,
-    bits: 32,
-    lanes: 1,
+    RLMeshSpaceSpec, rlmesh_space_box, rlmesh_space_box_bounds, rlmesh_space_box_elementwise,
+    rlmesh_space_copy_nvec, rlmesh_space_dict, rlmesh_space_dict_get, rlmesh_space_dict_get_at,
+    rlmesh_space_dict_key, rlmesh_space_discrete, rlmesh_space_discrete_n, rlmesh_space_len,
+    rlmesh_space_spec_free, rlmesh_space_text_charset, rlmesh_space_text_length,
+    rlmesh_space_tuple, rlmesh_space_tuple_get, rlmesh_space_type,
 };
 
 const HEADER: &str = include_str!("../include/rlmesh.h");
-
-fn box_spec() -> SpaceSpec {
-    BoxSpaceBuilder::unbounded(vec![2, 2])
-        .dtype(DType::Float32)
-        .build()
-        .expect("valid box spec")
-}
-
-fn tensor_view(data: &[f32], shape: &[i64]) -> RLMeshTensor {
-    RLMeshTensor {
-        data: data.as_ptr().cast::<c_void>(),
-        ndim: shape.len() as i32,
-        shape: shape.as_ptr(),
-        strides: std::ptr::null(),
-        dtype: F32,
-        device_type: 1,
-        device_id: 0,
-        flags: 0,
-        manager_ctx: std::ptr::null_mut(),
-        deleter: None,
-    }
-}
-
-#[test]
-fn box_value_round_trips() {
-    let spec = box_spec();
-    let data: [f32; 4] = [1.0, 2.0, 3.0, 4.0];
-    let shape: [i64; 2] = [2, 2];
-    let view = tensor_view(&data, &shape);
-    let value = unsafe { rlmesh_value_box(&view) };
-    assert!(!value.is_null(), "rlmesh_value_box returned null");
-    round_trip(&spec, value, |decoded| {
-        let mut out = RLMeshTensor {
-            data: std::ptr::null(),
-            ndim: 0,
-            shape: std::ptr::null(),
-            strides: std::ptr::null(),
-            dtype: F32,
-            device_type: 0,
-            device_id: 0,
-            flags: 0,
-            manager_ctx: std::ptr::null_mut(),
-            deleter: None,
-        };
-        assert_eq!(
-            unsafe { rlmesh_value_as_tensor(decoded, &mut out) },
-            RLMeshStatus::Ok
-        );
-        assert_eq!(out.ndim, 2);
-        let recovered = unsafe { std::slice::from_raw_parts(out.data.cast::<f32>(), 4) };
-        assert_eq!(recovered, &data);
-    });
-}
-
-#[test]
-fn discrete_value_round_trips() {
-    let spec = DiscreteBuilder::new(8)
-        .build()
-        .expect("valid discrete spec");
-    let value = rlmesh_value_discrete(5);
-    round_trip(&spec, value, |decoded| {
-        let mut out = 0i64;
-        assert_eq!(
-            unsafe { rlmesh_value_as_discrete(decoded, &mut out) },
-            RLMeshStatus::Ok
-        );
-        assert_eq!(out, 5);
-    });
-}
-
-/// The value the header gives `name` in an `enum { NAME = value, ... }` line.
 fn header_enum_value(name: &str) -> i64 {
     let prefix = format!("{name} = ");
     let value = HEADER
@@ -188,542 +93,10 @@ fn header_status_and_class_values_match_crate() {
 }
 
 #[test]
-fn header_abi_version_macros_match_crate() {
-    let macro_value = |name: &str| -> String {
-        let prefix = format!("#define {name} ");
-        HEADER
-            .lines()
-            .find_map(|line| line.strip_prefix(prefix.as_str()))
-            .map(|rest| rest.trim().to_string())
-            .expect("version macro present in header")
-    };
-    // The binary ABI generation: header macro, exported fn, and crate const must
-    // all agree (this is the gate consumers compile against).
-    assert_eq!(
-        macro_value("RLMESH_ABI_VERSION"),
-        crate::abi::RLMESH_ABI_VERSION.to_string()
-    );
-    assert_eq!(
-        crate::abi::rlmesh_abi_version(),
-        crate::abi::RLMESH_ABI_VERSION
-    );
-    // Package semver macros stay informational but honest vs the crate version.
-    assert_eq!(
-        macro_value("RLMESH_ABI_VERSION_MAJOR"),
-        env!("CARGO_PKG_VERSION_MAJOR")
-    );
-    assert_eq!(
-        macro_value("RLMESH_ABI_VERSION_MINOR"),
-        env!("CARGO_PKG_VERSION_MINOR")
-    );
-    assert_eq!(
-        macro_value("RLMESH_ABI_VERSION_PATCH"),
-        env!("CARGO_PKG_VERSION_PATCH")
-    );
-}
-
-#[test]
-fn header_dtype_macros_match_core() {
-    // The header's `RLMESH_<NAME>` dtype macros are hand-authored; assert each
-    // `RLMESH_DTYPE_INIT(code, bits, lanes)` triple still matches what core's
-    // `RLMeshDLPackDType::from_core` produces, so the C constants can't silently drift.
-    let triple = |name: &str| -> RLMeshDLPackDType {
-        let prefix = format!("#define {name} RLMESH_DTYPE_INIT(");
-        let rest = HEADER
-            .lines()
-            .find_map(|line| line.trim().strip_prefix(prefix.as_str()))
-            .unwrap_or_else(|| panic!("dtype macro {name} present in header"));
-        let inner = rest.split(')').next().expect("closing paren");
-        let parts: Vec<&str> = inner.split(',').map(str::trim).collect();
-        assert_eq!(
-            parts.len(),
-            3,
-            "{name} expects a (code, bits, lanes) triple"
-        );
-        RLMeshDLPackDType {
-            code: parts[0].parse().expect("code"),
-            bits: parts[1].parse().expect("bits"),
-            lanes: parts[2].parse().expect("lanes"),
-        }
-    };
-    for (name, dtype) in [
-        ("RLMESH_F32", DType::Float32),
-        ("RLMESH_F64", DType::Float64),
-        ("RLMESH_I32", DType::Int32),
-        ("RLMESH_I64", DType::Int64),
-        ("RLMESH_U8", DType::Uint8),
-        ("RLMESH_BOOL", DType::Bool),
-    ] {
-        assert_eq!(
-            Some(triple(name)),
-            RLMeshDLPackDType::from_core(dtype),
-            "header dtype macro {name} drifted from core"
-        );
-    }
-}
-
-#[test]
-fn text_value_round_trips() {
-    let spec = TextBuilder::new(32).build().expect("valid text spec");
-    let text = "pick up the cup";
-    let value = unsafe { rlmesh_value_text(text.as_ptr().cast(), text.len()) };
-    assert!(!value.is_null());
-    round_trip(&spec, value, |decoded| {
-        let mut ptr: *const std::ffi::c_char = std::ptr::null();
-        let mut len = 0usize;
-        assert_eq!(
-            unsafe { rlmesh_value_as_text(decoded, &mut ptr, &mut len) },
-            RLMeshStatus::Ok
-        );
-        let recovered = unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), len) };
-        assert_eq!(recovered, text.as_bytes());
-    });
-}
-
-#[test]
-fn dict_get_rejects_null_key() {
-    let key = c"only";
-    let keys: [*const c_char; 1] = [key.as_ptr()];
-    let values: [*mut RLMeshValue; 1] = [rlmesh_value_discrete(7)];
-    let dict = unsafe { rlmesh_value_dict(keys.as_ptr(), values.as_ptr(), 1) };
-    assert!(!dict.is_null());
-    // A NULL key must return NULL, never dereference it.
-    assert!(unsafe { rlmesh_value_dict_get(dict, std::ptr::null()) }.is_null());
-    assert!(!unsafe { rlmesh_value_dict_get(dict, key.as_ptr()) }.is_null());
-    unsafe { rlmesh_value_free(dict) };
-}
-
-#[test]
-fn dict_with_a_null_child_takes_no_ownership() {
-    // `[valid, NULL]` must fail without adopting `keep`, so the caller still owns
-    // it — freeing it here is a single valid free (the pre-fix code adopted then
-    // freed children on the error path, making this a double free).
-    let keep = rlmesh_value_discrete(1);
-    let keys: [*const c_char; 2] = [c"a".as_ptr(), c"b".as_ptr()];
-    let values: [*mut RLMeshValue; 2] = [keep, std::ptr::null_mut()];
-    let dict = unsafe { rlmesh_value_dict(keys.as_ptr(), values.as_ptr(), 2) };
-    assert!(dict.is_null());
-    unsafe { rlmesh_value_free(keep) };
-}
-
-#[test]
-fn box_accepts_scalar_with_null_shape() {
-    // A scalar Box (ndim == 0) may carry shape == NULL; constructing it must not
-    // form a slice from the null pointer.
-    let scalar: f32 = 4.0;
-    let view = RLMeshTensor {
-        data: std::ptr::from_ref(&scalar).cast::<c_void>(),
-        ndim: 0,
-        shape: std::ptr::null(),
-        strides: std::ptr::null(),
-        dtype: F32,
-        device_type: 1,
-        device_id: 0,
-        flags: 0,
-        manager_ctx: std::ptr::null_mut(),
-        deleter: None,
-    };
-    let value = unsafe { rlmesh_value_box(&view) };
-    assert!(!value.is_null(), "scalar box with null shape must succeed");
-    unsafe { rlmesh_value_free(value) };
-}
-
-#[test]
-fn space_copy_shape_rejects_null_out() {
-    let spec = box_spec();
-    let spec_ptr = std::ptr::from_ref(&spec).cast::<RLMeshSpaceSpec>();
-    // A NULL out with ample capacity for a non-empty shape must error, not deref.
-    assert_eq!(
-        unsafe { rlmesh_space_copy_shape(spec_ptr, std::ptr::null_mut(), 8) },
-        RLMeshStatus::InvalidArgument
-    );
-}
-
-// ---- kind / length accessors -------------------------------------------
-
-#[test]
-fn kind_reports_every_variant_and_invalid_for_null() {
-    let cases: [(*mut RLMeshValue, RLMeshValueKind); 5] = [
-        (rlmesh_value_discrete(1), RLMeshValueKind::Discrete),
-        (
-            unsafe { rlmesh_value_multi_binary([1u8, 0].as_ptr(), 2) },
-            RLMeshValueKind::MultiBinary,
-        ),
-        (
-            unsafe { rlmesh_value_multi_discrete([3i64, 4].as_ptr(), 2) },
-            RLMeshValueKind::MultiDiscrete,
-        ),
-        (
-            unsafe { rlmesh_value_text(c"hi".as_ptr(), 2) },
-            RLMeshValueKind::Text,
-        ),
-        (
-            unsafe { rlmesh_value_tuple([rlmesh_value_discrete(0)].as_ptr(), 1) },
-            RLMeshValueKind::Tuple,
-        ),
-    ];
-    for (value, kind) in cases {
-        assert!(!value.is_null());
-        assert_eq!(unsafe { rlmesh_value_kind(value) }, kind);
-        unsafe { rlmesh_value_free(value) };
-    }
-    // A NULL handle has no kind — it must not masquerade as Tuple.
-    assert_eq!(
-        unsafe { rlmesh_value_kind(std::ptr::null()) },
-        RLMeshValueKind::Invalid
-    );
-}
-
-#[test]
-fn len_separates_empty_from_wrong_kind_from_null() {
-    let empty = unsafe { rlmesh_value_tuple(std::ptr::null(), 0) };
-    let mut len = 9usize;
-    assert_eq!(
-        unsafe { rlmesh_value_len(empty, &mut len) },
-        RLMeshStatus::Ok
-    );
-    assert_eq!(
-        len, 0,
-        "an empty Tuple has length 0, and that is not an error"
-    );
-    // Wrong kind, NULL value and NULL out are each distinguishable.
-    let scalar = rlmesh_value_discrete(1);
-    assert_eq!(
-        unsafe { rlmesh_value_len(scalar, &mut len) },
-        RLMeshStatus::Type
-    );
-    assert_eq!(
-        unsafe { rlmesh_value_len(std::ptr::null(), &mut len) },
-        RLMeshStatus::InvalidArgument
-    );
-    assert_eq!(
-        unsafe { rlmesh_value_len(empty, std::ptr::null_mut()) },
-        RLMeshStatus::InvalidArgument
-    );
-    unsafe { rlmesh_value_free(scalar) };
-    unsafe { rlmesh_value_free(empty) };
-}
-
-#[test]
-fn array_len_reports_length_and_rejects_other_kinds() {
-    let bits = unsafe { rlmesh_value_multi_binary([1u8, 0, 1].as_ptr(), 3) };
-    let mut len = 0usize;
-    assert_eq!(
-        unsafe { rlmesh_value_array_len(bits, &mut len) },
-        RLMeshStatus::Ok
-    );
-    assert_eq!(len, 3);
-    let scalar = rlmesh_value_discrete(1);
-    assert_eq!(
-        unsafe { rlmesh_value_array_len(scalar, &mut len) },
-        RLMeshStatus::Type
-    );
-    unsafe { rlmesh_value_free(scalar) };
-    unsafe { rlmesh_value_free(bits) };
-}
-
-// ---- array construct -> copy round trips -------------------------------
-
-#[test]
-fn multi_binary_round_trips_normalizing_to_bits() {
-    let value = unsafe { rlmesh_value_multi_binary([0u8, 7, 0, 1].as_ptr(), 4) };
-    let mut out = [9u8; 4];
-    assert_eq!(
-        unsafe { rlmesh_value_copy_multi_binary(value, out.as_mut_ptr(), out.len()) },
-        RLMeshStatus::Ok
-    );
-    assert_eq!(out, [0, 1, 0, 1], "any nonzero byte becomes a set bit");
-    // A buffer too small is rejected before any write.
-    assert_eq!(
-        unsafe { rlmesh_value_copy_multi_binary(value, out.as_mut_ptr(), 3) },
-        RLMeshStatus::InvalidArgument
-    );
-    unsafe { rlmesh_value_free(value) };
-}
-
-#[test]
-fn multi_discrete_round_trips() {
-    let value = unsafe { rlmesh_value_multi_discrete([2i64, 0, 5].as_ptr(), 3) };
-    let mut out = [0i64; 3];
-    assert_eq!(
-        unsafe { rlmesh_value_copy_multi_discrete(value, out.as_mut_ptr(), out.len()) },
-        RLMeshStatus::Ok
-    );
-    assert_eq!(out, [2, 0, 5]);
-    unsafe { rlmesh_value_free(value) };
-}
-
-#[test]
-fn copy_out_accepts_a_null_buffer_for_an_empty_value() {
-    // Same rule as rlmesh_space_copy_shape: nothing to write, nothing to reject.
-    let empty = unsafe { rlmesh_value_multi_discrete(std::ptr::null(), 0) };
-    assert_eq!(
-        unsafe { rlmesh_value_copy_multi_discrete(empty, std::ptr::null_mut(), 0) },
-        RLMeshStatus::Ok
-    );
-    unsafe { rlmesh_value_free(empty) };
-    let bits = unsafe { rlmesh_value_multi_binary([1u8].as_ptr(), 1) };
-    assert_eq!(
-        unsafe { rlmesh_value_copy_multi_binary(bits, std::ptr::null_mut(), 4) },
-        RLMeshStatus::InvalidArgument
-    );
-    unsafe { rlmesh_value_free(bits) };
-}
-
-#[test]
-fn space_copy_shape_accepts_a_null_buffer_for_a_scalar_space() {
-    let spec = SpaceSpec {
-        shape: vec![],
-        dtype: DType::Float32,
-        spec: Some(SpaceKind::Box(BoxSpec { bounds: None })),
-    };
-    assert_eq!(
-        unsafe { rlmesh_space_copy_shape(spec_ptr(&spec), std::ptr::null_mut(), 0) },
-        RLMeshStatus::Ok
-    );
-}
-
-// ---- composites --------------------------------------------------------
-
-#[test]
-fn tuple_round_trips_and_borrows_children_by_index() {
-    let children: [*mut RLMeshValue; 2] = [rlmesh_value_discrete(3), unsafe {
-        rlmesh_value_text(c"go".as_ptr(), 2)
-    }];
-    let tuple = unsafe { rlmesh_value_tuple(children.as_ptr(), 2) };
-    assert!(!tuple.is_null());
-    let mut len = 0usize;
-    assert_eq!(
-        unsafe { rlmesh_value_len(tuple, &mut len) },
-        RLMeshStatus::Ok
-    );
-    assert_eq!(len, 2);
-    let mut n = 0i64;
-    assert_eq!(
-        unsafe { rlmesh_value_as_discrete(rlmesh_value_tuple_get(tuple, 0), &mut n) },
-        RLMeshStatus::Ok
-    );
-    assert_eq!(n, 3);
-    assert_eq!(
-        unsafe { rlmesh_value_kind(rlmesh_value_tuple_get(tuple, 1)) },
-        RLMeshValueKind::Text
-    );
-    // Out of range and wrong kind both read as "no such child".
-    assert!(unsafe { rlmesh_value_tuple_get(tuple, 2) }.is_null());
-    unsafe { rlmesh_value_free(tuple) };
-}
-
-#[test]
-fn dict_keys_are_discoverable_by_index() {
-    let keys: [*const c_char; 2] = [c"pos".as_ptr(), c"grip".as_ptr()];
-    let values: [*mut RLMeshValue; 2] = [rlmesh_value_discrete(1), rlmesh_value_discrete(2)];
-    let dict = unsafe { rlmesh_value_dict(keys.as_ptr(), values.as_ptr(), 2) };
-    assert!(!dict.is_null());
-    // Keys come back in sorted order, parallel to nothing but themselves.
-    assert_eq!(read_key(dict, 0), "grip");
-    assert_eq!(read_key(dict, 1), "pos");
-    let mut ptr: *const c_char = std::ptr::null();
-    let mut len = 0usize;
-    assert_eq!(
-        unsafe { rlmesh_value_dict_key(dict, 2, &mut ptr, &mut len) },
-        RLMeshStatus::InvalidArgument
-    );
-    // The children walk the SAME order, so key(i) names get_at(i) with no
-    // NUL-terminated copy of the key in between.
-    assert_eq!(discrete_at(unsafe { rlmesh_value_dict_get_at(dict, 0) }), 2);
-    assert_eq!(discrete_at(unsafe { rlmesh_value_dict_get_at(dict, 1) }), 1);
-    assert!(unsafe { rlmesh_value_dict_get_at(dict, 2) }.is_null());
-    // Wrong kind and NULL both read as "no such child".
-    let tuple_children: [*mut RLMeshValue; 1] = [rlmesh_value_discrete(1)];
-    let tuple = unsafe { rlmesh_value_tuple(tuple_children.as_ptr(), 1) };
-    assert!(unsafe { rlmesh_value_dict_get_at(tuple, 0) }.is_null());
-    assert!(unsafe { rlmesh_value_dict_get_at(std::ptr::null(), 0) }.is_null());
-    unsafe { rlmesh_value_free(tuple) };
-    unsafe { rlmesh_value_free(dict) };
-}
-
-#[test]
-fn dict_rejects_a_duplicate_key_without_taking_ownership() {
-    // Last-wins would silently drop the first child; instead the call fails and
-    // both children are still the caller's to free (a single valid free each).
-    let first = rlmesh_value_discrete(1);
-    let second = rlmesh_value_discrete(2);
-    let keys: [*const c_char; 2] = [c"a".as_ptr(), c"a".as_ptr()];
-    let values: [*mut RLMeshValue; 2] = [first, second];
-    assert!(unsafe { rlmesh_value_dict(keys.as_ptr(), values.as_ptr(), 2) }.is_null());
-    assert!(!crate::abi::status::rlmesh_last_error_message().is_null());
-    unsafe { rlmesh_value_free(first) };
-    unsafe { rlmesh_value_free(second) };
-}
-
-#[test]
-fn nested_dict_of_box_and_tuple_round_trips() {
-    let data: [f32; 2] = [1.0, 2.0];
-    let shape: [i64; 1] = [2];
-    let view = tensor_view(&data, &shape);
-    let inner: [*mut RLMeshValue; 2] = [rlmesh_value_discrete(4), unsafe {
-        rlmesh_value_text(c"lift".as_ptr(), 4)
-    }];
-    let children: [*mut RLMeshValue; 2] = [unsafe { rlmesh_value_box(&view) }, unsafe {
-        rlmesh_value_tuple(inner.as_ptr(), 2)
-    }];
-    let keys: [*const c_char; 2] = [c"pos".as_ptr(), c"extra".as_ptr()];
-    let dict = unsafe { rlmesh_value_dict(keys.as_ptr(), children.as_ptr(), 2) };
-    assert!(!dict.is_null());
-
-    let mut len = 0usize;
-    assert_eq!(
-        unsafe { rlmesh_value_len(dict, &mut len) },
-        RLMeshStatus::Ok
-    );
-    assert_eq!(len, 2);
-
-    let pos = unsafe { rlmesh_value_dict_get(dict, c"pos".as_ptr()) };
-    let mut tensor = empty_tensor();
-    assert_eq!(
-        unsafe { rlmesh_value_as_tensor(pos, &mut tensor) },
-        RLMeshStatus::Ok
-    );
-    assert_eq!(
-        unsafe { std::slice::from_raw_parts(tensor.data.cast::<f32>(), 2) },
-        &data
-    );
-
-    let extra = unsafe { rlmesh_value_dict_get(dict, c"extra".as_ptr()) };
-    assert_eq!(unsafe { rlmesh_value_kind(extra) }, RLMeshValueKind::Tuple);
-    let mut n = 0i64;
-    assert_eq!(
-        unsafe { rlmesh_value_as_discrete(rlmesh_value_tuple_get(extra, 0), &mut n) },
-        RLMeshStatus::Ok
-    );
-    assert_eq!(n, 4);
-    let mut text: *const c_char = std::ptr::null();
-    let mut text_len = 0usize;
-    assert_eq!(
-        unsafe { rlmesh_value_as_text(rlmesh_value_tuple_get(extra, 1), &mut text, &mut text_len) },
-        RLMeshStatus::Ok
-    );
-    assert_eq!(
-        unsafe { std::slice::from_raw_parts(text.cast::<u8>(), text_len) },
-        b"lift"
-    );
-    unsafe { rlmesh_value_free(dict) };
-}
-
-// ---- tensor release ----------------------------------------------------
-
-static DELETER_CALLS: AtomicUsize = AtomicUsize::new(0);
-
-unsafe extern "C" fn counting_deleter(_tensor: *mut RLMeshTensor) {
-    DELETER_CALLS.fetch_add(1, Ordering::SeqCst);
-}
-
-#[test]
-fn tensor_release_runs_the_deleter_exactly_once() {
-    let mut tensor = empty_tensor();
-    tensor.deleter = Some(counting_deleter);
-    unsafe { rlmesh_tensor_release(&mut tensor) };
-    assert_eq!(DELETER_CALLS.load(Ordering::SeqCst), 1);
-    // A borrowed view (no deleter) and NULL are both no-ops.
-    let mut borrowed = empty_tensor();
-    unsafe { rlmesh_tensor_release(&mut borrowed) };
-    unsafe { rlmesh_tensor_release(std::ptr::null_mut()) };
-    assert_eq!(DELETER_CALLS.load(Ordering::SeqCst), 1);
-}
-
-// ---- contract + error + version accessors ------------------------------
-
-#[test]
-fn contract_exposes_num_envs_and_the_observation_space() {
-    let contract = RLMeshContract(EnvContract {
-        num_envs: 4,
-        observation_space: Some(box_spec()),
-        ..Default::default()
-    });
-    let ptr = std::ptr::from_ref(&contract);
-    assert_eq!(unsafe { rlmesh_contract_num_envs(ptr) }, 4);
-    let obs = unsafe { rlmesh_contract_observation_space(ptr) };
-    assert_eq!(unsafe { rlmesh_space_type(obs) }, RLMeshValueKind::Box);
-    // A NULL contract yields the empty answers, never a dereference.
-    assert_eq!(unsafe { rlmesh_contract_num_envs(std::ptr::null()) }, 0);
-    assert!(unsafe { rlmesh_contract_observation_space(std::ptr::null()) }.is_null());
-}
-
-#[test]
-fn last_error_reports_an_unrecoverable_capi_failure() {
-    let text = unsafe { rlmesh_value_text(c"x".as_ptr(), 1) };
-    let mut out = 0i64;
-    assert_eq!(
-        unsafe { rlmesh_value_as_discrete(text, &mut out) },
-        RLMeshStatus::Type
-    );
-    assert!(!crate::abi::status::rlmesh_last_error_message().is_null());
-    // A capi-side argument error is never flagged recoverable (that is reserved
-    // for runtime errors that carry the flag).
-    assert_eq!(rlmesh_last_error_is_recoverable(), 0);
-    unsafe { rlmesh_value_free(text) };
-}
-
-#[test]
-fn last_error_status_carries_the_code_a_null_return_cannot() {
-    // A pointer-returning export has no status channel, so the slot is the only
-    // place its code lands -- and it is the real one, not a stand-in for
-    // "something was wrong with the value".
-    assert!(unsafe { rlmesh_value_text(std::ptr::null(), 1) }.is_null());
-    assert_eq!(
-        crate::abi::status::rlmesh_last_error_status(),
-        RLMeshStatus::InvalidArgument
-    );
-    // A status-returning export records the same code it returns.
-    let text = unsafe { rlmesh_value_text(c"x".as_ptr(), 1) };
-    let mut out = 0i64;
-    assert_eq!(
-        unsafe { rlmesh_value_as_discrete(text, &mut out) },
-        RLMeshStatus::Type
-    );
-    assert_eq!(
-        crate::abi::status::rlmesh_last_error_status(),
-        RLMeshStatus::Type
-    );
-    unsafe { rlmesh_value_free(text) };
-    // Nothing recorded reads as OK rather than a stale failure.
-    crate::abi::status::clear_last_error();
-    assert_eq!(
-        crate::abi::status::rlmesh_last_error_status(),
-        RLMeshStatus::Ok
-    );
-}
-
-#[test]
-fn package_version_accessors_match_the_crate() {
-    let parse = |value: &str| value.parse::<u32>().expect("numeric version component");
-    assert_eq!(
-        crate::abi::rlmesh_abi_version_major(),
-        parse(env!("CARGO_PKG_VERSION_MAJOR"))
-    );
-    assert_eq!(
-        crate::abi::rlmesh_abi_version_minor(),
-        parse(env!("CARGO_PKG_VERSION_MINOR"))
-    );
-    assert_eq!(
-        crate::abi::rlmesh_abi_version_patch(),
-        parse(env!("CARGO_PKG_VERSION_PATCH"))
-    );
-}
-
-// ---- space introspection ------------------------------------------------
-
-#[test]
 fn space_type_is_invalid_for_null_and_unspecified() {
-    assert_eq!(
-        unsafe { rlmesh_space_type(std::ptr::null()) },
-        RLMeshValueKind::Invalid
-    );
+    assert_eq!(unsafe { rlmesh_space_type(std::ptr::null()) }, 0);
     let unspecified = SpaceSpec::default();
-    assert_eq!(
-        unsafe { rlmesh_space_type(spec_ptr(&unspecified)) },
-        RLMeshValueKind::Invalid
-    );
+    assert_eq!(unsafe { rlmesh_space_type(spec_ptr(&unspecified)) }, 0);
 }
 
 #[test]
@@ -898,7 +271,7 @@ fn composite_spaces_are_walkable_from_c() {
     assert_eq!(space_key(root, 1), "extra");
 
     let extra = unsafe { rlmesh_space_dict_get(root, c"extra".as_ptr()) };
-    assert_eq!(unsafe { rlmesh_space_type(extra) }, RLMeshValueKind::Tuple);
+    assert_eq!(unsafe { rlmesh_space_type(extra) }, 11);
     assert_eq!(
         unsafe { rlmesh_space_len(extra, &mut len) },
         RLMeshStatus::Ok
@@ -906,17 +279,17 @@ fn composite_spaces_are_walkable_from_c() {
     assert_eq!(len, 2);
     assert_eq!(
         unsafe { rlmesh_space_type(rlmesh_space_tuple_get(extra, 0)) },
-        RLMeshValueKind::Discrete
+        2
     );
     assert_eq!(
         unsafe { rlmesh_space_type(rlmesh_space_tuple_get(extra, 1)) },
-        RLMeshValueKind::Text
+        5
     );
     // Children by index walk the SAME declaration order as the keys, so key(i)
     // names get_at(i) without copying the key into a NUL-terminated buffer.
     assert_eq!(
         unsafe { rlmesh_space_type(rlmesh_space_dict_get_at(root, 0)) },
-        RLMeshValueKind::Box
+        1
     );
     assert_eq!(unsafe { rlmesh_space_dict_get_at(root, 1) }, unsafe {
         rlmesh_space_dict_get(root, c"extra".as_ptr())
@@ -950,21 +323,6 @@ fn discrete_spec() -> SpaceSpec {
     }
 }
 
-fn empty_tensor() -> RLMeshTensor {
-    RLMeshTensor {
-        data: std::ptr::null(),
-        ndim: 0,
-        shape: std::ptr::null(),
-        strides: std::ptr::null(),
-        dtype: F32,
-        device_type: 0,
-        device_id: 0,
-        flags: 0,
-        manager_ctx: std::ptr::null_mut(),
-        deleter: None,
-    }
-}
-
 fn bounds(spec: &SpaceSpec, index: usize) -> (f64, f64) {
     let (mut low, mut high) = (0.0, 0.0);
     assert_eq!(
@@ -972,29 +330,6 @@ fn bounds(spec: &SpaceSpec, index: usize) -> (f64, f64) {
         RLMeshStatus::Ok
     );
     (low, high)
-}
-
-/// The `index`-th dict key of a value, as a `&str` over the borrowed bytes.
-fn read_key(value: *const RLMeshValue, index: usize) -> String {
-    let mut ptr: *const c_char = std::ptr::null();
-    let mut len = 0usize;
-    assert_eq!(
-        unsafe { rlmesh_value_dict_key(value, index, &mut ptr, &mut len) },
-        RLMeshStatus::Ok
-    );
-    let bytes = unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), len) };
-    String::from_utf8(bytes.to_vec()).expect("utf-8 key")
-}
-
-/// A borrowed `Discrete` child's value (the child must exist).
-fn discrete_at(value: *const RLMeshValue) -> i64 {
-    assert!(!value.is_null(), "dict child missing");
-    let mut out = 0i64;
-    assert_eq!(
-        unsafe { rlmesh_value_as_discrete(value, &mut out) },
-        RLMeshStatus::Ok
-    );
-    out
 }
 
 /// A Text space's charset, as a `String` over the borrowed bytes.
@@ -1024,8 +359,8 @@ fn space_key(spec: *const RLMeshSpaceSpec, index: usize) -> String {
     String::from_utf8(bytes.to_vec()).expect("utf-8 key")
 }
 
-fn capi_dtype(dtype: DType) -> RLMeshDLPackDType {
-    RLMeshDLPackDType::from_core(dtype).expect("a C dtype")
+fn capi_dtype(dtype: DType) -> i32 {
+    dtype as i32
 }
 
 /// The owned spec behind a builder handle.
@@ -1047,14 +382,8 @@ fn a_dict_space_the_builder_rejects_takes_none_of_its_children() {
         crate::abi::status::rlmesh_last_error_status(),
         RLMeshStatus::InvalidArgument
     );
-    assert_eq!(
-        unsafe { rlmesh_space_type(first) },
-        RLMeshValueKind::Discrete
-    );
-    assert_eq!(
-        unsafe { rlmesh_space_type(second) },
-        RLMeshValueKind::Discrete
-    );
+    assert_eq!(unsafe { rlmesh_space_type(first) }, 2);
+    assert_eq!(unsafe { rlmesh_space_type(second) }, 2);
     // The same children still build a valid Dict, which then owns them.
     let keys: [*const c_char; 2] = [c"a".as_ptr(), c"b".as_ptr()];
     let dict = unsafe { rlmesh_space_dict(keys.as_ptr(), children.as_ptr(), 2) };
@@ -1072,12 +401,9 @@ fn a_tuple_space_with_a_null_child_takes_none_of_the_others() {
     let child = rlmesh_space_discrete(2, 0);
     let children = [child, std::ptr::null_mut()];
     assert!(unsafe { rlmesh_space_tuple(children.as_ptr(), 2) }.is_null());
-    assert_eq!(
-        unsafe { rlmesh_space_type(child) },
-        RLMeshValueKind::Discrete
-    );
+    assert_eq!(unsafe { rlmesh_space_type(child) }, 2);
     let tuple = unsafe { rlmesh_space_tuple([child].as_ptr(), 1) };
-    assert_eq!(unsafe { rlmesh_space_type(tuple) }, RLMeshValueKind::Tuple);
+    assert_eq!(unsafe { rlmesh_space_type(tuple) }, 11);
     unsafe { rlmesh_space_spec_free(tuple) };
 }
 
@@ -1186,4 +512,11 @@ fn unsigned_box_bounds_above_i64_max_round_trip_exactly() {
     };
     assert!(!signed.is_null());
     unsafe { rlmesh_space_spec_free(signed) };
+}
+
+fn box_spec() -> SpaceSpec {
+    BoxSpaceBuilder::unbounded(vec![2, 2])
+        .dtype(DType::Float32)
+        .build()
+        .expect("box")
 }

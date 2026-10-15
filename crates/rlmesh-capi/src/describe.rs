@@ -407,11 +407,7 @@ mod tests {
         parse(&String::from_utf8(unsafe { out.into_vec() }).expect("utf-8"))
     }
 
-    const F32: crate::value::dtype::RLMeshDLPackDType = crate::value::dtype::RLMeshDLPackDType {
-        code: 2,
-        bits: 32,
-        lanes: 1,
-    };
+    const F32: i32 = 11;
 
     /// A C env `id` whose observation is Dict{eef_pos: f32[3] in [-bound, bound]}.
     fn native_env(id: &str, bound: f64) -> *mut RLMeshEnv {

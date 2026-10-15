@@ -328,8 +328,19 @@ fn callback_error(op: &str, status: c_int) -> EnvRuntimeError {
 
 /// Reclaim an owned value the callback wrote (NULL = none), before its status
 /// is read: the header promises the capi takes it on failure too.
-fn take_value(ptr: *mut RLMeshValue) -> Option<SpaceValue> {
-    (!ptr.is_null()).then(|| unsafe { Box::from_raw(ptr) }.0)
+fn take_value(ptr: *mut RLMeshValue) -> Option<rlmesh::Value> {
+    (!ptr.is_null()).then(|| unsafe { Box::from_raw(ptr) }.value().clone())
+}
+fn observation_value(
+    value: Option<rlmesh::Value>,
+    spec: &SpaceSpec,
+) -> Result<Option<SpaceValue>, EnvRuntimeError> {
+    value
+        .map(|v| {
+            rlmesh::binding::value_to_space(spec, &v)
+                .map_err(|e| EnvRuntimeError::InvalidValue(e.to_string()))
+        })
+        .transpose()
 }
 
 /// Parse a borrowed info JSON object into a metadata map (NULL = none).
@@ -359,6 +370,7 @@ fn json_object(text: &str) -> Result<MetaMap, String> {
 /// PNG-encode a render frame by Python's lenient rule (ENV-5): any numeric Box
 /// value cast to uint8; `[H, W, 3]`, `[H, W, 4]`, `[3, H, W]`, `[4, H, W]` and
 /// `[H, W]` encode, and any other shape or kind gives no frame.
+#[cfg(test)]
 fn encode_png(frame: &SpaceValue) -> Result<Option<Vec<u8>>, EnvRuntimeError> {
     let SpaceValue::Box(tensor) = frame else {
         return Ok(None);
@@ -377,6 +389,7 @@ fn call_reset(
     reset: RLMeshEnvResetFn,
     user_data: UserData,
     req: ResetRequest,
+    observation_space: &SpaceSpec,
 ) -> Result<ResetResult, EnvRuntimeError> {
     let trial_index = req
         .options
@@ -410,7 +423,7 @@ fn call_reset(
         return Err(callback_error("reset", status));
     }
     Ok(ResetResult {
-        observation,
+        observation: observation_value(observation, observation_space)?,
         info: info_map(out.info_json, "reset")?,
         episode_id: None,
     })
@@ -421,11 +434,13 @@ fn call_step(
     step: RLMeshEnvStepFn,
     user_data: UserData,
     req: StepRequest,
+    observation_space: &SpaceSpec,
+    action_space: &SpaceSpec,
 ) -> Result<StepResult, EnvRuntimeError> {
-    // `RLMeshValue` is repr(transparent) over `SpaceValue`: lend the action.
-    let action = req.action.as_ref().map_or(std::ptr::null(), |action| {
-        std::ptr::from_ref(action).cast::<RLMeshValue>()
-    });
+    let action = req
+        .action
+        .map(|action| RLMeshValue::new(rlmesh::binding::value_from_space(action_space, action)));
+    let action = action.as_ref().map_or(std::ptr::null(), std::ptr::from_ref);
     let mut out = RLMeshStepResult {
         observation: std::ptr::null_mut(),
         reward: 0.0,
@@ -440,7 +455,7 @@ fn call_step(
         return Err(callback_error("step", status));
     }
     Ok(StepResult {
-        observation,
+        observation: observation_value(observation, observation_space)?,
         reward: out.reward,
         terminated: out.terminated,
         truncated: out.truncated,
@@ -453,7 +468,7 @@ fn call_step(
 fn call_render(
     render: RLMeshEnvRenderFn,
     user_data: UserData,
-) -> Result<Option<SpaceValue>, EnvRuntimeError> {
+) -> Result<Option<rlmesh::Value>, EnvRuntimeError> {
     let mut frame: *mut RLMeshValue = std::ptr::null_mut();
     clear_last_error();
     let status = unsafe { render(user_data.0, &mut frame) };
@@ -487,7 +502,8 @@ impl Env for CEnv {
             return Err(EnvRuntimeError::Runtime("env vtable has no reset".into()));
         };
         let user_data = self.user_data;
-        self.dispatch(move || call_reset(reset, user_data, req))
+        let spec = self.observation_space.clone();
+        self.dispatch(move || call_reset(reset, user_data, req, &spec))
             .await
     }
 
@@ -496,7 +512,10 @@ impl Env for CEnv {
             return Err(EnvRuntimeError::Runtime("env vtable has no step".into()));
         };
         let user_data = self.user_data;
-        self.dispatch(move || call_step(step, user_data, req)).await
+        let obs = self.observation_space.clone();
+        let act = self.action_space.clone();
+        self.dispatch(move || call_step(step, user_data, req, &obs, &act))
+            .await
     }
 
     async fn render(&mut self, _req: RenderRequest) -> Result<RenderResult, EnvRuntimeError> {
@@ -509,7 +528,10 @@ impl Env for CEnv {
             .await?;
         Ok(RenderResult {
             frame: frame
-                .map(|frame| encode_png(&frame))
+                .map(|frame| {
+                    rlmesh::binding::encode_render_frame(&frame)
+                        .map_err(|e| EnvRuntimeError::InvalidValue(e.to_string()))
+                })
                 .transpose()?
                 .flatten()
                 .map(|frame| RenderFrame { frame }),
@@ -1095,8 +1117,13 @@ mod tests {
     use super::*;
     use crate::model::rlmesh_callback_set_error;
     use crate::spaces::{rlmesh_space_box, rlmesh_space_dict, rlmesh_space_spec_free};
-    use crate::value::dtype::RLMeshDLPackDType;
-    use crate::value::handle::into_handle;
+
+    fn into_handle(value: SpaceValue) -> *mut RLMeshValue {
+        crate::value::handle::into_handle(rlmesh::binding::value_from_space(
+            &SpaceSpec::default(),
+            value,
+        ))
+    }
 
     /// A scalar wire client over the binding core, as these tests drive one.
     struct RemoteEnv(rlmesh::binding::env::EnvClientCore);
@@ -1160,21 +1187,11 @@ mod tests {
         fn detach(self) {}
     }
 
-    const F32: RLMeshDLPackDType = RLMeshDLPackDType {
-        code: 2,
-        bits: 32,
-        lanes: 1,
-    };
-    const U8: RLMeshDLPackDType = RLMeshDLPackDType {
-        code: 1,
-        bits: 8,
-        lanes: 1,
-    };
-
+    const F32: i32 = 11;
+    const U8: i32 = 2;
     const TAGS: &str = r#"{"observation": {"eef_pos": {"type": "state", "role": "proprio/eef_pos"}},
         "action": {"components": [{"role": "action/gripper", "dim": 1}]}}"#;
 
-    /// What the C side saw, shared with the test through `user_data`.
     #[derive(Default)]
     struct Probe {
         resets: Mutex<Vec<(Option<i64>, Option<i64>)>>,
@@ -1233,13 +1250,11 @@ mod tests {
     ) -> c_int {
         let probe = unsafe { &*user_data.cast::<Probe>() };
         probe.record_thread();
-        let mut tensor = std::mem::MaybeUninit::<crate::value::tensor::RLMeshTensor>::zeroed();
-        if unsafe { crate::value::handle::rlmesh_value_as_tensor(action, tensor.as_mut_ptr()) }
-            != RLMeshStatus::Ok
-        {
-            return 1;
-        }
-        let chosen = unsafe { *(*tensor.as_ptr()).data.cast::<f32>() };
+        let chosen = {
+            let value = crate::value::handle::value_ref(action).ok().unwrap();
+            let data = value.as_tensor().unwrap().buffer();
+            f32::from_ne_bytes(data[..4].try_into().unwrap())
+        };
         if chosen <= -0.9 {
             let message = CString::new("action at the limit, retry").unwrap();
             unsafe { rlmesh_callback_set_error(message.as_ptr(), true) };

@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ## [Unreleased]
 
+- C ABI generation 5 rebases `RLMeshValue` on the Rust facade's core Value and Metadata, with all ten value kinds, strict typed reads, insertion-ordered dicts, length-bearing text and shared immutable handles. Composite constructors retain their children. `RLMeshTensor` becomes an opaque facade handle with copying construction, shared clones and reshapes, byte strides, read-only buffers and explicit deep copies. Removes the tensor POD, DLPack dtype triple, old value projection and package-semver ABI accessors; packaging now selects SONAME 5. C and C++ examples use the new C calls; the full C env/model/run/remote parity surface and native DLPack support remain pending.
+
 ### Added
 
 - `rlmesh.FrameSources` is now a Stable root export. `rlmesh.recorder` and its `WorkloadRecord`, `EpisodeRecord`, `MediaRef`, and `SCHEMA` exports are Stable; `ResultSet` and `EpisodeRecord.from_result` remain Internal (RUN-P5 / RUN-17).

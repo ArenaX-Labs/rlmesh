@@ -31,7 +31,60 @@ static void count_free(void* user_data) {
   ++freed;
 }
 
+static void check_values(void) {
+  RLMeshValue* one = NULL;
+  RLMeshValue* flag = NULL;
+  RLMeshValue* dict = NULL;
+  CHECK(rlmesh_value_int(1, &one) == RLMESH_OK);
+  CHECK(rlmesh_value_bool(true, &flag) == RLMESH_OK);
+  int64_t number = 42;
+  CHECK(rlmesh_value_as_int(flag, &number) == RLMESH_ERR_TYPE && number == 42);
+  const RLMeshValue* values[] = {one, flag, flag};
+  RLMeshStr keys[] = {rlmesh_str("z"), rlmesh_str(""), rlmesh_str("z")};
+  CHECK(rlmesh_value_dict(keys, values, 3, &dict) == RLMESH_OK);
+  rlmesh_value_free(one);
+  rlmesh_value_free(flag);
+  RLMeshValue* retained = rlmesh_value_clone(dict);
+  rlmesh_value_free(dict);
+  size_t n = 0;
+  CHECK(rlmesh_value_len(retained, &n) == RLMESH_OK && n == 2);
+  RLMeshStr key = {NULL, 0};
+  CHECK(rlmesh_value_dict_key_at(retained, 0, &key) == RLMESH_OK && key.len == 1 &&
+        key.data[0] == 'z');
+  CHECK(rlmesh_value_dict_key_at(retained, 1, &key) == RLMESH_OK && key.len == 0 &&
+        key.data != NULL);
+  const RLMeshValue* child = NULL;
+  CHECK(rlmesh_value_dict_get(retained, rlmesh_str("z"), &child) == RLMESH_OK);
+  CHECK(rlmesh_value_kind(child) == RLMESH_VALUE_BOOL);
+  CHECK(rlmesh_value_dict_get(retained, rlmesh_str("absent"), &child) == RLMESH_OK &&
+        child == NULL);
+  rlmesh_value_free(retained);
+
+  const float data[] = {1, 2, 3, 4};
+  const size_t shape[] = {2, 2};
+  RLMeshTensor* tensor = NULL;
+  CHECK(rlmesh_tensor_new(data, sizeof(data), shape, 2, RLMESH_DTYPE_FLOAT32, &tensor) ==
+        RLMESH_OK);
+  size_t strides[2] = {99, 99};
+  CHECK(rlmesh_tensor_strides(tensor, NULL, 0, &n) == RLMESH_OK && n == 2);
+  CHECK(rlmesh_tensor_strides(tensor, strides, 1, &n) == RLMESH_ERR_INVALID_ARGUMENT);
+  CHECK(strides[0] == 99 && strides[1] == 99 && n == 2);
+  CHECK(rlmesh_tensor_strides(tensor, strides, 2, &n) == RLMESH_OK && strides[0] == 8 &&
+        strides[1] == 4);
+  RLMeshValue* value = NULL;
+  CHECK(rlmesh_value_tensor(tensor, &value) == RLMESH_OK);
+  rlmesh_tensor_free(tensor);
+  CHECK(rlmesh_value_as_tensor(value, &tensor) == RLMESH_OK);
+  rlmesh_value_free(value);
+  const void* buffer = NULL;
+  CHECK(rlmesh_tensor_buffer(tensor, &buffer, &n) == RLMESH_OK && n == sizeof(data));
+  CHECK(memcmp(buffer, data, sizeof(data)) == 0);
+  rlmesh_tensor_free(tensor);
+}
+
 int main(void) {
+  CHECK(rlmesh_abi_version() == 5 && rlmesh_abi_check());
+  check_values();
   RLMeshBuildInfo bi = RLMESH_BUILD_INFO_INIT;
   CHECK(rlmesh_build_info(&bi) == RLMESH_OK);
   CHECK(strcmp(bi.version, RLMESH_VERSION) == 0);

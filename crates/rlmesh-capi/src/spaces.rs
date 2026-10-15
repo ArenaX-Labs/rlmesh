@@ -10,13 +10,11 @@ use rlmesh_spaces::spaces::{
     BoxSpaceBuilder, DictSpaceBuilder, DiscreteBuilder, MultiBinaryBuilder, MultiDiscreteBuilder,
     TextBuilder, TupleSpaceBuilder,
 };
-use rlmesh_spaces::{
-    BoxBounds, DType, EnvContract, SpaceKind, SpaceSpec, SpaceType, decode_scalars,
-};
+use rlmesh_spaces::{BoxBounds, DType, EnvContract, SpaceKind, SpaceSpec, decode_scalars};
 
 use crate::abi::status::{CapiError, RLMeshStatus, guard, guard_ptr, guard_value};
-use crate::value::dtype::RLMeshDLPackDType;
-use crate::value::handle::{RLMeshValueKind, write_out};
+use crate::value::dtype::{dtype_from_c, dtype_to_c};
+use crate::value::handle::write_out;
 
 /// An opaque environment contract (spaces, id, num_envs, autoreset).
 #[repr(transparent)]
@@ -78,40 +76,18 @@ pub(crate) fn spec_ref<'a>(spec: *const RLMeshSpaceSpec) -> Option<&'a SpaceSpec
 
 /// The space kind, or `Invalid` when `spec` is NULL or its kind is unspecified.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_space_type(spec: *const RLMeshSpaceSpec) -> RLMeshValueKind {
-    guard_value(RLMeshValueKind::Invalid, || {
-        spec_ref(spec).map_or(RLMeshValueKind::Invalid, |spec| match spec.space_type() {
-            SpaceType::Box => RLMeshValueKind::Box,
-            SpaceType::Discrete => RLMeshValueKind::Discrete,
-            SpaceType::MultiBinary => RLMeshValueKind::MultiBinary,
-            SpaceType::MultiDiscrete => RLMeshValueKind::MultiDiscrete,
-            SpaceType::Text => RLMeshValueKind::Text,
-            SpaceType::Dict => RLMeshValueKind::Dict,
-            SpaceType::Tuple => RLMeshValueKind::Tuple,
-            SpaceType::Unspecified => RLMeshValueKind::Invalid,
-        })
-    })
+pub unsafe extern "C" fn rlmesh_space_type(spec: *const RLMeshSpaceSpec) -> i32 {
+    crate::space_handle::rlmesh_space_spec_kind(spec)
 }
 
-/// The space's element dtype (`{0,0,0}` if unset/unsupported).
+/// The facade dtype enum; INVALID for NULL or an unspecified dtype.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_space_dtype(spec: *const RLMeshSpaceSpec) -> RLMeshDLPackDType {
-    guard_value(
-        RLMeshDLPackDType {
-            code: 0,
-            bits: 0,
-            lanes: 0,
-        },
-        || {
-            spec_ref(spec)
-                .and_then(|spec| RLMeshDLPackDType::from_core(spec.dtype))
-                .unwrap_or(RLMeshDLPackDType {
-                    code: 0,
-                    bits: 0,
-                    lanes: 0,
-                })
-        },
-    )
+pub unsafe extern "C" fn rlmesh_space_dtype(spec: *const RLMeshSpaceSpec) -> i32 {
+    guard_value(0, || {
+        spec_ref(spec)
+            .and_then(|s| dtype_from_c(s.dtype as i32))
+            .map_or(0, dtype_to_c)
+    })
 }
 
 /// The space's rank (number of dimensions), or 0.
@@ -433,9 +409,9 @@ pub(crate) unsafe fn slice_arg<'a, T>(
     Ok(unsafe { std::slice::from_raw_parts(ptr, len) })
 }
 
-fn core_dtype(dtype: RLMeshDLPackDType) -> Result<DType, CapiError> {
-    dtype
-        .to_core()
+fn core_dtype(dtype: i32) -> Result<DType, CapiError> {
+    dtype_from_c(dtype)
+        .map(|d| DType::try_from(d as i32).expect("facade dtype has a wire value"))
         .ok_or_else(|| CapiError::invalid_arg("unsupported dtype"))
 }
 
@@ -519,7 +495,7 @@ fn bounds_vec<T>(
 /// `shape` points at `ndim` readable `int64_t`s (NULL when `ndim == 0`).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_space_box(
-    dtype: RLMeshDLPackDType,
+    dtype: i32,
     shape: *const i64,
     ndim: usize,
     low: f64,
@@ -546,7 +522,7 @@ pub unsafe extern "C" fn rlmesh_space_box(
 /// `shape` points at `ndim` `int64_t`s; `low`/`high` at `numel` doubles each.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_space_box_elementwise(
-    dtype: RLMeshDLPackDType,
+    dtype: i32,
     shape: *const i64,
     ndim: usize,
     low: *const f64,

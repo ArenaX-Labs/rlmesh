@@ -32,7 +32,7 @@ extern "C" {
  * symbol removal). Decoupled from the package semver below, which can't express
  * an ABI break. Appending a struct_size-guarded vtable/config field is NOT a
  * break. */
-#define RLMESH_ABI_VERSION 4
+#define RLMESH_ABI_VERSION 5
 
 RLMESH_API uint32_t rlmesh_abi_version(void);
 
@@ -45,17 +45,6 @@ static inline int rlmesh_abi_check(void) { return RLMESH_ABI_VERSION == rlmesh_a
  * spelling of the same release). rlmesh_build_info() reports the linked
  * library's. */
 #define RLMESH_VERSION "0.1.0"
-
-/* Deprecated: package (marketing) semver — informational only; use
- * RLMESH_VERSION and rlmesh_build_info(). Do NOT gate ABI compatibility on
- * these; use RLMESH_ABI_VERSION / rlmesh_abi_check(). */
-#define RLMESH_ABI_VERSION_MAJOR 0
-#define RLMESH_ABI_VERSION_MINOR 1
-#define RLMESH_ABI_VERSION_PATCH 0
-
-RLMESH_API uint32_t rlmesh_abi_version_major(void);
-RLMESH_API uint32_t rlmesh_abi_version_minor(void);
-RLMESH_API uint32_t rlmesh_abi_version_patch(void);
 
 /* Signals: creating a model or env handle sets SIGPIPE to ignored (POSIX), unless
  * the host already installed a handler for it. The transport's socket writes
@@ -283,146 +272,123 @@ RLMESH_API const char* rlmesh_dtype_str(RLMeshDType dtype);
 /* Byte size of one element; 0 for INVALID, OTHER or an unknown value. */
 RLMESH_API size_t rlmesh_ext_dtype_size(RLMeshDType dtype);
 
-/* Deprecated: the DLPack (code, bits, lanes) dtype the tensor and value API and
- * the old space builders still take, until RLMeshTensor becomes an opaque handle
- * (ABI 5). Called RLMeshDType before; new code uses the enum above. code is
- * DLDataTypeCode (int=0, uint=1, float=2, bfloat=4, bool=6); lanes is always 1. */
-typedef struct RLMeshDLPackDType {
-  uint8_t code;
-  uint8_t bits;
-  uint16_t lanes;
-} RLMeshDLPackDType;
+/* A space's kind (Python's `kind`); output only. UNKNOWN is a spec with no
+ * payload and what a NULL handle reads. */
+typedef enum RLMeshSpaceKind {
+  RLMESH_SPACE_KIND_UNKNOWN = 0,
+  RLMESH_SPACE_KIND_BOX = 1,
+  RLMESH_SPACE_KIND_DISCRETE = 2,
+  RLMESH_SPACE_KIND_MULTI_BINARY = 3,
+  RLMESH_SPACE_KIND_MULTI_DISCRETE = 4,
+  RLMESH_SPACE_KIND_TEXT = 5,
+  RLMESH_SPACE_KIND_DICT = 10,
+  RLMESH_SPACE_KIND_TUPLE = 11
+} RLMeshSpaceKind;
 
-#ifdef __cplusplus
-#define RLMESH_DTYPE_INIT(c, b, l) \
-  RLMeshDLPackDType { (uint8_t)(c), (uint8_t)(b), (uint16_t)(l) }
-#else
-#define RLMESH_DTYPE_INIT(c, b, l) \
-  (RLMeshDLPackDType) { (uint8_t)(c), (uint8_t)(b), (uint16_t)(l) }
-#endif
-#define RLMESH_F32 RLMESH_DTYPE_INIT(2, 32, 1)
-#define RLMESH_F64 RLMESH_DTYPE_INIT(2, 64, 1)
-#define RLMESH_I32 RLMESH_DTYPE_INIT(0, 32, 1)
-#define RLMESH_I64 RLMESH_DTYPE_INIT(0, 64, 1)
-#define RLMESH_U8 RLMESH_DTYPE_INIT(1, 8, 1)
-#define RLMESH_BOOL RLMESH_DTYPE_INIT(6, 8, 1)
+typedef struct RLMeshStr {
+  const char* data;
+  size_t len;
+} RLMeshStr;
 
-#define RLMESH_DEVICE_CPU 1
-#define RLMESH_TENSOR_FLAG_READ_ONLY ((uint64_t)1)
+/* Wrap a NUL-terminated string (NULL gives the empty text). */
+static inline RLMeshStr rlmesh_str(const char* s) {
+  RLMeshStr out;
+  size_t len = 0;
+  if (s != NULL) {
+    while (s[len] != '\0') {
+      ++len;
+    }
+  }
+  out.data = s;
+  out.len = len;
+  return out;
+}
 
-/* Element byte size, or 0 if unsupported (or lanes != 1). */
-RLMESH_API size_t rlmesh_dtype_size(RLMeshDLPackDType dtype);
+typedef enum RLMeshDevice { RLMESH_DEVICE_INVALID = 0, RLMESH_DEVICE_CPU = 1 } RLMeshDevice;
+RLMESH_API const char* rlmesh_device_str(RLMeshDevice device);
 
-/* A DLPack-shaped tensor view. `strides` is in element counts (NULL = row-major
- * contiguous); `data` points at element 0. A tensor returned by value is a
- * borrowed view (`deleter == NULL`) valid only while its source value lives.
- *
- * `data` is const: a borrowed view aliases library-owned memory, so writing
- * through it is undefined. A tensor you fill in for rlmesh_value_box is only
- * read, so the same const pointer serves both directions. */
-typedef struct RLMeshTensor {
-  const void* data;
-  int32_t ndim;
-  const int64_t* shape;
-  const int64_t* strides;
-  RLMeshDLPackDType dtype;
-  int32_t device_type;
-  int32_t device_id;
-  uint64_t flags;
-  void* manager_ctx;
-  void (*deleter)(struct RLMeshTensor* self);
-} RLMeshTensor;
-
-/* Release a tensor's backing resource (`manager_ctx` only; never frees `self`).
- * A no-op for a borrowed view. */
-RLMESH_API void rlmesh_tensor_release(RLMeshTensor* tensor);
-
-/* ---- values (a SpaceValue projection) ----------------------------------- */
-
-typedef struct RLMeshValue RLMeshValue;
-
-typedef enum RLMeshValueKind {
-  RLMESH_VALUE_INVALID = 0, /* NULL handle, or a space of unspecified kind */
-  RLMESH_VALUE_BOX = 1,
-  RLMESH_VALUE_DISCRETE = 2,
-  RLMESH_VALUE_MULTI_BINARY = 3,
-  RLMESH_VALUE_MULTI_DISCRETE = 4,
-  RLMESH_VALUE_TEXT = 5,
-  RLMESH_VALUE_DICT = 10,
-  RLMESH_VALUE_TUPLE = 11
-} RLMeshValueKind;
-
-/* Accessor convention across the value and space surfaces: a fallible read
- * returns RLMeshStatus and writes through an out-param (detail in
- * rlmesh_last_error_message()); a kind accessor returns RLMESH_VALUE_INVALID;
- * a borrow accessor returns a pointer, NULL when there is no such child. A
- * length is never a sentinel — 0 is a legal length — so it travels by status. */
-
-/* RLMESH_VALUE_INVALID when `value` is NULL. */
-RLMESH_API RLMeshValueKind rlmesh_value_kind(const RLMeshValue* value);
-
-/* Box: borrowed tensor view (valid while `value` lives) / copy-construct. */
-RLMESH_API RLMeshStatus rlmesh_value_as_tensor(const RLMeshValue* value, RLMeshTensor* out);
-RLMESH_API RLMeshValue* rlmesh_value_box(const RLMeshTensor* tensor); /* contiguous only */
-
-/* Discrete. */
-RLMESH_API RLMeshValue* rlmesh_value_discrete(int64_t value);
-RLMESH_API RLMeshStatus rlmesh_value_as_discrete(const RLMeshValue* value, int64_t* out);
-
-/* Text: `len` UTF-8 bytes (not NUL-terminated), in either direction. The
- * accessor borrows `*out_len` bytes that are NOT NUL-terminated and stay valid
- * only while `value` lives. */
-RLMESH_API RLMeshValue* rlmesh_value_text(const char* data, size_t len);
-RLMESH_API RLMeshStatus rlmesh_value_as_text(const RLMeshValue* value, const char** out_ptr,
+/* Opaque immutable tensor. Construction copies; clone and reshape share;
+ * copy creates independent storage. Strides are in bytes. */
+typedef struct RLMeshTensor RLMeshTensor;
+RLMESH_API RLMeshStatus rlmesh_tensor_new(const void* buffer, size_t buffer_len,
+                                          const size_t* shape, size_t ndim, RLMeshDType dtype,
+                                          RLMeshTensor** out);
+RLMESH_API RLMeshTensor* rlmesh_tensor_clone(const RLMeshTensor* tensor);
+RLMESH_API void rlmesh_tensor_free(RLMeshTensor* tensor);
+RLMESH_API RLMeshDType rlmesh_tensor_dtype(const RLMeshTensor* tensor);
+RLMESH_API RLMeshDevice rlmesh_tensor_device(const RLMeshTensor* tensor);
+RLMESH_API RLMeshStatus rlmesh_tensor_shape(const RLMeshTensor* tensor, size_t* out, size_t cap,
+                                            size_t* out_len);
+RLMESH_API RLMeshStatus rlmesh_tensor_strides(const RLMeshTensor* tensor, size_t* out, size_t cap,
+                                              size_t* out_len);
+RLMESH_API RLMeshStatus rlmesh_tensor_ndim(const RLMeshTensor* tensor, size_t* out);
+RLMESH_API RLMeshStatus rlmesh_tensor_size(const RLMeshTensor* tensor, size_t* out);
+RLMESH_API RLMeshStatus rlmesh_tensor_nbytes(const RLMeshTensor* tensor, size_t* out);
+RLMESH_API RLMeshStatus rlmesh_tensor_buffer(const RLMeshTensor* tensor, const void** out_data,
                                              size_t* out_len);
+RLMESH_API bool rlmesh_tensor_is_contiguous(const RLMeshTensor* tensor);
+RLMESH_API RLMeshStatus rlmesh_tensor_reshape(const RLMeshTensor* tensor, const int64_t* shape,
+                                              size_t ndim, RLMeshTensor** out);
+RLMESH_API RLMeshStatus rlmesh_tensor_copy(const RLMeshTensor* tensor, RLMeshTensor** out);
+RLMESH_API RLMeshStatus rlmesh_tensor_tobytes(const RLMeshTensor* tensor, struct RLMeshBytes* out);
+RLMESH_API RLMeshStatus rlmesh_tensor_repr(const RLMeshTensor* tensor, struct RLMeshBytes* out);
 
-/* MultiBinary / MultiDiscrete: constructed from / copied into a caller buffer.
- * A copy into a NULL `out` is OK when the value is empty, an error otherwise.
- * The element count is the space's shape flattened row-major: `n` for the usual
- * MultiBinary([n]) / MultiDiscrete(nvec), the product of the dims for a
- * multi-dimensional one (both spaces allow any rank >= 1). MultiBinary carries
- * no `n` of its own — see rlmesh_space_copy_shape below. */
-RLMESH_API RLMeshValue* rlmesh_value_multi_discrete(const int64_t* data, size_t n);
-RLMESH_API RLMeshValue* rlmesh_value_multi_binary(const uint8_t* data, size_t n);
-/* Element count into `*out`; RLMESH_ERR_TYPE for any other kind. */
-RLMESH_API RLMeshStatus rlmesh_value_array_len(const RLMeshValue* value, size_t* out);
-RLMESH_API RLMeshStatus rlmesh_value_copy_multi_discrete(const RLMeshValue* value, int64_t* out,
-                                                         size_t cap);
-RLMESH_API RLMeshStatus rlmesh_value_copy_multi_binary(const RLMeshValue* value, uint8_t* out,
-                                                       size_t cap);
-
-/* Dict / Tuple: borrowed children (valid while `value` lives). */
-
-/* Child count into `*out`; RLMESH_ERR_TYPE for any other kind. */
-RLMESH_API RLMeshStatus rlmesh_value_len(const RLMeshValue* value, size_t* out);
-/* NULL when `value` is not that kind, or the index/key is absent. */
-RLMESH_API const RLMeshValue* rlmesh_value_tuple_get(const RLMeshValue* value, size_t index);
-RLMESH_API const RLMeshValue* rlmesh_value_dict_get(const RLMeshValue* value, const char* key);
-/* The `index`-th dict key in sorted order: `*out_len` UTF-8 bytes, NOT
- * NUL-terminated, valid while `value` lives. Pair with rlmesh_value_len to
- * iterate a dict (its keys are otherwise undiscoverable from C).
- * NOTE: a dict VALUE indexes in sorted key order, a dict SPACE in declaration
- * order (rlmesh_space_dict_key) — the two can disagree, so match a value child
- * to its space by KEY (rlmesh_space_dict_get), never by index. */
-RLMESH_API RLMeshStatus rlmesh_value_dict_key(const RLMeshValue* value, size_t index,
-                                              const char** out_ptr, size_t* out_len);
-/* The `index`-th dict child, in the SAME sorted-key order as
- * rlmesh_value_dict_key — so key(i) names get_at(i). Iterating a dict this way
- * needs no NUL-terminated copy of each key. NULL when `value` is not a Dict or
- * `index` is out of range. */
-RLMESH_API const RLMeshValue* rlmesh_value_dict_get_at(const RLMeshValue* value, size_t index);
-
-/* The composite constructors take ownership of (and free) each child value on
- * success. On failure (NULL return) they take ownership of NOTHING: every child
- * is still the caller's to free. rlmesh_value_dict additionally requires unique
- * keys — a duplicate is RLMESH_ERR_INVALID_ARGUMENT, not a silent last-wins. */
-RLMESH_API RLMeshValue* rlmesh_value_tuple(RLMeshValue* const* children, size_t n);
-RLMESH_API RLMeshValue* rlmesh_value_dict(const char* const* keys, RLMeshValue* const* values,
-                                          size_t n);
-
-/* Free an owned value (from a constructor). Not for a borrowed child (*_get), a
- * predict observation row, or a tensor view. */
+/* Core Value, Metadata and InfoDict. Handles are immutable; clones share.
+ * A dict preserves insertion order, replacing duplicate keys in place.
+ * Composite constructors retain children: callers still free their handles.
+ * Borrowed reads live as long as the value. Missing keys/indices succeed with
+ * NULL (or RLMeshStr {NULL, 0}); a present empty string has non-NULL data.
+ * A read of the wrong kind returns RLMESH_ERR_TYPE. */
+typedef struct RLMeshValue RLMeshValue;
+typedef enum RLMeshValueKind {
+  RLMESH_VALUE_INVALID = 0,
+  RLMESH_VALUE_NONE = 1,
+  RLMESH_VALUE_BOOL = 2,
+  RLMESH_VALUE_INT = 3,
+  RLMESH_VALUE_FLOAT = 4,
+  RLMESH_VALUE_TEXT = 5,
+  RLMESH_VALUE_BYTES = 6,
+  RLMESH_VALUE_TENSOR = 7,
+  RLMESH_VALUE_LIST = 8,
+  RLMESH_VALUE_TUPLE = 9,
+  RLMESH_VALUE_DICT = 10
+} RLMeshValueKind;
+RLMESH_API RLMeshValueKind rlmesh_value_kind(const RLMeshValue* value);
+RLMESH_API RLMeshValue* rlmesh_value_clone(const RLMeshValue* value);
+RLMESH_API bool rlmesh_value_equals(const RLMeshValue* a, const RLMeshValue* b);
 RLMESH_API void rlmesh_value_free(RLMeshValue* value);
+RLMESH_API RLMeshStatus rlmesh_value_none(RLMeshValue** out);
+RLMESH_API RLMeshStatus rlmesh_value_bool(bool v, RLMeshValue** out);
+RLMESH_API RLMeshStatus rlmesh_value_int(int64_t v, RLMeshValue** out);
+RLMESH_API RLMeshStatus rlmesh_value_float(double v, RLMeshValue** out);
+RLMESH_API RLMeshStatus rlmesh_value_text(RLMeshStr v, RLMeshValue** out);
+RLMESH_API RLMeshStatus rlmesh_value_bytes(const uint8_t* data, size_t len, RLMeshValue** out);
+RLMESH_API RLMeshStatus rlmesh_value_tensor(const RLMeshTensor* tensor, RLMeshValue** out);
+RLMESH_API RLMeshStatus rlmesh_value_list(const RLMeshValue* const* items, size_t n,
+                                          RLMeshValue** out);
+RLMESH_API RLMeshStatus rlmesh_value_tuple(const RLMeshValue* const* items, size_t n,
+                                           RLMeshValue** out);
+RLMESH_API RLMeshStatus rlmesh_value_dict(const RLMeshStr* keys, const RLMeshValue* const* values,
+                                          size_t n, RLMeshValue** out);
+RLMESH_API RLMeshStatus rlmesh_value_as_bool(const RLMeshValue* value, bool* out);
+RLMESH_API RLMeshStatus rlmesh_value_as_int(const RLMeshValue* value, int64_t* out);
+RLMESH_API RLMeshStatus rlmesh_value_as_float(const RLMeshValue* value, double* out);
+RLMESH_API RLMeshStatus rlmesh_value_as_text(const RLMeshValue* value, RLMeshStr* out);
+RLMESH_API RLMeshStatus rlmesh_value_as_bytes(const RLMeshValue* value, const uint8_t** out_data,
+                                              size_t* out_len);
+/* Unlike other reads, as_tensor returns an owned shared reference. */
+RLMESH_API RLMeshStatus rlmesh_value_as_tensor(const RLMeshValue* value, RLMeshTensor** out);
+RLMESH_API RLMeshStatus rlmesh_value_len(const RLMeshValue* value, size_t* out);
+RLMESH_API RLMeshStatus rlmesh_value_get(const RLMeshValue* value, size_t i,
+                                         const RLMeshValue** out);
+RLMESH_API RLMeshStatus rlmesh_value_dict_key_at(const RLMeshValue* value, size_t i,
+                                                 RLMeshStr* out);
+RLMESH_API RLMeshStatus rlmesh_value_dict_value_at(const RLMeshValue* value, size_t i,
+                                                   const RLMeshValue** out);
+RLMESH_API RLMeshStatus rlmesh_value_dict_get(const RLMeshValue* value, RLMeshStr key,
+                                              const RLMeshValue** out);
+RLMESH_API RLMeshStatus rlmesh_value_dict_contains_key(const RLMeshValue* value, RLMeshStr key,
+                                                       bool* out);
 
 /* ---- spaces + contract ------------------------------------------------- */
 
@@ -437,8 +403,8 @@ RLMESH_API uint32_t rlmesh_contract_num_envs(const RLMeshContract* contract);
  * space: shape + dtype + bounds for Box, n/start for Discrete, the length limits
  * for Text, the per-element category counts for MultiDiscrete, and a child walk
  * for Dict/Tuple. RLMESH_VALUE_INVALID when `spec` is NULL or unspecified. */
-RLMESH_API RLMeshValueKind rlmesh_space_type(const RLMeshSpaceSpec* spec);
-RLMESH_API RLMeshDLPackDType rlmesh_space_dtype(const RLMeshSpaceSpec* spec);
+RLMESH_API RLMeshSpaceKind rlmesh_space_type(const RLMeshSpaceSpec* spec);
+RLMESH_API RLMeshDType rlmesh_space_dtype(const RLMeshSpaceSpec* spec);
 /* Rank; 0 for a scalar shape or a NULL spec. */
 RLMESH_API size_t rlmesh_space_ndim(const RLMeshSpaceSpec* spec);
 /* Shape into `out` (capacity `cap`); a NULL `out` is OK for a rank-0 space. */
@@ -497,12 +463,12 @@ RLMESH_API RLMeshStatus rlmesh_space_copy_nvec(const RLMeshSpaceSpec* spec, int6
  * dtype can represent (none negative for an unsigned dtype): an out-of-range
  * bound is RLMESH_ERR_INVALID_ARGUMENT, never clamped. A double holds every
  * integer only up to 2^53: a larger 64-bit bound is the double's exact value. */
-RLMESH_API RLMeshSpaceSpec* rlmesh_space_box(RLMeshDLPackDType dtype, const int64_t* shape,
-                                             size_t ndim, double low, double high);
+RLMESH_API RLMeshSpaceSpec* rlmesh_space_box(RLMeshDType dtype, const int64_t* shape, size_t ndim,
+                                             double low, double high);
 /* Per-element bounds: `low` / `high` each hold the shape's element count. */
-RLMESH_API RLMeshSpaceSpec* rlmesh_space_box_elementwise(RLMeshDLPackDType dtype,
-                                                         const int64_t* shape, size_t ndim,
-                                                         const double* low, const double* high);
+RLMESH_API RLMeshSpaceSpec* rlmesh_space_box_elementwise(RLMeshDType dtype, const int64_t* shape,
+                                                         size_t ndim, const double* low,
+                                                         const double* high);
 RLMESH_API RLMeshSpaceSpec* rlmesh_space_discrete(int64_t n, int64_t start);
 RLMESH_API RLMeshSpaceSpec* rlmesh_space_multi_binary(const int64_t* shape, size_t ndim);
 RLMESH_API RLMeshSpaceSpec* rlmesh_space_multi_discrete(const int64_t* nvec, size_t n);
@@ -539,38 +505,6 @@ RLMESH_API void rlmesh_bytes_free(RLMeshBytes bytes);
 
 /* UTF-8 text with its length. Inputs may hold NUL; `data` may be NULL only when
  * `len` is 0. Outputs are borrowed from their parent and NOT NUL-terminated. */
-typedef struct RLMeshStr {
-  const char* data;
-  size_t len;
-} RLMeshStr;
-
-/* Wrap a NUL-terminated string (NULL gives the empty text). */
-static inline RLMeshStr rlmesh_str(const char* s) {
-  RLMeshStr out;
-  size_t len = 0;
-  if (s != NULL) {
-    while (s[len] != '\0') {
-      ++len;
-    }
-  }
-  out.data = s;
-  out.len = len;
-  return out;
-}
-
-/* A space's kind (Python's `kind`); output only. UNKNOWN is a spec with no
- * payload and what a NULL handle reads. */
-typedef enum RLMeshSpaceKind {
-  RLMESH_SPACE_KIND_UNKNOWN = 0,
-  RLMESH_SPACE_KIND_BOX = 1,
-  RLMESH_SPACE_KIND_DISCRETE = 2,
-  RLMESH_SPACE_KIND_MULTI_BINARY = 3,
-  RLMESH_SPACE_KIND_MULTI_DISCRETE = 4,
-  RLMESH_SPACE_KIND_TEXT = 5,
-  RLMESH_SPACE_KIND_DICT = 10,
-  RLMESH_SPACE_KIND_TUPLE = 11
-} RLMeshSpaceKind;
-
 /* How a Box stores its bounds (Python's `bounds_kind`). */
 typedef enum RLMeshBoundsKind {
   RLMESH_BOUNDS_KIND_INVALID = 0,
@@ -986,7 +920,7 @@ typedef struct RLMeshResetArgs {
  * never a borrowed one such as the step's action or a rlmesh_value_tuple_get /
  * rlmesh_value_dict_get child: freeing that is undefined behaviour. There is no
  * value copy function; build a fresh value with the constructors (e.g.
- * rlmesh_value_as_tensor + rlmesh_value_box copies a Box). `info_json` is a
+ * rlmesh_value_clone retains a value). `info_json` is a
  * borrowed JSON object (NULL = none) that must stay valid until the callback's
  * next call on this env (e.g. a std::string member). */
 typedef struct RLMeshResetResult {

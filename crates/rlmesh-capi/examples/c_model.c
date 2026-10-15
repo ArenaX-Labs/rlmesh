@@ -13,10 +13,11 @@
 /* A zero action shaped like the route's action space (Box or Discrete). */
 static RLMeshValue* zero_action(const RLMeshSpaceSpec* action) {
   switch (rlmesh_space_type(action)) {
-    case RLMESH_VALUE_BOX: {
-      RLMeshDLPackDType dtype = rlmesh_space_dtype(action);
+    case RLMESH_SPACE_KIND_BOX: {
+      RLMeshDType dtype = rlmesh_space_dtype(action);
       size_t ndim = rlmesh_space_ndim(action);
       int64_t shape[16];
+      size_t dims[16];
       if (ndim > 16) {
         rlmesh_callback_set_error("action rank exceeds 16", false);
         return NULL;
@@ -26,22 +27,28 @@ static RLMeshValue* zero_action(const RLMeshSpaceSpec* action) {
       }
       size_t numel = 1;
       for (size_t i = 0; i < ndim; ++i) {
-        numel *= (size_t)shape[i];
+        dims[i] = (size_t)shape[i];
+        numel *= dims[i];
       }
-      size_t nbytes = numel * rlmesh_dtype_size(dtype);
+      size_t nbytes = numel * rlmesh_ext_dtype_size(dtype);
       uint8_t* zeros = (uint8_t*)calloc(nbytes ? nbytes : 1, 1);
-      RLMeshTensor tensor = {0};
-      tensor.data = zeros;
-      tensor.ndim = (int32_t)ndim;
-      tensor.shape = shape;
-      tensor.dtype = dtype;
-      tensor.device_type = RLMESH_DEVICE_CPU;
-      RLMeshValue* value = rlmesh_value_box(&tensor); /* copies */
+      RLMeshTensor* tensor = NULL;
+      RLMeshValue* value = NULL;
+      RLMeshStatus status = rlmesh_tensor_new(zeros, nbytes, dims, ndim, dtype, &tensor);
+      if (status == RLMESH_OK) status = rlmesh_value_tensor(tensor, &value);
+      if (status != RLMESH_OK) {
+        free(zeros);
+        return NULL;
+      }
+      rlmesh_tensor_free(tensor);
       free(zeros);
       return value;
     }
-    case RLMESH_VALUE_DISCRETE:
-      return rlmesh_value_discrete(0);
+    case RLMESH_SPACE_KIND_DISCRETE: {
+      RLMeshValue* value = NULL;
+      rlmesh_value_int(0, &value);
+      return value;
+    }
     default:
       rlmesh_callback_set_error("c_model handles Box/Discrete only", false);
       return NULL;
@@ -66,7 +73,7 @@ static int predict(void* user_data, const RLMeshObservation* obs, RLMeshValue** 
     }
     if (obs->observations != NULL) {
       int64_t n = 0;
-      if (rlmesh_value_as_discrete(obs->observations[i], &n) == RLMESH_OK) {
+      if (rlmesh_value_as_int(obs->observations[i], &n) == RLMESH_OK) {
         printf(" obs %lld", (long long)n);
       }
     }
