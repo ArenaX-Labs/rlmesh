@@ -10,7 +10,9 @@ static int failures;
       ++failures;                                             \
     }                                                         \
   } while (0)
-static int predict(void* u, const RLMeshExtLegacyObservation* o, RLMeshValue** out) {
+static RLMeshStatus predict(void* u, const RLMeshValue* o, const RLMeshPredictContext* context,
+                            RLMeshValue** out) {
+  (void)context;
   (void)u;
   (void)o;
   (void)out;
@@ -62,34 +64,34 @@ int main(void) {
   CHECK(rlmesh_value_as_int(scalar, &number) == RLMESH_OK && number == 42);
   rlmesh_value_free(scalar);
   CHECK(rlmesh_abi_check() && RLMESH_ABI_VERSION == 5);
-  RLMeshExtLegacyModelVtable zero = {0};
-  RLMeshExtLegacyModel* model = NULL;
-  CHECK(rlmesh_ext_legacy_model_new(&zero, NULL, &model) == RLMESH_ERR_INVALID_ARGUMENT &&
+  RLMeshModelVtable zero = {0};
+  RLMeshModel* model = NULL;
+  CHECK(rlmesh_model_new(&zero, NULL, NULL, &model) == RLMESH_ERR_INVALID_ARGUMENT &&
         model == NULL);
   struct VtableTail {
-    RLMeshExtLegacyModelVtable vt;
+    RLMeshModelVtable vt;
     size_t tail;
-  } vt = {RLMESH_EXT_LEGACY_MODEL_VTABLE_INIT, 0};
+  } vt = {RLMESH_MODEL_VTABLE_INIT, 0};
   vt.vt.struct_size = sizeof(vt);
   vt.vt.predict = predict;
   vt.tail = 1;
-  CHECK(rlmesh_ext_legacy_model_new(&vt.vt, NULL, &model) == RLMESH_ERR_TYPE && model == NULL);
+  CHECK(rlmesh_model_new(&vt.vt, NULL, NULL, &model) == RLMESH_ERR_TYPE && model == NULL);
   vt.tail = 0;
-  CHECK(rlmesh_ext_legacy_model_new(&vt.vt, NULL, &model) == RLMESH_OK);
-  RLMeshExtLegacyRunOptions run = {0};
-  CHECK(rlmesh_ext_legacy_model_run_local(model, "tcp://127.0.0.1:1", &run, NULL) ==
+  CHECK(rlmesh_model_new(&vt.vt, NULL, NULL, &model) == RLMESH_OK);
+  RLMeshRunResult* report = NULL;
+  RLMeshRunOptions run = {0};
+  CHECK(rlmesh_model_run(model, rlmesh_address_target("tcp://127.0.0.1:1"), &run, &report) ==
         RLMESH_ERR_INVALID_ARGUMENT);
   struct RunTail {
-    RLMeshExtLegacyRunOptions options;
+    RLMeshRunOptions options;
     size_t tail;
-  } rt = {RLMESH_EXT_LEGACY_RUN_OPTIONS_INIT, 1};
+  } rt = {RLMESH_RUN_OPTIONS_INIT, 1};
   rt.options.struct_size = sizeof(rt);
-  CHECK(rlmesh_ext_legacy_model_run_local(model, "tcp://127.0.0.1:1", &rt.options, NULL) ==
+  CHECK(rlmesh_model_run(model, rlmesh_address_target("tcp://127.0.0.1:1"), &rt.options, &report) ==
         RLMESH_ERR_TYPE);
-  RLMeshExtLegacyServeOptions serve = {0};
-  CHECK(rlmesh_ext_legacy_model_serve(model, "tcp://127.0.0.1:0", &serve) ==
-        RLMESH_ERR_INVALID_ARGUMENT);
-  rlmesh_ext_legacy_model_free(model);
+  RLMeshModelServeOptions serve = {0};
+  CHECK(rlmesh_model_serve(model, "tcp://127.0.0.1:0", &serve) == RLMESH_ERR_INVALID_ARGUMENT);
+  rlmesh_model_free(model);
   RLMeshEpisodeResult episode = RLMESH_EPISODE_RESULT_INIT;
   episode.steps = 4;
   episode.reward = 2;

@@ -51,6 +51,17 @@ More in [`examples/python`](examples/python): adapters, Docker sandboxes, bring-
 
 Grab the [`rlmesh`](crates/rlmesh/README.md) crate. You'll need `protoc` installed (`apt install protobuf-compiler` / `brew install protobuf`) since the gRPC stubs are generated at build time.
 
+## C++20
+
+The [C++ API](crates/rlmesh-capi/README.md#c20) wraps ABI 5 with exceptions,
+RAII handles, typed values/spaces and Python-shaped models, envs, sessions,
+adapters and results. Build consumers with `-std=c++20` and exceptions enabled.
+
+```cpp
+rlmesh::Model model([](const rlmesh::Value&) { return rlmesh::Value(0); });
+auto result = model.run("tcp://127.0.0.1:5555", {.episodes = 2, .seeds = {0, 1}});
+```
+
 ## Status
 
 Pre-1.0. The Python package is the stable-ish surface; pin a minor version if you depend on it. See [compatibility](https://rlmesh.dev/docs/releases/compatibility/) for the details.

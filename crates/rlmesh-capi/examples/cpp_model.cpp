@@ -1,75 +1,35 @@
-// A C++ model driving a remote RLMesh environment through the rlmesh.hpp wrapper.
-//
-//   c++ -std=c++17 -I<include> cpp_model.cpp -lrlmesh_capi -o cpp_model
-//   ./cpp_model tcp://127.0.0.1:5555 [episodes]
+// c++ -std=c++20 -I<include> cpp_model.cpp -lrlmesh_capi -o cpp_model
 #include <cstdio>
 #include <cstdlib>
-#include <optional>
 #include <rlmesh.hpp>
-#include <string>
-#include <string_view>
 
-namespace {
-
-// Log what arrived: which predict of the episode this is (plus its per-predict
-// seed when the episode was seeded), then the observation, whatever kind the
-// observation space happens to be.
-void log_observation(const rlmesh::Request& request) {
-  const rlmesh::Episode& episode = request.episode();
-  std::printf("episode %.*s: predict %llu", static_cast<int>(episode.id.size()), episode.id.data(),
-              static_cast<unsigned long long>(episode.predict_index));
-  if (episode.predict_seed) {
-    std::printf(" seed %lld", static_cast<long long>(*episode.predict_seed));
-  }
-  if (std::optional<rlmesh::ValueRef> observation = request.observation()) {
-    if (auto n = observation->as_discrete()) {
-      std::printf(" obs %lld", static_cast<long long>(*n));
-    } else if (auto tensor = observation->as_tensor()) {
-      std::printf(" obs %d-D tensor, %zu elements", tensor->ndim(), tensor->numel());
-    }
-  }
-  std::printf("\n");
-}
-
-}  // namespace
-
-int main(int argc, char** argv) {
+int main(int argc, char** argv) try {
   const std::string address = argc > 1 ? argv[1] : "tcp://127.0.0.1:5555";
-  rlmesh::RunOptions options;
-  options.seeded = true;  // deterministic env resets
-  options.base_seed = 7;
-  if (argc > 2) options.max_episodes = std::strtoull(argv[2], nullptr, 10);
-
-  // One action per predict: the neutral value of whatever the route's action
-  // space turns out to be — Box, Discrete, Text, Multi*, Dict or Tuple.
-  auto model = rlmesh::Model::from_predict([](const rlmesh::Request& request) {
-    log_observation(request);
-    return rlmesh::zeros_for(request.action_space());
-  });
-  if (!model) {
-    std::fprintf(stderr, "failed to create model: %s\n", model.error().message().c_str());
-    return 1;
-  }
-  model
-      ->on_episode_end([](std::string_view, std::string_view episode_id) {
-        std::string id = episode_id.empty() ? std::string("(all)") : std::string(episode_id);
-        std::printf("episode end: %s\n", id.c_str());
-      })
-      .on_close([] { std::printf("model closed\n"); });
-
-  std::printf("connecting to %s ...\n", address.c_str());
-  auto report = model->run_local(address, options);
-  if (!report) {
-    // This example never cancels, but a host that does (a Ctrl-C handler calling
-    // Model::cancel from another thread) lands here: a cancelled run is a clean
-    // stop with no report, not a failure.
-    if (report.error().is_cancelled()) return 0;
-    std::fprintf(stderr, "run failed: %s\n", report.error().message().c_str());
-    return 1;
-  }
-  std::printf("run report: episodes=%lld steps=%lld reward=%.1f mean=%.1f\n",
-              static_cast<long long>(report->total_episodes),
-              static_cast<long long>(report->total_steps), report->total_reward,
-              report->mean_reward);
+  const uint64_t episodes = argc > 2 ? std::strtoull(argv[2], nullptr, 10) : 3;
+  rlmesh::RemoteEnv env({.address = address});
+  auto action_space = env.action_space();
+  rlmesh::Model model(
+      [action_space](const rlmesh::Value&, const rlmesh::PredictContext& context) {
+        std::printf("episode %.*s: predict %llu", static_cast<int>(context.episode_id.size()),
+                    context.episode_id.data(),
+                    static_cast<unsigned long long>(context.predict_index));
+        if (context.predict_seed)
+          std::printf(" seed %lld", static_cast<long long>(*context.predict_seed));
+        std::puts("");
+        return action_space.sample();
+      },
+      {.on_episode_end = [](std::string_view id) {
+        std::printf("episode end: %.*s\n", static_cast<int>(id.size()), id.data());
+      }});
+  std::vector<int64_t> seeds;
+  for (uint64_t i = 0; i < episodes; ++i) seeds.push_back(static_cast<int64_t>(7 + i));
+  auto result = model.run(env, {.episodes = episodes, .seeds = std::move(seeds)});
+  std::printf("run report: episodes=%zu steps=%lld mean=%.1f\n", result.num_episodes(),
+              static_cast<long long>(result.total_steps()), result.mean_reward());
   return 0;
+} catch (const rlmesh::ext::CancelledError&) {
+  return 0;
+} catch (const std::exception& e) {
+  std::fprintf(stderr, "%s\n", e.what());
+  return 1;
 }

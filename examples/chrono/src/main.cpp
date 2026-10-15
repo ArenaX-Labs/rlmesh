@@ -40,61 +40,9 @@ void usage() {
                "       chrono_reach_env --describe [--image-size N] [--max-steps N]\n");
 }
 
-// The stop signals, plus the signal that wakes the waiter when serve returns
-// on its own. main blocks them all before any thread exists.
-sigset_t waited_signals() {
-  sigset_t set;
-  sigemptyset(&set);
-  sigaddset(&set, SIGINT);
-  sigaddset(&set, SIGTERM);
-  sigaddset(&set, SIGUSR1);
-  return set;
-}
-
-// Waits for SIGINT / SIGTERM and cancels the server. Destroying it wakes the
-// thread and joins it, so it never outlives the server it cancels.
-class SignalWaiter {
- public:
-  explicit SignalWaiter(rlmesh::EnvServer& server) : thread_([this, &server] { wait(server); }) {}
-  ~SignalWaiter() {
-    done_.store(true);
-    // A signal sent to the thread itself, so it reaches this waiter's sigwait
-    // and no other. Harmless if the thread already returned.
-    pthread_kill(thread_.native_handle(), SIGUSR1);
-    thread_.join();
-  }
-  SignalWaiter(const SignalWaiter&) = delete;
-  SignalWaiter& operator=(const SignalWaiter&) = delete;
-
- private:
-  void wait(rlmesh::EnvServer& server) {
-    const sigset_t set = waited_signals();
-    for (;;) {
-      int signal = 0;
-      if (sigwait(&set, &signal) != 0) continue;
-      if (signal == SIGUSR1) {
-        if (done_.load()) return;
-        continue;  // a stray SIGUSR1 from outside: not ours
-      }
-      std::printf("received %s, shutting down\n", signal == SIGINT ? "SIGINT" : "SIGTERM");
-      std::fflush(stdout);
-      server.cancel();
-      return;
-    }
-  }
-
-  std::atomic<bool> done_{false};
-  std::thread thread_;
-};
-
 }  // namespace
 
-int main(int argc, char** argv) {
-  // Block the stop signals before any thread exists, so every thread the
-  // runtime spawns inherits the mask and only the waiter below receives them.
-  const sigset_t signals = waited_signals();
-  pthread_sigmask(SIG_BLOCK, &signals, nullptr);
-
+int main(int argc, char** argv) try {
   const char* env_address = std::getenv("RLMESH_ADDRESS");
   std::string address = env_address != nullptr ? env_address : "0.0.0.0:50051";
   chrono_reach::Options options;
@@ -135,44 +83,22 @@ int main(int argc, char** argv) {
   }
   const std::string renderer_name = renderer->describe();
 
-  auto config = chrono_reach::IndustrialReach::config(options);
-  if (!config) {
-    std::fprintf(stderr, "invalid env config: %s\n", config.error().message().c_str());
-    return 1;
-  }
-  auto server = rlmesh::EnvServer::create(
-      std::make_unique<chrono_reach::IndustrialReach>(options, std::move(renderer)), *config);
-  if (!server) {
-    std::fprintf(stderr, "failed to create env: %s\n", server.error().message().c_str());
-    return 1;
-  }
+  rlmesh::EnvServer server(chrono_reach::IndustrialReach(options, std::move(renderer)),
+                           {.address = describe ? "tcp://127.0.0.1:0" : address,
+                            .tags = chrono_reach::IndustrialReach::tags()});
   if (describe) {
-    auto envelope = server->describe_json();
-    if (!envelope) {
-      std::fprintf(stderr, "failed to describe: %s\n", envelope.error().message().c_str());
-      return 1;
-    }
-    std::printf("%s\n", envelope->c_str());
+    std::puts(rlmesh::ext::env_server_describe_json(server).c_str());
     return 0;
-  }
-  auto bound = server->bind(address);
-  if (!bound) {
-    std::fprintf(stderr, "failed to bind %s: %s\n", address.c_str(),
-                 bound.error().message().c_str());
-    return 1;
   }
   std::printf("Project Chrono %s IndustrialRobot6dof env (native C++)\n", CHRONO_VERSION);
   std::printf("camera: %s\n", renderer_name.c_str());
-  std::printf("listening on %s\n", bound->c_str());
+  std::printf("listening on %s\n", server.address().c_str());
   std::fflush(stdout);
-
-  rlmesh::Status served = [&] {
-    SignalWaiter waiter(*server);
-    return server->serve();
-  }();  // the waiter is joined here, on every way serve returns
-  if (!served) {
-    std::fprintf(stderr, "serve failed: %s\n", served.error().message().c_str());
-    return 1;
-  }
+  server.serve();
   return 0;
+} catch (const rlmesh::ext::CancelledError&) {
+  return 0;
+} catch (const std::exception& e) {
+  std::fprintf(stderr, "%s\n", e.what());
+  return 1;
 }

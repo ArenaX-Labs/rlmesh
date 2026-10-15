@@ -7,8 +7,9 @@
 
 use std::any::Any;
 use std::cell::RefCell;
-use std::ffi::{CString, c_char, c_int};
+use std::ffi::{CString, c_char, c_int, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::{Arc, Mutex};
 
 use rlmesh::{ErrorClass, ErrorCode, ModelErrorCode};
 
@@ -229,7 +230,97 @@ fn model_code_from_wire(value: c_int) -> Option<ModelErrorCode> {
     })
 }
 
+// The pointer is owned by the slot. Its deleter may run on any thread (R-12).
+struct OpaquePayload {
+    pointer: *mut c_void,
+    free: Option<unsafe extern "C" fn(*mut c_void)>,
+}
+// SAFETY: the host promises that payload destruction is thread-safe.
+unsafe impl Send for OpaquePayload {}
+impl Drop for OpaquePayload {
+    fn drop(&mut self) {
+        if let Some(free) = self.free {
+            unsafe { free(self.pointer) };
+        }
+    }
+}
+type HostPayload = Arc<Mutex<Option<OpaquePayload>>>;
+thread_local! {
+    static CALLBACK_PAYLOAD: RefCell<Option<HostPayload>> = const { RefCell::new(None) };
+}
+/// A callback owns its pending error independently from nested exports. Nested
+/// callbacks save and restore it; successful callbacks drop unused payloads.
+pub(crate) struct CallbackFrame {
+    message: Option<(String, bool)>,
+    class: Option<RLMeshErrorClass>,
+    payload: Option<HostPayload>,
+}
+impl CallbackFrame {
+    pub(crate) fn enter() -> Self {
+        Self {
+            message: CALLBACK_MESSAGE.with(|s| s.borrow_mut().take()),
+            class: CALLBACK_CLASS.with(|s| s.take()),
+            payload: CALLBACK_PAYLOAD.with(|s| s.borrow_mut().take()),
+        }
+    }
+}
+impl Drop for CallbackFrame {
+    fn drop(&mut self) {
+        CALLBACK_MESSAGE.with(|s| *s.borrow_mut() = self.message.take());
+        CALLBACK_CLASS.with(|s| s.set(self.class.take()));
+        let previous = CALLBACK_PAYLOAD.with(|s| s.replace(self.payload.take()));
+        drop(previous);
+    }
+}
+thread_local! {
+    static CALLBACK_MESSAGE: RefCell<Option<(String, bool)>> = const { RefCell::new(None) };
+}
+pub(crate) fn callback_message() -> String {
+    CALLBACK_MESSAGE.with(|s| s.borrow().as_ref().map(|v| v.0.clone()).unwrap_or_default())
+}
+pub(crate) fn callback_recoverable() -> bool {
+    CALLBACK_MESSAGE.with(|s| s.borrow().as_ref().is_some_and(|v| v.1))
+}
+/// Attach the callback's host exception to the error traveling to its caller.
+pub(crate) fn attach_callback_payload(error: rlmesh::Error) -> rlmesh::Error {
+    let payload = CALLBACK_PAYLOAD.with(|slot| slot.borrow_mut().take());
+    match payload {
+        Some(p) => rlmesh::binding::AttachedError::attach(error, p),
+        None => error,
+    }
+}
+/// Record an owned opaque payload for the current callback failure.
+#[unsafe(no_mangle)]
+pub extern "C" fn rlmesh_ext_callback_set_error_payload(
+    pointer: *mut c_void,
+    free: Option<unsafe extern "C" fn(*mut c_void)>,
+) {
+    let previous = CALLBACK_PAYLOAD.with(|slot| {
+        slot.replace(Some(Arc::new(Mutex::new(Some(OpaquePayload {
+            pointer,
+            free,
+        })))))
+    });
+    drop(previous);
+}
+/// Transfer the failing caller's last host exception. A second take is NULL.
+#[unsafe(no_mangle)]
+pub extern "C" fn rlmesh_ext_last_error_take_payload() -> *mut c_void {
+    LAST_ERROR.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let Some(payload) = slot.as_mut().and_then(|e| e.payload.take()) else {
+            return std::ptr::null_mut();
+        };
+        let Some(mut owned) = payload.lock().unwrap_or_else(|p| p.into_inner()).take() else {
+            return std::ptr::null_mut();
+        };
+        owned.free = None;
+        owned.pointer
+    })
+}
+
 pub(crate) struct CapiError {
+    payload: Option<HostPayload>,
     pub status: RLMeshStatus,
     pub class: RLMeshErrorClass,
     pub code: Option<CapiCode>,
@@ -241,6 +332,7 @@ impl CapiError {
     pub(crate) fn new(status: RLMeshStatus, message: impl Into<String>) -> Self {
         Self {
             status,
+            payload: None,
             class: RLMeshErrorClass::for_status(status),
             code: None,
             message: message.into(),
@@ -256,30 +348,24 @@ impl CapiError {
     pub(crate) fn type_error(message: impl Into<String>) -> Self {
         Self::new(RLMeshStatus::Type, message)
     }
-    pub(crate) fn internal(message: impl Into<String>) -> Self {
-        Self::new(RLMeshStatus::Internal, message)
-    }
-    /// The same error reported as a cancellation (`KeyboardInterrupt`).
-    pub(crate) fn into_cancelled(self) -> Self {
-        Self {
-            status: RLMeshStatus::Cancelled,
-            class: RLMeshErrorClass::KeyboardInterrupt,
-            code: None,
-            recoverable: false,
-            ..self
-        }
-    }
 }
 
 impl From<rlmesh::Error> for CapiError {
     fn from(err: rlmesh::Error) -> Self {
         let class = err.class();
-        let code = match &err {
+        let (bare, payload) = match &err {
+            rlmesh::Error::Attached(attached) => {
+                (attached.error(), attached.payload::<HostPayload>().cloned())
+            }
+            error => (error, None),
+        };
+        let code = match bare {
             rlmesh::Error::Environment(error) => Some(CapiCode::Env(error.code)),
             rlmesh::Error::Model(error) => Some(CapiCode::Model(error.code)),
             _ => None,
         };
         Self {
+            payload,
             status: status_for_class(class),
             class: RLMeshErrorClass::from_rust(class),
             code,
@@ -290,6 +376,7 @@ impl From<rlmesh::Error> for CapiError {
 }
 
 struct LastError {
+    payload: Option<HostPayload>,
     message: CString,
     recoverable: bool,
     status: RLMeshStatus,
@@ -308,16 +395,18 @@ fn store(err: &CapiError) {
     let code_text = err
         .code
         .map(|code| CString::new(code.as_str()).expect("code spellings contain no NUL"));
-    LAST_ERROR.with(|slot| {
-        *slot.borrow_mut() = Some(LastError {
+    let previous = LAST_ERROR.with(|slot| {
+        slot.replace(Some(LastError {
+            payload: err.payload.clone(),
             message,
             recoverable: err.recoverable,
             status: err.status,
             class: err.class,
             code: err.code,
             code_text,
-        });
+        }))
     });
+    drop(previous);
 }
 
 /// Record a callback's failure (`rlmesh_callback_set_error`): read back on the
@@ -326,6 +415,7 @@ pub(crate) fn store_last_error(message: &str, recoverable: bool, status: RLMeshS
     let mut err = CapiError::new(status, message);
     err.recoverable = recoverable;
     store(&err);
+    CALLBACK_MESSAGE.with(|s| *s.borrow_mut() = Some((message.to_owned(), recoverable)));
     CALLBACK_CLASS.with(|slot| slot.set(None));
 }
 
@@ -338,6 +428,7 @@ pub(crate) fn store_last_error_class(message: &str, class: i32) {
     let mut err = CapiError::from(error);
     err.message = message.to_string();
     store(&err);
+    CALLBACK_MESSAGE.with(|s| *s.borrow_mut() = Some((message.to_owned(), false)));
     CALLBACK_CLASS.with(|slot| slot.set(Some(class)));
 }
 
@@ -376,23 +467,6 @@ pub(crate) fn error_of_class(class: RLMeshErrorClass, message: &str) -> rlmesh::
         RLMeshErrorClass::KeyboardInterrupt => Error::Cancelled,
         RLMeshErrorClass::RLMeshException | RLMeshErrorClass::Invalid => Error::Internal(message),
     }
-}
-
-/// Called before invoking a callback so a decline that does not set an error
-/// cannot report a previous request's stale message on a reused pool thread
-/// (20-review-spec B3).
-pub(crate) fn clear_last_error() {
-    LAST_ERROR.with(|slot| *slot.borrow_mut() = None);
-    CALLBACK_CLASS.with(|slot| slot.set(None));
-}
-
-pub(crate) fn last_error_message() -> String {
-    LAST_ERROR.with(|slot| {
-        slot.borrow()
-            .as_ref()
-            .map(|last| last.message.to_string_lossy().into_owned())
-            .unwrap_or_default()
-    })
 }
 
 pub(crate) fn last_error_recoverable() -> bool {
@@ -818,5 +892,76 @@ mod tests {
             rlmesh_last_error_class(),
             RLMeshErrorClass::AdapterResolutionError
         );
+    }
+}
+
+#[cfg(test)]
+mod payload_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    unsafe extern "C" fn free(p: *mut c_void) {
+        let count = unsafe { Box::from_raw(p.cast::<Arc<AtomicUsize>>()) };
+        count.fetch_add(1, Ordering::SeqCst);
+        // Reentrant error reads must not meet a borrowed TLS slot.
+        let _ = rlmesh_last_error_class();
+    }
+    fn payload(count: &Arc<AtomicUsize>) -> *mut c_void {
+        Box::into_raw(Box::new(Arc::clone(count))).cast()
+    }
+    #[test]
+    fn nested_callbacks_restore_pending_class_text_and_payload() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let frame = CallbackFrame::enter();
+        store_last_error_class("outer", RLMeshErrorClass::TypeError as i32);
+        rlmesh_ext_callback_set_error_payload(payload(&count), Some(free));
+        {
+            let _inner = CallbackFrame::enter();
+            store_last_error_class("inner", RLMeshErrorClass::ValueError as i32);
+            rlmesh_ext_callback_set_error_payload(payload(&count), Some(free));
+            let error = crate::ffi::callback_error("context");
+            assert_eq!(error.class(), ErrorClass::ValueError);
+            drop(error);
+        }
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        let error = crate::ffi::callback_error("context");
+        assert_eq!(error.class(), ErrorClass::TypeError);
+        assert_eq!(error.to_string(), "outer");
+        drop(frame);
+        std::thread::spawn(move || {
+            assert_eq!(guard(|| Err(error.into())), RLMeshStatus::Type);
+            let p = rlmesh_ext_last_error_take_payload();
+            assert!(!p.is_null());
+            assert!(rlmesh_ext_last_error_take_payload().is_null());
+            unsafe { free(p) };
+        })
+        .join()
+        .unwrap();
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+    }
+    #[test]
+    fn payloads_free_once_on_replacement_success_and_error_overwrite() {
+        let count = Arc::new(AtomicUsize::new(0));
+        {
+            let _frame = CallbackFrame::enter();
+            rlmesh_ext_callback_set_error_payload(payload(&count), Some(free));
+            rlmesh_ext_callback_set_error_payload(payload(&count), Some(free));
+            assert_eq!(count.load(Ordering::SeqCst), 1);
+        }
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+        let error = {
+            let _frame = CallbackFrame::enter();
+            rlmesh_ext_callback_set_error_payload(payload(&count), Some(free));
+            store_last_error_class("bad", RLMeshErrorClass::TypeError as i32);
+            crate::ffi::callback_error("context")
+        };
+        let clone = error.clone();
+        assert_eq!(guard(|| Err(error.into())), RLMeshStatus::Type);
+        assert_eq!(
+            guard(|| Err(CapiError::invalid_arg("replace"))),
+            RLMeshStatus::InvalidArgument
+        );
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+        drop(clone);
+        assert_eq!(count.load(Ordering::SeqCst), 3);
     }
 }

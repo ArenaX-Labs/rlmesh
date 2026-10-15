@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Compile the C/C++ ABI, build C and C++ env/model smokes, check native runtime declarations and legacy defaults, and run model/env gRPC flows"
+#MISE description="Compile the C/C++ ABI, build C and C++ env/model smokes, check native runtime declarations and C++20 parity, and run model/env gRPC flows"
 #MISE dir="{{ config_root }}"
 
 # The C/C++ analogue of the Python build+typecheck+test gates: the cdylib + the
@@ -37,11 +37,11 @@ cargo build -p rlmesh-capi --lib --bin e2e_harness --bin e2e_env_harness
 
 # 2. Typecheck the public surface in BOTH languages (the basedpyright analogue):
 #    a compile catches C-vs-C++ / extern "C" divergence in the header.
-echo "==> header compiles as C11 and as C++17"
+echo "==> header compiles as C11 and as C++20"
 printf '#include <rlmesh.h>\n' |
   $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" -c -x c - -o "$tmp/header_c.o"
 printf '#include <rlmesh.hpp>\n' |
-  $CXX -std=c++17 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" -c -x c++ - -o "$tmp/header_cxx.o"
+  $CXX -std=c++20 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" -c -x c++ - -o "$tmp/header_cxx.o"
 echo "==> C header stays warning-free in C++98"
 printf '#include <rlmesh.h>\n' |
   $CXX -std=c++98 "${warn[@]}" -pedantic "${cxx_quiet[@]}" -I "$inc" -c -x c++ - -o "$tmp/header_cxx98.o"
@@ -68,7 +68,7 @@ for first in dlpack.h rlmesh.h; do
     $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" -I "$tmp" -c -x c - \
       -o "$tmp/dlpack_order_c.o"
   printf '#include <%s>\n#include <%s>\n' "$first" "$second" |
-    $CXX -std=c++17 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" -I "$tmp" -c -x c++ - \
+    $CXX -std=c++20 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" -I "$tmp" -c -x c++ - \
       -o "$tmp/dlpack_order_cxx.o"
 done
 if printf '#define DLPACK_DLPACK_H_\n#include <rlmesh.h>\n' |
@@ -97,7 +97,7 @@ case "$CC" in *zig*)
 # cpp_surface.cpp names every public type and member, so a template that stops
 # compiling fails here instead of in a downstream build. Compiled, never linked.
 echo "==> C++ wrapper surface instantiates"
-$CXX -std=c++17 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" \
+$CXX -std=c++20 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" \
   -c crates/rlmesh-capi/examples/cpp_surface.cpp -o "$tmp/cpp_surface.o"
 
 # 3. Compile + link the C and C++ smokes against the cdylib (the build + link gate:
@@ -106,9 +106,9 @@ echo "==> build the C and C++ model and env smokes"
 link=(-L "$target" -lrlmesh_capi -Wl,-rpath,"$repo_root/$target" -lpthread -ldl -lm)
 $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/c_model.c "${link[@]}" -o "$target/c_model_smoke"
-$CXX -std=c++17 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" \
+$CXX -std=c++20 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/cpp_model.cpp "${link[@]}" -o "$target/cpp_model_smoke"
-$CXX -std=c++17 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" \
+$CXX -std=c++20 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/cpp_env.cpp "${link[@]}" -o "$target/cpp_env_smoke"
 $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/c_env.c "${link[@]}" -o "$target/c_env_smoke"
@@ -120,7 +120,7 @@ for standard in 11 17; do
     crates/rlmesh-capi/examples/c_env.c "${link[@]}" -o "$tmp/c_env_$standard"
   "$tmp/c_env_$standard" | python scripts/check-native-runtime.py c "$standard"
 done
-for standard in 17 20; do
+for standard in 20; do
   $CXX -std=c++$standard "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" \
     crates/rlmesh-capi/examples/cpp_env.cpp "${link[@]}" -o "$tmp/cpp_env_$standard"
   "$tmp/cpp_env_$standard" --describe | python scripts/check-native-runtime.py c++ "$standard"
@@ -183,26 +183,35 @@ echo "==> C and C++ core: build info, editions, constants, warning handler"
 $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/c_core.c "${link[@]}" -o "$tmp/c_core"
 "$tmp/c_core"
-$CXX -std=c++17 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" \
+$CXX -std=c++20 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/cpp_core.cpp "${link[@]}" -o "$tmp/cpp_core"
 "$tmp/cpp_core"
 
-echo "==> C config helper detects a C++17 translation unit"
-$CXX -std=c++17 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" -x c++ \
+echo "==> C config helper detects a C++20 translation unit"
+$CXX -std=c++20 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" -x c++ \
   crates/rlmesh-capi/examples/c_env.c "${link[@]}" -o "$tmp/c_header_cpp"
-"$tmp/c_header_cpp" | python scripts/check-native-runtime.py c++ 17
+"$tmp/c_header_cpp" | python scripts/check-native-runtime.py c++ 20
 
-echo "==> legacy C++ empty declaration equals the old C ABI output byte-for-byte"
-$CXX -std=c++17 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" \
-  crates/rlmesh-capi/examples/cpp_runtime.cpp "${link[@]}" -o "$tmp/cpp_runtime"
-"$tmp/cpp_runtime"
-
-echo "==> C++ exception classes follow the Python inheritance; the header builds without exceptions"
-$CXX -std=c++17 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" \
-  crates/rlmesh-capi/examples/cpp_errors.cpp "${link[@]}" -o "$tmp/cpp_errors"
-"$tmp/cpp_errors"
-printf '#include <rlmesh.hpp>\n' |
-  $CXX -std=c++17 -fno-exceptions "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" -c -x c++ - -o "$tmp/header_noexcept.o"
+echo "==> C++20 parity fixtures ($CXX; CI runs GCC and Clang)"
+for compiler in "$CXX"; do
+  compiler_quiet=()
+  case "$compiler" in *zig*) compiler_quiet=(-Wno-unused-command-line-argument -Wno-nullability-completeness) ;; esac
+  for example in cpp_core cpp_errors cpp_runtime cpp_spaces cpp_parity; do
+    $compiler -std=c++20 "${warn[@]}" "${compiler_quiet[@]}" -I "$inc" \
+      "crates/rlmesh-capi/examples/$example.cpp" "${link[@]}" -o "$tmp/$example"
+    "$tmp/$example"
+  done
+  $compiler -std=c++20 "${warn[@]}" "${compiler_quiet[@]}" -I "$inc" \
+    -c crates/rlmesh-capi/examples/cpp_surface.cpp -o "$tmp/cpp_surface.o"
+done
+$CXX -std=c++20 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" \
+  -c examples/chrono/src/scripted_model.cpp -o "$tmp/chrono_scripted_model.o"
+# C++20 and exceptions are requirements, not an alternate error-handling mode.
+if printf '#include <rlmesh.hpp>\n' |
+  $CXX -std=c++20 -fno-exceptions -I "$inc" -c -x c++ - -o "$tmp/noexceptions.o" >"$tmp/noexceptions.log" 2>&1; then
+  echo "ERROR: wrapper accepted disabled exceptions" >&2; exit 1
+fi
+rg -q 'rlmesh.hpp requires exceptions' "$tmp/noexceptions.log"
 
 # 4. Run each smoke against a live env over real gRPC (the pytest analogue).
 #    Both print the same run report; assert the real numbers, not just exit 0.

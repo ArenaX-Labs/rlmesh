@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ## [Unreleased]
 
+- **Breaking C++ API:** `rlmesh.hpp` now requires C++20 and exceptions. Replaces `Result<T>`, `RLMESH_TRY`, aborting accessors and ABI-4 wrapper types with typed values/tensors, shared RAII handles, aggregate options, Gymnasium tuples, chrono durations and Python's exception hierarchy. Adds detected Env/VectorEnv and four-corner Policy authoring, CRTP factories, Model/run/Session/results/hooks, remote clients, Describe, typed adapters, DLPack, View and Recorder. Copies share the library object where Python shares it; cancellation remains outside `std::exception`.
+- Removes the temporary `rlmesh_ext_legacy_*` C exports and callback records along with `LEGACY_ABI.md`. C++ and C examples now consume ABI 5 directly. Callback errors carry owned host exception payloads across worker threads, with nested callback isolation and caller-side rethrow. Updates the Chrono example to the C++20 surface; compiling its simulation requires the external Chrono SDK.
+
 - C ABI generation 5 rebases `RLMeshValue` on the Rust facade's core Value and Metadata, with all ten value kinds, strict typed reads, insertion-ordered dicts, length-bearing text and shared immutable handles. Composite constructors retain their children. `RLMeshTensor` becomes an opaque facade handle with copying construction, shared clones and reshapes, byte strides, read-only buffers and explicit deep copies. Removes the tensor POD, DLPack dtype triple, old value projection and package-semver ABI accessors; packaging now selects SONAME 5. C and C++ examples use the new C calls; native DLPack support remains deferred.
 
 ### Added

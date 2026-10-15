@@ -152,7 +152,7 @@ fn into_space_handle(space: Space) -> *mut RLMeshSpace {
     std::boxed::Box::into_raw(std::boxed::Box::new(RLMeshSpace(space)))
 }
 
-fn write_space(out: *mut *mut RLMeshSpace, space: Space) -> Result<(), CapiError> {
+pub(crate) fn write_space(out: *mut *mut RLMeshSpace, space: Space) -> Result<(), CapiError> {
     if out.is_null() {
         return Err(CapiError::invalid_arg("null out"));
     }

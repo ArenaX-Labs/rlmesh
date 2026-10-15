@@ -7,7 +7,7 @@ project(rlmesh_consumer C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # With RLMESH_PACKAGE_URL set, fetch the tarball at configure time the way a

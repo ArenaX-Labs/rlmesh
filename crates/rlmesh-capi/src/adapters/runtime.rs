@@ -23,7 +23,7 @@ impl Drop for Owner {
 fn value_call(f: TransformFn, user: usize, input: Value) -> rlmesh::Result<Value> {
     let input = RLMeshValue::new(input);
     let mut out = std::ptr::null_mut();
-    clear_last_error();
+    let _callback_frame = crate::abi::status::CallbackFrame::enter();
     let status = unsafe { f(user as *mut c_void, &input, &mut out) };
     let value = unsafe { ffi::take(out) };
     if status != 0 {
@@ -128,7 +128,7 @@ impl AdapterBase for CustomAdapter {
     }
     fn reset(&mut self) -> rlmesh::Result<()> {
         if let Some(f) = self.v.reset {
-            clear_last_error();
+            let _callback_frame = crate::abi::status::CallbackFrame::enter();
             if unsafe { f(self.owner.user as *mut c_void) } != 0 {
                 return Err(ffi::callback_error("context"));
             }
@@ -138,7 +138,7 @@ impl AdapterBase for CustomAdapter {
     fn observe(&mut self, raw: Value) -> rlmesh::Result<()> {
         if let Some(f) = self.v.observe {
             let raw = RLMeshValue::new(raw);
-            clear_last_error();
+            let _callback_frame = crate::abi::status::CallbackFrame::enter();
             if unsafe { f(self.owner.user as *mut c_void, &raw) } != 0 {
                 return Err(ffi::callback_error("context"));
             }
@@ -148,7 +148,7 @@ impl AdapterBase for CustomAdapter {
     fn explain(&self) -> rlmesh::Result<String> {
         if let Some(f) = self.v.explain {
             let mut out = std::ptr::null();
-            clear_last_error();
+            let _callback_frame = crate::abi::status::CallbackFrame::enter();
             if unsafe { f(self.owner.user as *mut c_void, &mut out) } != 0 {
                 return Err(ffi::callback_error("context"));
             }

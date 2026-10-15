@@ -1,56 +1,50 @@
-/* A minimal C environment's image-label describe envelope. The config helper
- * detects the C standard and compiler in this translation unit. */
+/* Minimal ABI 5 environment describe with the translation unit's host runtime. */
 #include <rlmesh.h>
 #include <stdio.h>
-
-static int reset(void* data, const RLMeshExtLegacyResetArgs* args,
-                 RLMeshExtLegacyResetResult* out) {
-  (void)data;
-  (void)args;
-  rlmesh_value_int(0, &out->observation);
-  return out->observation ? 0 : 1;
+static RLMeshStatus reset(void* u, const int64_t* seed, const RLMeshValue* options,
+                          RLMeshValue** obs, RLMeshValue** info) {
+  (void)u;
+  (void)seed;
+  (void)options;
+  (void)info;
+  return rlmesh_value_int(0, obs);
 }
-
-static int step(void* data, const RLMeshValue* action, RLMeshExtLegacyStepResult* out) {
-  (void)data;
+static RLMeshStatus step(void* u, const RLMeshValue* action, RLMeshValue** obs, double* reward,
+                         bool* term, bool* trunc, RLMeshValue** info) {
+  (void)u;
   (void)action;
-  rlmesh_value_int(0, &out->observation);
-  out->terminated = true;
-  return out->observation ? 0 : 1;
+  (void)reward;
+  (void)trunc;
+  (void)info;
+  *term = true;
+  return rlmesh_value_int(0, obs);
 }
-
 int main(void) {
-  RLMeshExtLegacyEnvConfig config = rlmesh_ext_legacy_env_config_init();
-  config.id = "CExample-v0";
-  RLMeshDiscrete* observation = NULL;
-  RLMeshDiscrete* action = NULL;
-  if (rlmesh_discrete_new(2, NULL, &observation) != RLMESH_OK ||
-      rlmesh_discrete_new(2, NULL, &action) != RLMESH_OK) {
-    fprintf(stderr, "space failed: %s\n", rlmesh_last_error_message());
-    return 1;
-  }
-  /* The config borrows each space's spec; the env copies it. */
-  config.observation_space = rlmesh_space_spec(observation);
-  config.action_space = rlmesh_space_spec(action);
-  RLMeshExtLegacyEnvVtable vtable = {sizeof(RLMeshExtLegacyEnvVtable), reset, step, NULL, NULL};
-  RLMeshExtLegacyEnv* env = NULL;
-  void* user_data = NULL;
-  RLMeshStatus status = rlmesh_ext_legacy_env_new_lanes(&vtable, &config, &user_data, 1, &env);
-  rlmesh_space_free(observation);
-  rlmesh_space_free(action);
-  if (status != RLMESH_OK) {
-    fprintf(stderr, "create failed: %s\n", rlmesh_last_error_message());
-    return 1;
-  }
-  RLMeshBytes description = {NULL, 0, 0};
-  status = rlmesh_ext_legacy_env_describe_json(env, &description);
+  RLMeshSpace* space = NULL;
+  if (rlmesh_discrete_new(2, NULL, &space) != RLMESH_OK) return 1;
+  RLMeshEnvVtable vt = RLMESH_ENV_VTABLE_INIT;
+  vt.reset = reset;
+  vt.step = step;
+  RLMeshEnvAttributes attrs = RLMESH_ENV_ATTRIBUTES_INIT;
+  attrs.observation_space = space;
+  attrs.action_space = space;
+  attrs.id = "CExample-v0";
+  RLMeshEnv* env = NULL;
+  if (rlmesh_env_new(&vt, NULL, &attrs, &env) != RLMESH_OK) return 1;
+  RLMeshExtEnvServerOptions ext = RLMESH_EXT_ENV_SERVER_OPTIONS_INIT;
+  RLMeshEnvServerOptions options = RLMESH_ENV_SERVER_OPTIONS_INIT;
+  options.ext = &ext;
+  RLMeshEnvServer* server = NULL;
+  RLMeshStatus status = rlmesh_env_server_new(&env, 1, &options, &server);
   if (status == RLMESH_OK) {
-    fwrite(description.data, 1, description.len, stdout);
-    putchar('\n');
+    RLMeshBytes description = {NULL, 0, 0};
+    status = rlmesh_ext_env_server_describe_json(server, &description);
+    if (status == RLMESH_OK) printf("%.*s\n", (int)description.len, (const char*)description.data);
     rlmesh_bytes_free(description);
-  } else {
-    fprintf(stderr, "describe failed: %s\n", rlmesh_last_error_message());
   }
-  rlmesh_ext_legacy_env_free(env);
+  if (status != RLMESH_OK) fprintf(stderr, "%s\n", rlmesh_last_error_message());
+  rlmesh_env_server_free(server);
+  rlmesh_env_free(env);
+  rlmesh_space_free(space);
   return status == RLMESH_OK ? 0 : 1;
 }

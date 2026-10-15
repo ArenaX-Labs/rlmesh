@@ -1,464 +1,67 @@
-// Compile-only check that the whole rlmesh.hpp surface still instantiates: every
-// public type and member is named here, so a template that stops compiling fails
-// `mise run test:cxx` instead of a downstream build. Compiled to an object, never
-// linked or run — the calls below are not meant to succeed at runtime.
-#include <chrono>
-#include <cstdint>
-#include <memory>
-#include <optional>
+// Compile-only Shapes and optional authoring signatures. Runtime cases live in
+// cpp_parity.cpp. This translation unit also instantiates every policy corner.
 #include <rlmesh.hpp>
-#include <string>
-#include <utility>
-#include <vector>
 
-namespace surface {
-
-// Error / Result / Status ergonomics, including RLMESH_TRY.
-rlmesh::Result<int64_t> results(rlmesh::ValueRef value) {
-  rlmesh::Error error(RLMESH_ERR_MODEL, "boom", true);
-  (void)error.code();
-  (void)error.message();
-  (void)error.is_recoverable();
-  (void)error.is_cancelled();
-  (void)rlmesh::Error::from_last(RLMESH_ERR_INTERNAL).code();
-
-  rlmesh::Status status = rlmesh::ok();
-  if (!status || !status.ok() || !status.has_value()) return status.error();
-  status.value();
-  status.unwrap();
-  rlmesh::Status chained = status.and_then([] { return rlmesh::ok(); });
-  if (!chained) return chained.error();
-
-  rlmesh::Result<int64_t> discrete = value.as_discrete();
-  (void)discrete.value_or(int64_t{0});
-  (void)discrete.has_value();
-  rlmesh::Result<int64_t> mapped = value.as_discrete().map([](int64_t n) { return n + 1; });
-  if (!mapped) return mapped.error();
-  rlmesh::Result<int64_t> doubled =
-      std::move(discrete).and_then([](int64_t n) -> rlmesh::Result<int64_t> { return n * 2; });
-  if (!doubled) return doubled.error();
-  int64_t unwrapped = std::move(mapped).unwrap();
-  int64_t tried = RLMESH_TRY(value.as_discrete());
-  return unwrapped + *doubled + tried;
-}
-
-// The error class and code accessors, and the exception classes.
-void error_classes(rlmesh::Error error) {
-  (void)error.error_class();
-  (void)error.detail_code();
-  rlmesh::Result<int64_t> result = error;
-  (void)std::move(result).value_or_throw();
-  rlmesh::Status status = error;
-  status.value_or_throw();
-  try {
-    rlmesh::throw_error(error);
-  } catch (const rlmesh::RecoverableEnvironmentException& e) {
-    (void)e.code();
-  } catch (const rlmesh::EnvironmentException& e) {
-    (void)rlmesh::to_string(e.code());
-    (void)e.is_recoverable();
-  } catch (const rlmesh::ModelException& e) {
-    (void)rlmesh::to_string(e.code());
-    (void)e.is_recoverable();
-  } catch (const rlmesh::ProtocolException&) {
-  } catch (const rlmesh::RLMeshException&) {
-  } catch (const rlmesh::RuntimeError&) {
-  } catch (const rlmesh::AdapterResolutionError&) {
-  } catch (const rlmesh::ValueError&) {
-  } catch (const rlmesh::TypeError&) {
-  } catch (const rlmesh::ConnectionError&) {
-  } catch (const rlmesh::TimeoutError&) {
-  } catch (const rlmesh::OSError&) {
-  } catch (const rlmesh::ext::CancelledError& e) {
-    (void)e.what();
+struct Greedy {
+  rlmesh::Value predict(const rlmesh::Value& observation) {
+    (void)observation;
+    return rlmesh::Value(0);
   }
-  throw rlmesh::ModelException("declined", true);
-}
-
-void authored_env_errors() { throw rlmesh::RecoverableEnvironmentException("busy"); }
-
-// Every ValueRef reader, plus the Tensor view.
-rlmesh::Status read_value(rlmesh::ValueRef value) {
-  (void)value.raw();
-  (void)value.kind();
-  auto tensor = value.as_tensor();
-  if (!tensor) return tensor.error();
-  (void)tensor->data();
-  (void)tensor->dtype();
-  (void)tensor->ndim();
-  (void)tensor->shape();
-  (void)tensor->strides();
-  (void)tensor->is_contiguous();
-  (void)tensor->numel();
-  (void)tensor->as<float>();
-
-  auto discrete = value.as_discrete();
-  if (!discrete) return discrete.error();
-  auto text = value.as_text();
-  if (!text) return text.error();
-  auto bits = value.as_multi_binary();
-  if (!bits) return bits.error();
-  auto nvec = value.as_multi_discrete();
-  if (!nvec) return nvec.error();
-  auto array_len = value.array_len();
-  if (!array_len) return array_len.error();
-  auto size = value.size();
-  if (!size) return size.error();
-  (void)value.at(0);
-  auto key = value.key(0);
-  if (!key) return key.error();
-  (void)value.get("field");
-  (void)value.at_key(0);
-  auto items = value.items();
-  if (!items) return items.error();
-  return rlmesh::ok();
-}
-
-// Every owned-value constructor, including the typed Box convenience.
-rlmesh::Result<rlmesh::Value> build_value() {
-  std::vector<rlmesh::Value> children;
-  auto f32 = rlmesh::Value::box(std::vector<float>{0.0F}, {1});
-  if (!f32) return f32.error();
-  children.push_back(std::move(*f32));
-  auto f64 = rlmesh::Value::box(std::vector<double>{0.0}, {1});
-  if (!f64) return f64.error();
-  children.push_back(std::move(*f64));
-  auto i32 = rlmesh::Value::box(std::vector<int32_t>{0}, {1});
-  if (!i32) return i32.error();
-  children.push_back(std::move(*i32));
-  auto i64 = rlmesh::Value::box(std::vector<int64_t>{0}, {1});
-  if (!i64) return i64.error();
-  children.push_back(std::move(*i64));
-  auto u8 = rlmesh::Value::box(std::vector<uint8_t>{0}, {1});
-  if (!u8) return u8.error();
-  children.push_back(std::move(*u8));
-  const std::vector<uint8_t> flags(2, 0);
-  auto boolean = rlmesh::Value::box(flags.data(), rlmesh::dtype_of<bool>(), {2});
-  if (!boolean) return boolean.error();
-  children.push_back(std::move(*boolean));
-  auto tuple = rlmesh::Value::tuple(std::move(children));
-  if (!tuple) return tuple.error();
-
-  std::vector<std::pair<std::string, rlmesh::Value>> entries;
-  auto discrete = rlmesh::Value::discrete(1);
-  if (!discrete) return discrete.error();
-  entries.emplace_back("discrete", std::move(*discrete));
-  auto text = rlmesh::Value::text("hello");
-  if (!text) return text.error();
-  entries.emplace_back("text", std::move(*text));
-  auto bits = rlmesh::Value::multi_binary({0, 1});
-  if (!bits) return bits.error();
-  entries.emplace_back("bits", std::move(*bits));
-  auto nvec = rlmesh::Value::multi_discrete({0, 1});
-  if (!nvec) return nvec.error();
-  entries.emplace_back("nvec", std::move(*nvec));
-  entries.emplace_back("tuple", std::move(*tuple));
-
-  auto dict = rlmesh::Value::dict(std::move(entries));
-  if (!dict) return dict.error();
-  (void)dict->raw();
-  (void)dict->ref().kind();
-  rlmesh::Value moved = std::move(*dict);
-  return rlmesh::Value(moved.release());
-}
-
-// Every SpaceRef accessor, plus zeros_for over an arbitrary space.
-rlmesh::Status read_space(rlmesh::SpaceRef space) {
-  (void)space.raw();
-  (void)space.valid();
-  (void)space.kind();
-  (void)space.dtype();
-  (void)space.ndim();
-  auto shape = space.shape();
-  if (!shape) return shape.error();
-  auto numel = space.numel();
-  if (!numel) return numel.error();
-  auto bounds = space.bounds(0);
-  if (!bounds) return bounds.error();
-  (void)bounds->low;
-  (void)bounds->high;
-  auto discrete = space.discrete();
-  if (!discrete) return discrete.error();
-  (void)discrete->n;
-  (void)discrete->start;
-  auto length = space.text_length();
-  if (!length) return length.error();
-  (void)length->min;
-  (void)length->max;
-  auto charset = space.charset();
-  if (!charset) return charset.error();
-  auto nvec = space.nvec();
-  if (!nvec) return nvec.error();
-  auto size = space.size();
-  if (!size) return size.error();
-  (void)space.at(0);
-  auto key = space.key(0);
-  if (!key) return key.error();
-  (void)space.get("field");
-  (void)space.at_key(0);
-  auto items = space.items();
-  if (!items) return items.error();
-  auto zeros = rlmesh::zeros_for(space);
-  if (!zeros) return zeros.error();
-  return rlmesh::ok();
-}
-
-// The batched policy shape: Batch indexing and per-row episodes.
-rlmesh::Result<rlmesh::Model> batched_model() {
-  return rlmesh::Model::from_predict_batch(
-      [](const rlmesh::Batch& batch) -> rlmesh::Result<std::vector<rlmesh::Value>> {
-        (void)batch.contract();
-        (void)batch.has_observations();
-        (void)batch.env_id();
-        (void)batch.session_id();
-        (void)batch.request_id();
-        (void)batch.observation_space();
-        std::vector<rlmesh::Value> actions;
-        for (size_t i = 0; i < batch.size(); ++i) {
-          rlmesh::Episode episode = batch.episode(i);
-          (void)episode.id;
-          (void)episode.seed;
-          (void)episode.predict_index;
-          (void)episode.predict_seed;
-          if (std::optional<rlmesh::ValueRef> row = batch.at(i)) (void)row->kind();
-          auto action = rlmesh::zeros_for(batch.action_space());
-          if (!action) return action.error();
-          actions.push_back(std::move(*action));
-        }
-        return actions;
-      });
-}
-
-// The single-env policy plus the whole Model lifecycle.
-rlmesh::Status drive(const std::string& address) {
-  auto model = rlmesh::Model::from_predict([](const rlmesh::Request& request) {
-    (void)request.env_id();
-    (void)request.session_id();
-    (void)request.request_id();
-    (void)request.episode().id;
-    (void)request.episode().seed;
-    (void)request.episode().predict_index;
-    (void)request.episode().predict_seed;
-    (void)request.observation();
-    (void)request.observation_space();
-    (void)request.batch().size();
-    return rlmesh::zeros_for(request.action_space());
-  });
-  if (!model) return model.error();
-  model->on_episode_end([](std::string_view, std::string_view) {}).on_close([] {});
-
-  rlmesh::RunOptions options;
-  options.max_episodes = 2;
-  options.seeded = true;
-  options.base_seed = 7;
-  options.max_episode_steps = 10;
-  options.max_episode_seconds = 1.5;
-  options.execution_horizon = 1;
-  options.close_env = true;
-  options.episode_seeds = {1, 2};
-  options.trial_indexed = true;
-  options.trial_index_base = 100;
-  auto report = model->run_local(address, options);
-  if (!report) return report.error();
-  rlmesh::RunReport copied = *report;
-  (void)copied.total_episodes;
-  (void)copied.total_steps;
-  (void)copied.total_reward;
-  (void)copied.mean_reward;
-  (void)copied.terminated_episodes;
-  (void)copied.truncated_episodes;
-
-  rlmesh::ServeOptions serve_options;
-  serve_options.token = "secret";
-  serve_options.allow_remote_shutdown = true;
-  serve_options.idle_timeout = std::chrono::seconds(30);
-  serve_options.drain_timeout = std::chrono::milliseconds(500);
-  serve_options.close_timeout = std::chrono::seconds(5);
-  serve_options.predict_concurrency = 4;
-  // The edition this model was authored against: the bare base, kept until its
-  // author deliberately moves it (it selects a source build's own
-  // "2026.06-dev.<git>" spelling as readily as the sealed name).
-  serve_options.workflow_edition = "2026.06";
-
-  rlmesh::Model moved = std::move(*model);
-  moved.cancel();
-  return moved.serve(address, serve_options);
-}
-
-// Env side: every Space builder, the Environment hooks, EnvConfig, EnvServer.
-rlmesh::Result<rlmesh::Space> spaces() {
-  auto image = rlmesh::Space::box<uint8_t>({8, 8, 3}, 0, 255);
-  if (!image) return image.error();
-  auto bounded = rlmesh::Space::box(RLMESH_DTYPE_FLOAT32, {2}, std::vector<double>{-1, -2},
-                                    std::vector<double>{1, 2});
-  if (!bounded) return bounded.error();
-  auto raw = rlmesh::Space::box(RLMESH_DTYPE_FLOAT64, {3}, -1.0, 1.0);
-  if (!raw) return raw.error();
-  auto discrete = rlmesh::Space::discrete(4, 1);
-  if (!discrete) return discrete.error();
-  auto bits = rlmesh::Space::multi_binary({5});
-  if (!bits) return bits.error();
-  auto counts = rlmesh::Space::multi_discrete({2, 3});
-  if (!counts) return counts.error();
-  auto text = rlmesh::Space::text(1, 32, "abc");
-  if (!text) return text.error();
-  std::vector<rlmesh::Space> children;
-  children.push_back(discrete.unwrap());
-  children.push_back(bits.unwrap());
-  auto tuple = rlmesh::Space::tuple(std::move(children));
-  if (!tuple) return tuple.error();
-  std::vector<std::pair<std::string, rlmesh::Space>> fields;
-  fields.emplace_back("image", image.unwrap());
-  fields.emplace_back("bounded", bounded.unwrap());
-  fields.emplace_back("raw", raw.unwrap());
-  fields.emplace_back("counts", counts.unwrap());
-  fields.emplace_back("text", text.unwrap());
-  fields.emplace_back("tuple", tuple.unwrap());
-  auto dict = rlmesh::Space::dict(std::move(fields));
-  if (!dict) return dict.error();
-  (void)dict->raw();
-  (void)dict->ref().kind();
-  rlmesh::Space moved = dict.unwrap();
-  return moved;
-}
-
-class SurfaceEnv : public rlmesh::Environment {
- public:
-  rlmesh::Result<rlmesh::ResetOutput> reset(const rlmesh::ResetArgs& args) override {
-    (void)args.seed;
-    (void)args.trial_index;
-    (void)args.options_json;
-    auto observation = rlmesh::Value::discrete(0);
-    if (!observation) return observation.error();
-    return rlmesh::ResetOutput{observation.unwrap(), "{}"};
-  }
-  rlmesh::Result<rlmesh::StepOutput> step(std::optional<rlmesh::ValueRef> action) override {
-    (void)action;
-    auto observation = rlmesh::Value::discrete(1);
-    if (!observation) return observation.error();
-    return rlmesh::StepOutput{observation.unwrap(), 1.0, true, false, ""};
-  }
-  rlmesh::Result<std::optional<rlmesh::Value>> render() override {
-    return std::optional<rlmesh::Value>();
-  }
-  void close() override {}
 };
-
-rlmesh::Status env_server(const std::string& address) {
-  rlmesh::EnvConfig config;
-  config.id = "Surface-v0";
-  auto observation = rlmesh::Space::discrete(2);
-  if (!observation) return observation.error();
-  auto action = spaces();
-  if (!action) return action.error();
-  config.observation_space = observation.unwrap();
-  config.action_space = action.unwrap();
-  config.adapter_tags_json = "";
-  config.reset_options = {"trial_index"};
-  config.render_mode = "rgb_array";
-  config.metadata_json = "{}";
-  config.foreground = false;
-  config.variants_catalog_json = R"([{"id": "a", "params": {"k": 1}}])";
-  std::vector<std::unique_ptr<rlmesh::Environment>> lanes;
-  lanes.push_back(std::make_unique<SurfaceEnv>());
-  lanes.push_back(std::make_unique<SurfaceEnv>());
-  auto multi = rlmesh::EnvServer::create(std::move(lanes), config);
-  if (!multi) return multi.error();
-  auto server = rlmesh::EnvServer::create(std::make_unique<SurfaceEnv>(), config);
-  if (!server) return server.error();
-  rlmesh::Result<std::string> describe = server->describe_json();
-  if (!describe) return describe.error();
-  rlmesh::ServeOptions options;
-  auto bound = server->bind(address, options);
-  if (!bound) return bound.error();
-  rlmesh::EnvServer moved = std::move(*server);
-  moved.cancel();
-  return moved.serve();
+void shapes(rlmesh::Env& env, rlmesh::SpecArg spec) {
+  auto model = rlmesh::Model(Greedy{}, {.spec = spec});
+  auto result = model.run(env, {.episodes = 2, .seeds = {0, 1}});
+  auto s = rlmesh::session(model, env);
+  auto [obs, info] = s.reset(0);
+  auto [obs2, reward, terminated, truncated, info2] = s.step(s.predict(obs));
+  (void)result;
+  (void)obs2;
+  (void)reward;
+  (void)terminated;
+  (void)truncated;
+  (void)info;
+  (void)info2;
 }
-
-// The spaces wrapper (rlmesh::spaces), through its no-exception factories.
-rlmesh::Status spaces_surface(const rlmesh::Value& value) {
-  using namespace rlmesh::spaces;
-  rlmesh::spaces::BoxOptions box_options;
-  box_options.dtype = rlmesh::DType::Int32;
-  auto box = Box::create(0, 10, {2}, box_options);
-  if (!box) return box.error();
-  (void)box->low();
-  (void)box->high();
-  (void)box->bounds_kind();
-  rlmesh::spaces::DiscreteOptions discrete_options;
-  discrete_options.start = 1;
-  auto discrete = Discrete::create(4, discrete_options);
-  if (!discrete) return discrete.error();
-  (void)(discrete->n() + discrete->start());
-  std::vector<std::pair<std::string, SpaceSpec>> children;
-  children.emplace_back("a", box->spec());
-  children.emplace_back("b", *discrete);
-  auto dict = Dict::create(children);
-  if (!dict) return dict.error();
-  (void)dict->size();
-  (void)dict->keys();
-  (void)dict->values();
-  (void)dict->items();
-  (void)dict->key_at(0);
-  (void)dict->get("a");
-  (void)dict->contains_key("b");
-  Space space = *dict;
-  (void)space.seed();
-  (void)space.seed(uint64_t{7});
-  auto sample = space.sample();
-  if (!sample) return sample.error();
-  (void)space.contains(value);
-  (void)(space == *box);
-  (void)space.to_string();
-  (void)space.as_box();
-  (void)space.as_discrete();
-  (void)space.as_dict();
-  SpaceSpec spec = space.spec();
-  (void)spec.kind();
-  (void)spec.shape();
-  (void)spec.dtype();
-  (void)spec.to_string();
-  auto again = spec.to_space();
-  if (!again) return again.error();
-  auto typed = space_from_spec(spec);
-  if (!typed) return typed.error();
-  (void)Box::from_spec(spec);
-  (void)Discrete::from_spec(spec);
-  (void)Dict::from_spec(spec);
-  Bound bound = 1.5;
-  (void)bound.type();
-  (void)bound.raw();
-  (void)to_string(SpaceKind::Box);
-  (void)to_string(BoundsKind::Uniform);
-  (void)rlmesh::to_string(rlmesh::DType::Float32);
-  auto per = rlmesh::ext::box_elementwise({0, 1}, {2, 3}, {2});
-  if (!per) return per.error();
-  return rlmesh::ok();
+struct MixedCorners {
+  static constexpr std::optional<uint32_t> native_chunk = 2;
+  rlmesh::Value predict(const rlmesh::Value&, const rlmesh::PredictContext&) { return 0; }
+  rlmesh::Value predict_chunk(const rlmesh::Value&) { return rlmesh::Value::list({0, 0}); }
+  std::vector<rlmesh::Value> predict_batch(std::span<const rlmesh::Value> values) {
+    return std::vector<rlmesh::Value>(values.size(), 0);
+  }
+  std::vector<rlmesh::Value> predict_chunk_batch(std::span<const rlmesh::Value> values, uint32_t h,
+                                                 rlmesh::BatchPredictContext) {
+    return std::vector<rlmesh::Value>(values.size(),
+                                      rlmesh::Value::list(std::vector<rlmesh::Value>(h, 0)));
+  }
+};
+struct HorizonContext {
+  rlmesh::Value predict_chunk(const rlmesh::Value&, uint32_t h, const rlmesh::PredictContext&) {
+    return rlmesh::Value::list(std::vector<rlmesh::Value>(h, 0));
+  }
+};
+struct ContextOnly {
+  rlmesh::Value predict_chunk(const rlmesh::Value&, const rlmesh::PredictContext&) {
+    return rlmesh::Value::list({0});
+  }
+};
+struct HorizonOnly {
+  rlmesh::Value predict_chunk(const rlmesh::Value&, uint32_t h) {
+    return rlmesh::Value::list(std::vector<rlmesh::Value>(h, 0));
+  }
+};
+struct BatchOnly {
+  std::vector<rlmesh::Value> predict_batch(std::span<const rlmesh::Value> v,
+                                           rlmesh::BatchPredictContext) {
+    return std::vector<rlmesh::Value>(v.size(), 0);
+  }
+};
+struct PlainChunkBatch {
+  std::vector<rlmesh::Value> predict_chunk_batch(std::span<const rlmesh::Value> v) {
+    return std::vector<rlmesh::Value>(v.size(), rlmesh::Value::list({0}));
+  }
+};
+void instantiate_corners() {
+  rlmesh::Model a(MixedCorners{}), b(HorizonContext{}), c(ContextOnly{}), d(HorizonOnly{}),
+      e(BatchOnly{}), f(PlainChunkBatch{});
 }
-
-void core_surface() {
-  rlmesh::BuildInfo info = rlmesh::build_info();
-  (void)info.version;
-  (void)info.protocol_generation;
-  (void)info.workflow_edition;
-  (void)info.workflow_edition_base;
-  (void)info.supported_workflow_editions;
-  (void)info.build_cohort;
-  (void)rlmesh::to_string(info.build_source);
-  (void)info.git;
-  (void)rlmesh::to_string(info);
-  (void)rlmesh::VERSION;
-  (void)rlmesh::current_workflow_edition();
-  (void)rlmesh::DESCRIBE_METADATA_KEY;
-  (void)rlmesh::DESCRIBE_SCHEMA_VERSION;
-  (void)rlmesh::ENV_RESET_OPTIONS_KEY;
-  rlmesh::Warning warning{rlmesh::WarningCategory::UserWarning, "note"};
-  (void)(warning == warning);
-  (void)rlmesh::name(warning.category);
-  (void)rlmesh::is_subclass_of(warning.category, rlmesh::WarningCategory::UserWarning);
-  rlmesh::set_warning_handler([](const rlmesh::Warning&) {});
-  rlmesh::set_warning_handler({});
-}
-
-}  // namespace surface

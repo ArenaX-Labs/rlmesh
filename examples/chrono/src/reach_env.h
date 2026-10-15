@@ -30,18 +30,24 @@ struct Options {
 };
 
 // One lane of the env: owns a Chrono system for the current episode.
-class IndustrialReach : public rlmesh::Environment {
+class IndustrialReach {
  public:
   // `renderer` draws both the observation image and render() frames.
   IndustrialReach(Options options, std::unique_ptr<Renderer> renderer);
 
-  rlmesh::Result<rlmesh::ResetOutput> reset(const rlmesh::ResetArgs& args) override;
-  rlmesh::Result<rlmesh::StepOutput> step(std::optional<rlmesh::ValueRef> action) override;
-  rlmesh::Result<std::optional<rlmesh::Value>> render() override;
-  void close() override;
+  rlmesh::ResetResult reset(std::optional<int64_t> seed,
+                            const std::optional<rlmesh::InfoDict>& options);
+  rlmesh::StepResult step(std::optional<rlmesh::Value> action);
+  std::optional<rlmesh::Value> render();
+  void close();
 
   // The spaces, adapter tags and reset options this env serves with.
-  static rlmesh::Result<rlmesh::EnvConfig> config(const Options& options);
+  rlmesh::spaces::Space observation_space() const;
+  rlmesh::spaces::Space action_space() const;
+  std::optional<std::string> id() const { return "ChronoIndustrialReach-v0"; }
+  std::optional<std::string> render_mode() const { return "rgb_array"; }
+  std::optional<rlmesh::Metadata> metadata() const;
+  static rlmesh::adapters::EnvTags tags();
 
  private:
   void build_world();
@@ -49,8 +55,8 @@ class IndustrialReach : public rlmesh::Environment {
   bool reachable(const chrono::ChVector3d& tcp) const;
   chrono::ChVector3d tcp_position() const;
   double distance() const;
-  rlmesh::Result<rlmesh::Value> observe() const;
-  rlmesh::Result<rlmesh::Value> camera(int size) const;
+  rlmesh::Value observe() const;
+  rlmesh::Value camera(int size) const;
 
   Options options_;
   std::unique_ptr<Renderer> renderer_;

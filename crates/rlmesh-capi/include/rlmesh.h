@@ -18,6 +18,10 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wpedantic"
 #pragma GCC diagnostic ignored "-Wc++11-extensions"
+#if !defined(__clang__)
+/* GCC diagnoses upstream's trailing enum commas as pedantic in C++98. */
+#pragma GCC diagnostic ignored "-Wpedantic"
+#endif
 #endif
 /*!
  *  Copyright (c) 2017 by Contributors
@@ -553,7 +557,7 @@ RLMESH_API RLMeshStatus rlmesh_build_info_repr(struct RLMeshBytes* out);
 
 /* The bare YYYY.MM workflow edition this build runs at (static): the value to
  * declare. A served model or env resolves its edition from
- * RLMeshExtLegacyServeOptions.workflow_edition, else the RLMESH_WORKFLOW_EDITION
+ * RLMeshServeOptions.workflow_edition, else the RLMESH_WORKFLOW_EDITION
  * environment variable (set but blank: float deliberately, quietly); one that
  * declares neither floats to the newest edition and warns once per process. */
 RLMESH_API const char* rlmesh_current_workflow_edition(void);
@@ -801,89 +805,7 @@ RLMESH_API RLMeshStatus rlmesh_env_contract_repr(const RLMeshEnvContract* contra
 RLMESH_API RLMeshStatus rlmesh_trial_index(const RLMeshValue* options, const size_t* lane,
                                            bool* out_has, int64_t* out);
 
-/* Space introspection — enough to build a valid zero (or random) action for any
- * space: shape + dtype + bounds for Box, n/start for Discrete, the length limits
- * for Text, the per-element category counts for MultiDiscrete, and a child walk
- * for Dict/Tuple. RLMESH_SPACE_KIND_UNKNOWN when `spec` is NULL or unspecified. */
-/* Composite walk: child count into `*out`, then children by index (Tuple) or by
- * key (Dict). The borrow accessors return NULL for the wrong kind or an absent
- * index/key; children stay valid while `spec` lives. */
-RLMESH_API RLMeshStatus rlmesh_ext_legacy_space_len(const RLMeshSpaceSpec* spec, size_t* out);
-RLMESH_API const RLMeshSpaceSpec* rlmesh_ext_legacy_space_tuple_get(const RLMeshSpaceSpec* spec,
-                                                                    size_t index);
-RLMESH_API const RLMeshSpaceSpec* rlmesh_ext_legacy_space_dict_get(const RLMeshSpaceSpec* spec,
-                                                                   const char* key);
-/* The `index`-th dict key (declaration order, parallel to the children, and the
- * order the wire encodes the dict's leaves in): `*out_len` UTF-8 bytes, NOT
- * NUL-terminated, valid while `spec` lives. A Value dict preserves insertion order;
- * pair a space child with a value child by key. */
-RLMESH_API RLMeshStatus rlmesh_ext_legacy_space_dict_key(const RLMeshSpaceSpec* spec, size_t index,
-                                                         const char** out_ptr, size_t* out_len);
-/* The `index`-th dict child, in the SAME declaration order as
- * rlmesh_ext_legacy_space_dict_key — so key(i) names get_at(i). NULL when `spec` is not a
- * Dict or `index` is out of range. */
-RLMESH_API const RLMeshSpaceSpec* rlmesh_ext_legacy_space_dict_get_at(const RLMeshSpaceSpec* spec,
-                                                                      size_t index);
-
-/* Leaf parameters. `rlmesh_ext_legacy_space_box_bounds` reports the `index`-th element's
- * inclusive bounds in row-major order (a uniform bound broadcasts; an undeclared
- * one reads as -inf/+inf); `index` must be below the element count.
- * A Discrete space's valid values are `start ..= start + n - 1`. For the paired
- * out-params, either may be NULL to skip it. */
-RLMESH_API RLMeshStatus rlmesh_ext_legacy_space_box_bounds(const RLMeshSpaceSpec* spec,
-                                                           size_t index, double* out_low,
-                                                           double* out_high);
-RLMESH_API RLMeshStatus rlmesh_ext_legacy_space_discrete_n(const RLMeshSpaceSpec* spec,
-                                                           int64_t* out_n, int64_t* out_start);
-RLMESH_API RLMeshStatus rlmesh_ext_legacy_space_text_length(const RLMeshSpaceSpec* spec,
-                                                            int64_t* out_min, int64_t* out_max);
-/* A Text space's allowed characters: `*out_len` UTF-8 bytes, NOT NUL-terminated,
- * valid while `spec` lives. An EMPTY charset means any character is allowed. */
-RLMESH_API RLMeshStatus rlmesh_ext_legacy_space_text_charset(const RLMeshSpaceSpec* spec,
-                                                             const char** out_ptr, size_t* out_len);
-/* One category count per element of the shape, row-major (capacity `cap`).
- * A MultiBinary space has no such table and no `n` field of its own: its
- * dimensions live entirely in the shape (rlmesh_space_spec_shape), so MultiBinary([n]) reads as
- * shape `[n]` and a value for it carries exactly `n` elements — the shape's row-major element
- * count, for a multi-dimensional MultiBinary too. */
-RLMESH_API RLMeshStatus rlmesh_ext_legacy_space_copy_nvec(const RLMeshSpaceSpec* spec, int64_t* out,
-                                                          size_t cap);
-
-/* Legacy C++ compatibility only (not the shared surface). Old ABI-4 builder
- * names are removed. These fenced helpers will disappear with the C++ wave.
- * Use rlmesh_box_new, rlmesh_discrete_new,
- * rlmesh_dict_new and rlmesh_ext_box_elementwise_new below, and lend their spec
- * with rlmesh_space_spec(). Each returns an OWNED spec, or NULL on error (detail
- * in rlmesh_last_error_message()); free it with rlmesh_space_spec_free unless a
- * composite builder adopted it. A float Box takes +-INFINITY for an
- * unbounded side; an integer-dtype Box needs finite whole-number bounds the
- * dtype can represent (none negative for an unsigned dtype): an out-of-range
- * bound is RLMESH_ERR_INVALID_ARGUMENT, never clamped. A double holds every
- * integer only up to 2^53: a larger 64-bit bound is the double's exact value. */
-RLMESH_API RLMeshSpaceSpec* rlmesh_ext_legacy_space_box(RLMeshDType dtype, const int64_t* shape,
-                                                        size_t ndim, double low, double high);
-/* Per-element bounds: `low` / `high` each hold the shape's element count. */
-RLMESH_API RLMeshSpaceSpec* rlmesh_ext_legacy_space_box_elementwise(RLMeshDType dtype,
-                                                                    const int64_t* shape,
-                                                                    size_t ndim, const double* low,
-                                                                    const double* high);
-RLMESH_API RLMeshSpaceSpec* rlmesh_ext_legacy_space_discrete(int64_t n, int64_t start);
-RLMESH_API RLMeshSpaceSpec* rlmesh_ext_legacy_space_multi_binary(const int64_t* shape, size_t ndim);
-RLMESH_API RLMeshSpaceSpec* rlmesh_ext_legacy_space_multi_discrete(const int64_t* nvec, size_t n);
-/* `charset` NULL or "" allows any character. */
-RLMESH_API RLMeshSpaceSpec* rlmesh_ext_legacy_space_text(int64_t min_length, int64_t max_length,
-                                                         const char* charset);
-/* The composite builders take ownership of every child on success and of
- * NOTHING on failure (NULL), whatever the reason, the same rule as
- * rlmesh_value_dict. Dict keys must be non-empty and unique; the built space
- * stores them sorted by key, whatever order they are passed in. */
-RLMESH_API RLMeshSpaceSpec* rlmesh_ext_legacy_space_dict(const char* const* keys,
-                                                         RLMeshSpaceSpec* const* children,
-                                                         size_t n);
-RLMESH_API RLMeshSpaceSpec* rlmesh_ext_legacy_space_tuple(RLMeshSpaceSpec* const* children,
-                                                          size_t n);
-/* Free an owned spec (a builder's or rlmesh_space_spec_clone's). Not for a
- * borrowed contract space, child or rlmesh_space_spec() result. NULL is a no-op. */
+/* Free an owned immutable spec; NULL is a no-op. */
 RLMESH_API void rlmesh_space_spec_free(RLMeshSpaceSpec* spec);
 
 /* ---- bytes -------------------------------------------------------------- */
@@ -1093,6 +1015,18 @@ RLMESH_API RLMeshStatus rlmesh_dict_get(const RLMeshDict* dict, RLMeshStr key,
 /* key in d, into *out; RLMESH_ERR_TYPE on another kind. */
 RLMESH_API RLMeshStatus rlmesh_dict_contains_key(const RLMeshDict* dict, RLMeshStr key, bool* out);
 
+/* Experimental spaces. Handles follow the same clone/free rules as Space. */
+RLMESH_API RLMeshStatus rlmesh_multi_binary_new(const int64_t*, size_t, RLMeshSpace**);
+RLMESH_API RLMeshStatus rlmesh_multi_discrete_new(const int64_t*, size_t, RLMeshDType,
+                                                  RLMeshSpace**);
+RLMESH_API RLMeshStatus rlmesh_text_new(int64_t max_length, int64_t min_length, const char* charset,
+                                        RLMeshSpace**);
+RLMESH_API RLMeshStatus rlmesh_tuple_new(const RLMeshSpaceSpec* const*, size_t, RLMeshSpace**);
+RLMESH_API RLMeshStatus rlmesh_multi_discrete_nvec(const RLMeshSpace*, int64_t*, size_t, size_t*);
+RLMESH_API RLMeshStatus rlmesh_text_limits(const RLMeshSpace*, int64_t*, int64_t*, RLMeshStr*);
+RLMESH_API RLMeshStatus rlmesh_tuple_len(const RLMeshSpace*, size_t*);
+RLMESH_API RLMeshStatus rlmesh_tuple_get(const RLMeshSpace*, size_t, RLMeshSpace**);
+
 typedef struct RLMeshEnv RLMeshEnv;
 typedef struct RLMeshVectorEnv RLMeshVectorEnv;
 /* Stable adapters: facade-backed typed trees and shared callables. */
@@ -1292,7 +1226,7 @@ struct RLMeshRotation {
   const double* value;
   size_t value_len;
 };
-#define RLMESH_ROTATION_INIT {sizeof(RLMeshRotation), 0, 0, NULL, 0}
+#define RLMESH_ROTATION_INIT {sizeof(RLMeshRotation), (RLMeshRotationEncoding)0, 0, NULL, 0}
 #define RLMESH_ROTATION_MIN_SIZE sizeof(RLMeshRotation)
 #if UINTPTR_MAX > UINT32_MAX
 struct RLMeshCustomEncoding {
@@ -1304,7 +1238,12 @@ struct RLMeshCustomEncoding {
   const char* name;
 };
 #define RLMESH_CUSTOM_ENCODING_INIT \
-  {sizeof(RLMeshCustomEncoding), 0, {0}, {NULL, NULL}, {NULL, NULL}, "custom"}
+  {sizeof(RLMeshCustomEncoding),    \
+   (RLMeshRotationEncoding)0,       \
+   {0},                             \
+   {NULL, NULL},                    \
+   {NULL, NULL},                    \
+   "custom"}
 #else
 struct RLMeshCustomEncoding {
   size_t struct_size;
@@ -1314,7 +1253,7 @@ struct RLMeshCustomEncoding {
   const char* name;
 };
 #define RLMESH_CUSTOM_ENCODING_INIT \
-  {sizeof(RLMeshCustomEncoding), 0, {NULL, NULL}, {NULL, NULL}, "custom"}
+  {sizeof(RLMeshCustomEncoding), (RLMeshRotationEncoding)0, {NULL, NULL}, {NULL, NULL}, "custom"}
 #endif
 #define RLMESH_CUSTOM_ENCODING_MIN_SIZE sizeof(RLMeshCustomEncoding)
 #if UINTPTR_MAX > UINT32_MAX
@@ -1649,7 +1588,7 @@ struct RLMeshState {
    0,                       \
    0,                       \
    {0},                     \
-   0,                       \
+   (RLMeshFrame)0,          \
    NULL,                    \
    NULL,                    \
    0,                       \
@@ -1755,7 +1694,7 @@ struct RLMeshState {
    0,                       \
    0,                       \
    {0},                     \
-   0,                       \
+   (RLMeshFrame)0,          \
    NULL,                    \
    NULL,                    \
    0,                       \
@@ -1913,47 +1852,47 @@ struct RLMeshActuator {
   const char* const* labels;
   size_t labels_len;
 };
-#define RLMESH_ACTUATOR_INIT \
-  {sizeof(RLMeshActuator),   \
-   NULL,                     \
-   0,                        \
-   0,                        \
-   {0},                      \
-   0,                        \
-   {0},                      \
-   NULL,                     \
-   0,                        \
-   {0},                      \
-   {0, 0},                   \
-   0,                        \
-   0,                        \
-   {0},                      \
-   0,                        \
-   NULL,                     \
-   0,                        \
-   0,                        \
-   0,                        \
-   {0},                      \
-   0,                        \
-   0,                        \
-   {0},                      \
-   0,                        \
-   0,                        \
-   0,                        \
-   {0},                      \
-   0,                        \
-   NULL,                     \
-   0,                        \
-   {0},                      \
-   0,                        \
-   NULL,                     \
-   NULL,                     \
-   0,                        \
-   {0},                      \
-   0,                        \
-   NULL,                     \
-   0,                        \
-   NULL,                     \
+#define RLMESH_ACTUATOR_INIT  \
+  {sizeof(RLMeshActuator),    \
+   NULL,                      \
+   0,                         \
+   0,                         \
+   {0},                       \
+   (RLMeshRotationEncoding)0, \
+   {0},                       \
+   NULL,                      \
+   0,                         \
+   {0},                       \
+   {0, 0},                    \
+   0,                         \
+   0,                         \
+   {0},                       \
+   0,                         \
+   NULL,                      \
+   0,                         \
+   0,                         \
+   0,                         \
+   {0},                       \
+   0,                         \
+   0,                         \
+   {0},                       \
+   0,                         \
+   0,                         \
+   0,                         \
+   {0},                       \
+   (RLMeshFrame)0,            \
+   NULL,                      \
+   0,                         \
+   {0},                       \
+   (RLMeshReference)0,        \
+   NULL,                      \
+   NULL,                      \
+   0,                         \
+   {0},                       \
+   0,                         \
+   NULL,                      \
+   0,                         \
+   NULL,                      \
    0}
 #else
 struct RLMeshActuator {
@@ -1998,46 +1937,46 @@ struct RLMeshActuator {
   const char* const* labels;
   size_t labels_len;
 };
-#define RLMESH_ACTUATOR_INIT \
-  {sizeof(RLMeshActuator),   \
-   NULL,                     \
-   0,                        \
-   0,                        \
-   {0},                      \
-   0,                        \
-   NULL,                     \
-   0,                        \
-   {0},                      \
-   {0, 0},                   \
-   0,                        \
-   0,                        \
-   {0},                      \
-   0,                        \
-   NULL,                     \
-   0,                        \
-   0,                        \
-   0,                        \
-   {0},                      \
-   0,                        \
-   0,                        \
-   {0},                      \
-   0,                        \
-   0,                        \
-   0,                        \
-   {0},                      \
-   0,                        \
-   NULL,                     \
-   0,                        \
-   {0},                      \
-   0,                        \
-   NULL,                     \
-   NULL,                     \
-   0,                        \
-   {0},                      \
-   0,                        \
-   NULL,                     \
-   0,                        \
-   NULL,                     \
+#define RLMESH_ACTUATOR_INIT  \
+  {sizeof(RLMeshActuator),    \
+   NULL,                      \
+   0,                         \
+   0,                         \
+   {0},                       \
+   (RLMeshRotationEncoding)0, \
+   NULL,                      \
+   0,                         \
+   {0},                       \
+   {0, 0},                    \
+   0,                         \
+   0,                         \
+   {0},                       \
+   0,                         \
+   NULL,                      \
+   0,                         \
+   0,                         \
+   0,                         \
+   {0},                       \
+   0,                         \
+   0,                         \
+   {0},                       \
+   0,                         \
+   0,                         \
+   0,                         \
+   {0},                       \
+   (RLMeshFrame)0,            \
+   NULL,                      \
+   0,                         \
+   {0},                       \
+   (RLMeshReference)0,        \
+   NULL,                      \
+   NULL,                      \
+   0,                         \
+   {0},                       \
+   0,                         \
+   NULL,                      \
+   0,                         \
+   NULL,                      \
    0}
 #endif
 #define RLMESH_ACTUATOR_MIN_SIZE sizeof(RLMeshActuator)
@@ -2118,11 +2057,11 @@ struct RLMeshStateTag {
    {0, 0},                    \
    0,                         \
    {0},                       \
-   0,                         \
+   (RLMeshFrame)0,            \
    NULL,                      \
    0,                         \
    {0},                       \
-   0,                         \
+   (RLMeshProvenance)0,       \
    NULL,                      \
    NULL,                      \
    NULL,                      \
@@ -2161,11 +2100,11 @@ struct RLMeshStateTag {
    {0, 0},                    \
    0,                         \
    {0},                       \
-   0,                         \
+   (RLMeshFrame)0,            \
    NULL,                      \
    0,                         \
    {0},                       \
-   0,                         \
+   (RLMeshProvenance)0,       \
    NULL,                      \
    NULL,                      \
    NULL,                      \
@@ -2224,11 +2163,11 @@ struct RLMeshField {
    {0, 0},                \
    0,                     \
    {0},                   \
-   0,                     \
+   (RLMeshFrame)0,        \
    NULL,                  \
    0,                     \
    {0},                   \
-   0,                     \
+   (RLMeshProvenance)0,   \
    NULL,                  \
    NULL,                  \
    NULL,                  \
@@ -2269,11 +2208,11 @@ struct RLMeshField {
    {0, 0},                \
    0,                     \
    {0},                   \
-   0,                     \
+   (RLMeshFrame)0,        \
    NULL,                  \
    0,                     \
    {0},                   \
-   0,                     \
+   (RLMeshProvenance)0,   \
    NULL,                  \
    NULL,                  \
    NULL,                  \
@@ -2343,7 +2282,7 @@ struct RLMeshAdvisory {
   uint32_t _reserved;
   const char* message;
 };
-#define RLMESH_ADVISORY_INIT {sizeof(RLMeshAdvisory), 0, 0, NULL}
+#define RLMESH_ADVISORY_INIT {sizeof(RLMeshAdvisory), (RLMeshAdvisorySeverity)0, 0, NULL}
 #define RLMESH_ADVISORY_MIN_SIZE sizeof(RLMeshAdvisory)
 struct RLMeshTagOptions {
   size_t struct_size;
@@ -2545,6 +2484,123 @@ RLMESH_API RLMeshStatus rlmesh_adapters_tag_vector(RLMeshVectorEnv* env, const R
                                                    const RLMeshTagOptions* options);
 RLMESH_API RLMeshStatus rlmesh_ext_register_entrypoint(const char* entrypoint,
                                                        const RLMeshObsTransform* transform);
+
+/* Runtime of the translation unit including this header, not of the Rust
+ * library behind the ABI. Used by the ABI 5 server options and rlmesh.hpp. */
+#define RLMESH_DETAIL_STRINGIFY_IMPL(x) #x
+#define RLMESH_DETAIL_STRINGIFY(x) RLMESH_DETAIL_STRINGIFY_IMPL(x)
+#ifdef __cplusplus
+#define RLMESH_DETAIL_HOST_LANGUAGE "c++"
+#if defined(_MSVC_LANG) && _MSVC_LANG > __cplusplus
+#define RLMESH_DETAIL_CXX_STANDARD _MSVC_LANG
+#else
+#define RLMESH_DETAIL_CXX_STANDARD __cplusplus
+#endif
+#if RLMESH_DETAIL_CXX_STANDARD > 202302L
+#define RLMESH_DETAIL_HOST_VERSION "26"
+#define RLMESH_DETAIL_HOST_VERSION_CHARS '2', '6'
+#elif RLMESH_DETAIL_CXX_STANDARD > 202002L
+#define RLMESH_DETAIL_HOST_VERSION "23"
+#define RLMESH_DETAIL_HOST_VERSION_CHARS '2', '3'
+#elif RLMESH_DETAIL_CXX_STANDARD >= 202002L
+#define RLMESH_DETAIL_HOST_VERSION "20"
+#define RLMESH_DETAIL_HOST_VERSION_CHARS '2', '0'
+#elif RLMESH_DETAIL_CXX_STANDARD >= 201703L
+#define RLMESH_DETAIL_HOST_VERSION "17"
+#define RLMESH_DETAIL_HOST_VERSION_CHARS '1', '7'
+#elif RLMESH_DETAIL_CXX_STANDARD >= 201402L
+#define RLMESH_DETAIL_HOST_VERSION "14"
+#define RLMESH_DETAIL_HOST_VERSION_CHARS '1', '4'
+#elif RLMESH_DETAIL_CXX_STANDARD >= 201103L
+#define RLMESH_DETAIL_HOST_VERSION "11"
+#define RLMESH_DETAIL_HOST_VERSION_CHARS '1', '1'
+#else
+#define RLMESH_DETAIL_HOST_VERSION "98"
+#define RLMESH_DETAIL_HOST_VERSION_CHARS '9', '8'
+#endif
+#else
+#define RLMESH_DETAIL_HOST_LANGUAGE "c"
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ > 201710L
+#define RLMESH_DETAIL_HOST_VERSION "23"
+#define RLMESH_DETAIL_HOST_VERSION_CHARS '2', '3'
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201710L
+#define RLMESH_DETAIL_HOST_VERSION "17"
+#define RLMESH_DETAIL_HOST_VERSION_CHARS '1', '7'
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+#define RLMESH_DETAIL_HOST_VERSION "11"
+#define RLMESH_DETAIL_HOST_VERSION_CHARS '1', '1'
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L
+#define RLMESH_DETAIL_HOST_VERSION "99"
+#define RLMESH_DETAIL_HOST_VERSION_CHARS '9', '9'
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199409L
+#define RLMESH_DETAIL_HOST_VERSION "95"
+#define RLMESH_DETAIL_HOST_VERSION_CHARS '9', '5'
+#else
+/* No standard macro: leave the language version undeclared. */
+#endif
+#endif
+
+/* Clang defines GNU compatibility macros too, so check it first. */
+#if defined(__clang_major__) && defined(__clang_minor__)
+#define RLMESH_DETAIL_HOST_COMPILER                                            \
+  ",\"toolchain\":{\"name\":\"clang\",\"version\":\"" RLMESH_DETAIL_STRINGIFY( \
+      __clang_major__) "." RLMESH_DETAIL_STRINGIFY(__clang_minor__) "\"}"
+#elif defined(__GNUC__) && defined(__GNUC_MINOR__)
+#define RLMESH_DETAIL_HOST_COMPILER                                          \
+  ",\"toolchain\":{\"name\":\"gcc\",\"version\":\"" RLMESH_DETAIL_STRINGIFY( \
+      __GNUC__) "." RLMESH_DETAIL_STRINGIFY(__GNUC_MINOR__) "\"}"
+#else
+#define RLMESH_DETAIL_HOST_COMPILER ""
+#endif
+
+/* MSVC's packed _MSC_VER (e.g. 1944) becomes 19.44. An immutable
+ * character array keeps this safe in C and C++98 without runtime initialization. */
+#if defined(_MSC_VER) && !defined(__clang_major__) && !defined(__GNUC__)
+static inline const char* rlmesh_detail_msvc_host_runtime(void) {
+  /* clang-format off */
+  static const char runtime[] = {
+    '{', '"',
+    'l', 'a', 'n', 'g', 'u', 'a', 'g', 'e', '"',
+    ':', '"',
+#ifdef __cplusplus
+    'c', '+', '+',
+#else
+    'c',
+#endif
+    '"',
+#ifdef RLMESH_DETAIL_HOST_VERSION
+    ',', '"',
+    'l', 'a', 'n', 'g', 'u', 'a', 'g', 'e', '_', 'v', 'e', 'r', 's', 'i', 'o', 'n', '"',
+    ':', '"',
+    RLMESH_DETAIL_HOST_VERSION_CHARS, '"',
+#endif
+    ',', '"',
+    't', 'o', 'o', 'l', 'c', 'h', 'a', 'i', 'n', '"',
+    ':', '{', '"',
+    'n', 'a', 'm', 'e', '"',
+    ':', '"',
+    'm', 's', 'v', 'c', '"',
+    ',', '"',
+    'v', 'e', 'r', 's', 'i', 'o', 'n', '"',
+    ':', '"',
+    '0' + (_MSC_VER / 1000) % 10, '0' + (_MSC_VER / 100) % 10, '.', '0' + (_MSC_VER / 10) % 10, '0' + _MSC_VER % 10,
+    '"',
+    '}', '}', '\0'
+  };
+  /* clang-format on */
+  return runtime;
+}
+#define RLMESH_HOST_RUNTIME_JSON rlmesh_detail_msvc_host_runtime()
+#else
+#ifdef RLMESH_DETAIL_HOST_VERSION
+#define RLMESH_DETAIL_HOST_STANDARD ",\"language_version\":\"" RLMESH_DETAIL_HOST_VERSION "\""
+#else
+#define RLMESH_DETAIL_HOST_STANDARD ""
+#endif
+#define RLMESH_HOST_RUNTIME_JSON                 \
+  "{\"language\":\"" RLMESH_DETAIL_HOST_LANGUAGE \
+  "\"" RLMESH_DETAIL_HOST_STANDARD RLMESH_DETAIL_HOST_COMPILER "}"
+#endif
 
 /* ---- Env authoring and serving (facade) ---------------------------------- */
 
@@ -3648,35 +3704,11 @@ RLMESH_API RLMeshStatus rlmesh_frame_sources_default_label(const RLMeshFrameSour
 RLMESH_API bool rlmesh_frame_sources_equals(const RLMeshFrameSources*, const RLMeshFrameSources*);
 RLMESH_API RLMeshStatus rlmesh_frame_sources_repr(const RLMeshFrameSources*, RLMeshBytes* out);
 RLMESH_API void rlmesh_frame_sources_free(RLMeshFrameSources*);
+/* Binding introspection: independent of render_label, without invoking render. */
+RLMESH_API bool rlmesh_ext_frame_sources_has_render(const RLMeshFrameSources*);
 RLMESH_API size_t rlmesh_run_result_advisories_len(const RLMeshRunResult*);
 RLMESH_API RLMeshStatus rlmesh_run_result_advisories_get(const RLMeshRunResult*, size_t i,
                                                          RLMeshAdvisory* out);
-
-typedef struct RLMeshExtLegacyEpisode {
-  const char* id;
-  bool seeded; /* whether `seed` carries an explicit reset seed */
-  int64_t seed;
-  uint64_t predict_index; /* re-plan ordinal within the episode, from 0 */
-  int64_t predict_seed;   /* predict_seed(seed, predict_index); only when `seeded` */
-} RLMeshExtLegacyEpisode;
-
-/* What a predict callback receives. Every pointer is valid only for the
- * duration of the call. Row i of `observations` belongs to `episodes[i]`;
- * `episodes` always has exactly num_envs entries. */
-typedef struct RLMeshExtLegacyObservation {
-  /* num_envs decoded values, or NULL when this request carries no observation
-   * or the contract declares no observation space (both are legal routes). */
-  const RLMeshValue* const* observations;
-  size_t num_envs;
-  /* Spaces/metadata for the route. Never NULL on a predict the runtime
-   * delivers: a route pins a contract (with an action space) before its first
-   * predict. */
-  const RLMeshEnvContract* contract;
-  const char* session_id;
-  const char* env_id;
-  const char* request_id;
-  const RLMeshExtLegacyEpisode* episodes; /* num_envs entries */
-} RLMeshExtLegacyObservation;
 
 /* Set this call's error message + recoverability before returning nonzero (any
  * callback: a model's predict or an env's reset / step / render). */
@@ -3691,446 +3723,11 @@ RLMESH_API void rlmesh_callback_set_error(const char* message, bool recoverable)
  * unknown value records RLMESH_ERROR_CLASS_RLMESH_EXCEPTION. The last call
  * before the callback returns wins. */
 RLMESH_API void rlmesh_callback_set_error_class(RLMeshErrorClass error_class, const char* message);
-
-/* The model callback vtable. Set struct_size = sizeof(RLMeshExtLegacyModelVtable); unknown
- * trailing bytes must be zero. `predict` is required. The vtable is
- * COPIED into the model at rlmesh_ext_legacy_model_new, so the caller's struct need not
- * outlive the model; `user_data` is kept by pointer and must.
- *
- * Callbacks run on a worker thread, so `user_data` must be thread-migration-safe.
- * A callback must not re-enter the model handle that invoked it (no
- * rlmesh_ext_legacy_model_run_local / _serve / _free on it from inside a callback);
- * rlmesh_ext_legacy_model_cancel is the one exception and is safe from anywhere.
- *
- * `predict` writes one OWNED action value per row into `out_actions` (num_envs
- * slots, pre-zeroed; the capi takes ownership) and returns 0 == RLMESH_OK, or
- * nonzero to decline. On a nonzero return the capi frees any rows already
- * written. The return is a plain int so an out-of-range value stays defined.
- * Actions are validated against the route's action space by the runtime: a
- * structural mismatch (wrong kind/shape/dtype) fails the step; a value merely
- * outside a Box's bounds is left to the environment's own policy.
- *
- * `on_episode_end` fires when the runtime drops an episode; `episode_id` NULL
- * means every episode of `env_id`. `on_close` fires once per handle: when a
- * serve stops, or at rlmesh_ext_legacy_model_free; a run_local borrows the model and
- * never fires it. */
-typedef struct RLMeshExtLegacyModelVtable {
-  size_t struct_size;
-  int (*predict)(void* user_data, const RLMeshExtLegacyObservation* obs, RLMeshValue** out_actions);
-  void (*on_episode_end)(void* user_data, const char* env_id, const char* episode_id);
-  void (*on_close)(void* user_data);
-} RLMeshExtLegacyModelVtable;
-#define RLMESH_EXT_LEGACY_MODEL_VTABLE_MIN_SIZE sizeof(RLMeshExtLegacyModelVtable)
-#define RLMESH_EXT_LEGACY_MODEL_VTABLE_INIT {sizeof(RLMeshExtLegacyModelVtable), NULL, NULL, NULL}
-
-/* An owned model handle. It is not a concurrency primitive: run at most one
- * rlmesh_ext_legacy_model_run_local / rlmesh_ext_legacy_model_serve on a handle at a time, and free
- * it only from a thread that is not executing it. rlmesh_ext_legacy_model_cancel is the only call
- * that may overlap a running one, from any thread. */
-typedef struct RLMeshExtLegacyModel RLMeshExtLegacyModel;
-
-RLMESH_API RLMeshStatus rlmesh_ext_legacy_model_new(const RLMeshExtLegacyModelVtable* vtable,
-                                                    void* user_data, RLMeshExtLegacyModel** out);
-
-/* Run options for rlmesh_ext_legacy_model_run_local. NULL == defaults (one episode,
- * unseeded, no caps). Every field is "unset" at 0 / NULL.
- *
- * Episode budget (Python's run(episodes=...)): max_episodes is the exact
- * episode count. 0 = unset: one episode, or one per seed when episode_seeds is
- * given. A non-zero count with episode_seeds must equal num_episode_seeds
- * (RLMESH_ERR_INVALID_ARGUMENT otherwise). There is no unbounded run.
- * TODO(docs/specs/language-parity/running.md): Python's episodes=0 (run
- * nothing) is not expressible here, since 0 means unset. */
-typedef struct RLMeshExtLegacyRunOptions {
-  size_t struct_size;
-  uint64_t max_episodes;        /* exact episode count; 0 = unset (1, or the seed count) */
-  bool seeded;                  /* whether base_seed is set */
-  int64_t base_seed;            /* seed for episode 0; later episodes derive from it */
-  int64_t max_episode_steps;    /* truncate an episode after this many steps; 0 = unset */
-  double max_episode_seconds;   /* truncate an episode after this long; 0 = unset */
-  uint32_t execution_horizon;   /* actions per predicted chunk to execute; 0/1 = no chunking */
-  bool close_env;               /* ask the env to close when the run ends */
-  const int64_t* episode_seeds; /* explicit per-episode seeds (overrides base_seed); NULL = unset */
-  size_t num_episode_seeds;     /* length of episode_seeds; 0 = unset */
-  bool trial_indexed;           /* whether trial_index_base is set */
-  uint64_t trial_index_base;    /* first trial ordinal the episodes walk (base, base+1, ...);
-                                   delivered as reset(options={"trial_index": k}) to an env
-                                   that declares that reset option */
-} RLMeshExtLegacyRunOptions;
-#define RLMESH_EXT_LEGACY_RUN_OPTIONS_MIN_SIZE sizeof(RLMeshExtLegacyRunOptions)
-#define RLMESH_EXT_LEGACY_RUN_OPTIONS_INIT \
-  {sizeof(RLMeshExtLegacyRunOptions), 0, false, 0, 0, 0.0, 0, false, NULL, 0, false, 0}
-
-/* What a finished run reports. Plain scalars: copy what you need. */
-typedef struct RLMeshExtLegacyRunReport {
-  int64_t total_episodes;      /* episodes completed during the run */
-  int64_t total_steps;         /* env steps across the whole run */
-  double total_reward;         /* summed episode reward */
-  double mean_reward;          /* mean episode reward (0 if none completed) */
-  int64_t terminated_episodes; /* completed episodes that ended terminated */
-  int64_t truncated_episodes;  /* completed episodes that hit a step/time cap */
-} RLMeshExtLegacyRunReport;
-
-/* Drive the model against the env at `env_address` (tcp://host:port,
- * host:port, or unix:///path). Blocking — returns when the run ends.
- * `out_report` may be NULL; it is written only on RLMESH_OK. */
-RLMESH_API RLMeshStatus rlmesh_ext_legacy_model_run_local(RLMeshExtLegacyModel* model,
-                                                          const char* env_address,
-                                                          const RLMeshExtLegacyRunOptions* options,
-                                                          RLMeshExtLegacyRunReport* out_report);
-
-/* Serve options for rlmesh_ext_legacy_model_serve. Pass NULL for all defaults (no auth, no
- * remote shutdown, no timeouts — serves until the process is killed). A 0 timeout
- * / concurrency means "unset". */
-typedef struct RLMeshExtLegacyServeOptions {
-  size_t struct_size;
-  const char* token;            /* NULL/"" disables auth */
-  bool allow_remote_shutdown;   /* honor a client-issued shutdown request */
-  uint64_t idle_timeout_ms;     /* 0 = never idle-shutdown */
-  uint64_t drain_timeout_ms;    /* 0 = unset */
-  uint64_t close_timeout_ms;    /* 0 = unset; ignored by an env (see rlmesh_ext_legacy_env_serve) */
-  size_t predict_concurrency;   /* 0 = default */
-  const char* workflow_edition; /* workflow edition this server declares; NULL/"" = none */
-} RLMeshExtLegacyServeOptions;
-#define RLMESH_EXT_LEGACY_SERVE_OPTIONS_MIN_SIZE sizeof(RLMeshExtLegacyServeOptions)
-#define RLMESH_EXT_LEGACY_SERVE_OPTIONS_INIT \
-  {sizeof(RLMeshExtLegacyServeOptions), NULL, false, 0, 0, 0, 0, NULL}
-
-/* Serve the model as a ModelService endpoint at `bind_address` (tcp://host:port
- * or unix:///path). Blocking — returns when the server stops: a remote shutdown
- * request, an idle timeout, or rlmesh_ext_legacy_model_cancel. The same vtable backs every
- * predict, exactly as rlmesh_ext_legacy_model_run_local. `options` may be NULL for
- * defaults. */
-RLMESH_API RLMeshStatus rlmesh_ext_legacy_model_serve(RLMeshExtLegacyModel* model,
-                                                      const char* bind_address,
-                                                      const RLMeshExtLegacyServeOptions* options);
-
-/* Stop a blocking rlmesh_ext_legacy_model_run_local / rlmesh_ext_legacy_model_serve on `model`.
- * Call it from another thread (a signal handler's worker, a UI thread); it returns immediately and
- * the blocked call unwinds shortly after. NULL is a no-op.
- *
- * Cancellation is terminal for the handle: a cancelled model refuses further
- * runs. A cancelled serve returns RLMESH_OK after running on_close -- once, and
- * only after any predict still inside the C callback has returned; a cancelled
- * run_local (this one, or any later one on the handle) returns
- * RLMESH_ERR_CANCELLED, since it has no report to give. */
-RLMESH_API void rlmesh_ext_legacy_model_cancel(RLMeshExtLegacyModel* model);
-
-/* Free a model handle. NULL is a no-op. Freeing closes the model: on_close
- * fires here, on the calling thread, unless a serve already fired it
- * (rlmesh_ext_legacy_model_run_local borrows the model and never closes it, as Python's
- * Model.run does). Must NOT be called from inside one of
- * this model's own callbacks (it drops the runtime the callback is running on);
- * doing so is contained rather than fatal, but leaves the handle undefined. */
-RLMESH_API void rlmesh_ext_legacy_model_free(RLMeshExtLegacyModel* model);
-
-/* ---- environment ------------------------------------------------------- */
-
-/* What `reset` receives; pointers are valid for the call only. `trial_index`
- * arrives only when the env declared the "trial_index" reset option. */
-typedef struct RLMeshExtLegacyResetArgs {
-  bool seeded; /* whether `seed` carries an explicit reset seed */
-  int64_t seed;
-  bool has_trial_index; /* whether `trial_index` is set */
-  int64_t trial_index;
-  const char* options_json; /* every reset option as a JSON object; NULL = none */
-} RLMeshExtLegacyResetArgs;
-
-/* What `reset` / `step` write. `observation` is OWNED: the capi takes and
- * frees whatever it holds when the callback returns, even when the callback
- * returns nonzero, so a callback that frees it on an error path must set it
- * back to NULL. It must be a value the callback owns (from a constructor),
- * never a borrowed one such as the step's action or a rlmesh_value_tuple_get /
- * rlmesh_value_dict_get child: freeing that is undefined behaviour. There is no
- * value copy function; build a fresh value with the constructors (e.g.
- * rlmesh_value_clone retains a value). `info_json` is a
- * borrowed JSON object (NULL = none) that must stay valid until the callback's
- * next call on this env (e.g. a std::string member). */
-typedef struct RLMeshExtLegacyResetResult {
-  RLMeshValue* observation;
-  const char* info_json;
-} RLMeshExtLegacyResetResult;
-
-typedef struct RLMeshExtLegacyStepResult {
-  RLMeshValue* observation;
-  double reward;
-  bool terminated;
-  bool truncated;
-  const char* info_json;
-} RLMeshExtLegacyStepResult;
-
-/* The environment callback vtable. Set struct_size = sizeof(RLMeshExtLegacyEnvVtable);
- * unknown trailing bytes must be zero. `reset` and `step` are required.
- * Copied in at rlmesh_ext_legacy_env_new_lanes; `user_data` is kept by pointer and must outlive
- * the env.
- *
- * Each lane runs its callbacks on ONE dedicated thread (not the one that
- * created the env), one call at a time; the lanes of a multi-lane env
- * (rlmesh_ext_legacy_env_new_lanes) run concurrently, each with its own `user_data`. A
- * foreground env (RLMeshExtLegacyEnvConfig.foreground) runs them on the thread blocked
- * in rlmesh_ext_legacy_env_serve instead. `reset` / `step` /
- * `render` return 0 == RLMESH_OK, or nonzero after rlmesh_callback_set_error
- * to fail that request. With `recoverable` set, only the request fails and the
- * client's session stays usable; otherwise the session ends (the client's next
- * reset opens a new one, and the env keeps serving). The client reads
- * "[INTERNAL] {op} failed: {message}", the message the callback set, or
- * "callback failed with status <n>" when it set none. `step` gets the action
- * borrowed (NULL when the request carries none). `render` writes an OWNED
- * numeric image value (cast to uint8) of shape [H, W, 3], [H, W, 4],
- * [3, H, W], [4, H, W] or [H, W], or leaves it NULL for no frame; the capi
- * PNG-encodes it, and any other shape is no frame. `close` fires once per lane: when the server
- * stops, or in rlmesh_ext_legacy_env_free for an env that never served.
- *
- * Out-parameter ownership: the capi takes ownership of any value left in an
- * out-parameter (`out->observation`, `*out_frame`) when the callback returns,
- * WHETHER OR NOT it returns 0. A callback that fails after building a value
- * either leaves it for the capi to free or frees it itself and sets the field
- * back to NULL; freeing it without clearing the field is a double free. Never
- * return a borrowed value (the step's action, a rlmesh_value_tuple_get /
- * rlmesh_value_dict_get / rlmesh_value_dict_get_at child) as an observation or
- * frame: the capi frees it, which is undefined behaviour. Build an owned copy
- * with the constructors instead (no value copy function exists). */
-typedef struct RLMeshExtLegacyEnvVtable {
-  size_t struct_size;
-  int (*reset)(void* user_data, const RLMeshExtLegacyResetArgs* args,
-               RLMeshExtLegacyResetResult* out);
-  int (*step)(void* user_data, const RLMeshValue* action, RLMeshExtLegacyStepResult* out);
-  int (*render)(void* user_data, RLMeshValue** out_frame);
-  void (*close)(void* user_data);
-} RLMeshExtLegacyEnvVtable;
-#define RLMESH_EXT_LEGACY_ENV_VTABLE_MIN_SIZE sizeof(RLMeshExtLegacyEnvVtable)
-#define RLMESH_EXT_LEGACY_ENV_VTABLE_INIT {sizeof(RLMeshExtLegacyEnvVtable), NULL, NULL, NULL, NULL}
-
-/* Runtime of the translation unit including this header, not of the Rust
- * library behind the ABI. Used by rlmesh_ext_legacy_env_config_init and rlmesh.hpp. */
-#define RLMESH_DETAIL_STRINGIFY_IMPL(x) #x
-#define RLMESH_DETAIL_STRINGIFY(x) RLMESH_DETAIL_STRINGIFY_IMPL(x)
-#ifdef __cplusplus
-#define RLMESH_DETAIL_HOST_LANGUAGE "c++"
-#if defined(_MSVC_LANG) && _MSVC_LANG > __cplusplus
-#define RLMESH_DETAIL_CXX_STANDARD _MSVC_LANG
-#else
-#define RLMESH_DETAIL_CXX_STANDARD __cplusplus
-#endif
-#if RLMESH_DETAIL_CXX_STANDARD > 202302L
-#define RLMESH_DETAIL_HOST_VERSION "26"
-#define RLMESH_DETAIL_HOST_VERSION_CHARS '2', '6'
-#elif RLMESH_DETAIL_CXX_STANDARD > 202002L
-#define RLMESH_DETAIL_HOST_VERSION "23"
-#define RLMESH_DETAIL_HOST_VERSION_CHARS '2', '3'
-#elif RLMESH_DETAIL_CXX_STANDARD >= 202002L
-#define RLMESH_DETAIL_HOST_VERSION "20"
-#define RLMESH_DETAIL_HOST_VERSION_CHARS '2', '0'
-#elif RLMESH_DETAIL_CXX_STANDARD >= 201703L
-#define RLMESH_DETAIL_HOST_VERSION "17"
-#define RLMESH_DETAIL_HOST_VERSION_CHARS '1', '7'
-#elif RLMESH_DETAIL_CXX_STANDARD >= 201402L
-#define RLMESH_DETAIL_HOST_VERSION "14"
-#define RLMESH_DETAIL_HOST_VERSION_CHARS '1', '4'
-#elif RLMESH_DETAIL_CXX_STANDARD >= 201103L
-#define RLMESH_DETAIL_HOST_VERSION "11"
-#define RLMESH_DETAIL_HOST_VERSION_CHARS '1', '1'
-#else
-#define RLMESH_DETAIL_HOST_VERSION "98"
-#define RLMESH_DETAIL_HOST_VERSION_CHARS '9', '8'
-#endif
-#else
-#define RLMESH_DETAIL_HOST_LANGUAGE "c"
-#if defined(__STDC_VERSION__) && __STDC_VERSION__ > 201710L
-#define RLMESH_DETAIL_HOST_VERSION "23"
-#define RLMESH_DETAIL_HOST_VERSION_CHARS '2', '3'
-#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201710L
-#define RLMESH_DETAIL_HOST_VERSION "17"
-#define RLMESH_DETAIL_HOST_VERSION_CHARS '1', '7'
-#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
-#define RLMESH_DETAIL_HOST_VERSION "11"
-#define RLMESH_DETAIL_HOST_VERSION_CHARS '1', '1'
-#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L
-#define RLMESH_DETAIL_HOST_VERSION "99"
-#define RLMESH_DETAIL_HOST_VERSION_CHARS '9', '9'
-#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199409L
-#define RLMESH_DETAIL_HOST_VERSION "95"
-#define RLMESH_DETAIL_HOST_VERSION_CHARS '9', '5'
-#else
-/* No standard macro: leave the language version undeclared. */
-#endif
-#endif
-
-/* Clang defines GNU compatibility macros too, so check it first. */
-#if defined(__clang_major__) && defined(__clang_minor__)
-#define RLMESH_DETAIL_HOST_COMPILER                                            \
-  ",\"toolchain\":{\"name\":\"clang\",\"version\":\"" RLMESH_DETAIL_STRINGIFY( \
-      __clang_major__) "." RLMESH_DETAIL_STRINGIFY(__clang_minor__) "\"}"
-#elif defined(__GNUC__) && defined(__GNUC_MINOR__)
-#define RLMESH_DETAIL_HOST_COMPILER                                          \
-  ",\"toolchain\":{\"name\":\"gcc\",\"version\":\"" RLMESH_DETAIL_STRINGIFY( \
-      __GNUC__) "." RLMESH_DETAIL_STRINGIFY(__GNUC_MINOR__) "\"}"
-#else
-#define RLMESH_DETAIL_HOST_COMPILER ""
-#endif
-
-/* MSVC's packed _MSC_VER (e.g. 1944) becomes 19.44. An immutable
- * character array keeps this safe in C and C++98 without runtime initialization. */
-#if defined(_MSC_VER) && !defined(__clang_major__) && !defined(__GNUC__)
-static inline const char* rlmesh_detail_msvc_host_runtime(void) {
-  /* clang-format off */
-  static const char runtime[] = {
-    '{', '"',
-    'l', 'a', 'n', 'g', 'u', 'a', 'g', 'e', '"',
-    ':', '"',
-#ifdef __cplusplus
-    'c', '+', '+',
-#else
-    'c',
-#endif
-    '"',
-#ifdef RLMESH_DETAIL_HOST_VERSION
-    ',', '"',
-    'l', 'a', 'n', 'g', 'u', 'a', 'g', 'e', '_', 'v', 'e', 'r', 's', 'i', 'o', 'n', '"',
-    ':', '"',
-    RLMESH_DETAIL_HOST_VERSION_CHARS, '"',
-#endif
-    ',', '"',
-    't', 'o', 'o', 'l', 'c', 'h', 'a', 'i', 'n', '"',
-    ':', '{', '"',
-    'n', 'a', 'm', 'e', '"',
-    ':', '"',
-    'm', 's', 'v', 'c', '"',
-    ',', '"',
-    'v', 'e', 'r', 's', 'i', 'o', 'n', '"',
-    ':', '"',
-    '0' + (_MSC_VER / 1000) % 10, '0' + (_MSC_VER / 100) % 10, '.', '0' + (_MSC_VER / 10) % 10, '0' + _MSC_VER % 10,
-    '"',
-    '}', '}', '\0'
-  };
-  /* clang-format on */
-  return runtime;
-}
-#define RLMESH_HOST_RUNTIME_JSON rlmesh_detail_msvc_host_runtime()
-#else
-#ifdef RLMESH_DETAIL_HOST_VERSION
-#define RLMESH_DETAIL_HOST_STANDARD ",\"language_version\":\"" RLMESH_DETAIL_HOST_VERSION "\""
-#else
-#define RLMESH_DETAIL_HOST_STANDARD ""
-#endif
-#define RLMESH_HOST_RUNTIME_JSON                 \
-  "{\"language\":\"" RLMESH_DETAIL_HOST_LANGUAGE \
-  "\"" RLMESH_DETAIL_HOST_STANDARD RLMESH_DETAIL_HOST_COMPILER "}"
-#endif
-
-/* What the env declares. Set struct_size = sizeof(RLMeshExtLegacyEnvConfig);
- * unknown trailing bytes must be zero. Borrowed for the rlmesh_ext_legacy_env_new_lanes call only
- * (the spaces are cloned). `adapter_tags_json` is the env's adapter EnvTags (v1 JSON), validated
- * against the spaces right there: an unknown field or a tag that does not fit its space fails
- * rlmesh_ext_legacy_env_new_lanes. The JSON grammar is in docs/specs/env_tags.v1.md. */
-typedef struct RLMeshExtLegacyEnvConfig {
-  size_t struct_size;
-  const char* id;                           /* contract id; NULL/"" = "UnknownEnv-v1" */
-  const RLMeshSpaceSpec* observation_space; /* required */
-  const RLMeshSpaceSpec* action_space;      /* required */
-  const char* adapter_tags_json;            /* NULL = untagged */
-  const char* const* reset_options;         /* e.g. {"trial_index"}; NULL = none */
-  size_t num_reset_options;
-  const char* render_mode;   /* "rgb_array" when `render` produces frames */
-  const char* metadata_json; /* extra contract metadata (JSON object); NULL = none */
-  /* Run every callback (close included) on the thread that calls
-   * rlmesh_ext_legacy_env_serve, which then serves from a helper thread: for a simulation
-   * bound to the thread that created it (a GL / Vulkan context, Isaac Sim).
-   * One lane only. false = callbacks run on a dedicated lane thread. */
-  bool foreground;
-  /* The named variants (scenarios) one image serves, as the describe
-   * envelope's variants.catalog: a JSON array of {"id", "params", "metadata"},
-   * e.g. [{"id": "viper/firm", "params": {"vehicle": "viper"}, "metadata":
-   * {"name": "Viper on firm soil"}}]. Ids must be unique. NULL = none. */
-  const char* variants_catalog_json;
-  /* Optional host runtime: JSON object with language / language_version strings,
-   * framework_versions (framework name -> version strings), and toolchain
-   * {"name": "gcc"/"clang"/"msvc", "version": "major.minor"}. No other keys.
-   * Strings and framework names are trimmed and must remain non-empty.
-   * Copied at creation; NULL = legacy runtime (language "c", no version/compiler).
-   * Use rlmesh_ext_legacy_env_config_init() to detect the host automatically. */
-  const char* host_runtime_json;
-} RLMeshExtLegacyEnvConfig;
-#define RLMESH_EXT_LEGACY_ENV_CONFIG_MIN_SIZE sizeof(RLMeshExtLegacyEnvConfig)
-#define RLMESH_EXT_LEGACY_ENV_CONFIG_INIT \
-  {sizeof(RLMeshExtLegacyEnvConfig), NULL, NULL, NULL, NULL, NULL, 0, NULL, NULL, false, NULL, NULL}
-
-/* Zero defaults plus struct_size and the host translation unit's runtime.
- * Fill the required spaces afterward; override host_runtime_json if needed. */
-static inline RLMeshExtLegacyEnvConfig rlmesh_ext_legacy_env_config_init(void) {
-#ifdef __cplusplus
-  RLMeshExtLegacyEnvConfig config = RLMeshExtLegacyEnvConfig();
-#else
-  RLMeshExtLegacyEnvConfig config = {0};
-#endif
-  config.struct_size = sizeof(RLMeshExtLegacyEnvConfig);
-  config.host_runtime_json = RLMESH_HOST_RUNTIME_JSON;
-  return config;
-}
-
-/* An owned env handle. Lifecycle: rlmesh_ext_legacy_env_new_lanes -> rlmesh_ext_legacy_env_bind ->
- * rlmesh_ext_legacy_env_serve (blocks) -> rlmesh_ext_legacy_env_free. rlmesh_ext_legacy_env_cancel
- * is the only call that may overlap a running serve, from any thread. */
-typedef struct RLMeshExtLegacyEnv RLMeshExtLegacyEnv;
-
-/* Serve `num_lanes` independent simulations as the lanes of one endpoint
- * (num_envs = num_lanes): lane i passes `user_data[i]` to its callbacks. Every
- * lane shares `vtable` and `config` (one contract) but runs on its own thread,
- * concurrently with the others, so each `user_data` must be its own simulation.
- * `user_data` (the array) is borrowed for the call; each entry must outlive the
- * env. num_lanes == 0 and a foreground config with num_lanes > 1 fail with
- * RLMESH_ERR_INVALID_ARGUMENT. */
-RLMESH_API RLMeshStatus rlmesh_ext_legacy_env_new_lanes(const RLMeshExtLegacyEnvVtable* vtable,
-                                                        const RLMeshExtLegacyEnvConfig* config,
-                                                        void* const* user_data, size_t num_lanes,
-                                                        RLMeshExtLegacyEnv** out);
-
-/* Bind to `bind_address` (tcp://host:port, host:port or unix:///path) without
- * serving yet; once per handle. `out_address` (may be NULL) receives the
- * resolved address, e.g. the OS-assigned port for port 0 (UTF-8, not
- * NUL-terminated; free with rlmesh_bytes_free). `options` may be NULL;
- * `predict_concurrency` and `close_timeout_ms` do not apply to an env. A failed
- * bind (an address in use, a bad RLMESH_ENV_ENDPOINT_TOKEN) leaves the handle
- * as it was: bind may be retried, and `close` still runs once per lane. */
-RLMESH_API RLMeshStatus rlmesh_ext_legacy_env_bind(RLMeshExtLegacyEnv* env,
-                                                   const char* bind_address,
-                                                   const RLMeshExtLegacyServeOptions* options,
-                                                   RLMeshBytes* out_address);
-
-/* The env's describe envelope (rlmesh.describe.v1: target "native:<id>", the
- * spaces as env_spec, the published adapter tags as env_tags, and the runtime
- * edition handshake) as UTF-8 JSON into `out` (not NUL-terminated; free with
- * rlmesh_bytes_free). Valid before and after bind; after bind it declares the
- * workflow edition the server was bound with. rlmesh_ext_legacy_env_bind also puts it on
- * the handshake PeerInfo.extra under "rlmesh.describe.v1" of its own endpoint
- * (each env bound in one process reports its own; a failed bind publishes
- * nothing), which is where the managed
- * platform reads it for an image without a baked `dev.rlmesh.describe` label.
- * Bake that label with this output to describe the image before it runs. */
-RLMESH_API RLMeshStatus rlmesh_ext_legacy_env_describe_json(const RLMeshExtLegacyEnv* env,
-                                                            RLMeshBytes* out);
-
-/* Serve the bound env until a remote shutdown, an idle timeout, or
- * rlmesh_ext_legacy_env_cancel. Blocking. `close` runs once per lane before this returns.
- * A foreground env runs every callback on the calling thread until then.
- *
- * When this returns, no callback is running and none will run again, so the
- * `user_data` may be freed. It waits for a callback still in flight (a step the
- * drain timeout gave up on) and for every `close`, however long: a callback
- * that never returns blocks this forever. `close_timeout_ms` does not apply. */
-RLMESH_API RLMeshStatus rlmesh_ext_legacy_env_serve(RLMeshExtLegacyEnv* env);
-
-/* Stop a blocking rlmesh_ext_legacy_env_serve from another thread: it drains, closes the
- * env and returns RLMESH_OK. Terminal for the handle. NULL is a no-op. */
-RLMESH_API void rlmesh_ext_legacy_env_cancel(RLMeshExtLegacyEnv* env);
-
-/* Free an env handle; not from inside its own callbacks. NULL is a no-op. Like
- * rlmesh_ext_legacy_env_serve, it returns only once no callback is running or can run.
- * For a handle that never served it runs each lane's `close` first: a bound
- * one stops its server (closing on the lane threads), an unbound one (a failed
- * bind included) closes on the calling thread. `close` runs once per lane over
- * the handle's life; `user_data` may be freed once this returns. */
-RLMESH_API void rlmesh_ext_legacy_env_free(RLMeshExtLegacyEnv* env);
+/* Opaque host exception attached to this callback failure; ownership transfers.
+ * Replacing, clearing or dropping an untaken payload calls free_payload once.
+ * The error carries it across worker threads. The failing caller may take it. */
+RLMESH_API void rlmesh_ext_callback_set_error_payload(void* payload, void (*free_payload)(void*));
+RLMESH_API void* rlmesh_ext_last_error_take_payload(void);
 
 /* ---- Recorder and immutable recorder records ---------------------------- */
 #define RLMESH_RECORDER_SCHEMA "rlmesh.result.v1"
