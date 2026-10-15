@@ -113,6 +113,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ### Changed
 
+- A lane endpoint served from Rust, C or C++ reports each range warning (`rlmesh.conformance.warning`) once per lane for the server's life, as a Python server does, instead of once for all lanes; a vector env still reports once for all its lanes.
+
 - A C or C++ env's failed callback reaches the client as `[INTERNAL] {op} failed: {message}`, as from Python and Rust, with `callback failed with status <n>` when the callback set no message (it read the raw message, or `environment {op} failed`). An env with no id serves `"UnknownEnv-v1"`, as Python's does (it was `"env"`). A render frame follows Python's lenient rule: any numeric image is cast to uint8, `[3, H, W]` and `[4, H, W]` encode too, and any other shape or kind is no frame instead of a failed render.
 
 - The remote text of a Python env failure is `{op} failed: {message}` with no type name: an env that raises `ValueError("x")` in `step` reaches the client as `[INTERNAL] step failed: x` (it read `[INTERNAL] step failed: ValueError: x`), and an authored `EnvironmentException("bad")` as `[INTERNAL] step failed: bad`, as from a Rust, C or C++ env; a model failure reaches the client as `[INTERNAL] x`. Servers send the message without the code and the client adds it once.

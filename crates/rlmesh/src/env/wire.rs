@@ -81,9 +81,10 @@ fn inject_conformance_warnings(
 /// per `(kind, path)`). Shared by both adapters; lock-free on the accept path.
 struct Conformance {
     policy: ValidationPolicy,
-    /// `(kind, path)` already reported this session. Behind a lock because
-    /// lane ops run concurrently through `&self`.
-    warned: std::sync::Mutex<HashSet<(String, String)>>,
+    /// `(lane, kind, path)` already reported for the server's life: once per
+    /// lane of a lane endpoint, once for all lanes of a vector env (lane 0).
+    /// Behind a lock because lane ops run concurrently through `&self`.
+    warned: std::sync::Mutex<HashSet<(usize, String, String)>>,
     /// The edition the current session runs at (see
     /// [`Environment::pin_workflow_edition`]); the warning key is its promise.
     edition: std::sync::Mutex<Edition>,
@@ -117,6 +118,7 @@ impl Conformance {
         space: &spaces::SpaceSpec,
         value: &spaces::SpaceValue,
         kind: &str,
+        lane: usize,
         warnings: &mut Vec<ConformanceWarning>,
     ) -> Result<(), EnvError> {
         match self.policy.check(space, value) {
@@ -135,7 +137,7 @@ impl Conformance {
                     .warned
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .insert((kind.to_string(), path.clone()));
+                    .insert((lane, kind.to_string(), path.clone()));
                 if first_time {
                     warnings.push(ConformanceWarning {
                         kind: kind.to_string(),
@@ -153,10 +155,12 @@ impl Conformance {
         space: &spaces::SpaceSpec,
         values: &[spaces::SpaceValue],
         kind: &str,
+        lanes: &[usize],
         warnings: &mut Vec<ConformanceWarning>,
     ) -> Result<(), EnvError> {
-        for value in values {
-            self.enforce(space, value, kind, warnings)?;
+        for (pos, value) in values.iter().enumerate() {
+            let lane = lanes.get(pos).copied().unwrap_or(0);
+            self.enforce(space, value, kind, lane, warnings)?;
         }
         Ok(())
     }
@@ -169,6 +173,7 @@ fn encode_step_response(
     observation_space: &spaces::SpaceSpec,
     mut result: super::types::StepResult,
     width: usize,
+    lanes: &[usize],
     mut warnings: Vec<ConformanceWarning>,
     env_indices: Vec<u32>,
 ) -> Result<ProtoStepResponse, EnvError> {
@@ -180,6 +185,7 @@ fn encode_step_response(
         observation_space,
         &result.observations,
         "observation",
+        lanes,
         &mut warnings,
     )?;
     inject_conformance_warnings(conformance.edition(), &mut result.info, warnings);
@@ -206,6 +212,7 @@ fn encode_reset_response(
     observation_space: &spaces::SpaceSpec,
     mut result: VectorResetResult,
     width: usize,
+    lanes: &[usize],
 ) -> Result<ProtoResetResponse, EnvError> {
     validate_count(&result.observations, width, "observations")?;
     let mut warnings = Vec::new();
@@ -213,6 +220,7 @@ fn encode_reset_response(
         observation_space,
         &result.observations,
         "observation",
+        lanes,
         &mut warnings,
     )?;
     inject_conformance_warnings(conformance.edition(), &mut result.info, warnings);
@@ -230,6 +238,7 @@ fn decode_actions(
     action_space: &spaces::SpaceSpec,
     action: Option<&rlmesh_proto::spaces::v1::SpaceValue>,
     width: usize,
+    lanes: &[usize],
     warnings: &mut Vec<ConformanceWarning>,
 ) -> Result<Vec<spaces::SpaceValue>, EnvError> {
     // N is authoritative; a wrong-width/count action is a client fault, so a
@@ -237,7 +246,7 @@ fn decode_actions(
     let actions = decode_batched_partial_values(action, action_space, width)
         .map_err(|err| EnvError::new(EnvErrorCode::InvalidAction, err.to_string()))?;
     validate_action_count(&actions, width)?;
-    conformance.enforce_all(action_space, &actions, "action", warnings)?;
+    conformance.enforce_all(action_space, &actions, "action", lanes, warnings)?;
     Ok(actions)
 }
 
@@ -331,8 +340,13 @@ impl<E: VectorEnv> Environment for WireEnvAdapter<E> {
         drop(env);
 
         let encode_started = Instant::now();
-        let response =
-            encode_reset_response(&self.conformance, &self.observation_space, result, width)?;
+        let response = encode_reset_response(
+            &self.conformance,
+            &self.observation_space,
+            result,
+            width,
+            &[],
+        )?;
         let mut phases =
             EndpointPhases::nest(decode_ns, call_ns, elapsed_ns(encode_started), inner);
         phases.queue_ns = queue_ns;
@@ -357,6 +371,7 @@ impl<E: VectorEnv> Environment for WireEnvAdapter<E> {
             &self.action_space,
             req.action.as_ref(),
             self.num_envs,
+            &[],
             &mut warnings,
         )?;
         let decode_ns = elapsed_ns(decode_started);
@@ -383,6 +398,7 @@ impl<E: VectorEnv> Environment for WireEnvAdapter<E> {
             &self.observation_space,
             result,
             self.num_envs,
+            &[],
             warnings,
             Vec::new(),
         )?;
@@ -539,6 +555,7 @@ impl Environment for WireLaneAdapter {
                 episode_ids: Vec::new(),
             },
             lanes.len(),
+            &lanes,
         )?;
         let inner = fold_phases(phases);
         let mut folded =
@@ -559,6 +576,7 @@ impl Environment for WireLaneAdapter {
             self.lanes.action_space(),
             req.action.as_ref(),
             lanes.len(),
+            &lanes,
             &mut warnings,
         )?;
         let timeout_ms = i64::try_from(req.timeout_ms).unwrap_or(i64::MAX);
@@ -598,6 +616,7 @@ impl Environment for WireLaneAdapter {
             self.lanes.observation_space(),
             result,
             lanes.len(),
+            &lanes,
             warnings,
             req.env_indices,
         )?;
@@ -1073,7 +1092,13 @@ mod tests {
         );
         let mut warnings = Vec::new();
         conformance
-            .enforce(&env.obs_space, &out_of_range, "observation", &mut warnings)
+            .enforce(
+                &env.obs_space,
+                &out_of_range,
+                "observation",
+                0,
+                &mut warnings,
+            )
             .expect("a range deviation warns under the warn policy");
         let mut info = None;
         inject_conformance_warnings(conformance.edition(), &mut info, warnings);
@@ -1081,6 +1106,52 @@ mod tests {
             info.unwrap().contains_key("rlmesh.conformance.warning"),
             "2026.06 reports conformance warnings under its reserved key"
         );
+    }
+
+    #[test]
+    fn range_warnings_are_reported_once_per_lane() {
+        let conformance = Conformance {
+            policy: ValidationPolicy::Warn,
+            warned: Default::default(),
+            edition: std::sync::Mutex::new(Edition::current()),
+        };
+        let env = DummyEnv::new();
+        let out_of_range = spaces::SpaceValue::Box(
+            spaces::Tensor::from_vec(
+                5.0f32.to_le_bytes().repeat(2),
+                vec![2],
+                spaces::DType::Float32,
+            )
+            .unwrap(),
+        );
+        let values = vec![out_of_range.clone(), out_of_range];
+        let mut warnings = Vec::new();
+        conformance
+            .enforce_all(
+                &env.obs_space,
+                &values,
+                "observation",
+                &[0, 1],
+                &mut warnings,
+            )
+            .unwrap();
+        assert_eq!(warnings.len(), 2, "each lane reports its own deviation");
+        let mut again = Vec::new();
+        conformance
+            .enforce_all(&env.obs_space, &values, "observation", &[0, 1], &mut again)
+            .unwrap();
+        assert!(again.is_empty(), "each lane reports a deviation once");
+        // A vector env's lanes share one report.
+        let vector = Conformance {
+            policy: ValidationPolicy::Warn,
+            warned: Default::default(),
+            edition: std::sync::Mutex::new(Edition::current()),
+        };
+        let mut shared = Vec::new();
+        vector
+            .enforce_all(&env.obs_space, &values, "observation", &[], &mut shared)
+            .unwrap();
+        assert_eq!(shared.len(), 1);
     }
 
     /// Reserve an ephemeral TCP port and free it, so a server can rebind it.
