@@ -54,6 +54,34 @@ the facade on this branch has no native DLPack import/export methods, and
 C does not expose them. C++ receives only compatibility changes for the new C
 value and tensor calls; its full parity API is a separate wave.
 
+## Running and sessions
+
+`rlmesh_run` and `rlmesh_model_run` accept frozen by-value model/env targets
+and `RLMESH_RUN_OPTIONS_INIT`. Options use Python's `episodes`, `seeds`,
+`max_episode_steps`, `max_episode_seconds`, execution settings and trial base;
+`has_*` flags distinguish an explicit zero from absence. NULL seeds means
+None; a non-NULL pointer with length zero means an empty list. Both the native
+Model loop and RANDOM_SAMPLE session loop delegate to the facade.
+
+RunHooks are owned vtable handles, borrowed exclusively for a run. Callbacks
+run on the calling thread, receive lent sized EpisodeResult/StepEvent structs,
+and may clone RunResult or RunContext handles to retain them. Hook errors
+follow the facade's first-error rule and still trigger on_run_end once.
+Results, telemetry, equality, repr and aggregates use facade result types.
+
+`rlmesh_session_new` / `rlmesh_model_session` create a lazy facade Session.
+Reset, predict, step, run, context access, cancellation and close keep the
+facade's state machine. A session leases local envs/factories until free;
+its borrowed model and server handles must outlive it. Within its own hooks,
+only the RunContext members contract/num_envs can query the session; stateful
+re-entry fails with RuntimeError. Closing/freeing a session never closes its
+model. Cancellation tokens are retained independently from the caller's token
+handle. Free drains local callbacks before releasing the lease.
+
+Instruction/view, context read/frame sources and advisories await their
+facade types in the separate adapters wave. Nonempty advisory constructor
+inputs are explicitly refused rather than discarded.
+
 ## Env authoring and servers
 
 `rlmesh_env_new(vtable, user_data, attributes, out)` and

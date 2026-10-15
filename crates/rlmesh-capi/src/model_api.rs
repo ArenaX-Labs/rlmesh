@@ -459,7 +459,7 @@ pub struct RLMeshModel {
     pub(crate) model: Model,
     info: Arc<Info>,
 }
-fn require<'a>(ptr: *const RLMeshModel) -> Result<&'a RLMeshModel, CapiError> {
+pub(crate) fn require<'a>(ptr: *const RLMeshModel) -> Result<&'a RLMeshModel, CapiError> {
     unsafe { ptr.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null model"))
 }
 unsafe fn declaration(vt: RLMeshModelVtable) -> Result<PolicyDecl, CapiError> {

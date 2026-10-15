@@ -231,6 +231,21 @@ int main(void) {
   CHECK(work.result == RLMESH_ERR_CANCELLED);
   CHECK(state.env_closes == state.makes && state.env_frees == state.makes);
   rlmesh_ext_cancel_token_free(cancel);
+  RLMeshRunResult* run_result = NULL;
+  RLMeshRunOptions run_options = RLMESH_RUN_OPTIONS_INIT;
+  CHECK(rlmesh_run(RLMESH_RANDOM_SAMPLE, rlmesh_env_factory_target(state.factory), &run_options,
+                   &run_result) == RLMESH_OK);
+  CHECK(rlmesh_run_result_num_episodes(run_result) == 1);
+  rlmesh_run_result_free(run_result);
+  CHECK(state.env_closes == state.makes && state.env_frees == state.makes);
+  RLMeshSession* session = NULL;
+  CHECK(rlmesh_session_new(RLMESH_RANDOM_SAMPLE, rlmesh_env_factory_target(state.factory), NULL,
+                           &session) == RLMESH_OK);
+  CHECK(rlmesh_env_factory_prepare(state.factory) == RLMESH_ERR_RUNTIME);
+  CHECK(rlmesh_session_run(session, NULL, &run_result) == RLMESH_OK);
+  rlmesh_run_result_free(run_result);
+  rlmesh_session_free(session);
+  CHECK(state.env_closes == state.makes && state.env_frees == state.makes);
   CHECK(rlmesh_env_factory_close(state.factory) == RLMESH_OK && state.closes == 1);
   rlmesh_env_factory_free(state.factory);
   CHECK(state.frees == 1 && state.closes == 1);

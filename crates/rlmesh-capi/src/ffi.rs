@@ -51,6 +51,7 @@ pub(crate) fn callback_error(kind: &str) -> Error {
         return error_of_class(class, &message);
     }
     match (kind, last_error_recoverable()) {
+        ("hook" | "context", _) => Error::Internal(message),
         ("env", true) => Error::environment_recoverable(message),
         ("env", false) => Error::environment(message),
         (_, true) => Error::model_recoverable(message),

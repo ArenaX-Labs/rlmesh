@@ -177,6 +177,11 @@ pub struct RLMeshEnvServer {
     _claims: Vec<Claim>,
     close_env_on_shutdown: bool,
 }
+impl RLMeshEnvServer {
+    pub(crate) fn facade(&self) -> &EnvServer {
+        &self.server
+    }
+}
 impl Drop for RLMeshEnvServer {
     fn drop(&mut self) {
         let _ = self.server.shutdown();

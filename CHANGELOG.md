@@ -10,6 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ### Added
 
+- C facade-backed `rlmesh_run` / `rlmesh_model_run`, Python-named sized RunOptions, local/address/server/factory targets and RANDOM_SAMPLE. RunHooks and retained RunContexts expose caller-thread callbacks, first-error delivery and typed step/result records. Immutable RunResult and TelemetryRow handles provide facade aggregates, repr and equality. C Sessions add lazy reset/predict/step/run, contexts, retained cancellation and close, with exclusive env borrowing and checked hook re-entry. Adapter-dependent instruction/view/read/advisory APIs remain deferred.
+
 - C `RLMeshModel` wraps the facade Model through a four-corner Policy vtable with per-corner context opt-in, checked load keys, config construction, loaded native chunks, shared clones, hook overrides, close/serve and reusable cancellation. PredictContext exposes facade-owned episode state with C value deleters. Constructor failures retain caller ownership; the last C reference drains callbacks and releases policy/hook state once. The C++ wrapper's prior worker-based model path is fenced under legacy extension names.
 
 - C `RLMeshEnvFactory`, TagParam lists and mutable Variant catalogs use the facade's default binding, branch checks, metadata stamping and serving pipeline. Factory hooks are exclusive and report re-entry as RuntimeError; callback state transfers only on successful construction, and free never closes the factory. Reusable C cancellation tokens stop serving and all C env callbacks are drained before return.

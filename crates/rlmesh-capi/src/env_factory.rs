@@ -94,10 +94,10 @@ impl Drop for Data {
 }
 pub struct RLMeshEnvFactory {
     data: Arc<Data>,
-    busy: AtomicBool,
+    busy: Arc<AtomicBool>,
 }
-struct Busy<'a>(&'a AtomicBool);
-impl Drop for Busy<'_> {
+struct Busy(Arc<AtomicBool>);
+impl Drop for Busy {
     fn drop(&mut self) {
         self.0.store(false, Ordering::Release);
     }
@@ -105,7 +105,7 @@ impl Drop for Busy<'_> {
 fn require<'a>(ptr: *const RLMeshEnvFactory) -> Result<&'a RLMeshEnvFactory, CapiError> {
     unsafe { ptr.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null factory"))
 }
-fn enter(f: &RLMeshEnvFactory) -> Result<Busy<'_>, CapiError> {
+fn enter(f: &RLMeshEnvFactory) -> Result<Busy, CapiError> {
     if f.busy
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
@@ -114,14 +114,14 @@ fn enter(f: &RLMeshEnvFactory) -> Result<Busy<'_>, CapiError> {
             "factory is already running a hook".into(),
         )));
     }
-    Ok(Busy(&f.busy))
+    Ok(Busy(Arc::clone(&f.busy)))
 }
 // EnvFactory's attributes are associated functions. A scoped, reentrant TLS
 // binding supplies this C instance while the facade invokes those functions.
 // Every C factory operation is sync; the facade runs its pre-serve hooks on
 // this calling thread. Nested calls on another factory restore the old scope.
 thread_local! {static CURRENT:RefCell<Vec<Arc<Data>>>=const {RefCell::new(Vec::new())};}
-struct Scope;
+pub(crate) struct Scope;
 impl Scope {
     fn new(data: Arc<Data>) -> Self {
         CURRENT.with(|s| s.borrow_mut().push(data));
@@ -347,7 +347,7 @@ pub unsafe extern "C" fn rlmesh_env_factory_new(
             out,
             Box::into_raw(Box::new(RLMeshEnvFactory {
                 data,
-                busy: AtomicBool::new(false),
+                busy: Arc::new(AtomicBool::new(false)),
             })),
         )
     })
@@ -640,4 +640,38 @@ impl Drop for ServeDrain {
             }
         }
     }
+}
+
+/// Owns exclusive factory admission while a facade run/session borrows it.
+pub(crate) struct FactoryBorrow {
+    factory: Factory,
+    data: Arc<Data>,
+    _drain: ServeDrain,
+    _busy: Busy,
+}
+impl FactoryBorrow {
+    pub(crate) fn scope(&self) -> Scope {
+        Scope::new(Arc::clone(&self.data))
+    }
+    // Only the factory field is lent for the session lifetime; scope() reads
+    // separate data. The binding drops the Session before this allocation.
+    pub(crate) unsafe fn scope_static(ptr: *const Self) -> Scope {
+        Scope::new(Arc::clone(unsafe { &(*ptr).data }))
+    }
+    pub(crate) unsafe fn target_static(ptr: *mut Self) -> rlmesh::EnvTarget<'static> {
+        rlmesh::EnvTarget::factory(unsafe { &mut (*ptr).factory })
+    }
+    pub(crate) fn target(&mut self) -> rlmesh::EnvTarget<'_> {
+        rlmesh::EnvTarget::factory(&mut self.factory)
+    }
+}
+pub(crate) fn borrow_factory(ptr: *const RLMeshEnvFactory) -> Result<FactoryBorrow, CapiError> {
+    let f = require(ptr)?;
+    let busy = enter(f)?;
+    Ok(FactoryBorrow {
+        factory: Factory,
+        data: Arc::clone(&f.data),
+        _busy: busy,
+        _drain: ServeDrain::new(Arc::clone(&f.data)),
+    })
 }
