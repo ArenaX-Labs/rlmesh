@@ -123,6 +123,7 @@ pub mod binding;
 mod bound;
 mod build_info;
 mod describe;
+mod dlpack;
 mod dtype;
 mod editions;
 pub mod env;
@@ -177,7 +178,7 @@ pub use run::{
 };
 pub use serve_options::ServeOptions;
 pub use specs::EnvContract;
-pub use tensor::Tensor;
+pub use tensor::{Tensor, ToDlpackOptions};
 pub use value::{InfoDict, Kwargs, Metadata, MetadataIter, Value, ValueKind};
 pub use warnings::{Warning, WarningCategory, WarningHandler, set_warning_handler};
 

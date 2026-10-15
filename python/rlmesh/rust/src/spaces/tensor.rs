@@ -203,38 +203,22 @@ impl PyTensor {
                 "stream must be None for CPU tensors",
             ));
         }
-        if let Some(device) = dl_device
-            && device != (super::dlpack::dl_device_type(self.inner.device()), 0)
-        {
-            return Err(pyo3::exceptions::PyBufferError::new_err(format!(
-                "cannot export to device {device:?}; only CPU (1, 0) is supported",
-            )));
-        }
-
-        let copied;
-        let (tensor, is_copy) = if copy == Some(true) {
-            copied = Tensor::from_slice(
-                &self.inner.to_contiguous_bytes(),
-                self.inner.shape(),
-                self.inner.dtype(),
-            )
-            .map_err(|err| pyo3::exceptions::PyBufferError::new_err(err.to_string()))?;
-            (&copied, true)
-        } else {
-            (&self.inner, false)
-        };
-
-        match max_version {
-            // A fresh copy is exclusively owned by the consumer, so it is
-            // exported writable; shared exports are flagged read-only.
-            Some((major, _)) if major >= 1 => super::dlpack::export_versioned(py, tensor, !is_copy),
-            _ => super::dlpack::export_legacy(py, tensor),
-        }
+        super::dlpack::export(
+            py,
+            &self.inner,
+            rlmesh::ToDlpackOptions {
+                dl_device,
+                copy: copy.unwrap_or(false),
+            },
+            matches!(max_version, Some((major, _)) if major >= 1),
+        )
     }
 
     /// DLPack device of the tensor data: `(kDLCPU, 0)`.
     fn __dlpack_device__(&self) -> (i32, i32) {
-        (super::dlpack::dl_device_type(self.inner.device()), 0)
+        rlmesh::binding::tensor_from_core(self.inner.clone())
+            .expect("Python tensors have a specified dtype")
+            .dlpack_device()
     }
 
     /// Import a tensor from a DLPack capsule or any object implementing
