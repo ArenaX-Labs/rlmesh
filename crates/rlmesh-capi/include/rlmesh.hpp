@@ -477,10 +477,10 @@ inline Status ok() { return Status(); }
 
 // ---- dtype + tensor ---------------------------------------------------------
 
-/// The RLMeshDType of a C++ element type (float, double, int32_t, int64_t,
+/// The RLMeshDLPackDType of a C++ element type (float, double, int32_t, int64_t,
 /// uint8_t, bool).
 template <class T>
-constexpr RLMeshDType dtype_of() {
+constexpr RLMeshDLPackDType dtype_of() {
   static_assert(std::is_same<T, float>::value || std::is_same<T, double>::value ||
                     std::is_same<T, int32_t>::value || std::is_same<T, int64_t>::value ||
                     std::is_same<T, uint8_t>::value || std::is_same<T, bool>::value,
@@ -506,7 +506,7 @@ class Tensor {
   explicit Tensor(const RLMeshTensor& raw) : raw_(raw) {}
 
   const void* data() const { return raw_.data; }
-  RLMeshDType dtype() const { return raw_.dtype; }
+  RLMeshDLPackDType dtype() const { return raw_.dtype; }
   int32_t ndim() const { return raw_.ndim; }
   const int64_t* shape() const { return raw_.shape; }
   const int64_t* strides() const { return raw_.strides; }
@@ -692,7 +692,7 @@ class Value {
   }
 
   /// Copy a contiguous row-major buffer into a Box value.
-  static Result<Value> box(const void* data, RLMeshDType dtype, std::vector<int64_t> shape) {
+  static Result<Value> box(const void* data, RLMeshDLPackDType dtype, std::vector<int64_t> shape) {
     RLMeshTensor tensor{};
     tensor.data = data;
     tensor.ndim = static_cast<int32_t>(shape.size());
@@ -796,7 +796,7 @@ class SpaceRef {
   bool valid() const { return ptr_ != nullptr; }
   RLMeshValueKind kind() const { return rlmesh_space_type(ptr_); }
 
-  RLMeshDType dtype() const { return rlmesh_space_dtype(ptr_); }
+  RLMeshDLPackDType dtype() const { return rlmesh_space_dtype(ptr_); }
   size_t ndim() const { return rlmesh_space_ndim(ptr_); }
 
   Result<std::vector<int64_t>> shape() const {
@@ -937,7 +937,7 @@ class SpaceRef {
 namespace detail {
 
 /// Store `scalar` into `dst` as `dtype`; false for a dtype we cannot encode.
-inline bool store_scalar(uint8_t* dst, RLMeshDType dtype, double scalar) {
+inline bool store_scalar(uint8_t* dst, RLMeshDLPackDType dtype, double scalar) {
   auto put = [&](auto typed) {
     std::memcpy(dst, &typed, sizeof(typed));
     return true;
@@ -996,7 +996,7 @@ inline bool store_scalar(uint8_t* dst, RLMeshDType dtype, double scalar) {
 inline Result<Value> zeros_for(SpaceRef space) {
   switch (space.kind()) {
     case RLMESH_VALUE_BOX: {
-      RLMeshDType dtype = space.dtype();
+      RLMeshDLPackDType dtype = space.dtype();
       size_t stride = rlmesh_dtype_size(dtype);
       if (stride == 0) return Error(RLMESH_ERR_TYPE, "unsupported Box dtype");
       auto shape = space.shape();
@@ -1466,7 +1466,7 @@ class Space {
   /// A Box with one bound pair for every element. A float dtype takes
   /// +-INFINITY for an unbounded side; an integer one needs finite whole bounds
   /// the dtype can represent (out of range is an error, never clamped).
-  static Result<Space> box(RLMeshDType dtype, const std::vector<int64_t>& shape, double low,
+  static Result<Space> box(RLMeshDLPackDType dtype, const std::vector<int64_t>& shape, double low,
                            double high) {
     return adopt(rlmesh_space_box(dtype, shape.data(), shape.size(), low, high));
   }
@@ -1476,7 +1476,7 @@ class Space {
     return box(dtype_of<T>(), shape, low, high);
   }
   /// A Box with per-element bounds (`low` / `high` hold the element count each).
-  static Result<Space> box(RLMeshDType dtype, const std::vector<int64_t>& shape,
+  static Result<Space> box(RLMeshDLPackDType dtype, const std::vector<int64_t>& shape,
                            const std::vector<double>& low, const std::vector<double>& high) {
     size_t numel = 1;
     for (int64_t dim : shape) numel *= static_cast<size_t>(dim < 0 ? 0 : dim);
@@ -1533,12 +1533,12 @@ class Space {
   }
   static Error disown(const std::vector<RLMeshSpaceSpec*>& children) {
     Error error = Error::from_last(rlmesh_last_error_status());
-    for (RLMeshSpaceSpec* child : children) rlmesh_space_free(child);
+    for (RLMeshSpaceSpec* child : children) rlmesh_space_spec_free(child);
     return error;
   }
   void reset() {
     if (ptr_ != nullptr) {
-      rlmesh_space_free(ptr_);
+      rlmesh_space_spec_free(ptr_);
       ptr_ = nullptr;
     }
   }

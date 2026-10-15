@@ -1098,16 +1098,16 @@ mod tests {
 
     use super::*;
     use crate::model::rlmesh_callback_set_error;
-    use crate::spaces::{rlmesh_space_box, rlmesh_space_dict, rlmesh_space_free};
-    use crate::value::dtype::RLMeshDType;
+    use crate::spaces::{rlmesh_space_box, rlmesh_space_dict, rlmesh_space_spec_free};
+    use crate::value::dtype::RLMeshDLPackDType;
     use crate::value::handle::into_handle;
 
-    const F32: RLMeshDType = RLMeshDType {
+    const F32: RLMeshDLPackDType = RLMeshDLPackDType {
         code: 2,
         bits: 32,
         lanes: 1,
     };
-    const U8: RLMeshDType = RLMeshDType {
+    const U8: RLMeshDLPackDType = RLMeshDLPackDType {
         code: 1,
         bits: 8,
         lanes: 1,
@@ -1307,8 +1307,8 @@ mod tests {
             }
         };
         unsafe {
-            rlmesh_space_free(obs);
-            rlmesh_space_free(act);
+            rlmesh_space_spec_free(obs);
+            rlmesh_space_spec_free(act);
         }
         if status == RLMeshStatus::Ok {
             Ok(env)
@@ -1656,8 +1656,8 @@ mod tests {
         assert_eq!(status, RLMeshStatus::InvalidArgument);
         assert!(env.is_null());
         unsafe {
-            rlmesh_space_free(obs);
-            rlmesh_space_free(act);
+            rlmesh_space_spec_free(obs);
+            rlmesh_space_spec_free(act);
         }
     }
 
@@ -1680,7 +1680,7 @@ mod tests {
             unsafe { crate::spaces::rlmesh_space_box_bounds(image, 5, &mut low, &mut high) };
         assert_eq!(status, RLMeshStatus::Ok);
         assert_eq!((low, high), (0.0, 255.0));
-        unsafe { rlmesh_space_free(image) };
+        unsafe { rlmesh_space_spec_free(image) };
         // An integer dtype has no infinite bound.
         let unbounded = unsafe { rlmesh_space_box(U8, shape.as_ptr(), 3, 0.0, f64::INFINITY) };
         assert!(unbounded.is_null());

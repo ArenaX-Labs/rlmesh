@@ -9,7 +9,7 @@
 
 use std::ffi::c_void;
 
-use super::dtype::RLMeshDType;
+use super::dtype::RLMeshDLPackDType;
 use crate::abi::status::guard_value;
 
 /// Host CPU device (`kDLCPU`).
@@ -32,7 +32,7 @@ pub struct RLMeshTensor {
     pub shape: *const i64,
     /// Element-count strides, or NULL for row-major contiguous.
     pub strides: *const i64,
-    pub dtype: RLMeshDType,
+    pub dtype: RLMeshDLPackDType,
     pub device_type: i32,
     pub device_id: i32,
     pub flags: u64,

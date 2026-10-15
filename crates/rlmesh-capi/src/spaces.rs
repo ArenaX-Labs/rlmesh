@@ -15,7 +15,7 @@ use rlmesh_spaces::{
 };
 
 use crate::abi::status::{CapiError, RLMeshStatus, guard, guard_ptr, guard_value};
-use crate::value::dtype::RLMeshDType;
+use crate::value::dtype::RLMeshDLPackDType;
 use crate::value::handle::{RLMeshValueKind, write_out};
 
 /// An opaque environment contract (spaces, id, num_envs, autoreset).
@@ -95,17 +95,17 @@ pub unsafe extern "C" fn rlmesh_space_type(spec: *const RLMeshSpaceSpec) -> RLMe
 
 /// The space's element dtype (`{0,0,0}` if unset/unsupported).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_space_dtype(spec: *const RLMeshSpaceSpec) -> RLMeshDType {
+pub unsafe extern "C" fn rlmesh_space_dtype(spec: *const RLMeshSpaceSpec) -> RLMeshDLPackDType {
     guard_value(
-        RLMeshDType {
+        RLMeshDLPackDType {
             code: 0,
             bits: 0,
             lanes: 0,
         },
         || {
             spec_ref(spec)
-                .and_then(|spec| RLMeshDType::from_core(spec.dtype))
-                .unwrap_or(RLMeshDType {
+                .and_then(|spec| RLMeshDLPackDType::from_core(spec.dtype))
+                .unwrap_or(RLMeshDLPackDType {
                     code: 0,
                     bits: 0,
                     lanes: 0,
@@ -419,7 +419,11 @@ fn built(result: Result<SpaceSpec, SpaceError>) -> Result<*mut RLMeshSpaceSpec, 
 
 /// # Safety
 /// `ptr` is NULL only when `len == 0`; otherwise it points at `len` readable `T`s.
-unsafe fn slice_arg<'a, T>(ptr: *const T, len: usize, what: &str) -> Result<&'a [T], CapiError> {
+pub(crate) unsafe fn slice_arg<'a, T>(
+    ptr: *const T,
+    len: usize,
+    what: &str,
+) -> Result<&'a [T], CapiError> {
     if len == 0 {
         return Ok(&[]);
     }
@@ -429,7 +433,7 @@ unsafe fn slice_arg<'a, T>(ptr: *const T, len: usize, what: &str) -> Result<&'a 
     Ok(unsafe { std::slice::from_raw_parts(ptr, len) })
 }
 
-fn core_dtype(dtype: RLMeshDType) -> Result<DType, CapiError> {
+fn core_dtype(dtype: RLMeshDLPackDType) -> Result<DType, CapiError> {
     dtype
         .to_core()
         .ok_or_else(|| CapiError::invalid_arg("unsupported dtype"))
@@ -515,7 +519,7 @@ fn bounds_vec<T>(
 /// `shape` points at `ndim` readable `int64_t`s (NULL when `ndim == 0`).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_space_box(
-    dtype: RLMeshDType,
+    dtype: RLMeshDLPackDType,
     shape: *const i64,
     ndim: usize,
     low: f64,
@@ -542,7 +546,7 @@ pub unsafe extern "C" fn rlmesh_space_box(
 /// `shape` points at `ndim` `int64_t`s; `low`/`high` at `numel` doubles each.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_space_box_elementwise(
-    dtype: RLMeshDType,
+    dtype: RLMeshDLPackDType,
     shape: *const i64,
     ndim: usize,
     low: *const f64,
@@ -746,13 +750,13 @@ pub unsafe extern "C" fn rlmesh_space_tuple(
     })
 }
 
-/// Free an owned space (from a constructor). Not for a borrowed contract space
-/// or child. NULL is a no-op.
+/// Free an owned space spec (from a constructor or `rlmesh_space_spec_clone`).
+/// Not for a borrowed contract space or child. NULL is a no-op.
 ///
 /// # Safety
 /// `spec` is NULL or an owned handle this thread has not freed.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_space_free(spec: *mut RLMeshSpaceSpec) {
+pub unsafe extern "C" fn rlmesh_space_spec_free(spec: *mut RLMeshSpaceSpec) {
     guard_value((), || {
         if !spec.is_null() {
             drop(unsafe { Box::from_raw(spec) });

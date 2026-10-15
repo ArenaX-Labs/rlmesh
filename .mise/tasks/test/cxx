@@ -78,6 +78,11 @@ for standard in 17 20; do
   "$tmp/cpp_env_$standard" --describe | python scripts/check-native-runtime.py c++ "$standard"
 done
 
+echo "==> C spaces API: build, seed, sample, contains, typed bounds, error classes"
+$CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
+  crates/rlmesh-capi/examples/c_spaces.c "${link[@]}" -o "$tmp/c_spaces"
+"$tmp/c_spaces"
+
 echo "==> C config helper detects a C++17 translation unit"
 $CXX -std=c++17 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" -x c++ \
   crates/rlmesh-capi/examples/c_env.c "${link[@]}" -o "$tmp/c_header_cpp"
