@@ -308,6 +308,9 @@ impl CEnv {
 /// The failed callback's error, read on the lane thread it ran on. A callback
 /// that set `recoverable` fails only this request; otherwise it ends the session.
 fn callback_error(op: &str) -> EnvRuntimeError {
+    // Any class reaches the model as an env failure across the wire; only
+    // RECOVERABLE_ENVIRONMENT_EXCEPTION (its recorded flag) keeps the session.
+    let _ = crate::abi::status::take_callback_class();
     let mut message = last_error_message();
     if message.is_empty() {
         message = format!("environment {op} failed");

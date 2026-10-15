@@ -222,6 +222,23 @@ pub unsafe extern "C" fn rlmesh_callback_set_error(message: *const c_char, recov
     crate::abi::status::store_last_error(&message, recoverable, RLMeshStatus::Model);
 }
 
+/// Set the current callback's error as an exact Python class (R-12), as a
+/// Python author raises `ValueError` or `TypeError` from a hook. An
+/// Environment or Model class carries code INTERNAL and is recoverable only as
+/// `RLMESH_ERROR_CLASS_RECOVERABLE_ENVIRONMENT_EXCEPTION`; INVALID or an
+/// unknown value records `RLMeshException`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_callback_set_error_class(error_class: i32, message: *const c_char) {
+    let message = if message.is_null() {
+        String::new()
+    } else {
+        unsafe { CStr::from_ptr(message) }
+            .to_string_lossy()
+            .into_owned()
+    };
+    crate::abi::status::store_last_error_class(&message, error_class);
+}
+
 /// A `*mut c_void` the C author guarantees is safe to use from a tokio worker
 /// thread (callbacks do not run on the creating thread).
 #[derive(Clone, Copy)]
@@ -302,6 +319,11 @@ fn callback_error(fallback: &str) -> Error {
     } else {
         message
     };
+    // A class set with `rlmesh_callback_set_error_class` propagates as that
+    // class; `rlmesh_callback_set_error` (and none) is the model's own failure.
+    if let Some(class) = crate::abi::status::take_callback_class() {
+        return crate::abi::status::error_of_class(class, &message);
+    }
     if last_error_recoverable() {
         Error::model_recoverable(message)
     } else {
@@ -1910,6 +1932,44 @@ mod tests {
             last_error_message()
         );
         assert_eq!(rlmesh_last_error_is_recoverable(), 1);
+    }
+
+    unsafe extern "C" fn fail_with_a_type_error(
+        _: *mut c_void,
+        _: *const RLMeshObservation,
+        _: *mut *mut RLMeshValue,
+    ) -> c_int {
+        unsafe { rlmesh_callback_set_error_class(8, c"bad observation".as_ptr()) };
+        RLMeshStatus::Type as c_int
+    }
+
+    #[test]
+    fn a_callback_error_class_propagates_unchanged_in_process() {
+        // R-12: a class set with rlmesh_callback_set_error_class is the run's
+        // error class and text in process, as a Python author's TypeError.
+        let env = EnvHarness::start();
+        let vtable = RLMeshModelVtable {
+            predict: Some(fail_with_a_type_error),
+            ..full_vtable()
+        };
+        let model = new_model(&vtable, std::ptr::null_mut());
+        let address = CString::new(env.address.clone()).expect("address");
+        let status = unsafe {
+            rlmesh_model_run_local(
+                model,
+                address.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null_mut(),
+            )
+        };
+        unsafe { rlmesh_model_free(model) };
+        assert_eq!(status, RLMeshStatus::Type, "{}", last_error_message());
+        assert_eq!(
+            crate::abi::status::rlmesh_last_error_class(),
+            crate::abi::status::RLMeshErrorClass::TypeError
+        );
+        assert_eq!(last_error_message(), "bad observation");
+        assert_eq!(rlmesh_last_error_is_recoverable(), 0);
     }
 
     /// `RLMeshServeOptions.workflow_edition` is the served model's sticky

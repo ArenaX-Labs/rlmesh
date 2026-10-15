@@ -266,11 +266,17 @@ impl CHandler {
             return Ok(());
         }
         let detail = last_error_message();
-        Err(rlmesh::Error::Internal(if detail.is_empty() {
+        let detail = if detail.is_empty() {
             format!("warning handler failed with status {status}")
         } else {
             detail
-        }))
+        };
+        // A class the handler set (`rlmesh_callback_set_error_class`) is the
+        // error's class; otherwise it is an RLMeshException (R-23).
+        Err(match crate::abi::status::take_callback_class() {
+            Some(class) => crate::abi::status::error_of_class(class, &detail),
+            None => rlmesh::Error::Internal(detail),
+        })
     }
 }
 

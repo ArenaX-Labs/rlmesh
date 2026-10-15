@@ -837,6 +837,16 @@ typedef struct RLMeshObservation {
  * callback: a model's predict or an env's reset / step / render). */
 RLMESH_API void rlmesh_callback_set_error(const char* message, bool recoverable);
 
+/* Set this call's error as an exact class instead, as a Python author raises
+ * ValueError or TypeError from a hook: in process the failing call reports that
+ * class, its status and `message`; across the wire the peer sees an environment
+ * or model failure. An environment or model class carries code INTERNAL and is
+ * recoverable only as RLMESH_ERROR_CLASS_RECOVERABLE_ENVIRONMENT_EXCEPTION (a
+ * recoverable model failure uses rlmesh_callback_set_error). INVALID or an
+ * unknown value records RLMESH_ERROR_CLASS_RLMESH_EXCEPTION. The last call
+ * before the callback returns wins. */
+RLMESH_API void rlmesh_callback_set_error_class(RLMeshErrorClass error_class, const char* message);
+
 /* The model callback vtable. Set struct_size = sizeof(RLMeshModelVtable); fields
  * beyond that are ignored (append-only). `predict` is required. The vtable is
  * COPIED into the model at rlmesh_model_new, so the caller's struct need not
