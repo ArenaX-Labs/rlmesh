@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ### Added
 
+- The Rust crate resolves workflow editions with Python's rules: `rlmesh::current_workflow_edition()` is the bare `YYYY.MM` base to declare, and the resolver behind every native serve takes the call's own value, then `RLMESH_WORKFLOW_EDITION`, then the served peer's option, then the type's declaration (natives read no `pyproject.toml`); a blank value declares nothing, a set-but-blank variable floats deliberately, and an edition this build cannot run is a `ValueError`-class error. `RemoteEnv::selected_workflow_edition()` reports the edition the handshake selected. Native warnings have Python's categories: `rlmesh::WarningCategory` (`UserWarning`, `RuntimeWarning`, `WorkflowEditionWarning`, with `name` and `is_subclass_of`), `rlmesh::Warning`, and `rlmesh::set_warning_handler`, whose failing handler fails the call that warned; by default each distinct warning prints once to stderr as `rlmesh: <Category>: <message>`. `CURRENT_WORKFLOW_EDITION`, `parse_declared_edition`, `PROTOCOL_GENERATION`, `supported_workflow_editions` and the `PeerInfo` override moved from the crate root to the hidden `rlmesh::binding`.
+
 - The experimental C API has Python's spaces as a stateful handle: `RLMeshSpace` (with `RLMeshBox`, `RLMeshDiscrete` and `RLMeshDict` as typedefs of it) built with `rlmesh_box_new(low, high, shape, ndim, options, &out)`, `rlmesh_discrete_new(n, options, &out)` and `rlmesh_dict_new(keys, specs, n, &out)`, or from a spec with `rlmesh_space_new`, `rlmesh_*_from_spec` and `rlmesh_spaces_space_from_spec`; `rlmesh_space_seed` (a `uint64_t`, `NULL` draws one), `rlmesh_space_sample`, `rlmesh_space_contains`, `rlmesh_space_equals`, `rlmesh_space_repr`, `rlmesh_space_clone` (shares the sampler) and `rlmesh_space_free`. Bounds are typed `RLMeshBound`s (`rlmesh_bound_int`, `_uint`, `_float`, `_bool`) read back exactly with `rlmesh_box_low`/`_high`/`_bounds_kind`; `rlmesh_ext_box_elementwise_new` builds a per-element Box. Dict keys are length-bearing `RLMeshStr` (`rlmesh_str()`), read with `rlmesh_dict_key_at`/`_value_at`/`_get`/`_len`/`_contains_key`. `RLMeshDType` is now the dtype enum (`RLMESH_DTYPE_FLOAT32`, ..., `rlmesh_dtype_str`, `rlmesh_ext_dtype_size`) taken by `RLMeshBoxOptions` and `RLMeshDiscreteOptions` (`_INIT`, `_MIN_SIZE`); the spec readers `rlmesh_space_spec_kind`/`_shape`/`_dtype`/`_repr`/`_clone`/`_free` return `RLMeshSpaceKind` and the enum.
 
 - The experimental C++ wrapper has the same spaces in `rlmesh::spaces`: `Space` (copies share the sampler; `seed`, `sample`, `contains`, `==`, `to_string`, `as_box`/`as_discrete`/`as_dict`), `Box`, `Discrete` and `Dict` with `create(...)`/`from_spec(...)` factories returning `Result` and, with exceptions, constructors that throw (`Box(-1.0, 1.0, {3})`, `Discrete(4, {.start = 1})`, `Dict({{"pos", box}, ...})`), `SpaceSpec`, implicit `Bound` with `as_int`/`as_uint`/`as_float`/`as_bool`, `BoxBound`, `SpaceKind`, `BoundsKind`, `rlmesh::DType`, and `rlmesh::ext::box_elementwise`.
@@ -51,6 +53,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ### Fixed
 
+- `Model.serve(address, options=ServeOptions(workflow_edition=X))` declares `X` even when `RLMESH_WORKFLOW_EDITION` is set, as `EnvServer` and the method's own docstring already did: the options' edition is the serve call's own value. Before, the environment variable won.
+
+- A `Model(policy)` wrapping a policy object reads its workflow edition from the policy's class (`type(policy).workflow_edition`) for `run`, `session` and `serve`, and, when that class declares none, warns once with `WorkflowEditionWarning` as a `Model` subclass does. Before, it read the `rlmesh.Model` wrapper's `None` and never warned. A `Model` wrapping a bare predict callable still floats quietly.
+
 - An integer `Box` samples in its dtype's exact integer domain instead of through `float`: a `uint64` Box with bounds above 2^63 no longer saturates at 2^63 - 1, and `int64`/`uint64` bounds beyond 2^53 no longer round. Samples of integer Boxes whose bounds are exact as floats, and of bool Boxes, are unchanged.
 
 - Model and env servers disable Nagle's algorithm on accepted TCP connections, which removed a ~40 ms stall on some env steps.
@@ -84,6 +90,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - A C or C++ model tracks up to 65,536 live episodes, as a Python model does, and refuses a new episode past that instead of evicting the least recently predicted one through `on_episode_end`: the predict fails with `RLMESH_ERR_RUNTIME` (Python's `RuntimeError`) before the callback runs, and every live episode keeps its count.
 
 ### Changed
+
+- The experimental C API's `rlmesh_model_serve` and `rlmesh_env_bind` resolve the served edition as Python does: an `RLMeshServeOptions.workflow_edition` wins, else `RLMESH_WORKFLOW_EDITION` (a set-but-blank value floats deliberately); a server that declares neither prints one `rlmesh: WorkflowEditionWarning: ...` line to stderr per process.
 
 - C API: the DLPack `(code, bits, lanes)` dtype struct is renamed `RLMeshDLPackDType` (deprecated; the tensor and value functions and the old space builders still take it), so `RLMeshDType` can name the dtype enum; the layout and the `RLMESH_F32`-style macros are unchanged. An owned spec from the old `rlmesh_space_*` builders is freed with `rlmesh_space_spec_free`; `rlmesh_space_free` now takes the new `RLMeshSpace` handle, and still frees an owned spec passed by a binary built against the previous header. The old builders are deprecated in favour of `rlmesh_box_new`, `rlmesh_discrete_new` and `rlmesh_dict_new`. The ABI version is unchanged.
 

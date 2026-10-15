@@ -801,25 +801,31 @@ fn serve_model_options(
 pub(crate) fn serve_options(options: *const RLMeshServeOptions) -> Result<ServeOptions, CapiError> {
     // SAFETY: the exports' contract is that `options` is NULL or a valid
     // `RLMeshServeOptions` for the duration of the call.
-    let Some(options) = (unsafe { options.as_ref() }) else {
-        return Ok(ServeOptions::default());
+    let options = unsafe { options.as_ref() };
+    let call = match options {
+        Some(options) if !options.workflow_edition.is_null() => {
+            Some(cstr_to_str(options.workflow_edition)?)
+        }
+        _ => None,
+    };
+    // The serve call's own value, then RLMESH_WORKFLOW_EDITION (COR-6); a
+    // name this build cannot run is refused where the host typed it. A served
+    // peer that floats warns once per process.
+    let workflow_edition = rlmesh::binding::resolve_workflow_edition(
+        rlmesh::binding::EditionSources {
+            call,
+            ..Default::default()
+        },
+        true,
+    )
+    .map_err(CapiError::from)?;
+    let Some(options) = options else {
+        return Ok(ServeOptions {
+            workflow_edition,
+            ..ServeOptions::default()
+        });
     };
     let ms = |value: u64| (value != 0).then(|| Duration::from_millis(value));
-    let workflow_edition = if options.workflow_edition.is_null() {
-        None
-    } else {
-        let declared = cstr_to_str(options.workflow_edition)?.trim();
-        if declared.is_empty() {
-            None
-        } else {
-            // Refuse a name this build cannot run a session at where the host
-            // typed it, naming the value and the editions it offers, rather than
-            // letting it fail later as a negotiation refusal on the first
-            // connection.
-            rlmesh::parse_declared_edition(declared).map_err(CapiError::invalid_arg)?;
-            Some(declared.to_string())
-        }
-    };
     Ok(ServeOptions {
         allow_remote_shutdown: options.allow_remote_shutdown,
         idle_timeout: ms(options.idle_timeout_ms),
@@ -1917,7 +1923,7 @@ mod tests {
         // This build's own edition: the value `rlmesh` reports and the one
         // a host is told to paste. A bare sealed base is NOT interchangeable with
         // it on a prerelease build, which is why the literal is not hardcoded.
-        let current = rlmesh::CURRENT_WORKFLOW_EDITION;
+        let current = rlmesh::binding::CURRENT_WORKFLOW_EDITION;
         let declared = CString::new(current).expect("edition cstr");
         let options = RLMeshServeOptions {
             workflow_edition: declared.as_ptr(),
@@ -1950,10 +1956,42 @@ mod tests {
         assert_eq!(error.status, RLMeshStatus::InvalidArgument);
         assert!(error.message.contains("2099.01"), "{}", error.message);
         assert!(
-            error.message.contains(rlmesh::CURRENT_WORKFLOW_EDITION),
+            error
+                .message
+                .contains(rlmesh::binding::CURRENT_WORKFLOW_EDITION),
             "{}",
             error.message
         );
+    }
+
+    /// `RLMESH_WORKFLOW_EDITION` declares for a serve call that sets none, as
+    /// in Python (COR-6), and a set-but-blank one floats deliberately.
+    #[test]
+    #[allow(unsafe_code)]
+    fn serve_options_read_the_workflow_edition_variable() {
+        let current = rlmesh::current_workflow_edition();
+        // SAFETY: nextest runs each test in its own process.
+        unsafe { std::env::set_var("RLMESH_WORKFLOW_EDITION", current) };
+        let resolved = super::serve_options(std::ptr::null())
+            .unwrap_or_else(|_| panic!("resolves: {}", last_error_message()));
+        assert_eq!(resolved.workflow_edition.as_deref(), Some(current));
+        let explicit = CString::new(rlmesh::binding::CURRENT_WORKFLOW_EDITION).expect("cstr");
+        let options = RLMeshServeOptions {
+            workflow_edition: explicit.as_ptr(),
+            ..serve_options(false)
+        };
+        let resolved = super::serve_options(std::ptr::from_ref(&options))
+            .unwrap_or_else(|_| panic!("resolves: {}", last_error_message()));
+        assert_eq!(
+            resolved.workflow_edition.as_deref(),
+            Some(rlmesh::binding::CURRENT_WORKFLOW_EDITION),
+            "the call's own value outranks the variable"
+        );
+        unsafe { std::env::set_var("RLMESH_WORKFLOW_EDITION", " ") };
+        let resolved = super::serve_options(std::ptr::null())
+            .unwrap_or_else(|_| panic!("resolves: {}", last_error_message()));
+        assert_eq!(resolved.workflow_edition, None);
+        unsafe { std::env::remove_var("RLMESH_WORKFLOW_EDITION") };
     }
 
     /// Hand a raw model/args tuple to a serve thread. The test joins it before

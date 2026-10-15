@@ -1439,6 +1439,11 @@ mod tests {
 
         let address = format!("tcp://127.0.0.1:{port}");
         let mut client = RemoteEnv::connect(&address).await.unwrap();
+        assert!(
+            rlmesh_proto::SUPPORTED_WORKFLOW_EDITIONS.contains(&client.selected_workflow_edition()),
+            "{}",
+            client.selected_workflow_edition()
+        );
 
         // Multiple reset/step calls reuse the Arc-shared specs (no per-call deep
         // clone) and still decode the expected number of observations.

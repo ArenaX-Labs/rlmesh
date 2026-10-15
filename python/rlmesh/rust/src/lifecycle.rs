@@ -94,7 +94,7 @@ impl PyServeOptions {
 #[cfg_attr(feature = "stub-gen", gen_stub_pyfunction)]
 #[pyfunction]
 pub fn current_workflow_edition() -> &'static str {
-    rlmesh_proto::WORKFLOW_EDITION_BASE
+    rlmesh::current_workflow_edition()
 }
 
 /// The identity of this build of the native core: package version, protocol
@@ -202,9 +202,34 @@ pub fn build_info() -> PyBuildInfo {
 #[cfg_attr(feature = "stub-gen", gen_stub_pyfunction)]
 #[pyfunction]
 pub fn validate_workflow_edition(edition: &str) -> PyResult<String> {
-    rlmesh_proto::parse_declared_edition(edition)
-        .map(|_| edition.trim().to_string())
-        .map_err(pyo3::exceptions::PyValueError::new_err)
+    rlmesh::binding::validate_workflow_edition(edition).map_err(crate::types::to_py_err)
+}
+
+/// The facade resolver's rungs (COR-6): the call's value,
+/// `RLMESH_WORKFLOW_EDITION`, the served peer's option, the class
+/// declaration. Returns the winner (validated and trimmed) and whether
+/// resolution stopped at a set-but-blank variable; `(None, False)` leaves
+/// Python's `pyproject.toml` rung and the float warning to the caller.
+#[cfg_attr(feature = "stub-gen", gen_stub_pyfunction)]
+#[pyfunction]
+#[pyo3(signature = (*, call=None, option=None, declared=None))]
+pub fn resolve_workflow_edition_rungs(
+    call: Option<&str>,
+    option: Option<&str>,
+    declared: Option<&str>,
+) -> PyResult<(Option<String>, bool)> {
+    use rlmesh::binding::{EditionResolution, EditionSources};
+    let resolution = rlmesh::binding::resolve_workflow_edition_rungs(EditionSources {
+        call,
+        option,
+        declared,
+    })
+    .map_err(crate::types::to_py_err)?;
+    Ok(match resolution {
+        EditionResolution::Declared(edition) => (Some(edition), false),
+        EditionResolution::FloatsDeliberately => (None, true),
+        EditionResolution::Undeclared => (None, false),
+    })
 }
 
 /// Normalize an optional declared edition: blank declares nothing, anything

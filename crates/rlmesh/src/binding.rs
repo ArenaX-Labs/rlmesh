@@ -5,6 +5,26 @@
 
 pub mod spaces;
 
+pub use crate::editions::{
+    EditionResolution, EditionSources, resolve_rungs as resolve_workflow_edition_rungs,
+    validate_workflow_edition,
+};
+/// The build's wire identity and the host-supplied handshake `PeerInfo`
+/// override, for a non-Rust host (the C ABI) that describes itself.
+pub use rlmesh_proto::{
+    CURRENT_WORKFLOW_EDITION, PROTOCOL_GENERATION, PeerInfoOverride, parse_declared_edition,
+    peer_info_override, supported_workflow_editions, update_peer_info_override,
+};
+
+/// Resolve a native participant's workflow edition (COR-6): rungs 1 to 4,
+/// warning once per process when an `authored` participant floats.
+pub fn resolve_workflow_edition(
+    sources: EditionSources<'_>,
+    authored: bool,
+) -> Result<Option<String>> {
+    crate::editions::resolve_native(sources, authored)
+}
+
 use crate::{Error, Metadata, Result, ServeOptions, Tensor, Value};
 
 /// The transport's options for `options` (the env server the Python binding
