@@ -6,7 +6,7 @@ use super::state::{check_axis_width, label_permutation, part_suffix};
 use super::{LeafKey, Result, bind, check_geometry, err, index_by_key};
 use crate::advisory::Advisory;
 use crate::error::ErrorCode;
-use crate::fmt::{quoted, quoted_encoding, quoted_leaf_keys};
+use crate::fmt::{missing_role_hint, quoted, quoted_encoding, quoted_leaf_keys};
 use crate::plans::{ActionPlan, ActionSegment};
 use crate::spec::{Action, Actuator, Attr};
 
@@ -329,10 +329,11 @@ pub(super) fn plan_action(
             return Err(err(
                 ErrorCode::MissingRole,
                 format!(
-                    "env action needs role {}{} but the model only outputs {}",
+                    "env action needs role {}{} but the model only outputs {}{}",
                     quoted(role),
                     part_suffix(env_component.part.as_deref()),
-                    quoted_leaf_keys(offsets)
+                    quoted_leaf_keys(offsets),
+                    missing_role_hint(role, offsets.keys().map(|(r, _, _)| r.as_str()))
                 ),
             ));
         };

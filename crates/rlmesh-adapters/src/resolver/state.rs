@@ -6,7 +6,7 @@ use super::action::ModelOutputs;
 use super::{LeafKey, Result, bind, check_geometry, check_provenance, err};
 use crate::advisory::Advisory;
 use crate::error::ErrorCode;
-use crate::fmt::{quoted, quoted_accept_set, quoted_encoding, quoted_leaf_keys};
+use crate::fmt::{missing_role_hint, quoted, quoted_accept_set, quoted_encoding, quoted_leaf_keys};
 use crate::path::NodePath;
 use crate::plans::{PreviousAction, StatePiece, StatePlan};
 use crate::spec::{AcceptSet, Attr, ConcatPart, EnvState, PartSource, RotationEncoding, State};
@@ -59,7 +59,7 @@ fn folded_fill(component: &ConcatPart) -> f64 {
 fn fill_piece(
     width: u32,
     fill: f64,
-    absent_role: bool,
+    absent_role: Option<String>,
     part: Option<String>,
     component: &ConcatPart,
 ) -> StatePiece {
@@ -162,7 +162,7 @@ fn previous_action_piece(
         gather,
         labels: component.labels.clone().or_else(|| actuator.labels.clone()),
         fill: Some(component.fill),
-        absent_role: false,
+        absent_role: None,
         previous: Some(PreviousAction {
             role: role.to_owned(),
             start,
@@ -387,7 +387,7 @@ pub(super) fn plan_state(
             let width = component
                 .dim
                 .expect("a constant part is codec-checked for dim");
-            pieces.push(fill_piece(width, component.fill, false, None, component));
+            pieces.push(fill_piece(width, component.fill, None, None, component));
             continue;
         };
         // An action-source part reads the model's own output, never an env
@@ -444,7 +444,7 @@ pub(super) fn plan_state(
                 pieces.push(fill_piece(
                     width,
                     folded_fill(component),
-                    true,
+                    Some(role.to_owned()),
                     component.part.clone(),
                     component,
                 ));
@@ -453,10 +453,11 @@ pub(super) fn plan_state(
             return Err(err(
                 ErrorCode::MissingRole,
                 format!(
-                    "model input {at} needs state role {}{} but the env offers {}",
+                    "model input {at} needs state role {}{} but the env offers {}{}",
                     quoted(role),
                     part_suffix(component.part.as_deref()),
-                    quoted_leaf_keys(states_by_role)
+                    quoted_leaf_keys(states_by_role),
+                    missing_role_hint(role, states_by_role.keys().map(|(r, _, _)| r.as_str()))
                 ),
             ));
         };
@@ -648,7 +649,7 @@ pub(super) fn plan_state(
             gather,
             labels,
             fill: None,
-            absent_role: false,
+            absent_role: None,
             previous: None,
             frame,
             provenance,

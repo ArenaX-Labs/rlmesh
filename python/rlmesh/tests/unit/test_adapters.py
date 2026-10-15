@@ -4001,7 +4001,8 @@ def test_constant_part_is_not_reported_as_a_zero_filled_role():
     assert [
         note
         for note in resolve(LIBERO_ENV, absent).advisories()
-        if "zero-filled" in note.message
+        if 'zero-filled because the env offers no match for "proprio/eef_pos" (part "right_arm")'
+        in note.message
     ]
 
 

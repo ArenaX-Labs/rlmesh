@@ -60,9 +60,10 @@ pub struct StatePiece {
     /// The constant this piece contributes instead of reading the env, with
     /// `scale`/`offset` already folded in. `None` means a real env source.
     pub fill: Option<f64>,
-    /// Whether a set `fill` stands in for an *absent* optional role (fabricated
-    /// data the fit report confesses) rather than a declared constant part.
-    pub absent_role: bool,
+    /// The *absent* optional role a set `fill` stands in for (fabricated data
+    /// the fit report confesses, by name), or `None` for a declared constant
+    /// part.
+    pub absent_role: Option<String>,
     /// The model output this piece reads instead of an env leaf, when the
     /// part's `source` is `action`; `fill` is then what it reads before the
     /// episode's first action, and `gather` reorders the actuator's axes by
