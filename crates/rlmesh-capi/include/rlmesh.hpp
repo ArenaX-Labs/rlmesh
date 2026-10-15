@@ -3528,16 +3528,24 @@ using MadeEnv = std::variant<Env, VectorEnv>;
 class ServedEnv {
   std::vector<const RLMeshEnv*> lanes_{};
   const RLMeshVectorEnv* vector_ = nullptr;
-
- public:
-  ServedEnv(const Env& e) : lanes_{e.raw()} {}
-  ServedEnv(const VectorEnv& e) : vector_(e.raw()) {}
-  ServedEnv(std::span<const Env> envs) {
+  void assign(std::span<const Env> envs) {
     if (envs.empty()) throw ValueError("served_env must not be empty");
     for (auto& e : envs) lanes_.push_back(e.raw());
   }
-  ServedEnv(const std::vector<Env>& envs) : ServedEnv(std::span<const Env>(envs)) {}
+
+ public:
+  ServedEnv(const Env& e) : lanes_{e.raw()} {}
+  ServedEnv(Env&&) = delete;
+  ServedEnv(const Env&&) = delete;
+  ServedEnv(const VectorEnv& e) : vector_(e.raw()) {}
+  ServedEnv(VectorEnv&&) = delete;
+  ServedEnv(const VectorEnv&&) = delete;
+  ServedEnv(const std::span<const Env>& envs) { assign(envs); }
+  ServedEnv(std::span<const Env>&&) = delete;
+  ServedEnv(const std::span<const Env>&&) = delete;
+  ServedEnv(const std::vector<Env>& envs) { assign(envs); }
   ServedEnv(std::vector<Env>&&) = delete;
+  ServedEnv(const std::vector<Env>&&) = delete;
   const auto& lanes() const { return lanes_; }
   const RLMeshVectorEnv* vector() const { return vector_; }
 };
