@@ -611,6 +611,33 @@ class PyEditionCell:
     }
 }
 
+/// Python's `normalize_connect_address` over the facade's one
+/// implementation (every language shares its rules and texts); the caller
+/// has checked `port`'s type and range and `transport`'s spelling.
+#[cfg_attr(feature = "stub-gen", pyo3_stub_gen::derive::gen_stub_pyfunction)]
+#[pyfunction]
+#[pyo3(signature = (address=None, *, host=None, port=None, path=None, transport=None))]
+pub fn normalize_connect_address(
+    address: Option<&str>,
+    host: Option<&str>,
+    port: Option<u16>,
+    path: Option<&str>,
+    transport: Option<&str>,
+) -> PyResult<String> {
+    let transport = match transport {
+        None => None,
+        Some("tcp") => Some(rlmesh::Transport::Tcp),
+        Some("unix") => Some(rlmesh::Transport::Unix),
+        Some(_) => {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "transport must be 'tcp', 'unix', or None",
+            ));
+        }
+    };
+    rlmesh::binding::env::normalize_connect_address(address, host, port, path, transport)
+        .map_err(to_py_err)
+}
+
 /// Parse a client timeout given in seconds: `None` and zero are no timeout;
 /// negative or non-finite is ValueError (RMT-4).
 pub(crate) fn optional_timeout(

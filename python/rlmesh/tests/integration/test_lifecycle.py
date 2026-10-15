@@ -1334,3 +1334,24 @@ def test_repeated_evals_do_not_accumulate_fds_or_runtimes() -> None:
         one_eval()
     grown = len(os.listdir("/dev/fd")) - baseline
     assert grown <= 5, f"fd count grew by {grown} across 5 evals (leak)"
+
+
+def test_a_closed_client_is_misuse_and_lanes_are_checked_before_any_request() -> None:
+    """RMT-P2 / RMT-P11: closed-handle I/O is RuntimeError; a lane past u32 is ValueError."""
+    import rlmesh
+
+    env = TinyEnv()
+    server = env_server(env)
+    server.start()
+    try:
+        remote = connect_with_retry(rlmesh.RemoteEnv, server.address)
+        with pytest.raises(ValueError, match="out of range"):
+            remote.render(env_index=2**32)
+        remote.close()
+        remote.close()
+        with pytest.raises(RuntimeError, match=r"^RemoteEnv is closed$"):
+            remote.reset()
+        assert remote.env_contract is not None
+        assert remote.selected_workflow_edition
+    finally:
+        server.shutdown()

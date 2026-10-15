@@ -1056,3 +1056,41 @@ fn remote_model_sessions_drive_every_remote_target() {
     assert_eq!(result.num_episodes(), 1);
     server.shutdown().unwrap();
 }
+
+#[test]
+fn a_native_run_dials_a_borrowed_remote_env_s_address() {
+    let server = steps_server();
+    let mut remote =
+        crate::RemoteEnv::new(crate::RemoteEnvOptions::default().address(server.address()))
+            .unwrap();
+    // An idle handle holds no session slot: the run dials its address.
+    let result = ones()
+        .run(
+            &mut remote,
+            RunOptions {
+                episodes: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(result.num_episodes(), 1);
+    // A handle that was driven holds the slot, and the run says so.
+    remote.reset(None, None).unwrap();
+    let err = ones()
+        .run(
+            &mut remote,
+            RunOptions {
+                episodes: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+    assert_eq!(err.class(), ErrorClass::RuntimeError, "{err}");
+    assert!(
+        err.to_string()
+            .starts_with("the target env already has an active session"),
+        "{err}"
+    );
+    remote.close().unwrap();
+    server.shutdown().unwrap();
+}

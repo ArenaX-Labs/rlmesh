@@ -161,6 +161,7 @@ pub fn rlmesh(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<lifecycle::PyBuildInfo>()?;
     m.add_function(wrap_pyfunction!(lifecycle::build_info, m)?)?;
     m.add_function(wrap_pyfunction!(model::check_remote_model_options, m)?)?;
+    m.add_function(wrap_pyfunction!(client::normalize_connect_address, m)?)?;
 
     m.add_class::<server::PyEnvServer>()?;
     m.add_class::<server::PyVectorEnvServer>()?;

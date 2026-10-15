@@ -81,6 +81,7 @@ __all__ = [
     "discrete_space_spec",
     "multi_binary_space_spec",
     "multi_discrete_space_spec",
+    "normalize_connect_address",
     "predict_seed",
     "resolve_workflow_edition_rungs",
     "run_cli",
@@ -740,6 +741,13 @@ def discrete_space_spec(n: int, start: int = 0, dtype: str | None = None) -> Spa
 def multi_binary_space_spec(shape: list[int], dtype: str | None = None) -> SpaceSpec: ...
 
 def multi_discrete_space_spec(nvec: list[int], dtype: str | None = None) -> SpaceSpec: ...
+
+def normalize_connect_address(address: typing.Optional[builtins.str] = None, *, host: typing.Optional[builtins.str] = None, port: typing.Optional[builtins.int] = None, path: typing.Optional[builtins.str] = None, transport: typing.Optional[builtins.str] = None) -> builtins.str:
+    r"""
+    Python's `normalize_connect_address` over the facade's one
+    implementation (every language shares its rules and texts); the caller
+    has checked `port`'s type and range and `transport`'s spelling.
+    """
 
 def predict_seed(episode_seed: int, predict_index: int) -> int: ...
 
