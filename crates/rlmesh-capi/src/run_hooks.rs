@@ -35,6 +35,35 @@ impl Drop for Context {
     }
 }
 impl RunContext for Context {
+    fn read(&self, observation: &Value, item: &rlmesh::ReadItem) -> rlmesh::Result<Value> {
+        let contract = self
+            .contract()?
+            .ok_or_else(|| rlmesh::Error::Runtime("context has no connected contract".into()))?;
+        let reader = rlmesh::binding::reader_from_contract(&contract, std::slice::from_ref(item))?;
+        let values = reader.call(observation)?;
+        Ok(values
+            .get(&reader.roles()[0])
+            .cloned()
+            .unwrap_or(Value::None))
+    }
+    fn frame_sources(&self) -> rlmesh::Result<rlmesh::FrameSources<'_>> {
+        let roles = self
+            .contract()?
+            .map(|c| {
+                rlmesh::adapters::EnvTags::from_metadata(
+                    c.metadata().unwrap_or(&rlmesh::Metadata::new()),
+                )
+            })
+            .transpose()?
+            .flatten()
+            .map(|tags| tags.observation_roles().images)
+            .unwrap_or_default();
+        Ok(rlmesh::FrameSources {
+            roles,
+            render_label: None,
+            render: None,
+        })
+    }
     fn contract(&self) -> rlmesh::Result<Option<rlmesh::EnvContract>> {
         let _lock = self
             .busy
@@ -192,6 +221,17 @@ unsafe fn event(p: *const RLMeshStepEvent) -> Result<StepEvent, CapiError> {
         info: value_ref(e.info)?.as_dict()?.clone(),
         predict_ms: e.predict_ms,
         step_ms: e.step_ms,
+        read: {
+            let context = unsafe { e.context.as_ref() }.cloned();
+            let observation = value_ref(e.observation)?.clone();
+            Arc::new(move |item| {
+                context
+                    .as_ref()
+                    .ok_or_else(|| rlmesh::Error::Runtime("event has no read context".into()))?
+                    .0
+                    .read(&observation, item)
+            })
+        },
     })
 }
 #[unsafe(no_mangle)]
@@ -207,7 +247,16 @@ pub unsafe extern "C" fn rlmesh_step_event_equals(
     b: *const RLMeshStepEvent,
     out: *mut bool,
 ) -> RLMeshStatus {
-    guard(|| write_out(out, unsafe { event(a) }? == unsafe { event(b) }?))
+    guard(|| {
+        let left = unsafe { event(a) }?;
+        let mut right = unsafe { event(b) }?;
+        // A caller-built C event's read callable is represented by its context
+        // and observation. Preserve that identity while comparing two views.
+        if unsafe { (*a).context == (*b).context && (*a).observation == (*b).observation } {
+            right.read = Arc::clone(&left.read);
+        }
+        write_out(out, left == right)
+    })
 }
 #[repr(C)]
 #[derive(Clone, Copy)]

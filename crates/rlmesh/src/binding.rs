@@ -212,6 +212,14 @@ pub fn adapter_json_format(value: &serde_json::Value) -> Result<String> {
     crate::adapters::format_json(value)
 }
 
+/// Resolve a read-only reader for a binding's authored run context.
+pub fn reader_from_contract(
+    contract: &crate::EnvContract,
+    items: &[crate::ReadItem],
+) -> Result<crate::Reader> {
+    crate::run::read::reader(contract, items)
+}
+
 /// An error carrying an in-process binding payload across worker threads.
 #[derive(Clone)]
 pub struct AttachedError {

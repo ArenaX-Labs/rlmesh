@@ -7,7 +7,7 @@
 
 pub(crate) mod drive;
 pub(crate) mod hooks;
-mod read;
+pub(crate) mod read;
 pub use read::{FrameSources, ReadFn, ReadItem, Reader, RenderFn};
 mod lent;
 mod native;
