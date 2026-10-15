@@ -123,8 +123,9 @@ where
     // Action chunking across a lockstep vector env would replay one whole-batch
     // chunk for every lane, and a lane that ends mid-chunk invalidates the buffer
     // for all of them. A lane endpoint replays per lane, so it is fine there.
+    // The options and the env decide it together: ValueError at connect (RUN-P1).
     if num_envs > 1 && !subset_step && options.execution_horizon > 1 {
-        return Err(Error::Internal(format!(
+        return Err(Error::invalid_argument(format!(
             "execution_horizon={} cannot be combined with a lockstep vector env (num_envs={num_envs}): \
              chunk replay is whole-batch, so one lane's episode end discards every lane's \
              buffered frames. Use num_envs=1, a lane endpoint, or execution_horizon=1.",
@@ -257,6 +258,9 @@ fn run_error(error: RuntimeError) -> Error {
         },
         RuntimeError::OperationTimeout { timeout, .. } => Error::Timeout(timeout),
         RuntimeError::Protocol(_) => Error::Protocol(message),
+        // A spec the options and the env cannot run together (autoreset,
+        // vector-env refusals): ValueError at connect (RUN-P1).
+        RuntimeError::InvalidSpec(_) => Error::invalid_argument(message),
         _ => Error::Internal(message),
     }
 }

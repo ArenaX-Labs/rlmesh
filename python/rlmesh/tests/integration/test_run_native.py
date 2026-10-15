@@ -805,9 +805,68 @@ def test_seeds_on_an_autoresetting_vector_env_are_refused_before_execution() -> 
 
     recorder = _Recorder()
     stacked = Model(lambda obs: np.zeros((2, 2), np.float32))
-    with pytest.raises(Exception, match="autoreset"):
+    with pytest.raises(ValueError, match="autoreset"):
         _drive(stacked, _NextStepVectorEnv(), "native", seeds=[1, 2], hooks=recorder)
     assert [c[0] for c in recorder.calls] == ["run_start", "run_end"]
+
+
+@pytest.mark.parametrize(
+    ("options", "text"),
+    [
+        ({"execution_horizon": 1025}, "execution_horizon must be <= 1024, got 1025"),
+        ({"max_episode_steps": 0}, "max_episode_steps must be >= 1, got 0"),
+        (
+            {"max_episode_steps": 2**63},
+            f"max_episode_steps must be <= {2**63 - 1}, got {2**63}",
+        ),
+        ({"max_episode_seconds": 0.0}, "max_episode_seconds must be > 0, got 0.0"),
+        (
+            {"max_episode_seconds": float("nan")},
+            "max_episode_seconds must be > 0, got nan",
+        ),
+        ({"prefetch_lead": 2**32}, f"prefetch_lead must be <= {2**32 - 1}"),
+    ],
+)
+def test_run_options_fail_before_anything_dials(
+    options: dict[str, Any], text: str
+) -> None:
+    import re
+
+    # Nothing listens on port 1, and zero episodes would never dial anyway:
+    # the options alone decide these, on both loops.
+    with pytest.raises(ValueError, match=re.escape(text)):
+        _model().run("tcp://127.0.0.1:1", episodes=0, **options)
+    if "prefetch_lead" not in options:
+        with pytest.raises(ValueError, match=re.escape(text)):
+            rlmesh.run(rlmesh.RANDOM_SAMPLE, "tcp://127.0.0.1:1", **options)
+
+
+def test_a_native_chunk_bounds_the_horizon_before_dialing() -> None:
+    from rlmesh.numpy import Model
+
+    class Chunked(Model):
+        native_chunk = 2
+
+        def predict_chunk(self, observation: Any, horizon: int) -> Any:
+            _ = observation
+            return np.zeros((horizon, 2), np.float32)
+
+    with pytest.raises(ValueError, match="exceeds the model's declared native_chunk=2"):
+        Chunked().run("tcp://127.0.0.1:1", execution_horizon=3)
+
+
+def test_an_infinite_time_cap_is_no_cap_on_a_next_step_env() -> None:
+    from rlmesh.numpy import Model
+
+    stacked = Model(lambda obs: np.zeros((2, 2), np.float32))
+    result = _drive(
+        stacked,
+        _NextStepVectorEnv(),
+        "native",
+        episodes=2,
+        max_episode_seconds=float("inf"),
+    )
+    assert result.num_episodes == 2
 
 
 def test_hooks_on_a_next_step_vector_env_whose_lanes_roll_apart() -> None:

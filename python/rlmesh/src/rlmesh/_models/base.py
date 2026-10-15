@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import math
 import contextvars
 import functools
 import inspect
@@ -1262,10 +1263,16 @@ class ModelBase(Generic[ObsT, ActT]):
         (``view=``) is a :meth:`session` option.
         """
         self._calls.check_open("run()")
-        if execution_horizon < 1:
-            raise ValueError(f"execution_horizon must be >= 1, got {execution_horizon}")
-        if prefetch_lead < 0:
-            raise ValueError(f"prefetch_lead must be >= 0, got {prefetch_lead}")
+        from ._eval import (
+            check_episode_caps,
+            check_execution_horizon,
+            check_prefetch_lead,
+        )
+
+        # Everything the options alone decide fails before anything dials.
+        check_execution_horizon(execution_horizon, self._native_chunk())
+        check_episode_caps(max_episode_steps, max_episode_seconds)
+        check_prefetch_lead(prefetch_lead)
         if trial_index_base < 0:
             raise ValueError(f"trial_index_base must be >= 0, got {trial_index_base}")
         declared_edition = self._declared_workflow_edition(workflow_edition)
@@ -1309,7 +1316,13 @@ class ModelBase(Generic[ObsT, ActT]):
                     episodes=episodes,
                     seeds=seeds,
                     max_episode_steps=max_episode_steps,
-                    max_episode_seconds=max_episode_seconds,
+                    # ``inf`` is no cap, as None is (a NEXT_STEP env takes both).
+                    max_episode_seconds=(
+                        None
+                        if max_episode_seconds is not None
+                        and math.isinf(max_episode_seconds)
+                        else max_episode_seconds
+                    ),
                     close_env=close_env,
                     execution_horizon=execution_horizon,
                     prefetch_lead=prefetch_lead,
@@ -1935,6 +1948,13 @@ def run(
             "served model or RANDOM_SAMPLE runs through the Python session loop, "
             "which does not prefetch. Remove prefetch_lead or run a local Model."
         )
+    from ._eval import check_episode_caps, resolve_episode_budget
+
+    # What the options alone decide fails before the session dials anything.
+    resolve_episode_budget(episodes, seeds)
+    check_episode_caps(max_episode_steps, max_episode_seconds)
+    if trial_index_base < 0:
+        raise ValueError(f"trial_index_base must be >= 0, got {trial_index_base}")
     sess = session(
         model,
         env,

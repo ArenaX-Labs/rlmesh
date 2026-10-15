@@ -176,6 +176,60 @@ def _episode_success(info: Mapping[str, Any]) -> bool | None:
     return None
 
 
+#: The runtime's bounds on the native loop's caps (``Option<i64>`` steps and a
+#: ``u32`` prefetch lead), checked on both loops so they validate alike.
+_MAX_EPISODE_STEPS = 2**63 - 1
+_MAX_PREFETCH_LEAD = 2**32 - 1
+
+
+def check_execution_horizon(execution_horizon: int, native_chunk: int | None) -> None:
+    """Refuse an ``execution_horizon`` outside ``1..=1024`` or past ``native_chunk``."""
+    if execution_horizon < 1:
+        raise ValueError(f"execution_horizon must be >= 1, got {execution_horizon}")
+    if execution_horizon > MAX_EXECUTION_HORIZON:
+        raise ValueError(
+            f"execution_horizon must be <= {MAX_EXECUTION_HORIZON}, got "
+            f"{execution_horizon}"
+        )
+    if native_chunk is not None and execution_horizon > native_chunk:
+        raise ValueError(
+            f"execution_horizon={execution_horizon} exceeds the model's declared "
+            f"native_chunk={native_chunk}: it cannot produce that many actions per "
+            f"predict. Lower the horizon to at most {native_chunk}."
+        )
+
+
+def check_episode_caps(
+    max_episode_steps: int | None, max_episode_seconds: float | None
+) -> None:
+    """Refuse a step cap outside ``1..=2**63-1`` and a time cap not ``> 0``.
+
+    NaN is refused (it is no cap a native caller can spell); ``inf`` is no cap.
+    """
+    if max_episode_steps is not None:
+        if max_episode_steps < 1:
+            raise ValueError(f"max_episode_steps must be >= 1, got {max_episode_steps}")
+        if max_episode_steps > _MAX_EPISODE_STEPS:
+            raise ValueError(
+                f"max_episode_steps must be <= {_MAX_EPISODE_STEPS}, got "
+                f"{max_episode_steps}"
+            )
+    if max_episode_seconds is not None and (
+        math.isnan(max_episode_seconds) or max_episode_seconds <= 0
+    ):
+        raise ValueError(f"max_episode_seconds must be > 0, got {max_episode_seconds}")
+
+
+def check_prefetch_lead(prefetch_lead: int) -> None:
+    """Refuse a ``prefetch_lead`` outside the runtime's ``0..=2**32-1``."""
+    if prefetch_lead < 0:
+        raise ValueError(f"prefetch_lead must be >= 0, got {prefetch_lead}")
+    if prefetch_lead > _MAX_PREFETCH_LEAD:
+        raise ValueError(
+            f"prefetch_lead must be <= {_MAX_PREFETCH_LEAD}, got {prefetch_lead}"
+        )
+
+
 def resolve_episode_budget(episodes: int | None, seeds: Sequence[int] | None) -> int:
     """The exact number of episodes a run executes.
 
@@ -775,19 +829,7 @@ class Session(Generic[ObsT, ActT]):
         :meth:`Model.session`, and the served handles' ``session``; the public
         ``__init__`` only rejects direct construction.
         """
-        if execution_horizon < 1:
-            raise ValueError(f"execution_horizon must be >= 1, got {execution_horizon}")
-        if execution_horizon > MAX_EXECUTION_HORIZON:
-            raise ValueError(
-                f"execution_horizon must be <= {MAX_EXECUTION_HORIZON}, got "
-                f"{execution_horizon}"
-            )
-        if native_chunk is not None and execution_horizon > native_chunk:
-            raise ValueError(
-                f"execution_horizon={execution_horizon} exceeds the model's declared "
-                f"native_chunk={native_chunk}: it cannot produce that many actions per "
-                f"predict. Lower the horizon to at most {native_chunk}."
-            )
+        check_execution_horizon(execution_horizon, native_chunk)
         self = object.__new__(cls)
         #: A local model's call gate (None for a served model): a session over
         #: a model that was closed refuses predict, step and run.
@@ -1371,17 +1413,12 @@ class Session(Generic[ObsT, ActT]):
         :func:`rlmesh.run` / :meth:`Model.run` own their internal session and
         close it for you.)
         """
-        if max_episode_steps is not None and max_episode_steps < 1:
-            raise ValueError(f"max_episode_steps must be >= 1, got {max_episode_steps}")
-        if max_episode_seconds is not None and max_episode_seconds <= 0:
-            raise ValueError(
-                f"max_episode_seconds must be > 0, got {max_episode_seconds}"
-            )
+        check_episode_caps(max_episode_steps, max_episode_seconds)
         if trial_index_base < 0:
             raise ValueError(f"trial_index_base must be >= 0, got {trial_index_base}")
+        n_episodes = resolve_episode_budget(episodes, seeds)
         self._require_model_open("run()")
         self._ensure_connected()
-        n_episodes = resolve_episode_budget(episodes, seeds)
         step_cap = (
             max_episode_steps
             if max_episode_steps is not None
