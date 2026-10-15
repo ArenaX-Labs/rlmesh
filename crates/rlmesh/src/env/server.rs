@@ -196,6 +196,17 @@ fn in_async_context() -> bool {
     tokio::task::try_id().is_some()
 }
 
+/// A blocking call made from async code fails with the RuntimeError class
+/// naming its `_async` twin, before it blocks (R-16).
+pub(crate) fn refuse_in_async_context(call: &str) -> Result<()> {
+    if in_async_context() {
+        return Err(Error::Runtime(format!(
+            "EnvServer::{call}() blocks; call {call}_async() from async code"
+        )));
+    }
+    Ok(())
+}
+
 impl EnvServer {
     /// Serve one env: Python's `EnvServer(env, ...)`.
     pub fn new<E: Env + Send + 'static>(env: E, options: EnvServerOptions) -> Result<EnvServer> {
@@ -442,11 +453,7 @@ impl EnvServer {
     /// server and this returns the cancellation class after the drain and
     /// close; SIGTERM stops it and this returns `Ok`.
     pub fn serve(&self) -> Result<()> {
-        if in_async_context() {
-            return Err(Error::Runtime(
-                "EnvServer::serve() blocks; call serve_async() from async code".to_string(),
-            ));
-        }
+        refuse_in_async_context("serve")?;
         let resources = self.take_resources("serve", State::Foreground)?;
         let signals = signals::enter(self.shared.shutdown.clone());
         let result = run(*resources, &self.shared, true);
@@ -486,6 +493,7 @@ impl EnvServer {
     /// first, `Ok(true)` once it has stopped. The call that observes the stop
     /// returns the serve error, once. `timeout` may be zero.
     pub fn wait(&self, timeout: Option<Duration>) -> Result<bool> {
+        refuse_in_async_context("wait")?;
         let started = Instant::now();
         loop {
             if let Some(result) = self.poll_wait()? {
@@ -539,6 +547,7 @@ impl EnvServer {
     /// Called from one of this server's own env callbacks, it only triggers
     /// the drain.
     pub fn shutdown(&self) -> Result<()> {
+        refuse_in_async_context("shutdown")?;
         self.shared.shutdown.trigger("local shutdown");
         if IN_CALLBACK.with(std::cell::Cell::get) == self.shared.id {
             return Ok(());

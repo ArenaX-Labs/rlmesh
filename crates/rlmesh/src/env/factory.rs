@@ -187,6 +187,11 @@ pub trait EnvFactoryExt: EnvFactory + sealed::Sealed {
     /// lanes), resolves the edition, publishes the describe envelope on the
     /// handshake, and serves in the foreground. The factory is not closed.
     fn serve(&mut self, address: &str, options: EnvFactoryServeOptions) -> Result<()> {
+        if tokio::task::try_id().is_some() {
+            return Err(Error::Runtime(
+                "EnvFactoryExt::serve() blocks; call serve_async() from async code".to_string(),
+            ));
+        }
         let cancel = options.cancel.clone();
         let server = prepare_serve(self, address, &options)?;
         let watcher = cancel.map(|cancel| CancelWatcher::start(cancel, &server));

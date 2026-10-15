@@ -661,3 +661,22 @@ fn variants_print_python_s_repr() {
     );
     assert_eq!(variant.clone(), variant);
 }
+
+#[test]
+fn blocking_calls_refuse_an_async_context() {
+    let counters = Arc::new(Counters::default());
+    let server = EnvServer::new(Counter::new(&counters), quick()).unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let err = runtime
+        .block_on(async { tokio::spawn(async move { server.serve() }).await })
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(err.class(), ErrorClass::RuntimeError);
+    assert_eq!(
+        err.to_string(),
+        "EnvServer::serve() blocks; call serve_async() from async code"
+    );
+}
