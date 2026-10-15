@@ -127,11 +127,11 @@ async fn drive(address: &str) -> Result<(), String> {
         return Err("the trial_index reset option was not declared".into());
     }
     client
-        .reset(rlmesh::ResetRequest::default())
+        .reset(rlmesh::binding::env::ResetRequest::default())
         .await
         .map_err(|err| format!("reset: {err}"))?;
     let frame = client
-        .render(rlmesh::RenderRequest::default())
+        .render(rlmesh::binding::env::RenderRequest::default())
         .await
         .map_err(|err| format!("render: {err}"))?
         .frame

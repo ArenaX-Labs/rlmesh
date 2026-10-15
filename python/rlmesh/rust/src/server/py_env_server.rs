@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use pyo3::prelude::*;
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pymethods};
-use rlmesh::env::{WireEnvAdapter, WireLaneAdapter};
+use rlmesh::binding::env::{WireEnvAdapter, WireLaneAdapter};
 use rlmesh::{BindAddress, ServeOptions};
 use rlmesh_grpc::env::{Environment, env_service_from_shared};
 use rlmesh_grpc::lifecycle::{
@@ -49,6 +49,8 @@ struct ServerResources {
     runtime: tokio::runtime::Runtime,
     listener: BoundListener,
     options: ServeOptions,
+    /// The endpoint token `RLMESH_ENV_ENDPOINT_TOKEN` sets, if any.
+    token: Option<String>,
     /// Call the env's `close()` when the server stops (the default). Off for a
     /// server standing in front of an env its caller owns and closes.
     close_env_on_shutdown: bool,
@@ -148,11 +150,8 @@ fn construct_server(
     crate::telemetry::init_tracing("env_server");
     // Resolve the deployment token before binding, so an invalid
     // `RLMESH_ENV_ENDPOINT_TOKEN` fails construction without holding the port.
-    let options = options
-        .map(PyServeOptions::into_rust)
-        .unwrap_or_default()
-        .with_env_endpoint_token()
-        .map_err(to_py_err)?;
+    let options = options.map(PyServeOptions::into_rust).unwrap_or_default();
+    let token = rlmesh::binding::env_endpoint_token().map_err(to_py_err)?;
     let shutdown = ShutdownTrigger::new();
 
     // The served contract is one lane's contract at the served width (lane 0's
@@ -247,6 +246,7 @@ fn construct_server(
             runtime,
             listener,
             options,
+            token,
             close_env_on_shutdown,
         }))),
         shutdown,
@@ -597,6 +597,7 @@ fn run_server(
         runtime,
         listener,
         options,
+        token,
         close_env_on_shutdown,
     } = resources;
 
@@ -616,13 +617,22 @@ fn run_server(
             match env {
                 PyServerEnv::Lanes(lanes) => {
                     let lanes = WireLaneAdapter::new(lanes).map_err(|err| err.to_string())?;
-                    run_env_server(lanes, listener, options, shutdown, close_env_on_shutdown).await
+                    run_env_server(
+                        lanes,
+                        listener,
+                        options,
+                        token,
+                        shutdown,
+                        close_env_on_shutdown,
+                    )
+                    .await
                 }
                 PyServerEnv::Vector(env) => {
                     run_env_server(
                         WireEnvAdapter::new(*env),
                         listener,
                         options,
+                        token,
                         shutdown,
                         close_env_on_shutdown,
                     )
@@ -657,6 +667,7 @@ async fn run_env_server<E>(
     env: E,
     listener: BoundListener,
     options: ServeOptions,
+    token: Option<String>,
     shutdown: ShutdownTrigger,
     close_env_on_shutdown: bool,
 ) -> ServeResult
@@ -670,7 +681,7 @@ where
     let drain_timeout = Some(options.drain_timeout.unwrap_or(DEFAULT_SHUTDOWN_GRACE));
     let close_timeout = Some(options.close_timeout.unwrap_or(DEFAULT_SHUTDOWN_GRACE));
     let env = Arc::new(env);
-    let grpc_options = rlmesh::binding::serve_options_to_grpc(options);
+    let grpc_options = rlmesh::binding::serve_options_to_grpc(options, token);
     let service = env_service_from_shared(
         Arc::clone(&env),
         shutdown.clone(),
@@ -746,6 +757,7 @@ fn cleanup_ready_resources(resources: ServerResources) -> ServeResult {
         listener,
         options,
         close_env_on_shutdown,
+        ..
     } = resources;
 
     match listener {

@@ -25,11 +25,12 @@ use async_trait::async_trait;
 use image::ExtendedColorType;
 use image::ImageEncoder;
 use image::codecs::png::PngEncoder;
-use rlmesh::{
-    BindAddress, BoundEnvServer, CancellationToken, CloseRequest, CloseResult,
-    ENV_RESET_OPTIONS_KEY, Env, EnvServer, RenderRequest, RenderResult, ResetRequest, ResetResult,
-    StepRequest, StepResult, TRIAL_INDEX_OPTION,
+use rlmesh::binding::TRIAL_INDEX_OPTION;
+use rlmesh::binding::env::{
+    BoundWireEnvServer as BoundEnvServer, CloseRequest, CloseResult, Env, RenderRequest,
+    RenderResult, ResetRequest, ResetResult, StepRequest, StepResult, WireEnvServer as EnvServer,
 };
+use rlmesh::{BindAddress, CancellationToken, ENV_RESET_OPTIONS_KEY};
 use rlmesh_adapters::v1::{ENV_METADATA_KEY, EnvTags, SpaceView, join, reject_unknowns_env};
 use rlmesh_spaces::errors::EnvRuntimeError;
 use rlmesh_spaces::{DType, EnvContract, MetaMap, MetaValue, RenderFrame, SpaceSpec, SpaceValue};
@@ -912,8 +913,9 @@ pub unsafe extern "C" fn rlmesh_env_bind(
         let bind = BindAddress::parse(address)
             .map_err(|err| CapiError::invalid_arg(format!("invalid bind address: {err}")))?;
         let mut serve = serve_options(options)?;
+        let mut ext = rlmesh::ext::EnvServerOptions::default();
         if let Some(c_options) = unsafe { options.as_ref() } {
-            serve.token = opt_str(c_options.token, "token")?
+            ext.token = opt_str(c_options.token, "token")?
                 .filter(|token| !token.is_empty())
                 .map(str::to_string);
         }
@@ -933,10 +935,10 @@ pub unsafe extern "C" fn rlmesh_env_bind(
             .describe
             .for_bind(serve.workflow_edition.as_deref())?;
         let (key, value) = Describe::bound_extra(&envelope);
-        serve.peer_info_extra.insert(key, value);
+        ext.peer_info_extra.insert(key, value);
         let bound = handle
             .runtime
-            .block_on(EnvServer::lanes(cenv).bind_with_options(bind, serve))
+            .block_on(EnvServer::lanes(cenv).bind_with_ext(bind, serve, ext))
             .map_err(CapiError::from)?;
         *lanes = None;
         drop(lanes);
@@ -1537,7 +1539,7 @@ mod tests {
                 .expect("connect");
             assert_eq!(client.num_envs(), 2);
             let reset = client
-                .reset(rlmesh::VectorResetRequest {
+                .reset(rlmesh::binding::env::VectorResetRequest {
                     seeds: vec![1, 2],
                     ..Default::default()
                 })
@@ -1545,7 +1547,7 @@ mod tests {
                 .expect("reset");
             assert_eq!(reset.observations.len(), 2);
             let step = client
-                .step(rlmesh::VectorStepRequest {
+                .step(rlmesh::binding::env::VectorStepRequest {
                     actions: vec![action(0.25), action(0.75)],
                     ..Default::default()
                 })
@@ -1883,11 +1885,11 @@ mod tests {
                 .await
                 .expect("connect");
             client
-                .reset(rlmesh::VectorResetRequest::default())
+                .reset(rlmesh::binding::env::VectorResetRequest::default())
                 .await
                 .expect("reset");
             let _ = client
-                .step(rlmesh::VectorStepRequest {
+                .step(rlmesh::binding::env::VectorStepRequest {
                     actions: vec![action(0.5), action(0.5)],
                     ..Default::default()
                 })

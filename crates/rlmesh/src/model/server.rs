@@ -81,6 +81,7 @@ pub(super) async fn bind_model_with_options<H>(
     handler: H,
     address: BindAddress,
     token: &str,
+    predict_concurrency: Option<usize>,
     options: ServeOptions,
 ) -> Result<BoundModelServer>
 where
@@ -101,6 +102,7 @@ where
         token.to_string(),
         activity_tx,
         shutdown.clone(),
+        predict_concurrency,
         options,
     );
 
@@ -143,6 +145,7 @@ struct ServedModelServer<H> {
     activity_tx: Option<mpsc::UnboundedSender<IdleActivity>>,
     shutdown: rlmesh_grpc::lifecycle::ShutdownTrigger,
     serve_options: ServeOptions,
+    predict_concurrency: Option<usize>,
     /// WANT: the edition this model declares on every handshake response, taken
     /// from [`ServeOptions::workflow_edition`]. `None` declares this build's
     /// current edition, which is `max(can)` here and so caps no runtime.
@@ -192,6 +195,7 @@ fn model_service<H>(
     token: String,
     activity_tx: Option<mpsc::UnboundedSender<IdleActivity>>,
     shutdown: rlmesh_grpc::lifecycle::ShutdownTrigger,
+    predict_concurrency: Option<usize>,
     serve_options: ServeOptions,
 ) -> ModelServiceServer<ServedModelServer<H>>
 where
@@ -208,6 +212,7 @@ where
         activity_tx,
         shutdown,
         serve_options,
+        predict_concurrency,
         declared_workflow_edition,
     })
     .max_decoding_message_size(rlmesh_grpc::MAX_MESSAGE_SIZE)
@@ -275,7 +280,6 @@ where
         let route_configs = Arc::clone(&self.route_configs);
         let activity_tx = self.activity_tx.clone();
         let concurrency = self
-            .serve_options
             .predict_concurrency
             .unwrap_or(rlmesh_grpc::DEFAULT_PREDICT_CONCURRENCY)
             .max(1);
@@ -1318,6 +1322,7 @@ mod tests {
             activity_tx: None,
             shutdown: rlmesh_grpc::lifecycle::ShutdownTrigger::new(),
             serve_options: ServeOptions::default(),
+            predict_concurrency: None,
             declared_workflow_edition: None,
         }
     }

@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::oneshot;
 
-use super::Env;
+use super::legacy::Env;
 use crate::binding::spaces::{self, CloseRequest, MetaMap, MetaValue, RenderRequest, RenderResult};
 use rlmesh_proto::{EndpointPhases, elapsed_ns};
 
@@ -324,7 +324,7 @@ pub(super) fn fold_phases(lane_phases: Vec<EndpointPhases>) -> EndpointPhases {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::env::WireLaneAdapter;
+    use crate::binding::env::WireLaneAdapter;
     use async_trait::async_trait;
     use rlmesh_grpc::wire::encode_batched_partial_values;
     use rlmesh_proto::env::v1::{ResetRequest, StepRequest};

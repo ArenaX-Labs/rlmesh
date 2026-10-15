@@ -68,7 +68,7 @@ fn u8_box(value: u8) -> spaces::SpaceValue {
 }
 
 #[async_trait]
-impl rlmesh::Env for SmokeEnv {
+impl rlmesh::binding::env::Env for SmokeEnv {
     fn observation_space(&self) -> &spaces::SpaceSpec {
         &self.obs_space
     }
@@ -81,14 +81,14 @@ impl rlmesh::Env for SmokeEnv {
 
     async fn reset(
         &mut self,
-        req: rlmesh::ResetRequest,
-    ) -> Result<rlmesh::ResetResult, spaces::EnvRuntimeError> {
+        req: rlmesh::binding::env::ResetRequest,
+    ) -> Result<rlmesh::binding::env::ResetResult, spaces::EnvRuntimeError> {
         self.steps = 0;
         self.reset_seeds
             .lock()
             .expect("reset seed log")
             .push(req.seed);
-        Ok(rlmesh::ResetResult {
+        Ok(rlmesh::binding::env::ResetResult {
             observation: Some(u8_box(0)),
             info: None,
             episode_id: None,
@@ -97,10 +97,10 @@ impl rlmesh::Env for SmokeEnv {
 
     async fn step(
         &mut self,
-        _req: rlmesh::StepRequest,
-    ) -> Result<rlmesh::StepResult, spaces::EnvRuntimeError> {
+        _req: rlmesh::binding::env::StepRequest,
+    ) -> Result<rlmesh::binding::env::StepResult, spaces::EnvRuntimeError> {
         self.steps += 1;
-        Ok(rlmesh::StepResult {
+        Ok(rlmesh::binding::env::StepResult {
             observation: Some(u8_box(self.steps)),
             reward: 1.0,
             terminated: self.steps >= STEPS_PER_EPISODE,
@@ -111,16 +111,16 @@ impl rlmesh::Env for SmokeEnv {
 
     async fn render(
         &mut self,
-        _req: rlmesh::RenderRequest,
-    ) -> Result<rlmesh::RenderResult, spaces::EnvRuntimeError> {
-        Ok(rlmesh::RenderResult::default())
+        _req: rlmesh::binding::env::RenderRequest,
+    ) -> Result<rlmesh::binding::env::RenderResult, spaces::EnvRuntimeError> {
+        Ok(rlmesh::binding::env::RenderResult::default())
     }
 
     async fn close(
         &mut self,
-        _req: rlmesh::CloseRequest,
-    ) -> Result<rlmesh::CloseResult, spaces::EnvRuntimeError> {
-        Ok(rlmesh::CloseResult)
+        _req: rlmesh::binding::env::CloseRequest,
+    ) -> Result<rlmesh::binding::env::CloseResult, spaces::EnvRuntimeError> {
+        Ok(rlmesh::binding::env::CloseResult)
     }
 }
 
@@ -151,19 +151,20 @@ async fn run(binary: String, expect: Option<String>) -> ExitCode {
     let reset_seeds = Arc::new(Mutex::new(Vec::new()));
     // Bind first: the listener is accepting before the model connects (port 0 →
     // OS-assigned), so no readiness sleep is needed.
-    let bound = match rlmesh::EnvServer::new(SmokeEnv::new(Arc::clone(&reset_seeds)))
-        .bind(rlmesh::BindAddress::Tcp {
-            host: "127.0.0.1".to_string(),
-            port: 0,
-        })
-        .await
-    {
-        Ok(bound) => bound,
-        Err(err) => {
-            eprintln!("failed to bind env: {err}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let bound =
+        match rlmesh::binding::env::WireEnvServer::new(SmokeEnv::new(Arc::clone(&reset_seeds)))
+            .bind(rlmesh::BindAddress::Tcp {
+                host: "127.0.0.1".to_string(),
+                port: 0,
+            })
+            .await
+        {
+            Ok(bound) => bound,
+            Err(err) => {
+                eprintln!("failed to bind env: {err}");
+                return ExitCode::FAILURE;
+            }
+        };
     let address = bound.local_addr().to_string();
     let server = tokio::spawn(async move {
         let _ = bound.serve().await;

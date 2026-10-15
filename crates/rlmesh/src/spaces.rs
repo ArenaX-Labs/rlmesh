@@ -81,7 +81,7 @@ impl SpaceKind {
         }
     }
 
-    fn of(spec: &WireSpec) -> SpaceKind {
+    pub(crate) fn of(spec: &WireSpec) -> SpaceKind {
         match spec.space_type() {
             SpaceType::Box => SpaceKind::Box,
             SpaceType::Discrete => SpaceKind::Discrete,

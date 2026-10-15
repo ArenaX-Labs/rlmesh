@@ -13,11 +13,11 @@ use rlmesh_grpc::wire::{
 use rlmesh_proto::Edition;
 
 use super::lanes::{LaneEnv, LaneReply, batch_infos, fold_phases};
+use super::legacy::{Env, VectorEnv};
 use super::types::{
     CloseRequest, EpisodeMetadata, RenderRequest, ResetRequest as VectorResetRequest,
     ResetResult as VectorResetResult, StepRequest as VectorStepRequest,
 };
-use super::{Env, VectorEnv};
 use crate::binding::spaces;
 use rlmesh_proto::{EndpointPhases, elapsed_ns};
 use rlmesh_spaces::spaces::{PolicyOutcome, ValidationPolicy};
@@ -167,7 +167,7 @@ impl Conformance {
 fn encode_step_response(
     conformance: &Conformance,
     observation_space: &spaces::SpaceSpec,
-    mut result: super::VectorStepResult,
+    mut result: super::types::StepResult,
     width: usize,
     mut warnings: Vec<ConformanceWarning>,
     env_indices: Vec<u32>,
@@ -577,7 +577,7 @@ impl Environment for WireLaneAdapter {
             }))
             .await;
         let call_ns = elapsed_ns(call_started);
-        let mut result = super::VectorStepResult::default();
+        let mut result = super::types::StepResult::default();
         let mut infos = Vec::with_capacity(lanes.len());
         let mut done = Vec::with_capacity(lanes.len());
         let mut phases = Vec::with_capacity(lanes.len());
@@ -850,11 +850,12 @@ mod tests {
 
     use crate::{BindAddress, Result, ServeOptions};
 
-    use super::super::{
-        RemoteVectorEnv as RemoteEnv, RenderResult, VectorCloseResult as CloseResult, VectorEnv,
-        VectorEnvServer as EnvServer, VectorResetRequest as ResetRequest,
-        VectorResetResult as ResetResult, VectorStepRequest as StepRequest,
-        VectorStepResult as StepResult,
+    use super::super::RemoteVectorEnv as RemoteEnv;
+    use crate::binding::env::{
+        RenderResult, VectorCloseResult as CloseResult, VectorEnv,
+        VectorResetRequest as ResetRequest, VectorResetResult as ResetResult,
+        VectorStepRequest as StepRequest, VectorStepResult as StepResult,
+        WireVectorEnvServer as EnvServer,
     };
 
     struct DummyEnv {
@@ -1368,14 +1369,19 @@ mod tests {
             let addr = addr.clone();
             async move {
                 EnvServer::new(DummyEnv::new())
-                    .serve_with_options(
+                    .bind_with_ext(
                         addr,
                         ServeOptions {
                             allow_remote_shutdown: true,
-                            token: Some("s3cret".to_string()),
                             ..ServeOptions::default()
                         },
+                        crate::ext::EnvServerOptions {
+                            token: Some("s3cret".to_string()),
+                            ..Default::default()
+                        },
                     )
+                    .await?
+                    .serve()
                     .await
             }
         });
@@ -1703,15 +1709,18 @@ mod tests {
         }
 
         let bound = EnvServer::new(DummyEnv::new())
-            .bind_with_options(
+            .bind_with_ext(
                 BindAddress::Tcp {
                     host: "127.0.0.1".to_string(),
                     port: 0,
                 },
                 ServeOptions {
-                    token: Some("direct-token".to_string()),
                     allow_remote_shutdown: true,
                     ..ServeOptions::default()
+                },
+                crate::ext::EnvServerOptions {
+                    token: Some("direct-token".to_string()),
+                    ..Default::default()
                 },
             )
             .await
@@ -1789,7 +1798,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl super::super::Env for RecordingLane {
+    impl super::super::legacy::Env for RecordingLane {
         fn observation_space(&self) -> &spaces::SpaceSpec {
             &self.obs_space
         }
@@ -1972,7 +1981,7 @@ mod tests {
     #[tokio::test]
     async fn env_server_lanes_serve_one_endpoint_of_num_envs_lanes() {
         let seen: Arc<Mutex<Vec<Option<spaces::MetaMap>>>> = Arc::new(Mutex::new(Vec::new()));
-        let bound = super::super::EnvServer::lanes(vec![
+        let bound = super::super::legacy_server::WireEnvServer::lanes(vec![
             RecordingLane::new(seen.clone()),
             RecordingLane::new(seen.clone()),
         ])
@@ -2005,7 +2014,7 @@ mod tests {
 
     #[tokio::test]
     async fn env_server_without_lanes_fails_to_bind() {
-        let error = super::super::EnvServer::<RecordingLane>::lanes(Vec::new())
+        let error = super::super::legacy_server::WireEnvServer::<RecordingLane>::lanes(Vec::new())
             .bind(BindAddress::parse("tcp://127.0.0.1:0").unwrap())
             .await
             .err()
@@ -2124,7 +2133,7 @@ mod tests {
     #[tokio::test]
     async fn a_fatal_lane_error_beside_a_recoverable_one_ends_the_served_session() {
         let (lanes, [(reset0, step0), (reset1, step1)]) = two_failing_lanes();
-        let bound = super::super::EnvServer::lanes(lanes)
+        let bound = super::super::legacy_server::WireEnvServer::lanes(lanes)
             .bind_with_options(
                 BindAddress::parse("tcp://127.0.0.1:0").unwrap(),
                 ServeOptions {

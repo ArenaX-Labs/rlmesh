@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use rlmesh::{
+use rlmesh::binding::env::{
     EndpointPhases, Env as RLMeshEnv, VectorCloseResult as EnvCloseResult,
     VectorEnv as RLMeshVectorEnv, VectorResetRequest as EnvResetRequest,
     VectorResetResult as EnvResetResult, VectorStepRequest as EnvStepRequest,

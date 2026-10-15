@@ -1,4 +1,5 @@
-//! Transport serve options shared by the env and model servers.
+//! Python's `ServeOptions`: the transport lifecycle policy shared by the env
+//! and model servers.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -11,127 +12,107 @@ pub const MODEL_ENDPOINT_TOKEN_ENV: &str = "RLMESH_MODEL_ENDPOINT_TOKEN";
 /// Environment variable holding the token a served environment endpoint requires.
 pub const ENV_ENDPOINT_TOKEN_ENV: &str = "RLMESH_ENV_ENDPOINT_TOKEN";
 
-/// Transport lifecycle policy for a server (shutdown, timeouts, auth).
+/// Transport lifecycle policy for a server: Python's `ServeOptions`.
 ///
-/// Defaults are conservative: remote shutdown is disabled, every timeout is
-/// unset (no idle shutdown, no drain/close bound). Model and environment servers
-/// additionally enforce `RLMESH_MODEL_ENDPOINT_TOKEN` and
-/// `RLMESH_ENV_ENDPOINT_TOKEN` respectively when set.
-/// Pass an instance to [`EnvServer::bind_with_options`](crate::EnvServer::bind_with_options)
-/// or via [`ServeModelOptions`](crate::ServeModelOptions) for the model server.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Fields keep Python's names, with the `_seconds` suffix dropped from the
+/// durations. The defaults are Python's: remote shutdown off, no idle
+/// shutdown, no drain or close bound (an env server caps each at 5 s), no
+/// declared edition, uncompressed responses. Options are plain data: the
+/// server that consumes them validates them (a timeout must be positive) and
+/// resolves the edition.
+///
+/// Build one with `..Default::default()`; appending a field is a minor change
+/// by project policy, so a full struct literal is unsupported.
+#[derive(Debug, Clone, Default)]
 pub struct ServeOptions {
     /// Honor a client `shutdown` RPC. When `false`, remote shutdown requests
-    /// are rejected and the server stops only via its own idle/drain policy.
+    /// are rejected.
     pub allow_remote_shutdown: bool,
     /// Shut the server down after this much inactivity. `None` never times out.
     pub idle_timeout: Option<Duration>,
-    /// Maximum time to drain in-flight requests during shutdown. `None` waits
-    /// indefinitely.
+    /// Maximum time to drain in-flight requests during shutdown. `None` is the
+    /// server's default (5 s for an env server).
     pub drain_timeout: Option<Duration>,
-    /// Maximum time the environment/handler close hook may take on shutdown.
-    /// `None` waits indefinitely.
+    /// Maximum time the env's (or model's) close may take on shutdown. `None`
+    /// is the server's default (5 s for an env server).
     pub close_timeout: Option<Duration>,
-    /// Bearer token required on the `authorization` metadata header of every
-    /// request to this endpoint.
-    ///
-    /// `None` (or an empty string) **disables authentication**: the endpoint
-    /// accepts every request without a token unless one is configured through
-    /// `RLMESH_ENV_ENDPOINT_TOKEN` (environment servers), or
-    /// `RLMESH_MODEL_ENDPOINT_TOKEN` or `ServeModelOptions::token` (model servers).
-    /// Either variable, when set, overrides this field. Requests may send the
-    /// token raw or as `Bearer <token>`.
-    ///
-    /// The model server also reads
-    /// [`ServeModelOptions::token`](crate::ServeModelOptions::token); a
-    /// non-empty value here wins over that field. `RLMESH_MODEL_ENDPOINT_TOKEN`,
-    /// when set, overrides both model token options.
-    pub token: Option<String>,
-    /// Maximum number of model Join-stream requests a served model processes
-    /// concurrently per connection (pipelined predict). `None` applies the
-    /// default cap. Per-route lifecycle ordering is preserved regardless; this
-    /// only bounds how many decode/encode and handler critical sections overlap.
-    /// Has no effect on the environment server.
-    pub predict_concurrency: Option<usize>,
-    /// The workflow edition this served peer **declares** — the sticky
-    /// statement of what it was authored against, kept until its author bumps
-    /// it. It rides every handshake response as the peer's WANT, so a runtime
-    /// runs the session at this edition even when both builds could go higher.
-    ///
-    /// `None` (the default) declares nothing: the response carries this build's
-    /// current edition, which is its own `max(can)` and therefore caps no
-    /// runtime — byte-identical to a build without this field.
-    ///
-    /// Declare the bare `YYYY.MM` base this peer was authored against
-    /// (`rlmesh_proto::WORKFLOW_EDITION_BASE` on the build you author on): it
-    /// names the contract and selects whichever spelling of it both sides offer,
-    /// a dev build's `YYYY.MM-dev.<git>` included. A cohort spelling pins to that
-    /// exact moving build instead. Either must admit an edition this build offers
-    /// ([`rlmesh_proto::parse_declared_edition`]); the surfaces that take this
-    /// from a user — the Python `ServeOptions`, `--workflow-edition`, the C API's
-    /// `RLMeshServeOptions` — refuse any other value where it is typed, while a
-    /// value set directly on this bare `pub` struct is only trimmed here and is
-    /// refused at negotiation instead, by the refusal naming every tier's WANT
-    /// and CAN.
+    /// The workflow edition this server declares: the serve call's own value,
+    /// adopted ahead of `RLMESH_WORKFLOW_EDITION`. A blank value declares
+    /// nothing.
     pub workflow_edition: Option<String>,
     /// Compress environment responses (zstd, else gzip) for a client that
-    /// advertises it accepts them. Off by default: observation leaves are raw
-    /// tensor bytes, so compression spends CPU on both ends and only pays on a
-    /// slow link with compressible payloads such as rendered images. Servers
-    /// refuse compressed requests either way, before reading them. Has no
-    /// effect on the model server.
+    /// accepts them. Has no effect on the model server.
     pub compress_responses: bool,
-    /// Advisory entries this endpoint adds to its handshake `PeerInfo.extra`,
-    /// over the process-wide peer-info override, so several servers in one
-    /// process each report their own. Diagnostics only: they never gate
-    /// compatibility. Empty by default. Has no effect on the model server.
-    pub peer_info_extra: BTreeMap<String, String>,
 }
 
 impl ServeOptions {
-    /// The transport's options for these. Crate-private: a public `From` impl
-    /// would expose the plumbing type on the shared surface.
+    /// Python's checks, run by the consuming call: every timeout positive.
+    pub(crate) fn validate(&self) -> Result<()> {
+        for (name, timeout) in [
+            ("idle_timeout_seconds", self.idle_timeout),
+            ("drain_timeout_seconds", self.drain_timeout),
+            ("close_timeout_seconds", self.close_timeout),
+        ] {
+            if timeout.is_some_and(|timeout| timeout.is_zero()) {
+                return Err(Error::invalid_argument(format!("{name} must be positive")));
+            }
+        }
+        Ok(())
+    }
+
+    /// The transport's options for these, with the language-only extras the
+    /// serve call carries beside them.
     #[allow(clippy::wrong_self_convention)] // The name R-25 gives it; consuming avoids a clone.
-    pub(crate) fn to_grpc(self) -> rlmesh_grpc::ServeOptions {
-        let value = self;
+    pub(crate) fn to_grpc(self, extras: WireExtras) -> rlmesh_grpc::ServeOptions {
         rlmesh_grpc::ServeOptions {
-            allow_remote_shutdown: value.allow_remote_shutdown,
-            idle_timeout: value.idle_timeout,
-            drain_timeout: value.drain_timeout,
-            close_timeout: value.close_timeout,
-            token: value.token.filter(|token| !token.is_empty()),
-            predict_concurrency: value.predict_concurrency,
-            workflow_edition: value
+            allow_remote_shutdown: self.allow_remote_shutdown,
+            idle_timeout: self.idle_timeout,
+            drain_timeout: self.drain_timeout,
+            close_timeout: self.close_timeout,
+            token: extras.token.filter(|token| !token.is_empty()),
+            predict_concurrency: extras.predict_concurrency,
+            workflow_edition: self
                 .workflow_edition
                 .map(|edition| edition.trim().to_string())
                 .filter(|edition| !edition.is_empty()),
-            compress_responses: value.compress_responses,
-            peer_info_extra: value.peer_info_extra,
+            compress_responses: self.compress_responses,
+            peer_info_extra: extras.peer_info_extra,
         }
     }
 }
 
-impl ServeOptions {
-    /// Apply `RLMESH_ENV_ENDPOINT_TOKEN` to these options: when set it replaces
-    /// [`token`](Self::token), and an empty, whitespace-only, or non-Unicode
-    /// value fails instead of disabling authentication. A token (from either
-    /// source) that cannot travel in an HTTP header value, such as one with a
-    /// trailing newline, fails too. Every environment server entry point calls
-    /// this before binding.
-    #[doc(hidden)]
-    pub fn with_env_endpoint_token(self) -> Result<Self> {
-        self.with_env_endpoint_token_from(std::env::var(ENV_ENDPOINT_TOKEN_ENV))
-    }
+/// What a serve call adds to its [`ServeOptions`] on the wire: the fenced
+/// token and peer-info extras, and the model's predict concurrency.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct WireExtras {
+    pub(crate) token: Option<String>,
+    pub(crate) predict_concurrency: Option<usize>,
+    pub(crate) peer_info_extra: BTreeMap<String, String>,
+}
 
-    fn with_env_endpoint_token_from(
-        mut self,
-        environment: std::result::Result<String, std::env::VarError>,
-    ) -> Result<Self> {
-        let configured = self.token.take().unwrap_or_default();
-        let token = endpoint_token(ENV_ENDPOINT_TOKEN_ENV, configured, environment)?;
-        self.token = Some(token).filter(|token| !token.is_empty());
-        Ok(self)
+/// An env server's token: `RLMESH_ENV_ENDPOINT_TOKEN` when set (its failures
+/// are the `RLMeshException` class), else the configured `ext.token` (a token
+/// no header can carry is the `ValueError` class, an invalid options field).
+pub(crate) fn env_endpoint_token(configured: Option<String>) -> Result<Option<String>> {
+    env_endpoint_token_from(configured, std::env::var(ENV_ENDPOINT_TOKEN_ENV))
+}
+
+fn env_endpoint_token_from(
+    configured: Option<String>,
+    environment: std::result::Result<String, std::env::VarError>,
+) -> Result<Option<String>> {
+    let configured = configured.unwrap_or_default();
+    if matches!(environment, Err(std::env::VarError::NotPresent))
+        && !configured.is_empty()
+        && let Some(problem) = rlmesh_grpc::helpers::token_header_problem(&configured)
+    {
+        return Err(Error::invalid_argument(format!(
+            "the configured endpoint token {problem}; a token must be printable ASCII \
+             without surrounding whitespace, since clients send it in an HTTP header"
+        )));
     }
+    let token = endpoint_token(ENV_ENDPOINT_TOKEN_ENV, configured, environment)?;
+    Ok(Some(token).filter(|token| !token.is_empty()))
 }
 
 /// Resolve a served endpoint's token from the deployment `variable` reading,
@@ -176,23 +157,28 @@ pub(crate) fn endpoint_token(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ErrorClass;
 
     #[test]
-    fn serve_options_default_disables_remote_shutdown() {
-        assert_eq!(
-            ServeOptions::default(),
-            ServeOptions {
-                allow_remote_shutdown: false,
-                idle_timeout: None,
-                drain_timeout: None,
-                close_timeout: None,
-                token: None,
-                predict_concurrency: None,
-                workflow_edition: None,
-                compress_responses: false,
-                peer_info_extra: BTreeMap::new(),
-            }
-        );
+    fn serve_options_default_is_pythons() {
+        let options = ServeOptions::default();
+        assert!(!options.allow_remote_shutdown);
+        assert_eq!(options.idle_timeout, None);
+        assert_eq!(options.drain_timeout, None);
+        assert_eq!(options.close_timeout, None);
+        assert_eq!(options.workflow_edition, None);
+        assert!(!options.compress_responses);
+    }
+
+    #[test]
+    fn a_zero_timeout_is_a_value_error() {
+        let options = ServeOptions {
+            drain_timeout: Some(Duration::ZERO),
+            ..ServeOptions::default()
+        };
+        let err = options.validate().unwrap_err();
+        assert_eq!(err.class(), ErrorClass::ValueError);
+        assert!(err.to_string().contains("drain_timeout_seconds"), "{err}");
     }
 
     #[test]
@@ -202,66 +188,31 @@ mod tests {
             idle_timeout: Some(Duration::from_secs(1)),
             drain_timeout: Some(Duration::from_secs(2)),
             close_timeout: Some(Duration::from_secs(3)),
+            workflow_edition: Some(format!("  {}  ", rlmesh_proto::CURRENT_WORKFLOW_EDITION)),
+            compress_responses: true,
+        };
+        let grpc_options = options.clone().to_grpc(WireExtras {
             token: Some("s3cret".to_string()),
             predict_concurrency: Some(8),
-            workflow_edition: Some(rlmesh_proto::CURRENT_WORKFLOW_EDITION.to_string()),
-            compress_responses: true,
             peer_info_extra: BTreeMap::from([("k".to_string(), "v".to_string())]),
-        };
-        let grpc_options = options.clone().to_grpc();
-        assert_eq!(
-            grpc_options.allow_remote_shutdown,
-            options.allow_remote_shutdown
-        );
+        });
+        assert!(grpc_options.allow_remote_shutdown);
         assert_eq!(grpc_options.idle_timeout, options.idle_timeout);
         assert_eq!(grpc_options.drain_timeout, options.drain_timeout);
         assert_eq!(grpc_options.close_timeout, options.close_timeout);
         assert_eq!(grpc_options.token.as_deref(), Some("s3cret"));
-        assert_eq!(
-            grpc_options.predict_concurrency,
-            options.predict_concurrency
-        );
+        assert_eq!(grpc_options.predict_concurrency, Some(8));
         assert_eq!(
             grpc_options.workflow_edition.as_deref(),
             Some(rlmesh_proto::CURRENT_WORKFLOW_EDITION)
         );
         assert!(grpc_options.compress_responses);
-        assert_eq!(grpc_options.peer_info_extra, options.peer_info_extra);
-    }
-
-    #[test]
-    fn blank_workflow_edition_declares_nothing_after_conversion() {
-        let options = ServeOptions {
+        assert_eq!(grpc_options.peer_info_extra.len(), 1);
+        let blank = ServeOptions {
             workflow_edition: Some("   ".to_string()),
             ..ServeOptions::default()
         };
-        let grpc_options = options.to_grpc();
-        assert_eq!(grpc_options.workflow_edition, None);
-    }
-
-    /// The user-facing surfaces normalize before they get here; this bare field
-    /// does not, so the conversion is where a padded value is trimmed.
-    #[test]
-    fn padded_workflow_edition_is_trimmed_after_conversion() {
-        let options = ServeOptions {
-            workflow_edition: Some(format!("  {}  ", rlmesh_proto::CURRENT_WORKFLOW_EDITION)),
-            ..ServeOptions::default()
-        };
-        let grpc_options = options.to_grpc();
-        assert_eq!(
-            grpc_options.workflow_edition.as_deref(),
-            Some(rlmesh_proto::CURRENT_WORKFLOW_EDITION)
-        );
-    }
-
-    #[test]
-    fn empty_token_disables_env_auth_after_conversion() {
-        let options = ServeOptions {
-            token: Some(String::new()),
-            ..ServeOptions::default()
-        };
-        let grpc_options = options.to_grpc();
-        assert_eq!(grpc_options.token, None);
+        assert_eq!(blank.to_grpc(WireExtras::default()).workflow_edition, None);
     }
 
     #[test]
@@ -272,38 +223,35 @@ mod tests {
             (Some("direct"), None, Some("direct")),
             (None, Some("deployment"), Some("deployment")),
             (Some("direct"), Some("deployment"), Some("deployment")),
+            // The variable replaces a configured token it does not check.
+            (Some("bad\n"), Some("deployment"), Some("deployment")),
         ] {
-            let options = ServeOptions {
-                token: configured.map(str::to_string),
-                ..ServeOptions::default()
-            };
             let environment = environment
                 .map(str::to_string)
                 .ok_or(std::env::VarError::NotPresent);
-            let resolved = options.with_env_endpoint_token_from(environment).unwrap();
-            assert_eq!(resolved.token.as_deref(), expected);
+            let resolved =
+                env_endpoint_token_from(configured.map(str::to_string), environment).unwrap();
+            assert_eq!(resolved.as_deref(), expected);
         }
     }
 
     #[test]
     fn env_endpoint_token_invalid_environment_fails_closed() {
-        let options = ServeOptions {
-            token: Some("fallback-must-not-be-used".to_string()),
-            ..ServeOptions::default()
-        };
         for value in ["", " ", "\t\n"] {
-            let error = options
-                .clone()
-                .with_env_endpoint_token_from(Ok(value.to_string()))
-                .unwrap_err();
+            let error = env_endpoint_token_from(
+                Some("fallback-must-not-be-used".to_string()),
+                Ok(value.to_string()),
+            )
+            .unwrap_err();
+            assert_eq!(error.class(), ErrorClass::RLMeshException);
             assert!(error.to_string().contains(ENV_ENDPOINT_TOKEN_ENV));
             assert!(!error.to_string().contains("fallback-must-not-be-used"));
         }
-        let error = options
-            .with_env_endpoint_token_from(Err(std::env::VarError::NotUnicode(
-                "private-value".into(),
-            )))
-            .unwrap_err();
+        let error = env_endpoint_token_from(
+            None,
+            Err(std::env::VarError::NotUnicode("private-value".into())),
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("valid Unicode"));
         assert!(!error.to_string().contains("private-value"));
     }
@@ -320,28 +268,26 @@ mod tests {
             ("private\u{1b}value", "control character"),
             ("private-v\u{e4}lue", "non-ASCII"),
         ] {
-            let error = ServeOptions::default()
-                .with_env_endpoint_token_from(Ok(value.to_string()))
-                .unwrap_err()
-                .to_string();
+            let error = env_endpoint_token_from(None, Ok(value.to_string())).unwrap_err();
+            assert_eq!(error.class(), ErrorClass::RLMeshException);
+            let error = error.to_string();
             assert!(error.contains(ENV_ENDPOINT_TOKEN_ENV), "{error}");
             assert!(error.contains(problem), "{error}");
             assert!(!error.contains("private"), "{error}");
         }
-        // A configured token is held to the same rule, named as such.
-        let error = ServeOptions {
-            token: Some("private-value\n".to_string()),
-            ..ServeOptions::default()
-        }
-        .with_env_endpoint_token_from(Err(std::env::VarError::NotPresent))
-        .unwrap_err()
-        .to_string();
+        // A configured token is held to the same rule, as an invalid options
+        // field (the ValueError class).
+        let error = env_endpoint_token_from(
+            Some("private-value\n".to_string()),
+            Err(std::env::VarError::NotPresent),
+        )
+        .unwrap_err();
+        assert_eq!(error.class(), ErrorClass::ValueError);
+        let error = error.to_string();
         assert!(error.contains("configured endpoint token"), "{error}");
         assert!(!error.contains("private"), "{error}");
         // Interior spaces travel in a header and stay accepted.
-        let resolved = ServeOptions::default()
-            .with_env_endpoint_token_from(Ok("a b".to_string()))
-            .unwrap();
-        assert_eq!(resolved.token.as_deref(), Some("a b"));
+        let resolved = env_endpoint_token_from(None, Ok("a b".to_string())).unwrap();
+        assert_eq!(resolved.as_deref(), Some("a b"));
     }
 }
