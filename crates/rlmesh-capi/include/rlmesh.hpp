@@ -1546,6 +1546,516 @@ class Space {
   RLMeshSpaceSpec* ptr_;
 };
 
+// ---- spaces (Python's rlmesh.spaces) ----------------------------------------
+
+/// An element dtype: Python's dtype strings; C's `RLMeshDType` numbers.
+enum class DType : int {
+  Bool = RLMESH_DTYPE_BOOL,
+  Uint8 = RLMESH_DTYPE_UINT8,
+  Uint16 = RLMESH_DTYPE_UINT16,
+  Uint32 = RLMESH_DTYPE_UINT32,
+  Uint64 = RLMESH_DTYPE_UINT64,
+  Int8 = RLMESH_DTYPE_INT8,
+  Int16 = RLMESH_DTYPE_INT16,
+  Int32 = RLMESH_DTYPE_INT32,
+  Int64 = RLMESH_DTYPE_INT64,
+  Float16 = RLMESH_DTYPE_FLOAT16,
+  Float32 = RLMESH_DTYPE_FLOAT32,
+  Float64 = RLMESH_DTYPE_FLOAT64,
+};
+
+/// Python's spelling ("float32"); empty for an unknown value.
+inline std::string_view to_string(DType dtype) {
+  return detail::sv(rlmesh_dtype_str(static_cast<RLMeshDType>(dtype)));
+}
+
+namespace spaces {
+
+/// A space's kind (Python's `kind`).
+enum class SpaceKind : int {
+  Unknown = RLMESH_SPACE_KIND_UNKNOWN,
+  Box = RLMESH_SPACE_KIND_BOX,
+  Discrete = RLMESH_SPACE_KIND_DISCRETE,
+  MultiBinary = RLMESH_SPACE_KIND_MULTI_BINARY,
+  MultiDiscrete = RLMESH_SPACE_KIND_MULTI_DISCRETE,
+  Text = RLMESH_SPACE_KIND_TEXT,
+  Dict = RLMESH_SPACE_KIND_DICT,
+  Tuple = RLMESH_SPACE_KIND_TUPLE,
+};
+
+/// How a Box stores its bounds (Python's `bounds_kind`).
+enum class BoundsKind : int {
+  Unbounded = RLMESH_BOUNDS_KIND_UNBOUNDED,
+  Uniform = RLMESH_BOUNDS_KIND_UNIFORM,
+  Elementwise = RLMESH_BOUNDS_KIND_ELEMENTWISE,
+  TypedUniform = RLMESH_BOUNDS_KIND_TYPED_UNIFORM,
+  TypedElementwise = RLMESH_BOUNDS_KIND_TYPED_ELEMENTWISE,
+};
+
+/// The C tag of a `Bound`.
+enum class BoundType : int {
+  Bool = RLMESH_BOUND_TYPE_BOOL,
+  Int = RLMESH_BOUND_TYPE_INT,
+  Uint = RLMESH_BOUND_TYPE_UINT,
+  Float = RLMESH_BOUND_TYPE_FLOAT,
+};
+
+inline std::string_view to_string(SpaceKind kind) {
+  return detail::sv(rlmesh_space_kind_str(static_cast<RLMeshSpaceKind>(kind)));
+}
+inline std::string_view to_string(BoundsKind kind) {
+  return detail::sv(rlmesh_bounds_kind_str(static_cast<RLMeshBoundsKind>(kind)));
+}
+
+namespace detail {
+
+[[noreturn]] inline void type_error(const char* what) {
+#if defined(__cpp_exceptions)
+  throw rlmesh::TypeError(what);
+#else
+  rlmesh::detail::die(what, Error(RLMESH_ERR_TYPE, what));
+#endif
+}
+
+inline Error last(RLMeshStatus status) { return Error::from_last(status); }
+
+inline std::string take_bytes(RLMeshBytes bytes) {
+  std::string out(reinterpret_cast<const char*>(bytes.data), bytes.len);
+  rlmesh_bytes_free(bytes);
+  return out;
+}
+
+inline RLMeshStr str(std::string_view text) {
+  RLMeshStr out;
+  out.data = text.data();
+  out.len = text.size();
+  return out;
+}
+
+}  // namespace detail
+
+/// One Box bound, exact in its domain: built implicitly from any arithmetic
+/// value (`bool` is Bool, signed integers Int, unsigned Uint, floats Float).
+class Bound {
+ public:
+  template <class T, class = std::enable_if_t<std::is_arithmetic_v<T>>>
+  Bound(T value) {  // NOLINT(google-explicit-constructor): Python takes a number
+    if constexpr (std::is_same_v<T, bool>) {
+      raw_ = rlmesh_bound_bool(value);
+    } else if constexpr (std::is_floating_point_v<T>) {
+      raw_ = rlmesh_bound_float(static_cast<double>(value));
+    } else if constexpr (std::is_signed_v<T>) {
+      raw_ = rlmesh_bound_int(static_cast<int64_t>(value));
+    } else {
+      raw_ = rlmesh_bound_uint(static_cast<uint64_t>(value));
+    }
+  }
+  static Bound from_raw(RLMeshBound raw) { return Bound(raw, 0); }
+
+  BoundType type() const { return static_cast<BoundType>(raw_.type_); }
+  /// Each throws `rlmesh::TypeError` (aborts without exceptions) on another type.
+  bool as_bool() const { return checked(BoundType::Bool).value.b; }
+  int64_t as_int() const { return checked(BoundType::Int).value.i; }
+  uint64_t as_uint() const { return checked(BoundType::Uint).value.u; }
+  double as_float() const { return checked(BoundType::Float).value.f; }
+  const RLMeshBound& raw() const { return raw_; }
+
+ private:
+  Bound(RLMeshBound raw, int) : raw_(raw) {}
+  const RLMeshBound& checked(BoundType type) const {
+    if (this->type() != type) detail::type_error("Bound holds another type");
+    return raw_;
+  }
+  RLMeshBound raw_;
+};
+
+/// A Box's `low` / `high`: one bound for every element, or one per element.
+using BoxBound = std::variant<Bound, std::vector<Bound>>;
+
+/// `Box`'s keyword arguments.
+struct BoxOptions {
+  DType dtype = DType::Float32;
+};
+
+/// `Discrete`'s keyword arguments.
+struct DiscreteOptions {
+  int64_t start = 0;
+  DType dtype = DType::Int64;
+};
+
+class Space;
+
+/// Immutable data describing a space (Python's `SpaceSpec`).
+class SpaceSpec {
+ public:
+  /// Copy a borrowed spec (a contract's, a space's, a child's).
+  static SpaceSpec copy_of(const RLMeshSpaceSpec* spec) {
+    return SpaceSpec(rlmesh_space_spec_clone(spec));
+  }
+  SpaceSpec(const SpaceSpec& other) : ptr_(rlmesh_space_spec_clone(other.ptr_)) {}
+  SpaceSpec(SpaceSpec&& other) noexcept : ptr_(other.ptr_) { other.ptr_ = nullptr; }
+  SpaceSpec& operator=(SpaceSpec other) noexcept {
+    std::swap(ptr_, other.ptr_);
+    return *this;
+  }
+  ~SpaceSpec() { rlmesh_space_spec_free(ptr_); }
+
+  const RLMeshSpaceSpec* raw() const { return ptr_; }
+  SpaceKind kind() const { return static_cast<SpaceKind>(rlmesh_space_spec_kind(ptr_)); }
+  std::vector<int64_t> shape() const {
+    size_t len = 0;
+    if (rlmesh_space_spec_shape(ptr_, nullptr, 0, &len) != RLMESH_OK) return {};
+    std::vector<int64_t> out(len);
+    if (rlmesh_space_spec_shape(ptr_, out.data(), out.size(), &len) != RLMESH_OK) return {};
+    return out;
+  }
+  DType dtype() const { return static_cast<DType>(rlmesh_space_spec_dtype(ptr_)); }
+  /// A fresh space with its own sampler.
+  inline Result<Space> to_space() const;
+  /// Gymnasium-style text, Python's `repr`.
+  std::string to_string() const {
+    RLMeshBytes bytes = {nullptr, 0, 0};
+    if (rlmesh_space_spec_repr(ptr_, &bytes) != RLMESH_OK) return {};
+    return detail::take_bytes(bytes);
+  }
+
+ private:
+  explicit SpaceSpec(RLMeshSpaceSpec* ptr) : ptr_(ptr) {}
+  RLMeshSpaceSpec* ptr_;
+};
+
+class Box;
+class Discrete;
+class Dict;
+
+/// A space: a spec plus its sampler (Python's `Space`). Copies share the
+/// handle, so two copies drive one RNG.
+class Space {
+ public:
+  /// `Space(spec)`.
+  static Result<Space> from_spec(const SpaceSpec& spec) {
+    RLMeshSpace* out = nullptr;
+    RLMeshStatus status = rlmesh_space_new(spec.raw(), &out);
+    if (status != RLMESH_OK) return detail::last(status);
+    return Space(out);
+  }
+  /// Adopt an owned handle.
+  static Space adopt(RLMeshSpace* ptr) { return Space(ptr); }
+
+  Space(const Space& other) : ptr_(rlmesh_space_clone(other.ptr_)) {}
+  Space(Space&& other) noexcept : ptr_(other.ptr_) { other.ptr_ = nullptr; }
+  Space& operator=(Space other) noexcept {
+    std::swap(ptr_, other.ptr_);
+    return *this;
+  }
+  ~Space() { rlmesh_space_free(ptr_); }
+
+  const RLMeshSpace* raw() const { return ptr_; }
+  SpaceSpec spec() const { return SpaceSpec::copy_of(rlmesh_space_spec(ptr_)); }
+  /// A space converts to its spec (Dict's children are specs).
+  operator SpaceSpec() const { return spec(); }  // NOLINT(google-explicit-constructor)
+  SpaceKind kind() const { return static_cast<SpaceKind>(rlmesh_space_kind(ptr_)); }
+  std::vector<int64_t> shape() const {
+    size_t len = 0;
+    if (rlmesh_space_shape(ptr_, nullptr, 0, &len) != RLMESH_OK) return {};
+    std::vector<int64_t> out(len);
+    if (rlmesh_space_shape(ptr_, out.data(), out.size(), &len) != RLMESH_OK) return {};
+    return out;
+  }
+  DType dtype() const { return static_cast<DType>(rlmesh_space_spec_dtype(rlmesh_space_spec(ptr_))); }
+  /// Restart the stream from `seed` (OS entropy when empty); returns the seed.
+  uint64_t seed(std::optional<uint64_t> seed = std::nullopt) const {
+    uint64_t used = 0;
+    if (seed.has_value()) {
+      uint64_t value = *seed;
+      (void)rlmesh_space_seed(ptr_, &value, &used);
+    } else {
+      (void)rlmesh_space_seed(ptr_, nullptr, &used);
+    }
+    return used;
+  }
+  Result<Value> sample() const {
+    RLMeshValue* out = nullptr;
+    RLMeshStatus status = rlmesh_space_sample(ptr_, &out);
+    if (status != RLMESH_OK) return detail::last(status);
+    return Value(out);
+  }
+  bool contains(const Value& value) const { return rlmesh_space_contains(ptr_, value.raw()); }
+  bool contains(const ValueRef& value) const { return rlmesh_space_contains(ptr_, value.raw()); }
+  bool operator==(const Space& other) const { return rlmesh_space_equals(ptr_, other.ptr_); }
+  bool operator!=(const Space& other) const { return !(*this == other); }
+  std::string to_string() const {
+    RLMeshBytes bytes = {nullptr, 0, 0};
+    if (rlmesh_space_repr(ptr_, &bytes) != RLMESH_OK) return {};
+    return detail::take_bytes(bytes);
+  }
+
+  inline std::optional<Box> as_box() const;
+  inline std::optional<Discrete> as_discrete() const;
+  inline std::optional<Dict> as_dict() const;
+
+ protected:
+  explicit Space(RLMeshSpace* ptr) : ptr_(ptr) {}
+  RLMeshSpace* ptr_;
+};
+
+inline Result<Space> SpaceSpec::to_space() const {
+  RLMeshSpace* out = nullptr;
+  RLMeshStatus status = rlmesh_space_spec_to_space(ptr_, &out);
+  if (status != RLMESH_OK) return detail::last(status);
+  return Space::adopt(out);
+}
+
+/// Python's `space_from_spec`: refuses a spec with no payload.
+inline Result<Space> space_from_spec(const SpaceSpec& spec) {
+  RLMeshSpace* out = nullptr;
+  RLMeshStatus status = rlmesh_spaces_space_from_spec(spec.raw(), &out);
+  if (status != RLMESH_OK) return detail::last(status);
+  return Space::adopt(out);
+}
+
+namespace detail {
+inline std::optional<BoxBound> read_bounds(const RLMeshSpace* box, bool high) {
+  bool has = false;
+  RLMeshBoundsKind kind = RLMESH_BOUNDS_KIND_INVALID;
+  if (rlmesh_box_bounds_kind(box, &has, &kind) != RLMESH_OK || !has ||
+      kind == RLMESH_BOUNDS_KIND_UNBOUNDED) {
+    return std::nullopt;
+  }
+  auto read = high ? rlmesh_box_high : rlmesh_box_low;
+  size_t len = 0;
+  if (read(box, nullptr, 0, &len) != RLMESH_OK) return std::nullopt;
+  std::vector<RLMeshBound> raw(len);
+  if (read(box, raw.data(), raw.size(), &len) != RLMESH_OK) return std::nullopt;
+  if (kind == RLMESH_BOUNDS_KIND_UNIFORM || kind == RLMESH_BOUNDS_KIND_TYPED_UNIFORM) {
+    if (raw.empty()) return std::nullopt;
+    return BoxBound(Bound::from_raw(raw[0]));
+  }
+  std::vector<Bound> out;
+  out.reserve(raw.size());
+  for (const RLMeshBound& bound : raw) out.push_back(Bound::from_raw(bound));
+  return BoxBound(std::move(out));
+}
+
+inline RLMeshBoxOptions box_options(const BoxOptions& options) {
+  RLMeshBoxOptions raw = RLMESH_BOX_OPTIONS_INIT;
+  raw.dtype = static_cast<RLMeshDType>(options.dtype);
+  return raw;
+}
+}  // namespace detail
+
+/// A box of numbers in `[low, high]` (Python's `Box`).
+class Box : public Space {
+ public:
+  /// `Box(low, high, shape, dtype)`.
+  static Result<Box> create(Bound low, Bound high, const std::vector<int64_t>& shape,
+                            BoxOptions options = {}) {
+    RLMeshBoxOptions raw = detail::box_options(options);
+    RLMeshSpace* out = nullptr;
+    RLMeshStatus status =
+        rlmesh_box_new(low.raw(), high.raw(), shape.data(), shape.size(), &raw, &out);
+    if (status != RLMESH_OK) return detail::last(status);
+    return Box(out);
+  }
+  /// `Box(spec)`: another kind is a ValueError.
+  static Result<Box> from_spec(const SpaceSpec& spec) {
+    RLMeshSpace* out = nullptr;
+    RLMeshStatus status = rlmesh_box_from_spec(spec.raw(), &out);
+    if (status != RLMESH_OK) return detail::last(status);
+    return Box(out);
+  }
+#if defined(__cpp_exceptions)
+  /// Throwing forms of `create` / `from_spec`.
+  Box(Bound low, Bound high, const std::vector<int64_t>& shape, BoxOptions options = {})
+      : Box(create(low, high, shape, options).value_or_throw()) {}
+  explicit Box(const SpaceSpec& spec) : Box(from_spec(spec).value_or_throw()) {}
+#endif
+
+  std::optional<BoxBound> low() const { return detail::read_bounds(ptr_, false); }
+  std::optional<BoxBound> high() const { return detail::read_bounds(ptr_, true); }
+  std::optional<BoundsKind> bounds_kind() const {
+    bool has = false;
+    RLMeshBoundsKind kind = RLMESH_BOUNDS_KIND_INVALID;
+    if (rlmesh_box_bounds_kind(ptr_, &has, &kind) != RLMESH_OK || !has) return std::nullopt;
+    return static_cast<BoundsKind>(kind);
+  }
+
+ private:
+  friend class Space;
+  explicit Box(RLMeshSpace* ptr) : Space(ptr) {}
+};
+
+/// The integers `start .. start + n` (Python's `Discrete`).
+class Discrete : public Space {
+ public:
+  static Result<Discrete> create(int64_t n, DiscreteOptions options = {}) {
+    RLMeshDiscreteOptions raw = RLMESH_DISCRETE_OPTIONS_INIT;
+    raw.start = options.start;
+    raw.dtype = static_cast<RLMeshDType>(options.dtype);
+    RLMeshSpace* out = nullptr;
+    RLMeshStatus status = rlmesh_discrete_new(n, &raw, &out);
+    if (status != RLMESH_OK) return detail::last(status);
+    return Discrete(out);
+  }
+  static Result<Discrete> from_spec(const SpaceSpec& spec) {
+    RLMeshSpace* out = nullptr;
+    RLMeshStatus status = rlmesh_discrete_from_spec(spec.raw(), &out);
+    if (status != RLMESH_OK) return detail::last(status);
+    return Discrete(out);
+  }
+#if defined(__cpp_exceptions)
+  explicit Discrete(int64_t n, DiscreteOptions options = {})
+      : Discrete(create(n, options).value_or_throw()) {}
+  explicit Discrete(const SpaceSpec& spec) : Discrete(from_spec(spec).value_or_throw()) {}
+#endif
+
+  int64_t n() const {
+    int64_t out = 0;
+    (void)rlmesh_discrete_n(ptr_, &out);
+    return out;
+  }
+  int64_t start() const {
+    int64_t out = 0;
+    (void)rlmesh_discrete_start(ptr_, &out);
+    return out;
+  }
+
+ private:
+  friend class Space;
+  explicit Discrete(RLMeshSpace* ptr) : Space(ptr) {}
+};
+
+/// Named child spaces (Python's `Dict`), read in declaration order.
+class Dict : public Space {
+ public:
+  /// `Dict(spaces)`: each spec is copied into a fresh child; keys sort.
+  static Result<Dict> create(const std::vector<std::pair<std::string, SpaceSpec>>& spaces) {
+    std::vector<RLMeshStr> keys;
+    std::vector<const RLMeshSpaceSpec*> specs;
+    keys.reserve(spaces.size());
+    specs.reserve(spaces.size());
+    for (const auto& entry : spaces) {
+      keys.push_back(detail::str(entry.first));
+      specs.push_back(entry.second.raw());
+    }
+    RLMeshSpace* out = nullptr;
+    RLMeshStatus status = rlmesh_dict_new(keys.data(), specs.data(), spaces.size(), &out);
+    if (status != RLMESH_OK) return detail::last(status);
+    return Dict(out);
+  }
+  static Result<Dict> from_spec(const SpaceSpec& spec) {
+    RLMeshSpace* out = nullptr;
+    RLMeshStatus status = rlmesh_dict_from_spec(spec.raw(), &out);
+    if (status != RLMESH_OK) return detail::last(status);
+    return Dict(out);
+  }
+#if defined(__cpp_exceptions)
+  explicit Dict(const std::vector<std::pair<std::string, SpaceSpec>>& spaces)
+      : Dict(create(spaces).value_or_throw()) {}
+  explicit Dict(const SpaceSpec& spec) : Dict(from_spec(spec).value_or_throw()) {}
+#endif
+
+  size_t size() const {
+    size_t out = 0;
+    (void)rlmesh_dict_len(ptr_, &out);
+    return out;
+  }
+  /// The `i`-th key, borrowed while any handle sharing the Dict lives.
+  std::string_view key_at(size_t i) const {
+    RLMeshStr out = {nullptr, 0};
+    if (rlmesh_dict_key_at(ptr_, i, &out) != RLMESH_OK) return {};
+    return std::string_view(out.data, out.len);
+  }
+  std::vector<std::string> keys() const {
+    std::vector<std::string> out;
+    for (size_t i = 0, n = size(); i < n; ++i) out.emplace_back(key_at(i));
+    return out;
+  }
+  std::vector<Space> values() const {
+    std::vector<Space> out;
+    for (size_t i = 0, n = size(); i < n; ++i) {
+      const RLMeshSpace* child = nullptr;
+      if (rlmesh_dict_value_at(ptr_, i, &child) == RLMESH_OK) out.push_back(borrow(child));
+    }
+    return out;
+  }
+  std::vector<std::pair<std::string, Space>> items() const {
+    std::vector<std::pair<std::string, Space>> out;
+    std::vector<Space> children = values();
+    for (size_t i = 0; i < children.size(); ++i) {
+      out.emplace_back(std::string(key_at(i)), std::move(children[i]));
+    }
+    return out;
+  }
+  std::optional<Space> get(std::string_view key) const {
+    const RLMeshSpace* child = nullptr;
+    if (rlmesh_dict_get(ptr_, detail::str(key), &child) != RLMESH_OK || child == nullptr) {
+      return std::nullopt;
+    }
+    return borrow(child);
+  }
+#if defined(__cpp_exceptions)
+  /// `d[key]`; throws `std::out_of_range` when absent.
+  Space operator[](std::string_view key) const {
+    std::optional<Space> child = get(key);
+    if (!child.has_value()) throw std::out_of_range("no Dict key " + std::string(key));
+    return std::move(*child);
+  }
+#endif
+  bool contains_key(std::string_view key) const {
+    return rlmesh_dict_contains_key(ptr_, detail::str(key));
+  }
+
+ private:
+  friend class Space;
+  explicit Dict(RLMeshSpace* ptr) : Space(ptr) {}
+  /// A shared handle to a borrowed child (the same space on every read).
+  static Space borrow(const RLMeshSpace* child) { return Space::adopt(rlmesh_space_clone(child)); }
+};
+
+inline std::optional<Box> Space::as_box() const {
+  if (kind() != SpaceKind::Box) return std::nullopt;
+  return Box(rlmesh_space_clone(ptr_));
+}
+inline std::optional<Discrete> Space::as_discrete() const {
+  if (kind() != SpaceKind::Discrete) return std::nullopt;
+  return Discrete(rlmesh_space_clone(ptr_));
+}
+inline std::optional<Dict> Space::as_dict() const {
+  if (kind() != SpaceKind::Dict) return std::nullopt;
+  return Dict(rlmesh_space_clone(ptr_));
+}
+
+}  // namespace spaces
+
+namespace ext {
+
+/// A Box with one bound pair per element (C++-only extra over
+/// `rlmesh_ext_box_elementwise_new`).
+inline Result<spaces::Box> box_elementwise(const std::vector<spaces::Bound>& low,
+                                           const std::vector<spaces::Bound>& high,
+                                           const std::vector<int64_t>& shape,
+                                           spaces::BoxOptions options = {}) {
+  if (low.size() != high.size()) {
+    return Error(RLMESH_ERR_INVALID_ARGUMENT, "Box low and high need the same length");
+  }
+  std::vector<RLMeshBound> raw_low;
+  std::vector<RLMeshBound> raw_high;
+  for (const spaces::Bound& bound : low) raw_low.push_back(bound.raw());
+  for (const spaces::Bound& bound : high) raw_high.push_back(bound.raw());
+  RLMeshBoxOptions raw = spaces::detail::box_options(options);
+  RLMeshSpace* out = nullptr;
+  RLMeshStatus status = rlmesh_ext_box_elementwise_new(
+      raw_low.data(), raw_high.data(), raw_low.size(), shape.data(), shape.size(), &raw, &out);
+  if (status != RLMESH_OK) return spaces::detail::last(status);
+  Result<spaces::Box> box =
+      spaces::Box::from_spec(spaces::SpaceSpec::copy_of(rlmesh_space_spec(out)));
+  rlmesh_space_free(out);
+  return box;
+}
+
+}  // namespace ext
+
 // ---- environment ------------------------------------------------------------
 
 /// What `Environment::reset` receives.

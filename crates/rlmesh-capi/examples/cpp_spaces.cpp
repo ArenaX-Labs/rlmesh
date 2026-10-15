@@ -1,0 +1,99 @@
+// The spaces C++ wrapper, Python's rlmesh.spaces: the parity spec's Shape
+// example, typed bounds, downcasts and error classes. Exits nonzero on the
+// first failed check.
+#include <rlmesh.hpp>
+
+#include <cmath>
+#include <cstdio>
+#include <limits>
+
+namespace {
+
+int failures = 0;
+
+void check(bool ok, const char* what, int line) {
+  if (!ok) {
+    std::fprintf(stderr, "cpp_spaces.cpp:%d: %s failed\n", line, what);
+    ++failures;
+  }
+}
+
+#define CHECK(cond) check((cond), #cond, __LINE__)
+
+}  // namespace
+
+int main() {
+  using namespace rlmesh::spaces;
+
+  // The Shape example (throwing constructors).
+  auto obs = Dict({{"pos", Box(-1.0, 1.0, {3})}, {"id", Discrete(4, {.start = 1})}});
+  CHECK(obs.seed(7) == 7);
+  rlmesh::Value x = obs.sample().value_or_throw();
+  CHECK(obs.contains(x));
+  CHECK(obs.keys() == (std::vector<std::string>{"id", "pos"}));
+  CHECK(obs.size() == 2);
+  CHECK(obs.contains_key("id") && !obs.contains_key("nope"));
+  CHECK(!obs.get("nope").has_value());
+
+  std::optional<Box> pos = obs["pos"].as_box();
+  CHECK(pos.has_value());
+  std::optional<BoxBound> low = pos->low();
+  CHECK(low.has_value() && std::get<Bound>(*low).as_float() == -1.0);
+  CHECK(pos->bounds_kind() == BoundsKind::Uniform);
+  CHECK(pos->to_string() == "Box(-1.0, 1.0, (3,), float32)");
+  CHECK(pos->shape() == (std::vector<int64_t>{3}));
+  CHECK(pos->dtype() == rlmesh::DType::Float32);
+  CHECK(rlmesh::to_string(rlmesh::DType::Float32) == "float32");
+  CHECK(to_string(SpaceKind::MultiBinary) == "multi_binary");
+
+  // Children are shared: the same space on every read.
+  CHECK(obs["pos"] == *pos);
+  CHECK(!obs.as_box().has_value());
+
+  // Typed bounds read back exactly.
+  Box wide = Box::create(uint64_t{0}, std::numeric_limits<uint64_t>::max(), {2},
+                         {rlmesh::DType::Uint64})
+                 .value_or_throw();
+  CHECK(std::get<Bound>(*wide.high()).as_uint() == std::numeric_limits<uint64_t>::max());
+  CHECK(wide.bounds_kind() == BoundsKind::TypedUniform);
+  bool threw_type = false;
+  try {
+    (void)std::get<Bound>(*wide.high()).as_int();
+  } catch (const rlmesh::TypeError&) {
+    threw_type = true;
+  }
+  CHECK(threw_type);
+
+  // Error classes: fractional integer bound, wrong-kind spec.
+  bool threw_value = false;
+  try {
+    Box bad(0.5, 3.0, {2}, {rlmesh::DType::Int32});
+  } catch (const rlmesh::ValueError&) {
+    threw_value = true;
+  }
+  CHECK(threw_value);
+  CHECK(!Discrete::from_spec(pos->spec()).has_value());
+  CHECK(Discrete::from_spec(pos->spec()).error().error_class() == RLMESH_ERROR_CLASS_VALUE_ERROR);
+
+  // Seeding reproduces; copies share the sampler.
+  Discrete d(1000);
+  Discrete copy = d;
+  d.seed(3);
+  rlmesh::Value a = d.sample().value_or_throw();
+  copy.seed(3);
+  rlmesh::Value b = d.sample().value_or_throw();
+  CHECK(a.ref().as_discrete().value_or(-1) == b.ref().as_discrete().value_or(-2));
+  CHECK(d.n() == 1000 && d.start() == 0);
+
+  // Per-element bounds (C++-only extra).
+  Box per = rlmesh::ext::box_elementwise({0, -5}, {1, 5}, {2}, {rlmesh::DType::Int64})
+                .value_or_throw();
+  CHECK(std::get<std::vector<Bound>>(*per.low())[1].as_int() == -5);
+
+  if (failures != 0) {
+    std::fprintf(stderr, "%d check(s) failed\n", failures);
+    return 1;
+  }
+  std::printf("cpp_spaces OK\n");
+  return 0;
+}
