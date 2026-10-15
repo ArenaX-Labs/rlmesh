@@ -15,6 +15,11 @@
 //! - **Serve a model.** Implement [`Policy`] (or write a predict closure),
 //!   build a [`Model`] from it, and host it with [`Model::serve`].
 //!
+//! - **Run a model against an env.** [`Model::run`] (or [`run`]) drives
+//!   episodes on the native loop and returns a [`RunResult`]; [`RunHooks`]
+//!   observe it. [`Model::session`] (or [`session`]) returns a [`Session`]
+//!   to drive by hand.
+//!
 //! Use [`RemoteEnv`] when you want to step an environment server directly.
 //!
 //! # Options structs
