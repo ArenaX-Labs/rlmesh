@@ -23,7 +23,12 @@ status and fill an owned handle. `rlmesh_value_clone` shares a reference;
 `rlmesh_value_free` releases it. Composite constructors retain references to
 children, so callers still free their own handles after success or failure.
 Dicts preserve insertion order, permit empty and embedded-NUL keys, and
-replace repeated keys in place. Metadata and InfoDict use the same Dict kind.
+replace repeated keys in place. Space sampling uses the facade Value conversion,
+so sampled Dicts follow their spec's declaration order (including a remote
+spec whose keys are not sorted). Space membership uses facade acceptance:
+extra Dict keys are ignored and a one-element integer Tensor can be a
+Discrete member; missing required keys and out-of-range values are refused.
+Metadata and InfoDict use the same Dict kind.
 
 Text and dict keys use length-bearing `RLMeshStr`. Reads of another kind
 return `RLMESH_ERR_TYPE`; numeric reads are strict. Missing keys and indices
@@ -36,7 +41,9 @@ with NULL/0 for a length query and no partial writes for a short buffer.
 Strides are in bytes. Clone, Value conversion and contiguous reshape share
 read-only storage; `rlmesh_tensor_copy` makes independent storage. An
 `rlmesh_value_as_tensor` result is an owned shared reference to free with
-`rlmesh_tensor_free`. The old tensor POD, DLPack dtype triple, tensor release
+`rlmesh_tensor_free`. The C++ compatibility Tensor shares that owned handle
+on copy, so its data, shape and strides survive the source Value and other
+Tensor copies. The old tensor POD, DLPack dtype triple, tensor release
 function and package-semver ABI accessors are removed. Use
 `rlmesh_build_info` for package identity. Package SONAME generation is read
 from `RLMESH_ABI_VERSION`, now 5.

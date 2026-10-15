@@ -21,7 +21,133 @@ static int str_eq(RLMeshStr s, const char* expected) {
   return s.len == strlen(expected) && memcmp(s.data, expected, s.len) == 0;
 }
 
+/* SPC-5 accepts facade Values that the strict wire validator rejects. */
+static void check_contains_acceptance(void) {
+  RLMeshDiscreteOptions options = RLMESH_DISCRETE_OPTIONS_INIT;
+  options.start = 2;
+  RLMeshDiscrete* discrete = NULL;
+  CHECK(rlmesh_discrete_new(4, &options, &discrete) == RLMESH_OK);
+  int64_t ints[] = {3, 4};
+  const size_t one[] = {1}, two[] = {2};
+  RLMeshTensor* tensor = NULL;
+  RLMeshValue* value = NULL;
+  CHECK(rlmesh_tensor_new(ints, sizeof(ints[0]), one, 1, RLMESH_DTYPE_INT64, &tensor) == RLMESH_OK);
+  CHECK(rlmesh_value_tensor(tensor, &value) == RLMESH_OK);
+  CHECK(rlmesh_space_contains(discrete, value));
+  rlmesh_value_free(value);
+  rlmesh_tensor_free(tensor);
+  ints[0] = 9;
+  CHECK(rlmesh_tensor_new(ints, sizeof(ints[0]), one, 1, RLMESH_DTYPE_INT64, &tensor) == RLMESH_OK);
+  CHECK(rlmesh_value_tensor(tensor, &value) == RLMESH_OK);
+  CHECK(!rlmesh_space_contains(discrete, value));
+  rlmesh_value_free(value);
+  rlmesh_tensor_free(tensor);
+  ints[0] = 3;
+  CHECK(rlmesh_tensor_new(ints, sizeof(ints), two, 1, RLMESH_DTYPE_INT64, &tensor) == RLMESH_OK);
+  CHECK(rlmesh_value_tensor(tensor, &value) == RLMESH_OK);
+  CHECK(!rlmesh_space_contains(discrete, value));
+  rlmesh_value_free(value);
+  rlmesh_tensor_free(tensor);
+
+  RLMeshStr keys[] = {rlmesh_str("required"), rlmesh_str("extra")};
+  const RLMeshSpaceSpec* specs[] = {rlmesh_space_spec(discrete)};
+  RLMeshDict* dict = NULL;
+  CHECK(rlmesh_dict_new(keys, specs, 1, &dict) == RLMESH_OK);
+  RLMeshValue *member = NULL, *extra = NULL;
+  CHECK(rlmesh_value_int(3, &member) == RLMESH_OK);
+  CHECK(rlmesh_value_text(rlmesh_str("ignored extra value"), &extra) == RLMESH_OK);
+  const RLMeshValue* values[] = {member, extra};
+  CHECK(rlmesh_value_dict(keys, values, 2, &value) == RLMESH_OK);
+  CHECK(rlmesh_space_contains(dict, value));
+  rlmesh_value_free(value);
+  CHECK(rlmesh_value_dict(keys + 1, values + 1, 1, &value) == RLMESH_OK);
+  CHECK(!rlmesh_space_contains(dict, value));
+  rlmesh_value_free(value);
+  rlmesh_value_free(member);
+  rlmesh_value_free(extra);
+  rlmesh_space_free(dict);
+  rlmesh_space_free(discrete);
+}
+
+/* SPC-10/11/13: sampling follows the spec and keys carry their byte lengths. */
+static void check_dict_key_bytes(void) {
+  const char embedded[] = {'k', '\0', 'v'};
+  const RLMeshStr keys[] = {{embedded, sizeof(embedded)}, {"k", 1}};
+  RLMeshDiscrete* leaf = NULL;
+  CHECK(rlmesh_discrete_new(8, NULL, &leaf) == RLMESH_OK);
+  const RLMeshSpaceSpec* specs[] = {rlmesh_space_spec(leaf), rlmesh_space_spec(leaf)};
+  RLMeshDict* dict = NULL;
+  CHECK(rlmesh_dict_new(keys, specs, 2, &dict) == RLMESH_OK);
+  const RLMeshSpace* child = NULL;
+  CHECK(rlmesh_dict_get(dict, keys[0], &child) == RLMESH_OK && child != NULL);
+  CHECK(rlmesh_dict_get(dict, keys[1], &child) == RLMESH_OK && child != NULL);
+  /* An explicit length distinguishes longer keys sharing the same prefix. */
+  const char missing_bytes[] = "k\0not-the-same";
+  const RLMeshStr missing = {missing_bytes, sizeof(missing_bytes) - 1};
+  CHECK(rlmesh_dict_get(dict, missing, &child) == RLMESH_OK && child == NULL);
+  RLMeshValue* sampled = NULL;
+  CHECK(rlmesh_space_sample(dict, &sampled) == RLMESH_OK);
+  CHECK(rlmesh_space_contains(dict, sampled));
+  for (size_t i = 0; i < 2; ++i) {
+    RLMeshStr declared = {NULL, 0}, actual = {NULL, 0};
+    CHECK(rlmesh_dict_key_at(dict, i, &declared) == RLMESH_OK);
+    CHECK(rlmesh_value_dict_key_at(sampled, i, &actual) == RLMESH_OK);
+    CHECK(actual.len == declared.len && memcmp(actual.data, declared.data, actual.len) == 0);
+  }
+  const RLMeshValue* borrowed = NULL;
+  CHECK(rlmesh_value_dict_get(sampled, keys[0], &borrowed) == RLMESH_OK && borrowed != NULL);
+  CHECK(rlmesh_value_kind(borrowed) == RLMESH_VALUE_INT);
+  rlmesh_value_free(sampled);
+
+  RLMeshValue *first = NULL, *second = NULL, *value = NULL;
+  CHECK(rlmesh_value_int(1, &first) == RLMESH_OK);
+  CHECK(rlmesh_value_int(2, &second) == RLMESH_OK);
+  const RLMeshValue* values[] = {first, second};
+  CHECK(rlmesh_value_dict(keys, values, 2, &value) == RLMESH_OK);
+  rlmesh_value_free(first);
+  rlmesh_value_free(second);
+  RLMeshStr key = {NULL, 0};
+  CHECK(rlmesh_value_dict_key_at(value, 0, &key) == RLMESH_OK && key.len == sizeof(embedded) &&
+        memcmp(key.data, embedded, sizeof(embedded)) == 0);
+  int64_t number = 0;
+  CHECK(rlmesh_value_dict_get(value, keys[0], &borrowed) == RLMESH_OK && borrowed != NULL);
+  CHECK(rlmesh_value_as_int(borrowed, &number) == RLMESH_OK && number == 1);
+  CHECK(rlmesh_value_dict_get(value, keys[1], &borrowed) == RLMESH_OK && borrowed != NULL);
+  CHECK(rlmesh_value_as_int(borrowed, &number) == RLMESH_OK && number == 2);
+  CHECK(rlmesh_value_dict_get(value, missing, &borrowed) == RLMESH_OK && borrowed == NULL);
+  bool present = false;
+  CHECK(rlmesh_value_dict_contains_key(value, keys[0], &present) == RLMESH_OK && present);
+  rlmesh_value_free(value);
+  rlmesh_space_free(dict);
+  rlmesh_space_free(leaf);
+}
+
+/* An extracted/cloned tensor owns storage independently from its source Value. */
+static void check_tensor_reference_lifetime(void) {
+  const int64_t elements[] = {7, 11};
+  const size_t shape[] = {2};
+  RLMeshTensor *original = NULL, *extracted = NULL, *copy = NULL;
+  RLMeshValue* value = NULL;
+  CHECK(rlmesh_tensor_new(elements, sizeof(elements), shape, 1, RLMESH_DTYPE_INT64, &original) ==
+        RLMESH_OK);
+  CHECK(rlmesh_value_tensor(original, &value) == RLMESH_OK);
+  CHECK(rlmesh_value_as_tensor(value, &extracted) == RLMESH_OK);
+  copy = rlmesh_tensor_clone(extracted);
+  CHECK(copy != NULL);
+  rlmesh_tensor_free(original);
+  rlmesh_value_free(value);
+  rlmesh_tensor_free(extracted);
+  const void* buffer = NULL;
+  size_t nbytes = 0;
+  CHECK(rlmesh_tensor_buffer(copy, &buffer, &nbytes) == RLMESH_OK && nbytes == sizeof(elements));
+  CHECK(memcmp(buffer, elements, sizeof(elements)) == 0);
+  rlmesh_tensor_free(copy);
+}
+
 int main(void) {
+  check_contains_acceptance();
+  check_dict_key_bytes();
+  check_tensor_reference_lifetime();
   /* The spec's Shape example. */
   RLMeshBox* pos = NULL;
   const int64_t shape[] = {3};

@@ -809,6 +809,74 @@ mod tests {
     use super::*;
 
     #[test]
+    fn sampled_dict_values_keep_remote_spec_order_and_nul_keys() {
+        use crate::value::handle::{
+            rlmesh_value_as_int, rlmesh_value_dict_get, rlmesh_value_dict_key_at,
+            rlmesh_value_dict_value_at, rlmesh_value_free,
+        };
+        use rlmesh_spaces::{DType, DictSpec, DiscreteSpec, SpaceKind, SpaceSpec};
+
+        // A remote spec may declare any key order. Dict::new sorts keys, so
+        // sampling a locally built Dict alone cannot detect the old BTreeMap bug.
+        let keys = ["z", "m\0key", "a"];
+        let numbers = [7, 11, 13];
+        let spec = RLMeshSpaceSpec(SpaceSpec {
+            shape: vec![],
+            dtype: DType::Float32,
+            spec: Some(SpaceKind::Dict(DictSpec {
+                keys: keys.iter().map(|s| (*s).to_owned()).collect(),
+                spaces: numbers
+                    .iter()
+                    .map(|&start| SpaceSpec {
+                        shape: vec![],
+                        dtype: DType::Int64,
+                        spec: Some(SpaceKind::Discrete(DiscreteSpec { n: 1, start })),
+                    })
+                    .collect(),
+            })),
+        });
+        let mut space = std::ptr::null_mut();
+        assert_eq!(rlmesh_dict_from_spec(&spec, &mut space), RLMeshStatus::Ok);
+        let mut sampled = std::ptr::null_mut();
+        assert_eq!(rlmesh_space_sample(space, &mut sampled), RLMeshStatus::Ok);
+        assert!(rlmesh_space_contains(space, sampled));
+        unsafe { rlmesh_space_free(space) };
+        drop(spec);
+        for (i, expected) in keys.iter().enumerate() {
+            let mut key = RLMeshStr {
+                data: std::ptr::null(),
+                len: 0,
+            };
+            assert_eq!(
+                rlmesh_value_dict_key_at(sampled, i, &mut key),
+                RLMeshStatus::Ok
+            );
+            assert_eq!(
+                unsafe { std::slice::from_raw_parts(key.data.cast::<u8>(), key.len) },
+                expected.as_bytes()
+            );
+            let mut by_key = std::ptr::null();
+            let mut by_index = std::ptr::null();
+            assert_eq!(
+                unsafe {
+                    rlmesh_value_dict_get(sampled, RLMeshStr::borrowed(expected), &mut by_key)
+                },
+                RLMeshStatus::Ok
+            );
+            assert_eq!(
+                rlmesh_value_dict_value_at(sampled, i, &mut by_index),
+                RLMeshStatus::Ok
+            );
+            assert!(!by_key.is_null());
+            assert_eq!(by_key, by_index);
+            let mut number = 0;
+            assert_eq!(rlmesh_value_as_int(by_key, &mut number), RLMeshStatus::Ok);
+            assert_eq!(number, numbers[i]);
+        }
+        unsafe { rlmesh_value_free(sampled) };
+    }
+
+    #[test]
     fn options_follow_struct_sizing() {
         let shape = [2i64];
         let low = RLMeshBound::write(Bound::Float(0.0));

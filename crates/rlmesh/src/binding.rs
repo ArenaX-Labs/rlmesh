@@ -91,12 +91,14 @@ pub fn box_elementwise(
     crate::spaces::Box::from_spec(spec)
 }
 
-/// Draw a wire value from `space` (the C ABI's values are still wire values).
+/// Draw a wire value for binding plumbing. Shared C values instead use
+/// [`crate::spaces::Space::sample`], which restores Dict declaration order.
 pub fn space_sample_wire(space: &crate::spaces::Space) -> Result<rlmesh_spaces::SpaceValue> {
     space.sample_wire()
 }
 
-/// Whether the wire `value` is a member of `space`.
+/// Strict wire membership for binding plumbing. Shared C values instead use
+/// [`crate::spaces::Space::contains`] and its broader facade Value acceptance.
 pub fn space_contains_wire(
     space: &crate::spaces::Space,
     value: &rlmesh_spaces::SpaceValue,

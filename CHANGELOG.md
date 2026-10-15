@@ -10,6 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ### Added
 
+- ABI-5 C/C++ regression coverage for facade space membership (extra Dict keys and one-element integer tensors), sampled Dict declaration order from nonalphabetical remote specs, length-bearing embedded-NUL dict construction/lookup, and tensor copies retaining storage after their source Value dies. These behaviors are already provided by the Value/tensor rebase; C++ Tensor copies share the opaque owned handle.
+
 - C RemoteEnv, RemoteVectorEnv and shared RemoteModel handles now use facade clients, sized constructor options and token extensions. Remote env accessors retain cache identity and remain usable during exclusive I/O/session borrows; selected editions read the facade's shared pin cell. Typed reset/step/render/shutdown/close, retained cancellation, remote run/session targets, and vector buffers with pre-I/O capacity checks are covered by live C gRPC tests.
 
 - C facade-backed `rlmesh_run` / `rlmesh_model_run`, Python-named sized RunOptions, local/address/server/factory targets and RANDOM_SAMPLE. RunHooks and retained RunContexts expose caller-thread callbacks, first-error delivery and typed step/result records. Immutable RunResult and TelemetryRow handles provide facade aggregates, repr and equality. C Sessions add lazy reset/predict/step/run, contexts, retained cancellation and close, with exclusive env borrowing and checked hook re-entry. Adapter-dependent instruction/view/read/advisory APIs remain deferred.

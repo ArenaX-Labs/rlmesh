@@ -743,7 +743,9 @@ constexpr RLMeshDType dtype_of() {
   }
 }
 
-/// Compatibility view over an owned ABI 5 tensor reference.
+/// Compatibility view over an owned ABI 5 tensor reference. Copies share the
+/// opaque handle and retain its storage independently from the source Value;
+/// shape/stride vectors belong to each copy.
 class Tensor {
  public:
   explicit Tensor(RLMeshTensor* raw) : raw_(raw, rlmesh_tensor_free) {
