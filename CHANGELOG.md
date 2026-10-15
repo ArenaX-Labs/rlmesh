@@ -113,6 +113,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ### Changed
 
+- A C or C++ env's failed callback reaches the client as `[INTERNAL] {op} failed: {message}`, as from Python and Rust, with `callback failed with status <n>` when the callback set no message (it read the raw message, or `environment {op} failed`). An env with no id serves `"UnknownEnv-v1"`, as Python's does (it was `"env"`). A render frame follows Python's lenient rule: any numeric image is cast to uint8, `[3, H, W]` and `[4, H, W]` encode too, and any other shape or kind is no frame instead of a failed render.
+
 - The remote text of a Python env failure is `{op} failed: {message}` with no type name: an env that raises `ValueError("x")` in `step` reaches the client as `[INTERNAL] step failed: x` (it read `[INTERNAL] step failed: ValueError: x`), and an authored `EnvironmentException("bad")` as `[INTERNAL] step failed: bad`, as from a Rust, C or C++ env; a model failure reaches the client as `[INTERNAL] x`. Servers send the message without the code and the client adds it once.
 
 - `EnvServer` raises `RLMeshException` (a `RuntimeError`) for a failed serve or close, from `serve()`, `wait()` and `shutdown()` alike, with the one text `serve failed: <message>` (`serve failed: close failed: boom`, `serve failed: close timed out after 5000ms`); a foreground `serve()` failure gains the `serve failed: ` prefix it lacked. Misuse (`wait()` before `start()`, a second `serve()`) stays `RuntimeError`.

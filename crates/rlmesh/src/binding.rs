@@ -176,3 +176,9 @@ pub fn foreground_sigterm_scope(
 ) -> crate::env::signals::SignalScope {
     crate::env::signals::enter_with(trigger, false)
 }
+
+/// PNG-encode a render frame by Python's lenient rule (ENV-5); `None` for a
+/// value that is no image.
+pub fn encode_render_frame(frame: &Value) -> Result<Option<Vec<u8>>> {
+    crate::env::batch::encode_frame(frame)
+}

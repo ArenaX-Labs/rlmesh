@@ -95,8 +95,9 @@ pub type RLMeshEnvStepFn = unsafe extern "C" fn(
     action: *const RLMeshValue,
     out: *mut RLMeshStepResult,
 ) -> c_int;
-/// Render callback: write an OWNED uint8 image value (`[H, W, 3]`, `[H, W, 4]`
-/// or `[H, W]`), or leave it NULL for "no frame". The capi PNG-encodes it,
+/// Render callback: write an OWNED numeric image value (cast to uint8;
+/// `[H, W, 3]`, `[H, W, 4]`, `[3, H, W]`, `[4, H, W]` or `[H, W]`), or leave it
+/// NULL for "no frame". The capi PNG-encodes it (any other shape is no frame),
 /// and takes it even when the callback fails.
 pub type RLMeshEnvRenderFn =
     unsafe extern "C" fn(user_data: *mut c_void, out_frame: *mut *mut RLMeshValue) -> c_int;
@@ -123,7 +124,7 @@ pub struct RLMeshEnvVtable {
 #[repr(C)]
 pub struct RLMeshEnvConfig {
     pub struct_size: usize,
-    /// Contract id, e.g. "ChronoArmReach-v0". NULL or "" = "env".
+    /// Contract id, e.g. "ChronoArmReach-v0". NULL or "" = "UnknownEnv-v1".
     pub id: *const c_char,
     /// Required.
     pub observation_space: *const RLMeshSpaceSpec,
@@ -308,14 +309,17 @@ impl CEnv {
 
 /// The failed callback's error, read on the lane thread it ran on. A callback
 /// that set `recoverable` fails only this request; otherwise it ends the session.
-fn callback_error(op: &str) -> EnvRuntimeError {
+/// The client reads `{op} failed: {message}` (ENV-35), the message being the
+/// one the callback set, or `callback failed with status <n>` (R-12).
+fn callback_error(op: &str, status: c_int) -> EnvRuntimeError {
     // Any class reaches the model as an env failure across the wire; only
     // RECOVERABLE_ENVIRONMENT_EXCEPTION (its recorded flag) keeps the session.
     let _ = crate::abi::status::take_callback_class();
     let mut message = last_error_message();
     if message.is_empty() {
-        message = format!("environment {op} failed");
+        message = format!("callback failed with status {status}");
     }
+    let message = format!("{op} failed: {message}");
     if last_error_recoverable() {
         EnvRuntimeError::Recoverable(message)
     } else {
@@ -353,35 +357,21 @@ fn json_object(text: &str) -> Result<MetaMap, String> {
     }
 }
 
-/// PNG-encode a uint8 image value: `[H, W, 3]`, `[H, W, 4]`, or `[H, W]`.
-fn encode_png(frame: &SpaceValue) -> Result<Vec<u8>, EnvRuntimeError> {
+/// PNG-encode a render frame by Python's lenient rule (ENV-5): any numeric Box
+/// value cast to uint8; `[H, W, 3]`, `[H, W, 4]`, `[3, H, W]`, `[4, H, W]` and
+/// `[H, W]` encode, and any other shape or kind gives no frame.
+fn encode_png(frame: &SpaceValue) -> Result<Option<Vec<u8>>, EnvRuntimeError> {
     let SpaceValue::Box(tensor) = frame else {
-        return Err(EnvRuntimeError::InvalidValue(
-            "render frame must be a Box value".to_string(),
-        ));
+        return Ok(None);
     };
-    if tensor.dtype() != DType::Uint8 {
-        return Err(EnvRuntimeError::InvalidValue(
-            "render frame must be uint8".to_string(),
-        ));
-    }
-    let dim = |d: i64| u32::try_from(d).unwrap_or(0);
-    let (width, height, color) = match tensor.shape() {
-        [h, w, 3] => (dim(*w), dim(*h), ExtendedColorType::Rgb8),
-        [h, w, 4] => (dim(*w), dim(*h), ExtendedColorType::Rgba8),
-        [h, w] => (dim(*w), dim(*h), ExtendedColorType::L8),
-        shape => {
-            return Err(EnvRuntimeError::InvalidValue(format!(
-                "render frame shape {shape:?} is not [H, W, 3], [H, W, 4] or [H, W]"
-            )));
-        }
-    };
-    let mut encoded = Vec::new();
-    PngEncoder::new(&mut encoded)
-        .write_image(&tensor.to_contiguous_bytes(), width, height, color)
+    let tensor = rlmesh::binding::tensor_from_core(tensor.clone())
         .map_err(|err| EnvRuntimeError::Runtime(format!("encode render frame: {err}")))?;
-    Ok(encoded)
+    rlmesh::binding::encode_render_frame(&rlmesh::Value::Tensor(tensor))
+        .map_err(|err| EnvRuntimeError::Runtime(format!("encode render frame: {err}")))
 }
+
+/// The id an env with none serves (ENV-6), as Python's.
+const UNKNOWN_ENV_ID: &str = "UnknownEnv-v1";
 
 /// Call `reset` and read its result back: one dispatchable unit.
 fn call_reset(
@@ -418,7 +408,7 @@ fn call_reset(
     let status = unsafe { reset(user_data.0, &args, &mut out) };
     let observation = take_value(out.observation);
     if status != 0 {
-        return Err(callback_error("reset"));
+        return Err(callback_error("reset", status));
     }
     Ok(ResetResult {
         observation,
@@ -448,7 +438,7 @@ fn call_step(
     let status = unsafe { step(user_data.0, action, &mut out) };
     let observation = take_value(out.observation);
     if status != 0 {
-        return Err(callback_error("step"));
+        return Err(callback_error("step", status));
     }
     Ok(StepResult {
         observation,
@@ -470,7 +460,7 @@ fn call_render(
     let status = unsafe { render(user_data.0, &mut frame) };
     let frame = take_value(frame);
     if status != 0 {
-        return Err(callback_error("render"));
+        return Err(callback_error("render", status));
     }
     Ok(frame)
 }
@@ -520,8 +510,10 @@ impl Env for CEnv {
             .await?;
         Ok(RenderResult {
             frame: frame
-                .map(|frame| encode_png(&frame).map(|frame| RenderFrame { frame }))
-                .transpose()?,
+                .map(|frame| encode_png(&frame))
+                .transpose()?
+                .flatten()
+                .map(|frame| RenderFrame { frame }),
         })
     }
 
@@ -759,7 +751,7 @@ fn build_contract(config: &EnvConfig) -> Result<(SpaceSpec, SpaceSpec, EnvContra
 
     let id = opt_str(config.id, "id")?
         .filter(|id| !id.is_empty())
-        .unwrap_or("env")
+        .unwrap_or(UNKNOWN_ENV_ID)
         .to_string();
     let render_mode = opt_str(config.render_mode, "render_mode")?
         .unwrap_or_default()
@@ -1463,12 +1455,24 @@ mod tests {
                 .await
                 .expect("step on the reopened session");
             client.detach();
-            // The env keeps serving new clients too.
+            // Detach is local-only: wait until the server observes the old
+            // stream ending and releases its exclusive Join slot. Only retry
+            // that transient refusal; any other reset failure is unexpected.
             let mut client = RemoteEnv::connect(&address).await.expect("reconnect");
-            client
-                .reset(ResetRequest::default())
-                .await
-                .expect("reset on a new session");
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                match client.reset(ResetRequest::default()).await {
+                    Ok(_) => break,
+                    Err(rlmesh::Error::Connection(message))
+                        if message.starts_with(
+                            "FailedPrecondition: environment already has an active Join session;",
+                        ) && tokio::time::Instant::now() < deadline =>
+                    {
+                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                    }
+                    Err(error) => panic!("reset on a new session: {error}"),
+                }
+            }
             client
                 .step(StepRequest {
                     action: Some(action(0.5)),
@@ -1667,12 +1671,18 @@ mod tests {
     }
 
     #[test]
-    fn png_encoding_rejects_non_images() {
+    fn png_encoding_follows_python_s_lenient_rule() {
+        // A float image is cast to uint8, as NumPy's astype does.
         let tensor = Tensor::from_vec(vec![0; 4 * 4 * 4], vec![4, 4], DType::Float32).unwrap();
-        assert!(encode_png(&SpaceValue::Box(tensor)).is_err());
-        assert!(encode_png(&SpaceValue::Discrete(1)).is_err());
+        assert!(encode_png(&SpaceValue::Box(tensor)).unwrap().is_some());
+        let chw = Tensor::from_vec(vec![7; 3 * 2 * 2], vec![3, 2, 2], DType::Uint8).unwrap();
+        assert!(encode_png(&SpaceValue::Box(chw)).unwrap().is_some());
+        // Any other shape or kind is no frame, not an error.
+        let flat = Tensor::from_vec(vec![1; 5], vec![5], DType::Uint8).unwrap();
+        assert!(encode_png(&SpaceValue::Box(flat)).unwrap().is_none());
+        assert!(encode_png(&SpaceValue::Discrete(1)).unwrap().is_none());
         let gray = Tensor::from_vec(vec![9; 3 * 5], vec![3, 5], DType::Uint8).unwrap();
-        assert!(encode_png(&SpaceValue::Box(gray)).is_ok());
+        assert!(encode_png(&SpaceValue::Box(gray)).unwrap().is_some());
     }
 
     #[test]

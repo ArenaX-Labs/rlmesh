@@ -7,7 +7,7 @@
 //! construction and builds the served [`EnvContract`](crate::specs::EnvContract).
 //! Authoring is sync; a lane runs on its own thread for the server's life.
 
-mod batch;
+pub(crate) mod batch;
 mod client;
 pub(crate) mod envelope;
 mod factory;

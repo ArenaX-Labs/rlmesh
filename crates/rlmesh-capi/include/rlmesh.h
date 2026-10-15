@@ -1015,10 +1015,13 @@ typedef struct RLMeshStepResult {
  * `render` return 0 == RLMESH_OK, or nonzero after rlmesh_callback_set_error
  * to fail that request. With `recoverable` set, only the request fails and the
  * client's session stays usable; otherwise the session ends (the client's next
- * reset opens a new one, and the env keeps serving). `step` gets the action
- * borrowed (NULL when the request carries none). `render` writes an OWNED uint8
- * image value of shape [H, W, 3], [H, W, 4] or [H, W] (or leaves it NULL for no
- * frame); the capi PNG-encodes it. `close` fires once per lane: when the server
+ * reset opens a new one, and the env keeps serving). The client reads
+ * "[INTERNAL] {op} failed: {message}", the message the callback set, or
+ * "callback failed with status <n>" when it set none. `step` gets the action
+ * borrowed (NULL when the request carries none). `render` writes an OWNED
+ * numeric image value (cast to uint8) of shape [H, W, 3], [H, W, 4],
+ * [3, H, W], [4, H, W] or [H, W], or leaves it NULL for no frame; the capi
+ * PNG-encodes it, and any other shape is no frame. `close` fires once per lane: when the server
  * stops, or in rlmesh_env_free for an env that never served.
  *
  * Out-parameter ownership: the capi takes ownership of any value left in an
@@ -1163,7 +1166,7 @@ static inline const char* rlmesh_detail_msvc_host_runtime(void) {
  * docs/specs/env_tags.v1.md. */
 typedef struct RLMeshEnvConfig {
   size_t struct_size;
-  const char* id;                           /* contract id; NULL/"" = "env" */
+  const char* id;                           /* contract id; NULL/"" = "UnknownEnv-v1" */
   const RLMeshSpaceSpec* observation_space; /* required */
   const RLMeshSpaceSpec* action_space;      /* required */
   const char* adapter_tags_json;            /* NULL = untagged */
