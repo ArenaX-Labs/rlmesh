@@ -1127,3 +1127,18 @@ def test_envelope_bounds_join_like_the_live_spaces() -> None:
             tags_json, live.observation_space, live.action_space
         )
         assert [str(a) for a in from_envelope] == [str(a) for a in from_live]
+
+
+def test_describe_wrapped_predict_callable_keeps_model_kind() -> None:
+    import rlmesh
+
+    def predict(obs):
+        return 0
+
+    model = rlmesh.Model(predict)
+    try:
+        envelope = rlmesh.describe(model)
+        assert envelope["kind"] == "model"
+        assert envelope["target"]["qualname"].endswith(predict.__qualname__)
+    finally:
+        model.close()

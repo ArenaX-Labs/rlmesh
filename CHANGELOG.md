@@ -67,6 +67,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ### Fixed
 
+- `describe(Model(predict_callable))` preserves the wrapper's model kind and reads declarations from the callable.
+- `Discrete(1, start=2**63 - 1).sample()` returns its sole member without overflowing. Box membership accepts ranges, generators, and `tolist()` wrappers and checks nested namedtuple shapes consistently.
+
 - Retained Python run contexts expose a local env render source only during hook dispatch on that thread. Saved render callables reject use outside dispatch, during another session operation, after session close or drop, and during a recursive render. Direct idle `Session.frame_sources()` and remote session contexts still render.
 
 - A single `Previous(...)` model input retains `source="action"` when read back from dict or JSON; a nonzero initial fill no longer fails reconstruction as an observation-source state.
@@ -145,6 +148,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - Ctrl-C during a served model's `predict` or route close (a `RemoteModel` session) raises `KeyboardInterrupt` promptly, as it does during an env call, instead of after the request returns.
 
 ### Changed
+
+- Integer Box bounds must fit together in a signed or unsigned 64-bit range (SPC-P6). Bound pairs such as `Box(-1, 2**63, [1], "int64")` and `Box(0, 2**64, [1], "uint64")` raise `ValueError` instead of rounding or saturating.
 
 - `Model.run`'s hooks run on the thread that called `Model.run`, between the native loop's steps, instead of on a worker thread of the extension's blocking pool; they still run one at a time with the env idle, and the first exception still aborts the run. A hook's own sync rlmesh calls (a `RemoteModel` session's `predict`, a `RemoteEnv.render`) and thread-bound state (a GL context, `threading.local`) now see the caller's thread.
 

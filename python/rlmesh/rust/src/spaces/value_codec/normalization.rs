@@ -6,7 +6,7 @@ use pyo3::types::PyAny;
 /// This is intentionally narrow: it unwraps namedtuples and array/scalar wrapper
 /// types into plain Python containers or scalars before space-specific encoding
 /// applies shape, dtype, and conformance checks.
-pub(super) fn normalize_space_value_input<'py>(
+pub(crate) fn normalize_space_value_input<'py>(
     value: &Bound<'py, PyAny>,
 ) -> PyResult<Bound<'py, PyAny>> {
     normalize_python_wrapper(value)
