@@ -202,7 +202,7 @@ $CXX -std=c++20 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" \
   -L "$target" -lrlmesh_capi -Wl,-rpath,"$repo_root/$target" -o "$tmp/cpp_payload"
 "$tmp/cpp_payload"
 echo "==> C++ exception cleanup and lazy adapter tables"
-for fixture in cpp_box_cleanup; do
+for fixture in cpp_box_cleanup cpp_constants; do
   $CXX -std=c++20 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" \
     "crates/rlmesh-capi/examples/$fixture.cpp" -L "$target" -lrlmesh_capi \
     -Wl,-rpath,"$repo_root/$target" -o "$tmp/$fixture"

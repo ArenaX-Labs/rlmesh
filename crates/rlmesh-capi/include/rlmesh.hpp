@@ -3099,22 +3099,28 @@ inline constexpr const char* RIGHT_LEG = "right_leg";
 inline constexpr const char* ENV_METADATA_KEY = "rlmesh.adapters.v1.env_tags";
 inline constexpr const char* MODEL_METADATA_KEY = "rlmesh.adapters.v1.model_spec";
 inline constexpr const char* ENV_BRANCH_METADATA_KEY = "rlmesh.adapters.v1.env_branch";
-inline const std::vector<const char*> PARTS = [] {
-  std::vector<const char*> v{};
-  for (size_t i = 0; i < rlmesh_adapters_parts_len(); ++i)
-    v.push_back(rlmesh_adapters_parts_get(i));
-  return v;
-}();
-inline const std::vector<std::pair<RotationEncoding, uint32_t>> ROTATION_DIMS = [] {
-  std::vector<std::pair<RotationEncoding, uint32_t>> v{};
-  for (size_t i = 0; i < rlmesh_adapters_rotation_dims_len(); ++i) {
-    RLMeshRotationEncoding e{};
-    uint32_t n = 0;
-    detail::check(rlmesh_adapters_rotation_dims_get(i, &e, &n));
-    v.emplace_back(static_cast<RotationEncoding>(e), n);
-  }
-  return v;
-}();
+inline const std::vector<const char*>& PARTS() {
+  static const auto values = [] {
+    std::vector<const char*> v{};
+    for (size_t i = 0; i < rlmesh_adapters_parts_len(); ++i)
+      v.push_back(rlmesh_adapters_parts_get(i));
+    return v;
+  }();
+  return values;
+}
+inline const std::vector<std::pair<RotationEncoding, uint32_t>>& ROTATION_DIMS() {
+  static const auto values = [] {
+    std::vector<std::pair<RotationEncoding, uint32_t>> v{};
+    for (size_t i = 0; i < rlmesh_adapters_rotation_dims_len(); ++i) {
+      RLMeshRotationEncoding e{};
+      uint32_t n = 0;
+      detail::check(rlmesh_adapters_rotation_dims_get(i, &e, &n));
+      v.emplace_back(static_cast<RotationEncoding>(e), n);
+    }
+    return v;
+  }();
+  return values;
+}
 class AdapterBase : public std::enable_shared_from_this<AdapterBase> {
  public:
   virtual ~AdapterBase() = default;
