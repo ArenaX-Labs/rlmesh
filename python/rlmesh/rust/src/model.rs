@@ -630,12 +630,13 @@ fn report_episodes_to_py(
     Ok(episodes.into_any().unbind())
 }
 
-/// Run the in-process worker loop with Python signal delivery: the run future
-/// races a poll interval that re-attaches only to check for pending signals
-/// (Ctrl-C), cancelling the runtime session and re-raising the signal's
-/// exception -- the same pattern the remote-env client uses (`run_rpc`), so a
-/// long eval aborts between operations instead of blocking SIGINT until the
-/// final episode.
+/// Run the in-process worker loop on the facade's sync driver (RUN-8): the
+/// calling thread polls the run in segments and, between them, runs each
+/// hook and each Python signal check itself, outside any async context, so a
+/// hook's sync rlmesh calls work and SIGINT is checked on the thread that
+/// called `Model.run`. A pending signal (Ctrl-C) cancels the runtime session
+/// and re-raises the signal's exception, so a long eval aborts between
+/// operations instead of blocking SIGINT until the final episode.
 fn run_local_blocking(
     py: Python<'_>,
     handler: AdaptedModelHandler,
@@ -649,15 +650,17 @@ fn run_local_blocking(
     }
     let cancellation = rlmesh::binding::CancellationToken::new();
     let run_token = cancellation.clone();
+    let (jobs, mut queue) = rlmesh::binding::model::caller_jobs();
     // A hook exception cancels the run through this same token; the relay keeps
     // the exception so it, not the cancellation, is what the caller sees.
-    let hooks = relay.map(|relay| Arc::new(PyRunHooks::new(relay, cancellation.clone())));
+    let hooks =
+        relay.map(|relay| Arc::new(PyRunHooks::new(relay, cancellation.clone(), jobs.clone())));
     let runtime_hooks: Arc<dyn rlmesh::binding::RuntimeHooks> = match &hooks {
         Some(hooks) => Arc::clone(hooks) as Arc<dyn rlmesh::binding::RuntimeHooks>,
         None => Arc::new(rlmesh::binding::NoopRuntimeHooks),
     };
     let outcome = py.detach(|| {
-        model_runtime().block_on(async move {
+        let run = async move {
             let run =
                 ModelWorker::new(handler).run_local_hooked_async(options, run_token, runtime_hooks);
             let mut run = std::pin::pin!(run);
@@ -667,7 +670,10 @@ fn run_local_blocking(
                 tokio::select! {
                     result = &mut run => return RunOutcome::Done(result),
                     _ = poll.tick() => {
-                        if let Err(err) = Python::attach(|py| py.check_signals()) {
+                        let checked = jobs
+                            .run(|| Python::attach(|py| py.check_signals()))
+                            .await;
+                        if let Ok(Err(err)) = checked {
                             cancellation.cancel();
                             let _ = (&mut run).await;
                             return RunOutcome::Signal(err);
@@ -675,7 +681,8 @@ fn run_local_blocking(
                     }
                 }
             }
-        })
+        };
+        rlmesh::binding::model::block_on_caller(run, &mut queue)
     });
     if let Some(err) = hooks.as_ref().and_then(|hooks| hooks.take_error()) {
         return Err(err);

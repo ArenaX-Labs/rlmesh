@@ -119,6 +119,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ### Changed
 
+- `Model.run`'s hooks run on the thread that called `Model.run`, between the native loop's steps, instead of on a worker thread of the extension's blocking pool; they still run one at a time with the env idle, and the first exception still aborts the run. A hook's own sync rlmesh calls (a `RemoteModel` session's `predict`, a `RemoteEnv.render`) and thread-bound state (a GL context, `threading.local`) now see the caller's thread.
+
 - `view="http:PORT"` takes only ASCII digits for the port: a sign, `_` separators, inner spaces and other scripts' digits, which `int()` accepted, raise `ValueError`.
 
 - `rlmesh.run(local_model, env, view=False)` is accepted as `view=None` is, since `False` turns the viewer off; only a view that resolves to a viewer raises `TypeError` for a local model, and a `view` of the wrong type still raises `TypeError`.

@@ -42,6 +42,42 @@ pub fn new_model(
     crate::model::construct(policy, decl, options, config)
 }
 
+/// Runs closures on the thread blocked in [`block_on_caller`]: a binding's
+/// hooks and signal checks on the thread that called a sync run (RUN-8).
+#[derive(Clone)]
+pub struct CallerJobs(crate::run::drive::CallerPort);
+
+/// The caller's end of [`CallerJobs`].
+pub struct CallerQueue(crate::run::drive::CallerQueue);
+
+/// A job port and its queue.
+pub fn caller_jobs() -> (CallerJobs, CallerQueue) {
+    let (port, queue) = crate::run::drive::caller_channel();
+    (CallerJobs(port), CallerQueue(queue))
+}
+
+impl CallerJobs {
+    /// Run `f` on the caller's thread and await its result; fails with the
+    /// `RuntimeError` class once the caller has stopped driving.
+    pub async fn run<R: Send + 'static>(
+        &self,
+        f: impl FnOnce() -> R + Send + 'static,
+    ) -> Result<R> {
+        self.0.call(move |_side| Ok(f())).await
+    }
+}
+
+/// Poll `future` on this thread in segments (inside the library runtime's
+/// context), running each job between segments outside any async execution
+/// context: the facade's sync driver.
+pub fn block_on_caller<F: std::future::Future>(future: F, queue: &mut CallerQueue) -> F::Output {
+    let mut side = crate::run::drive::CallerSide {
+        env: None,
+        hooks: None,
+    };
+    crate::run::drive::block_on_caller(future, &mut queue.0, &mut side)
+}
+
 /// Drive `model` in-process against a remote env until the run's episode
 /// budget is spent: the binding's run path until `run` lands. The run
 /// borrows the model and never closes it.

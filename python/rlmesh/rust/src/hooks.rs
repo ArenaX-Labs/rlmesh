@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
+use rlmesh::binding::model::CallerJobs;
 use rlmesh::binding::{
     ActionReceivedEvent, CancellationToken, EpisodeCompletedEvent, EpisodeStartedEvent, HookError,
     ObservationEmittedEvent, RuntimeHooks, StepCompletedEvent,
@@ -20,19 +21,22 @@ type RelayCall = Box<dyn for<'py> FnOnce(Python<'py>, &Bound<'py, PyAny>) -> PyR
 
 /// Delivers the runtime's per-episode events to a Python relay object as plain
 /// data, one method call per event, each awaited inline by the driver (so the
-/// env is idle while a hook runs). The first exception a call raises is kept
-/// with its original type and cancels the run; every later event is dropped.
+/// env is idle while a hook runs) and run on the thread that called
+/// `Model.run` (RUN-8). The first exception a call raises is kept with its
+/// original type and cancels the run; every later event is dropped.
 pub(crate) struct PyRunHooks {
     relay: Arc<Py<PyAny>>,
     cancellation: CancellationToken,
+    jobs: CallerJobs,
     error: Mutex<Option<PyErr>>,
 }
 
 impl PyRunHooks {
-    pub(crate) fn new(relay: Py<PyAny>, cancellation: CancellationToken) -> Self {
+    pub(crate) fn new(relay: Py<PyAny>, cancellation: CancellationToken, jobs: CallerJobs) -> Self {
         Self {
             relay: Arc::new(relay),
             cancellation,
+            jobs,
             error: Mutex::new(None),
         }
     }
@@ -47,14 +51,11 @@ impl PyRunHooks {
             return;
         }
         let relay = Arc::clone(&self.relay);
-        let result =
-            tokio::task::spawn_blocking(move || Python::attach(|py| call(py, relay.bind(py))))
-                .await
-                .unwrap_or_else(|err| {
-                    Err(PyRuntimeError::new_err(format!(
-                        "run hook task panicked: {err}"
-                    )))
-                });
+        let result = self
+            .jobs
+            .run(move || Python::attach(|py| call(py, relay.bind(py))))
+            .await
+            .unwrap_or_else(|err| Err(PyRuntimeError::new_err(err.to_string())));
         if let Err(err) = result {
             self.error
                 .lock()
