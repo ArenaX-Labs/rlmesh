@@ -2,6 +2,24 @@
 // cpp_parity.cpp. This translation unit also instantiates every policy corner.
 #include <rlmesh.hpp>
 
+rlmesh::adapters::ModelSpec model_spec();
+struct Planner {
+  static rlmesh::types::SpecArg spec() { return model_spec(); }
+  static constexpr std::optional<uint32_t> native_chunk = 8;
+  static constexpr std::array load_keys{rlmesh::types::LoadKey{"checkpoint"}};
+  void load(const rlmesh::Kwargs&) {}
+  rlmesh::Value predict(const rlmesh::Value&) { return 0; }
+  rlmesh::Value predict_chunk(const rlmesh::Value&, uint32_t horizon,
+                              const rlmesh::types::PredictContext& context) {
+    ++context.state.get_or_emplace<uint64_t>("plans");
+    return rlmesh::Value::list(std::vector<rlmesh::Value>(horizon, 0));
+  }
+};
+void planner_shape(const rlmesh::Kwargs& config) {
+  auto model = rlmesh::Model::from_config<Planner>(config);
+  model.serve("tcp://0.0.0.0:50051");
+}
+
 struct Greedy {
   rlmesh::Value predict(const rlmesh::Value& observation) {
     (void)observation;

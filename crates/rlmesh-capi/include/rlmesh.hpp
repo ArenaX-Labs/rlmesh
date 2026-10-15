@@ -3807,6 +3807,7 @@ class EnvFactory : public EnvFactoryBase {
   void close() {}
 };
 namespace types {
+using SpecArg = rlmesh::SpecArg;
 struct LoadKey {
   std::string_view name{};
   bool required = false;
