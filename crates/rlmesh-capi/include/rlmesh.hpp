@@ -243,17 +243,55 @@ template <class T>
 const T* ptr(const std::optional<T>& v) {
   return v ? &*v : nullptr;
 }
+// Hidden visibility keeps this tag local to each shared-library/runtime domain.
+#if defined(__GNUC__) || defined(__clang__)
+[[gnu::visibility("hidden")]]
+#endif
+inline const unsigned char exception_payload_tag{};
+struct ExceptionPayload {
+  static constexpr uint64_t MAGIC = 0x524c4d4350503230ULL;
+  uint64_t magic = MAGIC;
+  const void* tag = &exception_payload_tag;
+  std::exception_ptr exception;
+  explicit ExceptionPayload(std::exception_ptr e) noexcept : exception(std::move(e)) {}
+};
+struct PayloadOwner {
+  void* pointer;
+  void (*free)(void*);
+  ~PayloadOwner() {
+    if (pointer && free) free(pointer);
+  }
+};
+#if defined(__GNUC__) || defined(__clang__)
+[[gnu::visibility("hidden")]]
+#endif
+inline void free_exception_payload(void* p) noexcept {
+  delete static_cast<ExceptionPayload*>(p);
+}
+#if defined(__GNUC__) || defined(__clang__)
+[[gnu::visibility("hidden")]]
+#endif
 inline void check(RLMeshStatus status) {
   if (status == RLMESH_OK) return;
-  if (auto* payload = static_cast<std::exception_ptr*>(rlmesh_ext_last_error_take_payload())) {
-    std::unique_ptr<std::exception_ptr> owned(payload);
-    std::rethrow_exception(*owned);
-  }
   const auto cls = rlmesh_last_error_class();
   const std::string message(sv(rlmesh_last_error_message()));
   const bool recoverable = rlmesh_last_error_is_recoverable() != 0;
   int32_t code = RLMESH_ERROR_CODE_INTERNAL;
   (void)rlmesh_last_error_code(&code);
+  void* payload = nullptr;
+  void (*free)(void*) = nullptr;
+  const void* tag = nullptr;
+  if (rlmesh_ext_last_error_take_payload_owned(&payload, &free, &tag) == RLMESH_OK) {
+    PayloadOwner owned{payload, free};
+    // Never inspect foreign payload bytes, even if their allocation is smaller
+    // than this envelope. Their originating owner's deleter handles disposal.
+    if (payload && tag == &exception_payload_tag) {
+      const auto* envelope = static_cast<const ExceptionPayload*>(payload);
+      if (envelope->magic == ExceptionPayload::MAGIC && envelope->tag == &exception_payload_tag &&
+          envelope->exception)
+        std::rethrow_exception(envelope->exception);
+    }
+  }
   switch (cls) {
     case RLMESH_ERROR_CLASS_PROTOCOL_EXCEPTION:
       throw ProtocolException(message);
@@ -283,6 +321,9 @@ inline void check(RLMeshStatus status) {
       throw RLMeshException(message);
   }
 }
+#if defined(__GNUC__) || defined(__clang__)
+[[gnu::visibility("hidden")]]
+#endif
 inline RLMeshStatus record_exception(RLMeshStatus kind = RLMESH_ERR_INTERNAL) noexcept {
   const auto exception = std::current_exception();
   try {
@@ -325,9 +366,9 @@ inline RLMeshStatus record_exception(RLMeshStatus kind = RLMESH_ERR_INTERNAL) no
   }
   // Allocation failure must not escape the C boundary either.
   try {
-    auto payload = std::make_unique<std::exception_ptr>(exception);
-    rlmesh_ext_callback_set_error_payload(
-        payload.get(), [](void* p) { delete static_cast<std::exception_ptr*>(p); });
+    auto payload = std::make_unique<ExceptionPayload>(exception);
+    rlmesh_ext_callback_set_tagged_error_payload(payload.get(), free_exception_payload,
+                                                 &exception_payload_tag);
     payload.release();
   } catch (...) {
   }

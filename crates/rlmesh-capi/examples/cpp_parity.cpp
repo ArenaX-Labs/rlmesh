@@ -371,6 +371,53 @@ void exceptions() {
   a.get();
   b.get();
 }
+void foreign_error_payloads() {
+  static int freed = 0;
+  static const unsigned char foreign_tag = 0;
+  RLMeshModelVtable vt = RLMESH_MODEL_VTABLE_INIT;
+  vt.predict = [](void*, const RLMeshValue*, const RLMeshPredictContext*, RLMeshValue**) {
+    return RLMESH_OK;
+  };
+  vt.load = [](void* user, const RLMeshValue*) {
+    auto kind = *static_cast<int*>(user);
+    rlmesh_callback_set_error_class(RLMESH_ERROR_CLASS_VALUE_ERROR, "foreign payload");
+    if (kind == 2) {
+      auto* p = new rlmesh::detail::ExceptionPayload(std::make_exception_ptr(OwnError(99)));
+      p->magic = 0;
+      rlmesh_ext_callback_set_tagged_error_payload(
+          p,
+          [](void* value) {
+            ++freed;
+            delete static_cast<rlmesh::detail::ExceptionPayload*>(value);
+          },
+          &rlmesh::detail::exception_payload_tag);
+    } else {
+      auto* p = new unsigned char(7);  // Too small to inspect as a C++ envelope.
+      auto release = [](void* value) {
+        ++freed;
+        delete static_cast<unsigned char*>(value);
+        rlmesh_callback_set_error_class(RLMESH_ERROR_CLASS_RUNTIME_ERROR, "deleter reentered");
+      };
+      if (kind == 1)
+        rlmesh_ext_callback_set_tagged_error_payload(p, release, &foreign_tag);
+      else
+        rlmesh_ext_callback_set_error_payload(p, release);
+    }
+    return RLMESH_ERR_INVALID_ARGUMENT;
+  };
+  for (int kind = 0; kind < 3; ++kind) {
+    RLMeshModel* model = nullptr;
+    auto status = rlmesh_model_new(&vt, &kind, nullptr, &model);
+    assert(status == RLMESH_ERR_INVALID_ARGUMENT && !model);
+    try {
+      rlmesh::detail::check(status);
+      assert(false);
+    } catch (const ValueError& error) {
+      assert(std::string(error.what()) == "foreign payload");
+    }
+    assert(freed == kind + 1);
+  }
+}
 struct BatchCounter {
   std::optional<Metadata> metadata() const { return Metadata{{"autoreset_mode", "NextStep"}}; }
   uint64_t num_envs() const { return 2; }
@@ -715,6 +762,7 @@ int main() try {
   runs_sessions();
   session_target_lifetimes();
   exceptions();
+  foreign_error_payloads();
   factories_remote_describe();
   adapter_axis_presence();
   adapter_callable_identity();

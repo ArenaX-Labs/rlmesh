@@ -3737,6 +3737,18 @@ RLMESH_API void rlmesh_callback_set_error_class(RLMeshErrorClass error_class, co
  * The error carries it across worker threads. The failing caller may take it. */
 RLMESH_API void rlmesh_ext_callback_set_error_payload(void* payload, void (*free_payload)(void*));
 RLMESH_API void* rlmesh_ext_last_error_take_payload(void);
+/* Tagged ownership transfer: the library never reads tag or payload bytes.
+ * The tag identifies a payload representation/owner domain. The legacy setter
+ * records a NULL tag. Use the returned deleter for foreign representations.
+ * On success, all outputs are initialized (NULL when empty); outputs must be
+ * distinct writable slots. All three are required. A failing call does not
+ * consume the payload. A successful take transfers the deleter obligation. */
+RLMESH_API void rlmesh_ext_callback_set_tagged_error_payload(void* payload,
+                                                             void (*free_payload)(void*),
+                                                             const void* tag);
+RLMESH_API RLMeshStatus rlmesh_ext_last_error_take_payload_owned(void** out_payload,
+                                                                 void (**out_free_payload)(void*),
+                                                                 const void** out_tag);
 
 /* ---- Recorder and immutable recorder records ---------------------------- */
 #define RLMESH_RECORDER_SCHEMA "rlmesh.result.v1"

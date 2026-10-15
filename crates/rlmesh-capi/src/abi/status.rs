@@ -234,6 +234,7 @@ fn model_code_from_wire(value: c_int) -> Option<ModelErrorCode> {
 struct OpaquePayload {
     pointer: *mut c_void,
     free: Option<unsafe extern "C" fn(*mut c_void)>,
+    tag: usize,
 }
 // SAFETY: the host promises that payload destruction is thread-safe.
 unsafe impl Send for OpaquePayload {}
@@ -300,10 +301,20 @@ pub extern "C" fn rlmesh_ext_callback_set_error_payload(
     pointer: *mut c_void,
     free: Option<unsafe extern "C" fn(*mut c_void)>,
 ) {
+    rlmesh_ext_callback_set_tagged_error_payload(pointer, free, std::ptr::null());
+}
+/// Attach an opaque type/domain tag; the library never dereferences it.
+#[unsafe(no_mangle)]
+pub extern "C" fn rlmesh_ext_callback_set_tagged_error_payload(
+    pointer: *mut c_void,
+    free: Option<unsafe extern "C" fn(*mut c_void)>,
+    tag: *const c_void,
+) {
     let previous = CALLBACK_PAYLOAD.with(|slot| {
         slot.replace(Some(Arc::new(Mutex::new(Some(OpaquePayload {
             pointer,
             free,
+            tag: tag as usize,
         })))))
     });
     drop(previous);
@@ -311,16 +322,48 @@ pub extern "C" fn rlmesh_ext_callback_set_error_payload(
 /// Transfer the failing caller's last host exception. A second take is NULL.
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_ext_last_error_take_payload() -> *mut c_void {
-    LAST_ERROR.with(|slot| {
-        let mut slot = slot.borrow_mut();
-        let Some(payload) = slot.as_mut().and_then(|e| e.payload.take()) else {
-            return std::ptr::null_mut();
-        };
-        let Some(mut owned) = payload.lock().unwrap_or_else(|p| p.into_inner()).take() else {
-            return std::ptr::null_mut();
-        };
-        owned.free = None;
-        owned.pointer
+    let Some(mut owned) = take_last_payload() else {
+        return std::ptr::null_mut();
+    };
+    owned.free = None;
+    owned.pointer
+}
+fn take_last_payload() -> Option<OpaquePayload> {
+    let payload = LAST_ERROR.with(|slot| slot.borrow_mut().as_mut()?.payload.take())?;
+    payload.lock().unwrap_or_else(|p| p.into_inner()).take()
+}
+/// Transfer a payload together with its owner's deleter and opaque tag.
+/// Invalid output arguments do not consume the payload.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_ext_last_error_take_payload_owned(
+    out: *mut *mut c_void,
+    free: *mut Option<unsafe extern "C" fn(*mut c_void)>,
+    tag: *mut *const c_void,
+) -> RLMeshStatus {
+    guard(|| {
+        if out.is_null() || free.is_null() || tag.is_null() {
+            let mut error = CapiError::invalid_arg("payload, deleter and tag outputs are required");
+            // Recording this argument error must retain the original payload.
+            error.payload = LAST_ERROR
+                .with(|slot| slot.borrow().as_ref().and_then(|last| last.payload.clone()));
+            return Err(error);
+        }
+        // SAFETY: the caller supplies three distinct writable output slots.
+        unsafe {
+            out.write(std::ptr::null_mut());
+            free.write(None);
+            tag.write(std::ptr::null());
+        }
+        if let Some(mut owned) = take_last_payload() {
+            // SAFETY: these output slots were validated above; transfer only
+            // the deleter, so dropping the envelope cannot free the payload.
+            unsafe {
+                out.write(owned.pointer);
+                free.write(owned.free.take());
+                tag.write(owned.tag as *const c_void);
+            }
+        }
+        Ok(())
     })
 }
 
