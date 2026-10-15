@@ -1,8 +1,6 @@
 //! `rlmesh::Value` and `rlmesh::Metadata`: Python's `rlmesh.types.Value` and
 //! `Metadata` / `InfoDict`.
 
-use std::fmt;
-
 use indexmap::IndexMap;
 
 use crate::{Error, Result, Tensor};
@@ -274,7 +272,7 @@ impl From<Metadata> for Value {
 /// [`remove`](Self::remove) keeps the order of the remaining keys; collecting
 /// pairs with a repeated key keeps the first position and the last value, as
 /// `dict(pairs)` does.
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Metadata(IndexMap<String, Value>);
 
 /// Python's `InfoDict`: an env's `info`.
@@ -351,12 +349,6 @@ impl PartialEq for Metadata {
     }
 }
 
-impl fmt::Debug for Metadata {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_map().entries(self.iter()).finish()
-    }
-}
-
 impl<K: Into<String>, V: Into<Value>> FromIterator<(K, V)> for Metadata {
     fn from_iter<I: IntoIterator<Item = (K, V)>>(iter: I) -> Self {
         let mut map = Metadata::new();
@@ -364,14 +356,6 @@ impl<K: Into<String>, V: Into<Value>> FromIterator<(K, V)> for Metadata {
             map.insert(key, value);
         }
         map
-    }
-}
-
-impl<K: Into<String>, V: Into<Value>> Extend<(K, V)> for Metadata {
-    fn extend<I: IntoIterator<Item = (K, V)>>(&mut self, iter: I) {
-        for (key, value) in iter {
-            self.insert(key, value);
-        }
     }
 }
 

@@ -71,5 +71,8 @@ fn collecting_a_repeated_key_is_dict_of_pairs() {
     );
     let owned: Vec<(String, Value)> = map.clone().into_iter().collect();
     assert_eq!(owned[0].0, "k");
-    assert_eq!(format!("{map:?}"), r#"{"k": Int(3), "j": Int(2)}"#);
+    assert_eq!(
+        format!("{map:?}"),
+        r#"Metadata({"k": Int(3), "j": Int(2)})"#
+    );
 }
