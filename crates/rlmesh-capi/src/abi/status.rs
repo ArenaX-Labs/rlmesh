@@ -256,14 +256,6 @@ impl CapiError {
     pub(crate) fn type_error(message: impl Into<String>) -> Self {
         Self::new(RLMeshStatus::Type, message)
     }
-    /// Adapters cannot bridge env and model (`AdapterResolutionError`, a
-    /// `ValueError`).
-    pub(crate) fn adapter_resolution(message: impl Into<String>) -> Self {
-        Self {
-            class: RLMeshErrorClass::AdapterResolutionError,
-            ..Self::invalid_arg(message)
-        }
-    }
     pub(crate) fn internal(message: impl Into<String>) -> Self {
         Self::new(RLMeshStatus::Internal, message)
     }
@@ -821,7 +813,7 @@ mod tests {
 
     #[test]
     fn adapter_resolution_is_a_value_error_with_its_own_class() {
-        let status = guard(|| Err(CapiError::adapter_resolution("no bridge")));
+        let status = guard(|| Err(rlmesh::Error::adapter_resolution("no bridge").into()));
         assert_eq!(status, RLMeshStatus::InvalidArgument);
         assert_eq!(
             rlmesh_last_error_class(),

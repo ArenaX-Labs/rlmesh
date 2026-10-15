@@ -16,18 +16,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-// The adapter wave supplies authoring constructors for this opaque type. Env
-// APIs copy and return it already, without routing tags through JSON.
-#[derive(Clone)]
-pub struct RLMeshEnvTags(pub(crate) rlmesh::adapters::EnvTags);
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_env_tags_free(tags: *mut RLMeshEnvTags) {
-    guard_value((), || {
-        if !tags.is_null() {
-            drop(unsafe { Box::from_raw(tags) });
-        }
-    });
-}
+pub(crate) use crate::adapters::RLMeshEnvTags;
 
 #[repr(C)]
 #[derive(Clone, Copy)]

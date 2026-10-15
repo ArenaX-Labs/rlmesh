@@ -18,7 +18,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-pub struct RLMeshModelSpec(pub(crate) rlmesh::adapters::ModelSpec);
+pub(crate) use crate::adapters::RLMeshModelSpec;
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct RLMeshSpecArg {
@@ -549,7 +549,7 @@ unsafe fn construct(
     };
     let model = new_model(Box::new(policy), decl, opts, config)?;
     let spec = match model.spec() {
-        Some(rlmesh::types::SpecArg::ModelSpec(s)) => Some(RLMeshModelSpec(s.clone())),
+        Some(rlmesh::types::SpecArg::ModelSpec(s)) => Some(RLMeshModelSpec::new(s.clone())),
         _ => None,
     };
     owner.owned.store(true, Ordering::Release);

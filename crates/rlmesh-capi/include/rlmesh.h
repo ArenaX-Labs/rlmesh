@@ -712,33 +712,1452 @@ RLMESH_API RLMeshStatus rlmesh_dict_get(const RLMeshDict* dict, RLMeshStr key,
 /* key in d, into *out; RLMESH_ERR_TYPE on another kind. */
 RLMESH_API RLMeshStatus rlmesh_dict_contains_key(const RLMeshDict* dict, RLMeshStr key, bool* out);
 
-/* ---- adapters (experimental) -------------------------------------------- */
+typedef struct RLMeshEnv RLMeshEnv;
+typedef struct RLMeshVectorEnv RLMeshVectorEnv;
+/* Stable adapters: facade-backed typed trees and shared callables. */
+typedef struct RLMeshRotation RLMeshRotation;
+typedef struct RLMeshCustomEncoding RLMeshCustomEncoding;
+typedef struct RLMeshImage RLMeshImage;
+typedef struct RLMeshState RLMeshState;
+typedef struct RLMeshConcat RLMeshConcat;
+typedef struct RLMeshConstant RLMeshConstant;
+typedef struct RLMeshAdaptersText RLMeshAdaptersText;
+typedef struct RLMeshCustom RLMeshCustom;
+typedef struct RLMeshActuator RLMeshActuator;
+typedef struct RLMeshAction RLMeshAction;
+typedef struct RLMeshImageTag RLMeshImageTag;
+typedef struct RLMeshStateTag RLMeshStateTag;
+typedef struct RLMeshTextTag RLMeshTextTag;
+typedef struct RLMeshField RLMeshField;
+typedef struct RLMeshSplit RLMeshSplit;
+typedef struct RLMeshPreviousOptions RLMeshPreviousOptions;
+typedef struct RLMeshObservationRoles RLMeshObservationRoles;
+typedef struct RLMeshAdvisory RLMeshAdvisory;
+typedef struct RLMeshTagOptions RLMeshTagOptions;
+typedef struct RLMeshResolveOptions RLMeshResolveOptions;
+typedef struct RLMeshObsTransform RLMeshObsTransform;
+typedef struct RLMeshRotationTransform RLMeshRotationTransform;
+typedef struct RLMeshModelSpec RLMeshModelSpec;
+typedef struct RLMeshEnvTags RLMeshEnvTags;
+typedef struct RLMeshAdapter RLMeshAdapter;
+typedef struct RLMeshWrappedPredict RLMeshWrappedPredict;
+typedef enum RLMeshImageLayout {
+  RLMESH_IMAGE_LAYOUT_INVALID = 0,
+  RLMESH_IMAGE_LAYOUT_HWC = 1,
+  RLMESH_IMAGE_LAYOUT_CHW = 2
+} RLMeshImageLayout;
+RLMESH_API const char* rlmesh_image_layout_str(RLMeshImageLayout value);
+typedef enum RLMeshFitMode {
+  RLMESH_FIT_MODE_INVALID = 0,
+  RLMESH_FIT_MODE_STRETCH = 1,
+  RLMESH_FIT_MODE_CROP = 2,
+  RLMESH_FIT_MODE_PAD = 3,
+  RLMESH_FIT_MODE_OTHER = 1000
+} RLMeshFitMode;
+RLMESH_API const char* rlmesh_fit_mode_str(RLMeshFitMode value);
+typedef enum RLMeshFrame {
+  RLMESH_FRAME_INVALID = 0,
+  RLMESH_FRAME_WORLD = 1,
+  RLMESH_FRAME_ROBOT_BASE = 2,
+  RLMESH_FRAME_TOOL = 3,
+  RLMESH_FRAME_OTHER = 1000
+} RLMeshFrame;
+RLMESH_API const char* rlmesh_frame_str(RLMeshFrame value);
+typedef enum RLMeshReference {
+  RLMESH_REFERENCE_INVALID = 0,
+  RLMESH_REFERENCE_CURRENT = 1,
+  RLMESH_REFERENCE_TARGET = 2,
+  RLMESH_REFERENCE_OTHER = 1000
+} RLMeshReference;
+RLMESH_API const char* rlmesh_reference_str(RLMeshReference value);
+typedef enum RLMeshProvenance {
+  RLMESH_PROVENANCE_INVALID = 0,
+  RLMESH_PROVENANCE_SENSED = 1,
+  RLMESH_PROVENANCE_ESTIMATED = 2,
+  RLMESH_PROVENANCE_PRIVILEGED = 3,
+  RLMESH_PROVENANCE_OTHER = 1000
+} RLMeshProvenance;
+RLMESH_API const char* rlmesh_provenance_str(RLMeshProvenance value);
+typedef enum RLMeshResample {
+  RLMESH_RESAMPLE_INVALID = 0,
+  RLMESH_RESAMPLE_BILINEAR = 1,
+  RLMESH_RESAMPLE_BILINEAR_AA = 2,
+  RLMESH_RESAMPLE_BICUBIC_AA = 3,
+  RLMESH_RESAMPLE_LANCZOS3_AA = 4,
+  RLMESH_RESAMPLE_AREA = 5,
+  RLMESH_RESAMPLE_OTHER = 1000
+} RLMeshResample;
+RLMESH_API const char* rlmesh_resample_str(RLMeshResample value);
+typedef enum RLMeshRotationEncoding {
+  RLMESH_ROTATION_ENCODING_INVALID = 0,
+  RLMESH_ROTATION_ENCODING_QUAT_XYZW = 1,
+  RLMESH_ROTATION_ENCODING_QUAT_WXYZ = 2,
+  RLMESH_ROTATION_ENCODING_AXIS_ANGLE = 3,
+  RLMESH_ROTATION_ENCODING_ROT6D = 4,
+  RLMESH_ROTATION_ENCODING_ROT6D_ROWMAJOR = 5,
+  RLMESH_ROTATION_ENCODING_EULER_XYZ = 6,
+  RLMESH_ROTATION_ENCODING_GRAVITY_XYZ = 7,
+  RLMESH_ROTATION_ENCODING_OTHER = 1000
+} RLMeshRotationEncoding;
+RLMESH_API const char* rlmesh_rotation_encoding_str(RLMeshRotationEncoding value);
+typedef enum RLMeshStackPad {
+  RLMESH_STACK_PAD_INVALID = 0,
+  RLMESH_STACK_PAD_FIRST = 1,
+  RLMESH_STACK_PAD_BLACK = 2
+} RLMeshStackPad;
+RLMESH_API const char* rlmesh_stack_pad_str(RLMeshStackPad value);
+typedef enum RLMeshCropMode {
+  RLMESH_CROP_MODE_INVALID = 0,
+  RLMESH_CROP_MODE_ZOOM = 1,
+  RLMESH_CROP_MODE_SLICE = 2,
+  RLMESH_CROP_MODE_OTHER = 1000
+} RLMeshCropMode;
+RLMESH_API const char* rlmesh_crop_mode_str(RLMeshCropMode value);
+typedef enum RLMeshChannelOrder {
+  RLMESH_CHANNEL_ORDER_INVALID = 0,
+  RLMESH_CHANNEL_ORDER_RGB = 1,
+  RLMESH_CHANNEL_ORDER_BGR = 2,
+  RLMESH_CHANNEL_ORDER_OTHER = 1000
+} RLMeshChannelOrder;
+RLMESH_API const char* rlmesh_channel_order_str(RLMeshChannelOrder value);
+typedef enum RLMeshStateContainer {
+  RLMESH_STATE_CONTAINER_INVALID = 0,
+  RLMESH_STATE_CONTAINER_ARRAY = 1,
+  RLMESH_STATE_CONTAINER_LIST = 2
+} RLMeshStateContainer;
+RLMESH_API const char* rlmesh_state_container_str(RLMeshStateContainer value);
+typedef enum RLMeshTextContainer {
+  RLMESH_TEXT_CONTAINER_INVALID = 0,
+  RLMESH_TEXT_CONTAINER_STR = 1,
+  RLMESH_TEXT_CONTAINER_LIST = 2
+} RLMeshTextContainer;
+RLMESH_API const char* rlmesh_text_container_str(RLMeshTextContainer value);
+typedef enum RLMeshStateSource {
+  RLMESH_STATE_SOURCE_INVALID = 0,
+  RLMESH_STATE_SOURCE_OBSERVATION = 1,
+  RLMESH_STATE_SOURCE_ACTION = 2
+} RLMeshStateSource;
+RLMESH_API const char* rlmesh_state_source_str(RLMeshStateSource value);
+typedef enum RLMeshAdvisorySeverity {
+  RLMESH_ADVISORY_SEVERITY_INVALID = 0,
+  RLMESH_ADVISORY_SEVERITY_INFO = 1,
+  RLMESH_ADVISORY_SEVERITY_CAUTION = 2
+} RLMeshAdvisorySeverity;
+RLMESH_API const char* rlmesh_advisory_severity_str(RLMeshAdvisorySeverity value);
+typedef enum RLMeshNormalize {
+  RLMESH_NORMALIZE_INVALID = 0,
+  RLMESH_NORMALIZE_OFF = 1,
+  RLMESH_NORMALIZE_UNIT = 2,
+  RLMESH_NORMALIZE_RANGE = 3
+} RLMeshNormalize;
+typedef enum RLMeshInputNodeKind {
+  RLMESH_INPUT_NODE_KIND_INVALID = 0,
+  RLMESH_INPUT_NODE_KIND_IMAGE = 1,  /* leaf: const RLMeshImage* */
+  RLMESH_INPUT_NODE_KIND_STATE = 2,  /* leaf: const RLMeshState* */
+  RLMESH_INPUT_NODE_KIND_CONCAT = 3, /* leaf: const RLMeshConcat* */
+  RLMESH_INPUT_NODE_KIND_TEXT = 4,   /* leaf: const RLMeshAdaptersText* */
+  RLMESH_INPUT_NODE_KIND_CUSTOM = 5, /* leaf: const RLMeshCustom* */
+  RLMESH_INPUT_NODE_KIND_DICT = 6,   /* keys + children */
+  RLMESH_INPUT_NODE_KIND_TUPLE = 7   /* children */
+} RLMeshInputNodeKind;
+typedef struct RLMeshInputNode {
+  RLMeshInputNodeKind kind;
+  const void* leaf;                       /* leaf kinds; NULL otherwise */
+  const RLMeshStr* keys;                  /* DICT: children_len keys; NULL otherwise */
+  const struct RLMeshInputNode* children; /* DICT, TUPLE; NULL otherwise */
+  size_t children_len;
+} RLMeshInputNode;
 
-/* Resolve the env's tags (env_tags_json; see rlmesh_env_contract_adapter_tags_json)
- * against this model's spec (model_spec_json) into an opaque plan. Specs are the
- * frozen v1 JSON wire format; observation/action_space are borrowed contract
- * spaces, not retained. trust_entrypoints allows custom-input entrypoint strings
- * (the C caller vets them). On RLMESH_OK *out_plan owns a plan; free it with
- * rlmesh_adapter_plan_free. Per-step apply is not yet exposed. */
-typedef struct RLMeshAdapterPlan RLMeshAdapterPlan;
+typedef enum RLMeshObsNodeKind {
+  RLMESH_OBS_NODE_KIND_INVALID = 0,
+  RLMESH_OBS_NODE_KIND_IMAGE_TAG = 1, /* leaf: const RLMeshImageTag* */
+  RLMESH_OBS_NODE_KIND_STATE_TAG = 2, /* leaf: const RLMeshStateTag* */
+  RLMESH_OBS_NODE_KIND_TEXT_TAG = 3,  /* leaf: const RLMeshTextTag* */
+  RLMESH_OBS_NODE_KIND_SPLIT = 4,     /* leaf: const RLMeshSplit* */
+  RLMESH_OBS_NODE_KIND_DICT = 5,
+  RLMESH_OBS_NODE_KIND_TUPLE = 6
+} RLMeshObsNodeKind;
+typedef struct RLMeshObsNode {
+  RLMeshObsNodeKind kind;
+  const void* leaf;
+  const RLMeshStr* keys;
+  const struct RLMeshObsNode* children;
+  size_t children_len;
+} RLMeshObsNode;
 
-RLMESH_API RLMeshStatus rlmesh_adapter_resolve(const char* env_tags_json,
-                                               const RLMeshSpaceSpec* observation_space,
-                                               const RLMeshSpaceSpec* action_space,
-                                               const char* model_spec_json, bool trust_entrypoints,
-                                               RLMeshAdapterPlan** out_plan);
-RLMESH_API void rlmesh_adapter_plan_free(RLMeshAdapterPlan* plan);
-/* Human-readable summary (UTF-8) into out; free with rlmesh_bytes_free. */
-RLMESH_API RLMeshStatus rlmesh_adapter_plan_describe(const RLMeshAdapterPlan* plan,
-                                                     RLMeshBytes* out);
-/* Top-level observation keys the plan reads, as a JSON array of strings into
- * out; free with rlmesh_bytes_free. */
-RLMESH_API RLMeshStatus rlmesh_adapter_plan_referenced_obs_keys(const RLMeshAdapterPlan* plan,
-                                                                RLMeshBytes* out);
-/* The env's EnvTags as JSON into out (ready for rlmesh_adapter_resolve); free
- * with rlmesh_bytes_free. Empty buffer (RLMESH_OK) when the env is untagged. */
-RLMESH_API RLMeshStatus rlmesh_env_contract_adapter_tags_json(const RLMeshEnvContract* contract,
-                                                              RLMeshBytes* out);
+typedef enum RLMeshConcatPartKind {
+  RLMESH_CONCAT_PART_KIND_INVALID = 0,
+  RLMESH_CONCAT_PART_KIND_ROLE = 1,    /* role */
+  RLMESH_CONCAT_PART_KIND_STATE = 2,   /* leaf: const RLMeshState* */
+  RLMESH_CONCAT_PART_KIND_CONSTANT = 3 /* leaf: const RLMeshConstant* */
+} RLMeshConcatPartKind;
+typedef struct RLMeshConcatPart {
+  RLMeshConcatPartKind kind;
+  const char* role; /* ROLE; NULL otherwise */
+  const void* leaf; /* STATE, CONSTANT; NULL otherwise */
+} RLMeshConcatPart;
+RLMeshConcatPart rlmesh_concat_part_role(const char* role);
+RLMeshConcatPart rlmesh_concat_part_state(const RLMeshState* leaf);
+RLMeshConcatPart rlmesh_concat_part_constant(const RLMeshConstant* leaf);
+
+typedef struct RLMeshEncodingArm {
+  const RLMeshRotationTransform* transform;
+  const char* entrypoint;
+} RLMeshEncodingArm;
+struct RLMeshRotation {
+  size_t struct_size;
+  RLMeshRotationEncoding encoding;
+  uint32_t _reserved;
+  const double* value;
+  size_t value_len;
+};
+#define RLMESH_ROTATION_INIT {sizeof(RLMeshRotation), 0, 0, NULL, 0}
+#define RLMESH_ROTATION_MIN_SIZE sizeof(RLMeshRotation)
+#if UINTPTR_MAX > UINT32_MAX
+struct RLMeshCustomEncoding {
+  size_t struct_size;
+  RLMeshRotationEncoding base;
+  uint8_t _reserved0[4];
+  RLMeshEncodingArm from_base;
+  RLMeshEncodingArm to_base;
+  const char* name;
+};
+#define RLMESH_CUSTOM_ENCODING_INIT \
+  {sizeof(RLMeshCustomEncoding), 0, {0}, {NULL, NULL}, {NULL, NULL}, "custom"}
+#else
+struct RLMeshCustomEncoding {
+  size_t struct_size;
+  RLMeshRotationEncoding base;
+  RLMeshEncodingArm from_base;
+  RLMeshEncodingArm to_base;
+  const char* name;
+};
+#define RLMESH_CUSTOM_ENCODING_INIT \
+  {sizeof(RLMeshCustomEncoding), 0, {NULL, NULL}, {NULL, NULL}, "custom"}
+#endif
+#define RLMESH_CUSTOM_ENCODING_MIN_SIZE sizeof(RLMeshCustomEncoding)
+#if UINTPTR_MAX > UINT32_MAX
+struct RLMeshImage {
+  size_t struct_size;
+  const char* role;
+  bool has_height;
+  uint8_t _reserved0[3];
+  uint32_t height;
+  bool has_width;
+  uint8_t _reserved1[3];
+  uint32_t width;
+  RLMeshImageLayout layout;
+  bool has_channels;
+  uint8_t _reserved2[3];
+  uint32_t channels;
+  RLMeshDType dtype;
+  const char* dtype_other;
+  RLMeshNormalize normalize;
+  uint8_t _reserved3[4];
+  double normalize_range[2];
+  uint32_t lead_dims;
+  bool upside_down;
+  uint8_t _reserved4[3];
+  RLMeshResample resample;
+  uint8_t _reserved5[4];
+  const char* resample_other;
+  bool allow_upscale;
+  uint8_t _reserved6[7];
+  const RLMeshFitMode* fit;
+  size_t fit_len;
+  const char* const* fit_other;
+  bool optional;
+  bool has_fill;
+  uint8_t fill;
+  uint8_t _reserved7[1];
+  uint32_t stack;
+  bool has_crop;
+  uint8_t _reserved8[7];
+  double crop;
+  bool has_crop_area;
+  uint8_t _reserved9[7];
+  double crop_area;
+  RLMeshCropMode crop_mode;
+  uint8_t _reserved10[4];
+  const char* crop_mode_other;
+  bool has_jpeg_quality;
+  uint8_t jpeg_quality;
+  uint8_t _reserved11[2];
+  RLMeshChannelOrder channel_order;
+  const char* channel_order_other;
+  bool has_render;
+  uint8_t _reserved12[3];
+  uint32_t render[2];
+  uint8_t _reserved13[4];
+  const int32_t* offsets;
+  size_t offsets_len;
+  RLMeshStackPad stack_pad;
+  uint8_t _reserved14[4];
+  const char* part;
+  bool has_stride;
+  uint8_t _reserved15[3];
+  uint32_t stride;
+};
+#define RLMESH_IMAGE_INIT \
+  {sizeof(RLMeshImage),   \
+   NULL,                  \
+   0,                     \
+   {0},                   \
+   0,                     \
+   0,                     \
+   {0},                   \
+   0,                     \
+   (RLMeshImageLayout)1,  \
+   0,                     \
+   {0},                   \
+   0,                     \
+   (RLMeshDType)2,        \
+   NULL,                  \
+   (RLMeshNormalize)1,    \
+   {0},                   \
+   {0, 0},                \
+   0,                     \
+   0,                     \
+   {0},                   \
+   (RLMeshResample)1,     \
+   {0},                   \
+   NULL,                  \
+   0,                     \
+   {0},                   \
+   NULL,                  \
+   0,                     \
+   NULL,                  \
+   0,                     \
+   0,                     \
+   0,                     \
+   {0},                   \
+   1,                     \
+   0,                     \
+   {0},                   \
+   0,                     \
+   0,                     \
+   {0},                   \
+   0,                     \
+   (RLMeshCropMode)1,     \
+   {0},                   \
+   NULL,                  \
+   0,                     \
+   0,                     \
+   {0},                   \
+   (RLMeshChannelOrder)1, \
+   NULL,                  \
+   0,                     \
+   {0},                   \
+   {0, 0},                \
+   {0},                   \
+   NULL,                  \
+   0,                     \
+   (RLMeshStackPad)1,     \
+   {0},                   \
+   NULL,                  \
+   0,                     \
+   {0},                   \
+   0}
+#else
+struct RLMeshImage {
+  size_t struct_size;
+  const char* role;
+  bool has_height;
+  uint8_t _reserved0[3];
+  uint32_t height;
+  bool has_width;
+  uint8_t _reserved1[3];
+  uint32_t width;
+  RLMeshImageLayout layout;
+  bool has_channels;
+  uint8_t _reserved2[3];
+  uint32_t channels;
+  RLMeshDType dtype;
+  const char* dtype_other;
+  RLMeshNormalize normalize;
+  double normalize_range[2];
+  uint32_t lead_dims;
+  bool upside_down;
+  uint8_t _reserved3[3];
+  RLMeshResample resample;
+  const char* resample_other;
+  bool allow_upscale;
+  uint8_t _reserved4[3];
+  const RLMeshFitMode* fit;
+  size_t fit_len;
+  const char* const* fit_other;
+  bool optional;
+  bool has_fill;
+  uint8_t fill;
+  uint8_t _reserved5[1];
+  uint32_t stack;
+  bool has_crop;
+  uint8_t _reserved6[3];
+  double crop;
+  bool has_crop_area;
+  uint8_t _reserved7[3];
+  double crop_area;
+  RLMeshCropMode crop_mode;
+  const char* crop_mode_other;
+  bool has_jpeg_quality;
+  uint8_t jpeg_quality;
+  uint8_t _reserved8[2];
+  RLMeshChannelOrder channel_order;
+  const char* channel_order_other;
+  bool has_render;
+  uint8_t _reserved9[3];
+  uint32_t render[2];
+  const int32_t* offsets;
+  size_t offsets_len;
+  RLMeshStackPad stack_pad;
+  const char* part;
+  bool has_stride;
+  uint8_t _reserved10[3];
+  uint32_t stride;
+};
+#define RLMESH_IMAGE_INIT \
+  {sizeof(RLMeshImage),   \
+   NULL,                  \
+   0,                     \
+   {0},                   \
+   0,                     \
+   0,                     \
+   {0},                   \
+   0,                     \
+   (RLMeshImageLayout)1,  \
+   0,                     \
+   {0},                   \
+   0,                     \
+   (RLMeshDType)2,        \
+   NULL,                  \
+   (RLMeshNormalize)1,    \
+   {0, 0},                \
+   0,                     \
+   0,                     \
+   {0},                   \
+   (RLMeshResample)1,     \
+   NULL,                  \
+   0,                     \
+   {0},                   \
+   NULL,                  \
+   0,                     \
+   NULL,                  \
+   0,                     \
+   0,                     \
+   0,                     \
+   {0},                   \
+   1,                     \
+   0,                     \
+   {0},                   \
+   0,                     \
+   0,                     \
+   {0},                   \
+   0,                     \
+   (RLMeshCropMode)1,     \
+   NULL,                  \
+   0,                     \
+   0,                     \
+   {0},                   \
+   (RLMeshChannelOrder)1, \
+   NULL,                  \
+   0,                     \
+   {0},                   \
+   {0, 0},                \
+   NULL,                  \
+   0,                     \
+   (RLMeshStackPad)1,     \
+   NULL,                  \
+   0,                     \
+   {0},                   \
+   0}
+#endif
+#define RLMESH_IMAGE_MIN_SIZE sizeof(RLMeshImage)
+#if UINTPTR_MAX > UINT32_MAX
+struct RLMeshState {
+  size_t struct_size;
+  const char* role;
+  const RLMeshRotationEncoding* encoding;
+  size_t encoding_len;
+  const char* const* encoding_other;
+  const RLMeshCustomEncoding* custom_encoding;
+  bool has_dim;
+  uint8_t _reserved0[3];
+  uint32_t dim;
+  bool has_index;
+  uint8_t _reserved1[3];
+  uint32_t index;
+  bool optional;
+  bool has_range;
+  uint8_t _reserved2[6];
+  double range[2];
+  bool has_pad_to;
+  uint8_t _reserved3[3];
+  uint32_t pad_to;
+  RLMeshDType dtype;
+  uint8_t _reserved4[4];
+  const char* dtype_other;
+  const int64_t* reshape;
+  size_t reshape_len;
+  RLMeshStateContainer container;
+  uint8_t _reserved5[4];
+  double fill;
+  const RLMeshRotation* post_rotate;
+  bool has_scale;
+  uint8_t _reserved6[7];
+  double scale;
+  const double* axis_scale;
+  size_t axis_scale_len;
+  bool has_offset;
+  uint8_t _reserved7[7];
+  double offset;
+  const double* axis_offset;
+  size_t axis_offset_len;
+  bool has_frame;
+  uint8_t _reserved8[3];
+  RLMeshFrame frame;
+  const char* frame_other;
+  const RLMeshProvenance* provenance;
+  size_t provenance_len;
+  const char* const* provenance_other;
+  const char* part;
+  const char* const* labels;
+  size_t labels_len;
+  RLMeshStateSource source;
+  bool has_clip;
+  uint8_t _reserved9[3];
+  double clip[2];
+};
+#define RLMESH_STATE_INIT   \
+  {sizeof(RLMeshState),     \
+   NULL,                    \
+   NULL,                    \
+   0,                       \
+   NULL,                    \
+   NULL,                    \
+   0,                       \
+   {0},                     \
+   0,                       \
+   0,                       \
+   {0},                     \
+   0,                       \
+   0,                       \
+   0,                       \
+   {0},                     \
+   {0, 0},                  \
+   0,                       \
+   {0},                     \
+   0,                       \
+   (RLMeshDType)11,         \
+   {0},                     \
+   NULL,                    \
+   NULL,                    \
+   0,                       \
+   (RLMeshStateContainer)1, \
+   {0},                     \
+   0,                       \
+   NULL,                    \
+   0,                       \
+   {0},                     \
+   0,                       \
+   NULL,                    \
+   0,                       \
+   0,                       \
+   {0},                     \
+   0,                       \
+   NULL,                    \
+   0,                       \
+   0,                       \
+   {0},                     \
+   0,                       \
+   NULL,                    \
+   NULL,                    \
+   0,                       \
+   NULL,                    \
+   NULL,                    \
+   NULL,                    \
+   0,                       \
+   (RLMeshStateSource)1,    \
+   0,                       \
+   {0},                     \
+   {0, 0}}
+#else
+struct RLMeshState {
+  size_t struct_size;
+  const char* role;
+  const RLMeshRotationEncoding* encoding;
+  size_t encoding_len;
+  const char* const* encoding_other;
+  const RLMeshCustomEncoding* custom_encoding;
+  bool has_dim;
+  uint8_t _reserved0[3];
+  uint32_t dim;
+  bool has_index;
+  uint8_t _reserved1[3];
+  uint32_t index;
+  bool optional;
+  bool has_range;
+  uint8_t _reserved2[2];
+  double range[2];
+  bool has_pad_to;
+  uint8_t _reserved3[3];
+  uint32_t pad_to;
+  RLMeshDType dtype;
+  const char* dtype_other;
+  const int64_t* reshape;
+  size_t reshape_len;
+  RLMeshStateContainer container;
+  double fill;
+  const RLMeshRotation* post_rotate;
+  bool has_scale;
+  uint8_t _reserved4[3];
+  double scale;
+  const double* axis_scale;
+  size_t axis_scale_len;
+  bool has_offset;
+  uint8_t _reserved5[3];
+  double offset;
+  const double* axis_offset;
+  size_t axis_offset_len;
+  bool has_frame;
+  uint8_t _reserved6[3];
+  RLMeshFrame frame;
+  const char* frame_other;
+  const RLMeshProvenance* provenance;
+  size_t provenance_len;
+  const char* const* provenance_other;
+  const char* part;
+  const char* const* labels;
+  size_t labels_len;
+  RLMeshStateSource source;
+  bool has_clip;
+  uint8_t _reserved7[3];
+  double clip[2];
+};
+#define RLMESH_STATE_INIT   \
+  {sizeof(RLMeshState),     \
+   NULL,                    \
+   NULL,                    \
+   0,                       \
+   NULL,                    \
+   NULL,                    \
+   0,                       \
+   {0},                     \
+   0,                       \
+   0,                       \
+   {0},                     \
+   0,                       \
+   0,                       \
+   0,                       \
+   {0},                     \
+   {0, 0},                  \
+   0,                       \
+   {0},                     \
+   0,                       \
+   (RLMeshDType)11,         \
+   NULL,                    \
+   NULL,                    \
+   0,                       \
+   (RLMeshStateContainer)1, \
+   0,                       \
+   NULL,                    \
+   0,                       \
+   {0},                     \
+   0,                       \
+   NULL,                    \
+   0,                       \
+   0,                       \
+   {0},                     \
+   0,                       \
+   NULL,                    \
+   0,                       \
+   0,                       \
+   {0},                     \
+   0,                       \
+   NULL,                    \
+   NULL,                    \
+   0,                       \
+   NULL,                    \
+   NULL,                    \
+   NULL,                    \
+   0,                       \
+   (RLMeshStateSource)1,    \
+   0,                       \
+   {0},                     \
+   {0, 0}}
+#endif
+#define RLMESH_STATE_MIN_SIZE sizeof(RLMeshState)
+#if UINTPTR_MAX > UINT32_MAX
+struct RLMeshConcat {
+  size_t struct_size;
+  const RLMeshConcatPart* parts;
+  size_t parts_len;
+  bool has_pad_to;
+  uint8_t _reserved0[3];
+  uint32_t pad_to;
+  RLMeshDType dtype;
+  uint8_t _reserved1[4];
+  const char* dtype_other;
+  const int64_t* reshape;
+  size_t reshape_len;
+  RLMeshStateContainer container;
+  bool has_clip;
+  uint8_t _reserved2[3];
+  double clip[2];
+};
+#define RLMESH_CONCAT_INIT                                                                 \
+  {sizeof(RLMeshConcat),    NULL, 0,   0,     {0}, 0, (RLMeshDType)11, {0}, NULL, NULL, 0, \
+   (RLMeshStateContainer)1, 0,    {0}, {0, 0}}
+#else
+struct RLMeshConcat {
+  size_t struct_size;
+  const RLMeshConcatPart* parts;
+  size_t parts_len;
+  bool has_pad_to;
+  uint8_t _reserved0[3];
+  uint32_t pad_to;
+  RLMeshDType dtype;
+  const char* dtype_other;
+  const int64_t* reshape;
+  size_t reshape_len;
+  RLMeshStateContainer container;
+  bool has_clip;
+  uint8_t _reserved1[3];
+  double clip[2];
+};
+#define RLMESH_CONCAT_INIT                                                            \
+  {sizeof(RLMeshConcat),    NULL, 0,   0,     {0}, 0, (RLMeshDType)11, NULL, NULL, 0, \
+   (RLMeshStateContainer)1, 0,    {0}, {0, 0}}
+#endif
+#define RLMESH_CONCAT_MIN_SIZE sizeof(RLMeshConcat)
+#if UINTPTR_MAX > UINT32_MAX
+struct RLMeshConstant {
+  size_t struct_size;
+  uint32_t dim;
+  uint8_t _reserved0[4];
+  double fill;
+};
+#define RLMESH_CONSTANT_INIT {sizeof(RLMeshConstant), 1, {0}, 0}
+#else
+struct RLMeshConstant {
+  size_t struct_size;
+  uint32_t dim;
+  double fill;
+};
+#define RLMESH_CONSTANT_INIT {sizeof(RLMeshConstant), 1, 0}
+#endif
+#define RLMESH_CONSTANT_MIN_SIZE sizeof(RLMeshConstant)
+#if UINTPTR_MAX > UINT32_MAX
+struct RLMeshAdaptersText {
+  size_t struct_size;
+  const char* role;
+  RLMeshTextContainer container;
+  bool has_fill;
+  uint8_t _reserved0[3];
+  RLMeshStr fill;
+};
+#define RLMESH_ADAPTERS_TEXT_INIT \
+  {sizeof(RLMeshAdaptersText), NULL, (RLMeshTextContainer)1, 0, {0}, {NULL, 0}}
+#else
+struct RLMeshAdaptersText {
+  size_t struct_size;
+  const char* role;
+  RLMeshTextContainer container;
+  bool has_fill;
+  uint8_t _reserved0[3];
+  RLMeshStr fill;
+};
+#define RLMESH_ADAPTERS_TEXT_INIT \
+  {sizeof(RLMeshAdaptersText), NULL, (RLMeshTextContainer)1, 0, {0}, {NULL, 0}}
+#endif
+#define RLMESH_ADAPTERS_TEXT_MIN_SIZE sizeof(RLMeshAdaptersText)
+#if UINTPTR_MAX > UINT32_MAX
+struct RLMeshCustom {
+  size_t struct_size;
+  const RLMeshObsTransform* transform;
+  const char* entrypoint;
+};
+#define RLMESH_CUSTOM_INIT {sizeof(RLMeshCustom), NULL, NULL}
+#else
+struct RLMeshCustom {
+  size_t struct_size;
+  const RLMeshObsTransform* transform;
+  const char* entrypoint;
+};
+#define RLMESH_CUSTOM_INIT {sizeof(RLMeshCustom), NULL, NULL}
+#endif
+#define RLMESH_CUSTOM_MIN_SIZE sizeof(RLMeshCustom)
+#if UINTPTR_MAX > UINT32_MAX
+struct RLMeshActuator {
+  size_t struct_size;
+  const char* role;
+  uint32_t dim;
+  bool has_encoding;
+  uint8_t _reserved0[3];
+  RLMeshRotationEncoding encoding;
+  uint8_t _reserved1[4];
+  const RLMeshCustomEncoding* custom_encoding;
+  bool has_range;
+  uint8_t _reserved2[7];
+  double range[2];
+  bool binary;
+  bool has_scale;
+  uint8_t _reserved3[6];
+  double scale;
+  const double* axis_scale;
+  size_t axis_scale_len;
+  bool invert;
+  bool has_threshold;
+  uint8_t _reserved4[6];
+  double threshold;
+  bool clip;
+  uint8_t _reserved5[7];
+  double fill;
+  bool optional;
+  bool has_frame;
+  uint8_t _reserved6[2];
+  RLMeshFrame frame;
+  const char* frame_other;
+  bool has_reference;
+  uint8_t _reserved7[3];
+  RLMeshReference reference;
+  const char* reference_other;
+  const char* part;
+  bool has_offset;
+  uint8_t _reserved8[7];
+  double offset;
+  const double* axis_offset;
+  size_t axis_offset_len;
+  const char* const* labels;
+  size_t labels_len;
+};
+#define RLMESH_ACTUATOR_INIT \
+  {sizeof(RLMeshActuator),   \
+   NULL,                     \
+   0,                        \
+   0,                        \
+   {0},                      \
+   0,                        \
+   {0},                      \
+   NULL,                     \
+   0,                        \
+   {0},                      \
+   {0, 0},                   \
+   0,                        \
+   0,                        \
+   {0},                      \
+   0,                        \
+   NULL,                     \
+   0,                        \
+   0,                        \
+   0,                        \
+   {0},                      \
+   0,                        \
+   0,                        \
+   {0},                      \
+   0,                        \
+   0,                        \
+   0,                        \
+   {0},                      \
+   0,                        \
+   NULL,                     \
+   0,                        \
+   {0},                      \
+   0,                        \
+   NULL,                     \
+   NULL,                     \
+   0,                        \
+   {0},                      \
+   0,                        \
+   NULL,                     \
+   0,                        \
+   NULL,                     \
+   0}
+#else
+struct RLMeshActuator {
+  size_t struct_size;
+  const char* role;
+  uint32_t dim;
+  bool has_encoding;
+  uint8_t _reserved0[3];
+  RLMeshRotationEncoding encoding;
+  const RLMeshCustomEncoding* custom_encoding;
+  bool has_range;
+  uint8_t _reserved1[3];
+  double range[2];
+  bool binary;
+  bool has_scale;
+  uint8_t _reserved2[2];
+  double scale;
+  const double* axis_scale;
+  size_t axis_scale_len;
+  bool invert;
+  bool has_threshold;
+  uint8_t _reserved3[2];
+  double threshold;
+  bool clip;
+  uint8_t _reserved4[3];
+  double fill;
+  bool optional;
+  bool has_frame;
+  uint8_t _reserved5[2];
+  RLMeshFrame frame;
+  const char* frame_other;
+  bool has_reference;
+  uint8_t _reserved6[3];
+  RLMeshReference reference;
+  const char* reference_other;
+  const char* part;
+  bool has_offset;
+  uint8_t _reserved7[3];
+  double offset;
+  const double* axis_offset;
+  size_t axis_offset_len;
+  const char* const* labels;
+  size_t labels_len;
+};
+#define RLMESH_ACTUATOR_INIT \
+  {sizeof(RLMeshActuator),   \
+   NULL,                     \
+   0,                        \
+   0,                        \
+   {0},                      \
+   0,                        \
+   NULL,                     \
+   0,                        \
+   {0},                      \
+   {0, 0},                   \
+   0,                        \
+   0,                        \
+   {0},                      \
+   0,                        \
+   NULL,                     \
+   0,                        \
+   0,                        \
+   0,                        \
+   {0},                      \
+   0,                        \
+   0,                        \
+   {0},                      \
+   0,                        \
+   0,                        \
+   0,                        \
+   {0},                      \
+   0,                        \
+   NULL,                     \
+   0,                        \
+   {0},                      \
+   0,                        \
+   NULL,                     \
+   NULL,                     \
+   0,                        \
+   {0},                      \
+   0,                        \
+   NULL,                     \
+   0,                        \
+   NULL,                     \
+   0}
+#endif
+#define RLMESH_ACTUATOR_MIN_SIZE sizeof(RLMeshActuator)
+#if UINTPTR_MAX > UINT32_MAX
+struct RLMeshAction {
+  size_t struct_size;
+  const RLMeshActuator* const* components;
+  size_t components_len;
+  bool has_clip;
+  uint8_t _reserved0[7];
+  double clip[2];
+};
+#define RLMESH_ACTION_INIT {sizeof(RLMeshAction), NULL, 0, 0, {0}, {0, 0}}
+#else
+struct RLMeshAction {
+  size_t struct_size;
+  const RLMeshActuator* const* components;
+  size_t components_len;
+  bool has_clip;
+  uint8_t _reserved0[3];
+  double clip[2];
+};
+#define RLMESH_ACTION_INIT {sizeof(RLMeshAction), NULL, 0, 0, {0}, {0, 0}}
+#endif
+#define RLMESH_ACTION_MIN_SIZE sizeof(RLMeshAction)
+#if UINTPTR_MAX > UINT32_MAX
+struct RLMeshImageTag {
+  size_t struct_size;
+  const char* role;
+  RLMeshImageLayout layout;
+  bool upside_down;
+  uint8_t _reserved0[3];
+  const char* part;
+};
+#define RLMESH_IMAGE_TAG_INIT {sizeof(RLMeshImageTag), NULL, (RLMeshImageLayout)1, 0, {0}, NULL}
+#else
+struct RLMeshImageTag {
+  size_t struct_size;
+  const char* role;
+  RLMeshImageLayout layout;
+  bool upside_down;
+  uint8_t _reserved0[3];
+  const char* part;
+};
+#define RLMESH_IMAGE_TAG_INIT {sizeof(RLMeshImageTag), NULL, (RLMeshImageLayout)1, 0, {0}, NULL}
+#endif
+#define RLMESH_IMAGE_TAG_MIN_SIZE sizeof(RLMeshImageTag)
+#if UINTPTR_MAX > UINT32_MAX
+struct RLMeshStateTag {
+  size_t struct_size;
+  const char* role;
+  const RLMeshRotationEncoding* encoding;
+  size_t encoding_len;
+  const char* const* encoding_other;
+  bool has_range;
+  uint8_t _reserved0[7];
+  double range[2];
+  bool has_frame;
+  uint8_t _reserved1[3];
+  RLMeshFrame frame;
+  const char* frame_other;
+  bool has_provenance;
+  uint8_t _reserved2[3];
+  RLMeshProvenance provenance;
+  const char* provenance_other;
+  const char* part;
+  const char* const* labels;
+  size_t labels_len;
+};
+#define RLMESH_STATE_TAG_INIT \
+  {sizeof(RLMeshStateTag),    \
+   NULL,                      \
+   NULL,                      \
+   0,                         \
+   NULL,                      \
+   0,                         \
+   {0},                       \
+   {0, 0},                    \
+   0,                         \
+   {0},                       \
+   0,                         \
+   NULL,                      \
+   0,                         \
+   {0},                       \
+   0,                         \
+   NULL,                      \
+   NULL,                      \
+   NULL,                      \
+   0}
+#else
+struct RLMeshStateTag {
+  size_t struct_size;
+  const char* role;
+  const RLMeshRotationEncoding* encoding;
+  size_t encoding_len;
+  const char* const* encoding_other;
+  bool has_range;
+  uint8_t _reserved0[3];
+  double range[2];
+  bool has_frame;
+  uint8_t _reserved1[3];
+  RLMeshFrame frame;
+  const char* frame_other;
+  bool has_provenance;
+  uint8_t _reserved2[3];
+  RLMeshProvenance provenance;
+  const char* provenance_other;
+  const char* part;
+  const char* const* labels;
+  size_t labels_len;
+};
+#define RLMESH_STATE_TAG_INIT \
+  {sizeof(RLMeshStateTag),    \
+   NULL,                      \
+   NULL,                      \
+   0,                         \
+   NULL,                      \
+   0,                         \
+   {0},                       \
+   {0, 0},                    \
+   0,                         \
+   {0},                       \
+   0,                         \
+   NULL,                      \
+   0,                         \
+   {0},                       \
+   0,                         \
+   NULL,                      \
+   NULL,                      \
+   NULL,                      \
+   0}
+#endif
+#define RLMESH_STATE_TAG_MIN_SIZE sizeof(RLMeshStateTag)
+#if UINTPTR_MAX > UINT32_MAX
+struct RLMeshTextTag {
+  size_t struct_size;
+  const char* role;
+};
+#define RLMESH_TEXT_TAG_INIT {sizeof(RLMeshTextTag), NULL}
+#else
+struct RLMeshTextTag {
+  size_t struct_size;
+  const char* role;
+};
+#define RLMESH_TEXT_TAG_INIT {sizeof(RLMeshTextTag), NULL}
+#endif
+#define RLMESH_TEXT_TAG_MIN_SIZE sizeof(RLMeshTextTag)
+#if UINTPTR_MAX > UINT32_MAX
+struct RLMeshField {
+  size_t struct_size;
+  const char* role;
+  uint32_t dim;
+  uint8_t _reserved0[4];
+  const RLMeshRotationEncoding* encoding;
+  size_t encoding_len;
+  const char* const* encoding_other;
+  bool has_range;
+  uint8_t _reserved1[7];
+  double range[2];
+  bool has_frame;
+  uint8_t _reserved2[3];
+  RLMeshFrame frame;
+  const char* frame_other;
+  bool has_provenance;
+  uint8_t _reserved3[3];
+  RLMeshProvenance provenance;
+  const char* provenance_other;
+  const char* part;
+  const char* const* labels;
+  size_t labels_len;
+};
+#define RLMESH_FIELD_INIT \
+  {sizeof(RLMeshField),   \
+   NULL,                  \
+   0,                     \
+   {0},                   \
+   NULL,                  \
+   0,                     \
+   NULL,                  \
+   0,                     \
+   {0},                   \
+   {0, 0},                \
+   0,                     \
+   {0},                   \
+   0,                     \
+   NULL,                  \
+   0,                     \
+   {0},                   \
+   0,                     \
+   NULL,                  \
+   NULL,                  \
+   NULL,                  \
+   0}
+#else
+struct RLMeshField {
+  size_t struct_size;
+  const char* role;
+  uint32_t dim;
+  const RLMeshRotationEncoding* encoding;
+  size_t encoding_len;
+  const char* const* encoding_other;
+  bool has_range;
+  uint8_t _reserved0[3];
+  double range[2];
+  bool has_frame;
+  uint8_t _reserved1[3];
+  RLMeshFrame frame;
+  const char* frame_other;
+  bool has_provenance;
+  uint8_t _reserved2[3];
+  RLMeshProvenance provenance;
+  const char* provenance_other;
+  const char* part;
+  const char* const* labels;
+  size_t labels_len;
+};
+#define RLMESH_FIELD_INIT \
+  {sizeof(RLMeshField),   \
+   NULL,                  \
+   0,                     \
+   NULL,                  \
+   0,                     \
+   NULL,                  \
+   0,                     \
+   {0},                   \
+   {0, 0},                \
+   0,                     \
+   {0},                   \
+   0,                     \
+   NULL,                  \
+   0,                     \
+   {0},                   \
+   0,                     \
+   NULL,                  \
+   NULL,                  \
+   NULL,                  \
+   0}
+#endif
+#define RLMESH_FIELD_MIN_SIZE sizeof(RLMeshField)
+#if UINTPTR_MAX > UINT32_MAX
+struct RLMeshSplit {
+  size_t struct_size;
+  const RLMeshField* const* fields;
+  size_t fields_len;
+};
+#define RLMESH_SPLIT_INIT {sizeof(RLMeshSplit), NULL, 0}
+#else
+struct RLMeshSplit {
+  size_t struct_size;
+  const RLMeshField* const* fields;
+  size_t fields_len;
+};
+#define RLMESH_SPLIT_INIT {sizeof(RLMeshSplit), NULL, 0}
+#endif
+#define RLMESH_SPLIT_MIN_SIZE sizeof(RLMeshSplit)
+#if UINTPTR_MAX > UINT32_MAX
+struct RLMeshPreviousOptions {
+  size_t struct_size;
+  const char* part;
+  double fill;
+};
+#define RLMESH_PREVIOUS_OPTIONS_INIT {sizeof(RLMeshPreviousOptions), NULL, 0}
+#else
+struct RLMeshPreviousOptions {
+  size_t struct_size;
+  const char* part;
+  double fill;
+};
+#define RLMESH_PREVIOUS_OPTIONS_INIT {sizeof(RLMeshPreviousOptions), NULL, 0}
+#endif
+#define RLMESH_PREVIOUS_OPTIONS_MIN_SIZE sizeof(RLMeshPreviousOptions)
+#if UINTPTR_MAX > UINT32_MAX
+struct RLMeshObservationRoles {
+  size_t struct_size;
+  const char* const* images;
+  size_t images_len;
+  const char* const* states;
+  size_t states_len;
+  const char* const* texts;
+  size_t texts_len;
+};
+#define RLMESH_OBSERVATION_ROLES_INIT {sizeof(RLMeshObservationRoles), NULL, 0, NULL, 0, NULL, 0}
+#else
+struct RLMeshObservationRoles {
+  size_t struct_size;
+  const char* const* images;
+  size_t images_len;
+  const char* const* states;
+  size_t states_len;
+  const char* const* texts;
+  size_t texts_len;
+};
+#define RLMESH_OBSERVATION_ROLES_INIT {sizeof(RLMeshObservationRoles), NULL, 0, NULL, 0, NULL, 0}
+#endif
+#define RLMESH_OBSERVATION_ROLES_MIN_SIZE sizeof(RLMeshObservationRoles)
+struct RLMeshAdvisory {
+  size_t struct_size;
+  RLMeshAdvisorySeverity severity;
+  uint32_t _reserved;
+  const char* message;
+};
+#define RLMESH_ADVISORY_INIT {sizeof(RLMeshAdvisory), 0, 0, NULL}
+#define RLMESH_ADVISORY_MIN_SIZE sizeof(RLMeshAdvisory)
+struct RLMeshTagOptions {
+  size_t struct_size;
+  bool validate;
+  uint8_t _reserved0;
+  uint16_t _reserved1;
+  uint32_t _reserved2;
+};
+#define RLMESH_TAG_OPTIONS_INIT {sizeof(RLMeshTagOptions), true, 0, 0, 0}
+#define RLMESH_TAG_OPTIONS_MIN_SIZE sizeof(RLMeshTagOptions)
+struct RLMeshResolveOptions {
+  size_t struct_size;
+  bool trust_entrypoints;
+  bool check_inverse;
+  uint16_t _reserved0;
+  uint32_t _reserved1;
+};
+#define RLMESH_RESOLVE_OPTIONS_INIT {sizeof(RLMeshResolveOptions), 0, true, 0, 0}
+#define RLMESH_RESOLVE_OPTIONS_MIN_SIZE sizeof(RLMeshResolveOptions)
+
+#define RLMESH_ADAPTERS_IMAGE_PRIMARY "image/primary"
+#define RLMESH_ADAPTERS_IMAGE_SECONDARY "image/secondary"
+#define RLMESH_ADAPTERS_INSTRUCTION "text/instruction"
+#define RLMESH_ADAPTERS_JOINT_POS "proprio/joint_pos"
+#define RLMESH_ADAPTERS_JOINT_VEL "proprio/joint_vel"
+#define RLMESH_ADAPTERS_ACTION_JOINT_POS "action/joint_pos"
+#define RLMESH_ADAPTERS_ACTION_JOINT_VEL "action/joint_vel"
+#define RLMESH_ADAPTERS_IMAGE_WRIST "image/wrist"
+#define RLMESH_ADAPTERS_EEF_POS "proprio/eef_pos"
+#define RLMESH_ADAPTERS_EEF_ROT "proprio/eef_rot"
+#define RLMESH_ADAPTERS_GRIPPER_POS "proprio/gripper"
+#define RLMESH_ADAPTERS_EEF_WRENCH "proprio/eef_wrench"
+#define RLMESH_ADAPTERS_ACTION_DELTA_POS "action/delta_eef_pos"
+#define RLMESH_ADAPTERS_ACTION_DELTA_ROT "action/delta_eef_rot"
+#define RLMESH_ADAPTERS_ACTION_GRIPPER "action/gripper"
+#define RLMESH_ADAPTERS_ACTION_EEF_POS "action/eef_pos"
+#define RLMESH_ADAPTERS_ACTION_EEF_ROT "action/eef_rot"
+#define RLMESH_ADAPTERS_BASE_ANG_VEL "proprio/base_ang_vel"
+#define RLMESH_ADAPTERS_BASE_ROT "proprio/base_rot"
+#define RLMESH_ADAPTERS_COMMAND_BASE_VEL "command/base_vel"
+#define RLMESH_ADAPTERS_LEFT_ARM "left_arm"
+#define RLMESH_ADAPTERS_RIGHT_ARM "right_arm"
+#define RLMESH_ADAPTERS_HEAD "head"
+#define RLMESH_ADAPTERS_TORSO "torso"
+#define RLMESH_ADAPTERS_BASE "base"
+#define RLMESH_ADAPTERS_LEFT_LEG "left_leg"
+#define RLMESH_ADAPTERS_RIGHT_LEG "right_leg"
+#define RLMESH_ADAPTERS_ENV_METADATA_KEY "rlmesh.adapters.v1.env_tags"
+#define RLMESH_ADAPTERS_MODEL_METADATA_KEY "rlmesh.adapters.v1.model_spec"
+#define RLMESH_ADAPTERS_ENV_BRANCH_METADATA_KEY "rlmesh.adapters.v1.env_branch"
+RLMESH_API RLMeshModelSpec* rlmesh_model_spec_clone(const RLMeshModelSpec* value);
+RLMESH_API void rlmesh_model_spec_free(RLMeshModelSpec* value);
+RLMESH_API bool rlmesh_model_spec_equals(const RLMeshModelSpec* a, const RLMeshModelSpec* b);
+RLMESH_API RLMeshStatus rlmesh_model_spec_repr(const RLMeshModelSpec* value, RLMeshBytes* out);
+RLMESH_API RLMeshStatus rlmesh_model_spec_to_json(const RLMeshModelSpec* value, RLMeshBytes* out);
+RLMESH_API RLMeshStatus rlmesh_model_spec_to_dict(const RLMeshModelSpec* value, RLMeshValue** out);
+RLMESH_API RLMeshStatus rlmesh_model_spec_to_metadata(const RLMeshModelSpec* value,
+                                                      RLMeshValue** out);
+RLMESH_API RLMeshStatus rlmesh_model_spec_from_dict(const RLMeshValue* value,
+                                                    RLMeshModelSpec** out);
+RLMESH_API RLMeshStatus rlmesh_model_spec_from_metadata(const RLMeshValue* value,
+                                                        RLMeshModelSpec** out);
+RLMESH_API RLMeshStatus rlmesh_model_spec_from_json(const char* json, RLMeshModelSpec** out);
+RLMESH_API RLMeshEnvTags* rlmesh_env_tags_clone(const RLMeshEnvTags* value);
+RLMESH_API void rlmesh_env_tags_free(RLMeshEnvTags* value);
+RLMESH_API bool rlmesh_env_tags_equals(const RLMeshEnvTags* a, const RLMeshEnvTags* b);
+RLMESH_API RLMeshStatus rlmesh_env_tags_repr(const RLMeshEnvTags* value, RLMeshBytes* out);
+RLMESH_API RLMeshStatus rlmesh_env_tags_to_json(const RLMeshEnvTags* value, RLMeshBytes* out);
+RLMESH_API RLMeshStatus rlmesh_env_tags_to_dict(const RLMeshEnvTags* value, RLMeshValue** out);
+RLMESH_API RLMeshStatus rlmesh_env_tags_to_metadata(const RLMeshEnvTags* value, RLMeshValue** out);
+RLMESH_API RLMeshStatus rlmesh_env_tags_from_dict(const RLMeshValue* value, RLMeshEnvTags** out);
+RLMESH_API RLMeshStatus rlmesh_env_tags_from_metadata(const RLMeshValue* value,
+                                                      RLMeshEnvTags** out);
+RLMESH_API RLMeshStatus rlmesh_env_tags_from_json(const char* json, RLMeshEnvTags** out);
+/* All callables receive borrowed inputs and transfer their owned output Value,
+ * even on failure. State transfers only on successful construction. Transforms
+ * may be called concurrently; their clones share identity and user_data. */
+typedef RLMeshStatus (*RLMeshObsTransformFn)(void*, const RLMeshValue*, RLMeshValue**);
+typedef RLMeshStatus (*RLMeshRotationTransformFn)(void*, const RLMeshValue*, RLMeshValue**);
+typedef RLMeshStatus (*RLMeshPredictFn)(void*, const RLMeshValue*, RLMeshValue**);
+RLMESH_API RLMeshStatus rlmesh_obs_transform_new(RLMeshObsTransformFn fn, void* user_data,
+                                                 void (*free_user_data)(void*),
+                                                 RLMeshObsTransform** out);
+RLMESH_API RLMeshObsTransform* rlmesh_obs_transform_clone(const RLMeshObsTransform* transform);
+RLMESH_API void rlmesh_obs_transform_free(RLMeshObsTransform* transform);
+RLMESH_API RLMeshStatus rlmesh_rotation_transform_new(RLMeshRotationTransformFn fn, void* user_data,
+                                                      void (*free_user_data)(void*),
+                                                      RLMeshRotationTransform** out);
+RLMESH_API RLMeshRotationTransform* rlmesh_rotation_transform_clone(
+    const RLMeshRotationTransform* transform);
+RLMESH_API void rlmesh_rotation_transform_free(RLMeshRotationTransform* transform);
+RLMESH_API RLMeshStatus rlmesh_model_spec_new(const RLMeshInputNode* input,
+                                              const RLMeshAction* output, RLMeshModelSpec** out);
+RLMESH_API const RLMeshInputNode* rlmesh_model_spec_input(const RLMeshModelSpec* spec);
+RLMESH_API const RLMeshAction* rlmesh_model_spec_output(const RLMeshModelSpec* spec);
+RLMESH_API RLMeshStatus rlmesh_env_tags_new(const RLMeshObsNode* observation,
+                                            const RLMeshAction* action, RLMeshEnvTags** out);
+RLMESH_API const RLMeshObsNode* rlmesh_env_tags_observation(const RLMeshEnvTags* tags);
+RLMESH_API const RLMeshAction* rlmesh_env_tags_action(const RLMeshEnvTags* tags);
+RLMESH_API RLMeshStatus rlmesh_env_tags_observation_roles(const RLMeshEnvTags* tags,
+                                                          RLMeshObservationRoles* out);
+RLMESH_API RLMeshStatus rlmesh_observation_roles_equals(const RLMeshObservationRoles* a,
+                                                        const RLMeshObservationRoles* b, bool* out);
+RLMESH_API RLMeshStatus rlmesh_observation_roles_repr(const RLMeshObservationRoles* value,
+                                                      RLMeshBytes* out);
+RLMESH_API RLMeshStatus rlmesh_advisory_equals(const RLMeshAdvisory* a, const RLMeshAdvisory* b,
+                                               bool* out);
+RLMESH_API RLMeshStatus rlmesh_advisory_repr(const RLMeshAdvisory* value, RLMeshBytes* out);
+RLMESH_API RLMeshStatus rlmesh_action_dim(const RLMeshAction* action, uint32_t* out);
+RLMESH_API RLMeshStatus rlmesh_custom_encoding_is_entrypoint(const RLMeshCustomEncoding* encoding,
+                                                             bool* out);
+RLMESH_API RLMeshStatus rlmesh_custom_encoding_width(const RLMeshCustomEncoding* encoding,
+                                                     uint32_t* out);
+RLMESH_API RLMeshStatus rlmesh_rotation_encoding_dims(RLMeshRotationEncoding encoding,
+                                                      uint32_t* out);
+RLMESH_API size_t rlmesh_adapters_parts_len(void);
+RLMESH_API const char* rlmesh_adapters_parts_get(size_t i);
+RLMESH_API size_t rlmesh_adapters_rotation_dims_len(void);
+RLMESH_API RLMeshStatus rlmesh_adapters_rotation_dims_get(size_t i,
+                                                          RLMeshRotationEncoding* encoding,
+                                                          uint32_t* dims);
+RLMESH_API RLMeshStatus rlmesh_image_with_size(RLMeshImage* image, uint32_t size);
+RLMESH_API RLMeshStatus rlmesh_rotation_from_matrix(const double rows[3][3], double value[6],
+                                                    RLMeshRotation* out);
+RLMESH_API RLMeshStatus rlmesh_adapters_previous(const char* role,
+                                                 const RLMeshPreviousOptions* options,
+                                                 RLMeshState* out);
+RLMESH_API RLMeshInputNode rlmesh_input_node_image(const RLMeshImage* leaf);
+RLMESH_API RLMeshInputNode rlmesh_input_node_state(const RLMeshState* leaf);
+RLMESH_API RLMeshInputNode rlmesh_input_node_concat(const RLMeshConcat* leaf);
+RLMESH_API RLMeshInputNode rlmesh_input_node_text(const RLMeshAdaptersText* leaf);
+RLMESH_API RLMeshInputNode rlmesh_input_node_custom(const RLMeshCustom* leaf);
+RLMESH_API RLMeshInputNode rlmesh_input_node_dict(const RLMeshStr* keys,
+                                                  const RLMeshInputNode* children, size_t n);
+RLMESH_API RLMeshInputNode rlmesh_input_node_tuple(const RLMeshInputNode* children, size_t n);
+RLMESH_API RLMeshObsNode rlmesh_obs_node_image_tag(const RLMeshImageTag* leaf);
+RLMESH_API RLMeshObsNode rlmesh_obs_node_state_tag(const RLMeshStateTag* leaf);
+RLMESH_API RLMeshObsNode rlmesh_obs_node_text_tag(const RLMeshTextTag* leaf);
+RLMESH_API RLMeshObsNode rlmesh_obs_node_split(const RLMeshSplit* leaf);
+RLMESH_API RLMeshObsNode rlmesh_obs_node_dict(const RLMeshStr* keys, const RLMeshObsNode* children,
+                                              size_t n);
+RLMESH_API RLMeshObsNode rlmesh_obs_node_tuple(const RLMeshObsNode* children, size_t n);
+/* AdapterBase: per-step calls and explain serialize across clones. */
+typedef struct RLMeshAdapterVtable {
+  size_t struct_size;
+  RLMeshStatus (*transform_obs)(void*, const RLMeshValue*, RLMeshValue**);
+  RLMeshStatus (*transform_action)(void*, const RLMeshValue*, RLMeshValue**);
+  RLMeshStatus (*reset)(void*);
+  RLMeshStatus (*observe)(void*, const RLMeshValue*);
+  /* Borrowed UTF-8, copied before another slot runs; NULL slot uses the base text. */
+  RLMeshStatus (*explain)(void*, const char**);
+  void (*free_user_data)(void*);
+} RLMeshAdapterVtable;
+#define RLMESH_ADAPTER_VTABLE_INIT {sizeof(RLMeshAdapterVtable), NULL, NULL, NULL, NULL, NULL, NULL}
+#define RLMESH_ADAPTER_VTABLE_MIN_SIZE sizeof(RLMeshAdapterVtable)
+RLMESH_API RLMeshStatus rlmesh_adapter_new(const RLMeshAdapterVtable* vtable, void* user_data,
+                                           RLMeshAdapter** out);
+RLMESH_API RLMeshAdapter* rlmesh_adapter_clone(const RLMeshAdapter* adapter);
+RLMESH_API void rlmesh_adapter_free(RLMeshAdapter* adapter);
+RLMESH_API RLMeshStatus rlmesh_adapters_resolve(const RLMeshEnvTags* tags,
+                                                const RLMeshSpaceSpec* observation_space,
+                                                const RLMeshSpaceSpec* action_space,
+                                                const RLMeshModelSpec* spec,
+                                                const RLMeshResolveOptions* options,
+                                                RLMeshAdapter** out);
+RLMESH_API RLMeshStatus rlmesh_adapters_resolve_from_contract(const RLMeshEnvContract* contract,
+                                                              const RLMeshModelSpec* spec,
+                                                              const RLMeshResolveOptions* options,
+                                                              RLMeshAdapter** out);
+RLMESH_API RLMeshStatus rlmesh_adapter_transform_obs(RLMeshAdapter* adapter, const RLMeshValue* raw,
+                                                     RLMeshValue** out);
+RLMESH_API RLMeshStatus rlmesh_adapter_transform_action(RLMeshAdapter* adapter,
+                                                        const RLMeshValue* raw, RLMeshValue** out);
+RLMESH_API RLMeshStatus rlmesh_adapter_observe(RLMeshAdapter* adapter, const RLMeshValue* raw);
+RLMESH_API RLMeshStatus rlmesh_adapter_reset(RLMeshAdapter* adapter);
+RLMESH_API RLMeshStatus rlmesh_adapter_explain(const RLMeshAdapter* adapter, RLMeshBytes* out);
+RLMESH_API RLMeshStatus rlmesh_adapter_advisories_len(const RLMeshAdapter* adapter, size_t* out);
+RLMESH_API RLMeshStatus rlmesh_adapter_advisories_get(const RLMeshAdapter* adapter, size_t i,
+                                                      RLMeshAdvisory* out);
+RLMESH_API RLMeshStatus rlmesh_adapter_history_keys_len(const RLMeshAdapter* adapter, size_t* out);
+RLMESH_API RLMeshStatus rlmesh_adapter_history_keys_get(const RLMeshAdapter* adapter, size_t i,
+                                                        RLMeshStr* out);
+RLMESH_API RLMeshStatus rlmesh_adapter_history_windows_len(const RLMeshAdapter* adapter,
+                                                           size_t* out);
+RLMESH_API RLMeshStatus rlmesh_adapter_history_windows_get(const RLMeshAdapter* adapter, size_t i,
+                                                           RLMeshStr* placement, uint64_t* span,
+                                                           uint64_t* frame_bytes);
+RLMESH_API RLMeshStatus rlmesh_adapter_wrap_predict(RLMeshAdapter* adapter,
+                                                    RLMeshPredictFn predict_fn, void* user_data,
+                                                    void (*free_user_data)(void*),
+                                                    RLMeshWrappedPredict** out);
+RLMESH_API RLMeshStatus rlmesh_wrapped_predict_call(RLMeshWrappedPredict* predict,
+                                                    const RLMeshValue* raw_obs,
+                                                    RLMeshValue** out_action);
+RLMESH_API void rlmesh_wrapped_predict_free(RLMeshWrappedPredict* predict);
+RLMESH_API RLMeshStatus rlmesh_adapters_tag(RLMeshEnv* env, const RLMeshEnvTags* tags,
+                                            const RLMeshTagOptions* options);
+RLMESH_API RLMeshStatus rlmesh_adapters_tag_vector(RLMeshVectorEnv* env, const RLMeshEnvTags* tags,
+                                                   const RLMeshTagOptions* options);
+RLMESH_API RLMeshStatus rlmesh_ext_register_entrypoint(const char* entrypoint,
+                                                       const RLMeshObsTransform* transform);
 
 /* ---- Env authoring and serving (facade) ---------------------------------- */
 
@@ -746,8 +2165,7 @@ typedef struct RLMeshEnv RLMeshEnv;
 typedef struct RLMeshVectorEnv RLMeshVectorEnv;
 typedef struct RLMeshEnvServer RLMeshEnvServer;
 typedef struct RLMeshEnvTags RLMeshEnvTags;
-/* Adapter authoring belongs to its separate wave. Returned tags are owned. */
-RLMESH_API void rlmesh_env_tags_free(RLMeshEnvTags* tags);
+/* Returned tags are owned. */
 typedef enum RLMeshTransport {
   RLMESH_TRANSPORT_INVALID = 0,
   RLMESH_TRANSPORT_TCP = 1,

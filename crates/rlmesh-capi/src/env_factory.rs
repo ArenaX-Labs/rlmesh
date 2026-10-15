@@ -428,7 +428,7 @@ pub extern "C" fn rlmesh_env_factory_tags(
                 .tags
                 .clone()
                 .map_or(std::ptr::null_mut(), |t| {
-                    Box::into_raw(Box::new(RLMeshEnvTags(t)))
+                    Box::into_raw(Box::new(RLMeshEnvTags::new(t)))
                 }),
         )
     })
@@ -450,7 +450,7 @@ pub extern "C" fn rlmesh_env_factory_tags_for(
         write_out(
             out,
             tags.map_or(std::ptr::null_mut(), |t| {
-                Box::into_raw(Box::new(RLMeshEnvTags(t)))
+                Box::into_raw(Box::new(RLMeshEnvTags::new(t)))
             }),
         )
     })

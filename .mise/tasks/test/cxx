@@ -94,6 +94,10 @@ echo "==> C ABI 5 factories, discriminants, variants and cancellation"
 $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/c_factory.c "${link[@]}" -o "$tmp/c_factory"
 "$tmp/c_factory"
+echo "==> C ABI 5 typed adapters, transforms, ownership and model integration"
+$CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
+  crates/rlmesh-capi/examples/c_adapters.c "${link[@]}" -o "$target/c_adapters_smoke"
+"$target/c_adapters_smoke"
 echo "==> C ABI 5 Model load, declarations, cloning and lifecycle"
 $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/c_policy.c "${link[@]}" -o "$tmp/c_policy"

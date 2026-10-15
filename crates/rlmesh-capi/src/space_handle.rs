@@ -168,7 +168,7 @@ fn require_space<'a>(space: *const RLMeshSpace) -> Result<&'a Space, CapiError> 
     space_ref(space).ok_or_else(|| CapiError::invalid_arg("null space"))
 }
 
-fn require_spec(spec: *const RLMeshSpaceSpec) -> Result<SpaceSpec, CapiError> {
+pub(crate) fn require_spec(spec: *const RLMeshSpaceSpec) -> Result<SpaceSpec, CapiError> {
     spec_ref(spec)
         .map(|wire| rlmesh::binding::space_spec_from_wire(wire.clone()))
         .ok_or_else(|| CapiError::invalid_arg("null space spec"))

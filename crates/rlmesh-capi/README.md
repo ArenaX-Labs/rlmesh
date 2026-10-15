@@ -121,6 +121,47 @@ redundant legacy readers and the unused scalar legacy env constructor are gone.
 Space and SpaceSpec also use distinct free functions, without the ABI-4 pointer
 registry/fallback. The C++20 wave will remove the inventoried remainder.
 
+## Stable adapters
+
+`RLMeshEnvTags` and `RLMeshModelSpec` are immutable facade values. Build them
+from typed `RLMeshObsNode` / `RLMeshInputNode` trees and sized leaves, or use
+the dict / JSON / metadata constructors. Constructors copy input data; clone
+shares the immutable lent tree. Dict keys and text fill use `RLMeshStr`, so
+embedded NULs are preserved. Authored order is kept for access and observation
+roles; serialized objects use the facade's canonical sorted JSON. Canonical
+reads can change a state leaf's representation, as in Python's codec.
+
+Every sized leaf and options record requires its `RLMESH_*_INIT` minimum,
+zero reserved bytes and zero unknown input tails. Frozen node arrays retain
+their stride; Action components and Split fields are arrays of leaf pointers.
+The C fixture checks that every sized adapter record has explicit padding.
+Tolerant vocabulary values use `OTHER` plus text; closed enums refuse it.
+Image stride is expanded when a spec consumes the leaf, and lent images carry
+offsets rather than stride sugar.
+
+Transform handles retain shared callable identity across clones, leaves and
+specs. A successful `_new` takes `user_data`; its optional `free_user_data`
+runs once when the last reference drops. The callback must support concurrent
+calls, receives a borrowed Value, and transfers an owned output even on error.
+A failed constructor leaves state with its caller. Callback errors preserve
+their recorded error class.
+
+`rlmesh_adapters_tag` / `_tag_vector` validate through the facade before
+replacing the env wrapper, leaving the original handle unchanged on failure.
+`rlmesh_adapters_resolve` / `_resolve_from_contract` return a shared Adapter
+that executes the facade engine, serializing per-step calls and explain.
+`rlmesh_adapter_new` implements AdapterBase with a C vtable; Adapter-only
+history/advisory queries on that handle fail with TypeError. `wrap_predict`
+returns an owned reusable callable that keeps its adapter and callback state
+alive until freed.
+
+Attach a spec through `RLMeshModelOptions.spec` or the policy vtable. The
+model retains it. `RLMESH_SPEC_KIND_NO_ADAPTER` explicitly bypasses adaptation;
+a tagged env with no model spec otherwise fails with AdapterResolutionError.
+Trusted custom-input entrypoints resolve through the fenced
+`rlmesh_ext_register_entrypoint` registry. Custom-encoding string arms remain
+describe-only and are refused by resolve. See `examples/c_adapters.c`.
+
 ## Remote clients
 
 `rlmesh_remote_env_new` and `rlmesh_remote_vector_env_new` connect through

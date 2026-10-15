@@ -1,180 +1,697 @@
-//! Tag-driven IO adapter resolution over the C ABI. A model worker resolves
-//! the env's published `EnvTags` against its own `ModelSpec` into an opaque,
-//! immutable plan handle. Specs cross as JSON (the frozen v1 wire format is the
-//! contract; the capi never mirrors the ~30 nested spec structs); the env's
-//! observation/action spaces cross as the `RLMeshSpaceSpec` handles the contract
-//! already exposes. Per-step apply (`transform_obs`/`transform_action`) is a
-//! separate, not-yet-implemented surface.
-#![allow(unsafe_code)] // FFI: raw pointers + C string in / owned buffer out.
-
-use std::collections::BTreeSet;
-use std::ffi::{CStr, c_char};
-
-use rlmesh_adapters::v1::{
-    ENV_METADATA_KEY, EnvTags, ModelSpec, ResolvedAdapter, SpaceView, resolve,
+//! Stable typed adapters built on the public Rust facade.
+#![allow(unsafe_code)] // C callbacks, borrowed immutable trees and owned handles.
+mod inputs;
+mod records;
+mod runtime;
+mod views;
+use crate::abi::{
+    sizing,
+    status::{CapiError, RLMeshStatus, clear_last_error, guard, guard_ptr, guard_value},
 };
-use rlmesh_spaces::MetaValue;
-
-use crate::abi::status::{CapiError, RLMeshStatus, guard};
 use crate::codec::RLMeshBytes;
-use crate::spaces::{RLMeshEnvContract, RLMeshSpaceSpec, spec_ref};
+use crate::ffi;
+use crate::space_handle::RLMeshStr;
+use crate::spaces::slice_arg;
+use crate::value::handle::{RLMeshValue, into_handle, value_ref, write_out};
+pub(crate) use inputs::*;
+pub(crate) use records::*;
+use rlmesh::{Value, adapters as a};
 
-/// An opaque resolved adapter plan. Immutable; free with
-/// `rlmesh_adapter_plan_free`.
-#[repr(transparent)]
-pub struct RLMeshAdapterPlan(ResolvedAdapter);
-
-unsafe fn cstr<'a>(ptr: *const c_char, what: &str) -> Result<&'a str, CapiError> {
-    if ptr.is_null() {
-        return Err(CapiError::invalid_arg(format!("null {what}")));
+use std::ffi::{c_char, c_void};
+use std::sync::{Arc, Mutex};
+pub(crate) use views::*;
+pub(crate) struct RLMeshObsTransform(pub(crate) a::ObsTransform);
+pub(crate) struct RLMeshRotationTransform(pub(crate) a::RotationTransform);
+#[derive(Clone)]
+pub struct RLMeshModelSpec(pub(crate) a::ModelSpec, Arc<SpecView>);
+#[derive(Clone)]
+pub struct RLMeshEnvTags(pub(crate) a::EnvTags, Arc<TagsView>);
+impl RLMeshModelSpec {
+    pub(crate) fn new(value: a::ModelSpec) -> Self {
+        let view = SpecView::new(&value);
+        Self(value, Arc::new(view))
     }
-    unsafe { CStr::from_ptr(ptr) }
-        .to_str()
-        .map_err(|_| CapiError::invalid_arg(format!("{what} is not valid UTF-8")))
+}
+impl RLMeshEnvTags {
+    pub(crate) fn new(value: a::EnvTags) -> Self {
+        let view = TagsView::new(&value);
+        Self(value, Arc::new(view))
+    }
+}
+unsafe fn required(p: *const c_char, name: &str) -> Result<String, CapiError> {
+    unsafe { ffi::text(p) }?.ok_or_else(|| CapiError::type_error(format!("{name} is required")))
+}
+unsafe fn sized<T: Copy>(p: *const T, name: &str) -> Result<T, CapiError> {
+    unsafe { sizing::read(p, name) }?.ok_or_else(|| CapiError::invalid_arg(format!("null {name}")))
+}
+unsafe fn optional_slice<T: Copy>(
+    p: *const T,
+    n: usize,
+    name: &str,
+) -> Result<Option<Vec<T>>, CapiError> {
+    let values = unsafe { slice_arg(p, n, name) }?;
+    Ok((!p.is_null()).then(|| values.to_vec()))
+}
+unsafe fn strings(p: *const *const c_char, n: usize) -> Result<Option<Vec<String>>, CapiError> {
+    let values = unsafe { slice_arg(p, n, "strings") }?;
+    if p.is_null() {
+        return Ok(None);
+    }
+    Ok(Some(
+        values
+            .iter()
+            .map(|&p| unsafe { required(p, "string") })
+            .collect::<Result<_, _>>()?,
+    ))
+}
+unsafe fn accept<E: a::Vocabulary>(
+    p: *const i32,
+    n: usize,
+    other: *const *const c_char,
+    read: unsafe fn(i32, *const c_char) -> Result<a::Tolerant<E>, CapiError>,
+) -> Result<Option<Vec<a::Tolerant<E>>>, CapiError> {
+    let values = unsafe { slice_arg(p, n, "accept set") }?;
+    if p.is_null() {
+        return Ok(None);
+    }
+    Ok(Some(
+        values
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| unsafe {
+                read(
+                    v,
+                    if v == 1000 && !other.is_null() {
+                        *other.add(i)
+                    } else {
+                        std::ptr::null()
+                    },
+                )
+            })
+            .collect::<Result<_, _>>()?,
+    ))
+}
+unsafe fn axis(
+    has: bool,
+    scalar: f64,
+    p: *const f64,
+    n: usize,
+    name: &str,
+) -> Result<Option<a::AxisValue>, CapiError> {
+    let values = unsafe { optional_slice(p, n, name) }?;
+    if has && values.is_some() {
+        return Err(CapiError::invalid_arg(format!(
+            "{name} and axis_{name} are mutually exclusive"
+        )));
+    }
+    Ok(if has {
+        Some(a::AxisValue::Scalar(scalar))
+    } else {
+        values.map(a::AxisValue::PerAxis)
+    })
+}
+unsafe fn encoding_arm(arm: RLMeshEncodingArm) -> Result<Option<a::EncodingArm>, CapiError> {
+    if !arm.transform.is_null() && !arm.entrypoint.is_null() {
+        return Err(CapiError::invalid_arg(
+            "transform and entrypoint are mutually exclusive",
+        ));
+    }
+    Ok(if let Some(t) = unsafe { arm.transform.as_ref() } {
+        Some(a::EncodingArm::Transform(t.0.clone()))
+    } else {
+        unsafe { ffi::text(arm.entrypoint) }?.map(a::EncodingArm::Entrypoint)
+    })
+}
+unsafe fn state_encoding(
+    p: *const i32,
+    n: usize,
+    other: *const *const c_char,
+    custom: *const RLMeshCustomEncoding,
+) -> Result<Option<a::StateEncoding>, CapiError> {
+    if !custom.is_null() && (!p.is_null() || n != 0) {
+        return Err(CapiError::invalid_arg(
+            "encoding and custom_encoding are mutually exclusive",
+        ));
+    }
+    Ok(if !custom.is_null() {
+        Some(a::StateEncoding::Custom(unsafe {
+            parse_custom_encoding(custom)
+        }?))
+    } else {
+        unsafe { accept(p, n, other, tolerant_rotation_encoding) }?.map(a::StateEncoding::Native)
+    })
+}
+unsafe fn action_encoding(
+    has: bool,
+    e: i32,
+    custom: *const RLMeshCustomEncoding,
+) -> Result<Option<a::ActionEncoding>, CapiError> {
+    if has && !custom.is_null() {
+        return Err(CapiError::invalid_arg(
+            "encoding and custom_encoding are mutually exclusive",
+        ));
+    }
+    Ok(if !custom.is_null() {
+        Some(a::ActionEncoding::Custom(unsafe {
+            parse_custom_encoding(custom)
+        }?))
+    } else if has {
+        Some(a::ActionEncoding::Native(enum_rotation_encoding(e)?))
+    } else {
+        None
+    })
+}
+macro_rules! value_api {
+    ($ty:ident,$native:ident,$new:ident,$clone:ident,$free:ident,$eq:ident,$repr:ident,$dict:ident,$json:ident,$meta:ident,$fromdict:ident,$fromjson:ident,$frommeta:ident) => {
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $clone(p: *const $ty) -> *mut $ty {
+            guard_ptr(|| {
+                Ok(Box::into_raw(Box::new(
+                    unsafe { p.as_ref() }
+                        .ok_or_else(|| CapiError::invalid_arg("null handle"))?
+                        .clone(),
+                )))
+            })
+        }
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $free(p: *mut $ty) {
+            guard_value((), || {
+                if !p.is_null() {
+                    drop(unsafe { Box::from_raw(p) })
+                }
+            })
+        }
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $eq(p: *const $ty, q: *const $ty) -> bool {
+            guard_value(false, || {
+                match (unsafe { p.as_ref() }, unsafe { q.as_ref() }) {
+                    (Some(p), Some(q)) => p.0 == q.0,
+                    _ => false,
+                }
+            })
+        }
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $repr(p: *const $ty, out: *mut RLMeshBytes) -> RLMeshStatus {
+            guard(|| {
+                ffi::bytes(
+                    out,
+                    unsafe { p.as_ref() }
+                        .ok_or_else(|| CapiError::invalid_arg("null handle"))?
+                        .0
+                        .to_string(),
+                )
+            })
+        }
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $dict(p: *const $ty, out: *mut *mut RLMeshValue) -> RLMeshStatus {
+            guard(|| {
+                write_out(out, std::ptr::null_mut())?;
+                let value = unsafe { p.as_ref() }
+                    .ok_or_else(|| CapiError::invalid_arg("null handle"))?
+                    .0
+                    .to_dict()?;
+                write_out(out, into_handle(Value::Dict(value)))
+            })
+        }
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $meta(p: *const $ty, out: *mut *mut RLMeshValue) -> RLMeshStatus {
+            guard(|| {
+                write_out(out, std::ptr::null_mut())?;
+                let value = unsafe { p.as_ref() }
+                    .ok_or_else(|| CapiError::invalid_arg("null handle"))?
+                    .0
+                    .to_metadata()?;
+                write_out(out, into_handle(Value::Dict(value)))
+            })
+        }
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $json(p: *const $ty, out: *mut RLMeshBytes) -> RLMeshStatus {
+            guard(|| {
+                ffi::bytes(
+                    out,
+                    unsafe { p.as_ref() }
+                        .ok_or_else(|| CapiError::invalid_arg("null handle"))?
+                        .0
+                        .to_json()?,
+                )
+            })
+        }
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $fromdict(
+            p: *const RLMeshValue,
+            out: *mut *mut $ty,
+        ) -> RLMeshStatus {
+            guard(|| {
+                write_out(out, std::ptr::null_mut())?;
+                let value = a::$native::from_dict(value_ref(p)?.as_dict()?)?;
+                write_out(out, Box::into_raw(Box::new($ty::new(value))))
+            })
+        }
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $frommeta(
+            p: *const RLMeshValue,
+            out: *mut *mut $ty,
+        ) -> RLMeshStatus {
+            guard(|| {
+                write_out(out, std::ptr::null_mut())?;
+                if let Some(value) = a::$native::from_metadata(value_ref(p)?.as_dict()?)? {
+                    write_out(out, Box::into_raw(Box::new($ty::new(value))))?;
+                }
+                Ok(())
+            })
+        }
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $fromjson(p: *const c_char, out: *mut *mut $ty) -> RLMeshStatus {
+            guard(|| {
+                write_out(out, std::ptr::null_mut())?;
+                let value = a::$native::from_json(&unsafe { required(p, "json") }?)?;
+                write_out(out, Box::into_raw(Box::new($ty::new(value))))
+            })
+        }
+    };
+}
+value_api!(
+    RLMeshModelSpec,
+    ModelSpec,
+    rlmesh_model_spec_new,
+    rlmesh_model_spec_clone,
+    rlmesh_model_spec_free,
+    rlmesh_model_spec_equals,
+    rlmesh_model_spec_repr,
+    rlmesh_model_spec_to_dict,
+    rlmesh_model_spec_to_json,
+    rlmesh_model_spec_to_metadata,
+    rlmesh_model_spec_from_dict,
+    rlmesh_model_spec_from_json,
+    rlmesh_model_spec_from_metadata
+);
+value_api!(
+    RLMeshEnvTags,
+    EnvTags,
+    rlmesh_env_tags_new,
+    rlmesh_env_tags_clone,
+    rlmesh_env_tags_free,
+    rlmesh_env_tags_equals,
+    rlmesh_env_tags_repr,
+    rlmesh_env_tags_to_dict,
+    rlmesh_env_tags_to_json,
+    rlmesh_env_tags_to_metadata,
+    rlmesh_env_tags_from_dict,
+    rlmesh_env_tags_from_json,
+    rlmesh_env_tags_from_metadata
+);
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_model_spec_new(
+    input: *const RLMeshInputNode,
+    output: *const RLMeshAction,
+    out: *mut *mut RLMeshModelSpec,
+) -> RLMeshStatus {
+    guard(|| {
+        write_out(out, std::ptr::null_mut())?;
+        let value = a::ModelSpec::new(unsafe { parse_input(input, 0) }?, unsafe {
+            parse_action(output)
+        }?)?;
+        write_out(out, Box::into_raw(Box::new(RLMeshModelSpec::new(value))))
+    })
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_env_tags_new(
+    input: *const RLMeshObsNode,
+    output: *const RLMeshAction,
+    out: *mut *mut RLMeshEnvTags,
+) -> RLMeshStatus {
+    guard(|| {
+        write_out(out, std::ptr::null_mut())?;
+        let value = a::EnvTags::new(unsafe { parse_obs(input, 0) }?, unsafe {
+            parse_action(output)
+        }?)?;
+        write_out(out, Box::into_raw(Box::new(RLMeshEnvTags::new(value))))
+    })
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_model_spec_input(
+    p: *const RLMeshModelSpec,
+) -> *const RLMeshInputNode {
+    guard_value(std::ptr::null(), || {
+        unsafe { p.as_ref() }.map_or(std::ptr::null(), |p| p.1.input)
+    })
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_model_spec_output(
+    p: *const RLMeshModelSpec,
+) -> *const RLMeshAction {
+    guard_value(std::ptr::null(), || {
+        unsafe { p.as_ref() }.map_or(std::ptr::null(), |p| p.1.action)
+    })
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_env_tags_observation(
+    p: *const RLMeshEnvTags,
+) -> *const RLMeshObsNode {
+    guard_value(std::ptr::null(), || {
+        unsafe { p.as_ref() }.map_or(std::ptr::null(), |p| p.1.observation)
+    })
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_env_tags_action(p: *const RLMeshEnvTags) -> *const RLMeshAction {
+    guard_value(std::ptr::null(), || {
+        unsafe { p.as_ref() }.map_or(std::ptr::null(), |p| p.1.action)
+    })
 }
 
-fn plan_ref<'a>(plan: *const RLMeshAdapterPlan) -> Result<&'a ResolvedAdapter, CapiError> {
-    unsafe { plan.cast::<ResolvedAdapter>().as_ref() }
-        .ok_or_else(|| CapiError::invalid_arg("null adapter plan"))
-}
-
-fn write_bytes(out: *mut RLMeshBytes, bytes: Vec<u8>) -> Result<(), CapiError> {
+/// Write only the known output prefix; preserve the caller's declared size and tail.
+pub(crate) unsafe fn out_struct<T: Copy>(
+    out: *mut T,
+    mut value: T,
+    name: &str,
+) -> Result<(), CapiError> {
     if out.is_null() {
         return Err(CapiError::invalid_arg("null out"));
     }
-    unsafe { *out = RLMeshBytes::from_vec(bytes) };
+    let size = unsafe { out.cast::<usize>().read_unaligned() };
+    if size < std::mem::size_of::<T>() {
+        return Err(CapiError::invalid_arg(format!(
+            "{name}.struct_size is below its minimum"
+        )));
+    }
+    unsafe {
+        std::ptr::from_mut(&mut value)
+            .cast::<usize>()
+            .write_unaligned(size);
+        out.write_unaligned(value)
+    }
     Ok(())
 }
-
-/// The top-level observation entry a (possibly dotted) plan key lives under.
-/// `"."` is the reserved flat/root observation, its own top-level key.
-fn top_level_key(key: &str) -> &str {
-    if key == "." {
-        return ".";
-    }
-    key.split('.').next().unwrap_or(key)
-}
-
-/// Resolve env tags + spaces and a model spec into a plan handle.
-///
-/// `env_tags_json` is the env's `EnvTags` as JSON (see
-/// `rlmesh_env_contract_adapter_tags_json`); `model_spec_json` is the model's
-/// `ModelSpec`. The spaces are borrowed `RLMeshSpaceSpec` handles (e.g. from the
-/// contract); they are not retained past the call. On success `*out_plan` owns a
-/// plan freed with `rlmesh_adapter_plan_free`.
-///
-/// # Safety
-/// `out_plan` must be a valid writable pointer; the string and space pointers,
-/// when non-null, must be valid for the duration of the call.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_adapter_resolve(
-    env_tags_json: *const c_char,
-    observation_space: *const RLMeshSpaceSpec,
-    action_space: *const RLMeshSpaceSpec,
-    model_spec_json: *const c_char,
-    trust_entrypoints: bool,
-    out_plan: *mut *mut RLMeshAdapterPlan,
+pub unsafe extern "C" fn rlmesh_env_tags_observation_roles(
+    p: *const RLMeshEnvTags,
+    out: *mut RLMeshObservationRoles,
 ) -> RLMeshStatus {
     guard(|| {
-        if out_plan.is_null() {
-            return Err(CapiError::invalid_arg("null out_plan"));
-        }
-        unsafe { *out_plan = std::ptr::null_mut() };
-        let tags_json = unsafe { cstr(env_tags_json, "env_tags_json") }?;
-        let spec_json = unsafe { cstr(model_spec_json, "model_spec_json") }?;
-        let obs = spec_ref(observation_space)
-            .ok_or_else(|| CapiError::invalid_arg("null observation_space"))?;
-        let act =
-            spec_ref(action_space).ok_or_else(|| CapiError::invalid_arg("null action_space"))?;
-        let tags: EnvTags = serde_json::from_str(tags_json)
-            .map_err(|err| CapiError::invalid_arg(format!("invalid env tags: {err}")))?;
-        let model_spec: ModelSpec = serde_json::from_str(spec_json)
-            .map_err(|err| CapiError::invalid_arg(format!("invalid model spec: {err}")))?;
-        let adapter = resolve(
-            &tags,
-            &SpaceView::from(obs),
-            &SpaceView::from(act),
-            &model_spec,
-            trust_entrypoints,
+        let p = unsafe { p.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null tags"))?;
+        unsafe { out_struct(out, p.1.roles, "RLMeshObservationRoles") }
+    })
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_observation_roles_equals(
+    p: *const RLMeshObservationRoles,
+    q: *const RLMeshObservationRoles,
+    out: *mut bool,
+) -> RLMeshStatus {
+    guard(|| {
+        write_out(
+            out,
+            unsafe { parse_observation_roles(p) }? == unsafe { parse_observation_roles(q) }?,
         )
-        .map_err(|err| CapiError::adapter_resolution(err.message))?;
-        unsafe { *out_plan = Box::into_raw(Box::new(RLMeshAdapterPlan(adapter))) };
+    })
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_observation_roles_repr(
+    p: *const RLMeshObservationRoles,
+    out: *mut RLMeshBytes,
+) -> RLMeshStatus {
+    guard(|| ffi::bytes(out, unsafe { parse_observation_roles(p) }?.to_string()))
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_advisory_equals(
+    p: *const RLMeshAdvisory,
+    q: *const RLMeshAdvisory,
+    out: *mut bool,
+) -> RLMeshStatus {
+    guard(|| {
+        write_out(
+            out,
+            unsafe { parse_advisory(p) }? == unsafe { parse_advisory(q) }?,
+        )
+    })
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_advisory_repr(
+    p: *const RLMeshAdvisory,
+    out: *mut RLMeshBytes,
+) -> RLMeshStatus {
+    guard(|| ffi::bytes(out, format!("{:?}", unsafe { parse_advisory(p) }?)))
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_action_dim(p: *const RLMeshAction, out: *mut u32) -> RLMeshStatus {
+    guard(|| write_out(out, unsafe { parse_action(p) }?.dim()))
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_custom_encoding_is_entrypoint(
+    p: *const RLMeshCustomEncoding,
+    out: *mut bool,
+) -> RLMeshStatus {
+    guard(|| write_out(out, unsafe { parse_custom_encoding(p) }?.is_entrypoint()))
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_custom_encoding_width(
+    p: *const RLMeshCustomEncoding,
+    out: *mut u32,
+) -> RLMeshStatus {
+    guard(|| write_out(out, unsafe { parse_custom_encoding(p) }?.width()))
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_rotation_encoding_dims(v: i32, out: *mut u32) -> RLMeshStatus {
+    guard(|| write_out(out, enum_rotation_encoding(v)?.dims()))
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn rlmesh_adapters_parts_len() -> usize {
+    a::PARTS.len()
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn rlmesh_adapters_parts_get(i: usize) -> *const c_char {
+    a::PARTS
+        .get(i)
+        .map_or(std::ptr::null(), |s| crate::value::dtype::static_str(s))
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn rlmesh_adapters_rotation_dims_len() -> usize {
+    a::ROTATION_DIMS.len()
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_adapters_rotation_dims_get(
+    i: usize,
+    e: *mut i32,
+    d: *mut u32,
+) -> RLMeshStatus {
+    guard(|| {
+        if e.is_null() || d.is_null() {
+            return Err(CapiError::invalid_arg("null out"));
+        }
+        let entry = a::ROTATION_DIMS.get(i);
+        write_out(e, entry.map_or(0, |e| number_rotation_encoding(e.0)))?;
+        write_out(d, entry.map_or(0, |e| e.1))
+    })
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_image_with_size(p: *mut RLMeshImage, size: u32) -> RLMeshStatus {
+    guard(|| {
+        let mut v = unsafe { sized(p, "RLMeshImage") }?;
+        let _ = unsafe { parse_image(p) }?.with_size(size)?;
+        v.has_height = true;
+        v.height = size;
+        v.has_width = true;
+        v.width = size;
+        unsafe { out_struct(p, v, "RLMeshImage") }
+    })
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_rotation_from_matrix(
+    rows: *const [f64; 3],
+    values: *mut f64,
+    out: *mut RLMeshRotation,
+) -> RLMeshStatus {
+    guard(|| {
+        if rows.is_null() || values.is_null() || out.is_null() {
+            return Err(CapiError::invalid_arg("null matrix, value or out"));
+        }
+        let original = unsafe { sized(out, "RLMeshRotation") }?;
+        let rows = unsafe { [rows.read(), rows.add(1).read(), rows.add(2).read()] };
+        let value = a::Rotation::from_matrix(rows);
+        let mut v = original;
+        v.encoding = number_rotation_encoding(value.encoding);
+        v.value = values;
+        v.value_len = 6;
+        unsafe { out_struct(out, v, "RLMeshRotation") }?;
+        unsafe { std::ptr::copy_nonoverlapping(value.value.as_ptr(), values, 6) };
+        Ok(())
+    })
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_adapters_previous(
+    role: *const c_char,
+    o: *const RLMeshPreviousOptions,
+    out: *mut RLMeshState,
+) -> RLMeshStatus {
+    guard(|| {
+        unsafe { required(role, "role") }?;
+        let options = if o.is_null() {
+            a::PreviousOptions::default()
+        } else {
+            unsafe { parse_previous_options(o) }?
+        };
+        let value = a::Previous(unsafe { required(role, "role") }?, options);
+        let mut arena = Arena::default();
+        let mut view = view_state(&mut arena, &value);
+        view.role = role;
+        view.part = if o.is_null() {
+            std::ptr::null()
+        } else {
+            unsafe { (*o).part }
+        };
+        unsafe { out_struct(out, view, "RLMeshState") }
+    })
+}
+// Constructors store borrowed pointers. Composition validates and copies trees.
+macro_rules! node_leaf {
+    ($f:ident,$node:ident,$ty:ident,$kind:expr) => {
+        #[unsafe(no_mangle)]
+        pub extern "C" fn $f(leaf: *const $ty) -> $node {
+            $node {
+                kind: $kind,
+                leaf: leaf.cast(),
+                keys: std::ptr::null(),
+                children: std::ptr::null(),
+                children_len: 0,
+            }
+        }
+    };
+}
+node_leaf!(rlmesh_input_node_image, RLMeshInputNode, RLMeshImage, 1);
+node_leaf!(rlmesh_input_node_state, RLMeshInputNode, RLMeshState, 2);
+node_leaf!(rlmesh_input_node_concat, RLMeshInputNode, RLMeshConcat, 3);
+node_leaf!(
+    rlmesh_input_node_text,
+    RLMeshInputNode,
+    RLMeshAdaptersText,
+    4
+);
+node_leaf!(rlmesh_input_node_custom, RLMeshInputNode, RLMeshCustom, 5);
+node_leaf!(rlmesh_obs_node_image_tag, RLMeshObsNode, RLMeshImageTag, 1);
+node_leaf!(rlmesh_obs_node_state_tag, RLMeshObsNode, RLMeshStateTag, 2);
+node_leaf!(rlmesh_obs_node_text_tag, RLMeshObsNode, RLMeshTextTag, 3);
+node_leaf!(rlmesh_obs_node_split, RLMeshObsNode, RLMeshSplit, 4);
+macro_rules! composites {
+    ($dict:ident,$tuple:ident,$ty:ident,$d:expr,$t:expr) => {
+        #[unsafe(no_mangle)]
+        pub extern "C" fn $dict(keys: *const RLMeshStr, children: *const $ty, n: usize) -> $ty {
+            $ty {
+                kind: $d,
+                leaf: std::ptr::null(),
+                keys,
+                children,
+                children_len: n,
+            }
+        }
+        #[unsafe(no_mangle)]
+        pub extern "C" fn $tuple(children: *const $ty, n: usize) -> $ty {
+            $ty {
+                kind: $t,
+                leaf: std::ptr::null(),
+                keys: std::ptr::null(),
+                children,
+                children_len: n,
+            }
+        }
+    };
+}
+composites!(
+    rlmesh_input_node_dict,
+    rlmesh_input_node_tuple,
+    RLMeshInputNode,
+    6,
+    7
+);
+composites!(
+    rlmesh_obs_node_dict,
+    rlmesh_obs_node_tuple,
+    RLMeshObsNode,
+    5,
+    6
+);
+#[unsafe(no_mangle)]
+pub extern "C" fn rlmesh_concat_part_role(role: *const c_char) -> RLMeshConcatPart {
+    RLMeshConcatPart {
+        kind: 1,
+        role,
+        leaf: std::ptr::null(),
+    }
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn rlmesh_concat_part_state(leaf: *const RLMeshState) -> RLMeshConcatPart {
+    RLMeshConcatPart {
+        kind: 2,
+        role: std::ptr::null(),
+        leaf: leaf.cast(),
+    }
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn rlmesh_concat_part_constant(leaf: *const RLMeshConstant) -> RLMeshConcatPart {
+    RLMeshConcatPart {
+        kind: 3,
+        role: std::ptr::null(),
+        leaf: leaf.cast(),
+    }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_ext_register_entrypoint(
+    name: *const c_char,
+    transform: *const RLMeshObsTransform,
+) -> RLMeshStatus {
+    guard(|| {
+        let transform = unsafe { transform.as_ref() }
+            .ok_or_else(|| CapiError::invalid_arg("null transform"))?;
+        rlmesh::ext::register_entrypoint(
+            &unsafe { required(name, "entrypoint") }?,
+            transform.0.clone(),
+        )?;
+        Ok(())
+    })
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_adapters_tag(
+    p: *mut crate::env_api::RLMeshEnv,
+    tags: *const RLMeshEnvTags,
+    o: *const RLMeshTagOptions,
+) -> RLMeshStatus {
+    guard(|| {
+        let h = unsafe { p.as_mut() }.ok_or_else(|| CapiError::invalid_arg("null env"))?;
+        let _claim = crate::env_api::Claim::new(&h.leased)?;
+        let tags = unsafe { tags.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null tags"))?;
+        let options = if o.is_null() {
+            a::TagOptions::default()
+        } else {
+            unsafe { parse_tag_options(o) }?
+        };
+        let tagged = a::tag(Arc::clone(&h.inner), &tags.0, options)
+            .map_err(|e| CapiError::from(e.into_parts().1))?;
+        h.inner = Arc::new(Mutex::new(Box::new(tagged)));
+        Ok(())
+    })
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_adapters_tag_vector(
+    p: *mut crate::env_api::RLMeshVectorEnv,
+    tags: *const RLMeshEnvTags,
+    o: *const RLMeshTagOptions,
+) -> RLMeshStatus {
+    guard(|| {
+        let h = unsafe { p.as_mut() }.ok_or_else(|| CapiError::invalid_arg("null env"))?;
+        let _claim = crate::env_api::Claim::new(&h.leased)?;
+        let tags = unsafe { tags.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null tags"))?;
+        let options = if o.is_null() {
+            a::TagOptions::default()
+        } else {
+            unsafe { parse_tag_options(o) }?
+        };
+        let tagged = a::tag_vector(Arc::clone(&h.inner), &tags.0, options)
+            .map_err(|e| CapiError::from(e.into_parts().1))?;
+        h.inner = Arc::new(Mutex::new(Box::new(tagged)));
         Ok(())
     })
 }
 
-/// Free a plan from `rlmesh_adapter_resolve`.
-///
-/// # Safety
-/// `plan` must be a plan this thread owns and has not freed (NULL is a no-op).
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_adapter_plan_free(plan: *mut RLMeshAdapterPlan) {
-    if !plan.is_null() {
-        drop(unsafe { Box::from_raw(plan) });
-    }
-}
-
-/// Write a human-readable summary of the plan to `out` (UTF-8, free with
-/// `rlmesh_bytes_free`).
-///
-/// # Safety
-/// `plan` and `out` must be valid for the call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_adapter_plan_describe(
-    plan: *const RLMeshAdapterPlan,
-    out: *mut RLMeshBytes,
-) -> RLMeshStatus {
-    guard(|| write_bytes(out, plan_ref(plan)?.describe().into_bytes()))
-}
-
-/// Write the top-level observation keys the plan reads as a JSON array of
-/// strings to `out` (free with `rlmesh_bytes_free`). A host applying the plan
-/// should encode only these keys.
-///
-/// # Safety
-/// `plan` and `out` must be valid for the call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_adapter_plan_referenced_obs_keys(
-    plan: *const RLMeshAdapterPlan,
-    out: *mut RLMeshBytes,
-) -> RLMeshStatus {
-    guard(|| {
-        let referenced = plan_ref(plan)?.referenced_obs_keys();
-        let keys: BTreeSet<&str> = referenced.iter().map(|key| top_level_key(key)).collect();
-        let json = serde_json::to_string(&keys)
-            .map_err(|err| CapiError::internal(format!("serialize keys: {err}")))?;
-        write_bytes(out, json.into_bytes())
-    })
-}
-
-/// Write the env's adapter `EnvTags` (from the contract metadata) as JSON to
-/// `out`, ready to pass to `rlmesh_adapter_resolve` (free with
-/// `rlmesh_bytes_free`). Writes an empty buffer (status OK) when the env was
-/// served without tags — the caller treats empty as "untagged env".
-///
-/// # Safety
-/// `contract` and `out` must be valid for the call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_env_contract_adapter_tags_json(
-    contract: *const RLMeshEnvContract,
-    out: *mut RLMeshBytes,
-) -> RLMeshStatus {
-    guard(|| {
-        let contract = unsafe { RLMeshEnvContract::as_ref(contract) }
-            .ok_or_else(|| CapiError::invalid_arg("null contract"))?;
-        let json = match contract
-            .metadata
-            .as_ref()
-            .and_then(|metadata| metadata.get(ENV_METADATA_KEY))
-        {
-            Some(tags) => serde_json::to_string(&meta_to_json(tags))
-                .map_err(|err| CapiError::internal(format!("serialize tags: {err}")))?,
-            None => String::new(),
-        };
-        write_bytes(out, json.into_bytes())
-    })
-}
-
+use rlmesh_spaces::MetaValue;
 /// Faithfully render contract metadata as JSON (used by the tags accessor).
 pub(crate) fn meta_to_json(value: &MetaValue) -> serde_json::Value {
     use serde_json::Value as Json;
@@ -216,214 +733,5 @@ pub(crate) fn json_to_meta(value: &serde_json::Value) -> MetaValue {
                 .map(|(k, v)| (k.clone(), json_to_meta(v)))
                 .collect(),
         ),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::ffi::CString;
-
-    use rlmesh_spaces::{
-        BoxSpec, DType, DictSpec, EnvContract, MetaMap, SpaceKind, SpaceSpec, TextSpec,
-    };
-
-    use super::*;
-
-    const BASIC_PAIRING: &str =
-        include_str!("../../rlmesh-adapters/conformance/v1/cases/resolve_basic_pairing.json");
-
-    fn box_spec(shape: Vec<i64>, dtype: DType) -> SpaceSpec {
-        SpaceSpec {
-            shape,
-            dtype,
-            spec: Some(SpaceKind::Box(BoxSpec { bounds: None })),
-        }
-    }
-
-    // The observation/action SpaceSpecs whose SpaceView matches the
-    // resolve_basic_pairing vector (Dict of cam/eef_pos/eef_quat/gripper/text;
-    // Box[7] action; no declared bounds).
-    fn basic_obs_space() -> SpaceSpec {
-        SpaceSpec {
-            shape: vec![],
-            dtype: DType::Unspecified,
-            spec: Some(SpaceKind::Dict(DictSpec {
-                keys: ["cam", "eef_pos", "eef_quat", "gripper", "instruction"]
-                    .map(String::from)
-                    .to_vec(),
-                spaces: vec![
-                    box_spec(vec![8, 8, 3], DType::Uint8),
-                    box_spec(vec![3], DType::Float32),
-                    box_spec(vec![4], DType::Float32),
-                    box_spec(vec![2], DType::Float32),
-                    SpaceSpec {
-                        shape: vec![],
-                        dtype: DType::Unspecified,
-                        spec: Some(SpaceKind::Text(TextSpec::default())),
-                    },
-                ],
-            })),
-        }
-    }
-
-    fn read_bytes(bytes: &RLMeshBytes) -> String {
-        if bytes.data.is_null() {
-            return String::new();
-        }
-        let slice = unsafe { std::slice::from_raw_parts(bytes.data, bytes.len) };
-        String::from_utf8(slice.to_vec()).expect("utf-8")
-    }
-
-    #[test]
-    fn resolve_basic_pairing_matches_conformance_vector() {
-        let case: serde_json::Value = serde_json::from_str(BASIC_PAIRING).unwrap();
-        let tags = CString::new(serde_json::to_string(&case["env_tags"]).unwrap()).unwrap();
-        let model = CString::new(serde_json::to_string(&case["model_spec"]).unwrap()).unwrap();
-        let expected = case["expect"]["describe"].as_str().unwrap();
-
-        let obs = RLMeshSpaceSpec(basic_obs_space());
-        let act = RLMeshSpaceSpec(box_spec(vec![7], DType::Float32));
-        let mut plan: *mut RLMeshAdapterPlan = std::ptr::null_mut();
-
-        let status = unsafe {
-            rlmesh_adapter_resolve(tags.as_ptr(), &obs, &act, model.as_ptr(), false, &mut plan)
-        };
-        assert_eq!(status, RLMeshStatus::Ok);
-        assert!(!plan.is_null());
-
-        let mut out = RLMeshBytes {
-            data: std::ptr::null_mut(),
-            len: 0,
-            cap: 0,
-        };
-        assert_eq!(
-            unsafe { rlmesh_adapter_plan_describe(plan, &mut out) },
-            RLMeshStatus::Ok
-        );
-        assert_eq!(read_bytes(&out), expected);
-        unsafe { crate::codec::rlmesh_bytes_free(out) };
-
-        let mut keys = RLMeshBytes {
-            data: std::ptr::null_mut(),
-            len: 0,
-            cap: 0,
-        };
-        assert_eq!(
-            unsafe { rlmesh_adapter_plan_referenced_obs_keys(plan, &mut keys) },
-            RLMeshStatus::Ok
-        );
-        let parsed: BTreeSet<String> = serde_json::from_str(&read_bytes(&keys)).unwrap();
-        assert!(
-            parsed.contains("cam") && parsed.contains("eef_pos") && parsed.contains("instruction")
-        );
-        unsafe { crate::codec::rlmesh_bytes_free(keys) };
-
-        unsafe { rlmesh_adapter_plan_free(plan) };
-    }
-
-    #[test]
-    fn resolve_rejects_invalid_model_spec_json() {
-        let obs = RLMeshSpaceSpec(basic_obs_space());
-        let act = RLMeshSpaceSpec(box_spec(vec![7], DType::Float32));
-        let tags =
-            CString::new(r#"{"observation":{},"action":{"clip":null,"components":[]}}"#).unwrap();
-        let bad = CString::new("{ not json").unwrap();
-        let mut plan: *mut RLMeshAdapterPlan = std::ptr::null_mut();
-        let status = unsafe {
-            rlmesh_adapter_resolve(tags.as_ptr(), &obs, &act, bad.as_ptr(), false, &mut plan)
-        };
-        assert_eq!(status, RLMeshStatus::InvalidArgument);
-        assert!(plan.is_null());
-    }
-
-    #[test]
-    fn resolve_rejects_null_out_and_spaces() {
-        let tags = CString::new("{}").unwrap();
-        let model = CString::new("{}").unwrap();
-        // null out_plan
-        assert_eq!(
-            unsafe {
-                rlmesh_adapter_resolve(
-                    tags.as_ptr(),
-                    std::ptr::null(),
-                    std::ptr::null(),
-                    model.as_ptr(),
-                    false,
-                    std::ptr::null_mut(),
-                )
-            },
-            RLMeshStatus::InvalidArgument
-        );
-        // null spaces
-        let mut plan: *mut RLMeshAdapterPlan = std::ptr::null_mut();
-        assert_eq!(
-            unsafe {
-                rlmesh_adapter_resolve(
-                    tags.as_ptr(),
-                    std::ptr::null(),
-                    std::ptr::null(),
-                    model.as_ptr(),
-                    false,
-                    &mut plan,
-                )
-            },
-            RLMeshStatus::InvalidArgument
-        );
-        assert!(plan.is_null());
-    }
-
-    #[test]
-    fn contract_tags_json_roundtrips_through_resolve() {
-        let case: serde_json::Value = serde_json::from_str(BASIC_PAIRING).unwrap();
-        let mut metadata = MetaMap::new();
-        metadata.insert(ENV_METADATA_KEY.to_owned(), json_to_meta(&case["env_tags"]));
-        let contract = RLMeshEnvContract::new(EnvContract {
-            metadata: Some(metadata),
-            ..Default::default()
-        });
-
-        let mut out = RLMeshBytes {
-            data: std::ptr::null_mut(),
-            len: 0,
-            cap: 0,
-        };
-        assert_eq!(
-            unsafe { rlmesh_env_contract_adapter_tags_json(&contract, &mut out) },
-            RLMeshStatus::Ok
-        );
-        let tags_json = read_bytes(&out);
-        unsafe { crate::codec::rlmesh_bytes_free(out) };
-        // The accessor's JSON must be exactly what resolve consumes.
-        serde_json::from_str::<EnvTags>(&tags_json).expect("tags json parses as EnvTags");
-
-        let tags = CString::new(tags_json).unwrap();
-        let model = CString::new(serde_json::to_string(&case["model_spec"]).unwrap()).unwrap();
-        let obs = RLMeshSpaceSpec(basic_obs_space());
-        let act = RLMeshSpaceSpec(box_spec(vec![7], DType::Float32));
-        let mut plan: *mut RLMeshAdapterPlan = std::ptr::null_mut();
-        assert_eq!(
-            unsafe {
-                rlmesh_adapter_resolve(tags.as_ptr(), &obs, &act, model.as_ptr(), false, &mut plan)
-            },
-            RLMeshStatus::Ok
-        );
-        assert!(!plan.is_null());
-        unsafe { rlmesh_adapter_plan_free(plan) };
-    }
-
-    #[test]
-    fn contract_tags_json_empty_when_untagged() {
-        let contract = RLMeshEnvContract::new(EnvContract::default());
-        let mut out = RLMeshBytes {
-            data: std::ptr::null_mut(),
-            len: 0,
-            cap: 0,
-        };
-        assert_eq!(
-            unsafe { rlmesh_env_contract_adapter_tags_json(&contract, &mut out) },
-            RLMeshStatus::Ok
-        );
-        assert!(out.data.is_null() && out.len == 0);
-        unsafe { crate::codec::rlmesh_bytes_free(out) };
     }
 }
