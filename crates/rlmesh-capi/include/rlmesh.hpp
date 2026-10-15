@@ -2111,6 +2111,7 @@ struct State {
       } else {
         const auto& v = std::get<std::vector<double>>(*scale);
         c.axis_scale = a.array(v);
+        if (!c.axis_scale) c.axis_scale = a.keep(double{});
         c.axis_scale_len = v.size();
       }
     }
@@ -2121,6 +2122,7 @@ struct State {
       } else {
         const auto& v = std::get<std::vector<double>>(*offset);
         c.axis_offset = a.array(v);
+        if (!c.axis_offset) c.axis_offset = a.keep(double{});
         c.axis_offset_len = v.size();
       }
     }
@@ -2313,6 +2315,7 @@ struct Actuator {
       } else {
         const auto& v = std::get<std::vector<double>>(*scale);
         c.axis_scale = a.array(v);
+        if (!c.axis_scale) c.axis_scale = a.keep(double{});
         c.axis_scale_len = v.size();
       }
     }
@@ -2343,6 +2346,7 @@ struct Actuator {
       } else {
         const auto& v = std::get<std::vector<double>>(*offset);
         c.axis_offset = a.array(v);
+        if (!c.axis_offset) c.axis_offset = a.keep(double{});
         c.axis_offset_len = v.size();
       }
     }

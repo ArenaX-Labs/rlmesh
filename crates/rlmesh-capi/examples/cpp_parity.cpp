@@ -430,6 +430,45 @@ struct Identity : adapters::AdapterBase {
   Value transform_obs(const Value& v) override { return v; }
   Value transform_action(const Value& v) override { return v; }
 };
+void adapter_axis_presence() {
+  using namespace adapters;
+  State state{.role = JOINT_POS, .dim = 1};
+  Actuator actuator{.role = ACTION_JOINT_POS, .dim = 1};
+  ModelSpec absent(state, Action{.components = {actuator}});
+  const auto* input = static_cast<const RLMeshState*>(rlmesh_model_spec_input(absent.raw())->leaf);
+  assert(!input->has_scale && !input->axis_scale && !input->has_offset && !input->axis_offset);
+  const auto* output = rlmesh_model_spec_output(absent.raw())->components[0];
+  assert(!output->has_scale && !output->axis_scale && !output->has_offset && !output->axis_offset);
+  for (bool offset : {false, true}) {
+    auto empty_state = state;
+    (offset ? empty_state.offset : empty_state.scale) = std::vector<double>{};
+    bool rejected = false;
+    try {
+      ModelSpec invalid(empty_state, Action{.components = {actuator}});
+    } catch (const ValueError&) {
+      rejected = true;
+    }
+    assert(rejected);
+    auto empty_actuator = actuator;
+    (offset ? empty_actuator.offset : empty_actuator.scale) = std::vector<double>{};
+    rejected = false;
+    try {
+      ModelSpec invalid(state, Action{.components = {empty_actuator}});
+    } catch (const ValueError&) {
+      rejected = true;
+    }
+    assert(rejected);
+  }
+  state.scale = std::vector<double>{2};
+  state.offset = std::vector<double>{1};
+  actuator.scale = std::vector<double>{2};
+  actuator.offset = std::vector<double>{1};
+  ModelSpec present(state, Action{.components = {actuator}});
+  assert(present == ModelSpec(State{.role = JOINT_POS, .dim = 1,
+                                   .scale = std::vector<double>{2},
+                                   .offset = std::vector<double>{1}},
+                              Action{.components = {actuator}}));
+}
 Value vector(float f) { return Tensor(&f, sizeof(f), {1}, DType::Float32); }
 struct Tagged {
   std::optional<std::string> render_mode() const { return "rgb_array"; }
@@ -509,6 +548,7 @@ int main() try {
   runs_sessions();
   exceptions();
   factories_remote_describe();
+  adapter_axis_presence();
   adapters_readers_recorder();
   std::cout << "cpp_parity OK\n";
 } catch (const std::exception& e) {
