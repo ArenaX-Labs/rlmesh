@@ -279,94 +279,6 @@ fn sorted(j: Json) -> Json {
     }
 }
 
-// Parse tree containers directly from the JSON stream. serde_json::Value uses
-// sorted objects throughout the workspace; enabling preserve_order globally
-// would change the contract/envelope serializers of unrelated areas.
-struct RawObject(Vec<(String, Box<serde_json::value::RawValue>)>);
-impl<'de> Deserialize<'de> for RawObject {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
-        struct Visitor;
-        impl<'de> serde::de::Visitor<'de> for Visitor {
-            type Value = RawObject;
-            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str("an ordered object")
-            }
-            fn visit_map<M: serde::de::MapAccess<'de>>(
-                self,
-                mut map: M,
-            ) -> std::result::Result<Self::Value, M::Error> {
-                let mut pairs = Vec::new();
-                while let Some(pair) = map.next_entry()? {
-                    pairs.push(pair)
-                }
-                Ok(RawObject(pairs))
-            }
-        }
-        d.deserialize_map(Visitor)
-    }
-}
-pub(crate) fn input_from_text(text: &str) -> Result<InputNode> {
-    if text.trim_start().starts_with('[') {
-        let children: Vec<Box<serde_json::value::RawValue>> =
-            serde_json::from_str(text).map_err(err)?;
-        return Ok(InputNode::tuple(
-            children
-                .iter()
-                .map(|s| input_from_text(s.get()))
-                .collect::<Result<Vec<_>>>()?,
-        ));
-    }
-    let RawObject(pairs) = serde_json::from_str(text).map_err(err)?;
-    if pairs.iter().any(|(k, _)| k == "type") {
-        input_from(serde_json::from_str(text).map_err(err)?)
-    } else {
-        Ok(InputNode::Dict(
-            pairs
-                .into_iter()
-                .map(|(k, v)| Ok((k, input_from_text(v.get())?)))
-                .collect::<Result<_>>()?,
-        ))
-    }
-}
-pub(crate) fn obs_from_text(text: &str) -> Result<ObsNode> {
-    if text.trim_start().starts_with('[') {
-        let children: Vec<Box<serde_json::value::RawValue>> =
-            serde_json::from_str(text).map_err(err)?;
-        return Ok(ObsNode::tuple(
-            children
-                .iter()
-                .map(|s| obs_from_text(s.get()))
-                .collect::<Result<Vec<_>>>()?,
-        ));
-    }
-    let RawObject(pairs) = serde_json::from_str(text).map_err(err)?;
-    if pairs.iter().any(|(k, _)| k == "type") {
-        obs_from(serde_json::from_str(text).map_err(err)?)
-    } else {
-        Ok(ObsNode::Dict(
-            pairs
-                .into_iter()
-                .map(|(k, v)| Ok((k, obs_from_text(v.get())?)))
-                .collect::<Result<_>>()?,
-        ))
-    }
-}
-pub(crate) fn authored_input(text: &str) -> Result<InputNode> {
-    #[derive(Deserialize)]
-    struct Raw {
-        input: Box<serde_json::value::RawValue>,
-    }
-    let raw: Raw = serde_json::from_str(text).map_err(err)?;
-    input_from_text(raw.input.get())
-}
-pub(crate) fn authored_observation(text: &str) -> Result<ObsNode> {
-    #[derive(Deserialize)]
-    struct Raw {
-        observation: Box<serde_json::value::RawValue>,
-    }
-    let raw: Raw = serde_json::from_str(text).map_err(err)?;
-    obs_from_text(raw.observation.get())
-}
 pub(crate) fn metadata_json(m: &Metadata) -> Result<String> {
     Ok(format!(
         "{{{}}}",
@@ -380,8 +292,12 @@ pub(crate) fn metadata_json(m: &Metadata) -> Result<String> {
             .join(",")
     ))
 }
-fn value_json(v: &Value) -> Result<String> {
+pub(crate) fn value_json(v: &Value) -> Result<String> {
     match v {
+        Value::Float(v) if !v.is_finite() => Err(err("adapter JSON numbers must be finite")),
+        Value::Bytes(_) | Value::Tensor(_) => {
+            Err(err("adapter JSON cannot contain bytes or tensors"))
+        }
         Value::Dict(m) => metadata_json(m),
         Value::List(v) | Value::Tuple(v) => Ok(format!(
             "[{}]",

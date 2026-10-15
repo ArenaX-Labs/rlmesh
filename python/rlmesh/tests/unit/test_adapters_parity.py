@@ -127,3 +127,9 @@ def test_equal_custom_encodings_are_probed_once() -> None:
     )
     adapt.resolve(tags, _space(4), _space(), spec)
     assert len(calls) == 2
+
+
+def test_previous_action_source_survives_single_part_round_trip() -> None:
+    spec = adapt.ModelSpec(adapt.Previous(adapt.ACTION_GRIPPER, fill=2.0), _action())
+    assert adapt.ModelSpec.from_dict(spec.to_dict()) == spec
+    assert adapt.ModelSpec.from_json(spec.to_json()) == spec

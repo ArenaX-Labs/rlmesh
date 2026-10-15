@@ -442,13 +442,69 @@ fn inverse_check_preserves_intermediate_shape_and_per_step_checks_the_arm() {
     );
 }
 #[test]
-fn json_and_metadata_readers_preserve_authored_order_and_refuse_duplicate_keys() {
+fn readers_return_canonical_order_while_constructors_keep_authored_order() {
     let text = r#"{"input":{"z":{"type":"text","role":"text/z"},"a":{"type":"text","role":"text/a"}},"output":{"components":[{"role":"action/gripper","dim":1}]}}"#;
     let spec = ModelSpec::from_json(text).unwrap();
     let InputNode::Dict(pairs) = spec.input() else {
         panic!()
     };
+    assert_eq!(pairs[0].0, "a");
+    let authored = ModelSpec::new(
+        InputNode::dict([
+            ("z", Text::new("text/z").into()),
+            ("a", Text::new("text/a").into()),
+        ]),
+        action(),
+    )
+    .unwrap();
+    let InputNode::Dict(pairs) = authored.input() else {
+        panic!()
+    };
     assert_eq!(pairs[0].0, "z");
-    let text = r#"{"input":{"z":{"type":"text","role":"text/z"},"z":{"type":"text","role":"text/a"}},"output":{"components":[{"role":"action/gripper","dim":1}]}}"#;
-    assert!(ModelSpec::from_json(text).is_err());
+    assert_eq!(spec, authored);
+    assert_eq!(
+        ModelSpec::from_dict(&authored.to_dict().unwrap()).unwrap(),
+        spec
+    );
+}
+
+#[test]
+fn typed_metadata_refuses_nonfinite_numbers_instead_of_converting_them_to_null() {
+    let mut data = ModelSpec::new(
+        State {
+            dim: Some(1),
+            ..State::new(GRIPPER_POS)
+        },
+        action(),
+    )
+    .unwrap()
+    .to_dict()
+    .unwrap();
+    let Value::Dict(input) = data.get_mut("input").unwrap() else {
+        panic!()
+    };
+    let Value::List(parts) = input.get_mut("components").unwrap() else {
+        panic!()
+    };
+    let Value::Dict(part) = &mut parts[0] else {
+        panic!()
+    };
+    part.insert("scale", f64::NAN);
+    assert_eq!(
+        ModelSpec::from_dict(&data).unwrap_err().class(),
+        ErrorClass::ValueError
+    );
+}
+
+#[test]
+fn previous_action_source_round_trips_as_a_single_state_leaf() {
+    let spec = ModelSpec::new(
+        Previous(ACTION_GRIPPER, PreviousOptions::default().fill(2.0)),
+        action(),
+    )
+    .unwrap();
+    assert_eq!(
+        ModelSpec::from_json(&spec.to_json().unwrap()).unwrap(),
+        spec
+    );
 }

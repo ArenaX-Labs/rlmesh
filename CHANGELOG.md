@@ -67,6 +67,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ### Fixed
 
+- A single `Previous(...)` model input retains `source="action"` when read back from dict or JSON; a nonzero initial fill no longer fails reconstruction as an observation-source state.
+
 - Custom adapter inputs on the native model engine retain integer and boolean kinds, `None`, and tuples instead of coercing scalars to floats or tuples to lists.
 
 - Model run, session and serve resolution now use the tolerant contract-tag reader: unknown, unreferenced env leaf kinds no longer fail a strict preflight (ADP-P1).

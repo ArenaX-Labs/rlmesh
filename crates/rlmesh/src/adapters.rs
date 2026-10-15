@@ -154,13 +154,14 @@ impl ModelSpec {
     }
     /// Read and validate a JSON representation.
     pub fn from_json(text: &str) -> Result<Self> {
-        let raw: Json =
+        let wire: core::ModelSpec =
             serde_json::from_str(text).map_err(|e| Error::invalid_argument(e.to_string()))?;
-        let wire: core::ModelSpec = serde_json::from_value(raw.clone())
-            .map_err(|e| Error::invalid_argument(e.to_string()))?;
         core::reject_unknowns_model(&wire).map_err(Error::invalid_argument)?;
         Self::new(
-            codec::authored_input(text)?,
+            codec::input_from(
+                serde_json::to_value(&wire.input)
+                    .map_err(|e| Error::invalid_argument(e.to_string()))?,
+            )?,
             codec::action_from(
                 serde_json::to_value(wire.output)
                     .map_err(|e| Error::invalid_argument(e.to_string()))?,
@@ -250,13 +251,14 @@ impl EnvTags {
     }
     /// Read and validate a JSON representation.
     pub fn from_json(text: &str) -> Result<Self> {
-        let raw: Json =
+        let wire: core::EnvTags =
             serde_json::from_str(text).map_err(|e| Error::invalid_argument(e.to_string()))?;
-        let wire: core::EnvTags = serde_json::from_value(raw.clone())
-            .map_err(|e| Error::invalid_argument(e.to_string()))?;
         core::reject_unknowns_env(&wire).map_err(Error::invalid_argument)?;
         Self::new(
-            codec::authored_observation(text)?,
+            codec::obs_from(
+                serde_json::to_value(&wire.observation)
+                    .map_err(|e| Error::invalid_argument(e.to_string()))?,
+            )?,
             codec::action_from(
                 serde_json::to_value(wire.action)
                     .map_err(|e| Error::invalid_argument(e.to_string()))?,

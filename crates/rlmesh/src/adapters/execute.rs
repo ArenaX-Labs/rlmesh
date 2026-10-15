@@ -579,7 +579,7 @@ pub(crate) fn contract_tags(c: &crate::EnvContract) -> Result<core::EnvTags> {
         .metadata()
         .and_then(|m| m.get(ENV_METADATA_KEY))
         .ok_or_else(|| Error::adapter_resolution("env contract publishes no adapter tags"))?;
-    serde_json::from_value(crate::specs::value_to_json(tags).map_err(resolution_error)?)
+    serde_json::from_str(&super::codec::value_json(tags).map_err(resolution_error)?)
         .map_err(resolution_error)
 }
 struct AdapterState {
