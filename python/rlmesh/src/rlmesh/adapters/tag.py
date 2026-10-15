@@ -48,9 +48,11 @@ def tag(env: EnvT, tags: EnvTags, *, validate: bool = True) -> EnvT:
 
 
 def _validate(env: object, tags: EnvTags) -> None:
-    from .._server import _is_vector_env
-
-    prefix = "single_" if _is_vector_env(env) else ""
+    is_vector = any(
+        hasattr(env, name)
+        for name in ("num_envs", "single_observation_space", "single_action_space")
+    )
+    prefix = "single_" if is_vector else ""
     observation_space = getattr(env, f"{prefix}observation_space", None)
     action_space = getattr(env, f"{prefix}action_space", None)
     if observation_space is None or action_space is None:
