@@ -10,65 +10,17 @@ use rlmesh_spaces::spaces::{
     BoxSpaceBuilder, DictSpaceBuilder, DiscreteBuilder, MultiBinaryBuilder, MultiDiscreteBuilder,
     TextBuilder, TupleSpaceBuilder,
 };
-use rlmesh_spaces::{BoxBounds, DType, EnvContract, SpaceKind, SpaceSpec, decode_scalars};
+use rlmesh_spaces::{BoxBounds, DType, SpaceKind, SpaceSpec, decode_scalars};
 
 use crate::abi::status::{CapiError, RLMeshStatus, guard, guard_ptr, guard_value};
 use crate::value::dtype::{dtype_from_c, dtype_to_c};
 use crate::value::handle::write_out;
 
-/// An opaque environment contract (spaces, id, num_envs, autoreset).
-#[repr(transparent)]
-pub struct RLMeshContract(pub(crate) EnvContract);
-
-impl RLMeshContract {
-    /// # Safety
-    /// `ptr` must be NULL or a valid `*const RLMeshContract` outliving `'a`.
-    pub(crate) unsafe fn as_ref<'a>(ptr: *const Self) -> Option<&'a EnvContract> {
-        unsafe { ptr.cast::<EnvContract>().as_ref() }
-    }
-}
+pub(crate) use crate::contract::RLMeshEnvContract;
 
 /// An opaque space specification.
 #[repr(transparent)]
 pub struct RLMeshSpaceSpec(pub(crate) SpaceSpec);
-
-/// Borrow the observation space (valid while `contract` lives), or NULL.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_contract_observation_space(
-    contract: *const RLMeshContract,
-) -> *const RLMeshSpaceSpec {
-    space_ptr(contract, |contract| contract.observation_space.as_ref())
-}
-
-/// Borrow the action space (valid while `contract` lives), or NULL.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_contract_action_space(
-    contract: *const RLMeshContract,
-) -> *const RLMeshSpaceSpec {
-    space_ptr(contract, |contract| contract.action_space.as_ref())
-}
-
-/// The contract's batch size (`num_envs`), or 0 if `contract` is NULL.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_contract_num_envs(contract: *const RLMeshContract) -> u32 {
-    guard_value(0, || {
-        unsafe { RLMeshContract::as_ref(contract) }.map_or(0, |contract| contract.num_envs)
-    })
-}
-
-fn space_ptr(
-    contract: *const RLMeshContract,
-    pick: impl FnOnce(&EnvContract) -> Option<&SpaceSpec>,
-) -> *const RLMeshSpaceSpec {
-    guard_value(std::ptr::null(), || {
-        match unsafe { RLMeshContract::as_ref(contract) } {
-            Some(contract) => {
-                pick(contract).map_or(std::ptr::null(), |spec| (spec as *const SpaceSpec).cast())
-            }
-            None => std::ptr::null(),
-        }
-    })
-}
 
 pub(crate) fn spec_ref<'a>(spec: *const RLMeshSpaceSpec) -> Option<&'a SpaceSpec> {
     unsafe { spec.cast::<SpaceSpec>().as_ref() }

@@ -1383,12 +1383,13 @@ class Batch {
   std::string_view session_id() const { return detail::sv(raw_->session_id); }
   std::string_view request_id() const { return detail::sv(raw_->request_id); }
 
-  const RLMeshContract* contract() const { return raw_->contract; }
+  const RLMeshEnvContract* contract() const { return raw_->contract; }
   SpaceRef action_space() const {
-    return SpaceRef(raw_->contract ? rlmesh_contract_action_space(raw_->contract) : nullptr);
+    return SpaceRef(raw_->contract ? rlmesh_env_contract_action_space(raw_->contract) : nullptr);
   }
   SpaceRef observation_space() const {
-    return SpaceRef(raw_->contract ? rlmesh_contract_observation_space(raw_->contract) : nullptr);
+    return SpaceRef(raw_->contract ? rlmesh_env_contract_observation_space(raw_->contract)
+                                   : nullptr);
   }
 
  private:

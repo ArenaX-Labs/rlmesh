@@ -17,7 +17,7 @@ use rlmesh_spaces::MetaValue;
 
 use crate::abi::status::{CapiError, RLMeshStatus, guard};
 use crate::codec::RLMeshBytes;
-use crate::spaces::{RLMeshContract, RLMeshSpaceSpec, spec_ref};
+use crate::spaces::{RLMeshEnvContract, RLMeshSpaceSpec, spec_ref};
 
 /// An opaque resolved adapter plan. Immutable; free with
 /// `rlmesh_adapter_plan_free`.
@@ -58,7 +58,7 @@ fn top_level_key(key: &str) -> &str {
 /// Resolve env tags + spaces and a model spec into a plan handle.
 ///
 /// `env_tags_json` is the env's `EnvTags` as JSON (see
-/// `rlmesh_contract_adapter_tags_json`); `model_spec_json` is the model's
+/// `rlmesh_env_contract_adapter_tags_json`); `model_spec_json` is the model's
 /// `ModelSpec`. The spaces are borrowed `RLMeshSpaceSpec` handles (e.g. from the
 /// contract); they are not retained past the call. On success `*out_plan` owns a
 /// plan freed with `rlmesh_adapter_plan_free`.
@@ -155,12 +155,12 @@ pub unsafe extern "C" fn rlmesh_adapter_plan_referenced_obs_keys(
 /// # Safety
 /// `contract` and `out` must be valid for the call.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_contract_adapter_tags_json(
-    contract: *const RLMeshContract,
+pub unsafe extern "C" fn rlmesh_env_contract_adapter_tags_json(
+    contract: *const RLMeshEnvContract,
     out: *mut RLMeshBytes,
 ) -> RLMeshStatus {
     guard(|| {
-        let contract = unsafe { RLMeshContract::as_ref(contract) }
+        let contract = unsafe { RLMeshEnvContract::as_ref(contract) }
             .ok_or_else(|| CapiError::invalid_arg("null contract"))?;
         let json = match contract
             .metadata
@@ -377,7 +377,7 @@ mod tests {
         let case: serde_json::Value = serde_json::from_str(BASIC_PAIRING).unwrap();
         let mut metadata = MetaMap::new();
         metadata.insert(ENV_METADATA_KEY.to_owned(), json_to_meta(&case["env_tags"]));
-        let contract = RLMeshContract(EnvContract {
+        let contract = RLMeshEnvContract::new(EnvContract {
             metadata: Some(metadata),
             ..Default::default()
         });
@@ -388,7 +388,7 @@ mod tests {
             cap: 0,
         };
         assert_eq!(
-            unsafe { rlmesh_contract_adapter_tags_json(&contract, &mut out) },
+            unsafe { rlmesh_env_contract_adapter_tags_json(&contract, &mut out) },
             RLMeshStatus::Ok
         );
         let tags_json = read_bytes(&out);
@@ -413,14 +413,14 @@ mod tests {
 
     #[test]
     fn contract_tags_json_empty_when_untagged() {
-        let contract = RLMeshContract(EnvContract::default());
+        let contract = RLMeshEnvContract::new(EnvContract::default());
         let mut out = RLMeshBytes {
             data: std::ptr::null_mut(),
             len: 0,
             cap: 0,
         };
         assert_eq!(
-            unsafe { rlmesh_contract_adapter_tags_json(&contract, &mut out) },
+            unsafe { rlmesh_env_contract_adapter_tags_json(&contract, &mut out) },
             RLMeshStatus::Ok
         );
         assert!(out.data.is_null() && out.len == 0);

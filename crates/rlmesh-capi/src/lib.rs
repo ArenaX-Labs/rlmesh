@@ -6,6 +6,7 @@ mod abi;
 mod adapters;
 mod build;
 mod codec;
+mod contract;
 mod describe;
 mod env;
 mod model;

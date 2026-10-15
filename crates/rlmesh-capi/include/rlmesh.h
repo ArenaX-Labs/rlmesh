@@ -393,16 +393,37 @@ RLMESH_API RLMeshStatus rlmesh_value_dict_contains_key(const RLMeshValue* value,
 /* ---- spaces + contract ------------------------------------------------- */
 
 typedef struct RLMeshSpaceSpec RLMeshSpaceSpec;
-typedef struct RLMeshContract RLMeshContract;
+typedef struct RLMeshEnvContract RLMeshEnvContract;
 
-RLMESH_API const RLMeshSpaceSpec* rlmesh_contract_observation_space(const RLMeshContract* contract);
-RLMESH_API const RLMeshSpaceSpec* rlmesh_contract_action_space(const RLMeshContract* contract);
-RLMESH_API uint32_t rlmesh_contract_num_envs(const RLMeshContract* contract);
+RLMESH_API const RLMeshSpaceSpec* rlmesh_env_contract_observation_space(
+    const RLMeshEnvContract* contract);
+RLMESH_API const RLMeshSpaceSpec* rlmesh_env_contract_action_space(
+    const RLMeshEnvContract* contract);
+RLMESH_API uint64_t rlmesh_env_contract_num_envs(const RLMeshEnvContract* contract);
+
+/* The full immutable contract surface. Borrowed spaces/metadata stay valid
+ * while any contract reference lives. Text outputs are owned RLMeshBytes. */
+RLMESH_API RLMeshStatus rlmesh_env_contract_id(const RLMeshEnvContract* contract,
+                                               struct RLMeshBytes* out);
+RLMESH_API RLMeshStatus rlmesh_env_contract_render_mode(const RLMeshEnvContract* contract,
+                                                        bool* out_has, struct RLMeshBytes* out);
+RLMESH_API const RLMeshValue* rlmesh_env_contract_metadata(const RLMeshEnvContract* contract);
+RLMESH_API RLMeshEnvContract* rlmesh_env_contract_clone(const RLMeshEnvContract* contract);
+RLMESH_API RLMeshEnvContract* rlmesh_env_contract_env(const RLMeshEnvContract* contract);
+RLMESH_API RLMeshEnvContract* rlmesh_env_contract_spec(const RLMeshEnvContract* contract);
+RLMESH_API void rlmesh_env_contract_free(RLMeshEnvContract* contract);
+RLMESH_API RLMeshStatus rlmesh_env_contract_to_dict(const RLMeshEnvContract* contract,
+                                                    RLMeshValue** out);
+RLMESH_API RLMeshStatus rlmesh_env_contract_repr(const RLMeshEnvContract* contract,
+                                                 struct RLMeshBytes* out);
+/* Typed reset options; NULL options/lane mean None. */
+RLMESH_API RLMeshStatus rlmesh_trial_index(const RLMeshValue* options, const size_t* lane,
+                                           bool* out_has, int64_t* out);
 
 /* Space introspection — enough to build a valid zero (or random) action for any
  * space: shape + dtype + bounds for Box, n/start for Discrete, the length limits
  * for Text, the per-element category counts for MultiDiscrete, and a child walk
- * for Dict/Tuple. RLMESH_VALUE_INVALID when `spec` is NULL or unspecified. */
+ * for Dict/Tuple. RLMESH_SPACE_KIND_UNKNOWN when `spec` is NULL or unspecified. */
 RLMESH_API RLMeshSpaceKind rlmesh_space_type(const RLMeshSpaceSpec* spec);
 RLMESH_API RLMeshDType rlmesh_space_dtype(const RLMeshSpaceSpec* spec);
 /* Rank; 0 for a scalar shape or a NULL spec. */
@@ -420,8 +441,8 @@ RLMESH_API const RLMeshSpaceSpec* rlmesh_space_dict_get(const RLMeshSpaceSpec* s
                                                         const char* key);
 /* The `index`-th dict key (declaration order, parallel to the children, and the
  * order the wire encodes the dict's leaves in): `*out_len` UTF-8 bytes, NOT
- * NUL-terminated, valid while `spec` lives. This is NOT the sorted order
- * rlmesh_value_dict_key uses — pair a space child with a value child by key. */
+ * NUL-terminated, valid while `spec` lives. A Value dict preserves insertion order;
+ * pair a space child with a value child by key. */
 RLMESH_API RLMeshStatus rlmesh_space_dict_key(const RLMeshSpaceSpec* spec, size_t index,
                                               const char** out_ptr, size_t* out_len);
 /* The `index`-th dict child, in the SAME declaration order as
@@ -695,7 +716,7 @@ RLMESH_API RLMeshStatus rlmesh_dict_contains_key(const RLMeshDict* dict, RLMeshS
 
 /* ---- adapters (experimental) -------------------------------------------- */
 
-/* Resolve the env's tags (env_tags_json; see rlmesh_contract_adapter_tags_json)
+/* Resolve the env's tags (env_tags_json; see rlmesh_env_contract_adapter_tags_json)
  * against this model's spec (model_spec_json) into an opaque plan. Specs are the
  * frozen v1 JSON wire format; observation/action_space are borrowed contract
  * spaces, not retained. trust_entrypoints allows custom-input entrypoint strings
@@ -718,8 +739,8 @@ RLMESH_API RLMeshStatus rlmesh_adapter_plan_referenced_obs_keys(const RLMeshAdap
                                                                 RLMeshBytes* out);
 /* The env's EnvTags as JSON into out (ready for rlmesh_adapter_resolve); free
  * with rlmesh_bytes_free. Empty buffer (RLMESH_OK) when the env is untagged. */
-RLMESH_API RLMeshStatus rlmesh_contract_adapter_tags_json(const RLMeshContract* contract,
-                                                          RLMeshBytes* out);
+RLMESH_API RLMeshStatus rlmesh_env_contract_adapter_tags_json(const RLMeshEnvContract* contract,
+                                                              RLMeshBytes* out);
 
 /* ---- model -------------------------------------------------------------- */
 
@@ -760,7 +781,7 @@ typedef struct RLMeshObservation {
   /* Spaces/metadata for the route. Never NULL on a predict the runtime
    * delivers: a route pins a contract (with an action space) before its first
    * predict. */
-  const RLMeshContract* contract;
+  const RLMeshEnvContract* contract;
   const char* session_id;
   const char* env_id;
   const char* request_id;

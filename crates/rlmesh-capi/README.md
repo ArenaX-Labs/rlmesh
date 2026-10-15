@@ -41,6 +41,13 @@ function and package-semver ABI accessors are removed. Use
 `rlmesh_build_info` for package identity. Package SONAME generation is read
 from `RLMESH_ABI_VERSION`, now 5.
 
+`RLMeshEnvContract` replaces `RLMeshContract`. The library builds it; callers
+can retain it with `rlmesh_env_contract_clone` (or the `env` / `spec` aliases)
+and free it with `rlmesh_env_contract_free`. Its id, spaces, optional render
+mode, lane count, typed metadata, `to_dict` and repr follow the facade.
+`rlmesh_trial_index` takes a Value dict and an optional lane, using Python's
+integer/float conversion and per-lane validation directly from the facade.
+
 The rest of the C parity migration is ongoing: the legacy env/model/run
 interfaces below have not yet become the full facade surface. In particular,
 the facade on this branch has no native DLPack import/export methods, and

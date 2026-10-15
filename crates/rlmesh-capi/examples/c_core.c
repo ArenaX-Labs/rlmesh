@@ -60,6 +60,21 @@ static void check_values(void) {
         child == NULL);
   rlmesh_value_free(retained);
 
+  RLMeshValue* ordinal = NULL;
+  RLMeshValue* options = NULL;
+  CHECK(rlmesh_value_int(-3, &ordinal) == RLMESH_OK);
+  RLMeshStr trial_key = rlmesh_str("trial_index");
+  const RLMeshValue* trial_values[] = {ordinal};
+  CHECK(rlmesh_value_dict(&trial_key, trial_values, 1, &options) == RLMESH_OK);
+  rlmesh_value_free(ordinal);
+  bool has_trial = false;
+  int64_t trial = 0;
+  CHECK(rlmesh_trial_index(options, NULL, &has_trial, &trial) == RLMESH_OK && has_trial &&
+        trial == -3);
+  const size_t lane = 1;
+  CHECK(rlmesh_trial_index(options, &lane, &has_trial, &trial) == RLMESH_ERR_INVALID_ARGUMENT);
+  rlmesh_value_free(options);
+
   const float data[] = {1, 2, 3, 4};
   const size_t shape[] = {2, 2};
   RLMeshTensor* tensor = NULL;

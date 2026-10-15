@@ -57,8 +57,13 @@ static RLMeshValue* zero_action(const RLMeshSpaceSpec* action) {
 
 static int predict(void* user_data, const RLMeshObservation* obs, RLMeshValue** out_actions) {
   (void)user_data;
+  if (obs->contract != NULL) {
+    RLMeshValue* details = NULL;
+    if (rlmesh_env_contract_to_dict(obs->contract, &details) != RLMESH_OK) return RLMESH_ERR_MODEL;
+    rlmesh_value_free(details);
+  }
   const RLMeshSpaceSpec* action =
-      obs->contract ? rlmesh_contract_action_space(obs->contract) : NULL;
+      obs->contract ? rlmesh_env_contract_action_space(obs->contract) : NULL;
   if (action == NULL) {
     rlmesh_callback_set_error("no action space on contract", false);
     return RLMESH_ERR_MODEL;

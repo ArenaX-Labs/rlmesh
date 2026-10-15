@@ -25,7 +25,7 @@ use crate::abi::status::{
     CapiError, RLMeshStatus, clear_last_error, guard, guard_value, last_error_message,
     last_error_recoverable,
 };
-use crate::spaces::RLMeshContract;
+use crate::spaces::RLMeshEnvContract;
 use crate::value::handle::RLMeshValue;
 
 /// Predict callback: read the decoded per-env observations in `obs`, run the
@@ -181,7 +181,7 @@ pub struct RLMeshObservation {
     /// Spaces/metadata for the route. Never NULL on a predict the runtime
     /// delivers (the route pins a contract with an action space before the
     /// first predict); check it anyway if you like.
-    pub contract: *const RLMeshContract,
+    pub contract: *const RLMeshEnvContract,
     /// NUL-terminated.
     pub session_id: *const c_char,
     /// NUL-terminated.
@@ -418,17 +418,13 @@ impl ModelHandler for CModelHandler {
                     .map(|v| RLMeshValue::new(rlmesh::binding::value_from_space(spec, v)))
                     .collect()
             });
-            let lane_ptrs: Option<Vec<*const RLMeshValue>> = lanes.as_ref().map(|lanes| {
-                lanes
-                    .iter()
-                    .map(|value| std::ptr::from_ref(value))
-                    .collect()
-            });
-            // `RLMeshContract` is repr(transparent) over `EnvContract`: borrow the
-            // shared Arc's contract for the call rather than cloning it per predict.
-            let contract_ptr = contract.as_deref().map_or(std::ptr::null(), |c| {
-                std::ptr::from_ref(c).cast::<RLMeshContract>()
-            });
+            let lane_ptrs: Option<Vec<*const RLMeshValue>> = lanes
+                .as_ref()
+                .map(|lanes| lanes.iter().map(std::ptr::from_ref).collect());
+            let contract_handle = contract.as_deref().cloned().map(RLMeshEnvContract::new);
+            let contract_ptr = contract_handle
+                .as_ref()
+                .map_or(std::ptr::null(), std::ptr::from_ref);
             let view = RLMeshObservation {
                 observations: lane_ptrs
                     .as_ref()
