@@ -1223,8 +1223,8 @@ class ModelBase(Generic[ObsT, ActT]):
         built-in bound as :meth:`Session.run <rlmesh.Session.run>`). Explicit
         seeds and caps need the runtime to own resets, so they are refused
         before any episode starts on an autoresetting vector env (drive it
-        with ``episodes``; seeds on a driver-reset vector env must be a
-        multiple of ``num_envs``). Every episode walks a trial
+        with ``episodes``; on a driver-reset vector env seeds are consumed one
+        per episode start, in any count). Every episode walks a trial
         ordinal, ``trial_index_base + i`` for episode ``i``: the runtime
         delivers it as ``reset(options={"trial_index": ...})`` to an env that
         declared the key in :attr:`EnvFactory.reset_options
@@ -1962,7 +1962,10 @@ def run(
     from ._eval import RANDOM_SAMPLE
 
     if model is not RANDOM_SAMPLE and not _served_handle(model):
-        if view is not None:
+        from ._view import resolve_view
+
+        # False is "no viewer", as None is; a wrong type stays a TypeError.
+        if resolve_view(view) is not None:
             raise TypeError(
                 "view is a session() option for a local model: use "
                 "model.session(env, view=...).run(...) for it."

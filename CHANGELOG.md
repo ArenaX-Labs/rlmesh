@@ -119,6 +119,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ### Changed
 
+- `view="http:PORT"` takes only ASCII digits for the port: a sign, `_` separators, inner spaces and other scripts' digits, which `int()` accepted, raise `ValueError`.
+
+- `rlmesh.run(local_model, env, view=False)` is accepted as `view=None` is, since `False` turns the viewer off; only a view that resolves to a viewer raises `TypeError` for a local model, and a `view` of the wrong type still raises `TypeError`.
+
 - Inside its own `Session.run` hooks a session offers only the `RunContext` protocol: `contract`, `num_envs`, `read` and `frame_sources` keep working, and `reset`, `step`, `predict`, `run`, `close`, `reader`, `observation_roles`, `selected_workflow_edition` and `done` raise `RuntimeError`. Before, a hook could step or close the session under its own loop and corrupt it. Outside the hooks every member works as before.
 
 - When `Session.run` fails, the run's own exception is raised even if the model's `on_episode_end` for the last episode also fails, as `Model.run` does; before, that `on_episode_end` error replaced it. On success, an `on_run_end` error now wins over the last episode end's.

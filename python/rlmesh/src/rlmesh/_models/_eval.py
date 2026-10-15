@@ -1438,9 +1438,9 @@ class Session(Generic[ObsT, ActT]):
         loop). Episode ``i`` walks trial ordinal ``trial_index_base + i``,
         delivered as ``reset(options={"trial_index": ...})`` to an env that
         declared the key in :attr:`EnvFactory.reset_options
-        <rlmesh.EnvFactory.reset_options>` (an env that did not never sees it,
-        and its :attr:`EpisodeResult.trial` stays ``None``); the base lets a local
-        eval walk the same states as a platform shard. ``hooks``
+        <rlmesh.EnvFactory.reset_options>` (an env that did not never sees it)
+        and recorded on :attr:`EpisodeResult.trial` either way; the base lets a
+        local eval walk the same states as a platform shard. ``hooks``
         (:class:`RunHooks`) observes the loop; hook exceptions propagate and
         abort the run, and :meth:`RunHooks.on_run_end` always fires exactly once
         with the completed episodes, even on an error or interrupt.
