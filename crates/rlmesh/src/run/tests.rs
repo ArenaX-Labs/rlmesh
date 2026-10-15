@@ -1311,6 +1311,40 @@ fn native_adapter_instruction_and_kept_context_read() {
 }
 
 #[test]
+fn closure_resolution_does_not_consume_the_authored_warning() {
+    let _lock = crate::warnings::tests::HANDLER_LOCK.lock().unwrap();
+    let warnings = Arc::new(AtomicUsize::new(0));
+    let count = warnings.clone();
+    crate::set_warning_handler(Some(Box::new(move |warning| {
+        if warning.category == crate::WarningCategory::WorkflowEditionWarning {
+            count.fetch_add(1, Ordering::SeqCst);
+        }
+        Ok(())
+    })));
+    let closure = ones();
+    let mut env = Steps::new();
+    let session = closure
+        .session(&mut env, SessionOptions::default())
+        .unwrap();
+    drop(session);
+    closure.run(&mut env, RunOptions::default()).unwrap();
+    assert_eq!(warnings.load(Ordering::SeqCst), 0);
+    struct Authored;
+    impl crate::Policy for Authored {
+        fn predict(&mut self, _: Value) -> Result<Value> {
+            Ok(Value::Int(0))
+        }
+    }
+    let authored = Model::new(Authored, ModelOptions::default()).unwrap();
+    let session = authored
+        .session(&mut env, SessionOptions::default())
+        .unwrap();
+    drop(session);
+    crate::set_warning_handler(None);
+    assert_eq!(warnings.load(Ordering::SeqCst), 1);
+}
+
+#[test]
 fn short_chunk_warnings_run_on_the_polling_thread_and_can_abort() {
     let _lock = crate::warnings::tests::HANDLER_LOCK.lock().unwrap();
     struct Chunk;
@@ -1349,3 +1383,347 @@ fn short_chunk_warnings_run_on_the_polling_thread_and_can_abort() {
     assert_eq!(error, crate::Error::Runtime("warning refused".into()));
 }
 
+#[test]
+fn dropped_predict_never_starts_a_queued_model_callback() {
+    let starts = Arc::new(AtomicUsize::new(0));
+    let count = starts.clone();
+    let model = Model::new(
+        move |_: Value| {
+            count.fetch_add(1, Ordering::SeqCst);
+            Ok(Value::Int(0))
+        },
+        ModelOptions::default(),
+    )
+    .unwrap();
+    let mut env = Steps::new();
+    let mut session = model.session(&mut env, SessionOptions::default()).unwrap();
+    session.reset(None, None).unwrap();
+    let shared = model.shared().clone();
+    let (entered, started) = std::sync::mpsc::channel();
+    let (release, blocked) = std::sync::mpsc::channel();
+    let busy = std::thread::spawn(move || {
+        shared.call(move |_| {
+            entered.send(()).unwrap();
+            blocked.recv().unwrap();
+            Ok(())
+        })
+    });
+    started.recv().unwrap();
+    super::drive::block_on_library(async {
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(50),
+                session.predict_async(Value::Int(0))
+            )
+            .await
+            .is_err()
+        );
+    });
+    release.send(()).unwrap();
+    busy.join().unwrap().unwrap();
+    model.shared().call(|_| Ok(())).unwrap();
+    assert_eq!(starts.load(Ordering::SeqCst), 0);
+    session.predict(Value::Int(0)).unwrap();
+    assert_eq!(starts.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn async_session_drop_enqueues_episode_end_before_model_close() {
+    tokio::spawn(async move {
+        let ended = Arc::new(AtomicUsize::new(0));
+        let count = ended.clone();
+        let model = Model::new(
+            |_: Value| Ok(Value::Int(0)),
+            ModelOptions {
+                on_episode_end: Some(Box::new(move |_| {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                })),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut env = Steps::new();
+        let mut session = model
+            .session_async(&mut env, SessionOptions::default())
+            .await
+            .unwrap();
+        session.reset_async(None, None).await.unwrap();
+        drop(session);
+        let closing = model.clone();
+        std::thread::spawn(move || closing.close())
+            .join()
+            .unwrap()
+            .unwrap();
+        assert_eq!(ended.load(Ordering::SeqCst), 1);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn async_session_drop_closes_factory_envs() {
+    tokio::spawn(async move {
+        let model = ones();
+        let mut factory = Factory {
+            closes: Arc::default(),
+            made: 0,
+        };
+        let closes = factory.closes.clone();
+        let mut session = model
+            .session_async(EnvTarget::factory(&mut factory), SessionOptions::default())
+            .await
+            .unwrap();
+        session.reset_async(None, None).await.unwrap();
+        drop(session);
+        for _ in 0..100 {
+            if closes.load(Ordering::SeqCst) != 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(closes.load(Ordering::SeqCst), 1);
+    })
+    .await
+    .unwrap();
+}
+
+#[test]
+fn cancelling_a_slow_local_step_discards_its_result() {
+    struct Slow {
+        token: crate::ext::CancelToken,
+        steps: usize,
+    }
+    impl crate::Env for Slow {
+        fn observation_space(&self) -> Space {
+            Discrete::new(4, DiscreteOptions::default()).unwrap().into()
+        }
+        fn action_space(&self) -> Space {
+            self.observation_space()
+        }
+        fn reset(&mut self, _: Option<i64>, _: Option<&InfoDict>) -> Result<(Value, InfoDict)> {
+            Ok((Value::Int(0), InfoDict::new()))
+        }
+        fn step(&mut self, _: Option<Value>) -> Result<(Value, f64, bool, bool, InfoDict)> {
+            self.steps += 1;
+            if self.steps == 1 {
+                self.token.cancel();
+            }
+            Ok((Value::Int(1), 1., true, false, InfoDict::new()))
+        }
+    }
+    let token = crate::ext::CancelToken::new();
+    let mut env = Slow {
+        token: token.clone(),
+        steps: 0,
+    };
+    let model = ones();
+    let mut session = model
+        .session(
+            &mut env,
+            SessionOptions {
+                cancel: Some(token),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    session.reset(None, None).unwrap();
+    assert_eq!(
+        session.step(Value::Int(0)).unwrap_err(),
+        crate::Error::Cancelled
+    );
+    assert!(
+        !session.done(),
+        "cancelled results do not finish the episode"
+    );
+    session.step(Value::Int(0)).unwrap();
+    assert!(session.done());
+}
+
+#[test]
+fn one_firing_cancels_two_sessions_sharing_a_token() {
+    let token = crate::ext::CancelToken::new();
+    let (ready, entered) = std::sync::mpsc::channel();
+    let mut threads = Vec::new();
+    for _ in 0..2 {
+        let ready = ready.clone();
+        let token = token.clone();
+        threads.push(std::thread::spawn(move || {
+            struct Slow(std::sync::mpsc::Sender<()>);
+            impl crate::Env for Slow {
+                fn observation_space(&self) -> Space {
+                    Discrete::new(2, DiscreteOptions::default()).unwrap().into()
+                }
+                fn action_space(&self) -> Space {
+                    self.observation_space()
+                }
+                fn reset(
+                    &mut self,
+                    _: Option<i64>,
+                    _: Option<&InfoDict>,
+                ) -> Result<(Value, InfoDict)> {
+                    Ok((Value::Int(0), InfoDict::new()))
+                }
+                fn step(&mut self, _: Option<Value>) -> Result<(Value, f64, bool, bool, InfoDict)> {
+                    self.0.send(()).unwrap();
+                    std::thread::sleep(Duration::from_millis(150));
+                    Ok((Value::Int(0), 0., false, false, InfoDict::new()))
+                }
+            }
+            let model = ones();
+            let mut env = Slow(ready);
+            let mut session = model
+                .session(
+                    &mut env,
+                    SessionOptions {
+                        cancel: Some(token),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            session.reset(None, None).unwrap();
+            session.step(Value::Int(0))
+        }));
+    }
+    for _ in 0..2 {
+        entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    }
+    token.cancel();
+    for thread in threads {
+        assert_eq!(thread.join().unwrap().unwrap_err(), crate::Error::Cancelled);
+    }
+    token.cancel();
+    assert!(token.take());
+    assert!(!token.take());
+}
+
+#[test]
+fn dropping_remote_session_creation_returns_the_borrowed_env() {
+    let server = steps_server();
+    let mut remote =
+        crate::RemoteEnv::new(crate::RemoteEnvOptions::default().address(server.address()))
+            .unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let model = crate::RemoteModel::new(
+        crate::RemoteModelOptions::default().address(listener.local_addr().unwrap().to_string()),
+    )
+    .unwrap();
+    super::drive::block_on_library(async {
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(60),
+                model.session_async(&mut remote, SessionOptions::default())
+            )
+            .await
+            .is_err()
+        );
+    });
+    remote
+        .reset(None, None)
+        .expect("a cancelled session dial returns the borrowed client core");
+    remote.close().unwrap();
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn cancelling_a_failed_model_dial_does_not_poison_the_next_call() {
+    let server = steps_server();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let model = crate::RemoteModel::new(
+        crate::RemoteModelOptions::default()
+            .address(listener.local_addr().unwrap().to_string())
+            .connect_timeout(Duration::from_millis(100)),
+    )
+    .unwrap();
+    let cancel = crate::ext::CancelToken::new();
+    let fired = cancel.clone();
+    let thread = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(30));
+        fired.cancel();
+    });
+    let error = model
+        .session(
+            &server,
+            SessionOptions {
+                cancel: Some(cancel.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+    thread.join().unwrap();
+    assert_eq!(error, crate::Error::Cancelled);
+    let error = model
+        .session(
+            &server,
+            SessionOptions {
+                cancel: Some(cancel),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+    assert_ne!(
+        error,
+        crate::Error::Cancelled,
+        "the next dial must see its own error"
+    );
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn dropped_native_run_closes_its_factory_env() {
+    let model = Model::new(
+        |_: Value| {
+            std::thread::sleep(Duration::from_millis(100));
+            Ok(Value::Int(0))
+        },
+        ModelOptions::default(),
+    )
+    .unwrap();
+    let mut factory = Factory {
+        closes: Arc::default(),
+        made: 0,
+    };
+    let closes = factory.closes.clone();
+    super::drive::block_on_library(async {
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(50),
+                model.run_async(EnvTarget::factory(&mut factory), RunOptions::default())
+            )
+            .await
+            .is_err()
+        );
+        for _ in 0..100 {
+            if closes.load(Ordering::SeqCst) > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    });
+    assert_eq!(closes.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn cancellation_wins_over_a_failed_env_dial_too() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap().to_string();
+    let cancel = crate::ext::CancelToken::new();
+    let fired = cancel.clone();
+    let peer = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        fired.cancel();
+        drop(stream);
+    });
+    let model =
+        crate::RemoteModel::new(crate::RemoteModelOptions::default().address("127.0.0.1:1"))
+            .unwrap();
+    let result = model.session(
+        address.as_str(),
+        SessionOptions {
+            cancel: Some(cancel),
+            ..Default::default()
+        },
+    );
+    peer.join().unwrap();
+    assert_eq!(result.unwrap_err(), crate::Error::Cancelled);
+}

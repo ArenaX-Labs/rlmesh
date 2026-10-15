@@ -771,6 +771,18 @@ impl Shared {
             .map_err(|_| Error::Internal("the model call was dropped".to_string()))?
     }
 
+    /// Owned Drop cleanup is enqueued immediately; only the wait may detach.
+    pub(crate) fn queue_episode_end(&self, episode_id: String) -> Result<()> {
+        let _admission = self.life.lock();
+        if self.refuse.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        crate::warnings::with_work(None, || {
+            self.submit(move |core| core.episode_end(&episode_id))
+        })?;
+        Ok(())
+    }
+
     /// Claim the model's one run slot (RUN-9): a second run while one is in
     /// progress fails at once with the `RuntimeError` class.
     pub(crate) fn claim_run(self: &Arc<Self>) -> Result<RunSlot> {
@@ -1105,6 +1117,10 @@ impl CancelWatcher {
         tokens: Vec<crate::ext::CancelToken>,
         trigger: ShutdownTrigger,
     ) -> CancelWatcher {
+        let tokens: Vec<_> = tokens
+            .iter()
+            .map(crate::ext::CancelToken::subscribe)
+            .collect();
         let stop = Arc::new(AtomicBool::new(false));
         let fired = Arc::new(AtomicBool::new(false));
         let (stop_flag, fired_flag) = (Arc::clone(&stop), Arc::clone(&fired));
@@ -1115,7 +1131,7 @@ impl CancelWatcher {
                 .name("rlmesh-cancel".to_string())
                 .spawn(move || {
                     while !stop_flag.load(Ordering::SeqCst) {
-                        if tokens.iter().any(crate::ext::CancelToken::take) {
+                        if tokens.iter().any(crate::ext::CancelSubscription::fired) {
                             fired_flag.store(true, Ordering::SeqCst);
                             trigger.trigger("cancelled");
                             return;

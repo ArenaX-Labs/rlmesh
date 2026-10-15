@@ -3007,3 +3007,91 @@ async fn served_legs_learn_this_builds_ceilings() {
     );
     assert_eq!(env_ceiling.dtypes.len(), spaces::DType::ALL.len());
 }
+
+struct DeadlineRoute {
+    stall_resolve: bool,
+}
+
+#[async_trait]
+impl ModelRouteSetup for DeadlineRoute {
+    async fn resolve_adapter(
+        &self,
+        _: &str,
+        _: &spaces::EnvContract,
+        _: ResolveOptions,
+    ) -> Result<RouteNeeds> {
+        if self.stall_resolve {
+            futures::future::pending().await
+        } else {
+            Ok(RouteNeeds::default())
+        }
+    }
+    async fn reset_adapter(&self, _: &str, _: &[String]) -> Result<()> {
+        futures::future::pending().await
+    }
+}
+
+struct DeadlineModel(Arc<DeadlineRoute>);
+
+#[async_trait]
+impl ModelHandler for DeadlineModel {
+    async fn predict(&mut self, _: ModelObservation) -> Result<Vec<spaces::SpaceValue>> {
+        Ok(vec![spaces::SpaceValue::Box(
+            spaces::Tensor::from_vec(vec![0], vec![1], spaces::DType::Uint8).unwrap(),
+        )])
+    }
+    fn route_setup(&self) -> Option<Arc<dyn ModelRouteSetup>> {
+        Some(self.0.clone())
+    }
+}
+
+async fn prediction_deadline_regression(stall_resolve: bool) {
+    let bound = ModelWorker::new(DeadlineModel(Arc::new(DeadlineRoute { stall_resolve })))
+        .bind_async(ServeModelOptions::new(BindAddress::Tcp {
+            host: "127.0.0.1".into(),
+            port: 0,
+        }))
+        .await
+        .unwrap();
+    let trigger = bound.shutdown_trigger();
+    let address = bound.local_addr().to_string();
+    let server = tokio::spawn(bound.serve());
+    let mut client = super::remote::ModelClient::connect_with(
+        &address,
+        SmokeEnv::new().env_contract,
+        super::remote::ModelConnect {
+            request_timeout: Some(Duration::from_millis(40)),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    client.reset(None);
+    let observation = || {
+        spaces::SpaceValue::Box(
+            spaces::Tensor::from_vec(vec![0], vec![1], spaces::DType::Uint8).unwrap(),
+        )
+    };
+    if !stall_resolve {
+        client.predict(observation()).await.unwrap();
+        client.reset(None);
+    }
+    let out = tokio::time::timeout(Duration::from_millis(250), client.predict(observation())).await;
+    trigger.trigger("test complete");
+    server.abort();
+    assert_eq!(
+        out.expect("the whole prediction must observe request_timeout")
+            .unwrap_err(),
+        crate::Error::Timeout(Duration::from_millis(40))
+    );
+}
+
+#[tokio::test]
+async fn request_timeout_includes_adapter_resolution() {
+    prediction_deadline_regression(true).await;
+}
+
+#[tokio::test]
+async fn request_timeout_includes_pending_episode_end() {
+    prediction_deadline_regression(false).await;
+}

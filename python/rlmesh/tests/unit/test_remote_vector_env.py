@@ -255,3 +255,9 @@ def test_a_failed_remote_model_session_closes_the_env_it_dialed(
     assert len(dialed) == 1
     assert dialed[0].workflow_edition == "2026.06"
     assert dialed[0].closed is True
+
+
+def test_empty_remote_model_host_defaults_to_loopback() -> None:
+    from rlmesh import RemoteModel
+
+    assert RemoteModel(host="", port=5556).address == "tcp://127.0.0.1:5556"

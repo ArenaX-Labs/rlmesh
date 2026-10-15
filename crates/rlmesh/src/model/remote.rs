@@ -383,6 +383,13 @@ impl ModelClient {
     /// observation space and the returned action is decoded with its action
     /// space.
     pub async fn predict(&mut self, observation: spaces::SpaceValue) -> Result<spaces::SpaceValue> {
+        bounded(self.request_timeout, self.predict_inner(observation)).await
+    }
+
+    async fn predict_inner(
+        &mut self,
+        observation: spaces::SpaceValue,
+    ) -> Result<spaces::SpaceValue> {
         let episode_id = self
             .episode_id
             .clone()
@@ -450,10 +457,7 @@ impl ModelClient {
             };
 
             let inner = &mut self.inner;
-            let response = bounded(self.request_timeout, async {
-                inner.predict(request).await.map_err(Error::from_grpc)
-            })
-            .await?;
+            let response = inner.predict(request).await.map_err(Error::from_grpc)?;
 
             if response.actions.is_empty() {
                 return Err(Error::Internal(

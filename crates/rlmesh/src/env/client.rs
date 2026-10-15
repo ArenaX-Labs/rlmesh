@@ -171,7 +171,10 @@ pub(crate) fn normalize_connect_address(
             "port is required when connecting with host/path helpers",
         ));
     };
-    Ok(format!("tcp://{}:{port}", host.unwrap_or("127.0.0.1")))
+    Ok(format!(
+        "tcp://{}:{port}",
+        host.filter(|host| !host.is_empty()).unwrap_or("127.0.0.1")
+    ))
 }
 
 /// RMT-4: zero means no timeout, as `None` does.

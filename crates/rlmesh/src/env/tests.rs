@@ -843,6 +843,14 @@ fn construction_errors_follow_rmt_12() {
 }
 
 #[test]
+fn empty_connect_host_defaults_to_loopback() {
+    assert_eq!(
+        super::client::normalize_connect_address(None, Some(""), Some(1234), None, None).unwrap(),
+        "tcp://127.0.0.1:1234"
+    );
+}
+
+#[test]
 fn foreground_callback_shutdown_marks_the_server_stopped_at_once() {
     struct Stops(Arc<Mutex<Option<std::sync::Weak<EnvServer>>>>);
     impl Env for Stops {

@@ -67,8 +67,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ### Fixed
 
-- `describe(Model(predict_callable))` preserves the wrapper's model kind and reads declarations from the callable.
+- Native model batch and chunk-batch failures preserve `ModelException` identity, recoverability, and wire message text. Engine warnings run on the calling thread, point to the Python caller, and retain their original warning class under an `"error"` warnings filter.
+- `describe(Model(predict_callable))` preserves the wrapper's model kind and reads declarations from the callable. Concurrent model close waits behind already-admitted predicts and episode hooks in submission order.
 - `Discrete(1, start=2**63 - 1).sample()` returns its sole member without overflowing. Box membership accepts ranges, generators, and `tolist()` wrappers and checks nested namedtuple shapes consistently.
+- Foreground `EnvServer.shutdown()` called inside an env callback immediately marks the server stopped, so `wait()` succeeds there. Remote model prediction deadlines cover adapter resolution and pending episode cleanup as well as prediction itself. An empty remote TCP host defaults to `127.0.0.1`.
 
 - Retained Python run contexts expose a local env render source only during hook dispatch on that thread. Saved render callables reject use outside dispatch, during another session operation, after session close or drop, and during a recursive render. Direct idle `Session.frame_sources()` and remote session contexts still render.
 

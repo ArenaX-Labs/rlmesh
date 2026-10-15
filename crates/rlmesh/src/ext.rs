@@ -291,7 +291,21 @@ pub async fn reset_lanes_async(
 ///
 /// [`cancel`]: CancelToken::cancel
 #[derive(Clone, Debug, Default)]
-pub struct CancelToken(std::sync::Arc<std::sync::atomic::AtomicBool>);
+pub struct CancelToken(std::sync::Arc<std::sync::Mutex<CancelState>>);
+
+#[derive(Debug, Default)]
+struct CancelState {
+    generation: u64,
+    subscribers: usize,
+    pending: bool,
+}
+
+pub(crate) struct CancelSubscription {
+    token: CancelToken,
+    generation: u64,
+    pending: bool,
+    active: std::sync::atomic::AtomicBool,
+}
 
 impl CancelToken {
     /// A token that has not fired (equal to `default()`).
@@ -299,14 +313,57 @@ impl CancelToken {
         Self::default()
     }
 
-    /// Fire the token, from any thread.
+    /// Fire every call currently using the token, or the next call when idle.
     pub fn cancel(&self) {
-        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        let mut state = self.0.lock().unwrap_or_else(|err| err.into_inner());
+        state.generation = state.generation.wrapping_add(1);
+        if state.subscribers == 0 {
+            state.pending = true;
+        }
     }
 
-    /// Consume a pending cancel: true once per firing (the re-arm).
+    pub(crate) fn subscribe(&self) -> CancelSubscription {
+        let mut state = self.0.lock().unwrap_or_else(|err| err.into_inner());
+        state.subscribers += 1;
+        CancelSubscription {
+            token: self.clone(),
+            generation: state.generation,
+            pending: std::mem::take(&mut state.pending),
+            active: std::sync::atomic::AtomicBool::new(true),
+        }
+    }
+
+    /// Consume one idle firing at a synchronous admission boundary.
     pub(crate) fn take(&self) -> bool {
-        self.0.swap(false, std::sync::atomic::Ordering::SeqCst)
+        let mut state = self.0.lock().unwrap_or_else(|err| err.into_inner());
+        std::mem::take(&mut state.pending)
+    }
+}
+
+impl CancelSubscription {
+    pub(crate) fn fired(&self) -> bool {
+        self.active.load(std::sync::atomic::Ordering::SeqCst)
+            && (self.pending
+                || self
+                    .token
+                    .0
+                    .lock()
+                    .unwrap_or_else(|err| err.into_inner())
+                    .generation
+                    != self.generation)
+    }
+
+    pub(crate) fn unsubscribe(&self) {
+        let mut state = self.token.0.lock().unwrap_or_else(|err| err.into_inner());
+        if self.active.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            state.subscribers -= 1;
+        }
+    }
+}
+
+impl Drop for CancelSubscription {
+    fn drop(&mut self) {
+        self.unsubscribe();
     }
 }
 
@@ -325,3 +382,20 @@ pub const ENV_ENDPOINT_TOKEN_ENV: &str = "RLMESH_ENV_ENDPOINT_TOKEN";
 /// Environment variable name for model endpoint authentication.
 pub const MODEL_ENDPOINT_TOKEN_ENV: &str = "RLMESH_MODEL_ENDPOINT_TOKEN";
 
+#[cfg(test)]
+mod cancellation_regressions {
+    use super::*;
+
+    #[test]
+    fn idle_cancel_after_a_finished_call_is_pending_even_before_its_watcher_exits() {
+        let token = CancelToken::new();
+        let watch = crate::run::drive::CancelWatch::start(
+            vec![token.clone()],
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .unwrap();
+        drop(watch);
+        token.cancel();
+        assert!(token.take());
+    }
+}

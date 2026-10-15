@@ -98,7 +98,7 @@ pub(crate) async fn run_model(
             option: None,
             declared: shared.decl.workflow_edition.as_deref(),
         },
-        true,
+        shared.decl.authored,
     )?;
     if execution_horizon > 1 && !shared.decl.has_chunk() {
         crate::warnings::warn(
@@ -163,6 +163,29 @@ pub(crate) async fn run_model(
             Err(err)
         }
         (Err(err), _) => Err(err),
+    }
+}
+
+/// A factory-made env remains owned until its explicit close, including on a
+/// dropped run future. Cleanup runs on a plain thread and outlives the future.
+#[derive(Default)]
+pub(crate) struct OwnedMadeEnv(pub(crate) Option<MadeEnv>, pub(crate) bool);
+
+impl Drop for OwnedMadeEnv {
+    fn drop(&mut self) {
+        if self.1 {
+            return;
+        }
+        if let Some(mut env) = self.0.take() {
+            let _ = std::thread::Builder::new()
+                .name("rlmesh-env-close".into())
+                .spawn(move || {
+                    let _ = match &mut env {
+                        MadeEnv::Env(env) => env.close(),
+                        MadeEnv::Vector(env) => env.close(),
+                    };
+                });
+        }
     }
 }
 
@@ -241,12 +264,12 @@ async fn run_body(
     };
     // A factory-built env is this call's own: built only now that an
     // episode needs it, closed when the run ends.
-    let mut made: Option<MadeEnv> = None;
+    let mut made = OwnedMadeEnv::default();
     if let EnvKind::Factory(factory) = &mut env {
-        made = Some(mode.call(|| factory.make())?);
+        made.0 = Some(mode.call(|| factory.make())?);
     }
-    let built = made.is_some();
-    let (mut local, remote_handle) = match (&mut env, &mut made) {
+    let built = made.0.is_some();
+    let (mut local, remote_handle) = match (&mut env, &mut made.0) {
         (_, Some(MadeEnv::Env(env))) => (Some(LocalEnv::Env(&mut **env)), None),
         (_, Some(MadeEnv::Vector(env))) => (Some(LocalEnv::Vector(&mut **env)), None),
         (EnvKind::Env(env), None) => (Some(LocalEnv::Env(&mut **env)), None),
@@ -368,6 +391,8 @@ async fn run_body(
         };
         release = release.and(closed);
     }
+    // Explicit close has run; disarm the cancellation cleanup.
+    made.1 = true;
     // A caller's remote client shuts its env down on the opt-in.
     if plan.close_env
         && let Some(handle) = remote_handle
