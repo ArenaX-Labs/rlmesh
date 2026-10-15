@@ -93,6 +93,12 @@ pub unsafe extern "C" fn rlmesh_episode_state_set(
         let state =
             unsafe { state.as_mut() }.ok_or_else(|| CapiError::invalid_arg("null state"))?;
         let key = unsafe { ffi::text(key) }?.ok_or_else(|| CapiError::invalid_arg("null key"))?;
+        if let Some(existing) = state.0.get_mut::<Foreign>(&key)
+            && existing.ptr == value
+        {
+            existing.free = free_value;
+            return Ok(());
+        }
         drop(state.0.remove(&key));
         state.0.insert(
             key,

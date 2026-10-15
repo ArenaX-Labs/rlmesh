@@ -2874,7 +2874,8 @@ typedef struct RLMeshEpisodeState RLMeshEpisodeState; /* borrowed, valid for the
 RLMESH_API bool rlmesh_episode_state_get(const RLMeshEpisodeState*, const char* key, void** out);
 /* R-20: on RLMESH_OK value (and free_value, NULL = none) pass to the state, and replacing
  * a key frees the old value first; on nonzero free_value is not called, the caller still
- * owns value, and the state is unchanged. */
+ * owns value, and the state is unchanged. Re-setting the same pointer keeps the
+ * value alive and updates its free function without calling the previous one. */
 RLMESH_API RLMeshStatus rlmesh_episode_state_set(RLMeshEpisodeState*, const char* key, void* value,
                                                  void (*free_value)(void* value));
 RLMESH_API bool rlmesh_episode_state_remove(RLMeshEpisodeState*, const char* key);

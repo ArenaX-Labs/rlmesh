@@ -2,6 +2,7 @@
 #include <math.h>
 #include <rlmesh.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 static int failures;
 #define CHECK(x)                                                                                \
@@ -49,11 +50,32 @@ static RLMeshStatus close_env(void* ud) {
   ++((State*)ud)->closes;
   return RLMESH_OK;
 }
+static int state_frees, replaced_state_frees;
+static void old_state_free(void* value) {
+  ++replaced_state_frees;
+  free(value);
+}
+static void new_state_free(void* value) {
+  ++state_frees;
+  free(value);
+}
 static RLMeshStatus predict(void* ud, const RLMeshValue* obs, const RLMeshPredictContext* ctx,
                             RLMeshValue** action) {
   (void)ud;
   (void)obs;
   CHECK(ctx != NULL && ctx->predict_index == 0);
+  int* value = malloc(sizeof(*value));
+  CHECK(value != NULL);
+  *value = 42;
+  int before = state_frees;
+  CHECK(rlmesh_episode_state_set(ctx->state, "owned", value, old_state_free) == RLMESH_OK);
+  CHECK(rlmesh_episode_state_set(ctx->state, "owned", value, new_state_free) == RLMESH_OK);
+  CHECK(replaced_state_frees == 0 && state_frees == before);
+  void* read = NULL;
+  CHECK(rlmesh_episode_state_get(ctx->state, "owned", &read) && read == value);
+  CHECK(*(int*)read == 42);
+  CHECK(rlmesh_episode_state_remove(ctx->state, "owned"));
+  CHECK(replaced_state_frees == 0 && state_frees == before + 1);
   return rlmesh_value_int(0, action);
 }
 static RLMeshStatus start(void* ud, const RLMeshRunContext* ctx) {
