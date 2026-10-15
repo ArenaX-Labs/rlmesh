@@ -69,15 +69,16 @@ typedef enum RLMeshStatus {
   RLMESH_ERR_ENVIRONMENT = 3,      /* (Recoverable)EnvironmentException */
   RLMESH_ERR_MODEL = 4,            /* ModelException */
   RLMESH_ERR_CONNECTION = 5,       /* ConnectionError */
-  RLMESH_ERR_TRANSPORT = RLMESH_ERR_CONNECTION, /* deprecated alias */
-  RLMESH_ERR_TIMEOUT = 6,          /* TimeoutError */
-  RLMESH_ERR_PANIC = 7,            /* a Rust panic; class RLMeshException */
-  RLMESH_ERR_CANCELLED = 8,        /* KeyboardInterrupt */
-  RLMESH_ERR_PROTOCOL = 9,         /* ProtocolException */
-  RLMESH_ERR_TYPE = 10,            /* TypeError */
-  RLMESH_ERR_RUNTIME = 11,         /* RuntimeError: misuse, local refusals */
-  RLMESH_ERR_OS = 12,              /* OSError */
-  RLMESH_ERR_INTERNAL = 99         /* RLMeshException */
+  /* Deprecated alias of RLMESH_ERR_CONNECTION. */
+  RLMESH_ERR_TRANSPORT = RLMESH_ERR_CONNECTION,
+  RLMESH_ERR_TIMEOUT = 6,   /* TimeoutError */
+  RLMESH_ERR_PANIC = 7,     /* a Rust panic; class RLMeshException */
+  RLMESH_ERR_CANCELLED = 8, /* KeyboardInterrupt */
+  RLMESH_ERR_PROTOCOL = 9,  /* ProtocolException */
+  RLMESH_ERR_TYPE = 10,     /* TypeError */
+  RLMESH_ERR_RUNTIME = 11,  /* RuntimeError: misuse, local refusals */
+  RLMESH_ERR_OS = 12,       /* OSError */
+  RLMESH_ERR_INTERNAL = 99  /* RLMeshException */
 } RLMeshStatus;
 
 /* The exact class of an error, spelled as Python spells it. */

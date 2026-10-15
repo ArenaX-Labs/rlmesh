@@ -17,6 +17,13 @@
 //   * A callback (predict, or an env's reset / step / render) declines by
 //     returning an `Error` through its `Result`. The wrapper forwards it to
 //     `rlmesh_callback_set_error` and returns its code.
+//   * With exceptions enabled, the header also defines the exception classes of
+//     the Python package, with Python's inheritance (`RLMeshException`,
+//     `ModelException`, `ValueError`, ...; `rlmesh::ext::CancelledError` has no
+//     `std::` base). `throw_error(error)` / `Result::value_or_throw()` raise the
+//     class an `Error` belongs to, and a callback may throw
+//     `ModelException(msg, recoverable)` / `(Recoverable)EnvironmentException(msg)`
+//     to decline. Without exceptions they are left out and nothing else changes.
 #ifndef RLMESH_HPP
 #define RLMESH_HPP
 
@@ -28,6 +35,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -41,18 +49,67 @@ namespace rlmesh {
 
 // ---- errors + results -------------------------------------------------------
 
-/// A failure: a status code plus an owned message snapshot.
+namespace detail {
+
+/// The class a status reports when nothing more specific is known.
+inline RLMeshErrorClass class_for_status(RLMeshStatus status) {
+  switch (status) {
+    case RLMESH_OK:
+      return RLMESH_ERROR_CLASS_INVALID;
+    case RLMESH_ERR_INVALID_ARGUMENT:
+      return RLMESH_ERROR_CLASS_VALUE_ERROR;
+    case RLMESH_ERR_INVALID_VALUE:
+    case RLMESH_ERR_TYPE:
+      return RLMESH_ERROR_CLASS_TYPE_ERROR;
+    case RLMESH_ERR_ENVIRONMENT:
+      return RLMESH_ERROR_CLASS_ENVIRONMENT_EXCEPTION;
+    case RLMESH_ERR_MODEL:
+      return RLMESH_ERROR_CLASS_MODEL_EXCEPTION;
+    case RLMESH_ERR_CONNECTION:
+      return RLMESH_ERROR_CLASS_CONNECTION_ERROR;
+    case RLMESH_ERR_TIMEOUT:
+      return RLMESH_ERROR_CLASS_TIMEOUT_ERROR;
+    case RLMESH_ERR_CANCELLED:
+      return RLMESH_ERROR_CLASS_KEYBOARD_INTERRUPT;
+    case RLMESH_ERR_PROTOCOL:
+      return RLMESH_ERROR_CLASS_PROTOCOL_EXCEPTION;
+    case RLMESH_ERR_RUNTIME:
+      return RLMESH_ERROR_CLASS_RUNTIME_ERROR;
+    case RLMESH_ERR_OS:
+      return RLMESH_ERROR_CLASS_OS_ERROR;
+    case RLMESH_ERR_PANIC:
+    case RLMESH_ERR_INTERNAL:
+    default:
+      return RLMESH_ERROR_CLASS_RLMESH_EXCEPTION;
+  }
+}
+
+}  // namespace detail
+
+/// A failure: a status code plus an owned snapshot of the message, the exact
+/// Python class (`error_class()`), and the environment or model error code
+/// when the class carries one.
 class Error {
  public:
   Error(RLMeshStatus code, std::string message, bool recoverable = false)
-      : code_(code), message_(std::move(message)), recoverable_(recoverable) {}
+      : code_(code),
+        message_(std::move(message)),
+        recoverable_(recoverable),
+        class_(recoverable && code == RLMESH_ERR_ENVIRONMENT
+                   ? RLMESH_ERROR_CLASS_RECOVERABLE_ENVIRONMENT_EXCEPTION
+                   : detail::class_for_status(code)) {}
 
   /// Snapshot the thread-local last error after a nonzero status (or a NULL
   /// return from a pointer-returning capi call).
   static Error from_last(RLMeshStatus code) {
     const char* message = rlmesh_last_error_message();
-    return Error(code, message ? std::string(message) : std::string(),
-                 rlmesh_last_error_is_recoverable() != 0);
+    Error error(code, message ? std::string(message) : std::string(),
+                rlmesh_last_error_is_recoverable() != 0);
+    RLMeshErrorClass cls = rlmesh_last_error_class();
+    if (cls != RLMESH_ERROR_CLASS_INVALID) error.class_ = cls;
+    int32_t detail_code = 0;
+    if (rlmesh_last_error_code(&detail_code)) error.detail_code_ = detail_code;
+    return error;
   }
 
   RLMeshStatus code() const { return code_; }
@@ -60,12 +117,225 @@ class Error {
   bool is_recoverable() const { return recoverable_; }
   /// The run/serve was stopped by `Model::cancel()` — a clean stop, not a fault.
   bool is_cancelled() const { return code_ == RLMESH_ERR_CANCELLED; }
+  /// The exact class, as Python names it (`rlmesh_error_class_name`).
+  RLMeshErrorClass error_class() const { return class_; }
+  /// The environment (`RLMeshErrorCode`) or model (`RLMeshModelErrorCode`)
+  /// code's wire number, when the class carries one.
+  std::optional<int32_t> detail_code() const { return detail_code_; }
 
  private:
   RLMeshStatus code_;
   std::string message_;
   bool recoverable_;
+  RLMeshErrorClass class_;
+  std::optional<int32_t> detail_code_;
 };
+
+#if defined(__cpp_exceptions)
+
+/// An environment error's code (Python's `EnvironmentException.code`).
+enum class ErrorCode : int32_t {
+  Unspecified = RLMESH_ERROR_CODE_UNSPECIFIED,
+  Timeout = RLMESH_ERROR_CODE_TIMEOUT,
+  InvalidAction = RLMESH_ERROR_CODE_INVALID_ACTION,
+  NotReady = RLMESH_ERROR_CODE_NOT_READY,
+  Busy = RLMESH_ERROR_CODE_BUSY,
+  Unsupported = RLMESH_ERROR_CODE_UNSUPPORTED,
+  Internal = RLMESH_ERROR_CODE_INTERNAL,
+  Crashed = RLMESH_ERROR_CODE_CRASHED,
+  Cancelled = RLMESH_ERROR_CODE_CANCELLED,
+  Closed = RLMESH_ERROR_CODE_CLOSED,
+};
+
+/// A model error's code (Python's `ModelException.code`).
+enum class ModelErrorCode : int32_t {
+  Unspecified = RLMESH_MODEL_ERROR_CODE_UNSPECIFIED,
+  InvalidRequest = RLMESH_MODEL_ERROR_CODE_INVALID_REQUEST,
+  NotConfigured = RLMESH_MODEL_ERROR_CODE_NOT_CONFIGURED,
+  Busy = RLMESH_MODEL_ERROR_CODE_BUSY,
+  Unsupported = RLMESH_MODEL_ERROR_CODE_UNSUPPORTED,
+  Internal = RLMESH_MODEL_ERROR_CODE_INTERNAL,
+  Cancelled = RLMESH_MODEL_ERROR_CODE_CANCELLED,
+  Closed = RLMESH_MODEL_ERROR_CODE_CLOSED,
+};
+
+/// The code's text ("INVALID_ACTION"); empty for an unknown value.
+inline std::string_view to_string(ErrorCode code) {
+  const char* text = rlmesh_error_code_str(static_cast<RLMeshErrorCode>(code));
+  return text != nullptr ? std::string_view(text) : std::string_view();
+}
+inline std::string_view to_string(ModelErrorCode code) {
+  const char* text = rlmesh_model_error_code_str(static_cast<RLMeshModelErrorCode>(code));
+  return text != nullptr ? std::string_view(text) : std::string_view();
+}
+
+namespace detail {
+/// Tag for the library's own constructors, which carry a code; the public
+/// constructors take Python's authoring arguments.
+struct FromLibrary {};
+}  // namespace detail
+
+/// Python's builtin `RuntimeError`: misuse and local refusals.
+class RuntimeError : public std::runtime_error {
+ public:
+  explicit RuntimeError(const std::string& message) : std::runtime_error(message) {}
+};
+
+/// `RLMeshException`: an internal or server-side failure. The base of the
+/// rlmesh-specific classes; the builtins (`ValueError`, `OSError`, ...) are not
+/// under it, as in Python.
+class RLMeshException : public RuntimeError {
+ public:
+  explicit RLMeshException(const std::string& message) : RuntimeError(message) {}
+};
+
+/// `ProtocolException`: generation mismatch, refused edition, failed
+/// handshake, malformed message.
+class ProtocolException : public RLMeshException {
+ public:
+  explicit ProtocolException(const std::string& message) : RLMeshException(message) {}
+};
+
+/// `EnvironmentException`: the env reported a failure. Thrown from an env
+/// callback, it fails the request and ends the session (code `INTERNAL`).
+class EnvironmentException : public RLMeshException {
+ public:
+  explicit EnvironmentException(std::string message)
+      : EnvironmentException(std::move(message), ErrorCode::Internal, false,
+                             detail::FromLibrary{}) {}
+  EnvironmentException(std::string message, ErrorCode code, bool is_recoverable,
+                       detail::FromLibrary)
+      : RLMeshException(message), code_(code), recoverable_(is_recoverable) {}
+
+  ErrorCode code() const { return code_; }
+  bool is_recoverable() const { return recoverable_; }
+
+ private:
+  ErrorCode code_;
+  bool recoverable_;
+};
+
+/// `RecoverableEnvironmentException`: the request failed, the session stays
+/// usable. Throw it from an env callback to fail one request.
+class RecoverableEnvironmentException : public EnvironmentException {
+ public:
+  explicit RecoverableEnvironmentException(std::string message)
+      : EnvironmentException(std::move(message), ErrorCode::Internal, true, detail::FromLibrary{}) {
+  }
+  RecoverableEnvironmentException(std::string message, ErrorCode code, detail::FromLibrary tag)
+      : EnvironmentException(std::move(message), code, true, tag) {}
+};
+
+/// `ModelException`: the model reported a failure. Throw
+/// `ModelException(msg, true)` from predict to fail one request as recoverable
+/// (code `INTERNAL`).
+class ModelException : public RLMeshException {
+ public:
+  explicit ModelException(std::string message, bool is_recoverable = false)
+      : ModelException(std::move(message), ModelErrorCode::Internal, is_recoverable,
+                       detail::FromLibrary{}) {}
+  ModelException(std::string message, ModelErrorCode code, bool is_recoverable, detail::FromLibrary)
+      : RLMeshException(message), code_(code), recoverable_(is_recoverable) {}
+
+  ModelErrorCode code() const { return code_; }
+  bool is_recoverable() const { return recoverable_; }
+
+ private:
+  ModelErrorCode code_;
+  bool recoverable_;
+};
+
+/// Python's `ValueError`: an invalid argument value, address or options field.
+class ValueError : public std::invalid_argument {
+ public:
+  explicit ValueError(const std::string& message) : std::invalid_argument(message) {}
+};
+
+/// `AdapterResolutionError`: adapters cannot bridge env and model.
+class AdapterResolutionError : public ValueError {
+ public:
+  explicit AdapterResolutionError(const std::string& message) : ValueError(message) {}
+};
+
+/// Python's `TypeError`: the wrong kind of value or object.
+class TypeError : public std::logic_error {
+ public:
+  explicit TypeError(const std::string& message) : std::logic_error(message) {}
+};
+
+/// Python's `OSError`: a filesystem failure.
+class OSError : public std::runtime_error {
+ public:
+  explicit OSError(const std::string& message) : std::runtime_error(message) {}
+};
+
+/// Python's `ConnectionError` (an `OSError`): a transport failure.
+class ConnectionError : public OSError {
+ public:
+  explicit ConnectionError(const std::string& message) : OSError(message) {}
+};
+
+/// Python's `TimeoutError` (an `OSError`): a connect or request deadline.
+class TimeoutError : public OSError {
+ public:
+  explicit TimeoutError(const std::string& message) : OSError(message) {}
+};
+
+namespace ext {
+
+/// Cancellation (Python's `KeyboardInterrupt`). Derives from no `std::`
+/// exception, so `catch (const std::exception&)` does not swallow a cancel.
+class CancelledError {
+ public:
+  explicit CancelledError(std::string message = "cancelled") : message_(std::move(message)) {}
+  const char* what() const noexcept { return message_.c_str(); }
+
+ private:
+  std::string message_;
+};
+
+}  // namespace ext
+
+/// Throw the exception class `error` belongs to, with its message as `what()`.
+[[noreturn]] inline void throw_error(const Error& error) {
+  const std::string& message = error.message();
+  const int32_t raw_code = error.detail_code().value_or(RLMESH_ERROR_CODE_INTERNAL);
+  switch (error.error_class()) {
+    case RLMESH_ERROR_CLASS_PROTOCOL_EXCEPTION:
+      throw ProtocolException(message);
+    case RLMESH_ERROR_CLASS_ENVIRONMENT_EXCEPTION:
+      throw EnvironmentException(message, static_cast<ErrorCode>(raw_code), false,
+                                 detail::FromLibrary{});
+    case RLMESH_ERROR_CLASS_RECOVERABLE_ENVIRONMENT_EXCEPTION:
+      throw RecoverableEnvironmentException(message, static_cast<ErrorCode>(raw_code),
+                                            detail::FromLibrary{});
+    case RLMESH_ERROR_CLASS_MODEL_EXCEPTION:
+      throw ModelException(message, static_cast<ModelErrorCode>(raw_code), error.is_recoverable(),
+                           detail::FromLibrary{});
+    case RLMESH_ERROR_CLASS_VALUE_ERROR:
+      throw ValueError(message);
+    case RLMESH_ERROR_CLASS_ADAPTER_RESOLUTION_ERROR:
+      throw AdapterResolutionError(message);
+    case RLMESH_ERROR_CLASS_TYPE_ERROR:
+      throw TypeError(message);
+    case RLMESH_ERROR_CLASS_RUNTIME_ERROR:
+      throw RuntimeError(message);
+    case RLMESH_ERROR_CLASS_OS_ERROR:
+      throw OSError(message);
+    case RLMESH_ERROR_CLASS_CONNECTION_ERROR:
+      throw ConnectionError(message);
+    case RLMESH_ERROR_CLASS_TIMEOUT_ERROR:
+      throw TimeoutError(message);
+    case RLMESH_ERROR_CLASS_KEYBOARD_INTERRUPT:
+      throw ext::CancelledError(message);
+    case RLMESH_ERROR_CLASS_INVALID:
+    case RLMESH_ERROR_CLASS_RLMESH_EXCEPTION:
+    default:
+      throw RLMeshException(message);
+  }
+}
+
+#endif  // __cpp_exceptions
 
 namespace detail {
 
@@ -116,6 +386,14 @@ class [[nodiscard]] Result {
   /// Move the value out; aborts on an error.
   T unwrap() { return std::move(checked()); }
 
+#if defined(__cpp_exceptions)
+  /// Move the value out, or throw the error's exception class (`throw_error`).
+  T value_or_throw() {
+    if (!has_value()) throw_error(error());
+    return std::move(checked());
+  }
+#endif
+
   /// Chain: `map` wraps `fn`'s return in a Result, `and_then` expects one.
   /// Both consume the Result (`std::move(result).map(...)` for an lvalue).
   template <class F>
@@ -163,6 +441,13 @@ class [[nodiscard]] Result<void> {
     if (!has_value()) detail::die("Result::value() on an error", error());
   }
   void unwrap() const { value(); }
+
+#if defined(__cpp_exceptions)
+  /// Throw the error's exception class (`throw_error`) unless this is a success.
+  void value_or_throw() const {
+    if (!has_value()) throw_error(error());
+  }
+#endif
 
   template <class F>
   auto and_then(F&& fn) const -> decltype(std::forward<F>(fn)()) {
@@ -1105,6 +1390,9 @@ class Model {
       for (size_t i = 0; i < actions->size(); ++i) out_actions[i] = (*actions)[i].release();
       return RLMESH_OK;
 #if defined(__cpp_exceptions)
+    } catch (const ModelException& error) {
+      // Only a ModelException's own flag makes a model failure recoverable.
+      return fail(Error(RLMESH_ERR_MODEL, error.what(), error.is_recoverable()));
     } catch (const std::exception& error) {
       return fail(Error(RLMESH_ERR_MODEL, error.what()));
     } catch (...) {
@@ -1501,6 +1789,9 @@ class EnvServer {
       out->info_json = keep_info(state, std::move(result->info_json));
       return RLMESH_OK;
 #if defined(__cpp_exceptions)
+    } catch (const EnvironmentException& error) {
+      // Only an EnvironmentException's own flag makes an env failure recoverable.
+      return fail(Error(RLMESH_ERR_ENVIRONMENT, error.what(), error.is_recoverable()));
     } catch (const std::exception& error) {
       return fail(Error(RLMESH_ERR_ENVIRONMENT, error.what()));
     } catch (...) {
@@ -1526,6 +1817,9 @@ class EnvServer {
       out->info_json = keep_info(state, std::move(result->info_json));
       return RLMESH_OK;
 #if defined(__cpp_exceptions)
+    } catch (const EnvironmentException& error) {
+      // Only an EnvironmentException's own flag makes an env failure recoverable.
+      return fail(Error(RLMESH_ERR_ENVIRONMENT, error.what(), error.is_recoverable()));
     } catch (const std::exception& error) {
       return fail(Error(RLMESH_ERR_ENVIRONMENT, error.what()));
     } catch (...) {
@@ -1544,6 +1838,9 @@ class EnvServer {
       if (frame->has_value()) *out_frame = (*frame)->release();
       return RLMESH_OK;
 #if defined(__cpp_exceptions)
+    } catch (const EnvironmentException& error) {
+      // Only an EnvironmentException's own flag makes an env failure recoverable.
+      return fail(Error(RLMESH_ERR_ENVIRONMENT, error.what(), error.is_recoverable()));
     } catch (const std::exception& error) {
       return fail(Error(RLMESH_ERR_ENVIRONMENT, error.what()));
     } catch (...) {

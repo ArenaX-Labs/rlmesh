@@ -42,6 +42,41 @@ rlmesh::Result<int64_t> results(rlmesh::ValueRef value) {
   return unwrapped + *doubled + tried;
 }
 
+// The error class and code accessors, and the exception classes.
+void error_classes(rlmesh::Error error) {
+  (void)error.error_class();
+  (void)error.detail_code();
+  rlmesh::Result<int64_t> result = error;
+  (void)std::move(result).value_or_throw();
+  rlmesh::Status status = error;
+  status.value_or_throw();
+  try {
+    rlmesh::throw_error(error);
+  } catch (const rlmesh::RecoverableEnvironmentException& e) {
+    (void)e.code();
+  } catch (const rlmesh::EnvironmentException& e) {
+    (void)rlmesh::to_string(e.code());
+    (void)e.is_recoverable();
+  } catch (const rlmesh::ModelException& e) {
+    (void)rlmesh::to_string(e.code());
+    (void)e.is_recoverable();
+  } catch (const rlmesh::ProtocolException&) {
+  } catch (const rlmesh::RLMeshException&) {
+  } catch (const rlmesh::RuntimeError&) {
+  } catch (const rlmesh::AdapterResolutionError&) {
+  } catch (const rlmesh::ValueError&) {
+  } catch (const rlmesh::TypeError&) {
+  } catch (const rlmesh::ConnectionError&) {
+  } catch (const rlmesh::TimeoutError&) {
+  } catch (const rlmesh::OSError&) {
+  } catch (const rlmesh::ext::CancelledError& e) {
+    (void)e.what();
+  }
+  throw rlmesh::ModelException("declined", true);
+}
+
+void authored_env_errors() { throw rlmesh::RecoverableEnvironmentException("busy"); }
+
 // Every ValueRef reader, plus the Tensor view.
 rlmesh::Status read_value(rlmesh::ValueRef value) {
   (void)value.raw();
