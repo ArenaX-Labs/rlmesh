@@ -141,7 +141,7 @@ async fn bind_environment<T: Environment + Send + Sync + 'static>(
     let activity_tx = start_idle_shutdown(options.idle_timeout, shutdown.clone());
     let drain_timeout = options.drain_timeout;
     let close_timeout = options.close_timeout;
-    let grpc_options = rlmesh_grpc::ServeOptions::from(options);
+    let grpc_options = options.to_grpc();
 
     let listener = BoundListener::bind(addr).await?;
     let local_addr = listener.local_addr()?;

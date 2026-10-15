@@ -124,6 +124,8 @@
 #![warn(missing_docs)]
 
 mod address;
+#[doc(hidden)]
+pub mod binding;
 mod bound;
 pub mod env;
 mod error;

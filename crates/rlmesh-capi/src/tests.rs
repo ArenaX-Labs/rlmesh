@@ -121,10 +121,7 @@ fn header_enum_value(name: &str) -> i64 {
         .lines()
         .find_map(|line| line.trim().strip_prefix(prefix.as_str()))
         .unwrap_or_else(|| panic!("{name} present in header"));
-    let digits: String = value
-        .chars()
-        .take_while(|c| c.is_ascii_digit())
-        .collect();
+    let digits: String = value.chars().take_while(|c| c.is_ascii_digit()).collect();
     digits
         .parse()
         .unwrap_or_else(|_| panic!("{name} has a numeric value"))
@@ -157,8 +154,14 @@ fn header_status_and_class_values_match_crate() {
     let classes = [
         ("RLMESH_ERROR_CLASS_INVALID", C::Invalid),
         ("RLMESH_ERROR_CLASS_RLMESH_EXCEPTION", C::RLMeshException),
-        ("RLMESH_ERROR_CLASS_PROTOCOL_EXCEPTION", C::ProtocolException),
-        ("RLMESH_ERROR_CLASS_ENVIRONMENT_EXCEPTION", C::EnvironmentException),
+        (
+            "RLMESH_ERROR_CLASS_PROTOCOL_EXCEPTION",
+            C::ProtocolException,
+        ),
+        (
+            "RLMESH_ERROR_CLASS_ENVIRONMENT_EXCEPTION",
+            C::EnvironmentException,
+        ),
         (
             "RLMESH_ERROR_CLASS_RECOVERABLE_ENVIRONMENT_EXCEPTION",
             C::RecoverableEnvironmentException,
@@ -174,7 +177,10 @@ fn header_status_and_class_values_match_crate() {
         ("RLMESH_ERROR_CLASS_OS_ERROR", C::OSError),
         ("RLMESH_ERROR_CLASS_CONNECTION_ERROR", C::ConnectionError),
         ("RLMESH_ERROR_CLASS_TIMEOUT_ERROR", C::TimeoutError),
-        ("RLMESH_ERROR_CLASS_KEYBOARD_INTERRUPT", C::KeyboardInterrupt),
+        (
+            "RLMESH_ERROR_CLASS_KEYBOARD_INTERRUPT",
+            C::KeyboardInterrupt,
+        ),
     ];
     for (name, class) in classes {
         assert_eq!(header_enum_value(name), class as i64, "{name}");
