@@ -115,6 +115,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ### Changed
 
+- A Python `Model`'s `close()` is terminal and runs once: it stops a `serve` still running on the model (requests it already received finish, and that `serve` returns), waits for in-flight corner calls, then fires the close hook once; a subclass's authored `close()` no longer re-runs on every call. Afterwards `run`, `session` and `serve` on the model, and `predict`, `step` and `run` on a session opened before, raise `RuntimeError("the model is closed")`, and a session closed afterwards fires no `on_episode_end`. Before, a closed model kept working and the next serve rebuilt it.
+
+- All corner and hook calls on one Python `Model` run one at a time, across its sessions, runs and serves, so two threaded sessions on one model no longer overlap inside it. A corner or hook that calls back into its own model (a predict, `run`, `session`, `serve` or `close()` on it, or a predict through a session on it) raises `RuntimeError` instead of deadlocking.
+
+- `Model(on_close=...)` replaces a subclass's authored `close()` body, as the constructor's docstring says: with `on_close` set, `close()` runs the hook once instead of the authored body. A subclass passing both loses its authored body.
+
+- A served model drops an env's per-episode context entries when that env's route is torn down (an evict-all `ResetAdapter` or a `ReleaseAdapter`), without firing `on_episode_end`, so episodes ended by teardown no longer leak until the 65,536-episode capacity refuses new ones.
+
+- `native_chunk` is read once, after `load()`, and a value below 1 is refused there with `ValueError("native_chunk must be >= 1 ...")`. A `native_chunk` set in `load()` on a model with no chunk corner is refused by the constructor or `from_config` with `TypeError`, as a class-level one is; before, `Model.run` and `serve` refused it only at route resolve with `RuntimeError("model error: ...")`, and a local session never did.
+
+- A `Model` subclass's declarations (a derivable `predict`, a class-level `native_chunk` with a chunk corner) are checked before `load()` runs, so a bad declaration no longer costs a full weight load.
+
+- A wrapping `Model(policy)` reads its declarations from the policy: `allow_fusion` is the policy's (a wrapped policy that sets `allow_fusion = False` is no longer fused), and the wrapper's `allow_fusion`, `native_chunk` and `workflow_edition` attributes report the policy's. A wrapped bare callable keeps the defaults.
+
+- A model returning a tuple as an action chunk now replays (and de-chunks) it as one frame, as the native engine already did when the model was served; return a list of frames instead. Only a list, an array or tensor (along its leading axis) and a mapping (per field) split into frames.
+
+- `Model.run` raises `ValueError` for a chunk that is not exactly the declared `native_chunk` frames and for an empty chunk at a horizon above 1, as a local session already does, instead of `RuntimeError("model error: ...")`.
+
+- `Model.run` and `serve` warn `RuntimeWarning` (once per episode, with the session's text) when a model with no `native_chunk` returns a chunk shorter than the execution horizon, as a local session does; before they only logged it. Native warnings in a Python process now go through Python's `warnings` machinery.
+
 - A lane endpoint served from Rust, C or C++ reports each range warning (`rlmesh.conformance.warning`) once per lane for the server's life, as a Python server does, instead of once for all lanes; a vector env still reports once for all its lanes.
 
 - A C or C++ env's failed callback reaches the client as `[INTERNAL] {op} failed: {message}`, as from Python and Rust, with `callback failed with status <n>` when the callback set no message (it read the raw message, or `environment {op} failed`). An env with no id serves `"UnknownEnv-v1"`, as Python's does (it was `"env"`). A render frame follows Python's lenient rule: any numeric image is cast to uint8, `[3, H, W]` and `[4, H, W]` encode too, and any other shape or kind is no frame instead of a failed render.

@@ -74,6 +74,11 @@ struct PyPredict {
     native_chunk: Option<u32>,
     on_episode_end: Option<Py<PyAny>>,
     on_close: Option<Py<PyAny>>,
+    /// Drops an env's per-episode entries (an evict-all `ResetAdapter` or a
+    /// `ReleaseAdapter`), firing no episode-end hook.
+    on_route_drop: Option<Py<PyAny>>,
+    /// The episodes a spec-less route already warned a short chunk for.
+    short_warned: std::sync::Mutex<std::collections::HashSet<String>>,
     /// The last exception a host callback raised, kept so the in-process run
     /// re-raises the user's own exception instead of its stringified copy.
     last_error: LastPyError,
@@ -361,6 +366,36 @@ impl PredictFn for PyPredict {
                     frames.len()
                 )));
             }
+            if self.native_chunk.is_none() && frames.len() < horizon {
+                // Python's Session warning, once per episode (MDL-P11).
+                let key = observation
+                    .route
+                    .episodes
+                    .first()
+                    .map(|episode| episode.episode_id.clone())
+                    .filter(|id| !id.is_empty())
+                    .unwrap_or_else(|| format!("route:{}", observation.route.env_id));
+                let first = self
+                    .short_warned
+                    .lock()
+                    .expect("short-chunk set poisoned")
+                    .insert(key);
+                if first {
+                    let message = std::ffi::CString::new(format!(
+                        "the model returned {} actions for execution_horizon={horizon}; \
+                         replaying what there is and re-planning early. Declare \
+                         Model.native_chunk so the horizon can be validated up front.",
+                        frames.len()
+                    ))
+                    .expect("no interior NUL");
+                    PyErr::warn(
+                        py,
+                        &py.get_type::<pyo3::exceptions::PyRuntimeWarning>(),
+                        &message,
+                        1,
+                    )?;
+                }
+            }
             let mut frames = frames.into_iter().take(horizon);
             let first = frames.next().ok_or_else(|| {
                 pyo3::exceptions::PyValueError::new_err(
@@ -376,6 +411,10 @@ impl PredictFn for PyPredict {
     }
 
     fn on_episode_end(&self, episode_id: &str) -> rlmesh::Result<()> {
+        self.short_warned
+            .lock()
+            .expect("short-chunk set poisoned")
+            .remove(episode_id);
         let Some(callback) = self.on_episode_end.as_ref() else {
             return Ok(());
         };
@@ -386,6 +425,19 @@ impl PredictFn for PyPredict {
 
     fn on_close(&self) -> rlmesh::Result<()> {
         Self::fire(&self.on_close)
+    }
+
+    fn on_route_reset(&self, env_id: &str) -> rlmesh::Result<()> {
+        let Some(callback) = self.on_route_drop.as_ref() else {
+            return Ok(());
+        };
+        Python::attach(|py| callback.call1(py, (env_id,)))
+            .map(|_| ())
+            .map_err(|err| self.internal(err))
+    }
+
+    fn on_route_release(&self, env_id: &str) -> rlmesh::Result<()> {
+        self.on_route_reset(env_id)
     }
 }
 
@@ -454,6 +506,12 @@ fn episode_context_dict<'py>(
             .unwrap_or(""),
     )?;
     dict.set_item("episode_seed", episode.and_then(|episode| episode.seed))?;
+    // The route the row arrived on: the store tags its entry with it, so the
+    // env's teardown drops it (MDL-P4).
+    dict.set_item(
+        "env_id",
+        episode.map(|episode| episode.env_id.as_str()).unwrap_or(""),
+    )?;
     Ok(dict)
 }
 
@@ -719,8 +777,18 @@ pub struct PyModel {
     configure_fn: Option<Py<PyAny>>,
     on_episode_end: Option<Py<PyAny>>,
     on_close: Option<Py<PyAny>>,
+    on_route_drop: Option<Py<PyAny>>,
     profiler: Arc<ProfileCollector>,
     last_error: LastPyError,
+    /// The running serves' shutdown triggers, and whether `stop_serving`
+    /// fired (sticky: the model is closing, so no serve starts again).
+    serving: Arc<std::sync::Mutex<Serving>>,
+}
+
+#[derive(Default)]
+struct Serving {
+    stopped: bool,
+    triggers: Vec<rlmesh_grpc::lifecycle::ShutdownTrigger>,
 }
 
 impl PyModel {
@@ -740,6 +808,8 @@ impl PyModel {
             native_chunk: self.native_chunk,
             on_episode_end: self.on_episode_end.as_ref().map(|cb| cb.clone_ref(py)),
             on_close: self.on_close.as_ref().map(|cb| cb.clone_ref(py)),
+            on_route_drop: self.on_route_drop.as_ref().map(|cb| cb.clone_ref(py)),
+            short_warned: Default::default(),
             last_error: Arc::clone(&self.last_error),
         });
         let resolver: Option<Arc<dyn RouteResolver>> =
@@ -754,7 +824,7 @@ impl PyModel {
 #[pymethods]
 impl PyModel {
     #[new]
-    #[pyo3(signature = (predict_fn, configure_fn=None, on_episode_end=None, on_close=None, predict_chunk_fn=None, predict_batch_fn=None, predict_chunk_batch_fn=None, allow_fusion=true, native_chunk=None))]
+    #[pyo3(signature = (predict_fn, configure_fn=None, on_episode_end=None, on_close=None, predict_chunk_fn=None, predict_batch_fn=None, predict_chunk_batch_fn=None, allow_fusion=true, native_chunk=None, on_route_drop=None))]
     #[allow(clippy::too_many_arguments)] // a PyO3 #[new] ctor maps each arg to a Python kwarg
     fn new(
         predict_fn: Py<PyAny>,
@@ -766,6 +836,7 @@ impl PyModel {
         predict_chunk_batch_fn: Option<Py<PyAny>>,
         allow_fusion: bool,
         native_chunk: Option<u32>,
+        on_route_drop: Option<Py<PyAny>>,
     ) -> PyResult<Self> {
         init_tracing("model_worker");
         let profiler = ProfileCollector::new("model_worker");
@@ -780,9 +851,21 @@ impl PyModel {
             configure_fn,
             on_episode_end,
             on_close,
+            on_route_drop,
             profiler,
             last_error: LastPyError::default(),
+            serving: Arc::default(),
         })
+    }
+
+    /// Stop every serve running on this worker (drain, then return), and any
+    /// serve that starts later: the model is closing.
+    fn stop_serving(&self) {
+        let mut serving = self.serving.lock().expect("serving lock poisoned");
+        serving.stopped = true;
+        for trigger in &serving.triggers {
+            trigger.trigger("model closed");
+        }
     }
 
     #[pyo3(signature = (env_address, execution_horizon=1, prefetch_lead=0, workflow_edition=None))]
@@ -892,6 +975,7 @@ impl PyModel {
         options.drain_timeout = options.drain_timeout.or(Some(SHUTDOWN_GRACE));
         options.close_timeout = options.close_timeout.or(Some(SHUTDOWN_GRACE));
         let handler = self.build_handler();
+        let serving = Arc::clone(&self.serving);
 
         // Same signal contract as EnvServer: SIGINT/SIGTERM drain and close the
         // model; Python's own SIGINT handler still raises KeyboardInterrupt after.
@@ -902,6 +986,15 @@ impl PyModel {
                     .await
                     .map_err(to_py_err)?;
                 let shutdown = bound.shutdown_trigger();
+                {
+                    // The model's close() stops this serve, also when it began
+                    // before the server was bound.
+                    let mut serving = serving.lock().expect("serving lock poisoned");
+                    if serving.stopped {
+                        shutdown.trigger("model closed");
+                    }
+                    serving.triggers.push(shutdown.clone());
+                }
                 crate::server::py_env_server::spawn_signal_shutdown(shutdown.clone());
                 let mut serve = std::pin::pin!(bound.serve());
                 // A signal Python's own handler caught (before the tokio
@@ -938,7 +1031,8 @@ import collections.abc
 import typing
 
 class PyModel:
-    def __init__(self, predict_fn: collections.abc.Callable[[Value], Value], configure_fn: collections.abc.Callable[[EnvContract], object] | None = None, on_episode_end: collections.abc.Callable[[str], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None, predict_chunk_fn: collections.abc.Callable[[Value, int], Value] | None = None, predict_batch_fn: collections.abc.Callable[[list[Value], list[dict[str, typing.Any]]], list[Value]] | None = None, predict_chunk_batch_fn: collections.abc.Callable[[list[Value], int, list[dict[str, typing.Any]]], list[Value]] | None = None, allow_fusion: bool = True, native_chunk: int | None = None) -> None: ...
+    def __init__(self, predict_fn: collections.abc.Callable[[Value], Value], configure_fn: collections.abc.Callable[[EnvContract], object] | None = None, on_episode_end: collections.abc.Callable[[str], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None, predict_chunk_fn: collections.abc.Callable[[Value, int], Value] | None = None, predict_batch_fn: collections.abc.Callable[[list[Value], list[dict[str, typing.Any]]], list[Value]] | None = None, predict_chunk_batch_fn: collections.abc.Callable[[list[Value], int, list[dict[str, typing.Any]]], list[Value]] | None = None, allow_fusion: bool = True, native_chunk: int | None = None, on_route_drop: collections.abc.Callable[[str], None] | None = None) -> None: ...
+    def stop_serving(self) -> None: ...
     def run_local(self, env_address: str, execution_horizon: int = 1, prefetch_lead: int = 0, workflow_edition: str | None = None) -> dict[str, typing.Any]: ...
     def run_local_for_episodes(self, env_address: str, episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trial_index_base: int | None = None, prefetch_lead: int = 0, workflow_edition: str | None = None, hooks: object | None = None, env_token: str | None = None) -> dict[str, typing.Any]: ...
     def serve(self, address: str, options: ServeOptions | None = None) -> None: ...

@@ -428,6 +428,9 @@ class TestServeOptionsDeclaring:
                 _ = address
                 served.append(options)
 
+            def stop_serving(self) -> None:
+                pass
+
         model = rlmesh.Model(lambda obs: obs)
         monkeypatch.setattr(model, "_install_worker", Worker)
         monkeypatch.setenv(WORKFLOW_EDITION_ENV_VAR, UNKNOWN_EDITION)

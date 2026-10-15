@@ -50,11 +50,12 @@ def _native_predict_seed(episode_seed: int, predict_index: int) -> int:
 class _Episode:
     """One episode's bookkeeping: how many predicts it has had, its seed, its state."""
 
-    __slots__ = ("index", "seed", "state")
+    __slots__ = ("env_id", "index", "seed", "state")
 
-    def __init__(self, seed: int | None) -> None:
+    def __init__(self, seed: int | None, env_id: str = "") -> None:
         self.index = 0
         self.seed = seed
+        self.env_id = env_id
         self.state: dict[str, Any] = {}
 
 
@@ -115,7 +116,8 @@ class EpisodeStore:
                     "or the deployment runs more concurrent episodes than "
                     f"{EPISODE_STATE_CAPACITY_ENV} allows"
                 )
-            episode = self._episodes[episode_id] = _Episode(seed)
+            env_id = str(raw.get("env_id") or "") if raw is not None else ""
+            episode = self._episodes[episode_id] = _Episode(seed, env_id)
         index = episode.index
         episode.index += 1
         return {
@@ -135,3 +137,15 @@ class EpisodeStore:
         self._episodes.pop(episode_id, None)
         if self._on_end is not None:
             self._on_end(episode_id)
+
+    def drop_env(self, env_id: str) -> None:
+        """Drop every entry ``env_id``'s route created, firing no hook.
+
+        The served path's teardown edge: an evict-all ``ResetAdapter`` or a
+        ``ReleaseAdapter`` for the env, so episodes ended by teardown do not
+        leak until capacity.
+        """
+        for episode_id in [
+            key for key, episode in self._episodes.items() if episode.env_id == env_id
+        ]:
+            del self._episodes[episode_id]

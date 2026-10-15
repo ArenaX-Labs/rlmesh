@@ -22,6 +22,7 @@ from typing import (
 
 from .._value_conversion import ValueBridge, identity_bridge, tree_map
 from ..types import EnvTarget, LocalEnvTarget, Value, ViewArg
+from ._calls import ModelCalls
 from ._episodes import EpisodeStore
 from ._instruction import text_placements, tree_set
 
@@ -47,6 +48,12 @@ Corner = Callable[..., object]
 _CORNERS = ("predict", "predict_chunk", "predict_batch", "predict_chunk_batch")
 PREDICT_CORNERS = _CORNERS
 _ModelT = TypeVar("_ModelT", bound="ModelBase[Any, Any]")
+
+_NATIVE_CHUNK_WITHOUT_CORNER = (
+    "native_chunk declares how long ONE action chunk is, but this model "
+    "defines no predict_chunk() / predict_chunk_batch(). Add a chunk "
+    "corner, or drop native_chunk."
+)
 
 
 def _served_handle(model: object) -> bool:
@@ -207,15 +214,15 @@ def _first_frame(chunk: object) -> object:
     """The first action of a single chunk, matching the engine's ``split_chunk``.
 
     A ``Mapping`` (Dict-space action) carries the chunk axis INSIDE each leaf, so
-    recurse per value; a ``list``/``tuple`` is itself the frame axis; an array's
-    leading axis is the frame axis; a scalar/text is a single-frame chunk and stands
-    as its own action. Keeps local de-chunking byte-consistent with the served path
-    (``stateful.rs::split_chunk``).
+    recurse per value; a ``list`` is itself the frame axis; an array's
+    leading axis is the frame axis; a tuple, a scalar or text is a single-frame
+    chunk and stands as its own action. Keeps local de-chunking byte-consistent
+    with the served path (``stateful.rs::split_chunk``).
     """
     if isinstance(chunk, Mapping):
         items = cast("Mapping[Any, Any]", chunk)
         return {k: _first_frame(v) for k, v in items.items()}
-    if isinstance(chunk, (list, tuple)):
+    if isinstance(chunk, list):
         seq = cast("Any", chunk)
         if len(seq) == 0:
             raise ValueError(
@@ -242,8 +249,11 @@ def _chunk_len(chunk: object, *, batched: bool) -> int | None:
     if batched:
         shape = getattr(chunk, "shape", None)
         return int(shape[1]) if shape is not None and len(shape) >= 2 else None
-    if isinstance(chunk, (list, tuple)):
+    if isinstance(chunk, list):
         return len(cast("Any", chunk))
+    if isinstance(chunk, tuple):
+        # A tuple is one frame, as the native split_chunk keeps it whole.
+        return 1
     if getattr(chunk, "ndim", 0) >= 1:
         return int(cast("Any", chunk).shape[0])
     return None
@@ -597,6 +607,9 @@ class ModelBase(Generic[ObsT, ActT]):
         (instantiated by :func:`coerce_model`), a duck-typed policy object, or an
         unannotated callable falls back to the framework's default value types.
         """
+        # The model's one call gate: every corner and hook call, from every
+        # session, run and serve on this model, runs through it one at a time.
+        self._calls = ModelCalls()
         self._bridge.ensure_available()
 
         # A Model subclass overrides at least one predict corner (plus optionally
@@ -609,13 +622,15 @@ class ModelBase(Generic[ObsT, ActT]):
             return cast("Corner", getattr(self, method_name))
 
         corners = {name: _overridden(name) for name in _CORNERS}
+        #: Whether this subclass loads in ``__init__`` (after its declarations
+        #: are checked); the served-construction path suppresses it and calls
+        #: ``load(**binding)`` itself once the params are resolved.
+        autoload = False
 
         if source is None and any(fn is not None for fn in corners.values()):
-            # Subclass-authoring mode. Load weights once, before the worker is built.
-            # The served-construction path suppresses this eager load and calls
-            # load(**binding) itself once the params are resolved.
-            if not _suppress_autoload.get():
-                self.load()
+            # Subclass-authoring mode. Weights load once, after the declarations
+            # below are checked, so a bad declaration costs no weight load.
+            autoload = not _suppress_autoload.get()
             resolved_spec = spec if spec is not None else type(self).spec
             coerced_on_episode_end: LifecycleCallback | None = self.on_episode_end
             # An authored close() is the public close itself (wrapped by
@@ -707,50 +722,96 @@ class ModelBase(Generic[ObsT, ActT]):
                 "derived from (a chunk-only model on the raw Value bridge needs an "
                 "explicit predict())."
             )
+        self._has_chunk_corner = (
+            raw_predict_chunk is not None or raw_predict_chunk_batch is not None
+        )
+        # A class-level K with no chunk corner can never be honored (and nothing
+        # would ever check it), so reject it where the corners are known, before
+        # any weights load. A K set in load() meets the same door after load.
+        if (
+            getattr(type(policy), "native_chunk", None) is not None
+            and not self._has_chunk_corner
+        ):
+            raise TypeError(_NATIVE_CHUNK_WITHOUT_CORNER)
 
-        self._raw_predict = cast("PredictFn[ObsT, ActT]", raw_predict)
-        self._raw_predict_chunk = raw_predict_chunk
-        self._raw_predict_batch = raw_predict_batch
-        self._raw_predict_chunk_batch = raw_predict_chunk_batch
+        # Every corner call goes through the model's call gate, one at a time.
+        self._raw_predict = cast(
+            "PredictFn[ObsT, ActT]", self._calls.gated(raw_predict)
+        )
+        self._raw_predict_chunk = self._calls.gated(raw_predict_chunk)
+        self._raw_predict_batch = self._calls.gated(raw_predict_batch)
+        self._raw_predict_chunk_batch = self._calls.gated(raw_predict_chunk_batch)
         self.spec = resolved_spec
         self._policy = policy
         #: A bare predict callable, whose own attribute is its edition
         #: declaration (``None`` for a subclass or a wrapped policy).
         self._edition_source: object = source if policy is None else None
+        #: The close hook: the ``on_close=`` option, which replaces an authored
+        #: ``close()`` body too, else a wrapped policy's own ``close``.
         self._on_close = on_close if on_close is not None else coerced_on_close
         #: The episode-end edge both paths drive: drop the store entry, then fire
-        #: the model's own hook with the id that ended.
-        self._on_episode_end: LifecycleCallback = self._episodes.end
+        #: the model's own hook with the id that ended. After ``close()`` it
+        #: submits nothing.
+        episodes = self._episodes
+        calls = self._calls
+
+        def end_episode(episode_id: str = "") -> None:
+            calls.hook(episodes.end, episode_id)
+
+        def drop_env(env_id: str) -> None:
+            calls.hook(episodes.drop_env, env_id)
+
+        self._on_episode_end: LifecycleCallback = end_episode
+        self._drop_env_entries: Callable[[str], None] = drop_env
         self._trust_entrypoints = trust_entrypoints
         self._worker: PyModel | None = None
         #: Per-run state the cached native worker reads at call time: the
         #: ``instruction=`` override and the hooks' run context.
         self._instruction: str | None = None
         self._native_run: NativeRunContext | None = None
-        # A class-level K with no chunk corner can never be honored (and nothing
-        # would ever check it), so reject it where the corners are known. A K set
-        # in load() is caught by the same door at resolve instead -- load() may run
-        # after construction on the served path.
-        if (
-            getattr(type(policy), "native_chunk", None) is not None
-            and raw_predict_chunk is None
-            and raw_predict_chunk_batch is None
-        ):
-            raise TypeError(
-                "native_chunk declares how long ONE action chunk is, but this model "
-                "defines no predict_chunk() / predict_chunk_batch(). Add a chunk "
-                "corner, or drop native_chunk."
-            )
+        self._loaded_native_chunk: int | None = None
+        self._loaded_allow_fusion = True
+        if autoload:
+            self.load()
+        if autoload or policy is not self:
+            self._finish_load()
+
+    def _finish_load(self) -> None:
+        """Read the policy's declarations once, after ``load()``, and cache them.
+
+        ``native_chunk`` (a checkpoint may set it in ``load()``) is refused here
+        when the model has no chunk corner (``TypeError``, as a class-level K is)
+        or when it is below 1 (``ValueError``); ``allow_fusion`` is read with it.
+        A wrapping ``Model(policy)`` reads the policy's and reports them as its
+        own attributes; a wrapped bare callable keeps the defaults.
+        """
+        policy = self._policy
+        native_chunk = (
+            getattr(policy, "native_chunk", None) if policy is not None else None
+        )
+        allow_fusion = (
+            bool(getattr(policy, "allow_fusion", True)) if policy is not None else True
+        )
+        if native_chunk is not None:
+            if not self._has_chunk_corner:
+                raise TypeError(_NATIVE_CHUNK_WITHOUT_CORNER)
+            if int(native_chunk) < 1:
+                raise ValueError(
+                    "native_chunk must be >= 1 (or None when undeclared), got "
+                    f"{native_chunk!r}"
+                )
+            native_chunk = int(native_chunk)
+        self._loaded_native_chunk = native_chunk
+        self._loaded_allow_fusion = allow_fusion
+        if policy is not self and policy is not None:
+            # A wrapping Model reports its policy's declarations.
+            self.native_chunk = native_chunk
+            self.allow_fusion = allow_fusion
+            setattr(self, "workflow_edition", self._class_workflow_edition())  # noqa: B010
 
     def _native_chunk(self) -> int | None:
-        """The declared native chunk K, read off the loaded policy.
-
-        Read here rather than captured at construction so a ``load()`` that sets
-        it from the checkpoint (the usual case) is honored. Reads the *policy*, so
-        a duck-typed object wrapped as ``Model(policy)`` declares the same way a
-        subclass does.
-        """
-        return getattr(self._policy, "native_chunk", None)
+        """The native chunk K, read once after ``load()`` (see :meth:`_finish_load`)."""
+        return self._loaded_native_chunk
 
     def _to_device(self, value: object) -> object:
         """Move every framework tensor leaf of an input onto :attr:`device`.
@@ -857,14 +918,19 @@ class ModelBase(Generic[ObsT, ActT]):
         super().__init_subclass__(**kwargs)
         authored_close = cls.__dict__.get("close")
         if callable(authored_close):
-            # An override need not call super().close(); the worker cycle
-            # (see close) is dropped around it either way.
+            # An authored close() is the model's close hook: it runs at most once,
+            # inside the terminal close (serves stopped, in-flight calls done),
+            # and an on_close= option replaces it. An override need not call
+            # super().close(); inside the close that call is a no-op.
             @functools.wraps(authored_close)
             def close(self: ModelBase[Any, Any], *args: Any, **kwargs: Any) -> None:
-                try:
+                if self._calls.closing_here():
+                    # A subclass's authored close calling super().close().
                     authored_close(self, *args, **kwargs)
-                finally:
-                    self._worker = None
+                    return
+                self._close_with(
+                    functools.partial(authored_close, self, *args, **kwargs)
+                )
 
             cls.close = close  # type: ignore[method-assign]
         if "reset" in cls.__dict__:
@@ -890,13 +956,31 @@ class ModelBase(Generic[ObsT, ActT]):
         Never called by ``run()`` or a session close -- a model instance is
         borrowed there and stays usable. Override it to unload weights; on a
         wrapped policy the base fires the ``on_close`` callback (or the
-        policy's own ``close``) once. Serving calls it when the server stops.
+        policy's own ``close``). Serving calls it when the server stops.
+
+        Terminal and idempotent: it stops a ``serve`` still running on the model
+        (requests it already received finish, and that ``serve`` returns),
+        waits for in-flight corner calls, then fires the close hook once. Every
+        later corner call, ``run``, ``session`` or ``serve`` -- and ``predict``,
+        ``step`` and ``run`` on a session opened before -- raises
+        ``RuntimeError``; a session closed afterwards fires no
+        ``on_episode_end``.
         """
-        hook, self._on_close = self._on_close, None
+        if self._calls.closing_here():
+            return
+        self._close_with(None)
+
+    def _close_with(self, authored: Callable[[], object] | None) -> None:
+        """The one terminal close; ``authored`` is a subclass's own close body."""
+        calls = self._calls
+        if not calls.begin_close():
+            return
         try:
+            hook = self._on_close if self._on_close is not None else authored
             if hook is not None:
-                hook()
+                calls.run_close_hook(hook)
         finally:
+            calls.finish_close()
             # The native worker's callbacks close over self through a class the
             # cycle collector cannot traverse; dropping it lets the model be freed.
             self._worker = None
@@ -1060,21 +1144,19 @@ class ModelBase(Generic[ObsT, ActT]):
 
             predict_chunk_batch_neutral = _predict_chunk_batch_neutral
 
-        native_chunk = self._native_chunk()
-        if native_chunk is not None and int(native_chunk) < 1:
-            raise ValueError(
-                f"native_chunk must be >= 1 (or None when undeclared), got {native_chunk!r}"
-            )
+        # The serve's close is this model's own (`serve` calls close() when the
+        # server stops), so the worker carries no close hook.
         worker: PyModel = load_native("PyModel")(
             predict_fn=predict_neutral,
             configure_fn=configure,
             on_episode_end=self._on_episode_end,
-            on_close=self.close,
+            on_close=None,
             predict_chunk_fn=predict_chunk_neutral,
             predict_batch_fn=predict_batch_neutral,
             predict_chunk_batch_fn=predict_chunk_batch_neutral,
-            allow_fusion=self.allow_fusion,
-            native_chunk=native_chunk,
+            allow_fusion=self._loaded_allow_fusion,
+            native_chunk=self._native_chunk(),
+            on_route_drop=self._drop_env_entries,
         )
         self._worker = worker
         return worker
@@ -1179,6 +1261,7 @@ class ModelBase(Generic[ObsT, ActT]):
         in its declared shape, exactly as on the session loop. The live viewer
         (``view=``) is a :meth:`session` option.
         """
+        self._calls.check_open("run()")
         if execution_horizon < 1:
             raise ValueError(f"execution_horizon must be >= 1, got {execution_horizon}")
         if prefetch_lead < 0:
@@ -1445,6 +1528,7 @@ class ModelBase(Generic[ObsT, ActT]):
         """
         from ._eval import Session
 
+        self._calls.check_open("session()")
         declared_edition = self._declared_workflow_edition(workflow_edition)
         self._require_device_support()
         if execution_horizon > 1 and self._raw_predict_chunk is None:
@@ -1473,6 +1557,7 @@ class ModelBase(Generic[ObsT, ActT]):
             native_chunk=self._native_chunk(),
             view=view,
             workflow_edition=declared_edition,
+            model_calls=self._calls,
         )
 
     def serve(
@@ -1497,17 +1582,28 @@ class ModelBase(Generic[ObsT, ActT]):
         """
         from .._editions import serve_options_declaring
 
+        self._calls.check_open("serve()")
         self._require_device_support()
-        self._install_worker().serve(
-            address,
-            serve_options_declaring(
-                options,
-                # The options' own edition is this call's value, ahead of
-                # RLMESH_WORKFLOW_EDITION, as EnvServer adopts it (COR-6).
-                call=options.workflow_edition if options is not None else None,
-                declared=self._class_workflow_edition(),
-            ),
+        declared = serve_options_declaring(
+            options,
+            # The options' own edition is this call's value, ahead of
+            # RLMESH_WORKFLOW_EDITION, as EnvServer adopts it (COR-6).
+            call=options.workflow_edition if options is not None else None,
+            declared=self._class_workflow_edition(),
         )
+        worker = self._install_worker()
+        # close() stops this serve (drain); the serve then returns and its own
+        # close below is that one.
+        token = self._calls.register_serve(worker.stop_serving)
+        try:
+            worker.serve(address, declared)
+        except BaseException:
+            self._calls.deregister_serve(token)
+            with contextlib.suppress(Exception):
+                self.close()
+            raise
+        self._calls.deregister_serve(token)
+        self.close()
 
     def _run_local(
         self, env_address: str, *, execution_horizon: int = 1, prefetch_lead: int = 0
