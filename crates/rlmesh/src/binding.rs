@@ -198,3 +198,8 @@ pub fn foreground_sigterm_scope(
 pub fn encode_render_frame(frame: &Value) -> Result<Option<Vec<u8>>> {
     crate::env::batch::encode_frame(frame)
 }
+
+/// Shared canonical adapter JSON formatter for language bindings.
+pub fn adapter_json_format(value: &serde_json::Value) -> Result<String> {
+    crate::adapters::format_json(value)
+}

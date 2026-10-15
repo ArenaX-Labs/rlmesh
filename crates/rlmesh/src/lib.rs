@@ -172,9 +172,10 @@ pub use model::{
 #[doc(no_inline)]
 pub use rlmesh_runtime::ENV_RESET_OPTIONS_KEY;
 pub use run::{
-    EnvTarget, EpisodeResult, ModelTarget, RANDOM_SAMPLE, RandomSample, RunContext, RunHooks,
-    RunOptions, RunResult, Session, SessionOptions, SessionRunOptions, StepEvent, TelemetryRow,
-    run, run_async, session, session_async,
+    EnvTarget, EpisodeResult, FrameSources, ModelTarget, RANDOM_SAMPLE, RandomSample, ReadFn,
+    ReadItem, Reader, RenderFn, RunContext, RunHooks, RunOptions, RunResult, Session,
+    SessionOptions, SessionRunOptions, StepEvent, TelemetryRow, run, run_async, session,
+    session_async,
 };
 pub use serve_options::{ENV_ENDPOINT_TOKEN_ENV, MODEL_ENDPOINT_TOKEN_ENV, ServeOptions};
 pub use specs::EnvContract;

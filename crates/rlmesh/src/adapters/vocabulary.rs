@@ -6,31 +6,39 @@ use std::{
 };
 
 pub(crate) mod sealed {
+    /// The adapter protocol implemented by authors.
     pub trait Sealed {}
 }
 /// A library-defined closed string vocabulary. Implementations are sealed.
 pub trait Vocabulary:
     Copy + Eq + Hash + fmt::Debug + Send + Sync + 'static + sealed::Sealed
 {
+    /// The exact Python vocabulary spelling.
     fn as_str(self) -> &'static str;
+    /// Parse an exact Python vocabulary spelling.
     fn parse(text: &str) -> Option<Self>;
 }
 /// A known vocabulary value or a newer peer's spelling, retained verbatim.
 #[derive(Clone, Debug)]
 pub enum Tolerant<E: Vocabulary> {
+    /// The `Known` alternative.
     Known(E),
+    /// The `Other` alternative.
     Other(String),
 }
 impl<E: Vocabulary> Tolerant<E> {
+    /// Parse an exact Python vocabulary spelling.
     pub fn parse(text: &str) -> Self {
         E::parse(text).map_or_else(|| Self::Other(text.into()), Self::Known)
     }
+    /// The exact Python vocabulary spelling.
     pub fn as_str(&self) -> &str {
         match self {
             Self::Known(e) => e.as_str(),
             Self::Other(s) => s,
         }
     }
+    /// The recognized value, when this carrier holds one.
     pub fn known(&self) -> Option<&E> {
         match self {
             Self::Known(e) => Some(e),
@@ -73,9 +81,12 @@ macro_rules! vocabulary {
     ($name:ident { $($variant:ident = $text:literal),+ $(,)? }) => {
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
         #[non_exhaustive]
-        pub enum $name { $($variant),+ }
+        /// A typed adapter vocabulary or tree alternative.
+        pub enum $name { $(#[doc = $text] $variant),+ }
         impl $name {
+            /// The exact Python vocabulary spelling.
             pub fn as_str(self) -> &'static str { match self { $(Self::$variant => $text),+ } }
+            /// Parse an exact Python vocabulary spelling.
             pub fn parse(text: &str) -> Option<Self> { match text { $($text => Some(Self::$variant)),+, _ => None } }
         }
         impl sealed::Sealed for $name {}
@@ -109,6 +120,7 @@ impl Vocabulary for crate::DType {
     }
 }
 impl RotationEncoding {
+    /// The rotation encoding’s element width.
     pub fn dims(self) -> u32 {
         match self {
             Self::QuatXyzw | Self::QuatWxyz => 4,
@@ -117,7 +129,9 @@ impl RotationEncoding {
         }
     }
 }
+/// The corresponding Python adapter annotation.
 pub type StackSpec = Vec<i32>;
+/// The shared Python spelling or ordered vocabulary.
 pub const ROTATION_DIMS: &[(RotationEncoding, u32)] = &[
     (RotationEncoding::AxisAngle, 3),
     (RotationEncoding::EulerXyz, 3),

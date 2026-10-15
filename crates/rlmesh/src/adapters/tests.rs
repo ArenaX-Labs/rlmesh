@@ -194,18 +194,10 @@ fn state_encodings_and_axis_values_round_trip() {
 }
 
 fn box_spec(width: usize) -> crate::spaces::SpaceSpec {
-    crate::spaces::Box::new(
-        -100.0,
-        100.0,
-        vec![width as i64],
-        crate::spaces::BoxOptions {
-            dtype: crate::DType::Float32,
-            ..Default::default()
-        },
-    )
-    .unwrap()
-    .spec()
-    .clone()
+    crate::spaces::Box::new(-100.0, 100.0, vec![width as i64], Default::default())
+        .unwrap()
+        .spec()
+        .clone()
 }
 fn floats(v: &[f32]) -> Value {
     Value::Tensor(
@@ -315,7 +307,7 @@ fn registry_resolves_once_and_replacement_affects_only_later_adapters() {
         ObsTransform::from(|_: &Value| Ok(Value::Int(2))),
     )
     .unwrap();
-    assert_eq!(a.transform_obs(floats(&[1.])).unwrap(), Value::Float(1.));
+    assert_eq!(a.transform_obs(floats(&[1.])).unwrap(), Value::Int(1));
     let mut b = resolve(
         &flat_tags(),
         &box_spec(1),
@@ -324,7 +316,7 @@ fn registry_resolves_once_and_replacement_affects_only_later_adapters() {
         ResolveOptions::default().trust_entrypoints(true),
     )
     .unwrap();
-    assert_eq!(b.transform_obs(floats(&[1.])).unwrap(), Value::Float(2.));
+    assert_eq!(b.transform_obs(floats(&[1.])).unwrap(), Value::Int(2));
 }
 #[test]
 fn inverse_checks_are_value_distinct_and_fail_with_resolution_class() {
@@ -361,4 +353,102 @@ fn inverse_checks_are_value_distinct_and_fail_with_resolution_class() {
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     let value = adapter.transform_obs(floats(&[0., 0., 0., 1.])).unwrap();
     assert!(matches!(value, Value::Tuple(_)));
+}
+
+#[test]
+fn custom_values_preserve_scalar_kinds_none_and_tuples() {
+    let expected = Value::Tuple(vec![Value::Int(i64::MAX), Value::Bool(true), Value::None]);
+    let output = expected.clone();
+    let spec = ModelSpec::new(
+        Custom {
+            transform: Some(ObsTransform::from(move |raw: &Value| {
+                assert_eq!(raw.as_dict()?.get("<obs>"), Some(&Value::Int(4)));
+                Ok(output.clone())
+            })),
+            entrypoint: None,
+        },
+        action(),
+    )
+    .unwrap();
+    let mut adapter = resolve(
+        &flat_tags(),
+        &box_spec(1),
+        &box_spec(1),
+        &spec,
+        Default::default(),
+    )
+    .unwrap();
+    assert_eq!(adapter.transform_obs(Value::Int(4)).unwrap(), expected);
+}
+#[test]
+fn codec_refuses_nonfinite_fields_and_normalizes_known_tolerant_spellings() {
+    let spec = ModelSpec::new(
+        State {
+            scale: Some(AxisValue::Scalar(f64::NAN)),
+            ..State::new(GRIPPER_POS)
+        },
+        action(),
+    )
+    .unwrap();
+    assert!(spec.to_json().is_err());
+    let tags = EnvTags::new(
+        StateTag {
+            frame: Some(Tolerant::Other("world".into())),
+            ..StateTag::new(EEF_POS)
+        },
+        action(),
+    )
+    .unwrap();
+    let ObsNode::Leaf(ObsLeaf::StateTag(tag)) = tags.observation() else {
+        panic!()
+    };
+    assert_eq!(tag.frame.as_ref().unwrap().known(), Some(&Frame::World));
+}
+
+#[test]
+fn inverse_check_preserves_intermediate_shape_and_per_step_checks_the_arm() {
+    let from =
+        RotationTransform::from(|v: &Value| v.as_tensor()?.reshape(&[2, 2]).map(Value::Tensor));
+    let to = RotationTransform::from(|v: &Value| v.as_tensor()?.reshape(&[4]).map(Value::Tensor));
+    let encoding = CustomEncoding {
+        from_base: Some(EncodingArm::Transform(from)),
+        to_base: Some(EncodingArm::Transform(to)),
+        ..CustomEncoding::new(RotationEncoding::QuatXyzw)
+    };
+    let spec = ModelSpec::new(
+        State {
+            encoding: Some(StateEncoding::Custom(encoding)),
+            ..State::new(EEF_ROT)
+        },
+        action(),
+    )
+    .unwrap();
+    let tags = EnvTags::new(
+        StateTag {
+            encoding: Some(vec![RotationEncoding::QuatXyzw.into()]),
+            ..StateTag::new(EEF_ROT)
+        },
+        action(),
+    )
+    .unwrap();
+    let mut adapter =
+        resolve(&tags, &box_spec(4), &box_spec(1), &spec, Default::default()).unwrap();
+    assert_eq!(
+        adapter
+            .transform_obs(floats(&[0., 0., 0., 1.]))
+            .unwrap_err()
+            .class(),
+        ErrorClass::ValueError
+    );
+}
+#[test]
+fn json_and_metadata_readers_preserve_authored_order_and_refuse_duplicate_keys() {
+    let text = r#"{"input":{"z":{"type":"text","role":"text/z"},"a":{"type":"text","role":"text/a"}},"output":{"components":[{"role":"action/gripper","dim":1}]}}"#;
+    let spec = ModelSpec::from_json(text).unwrap();
+    let InputNode::Dict(pairs) = spec.input() else {
+        panic!()
+    };
+    assert_eq!(pairs[0].0, "z");
+    let text = r#"{"input":{"z":{"type":"text","role":"text/z"},"z":{"type":"text","role":"text/a"}},"output":{"components":[{"role":"action/gripper","dim":1}]}}"#;
+    assert!(ModelSpec::from_json(text).is_err());
 }

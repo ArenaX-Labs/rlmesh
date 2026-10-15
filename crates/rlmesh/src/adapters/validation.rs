@@ -24,9 +24,6 @@ fn axes(v: &Option<AxisValue>) -> Result<()> {
     }
     Ok(())
 }
-fn accept<E: Vocabulary>(_v: &Option<Vec<Tolerant<E>>>) -> Result<()> {
-    Ok(())
-}
 pub(crate) fn custom(c: &CustomEncoding) -> Result<()> {
     require(
         c.from_base.is_some() || c.to_base.is_some(),
@@ -77,7 +74,7 @@ fn state(s: &State) -> Result<()> {
     }
     match &s.encoding {
         Some(StateEncoding::Custom(c)) => custom(c)?,
-        Some(StateEncoding::Native(v)) => accept(&Some(v.clone()))?,
+        Some(StateEncoding::Native(_)) => {}
         _ => {}
     }
     axes(&s.scale)?;
@@ -234,15 +231,11 @@ pub(crate) fn obs(n: &ObsNode) -> Result<()> {
             }
         }
         ObsNode::Leaf(l) => match l {
-            ObsLeaf::StateTag(s) => {
-                accept(&s.encoding)?;
-                labels(&s.labels)?
-            }
+            ObsLeaf::StateTag(s) => labels(&s.labels)?,
             ObsLeaf::Split(s) => {
                 require(!s.fields.is_empty(), "Split needs at least one Field")?;
                 for f in &s.fields {
                     require(f.dim >= 1, "Field: dim must be >= 1")?;
-                    accept(&f.encoding)?;
                     labels(&f.labels)?;
                     require(
                         f.labels.as_ref().is_none_or(|l| l.len() == f.dim as usize),
@@ -290,4 +283,196 @@ pub(crate) fn identities(n: &ObsNode, out: &mut Vec<(u8, String, Option<String>,
             }
         },
     }
+}
+
+fn norm<E: Vocabulary>(v: &mut Tolerant<E>) {
+    *v = Tolerant::parse(v.as_str())
+}
+fn norms<E: Vocabulary>(v: &mut Option<Vec<Tolerant<E>>>) {
+    if let Some(v) = v {
+        for x in v {
+            norm(x)
+        }
+    }
+}
+fn optional_norm<E: Vocabulary>(v: &mut Option<Tolerant<E>>) {
+    if let Some(v) = v {
+        norm(v)
+    }
+}
+fn normalize_state(s: &mut State) {
+    norm(&mut s.dtype);
+    optional_norm(&mut s.frame);
+    norms(&mut s.provenance);
+    if let Some(StateEncoding::Native(v)) = &mut s.encoding {
+        for e in v {
+            norm(e)
+        }
+    }
+}
+pub(crate) fn normalize_action(a: &mut Action) {
+    for c in &mut a.components {
+        optional_norm(&mut c.frame);
+        optional_norm(&mut c.reference)
+    }
+}
+pub(crate) fn normalize_input(n: &mut InputNode) {
+    match n {
+        InputNode::Dict(v) => {
+            for (_, n) in v {
+                normalize_input(n)
+            }
+        }
+        InputNode::Tuple(v) => {
+            for n in v {
+                normalize_input(n)
+            }
+        }
+        InputNode::Leaf(l) => match l {
+            ModelLeaf::Image(i) => {
+                norm(&mut i.dtype);
+                norm(&mut i.resample);
+                norm(&mut i.crop_mode);
+                norm(&mut i.channel_order);
+                norms(&mut i.fit)
+            }
+            ModelLeaf::State(s) => normalize_state(s),
+            ModelLeaf::Concat(c) => {
+                norm(&mut c.dtype);
+                for p in &mut c.parts {
+                    if let ConcatPart::State(s) = p {
+                        normalize_state(s)
+                    }
+                }
+            }
+            _ => {}
+        },
+    }
+}
+pub(crate) fn normalize_obs(n: &mut ObsNode) {
+    match n {
+        ObsNode::Dict(v) => {
+            for (_, n) in v {
+                normalize_obs(n)
+            }
+        }
+        ObsNode::Tuple(v) => {
+            for n in v {
+                normalize_obs(n)
+            }
+        }
+        ObsNode::Leaf(l) => match l {
+            ObsLeaf::StateTag(t) => {
+                norms(&mut t.encoding);
+                optional_norm(&mut t.frame);
+                optional_norm(&mut t.provenance)
+            }
+            ObsLeaf::Split(s) => {
+                for f in &mut s.fields {
+                    norms(&mut f.encoding);
+                    optional_norm(&mut f.frame);
+                    optional_norm(&mut f.provenance)
+                }
+            }
+            _ => {}
+        },
+    }
+}
+fn finite(v: impl IntoIterator<Item = f64>) -> Result<()> {
+    require(
+        v.into_iter().all(f64::is_finite),
+        "adapter numeric fields must be finite",
+    )
+}
+fn range_finite(v: Option<(f64, f64)>) -> Result<()> {
+    finite(v.into_iter().flat_map(|(a, b)| [a, b]))
+}
+fn axis_finite(v: &Option<AxisValue>) -> Result<()> {
+    match v {
+        Some(AxisValue::Scalar(x)) => finite([*x]),
+        Some(AxisValue::PerAxis(v)) => finite(v.iter().copied()),
+        _ => Ok(()),
+    }
+}
+fn finite_state(s: &State) -> Result<()> {
+    finite([s.fill])?;
+    range_finite(s.range)?;
+    range_finite(s.clip)?;
+    axis_finite(&s.scale)?;
+    axis_finite(&s.offset)?;
+    if let Some(r) = &s.post_rotate {
+        finite(r.value.iter().copied())?
+    }
+    Ok(())
+}
+pub(crate) fn finite_action(a: &Action) -> Result<()> {
+    range_finite(a.clip)?;
+    for c in &a.components {
+        finite([c.fill])?;
+        finite(c.threshold)?;
+        range_finite(c.range)?;
+        axis_finite(&c.scale)?;
+        axis_finite(&c.offset)?
+    }
+    Ok(())
+}
+pub(crate) fn finite_input(n: &InputNode) -> Result<()> {
+    match n {
+        InputNode::Dict(v) => {
+            for (_, n) in v {
+                finite_input(n)?
+            }
+        }
+        InputNode::Tuple(v) => {
+            for n in v {
+                finite_input(n)?
+            }
+        }
+        InputNode::Leaf(l) => match l {
+            ModelLeaf::Image(i) => {
+                finite(i.crop)?;
+                finite(i.crop_area)?;
+                if let Normalize::Range(a, b) = i.normalize {
+                    finite([a, b])?
+                }
+            }
+            ModelLeaf::State(s) => finite_state(s)?,
+            ModelLeaf::Concat(c) => {
+                range_finite(c.clip)?;
+                for p in &c.parts {
+                    match p {
+                        ConcatPart::State(s) => finite_state(s)?,
+                        ConcatPart::Constant(c) => finite([c.fill])?,
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        },
+    }
+    Ok(())
+}
+pub(crate) fn finite_obs(n: &ObsNode) -> Result<()> {
+    match n {
+        ObsNode::Dict(v) => {
+            for (_, n) in v {
+                finite_obs(n)?
+            }
+        }
+        ObsNode::Tuple(v) => {
+            for n in v {
+                finite_obs(n)?
+            }
+        }
+        ObsNode::Leaf(l) => match l {
+            ObsLeaf::StateTag(t) => range_finite(t.range)?,
+            ObsLeaf::Split(s) => {
+                for f in &s.fields {
+                    range_finite(f.range)?
+                }
+            }
+            _ => {}
+        },
+    }
+    Ok(())
 }

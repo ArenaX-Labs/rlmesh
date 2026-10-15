@@ -5,24 +5,36 @@ use std::fmt;
 
 #[derive(Clone, Debug, PartialEq)]
 #[allow(clippy::large_enum_variant)]
+/// A typed adapter vocabulary or tree alternative.
 pub enum ModelLeaf {
+    /// The `Image` alternative.
     Image(Image),
+    /// The `State` alternative.
     State(State),
+    /// The `Concat` alternative.
     Concat(Concat),
+    /// The `Text` alternative.
     Text(Text),
+    /// The `Custom` alternative.
     Custom(Custom),
 }
 #[derive(Clone, Debug)]
 #[allow(clippy::large_enum_variant)]
+/// A typed adapter vocabulary or tree alternative.
 pub enum InputNode {
+    /// The `Leaf` alternative.
     Leaf(ModelLeaf),
+    /// The `Dict` alternative.
     Dict(Vec<(String, InputNode)>),
+    /// The `Tuple` alternative.
     Tuple(Vec<InputNode>),
 }
 impl InputNode {
+    /// Create an ordered Dict node; duplicate keys are checked at composition.
     pub fn dict<K: Into<String>>(pairs: impl IntoIterator<Item = (K, Self)>) -> Self {
         Self::Dict(pairs.into_iter().map(|(k, v)| (k.into(), v)).collect())
     }
+    /// Create a Tuple node in positional order.
     pub fn tuple(items: impl IntoIterator<Item = Self>) -> Self {
         Self::Tuple(items.into_iter().collect())
     }
@@ -165,23 +177,34 @@ impl InputNode {
 }
 #[derive(Clone, Debug, PartialEq)]
 #[allow(clippy::large_enum_variant)]
+/// A typed adapter vocabulary or tree alternative.
 pub enum ObsLeaf {
+    /// The `ImageTag` alternative.
     ImageTag(ImageTag),
+    /// The `StateTag` alternative.
     StateTag(StateTag),
+    /// The `TextTag` alternative.
     TextTag(TextTag),
+    /// The `Split` alternative.
     Split(Split),
 }
 #[derive(Clone, Debug)]
 #[allow(clippy::large_enum_variant)]
+/// A typed adapter vocabulary or tree alternative.
 pub enum ObsNode {
+    /// The `Leaf` alternative.
     Leaf(ObsLeaf),
+    /// The `Dict` alternative.
     Dict(Vec<(String, ObsNode)>),
+    /// The `Tuple` alternative.
     Tuple(Vec<ObsNode>),
 }
 impl ObsNode {
+    /// Create an ordered Dict node; duplicate keys are checked at composition.
     pub fn dict<K: Into<String>>(pairs: impl IntoIterator<Item = (K, Self)>) -> Self {
         Self::Dict(pairs.into_iter().map(|(k, v)| (k.into(), v)).collect())
     }
+    /// Create a Tuple node in positional order.
     pub fn tuple(items: impl IntoIterator<Item = Self>) -> Self {
         Self::Tuple(items.into_iter().collect())
     }

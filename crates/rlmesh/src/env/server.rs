@@ -358,7 +358,7 @@ impl EnvServer {
                     // spaces are its single spaces.
                     Some(tags) => {
                         let mut metadata = env.metadata().unwrap_or_default();
-                        tags.stamp(&mut metadata);
+                        tags.stamp(&mut metadata)?;
                         let base = vector_contract_of(env.as_ref())?;
                         EnvContract::new(
                             base.id().to_string(),
@@ -865,14 +865,14 @@ impl Tagged {
     /// Merge and validate `tags` against `env`'s spaces.
     pub(crate) fn new(env: Box<dyn Env + Send>, tags: EnvTags) -> Result<Tagged> {
         tags.validate(&env.observation_space(), &env.action_space())?;
-        Ok(Self::unchecked(env, tags))
+        Self::unchecked(env, tags)
     }
 
     /// Merge `tags` without validation.
-    pub(crate) fn unchecked(env: Box<dyn Env + Send>, tags: EnvTags) -> Tagged {
+    pub(crate) fn unchecked(env: Box<dyn Env + Send>, tags: EnvTags) -> Result<Tagged> {
         let mut metadata = env.metadata().unwrap_or_default();
-        tags.stamp(&mut metadata);
-        Tagged { env, metadata }
+        tags.stamp(&mut metadata)?;
+        Ok(Tagged { env, metadata })
     }
 
     /// `env` serving `metadata` as its own (a factory's stamp).

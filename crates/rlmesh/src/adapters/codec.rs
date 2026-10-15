@@ -5,8 +5,9 @@ use serde_json::{Value as Json, json};
 
 pub(crate) mod set {
     use super::*;
+    /// Python’s `serialize` adapter operation.
     pub fn serialize<S: serde::Serializer, E: Vocabulary>(
-        v: &Vec<Tolerant<E>>,
+        v: &[Tolerant<E>],
         s: S,
     ) -> std::result::Result<S::Ok, S::Error> {
         if v.len() == 1 {
@@ -15,6 +16,7 @@ pub(crate) mod set {
             v.serialize(s)
         }
     }
+    /// Python’s `deserialize` adapter operation.
     pub fn deserialize<'de, D: serde::Deserializer<'de>, E: Vocabulary>(
         d: D,
     ) -> std::result::Result<Vec<Tolerant<E>>, D::Error> {
@@ -32,6 +34,7 @@ pub(crate) mod set {
 }
 pub(crate) mod accept {
     use super::*;
+    /// Python’s `serialize` adapter operation.
     pub fn serialize<S: serde::Serializer, E: Vocabulary>(
         v: &Option<Vec<Tolerant<E>>>,
         s: S,
@@ -41,6 +44,7 @@ pub(crate) mod accept {
             Some(v) => set::serialize(v, s),
         }
     }
+    /// Python’s `deserialize` adapter operation.
     pub fn deserialize<'de, D: serde::Deserializer<'de>, E: Vocabulary>(
         d: D,
     ) -> std::result::Result<Option<Vec<Tolerant<E>>>, D::Error> {
@@ -60,7 +64,11 @@ pub(crate) fn leaf_json<T: Serialize>(v: &T) -> Result<Json> {
 fn axis_to_wire(j: &mut Json) {
     for key in ["scale", "offset"] {
         if j[key].is_array() {
-            let value = j.as_object_mut().unwrap().remove(key).unwrap();
+            let value = j
+                .as_object_mut()
+                .expect("adapter leaves serialize as objects")
+                .remove(key)
+                .expect("array axis field is present");
             j[format!("axis_{key}")] = value;
         }
     }
@@ -78,7 +86,9 @@ fn axis_from_wire(j: &mut Json) {
 pub(crate) fn state_part(s: &State) -> Result<Json> {
     let mut j = leaf_json(s)?;
     for key in ["pad_to", "dtype", "reshape", "container", "clip"] {
-        j.as_object_mut().unwrap().remove(key);
+        j.as_object_mut()
+            .expect("adapter leaves serialize as objects")
+            .remove(key);
     }
     Ok(j)
 }
@@ -191,10 +201,14 @@ pub(crate) fn input_from(j: Json) -> Result<InputNode> {
                     decode::<State>(v.clone()).map(ConcatPart::State)
                 })
                 .collect::<Result<Vec<_>>>()?;
-            let mut container = j.as_object().unwrap().clone();
+            let mut container = j.as_object().expect("state input is an object").clone();
             container.remove("components");
             if parts.len() == 1 && matches!(&parts[0], ConcatPart::State(_)) {
-                let ConcatPart::State(mut s) = parts.into_iter().next().unwrap() else {
+                let ConcatPart::State(mut s) = parts
+                    .into_iter()
+                    .next()
+                    .expect("one parameterized part was checked above")
+                else {
                     unreachable!()
                 };
                 let c: Concat = decode(Json::Object(container))?;
@@ -262,5 +276,120 @@ fn sorted(j: Json) -> Json {
         }
         Json::Array(v) => Json::Array(v.into_iter().map(sorted).collect()),
         v => v,
+    }
+}
+
+// Parse tree containers directly from the JSON stream. serde_json::Value uses
+// sorted objects throughout the workspace; enabling preserve_order globally
+// would change the contract/envelope serializers of unrelated areas.
+struct RawObject(Vec<(String, Box<serde_json::value::RawValue>)>);
+impl<'de> Deserialize<'de> for RawObject {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = RawObject;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("an ordered object")
+            }
+            fn visit_map<M: serde::de::MapAccess<'de>>(
+                self,
+                mut map: M,
+            ) -> std::result::Result<Self::Value, M::Error> {
+                let mut pairs = Vec::new();
+                while let Some(pair) = map.next_entry()? {
+                    pairs.push(pair)
+                }
+                Ok(RawObject(pairs))
+            }
+        }
+        d.deserialize_map(Visitor)
+    }
+}
+pub(crate) fn input_from_text(text: &str) -> Result<InputNode> {
+    if text.trim_start().starts_with('[') {
+        let children: Vec<Box<serde_json::value::RawValue>> =
+            serde_json::from_str(text).map_err(err)?;
+        return Ok(InputNode::tuple(
+            children
+                .iter()
+                .map(|s| input_from_text(s.get()))
+                .collect::<Result<Vec<_>>>()?,
+        ));
+    }
+    let RawObject(pairs) = serde_json::from_str(text).map_err(err)?;
+    if pairs.iter().any(|(k, _)| k == "type") {
+        input_from(serde_json::from_str(text).map_err(err)?)
+    } else {
+        Ok(InputNode::Dict(
+            pairs
+                .into_iter()
+                .map(|(k, v)| Ok((k, input_from_text(v.get())?)))
+                .collect::<Result<_>>()?,
+        ))
+    }
+}
+pub(crate) fn obs_from_text(text: &str) -> Result<ObsNode> {
+    if text.trim_start().starts_with('[') {
+        let children: Vec<Box<serde_json::value::RawValue>> =
+            serde_json::from_str(text).map_err(err)?;
+        return Ok(ObsNode::tuple(
+            children
+                .iter()
+                .map(|s| obs_from_text(s.get()))
+                .collect::<Result<Vec<_>>>()?,
+        ));
+    }
+    let RawObject(pairs) = serde_json::from_str(text).map_err(err)?;
+    if pairs.iter().any(|(k, _)| k == "type") {
+        obs_from(serde_json::from_str(text).map_err(err)?)
+    } else {
+        Ok(ObsNode::Dict(
+            pairs
+                .into_iter()
+                .map(|(k, v)| Ok((k, obs_from_text(v.get())?)))
+                .collect::<Result<_>>()?,
+        ))
+    }
+}
+pub(crate) fn authored_input(text: &str) -> Result<InputNode> {
+    #[derive(Deserialize)]
+    struct Raw {
+        input: Box<serde_json::value::RawValue>,
+    }
+    let raw: Raw = serde_json::from_str(text).map_err(err)?;
+    input_from_text(raw.input.get())
+}
+pub(crate) fn authored_observation(text: &str) -> Result<ObsNode> {
+    #[derive(Deserialize)]
+    struct Raw {
+        observation: Box<serde_json::value::RawValue>,
+    }
+    let raw: Raw = serde_json::from_str(text).map_err(err)?;
+    obs_from_text(raw.observation.get())
+}
+pub(crate) fn metadata_json(m: &Metadata) -> Result<String> {
+    Ok(format!(
+        "{{{}}}",
+        m.iter()
+            .map(|(k, v)| Ok(format!(
+                "{}:{}",
+                serde_json::to_string(k).map_err(err)?,
+                value_json(v)?
+            )))
+            .collect::<Result<Vec<_>>>()?
+            .join(",")
+    ))
+}
+fn value_json(v: &Value) -> Result<String> {
+    match v {
+        Value::Dict(m) => metadata_json(m),
+        Value::List(v) | Value::Tuple(v) => Ok(format!(
+            "[{}]",
+            v.iter()
+                .map(value_json)
+                .collect::<Result<Vec<_>>>()?
+                .join(",")
+        )),
+        _ => serde_json::to_string(&crate::specs::value_to_json(v)?).map_err(err),
     }
 }

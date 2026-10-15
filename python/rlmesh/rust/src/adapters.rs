@@ -308,6 +308,17 @@ fn reject_custom_leaves(node: &InputNode) -> PyResult<()> {
 
 pub(crate) fn encode_value<'py>(py: Python<'py>, value: &Value) -> PyResult<Bound<'py, PyAny>> {
     match value {
+        Value::None => Ok(py.None().into_bound(py)),
+        Value::Bool(value) => Ok(value.into_pyobject(py)?.to_owned().into_any()),
+        Value::Int(value) => Ok(value.into_pyobject(py)?.into_any()),
+        Value::Tuple(items) => Ok(PyTuple::new(
+            py,
+            items
+                .iter()
+                .map(|v| encode_value(py, v))
+                .collect::<PyResult<Vec<_>>>()?,
+        )?
+        .into_any()),
         Value::Tensor(tensor) => crate::spaces::wrap_native_tensor(py, tensor.clone()),
         Value::Text(text) => Ok(text.into_pyobject(py)?.into_any()),
         Value::Bytes(bytes) => Ok(PyBytes::new(py, bytes).into_any()),

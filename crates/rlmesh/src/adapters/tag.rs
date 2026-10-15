@@ -5,6 +5,7 @@ use std::fmt;
 /// field is a minor change by project policy.
 #[derive(Clone, Debug)]
 pub struct TagOptions {
+    /// The `validate` field, with Python’s meaning and default.
     pub validate: bool,
 }
 impl Default for TagOptions {
@@ -13,6 +14,7 @@ impl Default for TagOptions {
     }
 }
 impl TagOptions {
+    /// Set whether the env’s single-lane spaces are checked.
     pub fn validate(mut self, value: bool) -> Self {
         self.validate = value;
         self
@@ -25,15 +27,19 @@ pub struct Tagged<E> {
     fragment: Metadata,
 }
 impl<E> Tagged<E> {
+    /// Borrow the authored environment.
     pub fn get_ref(&self) -> &E {
         &self.inner
     }
+    /// Mutably borrow the authored environment.
     pub fn get_mut(&mut self) -> &mut E {
         &mut self.inner
     }
+    /// Recover the authored environment without the tag wrapper.
     pub fn into_inner(self) -> E {
         self.inner
     }
+    /// The immutable tags attached to this environment.
     pub fn tags(&self) -> &EnvTags {
         &self.tags
     }
@@ -51,9 +57,11 @@ pub struct TagError<E> {
     error: Error,
 }
 impl<E> TagError<E> {
+    /// The tagging failure, without consuming the original environment.
     pub fn error(&self) -> &Error {
         &self.error
     }
+    /// Recover ownership of the original environment and the tagging failure.
     pub fn into_parts(self) -> (E, Error) {
         (self.env, self.error)
     }

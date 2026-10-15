@@ -187,7 +187,9 @@ impl EncodingTransform for Encodings {
 /// an options field is a minor change by project policy.
 #[derive(Clone, Debug)]
 pub struct ResolveOptions {
+    /// The `trust_entrypoints` field, with Python’s meaning and default.
     pub trust_entrypoints: bool,
+    /// The `check_inverse` field, with Python’s meaning and default.
     pub check_inverse: bool,
 }
 impl Default for ResolveOptions {
@@ -199,10 +201,12 @@ impl Default for ResolveOptions {
     }
 }
 impl ResolveOptions {
+    /// Set whether registered custom-input entrypoints may be used.
     pub fn trust_entrypoints(mut self, v: bool) -> Self {
         self.trust_entrypoints = v;
         self
     }
+    /// Set whether distinct two-arm custom encodings are inverse-checked.
     pub fn check_inverse(mut self, v: bool) -> Self {
         self.check_inverse = v;
         self
@@ -219,6 +223,70 @@ fn arm(arm: &Option<EncodingArm>, side: &str) -> Result<RotationTransform> {
         ))),
     }
 }
+fn float64_array(value: &Value) -> Result<Value> {
+    if let Value::Tensor(t) = value {
+        let data = rlmesh_spaces::scalar::decode_scalars(&t.tobytes(), t.dtype().to_core())
+            .map_err(|e| Error::invalid_argument(e.to_string()))?
+            .into_iter()
+            .map(|s| s.to_f64(t.dtype().to_core()))
+            .collect::<Vec<_>>();
+        let bytes = data
+            .iter()
+            .flat_map(|x| x.to_le_bytes())
+            .collect::<Vec<_>>();
+        return crate::Tensor::new(&bytes, t.shape(), crate::DType::Float64).map(Value::Tensor);
+    }
+    fn flatten(value: &Value, shape: &mut Vec<usize>, data: &mut Vec<f64>) -> Result<()> {
+        match value {
+            Value::List(v) | Value::Tuple(v) => {
+                shape.push(v.len());
+                let mut child_shape = None;
+                for child in v {
+                    let mut dims = Vec::new();
+                    flatten(child, &mut dims, data)?;
+                    if child_shape.as_ref().is_some_and(|s| s != &dims) {
+                        return Err(Error::invalid_argument(
+                            "inverse-check intermediate array is ragged",
+                        ));
+                    }
+                    child_shape = Some(dims)
+                }
+                if let Some(dims) = child_shape {
+                    shape.extend(dims)
+                }
+                Ok(())
+            }
+            Value::Int(v) => {
+                data.push(*v as f64);
+                Ok(())
+            }
+            Value::Float(v) => {
+                data.push(*v);
+                Ok(())
+            }
+            Value::Bool(v) => {
+                data.push(f64::from(*v));
+                Ok(())
+            }
+            _ => Err(Error::invalid_argument(
+                "inverse-check intermediate value must be numeric",
+            )),
+        }
+    }
+    let mut shape = Vec::new();
+    let mut data = Vec::new();
+    flatten(value, &mut shape, &mut data)?;
+    crate::Tensor::new(
+        &data
+            .into_iter()
+            .flat_map(f64::to_le_bytes)
+            .collect::<Vec<_>>(),
+        &shape,
+        crate::DType::Float64,
+    )
+    .map(Value::Tensor)
+}
+
 fn check_inverse(encodings: &[CustomEncoding]) -> Result<()> {
     let mut seen = Vec::new();
     for c in encodings {
@@ -242,7 +310,7 @@ fn check_inverse(encodings: &[CustomEncoding]) -> Result<()> {
         let result = (|| {
             let input = vector(&probe, crate::DType::Float64)?;
             let mid = from.call(&input)?;
-            let mid = vector(&numeric(&mid)?, crate::DType::Float64)?;
+            let mid = float64_array(&mid)?;
             numeric(&to.call(&mid)?)
         })();
         let output = result.map_err(|e| {
@@ -266,9 +334,13 @@ fn check_inverse(encodings: &[CustomEncoding]) -> Result<()> {
     Ok(())
 }
 pub(crate) struct ResolvedParts {
+    /// The `plan` field, with Python’s meaning and default.
     pub plan: core::ResolvedAdapter,
+    /// The `customs` field, with Python’s meaning and default.
     pub customs: Customs,
+    /// The `encodings` field, with Python’s meaning and default.
     pub encodings: Encodings,
+    /// The `input` field, with Python’s meaning and default.
     pub input: InputNode,
 }
 fn walk<'a>(n: &'a InputNode, path: NodePath, out: &mut Vec<(NodePath, &'a ModelLeaf)>) {
@@ -289,7 +361,11 @@ fn walk<'a>(n: &'a InputNode, path: NodePath, out: &mut Vec<(NodePath, &'a Model
 fn core_input_mut<'a>(n: &'a mut core::InputNode, path: &[PathSeg]) -> &'a mut core::InputNode {
     if let Some((h, t)) = path.split_first() {
         match (h, n) {
-            (PathSeg::Key(k), core::InputNode::Dict(m)) => core_input_mut(m.get_mut(k).unwrap(), t),
+            (PathSeg::Key(k), core::InputNode::Dict(m)) => core_input_mut(
+                m.get_mut(k)
+                    .expect("lowering retains every authored Dict placement"),
+                t,
+            ),
             (PathSeg::Index(i), core::InputNode::Tuple(v)) => core_input_mut(&mut v[*i], t),
             _ => unreachable!(),
         }
@@ -478,6 +554,7 @@ pub fn resolve(
     options: ResolveOptions,
 ) -> Result<Adapter> {
     let tags = tags.wire().map_err(resolution_error)?;
+    core::reject_unknowns_env(&tags).map_err(resolution_error)?;
     let parts = resolve_parts(&tags, observation, action, spec, options)?;
     Ok(Adapter::new(parts))
 }
@@ -523,6 +600,7 @@ impl Adapter {
             current_step: 0,
         })))
     }
+    /// Non-fatal notes produced while resolving this adapter.
     pub fn advisories(&self) -> Vec<Advisory> {
         self.0
             .lock()
@@ -531,9 +609,10 @@ impl Adapter {
             .plan
             .advisories()
             .into_iter()
-            .map(Into::into)
+            .map(crate::adapters::Advisory::from_core)
             .collect()
     }
+    /// Canonical placements requiring per-episode history.
     pub fn history_keys(&self) -> Vec<String> {
         self.0
             .lock()
@@ -542,6 +621,7 @@ impl Adapter {
             .plan
             .history_keys()
     }
+    /// Placement, span and frame byte cost of each frame window.
     pub fn history_windows(&self) -> Vec<(String, u64, u64)> {
         self.0
             .lock()
@@ -561,6 +641,7 @@ fn raw_map(raw: Value) -> Result<BTreeMap<String, core::Value>> {
     }
 }
 impl AdapterBase for Adapter {
+    /// Python’s `AdapterBase.transform_obs` operation.
     fn transform_obs(&mut self, raw: Value) -> Result<Value> {
         let mut s = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let AdapterState {
@@ -587,6 +668,7 @@ impl AdapterBase for Adapter {
         .map_err(Error::from_apply)?;
         Ok(restore_shape(from_adapter(out)?, &parts.input))
     }
+    /// Python’s `AdapterBase.transform_action` operation.
     fn transform_action(&mut self, raw: Value) -> Result<Value> {
         let mut s = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let AdapterState {
@@ -608,6 +690,7 @@ impl AdapterBase for Adapter {
             .map_err(Error::from_apply)?;
         crate::binding::tensor_from_core(tensor).map(Value::Tensor)
     }
+    /// Python’s `AdapterBase.observe` operation.
     fn observe(&mut self, raw: Value) -> Result<()> {
         let mut s = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let AdapterState {
@@ -624,6 +707,7 @@ impl AdapterBase for Adapter {
         *step = tick + 1;
         core::observe_obs(&parts.plan, &raw_map(raw)?, "local", buffers).map_err(Error::from_apply)
     }
+    /// Python’s `AdapterBase.reset` operation.
     fn reset(&mut self) -> Result<()> {
         let mut s = self.0.lock().unwrap_or_else(|e| e.into_inner());
         s.buffers.clear();
@@ -631,6 +715,7 @@ impl AdapterBase for Adapter {
         s.current_step = 0;
         Ok(())
     }
+    /// Python’s `AdapterBase.explain` operation.
     fn explain(&self) -> Result<String> {
         Ok(self
             .0
@@ -663,14 +748,19 @@ pub(crate) fn restore_shape(value: Value, node: &InputNode) -> Value {
 }
 /// An authored adapter protocol; defaults match Python's `AdapterBase`.
 pub trait AdapterBase {
+    /// Python’s `AdapterBase.transform_obs` operation.
     fn transform_obs(&mut self, raw_obs: Value) -> Result<Value>;
+    /// Python’s `AdapterBase.transform_action` operation.
     fn transform_action(&mut self, raw_action: Value) -> Result<Value>;
+    /// Python’s `AdapterBase.observe` operation.
     fn observe(&mut self, _raw_obs: Value) -> Result<()> {
         Ok(())
     }
+    /// Python’s `AdapterBase.reset` operation.
     fn reset(&mut self) -> Result<()> {
         Ok(())
     }
+    /// Python’s `AdapterBase.explain` operation.
     fn explain(&self) -> Result<String> {
         let name = std::any::type_name::<Self>()
             .split('<')
@@ -681,6 +771,7 @@ pub trait AdapterBase {
             .unwrap_or("AdapterBase");
         Ok(format!("{name} (custom adapter)"))
     }
+    /// Python’s `AdapterBase.wrap_predict` operation.
     fn wrap_predict<F>(self, predict_fn: F) -> WrappedPredict<Self, F>
     where
         Self: Sized,
@@ -698,13 +789,16 @@ pub struct WrappedPredict<A, F> {
     predict_fn: F,
 }
 impl<A: AdapterBase, F: FnMut(Value) -> Result<Value>> WrappedPredict<A, F> {
+    /// Invoke this callable.
     pub fn call(&mut self, observation: Value) -> Result<Value> {
         let input = self.adapter.transform_obs(observation)?;
         self.adapter.transform_action((self.predict_fn)(input)?)
     }
+    /// Borrow the wrapped adapter.
     pub fn adapter(&self) -> &A {
         &self.adapter
     }
+    /// Mutably borrow the wrapped adapter.
     pub fn adapter_mut(&mut self) -> &mut A {
         &mut self.adapter
     }
@@ -714,5 +808,42 @@ impl<A: AdapterBase + Send + 'static, F: FnMut(Value) -> Result<Value> + Send + 
 {
     fn predict(&mut self, observation: Value) -> Result<Value> {
         self.call(observation)
+    }
+}
+
+pub(crate) fn inject_instruction(
+    value: Value,
+    node: &InputNode,
+    instruction: Option<&str>,
+) -> Value {
+    let Some(text) = instruction else {
+        return value;
+    };
+    match (node, value) {
+        (InputNode::Leaf(ModelLeaf::Text(t)), _) => {
+            if t.container == TextContainer::List {
+                Value::List(vec![Value::Text(text.into())])
+            } else {
+                Value::Text(text.into())
+            }
+        }
+        (InputNode::Dict(nodes), Value::Dict(mut map)) => {
+            for (k, n) in nodes {
+                let previous = map.get(k).cloned().unwrap_or(Value::None);
+                let v = inject_instruction(previous, n, Some(text));
+                if !v.is_none() {
+                    map.insert(k, v);
+                }
+            }
+            Value::Dict(map)
+        }
+        (InputNode::Tuple(nodes), Value::Tuple(values)) => Value::Tuple(
+            values
+                .into_iter()
+                .zip(nodes)
+                .map(|(v, n)| inject_instruction(v, n, Some(text)))
+                .collect(),
+        ),
+        (_, v) => v,
     }
 }

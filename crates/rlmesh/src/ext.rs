@@ -157,15 +157,15 @@ pub struct ModelServeOptions {
 }
 
 /// Python's `EnvTags` from its wire JSON (the form `EnvTags.to_dict()`
-/// writes), checked for unknown fields: the way Rust builds tags until the
-/// adapters surface lands.
+/// writes), checked for unknown fields. A convenience alias for
+/// [`EnvTags::from_json`](crate::adapters::EnvTags::from_json).
 pub fn env_tags_from_json(json: &str) -> Result<crate::adapters::EnvTags> {
     crate::adapters::EnvTags::from_json(json)
 }
 
 /// Python's `ModelSpec` from its wire JSON (the form `ModelSpec.to_dict()`
-/// writes), checked for unknown fields: the way Rust builds a spec until the
-/// adapters surface lands.
+/// writes), checked for unknown fields. A convenience alias for
+/// [`ModelSpec::from_json`](crate::adapters::ModelSpec::from_json).
 pub fn model_spec_from_json(json: &str) -> Result<crate::adapters::ModelSpec> {
     crate::adapters::ModelSpec::from_json(json)
 }

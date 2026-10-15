@@ -379,6 +379,15 @@ pub(super) fn plan_state(
     advisories: &mut Vec<Advisory>,
 ) -> Result<StatePlan> {
     let at = quoted(&placement.to_string());
+    if rlmesh_spaces::DType::from_name(&model_input.dtype).is_none() {
+        return Err(err(
+            ErrorCode::Unsupported,
+            format!(
+                "model input {at}: unknown dtype {}",
+                quoted(&model_input.dtype)
+            ),
+        ));
+    }
     let mut pieces: Vec<StatePiece> = Vec::with_capacity(model_input.components.len());
     for component in &model_input.components {
         // A constant part reads nothing: it contributes its declared width of

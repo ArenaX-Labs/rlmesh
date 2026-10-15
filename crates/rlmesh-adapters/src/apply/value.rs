@@ -21,6 +21,14 @@ use crate::error::ApplyError;
 /// A value flowing through the apply engine.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
+    /// A null host value, retained by custom inputs.
+    None,
+    /// A boolean host value, retained without coercion to a float.
+    Bool(bool),
+    /// An exact signed integer host value.
+    Int(i64),
+    /// A host tuple; unlike a list, it is one chunk frame.
+    Tuple(Vec<Value>),
     Tensor(Tensor),
     Text(String),
     Bytes(Vec<u8>),

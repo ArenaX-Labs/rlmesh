@@ -654,6 +654,7 @@ fn results_print_as_python_does() {
          success=None, duration_s=0.25, predict_ms=1.0, step_ms=None, trial=0)"
     );
     let result = RunResult {
+        advisories: Vec::new(),
         episodes: vec![episode],
         telemetry: vec![TelemetryRow {
             op: "env.step".into(),
@@ -1093,4 +1094,218 @@ fn a_native_run_dials_a_borrowed_remote_env_s_address() {
     );
     remote.close().unwrap();
     server.shutdown().unwrap();
+}
+
+struct AdapterSteps {
+    step: i64,
+}
+impl Env for AdapterSteps {
+    fn observation_space(&self) -> Space {
+        crate::spaces::Box::new(-10.0, 10.0, vec![1], Default::default())
+            .unwrap()
+            .into()
+    }
+    fn action_space(&self) -> Space {
+        crate::spaces::Box::new(-10.0, 10.0, vec![1], Default::default())
+            .unwrap()
+            .into()
+    }
+    fn reset(
+        &mut self,
+        _seed: Option<i64>,
+        _options: Option<&InfoDict>,
+    ) -> Result<(Value, InfoDict)> {
+        self.step = 0;
+        Ok((Value::List(vec![Value::Float(2.)]), InfoDict::new()))
+    }
+    fn step(&mut self, _action: Option<Value>) -> Result<(Value, f64, bool, bool, InfoDict)> {
+        self.step += 1;
+        Ok((
+            Value::List(vec![Value::Float(3.)]),
+            1.,
+            true,
+            false,
+            InfoDict::new(),
+        ))
+    }
+    fn render_mode(&self) -> Option<String> {
+        Some("rgb_array".into())
+    }
+    fn render(&mut self) -> Result<Option<Value>> {
+        Ok(Some(Value::Int(self.step)))
+    }
+}
+fn adapter_action() -> crate::adapters::Action {
+    use crate::adapters::*;
+    Action::new([Actuator {
+        role: Some(ACTION_GRIPPER.into()),
+        dim: 1,
+        ..Default::default()
+    }])
+}
+fn adapter_steps() -> crate::adapters::Tagged<AdapterSteps> {
+    use crate::adapters::*;
+    tag(
+        AdapterSteps { step: 0 },
+        &EnvTags::new(StateTag::new(GRIPPER_POS), adapter_action()).unwrap(),
+        Default::default(),
+    )
+    .unwrap()
+}
+struct TextPolicy;
+impl crate::Policy for TextPolicy {
+    fn predict(&mut self, observation: Value) -> Result<Value> {
+        let input = observation.as_dict()?;
+        assert_eq!(
+            input.get("instruction"),
+            Some(&Value::List(vec![Value::Text("override".into())]))
+        );
+        assert!(input.contains_key("state"));
+        Ok(Value::List(vec![Value::Float(0.)]))
+    }
+}
+fn text_model() -> Model {
+    use crate::adapters::*;
+    Model::new(
+        TextPolicy,
+        ModelOptions {
+            spec: Some(
+                ModelSpec::new(
+                    InputNode::dict([
+                        ("state", State::new(GRIPPER_POS).into()),
+                        (
+                            "missing_camera",
+                            Image {
+                                optional: true,
+                                height: Some(1),
+                                width: Some(1),
+                                channels: Some(3),
+                                ..Image::new(IMAGE_PRIMARY)
+                            }
+                            .into(),
+                        ),
+                        (
+                            "instruction",
+                            Text {
+                                container: TextContainer::List,
+                                fill: Some("fallback".into()),
+                                ..Text::new(INSTRUCTION)
+                            }
+                            .into(),
+                        ),
+                    ]),
+                    adapter_action(),
+                )
+                .unwrap()
+                .into(),
+            ),
+            ..Default::default()
+        },
+    )
+    .unwrap()
+}
+#[derive(Default)]
+struct ReadHooks {
+    context: Option<Arc<dyn RunContext>>,
+    reads: usize,
+}
+impl RunHooks for ReadHooks {
+    fn on_run_start(&mut self, context: Arc<dyn RunContext>) -> Result<()> {
+        self.context = Some(context);
+        Ok(())
+    }
+    fn on_step(&mut self, event: &StepEvent) -> Result<()> {
+        let value = event.read(crate::adapters::GRIPPER_POS)?;
+        assert!(matches!(value, Value::Tensor(_)));
+        let context = self.context.as_ref().unwrap();
+        let mut sources = context.frame_sources()?;
+        assert_eq!(sources.render_label.as_deref(), Some("render"));
+        assert!(sources.render.as_mut().is_some());
+        assert_eq!(sources.render.as_mut().unwrap().call()?, Value::Int(1));
+        self.reads += 1;
+        Ok(())
+    }
+    fn on_run_end(&mut self, _result: &RunResult) -> Result<()> {
+        let mut sources = self.context.as_ref().unwrap().frame_sources()?;
+        assert!(sources.render.as_mut().is_some());
+        assert_eq!(sources.render.as_mut().unwrap().call()?, Value::Int(1));
+        Ok(())
+    }
+}
+
+#[test]
+fn adapter_session_readers_instruction_and_scoped_render() {
+    let model = text_model();
+    let mut env = adapter_steps();
+    let mut session = model
+        .session(&mut env, SessionOptions::default().instruction("override"))
+        .unwrap();
+    let (observation, _) = session.reset(None, None).unwrap();
+    let reader = session
+        .reader(&[crate::adapters::GRIPPER_POS.into()])
+        .unwrap();
+    assert_eq!(reader.roles(), [crate::adapters::GRIPPER_POS]);
+    assert!(
+        reader
+            .call(&observation)
+            .unwrap()
+            .contains_key(crate::adapters::GRIPPER_POS)
+    );
+    assert_eq!(
+        session.observation_roles().unwrap().states,
+        [crate::adapters::GRIPPER_POS]
+    );
+    assert!(session.reader(&[]).is_err());
+    let context = session.run_context().unwrap();
+    assert!(context.frame_sources().unwrap().render.is_none());
+    {
+        let mut sources = session.frame_sources().unwrap();
+        assert_eq!(
+            sources.render.as_mut().unwrap().call().unwrap(),
+            Value::Int(0)
+        );
+    }
+    let mut hooks = ReadHooks::default();
+    let result = session
+        .run(SessionRunOptions {
+            hooks: Some(&mut hooks),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(hooks.reads, 1);
+    assert!(!result.advisories.is_empty());
+    session.close().unwrap();
+    assert_eq!(
+        context.frame_sources().unwrap_err().class(),
+        ErrorClass::RuntimeError
+    );
+}
+#[test]
+fn native_adapter_instruction_and_kept_context_read() {
+    let model = text_model();
+    let mut env = adapter_steps();
+    let mut hooks = ReadHooks::default();
+    let result = model
+        .run(
+            &mut env,
+            RunOptions {
+                instruction: Some("override".into()),
+                hooks: Some(&mut hooks),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(hooks.reads, 1);
+    assert!(!result.advisories.is_empty());
+    let context = hooks.context.unwrap();
+    assert!(context.contract().unwrap().is_some());
+    assert!(context.frame_sources().unwrap().render.is_none());
+    assert!(
+        context
+            .read(
+                &Value::List(vec![Value::Float(5.)]),
+                &crate::adapters::GRIPPER_POS.into()
+            )
+            .is_ok()
+    );
 }

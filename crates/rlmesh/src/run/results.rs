@@ -4,7 +4,7 @@
 use std::fmt;
 
 use crate::env::factory::{py_float, py_repr, py_str};
-use crate::{InfoDict, Value};
+use crate::{InfoDict, Result, Value};
 
 /// Python's `repr` of an optional float.
 fn py_opt_float(value: Option<f64>) -> String {
@@ -122,15 +122,14 @@ impl fmt::Display for TelemetryRow {
 }
 
 /// The result of a run: Python's `RunResult`.
-///
-/// Python's `advisories` field arrives with the adapters surface's
-/// `Advisory`; the open-source runtime never raises one.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RunResult {
     /// Every completed episode.
     pub episodes: Vec<EpisodeResult>,
     /// The run's aggregated telemetry, one row per measured series.
     pub telemetry: Vec<TelemetryRow>,
+    /// Notes raised while resolving the model adapter.
+    pub advisories: Vec<crate::adapters::Advisory>,
 }
 
 impl RunResult {
@@ -241,9 +240,7 @@ impl fmt::Display for RunResult {
 
 /// One env step of a run, passed to
 /// [`RunHooks::on_step`](crate::RunHooks::on_step): Python's `StepEvent`.
-///
-/// Python's `read` member arrives with the adapters surface's read items.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone)]
 pub struct StepEvent {
     /// 0-based episode index (equals [`EpisodeResult::index`]).
     pub episode: i64,
@@ -267,6 +264,14 @@ pub struct StepEvent {
     pub predict_ms: f64,
     /// Wall time of the env step round trip, in milliseconds.
     pub step_ms: f64,
+    /// Read one role or input leaf from this event’s observation.
+    pub read: super::ReadFn,
+}
+
+impl fmt::Debug for StepEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
 }
 
 impl fmt::Display for StepEvent {
@@ -274,7 +279,7 @@ impl fmt::Display for StepEvent {
         write!(
             f,
             "StepEvent(episode={}, seed={}, step={}, observation={}, action={}, reward={}, \
-             terminated={}, truncated={}, info={}, predict_ms={}, step_ms={})",
+             terminated={}, truncated={}, info={}, predict_ms={}, step_ms={}, read=<function>)",
             self.episode,
             py_opt_int(self.seed),
             self.step,
@@ -294,6 +299,12 @@ impl fmt::Display for StepEvent {
 /// seconds, Python's field names).
 pub(crate) fn from_report(report: &rlmesh_runtime::RuntimeReport) -> RunResult {
     RunResult {
+        advisories: report
+            .advisories
+            .iter()
+            .cloned()
+            .map(crate::adapters::Advisory::from_core)
+            .collect(),
         episodes: report.episodes.iter().map(episode_from_summary).collect(),
         telemetry: telemetry_rows(&report.telemetry),
     }
@@ -340,4 +351,28 @@ pub(crate) fn telemetry_rows(snapshot: &rlmesh_runtime::telemetry::Snapshot) -> 
             p99: row.p99,
         })
         .collect()
+}
+
+impl StepEvent {
+    /// Read one semantic role or leaf through this event’s bound callback.
+    pub fn read(&self, item: impl Into<super::ReadItem>) -> Result<Value> {
+        (self.read)(&item.into())
+    }
+}
+
+impl PartialEq for StepEvent {
+    fn eq(&self, other: &Self) -> bool {
+        self.episode == other.episode
+            && self.seed == other.seed
+            && self.step == other.step
+            && self.observation == other.observation
+            && self.action == other.action
+            && self.reward == other.reward
+            && self.terminated == other.terminated
+            && self.truncated == other.truncated
+            && self.info == other.info
+            && self.predict_ms == other.predict_ms
+            && self.step_ms == other.step_ms
+            && std::sync::Arc::ptr_eq(&self.read, &other.read)
+    }
 }
