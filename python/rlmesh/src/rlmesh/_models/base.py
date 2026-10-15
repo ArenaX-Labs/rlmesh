@@ -1345,12 +1345,14 @@ class ModelBase(Generic[ObsT, ActT]):
         if trust_entrypoints is not None:
             self._trust_entrypoints = trust_entrypoints
         relay: NativeHookRelay | None = None
+        run_context = NativeRunContext(trust=bool(self._trust_entrypoints))
         self._instruction = instruction
         try:
             if hooks is not None:
-                self._native_run = NativeRunContext(trust=bool(self._trust_entrypoints))
-                relay = NativeHookRelay(hooks, self._native_run)
-                hooks.on_run_start(self._native_run)
+                self._native_run = run_context
+                relay = NativeHookRelay(hooks, run_context)
+                with run_context.dispatch():
+                    hooks.on_run_start(run_context)
             if episodes == 0:
                 report: dict[str, Any] = {
                     "episodes": [],
@@ -1380,7 +1382,7 @@ class ModelBase(Generic[ObsT, ActT]):
         except BaseException:
             # The run's own exception wins over anything on_run_end raises.
             if hooks is not None:
-                with contextlib.suppress(BaseException):
+                with contextlib.suppress(BaseException), run_context.dispatch():
                     hooks.on_run_end(
                         RunResult(episodes=tuple(relay.results if relay else ()))
                     )
@@ -1414,7 +1416,8 @@ class ModelBase(Generic[ObsT, ActT]):
             advisories=tuple(report["advisories"]),
         )
         if hooks is not None:
-            hooks.on_run_end(result)
+            with run_context.dispatch():
+                hooks.on_run_end(result)
         return result
 
     def _run_native(

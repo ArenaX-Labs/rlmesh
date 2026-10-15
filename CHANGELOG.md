@@ -67,6 +67,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ### Fixed
 
+- Retained Python run contexts expose a local env render source only during hook dispatch on that thread. Saved render callables reject use outside dispatch, during another session operation, after session close or drop, and during a recursive render. Direct idle `Session.frame_sources()` and remote session contexts still render.
+
 - A single `Previous(...)` model input retains `source="action"` when read back from dict or JSON; a nonzero initial fill no longer fails reconstruction as an observation-source state.
 
 - Custom adapter inputs on the native model engine retain integer and boolean kinds, `None`, and tuples instead of coercing scalars to floats or tuples to lists.
