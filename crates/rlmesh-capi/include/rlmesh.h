@@ -424,14 +424,6 @@ RLMESH_API RLMeshStatus rlmesh_trial_index(const RLMeshValue* options, const siz
  * space: shape + dtype + bounds for Box, n/start for Discrete, the length limits
  * for Text, the per-element category counts for MultiDiscrete, and a child walk
  * for Dict/Tuple. RLMESH_SPACE_KIND_UNKNOWN when `spec` is NULL or unspecified. */
-RLMESH_API RLMeshSpaceKind rlmesh_ext_legacy_space_type(const RLMeshSpaceSpec* spec);
-RLMESH_API RLMeshDType rlmesh_ext_legacy_space_dtype(const RLMeshSpaceSpec* spec);
-/* Rank; 0 for a scalar shape or a NULL spec. */
-RLMESH_API size_t rlmesh_ext_legacy_space_ndim(const RLMeshSpaceSpec* spec);
-/* Shape into `out` (capacity `cap`); a NULL `out` is OK for a rank-0 space. */
-RLMESH_API RLMeshStatus rlmesh_ext_legacy_space_copy_shape(const RLMeshSpaceSpec* spec,
-                                                           int64_t* out, size_t cap);
-
 /* Composite walk: child count into `*out`, then children by index (Tuple) or by
  * key (Dict). The borrow accessors return NULL for the wrong kind or an absent
  * index/key; children stay valid while `spec` lives. */
@@ -470,9 +462,8 @@ RLMESH_API RLMeshStatus rlmesh_ext_legacy_space_text_charset(const RLMeshSpaceSp
                                                              const char** out_ptr, size_t* out_len);
 /* One category count per element of the shape, row-major (capacity `cap`).
  * A MultiBinary space has no such table and no `n` field of its own: its
- * dimensions live entirely in the shape (rlmesh_ext_legacy_space_ndim /
- * rlmesh_ext_legacy_space_copy_shape), so MultiBinary([n]) reads as shape `[n]` and a
- * value for it carries exactly `n` elements — the shape's row-major element
+ * dimensions live entirely in the shape (rlmesh_space_spec_shape), so MultiBinary([n]) reads as
+ * shape `[n]` and a value for it carries exactly `n` elements — the shape's row-major element
  * count, for a multi-dimensional MultiBinary too. */
 RLMESH_API RLMeshStatus rlmesh_ext_legacy_space_copy_nvec(const RLMeshSpaceSpec* spec, int64_t* out,
                                                           size_t cap);
@@ -1937,8 +1928,8 @@ typedef struct RLMeshExtLegacyStepResult {
 } RLMeshExtLegacyStepResult;
 
 /* The environment callback vtable. Set struct_size = sizeof(RLMeshExtLegacyEnvVtable);
- * fields beyond it are ignored (append-only). `reset` and `step` are required.
- * Copied in at rlmesh_ext_legacy_env_new; `user_data` is kept by pointer and must outlive
+ * unknown trailing bytes must be zero. `reset` and `step` are required.
+ * Copied in at rlmesh_ext_legacy_env_new_lanes; `user_data` is kept by pointer and must outlive
  * the env.
  *
  * Each lane runs its callbacks on ONE dedicated thread (not the one that
@@ -2095,12 +2086,11 @@ static inline const char* rlmesh_detail_msvc_host_runtime(void) {
   "\"" RLMESH_DETAIL_HOST_STANDARD RLMESH_DETAIL_HOST_COMPILER "}"
 #endif
 
-/* What the env declares. Set struct_size = sizeof(RLMeshExtLegacyEnvConfig); fields
- * beyond it read as unset. Borrowed for the rlmesh_ext_legacy_env_new call only (the
- * spaces are cloned). `adapter_tags_json` is the env's adapter EnvTags (v1
- * JSON), validated against the spaces right there: an unknown field or a tag
- * that does not fit its space fails rlmesh_ext_legacy_env_new. The JSON grammar is in
- * docs/specs/env_tags.v1.md. */
+/* What the env declares. Set struct_size = sizeof(RLMeshExtLegacyEnvConfig);
+ * unknown trailing bytes must be zero. Borrowed for the rlmesh_ext_legacy_env_new_lanes call only
+ * (the spaces are cloned). `adapter_tags_json` is the env's adapter EnvTags (v1 JSON), validated
+ * against the spaces right there: an unknown field or a tag that does not fit its space fails
+ * rlmesh_ext_legacy_env_new_lanes. The JSON grammar is in docs/specs/env_tags.v1.md. */
 typedef struct RLMeshExtLegacyEnvConfig {
   size_t struct_size;
   const char* id;                           /* contract id; NULL/"" = "UnknownEnv-v1" */
@@ -2146,14 +2136,10 @@ static inline RLMeshExtLegacyEnvConfig rlmesh_ext_legacy_env_config_init(void) {
   return config;
 }
 
-/* An owned env handle. Lifecycle: rlmesh_ext_legacy_env_new -> rlmesh_ext_legacy_env_bind ->
+/* An owned env handle. Lifecycle: rlmesh_ext_legacy_env_new_lanes -> rlmesh_ext_legacy_env_bind ->
  * rlmesh_ext_legacy_env_serve (blocks) -> rlmesh_ext_legacy_env_free. rlmesh_ext_legacy_env_cancel
  * is the only call that may overlap a running serve, from any thread. */
 typedef struct RLMeshExtLegacyEnv RLMeshExtLegacyEnv;
-
-RLMESH_API RLMeshStatus rlmesh_ext_legacy_env_new(const RLMeshExtLegacyEnvVtable* vtable,
-                                                  const RLMeshExtLegacyEnvConfig* config,
-                                                  void* user_data, RLMeshExtLegacyEnv** out);
 
 /* Serve `num_lanes` independent simulations as the lanes of one endpoint
  * (num_envs = num_lanes): lane i passes `user_data[i]` to its callbacks. Every

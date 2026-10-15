@@ -13,7 +13,7 @@ use rlmesh_spaces::spaces::{
 use rlmesh_spaces::{BoxBounds, DType, SpaceKind, SpaceSpec, decode_scalars};
 
 use crate::abi::status::{CapiError, RLMeshStatus, guard, guard_ptr, guard_value};
-use crate::value::dtype::{dtype_from_c, dtype_to_c};
+use crate::value::dtype::dtype_from_c;
 use crate::value::handle::write_out;
 
 pub(crate) use crate::contract::RLMeshEnvContract;
@@ -24,52 +24,6 @@ pub struct RLMeshSpaceSpec(pub(crate) SpaceSpec);
 
 pub(crate) fn spec_ref<'a>(spec: *const RLMeshSpaceSpec) -> Option<&'a SpaceSpec> {
     unsafe { spec.cast::<SpaceSpec>().as_ref() }
-}
-
-/// The space kind, or `Invalid` when `spec` is NULL or its kind is unspecified.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_ext_legacy_space_type(spec: *const RLMeshSpaceSpec) -> i32 {
-    crate::space_handle::rlmesh_space_spec_kind(spec)
-}
-
-/// The facade dtype enum; INVALID for NULL or an unspecified dtype.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_ext_legacy_space_dtype(spec: *const RLMeshSpaceSpec) -> i32 {
-    guard_value(0, || {
-        spec_ref(spec)
-            .and_then(|s| dtype_from_c(s.dtype as i32))
-            .map_or(0, dtype_to_c)
-    })
-}
-
-/// The space's rank (number of dimensions), or 0.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_ext_legacy_space_ndim(spec: *const RLMeshSpaceSpec) -> usize {
-    guard_value(0, || spec_ref(spec).map_or(0, |spec| spec.shape.len()))
-}
-
-/// Copy the space's shape into `out` (capacity `cap`).
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_ext_legacy_space_copy_shape(
-    spec: *const RLMeshSpaceSpec,
-    out: *mut i64,
-    cap: usize,
-) -> RLMeshStatus {
-    guard(|| {
-        let spec = spec_ref(spec).ok_or_else(|| CapiError::invalid_arg("null space spec"))?;
-        if spec.shape.len() > cap {
-            return Err(CapiError::invalid_arg("shape buffer too small"));
-        }
-        if spec.shape.is_empty() {
-            return Ok(());
-        }
-        if out.is_null() {
-            return Err(CapiError::invalid_arg("null out"));
-        }
-        let dst = unsafe { std::slice::from_raw_parts_mut(out, spec.shape.len()) };
-        dst.copy_from_slice(&spec.shape);
-        Ok(())
-    })
 }
 
 /// Write the child count of a `Dict`/`Tuple` space to `out`. Any other kind is

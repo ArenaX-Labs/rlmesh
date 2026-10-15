@@ -102,7 +102,7 @@ pub(crate) fn host_runtime(text: &str) -> Result<Value, CapiError> {
     Ok(Value::Object(normalized))
 }
 
-/// An env's describe envelope: built at `rlmesh_ext_legacy_env_new` with the build's own
+/// An env's describe envelope: built at `rlmesh_ext_legacy_env_new_lanes` with the build's own
 /// edition, rebuilt at bind with the edition the server declares.
 pub(crate) struct Describe {
     contract: EnvContract,
@@ -411,7 +411,7 @@ mod tests {
 
     /// A C env `id` whose observation is Dict{eef_pos: f32[3] in [-bound, bound]}.
     fn native_env(id: &str, bound: f64) -> *mut RLMeshExtLegacyEnv {
-        native_env_with(id, bound, None).expect("rlmesh_ext_legacy_env_new")
+        native_env_with(id, bound, None).expect("new_scalar_for_test")
     }
 
     /// [`native_env`] declaring `catalog` as its `variants_catalog_json`.
@@ -442,9 +442,7 @@ mod tests {
     ) -> Result<*mut RLMeshExtLegacyEnv, RLMeshStatus> {
         use std::ffi::CString;
 
-        use crate::env::{
-            RLMeshExtLegacyEnvConfig, RLMeshExtLegacyEnvVtable, rlmesh_ext_legacy_env_new,
-        };
+        use crate::env::{RLMeshExtLegacyEnvConfig, RLMeshExtLegacyEnvVtable, new_scalar_for_test};
         use crate::spaces::{
             rlmesh_ext_legacy_space_box, rlmesh_ext_legacy_space_dict, rlmesh_space_spec_free,
         };
@@ -502,7 +500,7 @@ mod tests {
             );
         }
         let status = unsafe {
-            rlmesh_ext_legacy_env_new(
+            new_scalar_for_test(
                 &vtable,
                 storage.as_ptr().cast(),
                 std::ptr::null_mut(),
@@ -641,8 +639,7 @@ mod tests {
         let catalog = r#"[{"id": "viper/firm", "params": {"vehicle": "viper", "soil": "firm"},
                            "metadata": {"name": "Viper rover on firm soil"}},
                           {"id": "hmmwv/firm", "params": {"vehicle": "hmmwv"}}]"#;
-        let env =
-            native_env_with("Catalog-v0", 1.0, Some(catalog)).expect("rlmesh_ext_legacy_env_new");
+        let env = native_env_with("Catalog-v0", 1.0, Some(catalog)).expect("new_scalar_for_test");
         let value = describe_json(env);
         assert_eq!(value["variants"]["catalog"], parse(catalog));
         unsafe { rlmesh_ext_legacy_env_free(env) };

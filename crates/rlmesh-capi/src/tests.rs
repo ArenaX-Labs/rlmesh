@@ -19,8 +19,10 @@ use crate::spaces::{
     rlmesh_ext_legacy_space_discrete, rlmesh_ext_legacy_space_discrete_n,
     rlmesh_ext_legacy_space_len, rlmesh_ext_legacy_space_text_charset,
     rlmesh_ext_legacy_space_text_length, rlmesh_ext_legacy_space_tuple,
-    rlmesh_ext_legacy_space_tuple_get, rlmesh_ext_legacy_space_type, rlmesh_space_spec_free,
+    rlmesh_ext_legacy_space_tuple_get, rlmesh_space_spec_free,
 };
+
+use crate::space_handle::rlmesh_space_spec_kind;
 
 const HEADER: &str = include_str!("../include/rlmesh.h");
 fn header_enum_value(name: &str) -> i64 {
@@ -97,12 +99,9 @@ fn header_status_and_class_values_match_crate() {
 
 #[test]
 fn space_type_is_invalid_for_null_and_unspecified() {
-    assert_eq!(unsafe { rlmesh_ext_legacy_space_type(std::ptr::null()) }, 0);
+    assert_eq!(rlmesh_space_spec_kind(std::ptr::null()), 0);
     let unspecified = SpaceSpec::default();
-    assert_eq!(
-        unsafe { rlmesh_ext_legacy_space_type(spec_ptr(&unspecified)) },
-        0
-    );
+    assert_eq!(rlmesh_space_spec_kind(spec_ptr(&unspecified)), 0);
 }
 
 #[test]
@@ -299,24 +298,24 @@ fn composite_spaces_are_walkable_from_c() {
     assert_eq!(space_key(root, 1), "extra");
 
     let extra = unsafe { rlmesh_ext_legacy_space_dict_get(root, c"extra".as_ptr()) };
-    assert_eq!(unsafe { rlmesh_ext_legacy_space_type(extra) }, 11);
+    assert_eq!(rlmesh_space_spec_kind(extra), 11);
     assert_eq!(
         unsafe { rlmesh_ext_legacy_space_len(extra, &mut len) },
         RLMeshStatus::Ok
     );
     assert_eq!(len, 2);
     assert_eq!(
-        unsafe { rlmesh_ext_legacy_space_type(rlmesh_ext_legacy_space_tuple_get(extra, 0)) },
+        unsafe { rlmesh_space_spec_kind(rlmesh_ext_legacy_space_tuple_get(extra, 0)) },
         2
     );
     assert_eq!(
-        unsafe { rlmesh_ext_legacy_space_type(rlmesh_ext_legacy_space_tuple_get(extra, 1)) },
+        unsafe { rlmesh_space_spec_kind(rlmesh_ext_legacy_space_tuple_get(extra, 1)) },
         5
     );
     // Children by index walk the SAME declaration order as the keys, so key(i)
     // names get_at(i) without copying the key into a NUL-terminated buffer.
     assert_eq!(
-        unsafe { rlmesh_ext_legacy_space_type(rlmesh_ext_legacy_space_dict_get_at(root, 0)) },
+        unsafe { rlmesh_space_spec_kind(rlmesh_ext_legacy_space_dict_get_at(root, 0)) },
         1
     );
     assert_eq!(
@@ -411,8 +410,8 @@ fn a_dict_space_the_builder_rejects_takes_none_of_its_children() {
         crate::abi::status::rlmesh_last_error_status(),
         RLMeshStatus::InvalidArgument
     );
-    assert_eq!(unsafe { rlmesh_ext_legacy_space_type(first) }, 2);
-    assert_eq!(unsafe { rlmesh_ext_legacy_space_type(second) }, 2);
+    assert_eq!(rlmesh_space_spec_kind(first), 2);
+    assert_eq!(rlmesh_space_spec_kind(second), 2);
     // The same children still build a valid Dict, which then owns them.
     let keys: [*const c_char; 2] = [c"a".as_ptr(), c"b".as_ptr()];
     let dict = unsafe { rlmesh_ext_legacy_space_dict(keys.as_ptr(), children.as_ptr(), 2) };
@@ -430,9 +429,9 @@ fn a_tuple_space_with_a_null_child_takes_none_of_the_others() {
     let child = rlmesh_ext_legacy_space_discrete(2, 0);
     let children = [child, std::ptr::null_mut()];
     assert!(unsafe { rlmesh_ext_legacy_space_tuple(children.as_ptr(), 2) }.is_null());
-    assert_eq!(unsafe { rlmesh_ext_legacy_space_type(child) }, 2);
+    assert_eq!(rlmesh_space_spec_kind(child), 2);
     let tuple = unsafe { rlmesh_ext_legacy_space_tuple([child].as_ptr(), 1) };
-    assert_eq!(unsafe { rlmesh_ext_legacy_space_type(tuple) }, 11);
+    assert_eq!(rlmesh_space_spec_kind(tuple), 11);
     unsafe { rlmesh_space_spec_free(tuple) };
 }
 
@@ -583,4 +582,40 @@ fn abi5_removes_the_old_space_symbol_names() {
         );
     }
     assert!(header.contains("rlmesh_space_dtype(const RLMeshSpace* space)"));
+}
+
+#[test]
+fn legacy_exports_are_only_the_cpp_compatibility_surface() {
+    use std::collections::BTreeSet;
+    let cpp = include_str!("../include/rlmesh.hpp");
+    let names = |text: &str| {
+        text.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .filter(|s| s.starts_with("rlmesh_ext_legacy_"))
+            .map(str::to_owned)
+            .collect::<BTreeSet<_>>()
+    };
+    assert_eq!(
+        names(HEADER),
+        names(cpp),
+        "remove any legacy declaration the wrapper no longer needs"
+    );
+    for record in [
+        "RLMeshExtLegacyEpisode",
+        "RLMeshExtLegacyObservation",
+        "RLMeshExtLegacyResetArgs",
+        "RLMeshExtLegacyResetResult",
+        "RLMeshExtLegacyStepResult",
+        "RLMeshExtLegacyRunReport",
+    ] {
+        assert!(cpp.contains(record), "migrate the orphaned record {record}");
+    }
+    for removed in [
+        "rlmesh_ext_legacy_env_new(",
+        "rlmesh_ext_legacy_space_type(",
+        "rlmesh_ext_legacy_space_dtype(",
+        "rlmesh_ext_legacy_space_ndim(",
+        "rlmesh_ext_legacy_space_copy_shape(",
+    ] {
+        assert!(!HEADER.contains(removed), "removed symbol {removed}");
+    }
 }

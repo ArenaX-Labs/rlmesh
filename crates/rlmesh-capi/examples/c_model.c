@@ -12,17 +12,18 @@
 
 /* A zero action shaped like the route's action space (Box or Discrete). */
 static RLMeshValue* zero_action(const RLMeshSpaceSpec* action) {
-  switch (rlmesh_ext_legacy_space_type(action)) {
+  switch (rlmesh_space_spec_kind(action)) {
     case RLMESH_SPACE_KIND_BOX: {
-      RLMeshDType dtype = rlmesh_ext_legacy_space_dtype(action);
-      size_t ndim = rlmesh_ext_legacy_space_ndim(action);
+      RLMeshDType dtype = rlmesh_space_spec_dtype(action);
+      size_t ndim = 0;
+      if (rlmesh_space_spec_shape(action, NULL, 0, &ndim) != RLMESH_OK) return NULL;
       int64_t shape[16];
       size_t dims[16];
       if (ndim > 16) {
         rlmesh_callback_set_error("action rank exceeds 16", false);
         return NULL;
       }
-      if (rlmesh_ext_legacy_space_copy_shape(action, shape, ndim) != RLMESH_OK) {
+      if (rlmesh_space_spec_shape(action, shape, ndim, &ndim) != RLMESH_OK) {
         return NULL; /* last-error already set */
       }
       size_t numel = 1;

@@ -34,7 +34,8 @@ int main(void) {
   config.action_space = rlmesh_space_spec(action);
   RLMeshExtLegacyEnvVtable vtable = {sizeof(RLMeshExtLegacyEnvVtable), reset, step, NULL, NULL};
   RLMeshExtLegacyEnv* env = NULL;
-  RLMeshStatus status = rlmesh_ext_legacy_env_new(&vtable, &config, NULL, &env);
+  void* user_data = NULL;
+  RLMeshStatus status = rlmesh_ext_legacy_env_new_lanes(&vtable, &config, &user_data, 1, &env);
   rlmesh_space_free(observation);
   rlmesh_space_free(action);
   if (status != RLMESH_OK) {

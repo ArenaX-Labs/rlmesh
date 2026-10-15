@@ -19,7 +19,8 @@ int step(void*, const RLMeshValue*, RLMeshExtLegacyStepResult*) { return 1; }
 rlmesh::Result<std::string> describe(const RLMeshExtLegacyEnvConfig& config) {
   RLMeshExtLegacyEnvVtable vtable{sizeof(RLMeshExtLegacyEnvVtable), reset, step, nullptr, nullptr};
   RLMeshExtLegacyEnv* env = nullptr;
-  RLMeshStatus status = rlmesh_ext_legacy_env_new(&vtable, &config, nullptr, &env);
+  void* user_data = nullptr;
+  RLMeshStatus status = rlmesh_ext_legacy_env_new_lanes(&vtable, &config, &user_data, 1, &env);
   if (status != RLMESH_OK) return rlmesh::Error(status, rlmesh_last_error_message());
   RLMeshBytes bytes{};
   status = rlmesh_ext_legacy_env_describe_json(env, &bytes);

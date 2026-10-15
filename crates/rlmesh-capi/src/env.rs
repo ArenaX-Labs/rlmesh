@@ -119,7 +119,7 @@ pub struct RLMeshExtLegacyEnvVtable {
 
 /// What the env declares: its spaces and the contract metadata a model reads.
 /// Set `struct_size = sizeof(RLMeshExtLegacyEnvConfig)`; unknown trailing bytes must be zero.
-/// Everything is borrowed for the `rlmesh_ext_legacy_env_new` call only (copied in).
+/// Everything is borrowed for the `rlmesh_ext_legacy_env_new_lanes` call only (copied in).
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct RLMeshExtLegacyEnvConfig {
@@ -131,7 +131,7 @@ pub struct RLMeshExtLegacyEnvConfig {
     /// Required.
     pub action_space: *const RLMeshSpaceSpec,
     /// Adapter `EnvTags` (the v1 JSON wire format), validated against the
-    /// spaces at `rlmesh_ext_legacy_env_new`. NULL = untagged.
+    /// spaces at `rlmesh_ext_legacy_env_new_lanes`. NULL = untagged.
     pub adapter_tags_json: *const c_char,
     /// Reset options the env understands (e.g. "trial_index"); the runtime sends
     /// only declared ones. NULL / 0 = none.
@@ -562,7 +562,7 @@ impl Env for CEnv {
 /// An owned environment handle: the C env lanes plus the runtime that serves
 /// them.
 ///
-/// Lifecycle: `rlmesh_ext_legacy_env_new` -> `rlmesh_ext_legacy_env_bind` (learn the address) ->
+/// Lifecycle: `rlmesh_ext_legacy_env_new_lanes` -> `rlmesh_ext_legacy_env_bind` (learn the address) ->
 /// `rlmesh_ext_legacy_env_serve` (blocks) -> `rlmesh_ext_legacy_env_free`. `rlmesh_ext_legacy_env_cancel` is the
 /// one call that may overlap a blocking serve, from any thread.
 pub struct RLMeshExtLegacyEnv {
@@ -760,14 +760,14 @@ fn build_contract(config: &EnvConfig) -> Result<(SpaceSpec, SpaceSpec, EnvContra
 ///
 /// # Safety
 /// `vtable` and `config` must be valid for the call; `out` writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_ext_legacy_env_new(
+#[cfg(test)]
+pub(crate) unsafe fn new_scalar_for_test(
     vtable: *const RLMeshExtLegacyEnvVtable,
     config: *const RLMeshExtLegacyEnvConfig,
     user_data: *mut c_void,
     out: *mut *mut RLMeshExtLegacyEnv,
 ) -> RLMeshStatus {
-    guard(|| unsafe { new_env(vtable, config, &[user_data], out) })
+    unsafe { rlmesh_ext_legacy_env_new_lanes(vtable, config, &user_data, 1, out) }
 }
 
 /// Create an env served as `num_lanes` lanes of one `num_envs = num_lanes`
@@ -1292,8 +1292,7 @@ mod tests {
         create_env(tags, &[probe], false)
     }
 
-    /// One lane per probe (`rlmesh_ext_legacy_env_new` for one, `rlmesh_ext_legacy_env_new_lanes`
-    /// otherwise).
+    /// One lane per probe, including the scalar one-lane case.
     fn create_env(
         tags: Option<&str>,
         probes: &[&Probe],
@@ -1336,7 +1335,7 @@ mod tests {
         let mut env = std::ptr::null_mut();
         let status = unsafe {
             if let [one] = user_data[..] {
-                rlmesh_ext_legacy_env_new(table, &config, one, &mut env)
+                new_scalar_for_test(table, &config, one, &mut env)
             } else {
                 rlmesh_ext_legacy_env_new_lanes(
                     table,
@@ -1710,7 +1709,7 @@ mod tests {
         };
         let mut env = std::ptr::null_mut();
         let status =
-            unsafe { rlmesh_ext_legacy_env_new(&table, &config, std::ptr::null_mut(), &mut env) };
+            unsafe { new_scalar_for_test(&table, &config, std::ptr::null_mut(), &mut env) };
         assert_eq!(status, RLMeshStatus::InvalidArgument);
         assert!(env.is_null());
         unsafe {

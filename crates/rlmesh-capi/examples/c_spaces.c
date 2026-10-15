@@ -268,11 +268,11 @@ int main(void) {
   CHECK(rlmesh_box_low(per, got, 3, &n) == RLMESH_OK && n == 3 && got[1].value.i == -5);
   rlmesh_space_free(per);
 
-  /* An ABI 4 binary frees a builder's spec with rlmesh_space_free. */
+  /* Space and SpaceSpec have distinct ABI-5 ownership/free functions. */
   RLMeshSpaceSpec* legacy = rlmesh_ext_legacy_space_discrete(3, 0);
   RLMeshSpace* from_legacy = NULL;
   CHECK(rlmesh_space_new(legacy, &from_legacy) == RLMESH_OK);
-  rlmesh_space_free((RLMeshSpace*)legacy);
+  rlmesh_space_spec_free(legacy);
   rlmesh_space_free(from_legacy);
 
   rlmesh_space_free(obs);

@@ -55,11 +55,11 @@ mode, lane count, typed metadata, `to_dict` and repr follow the facade.
 `rlmesh_trial_index` takes a Value dict and an optional lane, using Python's
 integer/float conversion and per-lane validation directly from the facade.
 
-The rest of the C parity migration is ongoing: the legacy env/model/run
-interfaces below have not yet become the full facade surface. In particular,
-the facade on this branch has no native DLPack import/export methods, and
-C does not expose them. C++ receives only compatibility changes for the new C
-value and tensor calls; its full parity API is a separate wave.
+The C env/model/run and remote interfaces below use the facade surface.
+The fenced compatibility sections document the old paths still needed by
+the C++ wrapper. The facade on this branch has no native DLPack import/export
+methods, and C does not expose them. C++ receives only compatibility changes;
+its full parity API is a separate wave.
 
 ## Describe
 
@@ -111,6 +111,15 @@ as `rlmesh_ext_legacy_space_*`; new C code uses typed Box/Discrete/Dict
 constructors and their readers. Experimental MultiBinary/MultiDiscrete/Text/
 Tuple authoring is not yet exposed by the Rust facade and remains on that
 compatibility path. `examples/c_abi5.c` covers strict sizes and output bounds.
+
+The remaining compatibility surface is explicitly limited to what the current
+C++ header needs: 18 space helpers, 11 old model/env control exports, one inline
+config helper and six frozen callback/result records. [LEGACY_ABI.md](LEGACY_ABI.md)
+lists every symbol and record, its wrapper dependency and its replacement path.
+The wrapper now uses the canonical SpaceSpec kind/dtype/shape readers; the four
+redundant legacy readers and the unused scalar legacy env constructor are gone.
+Space and SpaceSpec also use distinct free functions, without the ABI-4 pointer
+registry/fallback. The C++20 wave will remove the inventoried remainder.
 
 ## Remote clients
 
@@ -380,21 +389,21 @@ to an environment that declares that reset option.
 
 ## Environment contract
 
-`rlmesh_env_new(vtable, config, user_data, &env)` takes the callbacks and an
+`rlmesh_ext_legacy_env_new_lanes(vtable, config, user_data, num_lanes, &env)` takes the callbacks and an
 `RLMeshExtLegacyEnvConfig`: the observation and action spaces (built with
 `rlmesh_box_new`, `rlmesh_discrete_new` or `rlmesh_dict_new` and lent with
 `rlmesh_space_spec(space)`), an id, the adapter `EnvTags` as JSON, the reset
 options the env understands (`trial_index`), a render mode, and extra metadata.
 The tags are validated against the spaces right there, the same publish-time
-check Python's `adapters.tag()` runs, so a typo fails `rlmesh_env_new` rather
+check Python's `adapters.tag()` runs, so a typo fails `rlmesh_ext_legacy_env_new_lanes` rather
 than a model's resolve. The tag JSON grammar (leaf kinds, fields, defaults, and
 validation) is specified in [`docs/specs/env_tags.v1.md`](../../docs/specs/env_tags.v1.md).
 
-Then `rlmesh_env_bind` (learn the address, e.g. for port 0) and
-`rlmesh_env_serve` (blocks). `rlmesh_env_cancel` from any thread drains the
+Then `rlmesh_ext_legacy_env_bind` (learn the address, e.g. for port 0) and
+`rlmesh_ext_legacy_env_serve` (blocks). `rlmesh_ext_legacy_env_cancel` from any thread drains the
 server, runs `close` once, and lets `serve` return `RLMESH_OK`.
 
-When `rlmesh_env_serve` (or `rlmesh_env_free`) returns, no callback is running
+When `rlmesh_ext_legacy_env_serve` (or `rlmesh_ext_legacy_env_free`) returns, no callback is running
 and none will run again, so the callback state behind `user_data` can be freed
 right after. Serve waits for a callback still in flight, such as a `step` the
 `drain_timeout_ms` gave up on, and for every lane's `close`, however long it
@@ -404,7 +413,7 @@ apply to an env.
 The compatibility `rlmesh_ext_legacy_env_describe_json` (C++:
 `EnvServer::describe_json()`) returns the env's
 `rlmesh.describe.v1` envelope: the spaces, the tags, and the edition handshake,
-the same artifact `rlmesh describe` emits for a Python env. `rlmesh_env_bind`
+the same artifact `rlmesh describe` emits for a Python env. `rlmesh_ext_legacy_env_bind`
 puts it on that endpoint's handshake too (each env bound in a process reports
 its own), so the managed platform can read an image without a label; bake it
 as the image's `dev.rlmesh.describe` label to describe the image before it
@@ -457,9 +466,9 @@ runs on its own thread, concurrently with the others, so each `user_data` must
 be its own simulation. `num_lanes == 0` is rejected.
 
 A simulation bound to the thread that created it (a GL or Vulkan context, Isaac
-Sim) sets `RLMeshExtLegacyEnvConfig.foreground = true`: `rlmesh_env_serve` then runs the
+Sim) sets `RLMeshExtLegacyEnvConfig.foreground = true`: `rlmesh_ext_legacy_env_serve` then runs the
 server on a helper thread and every callback, `close` included, on the thread
-that called it, until the server stops. `rlmesh_env_cancel` works as before,
+that called it, until the server stops. `rlmesh_ext_legacy_env_cancel` works as before,
 and PNG encoding stays off that thread. A foreground env serves exactly one
 lane: `rlmesh_env_new_lanes` rejects `foreground` with more than one.
 
@@ -553,8 +562,8 @@ the library. Invalid declarations fail creation with `RLMESH_ERR_INVALID_ARGUMEN
 `NULL` (C++: an empty string) preserves the legacy runtime exactly: `"c"` with
 no language version or compiler. Hosts built against older headers also keep
 that output. ABI 5 refuses older config prefixes. For the legacy env config below, callers
-can adopt `rlmesh_ext_legacy_env_config_init()` to opt into detection. Native models do
-not currently emit a describe envelope and have no model config to extend.
+can adopt `rlmesh_ext_legacy_env_config_init()` to opt into detection. The legacy
+model worker has no host-runtime config; shared Model Describe uses C's runtime.
 
 ## Tasks
 

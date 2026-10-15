@@ -1061,14 +1061,19 @@ class SpaceRef {
 
   const RLMeshSpaceSpec* raw() const { return ptr_; }
   bool valid() const { return ptr_ != nullptr; }
-  RLMeshSpaceKind kind() const { return rlmesh_ext_legacy_space_type(ptr_); }
+  RLMeshSpaceKind kind() const { return rlmesh_space_spec_kind(ptr_); }
 
-  RLMeshDType dtype() const { return rlmesh_ext_legacy_space_dtype(ptr_); }
-  size_t ndim() const { return rlmesh_ext_legacy_space_ndim(ptr_); }
+  RLMeshDType dtype() const { return rlmesh_space_spec_dtype(ptr_); }
+  size_t ndim() const {
+    size_t n = 0;
+    if (ptr_) rlmesh_space_spec_shape(ptr_, nullptr, 0, &n);
+    return n;
+  }
 
   Result<std::vector<int64_t>> shape() const {
     std::vector<int64_t> out(ndim());
-    if (RLMeshStatus status = rlmesh_ext_legacy_space_copy_shape(ptr_, out.data(), out.size());
+    size_t n = 0;
+    if (RLMeshStatus status = rlmesh_space_spec_shape(ptr_, out.data(), out.size(), &n);
         status != RLMESH_OK) {
       return Error::from_last(status);
     }

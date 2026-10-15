@@ -3,9 +3,7 @@
 //! facade's `rlmesh::spaces`, plus the spec readers that go with it.
 #![allow(unsafe_code)] // FFI: raw pointers, a C union and repr(transparent) handles.
 
-use std::collections::HashSet;
 use std::ffi::c_char;
-use std::sync::{Mutex, OnceLock};
 
 use rlmesh::spaces::{
     Bound, BoundsKind, Box as SpaceBox, BoxBound, BoxOptions, Dict, Discrete, DiscreteOptions,
@@ -150,21 +148,8 @@ fn space_dtype(value: i32, field: &str) -> Result<rlmesh::DType, CapiError> {
 
 // ---- handle ownership -------------------------------------------------------
 
-/// Owned `RLMeshSpace` handles. `rlmesh_space_free` also frees an owned spec
-/// handle (its ABI 4 meaning) for binaries built before the space handle
-/// existed; this set tells the two apart.
-fn owned_spaces() -> std::sync::MutexGuard<'static, HashSet<usize>> {
-    static OWNED: OnceLock<Mutex<HashSet<usize>>> = OnceLock::new();
-    OWNED
-        .get_or_init(|| Mutex::new(HashSet::new()))
-        .lock()
-        .unwrap_or_else(|err| err.into_inner())
-}
-
 fn into_space_handle(space: Space) -> *mut RLMeshSpace {
-    let ptr = std::boxed::Box::into_raw(std::boxed::Box::new(RLMeshSpace(space)));
-    owned_spaces().insert(ptr as usize);
-    ptr
+    std::boxed::Box::into_raw(std::boxed::Box::new(RLMeshSpace(space)))
 }
 
 fn write_space(out: *mut *mut RLMeshSpace, space: Space) -> Result<(), CapiError> {
@@ -383,8 +368,8 @@ pub extern "C" fn rlmesh_space_clone(space: *const RLMeshSpace) -> *mut RLMeshSp
     )
 }
 
-/// Free an owned space handle (or, as in ABI 4, an owned spec handle). Not for
-/// a borrowed child. NULL is a no-op.
+/// Free an owned Space handle. Specs use rlmesh_space_spec_free. Not for a
+/// borrowed child. NULL is a no-op.
 ///
 /// # Safety
 /// `space` is NULL or an owned handle not yet freed.
@@ -394,11 +379,7 @@ pub unsafe extern "C" fn rlmesh_space_free(space: *mut RLMeshSpace) {
         if space.is_null() {
             return;
         }
-        if owned_spaces().remove(&(space as usize)) {
-            drop(unsafe { std::boxed::Box::from_raw(space) });
-        } else {
-            drop(unsafe { std::boxed::Box::from_raw(space.cast::<RLMeshSpaceSpec>()) });
-        }
+        drop(unsafe { std::boxed::Box::from_raw(space) });
     });
 }
 
