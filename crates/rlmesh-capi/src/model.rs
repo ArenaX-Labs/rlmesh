@@ -120,12 +120,9 @@ impl EpisodeStore {
             if !id.is_empty() && !self.episodes.contains_key(id) && !new_ids.contains(&id) {
                 if self.episodes.len() + new_ids.len() >= self.capacity {
                     // Python raises the builtin `RuntimeError` for this local
-                    // refusal (`_models/_episodes.py`). The C ABI has no
-                    // runtime-misuse status yet (`RLMESH_ERR_RUNTIME` is
-                    // planned, docs/specs/language-parity/rules.md R-21), so it
-                    // reports as `Error::Internal` -> `RLMESH_ERR_INTERNAL`, not
-                    // as a model decline.
-                    return Err(Error::Internal(format!(
+                    // refusal (`_models/_episodes.py`): `Error::Runtime` ->
+                    // `RLMESH_ERR_RUNTIME`, not a model decline.
+                    return Err(Error::Runtime(format!(
                         "model already tracks {} live episodes; refusing episode {id} rather \
                          than evicting another episode's live state. Episode ends are not \
                          reaching this model, or the deployment runs more concurrent \
@@ -1455,7 +1452,7 @@ mod tests {
             .predict(single("ep-c"))
             .await
             .expect_err("past capacity");
-        assert!(matches!(error, Error::Internal(_)), "{error:?}");
+        assert!(matches!(error, Error::Runtime(_)), "{error:?}");
         assert!(
             error.to_string().contains("refusing episode ep-c"),
             "{error}"
