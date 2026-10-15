@@ -8,7 +8,7 @@ use rlmesh_proto::model::v1::{
 use rlmesh_proto::spaces::v1::SpaceValue;
 
 use super::types::{ModelObservation, ModelRouteContext};
-use crate::{Error, Result, spaces};
+use crate::{Error, Result, binding::spaces};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct ModelAction {

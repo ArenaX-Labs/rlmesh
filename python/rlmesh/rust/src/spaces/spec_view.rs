@@ -17,7 +17,8 @@ use super::sample::sample_space_value;
 use super::spec_details::{space_kind_name, space_spec_details_to_py, space_spec_to_pydict};
 use crate::spaces::utils::dtype_name;
 use crate::spaces::{
-    ValueBackend, extract_tensor, make_space, meta_map_to_pydict, parse_space, py_any_to_space_value_with_backend,
+    ValueBackend, extract_tensor, make_space, meta_map_to_pydict, parse_space,
+    py_any_to_space_value_with_backend,
 };
 
 #[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
@@ -324,7 +325,10 @@ fn input_shape(value: &Bound<'_, PyAny>) -> Option<Vec<i64>> {
     let items: Option<Vec<Bound<'_, PyAny>>> = if let Ok(tuple) = value.cast::<PyTuple>() {
         Some(tuple.iter().collect())
     } else {
-        value.cast::<PyList>().ok().map(|list| list.iter().collect())
+        value
+            .cast::<PyList>()
+            .ok()
+            .map(|list| list.iter().collect())
     };
     if let Some(items) = items {
         let mut inner: Option<Vec<i64>> = None;
@@ -461,7 +465,9 @@ fn exact_int_bounds(
         // Not a Python int that fits 64 bits: an integral float (checked by
         // the caller) inside the 64-bit range.
         let in_range = as_float >= -(2f64.powi(63)) && as_float < 2f64.powi(64);
-        (value.extract::<f64>().is_ok() && !value.is_instance_of::<pyo3::types::PyInt>() && in_range)
+        (value.extract::<f64>().is_ok()
+            && !value.is_instance_of::<pyo3::types::PyInt>()
+            && in_range)
             .then_some(as_float as i128)
     }
     let (low, high) = (exact(low, low_f)?, exact(high, high_f)?);

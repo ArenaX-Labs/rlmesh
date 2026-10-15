@@ -21,6 +21,21 @@ pub enum Device {
     Cpu = 1,
 }
 
+impl Device {
+    /// Python's spelling of the device (`"cpu"`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Device::Cpu => "cpu",
+        }
+    }
+}
+
+impl std::fmt::Display for Device {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 impl From<Device> for i32 {
     fn from(value: Device) -> Self {
         value as i32

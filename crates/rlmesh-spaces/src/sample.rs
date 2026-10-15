@@ -660,8 +660,10 @@ mod tests {
                 };
                 tensor
                     .to_contiguous_bytes()
-                    .chunks_exact(8)
-                    .map(|chunk| u64::from_le_bytes(chunk.try_into().unwrap()))
+                    .as_chunks::<8>()
+                    .0
+                    .iter()
+                    .map(|chunk| u64::from_le_bytes(*chunk))
                     .collect::<Vec<_>>()
             })
             .collect()
@@ -677,7 +679,10 @@ mod tests {
             .build()
             .unwrap();
         let samples = box_u64_samples(&spec, 0..8);
-        assert!(samples.iter().all(|v| (low..=high).contains(v)), "{samples:?}");
+        assert!(
+            samples.iter().all(|v| (low..=high).contains(v)),
+            "{samples:?}"
+        );
         // Every value of the four-wide range is reachable (no saturation).
         for v in low..=high {
             assert!(samples.contains(&v), "{v} never sampled: {samples:?}");
@@ -697,7 +702,10 @@ mod tests {
             let v = *v as i64;
             assert!((low..=high).contains(&v), "{v} outside [{low}, {high}]");
         }
-        assert!(samples.contains(&((low + 1) as u64)), "inner value never sampled");
+        assert!(
+            samples.contains(&((low + 1) as u64)),
+            "inner value never sampled"
+        );
     }
 
     #[test]

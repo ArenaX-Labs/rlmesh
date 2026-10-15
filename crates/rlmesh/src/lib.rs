@@ -127,17 +127,25 @@ mod address;
 #[doc(hidden)]
 pub mod binding;
 mod bound;
+mod dtype;
 pub mod env;
 mod error;
+pub mod ext;
 pub mod model;
 pub mod prelude;
 pub mod serve_options;
 pub mod spaces;
+mod tensor;
 
 #[cfg(unix)]
 pub use address::remove_stale_socket;
 pub use address::{BindAddress, ConnectAddress};
 pub use async_trait::async_trait;
+/// The wire space spec the [`Env`] and model traits take until they take
+/// [`spaces::Space`]; the shared spec type is [`spaces::SpaceSpec`].
+pub use binding::spaces::SpaceSpec;
+pub use binding::spaces::{EnvContract, EnvRuntimeError, RenderFrame, SpaceValue};
+pub use dtype::{DType, Device};
 pub use env::{
     BoundEnvServer, CloseRequest, CloseResult, EndpointPhases, Env, EnvServer, EpisodeMetadata,
     RemoteEnv, RemoteVectorEnv, RenderRequest, RenderResult, ResetRequest, ResetResult,
@@ -172,7 +180,7 @@ pub use rlmesh_runtime::{
 #[doc(no_inline)]
 pub use rlmesh_runtime::{ENV_RESET_OPTIONS_KEY, PeerCeiling, RuntimeReport, TRIAL_INDEX_OPTION};
 pub use serve_options::{ENV_ENDPOINT_TOKEN_ENV, MODEL_ENDPOINT_TOKEN_ENV, ServeOptions};
-pub use spaces::{EnvContract, EnvRuntimeError, RenderFrame, SpaceSpec, SpaceValue};
+pub use tensor::Tensor;
 pub use tokio_util::sync::CancellationToken;
 
 /// Mint one fresh routing/episode id (UUIDv7 — time-ordered, sortable by creation,

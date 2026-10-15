@@ -11,7 +11,7 @@ use rlmesh_proto::model::v1::{
 use rlmesh_runtime::PeerCeiling;
 use uuid::Uuid;
 
-use crate::{ConnectAddress, Error, Result, spaces};
+use crate::{ConnectAddress, Error, Result, binding::spaces};
 
 /// A client handle to a remote model (policy) server.
 ///
@@ -530,7 +530,7 @@ impl RemoteModel {
 #[cfg(test)]
 mod tests {
     use super::{new_session_id, single_lane_contract};
-    use crate::spaces;
+    use crate::binding::spaces;
 
     fn single_lane_test_contract(num_envs: u32) -> spaces::EnvContract {
         spaces::EnvContract {

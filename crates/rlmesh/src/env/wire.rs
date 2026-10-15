@@ -18,7 +18,7 @@ use super::types::{
     ResetResult as VectorResetResult, StepRequest as VectorStepRequest,
 };
 use super::{Env, VectorEnv};
-use crate::spaces;
+use crate::binding::spaces;
 use rlmesh_proto::{EndpointPhases, elapsed_ns};
 use rlmesh_spaces::spaces::{PolicyOutcome, ValidationPolicy};
 use std::collections::{BTreeMap, HashSet};

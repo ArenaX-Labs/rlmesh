@@ -25,7 +25,7 @@ use super::handler::{
 };
 use super::predict_fn::{PredictFn, RouteConfig, RouteResolver};
 use super::types::{EpisodeInfo, ModelObservation};
-use crate::spaces::{EnvContract, SpaceKind, SpaceValue};
+use crate::binding::spaces::{EnvContract, SpaceKind, SpaceValue};
 use crate::{Error, Result};
 
 /// One configured route's resolved config plus its live per-episode frame-stack
@@ -1928,8 +1928,8 @@ mod fused_route_tests {
     use rlmesh_adapters::v1::{EnvTags, ModelSpec, NoCustoms, NoEncodings, SpaceView, resolve};
 
     use super::*;
+    use crate::binding::spaces::{self, DType, Tensor};
     use crate::model::types::ModelRouteContext;
-    use crate::spaces::{self, DType, Tensor};
 
     const ENV_TAGS: &str = r#"{
         "observation": {"state": {"type": "state", "role": "proprio/gripper"}},

@@ -13,7 +13,7 @@ use std::io::{BufRead, BufReader, Read};
 use std::process::{Command, ExitCode, Stdio};
 
 use async_trait::async_trait;
-use rlmesh::spaces::{DType, MetaValue, SpaceValue, Tensor};
+use rlmesh::binding::spaces::{DType, MetaValue, SpaceValue, Tensor};
 use rlmesh::{ModelHandler, ModelObservation, ModelWorker, RemoteEnv, RunLocalOptions};
 
 const EPISODES: u64 = 3;

@@ -11,7 +11,7 @@ use super::types::EpisodeInfo;
 use async_trait::async_trait;
 use rlmesh_adapters::v1::{CustomTransform, EncodingTransform, ResolvedAdapter, Value};
 
-use crate::spaces::{EnvContract, SpaceSpec, SpaceValue};
+use crate::binding::spaces::{EnvContract, SpaceSpec, SpaceValue};
 use crate::{Result, model::types::ModelObservation};
 
 /// The model's predict callable plus its discovered lifecycle hooks.

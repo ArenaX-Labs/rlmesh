@@ -3,13 +3,13 @@
 //! This prelude brings in the traits, servers, request/result types, errors,
 //! options, address types, and [`BinaryPayload`]
 //! used by environment and model implementations. It leaves the full space
-//! system under [`crate::spaces`].
+//! system under [`crate::binding::spaces`].
 //!
 //! [`crate::Result`] is not included. [`Env`] and [`VectorEnv`] methods use the
 //! two-argument `std::result::Result<_, EnvRuntimeError>` form.
 
 pub use crate::async_trait;
-pub use crate::spaces::BinaryPayload;
+pub use crate::binding::spaces::BinaryPayload;
 pub use crate::{
     BindAddress, BoundEnvServer, BoundModelServer, CloseRequest, CloseResult, ConnectAddress, Env,
     EnvContract, EnvRuntimeError, EnvServer, EnvironmentError, Error, ErrorClass, ErrorCode,

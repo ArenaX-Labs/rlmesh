@@ -36,7 +36,7 @@ use super::wire::{
     model_observation_from_endpoint_request,
 };
 use crate::bound::BoundListener;
-use crate::{BindAddress, Error, Result, ServeOptions, spaces};
+use crate::{BindAddress, Error, Result, ServeOptions, binding::spaces};
 
 /// A model server that has bound its listener but not yet started serving.
 ///

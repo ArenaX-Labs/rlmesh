@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use rlmesh_grpc::wire::Bytes;
 
-use crate::spaces;
+use crate::binding::spaces;
 use crate::{Error, Result};
 
 /// One row's episode identity: the runtime-minted id (UUIDv7, never repeats)
@@ -211,7 +211,7 @@ impl ModelObservation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::spaces::{DType, SpaceValue, Tensor};
+    use crate::binding::spaces::{DType, SpaceValue, Tensor};
 
     fn obs_space() -> spaces::SpaceSpec {
         spaces::spaces::BoxSpaceBuilder::scalar(0.0, 255.0, vec![1])

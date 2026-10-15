@@ -77,7 +77,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ### Changed
 
-- Adapter resolution errors for a missing role now suggest near matches among the roles the other side offers (`did you mean "x/goal_body"?`), and, when an `x/` role is involved, say that `x/` roles bind only to the identical string. The suggestion is only a hint: binding still matches roles exactly, and one registered role is never suggested for another. The zero-fill caution for an optional state input names the absent role and part (`zero-filled because the env offers no match for "proprio/eef_pos" (part "right_arm")`) instead of only counting components.
+- Rust: `rlmesh::spaces` is the shared spaces module above; the wire types it re-exported (spec payloads and builders, `SpaceValue`, the core `Tensor` and `DType`, `MetaMap`, render and request types) moved to the hidden `rlmesh::binding::spaces`. The crate-root `rlmesh::SpaceSpec`, `SpaceValue`, `EnvContract` and the prelude are unchanged; `rlmesh::binding::space_spec_wire` gives the wire spec of a `spaces::SpaceSpec` for the `Env` trait.
 
 - `Space.seed()` is annotated `-> int`: it always returned the seed it applied (one drawn from OS entropy for `seed=None`), never `None`.
 
@@ -112,6 +112,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - `RemoteEnv` and `RemoteVectorEnv` log a warning, once per client, when an env's own `info` key shadows a runtime-reserved one (`episode_ids`, `completed_episodes`). The env's value is still kept.
 
 - The live viewer shows the env's first declared image role by default instead of its `render()` frame. The role rides the step response, while `render()` costs one more env round trip per drawn frame; `render` stays selectable, and `View(source="render")` asks for it.
+
+- Adapter resolution errors for a missing role now suggest near matches among the roles the other side offers (`did you mean "x/goal_body"?`), and, when an `x/` role is involved, say that `x/` roles bind only to the identical string. The suggestion is only a hint: binding still matches roles exactly, and one registered role is never suggested for another. The zero-fill caution for an optional state input names the absent role and part (`zero-filled because the env offers no match for "proprio/eef_pos" (part "right_arm")`) instead of only counting components.
 
 ## [0.1.0] - 2026-09-23
 

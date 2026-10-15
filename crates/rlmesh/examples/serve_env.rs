@@ -12,7 +12,12 @@
 #![allow(clippy::print_stdout)]
 
 use rlmesh::prelude::*;
-use rlmesh::spaces::{self, SpaceValue};
+use rlmesh::spaces::{Discrete, DiscreteOptions, SpaceValue};
+
+/// The `Env` trait takes the wire spec until it takes `spaces::Space`.
+fn wire_spec(space: Discrete) -> SpaceSpec {
+    rlmesh::binding::space_spec_wire(space.spec()).clone()
+}
 
 /// A three-step counter. The observation is the step index, every action earns
 /// a reward of 1.0, and the episode terminates after the third step.
@@ -25,12 +30,14 @@ struct CounterEnv {
 
 impl CounterEnv {
     fn new() -> Self {
-        let observation_space = spaces::spaces::DiscreteBuilder::new(5)
-            .build()
-            .expect("discrete observation space spec is valid");
-        let action_space = spaces::spaces::DiscreteBuilder::new(2)
-            .build()
-            .expect("discrete action space spec is valid");
+        let observation_space = wire_spec(
+            Discrete::new(5, DiscreteOptions::default())
+                .expect("discrete observation space spec is valid"),
+        );
+        let action_space = wire_spec(
+            Discrete::new(2, DiscreteOptions::default())
+                .expect("discrete action space spec is valid"),
+        );
         let contract = EnvContract {
             id: "CounterEnv-v0".to_string(),
             observation_space: Some(observation_space.clone()),
@@ -81,14 +88,11 @@ impl Env for CounterEnv {
         })
     }
 
-    async fn render(
-        &mut self,
-        _req: spaces::RenderRequest,
-    ) -> Result<spaces::RenderResult, EnvRuntimeError> {
-        Ok(spaces::RenderResult::default())
+    async fn render(&mut self, _req: RenderRequest) -> Result<RenderResult, EnvRuntimeError> {
+        Ok(RenderResult::default())
     }
 
-    async fn close(&mut self, _req: spaces::CloseRequest) -> Result<CloseResult, EnvRuntimeError> {
+    async fn close(&mut self, _req: CloseRequest) -> Result<CloseResult, EnvRuntimeError> {
         Ok(CloseResult)
     }
 }
