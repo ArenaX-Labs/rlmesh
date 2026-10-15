@@ -76,8 +76,14 @@ fn numeric(value: &Value) -> Result<Vec<f64>> {
                     "custom encoding requires a flat 1-D numeric value",
                 ));
             }
-            let list = crate::specs::json_to_value(crate::specs::value_to_json(value)?);
-            numeric(&list)
+            rlmesh_spaces::scalar::decode_scalars(&t.tobytes(), t.dtype().to_core())
+                .map(|scalars| {
+                    scalars
+                        .into_iter()
+                        .map(|s| s.to_f64(t.dtype().to_core()))
+                        .collect()
+                })
+                .map_err(|e| Error::invalid_argument(e.to_string()))
         }
         Value::List(v) | Value::Tuple(v) => v
             .iter()

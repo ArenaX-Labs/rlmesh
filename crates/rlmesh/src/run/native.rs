@@ -113,7 +113,9 @@ pub(crate) async fn run_model(
     let relay = hooks
         .is_some()
         .then(|| Arc::new(HookRelay::new(driver.clone(), context.clone())));
+    let ended = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let plan = Plan {
+        ended: ended.clone(),
         shared: Arc::clone(shared),
         trust: trust_entrypoints.unwrap_or(shared.decl.trust_entrypoints),
         instruction,
@@ -126,9 +128,7 @@ pub(crate) async fn run_model(
         edition,
         trial_index_base,
     };
-    let ended = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let outcome = run_body(
-        ended.clone(),
         plan,
         env,
         hooks.as_deref_mut(),
@@ -167,6 +167,7 @@ pub(crate) async fn run_model(
 }
 
 struct Plan {
+    ended: Arc<std::sync::atomic::AtomicBool>,
     shared: Arc<crate::model::facade::Shared>,
     trust: bool,
     instruction: Option<String>,
@@ -190,7 +191,6 @@ struct Dial<'e> {
 }
 
 async fn run_body(
-    ended: Arc<std::sync::atomic::AtomicBool>,
     plan: Plan,
     env: EnvTarget<'_>,
     mut hooks: Option<&mut (dyn RunHooks + '_)>,
@@ -393,7 +393,7 @@ async fn run_body(
         })
     });
     if side.hooks.is_some() {
-        ended.store(true, std::sync::atomic::Ordering::SeqCst);
+        plan.ended.store(true, std::sync::atomic::Ordering::SeqCst);
         let partial = match &outcome {
             Ok(result) => result.clone(),
             Err(_) => RunResult {

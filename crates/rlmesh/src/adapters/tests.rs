@@ -508,3 +508,43 @@ fn previous_action_source_round_trips_as_a_single_state_leaf() {
         spec
     );
 }
+
+#[test]
+fn custom_encoding_numeric_tensors_do_not_pass_through_json() {
+    let from = RotationTransform::from(|_: &Value| {
+        Ok(Value::Tensor(crate::Tensor::new(
+            &[f64::NAN, 0.0, 0.0, 1.0]
+                .into_iter()
+                .flat_map(f64::to_le_bytes)
+                .collect::<Vec<_>>(),
+            &[4],
+            crate::DType::Float64,
+        )?))
+    });
+    let encoding = CustomEncoding {
+        from_base: Some(EncodingArm::Transform(from)),
+        ..CustomEncoding::new(RotationEncoding::QuatXyzw)
+    };
+    let spec = ModelSpec::new(
+        State {
+            encoding: Some(StateEncoding::Custom(encoding)),
+            dtype: crate::DType::Float64.into(),
+            ..State::new(EEF_ROT)
+        },
+        action(),
+    )
+    .unwrap();
+    let tags = EnvTags::new(
+        StateTag {
+            encoding: Some(vec![RotationEncoding::QuatXyzw.into()]),
+            ..StateTag::new(EEF_ROT)
+        },
+        action(),
+    )
+    .unwrap();
+    let mut adapter =
+        resolve(&tags, &box_spec(4), &box_spec(1), &spec, Default::default()).unwrap();
+    let output = adapter.transform_obs(floats(&[0., 0., 0., 1.])).unwrap();
+    let tensor = output.as_tensor().unwrap();
+    assert!(f64::from_le_bytes(tensor.tobytes()[0..8].try_into().unwrap()).is_nan());
+}

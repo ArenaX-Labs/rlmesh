@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
+from typing import Any
 
 import gymnasium as gym
 import numpy as np
@@ -21,7 +22,7 @@ def _space(width: int = 1) -> gym.spaces.Box:
 
 
 def test_model_path_uses_tolerant_contract_tags() -> None:
-    contract = SimpleNamespace(
+    contract: Any = SimpleNamespace(
         metadata={
             adapt.ENV_METADATA_KEY: {
                 "observation": {
