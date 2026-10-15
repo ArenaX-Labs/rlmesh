@@ -63,6 +63,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ### Changed
 
+- Adapter resolution errors for a missing role now suggest near matches among the roles the other side offers (`did you mean "x/goal_body"?`), and, when an `x/` role is involved, say that `x/` roles bind only to the identical string. The suggestion is only a hint: binding still matches roles exactly. The zero-fill caution for an optional state input names the absent role (`zero-filled because the env offers no "proprio/eef_pos"`) instead of only counting components.
 - The C and C++ API's type names spell the project name `RLMesh` (`RLMeshStatus`, `RLMeshValue`, `RLMeshEpisode`, ...) instead of `Rlmesh`, matching the Python `RLMeshError`. This breaks source but not ABI: function names (`rlmesh_*`), macros (`RLMESH_*`), the `rlmesh::` C++ namespace, struct layouts, and the ABI version are unchanged.
 
 - `rlmesh check` warns on an env without `tags` instead of failing it: an untagged env runs against spec-less models; tags are what let the platform adapt a spec'd model to it.

@@ -51,15 +51,17 @@ pub(crate) fn adapter_advisories(adapter: &ResolvedAdapter) -> Vec<Advisory> {
             ObsPlan::State(state) => {
                 // A declared constant part is authored data, not fabricated:
                 // only an absent role counts.
-                let zeros = state
+                let absent: Vec<String> = state
                     .pieces
                     .iter()
-                    .filter(|piece| piece.absent_role)
-                    .count();
-                if zeros > 0 {
+                    .filter_map(|piece| piece.absent_role.as_deref().map(quoted))
+                    .collect();
+                if !absent.is_empty() {
                     notes.push(Advisory::caution(format!(
-                        "state {}: {zeros} component(s) zero-filled for an absent env role",
-                        quoted(&state.placement.to_string())
+                        "state {}: {} component(s) zero-filled because the env offers no {}",
+                        quoted(&state.placement.to_string()),
+                        absent.len(),
+                        absent.join(", ")
                     )));
                 }
             }
@@ -347,7 +349,7 @@ fn describe_state(plan: &StatePlan) -> String {
             // An absent optional role filled with zeros keeps the original
             // `zeros(n)` wording; the new tokens render only when the new
             // features are used.
-            let mut note = match (piece.absent_role, fill == 0.0) {
+            let mut note = match (piece.absent_role.is_some(), fill == 0.0) {
                 (true, true) => format!("zeros({width})"),
                 (true, false) => format!("fill({width})={}", number(fill)),
                 (false, _) => format!("const({width})={}", number(fill)),
