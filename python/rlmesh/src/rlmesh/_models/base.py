@@ -8,6 +8,7 @@ import contextvars
 import functools
 import inspect
 import os
+import threading
 import warnings
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import (
@@ -611,6 +612,8 @@ class ModelBase(Generic[ObsT, ActT]):
         # The model's one call gate: every corner and hook call, from every
         # session, run and serve on this model, runs through it one at a time.
         self._calls = ModelCalls()
+        #: Held while a run drives this model (RUN-9).
+        self._run_slot = threading.Lock()
         self._bridge.ensure_available()
 
         # A Model subclass overrides at least one predict corner (plus optionally
@@ -1263,6 +1266,50 @@ class ModelBase(Generic[ObsT, ActT]):
         (``view=``) is a :meth:`session` option.
         """
         self._calls.check_open("run()")
+        # One run at a time (RUN-9): a second run while one is in progress
+        # would share this model's per-run state, so it fails at once.
+        if not self._run_slot.acquire(blocking=False):
+            raise RuntimeError(
+                "run() is already in progress on this model; a model runs one run "
+                "at a time"
+            )
+        try:
+            return self._run_holding_slot(
+                env_or_address,
+                seeds=seeds,
+                episodes=episodes,
+                max_episode_steps=max_episode_steps,
+                max_episode_seconds=max_episode_seconds,
+                hooks=hooks,
+                instruction=instruction,
+                close_env=close_env,
+                trust_entrypoints=trust_entrypoints,
+                execution_horizon=execution_horizon,
+                prefetch_lead=prefetch_lead,
+                trial_index_base=trial_index_base,
+                workflow_edition=workflow_edition,
+            )
+        finally:
+            self._run_slot.release()
+
+    def _run_holding_slot(
+        self,
+        env_or_address: LocalEnvTarget,
+        *,
+        seeds: Sequence[int] | None = None,
+        episodes: int | None = None,
+        max_episode_steps: int | None = None,
+        max_episode_seconds: float | None = None,
+        hooks: RunHooks | None = None,
+        instruction: str | None = None,
+        close_env: bool = False,
+        trust_entrypoints: bool | None = None,
+        execution_horizon: int = 1,
+        prefetch_lead: int = 0,
+        trial_index_base: int = 0,
+        workflow_edition: str | None = None,
+    ) -> RunResult:
+        """:meth:`run`'s body, holding the model's run slot."""
         from ._eval import (
             check_episode_caps,
             check_execution_horizon,

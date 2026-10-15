@@ -1156,3 +1156,23 @@ def test_a_scalar_predict_on_a_vector_env_is_refused_with_direction() -> None:
 
     with pytest.raises(TypeError, match="predict_batch"):
         _drive(Model(lambda obs: 0), _NextStepVectorEnv(), "native", episodes=2)
+
+
+def test_a_second_run_on_a_running_model_fails_at_once() -> None:
+    model = _model()
+    errors: list[BaseException] = []
+
+    class Reenter(rlmesh.RunHooks):
+        def on_episode_start(self, *, episode: int, seed: int | None) -> None:
+            _ = episode, seed
+            try:
+                model.run(CountEnv(episode_len=1))
+            except RuntimeError as exc:
+                errors.append(exc)
+
+    result = _drive(model, CountEnv(episode_len=1), "native", hooks=Reenter())
+    assert result.num_episodes == 1
+    assert len(errors) == 1
+    assert "already in progress" in str(errors[0])
+    # The slot is free again once the run returns.
+    assert model.run(CountEnv(episode_len=1)).num_episodes == 1
