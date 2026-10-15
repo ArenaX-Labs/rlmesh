@@ -1762,7 +1762,9 @@ class Space {
     if (rlmesh_space_shape(ptr_, out.data(), out.size(), &len) != RLMESH_OK) return {};
     return out;
   }
-  DType dtype() const { return static_cast<DType>(rlmesh_space_spec_dtype(rlmesh_space_spec(ptr_))); }
+  DType dtype() const {
+    return static_cast<DType>(rlmesh_space_spec_dtype(rlmesh_space_spec(ptr_)));
+  }
   /// Restart the stream from `seed` (OS entropy when empty); returns the seed.
   uint64_t seed(std::optional<uint64_t> seed = std::nullopt) const {
     uint64_t used = 0;

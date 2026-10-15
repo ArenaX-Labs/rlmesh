@@ -406,12 +406,12 @@ RLMESH_API RLMeshStatus rlmesh_space_copy_nvec(const RLMeshSpaceSpec* spec, int6
  * dtype can represent (none negative for an unsigned dtype): an out-of-range
  * bound is RLMESH_ERR_INVALID_ARGUMENT, never clamped. A double holds every
  * integer only up to 2^53: a larger 64-bit bound is the double's exact value. */
-RLMESH_API RLMeshSpaceSpec* rlmesh_space_box(RLMeshDLPackDType dtype, const int64_t* shape, size_t ndim,
-                                             double low, double high);
+RLMESH_API RLMeshSpaceSpec* rlmesh_space_box(RLMeshDLPackDType dtype, const int64_t* shape,
+                                             size_t ndim, double low, double high);
 /* Per-element bounds: `low` / `high` each hold the shape's element count. */
-RLMESH_API RLMeshSpaceSpec* rlmesh_space_box_elementwise(RLMeshDLPackDType dtype, const int64_t* shape,
-                                                         size_t ndim, const double* low,
-                                                         const double* high);
+RLMESH_API RLMeshSpaceSpec* rlmesh_space_box_elementwise(RLMeshDLPackDType dtype,
+                                                         const int64_t* shape, size_t ndim,
+                                                         const double* low, const double* high);
 RLMESH_API RLMeshSpaceSpec* rlmesh_space_discrete(int64_t n, int64_t start);
 RLMESH_API RLMeshSpaceSpec* rlmesh_space_multi_binary(const int64_t* shape, size_t ndim);
 RLMESH_API RLMeshSpaceSpec* rlmesh_space_multi_discrete(const int64_t* nvec, size_t n);
@@ -563,8 +563,7 @@ RLMESH_API RLMeshStatus rlmesh_space_spec_shape(const RLMeshSpaceSpec* spec, int
 /* A Dict reads RLMESH_DTYPE_FLOAT32, as in Python; INVALID for NULL. */
 RLMESH_API RLMeshDType rlmesh_space_spec_dtype(const RLMeshSpaceSpec* spec);
 /* A fresh space with its own sampler; never fails for a valid spec. */
-RLMESH_API RLMeshStatus rlmesh_space_spec_to_space(const RLMeshSpaceSpec* spec,
-                                                   RLMeshSpace** out);
+RLMESH_API RLMeshStatus rlmesh_space_spec_to_space(const RLMeshSpaceSpec* spec, RLMeshSpace** out);
 /* Gymnasium-style text, Python's repr; free with rlmesh_bytes_free. */
 RLMESH_API RLMeshStatus rlmesh_space_spec_repr(const RLMeshSpaceSpec* spec, RLMeshBytes* out);
 /* Python's space_from_spec: refuses a spec with no payload. */
@@ -607,7 +606,8 @@ typedef struct RLMeshBoxOptions {
 #define RLMESH_BOX_OPTIONS_MIN_SIZE (offsetof(RLMeshBoxOptions, _reserved) + sizeof(uint32_t))
 
 RLMESH_API RLMeshStatus rlmesh_box_new(RLMeshBound low, RLMeshBound high, const int64_t* shape,
-                                       size_t ndim, const RLMeshBoxOptions* options /* NULL = INIT */,
+                                       size_t ndim,
+                                       const RLMeshBoxOptions* options /* NULL = INIT */,
                                        RLMeshBox** out);
 /* Box(spec): a spec of another kind is RLMESH_ERR_INVALID_ARGUMENT. */
 RLMESH_API RLMeshStatus rlmesh_box_from_spec(const RLMeshSpaceSpec* spec, RLMeshBox** out);

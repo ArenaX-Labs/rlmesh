@@ -1,11 +1,10 @@
 // The spaces C++ wrapper, Python's rlmesh.spaces: the parity spec's Shape
 // example, typed bounds, downcasts and error classes. Exits nonzero on the
 // first failed check.
-#include <rlmesh.hpp>
-
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <rlmesh.hpp>
 
 namespace {
 
@@ -51,9 +50,9 @@ int main() {
   CHECK(!obs.as_box().has_value());
 
   // Typed bounds read back exactly.
-  Box wide = Box::create(uint64_t{0}, std::numeric_limits<uint64_t>::max(), {2},
-                         {rlmesh::DType::Uint64})
-                 .value_or_throw();
+  Box wide =
+      Box::create(uint64_t{0}, std::numeric_limits<uint64_t>::max(), {2}, {rlmesh::DType::Uint64})
+          .value_or_throw();
   CHECK(std::get<Bound>(*wide.high()).as_uint() == std::numeric_limits<uint64_t>::max());
   CHECK(wide.bounds_kind() == BoundsKind::TypedUniform);
   bool threw_type = false;
@@ -86,8 +85,8 @@ int main() {
   CHECK(d.n() == 1000 && d.start() == 0);
 
   // Per-element bounds (C++-only extra).
-  Box per = rlmesh::ext::box_elementwise({0, -5}, {1, 5}, {2}, {rlmesh::DType::Int64})
-                .value_or_throw();
+  Box per =
+      rlmesh::ext::box_elementwise({0, -5}, {1, 5}, {2}, {rlmesh::DType::Int64}).value_or_throw();
   CHECK(std::get<std::vector<Bound>>(*per.low())[1].as_int() == -5);
 
   if (failures != 0) {

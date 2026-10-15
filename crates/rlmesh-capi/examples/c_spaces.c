@@ -8,13 +8,13 @@
 
 static int failures = 0;
 
-#define CHECK(cond)                                                    \
-  do {                                                                 \
-    if (!(cond)) {                                                     \
-      fprintf(stderr, "%s:%d: CHECK(%s) failed (last error: %s)\n",    \
-              __FILE__, __LINE__, #cond, rlmesh_last_error_message()); \
-      ++failures;                                                      \
-    }                                                                  \
+#define CHECK(cond)                                                                            \
+  do {                                                                                         \
+    if (!(cond)) {                                                                             \
+      fprintf(stderr, "%s:%d: CHECK(%s) failed (last error: %s)\n", __FILE__, __LINE__, #cond, \
+              rlmesh_last_error_message());                                                    \
+      ++failures;                                                                              \
+    }                                                                                          \
   } while (0)
 
 static int str_eq(RLMeshStr s, const char* expected) {
@@ -121,8 +121,8 @@ int main(void) {
   /* Unbounded on any dtype; repr is Python's. */
   RLMeshBox* open = NULL;
   bopt.dtype = RLMESH_DTYPE_INT64;
-  CHECK(rlmesh_box_new(rlmesh_bound_float(-INFINITY), rlmesh_bound_float(INFINITY), shape, 1,
-                       &bopt, &open) == RLMESH_OK);
+  CHECK(rlmesh_box_new(rlmesh_bound_float(-INFINITY), rlmesh_bound_float(INFINITY), shape, 1, &bopt,
+                       &open) == RLMESH_OK);
   CHECK(rlmesh_box_low(open, NULL, 0, &n) == RLMESH_OK && n == 0);
   RLMeshBytes text = {NULL, 0, 0};
   CHECK(rlmesh_space_repr(pos, &text) == RLMESH_OK);
