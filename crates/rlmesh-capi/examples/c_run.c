@@ -261,11 +261,12 @@ int main(void) {
   CHECK(rlmesh_session_reset(s.session, NULL, NULL, &obs, &info) == RLMESH_ERR_RUNTIME);
   rlmesh_session_free(s.session);
   s.session = NULL;
-  RLMeshExtCancelToken* cancel = rlmesh_ext_cancel_token_new();
+  RLMeshExtCancelToken* cancel = NULL;
+  CHECK(rlmesh_ext_cancel_token_new(&cancel) == RLMESH_OK);
   so.cancel = cancel;
   CHECK(rlmesh_session_new(RLMESH_RANDOM_SAMPLE, rlmesh_env_target(env), &so, &s.session) ==
         RLMESH_OK);
-  rlmesh_ext_cancel_token_cancel(cancel);
+  CHECK(rlmesh_ext_cancel_token_cancel(cancel) == RLMESH_OK);
   rlmesh_ext_cancel_token_free(cancel);
   CHECK(rlmesh_session_reset(s.session, NULL, NULL, &obs, &info) == RLMESH_ERR_CANCELLED);
   rlmesh_session_free(s.session);

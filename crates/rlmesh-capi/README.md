@@ -231,6 +231,12 @@ re-entry fails with RuntimeError. Closing/freeing a session never closes its
 model. Cancellation tokens are retained independently from the caller's token
 handle. Free drains local callbacks before releasing the lease.
 
+Create tokens with `rlmesh_ext_cancel_token_new(&token)` and share them with
+`rlmesh_ext_cancel_token_clone(token, &copy)`; both return a status and an owned
+reference. `rlmesh_ext_cancel_token_cancel(token)` returns a status and fires
+the same token through any clone. Free references independently. Repeated
+fires coalesce, and a consumed cancellation re-arms the shared token (R-18).
+
 `RunOptions.instruction` and `SessionOptions.instruction` copy the optional
 text and use the facade's input injection. Read items copy a semantic role or
 an Image/State/Text leaf. Session readers retain a facade adapter independently

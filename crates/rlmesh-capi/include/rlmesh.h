@@ -2710,8 +2710,10 @@ typedef struct RLMeshVariantSink RLMeshVariantSink;
 typedef struct RLMeshVariantList RLMeshVariantList;
 typedef struct RLMeshTagParamList RLMeshTagParamList;
 typedef struct RLMeshExtCancelToken RLMeshExtCancelToken;
-RLMESH_API RLMeshExtCancelToken* rlmesh_ext_cancel_token_new(void);
-RLMESH_API void rlmesh_ext_cancel_token_cancel(const RLMeshExtCancelToken*);
+RLMESH_API RLMeshStatus rlmesh_ext_cancel_token_new(RLMeshExtCancelToken** out);
+RLMESH_API RLMeshStatus rlmesh_ext_cancel_token_clone(const RLMeshExtCancelToken*,
+                                                      RLMeshExtCancelToken** out);
+RLMESH_API RLMeshStatus rlmesh_ext_cancel_token_cancel(RLMeshExtCancelToken*);
 RLMESH_API void rlmesh_ext_cancel_token_free(RLMeshExtCancelToken*);
 
 typedef struct RLMeshEnvFactoryServeOptions {

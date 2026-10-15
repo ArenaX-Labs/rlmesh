@@ -195,7 +195,8 @@ int main(void) {
   socklen_t salen = sizeof(sa);
   CHECK(getsockname(sock, (struct sockaddr*)&sa, &salen) == 0);
   close(sock);
-  Serving work = {model, rlmesh_ext_cancel_token_new(), {0}, RLMESH_OK};
+  Serving work = {model, NULL, {0}, RLMESH_OK};
+  CHECK(rlmesh_ext_cancel_token_new(&work.cancel) == RLMESH_OK);
   snprintf(work.address, sizeof(work.address), "tcp://127.0.0.1:%u", (unsigned)ntohs(sa.sin_port));
   pthread_t thread;
   CHECK(pthread_create(&thread, NULL, serve_model, &work) == 0);
@@ -227,7 +228,7 @@ int main(void) {
   CHECK(rlmesh_session_close(session) == RLMESH_OK);
   rlmesh_session_free(session);
   rlmesh_remote_model_free(rm);
-  rlmesh_ext_cancel_token_cancel(work.cancel);
+  CHECK(rlmesh_ext_cancel_token_cancel(work.cancel) == RLMESH_OK);
   CHECK(pthread_join(thread, NULL) == 0);
   CHECK(work.status == RLMESH_ERR_CANCELLED);
   rlmesh_ext_cancel_token_free(work.cancel);

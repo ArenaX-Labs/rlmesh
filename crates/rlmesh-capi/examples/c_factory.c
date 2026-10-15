@@ -213,8 +213,16 @@ int main(void) {
   rlmesh_value_free(map);
   rlmesh_variant_free(a);
   rlmesh_variant_free(b);
-  RLMeshExtCancelToken* cancel = rlmesh_ext_cancel_token_new();
-  rlmesh_ext_cancel_token_cancel(cancel);
+  RLMeshExtCancelToken *cancel = NULL, *alias = NULL;
+  CHECK(rlmesh_ext_cancel_token_new(NULL) == RLMESH_ERR_INVALID_ARGUMENT);
+  CHECK(rlmesh_ext_cancel_token_clone(NULL, &alias) == RLMESH_ERR_INVALID_ARGUMENT && !alias);
+  CHECK(rlmesh_ext_cancel_token_cancel(NULL) == RLMESH_ERR_INVALID_ARGUMENT);
+  CHECK(rlmesh_ext_cancel_token_new(&cancel) == RLMESH_OK);
+  CHECK(rlmesh_ext_cancel_token_clone(cancel, NULL) == RLMESH_ERR_INVALID_ARGUMENT);
+  CHECK(rlmesh_ext_cancel_token_clone(cancel, &alias) == RLMESH_OK);
+  CHECK(rlmesh_ext_cancel_token_cancel(alias) == RLMESH_OK);
+  CHECK(rlmesh_ext_cancel_token_cancel(alias) == RLMESH_OK); /* coalesces */
+  rlmesh_ext_cancel_token_free(alias); /* original token still owns the pending fire */
   RLMeshEnvFactoryServeOptions fso = RLMESH_ENV_FACTORY_SERVE_OPTIONS_INIT;
   fso.cancel = cancel;
   CHECK(rlmesh_env_factory_serve(state.factory, "tcp://127.0.0.1:0", &fso) == RLMESH_ERR_CANCELLED);
@@ -226,7 +234,9 @@ int main(void) {
   for (int i = 0; i < 5000 && atomic_load(&state.makes) < 2; ++i) nanosleep(&delay, NULL);
   CHECK(atomic_load(&state.makes) >= 2);
   CHECK(rlmesh_env_factory_prepare(state.factory) == RLMESH_ERR_RUNTIME);
-  rlmesh_ext_cancel_token_cancel(cancel);
+  CHECK(rlmesh_ext_cancel_token_clone(cancel, &alias) == RLMESH_OK);
+  CHECK(rlmesh_ext_cancel_token_cancel(alias) == RLMESH_OK); /* re-armed shared token */
+  rlmesh_ext_cancel_token_free(alias);
   CHECK(pthread_join(thread, NULL) == 0);
   CHECK(work.result == RLMESH_ERR_CANCELLED);
   CHECK(state.env_closes == state.makes && state.env_frees == state.makes);

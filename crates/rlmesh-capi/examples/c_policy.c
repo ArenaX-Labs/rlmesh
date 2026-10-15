@@ -84,8 +84,9 @@ int main(void) {
   CHECK(rlmesh_model_clone(model, &clone) == RLMESH_OK);
   rlmesh_model_free(model);
   CHECK(state.closes == 0 && state.frees == 0);
-  RLMeshExtCancelToken* cancel = rlmesh_ext_cancel_token_new();
-  rlmesh_ext_cancel_token_cancel(cancel);
+  RLMeshExtCancelToken* cancel = NULL;
+  CHECK(rlmesh_ext_cancel_token_new(&cancel) == RLMESH_OK);
+  CHECK(rlmesh_ext_cancel_token_cancel(cancel) == RLMESH_OK);
   RLMeshModelServeOptions so = RLMESH_MODEL_SERVE_OPTIONS_INIT;
   so.cancel = cancel;
   CHECK(rlmesh_model_serve(clone, "tcp://127.0.0.1:0", &so) == RLMESH_ERR_CANCELLED &&
