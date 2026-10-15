@@ -66,12 +66,20 @@ enum Backing {
         _claim: Claim,
     },
     Factory(*mut FactoryBorrow),
+    Remote(*mut crate::remote_api::Lease<rlmesh::RemoteEnv>),
+    RemoteVector(*mut crate::remote_api::Lease<rlmesh::RemoteVectorEnv>),
 }
 // These pointers own Send allocations, exclusively driven under the session lock.
 unsafe impl Send for Backing {}
 impl Backing {
     unsafe fn new(t: RLMeshEnvTarget) -> Result<Self, CapiError> {
         Ok(match t.kind {
+            3 => Self::Remote(Box::into_raw(Box::new(unsafe {
+                crate::remote_api::borrow_env(t.handle.cast())
+            }?))),
+            4 => Self::RemoteVector(Box::into_raw(Box::new(unsafe {
+                crate::remote_api::borrow_vector(t.handle.cast())
+            }?))),
             5 => {
                 let h = unsafe { t.handle.cast::<RLMeshEnv>().as_ref() }
                     .ok_or_else(|| CapiError::invalid_arg("null env"))?;
@@ -109,6 +117,12 @@ impl Backing {
     }
     unsafe fn target(&self, t: RLMeshEnvTarget) -> Result<rlmesh::EnvTarget<'static>, CapiError> {
         match self {
+            Self::Remote(p) => Ok(unsafe { (*(*p)).client.as_deref_mut() }
+                .expect("session lease owns client")
+                .into()),
+            Self::RemoteVector(p) => Ok(unsafe { (*(*p)).client.as_deref_mut() }
+                .expect("session lease owns client")
+                .into()),
             Self::Env { ptr: p, .. } => Ok(unsafe { &mut **p }.into()),
             Self::Vector { ptr: p, .. } => Ok(rlmesh::EnvTarget::vector(unsafe { &mut **p })),
             Self::Factory(p) => Ok(unsafe { FactoryBorrow::target_static(*p) }),
@@ -144,6 +158,8 @@ impl Drop for Backing {
                 e.finish(false);
             }
             Self::Factory(p) => drop(unsafe { Box::from_raw(*p) }),
+            Self::Remote(p) => drop(unsafe { Box::from_raw(*p) }),
+            Self::RemoteVector(p) => drop(unsafe { Box::from_raw(*p) }),
         }
     }
 }

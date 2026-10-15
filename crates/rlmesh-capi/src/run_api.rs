@@ -136,6 +136,14 @@ pub(crate) unsafe fn options(
 pub(crate) unsafe fn model<'a>(t: RLMeshModelTarget) -> Result<rlmesh::ModelTarget<'a>, CapiError> {
     match t.kind {
         1 => Ok((&require(t.handle.cast())?.model).into()),
+        2 => Ok((&unsafe {
+            t.handle
+                .cast::<crate::remote_api::RLMeshRemoteModel>()
+                .as_ref()
+        }
+        .ok_or_else(|| CapiError::invalid_arg("null remote model"))?
+        .0)
+            .into()),
         3 => Ok(rlmesh::RANDOM_SAMPLE.into()),
         _ => Err(CapiError::invalid_arg(
             "invalid or unsupported model target",
@@ -154,6 +162,14 @@ pub(crate) unsafe fn with_env<R>(
             .ok_or_else(|| CapiError::invalid_arg("null server"))?
             .facade()
             .into()),
+        3 => {
+            let mut lease = unsafe { crate::remote_api::borrow_env(t.handle.cast()) }?;
+            f(lease.get().into())
+        }
+        4 => {
+            let mut lease = unsafe { crate::remote_api::borrow_vector(t.handle.cast()) }?;
+            f(lease.get().into())
+        }
         5 => {
             let h = unsafe { t.handle.cast::<RLMeshEnv>().as_ref() }
                 .ok_or_else(|| CapiError::invalid_arg("null env"))?;

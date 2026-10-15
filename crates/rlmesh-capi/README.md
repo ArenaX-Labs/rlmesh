@@ -54,6 +54,29 @@ the facade on this branch has no native DLPack import/export methods, and
 C does not expose them. C++ receives only compatibility changes for the new C
 value and tensor calls; its full parity API is a separate wave.
 
+## Remote clients
+
+`rlmesh_remote_env_new` and `rlmesh_remote_vector_env_new` connect through
+facade clients; `rlmesh_remote_model_new` validates without dialing. Use the
+corresponding options INIT macro (NULL means INIT), with address or the
+host/port/path/transport helpers. Timeout seconds use the facade's zero/None,
+finite and sign rules. Token-bearing constructors are fenced under `rlmesh_ext_`.
+
+Remote envs expose cached spaces, specs, metadata and contract pointers until
+free, including after close. All immutable accessors and cancel_handle work
+while I/O or a session borrows the client; selected_workflow_edition reads the
+facade's shared edition cell, including session pins. Overlapping I/O is a
+RuntimeError. A Session or run target borrows the client exclusively and
+returns it afterward; freeing during a call is the caller's error.
+
+Reset and step return owned Value handles in tuple order. A vector step uses
+one capacity/out_len for reward and termination arrays, and refuses a short
+buffer before I/O without changing any output. Render delegates PNG decoding
+to the facade's Tensor conversion. Close is idempotent; other I/O after close
+fails with RuntimeError. Free is required even after a failed close.
+RemoteModel clones share the facade handle and can create concurrent sessions
+against addresses, EnvServers and remote env targets.
+
 ## Running and sessions
 
 `rlmesh_run` and `rlmesh_model_run` accept frozen by-value model/env targets

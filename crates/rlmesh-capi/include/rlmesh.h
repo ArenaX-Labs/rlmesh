@@ -1505,6 +1505,145 @@ RLMESH_API RLMeshStatus rlmesh_session_cancel_handle(const RLMeshSession*,
 RLMESH_API RLMeshStatus rlmesh_session_close(RLMeshSession*);
 RLMESH_API void rlmesh_session_free(RLMeshSession*);
 
+/* ---- Remote clients ----------------------------------------------------- */
+typedef struct RLMeshRemoteEnv RLMeshRemoteEnv;
+typedef struct RLMeshRemoteVectorEnv RLMeshRemoteVectorEnv;
+typedef struct RLMeshRemoteModel RLMeshRemoteModel;
+typedef struct RLMeshRemoteEnvOptions {
+  size_t struct_size;
+  const char* address;
+  const char* host;
+  bool has_port;
+  uint16_t port;
+  const char* path;
+  bool has_transport;
+  RLMeshTransport transport;
+  bool has_connect_timeout_seconds;
+  double connect_timeout_seconds;
+  bool has_request_timeout_seconds;
+  double request_timeout_seconds;
+  const char* workflow_edition;
+} RLMeshRemoteEnvOptions;
+#define RLMESH_REMOTE_ENV_OPTIONS_MIN_SIZE sizeof(RLMeshRemoteEnvOptions)
+#define RLMESH_REMOTE_ENV_OPTIONS_INIT                                   \
+  {sizeof(RLMeshRemoteEnvOptions), NULL,  NULL, false, 0,   NULL, false, \
+   RLMESH_TRANSPORT_INVALID,       false, 0.0,  false, 0.0, NULL}
+typedef struct RLMeshRemoteModelOptions {
+  size_t struct_size;
+  const char* address;
+  const char* host;
+  bool has_port;
+  uint16_t port;
+  const char* path;
+  bool has_transport;
+  RLMeshTransport transport;
+  bool has_connect_timeout_seconds;
+  double connect_timeout_seconds;
+  bool has_request_timeout_seconds;
+  double request_timeout_seconds;
+} RLMeshRemoteModelOptions;
+#define RLMESH_REMOTE_MODEL_OPTIONS_MIN_SIZE sizeof(RLMeshRemoteModelOptions)
+#define RLMESH_REMOTE_MODEL_OPTIONS_INIT                                  \
+  {sizeof(RLMeshRemoteModelOptions), NULL,  NULL, false, 0,  NULL, false, \
+   RLMESH_TRANSPORT_INVALID,         false, 0.0,  false, 0.0}
+/* Env construction connects; Model construction only validates. Remote I/O
+ * is exclusive, while immutable accessors/cancellation may overlap any call.
+ * Accessor pointers remain borrowed until free, including after close. */
+RLMESH_API RLMeshStatus rlmesh_remote_env_new(const RLMeshRemoteEnvOptions*, RLMeshRemoteEnv** out);
+RLMESH_API RLMeshStatus rlmesh_remote_vector_env_new(const RLMeshRemoteEnvOptions*,
+                                                     RLMeshRemoteVectorEnv** out);
+RLMESH_API RLMeshStatus rlmesh_remote_model_new(const RLMeshRemoteModelOptions*,
+                                                RLMeshRemoteModel** out);
+RLMESH_API RLMeshStatus rlmesh_ext_remote_env_new_with_token(const RLMeshRemoteEnvOptions*,
+                                                             const char* token,
+                                                             RLMeshRemoteEnv** out);
+RLMESH_API RLMeshStatus rlmesh_ext_remote_vector_env_new_with_token(const RLMeshRemoteEnvOptions*,
+                                                                    const char* token,
+                                                                    RLMeshRemoteVectorEnv** out);
+RLMESH_API RLMeshStatus rlmesh_ext_remote_model_new_with_token(const RLMeshRemoteModelOptions*,
+                                                               const char* token,
+                                                               RLMeshRemoteModel** out);
+RLMESH_API RLMeshStatus rlmesh_remote_model_clone(const RLMeshRemoteModel*,
+                                                  RLMeshRemoteModel** out);
+RLMESH_API RLMeshStatus rlmesh_remote_model_address(const RLMeshRemoteModel*, RLMeshBytes* out);
+RLMESH_API RLMeshStatus rlmesh_remote_model_repr(const RLMeshRemoteModel*, RLMeshBytes* out);
+RLMESH_API void rlmesh_remote_model_free(RLMeshRemoteModel*);
+RLMESH_API RLMeshModelTarget rlmesh_remote_model_target(const RLMeshRemoteModel*);
+RLMESH_API RLMeshEnvTarget rlmesh_remote_env_target(RLMeshRemoteEnv*);
+RLMESH_API RLMeshEnvTarget rlmesh_remote_vector_env_target(RLMeshRemoteVectorEnv*);
+RLMESH_API RLMeshStatus rlmesh_remote_model_session(const RLMeshRemoteModel*, RLMeshEnvTarget,
+                                                    const RLMeshSessionOptions*,
+                                                    RLMeshSession** out);
+RLMESH_API RLMeshStatus rlmesh_remote_env_address(const RLMeshRemoteEnv*, RLMeshBytes* out);
+RLMESH_API RLMeshStatus rlmesh_remote_env_env_id(const RLMeshRemoteEnv*, RLMeshBytes* out);
+RLMESH_API RLMeshStatus rlmesh_remote_env_selected_workflow_edition(const RLMeshRemoteEnv*,
+                                                                    RLMeshBytes* out);
+RLMESH_API const RLMeshEnvContract* rlmesh_remote_env_env_contract(const RLMeshRemoteEnv*);
+RLMESH_API const RLMeshValue* rlmesh_remote_env_metadata(const RLMeshRemoteEnv*);
+RLMESH_API const RLMeshSpace* rlmesh_remote_env_observation_space(const RLMeshRemoteEnv*);
+RLMESH_API const RLMeshSpace* rlmesh_remote_env_action_space(const RLMeshRemoteEnv*);
+RLMESH_API const RLMeshSpaceSpec* rlmesh_remote_env_observation_space_spec(const RLMeshRemoteEnv*);
+RLMESH_API const RLMeshSpaceSpec* rlmesh_remote_env_action_space_spec(const RLMeshRemoteEnv*);
+RLMESH_API RLMeshStatus rlmesh_remote_env_render_mode(const RLMeshRemoteEnv*, bool* out_has,
+                                                      RLMeshBytes* out);
+RLMESH_API RLMeshStatus rlmesh_remote_env_cancel_handle(const RLMeshRemoteEnv*,
+                                                        RLMeshExtCancelToken** out);
+RLMESH_API RLMeshStatus rlmesh_remote_env_render(RLMeshRemoteEnv*, uint64_t env_index,
+                                                 RLMeshValue** out_frame);
+RLMESH_API RLMeshStatus rlmesh_remote_env_shutdown(RLMeshRemoteEnv*, const char* reason,
+                                                   bool* out_accepted);
+RLMESH_API RLMeshStatus rlmesh_remote_env_close(RLMeshRemoteEnv*);
+RLMESH_API void rlmesh_remote_env_free(RLMeshRemoteEnv*);
+RLMESH_API RLMeshStatus rlmesh_remote_vector_env_address(const RLMeshRemoteVectorEnv*,
+                                                         RLMeshBytes* out);
+RLMESH_API RLMeshStatus rlmesh_remote_vector_env_env_id(const RLMeshRemoteVectorEnv*,
+                                                        RLMeshBytes* out);
+RLMESH_API RLMeshStatus
+rlmesh_remote_vector_env_selected_workflow_edition(const RLMeshRemoteVectorEnv*, RLMeshBytes* out);
+RLMESH_API const RLMeshEnvContract* rlmesh_remote_vector_env_env_contract(
+    const RLMeshRemoteVectorEnv*);
+RLMESH_API const RLMeshValue* rlmesh_remote_vector_env_metadata(const RLMeshRemoteVectorEnv*);
+RLMESH_API const RLMeshSpace* rlmesh_remote_vector_env_observation_space(
+    const RLMeshRemoteVectorEnv*);
+RLMESH_API const RLMeshSpace* rlmesh_remote_vector_env_action_space(const RLMeshRemoteVectorEnv*);
+RLMESH_API const RLMeshSpaceSpec* rlmesh_remote_vector_env_observation_space_spec(
+    const RLMeshRemoteVectorEnv*);
+RLMESH_API const RLMeshSpaceSpec* rlmesh_remote_vector_env_action_space_spec(
+    const RLMeshRemoteVectorEnv*);
+RLMESH_API RLMeshStatus rlmesh_remote_vector_env_render_mode(const RLMeshRemoteVectorEnv*,
+                                                             bool* out_has, RLMeshBytes* out);
+RLMESH_API RLMeshStatus rlmesh_remote_vector_env_cancel_handle(const RLMeshRemoteVectorEnv*,
+                                                               RLMeshExtCancelToken** out);
+RLMESH_API RLMeshStatus rlmesh_remote_vector_env_render(RLMeshRemoteVectorEnv*, uint64_t env_index,
+                                                        RLMeshValue** out_frame);
+RLMESH_API RLMeshStatus rlmesh_remote_vector_env_shutdown(RLMeshRemoteVectorEnv*,
+                                                          const char* reason, bool* out_accepted);
+RLMESH_API RLMeshStatus rlmesh_remote_vector_env_close(RLMeshRemoteVectorEnv*);
+RLMESH_API void rlmesh_remote_vector_env_free(RLMeshRemoteVectorEnv*);
+RLMESH_API uint64_t rlmesh_remote_vector_env_num_envs(const RLMeshRemoteVectorEnv*);
+RLMESH_API const RLMeshSpace* rlmesh_remote_vector_env_single_observation_space(
+    const RLMeshRemoteVectorEnv*);
+RLMESH_API const RLMeshSpace* rlmesh_remote_vector_env_single_action_space(
+    const RLMeshRemoteVectorEnv*);
+RLMESH_API RLMeshStatus rlmesh_remote_env_reset(RLMeshRemoteEnv*, const int64_t* seed,
+                                                const RLMeshValue* options,
+                                                RLMeshValue** out_observation,
+                                                RLMeshValue** out_info);
+RLMESH_API RLMeshStatus rlmesh_remote_env_step(RLMeshRemoteEnv*, const RLMeshValue*,
+                                               RLMeshValue** out_observation, double* out_reward,
+                                               bool* out_terminated, bool* out_truncated,
+                                               RLMeshValue** out_info);
+RLMESH_API RLMeshStatus rlmesh_remote_vector_env_reset(RLMeshRemoteVectorEnv*, const int64_t* seed,
+                                                       size_t seed_len, const RLMeshValue* options,
+                                                       RLMeshValue** out_observation,
+                                                       RLMeshValue** out_info);
+/* A short capacity fails before I/O and leaves ALL outputs untouched. */
+RLMESH_API RLMeshStatus rlmesh_remote_vector_env_step(RLMeshRemoteVectorEnv*, const RLMeshValue*,
+                                                      RLMeshValue** out_observation,
+                                                      double* out_rewards, bool* out_terminated,
+                                                      bool* out_truncated, size_t capacity,
+                                                      size_t* out_len, RLMeshValue** out_info);
+
 /* ---- model -------------------------------------------------------------- */
 
 /* Error convention for every call below: on a nonzero RLMeshStatus (or a NULL

@@ -16,6 +16,7 @@ mod env_server;
 mod ffi;
 mod model;
 mod model_api;
+mod remote_api;
 mod run_api;
 mod run_hooks;
 mod run_results;
