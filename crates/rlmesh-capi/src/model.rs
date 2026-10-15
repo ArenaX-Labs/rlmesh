@@ -740,14 +740,15 @@ pub unsafe extern "C" fn rlmesh_model_run_local(
                     .await
             })
             .map_err(|err| {
-                let mut err = CapiError::from(err);
+                let err = CapiError::from(err);
                 // The core flattens a cancelled run to `Error::Internal` (the
                 // driver's typed `RouteCancelled` is gone by then), so the token
                 // we handed it is the typed signal -- not the message text.
                 if model.cancel.is_cancelled() {
-                    err.status = RLMeshStatus::Cancelled;
+                    err.into_cancelled()
+                } else {
+                    err
                 }
-                err
             })?;
         if let Some(out) = unsafe { out_report.as_mut() } {
             *out = run_report(&report);
@@ -1124,7 +1125,7 @@ mod tests {
         for row in 0..obs.num_envs {
             let value = unsafe { &**obs.observations.add(row) };
             let SpaceValue::Discrete(n) = &value.0 else {
-                return RLMeshStatus::InvalidValue as c_int;
+                return RLMeshStatus::Type as c_int;
             };
             unsafe { *out.add(row) = rlmesh_value_discrete(*n) };
         }

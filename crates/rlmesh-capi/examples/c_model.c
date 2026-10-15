@@ -54,7 +54,7 @@ static int predict(void* user_data, const RLMeshObservation* obs, RLMeshValue** 
       obs->contract ? rlmesh_contract_action_space(obs->contract) : NULL;
   if (action == NULL) {
     rlmesh_callback_set_error("no action space on contract", false);
-    return RLMESH_ERR_INVALID_VALUE;
+    return RLMESH_ERR_MODEL;
   }
   for (size_t i = 0; i < obs->num_envs; ++i) {
     /* Each row names its episode and how many times this episode has been
@@ -73,7 +73,7 @@ static int predict(void* user_data, const RLMeshObservation* obs, RLMeshValue** 
     printf("\n");
     out_actions[i] = zero_action(action);
     if (out_actions[i] == NULL) {
-      return RLMESH_ERR_INVALID_VALUE; /* the capi frees rows already written */
+      return RLMESH_ERR_MODEL; /* the capi frees rows already written */
     }
   }
   return RLMESH_OK;

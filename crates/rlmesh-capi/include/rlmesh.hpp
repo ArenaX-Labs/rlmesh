@@ -363,7 +363,7 @@ class ValueRef {
       auto name = key(i);
       if (!name) return name.error();
       std::optional<ValueRef> child = at_key(i);
-      if (!child) return Error(RLMESH_ERR_INVALID_VALUE, "dict child missing for a reported key");
+      if (!child) return Error(RLMESH_ERR_INTERNAL, "dict child missing for a reported key");
       out.emplace_back(*name, *child);
     }
     return out;
@@ -639,7 +639,7 @@ class SpaceRef {
       auto name = key(i);
       if (!name) return name.error();
       std::optional<SpaceRef> child = at_key(i);
-      if (!child) return Error(RLMESH_ERR_INVALID_VALUE, "dict space child missing for a key");
+      if (!child) return Error(RLMESH_ERR_INTERNAL, "dict space child missing for a key");
       out.emplace_back(*name, *child);
     }
     return out;
@@ -713,7 +713,7 @@ inline Result<Value> zeros_for(SpaceRef space) {
     case RLMESH_VALUE_BOX: {
       RLMeshDType dtype = space.dtype();
       size_t stride = rlmesh_dtype_size(dtype);
-      if (stride == 0) return Error(RLMESH_ERR_INVALID_VALUE, "unsupported Box dtype");
+      if (stride == 0) return Error(RLMESH_ERR_TYPE, "unsupported Box dtype");
       auto shape = space.shape();
       if (!shape) return shape.error();
       size_t numel = 1;
@@ -726,7 +726,7 @@ inline Result<Value> zeros_for(SpaceRef space) {
         if (range->low > scalar) scalar = range->low;
         if (range->high < scalar) scalar = range->high;
         if (scalar != 0.0 && !detail::store_scalar(bytes.data() + i * stride, dtype, scalar)) {
-          return Error(RLMESH_ERR_INVALID_VALUE, "unsupported Box dtype");
+          return Error(RLMESH_ERR_TYPE, "unsupported Box dtype");
         }
       }
       return Value::box(bytes.data(), dtype, std::move(*shape));
@@ -776,7 +776,7 @@ inline Result<Value> zeros_for(SpaceRef space) {
       children.reserve(*count);
       for (size_t i = 0; i < *count; ++i) {
         std::optional<SpaceRef> child = space.at(i);
-        if (!child) return Error(RLMESH_ERR_INVALID_VALUE, "tuple space child missing");
+        if (!child) return Error(RLMESH_ERR_INTERNAL, "tuple space child missing");
         auto value = zeros_for(*child);
         if (!value) return value.error();
         children.push_back(std::move(*value));
@@ -797,7 +797,7 @@ inline Result<Value> zeros_for(SpaceRef space) {
     }
     case RLMESH_VALUE_INVALID:
     default:
-      return Error(RLMESH_ERR_INVALID_VALUE, "no value fits an unspecified space");
+      return Error(RLMESH_ERR_INVALID_ARGUMENT, "no value fits an unspecified space");
   }
 }
 
