@@ -130,6 +130,24 @@ struct Shared {
     ended_by: std::sync::Mutex<Option<String>>,
 }
 
+/// A shared read handle on the edition an [`EnvClient`]'s Join opens with
+/// (the handshake selection, or the last pin).
+#[derive(Clone)]
+pub struct PinnedEdition(Arc<Shared>);
+
+impl PinnedEdition {
+    /// The current pinned edition spelling.
+    pub fn get(&self) -> String {
+        self.0.pinned_workflow_edition()
+    }
+}
+
+impl std::fmt::Debug for PinnedEdition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("PinnedEdition").field(&self.get()).finish()
+    }
+}
+
 /// The Join bidi stream: where requests go, and who is waiting for a reply.
 #[derive(Clone)]
 struct JoinStream {
@@ -457,6 +475,12 @@ impl EnvClient {
     pub fn pin_workflow_edition(&mut self, selected_workflow_edition: String) {
         self.shared
             .set_pinned_workflow_edition(selected_workflow_edition.trim().to_string());
+    }
+
+    /// A handle on the edition this session's Join opens with, shared by
+    /// every clone: it reads each pin as soon as it is made.
+    pub fn pinned_edition(&self) -> PinnedEdition {
+        PinnedEdition(Arc::clone(&self.shared))
     }
 
     async fn send_handshake(&mut self) -> Result<HandshakeResponse, GrpcError> {

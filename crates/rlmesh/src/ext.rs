@@ -170,6 +170,83 @@ pub fn model_spec_from_json(json: &str) -> Result<crate::adapters::ModelSpec> {
     crate::adapters::ModelSpec::from_json(json)
 }
 
+/// A [`RemoteEnv`](crate::RemoteEnv) that sends `token` on every request
+/// (RMT-5). `""` sends none; a token a header cannot carry is the ValueError
+/// class before any dial. Otherwise as [`RemoteEnv::new`](crate::RemoteEnv::new).
+pub fn remote_env_with_token(
+    options: crate::RemoteEnvOptions,
+    token: &str,
+) -> Result<crate::RemoteEnv> {
+    crate::env::client::check_token(token)?;
+    crate::run::drive::refuse_in_async_context("remote_env_with_token")?;
+    crate::run::drive::block_on_library(crate::RemoteEnv::new_in(options, token))
+}
+
+/// The async twin of [`remote_env_with_token`].
+pub async fn remote_env_with_token_async(
+    options: crate::RemoteEnvOptions,
+    token: &str,
+) -> Result<crate::RemoteEnv> {
+    crate::env::client::check_token(token)?;
+    crate::run::drive::in_library(crate::RemoteEnv::new_in(options, token)).await
+}
+
+/// A [`RemoteVectorEnv`](crate::RemoteVectorEnv) that sends `token` on every
+/// request (RMT-5).
+pub fn remote_vector_env_with_token(
+    options: crate::RemoteEnvOptions,
+    token: &str,
+) -> Result<crate::RemoteVectorEnv> {
+    crate::env::client::check_token(token)?;
+    crate::run::drive::refuse_in_async_context("remote_vector_env_with_token")?;
+    crate::run::drive::block_on_library(crate::RemoteVectorEnv::new_in(options, token))
+}
+
+/// The async twin of [`remote_vector_env_with_token`].
+pub async fn remote_vector_env_with_token_async(
+    options: crate::RemoteEnvOptions,
+    token: &str,
+) -> Result<crate::RemoteVectorEnv> {
+    crate::env::client::check_token(token)?;
+    crate::run::drive::in_library(crate::RemoteVectorEnv::new_in(options, token)).await
+}
+
+/// Partial reset (RMT-14): reset the listed lanes (an empty slice resets
+/// all of them; a per-lane seed list aligns with `env_indices`) and return
+/// the batched observation of every lane and the info with every lane's
+/// `episode_ids`. An index above `u32::MAX` is the ValueError class before
+/// any I/O.
+pub fn reset_lanes(
+    env: &mut crate::RemoteVectorEnv,
+    env_indices: &[u64],
+    seed: Option<crate::VectorSeed>,
+    options: Option<&crate::InfoDict>,
+) -> Result<(Value, crate::InfoDict)> {
+    crate::run::drive::refuse_in_async_context("reset_lanes")?;
+    crate::run::drive::block_on_library(crate::env::client::reset_lanes_in(
+        env,
+        env_indices,
+        seed,
+        options,
+    ))
+}
+
+/// The async twin of [`reset_lanes`].
+pub async fn reset_lanes_async(
+    env: &mut crate::RemoteVectorEnv,
+    env_indices: &[u64],
+    seed: Option<crate::VectorSeed>,
+    options: Option<&crate::InfoDict>,
+) -> Result<(Value, crate::InfoDict)> {
+    crate::run::drive::in_library(crate::env::client::reset_lanes_in(
+        env,
+        env_indices,
+        seed,
+        options,
+    ))
+    .await
+}
+
 /// Cancellation (R-18): the native counterpart of Python's
 /// `KeyboardInterrupt`. Every clone is the same token, so [`cancel`] on any
 /// copy fires it. One `cancel()` fails the call in flight on the token or,

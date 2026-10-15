@@ -13,7 +13,7 @@ use std::io::{BufRead, BufReader, Read};
 use std::process::{Command, ExitCode, Stdio};
 
 use async_trait::async_trait;
-use rlmesh::RemoteEnv;
+use rlmesh::binding::env::EnvClientCore;
 use rlmesh::binding::model::{ModelHandler, ModelObservation, ModelWorker, RunLocalOptions};
 use rlmesh::binding::spaces::{DType, MetaValue, SpaceValue, Tensor};
 
@@ -107,7 +107,7 @@ fn main() -> ExitCode {
 }
 
 async fn drive(address: &str) -> Result<(), String> {
-    let mut client = RemoteEnv::connect(address)
+    let mut client = EnvClientCore::connect(address)
         .await
         .map_err(|err| format!("connect: {err}"))?;
     let metadata = client
@@ -128,16 +128,15 @@ async fn drive(address: &str) -> Result<(), String> {
         return Err("the trial_index reset option was not declared".into());
     }
     client
-        .reset(rlmesh::binding::env::ResetRequest::default())
+        .reset(rlmesh::binding::env::VectorResetRequest::default())
         .await
         .map_err(|err| format!("reset: {err}"))?;
     let frame = client
-        .render(rlmesh::binding::env::RenderRequest::default())
+        .render(0)
         .await
         .map_err(|err| format!("render: {err}"))?
-        .frame
         .ok_or("render returned no frame")?;
-    if !frame.frame.starts_with(b"\x89PNG") {
+    if !frame.starts_with(b"\x89PNG") {
         return Err("render frame is not a PNG".into());
     }
     client

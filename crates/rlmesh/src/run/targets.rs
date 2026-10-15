@@ -2,7 +2,11 @@
 
 use std::fmt;
 
-use crate::{Env, EnvFactory, EnvFactoryExt, EnvServer, Kwargs, MadeEnv, Model, Result, VectorEnv};
+use crate::env::client::Lendable;
+use crate::{
+    Env, EnvFactory, EnvFactoryExt, EnvServer, Kwargs, MadeEnv, Model, RemoteEnv, RemoteVectorEnv,
+    Result, VectorEnv,
+};
 
 /// The random baseline: Python's `RANDOM_SAMPLE`, a model that samples the
 /// env's action space. Accepted by [`run`](crate::run) and
@@ -67,7 +71,8 @@ impl<F: EnvFactory> ErasedFactory for Factory<'_, F> {
 }
 
 /// The env argument of a run or session: an address, a served
-/// [`EnvServer`], or a borrowed local env, vector env or factory.
+/// [`EnvServer`], a borrowed [`RemoteEnv`] / [`RemoteVectorEnv`], or a
+/// borrowed local env, vector env or factory.
 ///
 /// A single env converts with `From` (`model.run(&mut env, ..)`); a vector
 /// env and a factory name their kind ([`EnvTarget::vector`],
@@ -77,6 +82,9 @@ pub struct EnvTarget<'a>(pub(crate) EnvKind<'a>);
 pub(crate) enum EnvKind<'a> {
     Address(String),
     Server(&'a EnvServer),
+    /// A caller's remote client: a session drives it through its own
+    /// connection; a native run dials its address (R-17).
+    Remote(&'a mut (dyn Lendable + Send + 'a)),
     Env(&'a mut (dyn Env + Send + 'a)),
     Vector(&'a mut (dyn VectorEnv + Send + 'a)),
     Factory(Box<dyn ErasedFactory + Send + 'a>),
@@ -113,6 +121,18 @@ impl<'a> From<&'a EnvServer> for EnvTarget<'a> {
     }
 }
 
+impl<'a> From<&'a mut RemoteEnv> for EnvTarget<'a> {
+    fn from(env: &'a mut RemoteEnv) -> Self {
+        EnvTarget(EnvKind::Remote(env))
+    }
+}
+
+impl<'a> From<&'a mut RemoteVectorEnv> for EnvTarget<'a> {
+    fn from(env: &'a mut RemoteVectorEnv) -> Self {
+        EnvTarget(EnvKind::Remote(env))
+    }
+}
+
 impl<'a, E: Env + Send + 'a> From<&'a mut E> for EnvTarget<'a> {
     fn from(env: &'a mut E) -> Self {
         EnvTarget(EnvKind::Env(env))
@@ -124,6 +144,7 @@ impl fmt::Debug for EnvTarget<'_> {
         match &self.0 {
             EnvKind::Address(address) => write!(f, "EnvTarget({address:?})"),
             EnvKind::Server(server) => write!(f, "EnvTarget({server})"),
+            EnvKind::Remote(env) => write!(f, "EnvTarget(<remote {}>)", env.remote_address()),
             EnvKind::Env(_) => f.write_str("EnvTarget(<env>)"),
             EnvKind::Vector(_) => f.write_str("EnvTarget(<vector env>)"),
             EnvKind::Factory(_) => f.write_str("EnvTarget(<factory>)"),

@@ -62,6 +62,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - `Session.run()` fills `RunResult.telemetry`, so `format_telemetry()` works on the Python loop a served model or a viewed run drives. It reports the client-observed `rpc.total` of `model.predict`, `env.reset`, `env.step`, and `runner.round`, under the names the native `Model.run` loop uses.
 
 - `ServeOptions(compress_responses=True)` has an env server compress its responses (zstd, else gzip) for clients that accept it; every RLMesh client now accepts compressed responses. Compression is responses-only: RLMesh clients never compress requests, and servers refuse a compressed request (`UNIMPLEMENTED`) before reading it, so a peer without the endpoint token cannot make a server decompress one. It is off by default: on loopback a ~200 KB rendered-image observation shrinks to ~1.4 KB on the wire but the step takes as long, so it only pays on a slow link with compressible observations.
+- The Rust crate's `RemoteEnv` and `RemoteVectorEnv` take Python's constructor keywords as `RemoteEnvOptions` (`address`, `host`, `port`, `path`, `transport`, `connect_timeout`, `request_timeout`, `workflow_edition`; a zero timeout is no timeout) and connect at `new`, with Python's Gymnasium calls: `reset(seed, options)`, `step(action)`, `render(env_index)` decoding the frame to a uint8 tensor, `close()` (bounded, detaching on a lost peer, idempotent) and `shutdown(reason)`, each with an `_async` twin that runs on any executor. Spaces are built once per client, `info` carries `episode_ids` and `completed_episodes`, I/O after `close` is the `RuntimeError` class, `cancel_handle()` cancels a call, and dropping an unclosed client closes it. A session or run takes `&mut RemoteEnv` / `&mut RemoteVectorEnv` as its env. Endpoint tokens and partial resets are Rust-only extras (`ext::remote_env_with_token`, `ext::reset_lanes`).
 
 ### Fixed
 
@@ -116,6 +117,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - A native run borrows the model, as Python's `Model.run` does: `rlmesh_model_run_local`, `Model::run_local`, and Rust's `ModelWorker::run_local` no longer fire the model's `on_close` when the run ends, so one model can run several times. A C or C++ model's `on_close` fires once per handle, when a serve stops or at `rlmesh_model_free` (the C++ destructor). In Rust, `RunLocalOptions::close_model(true)` still closes the model at the end of the run.
 
 - A C or C++ model tracks up to 65,536 live episodes, as a Python model does, and refuses a new episode past that instead of evicting the least recently predicted one through `on_episode_end`: the predict fails with `RLMESH_ERR_RUNTIME` (Python's `RuntimeError`) before the callback runs, and every live episode keeps its count.
+
+- The `env_id` and `selected_workflow_edition` of a `RemoteEnv` or `RemoteVectorEnv`, and `RemoteVectorEnv.num_envs`, answer while another thread is inside a call on the same client; before, they raised `RuntimeError: Already borrowed`.
+- `render(env_index=...)` above `2**32 - 1` raises `ValueError` before any request; before, the index was truncated and another lane was rendered.
+- A `reset`, `step` or `render` that outlives its `request_timeout_seconds` always raises `TimeoutError`: a reply that arrives at or after the deadline is discarded, and the deadline sent to the server is rounded up to whole milliseconds. Before, a reply landing within the client's 100 ms check interval past the deadline was returned, and a server-side expiry could surface as `TimeoutError("[TIMEOUT] env.step timed out after ...")`.
 
 ### Changed
 
@@ -218,6 +223,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - The live viewer shows the env's first declared image role by default instead of its `render()` frame. The role rides the step response, while `render()` costs one more env round trip per drawn frame; `render` stays selectable, and `View(source="render")` asks for it.
 
 - Adapter resolution errors for a missing role now suggest near matches among the roles the other side offers (`did you mean "x/goal_body"?`), and, when an `x/` role is involved, say that `x/` roles bind only to the identical string. The suggestion is only a hint: binding still matches roles exactly, and one registered role is never suggested for another. The zero-fill caution for an optional state input names the absent role and part (`zero-filled because the env offers no match for "proprio/eef_pos" (part "right_arm")`) instead of only counting components.
+
+- Calling `reset`, `step`, `render` or `shutdown` on a `RemoteEnv` or `RemoteVectorEnv` after `close()` (or after an accepted `shutdown()`) raises `RuntimeError("RemoteEnv is closed")` (`RemoteVectorEnv is closed`) instead of `ConnectionError("not connected")`; `close()` stays idempotent and the accessors keep working.
+- A render frame that does not decode raises `ProtocolException` (a `RuntimeError` subclass) instead of builtin `RuntimeError`.
+- A remote env client's timeouts read `operation timed out after 5s` (the `Duration` of the bound) instead of `remote environment call timed out after 5.000s` / `remote environment connect timed out after 5.000s`.
 
 ## [0.1.0] - 2026-09-23
 

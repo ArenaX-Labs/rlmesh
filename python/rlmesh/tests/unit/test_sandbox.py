@@ -8,6 +8,7 @@ and option handling -- is exercised without Docker.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -50,6 +51,12 @@ class _OkClient:
 
     def handshake(self) -> _Contract:
         return _Contract()
+
+    def env_id(self) -> str:
+        return "env-id"
+
+    def edition_cell(self) -> Any:
+        return SimpleNamespace(get=lambda: "2026.06")
 
     def close(self) -> None:
         pass
@@ -469,6 +476,12 @@ def test_attach_caps_retry_timeout_at_remaining_deadline(
         def handshake(self) -> _Contract:
             return _Contract()
 
+        def env_id(self) -> str:
+            return "env-id"
+
+        def edition_cell(self) -> Any:
+            return SimpleNamespace(get=lambda: "2026.06")
+
         def close(self) -> None:
             pass
 
@@ -541,6 +554,12 @@ def test_sandbox_vector_env_default_mode_is_auto(
 
         def handshake(self) -> _VecContract:
             return _VecContract()
+
+        def env_id(self) -> str:
+            return "env-id"
+
+        def edition_cell(self) -> Any:
+            return SimpleNamespace(get=lambda: "2026.06")
 
         def num_envs(self) -> int:
             return 2

@@ -12,8 +12,7 @@ def _make_numpy_vector_env(*, action_kind: str, num_envs: int) -> Any:
 
     env: Any = RemoteVectorEnv.__new__(RemoteVectorEnv)
     action_space = SimpleNamespace(kind=action_kind)
-    env._env_contract = SimpleNamespace(action_space=action_space)
-    env._client = SimpleNamespace(num_envs=lambda: num_envs)
+    env._env_contract = SimpleNamespace(action_space=action_space, num_envs=num_envs)
     assert isinstance(env, RemoteVectorEnvBase)
     return env
 
@@ -94,64 +93,40 @@ def test_normalize_autoreset_mode_idempotent_on_enum() -> None:
 
 
 class _FakeNativeClient:
-    def __init__(
-        self,
-        *,
-        num_envs: int = 2,
-        handshake_error: Exception | None = None,
-    ) -> None:
+    def __init__(self, *, num_envs: int = 2) -> None:
         self._num_envs = num_envs
-        self._handshake_error = handshake_error
         self.closed = False
 
     def address(self) -> str:
         return "tcp://127.0.0.1:5555"
 
     def handshake(self) -> Any:
-        if self._handshake_error is not None:
-            raise self._handshake_error
         return SimpleNamespace(num_envs=self._num_envs)
+
+    def env_id(self) -> str:
+        return "env-id"
+
+    def edition_cell(self) -> Any:
+        return SimpleNamespace(get=lambda: "2026.06")
 
     def close(self) -> None:
         self.closed = True
 
 
-def test_vector_client_rejects_scalar_endpoint(
+def test_accessors_read_state_cached_at_construction(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The mirror of the scalar client's vector-endpoint rejection: a vector
-    # client on a 1-env endpoint fails at handshake, not later, and closes
-    # the native client.
+    # env_id, num_envs and selected_workflow_edition never borrow the native
+    # client, so they work while another thread holds it in a call (RMT-P5).
     from rlmesh._native import RemoteVectorEnv
 
-    fake = _FakeNativeClient(num_envs=1)
+    fake = _FakeNativeClient(num_envs=3)
     monkeypatch.setattr(RemoteVectorEnv, "_make_client", lambda self, a, c, r, e: fake)
-
-    with pytest.raises(ValueError, match="Use RemoteEnv instead"):
-        RemoteVectorEnv("127.0.0.1:5555")
-    assert fake.closed is True
-
-
-def test_handshake_failure_closes_client_and_names_handshake(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # A handshake failure after a successful connect must close the native
-    # client (no leak) and must not be mislabeled "is the EnvServer running?".
-    from rlmesh._native import RemoteEnv
-
-    fake = _FakeNativeClient(handshake_error=ConnectionError("boom"))
-    monkeypatch.setattr(RemoteEnv, "_make_client", lambda self, a, c, r, e: fake)
-
-    with pytest.raises(ConnectionError, match="handshake failed") as excinfo:
-        RemoteEnv("127.0.0.1:5555")
-    assert "is the EnvServer running" not in str(excinfo.value)
-    assert fake.closed is True
-
-    fake_other = _FakeNativeClient(handshake_error=RuntimeError("proto"))
-    monkeypatch.setattr(RemoteEnv, "_make_client", lambda self, a, c, r, e: fake_other)
-    with pytest.raises(RuntimeError, match="proto"):
-        RemoteEnv("127.0.0.1:5555")
-    assert fake_other.closed is True
+    env = RemoteVectorEnv("127.0.0.1:5555")
+    fake.env_id = None  # type: ignore[method-assign]
+    assert env.env_id == "env-id"
+    assert env.num_envs == 3
+    assert env.selected_workflow_edition == "2026.06"
 
 
 def test_client_timeouts_pass_through_to_native(

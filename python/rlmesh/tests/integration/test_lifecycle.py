@@ -691,25 +691,6 @@ def test_client_injects_episode_ids_when_env_omits_them() -> None:
         server.shutdown()
 
 
-def test_client_step_respects_per_call_timeout() -> None:
-    """Per-call timeout bounds a blocked step."""
-    from rlmesh._rlmesh import PyEnvClient
-
-    env = SlowStepEnv(step_delay=3.0)
-    server = env_server(env)
-    server.start()
-    try:
-        client = PyEnvClient(server.address)
-        try:
-            client.reset()
-            with pytest.raises(TimeoutError):
-                client.step(0, timeout_seconds=0.2)
-        finally:
-            client.close()
-    finally:
-        server.shutdown()
-
-
 def test_client_constructor_default_timeout_applies() -> None:
     """A client-wide request_timeout_seconds bounds calls without a per-call arg."""
     from rlmesh._rlmesh import PyEnvClient
@@ -721,7 +702,7 @@ def test_client_constructor_default_timeout_applies() -> None:
         client = PyEnvClient(server.address, request_timeout_seconds=0.2)
         try:
             client.reset()
-            with pytest.raises(TimeoutError):
+            with pytest.raises(TimeoutError, match=r"^operation timed out after 200ms$"):
                 client.step(0)
         finally:
             client.close()

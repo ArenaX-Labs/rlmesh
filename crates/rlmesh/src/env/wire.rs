@@ -744,10 +744,6 @@ fn public_episode_metadata_to_proto(
     })
 }
 
-pub(super) fn protocol_error_to_error(error: impl ToString) -> crate::Error {
-    crate::Error::Internal(error.to_string())
-}
-
 pub(super) fn proto_episode_metadata_to_public(
     value: rlmesh_proto::env::v1::EpisodeMetadata,
 ) -> std::result::Result<EpisodeMetadata, String> {
@@ -869,7 +865,7 @@ mod tests {
 
     use crate::{BindAddress, Result, ServeOptions};
 
-    use super::super::RemoteVectorEnv as RemoteEnv;
+    use crate::binding::env::EnvClientCore as RemoteEnv;
     use crate::binding::env::{
         RenderResult, VectorCloseResult as CloseResult, VectorEnv,
         VectorResetRequest as ResetRequest, VectorResetResult as ResetResult,
@@ -1302,7 +1298,7 @@ mod tests {
             })
             .await
             .unwrap();
-        let mut final_episodes = client.close().await.unwrap().final_episodes;
+        let mut final_episodes = client.grpc().close().await.unwrap().final_episodes;
         final_episodes.sort_by_key(|episode| episode.env_index);
         assert_eq!(final_episodes.len(), 2);
         assert_eq!(final_episodes[0].env_index, 0);
@@ -1350,7 +1346,7 @@ mod tests {
             })
             .await
             .unwrap();
-        first.detach();
+        first.grpc().detach();
         drop(first);
 
         // The slot frees once the server observes the stream end; retry until

@@ -1477,12 +1477,13 @@ async fn a_declared_edition_no_peer_can_run_is_refused_at_the_env_handshake() {
     let address = bound.local_addr().to_string();
     let server = tokio::spawn(async move { bound.serve().await });
 
-    let connect =
-        crate::RemoteVectorEnv::connect_to(ConnectAddress::parse(&address).unwrap()).await;
+    let connect = crate::binding::env::EnvClientCore::connect(&address).await;
     server.abort();
     let Err(error) = connect else {
         panic!("the env declares an edition this build cannot run")
     };
+    // A refused handshake is the ProtocolException class (RMT-12).
+    assert_eq!(error.class(), crate::ErrorClass::ProtocolException);
     let error = error.to_string();
 
     assert!(
