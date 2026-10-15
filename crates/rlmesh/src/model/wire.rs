@@ -34,14 +34,16 @@ pub(super) fn model_error(message: impl Into<String>) -> join_response::Kind {
 /// `ModelError` per group inside `GroupedPredictResult`) and wrapped by
 /// [`model_error_from_error`] for the single-predict `JoinResponse.error` arm.
 pub(super) fn model_error_value(error: &Error) -> ModelError {
-    // A model error's own message: the client prefixes the code once
-    // (`[INTERNAL] message`), so its `Display` would carry it twice.
+    // An Environment- or Model-class error's raw message, any other error's
+    // text: the client prefixes the code once (COR-27), so `Display` would
+    // carry it twice.
     let (code, is_recoverable, message) = match error {
         Error::Model(model) => (
             ModelErrorCode::Internal,
             model.is_recoverable,
             model.message.clone(),
         ),
+        Error::Environment(env) => (ModelErrorCode::Internal, false, env.message.clone()),
         _ => (ModelErrorCode::Internal, false, error.to_string()),
     };
     ModelError {

@@ -105,6 +105,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ### Changed
 
+- The remote text of a Python env or model failure loses its `{phase} failed: <Type>: ` prefix: an env that raises `ValueError("x")` in `step` reaches the client as `[INTERNAL] x` (it read `[INTERNAL] step failed: ValueError: x`), and an authored `EnvironmentException("bad")` as `[INTERNAL] bad`, as from a Rust, C or C++ env or model. Servers send the raw message and the client adds the code once.
+
 - The experimental C++ wrapper's authored `rlmesh::EnvironmentException("bad")`, `RecoverableEnvironmentException("bad")` and `ModelException("bad")` read `[INTERNAL] bad` from `what()`, as Python's `str()` and Rust's `Display` of the same error; thrown from a callback, the peer still receives the message once prefixed.
 
 - `str()` of an authored env or model exception gains its code prefix: `EnvironmentException("bad")`, `RecoverableEnvironmentException("bad")` and `ModelException("bad")` read `[INTERNAL] bad`, as the same error reads in Rust, C and C++ and once it crosses the wire. `args[0]` is the raw message, including on the exceptions the clients raise, whose `str()` is unchanged.

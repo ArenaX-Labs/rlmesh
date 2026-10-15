@@ -91,24 +91,11 @@ pub(crate) fn raw_exception_text(value: &Bound<'_, PyAny>) -> String {
     raw.unwrap_or_default()
 }
 
-/// `TypeName: message` for an error crossing to the wire, with an
-/// environment or model exception's raw message (its code travels apart).
+/// The wire message of an author's exception (COR-27): an environment or
+/// model exception's raw message, `str(exc)` for any other; no phase or type
+/// name, since the receiver adds `[CODE] ` once.
 pub(crate) fn py_err_text(err: &PyErr) -> String {
-    Python::attach(|py| {
-        let value = err.value(py);
-        if value.is_instance_of::<EnvironmentException>()
-            || value.is_instance_of::<ModelException>()
-        {
-            let name = value
-                .get_type()
-                .name()
-                .map(|name| name.to_string())
-                .unwrap_or_default();
-            format!("{name}: {}", raw_exception_text(value))
-        } else {
-            err.to_string()
-        }
-    })
+    Python::attach(|py| raw_exception_text(err.value(py)))
 }
 
 /// Convert rlmesh facade Error to Python exception.
@@ -201,7 +188,7 @@ pub(crate) fn model_callback_error(err: &PyErr) -> Error {
                 is_recoverable,
             })
         } else {
-            Error::Internal(err.to_string())
+            Error::Internal(raw_exception_text(value))
         }
     })
 }
