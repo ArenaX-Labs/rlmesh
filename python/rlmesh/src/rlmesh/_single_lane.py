@@ -19,6 +19,36 @@ def _mode_name(mode: object) -> str:
     return str(getattr(mode, "name", mode)).upper()
 
 
+def _check_autoreset_mode(mode: object) -> None:
+    """Hold a present ``autoreset_mode`` to the rule every served env follows.
+
+    It must be a gymnasium ``AutoresetMode`` or ``"NextStep"`` / ``"Disabled"``.
+    """
+    if mode is None:
+        raise ValueError(
+            'metadata["autoreset_mode"] is present but None; set it to a gymnasium '
+            'AutoresetMode enum or one of "NextStep"/"SameStep"/"Disabled", or omit '
+            "the key entirely to default to DISABLED"
+        )
+    if _mode_name(mode) == "SAME_STEP" or getattr(mode, "value", mode) == "SameStep":
+        raise ValueError(
+            "a one-lane vector env with SAME_STEP autoreset returns the next "
+            "episode's first observation in place of the terminal one; "
+            "construct it with NEXT_STEP autoreset"
+        )
+    value = getattr(mode, "value", mode)
+    if not isinstance(value, str):
+        raise ValueError(
+            'metadata["autoreset_mode"] must be a gymnasium AutoresetMode enum or one '
+            f'of "NextStep"/"SameStep"/"Disabled", got {mode!r}'
+        )
+    if value not in ("NextStep", "Disabled"):
+        raise ValueError(
+            f'unrecognized metadata["autoreset_mode"] {value!r}; expected a gymnasium '
+            'AutoresetMode enum or one of "NextStep"/"SameStep"/"Disabled"'
+        )
+
+
 class SingleLaneEnv:
     """A scalar view of a vectorized env with ``num_envs == 1``.
 
@@ -30,13 +60,8 @@ class SingleLaneEnv:
 
     def __init__(self, env: Any):
         metadata: dict[str, Any] = dict(getattr(env, "metadata", None) or {})
-        mode = metadata.get(_AUTORESET_KEY)
-        if mode is not None and _mode_name(mode) == "SAME_STEP":
-            raise ValueError(
-                "a one-lane vector env with SAME_STEP autoreset returns the next "
-                "episode's first observation in place of the terminal one; "
-                "construct it with NEXT_STEP autoreset"
-            )
+        if _AUTORESET_KEY in metadata:
+            _check_autoreset_mode(metadata[_AUTORESET_KEY])
         self.env = env
         self.observation_space = env.single_observation_space
         self.action_space = env.single_action_space

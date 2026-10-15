@@ -319,7 +319,12 @@ def test_envserver_vector_tags_skip_space_validation(
 
     with pytest.raises(_StopError):
         rlmesh.EnvServer(
-            cast("Any", SimpleNamespace(num_envs=2)),
+            cast(
+                "Any",
+                SimpleNamespace(
+                    num_envs=2, single_observation_space=0, single_action_space=0
+                ),
+            ),
             "127.0.0.1:0",
             tags=cast("Any", object()),
         )
@@ -327,7 +332,9 @@ def test_envserver_vector_tags_skip_space_validation(
 
     with pytest.raises(_StopError):
         rlmesh.EnvServer(
-            cast("Any", SimpleNamespace()), "127.0.0.1:0", tags=cast("Any", object())
+            cast("Any", SimpleNamespace(observation_space=0, action_space=0)),
+            "127.0.0.1:0",
+            tags=cast("Any", object()),
         )
     assert captured["validate"] is True
 

@@ -117,6 +117,27 @@ pub struct PyEnvironment {
     /// so Rust hands/keeps native Tensor leaves and never touches numpy/torch.
     value_backend: ValueBackend,
     dispatch: Dispatch,
+    /// The server this env is served by (0 before one is built), so a
+    /// `shutdown()` from inside its own callback only triggers the drain.
+    server_id: u64,
+}
+
+thread_local! {
+    /// The server whose env callback this thread is running (0 when none).
+    static IN_SERVER_CALLBACK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Whether this thread is inside an env callback of server `id`.
+pub fn in_server_callback(id: u64) -> bool {
+    id != 0 && IN_SERVER_CALLBACK.with(std::cell::Cell::get) == id
+}
+
+/// Run `work` marked as a callback of server `id`.
+fn as_server_callback<R>(id: u64, work: impl FnOnce() -> R) -> R {
+    let previous = IN_SERVER_CALLBACK.with(|cell| cell.replace(id));
+    let result = work();
+    IN_SERVER_CALLBACK.with(|cell| cell.set(previous));
+    result
 }
 
 /// A Python call queued for the foreground thread (see [`Dispatch::Foreground`]).
@@ -172,6 +193,26 @@ impl PyServerEnv {
             PyServerEnv::Vector(env) => &mut env.0,
         };
         env.dispatch = Dispatch::Foreground(jobs);
+    }
+
+    /// Mark every env's callbacks as server `id`'s.
+    pub fn set_server_id(&mut self, id: u64) {
+        match self {
+            PyServerEnv::Lanes(lanes) => lanes.iter_mut().for_each(|lane| lane.0.server_id = id),
+            PyServerEnv::Vector(env) => env.0.server_id = id,
+        }
+    }
+
+    /// Route a vector env's Python calls through `jobs` (one dedicated thread
+    /// for a background serve); lanes are already pinned to their threads.
+    pub fn dispatch_vector(&mut self, jobs: std::sync::mpsc::Sender<ForegroundJob>) -> bool {
+        match self {
+            PyServerEnv::Vector(env) => {
+                env.0.dispatch = Dispatch::Foreground(jobs);
+                true
+            }
+            PyServerEnv::Lanes(_) => false,
+        }
     }
 
     pub fn env_contract(&self) -> &EnvContract {
@@ -258,6 +299,13 @@ impl PyEnvironment {
                 "action_space"
             };
 
+            for attr in [obs_space_attr, action_space_attr] {
+                if !env_ref.hasattr(attr)? {
+                    return Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(format!(
+                        "env must have '{attr}'"
+                    )));
+                }
+            }
             let obs_space_py = env_ref.getattr(obs_space_attr)?;
             let action_space_py = env_ref.getattr(action_space_attr)?;
 
@@ -295,6 +343,7 @@ impl PyEnvironment {
                 num_envs,
                 uses_vector_api,
                 dispatch: Dispatch::Pool,
+                server_id: 0,
                 profiler,
                 last_phases: EndpointPhases::default(),
                 policy: validation_policy_from_env(),
@@ -435,12 +484,19 @@ fn py_err_is_recoverable(error: &PyErr) -> bool {
 /// Run `work` under the GIL where `dispatch` says, mapping a lost reply or a
 /// `PyErr` through `into_err` (with whether the error is recoverable). Wraps
 /// the boilerplate every reset/step/render/close body shares.
-async fn spawn_py<T, E, W, M>(dispatch: Dispatch, phase: &str, work: W, into_err: M) -> Result<T, E>
+async fn spawn_py<T, E, W, M>(
+    dispatch: Dispatch,
+    server_id: u64,
+    phase: &str,
+    work: W,
+    into_err: M,
+) -> Result<T, E>
 where
     T: Send + 'static,
     W: FnOnce(Python<'_>) -> PyResult<T> + Send + 'static,
     M: Fn(String, bool) -> E,
 {
+    let work = move |py: Python<'_>| as_server_callback(server_id, || work(py));
     let result = match dispatch {
         Dispatch::Pinned => Python::attach(work),
         Dispatch::Pool => tokio::task::spawn_blocking(move || Python::attach(work))
@@ -457,7 +513,13 @@ where
                 .map_err(|_| into_err(format!("{phase}: the serving thread has stopped"), false))?
         }
     };
-    result.map_err(|e: PyErr| into_err(crate::types::py_err_text(&e), py_err_is_recoverable(&e)))
+    // ENV-35: `{phase} failed: {message}`, the message without a class name.
+    result.map_err(|e: PyErr| {
+        into_err(
+            format!("{phase} failed: {}", crate::types::py_err_text(&e)),
+            py_err_is_recoverable(&e),
+        )
+    })
 }
 
 /// Reset `options` reached an env whose `reset` takes no such parameter; latched
@@ -546,6 +608,7 @@ impl PyEnvironment {
 
         let (observation, mut info, phases) = spawn_py(
             self.dispatch.clone(),
+            self.server_id,
             "reset",
             move |py| {
                 let env_ref = env.bind(py);
@@ -636,6 +699,7 @@ impl PyEnvironment {
 
         let (observation, reward, terminated, truncated, mut info, phases) = spawn_py(
             self.dispatch.clone(),
+            self.server_id,
             "step",
             move |py| {
                 let env_ref = env.bind(py);
@@ -729,6 +793,7 @@ impl PyEnvironment {
 
         let (result, phases) = spawn_py(
             self.dispatch.clone(),
+            self.server_id,
             "render",
             move |py| {
                 let env_ref = env.bind(py);
@@ -775,6 +840,7 @@ impl PyEnvironment {
 
         spawn_py(
             self.dispatch.clone(),
+            self.server_id,
             "close",
             move |py| {
                 let env_ref = env.bind(py);
@@ -808,6 +874,7 @@ impl PyEnvironment {
 
         let (observations, mut info, obs_bytes, phases) = spawn_py(
             self.dispatch.clone(),
+            self.server_id,
             "reset",
             move |py| {
                 let env_ref = env.bind(py);
@@ -923,6 +990,7 @@ impl PyEnvironment {
             phases,
         ) = spawn_py(
             self.dispatch.clone(),
+            self.server_id,
             "step",
             move |py| {
                 let env_ref = env.bind(py);
@@ -1023,6 +1091,7 @@ impl PyEnvironment {
 
         let (result, phases) = spawn_py(
             self.dispatch.clone(),
+            self.server_id,
             "render",
             move |py| {
                 let env_ref = env.bind(py);
@@ -1068,6 +1137,7 @@ impl PyEnvironment {
 
         spawn_py(
             self.dispatch.clone(),
+            self.server_id,
             "close",
             move |py| {
                 let env_ref = env.bind(py);

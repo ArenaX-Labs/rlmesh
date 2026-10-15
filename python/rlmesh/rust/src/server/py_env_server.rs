@@ -68,6 +68,7 @@ enum ServerState {
 #[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(module = "rlmesh._rlmesh")]
 pub struct PyEnvServer {
+    id: u64,
     state: StdMutex<ServerState>,
     address: String,
     env_contract: EnvContract,
@@ -141,8 +142,10 @@ pub struct PyVectorEnvServer {
     inner: PyEnvServer,
 }
 
+static NEXT_SERVER_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 fn construct_server(
-    py_env: PyServerEnv,
+    mut py_env: PyServerEnv,
     address: Option<&str>,
     options: Option<PyServeOptions>,
     close_env_on_shutdown: bool,
@@ -153,6 +156,8 @@ fn construct_server(
     let options = options.map(PyServeOptions::into_rust).unwrap_or_default();
     let token = rlmesh::binding::env_endpoint_token().map_err(to_py_err)?;
     let shutdown = ShutdownTrigger::new();
+    let id = NEXT_SERVER_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    py_env.set_server_id(id);
 
     // The served contract is one lane's contract at the served width (lane 0's
     // spaces; the wire handshake stamps the same num_envs).
@@ -239,6 +244,7 @@ fn construct_server(
     };
 
     Ok(PyEnvServer {
+        id,
         address,
         env_contract,
         state: StdMutex::new(ServerState::Ready(Box::new(ServerResources {
@@ -318,7 +324,7 @@ impl PyEnvServer {
         *state = ServerState::Stopped;
         drop(state);
 
-        result.map_err(py_runtime_err)
+        result.map_err(serve_failed)
     }
 
     /// Start serving on a background thread.
@@ -369,6 +375,12 @@ impl PyEnvServer {
     /// Shutdown the server.
     fn shutdown(&self, py: Python<'_>) -> PyResult<()> {
         self.shutdown.trigger("local shutdown");
+        // From inside one of this server's own env callbacks, only trigger the
+        // drain: joining here would wait on this very callback (ENV-P2). The
+        // owner's wait() or shutdown() then observes the stop.
+        if super::py_environment::in_server_callback(self.id) {
+            return Ok(());
+        }
 
         enum ShutdownAction {
             None,
@@ -391,41 +403,21 @@ impl PyEnvServer {
             ShutdownAction::None => Ok(()),
             ShutdownAction::Cleanup(resources) => py
                 .detach(|| cleanup_ready_resources(*resources))
-                .map_err(py_runtime_err),
+                .map_err(serve_failed),
             ShutdownAction::Join(handle) => py.detach(|| join_background_server(handle)),
         }
     }
 }
 
 async fn shutdown_signal() -> &'static str {
-    #[cfg(unix)]
-    {
-        use tokio::signal::unix::{SignalKind, signal};
-        let mut sigterm = signal(SignalKind::terminate()).expect("install SIGTERM handler");
-
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
-                tracing::info!(pid = std::process::id(), "shutdown requested via SIGINT");
-                "sigint"
-            }
-            _ = sigterm.recv() => {
-                tracing::info!(
-                    pid = std::process::id(),
-                    "shutdown requested via SIGTERM; stopping EnvServer"
-                );
-                "sigterm"
-            }
-        }
-    }
-
-    #[cfg(not(unix))]
-    {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("install Ctrl+C handler");
-        tracing::info!(pid = std::process::id(), "shutdown requested via Ctrl+C");
-        "ctrl_c"
-    }
+    // SIGTERM is the native scoped installation (`run_server`), restored when
+    // the foreground serve returns (ENV-P8); SIGINT stays Python's, plus this
+    // watcher for a serve off the main thread.
+    tokio::signal::ctrl_c()
+        .await
+        .expect("install Ctrl+C handler");
+    tracing::info!(pid = std::process::id(), "shutdown requested via SIGINT");
+    "sigint"
 }
 
 pub(crate) fn spawn_signal_shutdown(shutdown: ShutdownTrigger) {
@@ -606,6 +598,19 @@ fn run_server(
         env.dispatch_foreground(tx);
         rx
     });
+    // A background vector env runs every call on one dedicated plain thread
+    // for the server's life, as a lane does (ENV-P7), never on the blocking
+    // pool; the thread ends once the server drops the env.
+    if !foreground {
+        let (tx, rx) = std::sync::mpsc::channel();
+        if env.dispatch_vector(tx) {
+            std::thread::Builder::new()
+                .name("rlmesh-vector-env".to_string())
+                .spawn(move || run_foreground(rx, || {}))
+                .map_err(|e| format!("failed to spawn the vector env thread: {e}"))?;
+        }
+    }
+    let sigterm = foreground.then(|| rlmesh::binding::foreground_sigterm_scope(shutdown.clone()));
     let signal_shutdown = shutdown.clone();
 
     let serve = move || {
@@ -658,9 +663,11 @@ fn run_server(
             signal_shutdown.trigger("sigint");
         }
     });
-    server
+    let result = server
         .join()
-        .unwrap_or_else(|_| Err("server thread panicked".to_string()))
+        .unwrap_or_else(|_| Err("server thread panicked".to_string()));
+    drop(sigterm);
+    result
 }
 
 async fn run_env_server<E>(
@@ -747,7 +754,7 @@ where
     await_close_with_timeout(close, close_timeout)
         .await
         .map_err(|timeout| format!("close timed out after {}ms", timeout.as_millis()))?
-        .map_err(|err| err.to_string())
+        .map_err(|err| err.message)
 }
 
 fn cleanup_ready_resources(resources: ServerResources) -> ServeResult {
@@ -779,14 +786,28 @@ fn cleanup_ready_resources(resources: ServerResources) -> ServeResult {
         await_close_with_timeout(env.close(), close_timeout)
             .await
             .map_err(|timeout| format!("close timed out after {}ms", timeout.as_millis()))?
-            .map_err(|err| err.to_string())
+            .map_err(|err| match err {
+                rlmesh_spaces::errors::EnvRuntimeError::Runtime(message)
+                | rlmesh_spaces::errors::EnvRuntimeError::Recoverable(message)
+                | rlmesh_spaces::errors::EnvRuntimeError::InvalidValue(message)
+                | rlmesh_spaces::errors::EnvRuntimeError::InvalidSpace(message) => message,
+                other => other.to_string(),
+            })
     })
 }
 
 fn join_background_server(handle: JoinHandle<ServeResult>) -> PyResult<()> {
     match handle.join() {
         Ok(Ok(())) => Ok(()),
-        Ok(Err(err)) => Err(py_runtime_err(format!("serve failed: {}", err))),
-        Err(_) => Err(py_runtime_err("background server thread panicked")),
+        Ok(Err(err)) => Err(serve_failed(err)),
+        Err(_) => Err(serve_failed(
+            "the background server thread panicked".to_string(),
+        )),
     }
+}
+
+/// A failed serve or close: `RLMeshException("serve failed: <message>")`,
+/// from `serve()`, `wait()` and `shutdown()` alike (ENV-P1).
+fn serve_failed(message: String) -> PyErr {
+    crate::types::RLMeshException::new_err(format!("serve failed: {message}"))
 }

@@ -59,6 +59,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ### Fixed
 
+- `EnvServer.shutdown()` called from inside one of the server's own env callbacks under `start()` triggers the drain and returns, as it already did under `serve()`; the owner's `wait()` or `shutdown()` reports the stop. Before, it waited on its own callback and failed with `serve failed: close timed out` after both 5 s caps.
+
+- A vector env served with `start()` runs every call on one dedicated thread for the server's life, as each lane already did, so a thread-bound vector env (a GL context) works there; before, its calls could hop threads on the blocking pool.
+
+- A foreground `EnvServer.serve()` restores the process's SIGTERM disposition when it returns; before, its SIGTERM handler was never removed, so a later SIGTERM no longer ended the process.
+
 - `Model.serve(address, options=ServeOptions(workflow_edition=X))` declares `X` even when `RLMESH_WORKFLOW_EDITION` is set, as `EnvServer` and the method's own docstring already did: the options' edition is the serve call's own value. Before, the environment variable won.
 
 - A `Model(policy)` wrapping a policy object reads its workflow edition from the policy's class (`type(policy).workflow_edition`) for `run`, `session` and `serve`, and, when that class declares none, warns once with `WorkflowEditionWarning` as a `Model` subclass does. Before, it read the `rlmesh.Model` wrapper's `None` and never warned. A `Model` wrapping a bare predict callable still floats quietly.
@@ -107,7 +113,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ### Changed
 
-- The remote text of a Python env or model failure loses its `{phase} failed: <Type>: ` prefix: an env that raises `ValueError("x")` in `step` reaches the client as `[INTERNAL] x` (it read `[INTERNAL] step failed: ValueError: x`), and an authored `EnvironmentException("bad")` as `[INTERNAL] bad`, as from a Rust, C or C++ env or model. Servers send the raw message and the client adds the code once.
+- The remote text of a Python env failure is `{op} failed: {message}` with no type name: an env that raises `ValueError("x")` in `step` reaches the client as `[INTERNAL] step failed: x` (it read `[INTERNAL] step failed: ValueError: x`), and an authored `EnvironmentException("bad")` as `[INTERNAL] step failed: bad`, as from a Rust, C or C++ env; a model failure reaches the client as `[INTERNAL] x`. Servers send the message without the code and the client adds it once.
+
+- `EnvServer` raises `RLMeshException` (a `RuntimeError`) for a failed serve or close, from `serve()`, `wait()` and `shutdown()` alike, with the one text `serve failed: <message>` (`serve failed: close failed: boom`, `serve failed: close timed out after 5000ms`); a foreground `serve()` failure gains the `serve failed: ` prefix it lacked. Misuse (`wait()` before `start()`, a second `serve()`) stays `RuntimeError`.
+
+- `EnvServer(path=..., transport="tcp")` raises `ValueError` instead of silently binding `unix://<path>`.
+
+- An env without its observation or action space (or `single_*` spaces for a vector env) raises `TypeError` (`env must have 'observation_space'`) from `EnvServer(...)`, checked first: before, it leaked `AttributeError`, or `AdapterResolutionError` when tags were given.
+
+- A one-lane vector env's `metadata["autoreset_mode"]` is checked as any env's is before the scalar view strips it: a present `None`, a non-string, an unknown string or `"SameStep"` raises `ValueError` (before, only a `SAME_STEP` enum was refused).
+
+- `rlmesh.trial_index(options)` returns `None` for an integral float outside `[-2**63, 2**63)` (`1e19`), as the native languages do, instead of an integer past int64.
+
 
 - The experimental C++ wrapper's authored `rlmesh::EnvironmentException("bad")`, `RecoverableEnvironmentException("bad")` and `ModelException("bad")` read `[INTERNAL] bad` from `what()`, as Python's `str()` and Rust's `Display` of the same error; thrown from a callback, the peer still receives the message once prefixed.
 

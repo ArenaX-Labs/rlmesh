@@ -748,9 +748,9 @@ def test_recoverable_env_error_keeps_the_session() -> None:
             remote.step(0)
         assert recoverable.value.is_recoverable is True
         assert recoverable.value.code == "INTERNAL"
-        # The wire carries the raw message and the client adds the code once,
-        # with no phase or type name (COR-P8, COR-P11).
-        assert str(recoverable.value) == "[INTERNAL] solver hiccup"
+        # The client reads `{op} failed: {message}` with the code added once
+        # and no type name (ENV-35, ENV-P6).
+        assert str(recoverable.value) == "[INTERNAL] step failed: solver hiccup"
         remote.step(0)  # same session, no reset
 
         env.fail_with = RuntimeError("solver diverged")
@@ -760,7 +760,7 @@ def test_recoverable_env_error_keeps_the_session() -> None:
             remote.step(0)
         assert fatal.value.is_recoverable is False
         assert not isinstance(fatal.value, rlmesh.RecoverableEnvironmentException)
-        assert str(fatal.value) == "[INTERNAL] solver diverged"
+        assert str(fatal.value) == "[INTERNAL] step failed: solver diverged"
         with pytest.raises(
             rlmesh.EnvironmentException, match="reset to start a new session"
         ):

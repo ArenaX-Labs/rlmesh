@@ -167,3 +167,12 @@ pub fn env_contract_from_wire(wire: &rlmesh_spaces::EnvContract) -> Result<crate
 pub fn env_contract_to_wire(contract: &crate::EnvContract) -> Result<rlmesh_spaces::EnvContract> {
     contract.to_wire()
 }
+
+/// ENV-11's scoped signal installation for the Python binding's foreground
+/// serve: SIGTERM stops the server through `trigger` and the previous
+/// disposition is restored when the scope drops; SIGINT stays Python's.
+pub fn foreground_sigterm_scope(
+    trigger: rlmesh_grpc::lifecycle::ShutdownTrigger,
+) -> crate::env::signals::SignalScope {
+    crate::env::signals::enter_with(trigger, false)
+}
