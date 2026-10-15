@@ -43,6 +43,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ### Fixed
 
+- An integer `Box` samples in its dtype's exact integer domain instead of through `float`: a `uint64` Box with bounds above 2^63 no longer saturates at 2^63 - 1, and `int64`/`uint64` bounds beyond 2^53 no longer round. Samples of integer Boxes whose bounds are exact as floats, and of bool Boxes, are unchanged.
+
 - Model and env servers disable Nagle's algorithm on accepted TCP connections, which removed a ~40 ms stall on some env steps.
 
 - Served model endpoints enforce `RLMESH_MODEL_ENDPOINT_TOKEN` when set, taking precedence over token options. Empty or invalid environment values fail startup instead of disabling authentication, as does a token no client could send in an HTTP header (leading or trailing whitespace such as a secret file's trailing newline, or control or non-ASCII characters): the error names the variable and the problem, and the value is never trimmed.
