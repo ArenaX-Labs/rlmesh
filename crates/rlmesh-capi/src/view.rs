@@ -107,7 +107,10 @@ pub unsafe extern "C" fn rlmesh_view_equals(
     b: *const RLMeshView,
     out: *mut bool,
 ) -> RLMeshStatus {
-    guard(|| write_out(out, unsafe { required(a) }? == unsafe { required(b) }?))
+    guard(|| unsafe {
+        /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+        write_out(out, { required(a) }? == { required(b) }?)
+    })
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_view_repr(

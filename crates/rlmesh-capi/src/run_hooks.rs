@@ -142,7 +142,10 @@ pub unsafe extern "C" fn rlmesh_run_context_new(
     out: *mut *mut RLMeshRunContext,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
         let v = unsafe { sizing::read(v, "RLMeshRunContextVtable") }?
             .ok_or_else(|| CapiError::invalid_arg("null vtable"))?;
         if v.contract.is_none()
@@ -154,14 +157,17 @@ pub unsafe extern "C" fn rlmesh_run_context_new(
                 "context requires contract, num_envs, read and frame_sources callbacks",
             ));
         }
-        write_out(
-            out,
-            Box::into_raw(Box::new(RLMeshRunContext(Arc::new(Context {
-                v,
-                user: user as usize,
-                busy: Mutex::new(()),
-            })))),
-        )
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                Box::into_raw(Box::new(RLMeshRunContext(Arc::new(Context {
+                    v,
+                    user: user as usize,
+                    busy: Mutex::new(()),
+                })))),
+            )
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -190,18 +196,24 @@ pub unsafe extern "C" fn rlmesh_run_context_contract(
     out: *mut *mut RLMeshEnvContract,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
         let c = unsafe { p.as_ref() }
             .ok_or_else(|| CapiError::invalid_arg("null context"))?
             .0
             .contract()?;
         if let Some(c) = c {
-            write_out(
-                out,
-                Box::into_raw(Box::new(RLMeshEnvContract::new(
-                    rlmesh::binding::env_contract_to_wire(&c)?,
-                ))),
-            )?;
+            unsafe {
+                /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+                write_out(
+                    out,
+                    Box::into_raw(Box::new(RLMeshEnvContract::new(
+                        rlmesh::binding::env_contract_to_wire(&c)?,
+                    ))),
+                )
+            }?;
         }
         Ok(())
     })
@@ -215,13 +227,16 @@ pub unsafe extern "C" fn rlmesh_run_context_num_envs(
         if out.is_null() {
             return Err(CapiError::invalid_arg("null out"));
         }
-        write_out(
-            out,
-            unsafe { p.as_ref() }
-                .ok_or_else(|| CapiError::invalid_arg("null context"))?
-                .0
-                .num_envs()?,
-        )
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                { p.as_ref() }
+                    .ok_or_else(|| CapiError::invalid_arg("null context"))?
+                    .0
+                    .num_envs()?,
+            )
+        }
     })
 }
 #[repr(C)]
@@ -249,17 +264,34 @@ unsafe fn event(p: *const RLMeshStepEvent) -> Result<StepEvent, CapiError> {
         episode: e.episode,
         seed: e.has_seed.then_some(e.seed),
         step: e.step,
-        observation: value_ref(e.observation)?.clone(),
-        action: value_ref(e.action)?.clone(),
+        observation: unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            value_ref(e.observation)
+        }?
+        .clone(),
+        action: unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            value_ref(e.action)
+        }?
+        .clone(),
         reward: e.reward,
         terminated: e.terminated,
         truncated: e.truncated,
-        info: value_ref(e.info)?.as_dict()?.clone(),
+        info: unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            value_ref(e.info)
+        }?
+        .as_dict()?
+        .clone(),
         predict_ms: e.predict_ms,
         step_ms: e.step_ms,
         read: {
             let context = unsafe { e.context.as_ref() }.cloned();
-            let observation = value_ref(e.observation)?.clone();
+            let observation = unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                value_ref(e.observation)
+            }?
+            .clone();
             Arc::new(move |item| {
                 context
                     .as_ref()
@@ -291,7 +323,10 @@ pub unsafe extern "C" fn rlmesh_step_event_equals(
         if unsafe { (*a).context == (*b).context && (*a).observation == (*b).observation } {
             right.read = Arc::clone(&left.read);
         }
-        write_out(out, left == right)
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, left == right)
+        }
     })
 }
 #[repr(C)]
@@ -433,18 +468,24 @@ pub unsafe extern "C" fn rlmesh_run_hooks_new(
     out: *mut *mut RLMeshRunHooks,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
         let v = unsafe { sizing::read(v, "RLMeshRunHooksVtable") }?
             .ok_or_else(|| CapiError::invalid_arg("null vtable"))?;
-        write_out(
-            out,
-            Box::into_raw(Box::new(RLMeshRunHooks(Mutex::new(Hooks {
-                v,
-                user: user as usize,
-                context: None,
-                native: None,
-            })))),
-        )
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                Box::into_raw(Box::new(RLMeshRunHooks(Mutex::new(Hooks {
+                    v,
+                    user: user as usize,
+                    context: None,
+                    native: None,
+                })))),
+            )
+        }
     })
 }
 pub(crate) fn native(hooks: Box<dyn RunHooks>) -> RLMeshRunHooks {
@@ -532,7 +573,10 @@ pub unsafe extern "C" fn rlmesh_run_hooks_on_run_end(
 ) -> RLMeshStatus {
     guard(|| {
         hooks(p)?
-            .on_run_end(crate::run_results::require(r)?)
+            .on_run_end(unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                crate::run_results::require(r)
+            }?)
             .map_err(Into::into)
     })
 }

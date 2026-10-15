@@ -319,7 +319,10 @@ pub unsafe extern "C" fn rlmesh_session_new(
     out: *mut *mut RLMeshSession,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
         let mut options = rlmesh::SessionOptions::default();
         if let Some(o) = unsafe { sizing::read(o, "RLMeshSessionOptions") }? {
             if o._reserved != 0 {
@@ -339,18 +342,21 @@ pub unsafe extern "C" fn rlmesh_session_new(
         let session = rlmesh::session(model, unsafe { backing.target(e) }?, options)?;
         let cancel = session.cancel_handle();
         let done = session.done();
-        write_out(
-            out,
-            Box::into_raw(Box::new(RLMeshSession {
-                roles: std::sync::OnceLock::new(),
-                state: Arc::new(Mutex::new(State {
-                    session: Some(session),
-                    backing,
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                Box::into_raw(Box::new(RLMeshSession {
+                    roles: std::sync::OnceLock::new(),
+                    state: Arc::new(Mutex::new(State {
+                        session: Some(session),
+                        backing,
+                    })),
+                    done: AtomicBool::new(done),
+                    cancel,
                 })),
-                done: AtomicBool::new(done),
-                cancel,
-            })),
-        )
+            )
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -371,16 +377,28 @@ pub unsafe extern "C" fn rlmesh_session_reset(
     info: *mut *mut RLMeshValue,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(obs, std::ptr::null_mut())?;
-        write_out(info, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(obs, std::ptr::null_mut())
+        }?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(info, std::ptr::null_mut())
+        }?;
         let (v, i) = with(p, |s| {
             Ok(s.reset(
                 unsafe { seed.as_ref() }.copied(),
                 unsafe { trial.as_ref() }.copied(),
             )?)
         })?;
-        write_out(obs, into_handle(v))?;
-        write_out(info, into_handle(rlmesh::Value::Dict(i)))
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(obs, into_handle(v))
+        }?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(info, into_handle(rlmesh::Value::Dict(i)))
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -390,9 +408,23 @@ pub extern "C" fn rlmesh_session_predict(
     out: *mut *mut RLMeshValue,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
-        let v = with(p, |s| Ok(s.predict(value_ref(obs)?.clone())?))?;
-        write_out(out, into_handle(v))
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
+        let v = with(p, |s| {
+            Ok(s.predict(
+                unsafe {
+                    // SAFETY: the FFI contract supplies live handles and writable output storage.
+                    value_ref(obs)
+                }?
+                .clone(),
+            )?)
+        })?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, into_handle(v))
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -406,17 +438,46 @@ pub extern "C" fn rlmesh_session_step(
     info: *mut *mut RLMeshValue,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(obs, std::ptr::null_mut())?;
-        write_out(info, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(obs, std::ptr::null_mut())
+        }?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(info, std::ptr::null_mut())
+        }?;
         if reward.is_null() || terminated.is_null() || truncated.is_null() {
             return Err(CapiError::invalid_arg("null step output"));
         }
-        let (v, r, t, u, i) = with(p, |s| Ok(s.step(value_ref(action)?.clone())?))?;
-        write_out(obs, into_handle(v))?;
-        write_out(reward, r)?;
-        write_out(terminated, t)?;
-        write_out(truncated, u)?;
-        write_out(info, into_handle(rlmesh::Value::Dict(i)))
+        let (v, r, t, u, i) = with(p, |s| {
+            Ok(s.step(
+                unsafe {
+                    // SAFETY: the FFI contract supplies live handles and writable output storage.
+                    value_ref(action)
+                }?
+                .clone(),
+            )?)
+        })?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(obs, into_handle(v))
+        }?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(reward, r)
+        }?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(terminated, t)
+        }?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(truncated, u)
+        }?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(info, into_handle(rlmesh::Value::Dict(i)))
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -426,7 +487,10 @@ pub unsafe extern "C" fn rlmesh_session_run(
     out: *mut *mut RLMeshRunResult,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
         let mut options = rlmesh::SessionRunOptions::default();
         let o = unsafe { sizing::read(o, "RLMeshSessionRunOptions") }?;
         let mut hooks = unsafe { run_hooks::borrow(o.map_or(std::ptr::null_mut(), |o| o.hooks)) }?;
@@ -470,13 +534,16 @@ pub extern "C" fn rlmesh_session_done(p: *const RLMeshSession, out: *mut bool) -
         if own_hook(p).is_some() {
             return Err(runtime("done is unavailable from this session's hooks"));
         }
-        write_out(
-            out,
-            unsafe { p.as_ref() }
-                .ok_or_else(|| CapiError::invalid_arg("null session"))?
-                .done
-                .load(Ordering::Acquire),
-        )
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                { p.as_ref() }
+                    .ok_or_else(|| CapiError::invalid_arg("null session"))?
+                    .done
+                    .load(Ordering::Acquire),
+            )
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -485,19 +552,25 @@ pub extern "C" fn rlmesh_session_contract(
     out: *mut *mut RLMeshEnvContract,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
         let c = if let Some(c) = own_hook(p) {
             c.0.contract()?
                 .ok_or_else(|| runtime("session is not connected"))?
         } else {
             with(p, |s| Ok(s.contract()?.clone()))?
         };
-        write_out(
-            out,
-            Box::into_raw(Box::new(RLMeshEnvContract::new(
-                rlmesh::binding::env_contract_to_wire(&c)?,
-            ))),
-        )
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                Box::into_raw(Box::new(RLMeshEnvContract::new(
+                    rlmesh::binding::env_contract_to_wire(&c)?,
+                ))),
+            )
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -511,7 +584,10 @@ pub extern "C" fn rlmesh_session_num_envs(p: *mut RLMeshSession, out: *mut u64) 
         } else {
             with(p, |s| Ok(s.num_envs()?))?
         };
-        write_out(out, n)
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, n)
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -532,9 +608,15 @@ pub extern "C" fn rlmesh_session_run_context(
     out: *mut *mut RLMeshRunContext,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
         let c = with(p, |s| Ok(s.run_context()?))?;
-        write_out(out, Box::into_raw(Box::new(RLMeshRunContext(c))))
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, Box::into_raw(Box::new(RLMeshRunContext(c))))
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -543,12 +625,18 @@ pub extern "C" fn rlmesh_session_cancel_handle(
     out: *mut *mut RLMeshExtCancelToken,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
         let h = unsafe { p.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null session"))?;
-        write_out(
-            out,
-            Box::into_raw(Box::new(RLMeshExtCancelToken(h.cancel.clone()))),
-        )
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                Box::into_raw(Box::new(RLMeshExtCancelToken(h.cancel.clone()))),
+            )
+        }
     })
 }
 #[unsafe(no_mangle)]

@@ -210,7 +210,10 @@ pub unsafe extern "C" fn rlmesh_remote_env_new(
     out: *mut *mut RLMeshRemoteEnv,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
         let c = RemoteEnv::new(unsafe { env_options(o) }?)?;
         env_output(c, out)
     })
@@ -226,13 +229,16 @@ fn env_output(c: RemoteEnv, out: *mut *mut RLMeshRemoteEnv) -> Result<(), CapiEr
         rlmesh::binding::env::env_core(&c)?.edition_cell(),
         c.cancel_handle(),
     )?;
-    write_out(
-        out,
-        Box::into_raw(Box::new(RLMeshRemoteEnv {
-            common: meta,
-            client: Arc::new(Mutex::new(Some(c))),
-        })),
-    )
+    unsafe {
+        /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+        write_out(
+            out,
+            Box::into_raw(Box::new(RLMeshRemoteEnv {
+                common: meta,
+                client: Arc::new(Mutex::new(Some(c))),
+            })),
+        )
+    }
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_ext_remote_env_new_with_token(
@@ -241,7 +247,10 @@ pub unsafe extern "C" fn rlmesh_ext_remote_env_new_with_token(
     out: *mut *mut RLMeshRemoteEnv,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
         let token =
             unsafe { ffi::text(token) }?.ok_or_else(|| CapiError::invalid_arg("null token"))?;
         let c = rlmesh::ext::remote_env_with_token(unsafe { env_options(o) }?, &token)?;
@@ -254,7 +263,10 @@ pub unsafe extern "C" fn rlmesh_remote_vector_env_new(
     out: *mut *mut RLMeshRemoteVectorEnv,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
         let c = RemoteVectorEnv::new(unsafe { env_options(o) }?)?;
         vector_output(c, out)
     })
@@ -273,13 +285,16 @@ fn vector_output(
         rlmesh::binding::env::vector_env_core(&c)?.edition_cell(),
         c.cancel_handle(),
     )?;
-    write_out(
-        out,
-        Box::into_raw(Box::new(RLMeshRemoteVectorEnv {
-            common: meta,
-            client: Arc::new(Mutex::new(Some(c))),
-        })),
-    )
+    unsafe {
+        /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+        write_out(
+            out,
+            Box::into_raw(Box::new(RLMeshRemoteVectorEnv {
+                common: meta,
+                client: Arc::new(Mutex::new(Some(c))),
+            })),
+        )
+    }
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_ext_remote_vector_env_new_with_token(
@@ -288,7 +303,10 @@ pub unsafe extern "C" fn rlmesh_ext_remote_vector_env_new_with_token(
     out: *mut *mut RLMeshRemoteVectorEnv,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
         let token =
             unsafe { ffi::text(token) }?.ok_or_else(|| CapiError::invalid_arg("null token"))?;
         let c = rlmesh::ext::remote_vector_env_with_token(unsafe { env_options(o) }?, &token)?;
@@ -301,9 +319,15 @@ pub unsafe extern "C" fn rlmesh_remote_model_new(
     out: *mut *mut RLMeshRemoteModel,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
         let c = RemoteModel::new(unsafe { model_options(o) }?)?;
-        write_out(out, Box::into_raw(Box::new(RLMeshRemoteModel(c))))
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, Box::into_raw(Box::new(RLMeshRemoteModel(c))))
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -313,11 +337,17 @@ pub unsafe extern "C" fn rlmesh_ext_remote_model_new_with_token(
     out: *mut *mut RLMeshRemoteModel,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
         let token =
             unsafe { ffi::text(token) }?.ok_or_else(|| CapiError::invalid_arg("null token"))?;
         let c = rlmesh::ext::remote_model_with_token(unsafe { model_options(o) }?, &token)?;
-        write_out(out, Box::into_raw(Box::new(RLMeshRemoteModel(c))))
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, Box::into_raw(Box::new(RLMeshRemoteModel(c))))
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -326,11 +356,17 @@ pub unsafe extern "C" fn rlmesh_remote_model_clone(
     out: *mut *mut RLMeshRemoteModel,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
         let c = unsafe { p.as_ref() }
             .ok_or_else(|| CapiError::invalid_arg("null remote model"))?
             .clone();
-        write_out(out, Box::into_raw(Box::new(c)))
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, Box::into_raw(Box::new(c)))
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -497,7 +533,10 @@ pub unsafe extern "C" fn rlmesh_remote_env_render_mode(
 ) -> RLMeshStatus {
     guard(|| {
         let h = unsafe { p.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null remote env"))?;
-        write_out(has, h.common.render_mode.is_some())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(has, h.common.render_mode.is_some())
+        }?;
         if let Some(v) = &h.common.render_mode {
             ffi::bytes(out, v.clone())?;
         }
@@ -510,12 +549,18 @@ pub unsafe extern "C" fn rlmesh_remote_env_cancel_handle(
     out: *mut *mut RLMeshExtCancelToken,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
         let h = unsafe { p.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null remote env"))?;
-        write_out(
-            out,
-            Box::into_raw(Box::new(RLMeshExtCancelToken(h.common.cancel.clone()))),
-        )
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                Box::into_raw(Box::new(RLMeshExtCancelToken(h.common.cancel.clone()))),
+            )
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -525,10 +570,16 @@ pub unsafe extern "C" fn rlmesh_remote_env_render(
     out: *mut *mut RLMeshValue,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
         let r = unsafe { borrow_env(p) }?.get().render(Some(index))?;
         if let Some(v) = r {
-            write_out(out, into_handle(v))?;
+            unsafe {
+                /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+                write_out(out, into_handle(v))
+            }?;
         }
         Ok(())
     })
@@ -551,7 +602,10 @@ pub unsafe extern "C" fn rlmesh_remote_env_shutdown(
         let v = unsafe { borrow_env(p) }?
             .get()
             .shutdown(reason.as_deref())?;
-        write_out(out, v)
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, v)
+        }
     })
 }
 common_text!(
@@ -618,7 +672,10 @@ pub unsafe extern "C" fn rlmesh_remote_vector_env_render_mode(
 ) -> RLMeshStatus {
     guard(|| {
         let h = unsafe { p.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null remote env"))?;
-        write_out(has, h.common.render_mode.is_some())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(has, h.common.render_mode.is_some())
+        }?;
         if let Some(v) = &h.common.render_mode {
             ffi::bytes(out, v.clone())?;
         }
@@ -631,12 +688,18 @@ pub unsafe extern "C" fn rlmesh_remote_vector_env_cancel_handle(
     out: *mut *mut RLMeshExtCancelToken,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
         let h = unsafe { p.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null remote env"))?;
-        write_out(
-            out,
-            Box::into_raw(Box::new(RLMeshExtCancelToken(h.common.cancel.clone()))),
-        )
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                Box::into_raw(Box::new(RLMeshExtCancelToken(h.common.cancel.clone()))),
+            )
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -646,10 +709,16 @@ pub unsafe extern "C" fn rlmesh_remote_vector_env_render(
     out: *mut *mut RLMeshValue,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
         let r = unsafe { borrow_vector(p) }?.get().render(Some(index))?;
         if let Some(v) = r {
-            write_out(out, into_handle(v))?;
+            unsafe {
+                /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+                write_out(out, into_handle(v))
+            }?;
         }
         Ok(())
     })
@@ -679,7 +748,10 @@ pub unsafe extern "C" fn rlmesh_remote_vector_env_shutdown(
         let v = unsafe { borrow_vector(p) }?
             .get()
             .shutdown(reason.as_deref())?;
-        write_out(out, v)
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, v)
+        }
     })
 }
 common_ptr!(
@@ -707,14 +779,26 @@ pub unsafe extern "C" fn rlmesh_remote_env_reset(
     info: *mut *mut RLMeshValue,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(obs, std::ptr::null_mut())?;
-        write_out(info, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(obs, std::ptr::null_mut())
+        }?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(info, std::ptr::null_mut())
+        }?;
         let options = ffi::dict(options)?;
         let (v, i) = unsafe { borrow_env(p) }?
             .get()
             .reset(unsafe { seed.as_ref() }.copied(), options.as_ref())?;
-        write_out(obs, into_handle(v))?;
-        write_out(info, into_handle(rlmesh::Value::Dict(i)))
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(obs, into_handle(v))
+        }?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(info, into_handle(rlmesh::Value::Dict(i)))
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -728,19 +812,44 @@ pub unsafe extern "C" fn rlmesh_remote_env_step(
     info: *mut *mut RLMeshValue,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(obs, std::ptr::null_mut())?;
-        write_out(info, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(obs, std::ptr::null_mut())
+        }?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(info, std::ptr::null_mut())
+        }?;
         if reward.is_null() || terminated.is_null() || truncated.is_null() {
             return Err(CapiError::invalid_arg("null step output"));
         }
-        let (v, r, t, u, i) = unsafe { borrow_env(p) }?
-            .get()
-            .step(value_ref(action)?.clone())?;
-        write_out(obs, into_handle(v))?;
-        write_out(reward, r)?;
-        write_out(terminated, t)?;
-        write_out(truncated, u)?;
-        write_out(info, into_handle(rlmesh::Value::Dict(i)))
+        let (v, r, t, u, i) = unsafe { borrow_env(p) }?.get().step(
+            unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                value_ref(action)
+            }?
+            .clone(),
+        )?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(obs, into_handle(v))
+        }?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(reward, r)
+        }?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(terminated, t)
+        }?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(truncated, u)
+        }?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(info, into_handle(rlmesh::Value::Dict(i)))
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -753,8 +862,14 @@ pub unsafe extern "C" fn rlmesh_remote_vector_env_reset(
     info: *mut *mut RLMeshValue,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(obs, std::ptr::null_mut())?;
-        write_out(info, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(obs, std::ptr::null_mut())
+        }?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(info, std::ptr::null_mut())
+        }?;
         let seed = if seeds.is_null() {
             if len != 0 {
                 return Err(CapiError::invalid_arg("null seeds with nonzero length"));
@@ -772,8 +887,14 @@ pub unsafe extern "C" fn rlmesh_remote_vector_env_reset(
         let (v, i) = unsafe { borrow_vector(p) }?
             .get()
             .reset(seed, options.as_ref())?;
-        write_out(obs, into_handle(v))?;
-        write_out(info, into_handle(rlmesh::Value::Dict(i)))
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(obs, into_handle(v))
+        }?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(info, into_handle(rlmesh::Value::Dict(i)))
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -803,11 +924,21 @@ pub unsafe extern "C" fn rlmesh_remote_vector_env_step(
         {
             return Err(CapiError::invalid_arg("step buffers must cover num_envs"));
         }
-        write_out(obs, std::ptr::null_mut())?;
-        write_out(info, std::ptr::null_mut())?;
-        let (v, r, t, u, i) = unsafe { borrow_vector(p) }?
-            .get()
-            .step(value_ref(actions)?.clone())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(obs, std::ptr::null_mut())
+        }?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(info, std::ptr::null_mut())
+        }?;
+        let (v, r, t, u, i) = unsafe { borrow_vector(p) }?.get().step(
+            unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                value_ref(actions)
+            }?
+            .clone(),
+        )?;
         if r.len() != n || t.len() != n || u.len() != n {
             return Err(rlmesh::Error::Protocol("vector reply has wrong lane count".into()).into());
         }
@@ -816,8 +947,17 @@ pub unsafe extern "C" fn rlmesh_remote_vector_env_step(
             std::ptr::copy_nonoverlapping(t.as_ptr(), terminated, n);
             std::ptr::copy_nonoverlapping(u.as_ptr(), truncated, n);
         }
-        write_out(len, n)?;
-        write_out(obs, into_handle(v))?;
-        write_out(info, into_handle(rlmesh::Value::Dict(i)))
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(len, n)
+        }?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(obs, into_handle(v))
+        }?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(info, into_handle(rlmesh::Value::Dict(i)))
+        }
     })
 }

@@ -51,6 +51,16 @@ static void invalid_bool_inputs(void) {
 }
 int main(void) {
   invalid_bool_inputs();
+  /* Ordinary output slots need not contain initialized C values. */
+  RLMeshValue* scalar;
+  CHECK(rlmesh_value_int(42, &scalar) == RLMESH_OK);
+  RLMeshBytes repr;
+  CHECK(rlmesh_build_info_repr(&repr) == RLMESH_OK);
+  CHECK(repr.len > 0);
+  rlmesh_bytes_free(repr);
+  int64_t number;
+  CHECK(rlmesh_value_as_int(scalar, &number) == RLMESH_OK && number == 42);
+  rlmesh_value_free(scalar);
   CHECK(rlmesh_abi_check() && RLMESH_ABI_VERSION == 5);
   RLMeshExtLegacyModelVtable zero = {0};
   RLMeshExtLegacyModel* model = NULL;

@@ -139,7 +139,12 @@ pub(crate) unsafe fn options(
 }
 pub(crate) unsafe fn model<'a>(t: RLMeshModelTarget) -> Result<rlmesh::ModelTarget<'a>, CapiError> {
     match t.kind {
-        1 => Ok((&require(t.handle.cast())?.model).into()),
+        1 => Ok((&unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            require(t.handle.cast())
+        }?
+        .model)
+            .into()),
         2 => Ok((&unsafe {
             t.handle
                 .cast::<crate::remote_api::RLMeshRemoteModel>()
@@ -216,7 +221,10 @@ pub unsafe extern "C" fn rlmesh_run(
     out: *mut *mut RLMeshRunResult,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
         let opts = unsafe { options(p) }?;
         let raw = unsafe { sizing::read(p, "RLMeshRunOptions") }?;
         let mut hooks =

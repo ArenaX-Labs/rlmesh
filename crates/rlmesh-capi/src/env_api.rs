@@ -387,7 +387,10 @@ pub unsafe extern "C" fn rlmesh_env_new(
             }))),
             leased: Arc::new(AtomicBool::new(false)),
         };
-        write_out(out, Box::into_raw(Box::new(value)))
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, Box::into_raw(Box::new(value)))
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -433,7 +436,10 @@ pub unsafe extern "C" fn rlmesh_vector_env_new(
             }))),
             leased: Arc::new(AtomicBool::new(false)),
         };
-        write_out(out, Box::into_raw(Box::new(value)))
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, Box::into_raw(Box::new(value)))
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -619,7 +625,16 @@ mod tests {
         p.resets.fetch_add(1, Ordering::Relaxed);
         *lock(&p.seed) = unsafe { seed.as_ref() }.copied();
         if !options.is_null() {
-            assert!(value_ref(options).ok().unwrap().as_dict().is_ok());
+            assert!(
+                unsafe {
+                    // SAFETY: the FFI contract supplies live handles and writable output storage.
+                    value_ref(options)
+                }
+                .ok()
+                .unwrap()
+                .as_dict()
+                .is_ok()
+            );
         }
         unsafe {
             *obs = into_handle(Value::Int(0));
@@ -640,7 +655,14 @@ mod tests {
     ) -> i32 {
         let p = unsafe { &*ud.cast::<Probe>() };
         p.steps.fetch_add(1, Ordering::Relaxed);
-        let n = value_ref(action).ok().unwrap().as_int().unwrap();
+        let n = unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            value_ref(action)
+        }
+        .ok()
+        .unwrap()
+        .as_int()
+        .unwrap();
         unsafe {
             *obs = into_handle(Value::Int(n));
             *reward = 2.0;

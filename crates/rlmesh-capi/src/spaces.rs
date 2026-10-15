@@ -39,7 +39,10 @@ pub unsafe extern "C" fn rlmesh_ext_legacy_space_len(
             Some(SpaceKind::Tuple(tuple)) => tuple.spaces.len(),
             _ => return Err(CapiError::type_error("space is not a Dict or Tuple")),
         };
-        write_out(out, len)
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, len)
+        }
     })
 }
 
@@ -113,8 +116,14 @@ pub unsafe extern "C" fn rlmesh_ext_legacy_space_dict_key(
             .keys
             .get(index)
             .ok_or_else(|| CapiError::invalid_arg("dict key index out of range"))?;
-        write_out(out_ptr, key.as_ptr().cast::<c_char>())?;
-        write_out(out_len, key.len())
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out_ptr, key.as_ptr().cast::<c_char>())
+        }?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out_len, key.len())
+        }
     })
 }
 
@@ -200,8 +209,14 @@ pub unsafe extern "C" fn rlmesh_ext_legacy_space_text_charset(
         let Some(SpaceKind::Text(text)) = &spec_ref(spec).ok_or_else(null_spec)?.spec else {
             return Err(CapiError::type_error("space is not Text"));
         };
-        write_out(out_ptr, text.charset.as_ptr().cast::<c_char>())?;
-        write_out(out_len, text.charset.len())
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out_ptr, text.charset.as_ptr().cast::<c_char>())
+        }?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out_len, text.charset.len())
+        }
     })
 }
 

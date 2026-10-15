@@ -28,12 +28,18 @@ pub unsafe extern "C" fn rlmesh_read_item_role(
     out: *mut *mut RLMeshReadItem,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
         let role = unsafe { ad::required(role, "role") }?;
-        write_out(
-            out,
-            Box::into_raw(Box::new(RLMeshReadItem(ReadItem::Role(role)))),
-        )
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                Box::into_raw(Box::new(RLMeshReadItem(ReadItem::Role(role)))),
+            )
+        }
     })
 }
 macro_rules! leaf_item {
@@ -41,12 +47,18 @@ macro_rules! leaf_item {
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $f(p: *const $ty, out: *mut *mut RLMeshReadItem) -> RLMeshStatus {
             guard(|| {
-                write_out(out, std::ptr::null_mut())?;
+                unsafe {
+                    // SAFETY: the FFI contract supplies live handles and writable output storage.
+                    write_out(out, std::ptr::null_mut())
+                }?;
                 let value = unsafe { ad::$parse(p) }?;
-                write_out(
-                    out,
-                    Box::into_raw(Box::new(RLMeshReadItem(ReadItem::$variant(value)))),
-                )
+                unsafe {
+                    // SAFETY: the FFI contract supplies live handles and writable output storage.
+                    write_out(
+                        out,
+                        Box::into_raw(Box::new(RLMeshReadItem(ReadItem::$variant(value)))),
+                    )
+                }
             })
         }
     };
@@ -70,15 +82,21 @@ pub unsafe extern "C" fn rlmesh_reader_new(
     out: *mut *mut RLMeshReader,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
         let adapter = unsafe { p.as_ref() }
             .ok_or_else(|| CapiError::invalid_arg("null adapter"))?
             .native()?;
         let roles = unsafe { ad::strings(roles, n) }?.unwrap_or_default();
-        write_out(
-            out,
-            Box::into_raw(Box::new(RLMeshReader(Reader::new(adapter, roles)))),
-        )
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                Box::into_raw(Box::new(RLMeshReader(Reader::new(adapter, roles)))),
+            )
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -117,9 +135,15 @@ pub unsafe extern "C" fn rlmesh_reader_call(
     out: *mut *mut RLMeshValue,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
         let p = unsafe { p.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null reader"))?;
-        write_out(out, into_handle(Value::Dict(p.0.call(value_ref(obs)?)?)))
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, into_handle(Value::Dict(p.0.call(value_ref(obs)?)?)))
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -130,13 +154,19 @@ pub unsafe extern "C" fn rlmesh_session_reader(
     out: *mut *mut RLMeshReader,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
         let items = unsafe { crate::spaces::slice_arg(items, n, "read items") }?
             .iter()
             .map(|&p| unsafe { item(p) }.cloned())
             .collect::<Result<Vec<_>, _>>()?;
         let reader = session_api::with(p, |s| Ok(s.reader(&items)?))?;
-        write_out(out, Box::into_raw(Box::new(RLMeshReader(reader))))
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, Box::into_raw(Box::new(RLMeshReader(reader))))
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -147,15 +177,24 @@ pub unsafe extern "C" fn rlmesh_session_read(
     out: *mut *mut RLMeshValue,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
-        let obs = value_ref(obs)?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
+        let obs = unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            value_ref(obs)
+        }?;
         let item = unsafe { item(read) }?;
         let value = if let Some(context) = session_api::own_hook(p) {
             context.0.read(obs, item)?
         } else {
             session_api::with(p, |s| Ok(s.read(obs, item.clone())?))?
         };
-        write_out(out, into_handle(value))
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, into_handle(value))
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -166,11 +205,23 @@ pub unsafe extern "C" fn rlmesh_run_context_read(
     out: *mut *mut RLMeshValue,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
         let context =
             unsafe { p.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null context"))?;
-        let value = context.0.read(value_ref(obs)?, unsafe { item(read) }?)?;
-        write_out(out, into_handle(value))
+        let value = context.0.read(
+            unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                value_ref(obs)
+            }?,
+            unsafe { item(read) }?,
+        )?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, into_handle(value))
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -180,19 +231,25 @@ pub unsafe extern "C" fn rlmesh_step_event_read(
     out: *mut *mut RLMeshValue,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
         let event = unsafe { sizing::read(p, "RLMeshStepEvent") }?
             .ok_or_else(|| CapiError::invalid_arg("null event"))?;
         let context = unsafe { event.context.as_ref() }
             .ok_or_else(|| CapiError::invalid_arg("event has no read context"))?;
-        write_out(
-            out,
-            into_handle(
-                context
-                    .0
-                    .read(value_ref(event.observation)?, unsafe { item(read) }?)?,
-            ),
-        )
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                into_handle(
+                    context
+                        .0
+                        .read(value_ref(event.observation)?, { item(read) }?)?,
+                ),
+            )
+        }
     })
 }
 pub(crate) struct RolesView {
@@ -334,11 +391,17 @@ pub unsafe extern "C" fn rlmesh_run_context_frame_sources(
     out: *mut *mut RLMeshFrameSources,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
         let context =
             unsafe { p.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null context"))?;
         let value = context_sources(Arc::clone(&context.0))?;
-        write_out(out, Box::into_raw(Box::new(value)))
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, Box::into_raw(Box::new(value)))
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -347,10 +410,16 @@ pub unsafe extern "C" fn rlmesh_session_frame_sources(
     out: *mut *mut RLMeshFrameSources,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
         if let Some(context) = session_api::own_hook(p) {
             let value = context_sources(context.0)?;
-            return write_out(out, Box::into_raw(Box::new(value)));
+            return unsafe {
+                /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+                write_out(out, Box::into_raw(Box::new(value)))
+            };
         }
         let (roles, label, has) = session_api::with(p, |s| {
             let sources = s.frame_sources()?;
@@ -366,10 +435,13 @@ pub unsafe extern "C" fn rlmesh_session_frame_sources(
         } else {
             None
         };
-        write_out(
-            out,
-            Box::into_raw(Box::new(RLMeshFrameSources::library(roles, label, render))),
-        )
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                Box::into_raw(Box::new(RLMeshFrameSources::library(roles, label, render))),
+            )
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -383,7 +455,10 @@ pub unsafe extern "C" fn rlmesh_frame_sources_new(
     out: *mut *mut RLMeshFrameSources,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
         let roles = unsafe { ad::strings(roles, n) }?.unwrap_or_default();
         let label = unsafe { ffi::text(label) }?;
         let owner = Arc::new(Owner {
@@ -417,17 +492,20 @@ pub unsafe extern "C" fn rlmesh_frame_sources_new(
             render,
         };
         let repr = native.to_string();
-        write_out(
-            out,
-            Box::into_raw(Box::new(RLMeshFrameSources {
-                inner: Mutex::new(native),
-                projection,
-                repr,
-                source,
-                _owner: Some(owner),
-                _context: None,
-            })),
-        )
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                Box::into_raw(Box::new(RLMeshFrameSources {
+                    inner: Mutex::new(native),
+                    projection,
+                    repr,
+                    source,
+                    _owner: Some(owner),
+                    _context: None,
+                })),
+            )
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -493,7 +571,10 @@ pub unsafe extern "C" fn rlmesh_frame_sources_render_label(
             return Err(CapiError::invalid_arg("null out"));
         }
         let inner = &sources(p)?.projection;
-        write_out(has, inner.render_label.is_some())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(has, inner.render_label.is_some())
+        }?;
         if let Some(label) = &inner.render_label {
             ffi::bytes(out, label.clone())?;
         }
@@ -512,7 +593,10 @@ pub unsafe extern "C" fn rlmesh_frame_sources_default_label(
         }
         let inner = &sources(p)?.projection;
         let label = inner.default_label();
-        write_out(has, label.is_some())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(has, label.is_some())
+        }?;
         if let Some(label) = label {
             ffi::bytes(out, label)?;
         }
@@ -530,9 +614,15 @@ pub unsafe extern "C" fn rlmesh_frame_sources_render(
             return Err(CapiError::invalid_arg("null out"));
         }
         let value = sources(p)?.render()?;
-        write_out(has, value.is_some())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(has, value.is_some())
+        }?;
         if let Some(v) = value {
-            write_out(out, into_handle(v))?;
+            unsafe {
+                /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+                write_out(out, into_handle(v))
+            }?;
         }
         Ok(())
     })

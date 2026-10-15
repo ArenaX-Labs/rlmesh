@@ -43,7 +43,9 @@ pub struct RLMeshWorkloadRecordOptions {
 }
 macro_rules! record {
     ($ty:ident, $native:ident, $require:ident, $free:ident, $equals:ident, $repr:ident, $dict:ident) => {
-        fn $require<'a>(p: *const $ty) -> Result<&'a $native, CapiError> {
+        /// # Safety
+        /// A non-NULL handle stays live for the returned reference's lifetime.
+        unsafe fn $require<'a>(p: *const $ty) -> Result<&'a $native, CapiError> {
             unsafe { p.as_ref() }
                 .map(|h| &*h.0)
                 .ok_or_else(|| CapiError::invalid_arg(concat!("null ", stringify!($ty))))
@@ -58,20 +60,46 @@ macro_rules! record {
         }
         #[unsafe(no_mangle)]
         pub extern "C" fn $equals(a: *const $ty, b: *const $ty) -> bool {
-            guard_value(false, || match ($require(a), $require(b)) {
-                (Ok(a), Ok(b)) => a == b,
-                _ => false,
+            guard_value(false, || {
+                match (
+                    unsafe {
+                        // SAFETY: the FFI contract supplies live handles and writable output storage.
+                        $require(a)
+                    },
+                    unsafe {
+                        // SAFETY: the FFI contract supplies live handles and writable output storage.
+                        $require(b)
+                    },
+                ) {
+                    (Ok(a), Ok(b)) => a == b,
+                    _ => false,
+                }
             })
         }
         #[unsafe(no_mangle)]
         pub extern "C" fn $repr(p: *const $ty, out: *mut RLMeshBytes) -> RLMeshStatus {
-            guard(|| ffi::bytes(out, $require(p)?.to_string()))
+            guard(|| {
+                ffi::bytes(
+                    out,
+                    unsafe {
+                        // SAFETY: the FFI contract supplies live handles and writable output storage.
+                        $require(p)
+                    }?
+                    .to_string(),
+                )
+            })
         }
         #[unsafe(no_mangle)]
         pub extern "C" fn $dict(p: *const $ty, out: *mut *mut RLMeshValue) -> RLMeshStatus {
             guard(|| {
-                write_out(out, null_mut())?;
-                write_out(out, into_handle(Value::Dict($require(p)?.to_dict())))
+                unsafe {
+                    // SAFETY: the FFI contract supplies live handles and writable output storage.
+                    write_out(out, null_mut())
+                }?;
+                unsafe {
+                    // SAFETY: the FFI contract supplies live handles and writable output storage.
+                    write_out(out, into_handle(Value::Dict($require(p)?.to_dict())))
+                }
             })
         }
     };
@@ -109,7 +137,11 @@ macro_rules! scalar {
         #[unsafe(no_mangle)]
         pub extern "C" fn $fn(p: *const $ty) -> $out {
             guard_value(<$out>::default(), || {
-                $require(p).map_or(<$out>::default(), $value)
+                unsafe {
+                    // SAFETY: the FFI contract supplies live handles and writable output storage.
+                    $require(p)
+                }
+                .map_or(<$out>::default(), $value)
             })
         }
     };
@@ -119,10 +151,19 @@ macro_rules! optional {
         #[unsafe(no_mangle)]
         pub extern "C" fn $fn(p: *const $ty, out: *mut $out) -> bool {
             guard_value(false, || {
-                $require(p)
-                    .ok()
-                    .and_then($value)
-                    .is_some_and(|v| write_out(out, v).is_ok())
+                unsafe {
+                    // SAFETY: the FFI contract supplies live handles and writable output storage.
+                    $require(p)
+                }
+                .ok()
+                .and_then($value)
+                .is_some_and(|v| {
+                    unsafe {
+                        // SAFETY: the FFI contract supplies live handles and writable output storage.
+                        write_out(out, v)
+                    }
+                    .is_ok()
+                })
             })
         }
     };
@@ -131,7 +172,17 @@ macro_rules! string {
     ($fn:ident, $ty:ident, $require:ident, $field:ident) => {
         #[unsafe(no_mangle)]
         pub extern "C" fn $fn(p: *const $ty, out: *mut RLMeshBytes) -> RLMeshStatus {
-            guard(|| ffi::bytes(out, $require(p)?.$field.clone()))
+            guard(|| {
+                ffi::bytes(
+                    out,
+                    unsafe {
+                        // SAFETY: the FFI contract supplies live handles and writable output storage.
+                        $require(p)
+                    }?
+                    .$field
+                    .clone(),
+                )
+            })
         }
     };
 }
@@ -278,7 +329,10 @@ pub unsafe extern "C" fn rlmesh_media_ref_new(
     out: *mut *mut RLMeshMediaRef,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, null_mut())
+        }?;
         let mut r = MediaRef {
             camera: unsafe { text(camera, "camera") }?,
             kind: unsafe { text(kind, "kind") }?,
@@ -292,7 +346,10 @@ pub unsafe extern "C" fn rlmesh_media_ref_new(
             r.height = o.has_height.then_some(o.height);
             r.fps = o.has_fps.then_some(o.fps);
         }
-        write_out(out, Box::into_raw(Box::new(RLMeshMediaRef(Arc::new(r)))))
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, Box::into_raw(Box::new(RLMeshMediaRef(Arc::new(r)))))
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -307,7 +364,10 @@ pub unsafe extern "C" fn rlmesh_episode_record_new(
     out: *mut *mut RLMeshEpisodeRecord,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, null_mut())
+        }?;
         let mut r = EpisodeRecord {
             index,
             seed: unsafe { seed.as_ref() }.copied(),
@@ -323,13 +383,22 @@ pub unsafe extern "C" fn rlmesh_episode_record_new(
             r.included_in_metrics = o.included_in_metrics;
             r.media = unsafe { slice_arg(o.media, o.media_len, "media") }?
                 .iter()
-                .map(|&p| media(p).cloned())
+                .map(|&p| {
+                    unsafe {
+                        // SAFETY: the FFI contract supplies live handles and writable output storage.
+                        media(p)
+                    }
+                    .cloned()
+                })
                 .collect::<Result<_, _>>()?;
         }
-        write_out(
-            out,
-            Box::into_raw(Box::new(RLMeshEpisodeRecord(Arc::new(r)))),
-        )
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                Box::into_raw(Box::new(RLMeshEpisodeRecord(Arc::new(r)))),
+            )
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -341,7 +410,10 @@ pub unsafe extern "C" fn rlmesh_workload_record_new(
     out: *mut *mut RLMeshWorkloadRecord,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, null_mut())
+        }?;
         let mut r = WorkloadRecord {
             model: unsafe { text(model, "model") }?,
             env: unsafe { text(env, "env") }?,
@@ -352,13 +424,22 @@ pub unsafe extern "C" fn rlmesh_workload_record_new(
             r.config = ffi::dict(o.config)?.unwrap_or_default();
             r.episodes = unsafe { slice_arg(o.episodes, o.episodes_len, "episodes") }?
                 .iter()
-                .map(|&p| episode(p).cloned())
+                .map(|&p| {
+                    unsafe {
+                        // SAFETY: the FFI contract supplies live handles and writable output storage.
+                        episode(p)
+                    }
+                    .cloned()
+                })
                 .collect::<Result<_, _>>()?;
         }
-        write_out(
-            out,
-            Box::into_raw(Box::new(RLMeshWorkloadRecord(Arc::new(r)))),
-        )
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                Box::into_raw(Box::new(RLMeshWorkloadRecord(Arc::new(r)))),
+            )
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -368,13 +449,22 @@ pub extern "C" fn rlmesh_episode_record_media_get(
     out: *mut *mut RLMeshMediaRef,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, null_mut())?;
-        let r = episode(p)?
-            .media
-            .get(i)
-            .cloned()
-            .ok_or_else(|| CapiError::invalid_arg("media index out of range"))?;
-        write_out(out, Box::into_raw(Box::new(RLMeshMediaRef(Arc::new(r)))))
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, null_mut())
+        }?;
+        let r = unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            episode(p)
+        }?
+        .media
+        .get(i)
+        .cloned()
+        .ok_or_else(|| CapiError::invalid_arg("media index out of range"))?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, Box::into_raw(Box::new(RLMeshMediaRef(Arc::new(r)))))
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -384,16 +474,25 @@ pub extern "C" fn rlmesh_workload_record_episodes_get(
     out: *mut *mut RLMeshEpisodeRecord,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, null_mut())?;
-        let r = workload(p)?
-            .episodes
-            .get(i)
-            .cloned()
-            .ok_or_else(|| CapiError::invalid_arg("episode index out of range"))?;
-        write_out(
-            out,
-            Box::into_raw(Box::new(RLMeshEpisodeRecord(Arc::new(r)))),
-        )
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, null_mut())
+        }?;
+        let r = unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            workload(p)
+        }?
+        .episodes
+        .get(i)
+        .cloned()
+        .ok_or_else(|| CapiError::invalid_arg("episode index out of range"))?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                Box::into_raw(Box::new(RLMeshEpisodeRecord(Arc::new(r)))),
+            )
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -402,7 +501,13 @@ pub extern "C" fn rlmesh_workload_record_config(
     out: *mut *mut RLMeshValue,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, null_mut())?;
-        write_out(out, into_handle(Value::Dict(workload(p)?.config.clone())))
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, null_mut())
+        }?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, into_handle(Value::Dict(workload(p)?.config.clone())))
+        }
     })
 }

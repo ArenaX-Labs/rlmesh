@@ -108,16 +108,25 @@ unsafe fn metadata(
     o: *const RLMeshDescribeOptions,
     out: *mut *mut RLMeshValue,
 ) -> Result<(), CapiError> {
-    write_out(out, std::ptr::null_mut())?;
+    unsafe {
+        /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+        write_out(out, std::ptr::null_mut())
+    }?;
     let result = rlmesh::binding::describe_native(obj, unsafe { options(o) }?)?;
-    write_out(out, into_handle(rlmesh::Value::Dict(result)))
+    unsafe {
+        /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+        write_out(out, into_handle(rlmesh::Value::Dict(result)))
+    }
 }
 unsafe fn json(
     obj: rlmesh::Describable<'_>,
     o: *const RLMeshDescribeJsonOptions,
     out: *mut RLMeshBytes,
 ) -> Result<(), CapiError> {
-    write_out(out, RLMeshBytes::from_vec(Vec::new()))?;
+    unsafe {
+        /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+        write_out(out, RLMeshBytes::from_vec(Vec::new()))
+    }?;
     let o = unsafe { sizing::read(o, "RLMeshDescribeJsonOptions") }?;
     let mut opts = rlmesh::DescribeJsonOptions::default();
     if let Some(o) = o {
@@ -156,7 +165,10 @@ pub unsafe extern "C" fn rlmesh_model_vtable_describe(
     out: *mut *mut RLMeshValue,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
         unsafe { metadata(declaration(v)?, o, out) }
     })
 }
@@ -167,7 +179,10 @@ pub unsafe extern "C" fn rlmesh_model_vtable_describe_json(
     out: *mut RLMeshBytes,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, RLMeshBytes::from_vec(Vec::new()))?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, RLMeshBytes::from_vec(Vec::new()))
+        }?;
         unsafe { json(declaration(v)?, o, out) }
     })
 }
@@ -178,7 +193,10 @@ pub unsafe extern "C" fn rlmesh_model_describe(
     out: *mut *mut RLMeshValue,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
         unsafe { metadata((&model_api::require(v)?.model).into(), o, out) }
     })
 }
@@ -189,7 +207,10 @@ pub unsafe extern "C" fn rlmesh_model_describe_json(
     out: *mut RLMeshBytes,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, RLMeshBytes::from_vec(Vec::new()))?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, RLMeshBytes::from_vec(Vec::new()))
+        }?;
         unsafe { json((&model_api::require(v)?.model).into(), o, out) }
     })
 }
@@ -200,7 +221,10 @@ pub unsafe extern "C" fn rlmesh_env_factory_describe(
     out: *mut *mut RLMeshValue,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
         let mut f = borrow_factory(v)?;
         let _scope = f.scope();
         unsafe { metadata(f.describable(), o, out) }
@@ -213,7 +237,10 @@ pub unsafe extern "C" fn rlmesh_env_factory_describe_json(
     out: *mut RLMeshBytes,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, RLMeshBytes::from_vec(Vec::new()))?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, RLMeshBytes::from_vec(Vec::new()))
+        }?;
         let mut f = borrow_factory(v)?;
         let _scope = f.scope();
         unsafe { json(f.describable(), o, out) }
@@ -225,7 +252,10 @@ pub unsafe extern "C" fn rlmesh_ext_env_server_describe_json(
     out: *mut RLMeshBytes,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, RLMeshBytes::from_vec(Vec::new()))?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, RLMeshBytes::from_vec(Vec::new()))
+        }?;
         let server =
             unsafe { v.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null env server"))?;
         ffi::bytes(

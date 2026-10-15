@@ -208,23 +208,35 @@ macro_rules! value_api {
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $dict(p: *const $ty, out: *mut *mut RLMeshValue) -> RLMeshStatus {
             guard(|| {
-                write_out(out, std::ptr::null_mut())?;
+                unsafe {
+                    // SAFETY: the FFI contract supplies live handles and writable output storage.
+                    write_out(out, std::ptr::null_mut())
+                }?;
                 let value = unsafe { p.as_ref() }
                     .ok_or_else(|| CapiError::invalid_arg("null handle"))?
                     .0
                     .to_dict()?;
-                write_out(out, into_handle(Value::Dict(value)))
+                unsafe {
+                    // SAFETY: the FFI contract supplies live handles and writable output storage.
+                    write_out(out, into_handle(Value::Dict(value)))
+                }
             })
         }
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $meta(p: *const $ty, out: *mut *mut RLMeshValue) -> RLMeshStatus {
             guard(|| {
-                write_out(out, std::ptr::null_mut())?;
+                unsafe {
+                    // SAFETY: the FFI contract supplies live handles and writable output storage.
+                    write_out(out, std::ptr::null_mut())
+                }?;
                 let value = unsafe { p.as_ref() }
                     .ok_or_else(|| CapiError::invalid_arg("null handle"))?
                     .0
                     .to_metadata()?;
-                write_out(out, into_handle(Value::Dict(value)))
+                unsafe {
+                    // SAFETY: the FFI contract supplies live handles and writable output storage.
+                    write_out(out, into_handle(Value::Dict(value)))
+                }
             })
         }
         #[unsafe(no_mangle)]
@@ -245,9 +257,21 @@ macro_rules! value_api {
             out: *mut *mut $ty,
         ) -> RLMeshStatus {
             guard(|| {
-                write_out(out, std::ptr::null_mut())?;
-                let value = a::$native::from_dict(value_ref(p)?.as_dict()?)?;
-                write_out(out, Box::into_raw(Box::new($ty::new(value))))
+                unsafe {
+                    // SAFETY: the FFI contract supplies live handles and writable output storage.
+                    write_out(out, std::ptr::null_mut())
+                }?;
+                let value = a::$native::from_dict(
+                    unsafe {
+                        // SAFETY: the FFI contract supplies live handles and writable output storage.
+                        value_ref(p)
+                    }?
+                    .as_dict()?,
+                )?;
+                unsafe {
+                    // SAFETY: the FFI contract supplies live handles and writable output storage.
+                    write_out(out, Box::into_raw(Box::new($ty::new(value))))
+                }
             })
         }
         #[unsafe(no_mangle)]
@@ -256,9 +280,21 @@ macro_rules! value_api {
             out: *mut *mut $ty,
         ) -> RLMeshStatus {
             guard(|| {
-                write_out(out, std::ptr::null_mut())?;
-                if let Some(value) = a::$native::from_metadata(value_ref(p)?.as_dict()?)? {
-                    write_out(out, Box::into_raw(Box::new($ty::new(value))))?;
+                unsafe {
+                    // SAFETY: the FFI contract supplies live handles and writable output storage.
+                    write_out(out, std::ptr::null_mut())
+                }?;
+                if let Some(value) = a::$native::from_metadata(
+                    unsafe {
+                        // SAFETY: the FFI contract supplies live handles and writable output storage.
+                        value_ref(p)
+                    }?
+                    .as_dict()?,
+                )? {
+                    unsafe {
+                        // SAFETY: the FFI contract supplies live handles and writable output storage.
+                        write_out(out, Box::into_raw(Box::new($ty::new(value))))
+                    }?;
                 }
                 Ok(())
             })
@@ -266,9 +302,15 @@ macro_rules! value_api {
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $fromjson(p: *const c_char, out: *mut *mut $ty) -> RLMeshStatus {
             guard(|| {
-                write_out(out, std::ptr::null_mut())?;
+                unsafe {
+                    // SAFETY: the FFI contract supplies live handles and writable output storage.
+                    write_out(out, std::ptr::null_mut())
+                }?;
                 let value = a::$native::from_json(&unsafe { required(p, "json") }?)?;
-                write_out(out, Box::into_raw(Box::new($ty::new(value))))
+                unsafe {
+                    // SAFETY: the FFI contract supplies live handles and writable output storage.
+                    write_out(out, Box::into_raw(Box::new($ty::new(value))))
+                }
             })
         }
     };
@@ -310,11 +352,17 @@ pub unsafe extern "C" fn rlmesh_model_spec_new(
     out: *mut *mut RLMeshModelSpec,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
         let value = a::ModelSpec::new(unsafe { parse_input(input, &mut Vec::new()) }?, unsafe {
             parse_action(output)
         }?)?;
-        write_out(out, Box::into_raw(Box::new(RLMeshModelSpec::new(value))))
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, Box::into_raw(Box::new(RLMeshModelSpec::new(value))))
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -324,11 +372,17 @@ pub unsafe extern "C" fn rlmesh_env_tags_new(
     out: *mut *mut RLMeshEnvTags,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
         let value = a::EnvTags::new(unsafe { parse_obs(input, &mut Vec::new()) }?, unsafe {
             parse_action(output)
         }?)?;
-        write_out(out, Box::into_raw(Box::new(RLMeshEnvTags::new(value))))
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, Box::into_raw(Box::new(RLMeshEnvTags::new(value))))
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -402,10 +456,13 @@ pub unsafe extern "C" fn rlmesh_observation_roles_equals(
     out: *mut bool,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(
-            out,
-            unsafe { parse_observation_roles(p) }? == unsafe { parse_observation_roles(q) }?,
-        )
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                { parse_observation_roles(p) }? == { parse_observation_roles(q) }?,
+            )
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -422,10 +479,10 @@ pub unsafe extern "C" fn rlmesh_advisory_equals(
     out: *mut bool,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(
-            out,
-            unsafe { parse_advisory(p) }? == unsafe { parse_advisory(q) }?,
-        )
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, { parse_advisory(p) }? == { parse_advisory(q) }?)
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -437,25 +494,37 @@ pub unsafe extern "C" fn rlmesh_advisory_repr(
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_action_dim(p: *const RLMeshAction, out: *mut u32) -> RLMeshStatus {
-    guard(|| write_out(out, unsafe { parse_action(p) }?.dim()))
+    guard(|| unsafe {
+        /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+        write_out(out, { parse_action(p) }?.dim())
+    })
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_custom_encoding_is_entrypoint(
     p: *const RLMeshCustomEncoding,
     out: *mut bool,
 ) -> RLMeshStatus {
-    guard(|| write_out(out, unsafe { parse_custom_encoding(p) }?.is_entrypoint()))
+    guard(|| unsafe {
+        /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+        write_out(out, { parse_custom_encoding(p) }?.is_entrypoint())
+    })
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_custom_encoding_width(
     p: *const RLMeshCustomEncoding,
     out: *mut u32,
 ) -> RLMeshStatus {
-    guard(|| write_out(out, unsafe { parse_custom_encoding(p) }?.width()))
+    guard(|| unsafe {
+        /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+        write_out(out, { parse_custom_encoding(p) }?.width())
+    })
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_rotation_encoding_dims(v: i32, out: *mut u32) -> RLMeshStatus {
-    guard(|| write_out(out, enum_rotation_encoding(v)?.dims()))
+    guard(|| unsafe {
+        /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+        write_out(out, enum_rotation_encoding(v)?.dims())
+    })
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_adapters_parts_len() -> usize {
@@ -482,8 +551,14 @@ pub unsafe extern "C" fn rlmesh_adapters_rotation_dims_get(
             return Err(CapiError::invalid_arg("null out"));
         }
         let entry = a::ROTATION_DIMS.get(i);
-        write_out(e, entry.map_or(0, |e| number_rotation_encoding(e.0)))?;
-        write_out(d, entry.map_or(0, |e| e.1))
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(e, entry.map_or(0, |e| number_rotation_encoding(e.0)))
+        }?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(d, entry.map_or(0, |e| e.1))
+        }
     })
 }
 #[unsafe(no_mangle)]

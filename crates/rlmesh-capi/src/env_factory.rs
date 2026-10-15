@@ -102,7 +102,9 @@ impl Drop for Busy {
         self.0.store(false, Ordering::Release);
     }
 }
-fn require<'a>(ptr: *const RLMeshEnvFactory) -> Result<&'a RLMeshEnvFactory, CapiError> {
+/// # Safety
+/// A non-NULL handle stays live for the returned reference's lifetime.
+unsafe fn require<'a>(ptr: *const RLMeshEnvFactory) -> Result<&'a RLMeshEnvFactory, CapiError> {
     unsafe { ptr.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null factory"))
 }
 fn enter(f: &RLMeshEnvFactory) -> Result<Busy, CapiError> {
@@ -316,8 +318,17 @@ pub unsafe extern "C" fn rlmesh_env_factory_new(
                 params.push(TagParam {
                     name: unsafe { ffi::text(p.name) }?
                         .ok_or_else(|| CapiError::invalid_arg("null tag param name"))?,
-                    default_: value_ref(p.default_)?.clone(),
-                    choices: value_ref(p.choices)?.as_list()?.to_vec(),
+                    default_: unsafe {
+                        // SAFETY: the FFI contract supplies live handles and writable output storage.
+                        value_ref(p.default_)
+                    }?
+                    .clone(),
+                    choices: unsafe {
+                        // SAFETY: the FFI contract supplies live handles and writable output storage.
+                        value_ref(p.choices)
+                    }?
+                    .as_list()?
+                    .to_vec(),
                 });
             }
             for &ptr in unsafe {
@@ -343,13 +354,16 @@ pub unsafe extern "C" fn rlmesh_env_factory_new(
         let _scope = Scope::new(Arc::clone(&data));
         rlmesh::binding::env_factory_check::<Factory>()?;
         data.owned.store(true, Ordering::Release);
-        write_out(
-            out,
-            Box::into_raw(Box::new(RLMeshEnvFactory {
-                data,
-                busy: Arc::new(AtomicBool::new(false)),
-            })),
-        )
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                Box::into_raw(Box::new(RLMeshEnvFactory {
+                    data,
+                    busy: Arc::new(AtomicBool::new(false)),
+                })),
+            )
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -365,7 +379,10 @@ macro_rules! hook {
         #[unsafe(no_mangle)]
         pub extern "C" fn $name(f: *mut RLMeshEnvFactory) -> RLMeshStatus {
             guard(|| {
-                let f = require(f)?;
+                let f = unsafe {
+                    // SAFETY: the FFI contract supplies live handles and writable output storage.
+                    require(f)
+                }?;
                 let _busy = enter(f)?;
                 let _scope = Scope::new(Arc::clone(&f.data));
                 Factory.$method()?;
@@ -387,7 +404,10 @@ pub extern "C" fn rlmesh_env_factory_make(
         if out_env.is_null() || out_vector.is_null() {
             return Err(CapiError::invalid_arg("null out"));
         }
-        let f = require(f)?;
+        let f = unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            require(f)
+        }?;
         let _busy = enter(f)?;
         let _scope = Scope::new(Arc::clone(&f.data));
         let kwargs = ffi::dict(kwargs)?.unwrap_or_default();
@@ -408,8 +428,14 @@ pub extern "C" fn rlmesh_env_factory_make(
                 })),
             ),
         };
-        write_out(out_env, env)?;
-        write_out(out_vector, vector)
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out_env, env)
+        }?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out_vector, vector)
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -421,16 +447,19 @@ pub extern "C" fn rlmesh_env_factory_tags(
         if out.is_null() {
             return Err(CapiError::invalid_arg("null out"));
         }
-        write_out(
-            out,
-            require(f)?
-                .data
-                .tags
-                .clone()
-                .map_or(std::ptr::null_mut(), |t| {
-                    Box::into_raw(Box::new(RLMeshEnvTags::new(t)))
-                }),
-        )
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                require(f)?
+                    .data
+                    .tags
+                    .clone()
+                    .map_or(std::ptr::null_mut(), |t| {
+                        Box::into_raw(Box::new(RLMeshEnvTags::new(t)))
+                    }),
+            )
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -443,16 +472,22 @@ pub extern "C" fn rlmesh_env_factory_tags_for(
         if out.is_null() {
             return Err(CapiError::invalid_arg("null out"));
         }
-        let f = require(f)?;
+        let f = unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            require(f)
+        }?;
         let _busy = enter(f)?;
         let _scope = Scope::new(Arc::clone(&f.data));
         let tags = Factory::tags_for(&ffi::dict(params)?.unwrap_or_default())?;
-        write_out(
-            out,
-            tags.map_or(std::ptr::null_mut(), |t| {
-                Box::into_raw(Box::new(RLMeshEnvTags::new(t)))
-            }),
-        )
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                tags.map_or(std::ptr::null_mut(), |t| {
+                    Box::into_raw(Box::new(RLMeshEnvTags::new(t)))
+                }),
+            )
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -464,18 +499,24 @@ pub extern "C" fn rlmesh_env_factory_enumerate_variants(
         if out.is_null() {
             return Err(CapiError::invalid_arg("null out"));
         }
-        let f = require(f)?;
+        let f = unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            require(f)
+        }?;
         let _busy = enter(f)?;
         let _scope = Scope::new(Arc::clone(&f.data));
         let variants = Factory::enumerate_variants()?;
-        write_out(
-            out,
-            variants.map_or(std::ptr::null_mut(), |v| {
-                Box::into_raw(Box::new(RLMeshVariantList(
-                    v.into_iter().map(RLMeshVariant::new).collect(),
-                )))
-            }),
-        )
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                variants.map_or(std::ptr::null_mut(), |v| {
+                    Box::into_raw(Box::new(RLMeshVariantList(
+                        v.into_iter().map(RLMeshVariant::new).collect(),
+                    )))
+                }),
+            )
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -488,15 +529,21 @@ pub extern "C" fn rlmesh_env_factory_reset_options(
             return Err(CapiError::invalid_arg("null out"));
         }
         let v = Value::List(
-            require(f)?
-                .data
-                .reset_options
-                .iter()
-                .cloned()
-                .map(Value::Text)
-                .collect(),
+            unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                require(f)
+            }?
+            .data
+            .reset_options
+            .iter()
+            .cloned()
+            .map(Value::Text)
+            .collect(),
         );
-        write_out(out, into_handle(v))
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, into_handle(v))
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -509,8 +556,16 @@ pub extern "C" fn rlmesh_env_factory_workflow_edition(
         if out.is_null() || out_has.is_null() {
             return Err(CapiError::invalid_arg("null out"));
         }
-        let edition = &require(f)?.data.edition;
-        write_out(out_has, edition.is_some())?;
+        let edition = &unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            require(f)
+        }?
+        .data
+        .edition;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out_has, edition.is_some())
+        }?;
         ffi::bytes(out, edition.clone().unwrap_or_default())
     })
 }
@@ -521,7 +576,10 @@ pub unsafe extern "C" fn rlmesh_env_factory_serve(
     options: *const RLMeshEnvFactoryServeOptions,
 ) -> RLMeshStatus {
     guard(|| {
-        let f = require(f)?;
+        let f = unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            require(f)
+        }?;
         let _busy = enter(f)?;
         let _scope = Scope::new(Arc::clone(&f.data));
         let address =
@@ -558,7 +616,10 @@ pub extern "C" fn rlmesh_env_factory_tag_params(
         if out.is_null() {
             return Err(CapiError::invalid_arg("null out"));
         }
-        let f = require(f)?;
+        let f = unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            require(f)
+        }?;
         let mut entries = Vec::new();
         for p in &f.data.params {
             let name = CString::new(p.name.clone())
@@ -578,7 +639,10 @@ pub extern "C" fn rlmesh_env_factory_tag_params(
             entry.raw.choices = &entry.choices;
             entries.push(entry);
         }
-        write_out(out, Box::into_raw(Box::new(RLMeshTagParamList(entries))))
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, Box::into_raw(Box::new(RLMeshTagParamList(entries))))
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -669,7 +733,10 @@ impl FactoryBorrow {
     }
 }
 pub(crate) fn borrow_factory(ptr: *const RLMeshEnvFactory) -> Result<FactoryBorrow, CapiError> {
-    let f = require(ptr)?;
+    let f = unsafe {
+        /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+        require(ptr)
+    }?;
     let busy = enter(f)?;
     Ok(FactoryBorrow {
         factory: Factory,

@@ -465,7 +465,9 @@ pub struct RLMeshModel {
     pub(crate) model: Model,
     info: Arc<Info>,
 }
-pub(crate) fn require<'a>(ptr: *const RLMeshModel) -> Result<&'a RLMeshModel, CapiError> {
+/// # Safety
+/// A non-NULL handle stays live for the returned reference's lifetime.
+pub(crate) unsafe fn require<'a>(ptr: *const RLMeshModel) -> Result<&'a RLMeshModel, CapiError> {
     unsafe { ptr.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null model"))
 }
 pub(crate) unsafe fn declaration(vt: RLMeshModelVtable) -> Result<PolicyDecl, CapiError> {
@@ -510,7 +512,10 @@ unsafe fn construct(
     config: Option<Metadata>,
     out: *mut *mut RLMeshModel,
 ) -> Result<(), CapiError> {
-    write_out(out, std::ptr::null_mut())?;
+    unsafe {
+        /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+        write_out(out, std::ptr::null_mut())
+    }?;
     let vt = unsafe { sizing::read(vt, "RLMeshModelVtable") }?
         .ok_or_else(|| CapiError::type_error("null model vtable"))?;
     let decl = unsafe { declaration(vt) }?;
@@ -569,7 +574,10 @@ unsafe fn construct(
         _hook_owner: hook_owner,
     });
     let handle = RLMeshModel { model, info };
-    write_out(out, Box::into_raw(Box::new(handle)))
+    unsafe {
+        /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+        write_out(out, Box::into_raw(Box::new(handle)))
+    }
 }
 impl Owner {
     fn ptr(&self) -> *mut c_void {
@@ -593,8 +601,16 @@ pub unsafe extern "C" fn rlmesh_model_from_config(
     out: *mut *mut RLMeshModel,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
-        let config = value_ref(config)?.as_dict()?.clone();
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
+        let config = unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            value_ref(config)
+        }?
+        .as_dict()?
+        .clone();
         unsafe { construct(vt, ud, std::ptr::null(), Some(config), out) }
     })
 }
@@ -607,13 +623,21 @@ pub extern "C" fn rlmesh_model_clone(
         if out.is_null() {
             return Err(CapiError::invalid_arg("null out"));
         }
-        write_out(out, Box::into_raw(Box::new(require(model)?.clone())))
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, Box::into_raw(Box::new(require(model)?.clone())))
+        }
     })
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_model_close(model: *mut RLMeshModel) -> RLMeshStatus {
     guard(|| {
-        require(model)?.model.close()?;
+        unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            require(model)
+        }?
+        .model
+        .close()?;
         Ok(())
     })
 }
@@ -642,7 +666,11 @@ pub unsafe extern "C" fn rlmesh_model_free(model: *mut RLMeshModel) {
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_model_allow_fusion(model: *const RLMeshModel) -> bool {
     guard_value(false, || {
-        require(model).is_ok_and(|m| m.model.allow_fusion())
+        unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            require(model)
+        }
+        .is_ok_and(|m| m.model.allow_fusion())
     })
 }
 #[unsafe(no_mangle)]
@@ -652,12 +680,23 @@ pub extern "C" fn rlmesh_model_native_chunk(
     out: *mut u32,
 ) {
     let _ = guard(|| {
-        let k = require(model)?.model.native_chunk();
+        let k = unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            require(model)
+        }?
+        .model
+        .native_chunk();
         if out.is_null() || out_has.is_null() {
             return Err(CapiError::invalid_arg("null out"));
         }
-        write_out(out_has, k.is_some())?;
-        write_out(out, k.unwrap_or_default())
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out_has, k.is_some())
+        }?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, k.unwrap_or_default())
+        }
     });
 }
 #[unsafe(no_mangle)]
@@ -670,8 +709,16 @@ pub extern "C" fn rlmesh_model_workflow_edition(
         if out.is_null() || out_has.is_null() {
             return Err(CapiError::invalid_arg("null out"));
         }
-        let edition = require(model)?.model.workflow_edition();
-        write_out(out_has, edition.is_some())?;
+        let edition = unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            require(model)
+        }?
+        .model
+        .workflow_edition();
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out_has, edition.is_some())
+        }?;
         if let Some(e) = edition {
             ffi::bytes(out, e.to_string())?;
         }
@@ -684,7 +731,10 @@ pub extern "C" fn rlmesh_model_spec(
     out: *mut RLMeshSpecArg,
 ) -> RLMeshStatus {
     guard(|| {
-        let m = require(model)?;
+        let m = unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            require(model)
+        }?;
         let spec = match m.model.spec() {
             None => RLMeshSpecArg {
                 kind: 1,
@@ -703,7 +753,10 @@ pub extern "C" fn rlmesh_model_spec(
                     .map_or(std::ptr::null(), std::ptr::from_ref),
             },
         };
-        write_out(out, spec)
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, spec)
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -713,7 +766,11 @@ pub unsafe extern "C" fn rlmesh_model_serve(
     options: *const RLMeshModelServeOptions,
 ) -> RLMeshStatus {
     guard(|| {
-        let model = &require(model)?.model;
+        let model = &unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            require(model)
+        }?
+        .model;
         let address =
             unsafe { ffi::text(address) }?.ok_or_else(|| CapiError::invalid_arg("null address"))?;
         let options = unsafe { sizing::read(options, "RLMeshModelServeOptions") }?;
@@ -824,7 +881,17 @@ mod tests {
             assert!(null_value.is_null());
             assert_eq!(unsafe { rlmesh_episode_state_len(c.state) }, 2);
         }
-        assert_eq!(value_ref(obs).ok().unwrap().as_int().unwrap(), 0);
+        assert_eq!(
+            unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                value_ref(obs)
+            }
+            .ok()
+            .unwrap()
+            .as_int()
+            .unwrap(),
+            0
+        );
         unsafe {
             *out = into_handle(Value::Int(0));
         }

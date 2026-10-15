@@ -30,14 +30,19 @@ pub struct RLMeshVariantOptions {
     pub struct_size: usize,
     pub metadata: *const RLMeshValue,
 }
-fn require<'a>(ptr: *const RLMeshVariant) -> Result<&'a RLMeshVariant, CapiError> {
+/// # Safety
+/// A non-NULL handle stays live for the returned reference's lifetime.
+unsafe fn require<'a>(ptr: *const RLMeshVariant) -> Result<&'a RLMeshVariant, CapiError> {
     unsafe { ptr.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null variant"))
 }
 fn mapping(ptr: *const RLMeshValue) -> Result<Metadata, CapiError> {
-    value_ref(ptr)?
-        .as_dict()
-        .cloned()
-        .map_err(|_| CapiError::invalid_arg("variant fields must be dicts"))
+    unsafe {
+        // SAFETY: the FFI contract supplies live handles and writable output storage.
+        value_ref(ptr)
+    }?
+    .as_dict()
+    .cloned()
+    .map_err(|_| CapiError::invalid_arg("variant fields must be dicts"))
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_variant_new(
@@ -57,14 +62,17 @@ pub unsafe extern "C" fn rlmesh_variant_new(
             Some(o) if !o.metadata.is_null() => mapping(o.metadata)?,
             _ => Metadata::new(),
         };
-        write_out(
-            out,
-            Box::into_raw(Box::new(RLMeshVariant::new(Variant::new(
-                id,
-                params,
-                VariantOptions { metadata },
-            )))),
-        )
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                Box::into_raw(Box::new(RLMeshVariant::new(Variant::new(
+                    id,
+                    params,
+                    VariantOptions { metadata },
+                )))),
+            )
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -80,32 +88,72 @@ pub extern "C" fn rlmesh_variant_id(
     v: *const RLMeshVariant,
     out: *mut RLMeshBytes,
 ) -> RLMeshStatus {
-    guard(|| ffi::bytes(out, require(v)?.value.id.clone()))
+    guard(|| {
+        ffi::bytes(
+            out,
+            unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                require(v)
+            }?
+            .value
+            .id
+            .clone(),
+        )
+    })
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_variant_repr(
     v: *const RLMeshVariant,
     out: *mut RLMeshBytes,
 ) -> RLMeshStatus {
-    guard(|| ffi::bytes(out, require(v)?.value.to_string()))
+    guard(|| {
+        ffi::bytes(
+            out,
+            unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                require(v)
+            }?
+            .value
+            .to_string(),
+        )
+    })
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_variant_params(v: *const RLMeshVariant) -> *const RLMeshValue {
     guard_value(std::ptr::null(), || {
-        require(v).map_or(std::ptr::null(), |v| std::ptr::from_ref(&v.params))
+        unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            require(v)
+        }
+        .map_or(std::ptr::null(), |v| std::ptr::from_ref(&v.params))
     })
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_variant_metadata(v: *const RLMeshVariant) -> *const RLMeshValue {
     guard_value(std::ptr::null(), || {
-        require(v).map_or(std::ptr::null(), |v| std::ptr::from_ref(&v.metadata))
+        unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            require(v)
+        }
+        .map_or(std::ptr::null(), |v| std::ptr::from_ref(&v.metadata))
     })
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_variant_equals(a: *const RLMeshVariant, b: *const RLMeshVariant) -> bool {
-    guard_value(false, || match (require(a), require(b)) {
-        (Ok(a), Ok(b)) => a.value == b.value,
-        _ => false,
+    guard_value(false, || {
+        match (
+            unsafe {
+                /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+                require(a)
+            },
+            unsafe {
+                /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+                require(b)
+            },
+        ) {
+            (Ok(a), Ok(b)) => a.value == b.value,
+            _ => false,
+        }
     })
 }
 #[unsafe(no_mangle)]

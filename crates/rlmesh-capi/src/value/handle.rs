@@ -53,10 +53,18 @@ pub enum RLMeshValueKind {
     Dict = 10,
 }
 
-pub(crate) fn value_ref<'a>(value: *const RLMeshValue) -> Result<&'a Value, CapiError> {
-    Ok(handle_ref(value)?.value())
+/// # Safety
+/// A non-NULL handle must stay live for the returned reference's lifetime.
+pub(crate) unsafe fn value_ref<'a>(value: *const RLMeshValue) -> Result<&'a Value, CapiError> {
+    Ok(unsafe {
+        // SAFETY: the FFI contract supplies live handles and writable output storage.
+        handle_ref(value)
+    }?
+    .value())
 }
-fn handle_ref<'a>(value: *const RLMeshValue) -> Result<&'a RLMeshValue, CapiError> {
+/// # Safety
+/// A non-NULL handle must stay live for the returned reference's lifetime.
+unsafe fn handle_ref<'a>(value: *const RLMeshValue) -> Result<&'a RLMeshValue, CapiError> {
     unsafe { value.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null value"))
 }
 
@@ -64,7 +72,12 @@ fn handle_ref<'a>(value: *const RLMeshValue) -> Result<&'a RLMeshValue, CapiErro
 pub extern "C" fn rlmesh_value_kind(value: *const RLMeshValue) -> RLMeshValueKind {
     use rlmesh::ValueKind as K;
     guard_value(RLMeshValueKind::Invalid, || {
-        match value_ref(value).map(Value::kind) {
+        match unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            value_ref(value)
+        }
+        .map(Value::kind)
+        {
             Ok(K::None) => RLMeshValueKind::None,
             Ok(K::Bool) => RLMeshValueKind::Bool,
             Ok(K::Int) => RLMeshValueKind::Int,
@@ -82,13 +95,32 @@ pub extern "C" fn rlmesh_value_kind(value: *const RLMeshValue) -> RLMeshValueKin
 
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_value_clone(value: *const RLMeshValue) -> *mut RLMeshValue {
-    guard_ptr(|| Ok(Box::into_raw(Box::new(handle_ref(value)?.clone()))))
+    guard_ptr(|| {
+        Ok(Box::into_raw(Box::new(
+            unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                handle_ref(value)
+            }?
+            .clone(),
+        )))
+    })
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_value_equals(a: *const RLMeshValue, b: *const RLMeshValue) -> bool {
-    guard_value(false, || match (value_ref(a), value_ref(b)) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => false,
+    guard_value(false, || {
+        match (
+            unsafe {
+                /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+                value_ref(a)
+            },
+            unsafe {
+                /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+                value_ref(b)
+            },
+        ) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -107,7 +139,10 @@ fn output(out: *mut *mut RLMeshValue, value: Value) -> Result<(), CapiError> {
     if out.is_null() {
         return Err(CapiError::invalid_arg("null out"));
     }
-    write_out(out, into_handle(value))
+    unsafe {
+        /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+        write_out(out, into_handle(value))
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -122,7 +157,10 @@ macro_rules! scalar {
         }
         #[unsafe(no_mangle)]
         pub extern "C" fn $read(value: *const RLMeshValue, out: *mut $ty) -> RLMeshStatus {
-            guard(|| write_out(out, value_ref(value)?.$access()?))
+            guard(|| unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                write_out(out, value_ref(value)?.$access()?)
+            })
         }
     };
 }
@@ -148,7 +186,10 @@ pub extern "C" fn rlmesh_value_as_text(
     value: *const RLMeshValue,
     out: *mut RLMeshStr,
 ) -> RLMeshStatus {
-    guard(|| write_out(out, RLMeshStr::borrowed(value_ref(value)?.as_text()?)))
+    guard(|| unsafe {
+        /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+        write_out(out, RLMeshStr::borrowed(value_ref(value)?.as_text()?))
+    })
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_value_bytes(
@@ -170,12 +211,22 @@ pub extern "C" fn rlmesh_value_as_bytes(
     out_len: *mut usize,
 ) -> RLMeshStatus {
     guard(|| {
-        let bytes = value_ref(value)?.as_bytes()?;
+        let bytes = unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            value_ref(value)
+        }?
+        .as_bytes()?;
         if out_data.is_null() || out_len.is_null() {
             return Err(CapiError::invalid_arg("null out"));
         }
-        write_out(out_data, bytes.as_ptr())?;
-        write_out(out_len, bytes.len())
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out_data, bytes.as_ptr())
+        }?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out_len, bytes.len())
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -183,20 +234,47 @@ pub extern "C" fn rlmesh_value_tensor(
     tensor: *const RLMeshTensor,
     out: *mut *mut RLMeshValue,
 ) -> RLMeshStatus {
-    guard(|| output(out, Value::Tensor(tensor_ref(tensor)?.clone())))
+    guard(|| {
+        output(
+            out,
+            Value::Tensor(
+                unsafe {
+                    // SAFETY: the FFI contract supplies live handles and writable output storage.
+                    tensor_ref(tensor)
+                }?
+                .clone(),
+            ),
+        )
+    })
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_value_as_tensor(
     value: *const RLMeshValue,
     out: *mut *mut RLMeshTensor,
 ) -> RLMeshStatus {
-    guard(|| super::tensor::output(out, value_ref(value)?.as_tensor()?.clone()))
+    guard(|| {
+        super::tensor::output(
+            out,
+            unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                value_ref(value)
+            }?
+            .as_tensor()?
+            .clone(),
+        )
+    })
 }
 
 unsafe fn items(items: *const *const RLMeshValue, n: usize) -> Result<Vec<RLMeshValue>, CapiError> {
     unsafe { crate::spaces::slice_arg(items, n, "items") }?
         .iter()
-        .map(|&p| handle_ref(p).cloned())
+        .map(|&p| {
+            unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                handle_ref(p)
+            }
+            .cloned()
+        })
         .collect()
 }
 fn composite(
@@ -209,7 +287,10 @@ fn composite(
     }
     let handle = RLMeshValue::new(value);
     let _ = handle.0.children.set(children);
-    write_out(out, Box::into_raw(Box::new(handle)))
+    unsafe {
+        /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+        write_out(out, Box::into_raw(Box::new(handle)))
+    }
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_value_list(
@@ -272,12 +353,18 @@ pub unsafe extern "C" fn rlmesh_value_dict(
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_value_len(value: *const RLMeshValue, out: *mut usize) -> RLMeshStatus {
     guard(|| {
-        let len = match value_ref(value)? {
+        let len = match unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            value_ref(value)
+        }? {
             Value::List(v) | Value::Tuple(v) => v.len(),
             Value::Dict(v) => v.len(),
             _ => return Err(CapiError::type_error("value is not a list, tuple or dict")),
         };
-        write_out(out, len)
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, len)
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -287,17 +374,23 @@ pub extern "C" fn rlmesh_value_get(
     out: *mut *const RLMeshValue,
 ) -> RLMeshStatus {
     guard(|| {
-        let handle = handle_ref(value)?;
+        let handle = unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            handle_ref(value)
+        }?;
         if !matches!(handle.value(), Value::List(_) | Value::Tuple(_)) {
             return Err(CapiError::type_error("value is not a list or tuple"));
         }
-        write_out(
-            out,
-            handle
-                .children()
-                .get(i)
-                .map_or(std::ptr::null(), std::ptr::from_ref),
-        )
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                handle
+                    .children()
+                    .get(i)
+                    .map_or(std::ptr::null(), std::ptr::from_ref),
+            )
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -307,17 +400,26 @@ pub extern "C" fn rlmesh_value_dict_key_at(
     out: *mut RLMeshStr,
 ) -> RLMeshStatus {
     guard(|| {
-        let key = value_ref(value)?.as_dict()?.keys().nth(i);
-        write_out(
-            out,
-            key.map_or(
-                RLMeshStr {
-                    data: std::ptr::null(),
-                    len: 0,
-                },
-                RLMeshStr::borrowed,
-            ),
-        )
+        let key = unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            value_ref(value)
+        }?
+        .as_dict()?
+        .keys()
+        .nth(i);
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                key.map_or(
+                    RLMeshStr {
+                        data: std::ptr::null(),
+                        len: 0,
+                    },
+                    RLMeshStr::borrowed,
+                ),
+            )
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -327,15 +429,21 @@ pub extern "C" fn rlmesh_value_dict_value_at(
     out: *mut *const RLMeshValue,
 ) -> RLMeshStatus {
     guard(|| {
-        let handle = handle_ref(value)?;
+        let handle = unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            handle_ref(value)
+        }?;
         handle.value().as_dict()?;
-        write_out(
-            out,
-            handle
-                .children()
-                .get(i)
-                .map_or(std::ptr::null(), std::ptr::from_ref),
-        )
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                handle
+                    .children()
+                    .get(i)
+                    .map_or(std::ptr::null(), std::ptr::from_ref),
+            )
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -345,14 +453,20 @@ pub unsafe extern "C" fn rlmesh_value_dict_get(
     out: *mut *const RLMeshValue,
 ) -> RLMeshStatus {
     guard(|| {
-        let handle = handle_ref(value)?;
+        let handle = unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            handle_ref(value)
+        }?;
         let map = handle.value().as_dict()?;
         let key = unsafe { key.read("dict key") }?;
         let child = map
             .keys()
             .position(|k| k == key)
             .map(|i| &handle.children()[i]);
-        write_out(out, child.map_or(std::ptr::null(), std::ptr::from_ref))
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, child.map_or(std::ptr::null(), std::ptr::from_ref))
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -362,17 +476,27 @@ pub unsafe extern "C" fn rlmesh_value_dict_contains_key(
     out: *mut bool,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(
-            out,
-            value_ref(value)?
-                .as_dict()?
-                .contains_key(unsafe { key.read("dict key") }?),
-        )
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                value_ref(value)?
+                    .as_dict()?
+                    .contains_key({ key.read("dict key") }?),
+            )
+        }
     })
 }
 
-pub(crate) fn write_out<T>(out: *mut T, value: T) -> Result<(), CapiError> {
-    let slot = unsafe { out.as_mut() }.ok_or_else(|| CapiError::invalid_arg("null out"))?;
-    *slot = value;
+/// Initialize a C output without reading or dropping its previous bytes.
+///
+/// # Safety
+/// `out` is NULL or aligned, writable storage for T. It need not be initialized.
+pub(crate) unsafe fn write_out<T>(out: *mut T, value: T) -> Result<(), CapiError> {
+    if out.is_null() {
+        return Err(CapiError::invalid_arg("null out"));
+    }
+    // SAFETY: the caller supplies writable storage; ptr::write never reads it.
+    unsafe { out.write(value) };
     Ok(())
 }

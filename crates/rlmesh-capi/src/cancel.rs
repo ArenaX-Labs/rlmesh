@@ -8,13 +8,19 @@ pub unsafe extern "C" fn rlmesh_ext_cancel_token_new(
     out: *mut *mut RLMeshExtCancelToken,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
-        write_out(
-            out,
-            Box::into_raw(Box::new(RLMeshExtCancelToken(
-                rlmesh::ext::CancelToken::new(),
-            ))),
-        )
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                Box::into_raw(Box::new(RLMeshExtCancelToken(
+                    rlmesh::ext::CancelToken::new(),
+                ))),
+            )
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -23,13 +29,19 @@ pub unsafe extern "C" fn rlmesh_ext_cancel_token_clone(
     out: *mut *mut RLMeshExtCancelToken,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
         let token =
             unsafe { token.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null cancel token"))?;
-        write_out(
-            out,
-            Box::into_raw(Box::new(RLMeshExtCancelToken(token.0.clone()))),
-        )
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                Box::into_raw(Box::new(RLMeshExtCancelToken(token.0.clone()))),
+            )
+        }
     })
 }
 #[unsafe(no_mangle)]

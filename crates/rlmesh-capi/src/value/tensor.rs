@@ -10,7 +10,9 @@ use rlmesh::Tensor;
 use std::ffi::c_void;
 
 pub struct RLMeshTensor(pub(crate) Tensor);
-pub(crate) fn tensor_ref<'a>(tensor: *const RLMeshTensor) -> Result<&'a Tensor, CapiError> {
+/// # Safety
+/// A non-NULL tensor handle stays live for the returned reference's lifetime.
+pub(crate) unsafe fn tensor_ref<'a>(tensor: *const RLMeshTensor) -> Result<&'a Tensor, CapiError> {
     Ok(&unsafe { tensor.as_ref() }
         .ok_or_else(|| CapiError::invalid_arg("null tensor"))?
         .0)
@@ -19,7 +21,10 @@ pub(crate) fn output(out: *mut *mut RLMeshTensor, tensor: Tensor) -> Result<(), 
     if out.is_null() {
         return Err(CapiError::invalid_arg("null out"));
     }
-    write_out(out, Box::into_raw(Box::new(RLMeshTensor(tensor))))
+    unsafe {
+        /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+        write_out(out, Box::into_raw(Box::new(RLMeshTensor(tensor))))
+    }
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_tensor_new(
@@ -42,7 +47,11 @@ pub unsafe extern "C" fn rlmesh_tensor_new(
 pub extern "C" fn rlmesh_tensor_clone(tensor: *const RLMeshTensor) -> *mut RLMeshTensor {
     guard_ptr(|| {
         Ok(Box::into_raw(Box::new(RLMeshTensor(
-            tensor_ref(tensor)?.clone(),
+            unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                tensor_ref(tensor)
+            }?
+            .clone(),
         ))))
     })
 }
@@ -61,7 +70,18 @@ pub extern "C" fn rlmesh_tensor_shape(
     cap: usize,
     out_len: *mut usize,
 ) -> RLMeshStatus {
-    guard(|| crate::space_handle::copy_buffer(tensor_ref(tensor)?.shape(), out, cap, out_len))
+    guard(|| {
+        crate::space_handle::copy_buffer(
+            unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                tensor_ref(tensor)
+            }?
+            .shape(),
+            out,
+            cap,
+            out_len,
+        )
+    })
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_tensor_strides(
@@ -70,23 +90,47 @@ pub extern "C" fn rlmesh_tensor_strides(
     cap: usize,
     out_len: *mut usize,
 ) -> RLMeshStatus {
-    guard(|| crate::space_handle::copy_buffer(&tensor_ref(tensor)?.strides(), out, cap, out_len))
+    guard(|| {
+        crate::space_handle::copy_buffer(
+            &unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                tensor_ref(tensor)
+            }?
+            .strides(),
+            out,
+            cap,
+            out_len,
+        )
+    })
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_tensor_dtype(tensor: *const RLMeshTensor) -> i32 {
     guard_value(0, || {
-        tensor_ref(tensor).map_or(0, |t| dtype_to_c(t.dtype()))
+        unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            tensor_ref(tensor)
+        }
+        .map_or(0, |t| dtype_to_c(t.dtype()))
     })
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_tensor_device(tensor: *const RLMeshTensor) -> i32 {
-    guard_value(0, || tensor_ref(tensor).map_or(0, |_| 1))
+    guard_value(0, || {
+        unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            tensor_ref(tensor)
+        }
+        .map_or(0, |_| 1)
+    })
 }
 macro_rules! size_read {
     ($name:ident, $method:ident) => {
         #[unsafe(no_mangle)]
         pub extern "C" fn $name(tensor: *const RLMeshTensor, out: *mut usize) -> RLMeshStatus {
-            guard(|| write_out(out, tensor_ref(tensor)?.$method()))
+            guard(|| unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                write_out(out, tensor_ref(tensor)?.$method())
+            })
         }
     };
 }
@@ -100,18 +144,32 @@ pub extern "C" fn rlmesh_tensor_buffer(
     out_len: *mut usize,
 ) -> RLMeshStatus {
     guard(|| {
-        let data = tensor_ref(tensor)?.buffer();
+        let data = unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            tensor_ref(tensor)
+        }?
+        .buffer();
         if out_data.is_null() || out_len.is_null() {
             return Err(CapiError::invalid_arg("null out"));
         }
-        write_out(out_data, data.as_ptr().cast())?;
-        write_out(out_len, data.len())
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out_data, data.as_ptr().cast())
+        }?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out_len, data.len())
+        }
     })
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_tensor_is_contiguous(tensor: *const RLMeshTensor) -> bool {
     guard_value(false, || {
-        tensor_ref(tensor).is_ok_and(Tensor::is_contiguous)
+        unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            tensor_ref(tensor)
+        }
+        .is_ok_and(Tensor::is_contiguous)
     })
 }
 #[unsafe(no_mangle)]
@@ -124,7 +182,11 @@ pub unsafe extern "C" fn rlmesh_tensor_reshape(
     guard(|| {
         output(
             out,
-            tensor_ref(tensor)?.reshape(unsafe { slice_arg(shape, ndim, "shape") }?)?,
+            unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                tensor_ref(tensor)
+            }?
+            .reshape(unsafe { slice_arg(shape, ndim, "shape") }?)?,
         )
     })
 }
@@ -133,7 +195,16 @@ pub extern "C" fn rlmesh_tensor_copy(
     tensor: *const RLMeshTensor,
     out: *mut *mut RLMeshTensor,
 ) -> RLMeshStatus {
-    guard(|| output(out, tensor_ref(tensor)?.copy()))
+    guard(|| {
+        output(
+            out,
+            unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                tensor_ref(tensor)
+            }?
+            .copy(),
+        )
+    })
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_tensor_tobytes(
@@ -144,7 +215,10 @@ pub extern "C" fn rlmesh_tensor_tobytes(
         if out.is_null() {
             return Err(CapiError::invalid_arg("null out"));
         }
-        write_out(out, RLMeshBytes::from_vec(tensor_ref(tensor)?.tobytes()))
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, RLMeshBytes::from_vec(tensor_ref(tensor)?.tobytes()))
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -156,10 +230,13 @@ pub extern "C" fn rlmesh_tensor_repr(
         if out.is_null() {
             return Err(CapiError::invalid_arg("null out"));
         }
-        write_out(
-            out,
-            RLMeshBytes::from_vec(tensor_ref(tensor)?.to_string().into_bytes()),
-        )
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                RLMeshBytes::from_vec(tensor_ref(tensor)?.to_string().into_bytes()),
+            )
+        }
     })
 }
 

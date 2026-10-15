@@ -13,6 +13,12 @@ of the wire:
 
 Status: alpha. The ABI (`RLMESH_ABI_VERSION`) will break before 1.0.
 
+Ordinary output slots need not be initialized: successful writes never read or
+free their previous contents. Free any previously owned result before reusing
+its slot. Sized output structs still require their `_INIT` / `struct_size`.
+Input bool fields must contain a 0 or 1 byte; malformed representations return
+`RLMESH_ERR_INVALID_ARGUMENT` before the library reads a typed struct.
+
 ## ABI 5 values and tensors
 
 ABI 5 replaces the space-specific value projection with immutable core

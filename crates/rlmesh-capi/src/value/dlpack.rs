@@ -30,7 +30,10 @@ pub unsafe extern "C" fn rlmesh_tensor_from_dlpack(
 ) -> RLMeshStatus {
     guard(|| {
         // Validate the output before the facade can consume the producer.
-        write_out(out, null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, null_mut())
+        }?;
         let obj = NonNull::new(obj).ok_or_else(|| CapiError::invalid_arg("null DLPack tensor"))?;
         // SAFETY: the C caller supplies an exclusively owned live descriptor
         // and readable CPU data/metadata. The facade copies and releases it
@@ -47,7 +50,10 @@ pub unsafe extern "C" fn rlmesh_tensor_to_dlpack(
     out: *mut *mut DLManagedTensorVersioned,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, null_mut())
+        }?;
         let options = match unsafe { sizing::read(options, "RLMeshToDlpackOptions") }? {
             None => ToDlpackOptions::default(),
             Some(o) => {
@@ -64,10 +70,17 @@ pub unsafe extern "C" fn rlmesh_tensor_to_dlpack(
                 }
             }
         };
-        let export = tensor_ref(tensor)?.to_dlpack(options)?;
+        let export = unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            tensor_ref(tensor)
+        }?
+        .to_dlpack(options)?;
         // Only the successful output gives up the facade's deleter-owning RAII
         // handle. No fallible operations remain after into_raw.
-        write_out(out, export.into_raw().as_ptr())
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, export.into_raw().as_ptr())
+        }
     })
 }
 
@@ -81,8 +94,18 @@ pub extern "C" fn rlmesh_tensor_dlpack_device(
         if out_type.is_null() || out_id.is_null() {
             return Err(CapiError::invalid_arg("null out"));
         }
-        let (device_type, device_id) = tensor_ref(tensor)?.dlpack_device();
-        write_out(out_type, device_type)?;
-        write_out(out_id, device_id)
+        let (device_type, device_id) = unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            tensor_ref(tensor)
+        }?
+        .dlpack_device();
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out_type, device_type)
+        }?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out_id, device_id)
+        }
     })
 }

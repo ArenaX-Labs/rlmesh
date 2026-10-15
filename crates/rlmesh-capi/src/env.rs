@@ -1218,7 +1218,12 @@ mod tests {
         let probe = unsafe { &*user_data.cast::<Probe>() };
         probe.record_thread();
         let chosen = {
-            let value = crate::value::handle::value_ref(action).ok().unwrap();
+            let value = unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                crate::value::handle::value_ref(action)
+            }
+            .ok()
+            .unwrap();
             let data = value.as_tensor().unwrap().buffer();
             f32::from_ne_bytes(data[..4].try_into().unwrap())
         };

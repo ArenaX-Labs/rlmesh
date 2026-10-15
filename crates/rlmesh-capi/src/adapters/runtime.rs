@@ -41,7 +41,10 @@ macro_rules! transform {
             out: *mut *mut $ty,
         ) -> RLMeshStatus {
             guard(|| {
-                write_out(out, std::ptr::null_mut())?;
+                unsafe {
+                    // SAFETY: the FFI contract supplies live handles and writable output storage.
+                    write_out(out, std::ptr::null_mut())
+                }?;
                 let f = f.ok_or_else(|| CapiError::type_error("transform function is required"))?;
                 let owner = Arc::new(Owner {
                     user: user as usize,
@@ -52,7 +55,10 @@ macro_rules! transform {
                 let value = a::$native::from(move |input: &Value| {
                     value_call(f, captured.user, input.clone())
                 });
-                write_out(out, Box::into_raw(Box::new($ty(value))))?;
+                unsafe {
+                    // SAFETY: the FFI contract supplies live handles and writable output storage.
+                    write_out(out, Box::into_raw(Box::new($ty(value))))
+                }?;
                 owner.owned.store(true, Ordering::Release);
                 Ok(())
             })
@@ -244,7 +250,9 @@ impl AdapterBase for RLMeshAdapter {
         self.call(|a| a.explain())
     }
 }
-fn require<'a>(p: *const RLMeshAdapter) -> Result<&'a RLMeshAdapter, CapiError> {
+/// # Safety
+/// A non-NULL handle stays live for the returned reference's lifetime.
+unsafe fn require<'a>(p: *const RLMeshAdapter) -> Result<&'a RLMeshAdapter, CapiError> {
     unsafe { p.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null adapter"))
 }
 #[unsafe(no_mangle)]
@@ -254,7 +262,10 @@ pub unsafe extern "C" fn rlmesh_adapter_new(
     out: *mut *mut RLMeshAdapter,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
         let v = unsafe { sized(v, "RLMeshAdapterVtable") }?;
         if v.transform_obs.is_none() || v.transform_action.is_none() {
             return Err(CapiError::type_error(
@@ -276,12 +287,23 @@ pub unsafe extern "C" fn rlmesh_adapter_new(
             keys: Vec::new(),
             windows: Vec::new(),
         }));
-        write_out(out, Box::into_raw(Box::new(value)))
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, Box::into_raw(Box::new(value)))
+        }
     })
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_adapter_clone(p: *const RLMeshAdapter) -> *mut RLMeshAdapter {
-    guard_ptr(|| Ok(Box::into_raw(Box::new(require(p)?.clone()))))
+    guard_ptr(|| {
+        Ok(Box::into_raw(Box::new(
+            unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                require(p)
+            }?
+            .clone(),
+        )))
+    })
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_adapter_free(p: *mut RLMeshAdapter) {
@@ -308,18 +330,30 @@ pub unsafe extern "C" fn rlmesh_adapters_resolve(
     out: *mut *mut RLMeshAdapter,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
         let tags = unsafe { tags.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null tags"))?;
         let spec = unsafe { spec.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null spec"))?;
-        let obs = crate::space_handle::require_spec(obs)?;
-        let act = crate::space_handle::require_spec(act)?;
+        let obs = unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            crate::space_handle::require_spec(obs)
+        }?;
+        let act = unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            crate::space_handle::require_spec(act)
+        }?;
         let adapter = a::resolve(&tags.0, &obs, &act, &spec.0, unsafe {
             resolve_options(options)
         }?)?;
-        write_out(
-            out,
-            Box::into_raw(Box::new(RLMeshAdapter::resolved(adapter))),
-        )
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                Box::into_raw(Box::new(RLMeshAdapter::resolved(adapter))),
+            )
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -330,17 +364,23 @@ pub unsafe extern "C" fn rlmesh_adapters_resolve_from_contract(
     out: *mut *mut RLMeshAdapter,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
         let spec = unsafe { spec.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null spec"))?;
         let wire = unsafe { crate::contract::RLMeshEnvContract::as_ref(contract) }
             .ok_or_else(|| CapiError::invalid_arg("null contract"))?;
         let contract = rlmesh::binding::env_contract_from_wire(wire)?;
         let adapter =
             a::resolve_from_contract(&contract, &spec.0, unsafe { resolve_options(options) }?)?;
-        write_out(
-            out,
-            Box::into_raw(Box::new(RLMeshAdapter::resolved(adapter))),
-        )
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                Box::into_raw(Box::new(RLMeshAdapter::resolved(adapter))),
+            )
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -350,9 +390,26 @@ pub unsafe extern "C" fn rlmesh_adapter_transform_obs(
     out: *mut *mut RLMeshValue,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
-        let value = require(p)?.clone().transform_obs(value_ref(v)?.clone())?;
-        write_out(out, into_handle(value))
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
+        let value = unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            require(p)
+        }?
+        .clone()
+        .transform_obs(
+            unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                value_ref(v)
+            }?
+            .clone(),
+        )?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, into_handle(value))
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -362,11 +419,26 @@ pub unsafe extern "C" fn rlmesh_adapter_transform_action(
     out: *mut *mut RLMeshValue,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
-        let value = require(p)?
-            .clone()
-            .transform_action(value_ref(v)?.clone())?;
-        write_out(out, into_handle(value))
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
+        let value = unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            require(p)
+        }?
+        .clone()
+        .transform_action(
+            unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                value_ref(v)
+            }?
+            .clone(),
+        )?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, into_handle(value))
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -375,14 +447,30 @@ pub unsafe extern "C" fn rlmesh_adapter_observe(
     v: *const RLMeshValue,
 ) -> RLMeshStatus {
     guard(|| {
-        require(p)?.clone().observe(value_ref(v)?.clone())?;
+        unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            require(p)
+        }?
+        .clone()
+        .observe(
+            unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                value_ref(v)
+            }?
+            .clone(),
+        )?;
         Ok(())
     })
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_adapter_reset(p: *mut RLMeshAdapter) -> RLMeshStatus {
     guard(|| {
-        require(p)?.clone().reset()?;
+        unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            require(p)
+        }?
+        .clone()
+        .reset()?;
         Ok(())
     })
 }
@@ -391,13 +479,25 @@ pub unsafe extern "C" fn rlmesh_adapter_explain(
     p: *const RLMeshAdapter,
     out: *mut RLMeshBytes,
 ) -> RLMeshStatus {
-    guard(|| ffi::bytes(out, require(p)?.explain()?))
+    guard(|| {
+        ffi::bytes(
+            out,
+            unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                require(p)
+            }?
+            .explain()?,
+        )
+    })
 }
 macro_rules! length {
     ($f:ident,$field:ident) => {
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $f(p: *const RLMeshAdapter, out: *mut usize) -> RLMeshStatus {
-            guard(|| write_out(out, require(p)?.resolved_only()?.$field.len()))
+            guard(|| unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                write_out(out, require(p)?.resolved_only()?.$field.len())
+            })
         }
     };
 }
@@ -411,17 +511,26 @@ pub unsafe extern "C" fn rlmesh_adapter_history_keys_get(
     out: *mut RLMeshStr,
 ) -> RLMeshStatus {
     guard(|| {
-        let v = require(p)?.resolved_only()?.keys.get(i);
-        write_out(
-            out,
-            v.map_or(
-                RLMeshStr {
-                    data: std::ptr::null(),
-                    len: 0,
-                },
-                |s| RLMeshStr::borrowed(s),
-            ),
-        )
+        let v = unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            require(p)
+        }?
+        .resolved_only()?
+        .keys
+        .get(i);
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                v.map_or(
+                    RLMeshStr {
+                        data: std::ptr::null(),
+                        len: 0,
+                    },
+                    |s| RLMeshStr::borrowed(s),
+                ),
+            )
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -436,19 +545,34 @@ pub unsafe extern "C" fn rlmesh_adapter_history_windows_get(
         if key.is_null() || span.is_null() || bytes.is_null() {
             return Err(CapiError::invalid_arg("null out"));
         }
-        let v = require(p)?.resolved_only()?.windows.get(i);
-        write_out(
-            key,
-            v.map_or(
-                RLMeshStr {
-                    data: std::ptr::null(),
-                    len: 0,
-                },
-                |s| RLMeshStr::borrowed(&s.0),
-            ),
-        )?;
-        write_out(span, v.map_or(0, |v| v.1))?;
-        write_out(bytes, v.map_or(0, |v| v.2))
+        let v = unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            require(p)
+        }?
+        .resolved_only()?
+        .windows
+        .get(i);
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                key,
+                v.map_or(
+                    RLMeshStr {
+                        data: std::ptr::null(),
+                        len: 0,
+                    },
+                    |s| RLMeshStr::borrowed(&s.0),
+                ),
+            )
+        }?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(span, v.map_or(0, |v| v.1))
+        }?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(bytes, v.map_or(0, |v| v.2))
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -458,7 +582,11 @@ pub unsafe extern "C" fn rlmesh_adapter_advisories_get(
     out: *mut RLMeshAdvisory,
 ) -> RLMeshStatus {
     guard(|| {
-        let state = require(p)?.resolved_only()?;
+        let state = unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            require(p)
+        }?
+        .resolved_only()?;
         let n = state
             .notes
             .get(i)
@@ -480,8 +608,15 @@ pub unsafe extern "C" fn rlmesh_adapter_wrap_predict(
     out: *mut *mut RLMeshWrappedPredict,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
-        let adapter = require(p)?.clone();
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
+        let adapter = unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            require(p)
+        }?
+        .clone();
         let f = f.ok_or_else(|| CapiError::type_error("predict function is required"))?;
         let owner = Arc::new(Owner {
             user: user as usize,
@@ -490,12 +625,15 @@ pub unsafe extern "C" fn rlmesh_adapter_wrap_predict(
         });
         let captured = Arc::clone(&owner);
         let predict: Predict = Box::new(move |value| value_call(f, captured.user, value));
-        write_out(
-            out,
-            Box::into_raw(Box::new(RLMeshWrappedPredict(Mutex::new(
-                adapter.wrap_predict(predict),
-            )))),
-        )?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                Box::into_raw(Box::new(RLMeshWrappedPredict(Mutex::new(
+                    adapter.wrap_predict(predict),
+                )))),
+            )
+        }?;
         owner.owned.store(true, Ordering::Release);
         Ok(())
     })
@@ -507,15 +645,27 @@ pub unsafe extern "C" fn rlmesh_wrapped_predict_call(
     out: *mut *mut RLMeshValue,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
         let p = unsafe { p.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null predict"))?;
         let mut f = p.0.try_lock().map_err(|_| {
             CapiError::from(rlmesh::Error::Runtime(
                 "wrapped predict is already active".into(),
             ))
         })?;
-        let value = f.call(value_ref(v)?.clone())?;
-        write_out(out, into_handle(value))
+        let value = f.call(
+            unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                value_ref(v)
+            }?
+            .clone(),
+        )?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, into_handle(value))
+        }
     })
 }
 #[unsafe(no_mangle)]

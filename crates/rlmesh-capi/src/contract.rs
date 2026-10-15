@@ -41,20 +41,35 @@ impl RLMeshEnvContract {
             .map_err(|e| CapiError::from(e.clone()))
     }
 }
-fn require<'a>(contract: *const RLMeshEnvContract) -> Result<&'a RLMeshEnvContract, CapiError> {
+/// # Safety
+/// A non-NULL handle stays live for the returned reference's lifetime.
+unsafe fn require<'a>(
+    contract: *const RLMeshEnvContract,
+) -> Result<&'a RLMeshEnvContract, CapiError> {
     unsafe { contract.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null contract"))
 }
 fn bytes(out: *mut RLMeshBytes, text: &str) -> Result<(), CapiError> {
     if out.is_null() {
         return Err(CapiError::invalid_arg("null out"));
     }
-    write_out(out, RLMeshBytes::from_vec(text.as_bytes().to_vec()))
+    unsafe {
+        /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+        write_out(out, RLMeshBytes::from_vec(text.as_bytes().to_vec()))
+    }
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_env_contract_clone(
     contract: *const RLMeshEnvContract,
 ) -> *mut RLMeshEnvContract {
-    guard_ptr(|| Ok(Box::into_raw(Box::new(require(contract)?.clone()))))
+    guard_ptr(|| {
+        Ok(Box::into_raw(Box::new(
+            unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                require(contract)
+            }?
+            .clone(),
+        )))
+    })
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_env_contract_env(
@@ -81,7 +96,17 @@ pub extern "C" fn rlmesh_env_contract_id(
     contract: *const RLMeshEnvContract,
     out: *mut RLMeshBytes,
 ) -> RLMeshStatus {
-    guard(|| bytes(out, require(contract)?.facade()?.id()))
+    guard(|| {
+        bytes(
+            out,
+            unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                require(contract)
+            }?
+            .facade()?
+            .id(),
+        )
+    })
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_env_contract_observation_space(
@@ -119,8 +144,16 @@ pub extern "C" fn rlmesh_env_contract_render_mode(
         if out_has.is_null() || out.is_null() {
             return Err(CapiError::invalid_arg("null out"));
         }
-        let mode = require(contract)?.facade()?.render_mode();
-        write_out(out_has, mode.is_some())?;
+        let mode = unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            require(contract)
+        }?
+        .facade()?
+        .render_mode();
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out_has, mode.is_some())
+        }?;
         bytes(out, mode.unwrap_or_default())
     })
 }
@@ -129,10 +162,13 @@ pub extern "C" fn rlmesh_env_contract_metadata(
     contract: *const RLMeshEnvContract,
 ) -> *const RLMeshValue {
     guard_value(std::ptr::null(), || {
-        require(contract)
-            .ok()
-            .and_then(|c| c.0.metadata.as_ref())
-            .map_or(std::ptr::null(), std::ptr::from_ref)
+        unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            require(contract)
+        }
+        .ok()
+        .and_then(|c| c.0.metadata.as_ref())
+        .map_or(std::ptr::null(), std::ptr::from_ref)
     })
 }
 #[unsafe(no_mangle)]
@@ -144,10 +180,13 @@ pub extern "C" fn rlmesh_env_contract_to_dict(
         if out.is_null() {
             return Err(CapiError::invalid_arg("null out"));
         }
-        write_out(
-            out,
-            into_handle(Value::Dict(require(contract)?.facade()?.to_dict())),
-        )
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                into_handle(Value::Dict(require(contract)?.facade()?.to_dict())),
+            )
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -155,7 +194,17 @@ pub extern "C" fn rlmesh_env_contract_repr(
     contract: *const RLMeshEnvContract,
     out: *mut RLMeshBytes,
 ) -> RLMeshStatus {
-    guard(|| bytes(out, &require(contract)?.facade()?.to_string()))
+    guard(|| {
+        bytes(
+            out,
+            &unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                require(contract)
+            }?
+            .facade()?
+            .to_string(),
+        )
+    })
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_trial_index(
@@ -171,11 +220,23 @@ pub unsafe extern "C" fn rlmesh_trial_index(
         let options = if options.is_null() {
             None
         } else {
-            Some(value_ref(options)?.as_dict()?)
+            Some(
+                unsafe {
+                    // SAFETY: the FFI contract supplies live handles and writable output storage.
+                    value_ref(options)
+                }?
+                .as_dict()?,
+            )
         };
         let index = rlmesh::trial_index(options, unsafe { lane.as_ref() }.copied())?;
-        write_out(out_has, index.is_some())?;
-        write_out(out, index.unwrap_or_default())
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out_has, index.is_some())
+        }?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, index.unwrap_or_default())
+        }
     })
 }
 
@@ -209,7 +270,12 @@ mod tests {
         let mut dict = null_mut();
         assert_eq!(rlmesh_env_contract_to_dict(&c, &mut dict), S::Ok);
         assert_eq!(
-            value_ref(dict).ok().unwrap(),
+            unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                value_ref(dict)
+            }
+            .ok()
+            .unwrap(),
             &Value::Dict(c.facade().ok().unwrap().to_dict())
         );
         let mut out = RLMeshBytes::from_vec(vec![]);

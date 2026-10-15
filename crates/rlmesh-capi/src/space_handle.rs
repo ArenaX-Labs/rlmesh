@@ -156,7 +156,10 @@ fn write_space(out: *mut *mut RLMeshSpace, space: Space) -> Result<(), CapiError
     if out.is_null() {
         return Err(CapiError::invalid_arg("null out"));
     }
-    write_out(out, into_space_handle(space))
+    unsafe {
+        /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+        write_out(out, into_space_handle(space))
+    }
 }
 
 fn space_ref<'a>(space: *const RLMeshSpace) -> Option<&'a Space> {
@@ -164,11 +167,15 @@ fn space_ref<'a>(space: *const RLMeshSpace) -> Option<&'a Space> {
     unsafe { space.cast::<Space>().as_ref() }
 }
 
-fn require_space<'a>(space: *const RLMeshSpace) -> Result<&'a Space, CapiError> {
+/// # Safety
+/// A non-NULL handle stays live for the returned reference's lifetime.
+unsafe fn require_space<'a>(space: *const RLMeshSpace) -> Result<&'a Space, CapiError> {
     space_ref(space).ok_or_else(|| CapiError::invalid_arg("null space"))
 }
 
-pub(crate) fn require_spec(spec: *const RLMeshSpaceSpec) -> Result<SpaceSpec, CapiError> {
+/// # Safety
+/// A non-NULL spec handle must remain live for this call.
+pub(crate) unsafe fn require_spec(spec: *const RLMeshSpaceSpec) -> Result<SpaceSpec, CapiError> {
     spec_ref(spec)
         .map(|wire| rlmesh::binding::space_spec_from_wire(wire.clone()))
         .ok_or_else(|| CapiError::invalid_arg("null space spec"))
@@ -179,7 +186,10 @@ fn typed<'a, T>(
     cast: impl FnOnce(&'a Space) -> Option<&'a T>,
     kind: &str,
 ) -> Result<&'a T, CapiError> {
-    let space = require_space(space)?;
+    let space = unsafe {
+        /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+        require_space(space)
+    }?;
     let actual = space.kind();
     cast(space)
         .ok_or_else(|| CapiError::type_error(format!("expected a {kind} space, got {actual}")))
@@ -193,7 +203,10 @@ pub(crate) fn copy_buffer<T: Copy>(
     cap: usize,
     out_len: *mut usize,
 ) -> Result<(), CapiError> {
-    write_out(out_len, src.len())?;
+    unsafe {
+        /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+        write_out(out_len, src.len())
+    }?;
     if out.is_null() && cap == 0 {
         return Ok(());
     }
@@ -253,7 +266,10 @@ fn bounds_kind_to_c(kind: BoundsKind) -> i32 {
 }
 
 fn repr_bytes(out: *mut RLMeshBytes, text: String) -> Result<(), CapiError> {
-    write_out(out, RLMeshBytes::from_vec(text.into_bytes()))
+    unsafe {
+        /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+        write_out(out, RLMeshBytes::from_vec(text.into_bytes()))
+    }
 }
 
 // ---- vocabularies -----------------------------------------------------------
@@ -328,7 +344,16 @@ pub extern "C" fn rlmesh_space_spec_to_space(
     spec: *const RLMeshSpaceSpec,
     out: *mut *mut RLMeshSpace,
 ) -> RLMeshStatus {
-    guard(|| write_space(out, require_spec(spec)?.to_space()))
+    guard(|| {
+        write_space(
+            out,
+            unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                require_spec(spec)
+            }?
+            .to_space(),
+        )
+    })
 }
 
 /// The spec's Gymnasium-style text (Python's `repr`), as owned bytes.
@@ -337,7 +362,16 @@ pub extern "C" fn rlmesh_space_spec_repr(
     spec: *const RLMeshSpaceSpec,
     out: *mut RLMeshBytes,
 ) -> RLMeshStatus {
-    guard(|| repr_bytes(out, require_spec(spec)?.to_string()))
+    guard(|| {
+        repr_bytes(
+            out,
+            unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                require_spec(spec)
+            }?
+            .to_string(),
+        )
+    })
 }
 
 /// Python's `space_from_spec`: refuses a spec with no payload.
@@ -346,7 +380,15 @@ pub extern "C" fn rlmesh_spaces_space_from_spec(
     spec: *const RLMeshSpaceSpec,
     out: *mut *mut RLMeshSpace,
 ) -> RLMeshStatus {
-    guard(|| write_space(out, rlmesh::spaces::space_from_spec(require_spec(spec)?)?))
+    guard(|| {
+        write_space(
+            out,
+            rlmesh::spaces::space_from_spec(unsafe {
+                /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+                require_spec(spec)
+            }?)?,
+        )
+    })
 }
 
 // ---- Space ------------------------------------------------------------------
@@ -357,7 +399,15 @@ pub extern "C" fn rlmesh_space_new(
     spec: *const RLMeshSpaceSpec,
     out: *mut *mut RLMeshSpace,
 ) -> RLMeshStatus {
-    guard(|| write_space(out, Space::new(require_spec(spec)?)))
+    guard(|| {
+        write_space(
+            out,
+            Space::new(unsafe {
+                /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+                require_spec(spec)
+            }?),
+        )
+    })
 }
 
 /// A new handle sharing `space`'s sampler (NULL for NULL).
@@ -420,7 +470,18 @@ pub extern "C" fn rlmesh_space_shape(
     cap: usize,
     out_len: *mut usize,
 ) -> RLMeshStatus {
-    guard(|| copy_buffer(require_space(space)?.shape(), out, cap, out_len))
+    guard(|| {
+        copy_buffer(
+            unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                require_space(space)
+            }?
+            .shape(),
+            out,
+            cap,
+            out_len,
+        )
+    })
 }
 
 /// `seed(seed)`: `seed == NULL` draws one from OS entropy. The seed applied
@@ -435,10 +496,16 @@ pub unsafe extern "C" fn rlmesh_space_seed(
     out_seed: *mut u64,
 ) -> RLMeshStatus {
     guard(|| {
-        let space = require_space(space)?;
+        let space = unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            require_space(space)
+        }?;
         let used = space.seed(unsafe { seed.as_ref() }.copied());
         if !out_seed.is_null() {
-            write_out(out_seed, used)?;
+            unsafe {
+                /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+                write_out(out_seed, used)
+            }?;
         }
         Ok(())
     })
@@ -454,8 +521,15 @@ pub extern "C" fn rlmesh_space_sample(
         if out.is_null() {
             return Err(CapiError::invalid_arg("null out"));
         }
-        let value = require_space(space)?.sample()?;
-        write_out(out, into_handle(value))
+        let value = unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            require_space(space)
+        }?
+        .sample()?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, into_handle(value))
+        }
     })
 }
 
@@ -490,7 +564,16 @@ pub extern "C" fn rlmesh_space_repr(
     space: *const RLMeshSpace,
     out: *mut RLMeshBytes,
 ) -> RLMeshStatus {
-    guard(|| repr_bytes(out, require_space(space)?.to_string()))
+    guard(|| {
+        repr_bytes(
+            out,
+            unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                require_space(space)
+            }?
+            .to_string(),
+        )
+    })
 }
 
 // ---- Box --------------------------------------------------------------------
@@ -564,7 +647,16 @@ pub extern "C" fn rlmesh_box_from_spec(
     spec: *const RLMeshSpaceSpec,
     out: *mut *mut RLMeshSpace,
 ) -> RLMeshStatus {
-    guard(|| write_space(out, SpaceBox::from_spec(require_spec(spec)?)?.into()))
+    guard(|| {
+        write_space(
+            out,
+            SpaceBox::from_spec(unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                require_spec(spec)
+            }?)?
+            .into(),
+        )
+    })
 }
 
 fn box_bound_entries(bound: Option<BoxBound>) -> Vec<RLMeshBound> {
@@ -615,8 +707,14 @@ pub extern "C" fn rlmesh_box_bounds_kind(
     guard(|| {
         let space = typed(space, Space::as_box, "box")?;
         let kind = space.bounds_kind();
-        write_out(out_has, kind.is_some())?;
-        write_out(out, kind.map_or(0, bounds_kind_to_c))
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out_has, kind.is_some())
+        }?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, kind.map_or(0, bounds_kind_to_c))
+        }
     })
 }
 
@@ -652,19 +750,34 @@ pub extern "C" fn rlmesh_discrete_from_spec(
     spec: *const RLMeshSpaceSpec,
     out: *mut *mut RLMeshSpace,
 ) -> RLMeshStatus {
-    guard(|| write_space(out, Discrete::from_spec(require_spec(spec)?)?.into()))
+    guard(|| {
+        write_space(
+            out,
+            Discrete::from_spec(unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                require_spec(spec)
+            }?)?
+            .into(),
+        )
+    })
 }
 
 /// `n`.
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_discrete_n(space: *const RLMeshSpace, out: *mut i64) -> RLMeshStatus {
-    guard(|| write_out(out, typed(space, Space::as_discrete, "discrete")?.n()))
+    guard(|| unsafe {
+        /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+        write_out(out, typed(space, Space::as_discrete, "discrete")?.n())
+    })
 }
 
 /// `start`.
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_discrete_start(space: *const RLMeshSpace, out: *mut i64) -> RLMeshStatus {
-    guard(|| write_out(out, typed(space, Space::as_discrete, "discrete")?.start()))
+    guard(|| unsafe {
+        /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+        write_out(out, typed(space, Space::as_discrete, "discrete")?.start())
+    })
 }
 
 // ---- Dict -------------------------------------------------------------------
@@ -687,7 +800,10 @@ pub unsafe extern "C" fn rlmesh_dict_new(
         let mut entries = Vec::with_capacity(n);
         for (key, spec) in keys.iter().zip(specs) {
             let key = unsafe { key.read("dict key") }?;
-            entries.push((key.to_string(), require_spec(*spec)?));
+            entries.push((key.to_string(), unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                require_spec(*spec)
+            }?));
         }
         write_space(out, Dict::new(entries)?.into())
     })
@@ -699,13 +815,25 @@ pub extern "C" fn rlmesh_dict_from_spec(
     spec: *const RLMeshSpaceSpec,
     out: *mut *mut RLMeshSpace,
 ) -> RLMeshStatus {
-    guard(|| write_space(out, Dict::from_spec(require_spec(spec)?)?.into()))
+    guard(|| {
+        write_space(
+            out,
+            Dict::from_spec(unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                require_spec(spec)
+            }?)?
+            .into(),
+        )
+    })
 }
 
 /// `len(d)`.
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_dict_len(space: *const RLMeshSpace, out: *mut usize) -> RLMeshStatus {
-    guard(|| write_out(out, typed(space, Space::as_dict, "dict")?.len()))
+    guard(|| unsafe {
+        /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+        write_out(out, typed(space, Space::as_dict, "dict")?.len())
+    })
 }
 
 /// The `i`-th key in declaration order, borrowed from the Dict; past the end
@@ -725,7 +853,10 @@ pub extern "C" fn rlmesh_dict_key_at(
             },
             RLMeshStr::borrowed,
         );
-        write_out(out, key)
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, key)
+        }
     })
 }
 
@@ -743,7 +874,10 @@ pub extern "C" fn rlmesh_dict_value_at(
             .values()
             .nth(i)
             .map_or(std::ptr::null(), |child| (child as *const Space).cast());
-        write_out(out, child)
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, child)
+        }
     })
 }
 
@@ -763,7 +897,10 @@ pub unsafe extern "C" fn rlmesh_dict_get(
         let child = dict
             .get(key)
             .map_or(std::ptr::null(), |child| (child as *const Space).cast());
-        write_out(out, child)
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, child)
+        }
     })
 }
 
@@ -781,7 +918,10 @@ pub unsafe extern "C" fn rlmesh_dict_contains_key(
     guard(|| {
         let dict = typed(space, Space::as_dict, "dict")?;
         let key = unsafe { key.read("dict key") }?;
-        write_out(out, dict.contains_key(key))
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, dict.contains_key(key))
+        }
     })
 }
 

@@ -24,14 +24,24 @@ pub(crate) fn dict(ptr: *const RLMeshValue) -> Result<Option<Metadata>, CapiErro
     if ptr.is_null() {
         Ok(None)
     } else {
-        Ok(Some(value_ref(ptr)?.as_dict()?.clone()))
+        Ok(Some(
+            unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                value_ref(ptr)
+            }?
+            .as_dict()?
+            .clone(),
+        ))
     }
 }
 pub(crate) fn bytes(out: *mut RLMeshBytes, text: String) -> Result<(), CapiError> {
     if out.is_null() {
         return Err(CapiError::invalid_arg("null out"));
     }
-    write_out(out, RLMeshBytes::from_vec(text.into_bytes()))
+    unsafe {
+        /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+        write_out(out, RLMeshBytes::from_vec(text.into_bytes()))
+    }
 }
 pub(crate) fn duration(value: f64, name: &str) -> Result<Duration, CapiError> {
     Duration::try_from_secs_f64(value).map_err(|_| {

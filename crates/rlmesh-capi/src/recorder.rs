@@ -107,7 +107,10 @@ pub unsafe extern "C" fn rlmesh_recorder_new(
     out: *mut *mut RLMeshRecorder,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, null_mut())
+        }?;
         let mut options_out = RecorderOptions::default();
         if let Some(o) = unsafe { sizing::read(options, "RLMeshRecorderOptions") }? {
             reserved(&o._reserved)?;
@@ -117,12 +120,15 @@ pub unsafe extern "C" fn rlmesh_recorder_new(
                 quality: o.quality,
             };
         }
-        write_out(
-            out,
-            Box::into_raw(Box::new(RLMeshRecorder(Mutex::new(Recorder::new(
-                options_out,
-            )?)))),
-        )
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                Box::into_raw(Box::new(RLMeshRecorder(Mutex::new(Recorder::new(
+                    options_out,
+                )?)))),
+            )
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -135,7 +141,10 @@ pub unsafe extern "C" fn rlmesh_recorder_add(
     out: *mut *mut RLMeshWorkloadRecord,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, null_mut())
+        }?;
         let mut opts = RecorderAddOptions::default();
         if let Some(o) = unsafe { sizing::read(options, "RLMeshRecorderAddOptions") }? {
             reserved(&o._reserved)?;
@@ -145,14 +154,20 @@ pub unsafe extern "C" fn rlmesh_recorder_add(
                 included_in_metrics: o.included_in_metrics,
             };
         }
-        let result = run_results::require(result)?;
+        let result = unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            run_results::require(result)
+        }?;
         let model = unsafe { text(model, "model") }?;
         let env = unsafe { text(env, "env") }?;
         let record = lock(ptr)?.add(result, &model, &env, opts)?;
-        write_out(
-            out,
-            Box::into_raw(Box::new(RLMeshWorkloadRecord(Arc::new(record)))),
-        )
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                Box::into_raw(Box::new(RLMeshWorkloadRecord(Arc::new(record)))),
+            )
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -164,7 +179,10 @@ pub unsafe extern "C" fn rlmesh_recorder_capture(
     out: *mut *mut RLMeshRunHooks,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, null_mut())
+        }?;
         let mut opts = RecorderCaptureOptions::default();
         if let Some(o) = unsafe { sizing::read(options, "RLMeshRecorderCaptureOptions") }? {
             reserved(&o._reserved)?;
@@ -182,10 +200,13 @@ pub unsafe extern "C" fn rlmesh_recorder_capture(
         let model = unsafe { text(model, "model") }?;
         let env = unsafe { text(env, "env") }?;
         let hooks = lock(ptr)?.capture(&model, &env, opts)?;
-        write_out(
-            out,
-            Box::into_raw(Box::new(crate::run_hooks::native(hooks))),
-        )
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                Box::into_raw(Box::new(crate::run_hooks::native(hooks))),
+            )
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -206,16 +227,22 @@ pub unsafe extern "C" fn rlmesh_recorder_workloads_get(
     out: *mut *mut RLMeshWorkloadRecord,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, null_mut())
+        }?;
         let record = lock(ptr)?
             .workloads()
             .get(i)
             .cloned()
             .ok_or_else(|| CapiError::invalid_arg("workload index out of range"))?;
-        write_out(
-            out,
-            Box::into_raw(Box::new(RLMeshWorkloadRecord(Arc::new(record)))),
-        )
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                Box::into_raw(Box::new(RLMeshWorkloadRecord(Arc::new(record)))),
+            )
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -225,13 +252,19 @@ pub unsafe extern "C" fn rlmesh_recorder_to_dict(
     out: *mut *mut RLMeshValue,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, null_mut())
+        }?;
         let recorded_at = unsafe { sizing::read(options, "RLMeshRecorderToDictOptions") }?
             .map(|o| unsafe { ffi::text(o.recorded_at) })
             .transpose()?
             .flatten();
         let value = lock(ptr)?.to_dict(RecorderToDictOptions { recorded_at });
-        write_out(out, into_handle(Value::Dict(value)))
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, into_handle(Value::Dict(value)))
+        }
     })
 }
 #[unsafe(no_mangle)]

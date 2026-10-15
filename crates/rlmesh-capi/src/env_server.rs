@@ -183,7 +183,9 @@ impl Drop for RLMeshEnvServer {
         }
     }
 }
-fn require<'a>(ptr: *const RLMeshEnvServer) -> Result<&'a RLMeshEnvServer, CapiError> {
+/// # Safety
+/// A non-NULL handle stays live for the returned reference's lifetime.
+unsafe fn require<'a>(ptr: *const RLMeshEnvServer) -> Result<&'a RLMeshEnvServer, CapiError> {
     unsafe { ptr.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null server"))
 }
 fn output(
@@ -198,18 +200,21 @@ fn output(
     let contract = RLMeshEnvContract::new(rlmesh::binding::env_contract_to_wire(
         server.env_contract(),
     )?);
-    write_out(
-        out,
-        Box::into_raw(Box::new(RLMeshEnvServer {
-            server,
-            contract,
-            stopped,
-            lanes,
-            vector,
-            _claims: claims,
-            close_env_on_shutdown,
-        })),
-    )
+    unsafe {
+        /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+        write_out(
+            out,
+            Box::into_raw(Box::new(RLMeshEnvServer {
+                server,
+                contract,
+                stopped,
+                lanes,
+                vector,
+                _claims: claims,
+                close_env_on_shutdown,
+            })),
+        )
+    }
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_env_server_new(
@@ -290,14 +295,29 @@ pub extern "C" fn rlmesh_env_server_address(
     server: *const RLMeshEnvServer,
     out: *mut RLMeshBytes,
 ) -> RLMeshStatus {
-    guard(|| ffi::bytes(out, require(server)?.server.address().to_string()))
+    guard(|| {
+        ffi::bytes(
+            out,
+            unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                require(server)
+            }?
+            .server
+            .address()
+            .to_string(),
+        )
+    })
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_env_server_env_contract(
     server: *const RLMeshEnvServer,
 ) -> *const RLMeshEnvContract {
     guard_value(std::ptr::null(), || {
-        require(server).map_or(std::ptr::null(), |s| std::ptr::from_ref(&s.contract))
+        unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            require(server)
+        }
+        .map_or(std::ptr::null(), |s| std::ptr::from_ref(&s.contract))
     })
 }
 #[unsafe(no_mangle)]
@@ -305,14 +325,29 @@ pub extern "C" fn rlmesh_env_server_repr(
     server: *const RLMeshEnvServer,
     out: *mut RLMeshBytes,
 ) -> RLMeshStatus {
-    guard(|| ffi::bytes(out, require(server)?.server.to_string()))
+    guard(|| {
+        ffi::bytes(
+            out,
+            unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                require(server)
+            }?
+            .server
+            .to_string(),
+        )
+    })
 }
 macro_rules! lifecycle {
     ($name:ident,$method:ident) => {
         #[unsafe(no_mangle)]
         pub extern "C" fn $name(server: *mut RLMeshEnvServer) -> RLMeshStatus {
             guard(|| {
-                require(server)?.server.$method()?;
+                unsafe {
+                    // SAFETY: the FFI contract supplies live handles and writable output storage.
+                    require(server)
+                }?
+                .server
+                .$method()?;
                 Ok(())
             })
         }
@@ -334,10 +369,23 @@ pub unsafe extern "C" fn rlmesh_env_server_wait(
         let timeout = unsafe { timeout.as_ref() }
             .map(|&v| ffi::duration(v, "timeout"))
             .transpose()?;
-        match rlmesh::binding::env::env_server_wait(&require(server)?.server, timeout)? {
-            None => write_out(out_stopped, false),
+        match rlmesh::binding::env::env_server_wait(
+            &unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                require(server)
+            }?
+            .server,
+            timeout,
+        )? {
+            None => unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                write_out(out_stopped, false)
+            },
             Some(result) => {
-                write_out(out_stopped, true)?;
+                unsafe {
+                    // SAFETY: the FFI contract supplies live handles and writable output storage.
+                    write_out(out_stopped, true)
+                }?;
                 result.map_err(Into::into)
             }
         }

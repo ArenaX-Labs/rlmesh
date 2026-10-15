@@ -6,6 +6,24 @@ use crate::space_handle::RLMeshStr;
 use rlmesh::{DType, Value};
 use std::ptr::{null, null_mut};
 
+#[test]
+fn write_out_initializes_storage_without_dropping_old_bytes() {
+    struct CountDrop<'a>(&'a std::cell::Cell<usize>);
+    impl Drop for CountDrop<'_> {
+        fn drop(&mut self) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+    let drops = std::cell::Cell::new(0);
+    let mut output = std::mem::MaybeUninit::<CountDrop<'_>>::uninit();
+    // SAFETY: output is aligned writable storage; no previous T exists there.
+    assert!(unsafe { write_out(output.as_mut_ptr(), CountDrop(&drops)) }.is_ok());
+    assert_eq!(drops.get(), 0);
+    // SAFETY: write_out initialized the slot exactly once above.
+    unsafe { output.assume_init_drop() };
+    assert_eq!(drops.get(), 1);
+}
+
 fn text(s: &str) -> RLMeshStr {
     RLMeshStr::borrowed(s)
 }

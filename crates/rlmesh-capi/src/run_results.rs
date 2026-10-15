@@ -96,7 +96,9 @@ pub struct RLMeshRunResultOptions {
     pub advisories: *const *const crate::adapters::RLMeshAdvisory,
     pub advisories_len: usize,
 }
-pub(crate) fn require<'a>(p: *const RLMeshRunResult) -> Result<&'a RunResult, CapiError> {
+/// # Safety
+/// A non-NULL handle stays live for the returned reference's lifetime.
+pub(crate) unsafe fn require<'a>(p: *const RLMeshRunResult) -> Result<&'a RunResult, CapiError> {
     unsafe { p.as_ref() }
         .map(|r| r.0.as_ref())
         .ok_or_else(|| CapiError::invalid_arg("null run result"))
@@ -105,7 +107,10 @@ pub(crate) fn output(out: *mut *mut RLMeshRunResult, result: RunResult) -> Resul
     if out.is_null() {
         return Err(CapiError::invalid_arg("null out"));
     }
-    write_out(out, Box::into_raw(Box::new(RLMeshRunResult::new(result))))
+    unsafe {
+        /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+        write_out(out, Box::into_raw(Box::new(RLMeshRunResult::new(result))))
+    }
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_run_result_new(
@@ -113,7 +118,10 @@ pub unsafe extern "C" fn rlmesh_run_result_new(
     out: *mut *mut RLMeshRunResult,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
         let mut result = RunResult::default();
         if let Some(o) = unsafe { sizing::read(options, "RLMeshRunResultOptions") }? {
             for &p in
@@ -164,7 +172,13 @@ macro_rules! scalar {
     ($name:ident,$ty:ty,$default:expr,$body:expr) => {
         #[unsafe(no_mangle)]
         pub extern "C" fn $name(p: *const RLMeshRunResult) -> $ty {
-            guard_value($default, || require(p).map_or($default, $body))
+            guard_value($default, || {
+                unsafe {
+                    // SAFETY: the FFI contract supplies live handles and writable output storage.
+                    require(p)
+                }
+                .map_or($default, $body)
+            })
         }
     };
 }
@@ -195,10 +209,19 @@ scalar!(rlmesh_run_result_telemetry_len, usize, 0, |r| r
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_run_result_success_rate(p: *const RLMeshRunResult, out: *mut f64) -> bool {
     guard_value(false, || {
-        require(p)
-            .ok()
-            .and_then(RunResult::success_rate)
-            .is_some_and(|v| write_out(out, v).is_ok())
+        unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            require(p)
+        }
+        .ok()
+        .and_then(RunResult::success_rate)
+        .is_some_and(|v| {
+            unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                write_out(out, v)
+            }
+            .is_ok()
+        })
     })
 }
 #[unsafe(no_mangle)]
@@ -210,13 +233,19 @@ pub unsafe extern "C" fn rlmesh_run_result_episodes_get(
     guard(|| {
         let caller = unsafe { sizing::read(out, "RLMeshEpisodeResult") }?
             .ok_or_else(|| CapiError::invalid_arg("null out"))?;
-        let e = require(p)?
-            .episodes
-            .get(i)
-            .ok_or_else(|| CapiError::invalid_arg("episode index out of range"))?;
+        let e = unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            require(p)
+        }?
+        .episodes
+        .get(i)
+        .ok_or_else(|| CapiError::invalid_arg("episode index out of range"))?;
         let mut filled = RLMeshEpisodeResult::from_core(e);
         filled.struct_size = caller.struct_size;
-        write_out(out, filled)
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, filled)
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -226,16 +255,25 @@ pub extern "C" fn rlmesh_run_result_telemetry_get(
     out: *mut *mut RLMeshTelemetryRow,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
-        let r = require(p)?
-            .telemetry
-            .get(i)
-            .ok_or_else(|| CapiError::invalid_arg("telemetry index out of range"))?
-            .clone();
-        write_out(
-            out,
-            Box::into_raw(Box::new(RLMeshTelemetryRow(Arc::new(r)))),
-        )
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
+        let r = unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            require(p)
+        }?
+        .telemetry
+        .get(i)
+        .ok_or_else(|| CapiError::invalid_arg("telemetry index out of range"))?
+        .clone();
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                Box::into_raw(Box::new(RLMeshTelemetryRow(Arc::new(r)))),
+            )
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -243,23 +281,52 @@ pub extern "C" fn rlmesh_run_result_format_telemetry(
     p: *const RLMeshRunResult,
     out: *mut RLMeshBytes,
 ) -> RLMeshStatus {
-    guard(|| ffi::bytes(out, require(p)?.format_telemetry()))
+    guard(|| {
+        ffi::bytes(
+            out,
+            unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                require(p)
+            }?
+            .format_telemetry(),
+        )
+    })
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_run_result_repr(
     p: *const RLMeshRunResult,
     out: *mut RLMeshBytes,
 ) -> RLMeshStatus {
-    guard(|| ffi::bytes(out, require(p)?.to_string()))
+    guard(|| {
+        ffi::bytes(
+            out,
+            unsafe {
+                // SAFETY: the FFI contract supplies live handles and writable output storage.
+                require(p)
+            }?
+            .to_string(),
+        )
+    })
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_run_result_equals(
     a: *const RLMeshRunResult,
     b: *const RLMeshRunResult,
 ) -> bool {
-    guard_value(false, || match (require(a), require(b)) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => false,
+    guard_value(false, || {
+        match (
+            unsafe {
+                /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+                require(a)
+            },
+            unsafe {
+                /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+                require(b)
+            },
+        ) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -269,10 +336,13 @@ pub unsafe extern "C" fn rlmesh_episode_result_equals(
     out: *mut bool,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(
-            out,
-            unsafe { RLMeshEpisodeResult::read(a) }? == unsafe { RLMeshEpisodeResult::read(b) }?,
-        )
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                { RLMeshEpisodeResult::read(a) }? == { RLMeshEpisodeResult::read(b) }?,
+            )
+        }
     })
 }
 #[unsafe(no_mangle)]
@@ -301,7 +371,10 @@ pub unsafe extern "C" fn rlmesh_telemetry_row_new(
     out: *mut *mut RLMeshTelemetryRow,
 ) -> RLMeshStatus {
     guard(|| {
-        write_out(out, std::ptr::null_mut())?;
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(out, std::ptr::null_mut())
+        }?;
         let text = |p| unsafe { ffi::text(p) }?.ok_or_else(|| CapiError::invalid_arg("null text"));
         let row = TelemetryRow {
             op: text(op)?,
@@ -314,10 +387,13 @@ pub unsafe extern "C" fn rlmesh_telemetry_row_new(
             p95,
             p99,
         };
-        write_out(
-            out,
-            Box::into_raw(Box::new(RLMeshTelemetryRow(Arc::new(row)))),
-        )
+        unsafe {
+            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
+            write_out(
+                out,
+                Box::into_raw(Box::new(RLMeshTelemetryRow(Arc::new(row)))),
+            )
+        }
     })
 }
 macro_rules! row_text {
@@ -378,7 +454,13 @@ pub unsafe extern "C" fn rlmesh_telemetry_row_free(p: *mut RLMeshTelemetryRow) {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_run_result_advisories_len(p: *const RLMeshRunResult) -> usize {
-    guard_value(0, || require(p).map_or(0, |r| r.advisories.len()))
+    guard_value(0, || {
+        unsafe {
+            // SAFETY: the FFI contract supplies live handles and writable output storage.
+            require(p)
+        }
+        .map_or(0, |r| r.advisories.len())
+    })
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_run_result_advisories_get(

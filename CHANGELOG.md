@@ -99,6 +99,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ### Fixed
 
+- C ABI 5 cancellation now follows R-18's status/out-parameter constructor and shared-clone API. Run hooks clear stale callback errors; setting episode state to the same pointer updates its deleter without freeing the value.
+- C input structs reject invalid bool bytes before typed reads. Output slots are initialized without reading or dropping their previous bytes, and raw handle/output helpers carry explicit Rust safety contracts. Session destruction from its own hooks is refused; retained frame sources use weak session state and report RuntimeError after destruction, including sources transferred through C contexts.
+
 - C View holds now accept every finite nonnegative number of seconds, saturating values too large for Rust's `Duration` to `Duration::MAX`. Negative, NaN and infinite holds remain ValueError-class failures at validation and consuming calls.
 
 - C `rlmesh_env_server_wait` now sets its stopped output before returning a background serve error, while misuse and invalid inputs leave the output untouched. The facade keeps these outcomes distinct through a binding seam, without polling the server a second time.
