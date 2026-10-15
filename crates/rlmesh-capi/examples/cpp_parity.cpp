@@ -237,6 +237,75 @@ void runs_sessions() {
   (void)info;
   assert(s.predict(obs).as_int() == 3);
 }
+void session_target_lifetimes() {
+  Env env(Counter{});
+  int closed = 0;
+  auto make_model = [&] {
+    return Model([](const Value&) { return 0; }, {.on_close = [&] { ++closed; }});
+  };
+  auto make_server = [] {
+    EnvServer server(Counter{}, {.address = "tcp://127.0.0.1:0"});
+    server.start();
+    return server;
+  };
+  {
+    auto s = make_model().session(env);
+    assert(closed == 0);
+    auto [obs, info] = s.reset();
+    (void)info;
+    assert(s.predict(obs) == Value(0));
+    auto moved = std::move(s);
+    assert(moved.step(0) == StepResult(1, 1.0, false, false, {{"is_success", true}}));
+  }
+  assert(closed == 1);
+  {
+    auto s = rlmesh::session(make_model(), make_server());
+    auto [obs, info] = s.reset();
+    (void)info;
+    assert(s.predict(obs) == Value(0));
+    assert(std::get<1>(s.step(0)) == 1);
+    auto other = rlmesh::session(make_model(), make_server());
+    s = std::move(other);
+    assert(closed == 2);
+    assert(s.run().total_steps() == 2);
+  }
+  assert(closed == 3);
+  Model served([](const Value&) { return 0; });
+  const auto path =
+      std::filesystem::temp_directory_path() /
+      ("rlmesh-cpp-model-" +
+       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".sock");
+  const auto address = "unix:" + path.string();
+  ext::CancelToken stop;
+  auto server = std::async(std::launch::async, [&] {
+    try {
+      served.serve(address, {.cancel = stop});
+    } catch (const ext::CancelledError&) {
+    }
+  });
+  try {
+    for (int retry = 0; retry < 5000 && !std::filesystem::exists(path); ++retry)
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    assert(std::filesystem::exists(path));
+    {
+      auto s = rlmesh::session(RemoteModel({.address = address}), env);
+      auto [obs, info] = s.reset();
+      (void)info;
+      assert(s.predict(obs) == Value(0));
+      assert(std::get<1>(s.step(0)) == 1);
+    }
+    {
+      auto s = RemoteModel({.address = address}).session(env);
+      assert(s.run().total_steps() == 2);
+    }
+  } catch (...) {
+    stop.cancel();
+    server.get();
+    throw;
+  }
+  stop.cancel();
+  server.get();
+}
 void exceptions() {
   Model policy([](const Value&) -> Value { throw OwnError(17); });
   Env env(Counter{});
@@ -644,6 +713,7 @@ int main() try {
   vector_and_chunks();
   policy_context_precedence();
   runs_sessions();
+  session_target_lifetimes();
   exceptions();
   factories_remote_describe();
   adapter_axis_presence();

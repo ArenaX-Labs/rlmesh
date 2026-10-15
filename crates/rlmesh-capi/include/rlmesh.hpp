@@ -3537,11 +3537,16 @@ struct EnvServerOptions {
   std::optional<ext::EnvServerOptions> ext{};
 };
 class EnvServer {
-  // Handle destroyed before its borrowed lanes.
-  MadeEnv env_;
-  std::vector<Env> lanes_{};
-  detail::Owned<RLMeshEnvServer, rlmesh_env_server_free> handle_{nullptr, rlmesh_env_server_free};
-  std::optional<specs::EnvContract> contract_{};
+  friend class EnvTarget;
+  struct State {
+    // The server handle is destroyed before its borrowed lanes.
+    MadeEnv env;
+    std::vector<Env> lanes{};
+    detail::Owned<RLMeshEnvServer, rlmesh_env_server_free> handle{nullptr, rlmesh_env_server_free};
+    std::optional<specs::EnvContract> contract{};
+    explicit State(MadeEnv e, std::vector<Env> l = {}) : env(std::move(e)), lanes(std::move(l)) {}
+  };
+  std::shared_ptr<State> state_;
   void init(const EnvServerOptions& options) {
     RLMeshEnvServerOptions c = RLMESH_ENV_SERVER_OPTIONS_INIT;
     c.address = detail::ptr(options.address);
@@ -3569,30 +3574,32 @@ class EnvServer {
     extra.peer_info_extra = peer_value.raw();
     c.ext = &extra;
     RLMeshEnvServer* p = nullptr;
-    if (auto v = std::get_if<VectorEnv>(&env_))
+    if (auto v = std::get_if<VectorEnv>(&state_->env))
       detail::check(rlmesh_env_server_new_vector(v->raw(), &c, &p));
     else {
       std::vector<RLMeshEnv*> lanes;
-      if (lanes_.empty())
-        lanes.push_back(std::get<Env>(env_).raw());
+      if (state_->lanes.empty())
+        lanes.push_back(std::get<Env>(state_->env).raw());
       else
-        for (auto& e : lanes_) lanes.push_back(e.raw());
+        for (auto& e : state_->lanes) lanes.push_back(e.raw());
       detail::check(rlmesh_env_server_new(lanes.data(), lanes.size(), &c, &p));
     }
-    handle_.reset(p);
-    contract_ = specs::EnvContract::copy_of(rlmesh_env_server_env_contract(p));
+    state_->handle.reset(p);
+    state_->contract = specs::EnvContract::copy_of(rlmesh_env_server_env_contract(p));
   }
 
  public:
-  explicit EnvServer(Env env, EnvServerOptions options = {}) : env_(std::move(env)) {
+  explicit EnvServer(Env env, EnvServerOptions options = {})
+      : state_(std::make_shared<State>(std::move(env))) {
     init(options);
   }
-  explicit EnvServer(VectorEnv env, EnvServerOptions options = {}) : env_(std::move(env)) {
+  explicit EnvServer(VectorEnv env, EnvServerOptions options = {})
+      : state_(std::make_shared<State>(std::move(env))) {
     init(options);
   }
   explicit EnvServer(std::vector<Env> lanes, EnvServerOptions options = {})
-      : env_(Env(static_cast<RLMeshEnv*>(nullptr))), lanes_(std::move(lanes)) {
-    if (lanes_.empty()) throw ValueError("env lanes must not be empty");
+      : state_(std::make_shared<State>(Env(static_cast<RLMeshEnv*>(nullptr)), std::move(lanes))) {
+    if (state_->lanes.empty()) throw ValueError("env lanes must not be empty");
     init(options);
   }
   template <class E>
@@ -3603,11 +3610,13 @@ class EnvServer {
     requires detail::BatchedEnv<std::remove_cvref_t<E>>
   explicit EnvServer(E&& env, EnvServerOptions options = {})
       : EnvServer(VectorEnv(std::forward<E>(env)), std::move(options)) {}
+  EnvServer(const EnvServer&) = delete;
+  EnvServer& operator=(const EnvServer&) = delete;
   EnvServer(EnvServer&&) = default;
   EnvServer& operator=(EnvServer&&) = delete;
-  RLMeshEnvServer* raw() const { return handle_.get(); }
+  RLMeshEnvServer* raw() const { return state_->handle.get(); }
   std::string address() const { return detail::text(rlmesh_env_server_address, raw()); }
-  const specs::EnvContract& env_contract() const { return *contract_; }
+  const specs::EnvContract& env_contract() const { return *state_->contract; }
   void start() { detail::check(rlmesh_env_server_start(raw())); }
   void serve() { detail::check(rlmesh_env_server_serve(raw())); }
   bool wait(std::optional<Duration> timeout = {}) {
@@ -4237,6 +4246,7 @@ struct SessionOptions;
 struct RunOptions;
 struct RunResult;
 class Model {
+  friend class ModelTarget;
   std::shared_ptr<RLMeshModel> handle_{};
   std::optional<SpecArg> spec_{};
   void read_spec() {
@@ -4570,6 +4580,7 @@ class RemoteVectorEnv {
   }
 };
 class RemoteModel {
+  friend class ModelTarget;
   std::shared_ptr<RLMeshRemoteModel> handle_{};
 
  public:
@@ -4592,23 +4603,29 @@ inline constexpr RandomSample RANDOM_SAMPLE{};
 inline std::string to_string(RandomSample) { return "RANDOM_SAMPLE"; }
 inline std::ostream& operator<<(std::ostream& s, RandomSample) { return s << "RANDOM_SAMPLE"; }
 class ModelTarget {
+  friend class Session;
   RLMeshModelTarget target_{};
+  std::shared_ptr<void> keepalive_{};
 
  public:
-  ModelTarget(Model& m) : target_(rlmesh_model_target(m.raw())) {}
-  ModelTarget(const RemoteModel& m) : target_(rlmesh_remote_model_target(m.raw())) {}
+  ModelTarget(const Model& m) : target_(rlmesh_model_target(m.raw())), keepalive_(m.handle_) {}
+  ModelTarget(const RemoteModel& m)
+      : target_(rlmesh_remote_model_target(m.raw())), keepalive_(m.handle_) {}
   ModelTarget(RandomSample) : target_(RLMESH_RANDOM_SAMPLE) {}
   RLMeshModelTarget raw() const { return target_; }
 };
 class EnvTarget {
+  friend class Session;
   RLMeshEnvTarget target_{};
+  std::shared_ptr<void> keepalive_{};
   std::string address_{};
 
  public:
   EnvTarget(const char* s) : EnvTarget(std::string_view(s)) {}
   EnvTarget(const std::string& s) : EnvTarget(std::string_view(s)) {}
   EnvTarget(std::string_view s) : target_(rlmesh_address_target(nullptr)), address_(s) {}
-  EnvTarget(const EnvServer& s) : target_(rlmesh_env_server_target(s.raw())) {}
+  EnvTarget(const EnvServer& s)
+      : target_(rlmesh_env_server_target(s.raw())), keepalive_(s.state_) {}
   EnvTarget(RemoteEnv& e) : target_(rlmesh_remote_env_target(e.raw())) {}
   EnvTarget(RemoteVectorEnv& e) : target_(rlmesh_remote_vector_env_target(e.raw())) {}
   EnvTarget(Env& e) : target_(rlmesh_env_target(e.raw())) {}
@@ -5134,12 +5151,26 @@ void session_options(C& c, const O& o) {
 }
 }  // namespace detail
 class Session {
+  // Release the C session before the targets whose pointers it borrows.
+  std::shared_ptr<void> model_keepalive_{}, env_keepalive_{};
   detail::Owned<RLMeshSession, rlmesh_session_free> handle_;
 
  public:
   explicit Session(RLMeshSession* p) : handle_(p, rlmesh_session_free) {}
-  Session(Session&&) = default;
-  Session& operator=(Session&&) = default;
+  Session(RLMeshSession* p, const ModelTarget& model, const EnvTarget& env) noexcept
+      : model_keepalive_(model.keepalive_),
+        env_keepalive_(env.keepalive_),
+        handle_(p, rlmesh_session_free) {}
+  Session(Session&&) noexcept = default;
+  Session& operator=(Session&& other) noexcept {
+    if (this != &other) {
+      Session incoming(std::move(other));
+      model_keepalive_.swap(incoming.model_keepalive_);
+      env_keepalive_.swap(incoming.env_keepalive_);
+      handle_.swap(incoming.handle_);
+    }
+    return *this;
+  }
   RLMeshSession* raw() const { return handle_.get(); }
   ResetResult reset(std::optional<int64_t> seed = {}, std::optional<int64_t> trial_index = {}) {
     RLMeshValue* o = nullptr;
@@ -5236,7 +5267,7 @@ inline Session session(ModelTarget model, EnvTarget env, const SessionOptions& o
   }
   RLMeshSession* p = nullptr;
   detail::check(rlmesh_session_new(model.raw(), env.raw(), &c, &p));
-  return Session(p);
+  return Session(p, model, env);
 }
 inline RunResult run(ModelTarget model, EnvTarget env, const RunOptions& options = {}) {
   RLMeshRunOptions c = RLMESH_RUN_OPTIONS_INIT;
