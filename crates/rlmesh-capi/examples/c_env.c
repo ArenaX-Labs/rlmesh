@@ -3,14 +3,15 @@
 #include <rlmesh.h>
 #include <stdio.h>
 
-static int reset(void* data, const RLMeshResetArgs* args, RLMeshResetResult* out) {
+static int reset(void* data, const RLMeshExtLegacyResetArgs* args,
+                 RLMeshExtLegacyResetResult* out) {
   (void)data;
   (void)args;
   rlmesh_value_int(0, &out->observation);
   return out->observation ? 0 : 1;
 }
 
-static int step(void* data, const RLMeshValue* action, RLMeshStepResult* out) {
+static int step(void* data, const RLMeshValue* action, RLMeshExtLegacyStepResult* out) {
   (void)data;
   (void)action;
   rlmesh_value_int(0, &out->observation);
@@ -19,7 +20,7 @@ static int step(void* data, const RLMeshValue* action, RLMeshStepResult* out) {
 }
 
 int main(void) {
-  RLMeshEnvConfig config = rlmesh_env_config_init();
+  RLMeshExtLegacyEnvConfig config = rlmesh_ext_legacy_env_config_init();
   config.id = "CExample-v0";
   RLMeshDiscrete* observation = NULL;
   RLMeshDiscrete* action = NULL;
@@ -31,9 +32,9 @@ int main(void) {
   /* The config borrows each space's spec; the env copies it. */
   config.observation_space = rlmesh_space_spec(observation);
   config.action_space = rlmesh_space_spec(action);
-  RLMeshEnvVtable vtable = {sizeof(RLMeshEnvVtable), reset, step, NULL, NULL};
-  RLMeshEnv* env = NULL;
-  RLMeshStatus status = rlmesh_env_new(&vtable, &config, NULL, &env);
+  RLMeshExtLegacyEnvVtable vtable = {sizeof(RLMeshExtLegacyEnvVtable), reset, step, NULL, NULL};
+  RLMeshExtLegacyEnv* env = NULL;
+  RLMeshStatus status = rlmesh_ext_legacy_env_new(&vtable, &config, NULL, &env);
   rlmesh_space_free(observation);
   rlmesh_space_free(action);
   if (status != RLMESH_OK) {
@@ -41,7 +42,7 @@ int main(void) {
     return 1;
   }
   RLMeshBytes description = {NULL, 0, 0};
-  status = rlmesh_env_describe_json(env, &description);
+  status = rlmesh_ext_legacy_env_describe_json(env, &description);
   if (status == RLMESH_OK) {
     fwrite(description.data, 1, description.len, stdout);
     putchar('\n');
@@ -49,6 +50,6 @@ int main(void) {
   } else {
     fprintf(stderr, "describe failed: %s\n", rlmesh_last_error_message());
   }
-  rlmesh_env_free(env);
+  rlmesh_ext_legacy_env_free(env);
   return status == RLMESH_OK ? 0 : 1;
 }

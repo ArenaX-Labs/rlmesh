@@ -262,3 +262,13 @@ impl Eq for AttachedError {}
 pub fn emit_warning(category: crate::WarningCategory, message: String) -> Result<()> {
     crate::warnings::warn(category, message)
 }
+
+/// Apply a C/C++ host declaration to an unstarted server's published describe.
+pub fn env_server_binding_host(
+    server: &crate::EnvServer,
+    component: &'static str,
+    language: &'static str,
+    extra: serde_json::Map<String, serde_json::Value>,
+) -> Result<()> {
+    server.binding_host(component, language, extra)
+}

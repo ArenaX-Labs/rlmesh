@@ -795,7 +795,7 @@ pub unsafe extern "C" fn rlmesh_model_run_local(
 /// auth, no remote shutdown, no timeouts — serves until the process is killed). A
 /// 0 timeout / concurrency means "unset".
 #[repr(C)]
-pub struct RLMeshServeOptions {
+pub struct RLMeshExtLegacyServeOptions {
     /// Bearer token required on requests; NULL or "" disables auth.
     pub token: *const c_char,
     /// Honor a client-issued shutdown request.
@@ -819,7 +819,7 @@ pub struct RLMeshServeOptions {
 
 fn serve_model_options(
     bind: BindAddress,
-    options: *const RLMeshServeOptions,
+    options: *const RLMeshExtLegacyServeOptions,
 ) -> Result<ServeModelOptions, CapiError> {
     let mut model_options = ServeModelOptions::new(bind);
     let Some(c_options) = (unsafe { options.as_ref() }) else {
@@ -835,13 +835,15 @@ fn serve_model_options(
         .serve_options(serve_options(options)?))
 }
 
-/// The core [`ServeOptions`] an `RLMeshServeOptions` names (NULL = defaults),
+/// The core [`ServeOptions`] an `RLMeshExtLegacyServeOptions` names (NULL = defaults),
 /// shared by the model and environment servers. The token and the predict
 /// concurrency are left to each caller: the model server carries them on
 /// `ServeModelOptions`, the environment server its token on its `ext`.
-pub(crate) fn serve_options(options: *const RLMeshServeOptions) -> Result<ServeOptions, CapiError> {
+pub(crate) fn serve_options(
+    options: *const RLMeshExtLegacyServeOptions,
+) -> Result<ServeOptions, CapiError> {
     // SAFETY: the exports' contract is that `options` is NULL or a valid
-    // `RLMeshServeOptions` for the duration of the call.
+    // `RLMeshExtLegacyServeOptions` for the duration of the call.
     let options = unsafe { options.as_ref() };
     let call = match options {
         Some(options) if !options.workflow_edition.is_null() => {
@@ -885,12 +887,12 @@ pub(crate) fn serve_options(options: *const RLMeshServeOptions) -> Result<ServeO
 ///
 /// # Safety
 /// `model` must be a live handle; `bind_address` a valid C string; `options` NULL
-/// or a valid `RLMeshServeOptions`.
+/// or a valid `RLMeshExtLegacyServeOptions`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_model_serve(
     model: *mut RLMeshModel,
     bind_address: *const c_char,
-    options: *const RLMeshServeOptions,
+    options: *const RLMeshExtLegacyServeOptions,
 ) -> RLMeshStatus {
     guard(|| {
         let model =
@@ -1999,7 +2001,7 @@ mod tests {
         assert_eq!(rlmesh_last_error_is_recoverable(), 0);
     }
 
-    /// `RLMeshServeOptions.workflow_edition` is the served model's sticky
+    /// `RLMeshExtLegacyServeOptions.workflow_edition` is the served model's sticky
     /// declaration: it reaches `ServeOptions`, NULL/"" declares nothing, and a
     /// name this build cannot drive is refused where the host typed it, naming
     /// both the value and the retained list.
@@ -2012,7 +2014,7 @@ mod tests {
         // it on a prerelease build, which is why the literal is not hardcoded.
         let current = rlmesh::binding::CURRENT_WORKFLOW_EDITION;
         let declared = CString::new(current).expect("edition cstr");
-        let options = RLMeshServeOptions {
+        let options = RLMeshExtLegacyServeOptions {
             workflow_edition: declared.as_ptr(),
             ..serve_options(false)
         };
@@ -2022,7 +2024,7 @@ mod tests {
         assert_eq!(resolved.serve.workflow_edition.as_deref(), Some(current));
 
         for blank in [std::ptr::null(), c"".as_ptr(), c"   ".as_ptr()] {
-            let options = RLMeshServeOptions {
+            let options = RLMeshExtLegacyServeOptions {
                 workflow_edition: blank,
                 ..serve_options(false)
             };
@@ -2033,7 +2035,7 @@ mod tests {
         }
 
         let unknown = CString::new("2099.01").expect("edition cstr");
-        let options = RLMeshServeOptions {
+        let options = RLMeshExtLegacyServeOptions {
             workflow_edition: unknown.as_ptr(),
             ..serve_options(false)
         };
@@ -2063,7 +2065,7 @@ mod tests {
             .unwrap_or_else(|_| panic!("resolves: {}", last_error_message()));
         assert_eq!(resolved.workflow_edition.as_deref(), Some(current));
         let explicit = CString::new(rlmesh::binding::CURRENT_WORKFLOW_EDITION).expect("cstr");
-        let options = RLMeshServeOptions {
+        let options = RLMeshExtLegacyServeOptions {
             workflow_edition: explicit.as_ptr(),
             ..serve_options(false)
         };
@@ -2086,7 +2088,7 @@ mod tests {
     struct ServeArgs {
         model: *mut RLMeshModel,
         bind: *const c_char,
-        options: *const RLMeshServeOptions,
+        options: *const RLMeshExtLegacyServeOptions,
     }
     // SAFETY: every test joins the serve thread before dropping model/bind/options.
     unsafe impl Send for ServeArgs {}
@@ -2099,8 +2101,8 @@ mod tests {
             .port()
     }
 
-    fn serve_options(allow_remote_shutdown: bool) -> RLMeshServeOptions {
-        RLMeshServeOptions {
+    fn serve_options(allow_remote_shutdown: bool) -> RLMeshExtLegacyServeOptions {
+        RLMeshExtLegacyServeOptions {
             token: std::ptr::null(),
             allow_remote_shutdown,
             idle_timeout_ms: 0,

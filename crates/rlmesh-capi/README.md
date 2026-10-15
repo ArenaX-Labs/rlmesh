@@ -54,6 +54,33 @@ the facade on this branch has no native DLPack import/export methods, and
 C does not expose them. C++ receives only compatibility changes for the new C
 value and tensor calls; its full parity API is a separate wave.
 
+## Env authoring and servers
+
+`rlmesh_env_new(vtable, user_data, attributes, out)` and
+`rlmesh_vector_env_new` wrap the facade's Gymnasium-shaped protocols. Reset
+and step use Value handles and tuple-ordered outputs; info is a Value dict,
+not JSON. Vtables include `free_user_data`; ownership transfers only on a
+successful constructor. Free releases state without calling close. Close is
+idempotent, and callbacks run serially for each handle.
+
+`rlmesh_env_server_new` borrows a list of scalar handles;
+`rlmesh_env_server_new_vector` borrows a native vector handle. Construction
+binds and derives the contract through the facade. `start`, `serve`, `wait`
+and `shutdown` keep its state machine, validation and thread behavior. The
+server holds an exclusive lease on each env until free; duplicate or busy
+handles fail with RuntimeError. Server free drains C callbacks even when a
+facade shutdown deadline has expired.
+
+Use `RLMESH_ENV_VTABLE_INIT`, `RLMESH_ENV_ATTRIBUTES_INIT`,
+`RLMESH_VECTOR_ENV_VTABLE_INIT`, `RLMESH_VECTOR_ENV_ATTRIBUTES_INIT`,
+`RLMESH_ENV_SERVER_OPTIONS_INIT` and `RLMESH_SERVE_OPTIONS_INIT`.
+All new structs have `struct_size` and `_MIN_SIZE`; zero initialization is
+refused, and nonzero unknown trailing bytes fail with TypeError. Serve
+options use seconds and explicit `has_*` fields, including for zero.
+`examples/c_env_api.c` exercises the new API. The C++ wrapper's existing
+combined env/server path now calls the fenced `rlmesh_ext_legacy_*` bridge;
+its full C++ parity migration remains separate.
+
 ## Layout
 
 - `include/rlmesh.h` — the C ABI (C11). Hand-authored; the single header authority.

@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 use crate::abi::status::{CapiError, RLMeshStatus, guard};
 use crate::adapters::meta_to_json;
 use crate::codec::RLMeshBytes;
-use crate::env::RLMeshEnv;
+use crate::env::RLMeshExtLegacyEnv;
 
 /// Component name the envelope's `runtime` reports for a C ABI host.
 const COMPONENT: &str = "rlmesh-capi";
@@ -102,7 +102,7 @@ pub(crate) fn host_runtime(text: &str) -> Result<Value, CapiError> {
     Ok(Value::Object(normalized))
 }
 
-/// An env's describe envelope: built at `rlmesh_env_new` with the build's own
+/// An env's describe envelope: built at `rlmesh_ext_legacy_env_new` with the build's own
 /// edition, rebuilt at bind with the edition the server declares.
 pub(crate) struct Describe {
     contract: EnvContract,
@@ -221,8 +221,8 @@ pub(crate) fn envelope(
 /// # Safety
 /// `env` must be a live handle; `out` writable.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_env_describe_json(
-    env: *const RLMeshEnv,
+pub unsafe extern "C" fn rlmesh_ext_legacy_env_describe_json(
+    env: *const RLMeshExtLegacyEnv,
     out: *mut RLMeshBytes,
 ) -> RLMeshStatus {
     guard(|| {
@@ -386,8 +386,8 @@ mod tests {
 
     unsafe extern "C" fn reset(
         _user_data: *mut std::ffi::c_void,
-        _args: *const crate::env::RLMeshResetArgs,
-        _out: *mut crate::env::RLMeshResetResult,
+        _args: *const crate::env::RLMeshExtLegacyResetArgs,
+        _out: *mut crate::env::RLMeshExtLegacyResetResult,
     ) -> std::ffi::c_int {
         1
     }
@@ -395,14 +395,14 @@ mod tests {
     unsafe extern "C" fn step(
         _user_data: *mut std::ffi::c_void,
         _action: *const crate::value::handle::RLMeshValue,
-        _out: *mut crate::env::RLMeshStepResult,
+        _out: *mut crate::env::RLMeshExtLegacyStepResult,
     ) -> std::ffi::c_int {
         1
     }
 
-    fn describe_json(env: *const RLMeshEnv) -> Value {
+    fn describe_json(env: *const RLMeshExtLegacyEnv) -> Value {
         let mut out = RLMeshBytes::from_vec(Vec::new());
-        let status = unsafe { rlmesh_env_describe_json(env, &mut out) };
+        let status = unsafe { rlmesh_ext_legacy_env_describe_json(env, &mut out) };
         assert_eq!(status, RLMeshStatus::Ok);
         parse(&String::from_utf8(unsafe { out.into_vec() }).expect("utf-8"))
     }
@@ -410,8 +410,8 @@ mod tests {
     const F32: i32 = 11;
 
     /// A C env `id` whose observation is Dict{eef_pos: f32[3] in [-bound, bound]}.
-    fn native_env(id: &str, bound: f64) -> *mut RLMeshEnv {
-        native_env_with(id, bound, None).expect("rlmesh_env_new")
+    fn native_env(id: &str, bound: f64) -> *mut RLMeshExtLegacyEnv {
+        native_env_with(id, bound, None).expect("rlmesh_ext_legacy_env_new")
     }
 
     /// [`native_env`] declaring `catalog` as its `variants_catalog_json`.
@@ -419,7 +419,7 @@ mod tests {
         id: &str,
         bound: f64,
         catalog: Option<&str>,
-    ) -> Result<*mut RLMeshEnv, RLMeshStatus> {
+    ) -> Result<*mut RLMeshExtLegacyEnv, RLMeshStatus> {
         native_env_runtime(id, bound, catalog, None, false)
     }
 
@@ -429,7 +429,7 @@ mod tests {
         catalog: Option<&str>,
         runtime: Option<&str>,
         old_config: bool,
-    ) -> Result<*mut RLMeshEnv, RLMeshStatus> {
+    ) -> Result<*mut RLMeshExtLegacyEnv, RLMeshStatus> {
         native_env_runtime_bytes(id, bound, catalog, runtime.map(str::as_bytes), old_config)
     }
 
@@ -439,10 +439,12 @@ mod tests {
         catalog: Option<&str>,
         runtime: Option<&[u8]>,
         old_config: bool,
-    ) -> Result<*mut RLMeshEnv, RLMeshStatus> {
+    ) -> Result<*mut RLMeshExtLegacyEnv, RLMeshStatus> {
         use std::ffi::CString;
 
-        use crate::env::{RLMeshEnvConfig, RLMeshEnvVtable, rlmesh_env_new};
+        use crate::env::{
+            RLMeshExtLegacyEnvConfig, RLMeshExtLegacyEnvVtable, rlmesh_ext_legacy_env_new,
+        };
         use crate::spaces::{rlmesh_space_box, rlmesh_space_dict, rlmesh_space_spec_free};
 
         let three = [3i64];
@@ -460,11 +462,11 @@ mod tests {
         let catalog = catalog.map(|catalog| CString::new(catalog).unwrap());
         let runtime = runtime.map(|runtime| CString::new(runtime).unwrap());
         let config_size = if old_config {
-            std::mem::offset_of!(RLMeshEnvConfig, host_runtime_json)
+            std::mem::offset_of!(RLMeshExtLegacyEnvConfig, host_runtime_json)
         } else {
-            std::mem::size_of::<RLMeshEnvConfig>()
+            std::mem::size_of::<RLMeshExtLegacyEnvConfig>()
         };
-        let config = RLMeshEnvConfig {
+        let config = RLMeshExtLegacyEnvConfig {
             struct_size: config_size,
             id: id.as_ptr(),
             observation_space: obs,
@@ -478,8 +480,8 @@ mod tests {
             variants_catalog_json: catalog.as_ref().map_or(std::ptr::null(), |c| c.as_ptr()),
             host_runtime_json: runtime.as_ref().map_or(std::ptr::null(), |r| r.as_ptr()),
         };
-        let vtable = RLMeshEnvVtable {
-            struct_size: std::mem::size_of::<RLMeshEnvVtable>(),
+        let vtable = RLMeshExtLegacyEnvVtable {
+            struct_size: std::mem::size_of::<RLMeshExtLegacyEnvVtable>(),
             reset: Some(reset),
             step: Some(step),
             render: None,
@@ -497,7 +499,7 @@ mod tests {
             );
         }
         let status = unsafe {
-            rlmesh_env_new(
+            rlmesh_ext_legacy_env_new(
                 &vtable,
                 storage.as_ptr().cast(),
                 std::ptr::null_mut(),
@@ -516,14 +518,18 @@ mod tests {
     }
 
     /// Bind `env` at `address` declaring `edition`; the bound address on success.
-    fn bind(env: *mut RLMeshEnv, address: &str, edition: &str) -> Result<String, RLMeshStatus> {
+    fn bind(
+        env: *mut RLMeshExtLegacyEnv,
+        address: &str,
+        edition: &str,
+    ) -> Result<String, RLMeshStatus> {
         use std::ffi::CString;
 
-        use crate::env::rlmesh_env_bind;
-        use crate::model::RLMeshServeOptions;
+        use crate::env::rlmesh_ext_legacy_env_bind;
+        use crate::model::RLMeshExtLegacyServeOptions;
 
         let edition = CString::new(edition).unwrap();
-        let options = RLMeshServeOptions {
+        let options = RLMeshExtLegacyServeOptions {
             token: std::ptr::null(),
             allow_remote_shutdown: false,
             idle_timeout_ms: 0,
@@ -534,7 +540,7 @@ mod tests {
         };
         let address = CString::new(address).unwrap();
         let mut out = RLMeshBytes::from_vec(Vec::new());
-        match unsafe { rlmesh_env_bind(env, address.as_ptr(), &options, &mut out) } {
+        match unsafe { rlmesh_ext_legacy_env_bind(env, address.as_ptr(), &options, &mut out) } {
             RLMeshStatus::Ok => Ok(String::from_utf8(unsafe { out.into_vec() }).unwrap()),
             status => Err(status),
         }
@@ -542,7 +548,7 @@ mod tests {
 
     #[test]
     fn the_c_export_describes_each_env_and_only_a_successful_bind_publishes() {
-        use crate::env::rlmesh_env_free;
+        use crate::env::rlmesh_ext_legacy_env_free;
 
         // A host's own process-wide override fields are left as they are.
         rlmesh::binding::update_peer_info_override(|info| info.os_version = "6.1".into());
@@ -586,7 +592,7 @@ mod tests {
         let third_before = describe_json(third);
         assert!(bind(third, &first_address, base).is_err());
         assert_eq!(describe_json(third), third_before);
-        unsafe { rlmesh_env_free(third) };
+        unsafe { rlmesh_ext_legacy_env_free(third) };
         assert!(
             rlmesh::binding::peer_info_override()
                 .is_none_or(|info| !info.extra.contains_key(DESCRIBE_METADATA_KEY)),
@@ -616,25 +622,26 @@ mod tests {
             "other override fields are kept"
         );
         for env in [first, second] {
-            unsafe { rlmesh_env_free(env) };
+            unsafe { rlmesh_ext_legacy_env_free(env) };
         }
 
         let mut out = RLMeshBytes::from_vec(Vec::new());
-        let status = unsafe { rlmesh_env_describe_json(std::ptr::null(), &mut out) };
+        let status = unsafe { rlmesh_ext_legacy_env_describe_json(std::ptr::null(), &mut out) };
         assert_eq!(status, RLMeshStatus::InvalidArgument);
     }
 
     #[test]
     fn the_c_export_describes_a_declared_catalog_and_refuses_a_malformed_one() {
-        use crate::env::rlmesh_env_free;
+        use crate::env::rlmesh_ext_legacy_env_free;
 
         let catalog = r#"[{"id": "viper/firm", "params": {"vehicle": "viper", "soil": "firm"},
                            "metadata": {"name": "Viper rover on firm soil"}},
                           {"id": "hmmwv/firm", "params": {"vehicle": "hmmwv"}}]"#;
-        let env = native_env_with("Catalog-v0", 1.0, Some(catalog)).expect("rlmesh_env_new");
+        let env =
+            native_env_with("Catalog-v0", 1.0, Some(catalog)).expect("rlmesh_ext_legacy_env_new");
         let value = describe_json(env);
         assert_eq!(value["variants"]["catalog"], parse(catalog));
-        unsafe { rlmesh_env_free(env) };
+        unsafe { rlmesh_ext_legacy_env_free(env) };
 
         for bad in [
             r#"{"id": "a"}"#,
@@ -654,7 +661,7 @@ mod tests {
 
     #[test]
     fn c_config_runtime_is_copied_per_env_and_old_configs_keep_the_default() {
-        use crate::env::rlmesh_env_free;
+        use crate::env::rlmesh_ext_legacy_env_free;
 
         let cpp = native_env_runtime(
             "Cpp-v0",
@@ -705,7 +712,7 @@ mod tests {
         assert!(legacy["runtime"].get("language_version").is_none());
         assert!(legacy["runtime"].get("framework_versions").is_none());
         for env in [cpp, c, old] {
-            unsafe { rlmesh_env_free(env) };
+            unsafe { rlmesh_ext_legacy_env_free(env) };
         }
     }
 
@@ -759,7 +766,7 @@ mod tests {
 
     #[test]
     fn host_runtime_trims_all_declared_strings() {
-        use crate::env::rlmesh_env_free;
+        use crate::env::rlmesh_ext_legacy_env_free;
 
         let env = native_env_runtime("Trim-v0", 1.0, None, Some(
             r#"{"language":" c++ ","language_version":" 17 ","framework_versions":{" torch ":" 2.1 "},"toolchain":{"name":" gcc ","version":" 16.2 "}}"#
@@ -769,7 +776,7 @@ mod tests {
         assert_eq!(runtime["language_version"], "17");
         assert_eq!(runtime["framework_versions"], json!({"torch":"2.1"}));
         assert_eq!(runtime["toolchain"], json!({"name":"gcc","version":"16.2"}));
-        unsafe { rlmesh_env_free(env) };
+        unsafe { rlmesh_ext_legacy_env_free(env) };
     }
 
     #[test]

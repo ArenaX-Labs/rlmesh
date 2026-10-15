@@ -259,6 +259,42 @@ impl EnvServer {
         Self::build(Served::Vector(env), options, Some(publish), true)
     }
 
+    /// Override publication identity for an in-repo non-Rust binding, before
+    /// starting the server. The facade still builds and validates the envelope.
+    pub(crate) fn binding_host(
+        &self,
+        component: &'static str,
+        language: &'static str,
+        extra: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<()> {
+        let mut state = lock(&self.shared.state);
+        let State::Ready(resources) = &mut *state else {
+            return Err(Error::Runtime("server has already started".into()));
+        };
+        if resources
+            .grpc
+            .peer_info_extra
+            .contains_key(DESCRIBE_METADATA_KEY)
+        {
+            let envelope = env_envelope(
+                &self.shared.contract,
+                None,
+                None,
+                &DescribingHost {
+                    component,
+                    language,
+                    extra,
+                },
+                resources.grpc.workflow_edition.as_deref(),
+            )?;
+            resources
+                .grpc
+                .peer_info_extra
+                .insert(DESCRIBE_METADATA_KEY.into(), envelope);
+        }
+        Ok(())
+    }
+
     /// The loopback server a run or session stands up in front of a local
     /// env: bound on `127.0.0.1`, publishing nothing, never closing the env
     /// (its caller does) and taking the caller's resolved edition.

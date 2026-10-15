@@ -202,7 +202,7 @@ RLMESH_API RLMeshStatus rlmesh_build_info_repr(struct RLMeshBytes* out);
 
 /* The bare YYYY.MM workflow edition this build runs at (static): the value to
  * declare. A served model or env resolves its edition from
- * RLMeshServeOptions.workflow_edition, else the RLMESH_WORKFLOW_EDITION
+ * RLMeshExtLegacyServeOptions.workflow_edition, else the RLMESH_WORKFLOW_EDITION
  * environment variable (set but blank: float deliberately, quietly); one that
  * declares neither floats to the newest edition and warns once per process. */
 RLMESH_API const char* rlmesh_current_workflow_edition(void);
@@ -742,6 +742,159 @@ RLMESH_API RLMeshStatus rlmesh_adapter_plan_referenced_obs_keys(const RLMeshAdap
 RLMESH_API RLMeshStatus rlmesh_env_contract_adapter_tags_json(const RLMeshEnvContract* contract,
                                                               RLMeshBytes* out);
 
+/* ---- Env authoring and serving (facade) ---------------------------------- */
+
+typedef struct RLMeshEnv RLMeshEnv;
+typedef struct RLMeshVectorEnv RLMeshVectorEnv;
+typedef struct RLMeshEnvServer RLMeshEnvServer;
+typedef struct RLMeshEnvTags RLMeshEnvTags;
+/* Adapter authoring belongs to its separate wave. Returned tags are owned. */
+RLMESH_API void rlmesh_env_tags_free(RLMeshEnvTags* tags);
+typedef enum RLMeshTransport {
+  RLMESH_TRANSPORT_INVALID = 0,
+  RLMESH_TRANSPORT_TCP = 1,
+  RLMESH_TRANSPORT_UNIX = 2
+} RLMeshTransport;
+RLMESH_API const char* rlmesh_transport_str(RLMeshTransport transport);
+
+/* Every sized input requires at least MIN_SIZE. NULL options means INIT;
+ * unknown trailing bytes must be zero. {0} is refused. Explicit reserved
+ * fields keep the layout free of implicit padding for later append-only fields. */
+typedef struct RLMeshServeOptions {
+  size_t struct_size;
+  bool allow_remote_shutdown;
+  bool has_idle_timeout_seconds;
+  bool has_drain_timeout_seconds;
+  bool has_close_timeout_seconds;
+  bool compress_responses;
+  uint8_t _reserved[3];
+  double idle_timeout_seconds;
+  double drain_timeout_seconds;
+  double close_timeout_seconds;
+  const char* workflow_edition;
+} RLMeshServeOptions;
+#define RLMESH_SERVE_OPTIONS_INIT \
+  {sizeof(RLMeshServeOptions), false, false, false, false, false, {0, 0, 0}, 0.0, 0.0, 0.0, NULL}
+#define RLMESH_SERVE_OPTIONS_MIN_SIZE sizeof(RLMeshServeOptions)
+
+typedef struct RLMeshExtEnvServerOptions {
+  size_t struct_size;
+  const char* token;
+  const RLMeshValue* peer_info_extra;
+  const char* host_runtime_json;
+  bool publish_describe;
+  uint8_t _reserved[sizeof(size_t) - 1];
+} RLMeshExtEnvServerOptions;
+#define RLMESH_EXT_ENV_SERVER_OPTIONS_INIT \
+  {sizeof(RLMeshExtEnvServerOptions), NULL, NULL, RLMESH_HOST_RUNTIME_JSON, false, {0}}
+#define RLMESH_EXT_ENV_SERVER_OPTIONS_MIN_SIZE sizeof(RLMeshExtEnvServerOptions)
+
+typedef struct RLMeshEnvServerOptions {
+  size_t struct_size;
+  const char* address;
+  const char* host;
+  const char* path;
+  const RLMeshServeOptions* options;
+  const RLMeshEnvTags* tags;
+  const RLMeshExtEnvServerOptions* ext;
+  uint16_t port;
+  bool has_port;
+  bool has_transport;
+  RLMeshTransport transport;
+  bool close_env_on_shutdown;
+  uint8_t _reserved[7];
+} RLMeshEnvServerOptions;
+#define RLMESH_ENV_SERVER_OPTIONS_INIT                                                  \
+  {sizeof(RLMeshEnvServerOptions), NULL, NULL, NULL, NULL, NULL, NULL, 0, false, false, \
+   RLMESH_TRANSPORT_INVALID,       true, {0}}
+#define RLMESH_ENV_SERVER_OPTIONS_MIN_SIZE sizeof(RLMeshEnvServerOptions)
+
+typedef struct RLMeshEnvAttributes {
+  size_t struct_size;
+  const RLMeshSpace* observation_space;
+  const RLMeshSpace* action_space;
+  const char* render_mode;
+  const RLMeshValue* metadata;
+  const char* id;
+} RLMeshEnvAttributes;
+#define RLMESH_ENV_ATTRIBUTES_INIT {sizeof(RLMeshEnvAttributes), NULL, NULL, NULL, NULL, NULL}
+#define RLMESH_ENV_ATTRIBUTES_MIN_SIZE sizeof(RLMeshEnvAttributes)
+
+typedef struct RLMeshVectorEnvAttributes {
+  size_t struct_size;
+  uint64_t num_envs;
+  const RLMeshSpace* single_observation_space;
+  const RLMeshSpace* single_action_space;
+  const char* render_mode;
+  const RLMeshValue* metadata;
+  const char* id;
+} RLMeshVectorEnvAttributes;
+#define RLMESH_VECTOR_ENV_ATTRIBUTES_INIT \
+  {sizeof(RLMeshVectorEnvAttributes), 0, NULL, NULL, NULL, NULL, NULL}
+#define RLMESH_VECTOR_ENV_ATTRIBUTES_MIN_SIZE sizeof(RLMeshVectorEnvAttributes)
+
+typedef struct RLMeshEnvVtable {
+  size_t struct_size;
+  RLMeshStatus (*reset)(void*, const int64_t* seed, const RLMeshValue* options,
+                        RLMeshValue** out_observation, RLMeshValue** out_info);
+  RLMeshStatus (*step)(void*, const RLMeshValue* action, RLMeshValue** out_observation,
+                       double* out_reward, bool* out_terminated, bool* out_truncated,
+                       RLMeshValue** out_info);
+  RLMeshStatus (*render)(void*, RLMeshValue** out_frame);
+  RLMeshStatus (*close)(void*);
+  void (*free_user_data)(void*);
+} RLMeshEnvVtable;
+#define RLMESH_ENV_VTABLE_INIT {sizeof(RLMeshEnvVtable), NULL, NULL, NULL, NULL, NULL}
+#define RLMESH_ENV_VTABLE_MIN_SIZE sizeof(RLMeshEnvVtable)
+
+typedef struct RLMeshVectorEnvVtable {
+  size_t struct_size;
+  RLMeshStatus (*reset)(void*, const int64_t* seed, size_t seed_len, const RLMeshValue* options,
+                        RLMeshValue** out_observation, RLMeshValue** out_info);
+  RLMeshStatus (*step)(void*, const RLMeshValue* actions, RLMeshValue** out_observation,
+                       double* out_rewards, bool* out_terminated, bool* out_truncated,
+                       RLMeshValue** out_info);
+  RLMeshStatus (*render)(void*, RLMeshValue** out_frame);
+  RLMeshStatus (*close)(void*);
+  void (*free_user_data)(void*);
+} RLMeshVectorEnvVtable;
+#define RLMESH_VECTOR_ENV_VTABLE_INIT {sizeof(RLMeshVectorEnvVtable), NULL, NULL, NULL, NULL, NULL}
+#define RLMESH_VECTOR_ENV_VTABLE_MIN_SIZE sizeof(RLMeshVectorEnvVtable)
+
+/* Env handles copy vtables/attributes. State transfers only on success and
+ * free_user_data runs once after the last library reference. Free never closes;
+ * close runs at most once. A handle may be borrowed by one server/run/session
+ * at a time. Free a borrowing server before freeing the env. Close on a busy
+ * env fails with RLMESH_ERR_RUNTIME. Callback outputs are taken even on failure;
+ * NULL info means {}. Callbacks and state must be safe to move between threads. */
+RLMESH_API RLMeshStatus rlmesh_env_new(const RLMeshEnvVtable*, void* user_data,
+                                       const RLMeshEnvAttributes*, RLMeshEnv** out);
+RLMESH_API RLMeshStatus rlmesh_vector_env_new(const RLMeshVectorEnvVtable*, void* user_data,
+                                              const RLMeshVectorEnvAttributes*,
+                                              RLMeshVectorEnv** out);
+RLMESH_API RLMeshStatus rlmesh_env_close(RLMeshEnv*);
+RLMESH_API RLMeshStatus rlmesh_vector_env_close(RLMeshVectorEnv*);
+RLMESH_API void rlmesh_env_free(RLMeshEnv*);
+RLMESH_API void rlmesh_vector_env_free(RLMeshVectorEnv*);
+
+/* New binds. start runs callbacks on library threads; serve keeps lane 0 on
+ * the caller. shutdown is allowed from a callback. Free shuts down and drains
+ * all C callbacks, including any still running past the facade's timeout. */
+RLMESH_API RLMeshStatus rlmesh_env_server_new(RLMeshEnv* const* envs, size_t envs_len,
+                                              const RLMeshEnvServerOptions*, RLMeshEnvServer** out);
+RLMESH_API RLMeshStatus rlmesh_env_server_new_vector(RLMeshVectorEnv*,
+                                                     const RLMeshEnvServerOptions*,
+                                                     RLMeshEnvServer** out);
+RLMESH_API RLMeshStatus rlmesh_env_server_address(const RLMeshEnvServer*, RLMeshBytes* out);
+RLMESH_API const RLMeshEnvContract* rlmesh_env_server_env_contract(const RLMeshEnvServer*);
+RLMESH_API RLMeshStatus rlmesh_env_server_start(RLMeshEnvServer*);
+RLMESH_API RLMeshStatus rlmesh_env_server_serve(RLMeshEnvServer*);
+RLMESH_API RLMeshStatus rlmesh_env_server_wait(RLMeshEnvServer*, const double* timeout,
+                                               bool* out_stopped);
+RLMESH_API RLMeshStatus rlmesh_env_server_shutdown(RLMeshEnvServer*);
+RLMESH_API RLMeshStatus rlmesh_env_server_repr(const RLMeshEnvServer*, RLMeshBytes* out);
+RLMESH_API void rlmesh_env_server_free(RLMeshEnvServer*);
+
 /* ---- model -------------------------------------------------------------- */
 
 /* Error convention for every call below: on a nonzero RLMeshStatus (or a NULL
@@ -885,15 +1038,15 @@ RLMESH_API RLMeshStatus rlmesh_model_run_local(RLMeshModel* model, const char* e
 /* Serve options for rlmesh_model_serve. Pass NULL for all defaults (no auth, no
  * remote shutdown, no timeouts — serves until the process is killed). A 0 timeout
  * / concurrency means "unset". */
-typedef struct RLMeshServeOptions {
+typedef struct RLMeshExtLegacyServeOptions {
   const char* token;            /* NULL/"" disables auth */
   bool allow_remote_shutdown;   /* honor a client-issued shutdown request */
   uint64_t idle_timeout_ms;     /* 0 = never idle-shutdown */
   uint64_t drain_timeout_ms;    /* 0 = unset */
-  uint64_t close_timeout_ms;    /* 0 = unset; ignored by an env (see rlmesh_env_serve) */
+  uint64_t close_timeout_ms;    /* 0 = unset; ignored by an env (see rlmesh_ext_legacy_env_serve) */
   size_t predict_concurrency;   /* 0 = default */
   const char* workflow_edition; /* workflow edition this server declares; NULL/"" = none */
-} RLMeshServeOptions;
+} RLMeshExtLegacyServeOptions;
 
 /* Serve the model as a ModelService endpoint at `bind_address` (tcp://host:port
  * or unix:///path). Blocking — returns when the server stops: a remote shutdown
@@ -901,7 +1054,7 @@ typedef struct RLMeshServeOptions {
  * predict, exactly as rlmesh_model_run_local. `options` may be NULL for
  * defaults. */
 RLMESH_API RLMeshStatus rlmesh_model_serve(RLMeshModel* model, const char* bind_address,
-                                           const RLMeshServeOptions* options);
+                                           const RLMeshExtLegacyServeOptions* options);
 
 /* Stop a blocking rlmesh_model_run_local / rlmesh_model_serve on `model`. Call
  * it from another thread (a signal handler's worker, a UI thread); it returns
@@ -926,13 +1079,13 @@ RLMESH_API void rlmesh_model_free(RLMeshModel* model);
 
 /* What `reset` receives; pointers are valid for the call only. `trial_index`
  * arrives only when the env declared the "trial_index" reset option. */
-typedef struct RLMeshResetArgs {
+typedef struct RLMeshExtLegacyResetArgs {
   bool seeded; /* whether `seed` carries an explicit reset seed */
   int64_t seed;
   bool has_trial_index; /* whether `trial_index` is set */
   int64_t trial_index;
   const char* options_json; /* every reset option as a JSON object; NULL = none */
-} RLMeshResetArgs;
+} RLMeshExtLegacyResetArgs;
 
 /* What `reset` / `step` write. `observation` is OWNED: the capi takes and
  * frees whatever it holds when the callback returns, even when the callback
@@ -944,29 +1097,29 @@ typedef struct RLMeshResetArgs {
  * rlmesh_value_clone retains a value). `info_json` is a
  * borrowed JSON object (NULL = none) that must stay valid until the callback's
  * next call on this env (e.g. a std::string member). */
-typedef struct RLMeshResetResult {
+typedef struct RLMeshExtLegacyResetResult {
   RLMeshValue* observation;
   const char* info_json;
-} RLMeshResetResult;
+} RLMeshExtLegacyResetResult;
 
-typedef struct RLMeshStepResult {
+typedef struct RLMeshExtLegacyStepResult {
   RLMeshValue* observation;
   double reward;
   bool terminated;
   bool truncated;
   const char* info_json;
-} RLMeshStepResult;
+} RLMeshExtLegacyStepResult;
 
-/* The environment callback vtable. Set struct_size = sizeof(RLMeshEnvVtable);
+/* The environment callback vtable. Set struct_size = sizeof(RLMeshExtLegacyEnvVtable);
  * fields beyond it are ignored (append-only). `reset` and `step` are required.
- * Copied in at rlmesh_env_new; `user_data` is kept by pointer and must outlive
+ * Copied in at rlmesh_ext_legacy_env_new; `user_data` is kept by pointer and must outlive
  * the env.
  *
  * Each lane runs its callbacks on ONE dedicated thread (not the one that
  * created the env), one call at a time; the lanes of a multi-lane env
- * (rlmesh_env_new_lanes) run concurrently, each with its own `user_data`. A
- * foreground env (RLMeshEnvConfig.foreground) runs them on the thread blocked
- * in rlmesh_env_serve instead. `reset` / `step` /
+ * (rlmesh_ext_legacy_env_new_lanes) run concurrently, each with its own `user_data`. A
+ * foreground env (RLMeshExtLegacyEnvConfig.foreground) runs them on the thread blocked
+ * in rlmesh_ext_legacy_env_serve instead. `reset` / `step` /
  * `render` return 0 == RLMESH_OK, or nonzero after rlmesh_callback_set_error
  * to fail that request. With `recoverable` set, only the request fails and the
  * client's session stays usable; otherwise the session ends (the client's next
@@ -977,7 +1130,7 @@ typedef struct RLMeshStepResult {
  * numeric image value (cast to uint8) of shape [H, W, 3], [H, W, 4],
  * [3, H, W], [4, H, W] or [H, W], or leaves it NULL for no frame; the capi
  * PNG-encodes it, and any other shape is no frame. `close` fires once per lane: when the server
- * stops, or in rlmesh_env_free for an env that never served.
+ * stops, or in rlmesh_ext_legacy_env_free for an env that never served.
  *
  * Out-parameter ownership: the capi takes ownership of any value left in an
  * out-parameter (`out->observation`, `*out_frame`) when the callback returns,
@@ -988,16 +1141,17 @@ typedef struct RLMeshStepResult {
  * rlmesh_value_dict_get / rlmesh_value_dict_get_at child) as an observation or
  * frame: the capi frees it, which is undefined behaviour. Build an owned copy
  * with the constructors instead (no value copy function exists). */
-typedef struct RLMeshEnvVtable {
+typedef struct RLMeshExtLegacyEnvVtable {
   size_t struct_size;
-  int (*reset)(void* user_data, const RLMeshResetArgs* args, RLMeshResetResult* out);
-  int (*step)(void* user_data, const RLMeshValue* action, RLMeshStepResult* out);
+  int (*reset)(void* user_data, const RLMeshExtLegacyResetArgs* args,
+               RLMeshExtLegacyResetResult* out);
+  int (*step)(void* user_data, const RLMeshValue* action, RLMeshExtLegacyStepResult* out);
   int (*render)(void* user_data, RLMeshValue** out_frame);
   void (*close)(void* user_data);
-} RLMeshEnvVtable;
+} RLMeshExtLegacyEnvVtable;
 
 /* Runtime of the translation unit including this header, not of the Rust
- * library behind the ABI. Used by rlmesh_env_config_init and rlmesh.hpp. */
+ * library behind the ABI. Used by rlmesh_ext_legacy_env_config_init and rlmesh.hpp. */
 #define RLMESH_DETAIL_STRINGIFY_IMPL(x) #x
 #define RLMESH_DETAIL_STRINGIFY(x) RLMESH_DETAIL_STRINGIFY_IMPL(x)
 #ifdef __cplusplus
@@ -1113,13 +1267,13 @@ static inline const char* rlmesh_detail_msvc_host_runtime(void) {
   "\"" RLMESH_DETAIL_HOST_STANDARD RLMESH_DETAIL_HOST_COMPILER "}"
 #endif
 
-/* What the env declares. Set struct_size = sizeof(RLMeshEnvConfig); fields
- * beyond it read as unset. Borrowed for the rlmesh_env_new call only (the
+/* What the env declares. Set struct_size = sizeof(RLMeshExtLegacyEnvConfig); fields
+ * beyond it read as unset. Borrowed for the rlmesh_ext_legacy_env_new call only (the
  * spaces are cloned). `adapter_tags_json` is the env's adapter EnvTags (v1
  * JSON), validated against the spaces right there: an unknown field or a tag
- * that does not fit its space fails rlmesh_env_new. The JSON grammar is in
+ * that does not fit its space fails rlmesh_ext_legacy_env_new. The JSON grammar is in
  * docs/specs/env_tags.v1.md. */
-typedef struct RLMeshEnvConfig {
+typedef struct RLMeshExtLegacyEnvConfig {
   size_t struct_size;
   const char* id;                           /* contract id; NULL/"" = "UnknownEnv-v1" */
   const RLMeshSpaceSpec* observation_space; /* required */
@@ -1130,7 +1284,7 @@ typedef struct RLMeshEnvConfig {
   const char* render_mode;   /* "rgb_array" when `render` produces frames */
   const char* metadata_json; /* extra contract metadata (JSON object); NULL = none */
   /* Run every callback (close included) on the thread that calls
-   * rlmesh_env_serve, which then serves from a helper thread: for a simulation
+   * rlmesh_ext_legacy_env_serve, which then serves from a helper thread: for a simulation
    * bound to the thread that created it (a GL / Vulkan context, Isaac Sim).
    * One lane only. false = callbacks run on a dedicated lane thread. */
   bool foreground;
@@ -1144,30 +1298,31 @@ typedef struct RLMeshEnvConfig {
    * {"name": "gcc"/"clang"/"msvc", "version": "major.minor"}. No other keys.
    * Strings and framework names are trimmed and must remain non-empty.
    * Copied at creation; NULL = legacy runtime (language "c", no version/compiler).
-   * Use rlmesh_env_config_init() to detect the host automatically. */
+   * Use rlmesh_ext_legacy_env_config_init() to detect the host automatically. */
   const char* host_runtime_json;
-} RLMeshEnvConfig;
+} RLMeshExtLegacyEnvConfig;
 
 /* Zero defaults plus struct_size and the host translation unit's runtime.
  * Fill the required spaces afterward; override host_runtime_json if needed. */
-static inline RLMeshEnvConfig rlmesh_env_config_init(void) {
+static inline RLMeshExtLegacyEnvConfig rlmesh_ext_legacy_env_config_init(void) {
 #ifdef __cplusplus
-  RLMeshEnvConfig config = RLMeshEnvConfig();
+  RLMeshExtLegacyEnvConfig config = RLMeshExtLegacyEnvConfig();
 #else
-  RLMeshEnvConfig config = {0};
+  RLMeshExtLegacyEnvConfig config = {0};
 #endif
-  config.struct_size = sizeof(RLMeshEnvConfig);
+  config.struct_size = sizeof(RLMeshExtLegacyEnvConfig);
   config.host_runtime_json = RLMESH_HOST_RUNTIME_JSON;
   return config;
 }
 
-/* An owned env handle. Lifecycle: rlmesh_env_new -> rlmesh_env_bind ->
- * rlmesh_env_serve (blocks) -> rlmesh_env_free. rlmesh_env_cancel is the only
- * call that may overlap a running serve, from any thread. */
-typedef struct RLMeshEnv RLMeshEnv;
+/* An owned env handle. Lifecycle: rlmesh_ext_legacy_env_new -> rlmesh_ext_legacy_env_bind ->
+ * rlmesh_ext_legacy_env_serve (blocks) -> rlmesh_ext_legacy_env_free. rlmesh_ext_legacy_env_cancel
+ * is the only call that may overlap a running serve, from any thread. */
+typedef struct RLMeshExtLegacyEnv RLMeshExtLegacyEnv;
 
-RLMESH_API RLMeshStatus rlmesh_env_new(const RLMeshEnvVtable* vtable, const RLMeshEnvConfig* config,
-                                       void* user_data, RLMeshEnv** out);
+RLMESH_API RLMeshStatus rlmesh_ext_legacy_env_new(const RLMeshExtLegacyEnvVtable* vtable,
+                                                  const RLMeshExtLegacyEnvConfig* config,
+                                                  void* user_data, RLMeshExtLegacyEnv** out);
 
 /* Serve `num_lanes` independent simulations as the lanes of one endpoint
  * (num_envs = num_lanes): lane i passes `user_data[i]` to its callbacks. Every
@@ -1176,9 +1331,10 @@ RLMESH_API RLMeshStatus rlmesh_env_new(const RLMeshEnvVtable* vtable, const RLMe
  * `user_data` (the array) is borrowed for the call; each entry must outlive the
  * env. num_lanes == 0 and a foreground config with num_lanes > 1 fail with
  * RLMESH_ERR_INVALID_ARGUMENT. */
-RLMESH_API RLMeshStatus rlmesh_env_new_lanes(const RLMeshEnvVtable* vtable,
-                                             const RLMeshEnvConfig* config, void* const* user_data,
-                                             size_t num_lanes, RLMeshEnv** out);
+RLMESH_API RLMeshStatus rlmesh_ext_legacy_env_new_lanes(const RLMeshExtLegacyEnvVtable* vtable,
+                                                        const RLMeshExtLegacyEnvConfig* config,
+                                                        void* const* user_data, size_t num_lanes,
+                                                        RLMeshExtLegacyEnv** out);
 
 /* Bind to `bind_address` (tcp://host:port, host:port or unix:///path) without
  * serving yet; once per handle. `out_address` (may be NULL) receives the
@@ -1187,43 +1343,45 @@ RLMESH_API RLMeshStatus rlmesh_env_new_lanes(const RLMeshEnvVtable* vtable,
  * `predict_concurrency` and `close_timeout_ms` do not apply to an env. A failed
  * bind (an address in use, a bad RLMESH_ENV_ENDPOINT_TOKEN) leaves the handle
  * as it was: bind may be retried, and `close` still runs once per lane. */
-RLMESH_API RLMeshStatus rlmesh_env_bind(RLMeshEnv* env, const char* bind_address,
-                                        const RLMeshServeOptions* options,
-                                        RLMeshBytes* out_address);
+RLMESH_API RLMeshStatus rlmesh_ext_legacy_env_bind(RLMeshExtLegacyEnv* env,
+                                                   const char* bind_address,
+                                                   const RLMeshExtLegacyServeOptions* options,
+                                                   RLMeshBytes* out_address);
 
 /* The env's describe envelope (rlmesh.describe.v1: target "native:<id>", the
  * spaces as env_spec, the published adapter tags as env_tags, and the runtime
  * edition handshake) as UTF-8 JSON into `out` (not NUL-terminated; free with
  * rlmesh_bytes_free). Valid before and after bind; after bind it declares the
- * workflow edition the server was bound with. rlmesh_env_bind also puts it on
+ * workflow edition the server was bound with. rlmesh_ext_legacy_env_bind also puts it on
  * the handshake PeerInfo.extra under "rlmesh.describe.v1" of its own endpoint
  * (each env bound in one process reports its own; a failed bind publishes
  * nothing), which is where the managed
  * platform reads it for an image without a baked `dev.rlmesh.describe` label.
  * Bake that label with this output to describe the image before it runs. */
-RLMESH_API RLMeshStatus rlmesh_env_describe_json(const RLMeshEnv* env, RLMeshBytes* out);
+RLMESH_API RLMeshStatus rlmesh_ext_legacy_env_describe_json(const RLMeshExtLegacyEnv* env,
+                                                            RLMeshBytes* out);
 
 /* Serve the bound env until a remote shutdown, an idle timeout, or
- * rlmesh_env_cancel. Blocking. `close` runs once per lane before this returns.
+ * rlmesh_ext_legacy_env_cancel. Blocking. `close` runs once per lane before this returns.
  * A foreground env runs every callback on the calling thread until then.
  *
  * When this returns, no callback is running and none will run again, so the
  * `user_data` may be freed. It waits for a callback still in flight (a step the
  * drain timeout gave up on) and for every `close`, however long: a callback
  * that never returns blocks this forever. `close_timeout_ms` does not apply. */
-RLMESH_API RLMeshStatus rlmesh_env_serve(RLMeshEnv* env);
+RLMESH_API RLMeshStatus rlmesh_ext_legacy_env_serve(RLMeshExtLegacyEnv* env);
 
-/* Stop a blocking rlmesh_env_serve from another thread: it drains, closes the
+/* Stop a blocking rlmesh_ext_legacy_env_serve from another thread: it drains, closes the
  * env and returns RLMESH_OK. Terminal for the handle. NULL is a no-op. */
-RLMESH_API void rlmesh_env_cancel(RLMeshEnv* env);
+RLMESH_API void rlmesh_ext_legacy_env_cancel(RLMeshExtLegacyEnv* env);
 
 /* Free an env handle; not from inside its own callbacks. NULL is a no-op. Like
- * rlmesh_env_serve, it returns only once no callback is running or can run.
+ * rlmesh_ext_legacy_env_serve, it returns only once no callback is running or can run.
  * For a handle that never served it runs each lane's `close` first: a bound
  * one stops its server (closing on the lane threads), an unbound one (a failed
  * bind included) closes on the calling thread. `close` runs once per lane over
  * the handle's life; `user_data` may be freed once this returns. */
-RLMESH_API void rlmesh_env_free(RLMeshEnv* env);
+RLMESH_API void rlmesh_ext_legacy_env_free(RLMeshExtLegacyEnv* env);
 
 #ifdef __cplusplus
 } /* extern "C" */

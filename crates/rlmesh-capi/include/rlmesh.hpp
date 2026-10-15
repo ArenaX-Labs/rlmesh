@@ -1456,7 +1456,7 @@ struct RunReport {
   int64_t truncated_episodes = 0;
 };
 
-/// Options for Model::serve — the C RLMeshServeOptions with owned/typed fields.
+/// Options for Model::serve — the C RLMeshExtLegacyServeOptions with owned/typed fields.
 /// A zero duration or concurrency means "unset".
 struct ServeOptions {
   /// Bearer token clients must present; empty disables auth.
@@ -1573,7 +1573,7 @@ class Model {
   /// idle timeout, or `cancel()`.
   Status serve(std::string_view bind_address, const ServeOptions& options = {}) {
     std::string address(bind_address);
-    RLMeshServeOptions raw{};
+    RLMeshExtLegacyServeOptions raw{};
     raw.token = options.token.empty() ? nullptr : options.token.c_str();
     raw.allow_remote_shutdown = options.allow_remote_shutdown;
     raw.idle_timeout_ms = static_cast<uint64_t>(options.idle_timeout.count());
@@ -2354,7 +2354,7 @@ class Environment {
   virtual void close() {}
 };
 
-/// What an env declares (the C RLMeshEnvConfig with owned fields). The spaces
+/// What an env declares (the C RLMeshExtLegacyEnvConfig with owned fields). The spaces
 /// are cloned at `EnvServer::create`, so this need not outlive it.
 struct EnvConfig {
   std::string id;
@@ -2422,7 +2422,7 @@ class EnvServer {
     for (const std::string& option : config.reset_options) options.push_back(option.c_str());
     auto opt = [](const std::string& text) { return text.empty() ? nullptr : text.c_str(); };
 
-    RLMeshEnvConfig raw = rlmesh_env_config_init();
+    RLMeshExtLegacyEnvConfig raw = rlmesh_ext_legacy_env_config_init();
     raw.id = opt(config.id);
     raw.observation_space = config.observation_space->raw();
     raw.action_space = config.action_space->raw();
@@ -2435,15 +2435,15 @@ class EnvServer {
     raw.variants_catalog_json = opt(config.variants_catalog_json);
     raw.host_runtime_json = opt(config.host_runtime_json);
 
-    RLMeshEnvVtable vtable{};
-    vtable.struct_size = sizeof(RLMeshEnvVtable);
+    RLMeshExtLegacyEnvVtable vtable{};
+    vtable.struct_size = sizeof(RLMeshExtLegacyEnvVtable);
     vtable.reset = &trampoline_reset;
     vtable.step = &trampoline_step;
     vtable.render = &trampoline_render;
     vtable.close = &trampoline_close;
-    RLMeshEnv* handle = nullptr;
+    RLMeshExtLegacyEnv* handle = nullptr;
     RLMeshStatus status =
-        rlmesh_env_new_lanes(&vtable, &raw, user_data.data(), user_data.size(), &handle);
+        rlmesh_ext_legacy_env_new_lanes(&vtable, &raw, user_data.data(), user_data.size(), &handle);
     if (status != RLMESH_OK) return Error::from_last(status);
     return EnvServer(handle, std::move(states));
   }
@@ -2453,7 +2453,7 @@ class EnvServer {
   }
   EnvServer& operator=(EnvServer&& other) noexcept {
     if (this != &other) {
-      if (env_ != nullptr) rlmesh_env_free(env_);
+      if (env_ != nullptr) rlmesh_ext_legacy_env_free(env_);
       env_ = other.env_;
       other.env_ = nullptr;
       states_ = std::move(other.states_);
@@ -2464,7 +2464,7 @@ class EnvServer {
   EnvServer& operator=(const EnvServer&) = delete;
   /// Frees the handle; never from inside one of the env's own callbacks.
   ~EnvServer() {
-    if (env_ != nullptr) rlmesh_env_free(env_);
+    if (env_ != nullptr) rlmesh_ext_legacy_env_free(env_);
   }
 
   /// Bind without serving; returns the resolved address (e.g. the port the OS
@@ -2472,7 +2472,7 @@ class EnvServer {
   /// apply to an env.
   Result<std::string> bind(std::string_view bind_address, const ServeOptions& options = {}) {
     std::string address(bind_address);
-    RLMeshServeOptions raw{};
+    RLMeshExtLegacyServeOptions raw{};
     raw.token = options.token.empty() ? nullptr : options.token.c_str();
     raw.allow_remote_shutdown = options.allow_remote_shutdown;
     raw.idle_timeout_ms = static_cast<uint64_t>(options.idle_timeout.count());
@@ -2481,7 +2481,7 @@ class EnvServer {
     raw.workflow_edition =
         options.workflow_edition.empty() ? nullptr : options.workflow_edition.c_str();
     RLMeshBytes resolved{};
-    RLMeshStatus status = rlmesh_env_bind(env_, address.c_str(), &raw, &resolved);
+    RLMeshStatus status = rlmesh_ext_legacy_env_bind(env_, address.c_str(), &raw, &resolved);
     if (status != RLMESH_OK) return Error::from_last(status);
     std::string out(reinterpret_cast<const char*>(resolved.data), resolved.len);
     rlmesh_bytes_free(resolved);
@@ -2494,7 +2494,7 @@ class EnvServer {
   /// handshake.
   Result<std::string> describe_json() const {
     RLMeshBytes bytes{};
-    RLMeshStatus status = rlmesh_env_describe_json(env_, &bytes);
+    RLMeshStatus status = rlmesh_ext_legacy_env_describe_json(env_, &bytes);
     if (status != RLMESH_OK) return Error::from_last(status);
     std::string out(reinterpret_cast<const char*>(bytes.data), bytes.len);
     rlmesh_bytes_free(bytes);
@@ -2508,13 +2508,13 @@ class EnvServer {
   /// waits for an in-flight call (one the drain timeout gave up on) and for
   /// every `close`, however long it takes.
   Status serve() {
-    RLMeshStatus status = rlmesh_env_serve(env_);
+    RLMeshStatus status = rlmesh_ext_legacy_env_serve(env_);
     if (status != RLMESH_OK) return Error::from_last(status);
     return ok();
   }
 
   /// Stop a blocking serve from any thread. Terminal.
-  void cancel() { rlmesh_env_cancel(env_); }
+  void cancel() { rlmesh_ext_legacy_env_cancel(env_); }
 
  private:
   struct State {
@@ -2523,7 +2523,7 @@ class EnvServer {
     std::string info_json;
   };
 
-  EnvServer(RLMeshEnv* env, std::vector<std::unique_ptr<State>> states)
+  EnvServer(RLMeshExtLegacyEnv* env, std::vector<std::unique_ptr<State>> states)
       : env_(env), states_(std::move(states)) {}
 
   static int fail(const Error& error) {
@@ -2536,8 +2536,8 @@ class EnvServer {
     return state->info_json.empty() ? nullptr : state->info_json.c_str();
   }
 
-  static int trampoline_reset(void* user_data, const RLMeshResetArgs* args,
-                              RLMeshResetResult* out) noexcept {
+  static int trampoline_reset(void* user_data, const RLMeshExtLegacyResetArgs* args,
+                              RLMeshExtLegacyResetResult* out) noexcept {
     auto* state = static_cast<State*>(user_data);
     ResetArgs request;
     if (args->seeded) request.seed = args->seed;
@@ -2564,7 +2564,7 @@ class EnvServer {
   }
 
   static int trampoline_step(void* user_data, const RLMeshValue* action,
-                             RLMeshStepResult* out) noexcept {
+                             RLMeshExtLegacyStepResult* out) noexcept {
     auto* state = static_cast<State*>(user_data);
     std::optional<ValueRef> borrowed;
     if (action != nullptr) borrowed = ValueRef(action);
@@ -2625,7 +2625,7 @@ class EnvServer {
 #endif
   }
 
-  RLMeshEnv* env_ = nullptr;
+  RLMeshExtLegacyEnv* env_ = nullptr;
   std::vector<std::unique_ptr<State>> states_;  // one per lane
 };
 

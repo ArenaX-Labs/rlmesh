@@ -5,13 +5,13 @@
 //! (reset, step, render, close) of a lane runs on that same thread, one at a
 //! time, never on the thread that created the env; the lanes of a multi-lane
 //! env run concurrently. A foreground env instead runs its callbacks as jobs on
-//! the thread blocked in `rlmesh_env_serve`, while the gRPC server runs on a
+//! the thread blocked in `rlmesh_ext_legacy_env_serve`, while the gRPC server runs on a
 //! helper thread. Either way a callback's error is read back on the thread
 //! that ran it, right after it returns, and travels on as an `EnvRuntimeError`
 //! value.
 //!
 //! Every callback runs through the handle's [`CallbackGate`], so
-//! `rlmesh_env_serve` (and `rlmesh_env_free`) return only once no callback is
+//! `rlmesh_ext_legacy_env_serve` (and `rlmesh_ext_legacy_env_free`) return only once no callback is
 //! running, and none can start afterwards: the C host frees `user_data` right
 //! after. For the same reason a C env waits for every lane's `close`, however
 //! long it takes (`close_timeout_ms` does not apply).
@@ -41,14 +41,14 @@ use crate::abi::status::{
 use crate::adapters::{json_to_meta, meta_to_json};
 use crate::codec::RLMeshBytes;
 use crate::describe::Describe;
-use crate::model::{RLMeshServeOptions, cstr_to_str, serve_options, vtable_field};
+use crate::model::{RLMeshExtLegacyServeOptions, cstr_to_str, serve_options, vtable_field};
 use crate::spaces::{RLMeshSpaceSpec, spec_ref};
 use crate::value::handle::RLMeshValue;
 
 /// What `reset` receives. Every pointer is valid only for the duration of the
 /// call.
 #[repr(C)]
-pub struct RLMeshResetArgs {
+pub struct RLMeshExtLegacyResetArgs {
     /// Whether `seed` carries an explicit reset seed.
     pub seeded: bool,
     /// The reset seed; only meaningful when `seeded`.
@@ -65,7 +65,7 @@ pub struct RLMeshResetArgs {
 /// What `reset` writes. `observation` is an OWNED value the capi takes
 /// even when the callback fails (never a borrowed one); `info_json` is a borrowed JSON object, or NULL for none.
 #[repr(C)]
-pub struct RLMeshResetResult {
+pub struct RLMeshExtLegacyResetResult {
     pub observation: *mut RLMeshValue,
     pub info_json: *const c_char,
 }
@@ -73,7 +73,7 @@ pub struct RLMeshResetResult {
 /// What `step` writes. `observation` is an OWNED value the capi takes
 /// even when the callback fails (never a borrowed one); `info_json` is a borrowed JSON object, or NULL for none.
 #[repr(C)]
-pub struct RLMeshStepResult {
+pub struct RLMeshExtLegacyStepResult {
     pub observation: *mut RLMeshValue,
     pub reward: f64,
     pub terminated: bool,
@@ -82,46 +82,46 @@ pub struct RLMeshStepResult {
 }
 
 /// Reset callback: start a new episode and write its first observation.
-pub type RLMeshEnvResetFn = unsafe extern "C" fn(
+pub type RLMeshExtLegacyEnvResetFn = unsafe extern "C" fn(
     user_data: *mut c_void,
-    args: *const RLMeshResetArgs,
-    out: *mut RLMeshResetResult,
+    args: *const RLMeshExtLegacyResetArgs,
+    out: *mut RLMeshExtLegacyResetResult,
 ) -> c_int;
 /// Step callback: apply `action` (borrowed; NULL when the request carries
 /// none) and write the transition.
-pub type RLMeshEnvStepFn = unsafe extern "C" fn(
+pub type RLMeshExtLegacyEnvStepFn = unsafe extern "C" fn(
     user_data: *mut c_void,
     action: *const RLMeshValue,
-    out: *mut RLMeshStepResult,
+    out: *mut RLMeshExtLegacyStepResult,
 ) -> c_int;
 /// Render callback: write an OWNED numeric image value (cast to uint8;
 /// `[H, W, 3]`, `[H, W, 4]`, `[3, H, W]`, `[4, H, W]` or `[H, W]`), or leave it
 /// NULL for "no frame". The capi PNG-encodes it (any other shape is no frame),
 /// and takes it even when the callback fails.
-pub type RLMeshEnvRenderFn =
+pub type RLMeshExtLegacyEnvRenderFn =
     unsafe extern "C" fn(user_data: *mut c_void, out_frame: *mut *mut RLMeshValue) -> c_int;
 /// Close callback: the server stopped (or a never-served handle is being
 /// freed); release the simulation. Runs once per lane.
-pub type RLMeshEnvCloseFn = unsafe extern "C" fn(user_data: *mut c_void);
+pub type RLMeshExtLegacyEnvCloseFn = unsafe extern "C" fn(user_data: *mut c_void);
 
 /// The environment callback vtable. Set `struct_size =
-/// sizeof(RLMeshEnvVtable)`; fields beyond that are ignored (append-only).
+/// sizeof(RLMeshExtLegacyEnvVtable)`; fields beyond that are ignored (append-only).
 /// `reset` and `step` are required.
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct RLMeshEnvVtable {
+pub struct RLMeshExtLegacyEnvVtable {
     pub struct_size: usize,
-    pub reset: Option<RLMeshEnvResetFn>,
-    pub step: Option<RLMeshEnvStepFn>,
-    pub render: Option<RLMeshEnvRenderFn>,
-    pub close: Option<RLMeshEnvCloseFn>,
+    pub reset: Option<RLMeshExtLegacyEnvResetFn>,
+    pub step: Option<RLMeshExtLegacyEnvStepFn>,
+    pub render: Option<RLMeshExtLegacyEnvRenderFn>,
+    pub close: Option<RLMeshExtLegacyEnvCloseFn>,
 }
 
 /// What the env declares: its spaces and the contract metadata a model reads.
-/// Set `struct_size = sizeof(RLMeshEnvConfig)`; fields beyond it are unset.
-/// Everything is borrowed for the `rlmesh_env_new` call only (copied in).
+/// Set `struct_size = sizeof(RLMeshExtLegacyEnvConfig)`; fields beyond it are unset.
+/// Everything is borrowed for the `rlmesh_ext_legacy_env_new` call only (copied in).
 #[repr(C)]
-pub struct RLMeshEnvConfig {
+pub struct RLMeshExtLegacyEnvConfig {
     pub struct_size: usize,
     /// Contract id, e.g. "ChronoArmReach-v0". NULL or "" = "UnknownEnv-v1".
     pub id: *const c_char,
@@ -130,7 +130,7 @@ pub struct RLMeshEnvConfig {
     /// Required.
     pub action_space: *const RLMeshSpaceSpec,
     /// Adapter `EnvTags` (the v1 JSON wire format), validated against the
-    /// spaces at `rlmesh_env_new`. NULL = untagged.
+    /// spaces at `rlmesh_ext_legacy_env_new`. NULL = untagged.
     pub adapter_tags_json: *const c_char,
     /// Reset options the env understands (e.g. "trial_index"); the runtime sends
     /// only declared ones. NULL / 0 = none.
@@ -140,7 +140,7 @@ pub struct RLMeshEnvConfig {
     pub render_mode: *const c_char,
     /// Extra contract metadata as a JSON object. NULL = none.
     pub metadata_json: *const c_char,
-    /// Run every callback on the thread that calls `rlmesh_env_serve` (which
+    /// Run every callback on the thread that calls `rlmesh_ext_legacy_env_serve` (which
     /// then serves from a helper thread) instead of a lane thread: for a
     /// simulation bound to the thread that created it (a GL or Vulkan
     /// context). One lane only.
@@ -163,7 +163,7 @@ struct UserData(*mut c_void);
 unsafe impl Send for UserData {}
 unsafe impl Sync for UserData {}
 
-/// What a foreground env's lane sends the thread blocked in `rlmesh_env_serve`.
+/// What a foreground env's lane sends the thread blocked in `rlmesh_ext_legacy_env_serve`.
 enum ForegroundJob {
     /// Run one callback (with its last-error read-back) on this thread.
     Run(Box<dyn FnOnce() + Send>),
@@ -171,7 +171,7 @@ enum ForegroundJob {
     Done,
 }
 
-/// The foreground job queue of a handle, drained by `rlmesh_env_serve`.
+/// The foreground job queue of a handle, drained by `rlmesh_ext_legacy_env_serve`.
 struct ForegroundQueue {
     tx: mpsc::Sender<ForegroundJob>,
     rx: mpsc::Receiver<ForegroundJob>,
@@ -187,7 +187,7 @@ impl Drop for DoneOnDrop {
 }
 
 /// Counts the callbacks running on one handle's `user_data`, so returning from
-/// `rlmesh_env_serve` / `rlmesh_env_free` can wait them out and refuse any that
+/// `rlmesh_ext_legacy_env_serve` / `rlmesh_ext_legacy_env_free` can wait them out and refuse any that
 /// would start later (a request the drain timeout left running, a connection
 /// that outlived the server). The core bounds its own teardown (a close
 /// timeout, a lane join grace) and may detach a lane thread still inside a
@@ -265,7 +265,7 @@ impl Drop for ShutOnDrop<'_> {
 /// keeps its lanes until one succeeds (a failed bind can be retried).
 #[derive(Clone)]
 struct CEnv {
-    vtable: RLMeshEnvVtable,
+    vtable: RLMeshExtLegacyEnvVtable,
     user_data: UserData,
     observation_space: SpaceSpec,
     action_space: SpaceSpec,
@@ -281,7 +281,7 @@ struct CEnv {
 impl CEnv {
     /// Run one C call, with everything that reads the thread-local last error,
     /// on the callback thread (inline on the lane thread, or as a job on the
-    /// thread blocked in `rlmesh_env_serve` for a foreground env), through the
+    /// thread blocked in `rlmesh_ext_legacy_env_serve` for a foreground env), through the
     /// handle's gate.
     async fn dispatch<T: Send + 'static>(
         &self,
@@ -386,7 +386,7 @@ const UNKNOWN_ENV_ID: &str = "UnknownEnv-v1";
 
 /// Call `reset` and read its result back: one dispatchable unit.
 fn call_reset(
-    reset: RLMeshEnvResetFn,
+    reset: RLMeshExtLegacyEnvResetFn,
     user_data: UserData,
     req: ResetRequest,
     observation_space: &SpaceSpec,
@@ -403,7 +403,7 @@ fn call_reset(
         let map = MetaValue::Map(options.clone());
         crate::model::cstring(&meta_to_json(&map).to_string())
     });
-    let args = RLMeshResetArgs {
+    let args = RLMeshExtLegacyResetArgs {
         seeded: req.seed.is_some(),
         seed: req.seed.unwrap_or_default(),
         has_trial_index: trial_index.is_some(),
@@ -412,7 +412,7 @@ fn call_reset(
             .as_ref()
             .map_or(std::ptr::null(), |s| s.as_ptr()),
     };
-    let mut out = RLMeshResetResult {
+    let mut out = RLMeshExtLegacyResetResult {
         observation: std::ptr::null_mut(),
         info_json: std::ptr::null(),
     };
@@ -431,7 +431,7 @@ fn call_reset(
 
 /// Call `step` and read its result back: one dispatchable unit.
 fn call_step(
-    step: RLMeshEnvStepFn,
+    step: RLMeshExtLegacyEnvStepFn,
     user_data: UserData,
     req: StepRequest,
     observation_space: &SpaceSpec,
@@ -441,7 +441,7 @@ fn call_step(
         .action
         .map(|action| RLMeshValue::new(rlmesh::binding::value_from_space(action_space, action)));
     let action = action.as_ref().map_or(std::ptr::null(), std::ptr::from_ref);
-    let mut out = RLMeshStepResult {
+    let mut out = RLMeshExtLegacyStepResult {
         observation: std::ptr::null_mut(),
         reward: 0.0,
         terminated: false,
@@ -466,7 +466,7 @@ fn call_step(
 /// Call `render` and take its frame back (PNG encoding happens after, on the
 /// lane thread): one dispatchable unit.
 fn call_render(
-    render: RLMeshEnvRenderFn,
+    render: RLMeshExtLegacyEnvRenderFn,
     user_data: UserData,
 ) -> Result<Option<rlmesh::Value>, EnvRuntimeError> {
     let mut frame: *mut RLMeshValue = std::ptr::null_mut();
@@ -479,7 +479,7 @@ fn call_render(
     Ok(frame)
 }
 
-fn call_close(close: RLMeshEnvCloseFn, user_data: UserData) {
+fn call_close(close: RLMeshExtLegacyEnvCloseFn, user_data: UserData) {
     unsafe { close(user_data.0) };
 }
 
@@ -561,22 +561,22 @@ impl Env for CEnv {
 /// An owned environment handle: the C env lanes plus the runtime that serves
 /// them.
 ///
-/// Lifecycle: `rlmesh_env_new` -> `rlmesh_env_bind` (learn the address) ->
-/// `rlmesh_env_serve` (blocks) -> `rlmesh_env_free`. `rlmesh_env_cancel` is the
+/// Lifecycle: `rlmesh_ext_legacy_env_new` -> `rlmesh_ext_legacy_env_bind` (learn the address) ->
+/// `rlmesh_ext_legacy_env_serve` (blocks) -> `rlmesh_ext_legacy_env_free`. `rlmesh_ext_legacy_env_cancel` is the
 /// one call that may overlap a blocking serve, from any thread.
-pub struct RLMeshEnv {
+pub struct RLMeshExtLegacyEnv {
     runtime: tokio::runtime::Runtime,
     env: Mutex<Option<Vec<CEnv>>>,
     bound: Mutex<Option<BoundEnvServer>>,
     cancel: CancellationToken,
-    /// Set for a foreground env until `rlmesh_env_serve` drains it.
+    /// Set for a foreground env until `rlmesh_ext_legacy_env_serve` drains it.
     foreground: Mutex<Option<ForegroundQueue>>,
     /// Every callback of every lane runs through it.
     gate: Arc<CallbackGate>,
     describe: Describe,
 }
 
-impl RLMeshEnv {
+impl RLMeshExtLegacyEnv {
     pub(crate) fn describe(&self) -> &Describe {
         &self.describe
     }
@@ -586,7 +586,9 @@ impl RLMeshEnv {
 ///
 /// # Safety
 /// `ptr` is non-NULL and its first `struct_size` bytes are valid.
-unsafe fn read_vtable(ptr: *const RLMeshEnvVtable) -> Result<RLMeshEnvVtable, CapiError> {
+unsafe fn read_vtable(
+    ptr: *const RLMeshExtLegacyEnvVtable,
+) -> Result<RLMeshExtLegacyEnvVtable, CapiError> {
     let base = ptr.cast::<u8>();
     let struct_size = unsafe { (*ptr).struct_size };
     if struct_size == 0 {
@@ -598,18 +600,18 @@ unsafe fn read_vtable(ptr: *const RLMeshEnvVtable) -> Result<RLMeshEnvVtable, Ca
                 vtable_field::<Option<$ty>>(
                     base,
                     struct_size,
-                    std::mem::offset_of!(RLMeshEnvVtable, $name),
+                    std::mem::offset_of!(RLMeshExtLegacyEnvVtable, $name),
                 )
             }
             .flatten()
         };
     }
-    let vtable = RLMeshEnvVtable {
+    let vtable = RLMeshExtLegacyEnvVtable {
         struct_size,
-        reset: field!(reset, RLMeshEnvResetFn),
-        step: field!(step, RLMeshEnvStepFn),
-        render: field!(render, RLMeshEnvRenderFn),
-        close: field!(close, RLMeshEnvCloseFn),
+        reset: field!(reset, RLMeshExtLegacyEnvResetFn),
+        step: field!(step, RLMeshExtLegacyEnvStepFn),
+        render: field!(render, RLMeshExtLegacyEnvRenderFn),
+        close: field!(close, RLMeshExtLegacyEnvCloseFn),
     };
     if vtable.reset.is_none() {
         return Err(CapiError::invalid_arg("env vtable reset is null"));
@@ -637,7 +639,7 @@ struct EnvConfig {
 
 /// # Safety
 /// `ptr` is non-NULL and its first `struct_size` bytes are valid.
-unsafe fn read_config(ptr: *const RLMeshEnvConfig) -> Result<EnvConfig, CapiError> {
+unsafe fn read_config(ptr: *const RLMeshExtLegacyEnvConfig) -> Result<EnvConfig, CapiError> {
     let base = ptr.cast::<u8>();
     let struct_size = unsafe { (*ptr).struct_size };
     if struct_size == 0 {
@@ -649,7 +651,7 @@ unsafe fn read_config(ptr: *const RLMeshEnvConfig) -> Result<EnvConfig, CapiErro
                 vtable_field::<$ty>(
                     base,
                     struct_size,
-                    std::mem::offset_of!(RLMeshEnvConfig, $name),
+                    std::mem::offset_of!(RLMeshExtLegacyEnvConfig, $name),
                 )
             }
             .unwrap_or($default)
@@ -796,11 +798,11 @@ fn build_contract(config: &EnvConfig) -> Result<(SpaceSpec, SpaceSpec, EnvContra
 /// # Safety
 /// `vtable` and `config` must be valid for the call; `out` writable.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_env_new(
-    vtable: *const RLMeshEnvVtable,
-    config: *const RLMeshEnvConfig,
+pub unsafe extern "C" fn rlmesh_ext_legacy_env_new(
+    vtable: *const RLMeshExtLegacyEnvVtable,
+    config: *const RLMeshExtLegacyEnvConfig,
     user_data: *mut c_void,
-    out: *mut *mut RLMeshEnv,
+    out: *mut *mut RLMeshExtLegacyEnv,
 ) -> RLMeshStatus {
     guard(|| unsafe { new_env(vtable, config, &[user_data], out) })
 }
@@ -816,12 +818,12 @@ pub unsafe extern "C" fn rlmesh_env_new(
 /// `vtable` and `config` must be valid for the call; `user_data` must point at
 /// `num_lanes` pointers; `out` writable.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_env_new_lanes(
-    vtable: *const RLMeshEnvVtable,
-    config: *const RLMeshEnvConfig,
+pub unsafe extern "C" fn rlmesh_ext_legacy_env_new_lanes(
+    vtable: *const RLMeshExtLegacyEnvVtable,
+    config: *const RLMeshExtLegacyEnvConfig,
     user_data: *const *mut c_void,
     num_lanes: usize,
-    out: *mut *mut RLMeshEnv,
+    out: *mut *mut RLMeshExtLegacyEnv,
 ) -> RLMeshStatus {
     guard(|| {
         if num_lanes == 0 {
@@ -838,12 +840,12 @@ pub unsafe extern "C" fn rlmesh_env_new_lanes(
 }
 
 /// # Safety
-/// As `rlmesh_env_new_lanes`, with one lane per `user_data` entry.
+/// As `rlmesh_ext_legacy_env_new_lanes`, with one lane per `user_data` entry.
 unsafe fn new_env(
-    vtable: *const RLMeshEnvVtable,
-    config: *const RLMeshEnvConfig,
+    vtable: *const RLMeshExtLegacyEnvVtable,
+    config: *const RLMeshExtLegacyEnvConfig,
     user_data: &[*mut c_void],
-    out: *mut *mut RLMeshEnv,
+    out: *mut *mut RLMeshExtLegacyEnv,
 ) -> Result<(), CapiError> {
     if vtable.is_null() {
         return Err(CapiError::invalid_arg("null vtable"));
@@ -890,7 +892,7 @@ unsafe fn new_env(
             closed: false,
         })
         .collect();
-    *out = Box::into_raw(Box::new(RLMeshEnv {
+    *out = Box::into_raw(Box::new(RLMeshExtLegacyEnv {
         runtime,
         env: Mutex::new(Some(envs)),
         bound: Mutex::new(None),
@@ -914,10 +916,10 @@ unsafe fn new_env(
 /// `env` must be a live handle; `bind_address` a valid C string; `options` NULL
 /// or valid; `out_address` NULL or writable.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_env_bind(
-    env: *mut RLMeshEnv,
+pub unsafe extern "C" fn rlmesh_ext_legacy_env_bind(
+    env: *mut RLMeshExtLegacyEnv,
     bind_address: *const c_char,
-    options: *const RLMeshServeOptions,
+    options: *const RLMeshExtLegacyServeOptions,
     out_address: *mut RLMeshBytes,
 ) -> RLMeshStatus {
     guard(|| {
@@ -966,10 +968,10 @@ pub unsafe extern "C" fn rlmesh_env_bind(
 }
 
 /// Serve the bound env until it stops: a remote shutdown request, an idle
-/// timeout, or `rlmesh_env_cancel`. Blocking. Each lane's `close` callback runs
+/// timeout, or `rlmesh_ext_legacy_env_cancel`. Blocking. Each lane's `close` callback runs
 /// once, on its lane thread, before this returns. A foreground env runs the
 /// server on a helper thread and every callback (`close` included) on the
-/// calling thread. Requires `rlmesh_env_bind`.
+/// calling thread. Requires `rlmesh_ext_legacy_env_bind`.
 ///
 /// When this returns no callback is running and none will run again: it waits
 /// for a callback still in flight (one the drain timeout gave up on, a `close`
@@ -978,18 +980,18 @@ pub unsafe extern "C" fn rlmesh_env_bind(
 /// # Safety
 /// `env` must be a live handle.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_env_serve(env: *mut RLMeshEnv) -> RLMeshStatus {
+pub unsafe extern "C" fn rlmesh_ext_legacy_env_serve(env: *mut RLMeshExtLegacyEnv) -> RLMeshStatus {
     guard(|| {
         let handle = unsafe { env.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null env"))?;
         serve_handle(handle)
     })
 }
 
-/// Serve a bound handle until it stops; `rlmesh_env_serve`'s body.
-fn serve_handle(handle: &RLMeshEnv) -> Result<(), CapiError> {
-    let bound = lock(&handle.bound)
-        .take()
-        .ok_or_else(|| CapiError::invalid_arg("env is not bound (call rlmesh_env_bind)"))?;
+/// Serve a bound handle until it stops; `rlmesh_ext_legacy_env_serve`'s body.
+fn serve_handle(handle: &RLMeshExtLegacyEnv) -> Result<(), CapiError> {
+    let bound = lock(&handle.bound).take().ok_or_else(|| {
+        CapiError::invalid_arg("env is not bound (call rlmesh_ext_legacy_env_bind)")
+    })?;
     let _shut = ShutOnDrop(&handle.gate);
     let trigger = bound.shutdown_trigger();
     let cancel = handle.cancel.clone();
@@ -998,7 +1000,7 @@ fn serve_handle(handle: &RLMeshEnv) -> Result<(), CapiError> {
         // then the close hook) rather than dropping the serve future.
         let watcher = tokio::spawn(async move {
             cancel.cancelled().await;
-            trigger.trigger("cancelled by rlmesh_env_cancel");
+            trigger.trigger("cancelled by rlmesh_ext_legacy_env_cancel");
         });
         let result = bound.serve().await;
         watcher.abort();
@@ -1016,7 +1018,7 @@ fn serve_handle(handle: &RLMeshEnv) -> Result<(), CapiError> {
 /// they arrive, until the server has stopped (its close hook included). A job
 /// that panics cancels the server rather than wedging it.
 fn serve_foreground(
-    handle: &RLMeshEnv,
+    handle: &RLMeshExtLegacyEnv,
     serve: impl Future<Output = rlmesh::Result<()>> + Send,
     queue: ForegroundQueue,
 ) -> rlmesh::Result<()> {
@@ -1047,7 +1049,7 @@ fn serve_foreground(
     })
 }
 
-/// Stop a blocking `rlmesh_env_serve` from another thread (a signal-handling
+/// Stop a blocking `rlmesh_ext_legacy_env_serve` from another thread (a signal-handling
 /// thread, a UI thread). Returns at once; the serve drains, closes the env and
 /// returns `RLMESH_OK`. Terminal: a cancelled handle's later serve stops at
 /// once. NULL is a no-op.
@@ -1055,7 +1057,7 @@ fn serve_foreground(
 /// # Safety
 /// `env` must be NULL or a live handle not being freed concurrently.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_env_cancel(env: *mut RLMeshEnv) {
+pub unsafe extern "C" fn rlmesh_ext_legacy_env_cancel(env: *mut RLMeshExtLegacyEnv) {
     guard_value((), || {
         if let Some(handle) = unsafe { env.as_ref() } {
             handle.cancel.cancel();
@@ -1073,7 +1075,7 @@ pub unsafe extern "C" fn rlmesh_env_cancel(env: *mut RLMeshEnv) {
 /// # Safety
 /// `env` must be NULL or a handle this thread owns and has not freed.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_env_free(env: *mut RLMeshEnv) {
+pub unsafe extern "C" fn rlmesh_ext_legacy_env_free(env: *mut RLMeshExtLegacyEnv) {
     guard_value((), || {
         if !env.is_null() {
             let handle = unsafe { Box::from_raw(env) };
@@ -1229,8 +1231,8 @@ mod tests {
 
     unsafe extern "C" fn reset(
         user_data: *mut c_void,
-        args: *const RLMeshResetArgs,
-        out: *mut RLMeshResetResult,
+        args: *const RLMeshExtLegacyResetArgs,
+        out: *mut RLMeshExtLegacyResetResult,
     ) -> c_int {
         let probe = unsafe { &*user_data.cast::<Probe>() };
         let args = unsafe { &*args };
@@ -1246,7 +1248,7 @@ mod tests {
     unsafe extern "C" fn step(
         user_data: *mut c_void,
         action: *const RLMeshValue,
-        out: *mut RLMeshStepResult,
+        out: *mut RLMeshExtLegacyStepResult,
     ) -> c_int {
         let probe = unsafe { &*user_data.cast::<Probe>() };
         probe.record_thread();
@@ -1294,9 +1296,9 @@ mod tests {
         probe.closes.fetch_add(1, Ordering::SeqCst);
     }
 
-    fn vtable() -> RLMeshEnvVtable {
-        RLMeshEnvVtable {
-            struct_size: std::mem::size_of::<RLMeshEnvVtable>(),
+    fn vtable() -> RLMeshExtLegacyEnvVtable {
+        RLMeshExtLegacyEnvVtable {
+            struct_size: std::mem::size_of::<RLMeshExtLegacyEnvVtable>(),
             reset: Some(reset),
             step: Some(step),
             render: Some(render),
@@ -1320,17 +1322,17 @@ mod tests {
         })
     }
 
-    fn new_env(tags: Option<&str>, probe: &Probe) -> Result<*mut RLMeshEnv, String> {
+    fn new_env(tags: Option<&str>, probe: &Probe) -> Result<*mut RLMeshExtLegacyEnv, String> {
         create_env(tags, &[probe], false)
     }
 
-    /// One lane per probe (`rlmesh_env_new` for one, `rlmesh_env_new_lanes`
+    /// One lane per probe (`rlmesh_ext_legacy_env_new` for one, `rlmesh_ext_legacy_env_new_lanes`
     /// otherwise).
     fn create_env(
         tags: Option<&str>,
         probes: &[&Probe],
         foreground: bool,
-    ) -> Result<*mut RLMeshEnv, String> {
+    ) -> Result<*mut RLMeshExtLegacyEnv, String> {
         let user_data: Vec<*mut c_void> = probes
             .iter()
             .map(|&probe| std::ptr::from_ref(probe).cast_mut().cast())
@@ -1340,19 +1342,19 @@ mod tests {
 
     /// One lane per `user_data` entry, served by `table`.
     fn create_env_from(
-        table: &RLMeshEnvVtable,
+        table: &RLMeshExtLegacyEnvVtable,
         tags: Option<&str>,
         user_data: &[*mut c_void],
         foreground: bool,
-    ) -> Result<*mut RLMeshEnv, String> {
+    ) -> Result<*mut RLMeshExtLegacyEnv, String> {
         let (obs, act) = spaces();
         let id = CString::new("CapiEnv-test").unwrap();
         let tags = tags.map(|tags| CString::new(tags).unwrap());
         let trial = CString::new("trial_index").unwrap();
         let options = [trial.as_ptr()];
         let mode = CString::new("rgb_array").unwrap();
-        let config = RLMeshEnvConfig {
-            struct_size: std::mem::size_of::<RLMeshEnvConfig>(),
+        let config = RLMeshExtLegacyEnvConfig {
+            struct_size: std::mem::size_of::<RLMeshExtLegacyEnvConfig>(),
             id: id.as_ptr(),
             observation_space: obs,
             action_space: act,
@@ -1368,9 +1370,9 @@ mod tests {
         let mut env = std::ptr::null_mut();
         let status = unsafe {
             if let [one] = user_data[..] {
-                rlmesh_env_new(table, &config, one, &mut env)
+                rlmesh_ext_legacy_env_new(table, &config, one, &mut env)
             } else {
-                rlmesh_env_new_lanes(
+                rlmesh_ext_legacy_env_new_lanes(
                     table,
                     &config,
                     user_data.as_ptr(),
@@ -1390,21 +1392,25 @@ mod tests {
         }
     }
 
-    fn bind(env: *mut RLMeshEnv) -> String {
+    fn bind(env: *mut RLMeshExtLegacyEnv) -> String {
         bind_with(env, std::ptr::null())
     }
 
-    fn bind_with(env: *mut RLMeshEnv, options: *const RLMeshServeOptions) -> String {
+    fn bind_with(
+        env: *mut RLMeshExtLegacyEnv,
+        options: *const RLMeshExtLegacyServeOptions,
+    ) -> String {
         let address = CString::new("127.0.0.1:0").unwrap();
         let mut out = RLMeshBytes::from_vec(Vec::new());
-        let status = unsafe { rlmesh_env_bind(env, address.as_ptr(), options, &mut out) };
+        let status =
+            unsafe { rlmesh_ext_legacy_env_bind(env, address.as_ptr(), options, &mut out) };
         assert_eq!(status, RLMeshStatus::Ok, "{}", last_error_message());
         String::from_utf8(unsafe { out.into_vec() }).expect("utf-8 address")
     }
 
     /// The env pointer, movable to the serve thread (the handle is Sync by contract:
     /// serve and cancel may overlap).
-    struct SendEnv(*mut RLMeshEnv);
+    struct SendEnv(*mut RLMeshExtLegacyEnv);
     unsafe impl Send for SendEnv {}
 
     #[test]
@@ -1415,7 +1421,7 @@ mod tests {
         let served = SendEnv(env);
         let server = std::thread::spawn(move || {
             let served = served;
-            unsafe { rlmesh_env_serve(served.0) }
+            unsafe { rlmesh_ext_legacy_env_serve(served.0) }
         });
 
         let runtime = tokio::runtime::Runtime::new().unwrap();
@@ -1470,13 +1476,13 @@ mod tests {
             assert_eq!(&frame.frame[..8], b"\x89PNG\r\n\x1a\n");
         });
 
-        unsafe { rlmesh_env_cancel(env) };
+        unsafe { rlmesh_ext_legacy_env_cancel(env) };
         let status = server.join().expect("serve thread");
         assert_eq!(status, RLMeshStatus::Ok, "{}", last_error_message());
         assert_eq!(probe.closes.load(Ordering::SeqCst), 1, "close runs once");
         assert_eq!(*probe.resets.lock().unwrap(), vec![(Some(11), Some(4))]);
         assert_eq!(*probe.actions.lock().unwrap(), vec![0.25]);
-        unsafe { rlmesh_env_free(env) };
+        unsafe { rlmesh_ext_legacy_env_free(env) };
     }
 
     #[test]
@@ -1487,7 +1493,7 @@ mod tests {
         let served = SendEnv(env);
         let server = std::thread::spawn(move || {
             let served = served;
-            unsafe { rlmesh_env_serve(served.0) }
+            unsafe { rlmesh_ext_legacy_env_serve(served.0) }
         });
         let runtime = tokio::runtime::Runtime::new().unwrap();
         runtime.block_on(async {
@@ -1557,9 +1563,9 @@ mod tests {
                 .await
                 .expect("step on a new session");
         });
-        unsafe { rlmesh_env_cancel(env) };
+        unsafe { rlmesh_ext_legacy_env_cancel(env) };
         assert_eq!(server.join().unwrap(), RLMeshStatus::Ok);
-        unsafe { rlmesh_env_free(env) };
+        unsafe { rlmesh_ext_legacy_env_free(env) };
     }
 
     #[test]
@@ -1570,7 +1576,7 @@ mod tests {
         let served = SendEnv(env);
         let server = std::thread::spawn(move || {
             let served = served;
-            let status = unsafe { rlmesh_env_serve(served.0) };
+            let status = unsafe { rlmesh_ext_legacy_env_serve(served.0) };
             (std::thread::current().id(), status)
         });
         let runtime = tokio::runtime::Runtime::new().unwrap();
@@ -1592,14 +1598,14 @@ mod tests {
                 .expect("a frame");
             assert_eq!(&frame.frame[..8], b"\x89PNG\r\n\x1a\n");
         });
-        unsafe { rlmesh_env_cancel(env) };
+        unsafe { rlmesh_ext_legacy_env_cancel(env) };
         let (serve_thread, status) = server.join().expect("serve thread");
         assert_eq!(status, RLMeshStatus::Ok, "{}", last_error_message());
         assert_eq!(probe.closes.load(Ordering::SeqCst), 1, "close runs once");
         let threads = probe.threads.lock().unwrap().clone();
         // reset, step, render, close: all on the thread that called serve.
         assert_eq!(threads, vec![serve_thread; 4]);
-        unsafe { rlmesh_env_free(env) };
+        unsafe { rlmesh_ext_legacy_env_free(env) };
     }
 
     #[test]
@@ -1610,7 +1616,7 @@ mod tests {
         let served = SendEnv(env);
         let server = std::thread::spawn(move || {
             let served = served;
-            unsafe { rlmesh_env_serve(served.0) }
+            unsafe { rlmesh_ext_legacy_env_serve(served.0) }
         });
         let runtime = tokio::runtime::Runtime::new().unwrap();
         runtime.block_on(async {
@@ -1635,7 +1641,7 @@ mod tests {
                 .expect("step");
             assert_eq!(step.rewards, vec![0.5, 0.5]);
         });
-        unsafe { rlmesh_env_cancel(env) };
+        unsafe { rlmesh_ext_legacy_env_cancel(env) };
         assert_eq!(server.join().unwrap(), RLMeshStatus::Ok);
         // Each lane saw its own seed and action through its own user_data.
         assert_eq!(*first.resets.lock().unwrap(), vec![(Some(1), None)]);
@@ -1651,7 +1657,7 @@ mod tests {
             threads[0]
         };
         assert_ne!(lane_thread(&first), lane_thread(&second));
-        unsafe { rlmesh_env_free(env) };
+        unsafe { rlmesh_ext_legacy_env_free(env) };
     }
 
     #[test]
@@ -1662,7 +1668,7 @@ mod tests {
         let served = SendEnv(env);
         let server = std::thread::spawn(move || {
             let served = served;
-            unsafe { rlmesh_env_serve(served.0) }
+            unsafe { rlmesh_ext_legacy_env_serve(served.0) }
         });
         let runtime = tokio::runtime::Runtime::new().unwrap();
         runtime.block_on(async {
@@ -1689,9 +1695,9 @@ mod tests {
         });
         assert_eq!(*probe.actions.lock().unwrap(), vec![0.5]);
         assert_eq!(probe.resets.lock().unwrap().len(), 1, "no second reset");
-        unsafe { rlmesh_env_cancel(env) };
+        unsafe { rlmesh_ext_legacy_env_cancel(env) };
         assert_eq!(server.join().unwrap(), RLMeshStatus::Ok);
-        unsafe { rlmesh_env_free(env) };
+        unsafe { rlmesh_ext_legacy_env_free(env) };
     }
 
     #[test]
@@ -1722,8 +1728,8 @@ mod tests {
         let mut table = vtable();
         table.step = None;
         let (obs, act) = spaces();
-        let config = RLMeshEnvConfig {
-            struct_size: std::mem::size_of::<RLMeshEnvConfig>(),
+        let config = RLMeshExtLegacyEnvConfig {
+            struct_size: std::mem::size_of::<RLMeshExtLegacyEnvConfig>(),
             id: std::ptr::null(),
             observation_space: obs,
             action_space: act,
@@ -1737,7 +1743,8 @@ mod tests {
             host_runtime_json: std::ptr::null(),
         };
         let mut env = std::ptr::null_mut();
-        let status = unsafe { rlmesh_env_new(&table, &config, std::ptr::null_mut(), &mut env) };
+        let status =
+            unsafe { rlmesh_ext_legacy_env_new(&table, &config, std::ptr::null_mut(), &mut env) };
         assert_eq!(status, RLMeshStatus::InvalidArgument);
         assert!(env.is_null());
         unsafe {
@@ -1836,8 +1843,8 @@ mod tests {
 
     unsafe extern "C" fn slow_reset(
         user_data: *mut c_void,
-        _args: *const RLMeshResetArgs,
-        out: *mut RLMeshResetResult,
+        _args: *const RLMeshExtLegacyResetArgs,
+        out: *mut RLMeshExtLegacyResetResult,
     ) -> c_int {
         let slow = unsafe { &*user_data.cast::<Slow>() };
         slow.enter("reset:start");
@@ -1849,7 +1856,7 @@ mod tests {
     unsafe extern "C" fn slow_step(
         user_data: *mut c_void,
         _action: *const RLMeshValue,
-        out: *mut RLMeshStepResult,
+        out: *mut RLMeshExtLegacyStepResult,
     ) -> c_int {
         let slow = unsafe { &*user_data.cast::<Slow>() };
         slow.enter("step:start");
@@ -1866,9 +1873,12 @@ mod tests {
         slow.leave("close:end");
     }
 
-    fn slow_env(lanes: &[&Slow], options: &RLMeshServeOptions) -> (*mut RLMeshEnv, String) {
-        let table = RLMeshEnvVtable {
-            struct_size: std::mem::size_of::<RLMeshEnvVtable>(),
+    fn slow_env(
+        lanes: &[&Slow],
+        options: &RLMeshExtLegacyServeOptions,
+    ) -> (*mut RLMeshExtLegacyEnv, String) {
+        let table = RLMeshExtLegacyEnvVtable {
+            struct_size: std::mem::size_of::<RLMeshExtLegacyEnvVtable>(),
             reset: Some(slow_reset),
             step: Some(slow_step),
             render: None,
@@ -1885,8 +1895,8 @@ mod tests {
 
     /// Short drain and close deadlines: the core gives up on both well before
     /// the slow callbacks return.
-    fn impatient() -> RLMeshServeOptions {
-        RLMeshServeOptions {
+    fn impatient() -> RLMeshExtLegacyServeOptions {
+        RLMeshExtLegacyServeOptions {
             token: std::ptr::null(),
             allow_remote_shutdown: false,
             idle_timeout_ms: 0,
@@ -1897,11 +1907,11 @@ mod tests {
         }
     }
 
-    fn spawn_serve(env: *mut RLMeshEnv) -> std::thread::JoinHandle<RLMeshStatus> {
+    fn spawn_serve(env: *mut RLMeshExtLegacyEnv) -> std::thread::JoinHandle<RLMeshStatus> {
         let served = SendEnv(env);
         std::thread::spawn(move || {
             let served = served;
-            unsafe { rlmesh_env_serve(served.0) }
+            unsafe { rlmesh_ext_legacy_env_serve(served.0) }
         })
     }
 
@@ -1910,13 +1920,13 @@ mod tests {
         let slow = Slow::with(0, 300);
         let (env, _address) = slow_env(&[&slow], &impatient());
         let server = spawn_serve(env);
-        unsafe { rlmesh_env_cancel(env) };
+        unsafe { rlmesh_ext_legacy_env_cancel(env) };
         let status = server.join().unwrap();
         // The close timeout does not apply to a C env: no error, and the close
         // callback finished before serve returned.
         assert_eq!(status, RLMeshStatus::Ok, "{}", last_error_message());
         slow.assert_finished();
-        unsafe { rlmesh_env_free(env) };
+        unsafe { rlmesh_ext_legacy_env_free(env) };
     }
 
     #[test]
@@ -1937,7 +1947,7 @@ mod tests {
                 .await;
         });
         slow.wait_for("step:start");
-        unsafe { rlmesh_env_cancel(env) };
+        unsafe { rlmesh_ext_legacy_env_cancel(env) };
         assert_eq!(
             server.join().unwrap(),
             RLMeshStatus::Ok,
@@ -1957,7 +1967,7 @@ mod tests {
             ]
         );
         let _ = runtime.block_on(client);
-        unsafe { rlmesh_env_free(env) };
+        unsafe { rlmesh_ext_legacy_env_free(env) };
     }
 
     #[test]
@@ -1982,7 +1992,7 @@ mod tests {
                 .await;
         });
         blocked.wait_for("step:start");
-        unsafe { rlmesh_env_cancel(env) };
+        unsafe { rlmesh_ext_legacy_env_cancel(env) };
         assert_eq!(
             server.join().unwrap(),
             RLMeshStatus::Ok,
@@ -1996,7 +2006,7 @@ mod tests {
         let at = |entry| log.iter().position(|e| *e == entry).unwrap();
         assert!(at("step:end") < at("close:start"), "{log:?}");
         let _ = runtime.block_on(client);
-        unsafe { rlmesh_env_free(env) };
+        unsafe { rlmesh_ext_legacy_env_free(env) };
     }
 
     #[test]
@@ -2016,10 +2026,12 @@ mod tests {
     }
 
     /// Bind `env` to `address`; the error message on failure.
-    fn try_bind(env: *mut RLMeshEnv, address: &str) -> Result<String, String> {
+    fn try_bind(env: *mut RLMeshExtLegacyEnv, address: &str) -> Result<String, String> {
         let address = CString::new(address).unwrap();
         let mut out = RLMeshBytes::from_vec(Vec::new());
-        let status = unsafe { rlmesh_env_bind(env, address.as_ptr(), std::ptr::null(), &mut out) };
+        let status = unsafe {
+            rlmesh_ext_legacy_env_bind(env, address.as_ptr(), std::ptr::null(), &mut out)
+        };
         if status != RLMeshStatus::Ok {
             return Err(last_error_message());
         }
@@ -2048,10 +2060,10 @@ mod tests {
                 .await
                 .expect("reset after the retried bind");
         });
-        unsafe { rlmesh_env_cancel(env) };
+        unsafe { rlmesh_ext_legacy_env_cancel(env) };
         assert_eq!(server.join().unwrap(), RLMeshStatus::Ok);
         assert_eq!(probe.closes.load(Ordering::SeqCst), 1, "serve closed it");
-        unsafe { rlmesh_env_free(env) };
+        unsafe { rlmesh_ext_legacy_env_free(env) };
         assert_eq!(probe.closes.load(Ordering::SeqCst), 1, "close runs once");
         drop(taken);
     }
@@ -2065,7 +2077,7 @@ mod tests {
         let (first, second) = (Probe::default(), Probe::default());
         let env = create_env(None, &[&first, &second], false).expect("env");
         try_bind(env, &occupied).expect_err("the port is taken");
-        unsafe { rlmesh_env_free(env) };
+        unsafe { rlmesh_ext_legacy_env_free(env) };
         for probe in [&first, &second] {
             assert_eq!(probe.closes.load(Ordering::SeqCst), 1, "close runs once");
             assert_eq!(
@@ -2078,7 +2090,7 @@ mod tests {
         for foreground in [false, true] {
             let probe = Probe::default();
             let env = create_env(None, &[&probe], foreground).expect("env");
-            unsafe { rlmesh_env_free(env) };
+            unsafe { rlmesh_ext_legacy_env_free(env) };
             assert_eq!(probe.closes.load(Ordering::SeqCst), 1, "close runs once");
         }
 
@@ -2087,7 +2099,7 @@ mod tests {
             let probe = Probe::default();
             let env = create_env(None, &[&probe], foreground).expect("env");
             bind(env);
-            unsafe { rlmesh_env_free(env) };
+            unsafe { rlmesh_ext_legacy_env_free(env) };
             assert_eq!(probe.closes.load(Ordering::SeqCst), 1, "close runs once");
         }
         drop(taken);
