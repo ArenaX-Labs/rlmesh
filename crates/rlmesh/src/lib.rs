@@ -131,6 +131,7 @@ mod error;
 pub mod ext;
 mod model;
 pub mod prelude;
+pub mod recorder;
 mod run;
 pub mod serve_options;
 pub mod spaces;
@@ -138,6 +139,7 @@ pub mod specs;
 mod tensor;
 pub mod types;
 mod value;
+mod view;
 mod warnings;
 
 pub(crate) use address::{BindAddress, ConnectAddress};
@@ -168,6 +170,10 @@ pub use model::{
     Corners, Model, ModelOptions, ModelServeOptions, NO_ADAPTER, Policy, RemoteModel,
     RemoteModelOptions, WithContext, predict_seed, with_context,
 };
+pub use recorder::{
+    EpisodeRecord, MediaRef, Recorder, RecorderAddOptions, RecorderCaptureOptions,
+    RecorderExportOptions, RecorderOptions, RecorderToDictOptions, WorkloadRecord,
+};
 #[doc(no_inline)]
 pub use rlmesh_runtime::ENV_RESET_OPTIONS_KEY;
 pub use run::{
@@ -180,6 +186,7 @@ pub use serve_options::ServeOptions;
 pub use specs::EnvContract;
 pub use tensor::{Tensor, ToDlpackOptions};
 pub use value::{InfoDict, Kwargs, Metadata, MetadataIter, Value, ValueKind};
+pub use view::{View, ViewBackend, ViewFormat, ViewHold};
 pub use warnings::{Warning, WarningCategory, WarningHandler, set_warning_handler};
 
 /// Mint one fresh routing/episode id (UUIDv7 — time-ordered, sortable by creation,

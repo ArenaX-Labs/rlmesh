@@ -21,13 +21,14 @@ from ._eval import (
     TelemetryRow,
 )
 from ._read import Reader
-from ._view import View
+from ._view import FrameSources, View
 from .base import run, session
 
 __all__ = [
     "NO_ADAPTER",
     "RANDOM_SAMPLE",
     "EpisodeResult",
+    "FrameSources",
     "Reader",
     "RunContext",
     "RunHooks",
