@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ## [Unreleased]
 
-This release brings the Rust facade crate (`rlmesh`), the C API (`rlmesh.h`, now C ABI 5) and the C++ wrapper (`rlmesh.hpp`, now C++20) to parity with the Python package: the same nouns, options, defaults, exception classes and error texts in every language. Where Python's behaviour was accidental or inconsistent, Python changes to match. Breaking changes are listed first, by language, each with what to do instead.
+This release gives the Rust facade crate (`rlmesh`), the C API (`rlmesh.h`, now C ABI 5) and the C++ wrapper (`rlmesh.hpp`, now C++20) the same nouns, options, defaults and error classes as the Python package, each in its own language's conventions. Python also fixes several inconsistent behaviours along the way. Breaking changes are listed first, by language, each with what to do instead.
 
 ### Breaking
 
@@ -142,6 +142,7 @@ The C API (`rlmesh.h`, ABI 5) projects the Rust facade, so every C call has the 
 - Authoring: `Env` and `VectorEnv` adapt any class with Gymnasium-shaped methods and space getters (a vector callback must keep its declared lane count), `EnvServer` owns the envs passed to it (a `std::shared_ptr<E>` when the host keeps the simulation, and `ServedEnv` refuses temporaries), and `EnvFactory<F>` uses CRTP to capture static declarations. `Model` detects any of the four Policy corners, each with optional context and execution-horizon parameters, and callables work directly; `Model::from_config<Policy>(kwargs)` applies load declarations.
 - Running: `Model::run`, `Session` (which keeps its model and server owners alive), `RunHooks`, `RunResult`, `EpisodeResult`, `RemoteEnv`, `RemoteVectorEnv`, `RemoteModel`, `describe`, `View` and `Recorder`, with options as aggregates supporting designated initializers, `std::optional` scalars, `OptionalList<T>` for None versus an empty list, `std::chrono::duration<double>` durations, and reset and step returning tuples for structured bindings. `ext::CancelToken` copies share one reusable cancellation source.
 - `rlmesh::build_info()`, `BuildInfo` (printable with `<<` and `to_string`), `BuildSource`, `VERSION`, `current_workflow_edition()`, `DESCRIBE_METADATA_KEY`, `DESCRIBE_SCHEMA_VERSION`, `ENV_RESET_OPTIONS_KEY`, and `Warning`, `WarningCategory` and `set_warning_handler(std::function)`.
+- `spaces::Dict::spaces()` returns the child spaces in order, sharing their sampler handles.
 
 #### Packaging and examples
 
@@ -172,6 +173,7 @@ The C API (`rlmesh.h`, ABI 5) projects the Rust facade, so every C call has the 
 - `RemoteEnv` and `RemoteVectorEnv` log a warning, once per client, when an env's own `info` key shadows a runtime-reserved one (`episode_ids`, `completed_episodes`). The env's value is still kept.
 - The live viewer shows the env's first declared image role by default instead of its `render()` frame. The role rides the step response, while `render()` costs one more env round trip per drawn frame; `render` stays selectable, and `View(source="render")` asks for it.
 - Adapter resolution errors for a missing role now suggest near matches among the roles the other side offers (`did you mean "x/goal_body"?`), and, when an `x/` role is involved, say that `x/` roles bind only to the identical string. The suggestion is only a hint: binding still matches roles exactly, and one registered role is never suggested for another. The zero-fill caution for an optional state input names the absent role and part (`zero-filled because the env offers no match for "proprio/eef_pos" (part "right_arm")`) instead of only counting components.
+- `sanitize_metadata` is labelled Bridge (Python-only), and the `params` module with `Model.params` / `EnvFactory.params` is labelled Experimental.
 
 #### All languages
 

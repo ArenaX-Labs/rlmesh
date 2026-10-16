@@ -94,7 +94,8 @@ pub trait EnvFactory: Sized {
     /// The tags of one discriminant binding: Python's `tags_for(**params)`
     /// (default [`tags`](Self::tags)). Override it only alongside
     /// [`tag_params`](Self::tag_params).
-    fn tags_for(_params: &Kwargs) -> Result<Option<EnvTags>> {
+    fn tags_for(params: &Kwargs) -> Result<Option<EnvTags>> {
+        let _ = params;
         Ok(Self::tags())
     }
 

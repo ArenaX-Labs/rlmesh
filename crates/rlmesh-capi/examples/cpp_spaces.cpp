@@ -31,6 +31,12 @@ int main() {
   CHECK(obs.contains(x));
   CHECK(obs.keys() == (std::vector<std::string>{"id", "pos"}));
   CHECK(obs.size() == 2);
+  const auto children = obs.spaces();
+  CHECK(children.size() == obs.size());
+  for (size_t i = 0; i < children.size(); ++i) {
+    CHECK(children[i].first == obs.keys()[i]);
+    CHECK(children[i].second == obs[children[i].first]);
+  }
   CHECK(obs.contains_key("id") && !obs.contains_key("nope"));
   CHECK(!obs.get("nope").has_value());
 

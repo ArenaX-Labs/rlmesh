@@ -58,6 +58,7 @@ def _parse(path: Path, config: HeaderSurfaceConfig) -> ci.TranslationUnit:
         config.language,
         f"-std={config.standard}",
         f"-I{path.parent}",
+        *_library_defines(config.language),
         *[
             arg
             for directory in _system_includes(config.language)
@@ -98,6 +99,29 @@ def _system_includes(language: str) -> list[str]:
         line.strip().split(" (")[0]
         for line in match.group(1).splitlines()
         if line.strip()
+    ]
+
+
+def _library_defines(language: str) -> list[str]:
+    """Preserve driver-provided libc++ configuration (not compiler builtins).
+
+    Zig configures libc++ on the command line instead of in __config_site.
+    Feeding only its include paths to libclang loses that configuration.
+    """
+    compiler = shlex.split(
+        os.environ.get("CXX" if language == "c++" else "CC")
+        or ("c++" if language == "c++" else "cc")
+    )
+    output = subprocess.run(
+        [*compiler, "-dM", "-E", "-x", language, "/dev/null"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    return [
+        "-D" + match[1] + "=" + match[2]
+        for line in output.splitlines()
+        if (match := re.match(r"#define (_LIBCPP_\w+)\s+(.*)", line))
     ]
 
 

@@ -954,12 +954,12 @@ pub(crate) fn construct(
 }
 
 impl Model {
-    /// Build a model from `policy`, loading it now with an empty config, as
+    /// Build a model from `source`, loading it now with an empty config, as
     /// Python's `MyModel()` does. A closure is a policy too
     /// (`Model::new(|obs| Ok(..), ModelOptions::default())`).
-    pub fn new<P: Policy>(policy: P, options: ModelOptions) -> Result<Model> {
+    pub fn new<P: Policy>(source: P, options: ModelOptions) -> Result<Model> {
         construct(
-            Box::new(Erased(policy)),
+            Box::new(Erased(source)),
             PolicyDecl::of::<P>(),
             options,
             None,

@@ -163,11 +163,11 @@ pub trait Policy: Send + 'static {
 
     /// Load weights from `config`, once, in the constructor. The default
     /// accepts only an empty config.
-    fn load(&mut self, config: &Kwargs) -> Result<()> {
-        if config.is_empty() {
+    fn load(&mut self, kwargs: &Kwargs) -> Result<()> {
+        if kwargs.is_empty() {
             return Ok(());
         }
-        let mut keys: Vec<&str> = config.keys().collect();
+        let mut keys: Vec<&str> = kwargs.keys().collect();
         keys.sort_unstable();
         Err(Error::Type(format!(
             "model received construction params ({}) but does not override load(...) to apply \

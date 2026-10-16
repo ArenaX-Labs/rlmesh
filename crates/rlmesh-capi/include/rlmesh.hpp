@@ -1368,6 +1368,8 @@ class Dict : public Space {
     }
     return out;
   }
+  /// The children in declaration order, sharing the Dict's child samplers.
+  std::vector<std::pair<std::string, Space>> spaces() const { return items(); }
   std::optional<Space> get(std::string_view key) const {
     const RLMeshSpace* child = nullptr;
     rlmesh::detail::check(rlmesh_dict_get(ptr_, detail::str(key), &child));
@@ -2983,8 +2985,8 @@ class ModelSpec {
     detail::check(rlmesh_model_spec_to_dict(raw(), &p));
     return Value::adopt(p).as_dict();
   }
-  static ModelSpec from_dict(const Metadata& v) {
-    Value value(v);
+  static ModelSpec from_dict(const Metadata& data) {
+    Value value(data);
     RLMeshModelSpec* p = nullptr;
     detail::check(rlmesh_model_spec_from_dict(value.raw(), &p));
     return ModelSpec(p);
@@ -2994,17 +2996,17 @@ class ModelSpec {
     detail::check(rlmesh_model_spec_to_metadata(raw(), &p));
     return Value::adopt(p).as_dict();
   }
-  static std::optional<ModelSpec> from_metadata(const Metadata& v) {
-    Value value(v);
+  static std::optional<ModelSpec> from_metadata(const Metadata& metadata) {
+    Value value(metadata);
     RLMeshModelSpec* p = nullptr;
     detail::check(rlmesh_model_spec_from_metadata(value.raw(), &p));
     if (!p) return {};
     return ModelSpec(p);
   }
   std::string to_json() const { return detail::text(rlmesh_model_spec_to_json, raw()); }
-  static ModelSpec from_json(std::string_view v) {
+  static ModelSpec from_json(std::string_view payload) {
     RLMeshModelSpec* p = nullptr;
-    detail::check(rlmesh_model_spec_from_json(std::string(v).c_str(), &p));
+    detail::check(rlmesh_model_spec_from_json(std::string(payload).c_str(), &p));
     return ModelSpec(p);
   }
   bool operator==(const ModelSpec& v) const { return rlmesh_model_spec_equals(raw(), v.raw()); }
@@ -3039,8 +3041,8 @@ class EnvTags {
     detail::check(rlmesh_env_tags_to_dict(raw(), &p));
     return Value::adopt(p).as_dict();
   }
-  static EnvTags from_dict(const Metadata& v) {
-    Value value(v);
+  static EnvTags from_dict(const Metadata& data) {
+    Value value(data);
     RLMeshEnvTags* p = nullptr;
     detail::check(rlmesh_env_tags_from_dict(value.raw(), &p));
     return EnvTags(p);
@@ -3050,17 +3052,17 @@ class EnvTags {
     detail::check(rlmesh_env_tags_to_metadata(raw(), &p));
     return Value::adopt(p).as_dict();
   }
-  static std::optional<EnvTags> from_metadata(const Metadata& v) {
-    Value value(v);
+  static std::optional<EnvTags> from_metadata(const Metadata& metadata) {
+    Value value(metadata);
     RLMeshEnvTags* p = nullptr;
     detail::check(rlmesh_env_tags_from_metadata(value.raw(), &p));
     if (!p) return {};
     return EnvTags(p);
   }
   std::string to_json() const { return detail::text(rlmesh_env_tags_to_json, raw()); }
-  static EnvTags from_json(std::string_view v) {
+  static EnvTags from_json(std::string_view payload) {
     RLMeshEnvTags* p = nullptr;
-    detail::check(rlmesh_env_tags_from_json(std::string(v).c_str(), &p));
+    detail::check(rlmesh_env_tags_from_json(std::string(payload).c_str(), &p));
     return EnvTags(p);
   }
   bool operator==(const EnvTags& v) const { return rlmesh_env_tags_equals(raw(), v.raw()); }
@@ -3128,21 +3130,22 @@ inline const std::vector<std::pair<RotationEncoding, uint32_t>>& ROTATION_DIMS()
 class AdapterBase : public std::enable_shared_from_this<AdapterBase> {
  public:
   virtual ~AdapterBase() = default;
-  virtual Value transform_obs(const Value&) = 0;
-  virtual Value transform_action(const Value&) = 0;
+  virtual Value transform_obs([[maybe_unused]] const Value& raw_obs) = 0;
+  virtual Value transform_action([[maybe_unused]] const Value& raw_action) = 0;
   virtual void reset() {}
-  virtual void observe(const Value&) {}
+  virtual void observe([[maybe_unused]] const Value& raw_obs) {}
   virtual std::string explain() const { return "AdapterBase (custom adapter)"; }
-  virtual std::function<Value(const Value&)> wrap_predict(std::function<Value(const Value&)> f) {
+  virtual std::function<Value(const Value&)> wrap_predict(
+      std::function<Value(const Value&)> predict_fn) {
     std::shared_ptr<AdapterBase> self;
     try {
       self = shared_from_this();
     } catch (const std::bad_weak_ptr&) {
       throw RuntimeError("wrap_predict requires shared ownership");
     }
-    return [self = std::move(self), f = std::move(f)](const Value& v) {
+    return [self = std::move(self), predict_fn = std::move(predict_fn)](const Value& v) {
       self->observe(v);
-      return self->transform_action(f(self->transform_obs(v)));
+      return self->transform_action(predict_fn(self->transform_obs(v)));
     };
   }
 };
@@ -3190,17 +3193,19 @@ class Adapter : public AdapterBase {
     handle_ = {h, rlmesh_adapter_free};
   }
   RLMeshAdapter* raw() const { return handle_.get(); }
-  Value transform_obs(const Value& v) override {
+  Value transform_obs(const Value& raw_obs) override {
     RLMeshValue* p = nullptr;
-    detail::check(rlmesh_adapter_transform_obs(raw(), v.raw(), &p));
+    detail::check(rlmesh_adapter_transform_obs(raw(), raw_obs.raw(), &p));
     return Value::adopt(p);
   }
-  Value transform_action(const Value& v) override {
+  Value transform_action(const Value& raw_action) override {
     RLMeshValue* p = nullptr;
-    detail::check(rlmesh_adapter_transform_action(raw(), v.raw(), &p));
+    detail::check(rlmesh_adapter_transform_action(raw(), raw_action.raw(), &p));
     return Value::adopt(p);
   }
-  void observe(const Value& v) override { detail::check(rlmesh_adapter_observe(raw(), v.raw())); }
+  void observe(const Value& raw_obs) override {
+    detail::check(rlmesh_adapter_observe(raw(), raw_obs.raw()));
+  }
   void reset() override { detail::check(rlmesh_adapter_reset(raw())); }
   std::string explain() const override { return detail::text(rlmesh_adapter_explain, raw()); }
   std::vector<Advisory> advisories() const {
@@ -3237,8 +3242,9 @@ class Adapter : public AdapterBase {
     }
     return v;
   }
-  std::function<Value(const Value&)> wrap_predict(std::function<Value(const Value&)> f) final {
-    auto state = std::make_unique<std::function<Value(const Value&)>>(std::move(f));
+  std::function<Value(const Value&)> wrap_predict(
+      std::function<Value(const Value&)> predict_fn) final {
+    auto state = std::make_unique<std::function<Value(const Value&)>>(std::move(predict_fn));
     RLMeshWrappedPredict* p = nullptr;
     detail::check(rlmesh_adapter_wrap_predict(
         raw(),
@@ -3262,23 +3268,24 @@ struct ResolveOptions {
   bool trust_entrypoints = false;
   bool check_inverse = true;
 };
-inline Adapter resolve(const EnvTags& tags, const spaces::SpaceSpec& obs,
-                       const spaces::SpaceSpec& action, const ModelSpec& spec,
+inline Adapter resolve(const EnvTags& env_tags, const spaces::SpaceSpec& observation_space,
+                       const spaces::SpaceSpec& action_space, const ModelSpec& model_spec,
                        ResolveOptions options = {}) {
   RLMeshResolveOptions c = RLMESH_RESOLVE_OPTIONS_INIT;
   c.trust_entrypoints = options.trust_entrypoints;
   c.check_inverse = options.check_inverse;
   RLMeshAdapter* p = nullptr;
-  detail::check(rlmesh_adapters_resolve(tags.raw(), obs.raw(), action.raw(), spec.raw(), &c, &p));
+  detail::check(rlmesh_adapters_resolve(env_tags.raw(), observation_space.raw(), action_space.raw(),
+                                        model_spec.raw(), &c, &p));
   return Adapter(p);
 }
-inline Adapter resolve_from_contract(const specs::EnvContract& contract, const ModelSpec& spec,
-                                     ResolveOptions options = {}) {
+inline Adapter resolve_from_contract(const specs::EnvContract& contract,
+                                     const ModelSpec& model_spec, ResolveOptions options = {}) {
   RLMeshResolveOptions c = RLMESH_RESOLVE_OPTIONS_INIT;
   c.trust_entrypoints = options.trust_entrypoints;
   c.check_inverse = options.check_inverse;
   RLMeshAdapter* p = nullptr;
-  detail::check(rlmesh_adapters_resolve_from_contract(contract.raw(), spec.raw(), &c, &p));
+  detail::check(rlmesh_adapters_resolve_from_contract(contract.raw(), model_spec.raw(), &c, &p));
   return Adapter(p);
 }
 using AdapterResolutionError = rlmesh::AdapterResolutionError;
@@ -3880,7 +3887,9 @@ class EnvFactory : public EnvFactoryBase {
   static std::vector<TagParam> tag_params() { return {}; }
   static std::vector<std::string> reset_options() { return {}; }
   static std::optional<std::string> workflow_edition() { return {}; }
-  static std::optional<adapters::EnvTags> tags_for(const Kwargs&) { return F::tags(); }
+  static std::optional<adapters::EnvTags> tags_for([[maybe_unused]] const Kwargs& params) {
+    return F::tags();
+  }
   static std::optional<std::vector<Variant>> enumerate_variants() { return {}; }
   static Metadata describe();
   void prepare() {}
@@ -3948,8 +3957,8 @@ using BatchPredictContext = std::span<const PredictContext>;
 using types::BatchPredictContext;
 using types::EpisodeState;
 using types::PredictContext;
-inline int64_t predict_seed(int64_t seed, uint64_t index) {
-  return rlmesh_predict_seed(seed, index);
+inline int64_t predict_seed(int64_t episode_seed, uint64_t predict_index) {
+  return rlmesh_predict_seed(episode_seed, predict_index);
 }
 class EpisodeEndHook {
   std::function<void(std::string_view)> function_{};
@@ -4327,20 +4336,21 @@ class Model {
   }
 
  public:
-  explicit Model(RLMeshModel* p) : handle_(p, rlmesh_model_free) { read_spec(); }
+  explicit Model(RLMeshModel* source) : handle_(source, rlmesh_model_free) { read_spec(); }
   template <class P>
     requires(!std::same_as<std::remove_cvref_t<P>, Model> && Policy<std::remove_cvref_t<P>>)
-  explicit Model(P&& p, ModelOptions options = {})
-      : Model(std::make_shared<std::remove_cvref_t<P>>(std::forward<P>(p)), std::move(options)) {}
+  explicit Model(P&& source, ModelOptions options = {})
+      : Model(std::make_shared<std::remove_cvref_t<P>>(std::forward<P>(source)),
+              std::move(options)) {}
   template <class P>
     requires Policy<P>
-  explicit Model(std::unique_ptr<P> p, ModelOptions options = {})
-      : Model(std::shared_ptr<P>(std::move(p)), std::move(options)) {}
+  explicit Model(std::unique_ptr<P> source, ModelOptions options = {})
+      : Model(std::shared_ptr<P>(std::move(source)), std::move(options)) {}
   template <class P>
     requires Policy<P>
-  explicit Model(std::shared_ptr<P> p, ModelOptions options = {}) {
-    if (!p) throw TypeError("policy must not be null");
-    auto state = std::make_unique<std::shared_ptr<P>>(std::move(p));
+  explicit Model(std::shared_ptr<P> source, ModelOptions options = {}) {
+    if (!source) throw TypeError("policy must not be null");
+    auto state = std::make_unique<std::shared_ptr<P>>(std::move(source));
     detail::PolicyTable<P> vt;
     RLMeshModelOptions c = RLMESH_MODEL_OPTIONS_INIT;
     c.spec = detail::spec_arg(options.spec);
@@ -4417,10 +4427,12 @@ class Model {
     }
     detail::check(rlmesh_model_serve(raw(), std::string(address).c_str(), &c));
   }
-  RunResult run(EnvTarget, const RunOptions&);
-  RunResult run(EnvTarget);
-  Session session(EnvTarget, const SessionOptions&);
-  Session session(EnvTarget);
+  RunResult run([[maybe_unused]] EnvTarget env_or_address,
+                [[maybe_unused]] const RunOptions& options);
+  RunResult run([[maybe_unused]] EnvTarget env_or_address);
+  Session session([[maybe_unused]] EnvTarget env_or_address,
+                  [[maybe_unused]] const SessionOptions& options);
+  Session session([[maybe_unused]] EnvTarget env_or_address);
 };
 struct RemoteEnvOptions {
   std::optional<std::string> address{}, host{};
@@ -4661,8 +4673,9 @@ class RemoteModel {
   const RLMeshRemoteModel* raw() const { return handle_.get(); }
   std::string address() const { return detail::text(rlmesh_remote_model_address, raw()); }
   std::string to_string() const { return detail::text(rlmesh_remote_model_repr, raw()); }
-  Session session(EnvTarget, const SessionOptions&) const;
-  Session session(EnvTarget) const;
+  Session session([[maybe_unused]] EnvTarget env,
+                  [[maybe_unused]] const SessionOptions& options) const;
+  Session session([[maybe_unused]] EnvTarget env) const;
 };
 struct RandomSample {
   bool operator==(const RandomSample&) const = default;
@@ -4998,7 +5011,8 @@ class RunContext {
   virtual ~RunContext() = default;
   virtual std::optional<specs::EnvContract> contract() const = 0;
   virtual uint64_t num_envs() const = 0;
-  virtual Value read(const Value&, const ReadItem&) const = 0;
+  virtual Value read([[maybe_unused]] const Value& observation,
+                     [[maybe_unused]] const ReadItem& item) const = 0;
   virtual FrameSources frame_sources() const = 0;
 };
 namespace detail {
@@ -5047,11 +5061,12 @@ struct StepEvent {
 class RunHooks {
  public:
   virtual ~RunHooks() = default;
-  virtual void on_run_start(std::shared_ptr<RunContext>) {}
-  virtual void on_episode_start(int64_t, std::optional<int64_t>) {}
-  virtual void on_step(const StepEvent&) {}
-  virtual void on_episode_end(const EpisodeResult&) {}
-  virtual void on_run_end(const RunResult&) {}
+  virtual void on_run_start([[maybe_unused]] std::shared_ptr<RunContext> context) {}
+  virtual void on_episode_start([[maybe_unused]] int64_t episode,
+                                [[maybe_unused]] std::optional<int64_t> seed) {}
+  virtual void on_step([[maybe_unused]] const StepEvent& event) {}
+  virtual void on_episode_end([[maybe_unused]] const EpisodeResult& result) {}
+  virtual void on_run_end([[maybe_unused]] const RunResult& result) {}
 };
 namespace detail {
 inline Owned<RLMeshRunHooks, rlmesh_run_hooks_free> hooks(RunHooks* p) {
@@ -5248,9 +5263,9 @@ class Session {
     auto info = Value::adopt(i);
     return {std::move(obs), info.as_dict()};
   }
-  Value predict(const Value& obs) {
+  Value predict(const Value& observation) {
     RLMeshValue* p = nullptr;
-    detail::check(rlmesh_session_predict(raw(), obs.raw(), &p));
+    detail::check(rlmesh_session_predict(raw(), observation.raw(), &p));
     return Value::adopt(p);
   }
   StepResult step(const Value& action) {
@@ -5354,14 +5369,16 @@ inline RunResult run(ModelTarget model, EnvTarget env, const RunOptions& options
   detail::check(rlmesh_run(model.raw(), env.raw(), &c, &p));
   return RunResult::take(p);
 }
-inline RunResult Model::run(EnvTarget env, const RunOptions& options) {
-  return rlmesh::run(*this, std::move(env), options);
+inline RunResult Model::run(EnvTarget env_or_address, const RunOptions& options) {
+  return rlmesh::run(*this, std::move(env_or_address), options);
 }
-inline RunResult Model::run(EnvTarget env) { return run(std::move(env), {}); }
-inline Session Model::session(EnvTarget env, const SessionOptions& options) {
-  return rlmesh::session(*this, std::move(env), options);
+inline RunResult Model::run(EnvTarget env_or_address) { return run(std::move(env_or_address), {}); }
+inline Session Model::session(EnvTarget env_or_address, const SessionOptions& options) {
+  return rlmesh::session(*this, std::move(env_or_address), options);
 }
-inline Session Model::session(EnvTarget env) { return session(std::move(env), {}); }
+inline Session Model::session(EnvTarget env_or_address) {
+  return session(std::move(env_or_address), {});
+}
 inline Session RemoteModel::session(EnvTarget env, const SessionOptions& options) const {
   return rlmesh::session(*this, std::move(env), options);
 }
@@ -5768,25 +5785,25 @@ struct DescribeJsonOptions {
     return c;
   }
 };
-inline Metadata describe(Model& model, const DescribeOptions& options = {}) {
+inline Metadata describe(Model& obj, const DescribeOptions& options = {}) {
   auto c = options.raw();
   RLMeshValue* p = nullptr;
-  detail::check(rlmesh_model_describe(model.raw(), &c, &p));
+  detail::check(rlmesh_model_describe(obj.raw(), &c, &p));
   return Value::adopt(p).as_dict();
 }
-inline Metadata describe(EnvFactoryBase& f, const DescribeOptions& options = {}) {
+inline Metadata describe(EnvFactoryBase& obj, const DescribeOptions& options = {}) {
   auto c = options.raw();
   RLMeshValue* p = nullptr;
-  detail::check(rlmesh_env_factory_describe(f.handle(), &c, &p));
+  detail::check(rlmesh_env_factory_describe(obj.handle(), &c, &p));
   return Value::adopt(p).as_dict();
 }
-inline std::string describe_json(Model& model, const DescribeJsonOptions& options = {}) {
+inline std::string describe_json(Model& obj, const DescribeJsonOptions& options = {}) {
   auto c = options.raw();
-  return detail::text(rlmesh_model_describe_json, model.raw(), &c);
+  return detail::text(rlmesh_model_describe_json, obj.raw(), &c);
 }
-inline std::string describe_json(EnvFactoryBase& f, const DescribeJsonOptions& options = {}) {
+inline std::string describe_json(EnvFactoryBase& obj, const DescribeJsonOptions& options = {}) {
   auto c = options.raw();
-  return detail::text(rlmesh_env_factory_describe_json, f.handle(), &c);
+  return detail::text(rlmesh_env_factory_describe_json, obj.handle(), &c);
 }
 template <class T>
 Metadata describe(const DescribeOptions& options = {}) {
@@ -5814,7 +5831,7 @@ std::string describe_json(const DescribeJsonOptions& options = {}) {
 }
 template <class P>
   requires Policy<P> && (!std::same_as<P, Model>)
-Metadata describe(P&, const DescribeOptions& options = {}) {
+Metadata describe([[maybe_unused]] P& obj, const DescribeOptions& options = {}) {
   detail::PolicyTable<P> vt;
   auto c = options.raw();
   RLMeshValue* p = nullptr;
@@ -5823,7 +5840,7 @@ Metadata describe(P&, const DescribeOptions& options = {}) {
 }
 template <class P>
   requires Policy<P> && (!std::same_as<P, Model>)
-std::string describe_json(P&, const DescribeJsonOptions& options = {}) {
+std::string describe_json([[maybe_unused]] P& obj, const DescribeJsonOptions& options = {}) {
   detail::PolicyTable<P> vt;
   auto c = options.raw();
   return detail::text(rlmesh_model_vtable_describe_json, &vt.table, &c);

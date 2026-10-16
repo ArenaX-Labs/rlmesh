@@ -172,7 +172,12 @@
       "description": "Dependency-free vector-environment remote client."
     },
     "rlmesh.Model": {
-      "description": "Dependency-free model wrapper."
+      "description": "Dependency-free model wrapper.",
+      "members": {
+        "params": {
+          "stability": "Experimental"
+        }
+      }
     },
     "rlmesh.Param": {
       "stability": "Experimental",
@@ -580,6 +585,34 @@
     },
     "rlmesh.recorder.SCHEMA": {
       "description": "Schema tag stamped onto every exported result bundle: rlmesh.result.v1."
+    },
+    "rlmesh.sanitize_metadata": {
+      "stability": "Bridge",
+      "description": "Coerce Python objects to portable metadata (R-24, D-9)."
+    },
+    "rlmesh.params": {
+      "stability": "Experimental"
+    },
+    "rlmesh.EnvFactory": {
+      "members": {
+        "params": {
+          "stability": "Experimental"
+        }
+      }
+    },
+    "rlmesh.numpy.Model": {
+      "members": {
+        "params": {
+          "stability": "Experimental"
+        }
+      }
+    },
+    "rlmesh.numpy.EnvFactory": {
+      "members": {
+        "params": {
+          "stability": "Experimental"
+        }
+      }
     }
   },
   "native": {
