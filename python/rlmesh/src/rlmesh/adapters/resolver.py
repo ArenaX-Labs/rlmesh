@@ -462,10 +462,16 @@ def _model_wire(
                         f"entrypoint {entrypoint!r}; pass "
                         "resolve(..., trust_entrypoints=True) to allow importing it"
                     )
-                customs[segments] = cast(
-                    ObsTransform,
-                    resolve_entrypoint(entrypoint, label="custom input transform"),
-                )
+                try:
+                    customs[segments] = cast(
+                        ObsTransform,
+                        resolve_entrypoint(entrypoint, label="custom input transform"),
+                    )
+                except (ImportError, AttributeError) as exc:
+                    raise AdapterResolutionError(
+                        f"custom input at {render_placement(segments)!r} could not "
+                        f"resolve entrypoint {entrypoint!r}: {exc}"
+                    ) from exc
                 wire_transform = entrypoint
             return {"type": "custom", "transform": wire_transform}
         return model_input_to_dict(cast(InputNode, leaf))

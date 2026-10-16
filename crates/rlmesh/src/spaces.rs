@@ -211,7 +211,7 @@ impl Space {
     /// sampled, such as one with no payload.
     pub fn sample(&self) -> Result<Value> {
         let wire = self.sample_wire()?;
-        Ok(space_codec::value_from_space(self.0.spec.wire(), wire))
+        space_codec::value_from_space(self.0.spec.wire(), wire)
     }
 
     /// Whether `value` is a member of this space; never fails. A Box takes a

@@ -1374,6 +1374,39 @@ def test_custom_entrypoint_requires_trust():
     assert adapter.transform_obs(make_obs())["count"] == len(make_obs())
 
 
+@pytest.mark.parametrize(
+    ("entrypoint", "cause_type"),
+    [
+        ("_rlmesh_missing_entrypoint_module:transform", ImportError),
+        ("builtins:_rlmesh_missing_transform", AttributeError),
+        ("builtins:len._rlmesh_missing_transform", AttributeError),
+    ],
+)
+def test_custom_entrypoint_lookup_failure_is_resolution_error(entrypoint, cause_type):
+    spec = adapt.ModelSpec(
+        input={"count": adapt.Custom(entrypoint=entrypoint)}, output=SMOLVLA.output
+    )
+    with pytest.raises(adapt.AdapterResolutionError, match=entrypoint) as caught:
+        resolve(LIBERO_ENV, spec, trust_entrypoints=True)
+    assert isinstance(caught.value.__cause__, cause_type)
+
+
+@pytest.mark.parametrize(
+    ("entrypoint", "error_type"),
+    [
+        ("builtins", ValueError),
+        ("builtins:len..missing", ValueError),
+        ("builtins:None", TypeError),
+    ],
+)
+def test_custom_entrypoint_keeps_syntax_and_noncallable_errors(entrypoint, error_type):
+    spec = adapt.ModelSpec(
+        input={"count": adapt.Custom(entrypoint=entrypoint)}, output=SMOLVLA.output
+    )
+    with pytest.raises(error_type):
+        resolve(LIBERO_ENV, spec, trust_entrypoints=True)
+
+
 def test_spec_normalize_door_roundtrips_validates_and_gates_custom():
     # P1.1: the single Rust normalize/validate door the Python codec will route
     # through in P1.2. Here it is exercised in isolation.

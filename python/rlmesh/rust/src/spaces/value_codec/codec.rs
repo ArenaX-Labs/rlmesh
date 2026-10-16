@@ -56,7 +56,7 @@ fn space_value_to_py<'py>(
             let dict = PyDict::new(py);
             for (key, child_space) in spec.keys.iter().zip(spec.spaces.iter()) {
                 let child_value = values.get(key).ok_or_else(|| {
-                    pyo3::exceptions::PyKeyError::new_err(format!(
+                    crate::types::ProtocolException::new_err(format!(
                         "missing RLMesh dict key '{key}'"
                     ))
                 })?;
@@ -153,7 +153,7 @@ pub(crate) fn py_any_to_space_value_with_backend(
     Ok(encoded)
 }
 
-fn py_any_to_space_value_unchecked(
+pub(super) fn py_any_to_space_value_unchecked(
     py: Python<'_>,
     value: &Bound<'_, PyAny>,
     space: &SpaceSpec,
@@ -206,13 +206,14 @@ fn py_any_to_space_value_unchecked(
             let dict = normalized.cast::<PyDict>()?;
             let mut values = BTreeMap::new();
             for (key, child_space) in spec.keys.iter().zip(spec.spaces.iter()) {
-                let child = dict.get_item(key)?.ok_or_else(|| {
-                    pyo3::exceptions::PyKeyError::new_err(format!("missing dict key '{key}'"))
-                })?;
-                values.insert(
-                    key.clone(),
-                    py_any_to_space_value_unchecked(py, &child, child_space, backend)?,
-                );
+                // Preserve missing fields until root conformance can report
+                // the native structural error with the full value path.
+                if let Some(child) = dict.get_item(key)? {
+                    values.insert(
+                        key.clone(),
+                        py_any_to_space_value_unchecked(py, &child, child_space, backend)?,
+                    );
+                }
             }
             SpaceValue::Dict(values)
         }
@@ -1011,6 +1012,73 @@ mod tests {
     use pyo3::types::PyDictMethods;
     use rlmesh_spaces::spaces::{DictSpaceBuilder, DiscreteBuilder, TextBuilder};
     use rlmesh_spaces::{DType, MetaValue};
+
+    #[test]
+    fn missing_dict_keys_use_conformance_errors_on_encode_and_protocol_errors_on_decode() {
+        use super::super::batch::{
+            batched_space_values_to_py_neutral, batched_space_values_to_py_with_backend,
+            py_any_to_batched_space_values_with_backend,
+        };
+        use rlmesh_spaces::{Conformance, SpaceValue, conform};
+        use std::collections::BTreeMap;
+
+        Python::attach(|py| {
+            let child = DictSpaceBuilder::new()
+                .insert("choice", DiscreteBuilder::new(3).build().unwrap())
+                .build()
+                .unwrap();
+            let nested = DictSpaceBuilder::new()
+                .insert("nested", child.clone())
+                .build()
+                .unwrap();
+            for (space, expression, encoded) in [
+                (
+                    child,
+                    pyo3::ffi::c_str!("{}"),
+                    SpaceValue::Dict(BTreeMap::new()),
+                ),
+                (
+                    nested,
+                    pyo3::ffi::c_str!("{'nested': {}}"),
+                    SpaceValue::Dict(BTreeMap::from([(
+                        "nested".into(),
+                        SpaceValue::Dict(BTreeMap::new()),
+                    )])),
+                ),
+            ] {
+                let Conformance::Structural(expected) = conform(&space, &encoded) else {
+                    panic!("missing key must be structural");
+                };
+                let value = py.eval(expression, None, None).unwrap();
+                for backend in [ValueBackend::Native, ValueBackend::Auto] {
+                    let err = py_any_to_space_value_with_backend(py, &value, &space, backend)
+                        .unwrap_err();
+                    assert!(err.is_instance_of::<pyo3::exceptions::PyValueError>(py));
+                    assert_eq!(err.value(py).to_string(), expected.to_string());
+                    let err =
+                        py_any_to_batched_space_values_with_backend(py, &value, &space, 2, backend)
+                            .unwrap_err();
+                    assert!(err.is_instance_of::<pyo3::exceptions::PyValueError>(py));
+                    assert_eq!(err.value(py).to_string(), expected.to_string());
+                    let err =
+                        space_value_to_py_with_backend(py, &encoded, &space, backend).unwrap_err();
+                    assert!(err.is_instance_of::<crate::types::ProtocolException>(py));
+                    let err = batched_space_values_to_py_with_backend(
+                        py,
+                        std::slice::from_ref(&encoded),
+                        &space,
+                        backend,
+                    )
+                    .unwrap_err();
+                    assert!(err.is_instance_of::<crate::types::ProtocolException>(py));
+                }
+                let err = super::space_value_to_py_neutral(py, &encoded, &space).unwrap_err();
+                assert!(err.is_instance_of::<crate::types::ProtocolException>(py));
+                let err = batched_space_values_to_py_neutral(py, &[encoded], &space).unwrap_err();
+                assert!(err.is_instance_of::<crate::types::ProtocolException>(py));
+            }
+        });
+    }
 
     #[test]
     fn metadata_roundtrips_without_protobuf() {

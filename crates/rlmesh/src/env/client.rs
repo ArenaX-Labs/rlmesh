@@ -801,7 +801,7 @@ impl EnvClientCore {
             .observations
             .into_iter()
             .map(|lane| space_codec::value_from_space(&self.observation_space, lane))
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
         Ok((
             lanes,
             meta_codec::metadata_from_wire(result.info.unwrap_or_default()),
@@ -828,7 +828,7 @@ impl EnvClientCore {
             .observations
             .into_iter()
             .map(|lane| space_codec::value_from_space(&self.observation_space, lane))
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
         Ok((
             lanes,
             result.rewards,

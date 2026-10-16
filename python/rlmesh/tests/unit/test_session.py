@@ -1199,3 +1199,45 @@ def test_the_runs_own_error_wins_over_the_last_episode_end() -> None:
     with pytest.raises(KeyError, match="run end failed"):
         sess.run(hooks=EndBoom())
     sess._close(failed=True)  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.parametrize("operation", ["run", "model_run", "session", "model_session"])
+@pytest.mark.parametrize(
+    ("entrypoint", "cause_type"),
+    [
+        ("_rlmesh_missing_entrypoint_module:transform", ImportError),
+        ("builtins:_rlmesh_missing_transform", AttributeError),
+    ],
+)
+def test_model_run_and_session_wrap_custom_entrypoint_lookup_failure(
+    operation: str, entrypoint: str, cause_type: type[Exception]
+) -> None:
+    import rlmesh.adapters as adapt
+
+    class TaggedEnv(_TinyEnv):
+        def __init__(self) -> None:
+            self.observation_space = rlmesh.spaces.Box(-1, 1, [1])
+            self.action_space = rlmesh.spaces.Box(-1, 1, [1])
+
+    action = adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1))
+    env = adapt.tag(
+        TaggedEnv(),
+        adapt.EnvTags(observation=adapt.StateTag(adapt.JOINT_POS), action=action),
+    )
+    spec = adapt.ModelSpec(input=adapt.Custom(entrypoint=entrypoint), output=action)
+    model = rlmesh.Model(lambda obs: 0, spec=spec, trust_entrypoints=True)
+    try:
+        with pytest.raises(adapt.AdapterResolutionError, match=entrypoint) as caught:
+            if operation == "run":
+                rlmesh.run(model, env)
+            elif operation == "model_run":
+                model.run(env)
+            elif operation == "session":
+                with rlmesh.session(model, env) as session:
+                    session.reset()
+            else:
+                with model.session(env) as session:
+                    session.reset()
+        assert isinstance(caught.value.__cause__, cause_type)
+    finally:
+        model.close()

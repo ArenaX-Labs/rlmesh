@@ -15,7 +15,14 @@ use super::{Metadata, Value};
 use crate::{Error, Result, Tensor};
 
 /// The [`Value`] for `value`, a value of the space `spec`.
-pub(crate) fn value_from_space(spec: &WireSpec, value: SpaceValue) -> Value {
+pub(crate) fn value_from_space(spec: &WireSpec, value: SpaceValue) -> Result<Value> {
+    if let rlmesh_spaces::Conformance::Structural(err) = rlmesh_spaces::conform(spec, &value) {
+        return Err(Error::Protocol(err.to_string()));
+    }
+    Ok(value_from_space_unchecked(spec, value))
+}
+
+fn value_from_space_unchecked(spec: &WireSpec, value: SpaceValue) -> Value {
     match (spec.spec.as_ref(), value) {
         (Some(WireKind::MultiBinary(_)), SpaceValue::MultiBinary(bits)) => {
             let ints: Vec<i64> = bits.iter().map(|&bit| i64::from(bit)).collect();
@@ -28,7 +35,7 @@ pub(crate) fn value_from_space(spec: &WireSpec, value: SpaceValue) -> Value {
             let mut map = Metadata::new();
             for (key, child) in dict.keys.iter().zip(&dict.spaces) {
                 if let Some(value) = values.remove(key) {
-                    map.insert(key.clone(), value_from_space(child, value));
+                    map.insert(key.clone(), value_from_space_unchecked(child, value));
                 }
             }
             // A key the spec does not declare keeps the wire's sorted order.
@@ -44,7 +51,7 @@ pub(crate) fn value_from_space(spec: &WireSpec, value: SpaceValue) -> Value {
                 items
                     .into_iter()
                     .zip(&tuple.spaces)
-                    .map(|(item, child)| value_from_space(child, item))
+                    .map(|(item, child)| value_from_space_unchecked(child, item))
                     .collect(),
             )
         }
@@ -151,8 +158,16 @@ fn input_shape(value: &Value) -> Option<Vec<i64>> {
     }
 }
 
-/// Encode `value` as a value of `spec`, without the conformance check (SPC-5).
+/// Encode `value` as a value of `spec`, rejecting structural deviations (SPC-5).
 pub(crate) fn value_to_space(spec: &WireSpec, value: &Value) -> Result<SpaceValue> {
+    let encoded = value_to_space_unchecked(spec, value)?;
+    if let rlmesh_spaces::Conformance::Structural(err) = rlmesh_spaces::conform(spec, &encoded) {
+        return Err(Error::invalid_argument(err.to_string()));
+    }
+    Ok(encoded)
+}
+
+fn value_to_space_unchecked(spec: &WireSpec, value: &Value) -> Result<SpaceValue> {
     Ok(match spec.spec.as_ref() {
         Some(WireKind::Box(_)) => {
             let dtype = resolved(spec.dtype, CoreDType::Float32);
@@ -188,10 +203,9 @@ pub(crate) fn value_to_space(spec: &WireSpec, value: &Value) -> Result<SpaceValu
             let map = value.as_dict()?;
             let mut values = std::collections::BTreeMap::new();
             for (key, child) in dict.keys.iter().zip(&dict.spaces) {
-                let item = map
-                    .get(key)
-                    .ok_or_else(|| Error::invalid_argument(format!("missing dict key '{key}'")))?;
-                values.insert(key.clone(), value_to_space(child, item)?);
+                if let Some(item) = map.get(key) {
+                    values.insert(key.clone(), value_to_space_unchecked(child, item)?);
+                }
             }
             SpaceValue::Dict(values)
         }
@@ -215,7 +229,7 @@ pub(crate) fn value_to_space(spec: &WireSpec, value: &Value) -> Result<SpaceValu
                 items
                     .iter()
                     .zip(&tuple.spaces)
-                    .map(|(item, child)| value_to_space(child, item))
+                    .map(|(item, child)| value_to_space_unchecked(child, item))
                     .collect::<Result<_>>()?,
             )
         }
@@ -379,6 +393,51 @@ mod tests {
     }
 
     #[test]
+    fn missing_dict_keys_match_conformance_on_encode_and_are_protocol_errors_on_decode() {
+        use rlmesh_spaces::spaces::{DictSpaceBuilder, DiscreteBuilder};
+        let child = DictSpaceBuilder::new()
+            .insert("choice", DiscreteBuilder::new(3).build().unwrap())
+            .build()
+            .unwrap();
+        let nested = DictSpaceBuilder::new()
+            .insert("nested", child.clone())
+            .build()
+            .unwrap();
+        for (space, value, wire) in [
+            (
+                child,
+                Value::Dict(Metadata::new()),
+                SpaceValue::Dict(Default::default()),
+            ),
+            (
+                nested,
+                Value::Dict(
+                    [("nested", Value::Dict(Metadata::new()))]
+                        .into_iter()
+                        .collect(),
+                ),
+                SpaceValue::Dict(
+                    [("nested".into(), SpaceValue::Dict(Default::default()))]
+                        .into_iter()
+                        .collect(),
+                ),
+            ),
+        ] {
+            let rlmesh_spaces::Conformance::Structural(expected) =
+                rlmesh_spaces::conform(&space, &wire)
+            else {
+                panic!("missing key must be structural");
+            };
+            let err = value_to_space(&space, &value).unwrap_err();
+            assert_eq!(err.class(), crate::ErrorClass::ValueError);
+            assert_eq!(err.to_string(), expected.to_string());
+            let err = value_from_space(&space, wire).unwrap_err();
+            assert_eq!(err.class(), crate::ErrorClass::ProtocolException);
+            assert_eq!(err.to_string(), expected.to_string());
+        }
+    }
+
+    #[test]
     fn array_kinds_read_as_tensors_of_the_space_dtype() {
         let bits = spec(
             &[2, 2],
@@ -388,7 +447,8 @@ mod tests {
         let value = value_from_space(
             &bits,
             SpaceValue::MultiBinary(vec![true, false, false, true]),
-        );
+        )
+        .unwrap();
         let tensor = value.as_tensor().unwrap();
         assert_eq!(
             (tensor.shape(), tensor.dtype()),
@@ -403,7 +463,7 @@ mod tests {
             CoreDType::Int64,
             WireKind::MultiDiscrete(MultiDiscreteSpec { nvec: vec![3, 4] }),
         );
-        let value = value_from_space(&counts, SpaceValue::MultiDiscrete(vec![2, 3]));
+        let value = value_from_space(&counts, SpaceValue::MultiDiscrete(vec![2, 3])).unwrap();
         assert_eq!(value.kind(), ValueKind::Tensor);
         assert!(space_contains(&counts, &value));
         assert!(space_contains(
@@ -433,7 +493,8 @@ mod tests {
         let value = value_from_space(
             &pair,
             SpaceValue::Tuple(vec![SpaceValue::Discrete(1), SpaceValue::Discrete(0)]),
-        );
+        )
+        .unwrap();
         assert_eq!(value, Value::Tuple(vec![Value::Int(1), Value::Int(0)]));
         assert!(space_contains(&pair, &value));
         assert!(space_contains(
