@@ -86,11 +86,11 @@ manifest_kind = "rlmesh.cpp-api-surface-manifest"
 package_artifact = "cargo:rlmesh"
 package_name = "rlmesh-capi"
 header = "crates/rlmesh-capi/include/rlmesh.hpp"
-standard = "c++17"
+standard = "c++20"
 namespace = "rlmesh"
 access = "early-access"
 stability = "Experimental"
-summary = "Early access. The header-only C++17 wrapper over the C ABI is experimental and will break before 1.0, together with the C ABI it wraps."
+summary = "Early access. The header-only C++20 wrapper over the C ABI is experimental and will break before 1.0, together with the C ABI it wraps."
 
 [[artifact]]
 id = "pypi:rlmesh"

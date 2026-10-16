@@ -2,7 +2,7 @@
 #![allow(unsafe_code)] // FFI pointers, callbacks and owned handles.
 use crate::abi::{
     sizing,
-    status::{CapiError, RLMeshStatus, clear_last_error, guard, guard_value},
+    status::{CapiError, RLMeshStatus, guard, guard_value},
 };
 use crate::cancel::RLMeshExtCancelToken;
 use crate::codec::RLMeshBytes;
@@ -173,7 +173,7 @@ impl EnvFactory for Factory {
         };
         let params = RLMeshValue::new(Value::Dict(params.clone()));
         let mut out = std::ptr::null_mut();
-        clear_last_error();
+        let _callback_frame = crate::abi::status::CallbackFrame::enter();
         let status = unsafe { callback(data.ud, &params, &mut out) };
         let error = (status != 0).then(|| ffi::callback_error("env"));
         let tags = if out.is_null() {
@@ -192,14 +192,14 @@ impl EnvFactory for Factory {
             return Ok(None);
         };
         let mut sink = RLMeshVariantSink(Vec::new());
-        clear_last_error();
+        let _callback_frame = crate::abi::status::CallbackFrame::enter();
         check(unsafe { callback(data.ud, &mut sink) })?;
         Ok(Some(sink.0))
     }
     fn prepare(&mut self) -> rlmesh::Result<()> {
         let d = current();
         if let Some(f) = d.vt.prepare {
-            clear_last_error();
+            let _callback_frame = crate::abi::status::CallbackFrame::enter();
             check(unsafe { f(d.ud) })?;
         }
         Ok(())
@@ -207,7 +207,7 @@ impl EnvFactory for Factory {
     fn close(&mut self) -> rlmesh::Result<()> {
         let d = current();
         if let Some(f) = d.vt.close {
-            clear_last_error();
+            let _callback_frame = crate::abi::status::CallbackFrame::enter();
             check(unsafe { f(d.ud) })?;
         }
         Ok(())
@@ -216,7 +216,7 @@ impl EnvFactory for Factory {
         let d = current();
         let kwargs = RLMeshValue::new(Value::Dict(kwargs.clone()));
         let (mut env, mut vector) = (std::ptr::null_mut(), std::ptr::null_mut());
-        clear_last_error();
+        let _callback_frame = crate::abi::status::CallbackFrame::enter();
         let status =
             unsafe { d.vt.make.expect("validated make")(d.ud, &kwargs, &mut env, &mut vector) };
         let error = (status != 0).then(|| ffi::callback_error("env"));

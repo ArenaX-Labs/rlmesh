@@ -2,6 +2,7 @@
 #![allow(unsafe_code)]
 use super::*;
 use a::AdapterBase;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::atomic::{AtomicBool, Ordering};
 type TransformFn =
     unsafe extern "C" fn(*mut c_void, *const RLMeshValue, *mut *mut RLMeshValue) -> i32;
@@ -23,7 +24,7 @@ impl Drop for Owner {
 fn value_call(f: TransformFn, user: usize, input: Value) -> rlmesh::Result<Value> {
     let input = RLMeshValue::new(input);
     let mut out = std::ptr::null_mut();
-    clear_last_error();
+    let _callback_frame = crate::abi::status::CallbackFrame::enter();
     let status = unsafe { f(user as *mut c_void, &input, &mut out) };
     let value = unsafe { ffi::take(out) };
     if status != 0 {
@@ -32,7 +33,7 @@ fn value_call(f: TransformFn, user: usize, input: Value) -> rlmesh::Result<Value
     value.ok_or_else(|| rlmesh::Error::Type("callback returned no Value".into()))
 }
 macro_rules! transform {
-    ($ty:ident,$native:ident,$new:ident,$clone:ident,$free:ident) => {
+    ($ty:ident,$native:ident,$new:ident,$clone:ident,$free:ident,$equals:ident,$hash:ident) => {
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $new(
             f: Option<TransformFn>,
@@ -80,6 +81,29 @@ macro_rules! transform {
                 }
             })
         }
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $equals(left: *const $ty, right: *const $ty) -> bool {
+            guard_value(false, || {
+                // SAFETY: non-NULL pointers are live borrowed transform handles.
+                match unsafe { (left.as_ref(), right.as_ref()) } {
+                    (Some(left), Some(right)) => left.0 == right.0,
+                    (None, None) => true,
+                    _ => false,
+                }
+            })
+        }
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $hash(p: *const $ty) -> u64 {
+            guard_value(0, || {
+                // SAFETY: a non-NULL pointer is a live borrowed transform handle.
+                let Some(transform) = (unsafe { p.as_ref() }) else {
+                    return 0;
+                };
+                let mut hasher = DefaultHasher::new();
+                transform.0.hash(&mut hasher);
+                hasher.finish()
+            })
+        }
     };
 }
 transform!(
@@ -87,14 +111,18 @@ transform!(
     ObsTransform,
     rlmesh_obs_transform_new,
     rlmesh_obs_transform_clone,
-    rlmesh_obs_transform_free
+    rlmesh_obs_transform_free,
+    rlmesh_obs_transform_equals,
+    rlmesh_obs_transform_hash
 );
 transform!(
     RLMeshRotationTransform,
     RotationTransform,
     rlmesh_rotation_transform_new,
     rlmesh_rotation_transform_clone,
-    rlmesh_rotation_transform_free
+    rlmesh_rotation_transform_free,
+    rlmesh_rotation_transform_equals,
+    rlmesh_rotation_transform_hash
 );
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -128,7 +156,7 @@ impl AdapterBase for CustomAdapter {
     }
     fn reset(&mut self) -> rlmesh::Result<()> {
         if let Some(f) = self.v.reset {
-            clear_last_error();
+            let _callback_frame = crate::abi::status::CallbackFrame::enter();
             if unsafe { f(self.owner.user as *mut c_void) } != 0 {
                 return Err(ffi::callback_error("context"));
             }
@@ -138,7 +166,7 @@ impl AdapterBase for CustomAdapter {
     fn observe(&mut self, raw: Value) -> rlmesh::Result<()> {
         if let Some(f) = self.v.observe {
             let raw = RLMeshValue::new(raw);
-            clear_last_error();
+            let _callback_frame = crate::abi::status::CallbackFrame::enter();
             if unsafe { f(self.owner.user as *mut c_void, &raw) } != 0 {
                 return Err(ffi::callback_error("context"));
             }
@@ -148,7 +176,7 @@ impl AdapterBase for CustomAdapter {
     fn explain(&self) -> rlmesh::Result<String> {
         if let Some(f) = self.v.explain {
             let mut out = std::ptr::null();
-            clear_last_error();
+            let _callback_frame = crate::abi::status::CallbackFrame::enter();
             if unsafe { f(self.owner.user as *mut c_void, &mut out) } != 0 {
                 return Err(ffi::callback_error("context"));
             }

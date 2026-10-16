@@ -30,17 +30,8 @@ pub(crate) fn ignore_sigpipe() {
     }
 }
 
-/// Binary ABI generation — a monotonic integer, decoupled from the 0.x package
-/// semver (which can't express an ABI break: every 0.x shares major 0). Bump it
-/// ONLY on a binary-incompatible change: a `repr(C)` layout change or
-/// enum-discriminant reorder, an `extern "C"` signature retype, or removing a
-/// symbol. Appending a field to a `struct_size`-guarded vtable (the model.rs
-/// pattern) is NOT a break and must not bump this — but `RLMeshExtLegacyServeOptions`
-/// carries no `struct_size`, so growing IT is a layout change and does bump this
-/// (generation 4 added `RLMeshExtLegacyServeOptions.workflow_edition`). A consumer gates
-/// on it via the header's
-/// `RLMESH_ABI_VERSION` macro + `rlmesh_abi_check()`; the versioned SONAME
-/// (`librlmesh_capi.so.N`) makes the loader enforce the same generation.
+/// Binary ABI generation, independent of the package semver. ABI 5 is the
+/// language-parity surface. Its options and callback records follow R-19.
 pub const RLMESH_ABI_VERSION: u32 = 5;
 
 /// The linked library's ABI generation (see [`RLMESH_ABI_VERSION`]). A consumer

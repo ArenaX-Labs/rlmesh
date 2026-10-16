@@ -6,7 +6,7 @@ pub(crate) mod runtime;
 mod views;
 use crate::abi::{
     sizing,
-    status::{CapiError, RLMeshStatus, clear_last_error, guard, guard_ptr, guard_value},
+    status::{CapiError, RLMeshStatus, guard, guard_ptr, guard_value},
 };
 use crate::codec::RLMeshBytes;
 use crate::ffi;
@@ -769,49 +769,4 @@ pub unsafe extern "C" fn rlmesh_adapters_tag_vector(
         h.inner = Arc::new(Mutex::new(Box::new(tagged)));
         Ok(())
     })
-}
-
-use rlmesh_spaces::MetaValue;
-/// Faithfully render contract metadata as JSON (used by the tags accessor).
-pub(crate) fn meta_to_json(value: &MetaValue) -> serde_json::Value {
-    use serde_json::Value as Json;
-    match value {
-        MetaValue::Null => Json::Null,
-        MetaValue::Bool(value) => Json::Bool(*value),
-        MetaValue::Int(value) => Json::Number((*value).into()),
-        MetaValue::Float(value) => {
-            serde_json::Number::from_f64(*value).map_or(Json::Null, Json::Number)
-        }
-        MetaValue::String(value) => Json::String(value.clone()),
-        MetaValue::Bytes(value) => {
-            Json::Array(value.iter().map(|&b| Json::Number(b.into())).collect())
-        }
-        MetaValue::List(items) => Json::Array(items.iter().map(meta_to_json).collect()),
-        MetaValue::Map(map) => Json::Object(
-            map.iter()
-                .map(|(k, v)| (k.clone(), meta_to_json(v)))
-                .collect(),
-        ),
-    }
-}
-
-/// The inverse of [`meta_to_json`]: JSON as contract metadata. Integers stay
-/// `Int` (the representable ones), every other number is a `Float`.
-pub(crate) fn json_to_meta(value: &serde_json::Value) -> MetaValue {
-    use serde_json::Value as Json;
-    match value {
-        Json::Null => MetaValue::Null,
-        Json::Bool(value) => MetaValue::Bool(*value),
-        Json::Number(number) => number.as_i64().map_or_else(
-            || MetaValue::Float(number.as_f64().unwrap_or(f64::NAN)),
-            MetaValue::Int,
-        ),
-        Json::String(value) => MetaValue::String(value.clone()),
-        Json::Array(items) => MetaValue::List(items.iter().map(json_to_meta).collect()),
-        Json::Object(map) => MetaValue::Map(
-            map.iter()
-                .map(|(k, v)| (k.clone(), json_to_meta(v)))
-                .collect(),
-        ),
-    }
 }

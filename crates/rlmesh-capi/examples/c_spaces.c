@@ -269,11 +269,11 @@ int main(void) {
   rlmesh_space_free(per);
 
   /* Space and SpaceSpec have distinct ABI-5 ownership/free functions. */
-  RLMeshSpaceSpec* legacy = rlmesh_ext_legacy_space_discrete(3, 0);
-  RLMeshSpace* from_legacy = NULL;
-  CHECK(rlmesh_space_new(legacy, &from_legacy) == RLMESH_OK);
-  rlmesh_space_spec_free(legacy);
-  rlmesh_space_free(from_legacy);
+  RLMeshSpaceSpec* cloned = rlmesh_space_spec_clone(rlmesh_space_spec(id));
+  RLMeshSpace* from_cloned = NULL;
+  CHECK(rlmesh_space_new(cloned, &from_cloned) == RLMESH_OK);
+  rlmesh_space_spec_free(cloned);
+  rlmesh_space_free(from_cloned);
 
   rlmesh_space_free(obs);
   rlmesh_space_free(id);
