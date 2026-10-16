@@ -15,7 +15,20 @@ fi
 mapfile -d '' untracked < <(git ls-files -z --others --exclude-standard)
 if [ "${#untracked[@]}" -gt 0 ]; then
   git add --intent-to-add -- "${untracked[@]}"
-  trap 'git reset -q -- "${untracked[@]}"' EXIT
 fi
 
-depot ci run --workflow .github/workflows/ci.yml --job fast --follow "$@"
+# Depot reports the run to GitHub as a check named "<workflow> / <job>" on the
+# base commit, so a run of ci.yml as-is shows up as "CI / Fast Checks" next to
+# the real one. Submit a copy renamed to "ci:remote" so it reads as a local run.
+# The copy stays in the (ignored) target dir: Depot finds the repository from
+# the workflow's location.
+mkdir -p target
+workflow="$(mktemp -p target ci-remote.XXXXXX.yml)"
+trap 'rm -f "$workflow"; [ "${#untracked[@]}" -eq 0 ] || git reset -q -- "${untracked[@]}"' EXIT
+sed '1s/^name: CI$/name: ci:remote/' .github/workflows/ci.yml >"$workflow"
+if ! head -1 "$workflow" | grep -qx 'name: ci:remote'; then
+  echo "ci:remote: .github/workflows/ci.yml no longer starts with 'name: CI'; update this task." >&2
+  exit 1
+fi
+
+depot ci run --workflow "$workflow" --job fast --follow "$@"
