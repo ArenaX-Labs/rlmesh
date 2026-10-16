@@ -1186,6 +1186,63 @@ mod tests {
             .unwrap();
     }
 
+    #[test]
+    fn malformed_actions_are_recoverable_before_native_callbacks() {
+        use spaces::spaces::{DictSpaceBuilder, DiscreteBuilder};
+        let child = DictSpaceBuilder::new()
+            .insert("choice", DiscreteBuilder::new(3).build().unwrap())
+            .build()
+            .unwrap();
+        let space = DictSpaceBuilder::new()
+            .insert("nested", child)
+            .build()
+            .unwrap();
+        for policy in [
+            ValidationPolicy::Warn,
+            ValidationPolicy::Strict,
+            ValidationPolicy::Off,
+        ] {
+            let conformance = Conformance {
+                policy,
+                ..Conformance::from_env()
+            };
+            for (fields, text) in [
+                (BTreeMap::new(), "$.nested: missing key 'choice'"),
+                (
+                    BTreeMap::from([
+                        ("choice".into(), spaces::SpaceValue::Discrete(1)),
+                        ("extra".into(), spaces::SpaceValue::Discrete(0)),
+                    ]),
+                    "$.nested: unexpected key 'extra'",
+                ),
+            ] {
+                let action = spaces::SpaceValue::Dict(BTreeMap::from([(
+                    "nested".into(),
+                    spaces::SpaceValue::Dict(fields),
+                )]));
+                // Both lane and vector adapters use this check before dispatch.
+                let error = conformance
+                    .enforce_all(&space, &[action], "action", &[0], &mut Vec::new())
+                    .unwrap_err();
+                assert_eq!(error.code, EnvErrorCode::InvalidAction);
+                assert!(error.is_recoverable);
+                assert_eq!(error.message, text);
+            }
+            let action = spaces::SpaceValue::Dict(BTreeMap::from([(
+                "nested".into(),
+                spaces::SpaceValue::Dict(BTreeMap::from([(
+                    "choice".into(),
+                    spaces::SpaceValue::Discrete(1),
+                )])),
+            )]));
+            assert!(
+                conformance
+                    .enforce_all(&space, &[action], "action", &[0], &mut Vec::new())
+                    .is_ok()
+            );
+        }
+    }
+
     #[tokio::test]
     async fn wire_adapter_roundtrips_batched_reset_and_step() {
         let env = WireEnvAdapter::new(DummyEnv::new());

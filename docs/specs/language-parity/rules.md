@@ -1519,7 +1519,10 @@ Acceptance criteria. The check fails when:
    `len`/`count` paired with a pointer, R-5/R-20); `struct_size` (R-19);
    callback state pointers named `user_data` or `ctx` (R-20); and the
    options-struct parameter itself (R-6). These are structural rules in the
-   checker, not per-entry exemptions. Other positional parameter names must
+   checker, not per-entry exemptions. A free callback names its parameter after
+   the object it frees (`free_value(value)`, `free_payload(payload)`); only a
+   callback that frees state uses `user_data` or `ctx`.
+   Other positional parameter names must
    match Python after R-4. A deliberate translation stated by a D-/area
    decision must cite that decision in the manifest.
 3. a `missing` entry's native item exists (stale gap);

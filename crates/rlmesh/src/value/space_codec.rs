@@ -38,10 +38,6 @@ fn value_from_space_unchecked(spec: &WireSpec, value: SpaceValue) -> Value {
                     map.insert(key.clone(), value_from_space_unchecked(child, value));
                 }
             }
-            // A key the spec does not declare keeps the wire's sorted order.
-            for (key, value) in values {
-                map.insert(key, value_from_unspecced(value));
-            }
             Value::Dict(map)
         }
         (Some(WireKind::Tuple(tuple)), SpaceValue::Tuple(items))
@@ -435,6 +431,54 @@ mod tests {
             assert_eq!(err.class(), crate::ErrorClass::ProtocolException);
             assert_eq!(err.to_string(), expected.to_string());
         }
+    }
+
+    #[test]
+    fn received_extra_keys_and_domain_errors_are_protocol_errors() {
+        use rlmesh_spaces::spaces::{DictSpaceBuilder, DiscreteBuilder, TextBuilder};
+        let child = DictSpaceBuilder::new()
+            .insert("choice", DiscreteBuilder::new(3).build().unwrap())
+            .build()
+            .unwrap();
+        let space = DictSpaceBuilder::new()
+            .insert("nested", child)
+            .build()
+            .unwrap();
+        for fields in [
+            [
+                ("choice".into(), SpaceValue::Discrete(1)),
+                ("extra".into(), SpaceValue::Discrete(0)),
+            ]
+            .into_iter()
+            .collect(),
+            [("choice".into(), SpaceValue::Text("wrong kind".into()))]
+                .into_iter()
+                .collect(),
+            [("choice".into(), SpaceValue::Discrete(3))]
+                .into_iter()
+                .collect(),
+        ] {
+            let value = SpaceValue::Dict(
+                [("nested".into(), SpaceValue::Dict(fields))]
+                    .into_iter()
+                    .collect(),
+            );
+            let rlmesh_spaces::Conformance::Structural(expected) =
+                rlmesh_spaces::conform(&space, &value)
+            else {
+                panic!("expected structural deviation");
+            };
+            let err = value_from_space(&space, value).unwrap_err();
+            assert_eq!(err.class(), crate::ErrorClass::ProtocolException);
+            assert_eq!(err.to_string(), expected.to_string());
+        }
+        let space = TextBuilder::new(1).charset("a").build().unwrap();
+        let value = SpaceValue::Text("bbb".into());
+        assert!(matches!(
+            rlmesh_spaces::conform(&space, &value),
+            rlmesh_spaces::Conformance::Range(_)
+        ));
+        assert!(value_from_space(&space, value).is_ok());
     }
 
     #[test]
