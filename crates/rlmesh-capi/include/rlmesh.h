@@ -3547,11 +3547,31 @@ typedef struct RLMeshRemoteEnvOptions {
   bool has_request_timeout_seconds;
   double request_timeout_seconds;
   const char* workflow_edition;
+  /* Appended after ABI 5 (read only when struct_size covers them; NULL is the
+   * default). api_key is sent as `authorization: Bearer <key>`; NULL reads
+   * RLMESH_API_KEY for an https:// address only, "" sends none. tls_ca_file
+   * is a PEM bundle an https:// dial trusts instead of the system roots. */
+  const char* api_key;
+  const char* tls_ca_file;
 } RLMeshRemoteEnvOptions;
-#define RLMESH_REMOTE_ENV_OPTIONS_MIN_SIZE sizeof(RLMeshRemoteEnvOptions)
-#define RLMESH_REMOTE_ENV_OPTIONS_INIT                                   \
-  {sizeof(RLMeshRemoteEnvOptions), NULL,  NULL, false, 0,   NULL, false, \
-   RLMESH_TRANSPORT_INVALID,       false, 0.0,  false, 0.0, NULL}
+#define RLMESH_REMOTE_ENV_OPTIONS_MIN_SIZE \
+  (offsetof(RLMeshRemoteEnvOptions, workflow_edition) + sizeof(const char*))
+#define RLMESH_REMOTE_ENV_OPTIONS_INIT \
+  {sizeof(RLMeshRemoteEnvOptions),     \
+   NULL,                               \
+   NULL,                               \
+   false,                              \
+   0,                                  \
+   NULL,                               \
+   false,                              \
+   RLMESH_TRANSPORT_INVALID,           \
+   false,                              \
+   0.0,                                \
+   false,                              \
+   0.0,                                \
+   NULL,                               \
+   NULL,                               \
+   NULL}
 typedef struct RLMeshRemoteModelOptions {
   size_t struct_size;
   const char* address;
@@ -3565,11 +3585,15 @@ typedef struct RLMeshRemoteModelOptions {
   double connect_timeout_seconds;
   bool has_request_timeout_seconds;
   double request_timeout_seconds;
+  /* Appended after ABI 5, as in RLMeshRemoteEnvOptions. */
+  const char* api_key;
+  const char* tls_ca_file;
 } RLMeshRemoteModelOptions;
-#define RLMESH_REMOTE_MODEL_OPTIONS_MIN_SIZE sizeof(RLMeshRemoteModelOptions)
-#define RLMESH_REMOTE_MODEL_OPTIONS_INIT                                  \
-  {sizeof(RLMeshRemoteModelOptions), NULL,  NULL, false, 0,  NULL, false, \
-   RLMESH_TRANSPORT_INVALID,         false, 0.0,  false, 0.0}
+#define RLMESH_REMOTE_MODEL_OPTIONS_MIN_SIZE \
+  (offsetof(RLMeshRemoteModelOptions, request_timeout_seconds) + sizeof(double))
+#define RLMESH_REMOTE_MODEL_OPTIONS_INIT                                   \
+  {sizeof(RLMeshRemoteModelOptions), NULL,  NULL, false, 0,   NULL, false, \
+   RLMESH_TRANSPORT_INVALID,         false, 0.0,  false, 0.0, NULL, NULL}
 /* Env construction connects; Model construction only validates. Remote I/O
  * is exclusive, while immutable accessors/cancellation may overlap any call.
  * Accessor pointers remain borrowed until free, including after close. */

@@ -31,6 +31,10 @@ pub struct RLMeshRemoteEnvOptions {
     pub has_request_timeout_seconds: bool,
     pub request_timeout_seconds: f64,
     pub workflow_edition: *const c_char,
+    /// Appended after ABI 5: read only when `struct_size` covers it.
+    pub api_key: *const c_char,
+    /// Appended after ABI 5: read only when `struct_size` covers it.
+    pub tls_ca_file: *const c_char,
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -47,6 +51,10 @@ pub struct RLMeshRemoteModelOptions {
     pub connect_timeout_seconds: f64,
     pub has_request_timeout_seconds: bool,
     pub request_timeout_seconds: f64,
+    /// Appended after ABI 5: read only when `struct_size` covers it.
+    pub api_key: *const c_char,
+    /// Appended after ABI 5: read only when `struct_size` covers it.
+    pub tls_ca_file: *const c_char,
 }
 fn transport(has: bool, t: i32) -> Result<Option<rlmesh::Transport>, CapiError> {
     if !has {
@@ -79,6 +87,8 @@ unsafe fn env_options(p: *const RLMeshRemoteEnvOptions) -> Result<RemoteEnvOptio
             "request_timeout_seconds",
         )?,
         workflow_edition: unsafe { ffi::text(o.workflow_edition) }?,
+        api_key: unsafe { ffi::text(o.api_key) }?,
+        tls_ca_file: unsafe { ffi::text(o.tls_ca_file) }?.map(Into::into),
     })
 }
 unsafe fn model_options(
@@ -103,6 +113,8 @@ unsafe fn model_options(
                 .then_some(o.request_timeout_seconds),
             "request_timeout_seconds",
         )?,
+        api_key: unsafe { ffi::text(o.api_key) }?,
+        tls_ca_file: unsafe { ffi::text(o.tls_ca_file) }?.map(Into::into),
     })
 }
 struct Common {

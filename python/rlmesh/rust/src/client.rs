@@ -74,6 +74,7 @@ struct ClientCore {
 }
 
 impl ClientCore {
+    #[allow(clippy::too_many_arguments)]
     fn connect(
         role: &'static str,
         public: &'static str,
@@ -81,6 +82,8 @@ impl ClientCore {
         connect_timeout_seconds: Option<f64>,
         request_timeout_seconds: Option<f64>,
         workflow_edition: Option<String>,
+        api_key: Option<&str>,
+        tls_ca_file: Option<&std::path::Path>,
     ) -> PyResult<Self> {
         init_tracing(role);
         let profiler = ProfileCollector::new(role);
@@ -104,13 +107,16 @@ impl ClientCore {
         )
         .map_err(to_py_err)?;
         let declared = crate::lifecycle::checked_workflow_edition(workflow_edition)?;
+        let auth =
+            rlmesh::binding::client_auth(address, api_key, tls_ca_file, true).map_err(to_py_err)?;
 
         let mut client = Python::attach(|py| {
             py.detach(|| {
                 runtime.block_on(EnvClientCore::connect_with(
                     address,
                     CoreConnect {
-                        token: "",
+                        token: auth.token(),
+                        trust: auth.trust().clone(),
                         declared: declared.as_deref(),
                         connect_timeout,
                         request_timeout,
@@ -276,12 +282,14 @@ macro_rules! client_class {
         #[pymethods]
         impl $Class {
             #[new]
-            #[pyo3(signature = (address, *, connect_timeout_seconds=None, request_timeout_seconds=None, workflow_edition=None))]
+            #[pyo3(signature = (address, *, connect_timeout_seconds=None, request_timeout_seconds=None, workflow_edition=None, api_key=None, tls_ca_file=None))]
             fn new(
                 address: &str,
                 connect_timeout_seconds: Option<f64>,
                 request_timeout_seconds: Option<f64>,
                 workflow_edition: Option<String>,
+                api_key: Option<String>,
+                tls_ca_file: Option<String>,
             ) -> PyResult<Self> {
                 Ok(Self {
                     core: ClientCore::connect(
@@ -291,6 +299,8 @@ macro_rules! client_class {
                         connect_timeout_seconds,
                         request_timeout_seconds,
                         workflow_edition,
+                        api_key.as_deref(),
+                        tls_ca_file.as_deref().map(std::path::Path::new),
                     )?,
                 })
             }
@@ -557,7 +567,7 @@ submit! {
     gen_methods_from_python! {
         r#"
 class PyEnvClient:
-    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None: ...
+    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | None = None) -> None: ...
     def address(self) -> str: ...
     def env_id(self) -> str: ...
     def selected_workflow_edition(self) -> str: ...
@@ -581,7 +591,7 @@ submit! {
     gen_methods_from_python! {
         r#"
 class PyVectorEnvClient:
-    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None: ...
+    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | None = None) -> None: ...
     def address(self) -> str: ...
     def env_id(self) -> str: ...
     def selected_workflow_edition(self) -> str: ...

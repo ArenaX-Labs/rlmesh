@@ -370,3 +370,19 @@ pub fn env_factory_native_serve<F: crate::EnvFactory>(
         },
     )
 }
+
+pub use crate::credentials::ClientAuth;
+
+/// Resolve a client's credentials for `address` (binding plumbing): the
+/// explicit `api_key`, else `RLMESH_API_KEY` for an `https://` address, and
+/// the `tls_ca_file` trust. With `warn`, an explicit key for a plaintext
+/// non-loopback host warns. The ValueError class for a key a header cannot
+/// carry or an unusable CA bundle.
+pub fn client_auth(
+    address: &str,
+    api_key: Option<&str>,
+    tls_ca_file: Option<&std::path::Path>,
+    warn: bool,
+) -> Result<ClientAuth> {
+    crate::credentials::resolve(address, api_key, tls_ca_file, warn)
+}

@@ -325,6 +325,11 @@ pub enum ClientError {
     /// header value. The message names the problem, never the token.
     #[error("the endpoint token cannot be sent in the authorization header: it {0}")]
     InvalidToken(&'static str),
+
+    /// The `tls_ca_file` cannot be read or is not a PEM certificate bundle.
+    /// The message names the file and the problem.
+    #[error("{0}")]
+    InvalidTlsCaFile(String),
 }
 
 /// Result type alias for rlmesh-grpc operations.

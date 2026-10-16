@@ -3210,14 +3210,13 @@ params = {}
 ["rlmesh:RemoteEnv"]
 area = "remote"
 rule = ["R-4"]
-parameters = { "address" = { "default" = "None" }, "host" = { "default" = "None" }, "port" = { "default" = "None" }, "path" = { "default" = "None" }, "transport" = { "default" = "None" }, "connect_timeout_seconds" = { "default" = "None" }, "request_timeout_seconds" = { "default" = "None" }, "workflow_edition" = { "default" = "None" } }
+parameters = { "address" = { "default" = "None" }, "host" = { "default" = "None" }, "port" = { "default" = "None" }, "path" = { "default" = "None" }, "transport" = { "default" = "None" }, "connect_timeout_seconds" = { "default" = "None" }, "request_timeout_seconds" = { "default" = "None" }, "workflow_edition" = { "default" = "None" }, "api_key" = { "default" = "None" }, "tls_ca_file" = { "default" = "None" } }
 
 ["rlmesh:RemoteEnv".rust]
 status = "present"
 path = "rlmesh::env::RemoteEnv"
-params = { "address" = "rlmesh::env::RemoteEnvOptions#address", "host" = "rlmesh::env::RemoteEnvOptions#host", "port" = "rlmesh::env::RemoteEnvOptions#port", "path" = "rlmesh::env::RemoteEnvOptions#path", "transport" = "rlmesh::env::RemoteEnvOptions#transport", "connect_timeout_seconds" = "rlmesh::env::RemoteEnvOptions#connect_timeout", "request_timeout_seconds" = "rlmesh::env::RemoteEnvOptions#request_timeout", "workflow_edition" = "rlmesh::env::RemoteEnvOptions#workflow_edition" }
+params = { "address" = "rlmesh::env::RemoteEnvOptions#address", "host" = "rlmesh::env::RemoteEnvOptions#host", "port" = "rlmesh::env::RemoteEnvOptions#port", "path" = "rlmesh::env::RemoteEnvOptions#path", "transport" = "rlmesh::env::RemoteEnvOptions#transport", "connect_timeout_seconds" = "rlmesh::env::RemoteEnvOptions#connect_timeout", "request_timeout_seconds" = "rlmesh::env::RemoteEnvOptions#request_timeout", "workflow_edition" = "rlmesh::env::RemoteEnvOptions#workflow_edition", "api_key" = "rlmesh::env::RemoteEnvOptions#api_key", "tls_ca_file" = "rlmesh::env::RemoteEnvOptions#tls_ca_file" }
 also = [
-  "rlmesh::env::Transport::TrivialClone",
   "rlmesh::RemoteEnv",
   "rlmesh::RemoteEnvOptions",
   "rlmesh::Transport",
@@ -3235,6 +3234,8 @@ also = [
   "rlmesh::env::RemoteEnvOptions::Clone",
   "rlmesh::env::RemoteEnvOptions::Debug",
   "rlmesh::env::RemoteEnvOptions::Default",
+  "rlmesh::env::RemoteEnvOptions::api_key",
+  "rlmesh::env::RemoteEnvOptions::tls_ca_file",
   "rlmesh::env::Transport",
   "rlmesh::env::Transport::Clone",
   "rlmesh::env::Transport::Copy",
@@ -3245,6 +3246,7 @@ also = [
   "rlmesh::env::Transport::PartialEq",
   "rlmesh::env::Transport::StructuralPartialEq",
   "rlmesh::env::Transport::Tcp",
+  "rlmesh::env::Transport::TrivialClone",
   "rlmesh::env::Transport::Unix",
   "rlmesh::env::Transport::as_str",
 ]
@@ -3270,16 +3272,18 @@ also_rules = { "rlmesh::env::RemoteEnv::close_async" = [
 ["rlmesh:RemoteEnv".c]
 status = "present"
 path = "RLMeshRemoteEnv"
-params = { "address" = "RLMeshRemoteEnvOptions#address", "host" = "RLMeshRemoteEnvOptions#host", "port" = "RLMeshRemoteEnvOptions#port", "path" = "RLMeshRemoteEnvOptions#path", "transport" = "RLMeshRemoteEnvOptions#transport", "connect_timeout_seconds" = "RLMeshRemoteEnvOptions#connect_timeout_seconds", "request_timeout_seconds" = "RLMeshRemoteEnvOptions#request_timeout_seconds", "workflow_edition" = "RLMeshRemoteEnvOptions#workflow_edition" }
+params = { "address" = "RLMeshRemoteEnvOptions#address", "host" = "RLMeshRemoteEnvOptions#host", "port" = "RLMeshRemoteEnvOptions#port", "path" = "RLMeshRemoteEnvOptions#path", "transport" = "RLMeshRemoteEnvOptions#transport", "connect_timeout_seconds" = "RLMeshRemoteEnvOptions#connect_timeout_seconds", "request_timeout_seconds" = "RLMeshRemoteEnvOptions#request_timeout_seconds", "workflow_edition" = "RLMeshRemoteEnvOptions#workflow_edition", "api_key" = "RLMeshRemoteEnvOptions#api_key", "tls_ca_file" = "RLMeshRemoteEnvOptions#tls_ca_file" }
 also = [
   "RLMESH_REMOTE_ENV_OPTIONS_INIT",
   "RLMESH_REMOTE_ENV_OPTIONS_MIN_SIZE",
   "RLMeshRemoteEnvOptions",
+  "RLMeshRemoteEnvOptions::api_key",
   "RLMeshRemoteEnvOptions::has_connect_timeout_seconds",
   "RLMeshRemoteEnvOptions::has_port",
   "RLMeshRemoteEnvOptions::has_request_timeout_seconds",
   "RLMeshRemoteEnvOptions::has_transport",
   "RLMeshRemoteEnvOptions::struct_size",
+  "RLMeshRemoteEnvOptions::tls_ca_file",
   "RLMeshTransport",
   "RLMeshTransport::RLMESH_TRANSPORT_INVALID",
   "RLMeshTransport::RLMESH_TRANSPORT_TCP",
@@ -3305,18 +3309,22 @@ also_rules = { "rlmesh_remote_env_free" = [
 ["rlmesh:RemoteEnv".cpp]
 status = "present"
 path = "rlmesh::RemoteEnv"
-params = { "address" = "rlmesh::RemoteEnvOptions#address", "host" = "rlmesh::RemoteEnvOptions#host", "port" = "rlmesh::RemoteEnvOptions#port", "path" = "rlmesh::RemoteEnvOptions#path", "transport" = "rlmesh::RemoteEnvOptions#transport", "connect_timeout_seconds" = "rlmesh::RemoteEnvOptions#connect_timeout", "request_timeout_seconds" = "rlmesh::RemoteEnvOptions#request_timeout", "workflow_edition" = "rlmesh::RemoteEnvOptions#workflow_edition" }
+params = { "address" = "rlmesh::RemoteEnvOptions#address", "host" = "rlmesh::RemoteEnvOptions#host", "port" = "rlmesh::RemoteEnvOptions#port", "path" = "rlmesh::RemoteEnvOptions#path", "transport" = "rlmesh::RemoteEnvOptions#transport", "connect_timeout_seconds" = "rlmesh::RemoteEnvOptions#connect_timeout", "request_timeout_seconds" = "rlmesh::RemoteEnvOptions#request_timeout", "workflow_edition" = "rlmesh::RemoteEnvOptions#workflow_edition", "api_key" = "rlmesh::RemoteEnvOptions#api_key", "tls_ca_file" = "rlmesh::RemoteEnvOptions#tls_ca_file" }
 also = [
   "rlmesh::RemoteEnv::RemoteEnv",
   "rlmesh::RemoteEnv::raw",
   "rlmesh::RemoteEnvOptions",
+  "rlmesh::RemoteEnvOptions::api_key",
   "rlmesh::RemoteEnvOptions::raw",
+  "rlmesh::RemoteEnvOptions::tls_ca_file",
   "rlmesh::RemoteEnvOptions::with_address",
+  "rlmesh::RemoteEnvOptions::with_api_key",
   "rlmesh::RemoteEnvOptions::with_connect_timeout",
   "rlmesh::RemoteEnvOptions::with_host",
   "rlmesh::RemoteEnvOptions::with_path",
   "rlmesh::RemoteEnvOptions::with_port",
   "rlmesh::RemoteEnvOptions::with_request_timeout",
+  "rlmesh::RemoteEnvOptions::with_tls_ca_file",
   "rlmesh::RemoteEnvOptions::with_transport",
   "rlmesh::RemoteEnvOptions::with_workflow_edition",
   "rlmesh::Transport",
@@ -3655,12 +3663,12 @@ result_tuple = ["Value", "double", "bool", "bool", "InfoDict"]
 ["rlmesh:RemoteModel"]
 area = "remote"
 rule = ["R-4"]
-parameters = { "address" = { "default" = "None" }, "host" = { "default" = "None" }, "port" = { "default" = "None" }, "path" = { "default" = "None" }, "transport" = { "default" = "None" }, "connect_timeout_seconds" = { "default" = "None" }, "request_timeout_seconds" = { "default" = "None" } }
+parameters = { "address" = { "default" = "None" }, "host" = { "default" = "None" }, "port" = { "default" = "None" }, "path" = { "default" = "None" }, "transport" = { "default" = "None" }, "connect_timeout_seconds" = { "default" = "None" }, "request_timeout_seconds" = { "default" = "None" }, "api_key" = { "default" = "None" }, "tls_ca_file" = { "default" = "None" } }
 
 ["rlmesh:RemoteModel".rust]
 status = "present"
 path = "rlmesh::RemoteModel"
-params = { "address" = "rlmesh::RemoteModelOptions#address", "host" = "rlmesh::RemoteModelOptions#host", "port" = "rlmesh::RemoteModelOptions#port", "path" = "rlmesh::RemoteModelOptions#path", "transport" = "rlmesh::RemoteModelOptions#transport", "connect_timeout_seconds" = "rlmesh::RemoteModelOptions#connect_timeout", "request_timeout_seconds" = "rlmesh::RemoteModelOptions#request_timeout" }
+params = { "address" = "rlmesh::RemoteModelOptions#address", "host" = "rlmesh::RemoteModelOptions#host", "port" = "rlmesh::RemoteModelOptions#port", "path" = "rlmesh::RemoteModelOptions#path", "transport" = "rlmesh::RemoteModelOptions#transport", "connect_timeout_seconds" = "rlmesh::RemoteModelOptions#connect_timeout", "request_timeout_seconds" = "rlmesh::RemoteModelOptions#request_timeout", "api_key" = "rlmesh::RemoteModelOptions#api_key", "tls_ca_file" = "rlmesh::RemoteModelOptions#tls_ca_file" }
 also = [
   "rlmesh::RemoteModel::Clone",
   "rlmesh::RemoteModel::Debug",
@@ -3673,11 +3681,13 @@ also = [
   "rlmesh::RemoteModelOptions::Debug",
   "rlmesh::RemoteModelOptions::Default",
   "rlmesh::RemoteModelOptions::address",
+  "rlmesh::RemoteModelOptions::api_key",
   "rlmesh::RemoteModelOptions::connect_timeout",
   "rlmesh::RemoteModelOptions::host",
   "rlmesh::RemoteModelOptions::path",
   "rlmesh::RemoteModelOptions::port",
   "rlmesh::RemoteModelOptions::request_timeout",
+  "rlmesh::RemoteModelOptions::tls_ca_file",
   "rlmesh::RemoteModelOptions::transport",
 ]
 rule = ["R-3"]
@@ -3692,12 +3702,13 @@ also_rules = { "rlmesh::RemoteModel::new" = [
 ["rlmesh:RemoteModel".c]
 status = "present"
 path = "RLMeshRemoteModel"
-params = { "address" = "RLMeshRemoteModelOptions#address", "host" = "RLMeshRemoteModelOptions#host", "port" = "RLMeshRemoteModelOptions#port", "path" = "RLMeshRemoteModelOptions#path", "transport" = "RLMeshRemoteModelOptions#transport", "connect_timeout_seconds" = "RLMeshRemoteModelOptions#connect_timeout_seconds", "request_timeout_seconds" = "RLMeshRemoteModelOptions#request_timeout_seconds" }
+params = { "address" = "RLMeshRemoteModelOptions#address", "host" = "RLMeshRemoteModelOptions#host", "port" = "RLMeshRemoteModelOptions#port", "path" = "RLMeshRemoteModelOptions#path", "transport" = "RLMeshRemoteModelOptions#transport", "connect_timeout_seconds" = "RLMeshRemoteModelOptions#connect_timeout_seconds", "request_timeout_seconds" = "RLMeshRemoteModelOptions#request_timeout_seconds", "api_key" = "RLMeshRemoteModelOptions#api_key", "tls_ca_file" = "RLMeshRemoteModelOptions#tls_ca_file" }
 also = [
   "RLMESH_REMOTE_MODEL_OPTIONS_INIT",
   "RLMESH_REMOTE_MODEL_OPTIONS_MIN_SIZE",
   "RLMeshRemoteModelOptions",
   "RLMeshRemoteModelOptions::address",
+  "RLMeshRemoteModelOptions::api_key",
   "RLMeshRemoteModelOptions::connect_timeout_seconds",
   "RLMeshRemoteModelOptions::has_connect_timeout_seconds",
   "RLMeshRemoteModelOptions::has_port",
@@ -3708,6 +3719,7 @@ also = [
   "RLMeshRemoteModelOptions::port",
   "RLMeshRemoteModelOptions::request_timeout_seconds",
   "RLMeshRemoteModelOptions::struct_size",
+  "RLMeshRemoteModelOptions::tls_ca_file",
   "RLMeshRemoteModelOptions::transport",
   "rlmesh_remote_model_clone",
   "rlmesh_remote_model_free",
@@ -3733,26 +3745,30 @@ also_rules = { "rlmesh_remote_model_clone" = [
 ["rlmesh:RemoteModel".cpp]
 status = "present"
 path = "rlmesh::RemoteModel"
-params = { "address" = "rlmesh::RemoteModelOptions#address", "host" = "rlmesh::RemoteModelOptions#host", "port" = "rlmesh::RemoteModelOptions#port", "path" = "rlmesh::RemoteModelOptions#path", "transport" = "rlmesh::RemoteModelOptions#transport", "connect_timeout_seconds" = "rlmesh::RemoteModelOptions#connect_timeout", "request_timeout_seconds" = "rlmesh::RemoteModelOptions#request_timeout" }
+params = { "address" = "rlmesh::RemoteModelOptions#address", "host" = "rlmesh::RemoteModelOptions#host", "port" = "rlmesh::RemoteModelOptions#port", "path" = "rlmesh::RemoteModelOptions#path", "transport" = "rlmesh::RemoteModelOptions#transport", "connect_timeout_seconds" = "rlmesh::RemoteModelOptions#connect_timeout", "request_timeout_seconds" = "rlmesh::RemoteModelOptions#request_timeout", "api_key" = "rlmesh::RemoteModelOptions#api_key", "tls_ca_file" = "rlmesh::RemoteModelOptions#tls_ca_file" }
 also = [
   "rlmesh::RemoteModel::RemoteModel",
   "rlmesh::RemoteModel::raw",
   "rlmesh::RemoteModel::to_string",
   "rlmesh::RemoteModelOptions",
   "rlmesh::RemoteModelOptions::address",
+  "rlmesh::RemoteModelOptions::api_key",
   "rlmesh::RemoteModelOptions::connect_timeout",
   "rlmesh::RemoteModelOptions::host",
   "rlmesh::RemoteModelOptions::path",
   "rlmesh::RemoteModelOptions::port",
   "rlmesh::RemoteModelOptions::raw",
   "rlmesh::RemoteModelOptions::request_timeout",
+  "rlmesh::RemoteModelOptions::tls_ca_file",
   "rlmesh::RemoteModelOptions::transport",
   "rlmesh::RemoteModelOptions::with_address",
+  "rlmesh::RemoteModelOptions::with_api_key",
   "rlmesh::RemoteModelOptions::with_connect_timeout",
   "rlmesh::RemoteModelOptions::with_host",
   "rlmesh::RemoteModelOptions::with_path",
   "rlmesh::RemoteModelOptions::with_port",
   "rlmesh::RemoteModelOptions::with_request_timeout",
+  "rlmesh::RemoteModelOptions::with_tls_ca_file",
   "rlmesh::RemoteModelOptions::with_transport",
 ]
 rule = ["R-3"]
@@ -3811,12 +3827,12 @@ params = { "env" = "rlmesh::RemoteModel::session#env", "instruction" = "rlmesh::
 ["rlmesh:RemoteVectorEnv"]
 area = "remote"
 rule = ["R-4"]
-parameters = { "address" = { "default" = "None" }, "host" = { "default" = "None" }, "port" = { "default" = "None" }, "path" = { "default" = "None" }, "transport" = { "default" = "None" }, "connect_timeout_seconds" = { "default" = "None" }, "request_timeout_seconds" = { "default" = "None" }, "workflow_edition" = { "default" = "None" } }
+parameters = { "address" = { "default" = "None" }, "host" = { "default" = "None" }, "port" = { "default" = "None" }, "path" = { "default" = "None" }, "transport" = { "default" = "None" }, "connect_timeout_seconds" = { "default" = "None" }, "request_timeout_seconds" = { "default" = "None" }, "workflow_edition" = { "default" = "None" }, "api_key" = { "default" = "None" }, "tls_ca_file" = { "default" = "None" } }
 
 ["rlmesh:RemoteVectorEnv".rust]
 status = "present"
 path = "rlmesh::env::RemoteVectorEnv"
-params = { "address" = "rlmesh::env::RemoteEnvOptions#address", "host" = "rlmesh::env::RemoteEnvOptions#host", "port" = "rlmesh::env::RemoteEnvOptions#port", "path" = "rlmesh::env::RemoteEnvOptions#path", "transport" = "rlmesh::env::RemoteEnvOptions#transport", "connect_timeout_seconds" = "rlmesh::env::RemoteEnvOptions#connect_timeout", "request_timeout_seconds" = "rlmesh::env::RemoteEnvOptions#request_timeout", "workflow_edition" = "rlmesh::env::RemoteEnvOptions#workflow_edition" }
+params = { "address" = "rlmesh::env::RemoteEnvOptions#address", "host" = "rlmesh::env::RemoteEnvOptions#host", "port" = "rlmesh::env::RemoteEnvOptions#port", "path" = "rlmesh::env::RemoteEnvOptions#path", "transport" = "rlmesh::env::RemoteEnvOptions#transport", "connect_timeout_seconds" = "rlmesh::env::RemoteEnvOptions#connect_timeout", "request_timeout_seconds" = "rlmesh::env::RemoteEnvOptions#request_timeout", "workflow_edition" = "rlmesh::env::RemoteEnvOptions#workflow_edition", "api_key" = "rlmesh::env::RemoteEnvOptions#api_key", "tls_ca_file" = "rlmesh::env::RemoteEnvOptions#tls_ca_file" }
 also = [
   "rlmesh::RemoteVectorEnv",
   "rlmesh::env::RemoteEnvOptions::address",
@@ -3860,7 +3876,7 @@ also_rules = { "rlmesh::env::RemoteVectorEnv::close_async" = [
 ["rlmesh:RemoteVectorEnv".c]
 status = "present"
 path = "RLMeshRemoteVectorEnv"
-params = { "address" = "RLMeshRemoteEnvOptions#address", "host" = "RLMeshRemoteEnvOptions#host", "port" = "RLMeshRemoteEnvOptions#port", "path" = "RLMeshRemoteEnvOptions#path", "transport" = "RLMeshRemoteEnvOptions#transport", "connect_timeout_seconds" = "RLMeshRemoteEnvOptions#connect_timeout_seconds", "request_timeout_seconds" = "RLMeshRemoteEnvOptions#request_timeout_seconds", "workflow_edition" = "RLMeshRemoteEnvOptions#workflow_edition" }
+params = { "address" = "RLMeshRemoteEnvOptions#address", "host" = "RLMeshRemoteEnvOptions#host", "port" = "RLMeshRemoteEnvOptions#port", "path" = "RLMeshRemoteEnvOptions#path", "transport" = "RLMeshRemoteEnvOptions#transport", "connect_timeout_seconds" = "RLMeshRemoteEnvOptions#connect_timeout_seconds", "request_timeout_seconds" = "RLMeshRemoteEnvOptions#request_timeout_seconds", "workflow_edition" = "RLMeshRemoteEnvOptions#workflow_edition", "api_key" = "RLMeshRemoteEnvOptions#api_key", "tls_ca_file" = "RLMeshRemoteEnvOptions#tls_ca_file" }
 also = [
   "RLMeshRemoteEnvOptions::address",
   "RLMeshRemoteEnvOptions::connect_timeout_seconds",
@@ -3888,7 +3904,7 @@ also_rules = { "rlmesh_remote_vector_env_free" = [
 ["rlmesh:RemoteVectorEnv".cpp]
 status = "present"
 path = "rlmesh::RemoteVectorEnv"
-params = { "address" = "rlmesh::RemoteEnvOptions#address", "host" = "rlmesh::RemoteEnvOptions#host", "port" = "rlmesh::RemoteEnvOptions#port", "path" = "rlmesh::RemoteEnvOptions#path", "transport" = "rlmesh::RemoteEnvOptions#transport", "connect_timeout_seconds" = "rlmesh::RemoteEnvOptions#connect_timeout", "request_timeout_seconds" = "rlmesh::RemoteEnvOptions#request_timeout", "workflow_edition" = "rlmesh::RemoteEnvOptions#workflow_edition" }
+params = { "address" = "rlmesh::RemoteEnvOptions#address", "host" = "rlmesh::RemoteEnvOptions#host", "port" = "rlmesh::RemoteEnvOptions#port", "path" = "rlmesh::RemoteEnvOptions#path", "transport" = "rlmesh::RemoteEnvOptions#transport", "connect_timeout_seconds" = "rlmesh::RemoteEnvOptions#connect_timeout", "request_timeout_seconds" = "rlmesh::RemoteEnvOptions#request_timeout", "workflow_edition" = "rlmesh::RemoteEnvOptions#workflow_edition", "api_key" = "rlmesh::RemoteEnvOptions#api_key", "tls_ca_file" = "rlmesh::RemoteEnvOptions#tls_ca_file" }
 also = [
   "rlmesh::RemoteEnvOptions::address",
   "rlmesh::RemoteEnvOptions::connect_timeout",
@@ -14674,7 +14690,7 @@ status = "bridge"
 ["rlmesh.numpy:RemoteEnv"]
 area = "remote"
 rule = ["R-24"]
-parameters = { "address" = { "default" = "None" }, "host" = { "default" = "None" }, "port" = { "default" = "None" }, "path" = { "default" = "None" }, "transport" = { "default" = "None" }, "connect_timeout_seconds" = { "default" = "None" }, "request_timeout_seconds" = { "default" = "None" }, "workflow_edition" = { "default" = "None" } }
+parameters = { "address" = { "default" = "None" }, "host" = { "default" = "None" }, "port" = { "default" = "None" }, "path" = { "default" = "None" }, "transport" = { "default" = "None" }, "connect_timeout_seconds" = { "default" = "None" }, "request_timeout_seconds" = { "default" = "None" }, "workflow_edition" = { "default" = "None" }, "api_key" = { "default" = "None" }, "tls_ca_file" = { "default" = "None" } }
 
 ["rlmesh.numpy:RemoteEnv".rust]
 status = "bridge"
@@ -14898,7 +14914,7 @@ status = "bridge"
 ["rlmesh.numpy:RemoteModel"]
 area = "remote"
 rule = ["R-24"]
-parameters = { "address" = { "default" = "None" }, "host" = { "default" = "None" }, "port" = { "default" = "None" }, "path" = { "default" = "None" }, "transport" = { "default" = "None" }, "connect_timeout_seconds" = { "default" = "None" }, "request_timeout_seconds" = { "default" = "None" } }
+parameters = { "address" = { "default" = "None" }, "host" = { "default" = "None" }, "port" = { "default" = "None" }, "path" = { "default" = "None" }, "transport" = { "default" = "None" }, "connect_timeout_seconds" = { "default" = "None" }, "request_timeout_seconds" = { "default" = "None" }, "api_key" = { "default" = "None" }, "tls_ca_file" = { "default" = "None" } }
 
 ["rlmesh.numpy:RemoteModel".rust]
 status = "bridge"
@@ -14940,7 +14956,7 @@ status = "bridge"
 ["rlmesh.numpy:RemoteVectorEnv"]
 area = "remote"
 rule = ["R-24"]
-parameters = { "address" = { "default" = "None" }, "host" = { "default" = "None" }, "port" = { "default" = "None" }, "path" = { "default" = "None" }, "transport" = { "default" = "None" }, "connect_timeout_seconds" = { "default" = "None" }, "request_timeout_seconds" = { "default" = "None" }, "workflow_edition" = { "default" = "None" } }
+parameters = { "address" = { "default" = "None" }, "host" = { "default" = "None" }, "port" = { "default" = "None" }, "path" = { "default" = "None" }, "transport" = { "default" = "None" }, "connect_timeout_seconds" = { "default" = "None" }, "request_timeout_seconds" = { "default" = "None" }, "workflow_edition" = { "default" = "None" }, "api_key" = { "default" = "None" }, "tls_ca_file" = { "default" = "None" } }
 
 ["rlmesh.numpy:RemoteVectorEnv".rust]
 status = "bridge"

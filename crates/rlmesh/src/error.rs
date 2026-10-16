@@ -484,6 +484,9 @@ impl Error {
             rlmesh_grpc::error::Error::Client(
                 error @ rlmesh_grpc::error::ClientError::InvalidToken(_),
             ) => Self::invalid_argument(error.to_string()),
+            rlmesh_grpc::error::Error::Client(
+                rlmesh_grpc::error::ClientError::InvalidTlsCaFile(message),
+            ) => Self::invalid_argument(message),
             rlmesh_grpc::error::Error::Client(error) => Self::Connection(error.to_string()),
             // rlmesh_grpc::error::Error is #[non_exhaustive].
             other => Self::Internal(other.to_string()),

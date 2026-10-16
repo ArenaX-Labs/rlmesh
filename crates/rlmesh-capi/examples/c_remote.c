@@ -224,20 +224,28 @@ int main(void) {
   CHECK(rlmesh_remote_model_clone(rm, &clone) == RLMESH_OK);
   rlmesh_remote_model_free(rm);
   rm = clone;
+  /* A plain local env, with no EnvServer: stepped on this thread. */
   RLMeshEnv* local = NULL;
   CHECK(rlmesh_env_new(&ev, &state, &attrs, &local) == RLMESH_OK);
-  CHECK(rlmesh_remote_model_session(rm, rlmesh_env_target(local), NULL, &session) ==
-            RLMESH_ERR_TYPE &&
-        session == NULL);
-  rlmesh_env_free(local);
   struct timespec delay = {0, 1000000};
   RLMeshStatus connected = RLMESH_ERR_CONNECTION;
   for (int i = 0; i < 500 && connected == RLMESH_ERR_CONNECTION; ++i) {
-    connected = rlmesh_remote_model_session(rm, rlmesh_env_server_target(server), NULL, &session);
+    connected = rlmesh_remote_model_session(rm, rlmesh_env_target(local), NULL, &session);
     if (connected == RLMESH_ERR_CONNECTION) nanosleep(&delay, NULL);
   }
   CHECK(connected == RLMESH_OK && session);
   RLMeshRunResult* result = NULL;
+  CHECK(rlmesh_session_run(session, NULL, &result) == RLMESH_OK);
+  CHECK(rlmesh_run_result_num_episodes(result) == 1 && rlmesh_run_result_total_steps(result) == 1);
+  rlmesh_run_result_free(result);
+  result = NULL;
+  CHECK(rlmesh_session_close(session) == RLMESH_OK);
+  rlmesh_session_free(session);
+  session = NULL;
+  rlmesh_env_free(local);
+  CHECK(rlmesh_remote_model_session(rm, rlmesh_env_server_target(server), NULL, &session) ==
+            RLMESH_OK &&
+        session);
   CHECK(rlmesh_session_run(session, NULL, &result) == RLMESH_OK);
   CHECK(rlmesh_run_result_num_episodes(result) == 1 && rlmesh_run_result_total_steps(result) == 1);
   rlmesh_run_result_free(result);

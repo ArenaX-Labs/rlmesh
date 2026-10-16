@@ -1040,6 +1040,16 @@ struct RunPlan {
     hooks: bool,
 }
 
+/// A served model's refusal of a local vector env: `RemoteModel` drives one
+/// lane.
+fn local_vector_refusal() -> Error {
+    Error::Type(
+        "a served model drives a single env (RemoteModel is single-lane); got a local \
+         vector env: pass a single env, or serve the vector env and run a local model"
+            .to_string(),
+    )
+}
+
 /// What the caller's side holds for the session's env.
 enum CallerEnv<'a> {
     None,
@@ -1315,13 +1325,34 @@ impl<'a> Session<'a> {
         // bound with.
         let mut lent = None;
         let mut server = None;
+        // A local env is stepped on the caller's side; its contract is
+        // derived here, before the model is dialed, and a factory's env is
+        // built now (and closed by the session, or here if creation fails).
+        let mut caller_env = CallerEnv::None;
         let (env_port, contract, env_offer) = match env.0 {
-            EnvKind::Env(_) | EnvKind::Vector(_) | EnvKind::Factory(_) => {
-                return Err(Error::Type(
-                    "a served model runs against an env client exposing `env_contract` \
-                     (RemoteEnv, an EnvServer, or an address to dial); got a local env"
-                        .to_string(),
-                ));
+            EnvKind::Vector(_) => {
+                return Err(local_vector_refusal());
+            }
+            EnvKind::Env(env) => {
+                let contract = crate::env::sync_wire::env_contract_of(&*env)?;
+                single_lane(contract.num_envs())?;
+                let wire = contract.to_wire()?;
+                caller_env = CallerEnv::Borrowed(LocalEnv::Env(env));
+                (EnvPort::Local, wire, None)
+            }
+            EnvKind::Factory(mut factory) => {
+                let made = super::native::OwnedMadeEnv(Some(factory.make()?), false);
+                let wire = match &made.0 {
+                    Some(MadeEnv::Env(env)) => {
+                        let contract = crate::env::sync_wire::env_contract_of(&**env)?;
+                        single_lane(contract.num_envs())?;
+                        contract.to_wire()?
+                    }
+                    _ => return Err(local_vector_refusal()),
+                };
+                let mut made = made;
+                caller_env = CallerEnv::Factory(factory, made.0.take());
+                (EnvPort::Local, wire, None)
             }
             EnvKind::Server(served) => {
                 let contract = served.env_contract();
@@ -1359,9 +1390,14 @@ impl<'a> Session<'a> {
                 )
             }
             EnvKind::Address(address) => {
+                // An https:// env address carries RLMESH_API_KEY, as a
+                // RemoteEnv dialed with no api_key does.
+                let auth = crate::credentials::resolve(&address, None, None, false)?;
                 let connected = EnvClientCore::connect_with(
                     &address,
                     CoreConnect {
+                        token: auth.token(),
+                        trust: auth.trust().clone(),
                         declared: edition.as_deref(),
                         ..CoreConnect::default()
                     },
@@ -1380,7 +1416,7 @@ impl<'a> Session<'a> {
                 (
                     EnvPort::Remote {
                         address,
-                        token: String::new(),
+                        token: auth.token().to_string(),
                         client: Some(Box::new(core)),
                         borrowed: false,
                     },
@@ -1398,6 +1434,7 @@ impl<'a> Session<'a> {
             contract,
             ModelConnect {
                 token: model.token(),
+                trust: model.trust().clone(),
                 env_offer,
                 declared: edition.as_deref(),
                 connect_timeout: model.connect_timeout(),
@@ -1409,10 +1446,21 @@ impl<'a> Session<'a> {
         // it returns (RMT-6).
         let cancelled = dial_cancel.is_cancelled() || _watch.fired();
         // A firing wins over either dial outcome and is consumed by this call.
-        if cancelled {
-            return Err(Error::Cancelled);
-        }
-        let mut client = dialed?;
+        let dialed = if cancelled {
+            Err(Error::Cancelled)
+        } else {
+            dialed
+        };
+        let mut client = match dialed {
+            Ok(client) => client,
+            Err(error) => {
+                // An env built here for this session is closed, not leaked.
+                if let CallerEnv::Factory(_, made) = &mut caller_env {
+                    drop(super::native::OwnedMadeEnv(made.take(), false));
+                }
+                return Err(error);
+            }
+        };
         let env_port = lease
             .env
             .take()
@@ -1442,7 +1490,7 @@ impl<'a> Session<'a> {
                 last_pace: Duration::ZERO,
                 last_view_failed: false,
             },
-            env: CallerEnv::None,
+            env: caller_env,
             queue,
             server,
             lent,

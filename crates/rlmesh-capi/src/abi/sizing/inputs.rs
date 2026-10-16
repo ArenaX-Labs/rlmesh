@@ -3,6 +3,21 @@
 use super::SizedInput;
 
 macro_rules! input {
+    ($ty:ty; min = $min:ident; appended = [$($appended:ident),*] $(; bools = [$($bool:ident),*])?) => {
+        // SAFETY: as below; all-zero is valid for every field (pointers,
+        // integers, floats, bools).
+        unsafe impl SizedInput for $ty {
+            const BOOL_FIELDS: &'static [(usize, &'static str)] = &[
+                $($((std::mem::offset_of!($ty, $bool), stringify!($bool)),)*)?
+            ];
+            const MIN_SIZE: usize = std::mem::offset_of!($ty, $min)
+                + crate::abi::sizing::inputs::field_size(|v: &$ty| &v.$min);
+            const APPENDED_ENDS: &'static [usize] = &[
+                $(std::mem::offset_of!($ty, $appended)
+                    + crate::abi::sizing::inputs::field_size(|v: &$ty| &v.$appended),)*
+            ];
+        }
+    };
     ($ty:ty $(, $field:ident)*) => {
         // SAFETY: listed bools are the only restricted scalar representations;
         // remaining fields are C integers, floats, raw pointers or nullable callbacks.
@@ -155,18 +170,16 @@ input!(
 );
 input!(crate::recorder::records::RLMeshWorkloadRecordOptions);
 input!(
-    crate::remote_api::RLMeshRemoteEnvOptions,
-    has_port,
-    has_transport,
-    has_connect_timeout_seconds,
-    has_request_timeout_seconds
+    crate::remote_api::RLMeshRemoteEnvOptions;
+    min = workflow_edition;
+    appended = [api_key, tls_ca_file];
+    bools = [has_port, has_transport, has_connect_timeout_seconds, has_request_timeout_seconds]
 );
 input!(
-    crate::remote_api::RLMeshRemoteModelOptions,
-    has_port,
-    has_transport,
-    has_connect_timeout_seconds,
-    has_request_timeout_seconds
+    crate::remote_api::RLMeshRemoteModelOptions;
+    min = request_timeout_seconds;
+    appended = [api_key, tls_ca_file];
+    bools = [has_port, has_transport, has_connect_timeout_seconds, has_request_timeout_seconds]
 );
 input!(
     crate::run_api::RLMeshRunOptions,
@@ -218,3 +231,8 @@ input!(
 );
 input!(crate::variant::RLMeshVariantOptions);
 input!(crate::view::RLMeshView, has_step_hz);
+
+/// The size of the field `get` projects, in a const context.
+pub(crate) const fn field_size<T, F>(_get: fn(&T) -> &F) -> usize {
+    std::mem::size_of::<F>()
+}

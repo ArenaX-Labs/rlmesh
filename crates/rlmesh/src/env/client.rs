@@ -38,10 +38,12 @@ const RUNTIME_INFO_KEYS: [&str; 2] = ["episode_ids", "completed_episodes"];
 ///
 /// `address` excludes the helpers (`host`, `port`, `path`, `transport`);
 /// without either the constructor fails with the ValueError class. A zero
-/// timeout means no timeout, as `None` does.
-#[derive(Clone, Debug, Default)]
+/// timeout means no timeout, as `None` does. `Debug` never prints the
+/// `api_key`.
+#[derive(Clone, Default)]
 pub struct RemoteEnvOptions {
-    /// The endpoint (`tcp://host:port`, `host:port` or `unix:///path`).
+    /// The endpoint (`tcp://host:port`, `host:port`, `https://host[:port]`
+    /// or `unix:///path`).
     pub address: Option<String>,
     /// TCP host helper (default `127.0.0.1`); needs `port`.
     pub host: Option<String>,
@@ -59,6 +61,28 @@ pub struct RemoteEnvOptions {
     /// The workflow edition this client declares on the handshake; empty or
     /// whitespace declares nothing and resolution continues.
     pub workflow_edition: Option<String>,
+    /// The key sent as `authorization: Bearer <key>` on every request; `None`
+    /// reads `RLMESH_API_KEY` for an `https://` address only, `""` sends none.
+    pub api_key: Option<String>,
+    /// A PEM bundle an `https://` dial trusts instead of the system roots.
+    pub tls_ca_file: Option<std::path::PathBuf>,
+}
+
+impl std::fmt::Debug for RemoteEnvOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RemoteEnvOptions")
+            .field("address", &self.address)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("path", &self.path)
+            .field("transport", &self.transport)
+            .field("connect_timeout", &self.connect_timeout)
+            .field("request_timeout", &self.request_timeout)
+            .field("workflow_edition", &self.workflow_edition)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field("tls_ca_file", &self.tls_ca_file)
+            .finish()
+    }
 }
 
 impl RemoteEnvOptions {
@@ -107,6 +131,18 @@ impl RemoteEnvOptions {
     /// Set `workflow_edition`.
     pub fn workflow_edition(mut self, edition: impl Into<String>) -> Self {
         self.workflow_edition = Some(edition.into());
+        self
+    }
+
+    /// Set `api_key`.
+    pub fn api_key(mut self, api_key: impl Into<String>) -> Self {
+        self.api_key = Some(api_key.into());
+        self
+    }
+
+    /// Set `tls_ca_file`.
+    pub fn tls_ca_file(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.tls_ca_file = Some(path.into());
         self
     }
 }
@@ -251,6 +287,8 @@ impl EditionCell {
 pub struct CoreConnect<'a> {
     /// Endpoint token (empty: none).
     pub token: &'a str,
+    /// The certificate authorities an `https://` dial trusts.
+    pub trust: rlmesh_grpc::TlsTrust,
     /// The workflow edition this side declares (already resolved).
     pub declared: Option<&'a str>,
     /// Bound on the dial and handshake.
@@ -318,7 +356,11 @@ impl EnvClientCore {
     pub async fn connect_with(address: &str, options: CoreConnect<'_>) -> Result<Self> {
         let parsed = ConnectAddress::parse(address)?;
         check_token(options.token)?;
-        let dial = Self::dial(parsed, options.token, options.declared);
+        let credentials = rlmesh_grpc::Credentials {
+            token: options.token.to_string(),
+            trust: options.trust,
+        };
+        let dial = Self::dial(parsed, &credentials, options.declared);
         let mut core = match normalize_timeout(options.connect_timeout) {
             Some(timeout) => tokio::time::timeout(timeout, dial)
                 .await
@@ -336,8 +378,12 @@ impl EnvClientCore {
         Ok(core)
     }
 
-    async fn dial(address: ConnectAddress, token: &str, declared: Option<&str>) -> Result<Self> {
-        let mut inner = rlmesh_grpc::EnvClient::connect_with_token(&address.to_string(), token)
+    async fn dial(
+        address: ConnectAddress,
+        credentials: &rlmesh_grpc::Credentials,
+        declared: Option<&str>,
+    ) -> Result<Self> {
+        let mut inner = rlmesh_grpc::EnvClient::connect_with(&address.to_string(), credentials)
             .await
             .map_err(Error::from_grpc)?;
         inner.declare_workflow_edition(declared.map(str::to_string));
@@ -897,6 +943,7 @@ fn decode_render_png(png: &[u8]) -> Result<Value> {
 
 /// Resolve the client's own declaration (Core's chain: the call, then the
 /// process and project surfaces) and dial with `options`.
+/// A nonempty `token` (an ext constructor's) stands in for `api_key`.
 async fn connect_core(options: RemoteEnvOptions, token: &str) -> Result<EnvClientCore> {
     let address = normalize_connect_address(
         options.address.as_deref(),
@@ -906,6 +953,13 @@ async fn connect_core(options: RemoteEnvOptions, token: &str) -> Result<EnvClien
         options.transport,
     )?;
     ConnectAddress::parse(&address)?;
+    let api_key = if token.is_empty() {
+        options.api_key.as_deref()
+    } else {
+        Some(token)
+    };
+    let auth =
+        crate::credentials::resolve(&address, api_key, options.tls_ca_file.as_deref(), true)?;
     let declared = crate::editions::resolve_native(
         crate::editions::EditionSources {
             call: options.workflow_edition.as_deref(),
@@ -917,7 +971,8 @@ async fn connect_core(options: RemoteEnvOptions, token: &str) -> Result<EnvClien
     EnvClientCore::connect_with(
         &address,
         CoreConnect {
-            token,
+            token: auth.token(),
+            trust: auth.trust().clone(),
             declared: declared.as_deref(),
             connect_timeout: options.connect_timeout,
             request_timeout: options.request_timeout,

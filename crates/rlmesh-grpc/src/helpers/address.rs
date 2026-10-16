@@ -1,9 +1,10 @@
 //! Address parsing and normalization for connect and bind targets.
 //!
-//! Accepts the `host:port`, `tcp://host:port`, `http://host:port`, and (on Unix)
-//! `unix:///path` forms, rejecting `https://` (reserved for control-plane URLs)
-//! and other schemes. A connect target carries both the dial endpoint and a
-//! normalized display address; a bind target carries the host/port or socket path.
+//! A connect target accepts `host:port`, `tcp://host:port` and
+//! `http://host:port` (plaintext HTTP/2), `https://host[:port]` (TLS, port 443
+//! by default, no path) and, on Unix, `unix:///path`; any other scheme is
+//! refused. It carries both the dial endpoint and a normalized display
+//! address. A bind target carries the host/port or socket path.
 
 #[cfg(not(unix))]
 use std::path::PathBuf;
@@ -24,6 +25,10 @@ pub struct EnvConnectTarget {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum EnvConnectTargetKind {
     Tcp,
+    Tls {
+        host: String,
+        port: u16,
+    },
     #[cfg(unix)]
     Unix {
         path: PathBuf,
@@ -53,15 +58,54 @@ impl EnvConnectTarget {
     /// The socket path for a Unix target, or `None` for TCP.
     pub fn unix_path(&self) -> Option<&PathBuf> {
         match &self.kind {
-            EnvConnectTargetKind::Tcp => None,
+            EnvConnectTargetKind::Tcp | EnvConnectTargetKind::Tls { .. } => None,
             #[cfg(unix)]
             EnvConnectTargetKind::Unix { path } => Some(path),
         }
     }
+
+    /// The server host and port of an `https://` target (the host without
+    /// IPv6 brackets: the name its certificate must carry), or `None` for a
+    /// plaintext or Unix target.
+    pub fn tls_server(&self) -> Option<(&str, u16)> {
+        match &self.kind {
+            EnvConnectTargetKind::Tls { host, port } => Some((host, *port)),
+            _ => None,
+        }
+    }
+
+    /// Whether this is an `https://` (TLS) target.
+    pub fn is_tls(&self) -> bool {
+        self.tls_server().is_some()
+    }
+
+    /// The host of a TCP target, plaintext or TLS (IPv6 without brackets),
+    /// or `None` for a Unix target.
+    pub fn tcp_host(&self) -> Option<&str> {
+        match &self.kind {
+            EnvConnectTargetKind::Tls { host, .. } => Some(host),
+            EnvConnectTargetKind::Tcp => {
+                let authority = self
+                    .endpoint
+                    .strip_prefix("http://")
+                    .unwrap_or(&self.endpoint);
+                let host = authority
+                    .rsplit_once(':')
+                    .map_or(authority, |(host, _)| host);
+                Some(
+                    host.strip_prefix('[')
+                        .and_then(|host| host.strip_suffix(']'))
+                        .unwrap_or(host),
+                )
+            }
+            #[cfg(unix)]
+            EnvConnectTargetKind::Unix { .. } => None,
+        }
+    }
 }
 
-/// Parse a connect address into an [`EnvConnectTarget`], rejecting `https://`
-/// and unsupported schemes.
+/// Parse a connect address into an [`EnvConnectTarget`], rejecting unsupported
+/// schemes and an `https://` address with a path.
 pub fn parse_env_connect_target(addr: &str) -> Result<EnvConnectTarget, Error> {
     let addr = addr.trim();
     if addr.is_empty() {
@@ -88,6 +132,20 @@ pub fn parse_env_connect_target(addr: &str) -> Result<EnvConnectTarget, Error> {
             )
             .into());
         }
+    }
+
+    if let Some(rest) = addr.strip_prefix("https://") {
+        let (host, port) = parse_https_authority(rest)?;
+        let authority = if host.contains(':') {
+            format!("[{host}]:{port}")
+        } else {
+            format!("{host}:{port}")
+        };
+        return Ok(EnvConnectTarget {
+            endpoint: format!("https://{authority}"),
+            address: format!("https://{authority}"),
+            kind: EnvConnectTargetKind::Tls { host, port },
+        });
     }
 
     if let Some(target) = addr.strip_prefix("tcp://") {
@@ -161,46 +219,9 @@ pub fn parse_bind_target(addr: &str) -> Result<BindTarget, Error> {
     })
 }
 
-/// Validate a tcp/http authority and re-emit it as a `tcp://...` session address.
-pub fn normalize_tcp_session_address(addr: &str) -> Result<String, Error> {
-    let addr = addr.trim();
-    if addr.is_empty() {
-        return Err(TransportError::InvalidAddress("empty address".to_string()).into());
-    }
-
-    if addr.starts_with("unix://") {
-        return Err(TransportError::InvalidAddress(
-            "unix sockets are not supported by rlmesh-grpc; use tcp://host:port instead"
-                .to_string(),
-        )
-        .into());
-    }
-
-    if let Some(target) = addr
-        .strip_prefix("tcp://")
-        .or_else(|| addr.strip_prefix("http://"))
-    {
-        validate_tcp_authority(target)?;
-        return Ok(format!("tcp://{target}"));
-    }
-
-    reject_nontcp_scheme(addr)?;
-
-    validate_tcp_authority(addr)?;
-    Ok(format!("tcp://{addr}"))
-}
-
-/// Reject a leftover scheme on an address that should be a bare tcp authority:
-/// `https://` is reserved for control-plane URLs, any other `scheme://` is
-/// unsupported. A schemeless address passes through.
+/// Reject a leftover scheme on an address that should be a bare tcp
+/// authority. A schemeless address passes through.
 fn reject_nontcp_scheme(addr: &str) -> Result<(), Error> {
-    if addr.starts_with("https://") {
-        return Err(TransportError::InvalidAddress(
-            "https:// is reserved for control-plane URLs, not session links".to_string(),
-        )
-        .into());
-    }
-
     if let Some((scheme, _)) = addr.split_once("://") {
         return Err(TransportError::InvalidAddress(format!(
             "unsupported address scheme '{scheme}'"
@@ -209,6 +230,58 @@ fn reject_nontcp_scheme(addr: &str) -> Result<(), Error> {
     }
 
     Ok(())
+}
+
+/// The host (IPv6 without brackets) and port of an `https://` address's
+/// remainder: port 443 when omitted; a path other than `/`, a query, a
+/// fragment or userinfo is refused.
+fn parse_https_authority(rest: &str) -> Result<(String, u16), Error> {
+    let invalid = |reason: &str| -> Error {
+        TransportError::InvalidAddress(format!("https://{rest}: {reason}")).into()
+    };
+    let authority = rest.strip_suffix('/').unwrap_or(rest);
+    if authority.contains('/') {
+        return Err(invalid(
+            "an https endpoint cannot have a path; give only https://host[:port]",
+        ));
+    }
+    if authority.contains(['?', '#']) {
+        return Err(invalid(
+            "an https endpoint cannot have a query or fragment; give only https://host[:port]",
+        ));
+    }
+    if authority.contains('@') {
+        return Err(invalid(
+            "an https endpoint cannot carry credentials in the address; use api_key",
+        ));
+    }
+    let (host, port) = if let Some(bracketed) = authority.strip_prefix('[') {
+        let (host, after) = bracketed
+            .split_once(']')
+            .ok_or_else(|| invalid("unterminated IPv6 address"))?;
+        match after {
+            "" => (host, None),
+            _ => match after.strip_prefix(':') {
+                Some(port) => (host, Some(port)),
+                None => return Err(invalid("unexpected text after the IPv6 address")),
+            },
+        }
+    } else {
+        match authority.rsplit_once(':') {
+            Some((host, port)) => (host, Some(port)),
+            None => (authority, None),
+        }
+    };
+    if host.is_empty() {
+        return Err(invalid("missing host"));
+    }
+    let port = match port {
+        None => 443,
+        Some(port) => port
+            .parse::<u16>()
+            .map_err(|error| invalid(&format!("invalid port '{port}': {error}")))?,
+    };
+    Ok((host.to_string(), port))
 }
 
 fn validate_tcp_authority(authority: &str) -> Result<(), Error> {
@@ -271,30 +344,48 @@ fn normalize_unix_path(path: &str) -> Result<PathBuf, Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        BindTarget, normalize_tcp_session_address, parse_bind_target, parse_env_connect_target,
-    };
+    use super::{BindTarget, parse_bind_target, parse_env_connect_target};
 
     #[test]
-    fn tcp_session_normalization_uses_tcp_scheme() {
-        assert_eq!(
-            normalize_tcp_session_address("localhost:50052").unwrap(),
-            "tcp://localhost:50052"
-        );
-        assert_eq!(
-            normalize_tcp_session_address("tcp://localhost:50052").unwrap(),
-            "tcp://localhost:50052"
-        );
-        assert_eq!(
-            normalize_tcp_session_address("http://localhost:50052").unwrap(),
-            "tcp://localhost:50052"
-        );
+    fn https_targets_default_to_port_443_and_dial_tls() {
+        let bare = parse_env_connect_target("https://models.example").unwrap();
+        assert_eq!(bare.endpoint(), "https://models.example:443");
+        assert_eq!(bare.display_address(), "https://models.example:443");
+        assert_eq!(bare.tls_server(), Some(("models.example", 443)));
+        assert!(bare.is_tls());
+
+        let slash = parse_env_connect_target("https://models.example:8443/").unwrap();
+        assert_eq!(slash.display_address(), "https://models.example:8443");
+        assert_eq!(slash.tls_server(), Some(("models.example", 8443)));
+
+        let v6 = parse_env_connect_target("https://[::1]:9443").unwrap();
+        assert_eq!(v6.endpoint(), "https://[::1]:9443");
+        assert_eq!(v6.tls_server(), Some(("::1", 9443)));
+        assert_eq!(v6.tcp_host(), Some("::1"));
+
+        let plain = parse_env_connect_target("tcp://localhost:50051").unwrap();
+        assert!(!plain.is_tls());
+        assert_eq!(plain.tcp_host(), Some("localhost"));
     }
 
     #[test]
-    fn tcp_session_normalization_rejects_unix_and_https() {
-        assert!(normalize_tcp_session_address("unix:///tmp/rlmesh.sock").is_err());
-        assert!(normalize_tcp_session_address("https://control-plane.example").is_err());
+    fn https_targets_refuse_paths_queries_and_credentials() {
+        for address in [
+            "https://models.example/v1",
+            "https://models.example:443/v1/",
+            "https://models.example?x=1",
+            "https://user:pw@models.example",
+            "https://",
+            "https://models.example:notaport",
+            "https://[::1",
+        ] {
+            let error = parse_env_connect_target(address).unwrap_err().to_string();
+            assert!(error.contains("invalid address"), "{address}: {error}");
+        }
+        let error = parse_env_connect_target("https://models.example/v1")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("cannot have a path"), "{error}");
     }
 
     #[test]
@@ -347,7 +438,6 @@ mod tests {
 
     #[test]
     fn env_connect_target_rejects_invalid_session_urls() {
-        assert!(parse_env_connect_target("https://control-plane.example").is_err());
         assert!(parse_env_connect_target("ftp://localhost:50051").is_err());
         assert!(parse_env_connect_target("localhost").is_err());
     }

@@ -277,63 +277,10 @@ impl PyEnvironment {
                 ));
             }
 
-            let num_envs = if env_ref.hasattr("num_envs")? {
-                env_ref.getattr("num_envs")?.extract::<usize>()?
-            } else {
-                1
-            };
-            let uses_vector_api = env_ref.hasattr("single_observation_space")?
-                || env_ref.hasattr("single_action_space")?
-                || env_ref.hasattr("num_envs")?;
-
-            let obs_space_attr =
-                if uses_vector_api && env_ref.hasattr("single_observation_space")? {
-                    "single_observation_space"
-                } else {
-                    "observation_space"
-                };
-
-            let action_space_attr = if uses_vector_api && env_ref.hasattr("single_action_space")? {
-                "single_action_space"
-            } else {
-                "action_space"
-            };
-
-            for attr in [obs_space_attr, action_space_attr] {
-                if !env_ref.hasattr(attr)? {
-                    return Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(format!(
-                        "env must have '{attr}'"
-                    )));
-                }
-            }
-            let obs_space_py = env_ref.getattr(obs_space_attr)?;
-            let action_space_py = env_ref.getattr(action_space_attr)?;
-
-            let observation_space = crate::spaces::parse_space(&obs_space_py)?;
-            let action_space = crate::spaces::parse_space(&action_space_py)?;
-
-            let env_id = if env_ref.hasattr("spec")? {
-                let spec = env_ref.getattr("spec")?;
-                if !spec.is_none() && spec.hasattr("id")? {
-                    spec.getattr("id")?
-                        .extract::<String>()
-                        .unwrap_or_else(|_| String::from("UnknownEnv-v1"))
-                } else {
-                    String::from("UnknownEnv-v1")
-                }
-            } else {
-                String::from("UnknownEnv-v1")
-            };
-
-            let env_contract = EnvContract {
-                id: env_id,
-                observation_space: Some(observation_space.clone()),
-                action_space: Some(action_space.clone()),
-                metadata: extract_optional_meta_attr(env_ref, "metadata")?,
-                render_mode: extract_render_mode(env_ref)?,
-                num_envs: num_envs as u32,
-                autoreset_mode: derive_autoreset_mode(env_ref)?,
-            };
+            let (env_contract, uses_vector_api) = derive_env_contract(env_ref)?;
+            let num_envs = env_contract.num_envs as usize;
+            let observation_space = env_contract.observation_space.clone().unwrap_or_default();
+            let action_space = env_contract.action_space.clone().unwrap_or_default();
 
             Ok(Self {
                 env,
@@ -410,6 +357,69 @@ impl PyEnvironment {
 }
 
 /// Wrap scalar env objects as the lanes of one endpoint (one env = one lane).
+/// The wire contract of a local Python env, as an `EnvServer` would publish
+/// it, and whether the env uses the vector API (`num_envs` or `single_*`
+/// spaces). No I/O and no env call beyond attribute reads.
+pub fn derive_env_contract(env_ref: &Bound<'_, PyAny>) -> PyResult<(EnvContract, bool)> {
+    let num_envs = if env_ref.hasattr("num_envs")? {
+        env_ref.getattr("num_envs")?.extract::<usize>()?
+    } else {
+        1
+    };
+    let uses_vector_api = env_ref.hasattr("single_observation_space")?
+        || env_ref.hasattr("single_action_space")?
+        || env_ref.hasattr("num_envs")?;
+
+    let obs_space_attr = if uses_vector_api && env_ref.hasattr("single_observation_space")? {
+        "single_observation_space"
+    } else {
+        "observation_space"
+    };
+
+    let action_space_attr = if uses_vector_api && env_ref.hasattr("single_action_space")? {
+        "single_action_space"
+    } else {
+        "action_space"
+    };
+
+    for attr in [obs_space_attr, action_space_attr] {
+        if !env_ref.hasattr(attr)? {
+            return Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(format!(
+                "env must have '{attr}'"
+            )));
+        }
+    }
+    let obs_space_py = env_ref.getattr(obs_space_attr)?;
+    let action_space_py = env_ref.getattr(action_space_attr)?;
+
+    let observation_space = crate::spaces::parse_space(&obs_space_py)?;
+    let action_space = crate::spaces::parse_space(&action_space_py)?;
+
+    let env_id = if env_ref.hasattr("spec")? {
+        let spec = env_ref.getattr("spec")?;
+        if !spec.is_none() && spec.hasattr("id")? {
+            spec.getattr("id")?
+                .extract::<String>()
+                .unwrap_or_else(|_| String::from("UnknownEnv-v1"))
+        } else {
+            String::from("UnknownEnv-v1")
+        }
+    } else {
+        String::from("UnknownEnv-v1")
+    };
+
+    let env_contract = EnvContract {
+        id: env_id,
+        observation_space: Some(observation_space.clone()),
+        action_space: Some(action_space.clone()),
+        metadata: extract_optional_meta_attr(env_ref, "metadata")?,
+        render_mode: extract_render_mode(env_ref)?,
+        num_envs: num_envs as u32,
+        autoreset_mode: derive_autoreset_mode(env_ref)?,
+    };
+    Ok((env_contract, uses_vector_api))
+}
+
 pub fn build_lane_server_env(envs: Vec<Py<PyAny>>, native_values: bool) -> PyResult<PyServerEnv> {
     if envs.is_empty() {
         return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(

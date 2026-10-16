@@ -79,6 +79,7 @@ __all__ = [
     "describe_envelope_normalize",
     "dict_space_spec",
     "discrete_space_spec",
+    "local_env_contract",
     "multi_binary_space_spec",
     "multi_discrete_space_spec",
     "normalize_connect_address",
@@ -380,7 +381,7 @@ class PyEditionCell:
 
 @typing.final
 class PyEnvClient:
-    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None: ...
+    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | None = None) -> None: ...
     def address(self) -> str: ...
     def env_id(self) -> str: ...
     def selected_workflow_edition(self) -> str: ...
@@ -458,7 +459,7 @@ class PyModelClient:
     `PyEnvClient`. Bound to one env contract (one route) for its lifetime; the
     Python layer creates one per `rlmesh.session(model, env)`.
     """
-    def __init__(self, address: str, env_contract: EnvContract, execution_horizon: int = 1, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, env_offer: tuple[list[str], str | None] | None = None) -> None: ...
+    def __init__(self, address: str, env_contract: EnvContract, execution_horizon: int = 1, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, env_offer: tuple[list[str], str | None] | None = None, api_key: str | None = None, tls_ca_file: str | None = None) -> None: ...
     def address(self) -> str: ...
     def env_id(self) -> str: ...
     def selected_workflow_edition(self) -> str: ...
@@ -470,7 +471,7 @@ class PyModelClient:
 
 @typing.final
 class PyVectorEnvClient:
-    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None: ...
+    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | None = None) -> None: ...
     def address(self) -> str: ...
     def env_id(self) -> str: ...
     def selected_workflow_edition(self) -> str: ...
@@ -714,11 +715,13 @@ def build_info() -> BuildInfo:
     the workflow edition it advertises with the cohort behind that spelling.
     """
 
-def check_remote_model_options(address: builtins.str, *, connect_timeout_seconds: typing.Optional[builtins.float] = None, request_timeout_seconds: typing.Optional[builtins.float] = None) -> None:
+def check_remote_model_options(address: builtins.str, *, connect_timeout_seconds: typing.Optional[builtins.float] = None, request_timeout_seconds: typing.Optional[builtins.float] = None, api_key: typing.Optional[builtins.str] = None, tls_ca_file: typing.Optional[builtins.str] = None) -> None:
     r"""
-    Check a `RemoteModel`'s address and timeouts as the native constructor
-    does (RMT-P6): an address that does not parse (`invalid address: ...`)
-    or a negative or non-finite timeout is ValueError. No I/O.
+    Check a `RemoteModel`'s address, timeouts, `api_key` and `tls_ca_file`
+    as the native constructor does (RMT-P6): an address that does not parse
+    (`invalid address: ...`), a negative or non-finite timeout, a key a
+    header cannot carry or an unreadable CA bundle is ValueError. An explicit
+    key for a plaintext non-loopback address warns. No network I/O.
     """
 
 def current_workflow_edition() -> builtins.str:
@@ -739,6 +742,14 @@ def describe_envelope_normalize(kind: str, pieces_json: str, generated_at: str |
 def dict_space_spec(entries: dict[str, object]) -> SpaceSpec: ...
 
 def discrete_space_spec(n: int, start: int = 0, dtype: str | None = None) -> SpaceSpec: ...
+
+def local_env_contract(env: typing.Any) -> typing.Any:
+    r"""
+    The wire contract of a local env, derived as an `EnvServer` would publish
+    it, for a served-model session that steps the env on the caller's side.
+    A vector env (`num_envs` or `single_*` spaces) is TypeError: a served
+    model drives a single env. No I/O.
+    """
 
 def multi_binary_space_spec(shape: list[int], dtype: str | None = None) -> SpaceSpec: ...
 

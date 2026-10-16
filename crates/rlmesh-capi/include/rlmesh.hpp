@@ -5389,6 +5389,11 @@ struct RemoteEnvOptions {
   std::optional<Transport> transport{};
   std::optional<Duration> connect_timeout{}, request_timeout{};
   std::optional<std::string> workflow_edition{};
+  /* Sent as `authorization: Bearer <key>`; unset reads RLMESH_API_KEY for an
+   * https:// address only, "" sends none. Never printed. */
+  std::optional<std::string> api_key{};
+  /* A PEM bundle an https:// dial trusts instead of the system roots. */
+  std::optional<std::string> tls_ca_file{};
   RLMeshRemoteEnvOptions raw() const {
     RLMeshRemoteEnvOptions c = RLMESH_REMOTE_ENV_OPTIONS_INIT;
     c.address = detail::ptr(address);
@@ -5403,6 +5408,8 @@ struct RemoteEnvOptions {
     c.has_request_timeout_seconds = request_timeout.has_value();
     if (request_timeout) c.request_timeout_seconds = request_timeout->count();
     c.workflow_edition = detail::ptr(workflow_edition);
+    c.api_key = detail::ptr(api_key);
+    c.tls_ca_file = detail::ptr(tls_ca_file);
     return c;
   }
   RemoteEnvOptions& with_address(std::optional<std::string> value) & {
@@ -5469,6 +5476,22 @@ struct RemoteEnvOptions {
     request_timeout = std::move(value);
     return std::move(*this);
   }
+  RemoteEnvOptions& with_api_key(std::optional<std::string> value) & {
+    api_key = std::move(value);
+    return *this;
+  }
+  RemoteEnvOptions with_api_key(std::optional<std::string> value) && {
+    api_key = std::move(value);
+    return std::move(*this);
+  }
+  RemoteEnvOptions& with_tls_ca_file(std::optional<std::string> value) & {
+    tls_ca_file = std::move(value);
+    return *this;
+  }
+  RemoteEnvOptions with_tls_ca_file(std::optional<std::string> value) && {
+    tls_ca_file = std::move(value);
+    return std::move(*this);
+  }
 };
 struct RemoteModelOptions {
   std::optional<std::string> address{}, host{};
@@ -5476,6 +5499,9 @@ struct RemoteModelOptions {
   std::optional<std::string> path{};
   std::optional<Transport> transport{};
   std::optional<Duration> connect_timeout{}, request_timeout{};
+  /* As RemoteEnvOptions::api_key and ::tls_ca_file. */
+  std::optional<std::string> api_key{};
+  std::optional<std::string> tls_ca_file{};
   RLMeshRemoteModelOptions raw() const {
     RLMeshRemoteModelOptions c = RLMESH_REMOTE_MODEL_OPTIONS_INIT;
     c.address = detail::ptr(address);
@@ -5489,6 +5515,8 @@ struct RemoteModelOptions {
     if (connect_timeout) c.connect_timeout_seconds = connect_timeout->count();
     c.has_request_timeout_seconds = request_timeout.has_value();
     if (request_timeout) c.request_timeout_seconds = request_timeout->count();
+    c.api_key = detail::ptr(api_key);
+    c.tls_ca_file = detail::ptr(tls_ca_file);
     return c;
   }
   RemoteModelOptions& with_address(std::optional<std::string> value) & {
@@ -5545,6 +5573,22 @@ struct RemoteModelOptions {
   }
   RemoteModelOptions with_request_timeout(std::optional<Duration> value) && {
     request_timeout = std::move(value);
+    return std::move(*this);
+  }
+  RemoteModelOptions& with_api_key(std::optional<std::string> value) & {
+    api_key = std::move(value);
+    return *this;
+  }
+  RemoteModelOptions with_api_key(std::optional<std::string> value) && {
+    api_key = std::move(value);
+    return std::move(*this);
+  }
+  RemoteModelOptions& with_tls_ca_file(std::optional<std::string> value) & {
+    tls_ca_file = std::move(value);
+    return *this;
+  }
+  RemoteModelOptions with_tls_ca_file(std::optional<std::string> value) && {
+    tls_ca_file = std::move(value);
     return std::move(*this);
   }
 };

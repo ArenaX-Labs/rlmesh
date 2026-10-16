@@ -751,6 +751,13 @@ impl crate::VectorEnv for Lanes {
 }
 
 impl Lanes {
+    fn new() -> Lanes {
+        Lanes {
+            counts: vec![0, 0],
+            ended: vec![false, false],
+        }
+    }
+
     fn observations(&self) -> Value {
         Value::List(self.counts.iter().map(|count| Value::Int(*count)).collect())
     }
@@ -936,6 +943,29 @@ fn remote_model_construction_checks_without_dialing() {
     )
     .unwrap_err();
     assert_eq!(err.class(), ErrorClass::ValueError);
+    // An api_key a header cannot carry is refused before any dial, and the
+    // key never reaches the error, Debug or Display.
+    let err = crate::RemoteModel::new(
+        crate::RemoteModelOptions::default()
+            .address("https://localhost:1")
+            .api_key("hidden-key\n"),
+    )
+    .unwrap_err();
+    assert_eq!(err.class(), ErrorClass::ValueError);
+    assert!(!err.to_string().contains("hidden-key"), "{err}");
+    let options = crate::RemoteModelOptions::default()
+        .address("https://localhost:1")
+        .api_key("hidden-key");
+    assert!(!format!("{options:?}").contains("hidden-key"));
+    let model = crate::RemoteModel::new(options).unwrap();
+    assert!(!format!("{model:?} {model}").contains("hidden-key"));
+    // An https address with a path is refused.
+    let err = crate::RemoteModel::new(
+        crate::RemoteModelOptions::default().address("https://models.example/v1"),
+    )
+    .unwrap_err();
+    assert_eq!(err.class(), ErrorClass::ValueError);
+    assert!(err.to_string().contains("cannot have a path"), "{err}");
 }
 
 #[test]
@@ -944,11 +974,29 @@ fn remote_model_sessions_refuse_bad_targets_before_dialing() {
     let model =
         crate::RemoteModel::new(crate::RemoteModelOptions::default().address("127.0.0.1:1"))
             .unwrap();
-    let mut env = Steps::new();
+    let mut lanes = Lanes::new();
     let err = model
-        .session(&mut env, SessionOptions::default())
+        .session(EnvTarget::vector(&mut lanes), SessionOptions::default())
         .unwrap_err();
     assert_eq!(err.class(), ErrorClass::TypeError);
+    assert!(err.to_string().contains("single-lane"), "{err}");
+    // A factory's env is built before the dial and closed when it fails.
+    let mut factory = Factory {
+        closes: Arc::default(),
+        made: 0,
+    };
+    let err = model
+        .session(EnvTarget::factory(&mut factory), SessionOptions::default())
+        .unwrap_err();
+    assert_eq!(err.class(), ErrorClass::ConnectionError, "{err}");
+    assert_eq!(factory.made, 1);
+    for _ in 0..200 {
+        if factory.closes.load(Ordering::SeqCst) == 1 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(factory.closes.load(Ordering::SeqCst), 1);
     let server = steps_server();
     let err = model
         .session(
@@ -1030,6 +1078,40 @@ fn remote_model_sessions_drive_every_remote_target() {
     let mut session = model.session(&server, SessionOptions::default()).unwrap();
     session.reset(None, None).unwrap();
     drop(session);
+
+    // A plain local env, with no EnvServer: stepped on the caller's side.
+    let mut local = Steps::new();
+    let closes = Arc::clone(&local.closes);
+    {
+        let mut session = model
+            .session(&mut local, SessionOptions::default())
+            .unwrap();
+        let result = session.run(SessionRunOptions::default()).unwrap();
+        assert_eq!(result.episodes[0].reward, 3.0);
+        session.close().unwrap();
+    }
+    assert_eq!(local.step, 3);
+    assert_eq!(
+        closes.load(Ordering::SeqCst),
+        0,
+        "a borrowed env stays open"
+    );
+
+    // A factory: its env is built for the session and closed with it.
+    let mut factory = Factory {
+        closes: Arc::default(),
+        made: 0,
+    };
+    let mut session = model
+        .session(EnvTarget::factory(&mut factory), SessionOptions::default())
+        .unwrap();
+    session.run(SessionRunOptions::default()).unwrap();
+    session.close().unwrap();
+    drop(session);
+    assert_eq!(
+        (factory.made, factory.closes.load(Ordering::SeqCst)),
+        (1, 1)
+    );
 
     // rlmesh::run over a served model runs the session loop.
     let result = crate::run(

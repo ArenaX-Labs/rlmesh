@@ -206,8 +206,12 @@ pub fn model_spec_from_json(json: &str) -> Result<crate::adapters::ModelSpec> {
 }
 
 /// A [`RemoteEnv`](crate::RemoteEnv) that sends `token` on every request.
-/// `""` sends none; a token a header cannot carry is the ValueError class
-/// before any dial. Otherwise as [`RemoteEnv::new`](crate::RemoteEnv::new).
+/// `""` falls back to the options' `api_key`; a token a header cannot carry
+/// is the ValueError class before any dial. Otherwise as
+/// [`RemoteEnv::new`](crate::RemoteEnv::new).
+///
+/// Superseded by [`RemoteEnvOptions::api_key`](crate::RemoteEnvOptions::api_key),
+/// which this forwards to.
 pub fn remote_env_with_token(
     options: crate::RemoteEnvOptions,
     token: &str,
@@ -228,6 +232,9 @@ pub async fn remote_env_with_token_async(
 
 /// A [`RemoteVectorEnv`](crate::RemoteVectorEnv) that sends `token` on every
 /// request.
+///
+/// Superseded by [`RemoteEnvOptions::api_key`](crate::RemoteEnvOptions::api_key),
+/// which this forwards to.
 pub fn remote_vector_env_with_token(
     options: crate::RemoteEnvOptions,
     token: &str,
@@ -247,8 +254,12 @@ pub async fn remote_vector_env_with_token_async(
 }
 
 /// A [`RemoteModel`](crate::RemoteModel) whose sessions send `token` on
-/// every model request. `""` sends none; a token a header cannot carry is
-/// the ValueError class here, before any dial. No I/O.
+/// every model request. `""` falls back to the options' `api_key`; a token a
+/// header cannot carry is the ValueError class here, before any dial. No
+/// network I/O.
+///
+/// Superseded by [`RemoteModelOptions::api_key`](crate::RemoteModelOptions::api_key),
+/// which this forwards to.
 pub fn remote_model_with_token(
     options: crate::RemoteModelOptions,
     token: &str,

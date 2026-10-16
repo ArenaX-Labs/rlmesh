@@ -565,7 +565,7 @@
             "signature": "step(action: ActionT) -> tuple[ValueT, float, bool, bool, StepInfo]"
           }
         },
-        "signature": "RemoteEnv(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None",
+        "signature": "RemoteEnv(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | os.PathLike[str] | None = None) -> None",
         "stability": "Stable"
       },
       "RemoteModel": {
@@ -580,7 +580,7 @@
             "signature": "session(env: EnvTarget, *, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, view: ViewArg = None, workflow_edition: str | None = None) -> Session[Any, Any]"
           }
         },
-        "signature": "RemoteModel(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None) -> None",
+        "signature": "RemoteModel(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, api_key: str | None = None, tls_ca_file: str | os.PathLike[str] | None = None) -> None",
         "stability": "Stable"
       },
       "RemoteVectorEnv": {
@@ -659,7 +659,7 @@
             "signature": "step(actions: ActionT) -> tuple[ValueT, ValueT, ValueT, ValueT, StepInfo]"
           }
         },
-        "signature": "RemoteVectorEnv(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None",
+        "signature": "RemoteVectorEnv(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | os.PathLike[str] | None = None) -> None",
         "stability": "Stable"
       },
       "RunContext": {
@@ -2695,7 +2695,7 @@
             "signature": "step(action: ActionT) -> tuple[ValueT, float, bool, bool, StepInfo]"
           }
         },
-        "signature": "RemoteEnv(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None",
+        "signature": "RemoteEnv(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | os.PathLike[str] | None = None) -> None",
         "stability": "Experimental"
       },
       "RemoteModel": {
@@ -2710,7 +2710,7 @@
             "signature": "session(env: EnvTarget, *, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, view: ViewArg = None, workflow_edition: str | None = None) -> Session[Any, Any]"
           }
         },
-        "signature": "RemoteModel(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None) -> None",
+        "signature": "RemoteModel(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, api_key: str | None = None, tls_ca_file: str | os.PathLike[str] | None = None) -> None",
         "stability": "Experimental"
       },
       "RemoteVectorEnv": {
@@ -2789,7 +2789,7 @@
             "signature": "step(actions: ActionT) -> tuple[ValueT, ValueT, ValueT, ValueT, StepInfo]"
           }
         },
-        "signature": "RemoteVectorEnv(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None",
+        "signature": "RemoteVectorEnv(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | os.PathLike[str] | None = None) -> None",
         "stability": "Experimental"
       },
       "SandboxBuild": {
@@ -3304,7 +3304,7 @@
             "signature": "step(action: ActionT) -> tuple[ValueT, float, bool, bool, StepInfo]"
           }
         },
-        "signature": "RemoteEnv(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None",
+        "signature": "RemoteEnv(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | os.PathLike[str] | None = None) -> None",
         "stability": "Stable"
       },
       "RemoteModel": {
@@ -3319,7 +3319,7 @@
             "signature": "session(env: EnvTarget, *, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, view: ViewArg = None, workflow_edition: str | None = None) -> Session[Any, Any]"
           }
         },
-        "signature": "RemoteModel(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None) -> None",
+        "signature": "RemoteModel(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, api_key: str | None = None, tls_ca_file: str | os.PathLike[str] | None = None) -> None",
         "stability": "Stable"
       },
       "RemoteVectorEnv": {
@@ -3398,7 +3398,7 @@
             "signature": "step(actions: ActionT) -> tuple[ValueT, ValueT, ValueT, ValueT, StepInfo]"
           }
         },
-        "signature": "RemoteVectorEnv(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None",
+        "signature": "RemoteVectorEnv(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | os.PathLike[str] | None = None) -> None",
         "stability": "Stable"
       },
       "SandboxBuild": {
@@ -4811,7 +4811,7 @@
             "signature": "step(action: ActionT) -> tuple[ValueT, float, bool, bool, StepInfo]"
           }
         },
-        "signature": "RemoteEnv(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None",
+        "signature": "RemoteEnv(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | os.PathLike[str] | None = None) -> None",
         "stability": "Experimental"
       },
       "RemoteModel": {
@@ -4826,7 +4826,7 @@
             "signature": "session(env: EnvTarget, *, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int = 1, view: ViewArg = None, workflow_edition: str | None = None) -> Session[Any, Any]"
           }
         },
-        "signature": "RemoteModel(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None) -> None",
+        "signature": "RemoteModel(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, api_key: str | None = None, tls_ca_file: str | os.PathLike[str] | None = None) -> None",
         "stability": "Experimental"
       },
       "RemoteVectorEnv": {
@@ -4905,7 +4905,7 @@
             "signature": "step(actions: ActionT) -> tuple[ValueT, ValueT, ValueT, ValueT, StepInfo]"
           }
         },
-        "signature": "RemoteVectorEnv(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None",
+        "signature": "RemoteVectorEnv(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | os.PathLike[str] | None = None) -> None",
         "stability": "Experimental"
       },
       "SandboxBuild": {
