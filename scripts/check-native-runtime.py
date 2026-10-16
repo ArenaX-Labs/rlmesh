@@ -13,7 +13,10 @@ def _check(condition, runtime):
 language, version = sys.argv[1:]
 runtime = json.load(sys.stdin)["runtime"]
 _check(runtime.get("language") == language, runtime)
-_check(runtime.get("language_version") == version, runtime)
+if language == "c++":
+    _check("language_version" not in runtime, runtime)
+else:
+    _check(runtime.get("language_version") == version, runtime)
 _check(runtime.get("component") == "rlmesh-capi", runtime)
 _check("framework_versions" not in runtime, runtime)
 toolchain = runtime.get("toolchain")

@@ -2509,33 +2509,8 @@ RLMESH_API RLMeshStatus rlmesh_ext_register_entrypoint(const char* entrypoint,
 #define RLMESH_DETAIL_STRINGIFY(x) RLMESH_DETAIL_STRINGIFY_IMPL(x)
 #ifdef __cplusplus
 #define RLMESH_DETAIL_HOST_LANGUAGE "c++"
-#if defined(_MSVC_LANG) && _MSVC_LANG > __cplusplus
-#define RLMESH_DETAIL_CXX_STANDARD _MSVC_LANG
-#else
-#define RLMESH_DETAIL_CXX_STANDARD __cplusplus
-#endif
-#if RLMESH_DETAIL_CXX_STANDARD > 202302L
-#define RLMESH_DETAIL_HOST_VERSION "26"
-#define RLMESH_DETAIL_HOST_VERSION_CHARS '2', '6'
-#elif RLMESH_DETAIL_CXX_STANDARD > 202002L
-#define RLMESH_DETAIL_HOST_VERSION "23"
-#define RLMESH_DETAIL_HOST_VERSION_CHARS '2', '3'
-#elif RLMESH_DETAIL_CXX_STANDARD >= 202002L
-#define RLMESH_DETAIL_HOST_VERSION "20"
-#define RLMESH_DETAIL_HOST_VERSION_CHARS '2', '0'
-#elif RLMESH_DETAIL_CXX_STANDARD >= 201703L
-#define RLMESH_DETAIL_HOST_VERSION "17"
-#define RLMESH_DETAIL_HOST_VERSION_CHARS '1', '7'
-#elif RLMESH_DETAIL_CXX_STANDARD >= 201402L
-#define RLMESH_DETAIL_HOST_VERSION "14"
-#define RLMESH_DETAIL_HOST_VERSION_CHARS '1', '4'
-#elif RLMESH_DETAIL_CXX_STANDARD >= 201103L
-#define RLMESH_DETAIL_HOST_VERSION "11"
-#define RLMESH_DETAIL_HOST_VERSION_CHARS '1', '1'
-#else
-#define RLMESH_DETAIL_HOST_VERSION "98"
-#define RLMESH_DETAIL_HOST_VERSION_CHARS '9', '8'
-#endif
+/* C++ translation units may mix standards in one binary. Do not bake an
+ * exact standard into shared inline wrapper definitions or advisory metadata. */
 #else
 #define RLMESH_DETAIL_HOST_LANGUAGE "c"
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ > 201710L

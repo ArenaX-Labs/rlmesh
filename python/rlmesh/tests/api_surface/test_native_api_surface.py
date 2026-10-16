@@ -171,7 +171,7 @@ def test_cpp_signatures_read_past_a_truncated_extent(standard: str) -> None:
         m.signature for m in exports["Model"].members if m.kind == "constructor"
     ]
     assert (
-        "template <class P> "
+        "template <class P, std::enable_if_t<Policy<P>, int> = 0> "
         "explicit Model(std::shared_ptr<P> source, ModelOptions options = {})"
     ) in constructors
 
