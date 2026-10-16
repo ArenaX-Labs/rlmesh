@@ -8,9 +8,40 @@
 //! and serves it; a pure-Rust model does the same with no host runtime.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+
+/// The episodes (or, for an anonymous lane, the routes) already warned that
+/// their model returned a chunk shorter than the horizon: Python's Session
+/// warns once per episode (MDL-P11).
+#[derive(Debug, Default)]
+pub(crate) struct ShortChunkWarned(Mutex<HashSet<String>>);
+
+impl ShortChunkWarned {
+    /// Whether `key` has not been warned yet (and mark it).
+    pub(crate) fn first(&self, key: &str) -> bool {
+        self.0
+            .lock()
+            .expect("short-chunk set poisoned")
+            .insert(key.to_string())
+    }
+
+    /// Forget `key` (its episode ended).
+    pub(crate) fn remove(&self, key: &str) {
+        self.0.lock().expect("short-chunk set poisoned").remove(key);
+    }
+}
+
+/// The once-key of a lane's short-chunk warning: its episode, or its route
+/// for an anonymous lane.
+fn warn_key(episode: Option<&EpisodeInfo>) -> String {
+    match episode {
+        Some(episode) if !episode.episode_id.is_empty() => episode.episode_id.clone(),
+        Some(episode) => format!("route:{}", episode.env_id),
+        None => "route:".to_string(),
+    }
+}
 
 use async_trait::async_trait;
 use rayon::prelude::*;
@@ -141,11 +172,9 @@ pub struct AdaptedModelHandler {
     /// predict-family call, drained per request via `take_adapter_ns`. Shared
     /// (`Arc`) because the work runs on `spawn_blocking` threads.
     adapter_ns: Arc<AtomicU64>,
-    /// Whether the short-chunk warning has already fired at this endpoint (see
-    /// [`take_prefix`]). Endpoint-wide, not per route: the fused grouped path
-    /// dispatches lanes concatenated ACROSS routes, so a per-route flag could
-    /// not name the offender anyway — and one line per process is the point.
-    short_chunk_warned: Arc<AtomicBool>,
+    /// The episodes the short-chunk warning already fired for (see
+    /// [`take_prefix`]): once per episode, as Python's Session warns.
+    short_chunk_warned: Arc<ShortChunkWarned>,
     /// The endpoint-wide frame-window budget (see [`FRAME_HISTORY_LIMIT_ENV`]),
     /// read once here so every route is admitted against the same number.
     history_limit: u64,
@@ -163,7 +192,7 @@ impl AdaptedModelHandler {
             spec_less_horizons: Arc::new(Mutex::new(HashMap::new())),
             held: Arc::new(HeldCells::default()),
             adapter_ns: Arc::new(AtomicU64::new(0)),
-            short_chunk_warned: Arc::new(AtomicBool::new(false)),
+            short_chunk_warned: Arc::new(ShortChunkWarned::default()),
             history_limit: frame_history_limit(),
         }
     }
@@ -512,7 +541,7 @@ fn dispatch_corners(
     episodes: &[EpisodeInfo],
     horizon: u32,
     num_envs: usize,
-    short_chunk_warned: &AtomicBool,
+    short_chunk_warned: &ShortChunkWarned,
 ) -> Result<Vec<Vec<Value>>> {
     let native_chunk = predict.native_chunk();
     if episodes.len() != num_envs {
@@ -532,12 +561,14 @@ fn dispatch_corners(
         }
         chunks
             .into_iter()
-            .map(|chunk| {
+            .enumerate()
+            .map(|(index, chunk)| {
                 take_prefix(
                     split_chunk(chunk).map_err(Error::from_apply)?,
                     horizon,
                     native_chunk,
                     short_chunk_warned,
+                    &warn_key(episodes.get(index)),
                 )
             })
             .collect::<Result<Vec<_>>>()
@@ -559,6 +590,7 @@ fn dispatch_corners(
                     horizon,
                     native_chunk,
                     short_chunk_warned,
+                    &warn_key(episodes.get(index)),
                 )
             })
             .collect::<Result<Vec<_>>>()
@@ -590,7 +622,7 @@ fn dispatch_route_corners(
     episodes: &[EpisodeInfo],
     horizon: u32,
     num_envs: usize,
-    short_chunk_warned: &AtomicBool,
+    short_chunk_warned: &ShortChunkWarned,
 ) -> Result<Vec<Vec<Value>>> {
     let input_summary = inputs_summary(&inputs);
     dispatch_corners(
@@ -619,11 +651,12 @@ fn take_prefix(
     mut frames: Vec<Value>,
     horizon: u32,
     native_chunk: Option<u32>,
-    short_chunk_warned: &AtomicBool,
+    short_chunk_warned: &ShortChunkWarned,
+    warn_key: &str,
 ) -> Result<Vec<Value>> {
     match native_chunk {
         Some(native) if frames.len() != native as usize => {
-            return Err(Error::model(format!(
+            return Err(Error::invalid_argument(format!(
                 "model declares native_chunk={native} but its chunk corner returned {} \
                  frames at execution_horizon={horizon}: return the WHOLE native chunk and \
                  let the runtime execute its prefix (do not slice to the horizon), or drop \
@@ -633,20 +666,30 @@ fn take_prefix(
         }
         Some(_) => {}
         None => {
-            if frames.len() < horizon as usize && !short_chunk_warned.swap(true, Ordering::Relaxed)
-            {
-                tracing::warn!(
-                    execution_horizon = horizon,
-                    chunk_len = frames.len(),
-                    "model returned a chunk shorter than the pinned execution horizon; the \
-                     runtime replays what there is and re-plans early. Declare native_chunk \
-                     (Model.native_chunk) so the horizon can be validated at resolve",
-                );
+            if frames.len() < horizon as usize && short_chunk_warned.first(warn_key) {
+                crate::warnings::warn(
+                    crate::WarningCategory::RuntimeWarning,
+                    short_chunk_text(frames.len(), horizon),
+                )?;
             }
         }
     }
+    if frames.is_empty() && horizon > 1 {
+        return Err(Error::invalid_argument(
+            "a chunked model (execute_horizon>1) returned an empty action chunk",
+        ));
+    }
     frames.truncate(horizon as usize);
     Ok(frames)
+}
+
+/// Python's Session text for an undeclared model's short chunk (MDL-P11).
+pub(crate) fn short_chunk_text(frames: usize, horizon: u32) -> String {
+    format!(
+        "the model returned {frames} actions for execution_horizon={horizon}; replaying what \
+         there is and re-planning early. Declare Model.native_chunk so the horizon can be \
+         validated up front."
+    )
 }
 
 /// Whether a bucket of grouped lanes at `horizon` may fuse into one batched
@@ -733,9 +776,9 @@ fn finish_route_frames_inner(
             .collect::<std::result::Result<Vec<SpaceValue>, _>>()
             .map_err(Error::from_apply)?
             .into_iter();
-        let first = applied
-            .next()
-            .ok_or_else(|| Error::model("a chunked model returned an empty action chunk"))?;
+        let first = applied.next().ok_or_else(|| {
+            Error::invalid_argument("a chunked model returned an empty action chunk")
+        })?;
         frame0.push(first);
         lane_replays.push(applied.collect());
     }
@@ -774,7 +817,7 @@ fn predict_route(
     predict: &Arc<dyn PredictFn>,
     observation: ModelObservation,
     adapter_ns: &AtomicU64,
-    short_chunk_warned: &AtomicBool,
+    short_chunk_warned: &ShortChunkWarned,
 ) -> Result<PredictFrames> {
     let num_envs = observation.num_envs;
     let (inputs, config) = {
@@ -875,7 +918,7 @@ fn predict_grouped_fused(
     observations: Vec<ModelObservation>,
     predict: &Arc<dyn PredictFn>,
     adapter_ns: &AtomicU64,
-    short_chunk_warned: &AtomicBool,
+    short_chunk_warned: &ShortChunkWarned,
 ) -> Vec<Result<PredictFrames>> {
     struct Prepared {
         index: usize,
@@ -1217,7 +1260,7 @@ impl ModelHandler for AdaptedModelHandler {
         }))
     }
 
-    async fn reset_adapter(&mut self, _env_id: &str, episode_ids: Vec<String>) -> Result<()> {
+    async fn reset_adapter(&mut self, env_id: &str, episode_ids: Vec<String>) -> Result<()> {
         // The frame buffers were already evicted off the predict lock by
         // `AdaptedRouteSetup::reset_adapter`. What is left is the model's own
         // hook, which shares the model's state with its forwards and so stays
@@ -1226,11 +1269,18 @@ impl ModelHandler for AdaptedModelHandler {
         // Surface the episode-end edge to the model's own hook (one call per
         // ended episode), e.g. to reset a single-env model's recurrent state. An
         // empty `episode_ids` is an evict-ALL/teardown, not an episode end, so it
-        // fires nothing here — model shutdown is `on_close`'s job.
-        if episode_ids.is_empty() {
-            return Ok(());
+        // fires nothing here — model shutdown is `on_close`'s job — but it
+        // drops the env's per-episode model state silently (MDL-8).
+        for episode_id in &episode_ids {
+            self.short_chunk_warned.remove(episode_id);
         }
         let predict = Arc::clone(&self.predict);
+        if episode_ids.is_empty() {
+            let env_id = env_id.to_string();
+            return tokio::task::spawn_blocking(move || predict.on_route_reset(&env_id))
+                .await
+                .map_err(|err| Error::Internal(format!("reset task panicked: {err}")))?;
+        }
         tokio::task::spawn_blocking(move || {
             for episode_id in &episode_ids {
                 predict.on_episode_end(episode_id)?;
@@ -1481,7 +1531,13 @@ impl ModelRouteSetup for AdaptedRouteSetup {
             .lock()
             .expect("spec-less horizons poisoned")
             .remove(env_id);
-        Ok(())
+        // The model's own per-episode state for this env goes too (MDL-8);
+        // the model serializes it behind its in-flight corner calls.
+        let predict = Arc::clone(&self.predict);
+        let env_id = env_id.to_string();
+        tokio::task::spawn_blocking(move || predict.on_route_release(&env_id))
+            .await
+            .map_err(|err| Error::Internal(format!("release task panicked: {err}")))?
     }
 }
 
@@ -1541,7 +1597,7 @@ mod input_context_tests {
 
 #[cfg(test)]
 mod fused_predict_tests {
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
     use crate::model::types::ModelRouteContext;
@@ -1674,6 +1730,7 @@ mod fused_predict_tests {
             .map(|lane| EpisodeInfo {
                 episode_id: format!("ep{lane}"),
                 seed: Some(lane as i64),
+                env_id: String::new(),
             })
             .collect()
     }
@@ -1689,7 +1746,7 @@ mod fused_predict_tests {
             &episodes(5),
             4,
             5,
-            &AtomicBool::new(false),
+            &ShortChunkWarned::default(),
         )
         .expect("frames");
 
@@ -1713,7 +1770,7 @@ mod fused_predict_tests {
             &episodes(3),
             1,
             3,
-            &AtomicBool::new(false),
+            &ShortChunkWarned::default(),
         )
         .expect("frames");
 
@@ -1736,7 +1793,7 @@ mod fused_predict_tests {
             &episodes(3),
             4,
             3,
-            &AtomicBool::new(false),
+            &ShortChunkWarned::default(),
         )
         .expect("frames");
 
@@ -1759,7 +1816,7 @@ mod fused_predict_tests {
             &episodes(4),
             4,
             4,
-            &AtomicBool::new(false),
+            &ShortChunkWarned::default(),
         )
         .expect_err("short fails");
 
@@ -1782,7 +1839,7 @@ mod fused_predict_tests {
             &episodes(3),
             4,
             3,
-            &AtomicBool::new(false),
+            &ShortChunkWarned::default(),
         )
         .expect("chunk batch");
         dispatch_route_corners(
@@ -1791,7 +1848,7 @@ mod fused_predict_tests {
             &episodes(2),
             1,
             2,
-            &AtomicBool::new(false),
+            &ShortChunkWarned::default(),
         )
         .expect("batch");
 
@@ -1817,7 +1874,7 @@ mod fused_predict_tests {
             &episodes(2),
             1,
             3,
-            &AtomicBool::new(false),
+            &ShortChunkWarned::default(),
         )
         .expect_err("row-count mismatch fails");
 
@@ -1898,6 +1955,7 @@ mod fused_predict_tests {
                     episodes: vec![EpisodeInfo {
                         episode_id: format!("ep-{index}"),
                         seed: None,
+                        env_id: String::new(),
                     }],
                     ..Default::default()
                 },
@@ -2174,6 +2232,7 @@ mod fused_route_tests {
                     .map(|value| EpisodeInfo {
                         episode_id: format!("{env_id}-ep-{value}"),
                         seed: None,
+                        env_id: String::new(),
                     })
                     .collect(),
                 ..Default::default()
@@ -2203,6 +2262,7 @@ mod fused_route_tests {
                 episodes: vec![EpisodeInfo {
                     episode_id: episode_id.to_string(),
                     seed,
+                    env_id: String::new(),
                 }],
                 ..Default::default()
             },
@@ -2571,6 +2631,7 @@ mod fused_route_tests {
                 episodes: vec![EpisodeInfo {
                     episode_id: format!("ep-{env_id}"),
                     seed: None,
+                    env_id: String::new(),
                 }],
             },
             num_envs: 1,
@@ -2962,28 +3023,36 @@ mod fused_route_tests {
         assert_eq!(frame_count(&mut handler, obs).await, 3);
     }
 
-    // 13. That short-chunk warning is latched once per endpoint, not per predict.
+    // 13. That short-chunk warning is latched once per episode, not per predict.
     #[test]
-    fn the_short_chunk_warning_latches_once_per_endpoint() {
-        let warned = AtomicBool::new(false);
+    fn the_short_chunk_warning_latches_once_per_episode() {
+        let warned = ShortChunkWarned::default();
         let frames = || vec![Value::Number(0.0), Value::Number(1.0)];
         assert_eq!(
-            take_prefix(frames(), 6, None, &warned)
+            take_prefix(frames(), 6, None, &warned, "ep")
                 .expect("elastic")
                 .len(),
             2
         );
-        assert!(
-            warned.load(Ordering::Relaxed),
-            "the first short chunk warns"
-        );
+        assert!(!warned.first("ep"), "the first short chunk warns");
         assert_eq!(
-            take_prefix(frames(), 6, None, &warned)
+            take_prefix(frames(), 6, None, &warned, "ep")
                 .expect("elastic")
                 .len(),
             2,
             "a latched flag must not change what is replayed"
         );
+        assert!(warned.first("other"), "another episode warns on its own");
+    }
+
+    // 13b. Declared-K and empty-chunk refusals are the ValueError class.
+    #[test]
+    fn chunk_refusals_are_value_errors() {
+        let warned = ShortChunkWarned::default();
+        let error = take_prefix(vec![Value::Number(0.0)], 2, Some(3), &warned, "ep").unwrap_err();
+        assert_eq!(error.class(), crate::ErrorClass::ValueError);
+        let error = take_prefix(Vec::new(), 2, None, &warned, "ep").unwrap_err();
+        assert_eq!(error.class(), crate::ErrorClass::ValueError);
     }
 
     // ---- observation history (a stacked route fed replayed steps as rows) ----
@@ -3077,6 +3146,7 @@ mod fused_route_tests {
         vec![EpisodeInfo {
             episode_id: id.to_string(),
             seed: None,
+            env_id: String::new(),
         }]
     }
 
@@ -3746,6 +3816,7 @@ mod fused_route_tests {
                     .map(|id| EpisodeInfo {
                         episode_id: id.to_string(),
                         seed: None,
+                        env_id: String::new(),
                     })
                     .collect(),
                 ..Default::default()

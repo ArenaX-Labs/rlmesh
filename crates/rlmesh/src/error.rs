@@ -307,7 +307,7 @@ impl Error {
     /// Construct a non-recoverable model failure (code `Internal`), as
     /// Python's `ModelException(message)`.
     ///
-    /// Use this from a [`crate::ModelHandler::predict`] implementation to signal
+    /// Use this from a [`crate::binding::model::ModelHandler::predict`] implementation to signal
     /// that the model declined the request (e.g. a malformed observation),
     /// rather than misreporting it as an internal/transport fault.
     pub fn model(message: impl Into<String>) -> Self {

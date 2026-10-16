@@ -1,7 +1,8 @@
-//! Python's `rlmesh.adapters`, as far as env authoring needs it: the
-//! [`EnvTags`] an env publishes. The typed tag leaves, `tag`, `resolve` and
-//! `ModelSpec` arrive with the adapters surface; until then Rust builds tags
-//! from their wire JSON with [`crate::ext::env_tags_from_json`].
+//! Python's `rlmesh.adapters`, as far as env and model authoring need it: the
+//! [`EnvTags`] an env publishes and the [`ModelSpec`] a model declares. The
+//! typed tag and spec leaves, `tag` and `resolve` arrive with the adapters
+//! surface; until then Rust builds both from their wire JSON with
+//! [`crate::ext::env_tags_from_json`] and [`crate::ext::model_spec_from_json`].
 
 use std::fmt;
 
@@ -65,5 +66,41 @@ impl EnvTags {
 impl fmt::Debug for EnvTags {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "EnvTags({})", self.to_json())
+    }
+}
+
+impl EnvTags {
+    pub(crate) fn wire(&self) -> &rlmesh_adapters::v1::EnvTags {
+        &self.0
+    }
+}
+
+/// A model's declared input tree and action layout: Python's
+/// `adapters.ModelSpec`. A model with a spec has its adapter resolved per
+/// route from the env's [`EnvTags`].
+#[derive(Clone, PartialEq)]
+pub struct ModelSpec(rlmesh_adapters::v1::ModelSpec);
+
+impl ModelSpec {
+    pub(crate) fn from_json(text: &str) -> Result<ModelSpec> {
+        let spec: rlmesh_adapters::v1::ModelSpec = serde_json::from_str(text)
+            .map_err(|err| Error::invalid_argument(format!("invalid model spec: {err}")))?;
+        rlmesh_adapters::v1::reject_unknowns_model(&spec)
+            .map_err(|message| Error::invalid_argument(format!("invalid model spec: {message}")))?;
+        Ok(ModelSpec(spec))
+    }
+
+    pub(crate) fn to_json(&self) -> serde_json::Value {
+        serde_json::to_value(&self.0).unwrap_or(serde_json::Value::Null)
+    }
+
+    pub(crate) fn wire(&self) -> &rlmesh_adapters::v1::ModelSpec {
+        &self.0
+    }
+}
+
+impl fmt::Debug for ModelSpec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "ModelSpec({})", self.to_json())
     }
 }

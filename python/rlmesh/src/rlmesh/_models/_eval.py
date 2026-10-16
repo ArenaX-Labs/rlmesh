@@ -25,6 +25,7 @@ from functools import partial
 from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeVar, cast
 
 from .._value_conversion import from_value, identity_bridge
+from ._calls import CLOSED_TEXT, ModelCalls
 from ._chunk import ChunkReplay
 from ._coerce import RANDOM_SAMPLE
 from ._connect import (
@@ -732,6 +733,7 @@ class Session(Generic[ObsT, ActT]):
     _read_cache: dict[Any, Reader]
     _view_driver: ViewerDriver | None
     _workflow_edition: str | None
+    _model_calls: ModelCalls | None
     _telemetry: _RunTelemetry | None
     _paced_s: float
     _run_failed: bool
@@ -765,6 +767,7 @@ class Session(Generic[ObsT, ActT]):
         device: object | None = None,
         view: object = None,
         workflow_edition: str | None = None,
+        model_calls: ModelCalls | None = None,
     ) -> Session[Any, Any]:
         """Build and populate a session (two modes: local predict+spec, or served model_client).
 
@@ -786,6 +789,9 @@ class Session(Generic[ObsT, ActT]):
                 f"predict. Lower the horizon to at most {native_chunk}."
             )
         self = object.__new__(cls)
+        #: A local model's call gate (None for a served model): a session over
+        #: a model that was closed refuses predict, step and run.
+        self._model_calls = model_calls
         self._native_chunk = native_chunk
         self._predict = predict
         self._predict_chunk = predict_chunk
@@ -882,6 +888,11 @@ class Session(Generic[ObsT, ActT]):
         """Reject any use of an explicitly closed session (no silent reconnect)."""
         if self._closed:
             raise RuntimeError("session is closed")
+
+    def _require_model_open(self, what: str) -> None:
+        """Reject ``what`` on a local model that was closed, or from its own corner."""
+        if self._model_calls is not None:
+            self._model_calls.check_open(what)
 
     def _ensure_connected(self) -> None:
         self._require_open()
@@ -1086,6 +1097,7 @@ class Session(Generic[ObsT, ActT]):
 
     def predict(self, observation: ObsT) -> ActT:
         """Map one env observation to an env-ready action (the model's adapter applied)."""
+        self._require_model_open("predict()")
         self._ensure_connected()
         if self._predict is RANDOM_SAMPLE:
             t0 = time.perf_counter()
@@ -1194,6 +1206,8 @@ class Session(Generic[ObsT, ActT]):
         With a viewer paced by :attr:`View.step_hz <rlmesh.View.step_hz>`, returns
         no sooner than the next step is due.
         """
+        if self._model_calls is not None and self._model_calls.closed:
+            raise RuntimeError(CLOSED_TEXT)
         self._ensure_connected()
         t0 = time.perf_counter()
         obs, reward, terminated, truncated, info = self._client.step(action)
@@ -1365,6 +1379,7 @@ class Session(Generic[ObsT, ActT]):
             )
         if trial_index_base < 0:
             raise ValueError(f"trial_index_base must be >= 0, got {trial_index_base}")
+        self._require_model_open("run()")
         self._ensure_connected()
         n_episodes = resolve_episode_budget(episodes, seeds)
         step_cap = (

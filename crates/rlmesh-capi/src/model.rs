@@ -13,10 +13,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use rlmesh::binding::model::{
+    EpisodeInfo, ModelHandler, ModelObservation, ModelWorker, RunLocalOptions, ServeModelOptions,
+};
 use rlmesh::binding::spaces::SpaceValue;
 use rlmesh::{
-    BindAddress, CancellationToken, ConnectAddress, EpisodeInfo, Error, ModelHandler,
-    ModelObservation, ModelWorker, RunLocalOptions, RuntimeReport, ServeModelOptions, ServeOptions,
+    BindAddress, CancellationToken, ConnectAddress, Error, RuntimeReport, ServeOptions,
     predict_seed,
 };
 
@@ -971,7 +973,7 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use rlmesh::ModelRouteContext;
+    use rlmesh::binding::model::ModelRouteContext;
     use rlmesh::binding::spaces::{DType, EnvContract, Tensor, spaces::DiscreteBuilder};
     use rlmesh_spaces::MetaValue;
 
@@ -1233,6 +1235,7 @@ mod tests {
         EpisodeInfo {
             episode_id: id.to_string(),
             seed,
+            env_id: String::new(),
         }
     }
 
@@ -1602,8 +1605,8 @@ mod tests {
     /// `trial_index` reset option and records the reset seeds + trial ordinals
     /// it was given so a seeded, trial-indexed run is checkable.
     struct SmokeEnv {
-        obs_space: rlmesh::SpaceSpec,
-        action_space: rlmesh::SpaceSpec,
+        obs_space: rlmesh::binding::spaces::SpaceSpec,
+        action_space: rlmesh::binding::spaces::SpaceSpec,
         env_contract: EnvContract,
         resets: Arc<std::sync::Mutex<ResetLog>>,
     }
@@ -1638,10 +1641,10 @@ mod tests {
 
     #[async_trait]
     impl rlmesh::binding::env::Env for SmokeEnv {
-        fn observation_space(&self) -> &rlmesh::SpaceSpec {
+        fn observation_space(&self) -> &rlmesh::binding::spaces::SpaceSpec {
             &self.obs_space
         }
-        fn action_space(&self) -> &rlmesh::SpaceSpec {
+        fn action_space(&self) -> &rlmesh::binding::spaces::SpaceSpec {
             &self.action_space
         }
         fn env_contract(&self) -> &EnvContract {
@@ -1651,7 +1654,8 @@ mod tests {
         async fn reset(
             &mut self,
             req: rlmesh::binding::env::ResetRequest,
-        ) -> Result<rlmesh::binding::env::ResetResult, rlmesh::EnvRuntimeError> {
+        ) -> Result<rlmesh::binding::env::ResetResult, rlmesh::binding::spaces::EnvRuntimeError>
+        {
             let trial = match req.options.as_ref().and_then(|o| o.get("trial_index")) {
                 Some(MetaValue::Int(trial)) => Some(*trial),
                 _ => None,
@@ -1669,7 +1673,8 @@ mod tests {
         async fn step(
             &mut self,
             _req: rlmesh::binding::env::StepRequest,
-        ) -> Result<rlmesh::binding::env::StepResult, rlmesh::EnvRuntimeError> {
+        ) -> Result<rlmesh::binding::env::StepResult, rlmesh::binding::spaces::EnvRuntimeError>
+        {
             Ok(rlmesh::binding::env::StepResult {
                 observation: Some(u8_box(1)),
                 reward: 1.0,
@@ -1682,14 +1687,16 @@ mod tests {
         async fn render(
             &mut self,
             _req: rlmesh::binding::env::RenderRequest,
-        ) -> Result<rlmesh::binding::env::RenderResult, rlmesh::EnvRuntimeError> {
+        ) -> Result<rlmesh::binding::env::RenderResult, rlmesh::binding::spaces::EnvRuntimeError>
+        {
             Ok(rlmesh::binding::env::RenderResult::default())
         }
 
         async fn close(
             &mut self,
             _req: rlmesh::binding::env::CloseRequest,
-        ) -> Result<rlmesh::binding::env::CloseResult, rlmesh::EnvRuntimeError> {
+        ) -> Result<rlmesh::binding::env::CloseResult, rlmesh::binding::spaces::EnvRuntimeError>
+        {
             Ok(rlmesh::binding::env::CloseResult)
         }
     }

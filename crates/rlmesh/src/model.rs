@@ -1,27 +1,47 @@
-//! Model-side API: the [`ModelHandler`] trait, the [`ModelWorker`] that drives
-//! or serves it, and the observation/route/lifecycle types a handler receives.
+//! Model authoring and serving: the [`Policy`] trait, the concrete
+//! [`Model`] handle, the per-episode context, and the engine plumbing the
+//! bindings drive (re-exported through `binding`).
 
-mod engine;
-mod handler;
-mod local;
-mod predict_fn;
+mod bridge;
+mod context;
+pub(crate) mod engine;
+mod facade;
+pub(crate) mod handler;
+pub(crate) mod local;
+mod policy;
+pub(crate) mod predict_fn;
 mod remote;
-mod server;
-mod types;
+pub(crate) mod server;
+pub(crate) mod types;
 mod wire;
-mod worker;
+pub(crate) mod worker;
 
-pub use engine::AdaptedModelHandler;
-pub use handler::{
+pub use context::{BatchPredictContext, EpisodeState, PredictContext};
+pub use facade::{DynPolicy, Model, ModelOptions, ModelServeOptions, PolicyDecl};
+pub(crate) use facade::{construct, run_local};
+pub use policy::{Corners, LoadKey, NO_ADAPTER, Policy, SpecArg, WithContext, with_context};
+pub use remote::RemoteModel;
+pub use types::predict_seed;
+
+// The engine plumbing, public through `binding` (R-25); named here for the
+// crate's own tests.
+#[allow(unused_imports)]
+pub(crate) use engine::AdaptedModelHandler;
+#[allow(unused_imports)]
+pub(crate) use handler::{
     HeldState, HistoryNeeds, ModelHandler, ModelRouteSetup, PredictFrames, ResolveOptions,
     RouteNeeds,
 };
-pub use local::{EnvClientRuntimeEnv, ModelHandlerRuntimeModel};
-pub use predict_fn::{PredictFn, RouteConfig, RouteResolver};
-pub use remote::RemoteModel;
-pub use server::BoundModelServer;
-pub use types::{EpisodeInfo, HistoryFrame, ModelObservation, ModelRouteContext, predict_seed};
-pub use worker::{ModelWorker, RunLocalOptions, ServeModelOptions};
+#[allow(unused_imports)]
+pub(crate) use predict_fn::{PredictFn, RouteConfig, RouteResolver};
+#[allow(unused_imports)]
+pub(crate) use server::BoundModelServer;
+#[allow(unused_imports)]
+pub(crate) use types::{EpisodeInfo, HistoryFrame, ModelObservation, ModelRouteContext};
+#[allow(unused_imports)]
+pub(crate) use worker::{ModelWorker, RunLocalOptions, ServeModelOptions};
 
+#[cfg(test)]
+mod facade_tests;
 #[cfg(test)]
 mod tests;

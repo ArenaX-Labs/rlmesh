@@ -424,7 +424,8 @@ pub unsafe extern "C" fn rlmesh_space_free(space: *mut RLMeshSpace) {
 pub extern "C" fn rlmesh_space_spec(space: *const RLMeshSpace) -> *const RLMeshSpaceSpec {
     guard_value(std::ptr::null(), || {
         space_ref(space).map_or(std::ptr::null(), |space| {
-            let wire: *const rlmesh::SpaceSpec = rlmesh::binding::space_spec_wire(space.spec());
+            let wire: *const rlmesh::binding::spaces::SpaceSpec =
+                rlmesh::binding::space_spec_wire(space.spec());
             wire.cast()
         })
     })

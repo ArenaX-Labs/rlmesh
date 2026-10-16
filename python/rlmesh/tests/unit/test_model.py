@@ -572,6 +572,8 @@ def test_split_chunk_stays_in_framework_and_does_not_force_numpy() -> None:
     from rlmesh._models._chunk import split_chunk
 
     class FakeDeviceTensor:
+        ndim = 2
+
         def __init__(self, rows: list[Any]) -> None:
             self._rows = rows
 
