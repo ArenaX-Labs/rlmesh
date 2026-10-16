@@ -841,3 +841,44 @@ fn construction_errors_follow_rmt_12() {
         "{err}"
     );
 }
+
+#[test]
+fn empty_connect_host_defaults_to_loopback() {
+    assert_eq!(
+        super::client::normalize_connect_address(None, Some(""), Some(1234), None, None).unwrap(),
+        "tcp://127.0.0.1:1234"
+    );
+}
+
+#[test]
+fn foreground_callback_shutdown_marks_the_server_stopped_at_once() {
+    struct Stops(Arc<Mutex<Option<std::sync::Weak<EnvServer>>>>);
+    impl Env for Stops {
+        fn observation_space(&self) -> Space {
+            Discrete::new(2, DiscreteOptions::default()).unwrap().into()
+        }
+        fn action_space(&self) -> Space {
+            self.observation_space()
+        }
+        fn reset(&mut self, _: Option<i64>, _: Option<&InfoDict>) -> Result<(Value, InfoDict)> {
+            let server = self.0.lock().unwrap().as_ref().unwrap().upgrade().unwrap();
+            server.shutdown()?;
+            assert!(server.wait(Some(Duration::ZERO))?);
+            Ok((Value::Int(0), InfoDict::new()))
+        }
+        fn step(&mut self, _: Option<Value>) -> Result<(Value, f64, bool, bool, InfoDict)> {
+            unreachable!()
+        }
+    }
+    let owner = Arc::new(Mutex::new(None));
+    let server = Arc::new(EnvServer::new(Stops(owner.clone()), quick()).unwrap());
+    *owner.lock().unwrap() = Some(Arc::downgrade(&server));
+    let serving = server.clone();
+    let thread = std::thread::spawn(move || serving.serve());
+    let mut remote =
+        crate::RemoteEnv::new(crate::RemoteEnvOptions::default().address(server.address()))
+            .unwrap();
+    remote.reset(None, None).unwrap();
+    remote.close().unwrap();
+    thread.join().unwrap().unwrap();
+}

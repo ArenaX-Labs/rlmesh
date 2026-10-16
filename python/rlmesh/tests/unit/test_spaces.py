@@ -336,3 +336,51 @@ def test_tensor_element_count_overflow_is_a_value_error() -> None:
     # SPC-P9: was OverflowError.
     with pytest.raises(ValueError, match="overflow"):
         Tensor(b"", [2**62, 2**62], "float32")
+
+
+def test_discrete_samples_at_signed_64_bit_boundary() -> None:
+    from rlmesh import spaces
+
+    for start in (-(2**63), 2**63 - 1):
+        space = spaces.Discrete(1, start=start)
+        assert space.sample() == start
+        assert space.contains(start)
+
+
+@pytest.mark.parametrize(
+    ("low", "high", "dtype"), [(-1, 2**63, "int64"), (0, 2**64, "uint64")]
+)
+def test_box_refuses_bounds_outside_64_bit_ranges(low, high, dtype) -> None:
+    from rlmesh import spaces
+
+    with pytest.raises(ValueError, match="64-bit integer range"):
+        spaces.Box(low, high, [1], dtype)
+
+
+def test_box_contains_materializes_iterables_and_wrappers_once() -> None:
+    from rlmesh import spaces
+
+    class Array:
+        calls = 0
+
+        def tolist(self):
+            self.calls += 1
+            assert self.calls == 1
+            return [0, 1]
+
+    box = spaces.Box(0, 1, [2])
+    assert box.contains(range(2))
+    assert box.contains(x for x in range(2))
+    assert box.contains(Array())
+    assert not spaces.Box(0, 1, [1, 2]).contains(x for x in range(2))
+
+
+def test_dict_contains_checks_box_shape_inside_namedtuple() -> None:
+    from collections import namedtuple
+
+    from rlmesh import spaces
+
+    Child = namedtuple("Child", ["array"])
+    space = spaces.Dict({"array": spaces.Box(0, 1, [2, 1])})
+    assert not space.contains(Child([0, 1]))
+    assert space.contains(Child([[0], [1]]))
