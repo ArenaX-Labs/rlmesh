@@ -1,0 +1,57 @@
+
+[[scenario]]
+id = "warning_deliver"
+family = "Warnings"
+rules = ["R-23"]
+operation = "warning"
+variant = "deliver"
+expect = { warnings = 1, category = "UserWarning", calling_thread = true }
+
+[[scenario]]
+id = "warning_fail"
+family = "Warnings"
+rules = ["R-23"]
+operation = "warning"
+variant = "fail"
+expect = { warnings = 1, category = "UserWarning", calling_thread = true, error = "TypeError", text = "warning abort" }
+
+[[scenario]]
+id = "warning_runtime"
+family = "Warnings"
+rules = ["R-23", "RUN-19"]
+operation = "warning"
+variant = "runtime"
+expect = { warnings = 1, category = "RuntimeWarning", calling_thread = true }
+
+[[scenario]]
+id = "warning_runtime_fail"
+family = "Warnings"
+rules = ["R-23", "RUN-19"]
+operation = "warning"
+variant = "runtime_fail"
+expect = { warnings = 1, category = "RuntimeWarning", calling_thread = true, error = "TypeError", text = "warning abort" }
+
+[[scenario]]
+id = "warning_workflow"
+family = "Warnings"
+rules = ["R-23", "RUN-19"]
+operation = "warning"
+variant = "workflow"
+expect = { warnings = 1, category = "WorkflowEditionWarning", calling_thread = true }
+
+[[scenario]]
+id = "warning_recorder"
+family = "Warnings"
+rules = ["R-23", "RUN-19"]
+operation = "warning"
+variant = "recorder"
+expect = { warnings = 1, category = "UserWarning", calling_thread = true }
+
+[[scenario]]
+id = "python_warnings_as_errors"
+family = "Warnings"
+rules = ["R-23"]
+operation = "warning_error"
+languages = ["python"]
+why = "warnings-as-errors is Python warnings-filter behavior; native warning-handler failures have separate fixtures."
+expect = { error = "UserWarning", caller_frame = true }

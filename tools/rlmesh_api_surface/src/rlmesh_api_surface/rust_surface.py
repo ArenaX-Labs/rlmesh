@@ -51,6 +51,7 @@ class RustSurfaceConfig:
     skipped_modules: tuple[str, ...]
     source_repo: str
     source_commit: str | None
+    document_hidden: bool = False
 
 
 def collect_rust_api_surface(
@@ -60,7 +61,7 @@ def collect_rust_api_surface(
     json_dir: Path | None = None,
 ) -> list[ApiModule]:
     """Document the facade crate (building rustdoc JSON unless `json_dir` holds it)."""
-    loader = _CrateLoader(repo_root, json_dir)
+    loader = _CrateLoader(repo_root, json_dir, document_hidden=config.document_hidden)
     facade = loader.load(config.crate)
     return _FacadeWalker(loader, facade, config).collect()
 
@@ -100,8 +101,11 @@ class _Crate:
 
 
 class _CrateLoader:
-    def __init__(self, repo_root: Path, json_dir: Path | None) -> None:
+    def __init__(
+        self, repo_root: Path, json_dir: Path | None, *, document_hidden: bool = False
+    ) -> None:
         self.repo_root = repo_root
+        self.document_hidden = document_hidden
         self.json_dir = json_dir
         self.workspace, self.target_dir = _cargo_workspace(repo_root)
         self._loaded: dict[str, _Crate] = {}
@@ -138,6 +142,7 @@ class _CrateLoader:
                 "unstable-options",
                 "--output-format",
                 "json",
+                *(["--document-hidden-items"] if self.document_hidden else []),
             ],
             cwd=self.repo_root,
             env=env,
@@ -310,6 +315,7 @@ class _FacadeWalker:
             signature=signature,
             documentation=_with_aliases(docs, aliases),
             qualified_name=canonical,
+            aliases=aliases,
             defined_at=defined_at,
             exported_at=exported_at if exported_at != defined_at else None,
             members=self._members(crate, item),
@@ -332,6 +338,7 @@ class _FacadeWalker:
             signature=f"pub use {'::'.join(path)};",
             documentation=_with_aliases(docs, aliases),
             qualified_name=canonical,
+            aliases=aliases,
             exported_at=self._location(placement.use_item)
             if placement.use_item is not None
             else None,
@@ -493,6 +500,10 @@ def _canonical_path(paths: list[str]) -> str:
     `rlmesh::spaces::SpaceSpec` beats the module-wide `rlmesh::spaces::types::SpaceSpec`.
     First seen wins a tie.
     """
+    # The prelude is a convenience alias, never an item's canonical home.
+    paths = [
+        path for path in paths if not path.startswith("rlmesh::prelude::")
+    ] or paths
     nested = [path for path in paths if path.count("::") > 1]
     return min(nested or paths, key=lambda path: path.count("::"))
 

@@ -56,6 +56,8 @@ mise run release:check
 
 Use targeted tests while iterating, then run the full checks before asking for review. If a check cannot be run locally, explain why in the PR template. Test layers and system profiles are described in [docs/testing.md](docs/testing.md).
 
+For cross-language API changes, follow [When parity:check or parity:fixtures fails](docs/testing.md#when-paritycheck-or-parityfixtures-fails), including manifest mappings and shared behavioural fixtures.
+
 Maintainer release process notes live in [docs/release.md](docs/release.md).
 
 ## Development Notes

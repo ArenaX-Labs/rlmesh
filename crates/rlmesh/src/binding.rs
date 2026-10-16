@@ -217,6 +217,7 @@ pub fn adapter_json_format(value: &serde_json::Value) -> Result<String> {
 pub struct AttachedError {
     pub(crate) error: Box<Error>,
     payload: std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    message: Option<String>,
 }
 
 impl std::fmt::Debug for AttachedError {
@@ -228,14 +229,44 @@ impl std::fmt::Debug for AttachedError {
 impl AttachedError {
     /// Attach a host exception without changing its native classification.
     pub fn attach(error: Error, payload: impl std::any::Any + Send + Sync) -> Error {
-        let error = match error {
-            Error::Attached(attached) => attached.error,
-            error => Box::new(error),
+        let (error, message) = match error {
+            Error::Attached(attached) => (attached.error, attached.message),
+            error => (Box::new(error), None),
         };
         Error::Attached(Self {
             error,
             payload: std::sync::Arc::new(payload),
+            message,
         })
+    }
+
+    /// Preserve an authored binding error's text when its native variant
+    /// carries structured data instead (for example a timeout duration).
+    pub fn with_message(error: Error, message: String) -> Error {
+        let error = match error {
+            Error::Attached(mut attached) => {
+                attached.message = Some(message);
+                return Error::Attached(attached);
+            }
+            error => error,
+        };
+        let mut attached = match Self::attach(error, ()) {
+            Error::Attached(attached) => attached,
+            _ => unreachable!(),
+        };
+        attached.message = Some(message);
+        Error::Attached(attached)
+    }
+
+    pub(crate) fn authored_message(&self) -> Option<&str> {
+        self.message.as_deref()
+    }
+
+    pub(crate) fn display(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.message {
+            Some(message) => f.write_str(message),
+            None => std::fmt::Display::fmt(&self.error, f),
+        }
     }
 
     /// Read the host's payload at its outer boundary.

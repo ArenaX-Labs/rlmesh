@@ -185,6 +185,8 @@ The C API (`rlmesh.h`, ABI 5) exposes values, spaces, envs, models, runs and ses
 
 #### Python
 
+- Model run and session warnings identify the caller’s source location, including calls through the top-level run helper, so module warning filters apply to user code.
+
 - `describe(rlmesh.Model(policy))` describes what `describe(policy)` does: the target qualname, the edition declaration, the `load` params, the variants, the predict corners and a class-level `native_chunk` come from the wrapped policy (only `model_spec` is the model's own). Before, they came from the `rlmesh.Model` wrapper class (`rlmesh._native:Model`, no corners). `describe(rlmesh.Model(predict_callable))` keeps the wrapper's model kind and reads its declarations from the callable.
 - `describe` reads `native_chunk` from the class, never from an instance, so describing a `Model` subclass instance no longer reports a K that `load()` set from a checkpoint.
 - `describe_json(..., served_env=[])` raises `ValueError` instead of `IndexError`.
@@ -221,9 +223,15 @@ The C API (`rlmesh.h`, ABI 5) exposes values, spaces, envs, models, runs and ses
 - Custom adapter inputs on the native model engine retain integer and boolean kinds, `None`, and tuples instead of coercing scalars to floats or tuples to lists.
 - `rlmesh check`, `rlmesh check-image`, and `python -m rlmesh._describe --check` join an env's tags against its spaces, per contract branch, the way `rlmesh.serve` does at startup, so tags whose widths or space classes do not fit now fail the check instead of passing it and crashing the server. A contract branch without tags, or whose tags fail to load, fails, as the platform probe does.
 
+#### C and C++
+
+- C output-buffer capacities use output parameter names, and tensor shape lengths use `shape_len`. C++ image helpers take `size` and `stride`, and the space constructor takes `spec`.
+- C++ recorder add and capture options preserve an absent `config` separately from an explicitly empty configuration, including their `with_config` setters.
+
 #### All languages
 
 - Back-to-back environment sessions and runs no longer fail spuriously with an active-session refusal after the previous client closes, detaches, or is dropped. The server releases its Join slot before sending the Close reply, including for older clients. A new Join from the same process waits up to five seconds, bounded by its request timeout, for a dropped or detached client's stream to finish; a stream still draining after that and genuinely concurrent clients receive the active-session refusal.
+- C callbacks reporting `TimeoutError` preserve their authored message through model and session calls instead of returning a fabricated zero-duration timeout.
 - DLPack 1.0 exports requested with `copy=True` set the standard `IS_COPIED` flag as well as exposing writable, independent storage, and DLPack imports reject overflowing sizes and strides before accessing producer data.
 - Model and env servers disable Nagle's algorithm on accepted TCP connections, which removed a ~40 ms stall on some env steps.
 - Served model endpoints enforce `RLMESH_MODEL_ENDPOINT_TOKEN` when set, taking precedence over token options, and served env endpoints enforce `RLMESH_ENV_ENDPOINT_TOKEN` the same way. Empty or invalid environment values fail startup instead of disabling authentication, as does a token no client could send in an HTTP header (leading or trailing whitespace such as a secret file's trailing newline, or control or non-ASCII characters): the error names the variable and the problem, and the value is never trimmed.

@@ -38,7 +38,13 @@ pub(super) fn model_error_value(error: &Error) -> ModelError {
     // text: the client prefixes the code once (COR-27), so `Display` would
     // carry it twice.
     let (code, is_recoverable, message) = match error {
-        Error::Attached(attached) => return model_error_value(attached.error()),
+        Error::Attached(attached) => {
+            let mut wire = model_error_value(attached.error());
+            if let Some(message) = attached.authored_message() {
+                wire.message = message.to_owned();
+            }
+            return wire;
+        }
         Error::Model(model) => (
             ModelErrorCode::Internal,
             model.is_recoverable,
@@ -329,5 +335,41 @@ mod tests {
             }],
         };
         assert!(model_observation_from_endpoint_request(request).is_err());
+    }
+}
+
+#[cfg(test)]
+mod authored_error_tests {
+    use super::*;
+    use crate::binding::AttachedError;
+    use std::time::Duration;
+
+    #[test]
+    fn wire_errors_preserve_authored_text_for_every_class() {
+        for error in [
+            Error::Timeout(Duration::from_secs(5)),
+            Error::Type("underlying type".into()),
+            Error::Runtime("underlying runtime".into()),
+            Error::Connection("underlying connection".into()),
+            Error::invalid_argument("underlying value"),
+            Error::model_recoverable("underlying model"),
+            Error::environment("underlying env"),
+            Error::Cancelled,
+        ] {
+            let expected_recoverable = error.is_recoverable();
+            let error =
+                AttachedError::with_message(error, "authored text: violet checkpoint".into());
+            let wire = model_error_value(&error);
+            assert_eq!(wire.message, "authored text: violet checkpoint");
+            assert_eq!(wire.is_recoverable, expected_recoverable);
+        }
+    }
+
+    #[test]
+    fn payload_without_message_keeps_model_text_unprefixed() {
+        let error = AttachedError::attach(Error::model_recoverable("authored model"), 42_u32);
+        let wire = model_error_value(&error);
+        assert_eq!(wire.message, "authored model");
+        assert!(wire.is_recoverable);
     }
 }

@@ -137,3 +137,56 @@ The local release gate combines static checks, tests, package verification, whee
 ```bash
 mise run release:check
 ```
+
+## When parity:check or parity:fixtures fails
+
+`mise run parity:check` compares the Stable Python snapshot with the live Rust,
+C and C++ APIs. `mise run parity:fixtures` runs shared behavioural scenarios in
+all four languages. The reviewed source of mappings is
+[`docs/specs/language-parity/manifest.toml`](specs/language-parity/manifest.toml);
+checks never regenerate it. Read the cited [parity rule](specs/language-parity/rules.md)
+and inspect the implementation before changing a mapping to silence a failure.
+
+Each `["module:Symbol.member"]` table records Python `parameters`, including
+`default` literals and, where needed, their snapshot `expression`. Its `.rust`,
+`.c` and `.cpp` tables record `status`, native `path`, and `params` targets.
+`Type#field` addresses a data field; `function#parameter` addresses an input.
+Members have their own symbol tables. Preserve Python's input order (R-6/R-7)
+and reset/step output order (R-15).
+
+| Failure                                                 | Where to fix it                                                                                                                                                                                                                                                                                                                  |
+| ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| E-2.1: absent symbol or keyword                         | Add the symbol table or `parameters` entry and each language's `params`. Implement shared APIs required by R-1.                                                                                                                                                                                                                  |
+| E-2.1: bridge or exemption                              | `status = "bridge"` is restricted to R-24's Python framework and typing scopes. `bridges` lists only Python bridge inputs. An `exempt` mapping needs its **own** `rule` citing a declared decision, never a generic `R-n`.                                                                                                       |
+| E-2.2: missing target, name, parameter, order or return | Correct `path`, `params`, `protocol`, `returns` or `result_tuple`, or fix native code to follow R-4/R-7/R-12/R-15. C++ protocol parameters come from detected calls cross-checked against C callback slots.                                                                                                                      |
+| E-2.3: stale gap                                        | Change `missing` to `present` and supply `path`/`params`. A genuinely missing implementation needs `status = "missing"` and `gap = "G-n"` from the spec's gap table.                                                                                                                                                             |
+| E-2.4: public native addition                           | Map a shared field/member directly. `also` inventories individual translation helpers; structural fields (`has_*`, `_reserved*`, `*_len`, `struct_size`), mapped setters and traits are recognized. Other helpers need a per-target `also_rules` citation. Adding an arbitrary member to `also` alone does not establish parity. |
+| E-2.4: native extra or plumbing                         | `[ext].rust/c/cpp` accepts only R-25 fences and its closed list of shared cancellation/serve/ABI exceptions. `[binding]` accepts binding plumbing (R-12/R-25 and vendored SPC-19 DLPack declarations). Move an inappropriate public extra into its fence or remove it.                                                           |
+| E-2.5: default                                          | Fix native initializers/`Default`, or intentionally update `parameters.*.default` with Python. `translations.<parameter>` cites a declared decision for a deliberate translation (for example RUN-20's C sentinel). Regenerate assertions with `python tests/parity/generate_defaults.py`.                                       |
+| E-2.6 / E-2.7: vocabulary or error                      | Fix the native enum/hierarchy to R-9/R-21; update its symbol's `path`/`also` only when the mapping itself is wrong.                                                                                                                                                                                                              |
+
+`translations` are per-parameter decision citations, independent of the row's
+`rule`; a naming rule cannot authorize a rename. Rust default assertions cover
+mapped fields on every `Default` type. Types with required constructor inputs
+use an explicit `default_constructor`; `default_serializers` records a typed
+representation when a Python literal needs translation. A callable default
+that has no data field requires `default_skip.<parameter>` with a concrete
+reason. Keep behavioural coverage for those defaults; a skip is reviewable
+source, not an inferred naming exception.
+
+Fixture failures print the scenario, observed key and expected value. Locate
+it under `tests/parity/fixtures/`, then inspect the corresponding operation in
+`python_runner.py`, `c_runner.c`, `cpp_runner.cpp` and
+`crates/rlmesh/tests/parity_fixtures.rs`. Expectations must come from library
+behaviour; runners must not manufacture expected results. A restricted
+`languages` list requires a `why` explanation. Check warnings counts as well as
+categories/text, and preserve authored error text across local and remote calls.
+Repeat a repaired gate under load with
+`mise run parity:fixtures -- --repeat 5 --load`. The task takes its own heavy
+lock; do not wrap it again. `run.py` honours `CARGO_TARGET_DIR` and supports
+`--no-build` when reusing native consumers.
+
+For local libclang/header-driver mismatches, run header checks with
+`CC="mise exec zig@0.13.0 -- zig cc" CXX="mise exec zig@0.13.0 -- zig c++"`.
+`RLMESH_PARITY_HEADER_CC` / `RLMESH_PARITY_HEADER_CXX` apply those drivers only
+to parity header extraction when invoking the combined check task.

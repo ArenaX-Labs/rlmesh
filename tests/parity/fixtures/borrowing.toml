@@ -1,0 +1,58 @@
+[[scenario]]
+id = "close_env_opt_in"
+family = "Borrowing"
+rules = ["R-17"]
+operation = "run"
+close_env = true
+expect = { episodes = 1, steps = 2, env_closes = 1, model_closes = 0, reusable = true }
+
+[[scenario]]
+id = "session_releases_borrows"
+family = "Borrowing"
+rules = ["R-17"]
+operation = "borrow"
+expect = { env_closes = 0, model_closes = 0, reusable = true, episode_ends = 1 }
+
+[[scenario]]
+id = "busy_remote_handle"
+family = "Borrowing"
+rules = ["R-17"]
+operation = "busy_remote"
+expect = { error = "RuntimeError", text = "the target env already has an active session: a RemoteEnv / RemoteVectorEnv handle that was driven with reset()/step() holds the env's single session slot. close() the handle (or its open session) before run(), or drive it interactively via session().", reusable = true }
+
+[[scenario]]
+id = "session_drop_outside"
+family = "Borrowing"
+rules = ["R-16", "R-17"]
+operation = "drop_session"
+variant = "outside"
+languages = ["rust"]
+why = "Rust session Drop closes synchronously outside Tokio; other languages have no runtime-sensitive Drop contract."
+expect = { env_closes = 1, episode_ends = 1 }
+
+[[scenario]]
+id = "session_drop_task"
+family = "Borrowing"
+rules = ["R-16", "R-17"]
+operation = "drop_session"
+variant = "task"
+languages = ["rust"]
+why = "Rust session Drop skips blocking env close inside a Tokio task; other APIs have no Tokio Drop contract."
+expect = { env_closes = 0, episode_ends = 1 }
+
+[[scenario]]
+id = "session_drop_spawn_blocking"
+family = "Borrowing"
+rules = ["R-16", "R-17"]
+operation = "drop_session"
+variant = "spawn_blocking"
+languages = ["rust"]
+why = "Rust session Drop skips blocking env close on the Tokio blocking pool; this Drop rule is Rust-specific."
+expect = { env_closes = 0, episode_ends = 1 }
+
+[[scenario]]
+id = "second_session_busy_env"
+family = "Borrowing"
+rules = ["R-17"]
+operation = "busy_session"
+expect = { error = "ConnectionError", text = "FailedPrecondition: environment already has an active Join session; only one client may be connected at a time", reusable = true }

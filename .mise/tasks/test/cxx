@@ -101,6 +101,10 @@ case "$CC" in *zig*)
 
 # Compile and run C gates once; the C++ consumers below share the same library.
 link=(-L "$target" -lrlmesh_capi -Wl,-rpath,"$repo_root/$target" -lpthread -ldl -lm)
+# The shared behavioural fixtures use the same toolchain, ABI library and warnings.
+mkdir -p "$tmp/parity"
+$CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
+  tests/parity/c_runner.c "${link[@]}" -o "$tmp/parity/c"
 for example in c_model c_env; do
   $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
     "crates/rlmesh-capi/examples/$example.c" "${link[@]}" -o "$target/${example}_smoke"
@@ -188,6 +192,8 @@ for compiler in "${compilers[@]}"; do
       $compiler "${flags[@]}" "crates/rlmesh-capi/examples/$example.cpp" "${link[@]}" -o "$tmp/$example"
       "$tmp/$example"
     done
+    $compiler "${flags[@]}" tests/parity/cpp_runner.cpp "${link[@]}" -o "$tmp/parity/cpp"
+    RLMESH_PARITY_BIN="$tmp/parity" python tests/parity/run.py --native-only --no-build
     # Exception payloads must be destroyed by the shared library that created them.
     $compiler "${flags[@]}" -fPIC -shared crates/rlmesh-capi/examples/cpp_payload_plugin.cpp \
       "${link[@]}" -o "$tmp/libcpp_payload_plugin.so"

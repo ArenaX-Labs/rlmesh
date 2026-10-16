@@ -94,6 +94,7 @@ ignore = [
 "python/rlmesh/tests/**" = ["B017", "D"]
 "python/rlmesh/tests/type_contract/fixtures/**" = ["D"]
 "tests/system/**" = ["B017", "D"]
+"tests/parity/**" = ["B017", "D"]
 "tools/rlmesh_api_surface/**" = ["D"]
 "tools/rlmesh_system/**" = ["B017", "D"]
 "tools/rlmesh_system_fixtures/**" = ["B017", "D"]

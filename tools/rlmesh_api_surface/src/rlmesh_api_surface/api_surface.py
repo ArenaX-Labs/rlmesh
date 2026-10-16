@@ -94,6 +94,7 @@ class ApiExport:
     defined_at: SourceLocation | None = None
     exported_at: SourceLocation | None = None
     members: list[ApiMember] = field(default_factory=list)
+    aliases: list[str] = field(default_factory=list)
 
     def to_contract(self) -> dict[str, object]:
         snapshot: dict[str, object] = {
@@ -362,6 +363,7 @@ def _collect_native_modules(
                 crate=policy["crate"],
                 stability=policy["stability"],
                 skipped_modules=tuple(policy.get("skipped_modules", [])),
+                document_hidden=bool(policy.get("document_hidden", False)),
                 source_repo=SOURCE_REPO,
                 source_commit=commit,
             ),
@@ -512,7 +514,13 @@ class _Collector:
             name=export_name,
             kind=kind,
             stability=stability,
-            signature=_signature_for(export_name, obj, kind),
+            signature=(
+                ""
+                if kind == "class"
+                and (member_metadata or {}).get("__init__", {}).get("stability")
+                == INTERNAL
+                else _signature_for(export_name, obj, kind)
+            ),
             documentation=documentation,
             qualified_name=f"{module_name}.{export_name}",
             defined_at=self._source_location(obj),

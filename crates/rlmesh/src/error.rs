@@ -528,7 +528,7 @@ impl std::error::Error for EnvironmentError {}
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Attached(attached) => attached.error.fmt(f),
+            Self::Attached(attached) => attached.display(f),
             Self::Internal(message)
             | Self::Protocol(message)
             | Self::Type(message)

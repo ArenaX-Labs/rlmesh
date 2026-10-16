@@ -1,0 +1,89 @@
+
+[[scenario]]
+id = "sync_context_task"
+family = "Sync and async"
+rules = ["R-16"]
+operation = "context"
+variant = "task"
+languages = ["rust"]
+why = "The Rust sync facade must refuse calls inside a Tokio task; other APIs have no Tokio-context guard."
+expect = { error = "RuntimeError", text = "Model::run() blocks; call Model::run_async() from async code" }
+
+[[scenario]]
+id = "sync_context_block_in_place"
+family = "Sync and async"
+rules = ["R-16"]
+operation = "context"
+variant = "block_in_place"
+languages = ["rust"]
+why = "Rust block_in_place still counts as a Tokio task for the sync-call guard; other APIs have no such context."
+expect = { error = "RuntimeError", text = "Model::run() blocks; call Model::run_async() from async code" }
+
+[[scenario]]
+id = "sync_context_spawn_blocking"
+family = "Sync and async"
+rules = ["R-16"]
+operation = "context"
+variant = "spawn_blocking"
+languages = ["rust"]
+why = "The Rust sync-call guard also refuses the Tokio blocking pool; other APIs have no Tokio-context guard."
+expect = { error = "RuntimeError", text = "Model::run() blocks; call Model::run_async() from async code" }
+
+[[scenario]]
+id = "sync_context_thread"
+family = "Sync and async"
+rules = ["R-16"]
+operation = "context"
+variant = "thread"
+languages = ["rust"]
+why = "Rust sync calls may block on a plain OS thread; this tests the Rust-specific Tokio-context guard."
+expect = { episodes = 1 }
+
+[[scenario]]
+id = "sync_context_entered_thread"
+family = "Sync and async"
+rules = ["R-16"]
+operation = "context"
+variant = "entered_thread"
+languages = ["rust"]
+why = "An entered Tokio handle on a plain thread still permits Rust sync calls; this runtime distinction is Rust-specific."
+expect = { episodes = 1 }
+
+[[scenario]]
+id = "sync_context_root"
+family = "Sync and async"
+rules = ["R-16"]
+operation = "context"
+variant = "root"
+languages = ["rust"]
+why = "Rust sync calls are allowed at a Tokio block_on root; this task-context distinction is Rust-specific."
+expect = { episodes = 1 }
+
+[[scenario]]
+id = "sync_context_sync_hook"
+family = "Sync and async"
+rules = ["R-16"]
+operation = "context"
+variant = "sync_hook"
+languages = ["rust"]
+why = "Rust sync hooks may call the sync facade; this tests the Rust-specific Tokio-context guard."
+expect = { episodes = 1 }
+
+[[scenario]]
+id = "sync_context_async_hook"
+family = "Sync and async"
+rules = ["R-16"]
+operation = "context"
+variant = "async_hook"
+languages = ["rust"]
+why = "Rust async hooks must use async methods; this tests the Rust-specific Tokio-context guard."
+expect = { error = "RuntimeError", text = "Model::run() blocks; call Model::run_async() from async code" }
+
+[[scenario]]
+id = "sync_remote_model_from_policy"
+family = "Sync and async"
+rules = ["R-16"]
+operation = "model_callback"
+languages = ["rust"]
+why = "Tests the Rust sync facade re-entering Tokio from a policy callback."
+expect = { episodes = 1 }

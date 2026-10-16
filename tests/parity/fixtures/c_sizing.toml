@@ -1,0 +1,60 @@
+
+[[scenario]]
+id = "c_sizing_zero"
+family = "C sizing"
+rules = ["R-19"]
+operation = "sizing"
+variant = "zero"
+languages = ["c"]
+why = "Tests C ABI struct_size and unknown-tail rules; other APIs hide the raw ABI structs."
+expect = { error = "ValueError" }
+
+[[scenario]]
+id = "c_sizing_minimum"
+family = "C sizing"
+rules = ["R-19"]
+operation = "sizing"
+variant = "minimum"
+languages = ["c"]
+why = "Tests C ABI struct_size and unknown-tail rules; other APIs hide the raw ABI structs."
+expect = { episodes = 1 }
+
+[[scenario]]
+id = "c_sizing_zero_tail"
+family = "C sizing"
+rules = ["R-19"]
+operation = "sizing"
+variant = "zero_tail"
+languages = ["c"]
+why = "Tests C ABI struct_size and unknown-tail rules; other APIs hide the raw ABI structs."
+expect = { episodes = 1 }
+
+[[scenario]]
+id = "c_sizing_nonzero_tail"
+family = "C sizing"
+rules = ["R-19"]
+operation = "sizing"
+variant = "nonzero_tail"
+languages = ["c"]
+why = "Tests C ABI struct_size and unknown-tail rules; other APIs hide the raw ABI structs."
+expect = { error = "TypeError" }
+
+[[scenario]]
+id = "c_sizing_out"
+family = "C sizing"
+rules = ["R-19"]
+operation = "sizing"
+variant = "out"
+languages = ["c"]
+why = "Tests C ABI struct_size and unknown-tail rules; other APIs hide the raw ABI structs."
+expect = { unknown_default = true }
+
+[[scenario]]
+id = "c_sizing_lent"
+family = "C sizing"
+rules = ["R-19"]
+operation = "sizing"
+variant = "lent"
+languages = ["c"]
+why = "Tests C ABI struct_size and unknown-tail rules; other APIs hide the raw ABI structs."
+expect = { unknown_default = true, library_size = true }

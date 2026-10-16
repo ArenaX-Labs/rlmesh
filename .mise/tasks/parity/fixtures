@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Run shared behavioural parity fixtures through Python, Rust, C and C++17"
+#MISE dir="{{ config_root }}"
+set -euo pipefail
+exec mise run dev:heavy -- python tests/parity/run.py "$@"
