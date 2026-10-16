@@ -97,7 +97,7 @@ pub unsafe extern "C" fn rlmesh_adapter_resolve(
             &model_spec,
             trust_entrypoints,
         )
-        .map_err(|err| CapiError::invalid_value(err.message))?;
+        .map_err(|err| CapiError::adapter_resolution(err.message))?;
         unsafe { *out_plan = Box::into_raw(Box::new(RLMeshAdapterPlan(adapter))) };
         Ok(())
     })

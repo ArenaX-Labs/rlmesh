@@ -33,14 +33,14 @@ impl BoundListener {
             BindAddress::Tcp { host, port } => {
                 let listener = TcpListener::bind((host.as_str(), port))
                     .await
-                    .map_err(|err| Error::Server(err.to_string()))?;
+                    .map_err(Error::server)?;
                 Ok(Self::Tcp(listener))
             }
             BindAddress::Unix { path } => {
                 #[cfg(not(unix))]
                 {
                     let _ = path;
-                    Err(Error::Address(
+                    Err(Error::invalid_address(
                         "unix sockets are not supported on Windows; use tcp://host:port instead"
                             .to_string(),
                     ))
@@ -49,8 +49,7 @@ impl BoundListener {
                 #[cfg(unix)]
                 {
                     crate::address::remove_stale_socket(&path)?;
-                    let listener =
-                        UnixListener::bind(&path).map_err(|err| Error::Server(err.to_string()))?;
+                    let listener = UnixListener::bind(&path).map_err(Error::server)?;
                     Ok(Self::Unix { listener, path })
                 }
             }
@@ -63,9 +62,7 @@ impl BoundListener {
     pub(crate) fn local_addr(&self) -> Result<BindAddress> {
         match self {
             Self::Tcp(listener) => {
-                let addr: SocketAddr = listener
-                    .local_addr()
-                    .map_err(|err| Error::Server(err.to_string()))?;
+                let addr: SocketAddr = listener.local_addr().map_err(Error::server)?;
                 Ok(BindAddress::Tcp {
                     host: addr.ip().to_string(),
                     port: addr.port(),
@@ -99,7 +96,7 @@ impl BoundListener {
                 drain_timeout,
             )
             .await
-            .map_err(|err| Error::Server(err.to_string())),
+            .map_err(Error::server),
             #[cfg(unix)]
             Self::Unix { listener, path } => {
                 let result = rlmesh_grpc::lifecycle::await_server_shutdown(
@@ -111,7 +108,7 @@ impl BoundListener {
                     drain_timeout,
                 )
                 .await
-                .map_err(|err| Error::Server(err.to_string()));
+                .map_err(Error::server);
                 // Unlink the socket file on shutdown so a subsequent serve on
                 // the same path does not fail with AddrInUse.
                 let _ = std::fs::remove_file(&path);

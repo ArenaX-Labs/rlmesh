@@ -88,6 +88,13 @@ $CXX -std=c++17 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/cpp_runtime.cpp "${link[@]}" -o "$tmp/cpp_runtime"
 "$tmp/cpp_runtime"
 
+echo "==> C++ exception classes follow the Python inheritance; the header builds without exceptions"
+$CXX -std=c++17 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" \
+  crates/rlmesh-capi/examples/cpp_errors.cpp "${link[@]}" -o "$tmp/cpp_errors"
+"$tmp/cpp_errors"
+printf '#include <rlmesh.hpp>\n' |
+  $CXX -std=c++17 -fno-exceptions "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" -c -x c++ - -o "$tmp/header_noexcept.o"
+
 # 4. Run each smoke against a live env over real gRPC (the pytest analogue).
 #    Both print the same run report; assert the real numbers, not just exit 0.
 #    The harness env takes two steps per episode, and the harness also checks

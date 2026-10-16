@@ -45,11 +45,11 @@ impl ConnectAddress {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Address`](crate::Error::Address) if `value` is not a
+    /// Returns [`Error::InvalidArgument`](crate::Error::InvalidArgument) if `value` is not a
     /// recognized address (including a `unix://` path on Windows, where Unix
     /// sockets are unsupported).
     pub fn parse(value: impl AsRef<str>) -> Result<Self> {
-        let target = parse_env_connect_target(value.as_ref()).map_err(Error::from)?;
+        let target = parse_env_connect_target(value.as_ref()).map_err(Error::from_grpc)?;
         Ok(match target.unix_path() {
             Some(path) => Self::Unix(path.clone()),
             None => Self::Tcp(target.display_address().to_string()),
@@ -87,11 +87,11 @@ impl BindAddress {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Address`](crate::Error::Address) if `value` is not a
+    /// Returns [`Error::InvalidArgument`](crate::Error::InvalidArgument) if `value` is not a
     /// recognized bind target (including a `unix://` path on Windows).
     pub fn parse(value: impl AsRef<str>) -> Result<Self> {
         Ok(
-            match parse_bind_target(value.as_ref()).map_err(Error::from)? {
+            match parse_bind_target(value.as_ref()).map_err(Error::from_grpc)? {
                 BindTarget::Tcp { host, port } => Self::Tcp { host, port },
                 BindTarget::Unix { path } => Self::Unix { path },
             },
@@ -142,14 +142,14 @@ pub fn remove_stale_socket(path: &std::path::Path) -> Result<()> {
     match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_socket() => {
             match std::os::unix::net::UnixStream::connect(path) {
-                Ok(_) => Err(Error::Server(format!(
+                Ok(_) => Err(Error::server(format!(
                     "address already in use: a server is already listening on {}",
                     path.display()
                 ))),
                 // Nothing is accepting: the socket is stale and safe to unlink.
                 Err(err) if err.kind() == ErrorKind::ConnectionRefused => {
                     std::fs::remove_file(path).map_err(|err| {
-                        Error::Server(format!(
+                        Error::server(format!(
                             "failed to remove stale socket {}: {err}",
                             path.display()
                         ))
@@ -158,7 +158,7 @@ pub fn remove_stale_socket(path: &std::path::Path) -> Result<()> {
                 // The path vanished from under us; nothing left to remove.
                 Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
                 // Can't prove it's stale; fail safe rather than steal the path.
-                Err(err) => Err(Error::Server(format!(
+                Err(err) => Err(Error::server(format!(
                     "cannot verify whether socket {} is stale: {err}",
                     path.display()
                 ))),
@@ -182,7 +182,7 @@ mod tests {
         let result = remove_stale_socket(&dir);
 
         assert!(
-            matches!(result, Err(Error::Server(_))),
+            matches!(result, Err(Error::Internal(_))),
             "live socket must not be unlinked, got: {result:?}"
         );
         assert!(dir.exists(), "live socket file must be left in place");

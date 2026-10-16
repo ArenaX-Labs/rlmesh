@@ -10,6 +10,7 @@ __all__ = [
     "ProtocolException",
     "EnvironmentException",
     "RecoverableEnvironmentException",
+    "ModelException",
     "ACTION_DELTA_POS",
     "ACTION_DELTA_ROT",
     "ACTION_EEF_POS",
@@ -143,6 +144,11 @@ class EnvironmentException(RLMeshException):
     is_recoverable: builtins.bool
 
 class RecoverableEnvironmentException(EnvironmentException): ...
+
+class ModelException(RLMeshException):
+    code: builtins.str
+    is_recoverable: builtins.bool
+    def __init__(self, message: builtins.str, *, is_recoverable: builtins.bool = False) -> None: ...
 
 ResetInfo: TypeAlias = dict[str, object]
 

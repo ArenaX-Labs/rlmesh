@@ -88,9 +88,13 @@ pub struct ServeOptions {
     pub peer_info_extra: BTreeMap<String, String>,
 }
 
-impl From<ServeOptions> for rlmesh_grpc::ServeOptions {
-    fn from(value: ServeOptions) -> Self {
-        Self {
+impl ServeOptions {
+    /// The transport's options for these. Crate-private: a public `From` impl
+    /// would expose the plumbing type on the shared surface.
+    #[allow(clippy::wrong_self_convention)] // The name R-25 gives it; consuming avoids a clone.
+    pub(crate) fn to_grpc(self) -> rlmesh_grpc::ServeOptions {
+        let value = self;
+        rlmesh_grpc::ServeOptions {
             allow_remote_shutdown: value.allow_remote_shutdown,
             idle_timeout: value.idle_timeout,
             drain_timeout: value.drain_timeout,
@@ -149,18 +153,18 @@ pub(crate) fn endpoint_token(
     let header_safe = |source: &str, token: String| match rlmesh_grpc::helpers::token_header_problem(
         &token,
     ) {
-        Some(problem) => Err(Error::Server(format!(
+        Some(problem) => Err(Error::server(format!(
             "{source} {problem}; a token must be printable ASCII without surrounding whitespace, since clients send it in an HTTP header"
         ))),
         None => Ok(token),
     };
     match environment {
-        Ok(token) if token.trim().is_empty() => Err(Error::Server(format!(
+        Ok(token) if token.trim().is_empty() => Err(Error::server(format!(
             "{variable} must not be empty or whitespace-only"
         ))),
         Ok(token) => header_safe(variable, token),
         Err(std::env::VarError::NotUnicode(_)) => {
-            Err(Error::Server(format!("{variable} must be valid Unicode")))
+            Err(Error::server(format!("{variable} must be valid Unicode")))
         }
         Err(std::env::VarError::NotPresent) if configured.is_empty() => Ok(configured),
         Err(std::env::VarError::NotPresent) => {
@@ -204,7 +208,7 @@ mod tests {
             compress_responses: true,
             peer_info_extra: BTreeMap::from([("k".to_string(), "v".to_string())]),
         };
-        let grpc_options = rlmesh_grpc::ServeOptions::from(options.clone());
+        let grpc_options = options.clone().to_grpc();
         assert_eq!(
             grpc_options.allow_remote_shutdown,
             options.allow_remote_shutdown
@@ -231,7 +235,7 @@ mod tests {
             workflow_edition: Some("   ".to_string()),
             ..ServeOptions::default()
         };
-        let grpc_options = rlmesh_grpc::ServeOptions::from(options);
+        let grpc_options = options.to_grpc();
         assert_eq!(grpc_options.workflow_edition, None);
     }
 
@@ -243,7 +247,7 @@ mod tests {
             workflow_edition: Some(format!("  {}  ", rlmesh_proto::CURRENT_WORKFLOW_EDITION)),
             ..ServeOptions::default()
         };
-        let grpc_options = rlmesh_grpc::ServeOptions::from(options);
+        let grpc_options = options.to_grpc();
         assert_eq!(
             grpc_options.workflow_edition.as_deref(),
             Some(rlmesh_proto::CURRENT_WORKFLOW_EDITION)
@@ -256,7 +260,7 @@ mod tests {
             token: Some(String::new()),
             ..ServeOptions::default()
         };
-        let grpc_options = rlmesh_grpc::ServeOptions::from(options);
+        let grpc_options = options.to_grpc();
         assert_eq!(grpc_options.token, None);
     }
 

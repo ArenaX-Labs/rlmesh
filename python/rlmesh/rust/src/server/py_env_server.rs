@@ -670,7 +670,7 @@ where
     let drain_timeout = Some(options.drain_timeout.unwrap_or(DEFAULT_SHUTDOWN_GRACE));
     let close_timeout = Some(options.close_timeout.unwrap_or(DEFAULT_SHUTDOWN_GRACE));
     let env = Arc::new(env);
-    let grpc_options = rlmesh_grpc::ServeOptions::from(options);
+    let grpc_options = rlmesh::binding::serve_options_to_grpc(options);
     let service = env_service_from_shared(
         Arc::clone(&env),
         shutdown.clone(),

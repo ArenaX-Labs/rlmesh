@@ -16,6 +16,7 @@ def test_root_namespace_is_small() -> None:
         "EnvironmentException",
         "EpisodeResult",
         "Model",
+        "ModelException",
         "Param",
         "ParamSpec",
         "ProtocolException",
@@ -109,6 +110,8 @@ def test_exception_family_is_public() -> None:
     assert issubclass(
         rlmesh.RecoverableEnvironmentException, rlmesh.EnvironmentException
     )
+    assert issubclass(rlmesh.ModelException, rlmesh.RLMeshException)
+    assert rlmesh.ModelException is _rlmesh.ModelException
 
 
 def test_spaces_namespace_contains_space_family() -> None:

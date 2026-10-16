@@ -155,7 +155,7 @@ pub unsafe extern "C" fn rlmesh_space_len(
         let len = match &spec_ref(spec).ok_or_else(null_spec)?.spec {
             Some(SpaceKind::Dict(dict)) => dict.spaces.len(),
             Some(SpaceKind::Tuple(tuple)) => tuple.spaces.len(),
-            _ => return Err(CapiError::invalid_value("space is not a Dict or Tuple")),
+            _ => return Err(CapiError::type_error("space is not a Dict or Tuple")),
         };
         write_out(out, len)
     })
@@ -225,7 +225,7 @@ pub unsafe extern "C" fn rlmesh_space_dict_key(
 ) -> RLMeshStatus {
     guard(|| {
         let Some(SpaceKind::Dict(dict)) = &spec_ref(spec).ok_or_else(null_spec)?.spec else {
-            return Err(CapiError::invalid_value("space is not a Dict"));
+            return Err(CapiError::type_error("space is not a Dict"));
         };
         let key = dict
             .keys
@@ -251,7 +251,7 @@ pub unsafe extern "C" fn rlmesh_space_box_bounds(
     guard(|| {
         let spec = spec_ref(spec).ok_or_else(null_spec)?;
         let Some(SpaceKind::Box(box_spec)) = &spec.spec else {
-            return Err(CapiError::invalid_value("space is not a Box"));
+            return Err(CapiError::type_error("space is not a Box"));
         };
         let numel: usize = spec
             .shape
@@ -280,7 +280,7 @@ pub unsafe extern "C" fn rlmesh_space_discrete_n(
     guard(|| {
         let Some(SpaceKind::Discrete(discrete)) = &spec_ref(spec).ok_or_else(null_spec)?.spec
         else {
-            return Err(CapiError::invalid_value("space is not Discrete"));
+            return Err(CapiError::type_error("space is not Discrete"));
         };
         write_opt(out_n, discrete.n);
         write_opt(out_start, discrete.start);
@@ -298,7 +298,7 @@ pub unsafe extern "C" fn rlmesh_space_text_length(
 ) -> RLMeshStatus {
     guard(|| {
         let Some(SpaceKind::Text(text)) = &spec_ref(spec).ok_or_else(null_spec)?.spec else {
-            return Err(CapiError::invalid_value("space is not Text"));
+            return Err(CapiError::type_error("space is not Text"));
         };
         write_opt(out_min, text.min_length);
         write_opt(out_max, text.max_length);
@@ -316,7 +316,7 @@ pub unsafe extern "C" fn rlmesh_space_text_charset(
 ) -> RLMeshStatus {
     guard(|| {
         let Some(SpaceKind::Text(text)) = &spec_ref(spec).ok_or_else(null_spec)?.spec else {
-            return Err(CapiError::invalid_value("space is not Text"));
+            return Err(CapiError::type_error("space is not Text"));
         };
         write_out(out_ptr, text.charset.as_ptr().cast::<c_char>())?;
         write_out(out_len, text.charset.len())
@@ -333,7 +333,7 @@ pub unsafe extern "C" fn rlmesh_space_copy_nvec(
 ) -> RLMeshStatus {
     guard(|| {
         let Some(SpaceKind::MultiDiscrete(md)) = &spec_ref(spec).ok_or_else(null_spec)?.spec else {
-            return Err(CapiError::invalid_value("space is not MultiDiscrete"));
+            return Err(CapiError::type_error("space is not MultiDiscrete"));
         };
         if md.nvec.len() > cap {
             return Err(CapiError::invalid_arg("nvec buffer too small"));
