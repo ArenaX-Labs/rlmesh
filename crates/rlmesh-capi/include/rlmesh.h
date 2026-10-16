@@ -2947,6 +2947,16 @@ RLMESH_API RLMeshStatus rlmesh_episode_state_set(RLMeshEpisodeState*, const char
 RLMESH_API bool rlmesh_episode_state_remove(RLMeshEpisodeState*, const char* key);
 RLMESH_API size_t rlmesh_episode_state_len(const RLMeshEpisodeState*);
 
+/* One row's episode identity. `episode_id` is runtime-minted and never repeats,
+ * so a stateful model keys per-episode state by it.
+ *
+ * `predict_index` is 0 on the first predict under the episode, then +1 per
+ * predict until on_episode_end drops it. `predict_seed` mixes the episode's reset
+ * seed with that ordinal (rlmesh_predict_seed) so a stochastic policy can seed
+ * each forward reproducibly; has_predict_seed is false when the episode was reset
+ * without a seed. A model holds at most 65536 live episodes and never evicts one:
+ * a predict that would start one more fails with RLMESH_ERR_RUNTIME before the
+ * callback runs. */
 typedef struct RLMeshPredictContext { /* struct_size = the library's sizeof */
   size_t struct_size;
   const char* episode_id;
@@ -3650,19 +3660,6 @@ RLMESH_API RLMeshStatus rlmesh_remote_vector_env_step(RLMeshRemoteVectorEnv*, co
  * its message on this thread, so a caller can simply propagate the status and
  * let the outermost frame read rlmesh_last_error_message(). Never set your own
  * message for a capi call that already failed. */
-
-/* One row's episode identity. `id` is runtime-minted and never repeats, so a
- * stateful model keys per-episode state by it (no positional lane concept).
- *
- * `predict_index` is the episode's re-plan ordinal: 0 on the first predict
- * under `id`, then +1 per predict until on_episode_end drops the episode (the
- * capi counts it per episode id, the way the Python SDK does; the runtime does
- * not send it). `predict_seed` mixes the episode's reset seed with that ordinal
- * (rlmesh.predict_seed in the SDK) so a stochastic policy can seed each forward
- * reproducibly under interleaving; it is meaningful only when `seeded`, 0
- * otherwise. The capi holds at most 65536 live episodes and never evicts one:
- * a predict that would start a new episode past that fails with
- * RLMESH_ERR_INTERNAL (Python raises RuntimeError) before the callback runs. */
 
 /* Read items copy leaves. Readers retain a resolved adapter and own their roles. */
 RLMESH_API RLMeshStatus rlmesh_read_item_role(const char* role, RLMeshReadItem** out);
