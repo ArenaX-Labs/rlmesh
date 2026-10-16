@@ -316,7 +316,8 @@ static void remote_auth(const char *variant, RLMeshEnv *env, RLMeshModel *model,
     error_fields();
     return;
   }
-  if (!strcmp(variant, "https_to_plaintext")) {
+  if (!strcmp(variant, "https_to_plaintext") ||
+      !strcmp(variant, "local_model_https_env")) {
     Script other = *s;
     RLMeshEnv *plain = NULL;
     OK(rlmesh_env_new(ev, &other, attrs, &plain));
@@ -334,14 +335,20 @@ static void remote_auth(const char *variant, RLMeshEnv *env, RLMeshModel *model,
     REQUIRE(colon > 0 && address.len - colon < sizeof port);
     memcpy(port, (const char *)address.data + colon, address.len - colon);
     snprintf(url, sizeof url, "https://127.0.0.1:%s", port);
-    RLMeshRemoteModelOptions mo = RLMESH_REMOTE_MODEL_OPTIONS_INIT;
-    mo.address = url;
-    RLMeshRemoteModel *remote = NULL;
-    OK(rlmesh_remote_model_new(&mo, &remote));
-    REQUIRE(rlmesh_run(rlmesh_remote_model_target(remote),
-                       rlmesh_env_target(env), NULL, &result) != RLMESH_OK);
-    error_fields_masked(port, "PORT");
-    rlmesh_remote_model_free(remote);
+    if (!strcmp(variant, "local_model_https_env")) {
+      REQUIRE(rlmesh_model_run(model, rlmesh_address_target(url), NULL,
+                               &result) != RLMESH_OK);
+      error_fields_masked(port, "PORT");
+    } else {
+      RLMeshRemoteModelOptions mo = RLMESH_REMOTE_MODEL_OPTIONS_INIT;
+      mo.address = url;
+      RLMeshRemoteModel *remote = NULL;
+      OK(rlmesh_remote_model_new(&mo, &remote));
+      REQUIRE(rlmesh_run(rlmesh_remote_model_target(remote),
+                         rlmesh_env_target(env), NULL, &result) != RLMESH_OK);
+      error_fields_masked(port, "PORT");
+      rlmesh_remote_model_free(remote);
+    }
     OK(rlmesh_env_server_shutdown(server));
     rlmesh_env_server_free(server);
     rlmesh_bytes_free(address);
@@ -750,7 +757,11 @@ int main(int argc, char **argv) {
       eo.struct_size = RLMESH_REMOTE_ENV_OPTIONS_MIN_SIZE + 1;
       RLMeshRemoteEnv *renv = NULL;
       REQUIRE(rlmesh_remote_env_new(&eo, &renv) != RLMESH_OK);
-      error_fields();
+      /* The size differs per target; the text masks it. */
+      char inside[32];
+      snprintf(inside, sizeof inside, "%zu",
+               (size_t)(RLMESH_REMOTE_ENV_OPTIONS_MIN_SIZE + 1));
+      error_fields_masked(inside, "MIN_SIZE+1");
     } else if (!strcmp(variant, "out")) {
       OK(rlmesh_model_run(model, rlmesh_env_target(env), NULL, &result));
       struct ExtendedOut {

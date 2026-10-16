@@ -3548,14 +3548,17 @@ typedef struct RLMeshRemoteEnvOptions {
   double request_timeout_seconds;
   const char* workflow_edition;
   /* Appended after ABI 5 (read only when struct_size covers them; NULL is the
-   * default). api_key is sent as `authorization: Bearer <key>`; NULL reads
+   * default). _reserved (0) starts exactly at the ABI-5 sizeof on every
+   * target, so the fields after it never overlap an ABI-5 caller's tail
+   * padding. api_key is sent as `authorization: Bearer <key>`; NULL reads
    * RLMESH_API_KEY for an https:// address only, "" sends none. tls_ca_file
    * is a PEM bundle an https:// dial trusts instead of the system roots. */
+  uint64_t _reserved;
   const char* api_key;
   const char* tls_ca_file;
 } RLMeshRemoteEnvOptions;
-#define RLMESH_REMOTE_ENV_OPTIONS_MIN_SIZE \
-  (offsetof(RLMeshRemoteEnvOptions, workflow_edition) + sizeof(const char*))
+/* The ABI-5 sizeof. */
+#define RLMESH_REMOTE_ENV_OPTIONS_MIN_SIZE offsetof(RLMeshRemoteEnvOptions, _reserved)
 #define RLMESH_REMOTE_ENV_OPTIONS_INIT \
   {sizeof(RLMeshRemoteEnvOptions),     \
    NULL,                               \
@@ -3570,6 +3573,7 @@ typedef struct RLMeshRemoteEnvOptions {
    false,                              \
    0.0,                                \
    NULL,                               \
+   0,                                  \
    NULL,                               \
    NULL}
 typedef struct RLMeshRemoteModelOptions {
@@ -3589,8 +3593,8 @@ typedef struct RLMeshRemoteModelOptions {
   const char* api_key;
   const char* tls_ca_file;
 } RLMeshRemoteModelOptions;
-#define RLMESH_REMOTE_MODEL_OPTIONS_MIN_SIZE \
-  (offsetof(RLMeshRemoteModelOptions, request_timeout_seconds) + sizeof(double))
+/* The ABI-5 sizeof: its last field is a double, so it has no tail padding. */
+#define RLMESH_REMOTE_MODEL_OPTIONS_MIN_SIZE offsetof(RLMeshRemoteModelOptions, api_key)
 #define RLMESH_REMOTE_MODEL_OPTIONS_INIT                                   \
   {sizeof(RLMeshRemoteModelOptions), NULL,  NULL, false, 0,   NULL, false, \
    RLMESH_TRANSPORT_INVALID,         false, 0.0,  false, 0.0, NULL, NULL}

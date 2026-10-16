@@ -31,6 +31,8 @@ pub struct RLMeshRemoteEnvOptions {
     pub has_request_timeout_seconds: bool,
     pub request_timeout_seconds: f64,
     pub workflow_edition: *const c_char,
+    /// Appended after ABI 5; starts at the ABI-5 sizeof on every target.
+    pub _reserved: u64,
     /// Appended after ABI 5: read only when `struct_size` covers it.
     pub api_key: *const c_char,
     /// Appended after ABI 5: read only when `struct_size` covers it.

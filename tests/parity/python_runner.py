@@ -397,6 +397,15 @@ def remote_auth(variant, env, model):
     if variant == "invalid_header":
         rlmesh.RemoteModel("https://localhost:1", api_key="bad\nkey")
         raise AssertionError("an api_key with a newline was accepted")
+    if variant == "local_model_https_env":
+        with rlmesh.EnvServer(ScriptedEnv(), address="tcp://127.0.0.1:0") as server:
+            server.start()
+            port = server.address.rsplit(":", 1)[1]
+            try:
+                model.run(f"https://127.0.0.1:{port}")
+            except ConnectionError as error:
+                return masked(error_record(error), port, "PORT")
+            raise AssertionError("https:// reached a plaintext env server")
     if variant == "https_to_plaintext":
         with rlmesh.EnvServer(ScriptedEnv(), address="tcp://127.0.0.1:0") as server:
             server.start()

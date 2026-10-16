@@ -1756,6 +1756,82 @@ fn dropping_remote_session_creation_returns_the_borrowed_env() {
 }
 
 #[test]
+fn dropping_remote_session_creation_closes_the_factory_env() {
+    // A listener that never answers: the model dial hangs until dropped.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let model = crate::RemoteModel::new(
+        crate::RemoteModelOptions::default().address(listener.local_addr().unwrap().to_string()),
+    )
+    .unwrap();
+    let mut factory = Factory {
+        closes: Arc::default(),
+        made: 0,
+    };
+    super::drive::block_on_library(async {
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(60),
+                model.session_async(EnvTarget::factory(&mut factory), SessionOptions::default())
+            )
+            .await
+            .is_err()
+        );
+    });
+    assert_eq!(factory.made, 1);
+    for _ in 0..500 {
+        if factory.closes.load(Ordering::SeqCst) == 1 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        factory.closes.load(Ordering::SeqCst),
+        1,
+        "a dropped session_async closes the env it built"
+    );
+}
+
+#[test]
+fn ext_token_constructors_do_not_warn_and_api_keys_warn_once_per_address() {
+    let _lock = crate::warnings::tests::HANDLER_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+    let record = Arc::clone(&seen);
+    crate::warnings::set_warning_handler(Some(Box::new(move |w: &crate::Warning| {
+        record.lock().unwrap().push(w.message.clone());
+        Ok(())
+    })));
+    let address = "10.255.255.7:5555";
+    crate::ext::remote_model_with_token(
+        crate::RemoteModelOptions::default().address(address),
+        "legacy-token",
+    )
+    .unwrap();
+    assert!(
+        seen.lock().unwrap().is_empty(),
+        "{:?}",
+        seen.lock().unwrap()
+    );
+    for _ in 0..2 {
+        crate::RemoteModel::new(
+            crate::RemoteModelOptions::default()
+                .address(address)
+                .api_key("some-key"),
+        )
+        .unwrap();
+    }
+    crate::warnings::set_warning_handler(None);
+    assert_eq!(
+        seen.lock().unwrap().as_slice(),
+        [
+            "api_key is sent unencrypted to tcp://10.255.255.7:5555; use an https:// address to \
+          keep it private"
+        ]
+    );
+}
+
+#[test]
 fn cancelling_a_failed_model_dial_does_not_poison_the_next_call() {
     let server = steps_server();
     let cancel = crate::ext::CancelToken::new();

@@ -424,12 +424,22 @@ impl Core {
                     let contract = EnvContract::from_wire(remote.env_contract())?;
                     (contract, false, None)
                 } else {
+                    // An address target carries what a RemoteEnv dialed with
+                    // no api_key would: RLMESH_API_KEY over https:// (RMT-22);
+                    // an EnvServer's own token wins.
+                    let auth = crate::credentials::resolve(address, None, None, false)?;
+                    let token = if token.is_empty() {
+                        auth.token()
+                    } else {
+                        token.as_str()
+                    };
                     let remote = cancellable(
                         &self.cancel,
                         EnvClientCore::connect_with(
                             address,
                             CoreConnect {
                                 token,
+                                trust: auth.trust().clone(),
                                 declared: self.edition.as_deref(),
                                 ..CoreConnect::default()
                             },
@@ -1329,6 +1339,7 @@ impl<'a> Session<'a> {
         // derived here, before the model is dialed, and a factory's env is
         // built now (and closed by the session, or here if creation fails).
         let mut caller_env = CallerEnv::None;
+        let mut pending_factory = None;
         let (env_port, contract, env_offer) = match env.0 {
             EnvKind::Vector(_) => {
                 return Err(local_vector_refusal());
@@ -1341,6 +1352,9 @@ impl<'a> Session<'a> {
                 (EnvPort::Local, wire, None)
             }
             EnvKind::Factory(mut factory) => {
+                // The guard closes the made env if creation fails or its
+                // future is dropped mid-dial; it moves into the session only
+                // once the session exists.
                 let made = super::native::OwnedMadeEnv(Some(factory.make()?), false);
                 let wire = match &made.0 {
                     Some(MadeEnv::Env(env)) => {
@@ -1350,8 +1364,7 @@ impl<'a> Session<'a> {
                     }
                     _ => return Err(local_vector_refusal()),
                 };
-                let mut made = made;
-                caller_env = CallerEnv::Factory(factory, made.0.take());
+                pending_factory = Some((factory, made));
                 (EnvPort::Local, wire, None)
             }
             EnvKind::Server(served) => {
@@ -1429,12 +1442,14 @@ impl<'a> Session<'a> {
             env: Some(env_port),
             lent,
         };
+        // Resolved fresh at each session dial (RMT-22).
+        let model_auth = model.auth()?;
         let dialed = ModelClient::connect_with(
             model.address(),
             contract,
             ModelConnect {
-                token: model.token(),
-                trust: model.trust().clone(),
+                token: model_auth.token(),
+                trust: model_auth.trust().clone(),
                 env_offer,
                 declared: edition.as_deref(),
                 connect_timeout: model.connect_timeout(),
@@ -1451,16 +1466,11 @@ impl<'a> Session<'a> {
         } else {
             dialed
         };
-        let mut client = match dialed {
-            Ok(client) => client,
-            Err(error) => {
-                // An env built here for this session is closed, not leaked.
-                if let CallerEnv::Factory(_, made) = &mut caller_env {
-                    drop(super::native::OwnedMadeEnv(made.take(), false));
-                }
-                return Err(error);
-            }
-        };
+        // On an error, an env built here is closed by its guard, not leaked.
+        let mut client = dialed?;
+        if let Some((factory, mut made)) = pending_factory {
+            caller_env = CallerEnv::Factory(factory, made.0.take());
+        }
         let env_port = lease
             .env
             .take()

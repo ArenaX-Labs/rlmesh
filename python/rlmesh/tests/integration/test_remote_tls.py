@@ -10,42 +10,69 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import socket
 import ssl
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import warnings
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import pytest
 
 trustme = pytest.importorskip("trustme")
 
 
-def _free_port() -> int:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        sock.bind(("127.0.0.1", 0))
-        return cast(int, sock.getsockname()[1])
-    finally:
-        sock.close()
+def _wait_for_socket(path: str) -> None:
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        with socket.socket(socket.AF_UNIX) as probe:
+            if probe.connect_ex(path) == 0:
+                return
+        time.sleep(0.02)
+    raise AssertionError(f"nothing listens on {path}")
+
+
+class ServedModel:
+    """A model served on a Unix socket in a fresh directory (no port race),
+    stopped and joined by :meth:`close`."""
+
+    def __init__(self, model: Any) -> None:
+        self.dir = tempfile.mkdtemp(prefix="rlmesh-tls-")
+        self.path = os.path.join(self.dir, "model.sock")
+        self.model = model
+        self.thread = threading.Thread(target=model.serve, args=(self.address,))
+        self.thread.start()
+        _wait_for_socket(self.path)
+
+    @property
+    def address(self) -> str:
+        return f"unix://{self.path}"
+
+    def close(self) -> None:
+        self.model.close()
+        self.thread.join(10)
+        assert not self.thread.is_alive(), "the served model did not stop"
+        shutil.rmtree(self.dir, ignore_errors=True)
 
 
 class TlsProxy:
-    """Terminate TLS on a loopback port and forward bytes to ``backend_port``.
+    """Terminate TLS on a loopback port bound to port 0 and forward bytes to
+    ``backend`` (a Unix socket path, or a loopback TCP port).
 
     ``delay_ms`` holds every chunk in each direction that long before it is
     forwarded (a round trip costs twice it), keeping order and overlap.
     """
 
     def __init__(
-        self, backend_port: int, context: ssl.SSLContext, delay_ms: float = 0.0
+        self, backend: str | int, context: ssl.SSLContext, delay_ms: float = 0.0
     ) -> None:
-        self.backend_port = backend_port
+        self.backend = backend
         self.context = context
         self.delay = delay_ms / 1000.0
         self.port = 0
@@ -71,9 +98,12 @@ class TlsProxy:
         self, client_r: asyncio.StreamReader, client_w: asyncio.StreamWriter
     ) -> None:
         try:
-            backend_r, backend_w = await asyncio.open_connection(
-                "127.0.0.1", self.backend_port
-            )
+            if isinstance(self.backend, str):
+                backend_r, backend_w = await asyncio.open_unix_connection(self.backend)
+            else:
+                backend_r, backend_w = await asyncio.open_connection(
+                    "127.0.0.1", self.backend
+                )
         except OSError:
             client_w.close()
             return
@@ -144,32 +174,6 @@ def _server_context(ca: Any) -> ssl.SSLContext:
     return context
 
 
-def _serve_policy(model: Any) -> int:
-    import rlmesh
-
-    port = _free_port()
-
-    def run() -> None:
-        model.serve(
-            f"127.0.0.1:{port}",
-            options=rlmesh.ServeOptions(allow_remote_shutdown=True),
-        )
-
-    threading.Thread(target=run, daemon=True).start()
-    _wait_for_port(port)
-    return port
-
-
-def _wait_for_port(port: int) -> None:
-    deadline = time.monotonic() + 10.0
-    while time.monotonic() < deadline:
-        with socket.socket() as sock:
-            if sock.connect_ex(("127.0.0.1", port)) == 0:
-                return
-        time.sleep(0.05)
-    raise AssertionError(f"nothing listens on 127.0.0.1:{port}")
-
-
 class CountEnv:
     """Box observations counting steps; ends after ``length`` steps."""
 
@@ -212,9 +216,13 @@ def _echo_policy() -> Any:
 
 @pytest.fixture(scope="module")
 def tls_model(ca: Any) -> Iterator[TlsProxy]:
-    proxy = TlsProxy(_serve_policy(_echo_policy()), _server_context(ca))
-    yield proxy
-    proxy.close()
+    served = ServedModel(_echo_policy())
+    proxy = TlsProxy(served.path, _server_context(ca))
+    try:
+        yield proxy
+    finally:
+        proxy.close()
+        served.close()
 
 
 def _run_one(model: Any, env: Any) -> Any:
@@ -258,10 +266,18 @@ def test_an_untrusted_certificate_is_a_connection_error(
 def test_https_to_a_plaintext_server_is_a_connection_error(ca_file: Path) -> None:
     import rlmesh
 
-    port = _serve_policy(_echo_policy())
-    model = rlmesh.RemoteModel(f"https://127.0.0.1:{port}", tls_ca_file=ca_file)
-    with pytest.raises(ConnectionError, match=f"TLS handshake with 127.0.0.1:{port}"):
-        _run_one(model, CountEnv())
+    # Any plaintext HTTP/2 server will do; an EnvServer binds port 0.
+    server = rlmesh.EnvServer(CountEnv(), address="tcp://127.0.0.1:0")
+    server.start()
+    try:
+        port = server.address.rsplit(":", 1)[1]
+        model = rlmesh.RemoteModel(f"https://127.0.0.1:{port}", tls_ca_file=ca_file)
+        with pytest.raises(
+            ConnectionError, match=f"TLS handshake with 127.0.0.1:{port}"
+        ):
+            _run_one(model, CountEnv())
+    finally:
+        server.shutdown()
 
 
 def test_an_https_address_with_a_path_is_a_value_error() -> None:
@@ -287,25 +303,29 @@ def test_an_unusable_ca_file_is_a_value_error(tmp_path: Path) -> None:
 @pytest.fixture(scope="module")
 def protected_tls_model(ca: Any) -> Iterator[TlsProxy]:
     """A model served with RLMESH_MODEL_ENDPOINT_TOKEN, behind the TLS proxy."""
-    port = _free_port()
+    directory = tempfile.mkdtemp(prefix="rlmesh-tls-")
+    path = os.path.join(directory, "model.sock")
     process = subprocess.Popen(
         [
             sys.executable,
             "-c",
             "import rlmesh, numpy as np; from rlmesh.numpy import Model; "
             "Model(lambda observation: np.asarray(observation, np.float32))"
-            f".serve('127.0.0.1:{port}')",
+            f".serve('unix://{path}')",
         ],
         env={**os.environ, "RLMESH_MODEL_ENDPOINT_TOKEN": "right-key"},
     )
     try:
-        _wait_for_port(port)
-        proxy = TlsProxy(port, _server_context(ca))
-        yield proxy
-        proxy.close()
+        _wait_for_socket(path)
+        proxy = TlsProxy(path, _server_context(ca))
+        try:
+            yield proxy
+        finally:
+            proxy.close()
     finally:
         process.kill()
         process.wait(10)
+        shutil.rmtree(directory, ignore_errors=True)
 
 
 def test_the_right_api_key_is_accepted(
@@ -356,7 +376,7 @@ def test_rlmesh_api_key_is_sent_only_over_tls(
 
     # The same key in the environment never reaches a plaintext address: the
     # protected backend, dialed directly, refuses the session.
-    plaintext = rlmesh.RemoteModel(f"127.0.0.1:{protected_tls_model.backend_port}")
+    plaintext = rlmesh.RemoteModel(f"unix://{protected_tls_model.backend}")
     with pytest.raises(ConnectionError):
         _run_one(plaintext, CountEnv())
 
@@ -399,7 +419,8 @@ def test_chunked_execution_hides_round_trip_latency(ca: Any, ca_file: Path) -> N
         def predict_chunk(self, observation: Any) -> Any:
             return np.repeat(np.asarray(observation, np.float32)[None], 8, axis=0)
 
-    proxy = TlsProxy(_serve_policy(Chunker()), _server_context(ca), delay_ms=20.0)
+    served = ServedModel(Chunker())
+    proxy = TlsProxy(served.path, _server_context(ca), delay_ms=20.0)
     try:
         model = rlmesh.RemoteModel(
             f"https://localhost:{proxy.port}", tls_ca_file=ca_file
@@ -416,6 +437,7 @@ def test_chunked_execution_hides_round_trip_latency(ca: Any, ca_file: Path) -> N
         one, eight = timed(1), timed(8)
     finally:
         proxy.close()
+        served.close()
     # 32 round trips against 4: a loose bound that holds on a loaded host.
     assert one > 32 * 0.035, one
     assert eight * 2.5 < one, (one, eight)

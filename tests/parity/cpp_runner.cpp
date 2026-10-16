@@ -242,6 +242,21 @@ void remote_auth(const std::string &variant, Env &env, Model &model,
     }
     return;
   }
+  if (variant == "local_model_https_env") {
+    EnvServer server(Counter{std::make_shared<Script>()},
+                     EnvServerOptions{}.with_address("tcp://127.0.0.1:0"));
+    server.start();
+    const std::string address = server.address();
+    const std::string port = address.substr(address.rfind(':') + 1);
+    try {
+      model.run("https://127.0.0.1:" + port);
+      REQUIRE(false);
+    } catch (...) {
+      current_error_masked(port, "PORT");
+    }
+    server.shutdown();
+    return;
+  }
   if (variant == "https_to_plaintext") {
     EnvServer server(Counter{std::make_shared<Script>()},
                      EnvServerOptions{}.with_address("tcp://127.0.0.1:0"));

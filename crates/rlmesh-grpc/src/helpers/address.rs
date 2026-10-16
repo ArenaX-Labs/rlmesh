@@ -219,6 +219,42 @@ pub fn parse_bind_target(addr: &str) -> Result<BindTarget, Error> {
     })
 }
 
+/// Validate a tcp/http authority and re-emit it as a `tcp://...` session
+/// address, refusing `unix://`, `https://` and other schemes.
+///
+/// Superseded by [`parse_env_connect_target`], which every RLMesh client now
+/// dials through (it also accepts `unix://` and `https://`); kept, with its
+/// previous behaviour, for existing callers.
+pub fn normalize_tcp_session_address(addr: &str) -> Result<String, Error> {
+    let addr = addr.trim();
+    if addr.is_empty() {
+        return Err(TransportError::InvalidAddress("empty address".to_string()).into());
+    }
+    if addr.starts_with("unix://") {
+        return Err(TransportError::InvalidAddress(
+            "unix sockets are not supported by rlmesh-grpc; use tcp://host:port instead"
+                .to_string(),
+        )
+        .into());
+    }
+    if addr.starts_with("https://") {
+        return Err(TransportError::InvalidAddress(
+            "https:// is reserved for control-plane URLs, not session links".to_string(),
+        )
+        .into());
+    }
+    if let Some(target) = addr
+        .strip_prefix("tcp://")
+        .or_else(|| addr.strip_prefix("http://"))
+    {
+        validate_tcp_authority(target)?;
+        return Ok(format!("tcp://{target}"));
+    }
+    reject_nontcp_scheme(addr)?;
+    validate_tcp_authority(addr)?;
+    Ok(format!("tcp://{addr}"))
+}
+
 /// Reject a leftover scheme on an address that should be a bare tcp
 /// authority. A schemeless address passes through.
 fn reject_nontcp_scheme(addr: &str) -> Result<(), Error> {
@@ -236,8 +272,18 @@ fn reject_nontcp_scheme(addr: &str) -> Result<(), Error> {
 /// remainder: port 443 when omitted; a path other than `/`, a query, a
 /// fragment or userinfo is refused.
 fn parse_https_authority(rest: &str) -> Result<(String, u16), Error> {
+    // Never echo userinfo, a query or a fragment (they can carry a secret),
+    // nor a path: only the authority is shown.
+    let shown = if rest.contains(['@', '?', '#']) {
+        "https://<redacted>".to_string()
+    } else {
+        match rest.split_once('/') {
+            Some((authority, path)) if !path.is_empty() => format!("https://{authority}/…"),
+            _ => format!("https://{}", rest.trim_end_matches('/')),
+        }
+    };
     let invalid = |reason: &str| -> Error {
-        TransportError::InvalidAddress(format!("https://{rest}: {reason}")).into()
+        TransportError::InvalidAddress(format!("{shown}: {reason}")).into()
     };
     let authority = rest.strip_suffix('/').unwrap_or(rest);
     if authority.contains('/') {
@@ -285,6 +331,13 @@ fn parse_https_authority(rest: &str) -> Result<(String, u16), Error> {
 }
 
 fn validate_tcp_authority(authority: &str) -> Result<(), Error> {
+    if authority.contains('@') {
+        // Userinfo can carry a secret: refuse it without echoing it.
+        return Err(TransportError::InvalidAddress(
+            "an address cannot carry credentials; use api_key".to_string(),
+        )
+        .into());
+    }
     let (host, port) = authority.rsplit_once(':').ok_or_else(|| {
         TransportError::InvalidAddress(format!(
             "missing port in tcp session endpoint '{authority}'"
@@ -344,7 +397,22 @@ fn normalize_unix_path(path: &str) -> Result<PathBuf, Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{BindTarget, parse_bind_target, parse_env_connect_target};
+    use super::{
+        BindTarget, normalize_tcp_session_address, parse_bind_target, parse_env_connect_target,
+    };
+
+    #[test]
+    fn tcp_session_normalization_keeps_its_previous_behaviour() {
+        for (address, expected) in [
+            ("localhost:50052", "tcp://localhost:50052"),
+            ("tcp://localhost:50052", "tcp://localhost:50052"),
+            ("http://localhost:50052", "tcp://localhost:50052"),
+        ] {
+            assert_eq!(normalize_tcp_session_address(address).unwrap(), expected);
+        }
+        assert!(normalize_tcp_session_address("unix:///tmp/rlmesh.sock").is_err());
+        assert!(normalize_tcp_session_address("https://control-plane.example").is_err());
+    }
 
     #[test]
     fn https_targets_default_to_port_443_and_dial_tls() {
@@ -386,6 +454,24 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("cannot have a path"), "{error}");
+    }
+
+    #[test]
+    fn refused_addresses_never_echo_a_secret() {
+        for address in [
+            "https://user:SECRET@models.example",
+            "https://models.example?api_key=SECRET",
+            "https://models.example/v1?api_key=SECRET",
+            "https://models.example#SECRET",
+            "https://models.example/SECRET",
+            "tcp://user:SECRET@models.example:1",
+            "http://user:SECRET@models.example:1",
+            "user:SECRET@models.example:1",
+        ] {
+            let error = parse_env_connect_target(address).unwrap_err().to_string();
+            assert!(!error.contains("SECRET"), "{address}: {error}");
+            assert!(error.contains("invalid address"), "{address}: {error}");
+        }
     }
 
     #[test]

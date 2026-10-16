@@ -59,6 +59,29 @@ impl TlsTrust {
     }
 }
 
+/// One root set a system-trust TLS dial may use.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Roots {
+    /// The host's trust store.
+    Native,
+    /// The bundled web PKI roots.
+    WebPki,
+}
+
+impl Roots {
+    fn apply(self, config: ClientTlsConfig) -> ClientTlsConfig {
+        match self {
+            Roots::Native => config.with_native_roots(),
+            Roots::WebPki => config.with_webpki_roots(),
+        }
+    }
+}
+
+/// System trust, in order: the host's store alone; only when it yields no
+/// roots (tonic refuses an empty native store), the bundled web PKI roots
+/// alone. The two sets are never combined.
+const SYSTEM_TRUST_ATTEMPTS: [Roots; 2] = [Roots::Native, Roots::WebPki];
+
 /// Dial `target` and return the HTTP/2 channel: TLS for an `https://` target
 /// (trusting `trust`), a Unix socket for `unix://`, plaintext otherwise.
 ///
@@ -94,11 +117,17 @@ pub(crate) async fn dial(target: &EnvConnectTarget, trust: &TlsTrust) -> Result<
                 TlsTrust::Bundle(pem) => {
                     endpoint.tls_config(base.ca_certificate(Certificate::from_pem(pem)))
                 }
-                TlsTrust::System => endpoint
-                    .clone()
-                    .tls_config(base.clone().with_native_roots().with_webpki_roots())
-                    // No system roots on this host: the bundled web PKI roots.
-                    .or_else(|_| endpoint.tls_config(base.with_webpki_roots())),
+                TlsTrust::System => {
+                    let mut attempts = SYSTEM_TRUST_ATTEMPTS.iter();
+                    let first = *attempts.next().expect("one attempt at least");
+                    attempts.fold(
+                        endpoint.clone().tls_config(first.apply(base.clone())),
+                        |built, roots| {
+                            built
+                                .or_else(|_| endpoint.clone().tls_config(roots.apply(base.clone())))
+                        },
+                    )
+                }
             }
             .map_err(|e| TransportError::ConnectFailed(tls_failure(target, &e)))?
         }
@@ -177,5 +206,15 @@ impl Credentials {
             token: token.into(),
             trust: TlsTrust::System,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn system_trust_is_native_roots_with_a_web_pki_fallback_only() {
+        assert_eq!(SYSTEM_TRUST_ATTEMPTS, [Roots::Native, Roots::WebPki]);
     }
 }

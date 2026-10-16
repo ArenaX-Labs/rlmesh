@@ -1084,6 +1084,26 @@ fn remote_auth(variant: &str, env: &mut ScriptedEnv, model: &Model) -> Json {
                 .unwrap_err(),
             );
         }
+        "local_model_https_env" => {
+            let server = EnvServer::new(
+                ScriptedEnv::new(&Arc::default()),
+                EnvServerOptions {
+                    address: Some("tcp://127.0.0.1:0".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            server.start().unwrap();
+            let port = server.address().rsplit(':').next().unwrap().to_string();
+            let error = model
+                .run(
+                    format!("https://127.0.0.1:{port}").as_str(),
+                    RunOptions::default(),
+                )
+                .unwrap_err();
+            server.shutdown().unwrap();
+            return masked(error_record(error), &port, "PORT");
+        }
         "https_to_plaintext" => {
             let server = EnvServer::new(
                 ScriptedEnv::new(&Arc::default()),

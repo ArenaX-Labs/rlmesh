@@ -115,7 +115,8 @@ def test_remote_model_drives_a_served_env_in_the_symmetric_loop() -> None:
 def test_session_refuses_a_target_that_is_not_an_env() -> None:
     import rlmesh
 
-    model = rlmesh.RemoteModel(f"127.0.0.1:{_free_port()}")
+    # Refused before any dial: nothing needs to listen.
+    model = rlmesh.RemoteModel("127.0.0.1:1")
     with pytest.raises(TypeError, match="reset\\(\\) and step\\(\\)"):
         rlmesh.session(model, object())
 
@@ -156,15 +157,28 @@ def test_served_model_drives_a_plain_local_env() -> None:
             seen.append(observation.copy())
             return np.asarray([observation[0], -observation[0]], np.float32)
 
-    model_address = f"127.0.0.1:{_free_port()}"
-    _serve_policy(model_address, Policy())
+    import os
+    import tempfile
+
+    # A Unix socket in a fresh directory: no port race, and the serve thread
+    # is stopped and joined below.
+    directory = tempfile.mkdtemp(prefix="rlmesh-remote-")
+    model_address = f"unix://{os.path.join(directory, 'model.sock')}"
+    policy = Policy()
+    serving = threading.Thread(target=policy.serve, args=(model_address,))
+    serving.start()
     env = BoxEnv()
-    sess = _connect_model_with_retry(model_address, env)
     try:
-        result = sess.run(episodes=1)
-        assert result.episodes[0].steps == 3
+        sess = _connect_model_with_retry(model_address, env)
+        try:
+            result = sess.run(episodes=1)
+            assert result.episodes[0].steps == 3
+        finally:
+            sess.close()
     finally:
-        sess.close()
+        policy.close()
+        serving.join(10)
+        assert not serving.is_alive()
     assert [float(obs[0]) for obs in seen] == [0.0, 1.0, 2.0]
     assert isinstance(env.actions[1], np.ndarray)
     assert env.actions[1].tolist() == [1.0, -1.0]
@@ -180,7 +194,7 @@ def test_served_model_refuses_a_local_vector_env() -> None:
         [lambda: gym.make("CartPole-v1"), lambda: gym.make("CartPole-v1")]
     )
     try:
-        model = rlmesh.RemoteModel(f"127.0.0.1:{_free_port()}")
+        model = rlmesh.RemoteModel("127.0.0.1:1")
         with pytest.raises(TypeError, match="single-lane"):
             rlmesh.session(model, vector)
     finally:

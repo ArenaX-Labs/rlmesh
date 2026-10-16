@@ -37,7 +37,7 @@ impl ClientAuth {
 /// class for a key a header cannot carry, a `tls_ca_file` that cannot be
 /// read or parsed, or one given for an address that is not `https://`. With
 /// `warn`, an explicit key bound for a plaintext non-loopback host warns
-/// (`UserWarning`). No network I/O.
+/// (`UserWarning`), once per address per process. No network I/O.
 pub fn resolve(
     address: &str,
     api_key: Option<&str>,
@@ -59,7 +59,12 @@ pub fn resolve(
     let token = match api_key {
         Some(key) => {
             check_key(key, "the api_key")?;
-            if warn && !key.is_empty() && !target.is_tls() && !is_local(&target) {
+            if warn
+                && !key.is_empty()
+                && !target.is_tls()
+                && !is_local(&target)
+                && first_plaintext_warning(target.display_address())
+            {
                 crate::warnings::warn(
                     WarningCategory::UserWarning,
                     format!(
@@ -81,6 +86,18 @@ pub fn resolve(
         None => String::new(),
     };
     Ok(ClientAuth(Credentials { token, trust }))
+}
+
+/// Whether this is the first plaintext-key warning for `address` in this
+/// process (the warning is once per address).
+fn first_plaintext_warning(address: &str) -> bool {
+    static WARNED: std::sync::Mutex<Option<std::collections::HashSet<String>>> =
+        std::sync::Mutex::new(None);
+    WARNED
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .get_or_insert_with(Default::default)
+        .insert(address.to_string())
 }
 
 /// A key a header cannot carry is the ValueError class; the text names

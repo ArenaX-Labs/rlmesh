@@ -37,3 +37,11 @@ rules = ["R-17"]
 operation = "remote_auth"
 variant = "local_env"
 expect = { episodes = 1, steps = 2, env_closes = 0 }
+
+[[scenario]]
+id = "local_model_https_env"
+family = "Remote auth"
+rules = ["R-22"]
+operation = "remote_auth"
+variant = "local_model_https_env"
+expect = { error = "ConnectionError", text = "TLS handshake with 127.0.0.1:PORT failed: received corrupt message of type InvalidContentType" }

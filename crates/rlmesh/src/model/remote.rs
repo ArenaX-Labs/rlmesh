@@ -752,7 +752,10 @@ impl RemoteModelOptions {
 
 struct RemoteModelInner {
     address: String,
-    auth: crate::credentials::ClientAuth,
+    /// Checked at `new`; resolved fresh at each session dial (RMT-22), so a
+    /// rotated `RLMESH_API_KEY` or CA bundle reaches the next session.
+    api_key: Option<String>,
+    tls_ca_file: Option<std::path::PathBuf>,
     connect_timeout: Option<Duration>,
     request_timeout: Option<Duration>,
 }
@@ -768,15 +771,17 @@ pub struct RemoteModel(Arc<RemoteModelInner>);
 impl RemoteModel {
     /// Check the address, timeouts, `api_key` and `tls_ca_file` (the
     /// ValueError class) and keep the address as given, so
-    /// `"127.0.0.1:5555"` stays scheme-less. Reads `tls_ca_file` and
-    /// `RLMESH_API_KEY` now; no network I/O. An explicit `api_key` for a
-    /// plaintext address that is not loopback warns (`UserWarning`).
+    /// `"127.0.0.1:5555"` stays scheme-less. Checks `tls_ca_file` and
+    /// `RLMESH_API_KEY` now (each session dial reads them again); no network
+    /// I/O. An explicit `api_key` for a plaintext address that is not
+    /// loopback warns (`UserWarning`, once per address per process).
     pub fn new(options: RemoteModelOptions) -> Result<RemoteModel> {
-        Self::with_token(options, String::new())
+        Self::new_in(options, true)
     }
 
-    /// A nonempty `token` (an ext constructor's) stands in for `api_key`.
-    pub(crate) fn with_token(options: RemoteModelOptions, token: String) -> Result<RemoteModel> {
+    /// `new`, warning about a plaintext key only with `warn` (the ext token
+    /// constructors pass `false`).
+    pub(crate) fn new_in(options: RemoteModelOptions, warn: bool) -> Result<RemoteModel> {
         let address = crate::env::client::normalize_connect_address(
             options.address.as_deref(),
             options.host.as_deref(),
@@ -787,16 +792,16 @@ impl RemoteModel {
         ConnectAddress::parse(&address)?;
         let connect_timeout = crate::env::client::normalize_timeout(options.connect_timeout);
         let request_timeout = crate::env::client::normalize_timeout(options.request_timeout);
-        let api_key = if token.is_empty() {
-            options.api_key.as_deref()
-        } else {
-            Some(token.as_str())
-        };
-        let auth =
-            crate::credentials::resolve(&address, api_key, options.tls_ca_file.as_deref(), true)?;
+        crate::credentials::resolve(
+            &address,
+            options.api_key.as_deref(),
+            options.tls_ca_file.as_deref(),
+            warn,
+        )?;
         Ok(RemoteModel(Arc::new(RemoteModelInner {
             address,
-            auth,
+            api_key: options.api_key,
+            tls_ca_file: options.tls_ca_file,
             connect_timeout,
             request_timeout,
         })))
@@ -808,12 +813,14 @@ impl RemoteModel {
         &self.0.address
     }
 
-    pub(crate) fn token(&self) -> &str {
-        self.0.auth.token()
-    }
-
-    pub(crate) fn trust(&self) -> &rlmesh_grpc::TlsTrust {
-        self.0.auth.trust()
+    /// The credentials a session dial sends, resolved now (RMT-22).
+    pub(crate) fn auth(&self) -> Result<crate::credentials::ClientAuth> {
+        crate::credentials::resolve(
+            &self.0.address,
+            self.0.api_key.as_deref(),
+            self.0.tls_ca_file.as_deref(),
+            false,
+        )
     }
 
     pub(crate) fn connect_timeout(&self) -> Option<Duration> {

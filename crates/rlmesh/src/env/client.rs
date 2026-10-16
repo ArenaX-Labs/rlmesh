@@ -943,8 +943,9 @@ fn decode_render_png(png: &[u8]) -> Result<Value> {
 
 /// Resolve the client's own declaration (Core's chain: the call, then the
 /// process and project surfaces) and dial with `options`.
-/// A nonempty `token` (an ext constructor's) stands in for `api_key`.
-async fn connect_core(options: RemoteEnvOptions, token: &str) -> Result<EnvClientCore> {
+/// With `warn` false (the ext token constructors), a plaintext key does not
+/// warn.
+async fn connect_core(options: RemoteEnvOptions, warn: bool) -> Result<EnvClientCore> {
     let address = normalize_connect_address(
         options.address.as_deref(),
         options.host.as_deref(),
@@ -953,13 +954,12 @@ async fn connect_core(options: RemoteEnvOptions, token: &str) -> Result<EnvClien
         options.transport,
     )?;
     ConnectAddress::parse(&address)?;
-    let api_key = if token.is_empty() {
-        options.api_key.as_deref()
-    } else {
-        Some(token)
-    };
-    let auth =
-        crate::credentials::resolve(&address, api_key, options.tls_ca_file.as_deref(), true)?;
+    let auth = crate::credentials::resolve(
+        &address,
+        options.api_key.as_deref(),
+        options.tls_ca_file.as_deref(),
+        warn,
+    )?;
     let declared = crate::editions::resolve_native(
         crate::editions::EditionSources {
             call: options.workflow_edition.as_deref(),
@@ -1244,16 +1244,16 @@ impl RemoteEnv {
     /// refused.
     pub fn new(options: RemoteEnvOptions) -> Result<RemoteEnv> {
         refuse_in_async_context("RemoteEnv::new")?;
-        block_on_library(Self::new_in(options, ""))
+        block_on_library(Self::new_in(options, true))
     }
 
     /// The async twin of [`new`](Self::new).
     pub async fn new_async(options: RemoteEnvOptions) -> Result<RemoteEnv> {
-        in_library(Self::new_in(options, "")).await
+        in_library(Self::new_in(options, true)).await
     }
 
-    pub(crate) async fn new_in(options: RemoteEnvOptions, token: &str) -> Result<RemoteEnv> {
-        let mut core = connect_core(options, token).await?;
+    pub(crate) async fn new_in(options: RemoteEnvOptions, warn: bool) -> Result<RemoteEnv> {
+        let mut core = connect_core(options, warn).await?;
         core.require_single()?;
         core.set_name("RemoteEnv");
         Ok(RemoteEnv {
@@ -1360,16 +1360,16 @@ impl RemoteVectorEnv {
     /// (the ValueError class).
     pub fn new(options: RemoteEnvOptions) -> Result<RemoteVectorEnv> {
         refuse_in_async_context("RemoteVectorEnv::new")?;
-        block_on_library(Self::new_in(options, ""))
+        block_on_library(Self::new_in(options, true))
     }
 
     /// The async twin of [`new`](Self::new).
     pub async fn new_async(options: RemoteEnvOptions) -> Result<RemoteVectorEnv> {
-        in_library(Self::new_in(options, "")).await
+        in_library(Self::new_in(options, true)).await
     }
 
-    pub(crate) async fn new_in(options: RemoteEnvOptions, token: &str) -> Result<RemoteVectorEnv> {
-        let mut core = connect_core(options, token).await?;
+    pub(crate) async fn new_in(options: RemoteEnvOptions, warn: bool) -> Result<RemoteVectorEnv> {
+        let mut core = connect_core(options, warn).await?;
         core.require_vector()?;
         core.set_name("RemoteVectorEnv");
         Ok(RemoteVectorEnv {

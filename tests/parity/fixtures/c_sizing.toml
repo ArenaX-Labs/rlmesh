@@ -67,4 +67,4 @@ operation = "sizing"
 variant = "abi5_remote"
 languages = ["c"]
 why = "Tests C ABI struct_size for fields appended after ABI 5; other APIs hide the raw ABI structs."
-expect = { error = "ValueError", text = "RLMeshRemoteEnvOptions.struct_size 89 ends inside a field" }
+expect = { error = "ValueError", text = "RLMeshRemoteEnvOptions.struct_size MIN_SIZE+1 ends inside a field" }
