@@ -104,6 +104,12 @@ pub(crate) fn py_err_text(err: &PyErr) -> String {
 /// so we use this helper function instead.
 pub fn to_py_err(err: Error) -> PyErr {
     match err {
+        Error::Attached(attached) => Python::attach(|py| {
+            attached
+                .payload::<PyErr>()
+                .map(|error| error.clone_ref(py))
+                .unwrap_or_else(|| to_py_err(attached.error().clone()))
+        }),
         Error::Internal(message) => RLMeshException::new_err(message),
         Error::Protocol(message) => ProtocolException::new_err(message),
         Error::Environment(e) => env_error_to_py(e),

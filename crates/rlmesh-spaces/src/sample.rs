@@ -56,9 +56,11 @@ pub fn sample_with<R: rand::Rng + ?Sized>(
                     format!("cannot sample Discrete space with n={}", discrete.n),
                 ));
             }
-            Ok(SpaceValue::Discrete(rng.random_range(
-                discrete.start..(discrete.start + discrete.n),
-            )))
+            let end = discrete
+                .start
+                .checked_add(discrete.n - 1)
+                .ok_or_else(|| SpaceError::invalid("$", "Discrete range exceeds i64::MAX"))?;
+            Ok(SpaceValue::Discrete(rng.random_range(discrete.start..=end)))
         }
         SpaceKind::MultiBinary(_) => Ok(SpaceValue::MultiBinary(sample_multi_binary(spec, rng))),
         SpaceKind::MultiDiscrete(spec) => {
@@ -725,5 +727,29 @@ mod tests {
             spec: Some(SpaceKind::Discrete(DiscreteSpec { n: 0, start: 0 })),
         };
         assert!(sample_seeded(&spec, 1).is_err());
+    }
+}
+
+#[cfg(test)]
+mod boundary_regressions {
+    use super::*;
+    use crate::spaces::DiscreteBuilder;
+
+    #[test]
+    fn discrete_samples_the_entire_signed_boundary() {
+        for start in [i64::MIN, i64::MAX] {
+            let spec = DiscreteBuilder::new(1).start(start).build().unwrap();
+            assert_eq!(
+                sample_seeded(&spec, 0).unwrap(),
+                SpaceValue::Discrete(start)
+            );
+        }
+        let spec = DiscreteBuilder::new(2).start(i64::MAX - 1).build().unwrap();
+        for seed in 0..20 {
+            let SpaceValue::Discrete(value) = sample_seeded(&spec, seed).unwrap() else {
+                panic!()
+            };
+            assert!((i64::MAX - 1..=i64::MAX).contains(&value));
+        }
     }
 }

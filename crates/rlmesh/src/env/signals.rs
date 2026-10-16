@@ -72,10 +72,11 @@ mod unix {
 
     use rlmesh_grpc::lifecycle::ShutdownTrigger;
 
-    /// SIGINTs received since SIGINT was installed; the handler re-raises
-    /// from the second.
+    /// Monotonic delivery generations, independent of handler installations.
     static SIGINTS: AtomicUsize = AtomicUsize::new(0);
     static SIGTERMS: AtomicUsize = AtomicUsize::new(0);
+    /// SIGINTs since this installation: the second forces termination.
+    static INTERRUPTS: AtomicUsize = AtomicUsize::new(0);
 
     struct Server {
         trigger: ShutdownTrigger,
@@ -100,7 +101,8 @@ mod unix {
 
     extern "C" fn on_signal(signal: libc::c_int) {
         if signal == libc::SIGINT {
-            if SIGINTS.fetch_add(1, Ordering::SeqCst) >= 1 {
+            SIGINTS.fetch_add(1, Ordering::SeqCst);
+            if INTERRUPTS.fetch_add(1, Ordering::SeqCst) >= 1 {
                 // SAFETY: async-signal-safe calls only (`signal`, `raise`).
                 unsafe {
                     libc::signal(libc::SIGINT, libc::SIG_DFL);
@@ -143,17 +145,19 @@ mod unix {
         if registry.stop_watcher.is_none() {
             let stop = Arc::new(AtomicBool::new(false));
             let flag = Arc::clone(&stop);
+            // Snapshot before installing either handler, not on the new thread.
+            let ints = SIGINTS.load(Ordering::SeqCst);
+            let terms = SIGTERMS.load(Ordering::SeqCst);
             let _ = std::thread::Builder::new()
                 .name("rlmesh-signals".to_string())
-                .spawn(move || watch(&flag));
+                .spawn(move || watch(&flag, ints, terms));
             registry.stop_watcher = Some(stop);
         }
         if registry.saved_term.is_none() {
-            SIGTERMS.store(0, Ordering::SeqCst);
             registry.saved_term = Some(install(libc::SIGTERM));
         }
         if sigint && registry.saved_int.is_none() {
-            SIGINTS.store(0, Ordering::SeqCst);
+            INTERRUPTS.store(0, Ordering::SeqCst);
             registry.saved_int = Some(install(libc::SIGINT));
         }
         registry.next_id += 1;
@@ -190,20 +194,43 @@ mod unix {
         }
     }
 
-    /// Turn received signals into server stops, off the handler.
-    fn watch(stop: &AtomicBool) {
-        let (mut ints, mut terms) = (
-            SIGINTS.load(Ordering::SeqCst),
-            SIGTERMS.load(Ordering::SeqCst),
+    #[cfg(test)]
+    pub(super) fn signal_before_watch_regression() {
+        let trigger = ShutdownTrigger::new();
+        let mut registry = Registry::default();
+        registry.servers.insert(
+            1,
+            Server {
+                trigger: trigger.clone(),
+                interrupted: Arc::new(AtomicBool::new(false)),
+                sigint: false,
+            },
         );
+        *STATE.lock().unwrap() = Some(registry);
+        SIGTERMS.store(1, Ordering::SeqCst);
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = stop.clone();
+        let watcher = std::thread::spawn(move || watch(&flag, 0, 0));
+        for _ in 0..100 {
+            if trigger.reason().is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        stop.store(true, Ordering::SeqCst);
+        watcher.join().unwrap();
+        assert_eq!(trigger.reason().as_deref(), Some("sigterm"));
+        *STATE.lock().unwrap() = None;
+    }
+
+    /// Turn received signals into server stops, off the handler.
+    fn watch(stop: &AtomicBool, mut ints: usize, mut terms: usize) {
         while !stop.load(Ordering::SeqCst) {
             std::thread::sleep(Duration::from_millis(20));
             let now_ints = SIGINTS.load(Ordering::SeqCst);
             let now_terms = SIGTERMS.load(Ordering::SeqCst);
-            // The counters reset when a signal is (re)installed, so any change
-            // to a nonzero count is a new signal.
-            let sigint = now_ints != ints && now_ints != 0;
-            let sigterm = now_terms != terms && now_terms != 0;
+            let sigint = now_ints != ints;
+            let sigterm = now_terms != terms;
             (ints, terms) = (now_ints, now_terms);
             if !sigint && !sigterm {
                 continue;
@@ -218,5 +245,15 @@ mod unix {
                 }
             }
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod regressions {
+    use super::*;
+
+    #[test]
+    fn a_signal_received_before_the_watcher_starts_is_delivered() {
+        unix::signal_before_watch_regression();
     }
 }

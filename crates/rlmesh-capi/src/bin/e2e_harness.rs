@@ -153,7 +153,7 @@ async fn run(binary: String, expect: Option<String>) -> ExitCode {
     // OS-assigned), so no readiness sleep is needed.
     let bound =
         match rlmesh::binding::env::WireEnvServer::new(SmokeEnv::new(Arc::clone(&reset_seeds)))
-            .bind(rlmesh::BindAddress::Tcp {
+            .bind(rlmesh::ext::BindAddress::Tcp {
                 host: "127.0.0.1".to_string(),
                 port: 0,
             })

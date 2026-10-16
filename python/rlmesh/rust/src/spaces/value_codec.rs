@@ -1,7 +1,7 @@
 mod batch;
 mod codec;
 mod metadata;
-mod normalization;
+pub(super) mod normalization;
 
 use pyo3::prelude::*;
 

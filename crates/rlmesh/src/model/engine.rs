@@ -1180,7 +1180,7 @@ impl ModelHandler for AdaptedModelHandler {
         // chunk frames); a spec-less route takes the preserved batched raw path
         // (chunked through the model's chunk corner when a horizon was pinned).
         let short_chunk_warned = Arc::clone(&self.short_chunk_warned);
-        tokio::task::spawn_blocking(move || match entry {
+        crate::warnings::blocking(move || match entry {
             Some(entry) => predict_route(
                 &entry,
                 &predict,
@@ -1190,8 +1190,7 @@ impl ModelHandler for AdaptedModelHandler {
             ),
             None => predict.predict_spec_less_chunked(observation, spec_less_horizon),
         })
-        .await
-        .map_err(|err| Error::Internal(format!("predict task panicked: {err}")))?
+        .await?
     }
 
     /// Fusion needs a batched corner and the model's permission
@@ -1223,7 +1222,7 @@ impl ModelHandler for AdaptedModelHandler {
         let adapter_ns = Arc::clone(&self.adapter_ns);
         let group_count = observations.len();
         let short_chunk_warned = Arc::clone(&self.short_chunk_warned);
-        tokio::task::spawn_blocking(move || {
+        crate::warnings::blocking(move || {
             predict_grouped_fused(
                 lanes,
                 observations,
@@ -1233,12 +1232,7 @@ impl ModelHandler for AdaptedModelHandler {
             )
         })
         .await
-        .unwrap_or_else(|err| {
-            let message = format!("grouped predict task panicked: {err}");
-            (0..group_count)
-                .map(|_| Err(Error::Internal(message.clone())))
-                .collect()
-        })
+        .unwrap_or_else(|err| (0..group_count).map(|_| Err(err.clone())).collect())
     }
 
     fn take_adapter_ns(&mut self) -> u64 {
@@ -1281,18 +1275,15 @@ impl ModelHandler for AdaptedModelHandler {
         let predict = Arc::clone(&self.predict);
         if episode_ids.is_empty() {
             let env_id = env_id.to_string();
-            return tokio::task::spawn_blocking(move || predict.on_route_reset(&env_id))
-                .await
-                .map_err(|err| Error::Internal(format!("reset task panicked: {err}")))?;
+            return crate::warnings::blocking(move || predict.on_route_reset(&env_id)).await?;
         }
-        tokio::task::spawn_blocking(move || {
+        crate::warnings::blocking(move || {
             for episode_id in &episode_ids {
                 predict.on_episode_end(episode_id)?;
             }
             Ok(())
         })
-        .await
-        .map_err(|err| Error::Internal(format!("on_episode_end task panicked: {err}")))?
+        .await?
     }
 
     async fn on_close(&mut self) -> Result<()> {
@@ -1313,9 +1304,7 @@ impl ModelHandler for AdaptedModelHandler {
             guard.publish_held();
         }
         let predict = Arc::clone(&self.predict);
-        tokio::task::spawn_blocking(move || predict.on_close())
-            .await
-            .map_err(|err| Error::Internal(format!("on_close task panicked: {err}")))?
+        crate::warnings::blocking(move || predict.on_close()).await?
     }
 }
 
@@ -1539,9 +1528,7 @@ impl ModelRouteSetup for AdaptedRouteSetup {
         // the model serializes it behind its in-flight corner calls.
         let predict = Arc::clone(&self.predict);
         let env_id = env_id.to_string();
-        tokio::task::spawn_blocking(move || predict.on_route_release(&env_id))
-            .await
-            .map_err(|err| Error::Internal(format!("release task panicked: {err}")))?
+        crate::warnings::blocking(move || predict.on_route_release(&env_id)).await?
     }
 }
 

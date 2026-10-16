@@ -139,9 +139,7 @@ pub mod types;
 mod value;
 mod warnings;
 
-#[cfg(unix)]
-pub use address::remove_stale_socket;
-pub use address::{BindAddress, ConnectAddress};
+pub(crate) use address::{BindAddress, ConnectAddress};
 pub use build_info::{BuildInfo, BuildSource, VERSION, build_info};
 pub use describe::{
     Describable, DescribeJsonOptions, DescribeKind, DescribeOptions, describe, describe_json,
@@ -177,7 +175,7 @@ pub use run::{
     SessionOptions, SessionRunOptions, StepEvent, TelemetryRow, run, run_async, session,
     session_async,
 };
-pub use serve_options::{ENV_ENDPOINT_TOKEN_ENV, MODEL_ENDPOINT_TOKEN_ENV, ServeOptions};
+pub use serve_options::ServeOptions;
 pub use specs::EnvContract;
 pub use tensor::Tensor;
 pub use value::{InfoDict, Kwargs, Metadata, MetadataIter, Value, ValueKind};

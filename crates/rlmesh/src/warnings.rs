@@ -92,14 +92,26 @@ pub(crate) fn warn(category: WarningCategory, message: impl Into<String>) -> Res
         category,
         message: message.into(),
     };
+    if let Some(work) = work_context() {
+        check_cancelled()?;
+        let (reply, result) = std::sync::mpsc::sync_channel(1);
+        work.warnings
+            .send((warning, reply))
+            .map_err(|_| crate::Error::Cancelled)?;
+        return result.recv().unwrap_or(Err(crate::Error::Cancelled));
+    }
+    deliver(&warning)
+}
+
+fn deliver(warning: &Warning) -> Result<()> {
     let handler = HANDLER
         .read()
         .unwrap_or_else(|err| err.into_inner())
         .clone();
     match handler {
-        Some(handler) => handler(&warning),
+        Some(handler) => handler(warning),
         None => {
-            default_handler(&warning);
+            default_handler(warning);
             Ok(())
         }
     }
@@ -155,4 +167,82 @@ pub(crate) mod tests {
         assert_eq!(seen.lock().unwrap()[0].message, "careful");
         assert!(warn(WarningCategory::UserWarning, "careful").is_ok());
     }
+}
+
+// CPU work may emit warnings, but their handler belongs to the thread polling
+// the call. The same context follows work through the model's serialized queue.
+type WarningRequest = (Warning, std::sync::mpsc::SyncSender<Result<()>>);
+
+#[derive(Clone)]
+pub(crate) struct WorkContext {
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
+    warnings: tokio::sync::mpsc::UnboundedSender<WarningRequest>,
+}
+
+thread_local! {
+    static WORK: std::cell::RefCell<Option<WorkContext>> = const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) fn work_context() -> Option<WorkContext> {
+    WORK.with(|work| work.borrow().clone())
+}
+
+pub(crate) fn check_cancelled() -> Result<()> {
+    if work_context().is_some_and(|work| work.cancelled.load(std::sync::atomic::Ordering::SeqCst)) {
+        Err(crate::Error::Cancelled)
+    } else {
+        Ok(())
+    }
+}
+
+pub(crate) fn with_work<R>(work: Option<WorkContext>, f: impl FnOnce() -> R) -> R {
+    struct Restore(Option<WorkContext>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            WORK.with(|work| *work.borrow_mut() = self.0.take());
+        }
+    }
+    let _restore = Restore(WORK.with(|slot| slot.replace(work)));
+    f()
+}
+
+/// Offload host work while delivering its warnings on the polling thread and
+/// refusing callbacks that have not started when the awaiting future is dropped.
+pub(crate) async fn blocking<R: Send + 'static>(
+    f: impl FnOnce() -> R + Send + 'static,
+) -> Result<R> {
+    use std::future::Future;
+    use std::task::Poll;
+    struct Cancel(Arc<std::sync::atomic::AtomicBool>);
+    impl Drop for Cancel {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let _cancel = Cancel(cancelled.clone());
+    let (warnings, mut incoming) = tokio::sync::mpsc::unbounded_channel();
+    let work = WorkContext {
+        cancelled,
+        warnings,
+    };
+    let mut job = tokio::task::spawn_blocking(move || {
+        with_work(Some(work), || {
+            check_cancelled()?;
+            Ok(f())
+        })
+    });
+    std::future::poll_fn(move |cx| {
+        while let Poll::Ready(Some((warning, reply))) = incoming.poll_recv(cx) {
+            let _ = reply.send(deliver(&warning));
+        }
+        match std::pin::Pin::new(&mut job).poll(cx) {
+            Poll::Ready(Ok(out)) => Poll::Ready(out),
+            Poll::Ready(Err(err)) => Poll::Ready(Err(crate::Error::Internal(format!(
+                "model task panicked: {err}"
+            )))),
+            Poll::Pending => Poll::Pending,
+        }
+    })
+    .await
 }

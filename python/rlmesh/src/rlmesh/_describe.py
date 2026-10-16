@@ -137,6 +137,8 @@ def describe_json(
     # A wrapping rlmesh.Model(policy) describes its policy's declarations, as
     # describe(policy) would; only its spec is its own.
     declared = _declaring_object(obj)
+    kind, _ = _kind_and_method(obj, kind)
+    kind, _ = _kind_and_method(obj, kind)
     kind, method = _kind_and_method(declared, kind)
     pieces = _gather(
         declared, method, kind, entrypoint, served_env, workflow_edition, spec_of=obj

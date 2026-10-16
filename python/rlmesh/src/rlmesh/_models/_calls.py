@@ -32,7 +32,8 @@ class ModelCalls:
     """The serialized call gate and close state of one model."""
 
     def __init__(self) -> None:
-        self._lock = threading.Lock()
+        self._next_ticket = 0
+        self._serving_ticket = 0
         self._state = threading.Condition()
         self._owner: int | None = None
         self._phase: str = "open"
@@ -68,34 +69,40 @@ class ModelCalls:
         fn: Callable[..., _R],
         args: tuple[Any, ...],
         kwargs: dict[str, Any] | None = None,
-    ) -> _R:
-        with self._lock:
+        *,
+        hook: bool = False,
+    ) -> _R | None:
+        with self._state:
             if self._refuse:
+                if hook:
+                    return None
                 raise RuntimeError(CLOSED_TEXT)
+            ticket = self._next_ticket
+            self._next_ticket += 1
+            self._state.notify_all()
+            self._state.wait_for(lambda: self._serving_ticket == ticket)
             self._owner = threading.get_ident()
-            try:
-                return fn(*args, **(kwargs or {}))
-            finally:
+        try:
+            return fn(*args, **(kwargs or {}))
+        finally:
+            with self._state:
                 self._owner = None
+                self._serving_ticket += 1
+                self._state.notify_all()
 
     def call(self, fn: Callable[..., _R], *args: Any, **kwargs: Any) -> _R:
         """Run one corner call behind every call already running."""
         self.check_not_reentrant("a corner call")
         if self._refuse:
             raise RuntimeError(CLOSED_TEXT)
-        return self._run(fn, args, kwargs)
+        return self._run(fn, args, kwargs)  # type: ignore[return-value]
 
     def hook(self, fn: Callable[..., object], *args: Any) -> None:
         """Run one episode hook; after ``close()`` it submits nothing."""
         if self._refuse:
             return
         self.check_not_reentrant("a model hook")
-        try:
-            self._run(fn, args)
-        except RuntimeError as error:
-            if self._refuse and str(error) == CLOSED_TEXT:
-                return
-            raise
+        self._run(fn, args, hook=True)
 
     def gated(self, fn: Callable[..., _R] | None) -> Callable[..., _R] | None:
         """``fn`` with every call through :meth:`call`."""
@@ -149,24 +156,26 @@ class ModelCalls:
                 self._state.wait_for(lambda: self._phase == "closed")
                 return False
             self._phase = "closing"
+            self._refuse = True
+            admitted = self._next_ticket
             self._closing_thread = threading.get_ident()
             stops = list(self._serves.values())
         for stop in stops:
             stop()
         with self._state:
-            while self._serves:
-                self._state.wait()
+            self._state.wait_for(
+                lambda: not self._serves and self._serving_ticket == admitted
+            )
         self._refuse = True
         return True
 
     def run_close_hook(self, hook: Callable[[], object]) -> None:
         """Fire the close hook behind every in-flight call."""
-        with self._lock:
-            self._owner = threading.get_ident()
-            try:
-                hook()
-            finally:
-                self._owner = None
+        self._owner = threading.get_ident()
+        try:
+            hook()
+        finally:
+            self._owner = None
 
     def finish_close(self) -> None:
         """Mark the model closed."""

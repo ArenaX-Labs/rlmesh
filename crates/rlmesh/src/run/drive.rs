@@ -134,6 +134,9 @@ impl CallerPort {
     ) -> Result<R> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let job: Job = Box::new(move |side: &mut CallerSide<'_>| {
+            if tx.is_closed() {
+                return;
+            }
             let out = catch_unwind(AssertUnwindSafe(|| f(side)))
                 .unwrap_or_else(|_| Err(panicked("a lent env or hook call")));
             let _ = tx.send(out);
@@ -304,6 +307,7 @@ pub(crate) fn refuse_in_async_context(call: &str) -> Result<()> {
 /// Watches R-18 tokens and cancels the driver when one fires.
 pub(crate) struct CancelWatch {
     fired: Arc<std::sync::atomic::AtomicBool>,
+    tokens: Arc<Vec<crate::ext::CancelSubscription>>,
     task: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -313,17 +317,24 @@ impl CancelWatch {
         tokens: Vec<crate::ext::CancelToken>,
         driver: tokio_util::sync::CancellationToken,
     ) -> Result<CancelWatch> {
-        if tokens.iter().any(crate::ext::CancelToken::take) {
+        let tokens: Arc<Vec<_>> = Arc::new(
+            tokens
+                .iter()
+                .map(crate::ext::CancelToken::subscribe)
+                .collect(),
+        );
+        if tokens.iter().any(crate::ext::CancelSubscription::fired) {
             return Err(Error::Cancelled);
         }
         let fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let task = (!tokens.is_empty()).then(|| {
             let fired = Arc::clone(&fired);
+            let tokens = Arc::clone(&tokens);
             runtime().spawn(async move {
                 let mut tick = tokio::time::interval(Duration::from_millis(20));
                 loop {
                     tick.tick().await;
-                    if tokens.iter().any(crate::ext::CancelToken::take) {
+                    if tokens.iter().any(crate::ext::CancelSubscription::fired) {
                         fired.store(true, std::sync::atomic::Ordering::SeqCst);
                         driver.cancel();
                         return;
@@ -331,17 +342,32 @@ impl CancelWatch {
                 }
             })
         });
-        Ok(CancelWatch { fired, task })
+        Ok(CancelWatch {
+            fired,
+            tokens,
+            task,
+        })
+    }
+
+    pub(crate) fn subscriptions(&self) -> Arc<Vec<crate::ext::CancelSubscription>> {
+        Arc::clone(&self.tokens)
     }
 
     /// Whether a token fired during the call.
     pub(crate) fn fired(&self) -> bool {
         self.fired.load(std::sync::atomic::Ordering::SeqCst)
+            || self
+                .tokens
+                .iter()
+                .any(crate::ext::CancelSubscription::fired)
     }
 }
 
 impl Drop for CancelWatch {
     fn drop(&mut self) {
+        for token in self.tokens.iter() {
+            token.unsubscribe();
+        }
         if let Some(task) = self.task.take() {
             task.abort();
         }

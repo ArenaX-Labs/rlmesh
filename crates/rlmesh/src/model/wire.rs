@@ -38,6 +38,7 @@ pub(super) fn model_error_value(error: &Error) -> ModelError {
     // text: the client prefixes the code once (COR-27), so `Display` would
     // carry it twice.
     let (code, is_recoverable, message) = match error {
+        Error::Attached(attached) => return model_error_value(attached.error()),
         Error::Model(model) => (
             ModelErrorCode::Internal,
             model.is_recoverable,

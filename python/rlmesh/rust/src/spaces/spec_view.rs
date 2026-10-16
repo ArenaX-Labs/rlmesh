@@ -265,10 +265,13 @@ impl PySpace {
         // A Box value must have the space's exact shape: the encoder reshapes
         // to the space's shape (the transport accepts batches), so `contains`
         // checks the input's own shape first.
-        if !box_shapes_match(value, &self.spec) {
+        let Ok(value) = normalize_contains_input(value, &self.spec) else {
+            return false;
+        };
+        if !box_shapes_match(&value, &self.spec) {
             return false;
         }
-        match py_any_to_space_value_with_backend(py, value, &self.spec, ValueBackend::Native) {
+        match py_any_to_space_value_with_backend(py, &value, &self.spec, ValueBackend::Native) {
             Ok(encoded) => rlmesh_spaces::contains(&self.spec, &encoded).is_ok(),
             Err(_) => false,
         }
@@ -277,6 +280,62 @@ impl PySpace {
     fn __repr__(&self) -> String {
         // Mirror the spec's Gymnasium-style rendering (see PySpaceSpec).
         self.spec.to_string()
+    }
+}
+
+/// Materialize wrappers and iterators once so shape checking and encoding see
+/// the same tree, including nested namedtuple dictionaries and one-shot inputs.
+fn normalize_contains_input<'py>(
+    value: &Bound<'py, PyAny>,
+    space: &SpaceSpec,
+) -> PyResult<Bound<'py, PyAny>> {
+    use super::value_codec::normalization::normalize_space_value_input;
+    let py = value.py();
+    match space.spec.as_ref() {
+        Some(SpaceKind::Box(_)) => normalize_array_input(value),
+        Some(SpaceKind::Dict(spec)) => {
+            let value = normalize_space_value_input(value)?;
+            let source = value.cast::<PyDict>()?;
+            let out = PyDict::new(py);
+            for (key, child) in spec.keys.iter().zip(&spec.spaces) {
+                if let Some(item) = source.get_item(key)? {
+                    out.set_item(key, normalize_contains_input(&item, child)?)?;
+                }
+            }
+            Ok(out.into_any())
+        }
+        Some(SpaceKind::Tuple(spec)) => {
+            let out = PyList::empty(py);
+            for (item, child) in value.try_iter()?.zip(&spec.spaces) {
+                out.append(normalize_contains_input(&item?, child)?)?;
+            }
+            // Preserve arity checking in the encoder.
+            if value.len()? != spec.spaces.len() {
+                return Ok(value.clone());
+            }
+            Ok(out.into_any())
+        }
+        _ => Ok(value.clone()),
+    }
+}
+
+fn normalize_array_input<'py>(value: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+    use super::value_codec::normalization::normalize_space_value_input;
+    if extract_tensor(value)?.is_some() {
+        return Ok(value.clone());
+    }
+    let value = normalize_space_value_input(value)?;
+    if value.is_instance_of::<pyo3::types::PyString>() || value.is_instance_of::<PyDict>() {
+        return Ok(value);
+    }
+    if let Ok(items) = value.try_iter() {
+        let out = PyList::empty(value.py());
+        for item in items {
+            out.append(normalize_array_input(&item?)?)?;
+        }
+        Ok(out.into_any())
+    } else {
+        Ok(value)
     }
 }
 

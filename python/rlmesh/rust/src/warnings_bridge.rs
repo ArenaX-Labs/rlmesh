@@ -27,9 +27,32 @@ fn warn(warning: &Warning) -> rlmesh::Result<()> {
     Python::attach(|py| {
         let message = CString::new(warning.message.replace('\0', " "))
             .unwrap_or_else(|_| CString::from(c"rlmesh warning"));
-        PyErr::warn(py, &category(py, warning.category), &message, 1)
+        let mut stacklevel = 1;
+        if let Ok(mut frame) = py
+            .import("sys")
+            .and_then(|sys| sys.call_method1("_getframe", (0,)))
+        {
+            loop {
+                let module = frame
+                    .getattr("f_globals")
+                    .and_then(|globals| globals.get_item("__name__"))
+                    .and_then(|name| name.extract::<String>())
+                    .unwrap_or_default();
+                if module != "rlmesh" && !module.starts_with("rlmesh.") {
+                    break;
+                }
+                stacklevel += 1;
+                frame = frame.getattr("f_back")?;
+                if frame.is_none() {
+                    break;
+                }
+            }
+        }
+        PyErr::warn(py, &category(py, warning.category), &message, stacklevel)
     })
-    .map_err(|err| rlmesh::Error::Internal(err.to_string()))
+    .map_err(|err| {
+        rlmesh::binding::AttachedError::attach(rlmesh::Error::Internal(err.to_string()), err)
+    })
 }
 
 /// Install the bridge as the process's native warning handler.

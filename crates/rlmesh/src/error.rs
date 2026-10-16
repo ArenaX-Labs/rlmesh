@@ -301,6 +301,9 @@ pub enum Error {
     Timeout(Duration),
     /// The call was cancelled (`KeyboardInterrupt`).
     Cancelled,
+    /// In-process host exception transport; only bindings construct this.
+    #[doc(hidden)]
+    Attached(crate::binding::AttachedError),
 }
 
 impl Error {
@@ -397,6 +400,7 @@ impl Error {
             Self::Connection(_) => ErrorClass::ConnectionError,
             Self::Timeout(_) => ErrorClass::TimeoutError,
             Self::Cancelled => ErrorClass::KeyboardInterrupt,
+            Self::Attached(attached) => attached.error.class(),
         }
     }
 
@@ -404,6 +408,7 @@ impl Error {
     /// Model error's own flag, and false for every other class.
     pub fn is_recoverable(&self) -> bool {
         match self {
+            Self::Attached(attached) => attached.error.is_recoverable(),
             Self::Environment(error) => error.is_recoverable,
             Self::Model(error) => error.is_recoverable,
             _ => false,
@@ -415,7 +420,10 @@ impl Error {
     /// driver plumbing use it; it is not the user-facing
     /// [`Error::is_recoverable`].
     pub(crate) fn is_transient(&self) -> bool {
-        matches!(self, Self::Connection(_) | Self::Timeout(_)) || self.is_recoverable()
+        match self {
+            Self::Attached(attached) => attached.error.is_transient(),
+            _ => matches!(self, Self::Connection(_) | Self::Timeout(_)) || self.is_recoverable(),
+        }
     }
 
     /// Map a wire-level protocol failure onto [`Error::Protocol`].
@@ -520,6 +528,7 @@ impl std::error::Error for EnvironmentError {}
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Attached(attached) => attached.error.fmt(f),
             Self::Internal(message)
             | Self::Protocol(message)
             | Self::Type(message)

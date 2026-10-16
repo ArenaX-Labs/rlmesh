@@ -18,7 +18,8 @@ use rlmesh::binding::model::{
 };
 use rlmesh::binding::spaces::SpaceValue;
 use rlmesh::binding::{CancellationToken, RuntimeReport};
-use rlmesh::{BindAddress, ConnectAddress, Error, ServeOptions, predict_seed};
+use rlmesh::ext::{BindAddress, ConnectAddress};
+use rlmesh::{Error, ServeOptions, predict_seed};
 
 use crate::abi::status::{
     CapiError, RLMeshStatus, clear_last_error, guard, guard_value, last_error_message,

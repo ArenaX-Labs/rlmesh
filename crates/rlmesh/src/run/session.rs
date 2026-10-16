@@ -147,6 +147,33 @@ enum EnvPort {
     },
 }
 
+/// Returns a borrowed connection even when creation is abandoned during a dial.
+struct EnvLease<'a> {
+    env: Option<EnvPort>,
+    lent: Option<&'a mut (dyn Lendable + Send + 'a)>,
+}
+
+impl Drop for EnvLease<'_> {
+    fn drop(&mut self) {
+        if let Some(EnvPort::Remote {
+            client: Some(mut core),
+            borrowed,
+            ..
+        }) = self.env.take()
+        {
+            if borrowed {
+                if let Some(handle) = self.lent.as_mut() {
+                    handle.give_back(core);
+                }
+            } else {
+                super::drive::runtime().spawn(async move {
+                    let _ = core.close().await;
+                });
+            }
+        }
+    }
+}
+
 struct Connected {
     contract: EnvContract,
     wire: Arc<rlmesh_spaces::EnvContract>,
@@ -181,6 +208,7 @@ struct Core {
     telemetry: Option<Telemetry>,
     /// The call in flight's cancellation (R-18).
     cancel: CancellationToken,
+    subscriptions: Arc<Vec<crate::ext::CancelSubscription>>,
 }
 
 /// Fail `future` with the cancellation class once `cancel` fires.
@@ -224,6 +252,32 @@ fn reject_vector_env(num_envs: u64) -> Result<()> {
 }
 
 impl Core {
+    async fn local_call<R: Send + 'static>(
+        &self,
+        call: impl for<'x, 'c> FnOnce(&'x mut CallerSide<'c>) -> Result<R> + Send + 'static,
+    ) -> Result<R> {
+        let subscriptions = Arc::clone(&self.subscriptions);
+        cancellable(
+            &self.cancel,
+            self.port.call(move |side| {
+                let cancelled = || {
+                    subscriptions
+                        .iter()
+                        .any(crate::ext::CancelSubscription::fired)
+                };
+                if cancelled() {
+                    return Err(Error::Cancelled);
+                }
+                let result = call(side);
+                if cancelled() {
+                    return Err(Error::Cancelled);
+                }
+                result
+            }),
+        )
+        .await
+    }
+
     fn check_model_open(&self) -> Result<()> {
         match &self.model {
             ModelPort::Local(model) => model.shared.admit(),
@@ -378,22 +432,21 @@ impl Core {
         let observation = connected.observation.clone();
         match &mut self.env {
             EnvPort::Local => {
-                self.port
-                    .call(move |side| {
-                        if vector {
-                            let (batch, info) = side
-                                .vector()?
-                                .reset(seed.map(crate::VectorSeed::One), options.as_ref())?;
-                            let lane = crate::env::batch::unstack_lanes(&observation, batch, 1)?
-                                .into_iter()
-                                .next()
-                                .unwrap_or(Value::None);
-                            Ok((lane, info))
-                        } else {
-                            side.env()?.reset(seed, options.as_ref())
-                        }
-                    })
-                    .await
+                self.local_call(move |side| {
+                    if vector {
+                        let (batch, info) = side
+                            .vector()?
+                            .reset(seed.map(crate::VectorSeed::One), options.as_ref())?;
+                        let lane = crate::env::batch::unstack_lanes(&observation, batch, 1)?
+                            .into_iter()
+                            .next()
+                            .unwrap_or(Value::None);
+                        Ok((lane, info))
+                    } else {
+                        side.env()?.reset(seed, options.as_ref())
+                    }
+                })
+                .await
             }
             EnvPort::Remote { client, .. } => {
                 let client = client.as_mut().ok_or_else(closed_error)?;
@@ -418,29 +471,27 @@ impl Core {
         let action_space = connected.action.clone();
         match &mut self.env {
             EnvPort::Local => {
-                self.port
-                    .call(move |side| {
-                        if vector {
-                            let actions =
-                                crate::env::batch::stack_lanes(&action_space, vec![action])?;
-                            let (batch, rewards, terminated, truncated, info) =
-                                side.vector()?.step(actions)?;
-                            let lane = crate::env::batch::unstack_lanes(&observation, batch, 1)?
-                                .into_iter()
-                                .next()
-                                .unwrap_or(Value::None);
-                            Ok((
-                                lane,
-                                rewards.first().copied().unwrap_or_default(),
-                                terminated.first().copied().unwrap_or_default(),
-                                truncated.first().copied().unwrap_or_default(),
-                                info,
-                            ))
-                        } else {
-                            side.env()?.step(Some(action))
-                        }
-                    })
-                    .await
+                self.local_call(move |side| {
+                    if vector {
+                        let actions = crate::env::batch::stack_lanes(&action_space, vec![action])?;
+                        let (batch, rewards, terminated, truncated, info) =
+                            side.vector()?.step(actions)?;
+                        let lane = crate::env::batch::unstack_lanes(&observation, batch, 1)?
+                            .into_iter()
+                            .next()
+                            .unwrap_or(Value::None);
+                        Ok((
+                            lane,
+                            rewards.first().copied().unwrap_or_default(),
+                            terminated.first().copied().unwrap_or_default(),
+                            truncated.first().copied().unwrap_or_default(),
+                            info,
+                        ))
+                    } else {
+                        side.env()?.step(Some(action))
+                    }
+                })
+                .await
             }
             EnvPort::Remote { client, .. } => {
                 let client = client.as_mut().ok_or_else(closed_error)?;
@@ -921,7 +972,7 @@ impl<'a> Session<'a> {
                         option: None,
                         declared: shared.decl.workflow_edition.as_deref(),
                     },
-                    true,
+                    shared.decl.authored,
                 )?;
                 if execution_horizon > 1 && !shared.decl.has_chunk() {
                     crate::warnings::warn(
@@ -1036,6 +1087,7 @@ impl<'a> Session<'a> {
                 episode: Episode::default(),
                 telemetry: None,
                 cancel: CancellationToken::new(),
+                subscriptions: Arc::default(),
             },
             env: caller_env,
             queue,
@@ -1096,9 +1148,8 @@ impl<'a> Session<'a> {
             Ok(())
         };
         let cancel = cancel.unwrap_or_default();
-        if cancel.take() {
-            return Err(Error::Cancelled);
-        }
+        let dial_cancel = CancellationToken::new();
+        let _watch = CancelWatch::start(vec![cancel.clone()], dial_cancel.clone())?;
         // What the session's env is, and the contract and offer the model is
         // bound with.
         let mut lent = None;
@@ -1147,14 +1198,18 @@ impl<'a> Session<'a> {
                 )
             }
             EnvKind::Address(address) => {
-                let mut core = EnvClientCore::connect_with(
+                let connected = EnvClientCore::connect_with(
                     &address,
                     CoreConnect {
                         declared: edition.as_deref(),
                         ..CoreConnect::default()
                     },
                 )
-                .await?;
+                .await;
+                if _watch.fired() {
+                    return Err(Error::Cancelled);
+                }
+                let mut core = connected?;
                 if let Err(err) = core.require_single() {
                     let _ = core.close().await;
                     return Err(err);
@@ -1173,6 +1228,10 @@ impl<'a> Session<'a> {
                 )
             }
         };
+        let mut lease = EnvLease {
+            env: Some(env_port),
+            lent,
+        };
         let dialed = ModelClient::connect_with(
             model.address(),
             contract,
@@ -1187,35 +1246,17 @@ impl<'a> Session<'a> {
         .await;
         // A cancel fired during the uncancellable dial fails this call once
         // it returns (RMT-6).
-        let dialed = match dialed {
-            Ok(_) if cancel.take() => Err(Error::Cancelled),
-            other => other,
-        };
-        let mut env_port = env_port;
-        let mut client = match dialed {
-            Ok(client) => client,
-            Err(err) => {
-                // Release what this call took: a lent core goes back, a
-                // dialed one closes (RMT-P7).
-                if let EnvPort::Remote {
-                    client, borrowed, ..
-                } = &mut env_port
-                    && let Some(mut core) = client.take()
-                {
-                    match lent.as_mut() {
-                        Some(handle) if *borrowed => handle.give_back(core),
-                        _ => {
-                            if let Err(close) = core.close().await {
-                                tracing::warn!(
-                                    "closing the env a failed session dialed failed: {close}"
-                                );
-                            }
-                        }
-                    }
-                }
-                return Err(err);
-            }
-        };
+        let cancelled = dial_cancel.is_cancelled() || _watch.fired();
+        // A firing wins over either dial outcome and is consumed by this call.
+        if cancelled {
+            return Err(Error::Cancelled);
+        }
+        let mut client = dialed?;
+        let env_port = lease
+            .env
+            .take()
+            .expect("the pending env is owned until transfer");
+        let lent = lease.lent.take();
         client.set_execution_horizon(execution_horizon);
         let (port, queue) = caller_channel();
         Ok(Session {
@@ -1229,6 +1270,7 @@ impl<'a> Session<'a> {
                 episode: Episode::default(),
                 telemetry: None,
                 cancel: CancellationToken::new(),
+                subscriptions: Arc::default(),
             },
             env: CallerEnv::None,
             queue,
@@ -1273,6 +1315,7 @@ impl<'a> Session<'a> {
         self.core.cancel = CancellationToken::new();
         let tokens = std::iter::once(self.cancel.clone()).chain(cancel).collect();
         let _watch = CancelWatch::start(tokens, self.core.cancel.clone())?;
+        self.core.subscriptions = _watch.subscriptions();
         let Session {
             core, env, queue, ..
         } = self;
@@ -1596,6 +1639,18 @@ impl Drop for Session<'_> {
         self.closed = true;
         self.core.context.close();
         if super::drive::in_async_context() {
+            // Queue the owned episode end before a later model close can refuse it.
+            if self.core.episode.open
+                && let ModelPort::Local(model) = &self.core.model
+            {
+                let _ = model.shared.queue_episode_end(self.core.episode.id.clone());
+                self.core.episode.open = false;
+            }
+            let made = match &mut self.env {
+                CallerEnv::Factory(_, made) => made.take(),
+                _ => None,
+            };
+            let _made = super::native::OwnedMadeEnv(made, false);
             // A borrowed client goes back to its owner at once: a borrow
             // cannot be detached (R-17).
             self.give_back();
@@ -1613,6 +1668,7 @@ impl Drop for Session<'_> {
                     episode: Episode::default(),
                     telemetry: None,
                     cancel: CancellationToken::new(),
+                    subscriptions: Arc::default(),
                 },
             );
             let close_env = self.close_env;
