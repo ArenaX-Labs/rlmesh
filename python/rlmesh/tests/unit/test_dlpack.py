@@ -77,6 +77,25 @@ def test_dlpack_copy_exports_fresh_buffer() -> None:
     capsule = tensor.__dlpack__(copy=True, max_version=(1, 0))
     assert _capsule_name_is(capsule, b"dltensor_versioned")
 
+    class VersionedHeader(ctypes.Structure):
+        _fields_: ClassVar = [
+            ("major", ctypes.c_uint32),
+            ("minor", ctypes.c_uint32),
+            ("manager_ctx", ctypes.c_void_p),
+            ("deleter", ctypes.c_void_p),
+            ("flags", ctypes.c_uint64),
+        ]
+
+    get_pointer = ctypes.pythonapi.PyCapsule_GetPointer
+    get_pointer.restype = ctypes.c_void_p
+    get_pointer.argtypes = [ctypes.py_object, ctypes.c_char_p]
+    for copy, flags in [(True, 2), (False, 1)]:
+        capsule = tensor.__dlpack__(copy=copy, max_version=(1, 0))
+        header = ctypes.cast(
+            get_pointer(capsule, b"dltensor_versioned"), ctypes.POINTER(VersionedHeader)
+        ).contents
+        assert (header.major, header.minor, header.flags) == (1, 0, flags)
+
 
 def test_numpy_from_dlpack_roundtrip() -> None:
     np = pytest.importorskip("numpy")
@@ -225,8 +244,9 @@ def test_from_dlpack_rejects_non_dlpack_objects() -> None:
         rlmesh.Tensor.from_dlpack(b"raw bytes")
 
 
-def test_from_dlpack_rejects_non_cpu_devices() -> None:
-    """Fabricate a kDLCUDA capsule with ctypes and check it is refused."""
+@pytest.mark.parametrize("versioned", [False, True])
+def test_from_dlpack_rejects_non_cpu_devices(versioned: bool) -> None:
+    """Failed imports preserve ownership for both capsule protocols."""
     import rlmesh
 
     class DLDevice(ctypes.Structure):
@@ -262,24 +282,63 @@ def test_from_dlpack_rejects_non_cpu_devices() -> None:
 
     shape = (ctypes.c_int64 * 1)(1)
     payload = (ctypes.c_uint8 * 4)(0, 0, 0, 0)
-    managed = DLManagedTensor()
+
+    class DLPackVersion(ctypes.Structure):
+        _fields_: ClassVar = [("major", ctypes.c_uint32), ("minor", ctypes.c_uint32)]
+
+    class DLManagedTensorVersioned(ctypes.Structure):
+        _fields_: ClassVar = [
+            ("version", DLPackVersion),
+            ("manager_ctx", ctypes.c_void_p),
+            ("deleter", ctypes.c_void_p),
+            ("flags", ctypes.c_uint64),
+            ("dl_tensor", DLTensor),
+        ]
+
+    if versioned:
+        managed = DLManagedTensorVersioned()
+        managed.version = DLPackVersion(1, 0)
+    else:
+        managed = DLManagedTensor()
+    name = b"dltensor_versioned" if versioned else b"dltensor"
+    used = b"used_dltensor_versioned" if versioned else b"used_dltensor"
     managed.dl_tensor.data = ctypes.cast(payload, ctypes.c_void_p)
     managed.dl_tensor.device = DLDevice(device_type=2, device_id=0)  # kDLCUDA
     managed.dl_tensor.ndim = 1
     managed.dl_tensor.dtype = DLDataType(code=2, bits=32, lanes=1)
     managed.dl_tensor.shape = shape
     managed.dl_tensor.byte_offset = 0
-    managed.deleter = None
+    calls = []
+
+    @ctypes.CFUNCTYPE(None, ctypes.c_void_p)
+    def deleter(_pointer: int) -> None:
+        calls.append("deleted")
+
+    managed.deleter = ctypes.cast(deleter, ctypes.c_void_p)
 
     new_capsule = ctypes.pythonapi.PyCapsule_New
     new_capsule.restype = ctypes.py_object
     new_capsule.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p]
     capsule = new_capsule(
-        ctypes.cast(ctypes.byref(managed), ctypes.c_void_p), b"dltensor", None
+        ctypes.cast(ctypes.byref(managed), ctypes.c_void_p), name, None
     )
 
-    with pytest.raises(ValueError, match="only CPU"):
+    for _ in range(2):
+        with pytest.raises(ValueError, match="only CPU"):
+            rlmesh.Tensor.from_dlpack(capsule)
+        assert calls == []
+        assert _capsule_name_is(capsule, name)
+
+    # The caller still owns a failed import and may fix it and try again.
+    managed.dl_tensor.device.device_type = 1
+    imported = rlmesh.Tensor.from_dlpack(capsule)
+    assert imported.tobytes() == bytes(4)
+    assert calls == ["deleted"]
+    assert _capsule_name_is(capsule, used)
+    with pytest.raises(TypeError):
         rlmesh.Tensor.from_dlpack(capsule)
+    del capsule, imported
+    assert calls == ["deleted"]
 
 
 def _rss_bytes() -> int:
@@ -397,3 +456,83 @@ def test_dlpack_capsule_data_pointer_and_strides() -> None:
     # Element-unit strides, C-order.
     assert [managed.strides[i] for i in range(2)] == [3, 1]
     assert managed.device.device_type == 1
+
+
+@pytest.mark.parametrize(
+    "dtype",
+    ["bool", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64"],
+)
+def test_numpy_dlpack_dtype_and_source_lifetimes(dtype: str) -> None:
+    np = pytest.importorskip("numpy")
+    import gc
+
+    import rlmesh
+
+    if _np_version(np) < (1, 25):
+        pytest.skip("all scalar DLPack dtypes require numpy >= 1.25")
+    source = np.array([0, 1, 1, 0], dtype=dtype).reshape(2, 2)
+    expected = source.tobytes()
+    tensor = rlmesh.Tensor.from_dlpack(source)
+    del source
+    gc.collect()
+    assert tensor.dtype == dtype
+    assert tensor.tobytes() == expected
+
+    array = np.from_dlpack(tensor)
+    del tensor
+    gc.collect()
+    assert array.dtype == np.dtype(dtype)
+    assert array.tobytes() == expected
+
+
+@pytest.mark.parametrize(
+    "layout", ["transpose", "reverse", "broadcast", "empty", "scalar"]
+)
+def test_numpy_dlpack_strides(layout: str) -> None:
+    np = pytest.importorskip("numpy")
+    import rlmesh
+
+    source = np.arange(12, dtype=np.int32).reshape(3, 4)
+    if layout == "transpose":
+        source = source.T
+    elif layout == "reverse":
+        source = source[::-1, ::-2]
+    elif layout == "broadcast":
+        # Keep the zero strides but make the view writable for legacy DLPack.
+        source = np.lib.stride_tricks.as_strided(source[0, :2], (3, 2), (0, 4))
+    elif layout == "empty":
+        source = source[:0]
+    else:
+        source = np.array(42, dtype=np.int32)
+    tensor = rlmesh.Tensor.from_dlpack(source)
+    assert tensor.shape == list(source.shape)
+    assert tensor.is_contiguous()
+    assert tensor.tobytes() == source.tobytes()
+    if source.size:
+        expected_strides = (
+            list(np.ascontiguousarray(source).strides) if source.ndim else []
+        )
+        assert tensor.strides == expected_strides
+
+
+@pytest.mark.parametrize("dtype", ["bool", "int8", "int16", "int32", "int64", "uint8"])
+def test_torch_dlpack_roundtrip_and_lifetimes(dtype: str) -> None:
+    torch = pytest.importorskip("torch")
+    import gc
+
+    import rlmesh
+
+    source = torch.tensor([[0, 1, 1], [1, 0, 1]], dtype=getattr(torch, dtype))
+    view = source.T[:, ::2]
+    tensor = rlmesh.Tensor.from_dlpack(view)
+    expected = view.tolist()
+    del source, view
+    gc.collect()
+    assert tensor.dtype == dtype
+    for copy in (False, True):
+        exported = torch.utils.dlpack.from_dlpack(tensor.__dlpack__(copy=copy))
+        assert exported.dtype == getattr(torch, dtype)
+        assert exported.tolist() == expected
+    del tensor
+    gc.collect()
+    assert exported.tolist() == expected

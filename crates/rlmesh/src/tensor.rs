@@ -6,6 +6,15 @@ use rlmesh_spaces::{Tensor as CoreTensor, TensorError, dtype_size};
 
 use crate::{DType, Device, Error, Result};
 
+/// Options for [`Tensor::to_dlpack`].
+#[derive(Clone, Debug, Default)]
+pub struct ToDlpackOptions {
+    /// Requested DLPack device; only CPU `(1, 0)` is supported.
+    pub dl_device: Option<(i32, i32)>,
+    /// Export a fresh writable copy instead of sharing read-only storage.
+    pub copy: bool,
+}
+
 /// An immutable n-dimensional array with shared storage: Python's
 /// `rlmesh.Tensor`.
 ///

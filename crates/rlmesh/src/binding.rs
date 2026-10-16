@@ -3,6 +3,11 @@
 //! Hidden from the docs and exempt from semver: nothing here is part of the
 //! shared surface, and it changes with the bindings.
 
+/// Legacy DLPack capsules are Python protocol plumbing, not a native API.
+pub mod dlpack {
+    pub use crate::dlpack::{DLManagedTensor, export_legacy, import_legacy};
+}
+
 pub mod env;
 pub mod model;
 pub mod spaces;
