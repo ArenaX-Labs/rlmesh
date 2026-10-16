@@ -13,6 +13,7 @@
 
 use rlmesh::prelude::*;
 use rlmesh::spaces::{Discrete, DiscreteOptions};
+use rlmesh::{EnvServer, EnvServerOptions};
 
 /// A three-step counter. The observation is the step index, every action earns
 /// a reward of 1.0, and the episode terminates after the third step.

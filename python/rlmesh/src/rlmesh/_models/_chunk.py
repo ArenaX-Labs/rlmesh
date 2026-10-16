@@ -19,7 +19,9 @@ from typing import Any, cast
 def split_chunk(raw_action: Any) -> list[Any]:
     """Split a chunked model action along its leading (chunk) axis.
 
-    A ``[chunk, dim]`` output becomes ``chunk`` per-step ``[dim]`` actions. Splits
+    The native ``split_chunk`` rule: a ``list`` splits into its items and an
+    array or tensor along its leading axis (a ``[chunk, dim]`` output becomes
+    ``chunk`` per-step ``[dim]`` actions; a 0-d one is one frame). Arrays split
     with ``list()`` so each per-step leaf stays in the model's own framework (a
     torch/jax *device* tensor is NOT force-converted to numpy here) -- it is then
     bridged identically to the non-chunked path and the serve path. A Dict-space
@@ -27,14 +29,15 @@ def split_chunk(raw_action: Any) -> list[Any]:
     tensor[H, ...]}``): every ``Mapping`` leaf is split recursively, leaves must
     agree on the horizon, and the frames are zipped into H per-step mappings --
     mirroring the native ``split_chunk`` Map arm and the ``_first_frame`` Mapping
-    recursion. A string/bytes leaf or a non-iterable (scalar) is a degenerate
-    single-step "chunk", matching the native ``split_chunk`` (which treats a
-    text / scalar leaf as one step). Called only when the replay ``horizon > 1``;
-    a mis-shaped output fails the action conversion downstream rather than being
-    silently mis-sliced (except a flat dim-1 action, the inference blind spot the
-    native ``split_chunk`` shares).
+    recursion. A tuple, a string or bytes, a scalar and any other value are one
+    frame, as the native ``split_chunk`` keeps a ``Tuple`` whole. Called only
+    when the replay ``horizon > 1``; a mis-shaped output fails the action
+    conversion downstream rather than being silently mis-sliced (except a flat
+    dim-1 action, the inference blind spot the native ``split_chunk`` shares).
     """
-    if isinstance(raw_action, (str, bytes, bytearray)):
+    if isinstance(raw_action, list):
+        return list(cast("list[Any]", raw_action))
+    if isinstance(raw_action, (str, bytes, bytearray, tuple)):
         return [raw_action]
     if isinstance(raw_action, Mapping):
         items = cast("Mapping[Any, Any]", raw_action)
@@ -50,10 +53,13 @@ def split_chunk(raw_action: Any) -> list[Any]:
             horizon = len(frames)
             fields.append((key, frames))
         return [{key: frames[i] for key, frames in fields} for i in range(horizon or 0)]
-    try:
-        return list(raw_action)
-    except TypeError:
-        return [raw_action]
+    ndim = getattr(raw_action, "ndim", None)
+    if isinstance(ndim, int) and ndim >= 1:
+        try:
+            return list(raw_action)
+        except TypeError:
+            return [raw_action]
+    return [raw_action]
 
 
 class ChunkReplay:

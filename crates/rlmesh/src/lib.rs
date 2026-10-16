@@ -12,9 +12,8 @@
 //!   Gymnasium shape and host it with [`EnvServer`], or implement
 //!   [`EnvFactory`] and call [`EnvFactoryExt::serve`].
 //!
-//! - **Drive or serve a model.** Implement [`ModelHandler`], then run it against
-//!   a remote environment with [`ModelWorker::run_local`] or serve it as an
-//!   endpoint with [`ModelWorker::serve`].
+//! - **Serve a model.** Implement [`Policy`] (or write a predict closure),
+//!   build a [`Model`] from it, and host it with [`Model::serve`].
 //!
 //! Use [`RemoteEnv`] when you want to step an environment server directly.
 //!
@@ -34,7 +33,7 @@
 //! [`ErrorClass::is_subclass_of`] follows Python's inheritance, and `Display`
 //! is Python's `str(exc)`. The two domain failures are
 //! [`Error::Environment`] (carrying an [`ErrorCode`]) and [`Error::Model`] (a
-//! failure your [`ModelHandler`] raised, carrying a [`ModelErrorCode`]). Both
+//! failure your [`Policy`] raised, carrying a [`ModelErrorCode`]). Both
 //! carry an `is_recoverable` flag surfaced by [`Error::is_recoverable`], which
 //! is false for every other variant.
 //!
@@ -43,6 +42,7 @@
 //! ```no_run
 //! use rlmesh::prelude::*;
 //! use rlmesh::spaces::{self, BoxOptions, Discrete, DiscreteOptions};
+//! use rlmesh::{EnvServer, EnvServerOptions};
 //!
 //! struct Cartpole {
 //!     observation_space: Space,
@@ -78,31 +78,34 @@
 //! # }
 //! ```
 //!
-//! # Example: drive a model against that environment
+//! # Example: serve a model
 //!
 //! ```no_run
 //! use rlmesh::prelude::*;
-//! use rlmesh::binding::spaces::SpaceValue;
+//! use rlmesh::{Model, ModelOptions, ModelServeOptions};
 //!
-//! struct MyModel;
+//! /// Counts its predicts per episode in the episode's state.
+//! #[derive(Default)]
+//! struct Counter;
 //!
-//! #[rlmesh::async_trait]
-//! impl ModelHandler for MyModel {
-//!     async fn predict(&mut self, _obs: ModelObservation)
-//!         -> rlmesh::Result<Vec<SpaceValue>>
+//! impl Policy for Counter {
+//!     const CONTEXT: Corners = Corners::PREDICT;
+//!
+//!     fn predict_with_context(&mut self, _observation: Value, context: &mut PredictContext<'_>)
+//!         -> rlmesh::Result<Value>
 //!     {
-//!         // Read `_obs.decoded_lanes()`, run your policy, return one action per lane.
-//!         Ok(vec![SpaceValue::Discrete(0)])
+//!         *context.state.get_or_insert_with("predicts", || 0u64)? += 1;
+//!         Ok(Value::Int(0))
 //!     }
 //! }
 //!
-//! # async fn run() -> rlmesh::Result<()> {
-//! // Drive a running env server for 100 episodes.
-//! let report = ModelWorker::new(MyModel)
-//!     .run_local_async(RunLocalOptions::parse("tcp://127.0.0.1:50051")?.for_episodes(100))
-//!     .await?;
-//! println!("ran {} steps", report.total_steps);
-//! Ok(())
+//! # fn run() -> rlmesh::Result<()> {
+//! let model = Model::new(Counter, ModelOptions::default())?;
+//! model.serve("tcp://127.0.0.1:50051", ModelServeOptions::default())?;
+//! // A closure is a policy too.
+//! let greedy = Model::new(|_observation: Value| Ok(Value::Int(0)), ModelOptions::default())?;
+//! # drop(greedy);
+//! # Ok(())
 //! # }
 //! ```
 
@@ -114,12 +117,13 @@ mod address;
 pub mod binding;
 mod bound;
 mod build_info;
+mod describe;
 mod dtype;
 mod editions;
 pub mod env;
 mod error;
 pub mod ext;
-pub mod model;
+mod model;
 pub mod prelude;
 pub mod serve_options;
 pub mod spaces;
@@ -132,12 +136,10 @@ mod warnings;
 #[cfg(unix)]
 pub use address::remove_stale_socket;
 pub use address::{BindAddress, ConnectAddress};
-pub use async_trait::async_trait;
-/// The wire space spec the model traits take until they take
-/// [`spaces::Space`]; the shared spec type is [`spaces::SpaceSpec`].
-pub use binding::spaces::SpaceSpec;
-pub use binding::spaces::{EnvRuntimeError, SpaceValue};
 pub use build_info::{BuildInfo, BuildSource, VERSION, build_info};
+pub use describe::{
+    Describable, DescribeJsonOptions, DescribeKind, DescribeOptions, describe, describe_json,
+};
 pub use dtype::{DType, Device};
 pub use editions::current_workflow_edition;
 
@@ -150,7 +152,7 @@ pub const DESCRIBE_METADATA_KEY: &str = rlmesh_adapters::v1::DESCRIBE_METADATA_K
 pub const DESCRIBE_SCHEMA_VERSION: i64 = rlmesh_adapters::v1::DESCRIBE_SCHEMA_VERSION as i64;
 pub use env::{
     Env, EnvFactory, EnvFactoryExt, EnvFactoryServeOptions, EnvServer, EnvServerOptions, MadeEnv,
-    RemoteEnv, RemoteVectorEnv, TagParam, Transport, Variant, VariantOptions, VectorEnv,
+    RemoteEnv, RemoteVectorEnv, ServedEnv, TagParam, Transport, Variant, VariantOptions, VectorEnv,
     VectorSeed, trial_index,
 };
 pub use error::{
@@ -158,11 +160,8 @@ pub use error::{
     ModelErrorCode, Result,
 };
 pub use model::{
-    AdaptedModelHandler, BoundModelServer, EnvClientRuntimeEnv, EpisodeInfo, HeldState,
-    HistoryFrame, HistoryNeeds, ModelHandler, ModelHandlerRuntimeModel, ModelObservation,
-    ModelRouteContext, ModelRouteSetup, ModelWorker, PredictFn, PredictFrames, RemoteModel,
-    ResolveOptions, RouteConfig, RouteNeeds, RouteResolver, RunLocalOptions, ServeModelOptions,
-    predict_seed,
+    Corners, Model, ModelOptions, ModelServeOptions, NO_ADAPTER, Policy, RemoteModel, WithContext,
+    predict_seed, with_context,
 };
 #[doc(no_inline)]
 pub use rlmesh_runtime::telemetry;

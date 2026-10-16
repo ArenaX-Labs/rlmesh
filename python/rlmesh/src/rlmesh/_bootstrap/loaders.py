@@ -397,6 +397,8 @@ def construct_authored_model(source: Any, /, **kwargs: object) -> Any:
             "apply them; implement load(**kwargs) to consume the binding"
         )
     model.load(**resolved)
+    # The declarations load() may set (native_chunk) are read once, here.
+    model._finish_load()  # pyright: ignore[reportPrivateUsage]
     return model
 
 

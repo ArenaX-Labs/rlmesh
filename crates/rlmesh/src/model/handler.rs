@@ -125,8 +125,8 @@ pub struct HeldState {
 /// Implement [`predict`](ModelHandler::predict) to map an observation to encoded
 /// action bytes. The default hooks let stateful policies track resets, episode
 /// ends, and shutdown. Drive the handler with
-/// [`ModelWorker::run_local`](crate::ModelWorker::run_local) or host it with
-/// [`ModelWorker::serve`](crate::ModelWorker::serve).
+/// [`ModelWorker::run_local`](crate::binding::model::ModelWorker::run_local) or host it with
+/// [`ModelWorker::serve`](crate::binding::model::ModelWorker::serve).
 #[async_trait]
 pub trait ModelHandler: Send {
     /// Produce an action for `observation`.
@@ -231,7 +231,7 @@ pub trait ModelHandler: Send {
     /// adapter per route (from the contract's spaces and adapter tags) for
     /// `predict` to apply. Defaults to `None`. The served path runs it at
     /// `ResolveAdapter`; the in-process
-    /// [`run_local`](crate::ModelWorker::run_local) path runs it once at
+    /// [`run_local`](crate::binding::model::ModelWorker::run_local) path runs it once at
     /// connect, before driving.
     fn route_setup(&self) -> Option<Arc<dyn ModelRouteSetup>> {
         None

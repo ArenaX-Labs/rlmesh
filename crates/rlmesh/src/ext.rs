@@ -143,11 +143,31 @@ pub struct EnvServerOptions {
     pub publish_describe: bool,
 }
 
+/// The Rust- and C-only fields of a model serve (MDL-20), reached through
+/// [`ModelServeOptions::ext`](crate::ModelServeOptions::ext).
+#[derive(Clone, Debug, Default)]
+pub struct ModelServeOptions {
+    /// Bearer token every model RPC must carry. `RLMESH_MODEL_ENDPOINT_TOKEN`,
+    /// when set, replaces it. `None` or empty disables authentication.
+    pub token: Option<String>,
+    /// How many Join-stream requests the served model processes at once per
+    /// connection; `None` is the build's default cap. `Some(0)` is the
+    /// ValueError class. Corner calls stay serialized either way.
+    pub predict_concurrency: Option<usize>,
+}
+
 /// Python's `EnvTags` from its wire JSON (the form `EnvTags.to_dict()`
 /// writes), checked for unknown fields: the way Rust builds tags until the
 /// adapters surface lands.
 pub fn env_tags_from_json(json: &str) -> Result<crate::adapters::EnvTags> {
     crate::adapters::EnvTags::from_json(json)
+}
+
+/// Python's `ModelSpec` from its wire JSON (the form `ModelSpec.to_dict()`
+/// writes), checked for unknown fields: the way Rust builds a spec until the
+/// adapters surface lands.
+pub fn model_spec_from_json(json: &str) -> Result<crate::adapters::ModelSpec> {
+    crate::adapters::ModelSpec::from_json(json)
 }
 
 /// Cancellation (R-18): the native counterpart of Python's

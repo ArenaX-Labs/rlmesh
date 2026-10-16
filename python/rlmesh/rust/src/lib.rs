@@ -10,6 +10,7 @@ mod spaces;
 mod telemetry;
 mod types;
 mod viewer;
+mod warnings_bridge;
 
 #[cfg(feature = "cli")]
 use std::ffi::OsString;
@@ -144,6 +145,7 @@ fn ignore_sigpipe() {
 #[pyo3(name = "_rlmesh")]
 pub fn rlmesh(m: &Bound<'_, PyModule>) -> PyResult<()> {
     ignore_sigpipe();
+    warnings_bridge::install();
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     m.add("__build__", rlmesh_proto::CURRENT_WORKFLOW_EDITION)?;
 

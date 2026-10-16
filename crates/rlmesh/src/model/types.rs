@@ -15,6 +15,9 @@ pub struct EpisodeInfo {
     /// The explicit reset seed; `None` when the episode was not explicitly
     /// seeded (a genuine seed of 0 is `Some(0)`).
     pub seed: Option<i64>,
+    /// The route (env) the row arrived on: a model's episode store tags its
+    /// entries with it, so an env's teardown drops that env's entries.
+    pub env_id: String,
 }
 
 /// The per-predict sampling seed: a reproducible mix of the episode's reset seed
@@ -87,7 +90,7 @@ impl ModelRouteContext {
     }
 }
 
-/// An observation delivered to [`ModelHandler::predict`](crate::ModelHandler::predict).
+/// An observation delivered to [`ModelHandler::predict`](crate::binding::model::ModelHandler::predict).
 ///
 /// Carries the encoded observation payload plus the routing context and the
 /// env contract / batch size needed to decode it.

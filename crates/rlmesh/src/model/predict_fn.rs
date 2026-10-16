@@ -171,6 +171,18 @@ pub trait PredictFn: Send + Sync {
     fn on_close(&self) -> Result<()> {
         Ok(())
     }
+
+    /// An evict-all `ResetAdapter` (no ids) for `env_id`: drop that env's
+    /// per-episode model state silently, firing no episode-end hook (MDL-8).
+    fn on_route_reset(&self, _env_id: &str) -> Result<()> {
+        Ok(())
+    }
+
+    /// A `ReleaseAdapter` for `env_id`: drop that env's per-episode model
+    /// state silently (MDL-8).
+    fn on_route_release(&self, _env_id: &str) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// The resolved per-route state the engine caches at `ResolveAdapter`: the

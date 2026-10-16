@@ -251,13 +251,59 @@ def test_run_holds_a_declared_native_chunk_to_its_length() -> None:
 
     try:
         with pytest.raises(
-            Exception, match="native_chunk=8 but its chunk corner returned 2"
+            ValueError, match="native_chunk=8 but its chunk corner returned 2"
         ):
             ShortChunk().run(CountEnv(), episodes=1, execution_horizon=4)
     except ConnectionError as exc:
         if "Operation not permitted" in str(exc):
             pytest.skip("local tcp bind is not permitted in this environment")
         raise
+
+
+def test_run_warns_once_per_episode_for_an_undeclared_short_chunk() -> None:
+    """An undeclared K replays the short chunk and warns ``RuntimeWarning``
+    with the Session's text, once per episode (MDL-P11)."""
+    from rlmesh.numpy import Model
+
+    class Short(Model):
+        def predict_chunk(self, obs: Any) -> Any:
+            return np.zeros((2, 2), np.float32)
+
+    with pytest.warns(RuntimeWarning, match="the model returned 2 actions") as record:
+        Short().run(CountEnv(episode_len=6), episodes=2, execution_horizon=4)
+    short = [w for w in record if "the model returned 2 actions" in str(w.message)]
+    assert len(short) >= 1
+
+
+def test_close_stops_a_running_serve_which_then_returns() -> None:
+    """``close()`` is terminal: it stops a running serve (drain) and fires the
+    hook once (MDL-P2)."""
+    import socket
+    import threading
+
+    closes: list[str] = []
+    model = rlmesh.Model(lambda obs: 0, on_close=lambda: closes.append("closed"))
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    errors: list[BaseException] = []
+
+    def serve() -> None:
+        try:
+            model.serve(f"127.0.0.1:{port}")
+        except BaseException as error:  # pragma: no cover - surfaced below
+            errors.append(error)
+
+    thread = threading.Thread(target=serve)
+    thread.start()
+    time.sleep(0.5)
+    model.close()
+    thread.join(timeout=15)
+    assert not thread.is_alive()
+    assert errors == []
+    assert closes == ["closed"]
+    with pytest.raises(RuntimeError, match="the model is closed"):
+        model.serve(f"127.0.0.1:{port}")
 
 
 def test_run_delivers_every_step_to_a_stacked_model_at_any_horizon() -> None:
