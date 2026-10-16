@@ -12,6 +12,8 @@ maturin = "1.15"
 
 # Cross-compiles release wheels (maturin --zig) and builds the C/C++ binding smokes.
 zig = "0.17"
+# Cross-compiles the Windows (MSVC) C/C++ package from Linux; needs clang on PATH.
+"github:rust-cross/cargo-xwin" = "0.23"
 
 # Markdown/TOML/YAML/JSON formatting. node only exists to run oxfmt (npm backend).
 node = "24"

@@ -13,9 +13,10 @@ CXX="${CXX:-zig c++}"
 quiet=()
 case "$CXX" in *zig*) quiet=(-Wno-nullability-completeness -Wno-unused-command-line-argument) ;; esac
 
-# 1. Produce the package, then locate it by globbing its single tarball.
+# 1. Produce the package, then locate the host triple's tarball (a Windows
+#    package from `release:cxx:package --target windows` may sit beside it).
 mise run release:cxx:package
-tarball="$(echo target/capi-pkg/rlmesh-*.tar.gz)"
+tarball="$(echo target/capi-pkg/rlmesh-*-"$(rustc -vV | sed -n 's/host: //p')".tar.gz)"
 name="$(basename "$tarball" .tar.gz)"
 
 # 2. Unpack into a throwaway dir — the consumer sees only this tree.

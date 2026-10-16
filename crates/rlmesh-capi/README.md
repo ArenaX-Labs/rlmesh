@@ -41,6 +41,26 @@ cc -std=c11 serve.c $(pkg-config --cflags --libs rlmesh) -o serve
 
 `rlmesh::rlmesh` links the shared library; install your binary beside it, set an rpath, or add `<unpacked>/lib` to `LD_LIBRARY_PATH`. `rlmesh::rlmesh_static` is for fully static targets that link no other Rust library. The CMake package version is the ABI generation, so `find_package(rlmesh 5)` refuses a package built for another generation.
 
+### Windows (MSVC)
+
+Releases also carry `rlmesh-<version>-x86_64-pc-windows-msvc.tar.gz` and its `.sha256`, built with the MSVC toolchain against the UCRT (Windows 10 or later). It holds the headers, `bin/rlmesh_capi.dll` (with its `.pdb`), the import library `lib/rlmesh_capi.lib` and the CMake metadata; there is no static library or pkg-config file. Windows 10 and later unpack it with the built-in `tar -xf`.
+
+The CMake snippets above work unchanged with the Windows tarball's URL. `rlmesh::rlmesh` links the import library; copy `bin/rlmesh_capi.dll` beside your `.exe`, for example with a post-build step:
+
+```cmake
+add_custom_command(TARGET my_sim POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:rlmesh::rlmesh> $<TARGET_FILE_DIR:my_sim>)
+```
+
+Without CMake, add `<unpacked>\include` to the include path and link `<unpacked>\lib\rlmesh_capi.lib`:
+
+```bat
+cl /std:c11 /W4 /I <unpacked>\include serve.c /link <unpacked>\lib\rlmesh_capi.lib
+cl /std:c++17 /EHsc /W4 /permissive- /I <unpacked>\include serve.cpp /link <unpacked>\lib\rlmesh_capi.lib
+```
+
+The headers declare every function `__declspec(dllimport)` on Windows. For Unreal Engine, link the import library from the consuming module's `.Build.cs` (`PublicAdditionalLibraries`), stage the DLL with `RuntimeDependencies`, and set `bEnableExceptions = true`, which `rlmesh.hpp` needs.
+
 ### From source
 
 From a checkout of this repository (needs Rust and `protoc`):
@@ -51,7 +71,7 @@ cc -std=c11 -I crates/rlmesh-capi/include serve.c \
   -L target/release -lrlmesh_capi -Wl,-rpath,"$PWD/target/release" -lpthread -ldl -lm -o serve
 ```
 
-`mise run release:cxx:package` assembles the same package as a release for the host platform, under `target/capi-pkg/`.
+`mise run release:cxx:package` assembles the same package as a release for the host platform, under `target/capi-pkg/`. `mise run release:cxx:package --target windows` cross-builds the Windows package from Linux or macOS with [cargo-xwin](https://github.com/rust-cross/cargo-xwin), which needs `clang` and downloads the MSVC CRT and Windows SDK, accepting Microsoft's license for them.
 
 ## Quickstart
 
