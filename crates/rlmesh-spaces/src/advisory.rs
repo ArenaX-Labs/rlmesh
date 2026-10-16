@@ -11,7 +11,7 @@
 use std::fmt;
 
 /// How much an advisory should worry an automated consumer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AdvisorySeverity {
     /// A benign note: an authoring nudge or an explicitly-requested lossy step.
     Info,
@@ -31,7 +31,7 @@ impl AdvisorySeverity {
 }
 
 /// One non-fatal note raised at join, resolve, or plan derivation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Advisory {
     pub severity: AdvisorySeverity,
     pub message: String,

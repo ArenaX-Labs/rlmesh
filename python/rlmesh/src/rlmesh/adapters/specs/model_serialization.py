@@ -422,6 +422,7 @@ def model_leaf_from_dict(data: Mapping[str, Any]) -> ModelLeaf:
                 provenance=base.provenance,
                 part=base.part,
                 labels=base.labels,
+                source=base.source,
                 pad_to=pad_to,
                 dtype=dtype,
                 reshape=reshape_t,

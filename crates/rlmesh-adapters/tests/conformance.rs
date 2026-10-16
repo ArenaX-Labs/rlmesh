@@ -119,6 +119,9 @@ fn dec(value: &Json) -> Value {
 /// (inverse of [`dec`]); used by update mode to write expectations.
 fn enc(value: &Value) -> Json {
     match value {
+        Value::None | Value::Bool(_) | Value::Int(_) | Value::Tuple(_) => {
+            panic!("host custom value {value:?} has no conformance vector encoding")
+        }
         Value::Text(text) => json!({"kind": "text", "data": text}),
         Value::Bytes(_) => panic!("bytes have no conformance vector encoding"),
         Value::Number(number) => panic!("bare number {number} has no vector encoding"),

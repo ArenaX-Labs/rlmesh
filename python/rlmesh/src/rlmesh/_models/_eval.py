@@ -17,13 +17,16 @@ import contextlib
 import math
 import numbers
 import os
+import threading
 import time
 import uuid
 import warnings
+import weakref
+from _thread import LockType
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from functools import partial
-from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeVar, cast
+from functools import partial, wraps
+from typing import TYPE_CHECKING, Any, Generic, ParamSpec, Protocol, TypeVar, cast
 
 from .._value_conversion import from_value, identity_bridge
 from ._calls import CLOSED_TEXT, ModelCalls
@@ -31,6 +34,7 @@ from ._chunk import ChunkReplay
 from ._coerce import RANDOM_SAMPLE
 from ._connect import (
     adapter_env_bridge,
+    classify_env_target,
     close_client,
     connect_env,
     declares_reset_option,
@@ -73,6 +77,22 @@ MAX_EXECUTION_HORIZON = 1024
 
 ObsT = TypeVar("ObsT")
 ActT = TypeVar("ActT")
+
+
+_CallParams = ParamSpec("_CallParams")
+_CallResult = TypeVar("_CallResult")
+
+
+def _session_operation(
+    fn: Callable[_CallParams, _CallResult],
+) -> Callable[_CallParams, _CallResult]:
+    @wraps(fn)
+    def call(*args: _CallParams.args, **kwargs: _CallParams.kwargs) -> _CallResult:
+        session = cast("Session[Any, Any]", args[0])
+        with session._active_operation():  # pyright: ignore[reportPrivateUsage]
+            return fn(*args, **kwargs)
+
+    return call
 
 
 def _ema(prev: float, sample: float) -> float:
@@ -491,8 +511,7 @@ class StepEvent:
 class RunContext(Protocol):
     """What a run exposes to its hooks: the connected env, in either loop.
 
-    :meth:`RunHooks.on_run_start` receives one. A :class:`Session` is one on the
-    session loop; the native :meth:`Model.run <rlmesh.Model.run>` loop passes
+    :meth:`RunHooks.on_run_start` receives one. The session loop passes a view of its :class:`Session`; the native :meth:`Model.run <rlmesh.Model.run>` loop passes
     its own. ``contract`` and ``num_envs`` are known once the env is connected
     (before the first :meth:`RunHooks.on_episode_start`); ``read`` resolves a
     role over one observation the way :meth:`Session.read` does, and
@@ -793,6 +812,11 @@ class Session(Generic[ObsT, ActT]):
     _paced_s: float
     _run_failed: bool
     _in_hooks: bool
+    _hook_thread: int | None
+    _op_lock: LockType
+    _op_thread: int | None
+    _op_depth: int
+    _rendering: bool
 
     def __init__(self) -> None:
         raise TypeError(
@@ -920,6 +944,11 @@ class Session(Generic[ObsT, ActT]):
         #: Set while this session's own `run` calls a hook: the hook gets the
         #: RunContext protocol only (RUN-28).
         self._in_hooks = False
+        self._hook_thread = None
+        self._op_lock = threading.Lock()
+        self._op_thread = None
+        self._op_depth = 0
+        self._rendering = False
         return self
 
     def _new_replay(self) -> ChunkReplay:
@@ -951,13 +980,40 @@ class Session(Generic[ObsT, ActT]):
             )
 
     @contextlib.contextmanager
-    def _own_hooks(self) -> Iterator[None]:
-        """Mark this session's own hook dispatch."""
-        self._in_hooks = True
+    def _active_operation(self) -> Iterator[None]:
+        thread = threading.get_ident()
+        with self._op_lock:
+            if self._op_thread not in (None, thread):
+                raise RuntimeError("a session operation is already in flight")
+            self._op_thread = thread
+            self._op_depth += 1
         try:
             yield
         finally:
-            self._in_hooks = False
+            with self._op_lock:
+                self._op_depth -= 1
+                if self._op_depth == 0:
+                    self._op_thread = None
+
+    @contextlib.contextmanager
+    def _own_hooks(self) -> Iterator[None]:
+        """Lend the local render source only to this dispatching thread."""
+        previous = self._in_hooks, self._hook_thread
+        self._in_hooks = True
+        self._hook_thread = threading.get_ident()
+        try:
+            yield
+        finally:
+            self._in_hooks, self._hook_thread = previous
+
+    def _render_reachable(self, *, context_only: bool) -> bool:
+        own_hook = self._hook_thread == threading.get_ident()
+        if self._rendering or (self._in_hooks and not own_hook):
+            return False
+        if self._op_depth and not own_hook:
+            return False
+        local = classify_env_target(self._client)[0] == "env"
+        return not (context_only and local and not own_hook)
 
     def _require_model_open(self, what: str) -> None:
         """Reject ``what`` on a local model that was closed, or from its own corner."""
@@ -1105,6 +1161,7 @@ class Session(Generic[ObsT, ActT]):
             if self._on_episode_end is not None:
                 self._on_episode_end(self._episode_id)
 
+    @_session_operation
     def reset(
         self, *, seed: int | None = None, trial_index: int | None = None
     ) -> tuple[ObsT, Mapping[str, Any]]:
@@ -1168,6 +1225,7 @@ class Session(Generic[ObsT, ActT]):
         self._feed_view(obs)
         return cast("ObsT", obs), info
 
+    @_session_operation
     def predict(self, observation: ObsT) -> ActT:
         """Map one env observation to an env-ready action (the model's adapter applied)."""
         self._refuse_in_own_hooks("predict()")
@@ -1274,6 +1332,7 @@ class Session(Generic[ObsT, ActT]):
         if self._telemetry is not None:
             self._telemetry.record("model.predict", "model", ms)
 
+    @_session_operation
     def step(self, action: ActT) -> tuple[ObsT, float, bool, bool, Mapping[str, Any]]:
         """Apply one action to the env; record reward and termination.
 
@@ -1341,7 +1400,42 @@ class Session(Generic[ObsT, ActT]):
     def frame_sources(self) -> FrameSources:
         """The env's image roles and ``render()`` source, as the viewer sees them."""
         self._ensure_connected()
-        return discover_frame_sources(self._contract, self._client)
+        return self._frame_sources(context_only=False)
+
+    def _frame_sources(self, *, context_only: bool) -> FrameSources:
+        self._ensure_connected()
+        sources = discover_frame_sources(self._contract, self._client)
+        raw = sources.render
+        if raw is None or not self._render_reachable(context_only=context_only):
+            return FrameSources(sources.roles, None, None)
+        session_ref = weakref.ref(self)
+
+        def render() -> object:
+            session = session_ref()
+            if session is None:
+                raise RuntimeError("session has been dropped")
+            session._require_open()
+            with session._active_operation():
+                # The operation above reserves access; an idle direct call now
+                # owns one depth, whereas a hook already has the run's depth.
+                own_hook = session._hook_thread == threading.get_ident()
+                local = classify_env_target(session._client)[0] == "env"
+                if (
+                    session._rendering
+                    or (session._in_hooks and not own_hook)
+                    or (session._op_depth > 1 and not own_hook)
+                    or (context_only and local and not own_hook)
+                ):
+                    raise RuntimeError(
+                        "render is unreachable outside its hook dispatch"
+                    )
+                session._rendering = True
+                try:
+                    return raw()
+                finally:
+                    session._rendering = False
+
+        return FrameSources(sources.roles, sources.render_label, render)
 
     def reader(self, *items: object) -> Reader:
         """Build a read-only, role-addressed view over this env's observations.
@@ -1415,6 +1509,7 @@ class Session(Generic[ObsT, ActT]):
             return _ObservationRoles()
         return env_tags.observation_roles
 
+    @_session_operation
     def run(
         self,
         *,
@@ -1479,7 +1574,7 @@ class Session(Generic[ObsT, ActT]):
         try:
             if hooks is not None:
                 with self._own_hooks():
-                    hooks.on_run_start(self)
+                    hooks.on_run_start(_SessionRunContext(self))
             for i in range(n_episodes):
                 self._ep_index = i + 1
                 seed = seeds[i] if seeds is not None and i < len(seeds) else None
@@ -1595,6 +1690,7 @@ class Session(Generic[ObsT, ActT]):
             raise end_error
         return result
 
+    @_session_operation
     def close(self) -> None:
         """Close this session: served route (and owned source), connection, env.
 
@@ -1684,6 +1780,7 @@ class Session(Generic[ObsT, ActT]):
     def __enter__(self) -> Session[ObsT, ActT]:
         return self
 
+    @_session_operation
     def __exit__(
         self,
         exc_type: type[BaseException] | None,
@@ -1691,6 +1788,38 @@ class Session(Generic[ObsT, ActT]):
         tb: object,
     ) -> None:
         self._close(failed=exc_type is not None or self._run_failed)
+
+
+class _SessionRunContext:
+    """A retained protocol view, without ownership of the source session."""
+
+    def __init__(self, session: Session[Any, Any]) -> None:
+        self._session_ref = weakref.ref(session)
+
+    def _session(self) -> Session[Any, Any]:
+        session = self._session_ref()
+        if session is None:
+            raise RuntimeError("session has been dropped")
+        session._require_open()  # pyright: ignore[reportPrivateUsage]
+        return session
+
+    @property
+    def contract(self) -> Any:
+        return self._session().contract
+
+    @property
+    def num_envs(self) -> int:
+        return self._session().num_envs
+
+    def read(self, observation: object, item: object) -> Any:
+        return self._session().read(observation, item)
+
+    def frame_sources(self) -> FrameSources:
+        return self._session()._frame_sources(context_only=True)  # pyright: ignore[reportPrivateUsage]
+
+    def __getattr__(self, name: str) -> Any:
+        # Preserve the session's own descriptive errors for non-protocol use.
+        return getattr(self._session(), name)
 
 
 class NativeRunContext:
@@ -1708,6 +1837,17 @@ class NativeRunContext:
         self._client: object | None = None
         self._bridge = adapter_env_bridge(None)
         self._read_cache: dict[Any, Reader] = {}
+        self._hook_thread: int | None = None
+        self._rendering = False
+
+    @contextlib.contextmanager
+    def dispatch(self) -> Iterator[None]:
+        previous = self._hook_thread
+        self._hook_thread = threading.get_ident()
+        try:
+            yield
+        finally:
+            self._hook_thread = previous
 
     def bind_client(self, client: object | None) -> None:
         self._client = client
@@ -1730,7 +1870,21 @@ class NativeRunContext:
         return reader(observation)[reader.roles[0]]
 
     def frame_sources(self) -> FrameSources:
-        return discover_frame_sources(self.contract, self._client)
+        sources = discover_frame_sources(self.contract, self._client)
+        raw = sources.render
+        if raw is None or self._hook_thread != threading.get_ident() or self._rendering:
+            return FrameSources(sources.roles, None, None)
+
+        def render() -> object:
+            if self._hook_thread != threading.get_ident() or self._rendering:
+                raise RuntimeError("render is unreachable outside its hook dispatch")
+            self._rendering = True
+            try:
+                return raw()
+            finally:
+                self._rendering = False
+
+        return FrameSources(sources.roles, sources.render_label, render)
 
 
 @dataclass
@@ -1777,7 +1931,8 @@ class NativeHookRelay:
     ) -> None:
         _ = env_index
         self._episodes[episode_id] = _NativeEpisode(index - 1, seed, trial)
-        self._hooks.on_episode_start(episode=index - 1, seed=seed)
+        with self._context.dispatch():
+            self._hooks.on_episode_start(episode=index - 1, seed=seed)
 
     def observation(self, env_index: int, ids: list[str], values: list[Any]) -> None:
         decoded = [self._context.decode(v) for v in values]
@@ -1824,7 +1979,8 @@ class NativeHookRelay:
                 read=partial(self._context.read, observation),
             )
             episode.steps += 1
-            self._hooks.on_step(event)
+            with self._context.dispatch():
+                self._hooks.on_step(event)
 
     def episode_completed(
         self,
@@ -1858,4 +2014,5 @@ class NativeHookRelay:
             step_ms=step_ms,
         )
         self.results.append(result)
-        self._hooks.on_episode_end(result)
+        with self._context.dispatch():
+            self._hooks.on_episode_end(result)

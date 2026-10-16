@@ -60,12 +60,13 @@ class ApiMember:
     signature: str
     documentation: str = ""
     defined_at: SourceLocation | None = None
+    stability: str | None = None
 
     def to_contract(self) -> dict[str, str]:
-        return {
-            "kind": self.kind,
-            "signature": self.signature,
-        }
+        result = {"kind": self.kind, "signature": self.signature}
+        if self.stability is not None:
+            result["stability"] = self.stability
+        return result
 
     def to_docs_api_surface(self) -> dict[str, object]:
         snapshot: dict[str, object] = {
@@ -73,6 +74,8 @@ class ApiMember:
             "kind": self.kind,
             "signature": self.signature,
         }
+        if self.stability is not None:
+            snapshot["stability"] = self.stability
         if self.documentation:
             snapshot["documentation"] = self.documentation
         if self.defined_at is not None:
@@ -463,6 +466,18 @@ class _Collector:
     ) -> ApiExport:
         exported_obj = module.members[export_name]
         obj = _resolved_object(exported_obj)
+        # Griffe can replace an explicitly imported function with the child
+        # module of the same name while resolving other aliases. Honor the
+        # source import binding rather than documenting the loader collision.
+        if isinstance(obj, griffe.Module) and isinstance(module.filepath, Path):
+            tree = ast.parse(module.filepath.read_text(encoding="utf-8"))
+            for statement in tree.body:
+                if isinstance(statement, ast.ImportFrom):
+                    for alias in statement.names:
+                        if (
+                            alias.asname or alias.name
+                        ) == export_name and alias.name in obj.members:
+                            obj = _resolved_object(obj.members[alias.name])
         fq_name = f"{module_name}.{export_name}"
         export_metadata = self.metadata.get("exports", {}).get(fq_name, {})
         module_metadata = self.metadata["modules"][module_name]
@@ -475,6 +490,7 @@ class _Collector:
             fallback_description=description,
             stability=stability,
             exported_at=self._source_location(exported_obj),
+            member_metadata=export_metadata.get("members", {}),
         )
 
     def _export_from_object(
@@ -486,6 +502,7 @@ class _Collector:
         fallback_description: str,
         stability: str,
         exported_at: SourceLocation | None = None,
+        member_metadata: dict[str, Any] | None = None,
     ) -> ApiExport:
         kind = _kind_for(obj)
         documentation = _documentation_for(obj, fallback_description)
@@ -502,7 +519,7 @@ class _Collector:
             exported_at=_distinct_source_location(
                 exported_at, self._source_location(obj)
             ),
-            members=_class_members(obj, self._source_location)
+            members=_class_members(obj, self._source_location, member_metadata)
             if kind == "class"
             else [],
         )
@@ -783,7 +800,9 @@ def _attribute_signature(export_name: str, obj: Any) -> str:
     return _normalize_signature(f"{export_name}: {annotation}")
 
 
-def _class_members(obj: Any, source_location: Any | None = None) -> list[ApiMember]:
+def _class_members(
+    obj: Any, source_location: Any | None = None, metadata: dict[str, Any] | None = None
+) -> list[ApiMember]:
     if not hasattr(obj, "members"):
         return []
 
@@ -791,7 +810,9 @@ def _class_members(obj: Any, source_location: Any | None = None) -> list[ApiMemb
     seen: set[str] = set()
     for cls in _class_and_bases(obj):
         for name, member in getattr(cls, "members", {}).items():
-            if name in seen or not _is_public_member(name, member):
+            if name in seen or (
+                not _is_public_member(name, member) and name not in (metadata or {})
+            ):
                 continue
             kind = _kind_for(member)
             signature = (
@@ -806,6 +827,7 @@ def _class_members(obj: Any, source_location: Any | None = None) -> list[ApiMemb
                     signature=signature,
                     documentation=_documentation_for(member),
                     defined_at=source_location(member) if source_location else None,
+                    stability=(metadata or {}).get(name, {}).get("stability"),
                 )
             )
             seen.add(name)

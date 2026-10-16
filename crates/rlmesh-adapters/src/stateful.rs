@@ -667,8 +667,13 @@ pub fn value_max_abs_diff(left: &Value, right: &Value) -> Option<f64> {
                     .fold(0.0_f64, f64::max),
             )
         }
+        (Value::None, Value::None) => Some(0.0),
+        (Value::Bool(a), Value::Bool(b)) => Some(if a == b { 0.0 } else { 1.0 }),
+        (Value::Int(a), Value::Int(b)) => Some((i128::from(*a) - i128::from(*b)).abs() as f64),
         (Value::Number(a), Value::Number(b)) => Some((a - b).abs()),
-        (Value::List(a), Value::List(b)) if a.len() == b.len() => {
+        (Value::List(a), Value::List(b)) | (Value::Tuple(a), Value::Tuple(b))
+            if a.len() == b.len() =>
+        {
             let mut worst = 0.0_f64;
             for (x, y) in a.iter().zip(b.iter()) {
                 worst = worst.max(value_max_abs_diff(x, y)?);
@@ -695,7 +700,7 @@ pub fn value_max_abs_diff(left: &Value, right: &Value) -> Option<f64> {
 pub fn space_value_to_value(value: &SpaceValue, space: &SpaceSpec) -> Result<Value, ApplyError> {
     match value {
         SpaceValue::Box(tensor) => Ok(Value::Tensor(tensor.clone())),
-        SpaceValue::Discrete(value) => Ok(Value::Number(*value as f64)),
+        SpaceValue::Discrete(value) => Ok(Value::Int(*value)),
         SpaceValue::Text(text) => Ok(Value::Text(text.clone())),
         SpaceValue::MultiBinary(values) => {
             let bytes: Vec<u8> = values.iter().map(|value| u8::from(*value)).collect();
@@ -734,7 +739,7 @@ pub fn space_value_to_value(value: &SpaceValue, space: &SpaceSpec) -> Result<Val
             for (child, child_space) in values.iter().zip(spec.spaces.iter()) {
                 out.push(space_value_to_value(child, child_space)?);
             }
-            Ok(Value::List(out))
+            Ok(Value::Tuple(out))
         }
     }
 }
@@ -952,7 +957,7 @@ mod tests {
         let referenced: BTreeSet<String> = [OBS_ROOT_KEY.to_owned()].into_iter().collect();
 
         let map = space_value_to_obs_map(&value, &space, &referenced).expect("bridge");
-        assert_eq!(map.get(OBS_ROOT_KEY), Some(&Value::Number(7.0)));
+        assert_eq!(map.get(OBS_ROOT_KEY), Some(&Value::Int(7)));
     }
 
     #[test]

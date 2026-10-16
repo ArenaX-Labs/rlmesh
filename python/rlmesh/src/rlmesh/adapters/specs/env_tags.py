@@ -519,7 +519,11 @@ class EnvTags:
         # allow_nan=False: refuse to emit the non-RFC-8259 `Infinity`/`NaN`
         # tokens the Rust serde codec rejects (a directly-constructed dataclass
         # bypasses the from_dict finiteness guards).
-        return json.dumps(self.to_dict(), sort_keys=True, allow_nan=False)
+        from ..._rlmesh import adapters_spec_normalize
+
+        return adapters_spec_normalize(
+            "env", json.dumps(self.to_dict(), allow_nan=False), False
+        )
 
     def to_metadata(self) -> dict[str, Any]:
         """Return a metadata mapping fragment carrying these tags.

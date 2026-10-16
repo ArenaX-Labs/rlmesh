@@ -685,6 +685,32 @@ impl EnvClientCore {
         Ok(result)
     }
 
+    /// A render-only view of this already-connected channel. Context lifetime
+    /// and operation admission are enforced by the owning session context.
+    pub(crate) fn render_callback(&self) -> Arc<dyn Fn() -> Result<Value> + Send + Sync> {
+        let inner = self.inner.clone();
+        let timeout = self.request_timeout;
+        Arc::new(move || {
+            crate::run::drive::refuse_in_async_context("RunContext render")?;
+            let mut inner = inner.clone();
+            crate::run::drive::run_sync(async move {
+                let request = render_request_to_proto(&RenderRequest {
+                    env_index: Some(0),
+                    timeout_ms: i64::try_from(wire_timeout_ms(timeout)).unwrap_or(i64::MAX),
+                });
+                let response = bounded(timeout, async {
+                    inner.render(request).await.map_err(Error::from_grpc)
+                })
+                .await?;
+                let result = render_result_from_proto(response)
+                    .map_err(|e| Error::Protocol(e.to_string()))?;
+                match result.frame {
+                    Some(frame) => decode_render_png(&frame.frame),
+                    None => Ok(Value::None),
+                }
+            })
+        })
+    }
     /// Request a render frame of lane `env_index`: the PNG bytes, or `None`
     /// when the env has no frame.
     pub async fn render(&mut self, env_index: u64) -> Result<Option<Vec<u8>>> {
