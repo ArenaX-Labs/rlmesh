@@ -29,10 +29,14 @@
 //! # Errors
 //!
 //! Fallible operations return [`Result`] (alias for `Result<T, `[`Error`]`>`).
-//! [`Error`] separates transport/server faults from two domain failures:
+//! Each [`Error`] variant is one of the Python package's exception classes:
+//! [`Error::class`] reports the exact class as an [`ErrorClass`], whose
+//! [`ErrorClass::is_subclass_of`] follows Python's inheritance, and `Display`
+//! is Python's `str(exc)`. The two domain failures are
 //! [`Error::Environment`] (carrying an [`ErrorCode`]) and [`Error::Model`] (a
-//! failure your [`ModelHandler`] raised). Both carry an `is_recoverable` flag
-//! surfaced by [`Error::is_recoverable`].
+//! failure your [`ModelHandler`] raised, carrying a [`ModelErrorCode`]). Both
+//! carry an `is_recoverable` flag surfaced by [`Error::is_recoverable`], which
+//! is false for every other variant.
 //!
 //! # Implementing the traits
 //!
@@ -120,6 +124,8 @@
 #![warn(missing_docs)]
 
 mod address;
+#[doc(hidden)]
+pub mod binding;
 mod bound;
 pub mod env;
 mod error;
@@ -138,7 +144,10 @@ pub use env::{
     StepRequest, StepResult, VectorCloseResult, VectorEnv, VectorEnvServer, VectorResetRequest,
     VectorResetResult, VectorStepRequest, VectorStepResult,
 };
-pub use error::{EnvironmentError, Error, ErrorCode, ModelError, Result};
+pub use error::{
+    EnvironmentError, Error, ErrorClass, ErrorCode, InvalidArgumentError, ModelError,
+    ModelErrorCode, Result,
+};
 pub use model::{
     AdaptedModelHandler, BoundModelServer, EnvClientRuntimeEnv, EpisodeInfo, HeldState,
     HistoryFrame, HistoryNeeds, ModelHandler, ModelHandlerRuntimeModel, ModelObservation,

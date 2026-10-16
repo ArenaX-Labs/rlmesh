@@ -84,10 +84,12 @@ type LastPyError = Arc<std::sync::Mutex<Option<PyErr>>>;
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
 impl PyPredict {
+    /// A raised `ModelException` becomes a model failure carrying its
+    /// recoverable flag (code `INTERNAL`); any other exception stays internal.
     fn internal(&self, err: PyErr) -> RLMeshError {
-        let message = err.to_string();
+        let error = crate::types::model_callback_error(&err);
         *self.last_error.lock().expect("last_error lock poisoned") = Some(err);
-        RLMeshError::Internal(message)
+        error
     }
 
     fn fire(callback: &Option<Py<PyAny>>) -> rlmesh::Result<()> {

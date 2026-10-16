@@ -10,6 +10,7 @@ const SUPPLEMENTAL_EXPORTS: &[&str] = &[
     "ProtocolException",
     "EnvironmentException",
     "RecoverableEnvironmentException",
+    "ModelException",
 ];
 const SUPPLEMENTAL_STUBS: &str = r#"
 __version__: builtins.str
@@ -25,6 +26,11 @@ class EnvironmentException(RLMeshException):
     is_recoverable: builtins.bool
 
 class RecoverableEnvironmentException(EnvironmentException): ...
+
+class ModelException(RLMeshException):
+    code: builtins.str
+    is_recoverable: builtins.bool
+    def __init__(self, message: builtins.str, *, is_recoverable: builtins.bool = False) -> None: ...
 
 ResetInfo: TypeAlias = dict[str, object]
 

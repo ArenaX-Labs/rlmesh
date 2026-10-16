@@ -416,16 +416,19 @@ fn env_error_to_runtime_error(error: EnvError) -> EnvRuntimeError {
     }
 }
 
-/// Whether a Python exception leaves the session usable: one that carries a
-/// truthy `is_recoverable` (`RecoverableEnvironmentException`, or an
-/// `EnvironmentException` re-raised from a remote env that was recoverable).
+/// Whether a Python exception leaves the session usable: an
+/// `EnvironmentException` with a truthy `is_recoverable`
+/// (`RecoverableEnvironmentException`, or one re-raised from a remote env that
+/// was recoverable). Another class carrying the flag, such as a
+/// `ModelException(is_recoverable=True)`, is not an env's recoverable failure.
 fn py_err_is_recoverable(error: &PyErr) -> bool {
     Python::attach(|py| {
-        error
-            .value(py)
-            .getattr("is_recoverable")
-            .and_then(|flag| flag.is_truthy())
-            .unwrap_or(false)
+        let value = error.value(py);
+        value.is_instance_of::<crate::types::EnvironmentException>()
+            && value
+                .getattr("is_recoverable")
+                .and_then(|flag| flag.is_truthy())
+                .unwrap_or(false)
     })
 }
 

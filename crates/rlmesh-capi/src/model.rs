@@ -120,12 +120,9 @@ impl EpisodeStore {
             if !id.is_empty() && !self.episodes.contains_key(id) && !new_ids.contains(&id) {
                 if self.episodes.len() + new_ids.len() >= self.capacity {
                     // Python raises the builtin `RuntimeError` for this local
-                    // refusal (`_models/_episodes.py`). The C ABI has no
-                    // runtime-misuse status yet (`RLMESH_ERR_RUNTIME` is
-                    // planned, docs/specs/language-parity/rules.md R-21), so it
-                    // reports as `Error::Internal` -> `RLMESH_ERR_INTERNAL`, not
-                    // as a model decline.
-                    return Err(Error::Internal(format!(
+                    // refusal (`_models/_episodes.py`): `Error::Runtime` ->
+                    // `RLMESH_ERR_RUNTIME`, not a model decline.
+                    return Err(Error::Runtime(format!(
                         "model already tracks {} live episodes; refusing episode {id} rather \
                          than evicting another episode's live state. Episode ends are not \
                          reaching this model, or the deployment runs more concurrent \
@@ -740,14 +737,15 @@ pub unsafe extern "C" fn rlmesh_model_run_local(
                     .await
             })
             .map_err(|err| {
-                let mut err = CapiError::from(err);
+                let err = CapiError::from(err);
                 // The core flattens a cancelled run to `Error::Internal` (the
                 // driver's typed `RouteCancelled` is gone by then), so the token
                 // we handed it is the typed signal -- not the message text.
                 if model.cancel.is_cancelled() {
-                    err.status = RLMeshStatus::Cancelled;
+                    err.into_cancelled()
+                } else {
+                    err
                 }
-                err
             })?;
         if let Some(out) = unsafe { out_report.as_mut() } {
             *out = run_report(&report);
@@ -1124,7 +1122,7 @@ mod tests {
         for row in 0..obs.num_envs {
             let value = unsafe { &**obs.observations.add(row) };
             let SpaceValue::Discrete(n) = &value.0 else {
-                return RLMeshStatus::InvalidValue as c_int;
+                return RLMeshStatus::Type as c_int;
             };
             unsafe { *out.add(row) = rlmesh_value_discrete(*n) };
         }
@@ -1454,7 +1452,7 @@ mod tests {
             .predict(single("ep-c"))
             .await
             .expect_err("past capacity");
-        assert!(matches!(error, Error::Internal(_)), "{error:?}");
+        assert!(matches!(error, Error::Runtime(_)), "{error:?}");
         assert!(
             error.to_string().contains("refusing episode ep-c"),
             "{error}"

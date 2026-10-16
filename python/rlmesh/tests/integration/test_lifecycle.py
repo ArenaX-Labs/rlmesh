@@ -770,6 +770,29 @@ def test_recoverable_env_error_keeps_the_session() -> None:
         server.shutdown()
 
 
+def test_model_exception_raised_in_an_env_is_not_recoverable() -> None:
+    """Only an EnvironmentException's own flag makes an env failure recoverable;
+    a ModelException(is_recoverable=True) raised in an env ends the session (P-9)."""
+    import rlmesh
+
+    env = FailingStepEnv()
+    server = env_server(env)
+    server.start()
+    try:
+        remote = connect_with_retry(rlmesh.RemoteEnv, server.address)
+        remote.reset(seed=0)
+        env.fail_with = rlmesh.ModelException("not an env failure", is_recoverable=True)
+        with pytest.raises(
+            rlmesh.EnvironmentException, match="not an env failure"
+        ) as fatal:
+            remote.step(0)
+        assert fatal.value.is_recoverable is False
+        assert not isinstance(fatal.value, rlmesh.RecoverableEnvironmentException)
+        remote.close()
+    finally:
+        server.shutdown()
+
+
 def test_close_is_best_effort_when_the_peer_is_already_gone() -> None:
     """A dead peer must not turn close() into the error a `with` block reports."""
     import rlmesh

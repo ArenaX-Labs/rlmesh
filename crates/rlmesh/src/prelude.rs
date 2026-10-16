@@ -12,9 +12,10 @@ pub use crate::async_trait;
 pub use crate::spaces::BinaryPayload;
 pub use crate::{
     BindAddress, BoundEnvServer, BoundModelServer, CloseRequest, CloseResult, ConnectAddress, Env,
-    EnvContract, EnvRuntimeError, EnvServer, EnvironmentError, Error, ErrorCode, ModelHandler,
-    ModelObservation, ModelRouteContext, ModelWorker, RemoteEnv, RemoteVectorEnv, RenderFrame,
-    RenderRequest, RenderResult, ResetRequest, ResetResult, RunLocalOptions, ServeModelOptions,
-    ServeOptions, SpaceSpec, SpaceValue, StepRequest, StepResult, VectorCloseResult, VectorEnv,
-    VectorEnvServer, VectorResetRequest, VectorResetResult, VectorStepRequest, VectorStepResult,
+    EnvContract, EnvRuntimeError, EnvServer, EnvironmentError, Error, ErrorClass, ErrorCode,
+    ModelHandler, ModelObservation, ModelRouteContext, ModelWorker, RemoteEnv, RemoteVectorEnv,
+    RenderFrame, RenderRequest, RenderResult, ResetRequest, ResetResult, RunLocalOptions,
+    ServeModelOptions, ServeOptions, SpaceSpec, SpaceValue, StepRequest, StepResult,
+    VectorCloseResult, VectorEnv, VectorEnvServer, VectorResetRequest, VectorResetResult,
+    VectorStepRequest, VectorStepResult,
 };

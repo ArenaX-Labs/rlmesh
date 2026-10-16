@@ -53,12 +53,12 @@ class PointReach : public rlmesh::Environment {
   }
 
   rlmesh::Result<rlmesh::StepOutput> step(std::optional<rlmesh::ValueRef> action) override {
-    if (!action) return rlmesh::Error(RLMESH_ERR_INVALID_VALUE, "step without an action");
+    if (!action) return rlmesh::Error(RLMESH_ERR_TYPE, "step without an action");
     auto tensor = action->as_tensor();
     if (!tensor) return tensor.error();
     const float* delta = tensor->as<float>();
     if (delta == nullptr || tensor->numel() != 3) {
-      return rlmesh::Error(RLMESH_ERR_INVALID_VALUE, "expected a contiguous float32[3] action");
+      return rlmesh::Error(RLMESH_ERR_TYPE, "expected a contiguous float32[3] action");
     }
     for (int i = 0; i < 3; ++i) pos_[i] += 0.1f * delta[i];
     ++step_;

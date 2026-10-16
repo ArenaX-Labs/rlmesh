@@ -51,7 +51,7 @@ fn rejects_unix_facade_addresses_on_windows() {
 
 #[test]
 fn facade_error_mapping_hides_core_error_types() {
-    let err = Error::from(rlmesh_grpc::error::Error::Environment(EnvError::new(
+    let err = Error::from_grpc(rlmesh_grpc::error::Error::Environment(EnvError::new(
         EnvErrorCode::InvalidAction,
         "bad action",
     )));

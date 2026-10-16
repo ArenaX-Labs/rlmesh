@@ -114,6 +114,79 @@ fn discrete_value_round_trips() {
     });
 }
 
+/// The value the header gives `name` in an `enum { NAME = value, ... }` line.
+fn header_enum_value(name: &str) -> i64 {
+    let prefix = format!("{name} = ");
+    let value = HEADER
+        .lines()
+        .find_map(|line| line.trim().strip_prefix(prefix.as_str()))
+        .unwrap_or_else(|| panic!("{name} present in header"));
+    let digits: String = value.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits
+        .parse()
+        .unwrap_or_else(|_| panic!("{name} has a numeric value"))
+}
+
+#[test]
+fn header_status_and_class_values_match_crate() {
+    use crate::abi::status::RLMeshErrorClass as C;
+    use RLMeshStatus as S;
+    let statuses = [
+        ("RLMESH_OK", S::Ok),
+        ("RLMESH_ERR_INVALID_ARGUMENT", S::InvalidArgument),
+        ("RLMESH_ERR_INVALID_VALUE", S::InvalidValue),
+        ("RLMESH_ERR_ENVIRONMENT", S::Environment),
+        ("RLMESH_ERR_MODEL", S::Model),
+        ("RLMESH_ERR_CONNECTION", S::Connection),
+        ("RLMESH_ERR_TIMEOUT", S::Timeout),
+        ("RLMESH_ERR_PANIC", S::Panic),
+        ("RLMESH_ERR_CANCELLED", S::Cancelled),
+        ("RLMESH_ERR_PROTOCOL", S::Protocol),
+        ("RLMESH_ERR_TYPE", S::Type),
+        ("RLMESH_ERR_RUNTIME", S::Runtime),
+        ("RLMESH_ERR_OS", S::Os),
+        ("RLMESH_ERR_INTERNAL", S::Internal),
+    ];
+    for (name, status) in statuses {
+        assert_eq!(header_enum_value(name), status as i64, "{name}");
+    }
+    assert!(HEADER.contains("RLMESH_ERR_TRANSPORT = RLMESH_ERR_CONNECTION"));
+    let classes = [
+        ("RLMESH_ERROR_CLASS_INVALID", C::Invalid),
+        ("RLMESH_ERROR_CLASS_RLMESH_EXCEPTION", C::RLMeshException),
+        (
+            "RLMESH_ERROR_CLASS_PROTOCOL_EXCEPTION",
+            C::ProtocolException,
+        ),
+        (
+            "RLMESH_ERROR_CLASS_ENVIRONMENT_EXCEPTION",
+            C::EnvironmentException,
+        ),
+        (
+            "RLMESH_ERROR_CLASS_RECOVERABLE_ENVIRONMENT_EXCEPTION",
+            C::RecoverableEnvironmentException,
+        ),
+        ("RLMESH_ERROR_CLASS_MODEL_EXCEPTION", C::ModelException),
+        ("RLMESH_ERROR_CLASS_VALUE_ERROR", C::ValueError),
+        (
+            "RLMESH_ERROR_CLASS_ADAPTER_RESOLUTION_ERROR",
+            C::AdapterResolutionError,
+        ),
+        ("RLMESH_ERROR_CLASS_TYPE_ERROR", C::TypeError),
+        ("RLMESH_ERROR_CLASS_RUNTIME_ERROR", C::RuntimeError),
+        ("RLMESH_ERROR_CLASS_OS_ERROR", C::OSError),
+        ("RLMESH_ERROR_CLASS_CONNECTION_ERROR", C::ConnectionError),
+        ("RLMESH_ERROR_CLASS_TIMEOUT_ERROR", C::TimeoutError),
+        (
+            "RLMESH_ERROR_CLASS_KEYBOARD_INTERRUPT",
+            C::KeyboardInterrupt,
+        ),
+    ];
+    for (name, class) in classes {
+        assert_eq!(header_enum_value(name), class as i64, "{name}");
+    }
+}
+
 #[test]
 fn header_abi_version_macros_match_crate() {
     let macro_value = |name: &str| -> String {
@@ -317,7 +390,7 @@ fn len_separates_empty_from_wrong_kind_from_null() {
     let scalar = rlmesh_value_discrete(1);
     assert_eq!(
         unsafe { rlmesh_value_len(scalar, &mut len) },
-        RLMeshStatus::InvalidValue
+        RLMeshStatus::Type
     );
     assert_eq!(
         unsafe { rlmesh_value_len(std::ptr::null(), &mut len) },
@@ -343,7 +416,7 @@ fn array_len_reports_length_and_rejects_other_kinds() {
     let scalar = rlmesh_value_discrete(1);
     assert_eq!(
         unsafe { rlmesh_value_array_len(scalar, &mut len) },
-        RLMeshStatus::InvalidValue
+        RLMeshStatus::Type
     );
     unsafe { rlmesh_value_free(scalar) };
     unsafe { rlmesh_value_free(bits) };
@@ -582,7 +655,7 @@ fn last_error_reports_an_unrecoverable_capi_failure() {
     let mut out = 0i64;
     assert_eq!(
         unsafe { rlmesh_value_as_discrete(text, &mut out) },
-        RLMeshStatus::InvalidValue
+        RLMeshStatus::Type
     );
     assert!(!crate::abi::status::rlmesh_last_error_message().is_null());
     // A capi-side argument error is never flagged recoverable (that is reserved
@@ -606,11 +679,11 @@ fn last_error_status_carries_the_code_a_null_return_cannot() {
     let mut out = 0i64;
     assert_eq!(
         unsafe { rlmesh_value_as_discrete(text, &mut out) },
-        RLMeshStatus::InvalidValue
+        RLMeshStatus::Type
     );
     assert_eq!(
         crate::abi::status::rlmesh_last_error_status(),
-        RLMeshStatus::InvalidValue
+        RLMeshStatus::Type
     );
     unsafe { rlmesh_value_free(text) };
     // Nothing recorded reads as OK rather than a stale failure.
@@ -692,7 +765,7 @@ fn box_bounds_broadcast_uniform_and_report_per_element() {
     let discrete = discrete_spec();
     assert_eq!(
         unsafe { rlmesh_space_box_bounds(spec_ptr(&discrete), 0, &mut low, &mut high) },
-        RLMeshStatus::InvalidValue
+        RLMeshStatus::Type
     );
 
     // Either out-param may be skipped, as the header says; a failure writes
@@ -760,7 +833,7 @@ fn discrete_text_and_nvec_expose_what_an_action_needs() {
         unsafe {
             rlmesh_space_text_charset(spec_ptr(&discrete), &mut charset_ptr, &mut charset_len)
         },
-        RLMeshStatus::InvalidValue
+        RLMeshStatus::Type
     );
 
     let multi = SpaceSpec {
@@ -782,7 +855,7 @@ fn discrete_text_and_nvec_expose_what_an_action_needs() {
     );
     assert_eq!(
         unsafe { rlmesh_space_copy_nvec(spec_ptr(&text), nvec.as_mut_ptr(), 3) },
-        RLMeshStatus::InvalidValue
+        RLMeshStatus::Type
     );
 }
 
@@ -859,7 +932,7 @@ fn composite_spaces_are_walkable_from_c() {
     let leaf = box_spec();
     assert_eq!(
         unsafe { rlmesh_space_len(spec_ptr(&leaf), &mut len) },
-        RLMeshStatus::InvalidValue
+        RLMeshStatus::Type
     );
 }
 

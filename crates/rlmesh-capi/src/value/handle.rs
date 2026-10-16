@@ -65,10 +65,10 @@ pub unsafe extern "C" fn rlmesh_value_as_tensor(
         let value = value_ref(value)?;
         let out = unsafe { out.as_mut() }.ok_or_else(|| CapiError::invalid_arg("null out"))?;
         let SpaceValue::Box(tensor) = value else {
-            return Err(CapiError::invalid_value("value is not a Box tensor"));
+            return Err(CapiError::type_error("value is not a Box tensor"));
         };
         let dtype = RLMeshDType::from_core(tensor.dtype())
-            .ok_or_else(|| CapiError::invalid_value("unsupported dtype"))?;
+            .ok_or_else(|| CapiError::type_error("unsupported dtype"))?;
         let storage = tensor.storage().as_slice();
         // SAFETY: `byte_offset()` is within the tensor's own storage slice, so the
         // offset pointer stays inside that allocation.
@@ -97,17 +97,17 @@ pub unsafe extern "C" fn rlmesh_value_box(tensor: *const RLMeshTensor) -> *mut R
         let tensor =
             unsafe { tensor.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null tensor"))?;
         if !tensor.strides.is_null() {
-            return Err(CapiError::invalid_value(
+            return Err(CapiError::invalid_arg(
                 "rlmesh_value_box requires a contiguous tensor (strides == NULL)",
             ));
         }
         if tensor.ndim < 0 {
-            return Err(CapiError::invalid_value("negative ndim"));
+            return Err(CapiError::invalid_arg("negative ndim"));
         }
         let dtype = tensor
             .dtype
             .to_core()
-            .ok_or_else(|| CapiError::invalid_value("unsupported dtype"))?;
+            .ok_or_else(|| CapiError::invalid_arg("unsupported dtype"))?;
         let shape: Vec<i64> = if tensor.ndim == 0 {
             // A scalar carries no dims; shape may be NULL (an empty C++ vector's
             // data()), and from_raw_parts(NULL, 0) is UB — so do not form a slice.
@@ -126,10 +126,10 @@ pub unsafe extern "C" fn rlmesh_value_box(tensor: *const RLMeshTensor) -> *mut R
                     acc.checked_mul(dim as usize)
                 }
             })
-            .ok_or_else(|| CapiError::invalid_value("invalid shape"))?;
+            .ok_or_else(|| CapiError::invalid_arg("invalid shape"))?;
         let nbytes = numel
             .checked_mul(dtype_size(dtype))
-            .ok_or_else(|| CapiError::invalid_value("size overflow"))?;
+            .ok_or_else(|| CapiError::invalid_arg("size overflow"))?;
         let bytes: &[u8] = if nbytes == 0 {
             &[]
         } else if tensor.data.is_null() {
@@ -138,7 +138,7 @@ pub unsafe extern "C" fn rlmesh_value_box(tensor: *const RLMeshTensor) -> *mut R
             unsafe { std::slice::from_raw_parts(tensor.data.cast::<u8>(), nbytes) }
         };
         let core = Tensor::from_slice(bytes, &shape, dtype)
-            .map_err(|err| CapiError::invalid_value(err.to_string()))?;
+            .map_err(|err| CapiError::invalid_arg(err.to_string()))?;
         Ok(into_handle(SpaceValue::Box(core)))
     })
 }
@@ -161,7 +161,7 @@ pub unsafe extern "C" fn rlmesh_value_as_discrete(
                 *out = *n;
                 Ok(())
             }
-            _ => Err(CapiError::invalid_value("value is not Discrete")),
+            _ => Err(CapiError::type_error("value is not Discrete")),
         }
     })
 }
@@ -178,7 +178,7 @@ pub unsafe extern "C" fn rlmesh_value_text(data: *const c_char, len: usize) -> *
             unsafe { std::slice::from_raw_parts(data.cast::<u8>(), len) }
         };
         let text = std::str::from_utf8(bytes)
-            .map_err(|_| CapiError::invalid_value("text must be UTF-8"))?
+            .map_err(|_| CapiError::invalid_arg("text must be UTF-8"))?
             .to_owned();
         Ok(into_handle(SpaceValue::Text(text)))
     })
@@ -203,7 +203,7 @@ pub unsafe extern "C" fn rlmesh_value_as_text(
                 *out_len = text.len();
                 Ok(())
             }
-            _ => Err(CapiError::invalid_value("value is not Text")),
+            _ => Err(CapiError::type_error("value is not Text")),
         }
     })
 }
@@ -233,7 +233,7 @@ pub unsafe extern "C" fn rlmesh_value_array_len(
             SpaceValue::MultiBinary(bits) => bits.len(),
             SpaceValue::MultiDiscrete(values) => values.len(),
             _ => {
-                return Err(CapiError::invalid_value(
+                return Err(CapiError::type_error(
                     "value is not MultiBinary or MultiDiscrete",
                 ));
             }
@@ -251,7 +251,7 @@ pub unsafe extern "C" fn rlmesh_value_copy_multi_discrete(
 ) -> RLMeshStatus {
     guard(|| {
         let SpaceValue::MultiDiscrete(values) = value_ref(value)? else {
-            return Err(CapiError::invalid_value("value is not MultiDiscrete"));
+            return Err(CapiError::type_error("value is not MultiDiscrete"));
         };
         copy_out(values, out, cap, i64::clone)
     })
@@ -282,7 +282,7 @@ pub unsafe extern "C" fn rlmesh_value_copy_multi_binary(
 ) -> RLMeshStatus {
     guard(|| {
         let SpaceValue::MultiBinary(bits) = value_ref(value)? else {
-            return Err(CapiError::invalid_value("value is not MultiBinary"));
+            return Err(CapiError::type_error("value is not MultiBinary"));
         };
         copy_out(bits, out, cap, |&b| u8::from(b))
     })
@@ -299,7 +299,7 @@ pub unsafe extern "C" fn rlmesh_value_len(
         let len = match value_ref(value)? {
             SpaceValue::Tuple(items) => items.len(),
             SpaceValue::Dict(map) => map.len(),
-            _ => return Err(CapiError::invalid_value("value is not a Dict or Tuple")),
+            _ => return Err(CapiError::type_error("value is not a Dict or Tuple")),
         };
         write_out(out, len)
     })
@@ -378,7 +378,7 @@ pub unsafe extern "C" fn rlmesh_value_dict_key(
 ) -> RLMeshStatus {
     guard(|| {
         let SpaceValue::Dict(map) = value_ref(value)? else {
-            return Err(CapiError::invalid_value("value is not a Dict"));
+            return Err(CapiError::type_error("value is not a Dict"));
         };
         let key = map
             .keys()
@@ -433,7 +433,7 @@ pub unsafe extern "C" fn rlmesh_value_dict(
                 unsafe { CStr::from_ptr(key) }
                     .to_str()
                     .map(str::to_owned)
-                    .map_err(|_| CapiError::invalid_value("dict key must be UTF-8"))
+                    .map_err(|_| CapiError::invalid_arg("dict key must be UTF-8"))
             })
             .collect::<Result<_, _>>()?;
         // Reject duplicates rather than silently last-wins, still before adopting

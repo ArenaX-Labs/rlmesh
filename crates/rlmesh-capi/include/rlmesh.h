@@ -58,21 +58,78 @@ RLMESH_API uint32_t rlmesh_abi_version_patch(void);
 
 /* ---- status + errors ---------------------------------------------------- */
 
+/* Each nonzero status is one exception class of the Python package; a class
+ * without a status of its own (RECOVERABLE_ENVIRONMENT_EXCEPTION,
+ * ADAPTER_RESOLUTION_ERROR) returns its parent's, and rlmesh_last_error_class()
+ * reports the exact class. Values 0-8 and 99 keep their original numbers. */
 typedef enum RLMeshStatus {
   RLMESH_OK = 0,
-  RLMESH_ERR_INVALID_ARGUMENT = 1,
-  RLMESH_ERR_INVALID_VALUE = 2,
-  RLMESH_ERR_ENVIRONMENT = 3,
-  RLMESH_ERR_MODEL = 4,
-  RLMESH_ERR_TRANSPORT = 5,
-  RLMESH_ERR_TIMEOUT = 6,
-  RLMESH_ERR_PANIC = 7,
-  RLMESH_ERR_CANCELLED = 8,
-  RLMESH_ERR_INTERNAL = 99
+  RLMESH_ERR_INVALID_ARGUMENT = 1, /* ValueError, AdapterResolutionError */
+  RLMESH_ERR_INVALID_VALUE = 2,    /* deprecated: never returned; see RLMESH_ERR_TYPE */
+  RLMESH_ERR_ENVIRONMENT = 3,      /* (Recoverable)EnvironmentException */
+  RLMESH_ERR_MODEL = 4,            /* ModelException */
+  RLMESH_ERR_CONNECTION = 5,       /* ConnectionError */
+  /* Deprecated alias of RLMESH_ERR_CONNECTION. */
+  RLMESH_ERR_TRANSPORT = RLMESH_ERR_CONNECTION,
+  RLMESH_ERR_TIMEOUT = 6,   /* TimeoutError */
+  RLMESH_ERR_PANIC = 7,     /* a Rust panic; class RLMeshException */
+  RLMESH_ERR_CANCELLED = 8, /* KeyboardInterrupt */
+  RLMESH_ERR_PROTOCOL = 9,  /* ProtocolException */
+  RLMESH_ERR_TYPE = 10,     /* TypeError */
+  RLMESH_ERR_RUNTIME = 11,  /* RuntimeError: misuse, local refusals */
+  RLMESH_ERR_OS = 12,       /* OSError */
+  RLMESH_ERR_INTERNAL = 99  /* RLMeshException */
 } RLMeshStatus;
 
+/* The exact class of an error, spelled as Python spells it. */
+typedef enum RLMeshErrorClass {
+  RLMESH_ERROR_CLASS_INVALID = 0,
+  RLMESH_ERROR_CLASS_RLMESH_EXCEPTION = 1,
+  RLMESH_ERROR_CLASS_PROTOCOL_EXCEPTION = 2,
+  RLMESH_ERROR_CLASS_ENVIRONMENT_EXCEPTION = 3,
+  RLMESH_ERROR_CLASS_RECOVERABLE_ENVIRONMENT_EXCEPTION = 4,
+  RLMESH_ERROR_CLASS_MODEL_EXCEPTION = 5,
+  RLMESH_ERROR_CLASS_VALUE_ERROR = 6,
+  RLMESH_ERROR_CLASS_ADAPTER_RESOLUTION_ERROR = 7,
+  RLMESH_ERROR_CLASS_TYPE_ERROR = 8,
+  RLMESH_ERROR_CLASS_RUNTIME_ERROR = 9,
+  RLMESH_ERROR_CLASS_OS_ERROR = 10,
+  RLMESH_ERROR_CLASS_CONNECTION_ERROR = 11,
+  RLMESH_ERROR_CLASS_TIMEOUT_ERROR = 12,
+  RLMESH_ERROR_CLASS_KEYBOARD_INTERRUPT = 13
+} RLMeshErrorClass;
+
+/* An environment error's code (the wire numbers). */
+typedef enum RLMeshErrorCode {
+  RLMESH_ERROR_CODE_UNSPECIFIED = 0,
+  RLMESH_ERROR_CODE_TIMEOUT = 1,
+  RLMESH_ERROR_CODE_INVALID_ACTION = 2,
+  RLMESH_ERROR_CODE_NOT_READY = 3,
+  RLMESH_ERROR_CODE_BUSY = 4,
+  RLMESH_ERROR_CODE_UNSUPPORTED = 5,
+  RLMESH_ERROR_CODE_INTERNAL = 10,
+  RLMESH_ERROR_CODE_CRASHED = 11,
+  RLMESH_ERROR_CODE_CANCELLED = 12,
+  RLMESH_ERROR_CODE_CLOSED = 13
+} RLMeshErrorCode;
+
+/* A model error's code (the wire numbers). */
+typedef enum RLMeshModelErrorCode {
+  RLMESH_MODEL_ERROR_CODE_UNSPECIFIED = 0,
+  RLMESH_MODEL_ERROR_CODE_INVALID_REQUEST = 2,
+  RLMESH_MODEL_ERROR_CODE_NOT_CONFIGURED = 3,
+  RLMESH_MODEL_ERROR_CODE_BUSY = 4,
+  RLMESH_MODEL_ERROR_CODE_UNSUPPORTED = 5,
+  RLMESH_MODEL_ERROR_CODE_INTERNAL = 10,
+  RLMESH_MODEL_ERROR_CODE_CANCELLED = 12,
+  RLMESH_MODEL_ERROR_CODE_CLOSED = 13
+} RLMeshModelErrorCode;
+
 /* Most recent failing call's message on THIS thread (valid until the next
- * RLMesh call on this thread; NULL if none). Read only after a nonzero status. */
+ * RLMesh call on this thread; NULL if none). Read only after a nonzero status.
+ * The message is Python's str(exc): "[CODE] message" for an environment or
+ * model error, "operation timed out after 5s" for a timeout. The recoverable
+ * flag is nonzero only for a recoverable environment or model error. */
 RLMESH_API const char* rlmesh_last_error_message(void);
 RLMESH_API int rlmesh_last_error_is_recoverable(void);
 
@@ -81,6 +138,30 @@ RLMESH_API int rlmesh_last_error_is_recoverable(void);
  * channel the pointer-returning calls have, since they report failure by
  * returning NULL. */
 RLMESH_API RLMeshStatus rlmesh_last_error_status(void);
+
+/* The exact class that same call recorded; RLMESH_ERROR_CLASS_INVALID when
+ * none is. */
+RLMESH_API RLMeshErrorClass rlmesh_last_error_class(void);
+
+/* The last error's code: writes the wire number of an RLMeshErrorCode (an
+ * environment class) or an RLMeshModelErrorCode (the model class) to `*out`
+ * and returns true; returns false with `*out` untouched for any other class.
+ * rlmesh_last_error_code_str() is the code's text ("BUSY"), or NULL with no
+ * code; valid until the next RLMesh call on this thread. */
+RLMESH_API bool rlmesh_last_error_code(int32_t* out);
+RLMESH_API const char* rlmesh_last_error_code_str(void);
+
+/* Static text of a code ("INVALID_ACTION"), or NULL for an unknown value. */
+RLMESH_API const char* rlmesh_error_code_str(RLMeshErrorCode code);
+RLMESH_API const char* rlmesh_model_error_code_str(RLMeshModelErrorCode code);
+
+/* Python's name of a class ("ConnectionError"), static; NULL for INVALID or an
+ * unknown value. rlmesh_error_class_is_subclass is Python's
+ * issubclass(cls, base): reflexive, following Python's inheritance, so
+ * CONNECTION_ERROR is a subclass of OS_ERROR and the builtins are not
+ * subclasses of RLMESH_EXCEPTION. */
+RLMESH_API const char* rlmesh_error_class_name(RLMeshErrorClass cls);
+RLMESH_API bool rlmesh_error_class_is_subclass(RLMeshErrorClass cls, RLMeshErrorClass base);
 
 /* ---- dtype + tensor ----------------------------------------------------- */
 
@@ -183,7 +264,7 @@ RLMESH_API RLMeshStatus rlmesh_value_as_text(const RLMeshValue* value, const cha
  * no `n` of its own — see rlmesh_space_copy_shape below. */
 RLMESH_API RLMeshValue* rlmesh_value_multi_discrete(const int64_t* data, size_t n);
 RLMESH_API RLMeshValue* rlmesh_value_multi_binary(const uint8_t* data, size_t n);
-/* Element count into `*out`; RLMESH_ERR_INVALID_VALUE for any other kind. */
+/* Element count into `*out`; RLMESH_ERR_TYPE for any other kind. */
 RLMESH_API RLMeshStatus rlmesh_value_array_len(const RLMeshValue* value, size_t* out);
 RLMESH_API RLMeshStatus rlmesh_value_copy_multi_discrete(const RLMeshValue* value, int64_t* out,
                                                          size_t cap);
@@ -192,7 +273,7 @@ RLMESH_API RLMeshStatus rlmesh_value_copy_multi_binary(const RLMeshValue* value,
 
 /* Dict / Tuple: borrowed children (valid while `value` lives). */
 
-/* Child count into `*out`; RLMESH_ERR_INVALID_VALUE for any other kind. */
+/* Child count into `*out`; RLMESH_ERR_TYPE for any other kind. */
 RLMESH_API RLMeshStatus rlmesh_value_len(const RLMeshValue* value, size_t* out);
 /* NULL when `value` is not that kind, or the index/key is absent. */
 RLMESH_API const RLMeshValue* rlmesh_value_tuple_get(const RLMeshValue* value, size_t index);
