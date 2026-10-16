@@ -33,6 +33,14 @@ use crate::tensor::{dims_i64, tensor_error};
 use crate::value::space_codec;
 use crate::{DType, Error, Result, Tensor, Value};
 
+/// Raw DLPack interoperability and owned exports (SPC-19).
+pub mod dlpack {
+    pub use crate::dlpack::{
+        DLDataType, DLDevice, DLManagedTensorVersioned, DLPackType, DLPackVersion, DLTensor,
+        DlpackTensor, dlpack_type, dtype_from_dlpack,
+    };
+}
+
 /// Reference-counted byte storage shared by tensors.
 pub use rlmesh_spaces::Storage;
 
