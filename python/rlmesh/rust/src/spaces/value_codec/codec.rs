@@ -16,6 +16,7 @@ pub(crate) fn space_value_to_py_with_backend<'py>(
     space: &SpaceSpec,
     backend: ValueBackend,
 ) -> PyResult<Bound<'py, PyAny>> {
+    validate_received_value(space, value)?;
     space_value_to_py(py, value, space, &move |py, value, space| {
         array_leaf_to_py_with_backend(py, value, space, backend)
     })
@@ -26,7 +27,17 @@ pub(crate) fn space_value_to_py_neutral<'py>(
     value: &SpaceValue,
     space: &SpaceSpec,
 ) -> PyResult<Bound<'py, PyAny>> {
+    validate_received_value(space, value)?;
     space_value_to_py(py, value, space, &array_leaf_to_py_neutral)
+}
+
+// Received structural deviations are malformed messages. Range deviations stay
+// available to the serving side's warn/strict/off validation policy.
+pub(super) fn validate_received_value(space: &SpaceSpec, value: &SpaceValue) -> PyResult<()> {
+    if let Conformance::Structural(err) = conform(space, value) {
+        return Err(crate::types::ProtocolException::new_err(err.to_string()));
+    }
+    Ok(())
 }
 
 // Encodes the array-like leaves (Box, MultiBinary, MultiDiscrete); only the leaf
@@ -55,11 +66,7 @@ fn space_value_to_py<'py>(
         (Some(SpaceKind::Dict(spec)), SpaceValue::Dict(values)) => {
             let dict = PyDict::new(py);
             for (key, child_space) in spec.keys.iter().zip(spec.spaces.iter()) {
-                let child_value = values.get(key).ok_or_else(|| {
-                    crate::types::ProtocolException::new_err(format!(
-                        "missing RLMesh dict key '{key}'"
-                    ))
-                })?;
+                let child_value = &values[key];
                 dict.set_item(key, space_value_to_py(py, child_value, child_space, leaf)?)?;
             }
             Ok(dict.into_any())
@@ -1063,6 +1070,7 @@ mod tests {
                     let err =
                         space_value_to_py_with_backend(py, &encoded, &space, backend).unwrap_err();
                     assert!(err.is_instance_of::<crate::types::ProtocolException>(py));
+                    assert_eq!(err.value(py).to_string(), expected.to_string());
                     let err = batched_space_values_to_py_with_backend(
                         py,
                         std::slice::from_ref(&encoded),
@@ -1071,12 +1079,80 @@ mod tests {
                     )
                     .unwrap_err();
                     assert!(err.is_instance_of::<crate::types::ProtocolException>(py));
+                    assert_eq!(err.value(py).to_string(), expected.to_string());
                 }
                 let err = super::space_value_to_py_neutral(py, &encoded, &space).unwrap_err();
                 assert!(err.is_instance_of::<crate::types::ProtocolException>(py));
+                assert_eq!(err.value(py).to_string(), expected.to_string());
                 let err = batched_space_values_to_py_neutral(py, &[encoded], &space).unwrap_err();
                 assert!(err.is_instance_of::<crate::types::ProtocolException>(py));
+                assert_eq!(err.value(py).to_string(), expected.to_string());
             }
+        });
+    }
+
+    #[test]
+    fn received_structural_deviations_use_root_conformance_text() {
+        use super::super::batch::{
+            batched_space_values_to_py_neutral, batched_space_values_to_py_with_backend,
+        };
+        use rlmesh_spaces::{Conformance, SpaceValue, conform};
+        use std::collections::BTreeMap;
+
+        Python::attach(|py| {
+            let child = DictSpaceBuilder::new()
+                .insert("choice", DiscreteBuilder::new(3).build().unwrap())
+                .build()
+                .unwrap();
+            let space = DictSpaceBuilder::new()
+                .insert("nested", child)
+                .build()
+                .unwrap();
+            for fields in [
+                BTreeMap::from([
+                    ("choice".into(), SpaceValue::Discrete(1)),
+                    ("extra".into(), SpaceValue::Discrete(0)),
+                ]),
+                BTreeMap::from([("choice".into(), SpaceValue::Text("wrong kind".into()))]),
+                BTreeMap::from([("choice".into(), SpaceValue::Discrete(3))]),
+            ] {
+                let value = SpaceValue::Dict(BTreeMap::from([(
+                    "nested".into(),
+                    SpaceValue::Dict(fields),
+                )]));
+                let Conformance::Structural(expected) = conform(&space, &value) else {
+                    panic!("expected structural deviation");
+                };
+                for backend in [ValueBackend::Native, ValueBackend::Auto] {
+                    for result in [
+                        space_value_to_py_with_backend(py, &value, &space, backend),
+                        batched_space_values_to_py_with_backend(
+                            py,
+                            std::slice::from_ref(&value),
+                            &space,
+                            backend,
+                        ),
+                    ] {
+                        let err = result.unwrap_err();
+                        assert!(err.is_instance_of::<crate::types::ProtocolException>(py));
+                        assert_eq!(err.value(py).to_string(), expected.to_string());
+                    }
+                }
+                for result in [
+                    super::space_value_to_py_neutral(py, &value, &space),
+                    batched_space_values_to_py_neutral(py, &[value], &space),
+                ] {
+                    let err = result.unwrap_err();
+                    assert!(err.is_instance_of::<crate::types::ProtocolException>(py));
+                    assert_eq!(err.value(py).to_string(), expected.to_string());
+                }
+            }
+            let space = TextBuilder::new(1).charset("a").build().unwrap();
+            let value = SpaceValue::Text("bbb".into());
+            assert!(matches!(conform(&space, &value), Conformance::Range(_)));
+            assert!(
+                space_value_to_py_with_backend(py, &value, &space, ValueBackend::Native).is_ok()
+            );
         });
     }
 

@@ -14,7 +14,7 @@ use rlmesh_spaces::{Conformance, SpaceValue, conform};
 use super::ValueBackend;
 use super::codec::{
     encode_i64_sequence_bytes, py_any_to_space_value_unchecked, space_value_to_py_neutral,
-    space_value_to_py_with_backend, tensor_from_shape,
+    space_value_to_py_with_backend, tensor_from_shape, validate_received_value,
 };
 use super::normalization::normalize_space_value_input;
 use crate::spaces::tensor::{extract_tensor, wrap_native_tensor};
@@ -26,6 +26,9 @@ pub(crate) fn batched_space_values_to_py_with_backend<'py>(
     space: &SpaceSpec,
     backend: ValueBackend,
 ) -> PyResult<Bound<'py, PyAny>> {
+    for value in values {
+        validate_received_value(space, value)?;
+    }
     batched_space_values_to_py(py, values, space, &move |py, values, space| {
         batched_values_to_py(py, values, space, backend)
     })
@@ -75,9 +78,7 @@ fn dict_column(values: &[SpaceValue], key: &str) -> PyResult<Vec<SpaceValue>> {
     values
         .iter()
         .map(|value| match value {
-            SpaceValue::Dict(fields) => fields.get(key).cloned().ok_or_else(|| {
-                crate::types::ProtocolException::new_err(format!("missing RLMesh dict key '{key}'"))
-            }),
+            SpaceValue::Dict(fields) => Ok(fields[key].clone()),
             _ => Err(batch_kind_err("Dict")),
         })
         .collect()
@@ -230,6 +231,9 @@ pub(crate) fn batched_space_values_to_py_neutral<'py>(
     values: &[SpaceValue],
     space: &SpaceSpec,
 ) -> PyResult<Bound<'py, PyAny>> {
+    for value in values {
+        validate_received_value(space, value)?;
+    }
     batched_space_values_to_py(py, values, space, &batched_leaf_neutral)
 }
 

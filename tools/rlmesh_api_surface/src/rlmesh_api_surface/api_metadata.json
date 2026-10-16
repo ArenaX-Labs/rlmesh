@@ -588,7 +588,7 @@
     },
     "rlmesh.sanitize_metadata": {
       "stability": "Bridge",
-      "description": "Coerce Python objects to portable metadata (R-24, D-9)."
+      "description": "Coerce Python objects to portable metadata."
     },
     "rlmesh.params": {
       "stability": "Experimental"

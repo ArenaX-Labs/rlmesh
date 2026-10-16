@@ -1259,3 +1259,88 @@ impl RLMeshVectorEnv for PyVectorEnv {
         std::mem::take(&mut self.0.last_phases)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn malformed_actions_are_recoverable_before_python_callbacks() {
+        let env = Python::attach(|py| {
+            pyo3::types::PyModule::from_code(
+                py,
+                pyo3::ffi::c_str!(
+                    r#"import gymnasium as gym
+class Env:
+    observation_space = gym.spaces.Discrete(2)
+    action_space = gym.spaces.Dict({'nested': gym.spaces.Dict({'choice': gym.spaces.Discrete(3)})})
+    def reset(self, **kwargs): return 0, {}
+    def step(self, action): return 0, 0.0, False, False, {}
+    def close(self): pass
+env = Env()
+"#
+                ),
+                pyo3::ffi::c_str!("test_actions.py"),
+                pyo3::ffi::c_str!("test_actions"),
+            )
+            .unwrap()
+            .getattr("env")
+            .unwrap()
+            .unbind()
+        });
+        let mut env = PyEnvironment::new(env, false).unwrap();
+        env.dispatch = Dispatch::Pinned;
+        for policy in [
+            ValidationPolicy::Warn,
+            ValidationPolicy::Strict,
+            ValidationPolicy::Off,
+        ] {
+            env.policy = policy;
+            for (fields, text) in [
+                (BTreeMap::new(), "$.nested: missing key 'choice'"),
+                (
+                    BTreeMap::from([
+                        ("choice".into(), SpaceValue::Discrete(1)),
+                        ("extra".into(), SpaceValue::Discrete(0)),
+                    ]),
+                    "$.nested: unexpected key 'extra'",
+                ),
+            ] {
+                let action = SpaceValue::Dict(BTreeMap::from([(
+                    "nested".into(),
+                    SpaceValue::Dict(fields),
+                )]));
+                let err = env
+                    .step_single(SingleStepRequest {
+                        action: Some(action.clone()),
+                        timeout_ms: 0,
+                    })
+                    .await
+                    .unwrap_err();
+                assert_eq!(err.code, EnvErrorCode::InvalidAction);
+                assert!(err.is_recoverable);
+                assert_eq!(err.message, text);
+                // The vector path checks every lane before decoding/calling too.
+                let err = env
+                    .step_vector(EnvStepRequest {
+                        actions: vec![action],
+                        ..Default::default()
+                    })
+                    .await
+                    .unwrap_err();
+                assert!(
+                    matches!(err, EnvRuntimeError::InvalidValue(ref message) if message == text)
+                );
+            }
+            // A rejected action leaves the env usable.
+            assert!(
+                env.step_single(SingleStepRequest {
+                    action: None,
+                    timeout_ms: 0,
+                })
+                .await
+                .is_ok()
+            );
+        }
+    }
+}

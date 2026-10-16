@@ -244,7 +244,7 @@ impl ErrorClass {
         }
     }
 
-    /// Class inheritance test: reflexive, and true for every ancestor
+    /// Class inheritance test: reflexive and transitive over the class hierarchy
     /// (`ConnectionError` is a subclass of `OSError`).
     pub fn is_subclass_of(self, base: ErrorClass) -> bool {
         let mut class = Some(self);

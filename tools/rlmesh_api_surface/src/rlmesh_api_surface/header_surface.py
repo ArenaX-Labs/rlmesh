@@ -119,9 +119,9 @@ def _library_defines(language: str) -> list[str]:
         check=True,
     ).stdout
     return [
-        "-D" + match[1] + "=" + match[2]
+        "-D" + match[1] + ("=" + match[2] if match[2] else "")
         for line in output.splitlines()
-        if (match := re.match(r"#define (_LIBCPP_\w+)\s+(.*)", line))
+        if (match := re.match(r"#define (_LIBCPP_\w+)(?:\s+(.*))?", line))
     ]
 
 

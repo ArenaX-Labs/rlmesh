@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -60,6 +61,52 @@ def test_c_prototype_and_callback_parameters_are_named() -> None:
         "options",
         "out",
     ]
+    # Output names follow the order the library writes them in.
+    assert functions["rlmesh_text_limits"] == [
+        "space",
+        "out_min_length",
+        "out_max_length",
+        "out_charset",
+    ]
+    assert functions["rlmesh_reader_call"] == ["reader", "observation", "out"]
+
+    parameters = [
+        cursor
+        for cursor in tu.cursor.walk_preorder()
+        if cursor.kind == ci.CursorKind.PARM_DECL
+        and cursor.location.file is not None
+        and Path(cursor.location.file.name).resolve() == (REPO_ROOT / header).resolve()
+    ]
+    assert [p.spelling for p in parameters if re.search(r"_[12]$", p.spelling)] == []
+    for name, args in functions.items():
+        if name.endswith("_equals"):
+            assert args[:2] == ["a", "b"], name
+    assert functions["rlmesh_run_result_episodes_get"] == ["run_result", "i", "out"]
+    assert functions["rlmesh_run_result_telemetry_get"] == ["run_result", "i", "out"]
+    assert functions["rlmesh_env_server_new"][:2] == ["envs", "envs_len"]
+    assert functions["rlmesh_remote_env_step"][0] == "remote_env"
+    assert functions["rlmesh_remote_vector_env_step"][0] == "remote_vector_env"
+    assert functions["rlmesh_model_new"][0] == "vtable"
+    assert functions["rlmesh_model_vtable_describe"][0] == "vtable"
+    assert functions["rlmesh_model_describe"][0] == "model"
+    assert functions["rlmesh_env_factory_describe"][0] == "env_factory"
+    # Deleters name the object they free; user_data/ctx are not exempt here.
+    declarations = [
+        cursor
+        for cursor in tu.cursor.walk_preorder()
+        if cursor.kind in (ci.CursorKind.PARM_DECL, ci.CursorKind.FIELD_DECL)
+        and cursor.location.file is not None
+        and Path(cursor.location.file.name).resolve() == (REPO_ROOT / header).resolve()
+    ]
+    for parameter in declarations:
+        if parameter.spelling.startswith(("free_", "out_free_")):
+            freed = parameter.spelling.removeprefix("out_").removeprefix("free_")
+            callback_args = [
+                child.spelling
+                for child in parameter.get_children()
+                if child.kind == ci.CursorKind.PARM_DECL
+            ]
+            assert callback_args == [freed], parameter.spelling
 
 
 def test_rust_glob_reexports_include_private_module_contents(
@@ -611,3 +658,34 @@ def test_only_constructors_lose_an_initializer_list(tmp_path: Path) -> None:
         signatures["pick"] == "auto pick() -> std::integral_constant<int, true ? 1 : 2>"
     )
     assert signatures["greet"] == 'void greet(const char* url = "https://x;{") const'
+
+
+def test_library_defines_preserve_valueless_configuration(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from rlmesh_api_surface import header_surface
+
+    monkeypatch.setenv("CXX", "custom-cxx --target=test")
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        assert kwargs == {"capture_output": True, "text": True, "check": True}
+        return SimpleNamespace(
+            stdout=(
+                "#define _LIBCPP_ABI_VERSION 1\n"
+                "#define _LIBCPP_HAS_NO_THREADS\n"
+                "#define _LIBCPP_EMPTY \n"
+                "#define __COMPILER_BUILTIN__ 1\n"
+            )
+        )
+
+    monkeypatch.setattr(header_surface.subprocess, "run", run)
+    assert header_surface._library_defines("c++") == [
+        "-D_LIBCPP_ABI_VERSION=1",
+        "-D_LIBCPP_HAS_NO_THREADS",
+        "-D_LIBCPP_EMPTY",
+    ]
+    assert calls == [
+        ["custom-cxx", "--target=test", "-dM", "-E", "-x", "c++", "/dev/null"]
+    ]

@@ -505,8 +505,9 @@ RLMESH_API const char* rlmesh_error_code_str(RLMeshErrorCode code);
 RLMESH_API const char* rlmesh_model_error_code_str(RLMeshModelErrorCode code);
 
 /* The name of a class ("ConnectionError"), static; NULL for INVALID or an unknown value.
- * rlmesh_error_class_is_subclass tests class inheritance: it is reflexive, so
- * CONNECTION_ERROR is a subclass of OS_ERROR and the general error classes are not
+ * rlmesh_error_class_is_subclass tests class inheritance: it is reflexive and
+ * transitive over the class hierarchy. CONNECTION_ERROR is a subclass of OS_ERROR;
+ * the general error classes are not
  * subclasses of RLMESH_EXCEPTION. */
 RLMESH_API const char* rlmesh_error_class_name(RLMeshErrorClass cls);
 RLMESH_API bool rlmesh_error_class_is_subclass(RLMeshErrorClass cls, RLMeshErrorClass base);
@@ -1024,8 +1025,8 @@ RLMESH_API RLMeshStatus rlmesh_tuple_new(const RLMeshSpaceSpec* const* spaces, s
                                          RLMeshSpace** out);
 RLMESH_API RLMeshStatus rlmesh_multi_discrete_nvec(const RLMeshSpace* space, int64_t* out,
                                                    size_t capacity, size_t* out_len);
-RLMESH_API RLMeshStatus rlmesh_text_limits(const RLMeshSpace* space, int64_t* out_max_length,
-                                           int64_t* out_min_length, RLMeshStr* out_charset);
+RLMESH_API RLMeshStatus rlmesh_text_limits(const RLMeshSpace* space, int64_t* out_min_length,
+                                           int64_t* out_max_length, RLMeshStr* out_charset);
 RLMESH_API RLMeshStatus rlmesh_tuple_len(const RLMeshSpace* space, size_t* out);
 RLMESH_API RLMeshStatus rlmesh_tuple_get(const RLMeshSpace* space, size_t index, RLMeshSpace** out);
 
@@ -2374,8 +2375,8 @@ RLMESH_API RLMeshObsTransform* rlmesh_obs_transform_clone(const RLMeshObsTransfo
 RLMESH_API void rlmesh_obs_transform_free(RLMeshObsTransform* transform);
 /* Callable identity survives cloning; hashes are process-local. NULL equals NULL and hashes to 0.
  */
-RLMESH_API bool rlmesh_obs_transform_equals(const RLMeshObsTransform* obs_transform,
-                                            const RLMeshObsTransform* obs_transform_1);
+RLMESH_API bool rlmesh_obs_transform_equals(const RLMeshObsTransform* a,
+                                            const RLMeshObsTransform* b);
 RLMESH_API uint64_t rlmesh_obs_transform_hash(const RLMeshObsTransform* obs_transform);
 RLMESH_API RLMeshStatus rlmesh_rotation_transform_new(RLMeshRotationTransformFn fn, void* user_data,
                                                       void (*free_user_data)(void* user_data),
@@ -2385,9 +2386,8 @@ RLMESH_API RLMeshRotationTransform* rlmesh_rotation_transform_clone(
 RLMESH_API void rlmesh_rotation_transform_free(RLMeshRotationTransform* transform);
 /* Callable identity survives cloning; hashes are process-local. NULL equals NULL and hashes to 0.
  */
-RLMESH_API bool rlmesh_rotation_transform_equals(
-    const RLMeshRotationTransform* rotation_transform,
-    const RLMeshRotationTransform* rotation_transform_1);
+RLMESH_API bool rlmesh_rotation_transform_equals(const RLMeshRotationTransform* a,
+                                                 const RLMeshRotationTransform* b);
 RLMESH_API uint64_t
 rlmesh_rotation_transform_hash(const RLMeshRotationTransform* rotation_transform);
 RLMESH_API RLMeshStatus rlmesh_model_spec_new(const RLMeshInputNode* input,
@@ -2758,7 +2758,7 @@ RLMESH_API void rlmesh_vector_env_free(RLMeshVectorEnv* vector_env);
 /* New binds. start runs callbacks on library threads; serve keeps lane 0 on
  * the caller. shutdown is allowed from a callback. Free shuts down and drains
  * all C callbacks, including any still running past the facade's timeout. */
-RLMESH_API RLMeshStatus rlmesh_env_server_new(RLMeshEnv* const* env, size_t envs_len,
+RLMESH_API RLMeshStatus rlmesh_env_server_new(RLMeshEnv* const* envs, size_t envs_len,
                                               const RLMeshEnvServerOptions* options,
                                               RLMeshEnvServer** out);
 RLMESH_API RLMeshStatus rlmesh_env_server_new_vector(RLMeshVectorEnv* vector_env,
@@ -2908,7 +2908,7 @@ RLMESH_API const RLMeshValue* rlmesh_variant_params(
 RLMESH_API const RLMeshValue* rlmesh_variant_metadata(
     const RLMeshVariant* variant); /* DICT; borrowed likewise */
 RLMESH_API RLMeshStatus rlmesh_variant_repr(const RLMeshVariant* variant, RLMeshBytes* out);
-RLMESH_API bool rlmesh_variant_equals(const RLMeshVariant* variant, const RLMeshVariant* variant_1);
+RLMESH_API bool rlmesh_variant_equals(const RLMeshVariant* a, const RLMeshVariant* b);
 /* Variant fields are mutable. */
 RLMESH_API RLMeshStatus rlmesh_variant_set_id(RLMeshVariant* variant, const char* id);
 RLMESH_API RLMeshStatus rlmesh_variant_set_params(RLMeshVariant* variant,
@@ -2959,7 +2959,7 @@ RLMESH_API bool rlmesh_episode_state_get(const RLMeshEpisodeState* episode_state
  * owns value, and the state is unchanged. Re-setting the same pointer keeps the value
  * alive and updates its free function without calling the previous one. */
 RLMESH_API RLMeshStatus rlmesh_episode_state_set(RLMeshEpisodeState* episode_state, const char* key,
-                                                 void* value, void (*free_value)(void* user_data));
+                                                 void* value, void (*free_value)(void* value));
 RLMESH_API bool rlmesh_episode_state_remove(RLMeshEpisodeState* episode_state, const char* key);
 RLMESH_API size_t rlmesh_episode_state_len(const RLMeshEpisodeState* episode_state);
 
@@ -3069,7 +3069,7 @@ RLMESH_API RLMeshStatus
 rlmesh_model_serve(RLMeshModel* model, const char* address,
                    const RLMeshModelServeOptions* options /* NULL = INIT */);
 
-RLMESH_API RLMeshStatus rlmesh_model_new(const RLMeshModelVtable* source, void* user_data,
+RLMESH_API RLMeshStatus rlmesh_model_new(const RLMeshModelVtable* vtable, void* user_data,
                                          const RLMeshModelOptions* options, RLMeshModel** out);
 RLMESH_API RLMeshStatus rlmesh_model_from_config(const RLMeshModelVtable* model_vtable,
                                                  void* user_data, const RLMeshValue* config,
@@ -3131,22 +3131,22 @@ typedef struct RLMeshDescribeJsonOptions {
  * served_env NULL/0 = None; non-NULL/0 is an invalid empty list. At most one
  * served form may be set. It replaces the default build and is never closed.
  * workflow_edition NULL resolves/records refusal; "" explicitly declares none. */
-RLMESH_API RLMeshStatus rlmesh_model_vtable_describe(const RLMeshModelVtable* obj,
+RLMESH_API RLMeshStatus rlmesh_model_vtable_describe(const RLMeshModelVtable* vtable,
                                                      const RLMeshDescribeOptions* options,
                                                      RLMeshValue** out);
-RLMESH_API RLMeshStatus rlmesh_model_vtable_describe_json(const RLMeshModelVtable* obj,
+RLMESH_API RLMeshStatus rlmesh_model_vtable_describe_json(const RLMeshModelVtable* vtable,
                                                           const RLMeshDescribeJsonOptions* options,
                                                           RLMeshBytes* out);
-RLMESH_API RLMeshStatus rlmesh_model_describe(const RLMeshModel* obj,
+RLMESH_API RLMeshStatus rlmesh_model_describe(const RLMeshModel* model,
                                               const RLMeshDescribeOptions* options,
                                               RLMeshValue** out);
-RLMESH_API RLMeshStatus rlmesh_model_describe_json(const RLMeshModel* obj,
+RLMESH_API RLMeshStatus rlmesh_model_describe_json(const RLMeshModel* model,
                                                    const RLMeshDescribeJsonOptions* options,
                                                    RLMeshBytes* out);
-RLMESH_API RLMeshStatus rlmesh_env_factory_describe(RLMeshEnvFactory* obj,
+RLMESH_API RLMeshStatus rlmesh_env_factory_describe(RLMeshEnvFactory* env_factory,
                                                     const RLMeshDescribeOptions* options,
                                                     RLMeshValue** out);
-RLMESH_API RLMeshStatus rlmesh_env_factory_describe_json(RLMeshEnvFactory* obj,
+RLMESH_API RLMeshStatus rlmesh_env_factory_describe_json(RLMeshEnvFactory* env_factory,
                                                          const RLMeshDescribeJsonOptions* options,
                                                          RLMeshBytes* out);
 /* Served-env describe shorthand: reads the server's resolved snapshot, including its host
@@ -3237,9 +3237,8 @@ typedef struct RLMeshEpisodeResult {
    0.0,                            \
    false,                          \
    0}
-RLMESH_API RLMeshStatus rlmesh_episode_result_equals(const RLMeshEpisodeResult* episode_result,
-                                                     const RLMeshEpisodeResult* episode_result_1,
-                                                     bool* out);
+RLMESH_API RLMeshStatus rlmesh_episode_result_equals(const RLMeshEpisodeResult* a,
+                                                     const RLMeshEpisodeResult* b, bool* out);
 RLMESH_API RLMeshStatus rlmesh_episode_result_repr(const RLMeshEpisodeResult* episode_result,
                                                    RLMeshBytes* out);
 typedef struct RLMeshRunResultOptions {
@@ -3262,16 +3261,15 @@ RLMESH_API size_t rlmesh_run_result_num_episodes(const RLMeshRunResult* run_resu
 RLMESH_API int64_t rlmesh_run_result_total_steps(const RLMeshRunResult* run_result);
 RLMESH_API double rlmesh_run_result_mean_reward(const RLMeshRunResult* run_result);
 RLMESH_API bool rlmesh_run_result_success_rate(const RLMeshRunResult* run_result, double* out);
-RLMESH_API RLMeshStatus rlmesh_run_result_episodes_get(const RLMeshRunResult* run_result,
-                                                       size_t value, RLMeshEpisodeResult* out);
+RLMESH_API RLMeshStatus rlmesh_run_result_episodes_get(const RLMeshRunResult* run_result, size_t i,
+                                                       RLMeshEpisodeResult* out);
 RLMESH_API size_t rlmesh_run_result_telemetry_len(const RLMeshRunResult* run_result);
-RLMESH_API RLMeshStatus rlmesh_run_result_telemetry_get(const RLMeshRunResult* run_result,
-                                                        size_t value, RLMeshTelemetryRow** out);
+RLMESH_API RLMeshStatus rlmesh_run_result_telemetry_get(const RLMeshRunResult* run_result, size_t i,
+                                                        RLMeshTelemetryRow** out);
 RLMESH_API RLMeshStatus rlmesh_run_result_format_telemetry(const RLMeshRunResult* run_result,
                                                            RLMeshBytes* out);
 RLMESH_API RLMeshStatus rlmesh_run_result_repr(const RLMeshRunResult* run_result, RLMeshBytes* out);
-RLMESH_API bool rlmesh_run_result_equals(const RLMeshRunResult* run_result,
-                                         const RLMeshRunResult* run_result_1);
+RLMESH_API bool rlmesh_run_result_equals(const RLMeshRunResult* a, const RLMeshRunResult* b);
 RLMESH_API RLMeshStatus rlmesh_telemetry_row_new(const char* op, const char* component,
                                                  const char* metric, const char* unit,
                                                  int64_t count, double avg, double p50, double p95,
@@ -3291,8 +3289,8 @@ RLMESH_API double rlmesh_telemetry_row_p95(const RLMeshTelemetryRow* telemetry_r
 RLMESH_API double rlmesh_telemetry_row_p99(const RLMeshTelemetryRow* telemetry_row);
 RLMESH_API RLMeshStatus rlmesh_telemetry_row_repr(const RLMeshTelemetryRow* telemetry_row,
                                                   RLMeshBytes* out);
-RLMESH_API bool rlmesh_telemetry_row_equals(const RLMeshTelemetryRow* telemetry_row,
-                                            const RLMeshTelemetryRow* telemetry_row_1);
+RLMESH_API bool rlmesh_telemetry_row_equals(const RLMeshTelemetryRow* a,
+                                            const RLMeshTelemetryRow* b);
 RLMESH_API void rlmesh_telemetry_row_free(RLMeshTelemetryRow* telemetry_row);
 
 /* Contexts are shared and retained independently from hook invocation. Every
@@ -3339,8 +3337,8 @@ typedef struct RLMeshStepEvent {
 #define RLMESH_STEP_EVENT_MIN_SIZE sizeof(RLMeshStepEvent)
 #define RLMESH_STEP_EVENT_INIT \
   {sizeof(RLMeshStepEvent), 0, false, 0, 0, NULL, NULL, 0.0, false, false, NULL, 0.0, 0.0, NULL}
-RLMESH_API RLMeshStatus rlmesh_step_event_equals(const RLMeshStepEvent* step_event,
-                                                 const RLMeshStepEvent* step_event_1, bool* out);
+RLMESH_API RLMeshStatus rlmesh_step_event_equals(const RLMeshStepEvent* a, const RLMeshStepEvent* b,
+                                                 bool* out);
 RLMESH_API RLMeshStatus rlmesh_step_event_repr(const RLMeshStepEvent* step_event, RLMeshBytes* out);
 typedef struct RLMeshRunHooksVtable {
   size_t struct_size;
@@ -3418,8 +3416,7 @@ typedef struct RLMeshView {
       false}
 RLMESH_API RLMeshStatus rlmesh_view_validate(const RLMeshView* view);
 RLMESH_API RLMeshStatus rlmesh_view_parse(const char* text, RLMeshView* out);
-RLMESH_API RLMeshStatus rlmesh_view_equals(const RLMeshView* view, const RLMeshView* view_1,
-                                           bool* out);
+RLMESH_API RLMeshStatus rlmesh_view_equals(const RLMeshView* a, const RLMeshView* b, bool* out);
 RLMESH_API RLMeshStatus rlmesh_view_repr(const RLMeshView* view, RLMeshBytes* out);
 
 typedef struct RLMeshRunOptions {
@@ -3693,7 +3690,8 @@ RLMESH_API RLMeshStatus rlmesh_remote_env_reset(RLMeshRemoteEnv* remote_env, con
                                                 const RLMeshValue* options,
                                                 RLMeshValue** out_observation,
                                                 RLMeshValue** out_info);
-RLMESH_API RLMeshStatus rlmesh_remote_env_step(RLMeshRemoteEnv* env, const RLMeshValue* action,
+RLMESH_API RLMeshStatus rlmesh_remote_env_step(RLMeshRemoteEnv* remote_env,
+                                               const RLMeshValue* action,
                                                RLMeshValue** out_observation, double* out_reward,
                                                bool* out_terminated, bool* out_truncated,
                                                RLMeshValue** out_info);
@@ -3703,7 +3701,7 @@ RLMESH_API RLMeshStatus rlmesh_remote_vector_env_reset(RLMeshRemoteVectorEnv* re
                                                        RLMeshValue** out_observation,
                                                        RLMeshValue** out_info);
 /* A short capacity fails before I/O and leaves ALL outputs untouched. */
-RLMESH_API RLMeshStatus rlmesh_remote_vector_env_step(RLMeshRemoteVectorEnv* env,
+RLMESH_API RLMeshStatus rlmesh_remote_vector_env_step(RLMeshRemoteVectorEnv* remote_vector_env,
                                                       const RLMeshValue* actions,
                                                       RLMeshValue** out_observation,
                                                       double* out_rewards, bool* out_terminated,
@@ -3731,8 +3729,8 @@ RLMESH_API void rlmesh_reader_free(RLMeshReader* reader);
 RLMESH_API size_t rlmesh_reader_roles_len(const RLMeshReader* reader);
 RLMESH_API RLMeshStatus rlmesh_reader_roles_get(const RLMeshReader* reader, size_t i,
                                                 RLMeshBytes* out);
-RLMESH_API RLMeshStatus rlmesh_reader_call(const RLMeshReader* reader, const RLMeshValue* value,
-                                           RLMeshValue** out);
+RLMESH_API RLMeshStatus rlmesh_reader_call(const RLMeshReader* reader,
+                                           const RLMeshValue* observation, RLMeshValue** out);
 RLMESH_API RLMeshStatus rlmesh_session_reader(RLMeshSession* session,
                                               const RLMeshReadItem* const* items, size_t items_len,
                                               RLMeshReader** out);
@@ -3770,8 +3768,8 @@ RLMESH_API RLMeshStatus rlmesh_frame_sources_labels_get(const RLMeshFrameSources
                                                         size_t i, RLMeshBytes* out);
 RLMESH_API RLMeshStatus rlmesh_frame_sources_default_label(const RLMeshFrameSources* frame_sources,
                                                            RLMeshBytes* out, bool* out_has);
-RLMESH_API bool rlmesh_frame_sources_equals(const RLMeshFrameSources* frame_sources,
-                                            const RLMeshFrameSources* frame_sources_1);
+RLMESH_API bool rlmesh_frame_sources_equals(const RLMeshFrameSources* a,
+                                            const RLMeshFrameSources* b);
 RLMESH_API RLMeshStatus rlmesh_frame_sources_repr(const RLMeshFrameSources* frame_sources,
                                                   RLMeshBytes* out);
 RLMESH_API void rlmesh_frame_sources_free(RLMeshFrameSources* frame_sources);
@@ -3797,7 +3795,7 @@ RLMESH_API void rlmesh_callback_set_error_class(RLMeshErrorClass error_class, co
  * Replacing, clearing or dropping an untaken payload calls free_payload once.
  * The error carries it across worker threads. The failing caller may take it. */
 RLMESH_API void rlmesh_ext_callback_set_error_payload(void* payload,
-                                                      void (*free_payload)(void* user_data));
+                                                      void (*free_payload)(void* payload));
 RLMESH_API void* rlmesh_ext_last_error_take_payload(void);
 /* Tagged ownership transfer: the library never reads tag or payload bytes.
  * The tag identifies a payload representation/owner domain. The legacy setter
@@ -3806,10 +3804,10 @@ RLMESH_API void* rlmesh_ext_last_error_take_payload(void);
  * distinct writable slots. All three are required. A failing call does not
  * consume the payload. A successful take transfers the deleter obligation. */
 RLMESH_API void rlmesh_ext_callback_set_tagged_error_payload(void* payload,
-                                                             void (*free_payload)(void* user_data),
+                                                             void (*free_payload)(void* payload),
                                                              const void* tag);
 RLMESH_API RLMeshStatus rlmesh_ext_last_error_take_payload_owned(
-    void** out_payload, void (**out_free_payload)(void* user_data), const void** out_tag);
+    void** out_payload, void (**out_free_payload)(void* payload), const void** out_tag);
 
 /* ---- Recorder and immutable recorder records ---------------------------- */
 #define RLMESH_RECORDER_SCHEMA "rlmesh.result.v1"
@@ -3956,8 +3954,7 @@ RLMESH_API bool rlmesh_media_ref_height(const RLMeshMediaRef* media_ref, int64_t
 RLMESH_API bool rlmesh_media_ref_fps(const RLMeshMediaRef* media_ref, double* out);
 RLMESH_API RLMeshStatus rlmesh_media_ref_to_dict(const RLMeshMediaRef* media_ref,
                                                  RLMeshValue** out);
-RLMESH_API bool rlmesh_media_ref_equals(const RLMeshMediaRef* media_ref,
-                                        const RLMeshMediaRef* media_ref_1);
+RLMESH_API bool rlmesh_media_ref_equals(const RLMeshMediaRef* a, const RLMeshMediaRef* b);
 RLMESH_API RLMeshStatus rlmesh_media_ref_repr(const RLMeshMediaRef* media_ref, RLMeshBytes* out);
 RLMESH_API void rlmesh_media_ref_free(RLMeshMediaRef* media_ref);
 RLMESH_API RLMeshStatus rlmesh_episode_record_new(int64_t index, const int64_t* seed, int64_t steps,
@@ -3979,8 +3976,8 @@ RLMESH_API RLMeshStatus rlmesh_episode_record_media_get(const RLMeshEpisodeRecor
                                                         size_t i, RLMeshMediaRef** out);
 RLMESH_API RLMeshStatus rlmesh_episode_record_to_dict(const RLMeshEpisodeRecord* episode_record,
                                                       RLMeshValue** out);
-RLMESH_API bool rlmesh_episode_record_equals(const RLMeshEpisodeRecord* episode_record,
-                                             const RLMeshEpisodeRecord* episode_record_1);
+RLMESH_API bool rlmesh_episode_record_equals(const RLMeshEpisodeRecord* a,
+                                             const RLMeshEpisodeRecord* b);
 RLMESH_API RLMeshStatus rlmesh_episode_record_repr(const RLMeshEpisodeRecord* episode_record,
                                                    RLMeshBytes* out);
 RLMESH_API void rlmesh_episode_record_free(RLMeshEpisodeRecord* episode_record);
@@ -4005,8 +4002,8 @@ RLMESH_API bool rlmesh_workload_record_success_rate(const RLMeshWorkloadRecord* 
 RLMESH_API int64_t rlmesh_workload_record_total_steps(const RLMeshWorkloadRecord* workload_record);
 RLMESH_API RLMeshStatus rlmesh_workload_record_to_dict(const RLMeshWorkloadRecord* workload_record,
                                                        RLMeshValue** out);
-RLMESH_API bool rlmesh_workload_record_equals(const RLMeshWorkloadRecord* workload_record,
-                                              const RLMeshWorkloadRecord* workload_record_1);
+RLMESH_API bool rlmesh_workload_record_equals(const RLMeshWorkloadRecord* a,
+                                              const RLMeshWorkloadRecord* b);
 RLMESH_API RLMeshStatus rlmesh_workload_record_repr(const RLMeshWorkloadRecord* workload_record,
                                                     RLMeshBytes* out);
 RLMESH_API void rlmesh_workload_record_free(RLMeshWorkloadRecord* workload_record);

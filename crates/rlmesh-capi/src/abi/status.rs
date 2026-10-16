@@ -727,7 +727,7 @@ pub extern "C" fn rlmesh_error_class_name(class: c_int) -> *const c_char {
     )
 }
 
-/// Python's `issubclass(cls, base)`: reflexive and following Python's MRO
+/// Class inheritance test: reflexive and transitive over the class hierarchy
 /// (`CONNECTION_ERROR` is a subclass of `OS_ERROR`). False when either value
 /// is `INVALID` or unknown.
 #[unsafe(no_mangle)]
