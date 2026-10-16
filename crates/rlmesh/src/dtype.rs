@@ -1,14 +1,13 @@
-//! Element dtypes and devices, Python's dtype strings and `device`.
+//! Element dtypes and memory devices.
 
 use std::fmt;
 
 use rlmesh_spaces::DType as CoreDType;
 
-/// An element dtype: Python's dtype strings (`"float32"`, ...).
+/// An element dtype, with its wire spelling (`"float32"`, ...).
 ///
 /// The discriminants are the wire numbers (`Bool = 1` ... `Float64 = 12`). A
-/// space with no element dtype of its own (a `Dict`) reads as `Float32`, as
-/// Python does.
+/// space with no element dtype of its own (a `Dict`) reads as `Float32`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 #[repr(i32)]
@@ -56,12 +55,13 @@ impl DType {
         DType::Float64,
     ];
 
-    /// Python's spelling (`"float32"`).
+    /// The canonical spelling (`"float32"`).
     pub fn as_str(self) -> &'static str {
         self.to_core().name()
     }
 
-    /// The dtype Python spells `name`, exactly (`"float32"`); `None` otherwise.
+    /// The dtype whose canonical spelling is exactly `name` (`"float32"`);
+    /// `None` otherwise.
     pub fn parse(name: &str) -> Option<DType> {
         Self::ALL.into_iter().find(|dtype| dtype.as_str() == name)
     }
@@ -113,7 +113,7 @@ impl fmt::Display for DType {
     }
 }
 
-/// Where a tensor's memory lives: Python's `device` string (`"cpu"`).
+/// Where a tensor's memory lives (`"cpu"`).
 pub use rlmesh_spaces::Device;
 
 #[cfg(test)]

@@ -43,12 +43,12 @@ pub struct RunLocalOptions {
     /// Bearer token sent on every request to that environment server;
     /// empty/`""` connects unauthenticated.
     pub token: String,
-    /// The exact number of episodes the run executes, resolved like Python's
-    /// `run(episodes=...)` (see [`RunLocalOptions::episode_budget`]): `None`
-    /// runs one episode, or one per seed when `episode_seeds` is non-empty;
-    /// `Some(0)` runs nothing (the env is not even dialed); `Some(n)` with
-    /// non-empty `episode_seeds` must match the seed count. There is no
-    /// "until the env ends" budget.
+    /// The exact number of episodes the run executes (see
+    /// [`RunLocalOptions::episode_budget`]): `None` runs one episode, or one
+    /// per seed when `episode_seeds` is non-empty; `Some(0)` runs nothing
+    /// (the env is not even dialed); `Some(n)` with non-empty
+    /// `episode_seeds` must match the seed count. There is no "until the env
+    /// ends" budget.
     pub max_episodes: Option<u64>,
     /// Base seed threaded into the runtime session for deterministic env
     /// reset seeding; `None` leaves seeding to the env.
@@ -73,9 +73,9 @@ pub struct RunLocalOptions {
     pub max_episode_seconds: Option<f64>,
     /// Ask the env to close when the run ends.
     pub close_env: bool,
-    /// Fire the handler's `on_close` when the run ends. Off by default: like
-    /// Python's `Model.run`, a run borrows the model and the caller closes it.
-    /// Turn it on when the run is the model's last use and should close it.
+    /// Fire the handler's `on_close` when the run ends. Off by default: a
+    /// run borrows the model and the caller closes it. Turn it on when the
+    /// run is the model's last use and should close it.
     pub close_model: bool,
     /// How many actions of each predicted chunk the runtime executes before
     /// re-planning (1 = no chunking). Pinned onto the route at resolve, exactly
@@ -101,7 +101,7 @@ pub struct RunLocalOptions {
 }
 
 impl RunLocalOptions {
-    /// Run one episode against `env_address` (Python's default budget).
+    /// Run one episode against `env_address`.
     pub fn new(env_address: ConnectAddress) -> Self {
         Self {
             env_address,
@@ -138,11 +138,10 @@ impl RunLocalOptions {
         self
     }
 
-    /// The exact number of episodes this run executes, resolved like Python's
-    /// `resolve_episode_budget`: one when neither `max_episodes` nor
-    /// `episode_seeds` is given, the seed count when only seeds are, and
-    /// `max_episodes` otherwise, which must then equal the seed count (a seed
-    /// per episode, no unseeded tail). Zero runs nothing.
+    /// The exact number of episodes this run executes: one when neither
+    /// `max_episodes` nor `episode_seeds` is given, the seed count when only
+    /// seeds are, and `max_episodes` otherwise, which must then equal the
+    /// seed count (a seed per episode, no unseeded tail). Zero runs nothing.
     ///
     /// # Errors
     ///

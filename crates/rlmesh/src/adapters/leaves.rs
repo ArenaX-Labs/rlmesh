@@ -21,7 +21,7 @@ pub struct Image {
     /// Channel count the model expects (e.g. 3 for RGB, 1 for grayscale). When set, a resolve error
     /// if the env image differs; the adapter does not convert between channel counts.
     pub channels: Option<u32>,
-    /// NumPy dtype name the model expects.
+    /// Element dtype name the model expects.
     pub dtype: Tolerant<DType>,
     /// Whether (and into what range) to map 8-bit pixel values before casting: `False` (off, the
     /// default), `True` (the conventional `[0, 1]`), or a `(low, high)` pair for a model trained on
@@ -109,8 +109,8 @@ pub struct Image {
     pub stack_pad: StackPad,
     /// The body part the wanted camera sits on, when the role repeats across a body (`"head"`,
     /// `"left_arm"`, ...): an identity key the resolver matches on. Naming one binds only that
-    /// camera; naming none binds the env's only camera of the role under any part (with an `info`)
-    /// and fails when there are several. Keyword-only and omitted from the wire when unset.
+    /// camera; naming none binds the env's only camera of the role under any part (with an
+    /// `info`) and fails when there are several. Omitted from the wire when unset.
     pub part: Option<String>,
 }
 impl Image {
@@ -142,7 +142,8 @@ impl Image {
             part: None,
         }
     }
-    /// Construct this value with Python’s field defaults.
+    /// Construct an image input with HWC layout, uint8 data and no
+    /// normalization.
     pub fn new(role: impl Into<String>) -> Self {
         Self {
             role: role.into(),
@@ -220,11 +221,11 @@ pub struct State {
     /// converted, ranged and scaled, the parts are concatenated in order, and only then is the
     /// result padded.
     pub pad_to: Option<u32>,
-    /// NumPy dtype name of the resulting value.
+    /// Element dtype name of the resulting value.
     pub dtype: Tolerant<DType>,
     /// Optional target shape for the resulting value.
     pub reshape: Option<Vec<i64>>,
-    /// Emit a NumPy array or a plain Python list.
+    /// Emit a tensor or a list of values.
     pub container: StateContainer,
     /// Value this part contributes when `optional` is set and the env lacks the role (zeros by
     /// default). A non-zero `fill` requires `optional`, matching `Actuator.fill`.
@@ -238,42 +239,43 @@ pub struct State {
     /// serialized as `axis_scale`.
     pub scale: Option<AxisValue>,
     /// Model-side addend applied after `scale` (`value * scale + offset`) -- e.g. a `1 - 2g`
-    /// gripper is `scale=-2, offset=1`, a stand pose is `offset=tuple(-q for q in DEFAULT_POSE)`. A
-    /// float or a per-axis sequence like `scale`.
+    /// gripper is `scale=-2, offset=1`, a stand pose uses the negated default joint positions as
+    /// offsets. A float or a per-axis sequence like `scale`.
     pub offset: Option<AxisValue>,
     /// Coordinate frame the checkpoint was trained to read this part in, when the role is an
-    /// absolute pose (`proprio/eef_*`). Keyword-only and omitted from the wire when unset. A frame
-    /// the env contradicts fails resolution; a frame the env does not declare draws a caution (the
-    /// model states a requirement nothing can confirm).
+    /// absolute pose (`proprio/eef_*`). Omitted from the wire when unset. A frame the env
+    /// contradicts fails resolution; a frame the env does not declare draws a caution (the model
+    /// states a requirement nothing can confirm).
     pub frame: Option<Tolerant<Frame>>,
     #[serde(with = "super::codec::accept")]
-    /// Where the checkpoint expects this part's numbers to come from: `"sensed"`, `"estimated"` or
-    /// `"privileged"`, or a sequence of the ones it accepts. Against an env that publishes the role
-    /// under several provenances the declaration picks the leaf (an env publishing several and a
-    /// model naming none is an error); a value the env contradicts fails resolution, and one the
-    /// env does not declare draws a caution. Keyword-only and omitted from the wire when unset.
+    /// Where the checkpoint expects this part's numbers to come from: `"sensed"`, `"estimated"`
+    /// or `"privileged"`, or a sequence of the ones it accepts. Against an env that publishes
+    /// the role under several provenances the declaration picks the leaf (an env publishing
+    /// several and a model naming none is an error); a value the env contradicts fails
+    /// resolution, and one the env does not declare draws a caution. Omitted from the wire when
+    /// unset.
     pub provenance: Option<Vec<Tolerant<Provenance>>>,
-    /// The body part this part reads, when the role repeats across a body (`LEFT_ARM`, `RIGHT_ARM`,
-    /// or any identifier both sides agree on): an identity key the resolver matches on. Naming one
-    /// binds only that env leaf (a missing one fills if `optional`, else fails); naming none binds
-    /// the env's only leaf of the role under any part (with an `info`) and fails when there are
-    /// several, naming them. Keyword-only and omitted from the wire when unset.
+    /// The body part this part reads, when the role repeats across a body (`LEFT_ARM`,
+    /// `RIGHT_ARM`, or any identifier both sides agree on): an identity key the resolver matches
+    /// on. Naming one binds only that env leaf (a missing one fills if `optional`, else fails);
+    /// naming none binds the env's only leaf of the role under any part (with an `info`) and
+    /// fails when there are several, naming them. Omitted from the wire when unset.
     pub part: Option<String>,
-    /// The axis names this part reads, in the order the checkpoint was trained on. Fixes the width.
-    /// The env leaf must label its axes with the same set; the values are gathered by name, so a
-    /// differing order is a permutation, and a label either side lacks (or an env leaf with no
-    /// labels) is a resolve error. Keyword-only and omitted from the wire when unset; not
-    /// combinable with `index`. On an action-source part the names reorder the actuator's labels.
+    /// The axis names this part reads, in the order the checkpoint was trained on. Fixes the
+    /// width. The env leaf must label its axes with the same set; the values are gathered by
+    /// name, so a differing order is a permutation, and a label either side lacks (or an env
+    /// leaf with no labels) is a resolve error. Omitted from the wire when unset; not combinable
+    /// with `index`. On an action-source part the names reorder the actuator's labels.
     pub labels: Option<Vec<String>>,
     /// Where the value comes from: `"observation"` (the default, an env state feature matched by
     /// role) or `"action"` (the model's own output actuator of the same `role` and `part`, read
-    /// back as the raw action executed at the previous step, in model order, before the actuator's
-    /// scale/offset; `fill` before the episode's first action). `Previous` is the sugar. An action-
-    /// source part carries only `part`, `labels`, `dim` and `fill`. Keyword-only and omitted from
-    /// the wire when default.
+    /// back as the raw action executed at the previous step, in model order, before the
+    /// actuator's scale/offset; `fill` before the episode's first action). `Previous` is the
+    /// sugar. An action- source part carries only `part`, `labels`, `dim` and `fill`. Omitted
+    /// from the wire when default.
     pub source: StateSource,
     /// Clamp the assembled vector to `(low, high)` after every part's own transforms and before
-    /// `pad_to` (legged_gym's `clip_obs`). Keyword-only and omitted from the wire when unset.
+    /// `pad_to` (legged_gym's `clip_obs`). Omitted from the wire when unset.
     pub clip: Option<(f64, f64)>,
 }
 impl State {
@@ -301,7 +303,7 @@ impl State {
             clip: None,
         }
     }
-    /// Construct this value with Python’s field defaults.
+    /// Construct a required observation input producing float32 tensors.
     pub fn new(role: impl Into<String>) -> Self {
         Self {
             role: role.into(),
@@ -350,11 +352,11 @@ pub struct Concat {
     /// converted, ranged and scaled, the parts are concatenated in order, and only then is the
     /// result padded.
     pub pad_to: Option<u32>,
-    /// NumPy dtype name of the resulting value.
+    /// Element dtype name of the resulting value.
     pub dtype: Tolerant<DType>,
     /// Optional target shape for the resulting value.
     pub reshape: Option<Vec<i64>>,
-    /// Emit a NumPy array or a plain Python list.
+    /// Emit a tensor or a list of values.
     pub container: StateContainer,
     /// Clamp the concatenated vector to `(low, high)` after every part's own transforms and before
     /// `pad_to`.
@@ -371,7 +373,8 @@ impl Concat {
             clip: None,
         }
     }
-    /// Construct this value with Python’s field defaults.
+    /// Construct a concatenation producing float32 tensors without padding or
+    /// clipping.
     pub fn new<T: Into<ConcatPart>>(parts: impl IntoIterator<Item = T>) -> Self {
         Self {
             parts: parts.into_iter().map(Into::into).collect(),
@@ -446,7 +449,7 @@ impl Text {
             fill: None,
         }
     }
-    /// Construct this value with Python’s field defaults.
+    /// Construct a string input with no fallback value.
     pub fn new(role: impl Into<String>) -> Self {
         Self {
             role: role.into(),
@@ -471,9 +474,9 @@ impl std::fmt::Display for Text {
 #[serde(default = "Actuator::empty", deny_unknown_fields)]
 /// One contiguous slice of an action vector.
 pub struct Actuator {
-    /// Semantic role used for matching, e.g. `action/gripper`. `None` makes the actuator *opaque*:
-    /// it occupies `dim` dims of the action with the constant `fill`, matched by no model output --
-    /// the action-side mirror of a role-less `~rlmesh.adapters.Field`. Use it for dims the env
+    /// Semantic role used for matching, e.g. `action/gripper`. `None` makes the actuator
+    /// *opaque*: it occupies `dim` dims of the action with the constant `fill`, matched by no
+    /// model output -- the action-side mirror of a role-less [`Field`]. Use it for dims the env
     /// requires but no model produces (e.g. a control-mode selector). An opaque actuator carries
     /// only `dim` and `fill`.
     pub role: Option<String>,
@@ -510,10 +513,10 @@ pub struct Actuator {
     /// model input's `optional` zero-fill). A model that does output the role drives it normally.
     /// Meaningless on a role-less actuator (already always filled).
     pub optional: bool,
-    /// Coordinate frame a Cartesian command's axes are expressed in. Required of an absolute pose
-    /// (`action/eef_*`) under the require-frames tier; a delta (`action/delta_eef_*`) may declare
-    /// it too (a tool-frame delta and a base-frame delta are different commands), and when both
-    /// sides do they must agree. Keyword-only, omitted from the wire when unset.
+    /// Coordinate frame a Cartesian command's axes are expressed in. Required of an absolute
+    /// pose (`action/eef_*`) under the require-frames tier; a delta (`action/delta_eef_*`) may
+    /// declare it too (a tool-frame delta and a base-frame delta are different commands), and
+    /// when both sides do they must agree. Omitted from the wire when unset.
     pub frame: Option<Tolerant<Frame>>,
     /// What a *delta* command is integrated against (`action/delta_eef_*`): an env declares what
     /// its Cartesian controller adds the delta to -- the measured pose (`"current"`) or the last
@@ -524,16 +527,15 @@ pub struct Actuator {
     pub reference: Option<Tolerant<Reference>>,
     /// The body part this actuator drives, when the role repeats across a body (`LEFT_ARM`,
     /// `RIGHT_ARM`, or any identifier both sides agree on): an identity key the resolver matches
-    /// on, never a value it checks. Keyword-only and omitted from the wire when unset; an opaque
-    /// actuator may not carry one.
+    /// on, never a value it checks. Omitted from the wire when unset; an opaque actuator may not
+    /// carry one.
     pub part: Option<String>,
     /// Optional addend applied after `scale` (`value * scale + offset`), a float or a per-axis
-    /// sequence like `scale`: the stand pose a joint-position target is expressed around. Keyword-
-    /// only.
+    /// sequence like `scale`: the stand pose a joint-position target is expressed around..
     pub offset: Option<AxisValue>,
     /// The axis names this actuator drives, `dim` of them in this side's own order. When a model
-    /// names labels the env actuator must name the same set; the model's output is then reordered
-    /// onto the env's axes by name. Keyword-only and omitted from the wire when unset; an opaque
+    /// names labels the env actuator must name the same set; the model's output is then
+    /// reordered onto the env's axes by name. Omitted from the wire when unset; an opaque
     /// actuator may not carry them.
     pub labels: Option<Vec<String>>,
 }
@@ -606,7 +608,7 @@ impl Action {
             clip: None,
         }
     }
-    /// Construct this value with Python’s field defaults.
+    /// Construct ordered action actuators without clipping.
     pub fn new(items: impl IntoIterator<Item = Actuator>) -> Self {
         Self {
             components: items.into_iter().collect(),
@@ -641,7 +643,7 @@ pub struct ImageTag {
     pub upside_down: bool,
     /// The body part this camera sits on, when the role repeats across a body (`"head"`,
     /// `"left_arm"`, ...). An identity key the resolver matches on, never a value it checks.
-    /// Keyword-only and omitted from the wire when unset.
+    /// Omitted from the wire when unset.
     pub part: Option<String>,
 }
 impl ImageTag {
@@ -653,7 +655,7 @@ impl ImageTag {
             part: None,
         }
     }
-    /// Construct this value with Python’s field defaults.
+    /// Construct a camera tag with HWC layout and upright orientation.
     pub fn new(role: impl Into<String>) -> Self {
         Self {
             role: role.into(),
@@ -690,23 +692,22 @@ pub struct StateTag {
     /// rather than silently overriding them.
     pub range: Option<(f64, f64)>,
     /// Coordinate frame this entry's values are expressed in, when the role is an absolute pose
-    /// (`proprio/eef_*`). Keyword-only and omitted from the wire when unset. A model that declares
-    /// a different one fails resolution; a model that declares one the env does not draws a
-    /// caution.
+    /// (`proprio/eef_*`). Omitted from the wire when unset. A model that declares a different
+    /// one fails resolution; a model that declares one the env does not draws a caution.
     pub frame: Option<Tolerant<Frame>>,
     /// Where this entry's numbers come from: `"sensed"` (a physical sensor or its simulated
     /// equivalent), `"estimated"` (a state estimator) or `"privileged"` (simulator truth with no
     /// hardware counterpart). Part of the leaf's identity, so an env may publish one role twice
     /// under two provenances; a model that declares one the env contradicts fails resolution.
-    /// Keyword-only and omitted from the wire when unset.
+    /// Omitted from the wire when unset.
     pub provenance: Option<Tolerant<Provenance>>,
     /// The body part this entry belongs to, when the role repeats across a body (`LEFT_ARM`,
     /// `RIGHT_ARM`, or any identifier both sides agree on). An identity key the resolver matches
-    /// on; see `ImageTag`. Keyword-only and omitted from the wire when unset.
+    /// on; see `ImageTag`. Omitted from the wire when unset.
     pub part: Option<String>,
-    /// The axis names of this entry in the order the env emits them, one per element of the space
-    /// leaf (checked at `join`). A model that names labels must name this same set; another order
-    /// is gathered by name. Keyword-only and omitted from the wire when unset.
+    /// The axis names of this entry in the order the env emits them, one per element of the
+    /// space leaf (checked at `join`). A model that names labels must name this same set;
+    /// another order is gathered by name. Omitted from the wire when unset.
     pub labels: Option<Vec<String>>,
 }
 impl StateTag {
@@ -721,7 +722,7 @@ impl StateTag {
             labels: None,
         }
     }
-    /// Construct this value with Python’s field defaults.
+    /// Construct a state tag with only its role declared.
     pub fn new(role: impl Into<String>) -> Self {
         Self {
             role: role.into(),
@@ -759,7 +760,7 @@ impl TextTag {
             role: String::new(),
         }
     }
-    /// Construct this value with Python’s field defaults.
+    /// Construct a role reference.
     pub fn new(role: impl Into<String>) -> Self {
         Self { role: role.into() }
     }
@@ -850,7 +851,7 @@ impl Split {
     fn empty() -> Self {
         Self { fields: Vec::new() }
     }
-    /// Construct this value with Python’s field defaults.
+    /// Construct a split with fields in the supplied order.
     pub fn new(items: impl IntoIterator<Item = Field>) -> Self {
         Self {
             fields: items.into_iter().collect(),

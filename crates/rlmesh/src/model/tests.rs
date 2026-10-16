@@ -275,8 +275,8 @@ async fn run_local_defaults_to_one_episode() {
     assert_eq!(report.episodes.len(), 1);
 }
 
-/// A run borrows the model, as Python's `Model.run` does: `on_close` fires
-/// only when the caller asks with `close_model(true)`.
+/// A run borrows the model: `on_close` fires only when the caller asks with
+/// `close_model(true)`.
 #[tokio::test]
 async fn run_local_borrows_the_model_unless_asked_to_close_it() {
     let bound = crate::binding::env::WireEnvServer::new(SmokeEnv::new())
@@ -313,8 +313,8 @@ async fn run_local_borrows_the_model_unless_asked_to_close_it() {
     server.abort();
 }
 
-/// `for_episodes(0)` runs nothing and never dials the env, like Python's
-/// `run(episodes=0)`; a mismatched seed count is refused before dialing.
+/// `for_episodes(0)` runs nothing and never dials the env; a mismatched seed
+/// count is refused before dialing.
 #[tokio::test]
 async fn run_local_zero_episodes_runs_nothing() {
     // Nothing listens on port 1: dialing would fail the run.

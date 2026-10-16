@@ -5,7 +5,7 @@ use serde_json::{Value as Json, json};
 
 pub(crate) mod set {
     use super::*;
-    /// Python’s `serialize` adapter operation.
+    /// Serialize this adapter to a value.
     pub fn serialize<S: serde::Serializer, E: Vocabulary>(
         v: &[Tolerant<E>],
         s: S,
@@ -16,7 +16,7 @@ pub(crate) mod set {
             v.serialize(s)
         }
     }
-    /// Python’s `deserialize` adapter operation.
+    /// Deserialize an adapter from a value.
     pub fn deserialize<'de, D: serde::Deserializer<'de>, E: Vocabulary>(
         d: D,
     ) -> std::result::Result<Vec<Tolerant<E>>, D::Error> {
@@ -34,7 +34,7 @@ pub(crate) mod set {
 }
 pub(crate) mod accept {
     use super::*;
-    /// Python’s `serialize` adapter operation.
+    /// Serialize this adapter to a value.
     pub fn serialize<S: serde::Serializer, E: Vocabulary>(
         v: &Option<Vec<Tolerant<E>>>,
         s: S,
@@ -44,7 +44,7 @@ pub(crate) mod accept {
             Some(v) => set::serialize(v, s),
         }
     }
-    /// Python’s `deserialize` adapter operation.
+    /// Deserialize an adapter from a value.
     pub fn deserialize<'de, D: serde::Deserializer<'de>, E: Vocabulary>(
         d: D,
     ) -> std::result::Result<Option<Vec<Tolerant<E>>>, D::Error> {
@@ -262,8 +262,8 @@ pub(crate) fn metadata(j: Json) -> Result<Metadata> {
         _ => Err(err("expected a metadata dictionary")),
     }
 }
-/// One JSON formatter across the facade and Python: sorted UTF-8 keys, compact
-/// separators, serde's finite numeric spelling, and signed zero retained.
+/// Canonical JSON formatting: sorted UTF-8 keys, compact separators, serde's
+/// finite numeric spelling, and signed zero retained.
 pub(crate) fn format_json(j: &Json) -> Result<String> {
     serde_json::to_string(&sorted(j.clone())).map_err(err)
 }

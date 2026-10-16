@@ -1,5 +1,4 @@
-//! [`EnvFactory`]: Python's `EnvFactory` base, with its class attributes as
-//! associated functions, and [`Variant`].
+//! Environment factories with type-level declarations, and catalog variants.
 
 use std::fmt;
 use std::time::Instant;
@@ -16,13 +15,11 @@ use crate::{
     ENV_RESET_OPTIONS_KEY, Error, InfoDict, Kwargs, Metadata, Result, ServeOptions, Value,
 };
 
-/// The most contract branches a factory may declare (Python's
-/// `_MAX_TAG_BRANCHES`).
+/// The most contract branches a factory may declare.
 const MAX_TAG_BRANCHES: usize = 8;
 
-/// One contract discriminant of a branched factory: Python's `tag_params`
-/// entry with what Python reads from `make`'s signature default and the
-/// declared `Param`'s choices (ENV-15).
+/// One contract discriminant of a branched factory, including its default
+/// value and allowed choices.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TagParam {
     /// The `make` keyword.
@@ -62,45 +59,44 @@ impl fmt::Debug for MadeEnv {
     }
 }
 
-/// Builds envs: Python's `EnvFactory`.
+/// Builds environments.
 ///
-/// Python's class attributes and classmethods are associated functions
-/// (ENV-14): override them on the type. Implement [`make`](Self::make); the
-/// provided [`EnvFactoryExt::make_env`] stamps what it returns (tags, branch,
-/// reset options), and every library path uses it.
+/// Override the associated functions to declare the factory's contract.
+/// Implement [`make`](Self::make); the provided [`EnvFactoryExt::make_env`]
+/// stamps what it returns (tags, branch, reset options), and every library
+/// path uses it.
 pub trait EnvFactory: Sized {
-    /// The contract's tags: Python's `tags` (default `None`).
+    /// The contract's tags (default `None`).
     fn tags() -> Option<EnvTags> {
         None
     }
 
-    /// The contract discriminants: Python's `tag_params` (default none).
+    /// The contract discriminants (default none).
     fn tag_params() -> Vec<TagParam> {
         Vec::new()
     }
 
-    /// The reserved reset-option keys this env wants on `reset`: Python's
-    /// `reset_options` (default none).
+    /// The reserved reset-option keys this env wants on `reset` (default
+    /// none).
     fn reset_options() -> Vec<String> {
         Vec::new()
     }
 
-    /// The workflow edition this env was authored against: Python's
-    /// `workflow_edition` (default `None`, floating).
+    /// The workflow edition this env was authored against (default `None`,
+    /// floating).
     fn workflow_edition() -> Option<String> {
         None
     }
 
-    /// The tags of one discriminant binding: Python's `tags_for(**params)`
-    /// (default [`tags`](Self::tags)). Override it only alongside
-    /// [`tag_params`](Self::tag_params).
+    /// The tags of one discriminant binding (default [`tags`](Self::tags)).
+    /// Override it only alongside [`tag_params`](Self::tag_params).
     fn tags_for(params: &Kwargs) -> Result<Option<EnvTags>> {
         let _ = params;
         Ok(Self::tags())
     }
 
-    /// The factory's named catalog: Python's optional
-    /// `enumerate_variants()`. `Ok(None)` (the default) is "not defined".
+    /// The factory's named catalog. `Ok(None)` (the default) is "not
+    /// defined".
     fn enumerate_variants() -> Result<Option<Vec<Variant>>> {
         Ok(None)
     }
@@ -127,8 +123,7 @@ mod sealed {
     impl<F: super::EnvFactory> Sealed for F {}
 }
 
-/// The keywords of Python's `EnvFactory.serve(address, *, num_envs=1,
-/// workflow_edition=None, **make_kwargs)`.
+/// Options for serving a factory's environments.
 #[derive(Clone, Debug)]
 pub struct EnvFactoryServeOptions {
     /// Lanes to make and serve (default 1; `<= 1` serves one env).
@@ -138,8 +133,8 @@ pub struct EnvFactoryServeOptions {
     pub workflow_edition: Option<String>,
     /// Keywords passed to `make`.
     pub make_kwargs: Kwargs,
-    /// Stops the serve as SIGINT does (R-18): drain, close the envs, then
-    /// the cancellation class. Already fired, it fails the call at once.
+    /// Stops the serve as SIGINT does: drain, close the envs, then the
+    /// cancellation class. Already fired, it fails the call at once.
     pub cancel: Option<crate::ext::CancelToken>,
 }
 
@@ -154,7 +149,7 @@ impl Default for EnvFactoryServeOptions {
     }
 }
 
-/// What every [`EnvFactory`] provides: Python's stamping `make`, `serve`.
+/// Construction, stamping and serving operations for every [`EnvFactory`].
 pub trait EnvFactoryExt: EnvFactory + sealed::Sealed {
     /// `make` with the kwargs bound (each discriminant's default applied;
     /// a value outside its choices is the ValueError class before `make`
@@ -183,9 +178,9 @@ pub trait EnvFactoryExt: EnvFactory + sealed::Sealed {
         stamp(made, tags, fragment)
     }
 
-    /// This factory type's describe envelope: Python's `EnvFactory.describe()`
-    /// classmethod. Best-effort: each build default-constructs a factory,
-    /// and a failed build or space read is an `env_spec` badge.
+    /// This factory type's describe envelope. Best-effort: each build
+    /// default-constructs a factory, and a failed build or space read is an
+    /// `env_spec` badge.
     fn describe() -> Result<Metadata>
     where
         Self: Default,
@@ -199,10 +194,10 @@ pub trait EnvFactoryExt: EnvFactory + sealed::Sealed {
         )
     }
 
-    /// Host this factory's env on `address`, blocking: Python's `serve`.
-    /// Runs the branch check and `prepare()`, makes one env (or `num_envs`
-    /// lanes), resolves the edition, publishes the describe envelope on the
-    /// handshake, and serves in the foreground. The factory is not closed.
+    /// Host this factory's env on `address`, blocking. Runs the branch check
+    /// and `prepare()`, makes one env (or `num_envs` lanes), resolves the
+    /// edition, publishes the describe envelope on the handshake, and serves
+    /// in the foreground. The factory is not closed.
     fn serve(&mut self, address: &str, options: EnvFactoryServeOptions) -> Result<()> {
         serve_host(self, address, options, &crate::describe::Host::rust())
     }
@@ -210,7 +205,7 @@ pub trait EnvFactoryExt: EnvFactory + sealed::Sealed {
     /// The async twin of [`serve`](Self::serve): the pre-serve hooks run on
     /// the polling thread inside the first poll, then every lane serves from
     /// library threads; dropping the future stops the server and closes the
-    /// envs it made (ENV-29, ENV-32).
+    /// envs it made.
     fn serve_async(
         &mut self,
         address: &str,
@@ -493,8 +488,8 @@ pub(crate) fn branches<F: EnvFactory>() -> Vec<Kwargs> {
     branches
 }
 
-/// The branch table's checks (Python's `_check_tag_params`), each a
-/// TypeError. Rust cannot see whether `tags_for` was overridden (ENV-16).
+/// The branch table's checks, each a TypeError. Rust cannot see whether
+/// `tags_for` was overridden.
 pub(crate) fn check_branch_table<F: EnvFactory>() -> Result<()> {
     let params = F::tag_params();
     if params.is_empty() {
@@ -557,8 +552,7 @@ fn kwargs_repr(binding: &Kwargs) -> String {
         .join(", ")
 }
 
-/// Stamp a made env: tags (unvalidated, as Python's `validate=False`) and a
-/// metadata fragment.
+/// Stamp a made env: tags (unvalidated) and a metadata fragment.
 fn stamp(made: MadeEnv, tags: Option<EnvTags>, fragment: Metadata) -> Result<MadeEnv> {
     if tags.is_none() && fragment.is_empty() {
         return Ok(made);
@@ -631,14 +625,14 @@ impl VectorEnv for StampedVector {
     }
 }
 
-/// Python's `**metadata` of `Variant(id, params, /, **metadata)`.
+/// Options carrying a variant's metadata.
 #[derive(Clone, Debug, Default)]
 pub struct VariantOptions {
     /// Open display bag; `name` is the title a dashboard renders.
     pub metadata: Kwargs,
 }
 
-/// One concrete sub-environment in a factory's catalog: Python's `Variant`.
+/// One concrete sub-environment in a factory's catalog.
 #[derive(Clone, PartialEq)]
 pub struct Variant {
     /// The factory-unique handle.
@@ -650,7 +644,7 @@ pub struct Variant {
 }
 
 impl Variant {
-    /// Python's `Variant(id, params, **metadata)`.
+    /// Construct a catalog variant with its id, parameters and metadata.
     pub fn new(id: impl Into<String>, params: Kwargs, options: VariantOptions) -> Variant {
         Variant {
             id: id.into(),
@@ -660,7 +654,7 @@ impl Variant {
     }
 }
 
-/// Python's `repr`: `Variant(id='a', params={'task': 1}, metadata={})`.
+/// Text representation: `Variant(id='a', params={'task': 1}, metadata={})`.
 impl fmt::Display for Variant {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -679,7 +673,7 @@ impl fmt::Debug for Variant {
     }
 }
 
-/// A value as Python's `repr` prints it.
+/// Format a value with quoted strings and explicit kind spellings.
 pub(crate) fn py_repr(value: &Value) -> String {
     match value {
         Value::None => "None".to_string(),

@@ -1,5 +1,5 @@
-//! The describe envelope of a served env (ENV-13): the env-only envelope a
-//! server publishes on its handshake when asked to.
+//! The describe envelope of a served env: the env-only envelope a server
+//! publishes on its handshake when asked to.
 
 use rlmesh_adapters::v1::{ENV_METADATA_KEY, build_describe_envelope, space_spec_to_json};
 use serde_json::{Value as Json, json};

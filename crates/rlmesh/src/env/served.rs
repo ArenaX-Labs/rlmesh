@@ -7,10 +7,9 @@ use super::factory::MadeEnv;
 use super::{Env, VectorEnv};
 use crate::{Error, Result};
 
-/// An env already built from the described factory (the one a server
-/// hosts): Python's `describe_json(served_env=)`, an env, a vector env, or a
-/// list of lane envs, of which only lane 0 is read. Describe reads its spaces
-/// and never closes it.
+/// An env already built from the described factory: an env, a vector env, or
+/// a list of lane envs, of which only lane 0 is read. Describe reads its
+/// spaces and never closes it.
 #[non_exhaustive]
 pub enum ServedEnv<'a> {
     /// One env.

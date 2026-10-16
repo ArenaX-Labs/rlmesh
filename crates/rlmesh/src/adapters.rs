@@ -26,67 +26,67 @@ pub use tree::*;
 pub use values::*;
 pub use vocabulary::*;
 
-/// The shared Python spelling or ordered vocabulary.
+/// The canonical spelling or ordered vocabulary.
 pub const ENV_METADATA_KEY: &str = core::ENV_METADATA_KEY;
-/// The shared Python spelling or ordered vocabulary.
+/// The canonical spelling or ordered vocabulary.
 pub const MODEL_METADATA_KEY: &str = core::MODEL_METADATA_KEY;
-/// The shared Python spelling or ordered vocabulary.
+/// The canonical spelling or ordered vocabulary.
 pub const ENV_BRANCH_METADATA_KEY: &str = core::ENV_BRANCH_METADATA_KEY;
-/// The shared Python spelling or ordered vocabulary.
+/// The canonical spelling or ordered vocabulary.
 pub const IMAGE_PRIMARY: &str = "image/primary";
-/// The shared Python spelling or ordered vocabulary.
+/// The canonical spelling or ordered vocabulary.
 pub const IMAGE_SECONDARY: &str = "image/secondary";
-/// The shared Python spelling or ordered vocabulary.
+/// The canonical spelling or ordered vocabulary.
 pub const INSTRUCTION: &str = "text/instruction";
-/// The shared Python spelling or ordered vocabulary.
+/// The canonical spelling or ordered vocabulary.
 pub const JOINT_POS: &str = "proprio/joint_pos";
-/// The shared Python spelling or ordered vocabulary.
+/// The canonical spelling or ordered vocabulary.
 pub const JOINT_VEL: &str = "proprio/joint_vel";
-/// The shared Python spelling or ordered vocabulary.
+/// The canonical spelling or ordered vocabulary.
 pub const ACTION_JOINT_POS: &str = "action/joint_pos";
-/// The shared Python spelling or ordered vocabulary.
+/// The canonical spelling or ordered vocabulary.
 pub const ACTION_JOINT_VEL: &str = "action/joint_vel";
-/// The shared Python spelling or ordered vocabulary.
+/// The canonical spelling or ordered vocabulary.
 pub const IMAGE_WRIST: &str = "image/wrist";
-/// The shared Python spelling or ordered vocabulary.
+/// The canonical spelling or ordered vocabulary.
 pub const EEF_POS: &str = "proprio/eef_pos";
-/// The shared Python spelling or ordered vocabulary.
+/// The canonical spelling or ordered vocabulary.
 pub const EEF_ROT: &str = "proprio/eef_rot";
-/// The shared Python spelling or ordered vocabulary.
+/// The canonical spelling or ordered vocabulary.
 pub const GRIPPER_POS: &str = "proprio/gripper";
-/// The shared Python spelling or ordered vocabulary.
+/// The canonical spelling or ordered vocabulary.
 pub const EEF_WRENCH: &str = "proprio/eef_wrench";
-/// The shared Python spelling or ordered vocabulary.
+/// The canonical spelling or ordered vocabulary.
 pub const ACTION_DELTA_POS: &str = "action/delta_eef_pos";
-/// The shared Python spelling or ordered vocabulary.
+/// The canonical spelling or ordered vocabulary.
 pub const ACTION_DELTA_ROT: &str = "action/delta_eef_rot";
-/// The shared Python spelling or ordered vocabulary.
+/// The canonical spelling or ordered vocabulary.
 pub const ACTION_GRIPPER: &str = "action/gripper";
-/// The shared Python spelling or ordered vocabulary.
+/// The canonical spelling or ordered vocabulary.
 pub const ACTION_EEF_POS: &str = "action/eef_pos";
-/// The shared Python spelling or ordered vocabulary.
+/// The canonical spelling or ordered vocabulary.
 pub const ACTION_EEF_ROT: &str = "action/eef_rot";
-/// The shared Python spelling or ordered vocabulary.
+/// The canonical spelling or ordered vocabulary.
 pub const BASE_ANG_VEL: &str = "proprio/base_ang_vel";
-/// The shared Python spelling or ordered vocabulary.
+/// The canonical spelling or ordered vocabulary.
 pub const BASE_ROT: &str = "proprio/base_rot";
-/// The shared Python spelling or ordered vocabulary.
+/// The canonical spelling or ordered vocabulary.
 pub const COMMAND_BASE_VEL: &str = "command/base_vel";
-/// The shared Python spelling or ordered vocabulary.
+/// The canonical spelling or ordered vocabulary.
 pub const LEFT_ARM: &str = "left_arm";
-/// The shared Python spelling or ordered vocabulary.
+/// The canonical spelling or ordered vocabulary.
 pub const RIGHT_ARM: &str = "right_arm";
-/// The shared Python spelling or ordered vocabulary.
+/// The canonical spelling or ordered vocabulary.
 pub const HEAD: &str = "head";
-/// The shared Python spelling or ordered vocabulary.
+/// The canonical spelling or ordered vocabulary.
 pub const TORSO: &str = "torso";
-/// The shared Python spelling or ordered vocabulary.
+/// The canonical spelling or ordered vocabulary.
 pub const BASE: &str = "base";
-/// The shared Python spelling or ordered vocabulary.
+/// The canonical spelling or ordered vocabulary.
 pub const LEFT_LEG: &str = "left_leg";
-/// The shared Python spelling or ordered vocabulary.
+/// The canonical spelling or ordered vocabulary.
 pub const RIGHT_LEG: &str = "right_leg";
-/// The shared Python spelling or ordered vocabulary.
+/// The canonical spelling or ordered vocabulary.
 pub const PARTS: &[&str] = &[LEFT_ARM, RIGHT_ARM, HEAD, TORSO, BASE, LEFT_LEG, RIGHT_LEG];
 
 /// A validated immutable model input tree and action layout.
@@ -96,7 +96,8 @@ pub struct ModelSpec {
     output: Action,
 }
 impl ModelSpec {
-    /// Construct this value with Python’s field defaults.
+    /// Construct and validate a model spec from its input and action
+    /// declarations.
     pub fn new(input: impl Into<InputNode>, output: Action) -> Result<Self> {
         let mut input = input.into();
         let mut output = output;
@@ -190,7 +191,7 @@ pub struct EnvTags {
     action: Action,
 }
 impl EnvTags {
-    /// Construct this value with Python’s field defaults.
+    /// Construct and validate environment observation and action tags.
     pub fn new(observation: impl Into<ObsNode>, action: Action) -> Result<Self> {
         let mut observation = observation.into();
         let mut action = action;

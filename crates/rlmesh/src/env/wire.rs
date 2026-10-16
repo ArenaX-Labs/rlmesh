@@ -821,7 +821,7 @@ fn protocol_error_to_env_error(error: impl ToString) -> EnvError {
 /// when a reset restarts several lanes (see
 /// [`rlmesh_runtime::reset_options_for`]), but each lane here is a scalar env
 /// that gets its own `reset`: handing it the whole list leaves
-/// `rlmesh.trial_index(options)` unable to read an ordinal. Narrow the list to
+/// `trial_index(options, None)` unable to read an ordinal. Narrow the list to
 /// this lane's element; every other key rides through unchanged. A list that
 /// does not cover the lanes it was sent for is a malformed request, not a lane
 /// to silently leave unsequenced.

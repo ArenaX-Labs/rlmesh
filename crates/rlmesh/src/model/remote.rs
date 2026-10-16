@@ -28,8 +28,8 @@ async fn bounded<T>(
     }
 }
 
-/// The per-env served-model client a session drives (R-25: binding
-/// plumbing, exempt from semver; the shared surface is [`RemoteModel`]).
+/// The per-env served-model client a session drives (binding plumbing,
+/// exempt from semver; the shared surface is [`RemoteModel`]).
 ///
 /// Bound to one env contract (one route): drive it with
 /// [`reset`](ModelClient::reset) / [`predict`](ModelClient::predict), then
@@ -83,7 +83,7 @@ pub struct ModelClient {
     /// This client's env-step counter: one per `predict` call (each call is one
     /// env step from the caller's side), stamped on rows and requests.
     step: i64,
-    /// Bound on each `predict` and the route close (RMT-4).
+    /// Bound on each `predict` and the route close.
     request_timeout: Option<Duration>,
 }
 
@@ -641,9 +641,8 @@ mod tests {
     // structurally in predict() (no std::mem::take before the send).
 }
 
-/// The keywords of Python's `RemoteModel(address=None, *, ...)`: the same as
-/// [`RemoteEnvOptions`](crate::RemoteEnvOptions) without `workflow_edition`
-/// (RMT-3).
+/// Options for connecting to a served model: the same as
+/// [`RemoteEnvOptions`](crate::RemoteEnvOptions) without `workflow_edition`.
 #[derive(Clone, Debug, Default)]
 pub struct RemoteModelOptions {
     /// The endpoint (`tcp://host:port`, `host:port` or `unix:///path`).
@@ -714,7 +713,7 @@ struct RemoteModelInner {
     request_timeout: Option<Duration>,
 }
 
-/// A served model (policy) to bind envs to: Python's `RemoteModel`.
+/// A served model (policy) to bind envs to.
 ///
 /// Construction does no I/O: it checks the address and timeouts, and
 /// [`session`](RemoteModel::session) dials. Clones share the handle; it is
@@ -764,11 +763,11 @@ impl RemoteModel {
         self.0.request_timeout
     }
 
-    /// Bind this served model to `env` and dial it: Python's
-    /// `RemoteModel.session`. `env` is an address (dialed now and owned by
-    /// the session), an [`EnvServer`](crate::EnvServer) (dialed at first env
-    /// use), or a borrowed [`RemoteEnv`](crate::RemoteEnv); a local env is
-    /// the TypeError class and a multi-lane target the ValueError class.
+    /// Bind this served model to `env` and dial it. `env` is an address
+    /// (dialed now and owned by the session), an
+    /// [`EnvServer`](crate::EnvServer) (dialed at first env use), or a
+    /// borrowed [`RemoteEnv`](crate::RemoteEnv); a local env is the
+    /// TypeError class and a multi-lane target the ValueError class.
     /// `trust_entrypoints` set is the ValueError class (the served model
     /// owns its adapter).
     pub fn session<'a>(

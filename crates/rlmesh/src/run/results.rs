@@ -1,27 +1,27 @@
-//! A run's results with Python's names and units (RUN-10): `RunResult`,
-//! `EpisodeResult`, `TelemetryRow` and the per-step `StepEvent`.
+//! A run's results: `RunResult`, `EpisodeResult`, `TelemetryRow` and the
+//! per-step `StepEvent`.
 
 use std::fmt;
 
 use crate::env::factory::{py_float, py_repr, py_str};
 use crate::{InfoDict, Result, Value};
 
-/// Python's `repr` of an optional float.
+/// Format an optional float, using `None` when absent.
 fn py_opt_float(value: Option<f64>) -> String {
     value.map_or_else(|| "None".to_string(), py_float)
 }
 
-/// Python's `repr` of an optional int.
+/// Format an optional integer, using `None` when absent.
 fn py_opt_int(value: Option<i64>) -> String {
     value.map_or_else(|| "None".to_string(), |value| value.to_string())
 }
 
-/// Python's `repr` of a bool.
+/// Format a boolean as `True` or `False`.
 fn py_bool(value: bool) -> &'static str {
     if value { "True" } else { "False" }
 }
 
-/// Python's `f"{value:.{digits}f}"`.
+/// Format a float with a fixed number of decimal places.
 fn py_fixed(value: f64, digits: usize) -> String {
     if value.is_nan() {
         "nan".to_string()
@@ -30,7 +30,7 @@ fn py_fixed(value: f64, digits: usize) -> String {
     }
 }
 
-/// The outcome of one episode: Python's `EpisodeResult`.
+/// The outcome of one episode.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct EpisodeResult {
     /// 0-based episode index within the run.
@@ -79,7 +79,7 @@ impl fmt::Display for EpisodeResult {
     }
 }
 
-/// One aggregated metric series of a run: Python's `TelemetryRow`.
+/// One aggregated metric series of a run.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TelemetryRow {
     /// The measured operation (`model.predict`, `env.step`, ...).
@@ -121,7 +121,7 @@ impl fmt::Display for TelemetryRow {
     }
 }
 
-/// The result of a run: Python's `RunResult`.
+/// The result of a run.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RunResult {
     /// Every completed episode.
@@ -169,8 +169,7 @@ impl RunResult {
         Some(successes as f64 / self.episodes.len() as f64)
     }
 
-    /// The telemetry rows as an aligned text table: Python's
-    /// `format_telemetry()`.
+    /// The telemetry rows as an aligned text table.
     pub fn format_telemetry(&self) -> String {
         if self.telemetry.is_empty() {
             return "(no telemetry recorded)".to_string();
@@ -239,7 +238,7 @@ impl fmt::Display for RunResult {
 }
 
 /// One env step of a run, passed to
-/// [`RunHooks::on_step`](crate::RunHooks::on_step): Python's `StepEvent`.
+/// [`RunHooks::on_step`](crate::RunHooks::on_step).
 #[derive(Clone)]
 pub struct StepEvent {
     /// 0-based episode index (equals [`EpisodeResult::index`]).
@@ -250,7 +249,7 @@ pub struct StepEvent {
     pub step: i64,
     /// The observation the action was predicted from (pre-step).
     pub observation: Value,
-    /// The env-ready action applied to the env (never absent, RUN-21).
+    /// The env-ready action applied to the env (never absent).
     pub action: Value,
     /// The step's reward.
     pub reward: f64,
@@ -295,8 +294,7 @@ impl fmt::Display for StepEvent {
     }
 }
 
-/// The facade result of a native run's report (RUN-10: 0-based index,
-/// seconds, Python's field names).
+/// The facade result of a native run's report (0-based index, seconds).
 pub(crate) fn from_report(report: &rlmesh_runtime::RuntimeReport) -> RunResult {
     RunResult {
         advisories: report

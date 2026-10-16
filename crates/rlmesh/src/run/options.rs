@@ -1,5 +1,4 @@
-//! The keyword arguments of `run`, `session` and `Session.run` (RUN-1, RUN-2),
-//! with Python's names, defaults and checks (RUN-5).
+//! Options for runs and sessions, with their defaults and validation rules.
 
 use std::fmt;
 use std::time::Duration;
@@ -7,10 +6,10 @@ use std::time::Duration;
 use super::RunHooks;
 use crate::{Error, Result};
 
-/// The execution-horizon ceiling: Python's `MAX_EXECUTION_HORIZON`.
+/// The execution-horizon ceiling.
 pub(crate) const MAX_EXECUTION_HORIZON: u32 = 1024;
 
-/// The keywords of `rlmesh.run` and `Model.run`.
+/// Options for [`run`](crate::run) and [`Model::run`](crate::Model::run).
 ///
 /// Build with `..Default::default()`. Adding an options field is a minor
 /// change by project policy.
@@ -23,14 +22,13 @@ pub struct RunOptions<'h> {
     pub seeds: Option<Vec<i64>>,
     /// Truncate an episode after this many steps (at least 1).
     pub max_episode_steps: Option<u64>,
-    /// Truncate an episode after this wall time: Python's
-    /// `max_episode_seconds` (must be positive).
+    /// Truncate an episode after this wall time (must be positive).
     pub max_episode: Option<Duration>,
     /// Observer callbacks, borrowed for the call.
     pub hooks: Option<&'h mut dyn RunHooks>,
     /// Override each text input of a spec’d model for this call.
     pub instruction: Option<String>,
-    /// Live viewer; a local `Model::run` refuses a set view (RUN-4).
+    /// Live viewer; a local `Model::run` refuses a set view.
     pub view: Option<crate::View>,
     /// Shut the caller's env down when the run ends.
     pub close_env: bool,
@@ -47,7 +45,7 @@ pub struct RunOptions<'h> {
     pub workflow_edition: Option<String>,
     /// The first trial ordinal; episode `i` walks `trial_index_base + i`.
     pub trial_index_base: u64,
-    /// Cancels the run as Ctrl-C does in Python (R-18).
+    /// Cancels the run.
     pub cancel: Option<crate::ext::CancelToken>,
 }
 
@@ -92,7 +90,7 @@ impl fmt::Debug for RunOptions<'_> {
     }
 }
 
-/// The keywords of `rlmesh.session` and `Model.session`.
+/// Options for [`session`](crate::session) and [`Model::session`](crate::Model::session).
 #[derive(Clone, Debug)]
 pub struct SessionOptions {
     /// Override each text input of a spec’d model for this call.
@@ -108,7 +106,7 @@ pub struct SessionOptions {
     pub execution_horizon: u32,
     /// The workflow edition this session declares.
     pub workflow_edition: Option<String>,
-    /// The session's cancel token (R-18): every session call watches it, and
+    /// The session's cancel token: every session call watches it, and
     /// [`Session::cancel_handle`](crate::Session::cancel_handle) returns it.
     pub cancel: Option<crate::ext::CancelToken>,
 }
@@ -142,7 +140,7 @@ pub struct SessionRunOptions<'h> {
     pub hooks: Option<&'h mut dyn RunHooks>,
     /// The first trial ordinal.
     pub trial_index_base: u64,
-    /// Cancels this call (R-18), beside the session's own token.
+    /// Cancels this call, beside the session's own token.
     pub cancel: Option<crate::ext::CancelToken>,
 }
 
@@ -160,7 +158,7 @@ impl fmt::Debug for SessionRunOptions<'_> {
     }
 }
 
-/// Python's `resolve_episode_budget`.
+/// Resolve the episode count from the explicit budget and seeds.
 pub(crate) fn episode_budget(episodes: Option<u64>, seeds: Option<&[i64]>) -> Result<u64> {
     match (episodes, seeds) {
         (None, Some(seeds)) => Ok(seeds.len() as u64),

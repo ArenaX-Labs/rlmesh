@@ -1,5 +1,5 @@
-//! Space values as [`Value`]s (SPC-5, SPC-10): the wire `SpaceValue` a space
-//! samples and checks, read and written against its spec.
+//! Space values as [`Value`]s: the wire `SpaceValue` a space samples and
+//! checks, read and written against its spec.
 //!
 //! Box → `Tensor` (shape `()` too), Discrete → `Int`, Dict → dict in the
 //! space's declaration order, MultiBinary / MultiDiscrete → `Tensor`, Text →
@@ -106,8 +106,8 @@ fn resolved(dtype: CoreDType, default: CoreDType) -> CoreDType {
     }
 }
 
-/// Whether `value` is a member of `spec` (Python's `Space.contains`): it
-/// encodes as Python's native encoder does and then conforms, range included.
+/// Whether `value` encodes against `spec` and conforms to it, including its
+/// range.
 pub(crate) fn space_contains(spec: &WireSpec, value: &Value) -> bool {
     shapes_match(value, spec)
         && value_to_space(spec, value)
@@ -158,7 +158,7 @@ fn input_shape(value: &Value) -> Option<Vec<i64>> {
     }
 }
 
-/// Encode `value` as a value of `spec`, rejecting structural deviations (SPC-5).
+/// Encode `value` as a value of `spec`, rejecting structural deviations.
 pub(crate) fn value_to_space(spec: &WireSpec, value: &Value) -> Result<SpaceValue> {
     let encoded = value_to_space_unchecked(spec, value)?;
     if let rlmesh_spaces::Conformance::Structural(err) = rlmesh_spaces::conform(spec, &encoded) {
@@ -324,9 +324,9 @@ fn flatten<'a>(value: &'a Value, out: &mut Vec<&'a Value>) -> Result<()> {
     }
 }
 
-/// One element in `dtype`, as Python's `pack_scalar_bytes`: integer dtypes
-/// take `Int` or `Bool` in range, never `Float`; `bool` takes any number,
-/// true when nonzero; float dtypes take any number, rounded to the dtype.
+/// One element in `dtype`: integer dtypes take `Int` or `Bool` in range,
+/// never `Float`; `bool` takes any number, true when nonzero; float dtypes
+/// take any number, rounded to the dtype.
 fn pack(value: &Value, dtype: CoreDType, out: &mut Vec<u8>) -> Result<()> {
     let refused = || {
         Error::Type(format!(

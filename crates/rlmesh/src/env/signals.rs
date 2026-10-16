@@ -1,4 +1,4 @@
-//! ENV-11's signal handling for a foreground `serve()`.
+//! Signal handling for a foreground `serve()`.
 //!
 //! A native foreground serve saves the process's SIGINT and SIGTERM
 //! dispositions on entry and restores both when it returns, by any path, so

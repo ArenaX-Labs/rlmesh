@@ -1,4 +1,4 @@
-//! Workflow editions: which declaration a participant runs at (COR-6, D-7).
+//! Workflow editions: which declaration a participant runs at.
 //!
 //! A workflow edition is a sticky declaration: a participant states the
 //! edition it was authored against and keeps it until its author bumps it.
@@ -15,8 +15,7 @@
 //! A blank value declares nothing and falls through; a set-but-blank
 //! environment variable stops resolution, floats, and does not warn. The
 //! winner is validated and trimmed; an edition this build cannot run is the
-//! ValueError class. Rust, C and C++ read no project file; Python adds its
-//! `pyproject.toml` rung after the type's declaration.
+//! ValueError class. No project file is read.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -26,9 +25,8 @@ use crate::{Error, Result};
 /// The environment variable holding the process-wide declaration.
 pub(crate) const WORKFLOW_EDITION_ENV_VAR: &str = "RLMESH_WORKFLOW_EDITION";
 
-/// The bare `YYYY.MM` workflow edition this build runs at: the value to paste
-/// into a declaration, the same on every build of that edition. Python's
-/// `rlmesh.current_workflow_edition()`.
+/// The bare `YYYY.MM` workflow edition this build runs at: the value to
+/// paste into a declaration, the same on every build of that edition.
 ///
 /// A bare base selects whichever spelling of it both sides offer: the sealed
 /// name on a release, this build's cohort (what
@@ -82,8 +80,8 @@ fn nonblank(value: Option<&str>) -> Option<&str> {
     value.filter(|value| !value.trim().is_empty())
 }
 
-/// Rungs 1 to 4, without warning. The binding layers Python's project-file
-/// rung on [`EditionResolution::Undeclared`].
+/// Resolve the call, environment, peer and type declarations, without
+/// warning.
 pub fn resolve_rungs(sources: EditionSources<'_>) -> Result<EditionResolution> {
     if let Some(call) = nonblank(sources.call) {
         return validate_workflow_edition(call).map(EditionResolution::Declared);
@@ -121,7 +119,7 @@ pub(crate) fn resolve_native(
     Ok(resolution.into_declared())
 }
 
-/// The native float warning (COR-7).
+/// The native float warning.
 fn warn_floating() -> Result<()> {
     let edition = current_workflow_edition();
     warn(

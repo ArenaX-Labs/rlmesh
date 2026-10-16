@@ -41,7 +41,7 @@ pub struct Reader {
     roles: Vec<String>,
 }
 impl Reader {
-    /// Construct this value with Python’s field defaults.
+    /// Construct a reader with its resolved adapter and roles.
     pub fn new(adapter: a::Adapter, roles: Vec<String>) -> Self {
         Self { adapter, roles }
     }
@@ -143,7 +143,7 @@ pub struct RenderFn<'a> {
     call: Box<dyn FnMut() -> Result<Value> + 'a>,
 }
 impl<'a> RenderFn<'a> {
-    /// Construct this value with Python’s field defaults.
+    /// Wrap a render callback with a unique identity.
     pub fn new(f: impl FnMut() -> Result<Value> + 'a) -> Self {
         Self {
             id: NEXT_RENDER.fetch_add(1, Ordering::Relaxed),
@@ -174,11 +174,11 @@ impl fmt::Debug for RenderFn<'_> {
 /// Image roles and the render source reachable through one env or context.
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub struct FrameSources<'a> {
-    /// The `roles` field, with Python’s meaning and default.
+    /// Image roles reachable through this environment, in declaration order.
     pub roles: Vec<String>,
-    /// The `render_label` field, with Python’s meaning and default.
+    /// The render source's label, when a render source is available.
     pub render_label: Option<String>,
-    /// The `render` field, with Python’s meaning and default.
+    /// The render callback, when available.
     pub render: Option<RenderFn<'a>>,
 }
 impl FrameSources<'_> {

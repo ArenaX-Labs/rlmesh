@@ -1,6 +1,5 @@
-/* The spaces C API, Python's rlmesh.spaces: build, seed, sample and check a
- * Dict of a Box and a Discrete, read typed bounds back, and hit the error
- * paths. Exits nonzero on the first failed check. */
+/* The spaces C API: build, seed, sample and check a Dict of a Box and a Discrete, read
+ * typed bounds back, and hit the error paths. Exits nonzero on the first failed check. */
 #include <math.h>
 #include <rlmesh.h>
 #include <stdio.h>
@@ -21,7 +20,7 @@ static int str_eq(RLMeshStr s, const char* expected) {
   return s.len == strlen(expected) && memcmp(s.data, expected, s.len) == 0;
 }
 
-/* SPC-5 accepts facade Values that the strict wire validator rejects. */
+/* The space encoder accepts facade Values that the strict wire validator rejects. */
 static void check_contains_acceptance(void) {
   RLMeshDiscreteOptions options = RLMESH_DISCRETE_OPTIONS_INIT;
   options.start = 2;
@@ -69,7 +68,7 @@ static void check_contains_acceptance(void) {
   rlmesh_space_free(discrete);
 }
 
-/* SPC-10/11/13: sampling follows the spec and keys carry their byte lengths. */
+/* Sampling follows the spec and keys carry their byte lengths. */
 static void check_dict_key_bytes(void) {
   const char embedded[] = {'k', '\0', 'v'};
   const RLMeshStr keys[] = {{embedded, sizeof(embedded)}, {"k", 1}};
@@ -246,7 +245,7 @@ int main(void) {
   CHECK(rlmesh_discrete_n(pos, &value) == RLMESH_ERR_TYPE);
   CHECK(rlmesh_discrete_start(id, &value) == RLMESH_OK && value == 1);
 
-  /* Unbounded on any dtype; repr is Python's. */
+  /* Unbounded on any dtype; inspect the text representation. */
   RLMeshBox* open = NULL;
   bopt.dtype = RLMESH_DTYPE_INT64;
   CHECK(rlmesh_box_new(rlmesh_bound_float(-INFINITY), rlmesh_bound_float(INFINITY), shape, 1, &bopt,

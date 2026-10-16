@@ -1,4 +1,4 @@
-//! A borrowed local env behind a `'static` stand-in (RUN-25).
+//! A borrowed local env behind a `'static` stand-in.
 //!
 //! The native driver and an env server need `'static` envs, and a run holds
 //! only `&'a mut` of the caller's. The stand-in keeps the env's members read

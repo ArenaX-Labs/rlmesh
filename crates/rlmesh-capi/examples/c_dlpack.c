@@ -1,4 +1,4 @@
-/* ABI 5 / SPC-19: versioned CPU DLPack and success-only ownership transfer. */
+/* ABI 5: versioned CPU DLPack and success-only ownership transfer. */
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>

@@ -1,10 +1,10 @@
-//! Warnings: Python's `warnings.warn` with rlmesh's categories (R-23).
+//! Warnings with RLMesh's categories.
 //!
 //! A warning goes to the process-wide handler installed with
-//! [`set_warning_handler`], or by default to stderr as one line,
-//! `rlmesh: <Category>: <message>`, each distinct category and message once
-//! per process. A handler that fails aborts the operation that warned, which
-//! returns that error: the native form of Python's `-W error`.
+//! [`set_warning_handler`], or by default to stderr as one line, `rlmesh:
+//! <Category>: <message>`, each distinct category and message once per
+//! process. A handler that fails aborts the operation that warned, which
+//! returns that error.
 
 use std::collections::HashSet;
 use std::fmt;
@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use crate::Result;
 
-/// A warning category: Python's warning classes.
+/// A warning category.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum WarningCategory {
@@ -25,7 +25,7 @@ pub enum WarningCategory {
 }
 
 impl WarningCategory {
-    /// Python's class name (`"WorkflowEditionWarning"`).
+    /// The class name (`"WorkflowEditionWarning"`).
     pub fn name(self) -> &'static str {
         match self {
             WarningCategory::UserWarning => "UserWarning",
@@ -34,8 +34,8 @@ impl WarningCategory {
         }
     }
 
-    /// Python's `issubclass(self, other)`: reflexive, and
-    /// `WorkflowEditionWarning` is a `UserWarning`.
+    /// Class inheritance test: reflexive, and `WorkflowEditionWarning` is a
+    /// `UserWarning`.
     pub fn is_subclass_of(self, other: WarningCategory) -> bool {
         self == other
             || (self == WarningCategory::WorkflowEditionWarning

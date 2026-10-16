@@ -10,8 +10,8 @@ use rlmesh_spaces::{BoxBounds, DType as CoreDType};
 use super::{Space, SpaceSpec, space_newtype};
 use crate::{DType, Error, Result};
 
-/// One Box bound: Python's `float | int | "inf"` (`f64::INFINITY` is
-/// `"inf"`). Integers stay exact; `From` each primitive picks the variant.
+/// One Box bound: a float, an integer, or infinity (`f64::INFINITY`).
+/// Integers stay exact; `From` each primitive picks the variant.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum Bound {
@@ -91,7 +91,7 @@ pub enum BoxBound {
     Elementwise(Vec<Bound>),
 }
 
-/// How a Box stores its bounds: Python's `bounds_kind` strings.
+/// How a Box stores its bounds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum BoundsKind {
@@ -108,7 +108,7 @@ pub enum BoundsKind {
 }
 
 impl BoundsKind {
-    /// Python's spelling (`"typed_uniform"`).
+    /// The canonical spelling (`"typed_uniform"`).
     pub fn as_str(self) -> &'static str {
         match self {
             BoundsKind::Unbounded => "unbounded",
@@ -141,7 +141,7 @@ impl Default for BoxOptions {
     }
 }
 
-/// A box of numbers in `[low, high]`: Python's `rlmesh.spaces.Box`.
+/// A box of numbers in `[low, high]`.
 #[derive(Clone)]
 #[repr(transparent)]
 pub struct Box(Space);
@@ -241,7 +241,7 @@ fn typed_bound(scalar: Scalar, dtype: CoreDType) -> Bound {
     }
 }
 
-/// Build a Box spec by Python's rules (`box_space_spec`).
+/// Build a Box spec, validating shape, dtype and bounds.
 pub(crate) fn box_spec(
     low: Bound,
     high: Bound,
@@ -294,8 +294,8 @@ pub(crate) fn box_spec(
         .map_err(|err| Error::invalid_argument(err.to_string()))
 }
 
-/// Build a per-element Box spec (the C/C++ `ext` builders, SPC-22): each
-/// pair follows `box_spec`'s rules; all pairs must agree on float vs typed.
+/// Build a per-element Box spec (the C/C++ `ext` builders): each pair
+/// follows `box_spec`'s rules; all pairs must agree on float vs typed.
 pub(crate) fn box_elementwise_spec(
     low: &[Bound],
     high: &[Bound],

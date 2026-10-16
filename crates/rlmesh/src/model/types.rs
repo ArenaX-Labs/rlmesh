@@ -20,19 +20,19 @@ pub struct EpisodeInfo {
     pub env_id: String,
 }
 
-/// The per-predict sampling seed: a reproducible mix of the episode's reset seed
-/// and the re-plan ordinal within that episode.
+/// The per-predict sampling seed: a reproducible mix of the episode's reset
+/// seed and the re-plan ordinal within that episode.
 ///
 /// A stochastic policy seeded once per episode cannot be reproduced under
-/// interleaving — another episode's forward advances the same global generators
-/// between two of ours. Deriving a fresh seed per predict from `(episode_seed,
-/// predict_index)` makes each forward reproducible on its own, independent of
-/// what ran between. The SDK stamps the result on the predict context as
-/// `predict_seed`; the same function is exported to Python as
-/// `rlmesh.predict_seed`, so a model can derive it itself.
+/// interleaving — another episode's forward advances the same global
+/// generators between two of ours. Deriving a fresh seed per predict from
+/// `(episode_seed, predict_index)` makes each forward reproducible on its
+/// own, independent of what ran between. The SDK stamps the result on the
+/// predict context as `predict_seed`; a model can also derive it with this
+/// function.
 ///
-/// FNV-1a over the seed and the ordinal, masked to 32 bits — the narrow range
-/// every framework's seeding API accepts.
+/// FNV-1a over the seed and the ordinal, masked to 32 bits — the narrow
+/// range every framework's seeding API accepts.
 pub fn predict_seed(episode_seed: i64, predict_index: u64) -> i64 {
     const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
@@ -97,7 +97,7 @@ impl ModelRouteContext {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ModelObservation {
     /// Raw per-leaf observation wire bytes, if present. `None` is the only
-    /// "absent value" signal (§5) — decode via
+    /// "absent value" signal — decode via
     /// [`decoded`](ModelObservation::decoded)/[`decoded_lanes`](ModelObservation::decoded_lanes),
     /// never read these bytes directly.
     pub observation: Option<Vec<Bytes>>,

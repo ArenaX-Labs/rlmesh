@@ -88,7 +88,7 @@ fn custom_name() -> String {
     "custom".into()
 }
 impl CustomEncoding {
-    /// Construct this value with Python’s field defaults.
+    /// Construct an encoding named `custom` with neither transform arm set.
     pub fn new(base: RotationEncoding) -> Self {
         Self {
             base,

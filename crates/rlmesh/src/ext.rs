@@ -1,9 +1,9 @@
-//! Rust-only extras beside the shared surface (no Python counterpart).
+//! Additional native utilities and interoperability features.
 //!
 //! Nothing here is inherent on a shared type: these are extension traits and
-//! free items, so the shared types keep exactly Python's members.
+//! free items, keeping the shared types focused on their core operations.
 
-//! Native endpoint helpers are fenced here, not on the shared root.
+//! Native endpoint helpers are available through this module.
 //!
 //! ```compile_fail
 //! use rlmesh::BindAddress;
@@ -23,7 +23,7 @@
 //! ```compile_fail
 //! use rlmesh::serve_options::MODEL_ENDPOINT_TOKEN_ENV;
 //! ```
-//! On Unix, stale-socket cleanup is fenced too.
+//! On Unix, stale-socket cleanup is also available here.
 //! ```compile_fail
 //! use rlmesh::remove_stale_socket;
 //! ```
@@ -33,7 +33,7 @@ use crate::tensor::{dims_i64, tensor_error};
 use crate::value::space_codec;
 use crate::{DType, Error, Result, Tensor, Value};
 
-/// Raw DLPack interoperability and owned exports (SPC-19).
+/// Raw DLPack interoperability and owned exports.
 pub mod dlpack {
     pub use crate::dlpack::{
         DLDataType, DLDevice, DLManagedTensorVersioned, DLPackType, DLPackVersion, DLTensor,
@@ -49,7 +49,7 @@ pub fn dtype_size(dtype: DType) -> usize {
     rlmesh_spaces::dtype_size(dtype.to_core())
 }
 
-/// Tensor constructors and layout access beyond Python's members.
+/// Additional tensor constructors and layout access.
 pub trait TensorExt: Sized {
     /// Adopt `data` as a C-contiguous tensor without copying.
     fn from_vec(data: Vec<u8>, shape: &[usize], dtype: DType) -> Result<Self>;
@@ -162,8 +162,8 @@ impl SpaceExt for Space {
     }
 }
 
-/// The Rust- and C-only fields of an env server's options (ENV-12), reached
-/// through [`EnvServerOptions::ext`](crate::EnvServerOptions::ext).
+/// The Rust- and C-only fields of an env server's options, reached through
+/// [`EnvServerOptions::ext`](crate::EnvServerOptions::ext).
 #[derive(Clone, Debug, Default)]
 pub struct EnvServerOptions {
     /// Bearer token every request must carry. `RLMESH_ENV_ENDPOINT_TOKEN`,
@@ -176,7 +176,7 @@ pub struct EnvServerOptions {
     pub publish_describe: bool,
 }
 
-/// The Rust- and C-only fields of a model serve (MDL-20), reached through
+/// The Rust- and C-only fields of a model serve, reached through
 /// [`ModelServeOptions::ext`](crate::ModelServeOptions::ext).
 #[derive(Clone, Debug, Default)]
 pub struct ModelServeOptions {
@@ -189,23 +189,25 @@ pub struct ModelServeOptions {
     pub predict_concurrency: Option<usize>,
 }
 
-/// Python's `EnvTags` from its wire JSON (the form `EnvTags.to_dict()`
-/// writes), checked for unknown fields. A convenience alias for
+/// `EnvTags` from its wire JSON (the form
+/// [`EnvTags::to_dict`](crate::adapters::EnvTags::to_dict) writes), checked
+/// for unknown fields. A convenience alias for
 /// [`EnvTags::from_json`](crate::adapters::EnvTags::from_json).
 pub fn env_tags_from_json(json: &str) -> Result<crate::adapters::EnvTags> {
     crate::adapters::EnvTags::from_json(json)
 }
 
-/// Python's `ModelSpec` from its wire JSON (the form `ModelSpec.to_dict()`
-/// writes), checked for unknown fields. A convenience alias for
+/// `ModelSpec` from its wire JSON (the form
+/// [`ModelSpec::to_dict`](crate::adapters::ModelSpec::to_dict) writes),
+/// checked for unknown fields. A convenience alias for
 /// [`ModelSpec::from_json`](crate::adapters::ModelSpec::from_json).
 pub fn model_spec_from_json(json: &str) -> Result<crate::adapters::ModelSpec> {
     crate::adapters::ModelSpec::from_json(json)
 }
 
-/// A [`RemoteEnv`](crate::RemoteEnv) that sends `token` on every request
-/// (RMT-5). `""` sends none; a token a header cannot carry is the ValueError
-/// class before any dial. Otherwise as [`RemoteEnv::new`](crate::RemoteEnv::new).
+/// A [`RemoteEnv`](crate::RemoteEnv) that sends `token` on every request.
+/// `""` sends none; a token a header cannot carry is the ValueError class
+/// before any dial. Otherwise as [`RemoteEnv::new`](crate::RemoteEnv::new).
 pub fn remote_env_with_token(
     options: crate::RemoteEnvOptions,
     token: &str,
@@ -225,7 +227,7 @@ pub async fn remote_env_with_token_async(
 }
 
 /// A [`RemoteVectorEnv`](crate::RemoteVectorEnv) that sends `token` on every
-/// request (RMT-5).
+/// request.
 pub fn remote_vector_env_with_token(
     options: crate::RemoteEnvOptions,
     token: &str,
@@ -245,8 +247,8 @@ pub async fn remote_vector_env_with_token_async(
 }
 
 /// A [`RemoteModel`](crate::RemoteModel) whose sessions send `token` on
-/// every model request (RMT-5). `""` sends none; a token a header cannot
-/// carry is the ValueError class here, before any dial. No I/O.
+/// every model request. `""` sends none; a token a header cannot carry is
+/// the ValueError class here, before any dial. No I/O.
 pub fn remote_model_with_token(
     options: crate::RemoteModelOptions,
     token: &str,
@@ -255,11 +257,10 @@ pub fn remote_model_with_token(
     crate::RemoteModel::with_token(options, token.to_string())
 }
 
-/// Partial reset (RMT-14): reset the listed lanes (an empty slice resets
-/// all of them; a per-lane seed list aligns with `env_indices`) and return
-/// the batched observation of every lane and the info with every lane's
-/// `episode_ids`. An index above `u32::MAX` is the ValueError class before
-/// any I/O.
+/// Partial reset: reset the listed lanes (an empty slice resets all of them;
+/// a per-lane seed list aligns with `env_indices`) and return the batched
+/// observation of every lane and the info with every lane's `episode_ids`.
+/// An index above `u32::MAX` is the ValueError class before any I/O.
 pub fn reset_lanes(
     env: &mut crate::RemoteVectorEnv,
     env_indices: &[u64],
@@ -291,11 +292,11 @@ pub async fn reset_lanes_async(
     .await
 }
 
-/// Cancellation (R-18): the native counterpart of Python's
-/// `KeyboardInterrupt`. Every clone is the same token, so [`cancel`] on any
-/// copy fires it. One `cancel()` fails the call in flight on the token or,
-/// when none is, the next call made with it, at its start; the token then
-/// re-arms. Repeated `cancel()` before that call fails counts once.
+/// Cancellation reported as `KeyboardInterrupt`. Every clone is the same
+/// token, so [`cancel`] on any copy fires it. One `cancel()` fails the call
+/// in flight on the token or, when none is, the next call made with it, at
+/// its start; the token then re-arms. Repeated `cancel()` before that call
+/// fails counts once.
 ///
 /// [`cancel`]: CancelToken::cancel
 #[derive(Clone, Debug, Default)]

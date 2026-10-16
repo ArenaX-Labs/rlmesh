@@ -1,5 +1,5 @@
-//! [`EnvServer`]: Python's `EnvServer`, one non-generic server for an env, a
-//! list of lane envs, or a vector env.
+//! One non-generic environment server for an env, a list of lane envs, or a
+//! vector env.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -26,11 +26,10 @@ use crate::serve_options::{WireExtras, env_endpoint_token};
 use crate::specs::{EnvContract, value_to_json};
 use crate::{BindAddress, Error, Result, ServeOptions};
 
-/// The bound an env server puts on a drain or close the options leave unset
-/// (ENV-7).
+/// The bound an env server puts on a drain or close the options leave unset.
 const DEFAULT_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
-/// Python's `Transport` (`Literal["tcp", "unix"]`).
+/// Endpoint transport: TCP or Unix-domain sockets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Transport {
     /// TCP.
@@ -40,7 +39,7 @@ pub enum Transport {
 }
 
 impl Transport {
-    /// Python's spelling: `"tcp"` or `"unix"`.
+    /// The canonical spelling: `"tcp"` or `"unix"`.
     pub fn as_str(self) -> &'static str {
         match self {
             Transport::Tcp => "tcp",
@@ -55,12 +54,11 @@ impl fmt::Display for Transport {
     }
 }
 
-/// The keywords of Python's `EnvServer(env, address=None, *, ...)`.
+/// Options for constructing an environment server.
 ///
-/// Defaults are Python's: the address `tcp://127.0.0.1:0`, no serve options or
-/// tags, and `close_env_on_shutdown` true. Build one with
-/// `..Default::default()`; appending a field is a minor change by project
-/// policy.
+/// Defaults: the address `tcp://127.0.0.1:0`, no serve options or tags, and
+/// `close_env_on_shutdown` true. Build one with `..Default::default()`;
+/// appending a field is a minor change by project policy.
 #[derive(Clone, Debug)]
 pub struct EnvServerOptions {
     /// The bind address (`tcp://host:port` or `unix:///path`); `None` uses the
@@ -82,7 +80,7 @@ pub struct EnvServerOptions {
     /// Close the env when the server stops (default `true`); `false` for a
     /// server in front of an env its caller closes.
     pub close_env_on_shutdown: bool,
-    /// Rust-only fields (ENV-12).
+    /// Rust-only fields.
     pub ext: Option<crate::ext::EnvServerOptions>,
 }
 
@@ -156,18 +154,18 @@ struct Shared {
     done: tokio::sync::watch::Sender<bool>,
 }
 
-/// Serves an env, a list of lane envs, or a vector env: Python's `EnvServer`.
+/// Serves an env, a list of lane envs, or a vector env.
 ///
 /// The server binds at construction, so [`address`](Self::address) and
 /// [`env_contract`](Self::env_contract) are readable before serving. Then
 /// [`serve`](Self::serve) blocks with lane 0 (or the vector env) on the
 /// calling thread, or [`start`](Self::start) serves from library threads and
-/// [`wait`](Self::wait) / [`shutdown`](Self::shutdown) observe the stop. Each
-/// lane runs on one thread for the server's life.
+/// [`wait`](Self::wait) / [`shutdown`](Self::shutdown) observe the stop.
+/// Each lane runs on one thread for the server's life.
 ///
-/// Dropping a server runs [`shutdown`](Self::shutdown) and discards its error;
-/// call `shutdown()` to observe it. Inside an async runtime, Drop triggers the
-/// drain and leaves the rest to the server's own threads.
+/// Dropping a server runs [`shutdown`](Self::shutdown) and discards its
+/// error; call `shutdown()` to observe it. Inside an async runtime, Drop
+/// triggers the drain and leaves the rest to the server's own threads.
 pub struct EnvServer {
     shared: Arc<Shared>,
 }
@@ -192,14 +190,14 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|err| err.into_inner())
 }
 
-/// R-16's condition: the thread is polling a tokio task or a library
+/// Async-context condition: the thread is polling a tokio task or a library
 /// driver segment.
 pub(crate) fn in_async_context() -> bool {
     crate::run::drive::in_async_context()
 }
 
 /// A blocking call made from async code fails with the RuntimeError class
-/// naming its `_async` twin, before it blocks (R-16).
+/// naming its `_async` twin, before it blocks.
 pub(crate) fn refuse_in_async_context(call: &str) -> Result<()> {
     if in_async_context() {
         return Err(Error::Runtime(format!(
@@ -210,14 +208,13 @@ pub(crate) fn refuse_in_async_context(call: &str) -> Result<()> {
 }
 
 impl EnvServer {
-    /// Serve one env: Python's `EnvServer(env, ...)`.
+    /// Serve one env.
     pub fn new<E: Env + Send + 'static>(env: E, options: EnvServerOptions) -> Result<EnvServer> {
         Self::build(Served::Lanes(vec![Box::new(env)]), options, None, false)
     }
 
     /// Serve `envs` as the lanes of one `num_envs = N` endpoint, each on its
-    /// own thread: Python's `EnvServer([env, ...])`. Use `Box<dyn Env + Send>`
-    /// to mix env types.
+    /// own thread. Use `Box<dyn Env + Send>` to mix env types.
     pub fn lanes<E: Env + Send + 'static>(
         envs: Vec<E>,
         options: EnvServerOptions,
@@ -234,8 +231,8 @@ impl EnvServer {
         )
     }
 
-    /// Serve a vector env: Python's `EnvServer(vector_env)`. A vector env with
-    /// `num_envs == 1` is served as a single scalar lane.
+    /// Serve a vector env. A vector env with `num_envs == 1` is served as a
+    /// single scalar lane.
     pub fn vector<V: VectorEnv + Send + 'static>(
         env: V,
         options: EnvServerOptions,
@@ -861,7 +858,7 @@ fn check_expected_branch(metadata: Option<&crate::Metadata>) -> Result<()> {
     Ok(())
 }
 
-/// Step 5: Python's `normalize_bind_address`.
+/// Normalize the bind address.
 fn normalize_bind_address(options: &EnvServerOptions) -> Result<String> {
     let helpers = options.host.is_some()
         || options.port.is_some()
@@ -914,7 +911,7 @@ fn normalize_bind_address(options: &EnvServerOptions) -> Result<String> {
     ))
 }
 
-/// An env with tags merged into its metadata (Python's `adapters.tag`).
+/// An env with tags merged into its metadata.
 pub(crate) struct Tagged {
     env: Box<dyn Env + Send>,
     metadata: crate::Metadata,
@@ -1213,7 +1210,7 @@ fn drive<E: Environment + Send + Sync + 'static>(
     })
 }
 
-/// The one serve-failure text (ENV-P1): `serve failed: <message>`.
+/// The one serve-failure text: `serve failed: <message>`.
 fn serve_failure(serve: Result<()>, close: Result<()>) -> Result<()> {
     let text = |err: Error| match err {
         Error::Internal(message) => message,

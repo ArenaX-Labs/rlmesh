@@ -1,9 +1,8 @@
-//! Running a model against an env: Python's `rlmesh.run`, `rlmesh.session`,
-//! `Model.run`, `Model.session`, `Session`, the run hooks and the results.
+//! Running a model against an env: runs, sessions, hooks and results.
 //!
-//! Every call is sync and blocks, as in Python; each has an `_async` twin
-//! (R-16). A run borrows the model and the env (R-17): it never closes the
-//! model, and closes the env only on `close_env`.
+//! Every call is sync and blocks; each has an `_async` twin. A run borrows
+//! the model and the env: it never closes the model, and closes the env only
+//! on `close_env`.
 
 pub(crate) mod drive;
 pub(crate) mod hooks;
@@ -38,9 +37,9 @@ pub(crate) enum LoopbackEnv {
 
 impl Model {
     /// Drive this model against `env` on the native runtime loop and return
-    /// the result: Python's `Model.run`. The run borrows the model (it stays
-    /// open) and the env (closed only on `close_env`); hooks run on this
-    /// thread (RUN-8). One run at a time per model (RUN-9).
+    /// the result. The run borrows the model (it stays open) and the env
+    /// (closed only on `close_env`); hooks run on this thread. One run at a
+    /// time per model.
     pub fn run<'e>(
         &self,
         env_or_address: impl Into<EnvTarget<'e>>,
@@ -57,7 +56,7 @@ impl Model {
 
     /// The async twin of [`run`](Model::run): hooks run inside this future,
     /// where a blocking rlmesh call fails with the `RuntimeError` class.
-    /// Dropping it cancels the run and fires no hook (R-18).
+    /// Dropping it cancels the run and fires no hook.
     pub async fn run_async<'e>(
         &self,
         env_or_address: impl Into<EnvTarget<'e>>,
@@ -66,9 +65,8 @@ impl Model {
         native::run_model(self, env_or_address.into(), options, Mode::Async).await
     }
 
-    /// Bind this model to `env` for driving by hand: Python's
-    /// `Model.session`. Nothing dials until first use; closing the session
-    /// never closes the model.
+    /// Bind this model to `env` for driving by hand. Nothing dials until
+    /// first use; closing the session never closes the model.
     pub fn session<'a>(
         &'a self,
         env_or_address: impl Into<EnvTarget<'a>>,
@@ -88,10 +86,9 @@ impl Model {
     }
 }
 
-/// Drive `model` against `env` to completion: Python's `rlmesh.run`. A
-/// [`Model`] runs on the native loop ([`Model::run`]); a
-/// [`RemoteModel`](crate::RemoteModel) and [`RANDOM_SAMPLE`] run through a
-/// session it opens and closes.
+/// Drive `model` against `env` to completion. A [`Model`] runs on the native
+/// loop ([`Model::run`]); a [`RemoteModel`](crate::RemoteModel) and
+/// [`RANDOM_SAMPLE`] run through a session it opens and closes.
 pub fn run<'a>(
     model: impl Into<ModelTarget<'a>>,
     env: impl Into<EnvTarget<'a>>,
@@ -130,7 +127,7 @@ pub async fn run_async<'a>(
     }
 }
 
-/// `rlmesh.run` on the session loop: validate, open, run, close.
+/// Run on the session loop: validate, open, run, close.
 async fn run_session_loop<'a>(
     remote: Option<&'a crate::RemoteModel>,
     env: EnvTarget<'a>,
@@ -205,7 +202,7 @@ async fn run_session_loop<'a>(
     }
 }
 
-/// Bind `model` to `env`: Python's `rlmesh.session`.
+/// Bind `model` to `env`.
 pub fn session<'a>(
     model: impl Into<ModelTarget<'a>>,
     env: impl Into<EnvTarget<'a>>,

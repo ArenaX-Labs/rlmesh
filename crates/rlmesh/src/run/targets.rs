@@ -1,4 +1,4 @@
-//! The model and env a run or session takes (RUN-3, RUN-26).
+//! The model and env a run or session takes.
 
 use std::fmt;
 
@@ -8,13 +8,12 @@ use crate::{
     Result, VectorEnv,
 };
 
-/// The random baseline: Python's `RANDOM_SAMPLE`, a model that samples the
-/// env's action space. Accepted by [`run`](crate::run) and
-/// [`session`](crate::session).
+/// The random baseline: a model that samples the env's action space.
+/// Accepted by [`run`](crate::run) and [`session`](crate::session).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct RandomSample;
 
-/// The random baseline: Python's `rlmesh.RANDOM_SAMPLE`.
+/// The random action-sampling baseline.
 pub const RANDOM_SAMPLE: RandomSample = RandomSample;
 
 impl fmt::Display for RandomSample {
@@ -62,11 +61,10 @@ impl fmt::Debug for ModelTarget<'_> {
     }
 }
 
-/// A factory erased at construction (RUN-26): `EnvFactory` is not
-/// dyn-compatible, so the target keeps only what a run calls.
+/// A factory erased at construction: `EnvFactory` is not dyn-compatible, so
+/// the target keeps only what a run calls.
 pub(crate) trait ErasedFactory {
-    /// `prepare()` then the stamping `make_env()` with no keywords: Python's
-    /// `construct_authored_env`.
+    /// Call `prepare()`, then the stamping `make_env()` with no arguments.
     fn make(&mut self) -> Result<MadeEnv>;
 }
 
@@ -79,20 +77,20 @@ impl<F: EnvFactory> ErasedFactory for Factory<'_, F> {
     }
 }
 
-/// The env argument of a run or session: an address, a served
-/// [`EnvServer`], a borrowed [`RemoteEnv`] / [`RemoteVectorEnv`], or a
-/// borrowed local env, vector env or factory.
+/// The env argument of a run or session: an address, a served [`EnvServer`],
+/// a borrowed [`RemoteEnv`] / [`RemoteVectorEnv`], or a borrowed local env,
+/// vector env or factory.
 ///
 /// A single env converts with `From` (`model.run(&mut env, ..)`); a vector
 /// env and a factory name their kind ([`EnvTarget::vector`],
-/// [`EnvTarget::factory`], RUN-3).
+/// [`EnvTarget::factory`]).
 pub struct EnvTarget<'a>(pub(crate) EnvKind<'a>);
 
 pub(crate) enum EnvKind<'a> {
     Address(String),
     Server(&'a EnvServer),
     /// A caller's remote client: a session drives it through its own
-    /// connection; a native run dials its address (R-17).
+    /// connection; a native run dials its address.
     Remote(&'a mut (dyn Lendable + Send + 'a)),
     Env(&'a mut (dyn Env + Send + 'a)),
     Vector(&'a mut (dyn VectorEnv + Send + 'a)),

@@ -1,6 +1,6 @@
-/* RLMesh C ABI — experimental. Both v1 paths: a C/C++ model driving a remote
- * environment, and a C/C++ environment served to remote models. Hand-authored;
- * cbindgen-verifiable (a header-drift CI gate is a follow-up). */
+/* RLMesh C ABI — experimental. Supports a C/C++ model driving a remote environment and a
+ * C/C++ environment served to remote models. RLMesh uses the same nouns and constructs
+ * in every language, following each language's conventions. */
 #ifndef RLMESH_H
 #define RLMESH_H
 
@@ -396,8 +396,7 @@ RLMESH_API uint32_t rlmesh_abi_version(void);
  * (librlmesh_capi.so.N); this is for dlopen / raw-path consumers that bypass it. */
 static inline int rlmesh_abi_check(void) { return RLMESH_ABI_VERSION == rlmesh_abi_version(); }
 
-/* This header's package version, SemVer (Python's __version__ is the PEP 440
- * spelling of the same release). rlmesh_build_info() reports the linked
+/* This header's package version, in SemVer. rlmesh_build_info() reports the linked
  * library's. */
 #define RLMESH_VERSION "0.1.0"
 
@@ -408,10 +407,10 @@ static inline int rlmesh_abi_check(void) { return RLMESH_ABI_VERSION == rlmesh_a
 
 /* ---- status + errors ---------------------------------------------------- */
 
-/* Each nonzero status is one exception class of the Python package; a class
- * without a status of its own (RECOVERABLE_ENVIRONMENT_EXCEPTION,
- * ADAPTER_RESOLUTION_ERROR) returns its parent's, and rlmesh_last_error_class()
- * reports the exact class. Values 0-8 and 99 keep their original numbers. */
+/* Each nonzero status identifies an error class; a class without a status of its own
+ * (RECOVERABLE_ENVIRONMENT_EXCEPTION, ADAPTER_RESOLUTION_ERROR) returns its parent's,
+ * and rlmesh_last_error_class() reports the exact class. Values 0-8 and 99 keep their
+ * original numbers. */
 typedef enum RLMeshStatus {
   RLMESH_OK = 0,
   RLMESH_ERR_INVALID_ARGUMENT = 1, /* ValueError, AdapterResolutionError */
@@ -431,7 +430,7 @@ typedef enum RLMeshStatus {
   RLMESH_ERR_INTERNAL = 99  /* RLMeshException */
 } RLMeshStatus;
 
-/* The exact class of an error, spelled as Python spells it. */
+/* The exact class of an error. */
 typedef enum RLMeshErrorClass {
   RLMESH_ERROR_CLASS_INVALID = 0,
   RLMESH_ERROR_CLASS_RLMESH_EXCEPTION = 1,
@@ -475,11 +474,11 @@ typedef enum RLMeshModelErrorCode {
   RLMESH_MODEL_ERROR_CODE_CLOSED = 13
 } RLMeshModelErrorCode;
 
-/* Most recent failing call's message on THIS thread (valid until the next
- * RLMesh call on this thread; NULL if none). Read only after a nonzero status.
- * The message is Python's str(exc): "[CODE] message" for an environment or
- * model error, "operation timed out after 5s" for a timeout. The recoverable
- * flag is nonzero only for a recoverable environment or model error. */
+/* Most recent failing call's message on THIS thread (valid until the next RLMesh call on
+ * this thread; NULL if none). Read only after a nonzero status. The message is "[CODE]
+ * message" for an environment or model error, "operation timed out after 5s" for a
+ * timeout. The recoverable flag is nonzero only for a recoverable environment or model
+ * error. */
 RLMESH_API const char* rlmesh_last_error_message(void);
 RLMESH_API int rlmesh_last_error_is_recoverable(void);
 
@@ -505,17 +504,16 @@ RLMESH_API const char* rlmesh_last_error_code_str(void);
 RLMESH_API const char* rlmesh_error_code_str(RLMeshErrorCode code);
 RLMESH_API const char* rlmesh_model_error_code_str(RLMeshModelErrorCode code);
 
-/* Python's name of a class ("ConnectionError"), static; NULL for INVALID or an
- * unknown value. rlmesh_error_class_is_subclass is Python's
- * issubclass(cls, base): reflexive, following Python's inheritance, so
- * CONNECTION_ERROR is a subclass of OS_ERROR and the builtins are not
+/* The name of a class ("ConnectionError"), static; NULL for INVALID or an unknown value.
+ * rlmesh_error_class_is_subclass tests class inheritance: it is reflexive, so
+ * CONNECTION_ERROR is a subclass of OS_ERROR and the general error classes are not
  * subclasses of RLMESH_EXCEPTION. */
 RLMESH_API const char* rlmesh_error_class_name(RLMeshErrorClass cls);
 RLMESH_API bool rlmesh_error_class_is_subclass(RLMeshErrorClass cls, RLMeshErrorClass base);
 
 /* ---- build info, editions, warnings -------------------------------------- */
 
-/* Where a build's cohort came from: Python's BuildInfo.build_source. */
+/* Where a build's cohort came from. */
 typedef enum RLMeshBuildSource {
   RLMESH_BUILD_SOURCE_INVALID = 0,
   RLMESH_BUILD_SOURCE_RELEASE = 1, /* "release" */
@@ -523,13 +521,13 @@ typedef enum RLMeshBuildSource {
   RLMESH_BUILD_SOURCE_GIT = 3      /* "git" */
 } RLMeshBuildSource;
 
-/* Python's spelling ("release"), static; NULL for INVALID or an unknown value. */
+/* The canonical spelling ("release"), static; NULL for INVALID or an unknown value. */
 RLMESH_API const char* rlmesh_build_source_str(RLMeshBuildSource source);
 
-/* The linked library's identity: Python's rlmesh.build_info(). Every string is
- * static, NUL-terminated UTF-8 with process lifetime; nothing is freed.
- * supported_workflow_editions lists supported_workflow_editions_len editions,
- * newest first; git is NULL when the build was not stamped from git. */
+/* The linked library's identity. Every string is static, NUL-terminated UTF-8 with
+ * process lifetime; nothing is freed. supported_workflow_editions lists
+ * supported_workflow_editions_len editions, newest first; git is NULL when the build was
+ * not stamped from git. */
 typedef struct RLMeshBuildInfo {
   size_t struct_size;
   const char* version;
@@ -551,7 +549,7 @@ typedef struct RLMeshBuildInfo {
 /* Fill `*out` (initialized with RLMESH_BUILD_INFO_INIT). */
 RLMESH_API RLMeshStatus rlmesh_build_info(RLMeshBuildInfo* out);
 struct RLMeshBytes; /* defined below */
-/* Python's repr(build_info()) into `out` (UTF-8, not NUL-terminated; free with
+/* The build's text representation into `out` (UTF-8, not NUL-terminated; free with
  * rlmesh_bytes_free). */
 RLMESH_API RLMeshStatus rlmesh_build_info_repr(struct RLMeshBytes* out);
 
@@ -568,7 +566,7 @@ RLMESH_API const char* rlmesh_current_workflow_edition(void);
 #define RLMESH_DESCRIBE_SCHEMA_VERSION 1
 #define RLMESH_ENV_RESET_OPTIONS_KEY "rlmesh.env.v1.reset_options"
 
-/* A warning's category: Python's warning classes. */
+/* A warning's category. */
 typedef enum RLMeshWarningCategory {
   RLMESH_WARNING_CATEGORY_INVALID = 0,
   RLMESH_WARNING_CATEGORY_USER_WARNING = 1,
@@ -576,8 +574,8 @@ typedef enum RLMeshWarningCategory {
   RLMESH_WARNING_CATEGORY_WORKFLOW_EDITION_WARNING = 3 /* a USER_WARNING */
 } RLMeshWarningCategory;
 
-/* Python's class name ("UserWarning"), static; NULL for INVALID or an unknown
- * value. rlmesh_warning_category_is_subclass is Python's issubclass. */
+/* The class name ("UserWarning"), static; NULL for INVALID or an unknown value.
+ * rlmesh_warning_category_is_subclass tests class inheritance, including identity. */
 RLMESH_API const char* rlmesh_warning_category_name(RLMeshWarningCategory category);
 RLMESH_API bool rlmesh_warning_category_is_subclass(RLMeshWarningCategory cls,
                                                     RLMeshWarningCategory base);
@@ -600,10 +598,9 @@ RLMESH_API RLMeshStatus rlmesh_set_warning_handler(RLMeshWarningHandlerFn fn, vo
 
 /* ---- dtype + tensor ----------------------------------------------------- */
 
-/* An element dtype: Python's dtype strings. The numbers are the wire's.
- * RLMESH_DTYPE_OTHER exists only for Adapters' tolerant dtype fields; every
- * spaces input refuses it, as it refuses INVALID and unknown values, and no
- * spaces output returns it. */
+/* An element dtype with its canonical string spelling. The numbers are the wire's.
+ * RLMESH_DTYPE_OTHER exists only for Adapters' tolerant dtype fields; every spaces input
+ * refuses it, as it refuses INVALID and unknown values, and no spaces output returns it. */
 typedef enum RLMeshDType {
   RLMESH_DTYPE_INVALID = 0,
   RLMESH_DTYPE_BOOL = 1,
@@ -621,14 +618,14 @@ typedef enum RLMeshDType {
   RLMESH_DTYPE_OTHER = 1000
 } RLMeshDType;
 
-/* Python's spelling ("float32"), static storage; NULL for INVALID, OTHER or an
+/* The canonical spelling ("float32"), static storage; NULL for INVALID, OTHER or an
  * unknown value. */
 RLMESH_API const char* rlmesh_dtype_str(RLMeshDType dtype);
 /* Byte size of one element; 0 for INVALID, OTHER or an unknown value. */
 RLMESH_API size_t rlmesh_ext_dtype_size(RLMeshDType dtype);
 
-/* A space's kind (Python's `kind`); output only. UNKNOWN is a spec with no
- * payload and what a NULL handle reads. */
+/* A space's kind; output only. UNKNOWN is a spec with no payload and what a NULL handle
+ * reads. */
 typedef enum RLMeshSpaceKind {
   RLMESH_SPACE_KIND_UNKNOWN = 0,
   RLMESH_SPACE_KIND_BOX = 1,
@@ -688,10 +685,10 @@ RLMESH_API RLMeshStatus rlmesh_tensor_copy(const RLMeshTensor* tensor, RLMeshTen
 RLMESH_API RLMeshStatus rlmesh_tensor_tobytes(const RLMeshTensor* tensor, struct RLMeshBytes* out);
 RLMESH_API RLMeshStatus rlmesh_tensor_repr(const RLMeshTensor* tensor, struct RLMeshBytes* out);
 
-/* DLPack 1.x, versioned descriptors only. Options follow R-19: NULL = INIT;
- * struct_size below MIN_SIZE is refused; reserved/unknown bytes must be zero.
- * copy=false exports shared read-only storage; copy=true owns writable storage.
- * dl_device, when present, must be (kDLCPU, 0). No implicit padding. */
+/* DLPack 1.x, versioned descriptors only. Options: NULL = INIT; struct_size below
+ * MIN_SIZE is refused; reserved/unknown bytes must be zero. copy=false exports shared
+ * read-only storage; copy=true owns writable storage. dl_device, when present, must be
+ * (kDLCPU, 0). No implicit padding. */
 typedef struct RLMeshToDlpackOptions {
   size_t struct_size;
   bool copy;
@@ -823,11 +820,11 @@ typedef struct RLMeshBytes {
 
 RLMESH_API void rlmesh_bytes_free(RLMeshBytes bytes);
 
-/* ---- spaces (Python's rlmesh.spaces) ------------------------------------ */
+/* ---- spaces ------------------------------------------------------------ */
 
 /* UTF-8 text with its length. Inputs may hold NUL; `data` may be NULL only when
  * `len` is 0. Outputs are borrowed from their parent and NOT NUL-terminated. */
-/* How a Box stores its bounds (Python's `bounds_kind`). */
+/* How a Box stores its bounds. */
 typedef enum RLMeshBoundsKind {
   RLMESH_BOUNDS_KIND_INVALID = 0,
   RLMESH_BOUNDS_KIND_UNBOUNDED = 1,
@@ -837,8 +834,8 @@ typedef enum RLMeshBoundsKind {
   RLMESH_BOUNDS_KIND_TYPED_ELEMENTWISE = 5
 } RLMeshBoundsKind;
 
-/* Python's spellings ("multi_binary", "typed_uniform"), static storage; NULL
- * for an unknown value (and for RLMESH_BOUNDS_KIND_INVALID). */
+/* The canonical spellings ("multi_binary", "typed_uniform"), static storage; NULL for an
+ * unknown value (and for RLMESH_BOUNDS_KIND_INVALID). */
 RLMESH_API const char* rlmesh_space_kind_str(RLMeshSpaceKind kind);
 RLMESH_API const char* rlmesh_bounds_kind_str(RLMeshBoundsKind kind);
 
@@ -858,7 +855,7 @@ typedef struct RLMeshBound {
     bool b;
     int64_t i;
     uint64_t u;
-    double f; /* +-INFINITY is Python's "inf"; NaN is refused */
+    double f; /* infinite bounds are allowed; NaN is refused */
   } value;
 } RLMeshBound;
 
@@ -907,13 +904,13 @@ RLMESH_API RLMeshSpaceSpec* rlmesh_space_spec_clone(const RLMeshSpaceSpec* spec)
 RLMESH_API RLMeshSpaceKind rlmesh_space_spec_kind(const RLMeshSpaceSpec* spec);
 RLMESH_API RLMeshStatus rlmesh_space_spec_shape(const RLMeshSpaceSpec* spec, int64_t* out,
                                                 size_t cap, size_t* out_len);
-/* A Dict reads RLMESH_DTYPE_FLOAT32, as in Python; INVALID for NULL. */
+/* A Dict reads RLMESH_DTYPE_FLOAT32; INVALID for NULL. */
 RLMESH_API RLMeshDType rlmesh_space_spec_dtype(const RLMeshSpaceSpec* spec);
 /* A fresh space with its own sampler; never fails for a valid spec. */
 RLMESH_API RLMeshStatus rlmesh_space_spec_to_space(const RLMeshSpaceSpec* spec, RLMeshSpace** out);
-/* Gymnasium-style text, Python's repr; free with rlmesh_bytes_free. */
+/* Gymnasium-style text; free with rlmesh_bytes_free. */
 RLMESH_API RLMeshStatus rlmesh_space_spec_repr(const RLMeshSpaceSpec* spec, RLMeshBytes* out);
-/* Python's space_from_spec: refuses a spec with no payload. */
+/* Build a space from a spec: refuses a spec with no payload. */
 RLMESH_API RLMeshStatus rlmesh_spaces_space_from_spec(const RLMeshSpaceSpec* spec,
                                                       RLMeshSpace** out);
 
@@ -937,7 +934,7 @@ RLMESH_API RLMeshStatus rlmesh_space_seed(const RLMeshSpace* space, const uint64
 RLMESH_API RLMeshStatus rlmesh_space_sample(const RLMeshSpace* space, RLMeshValue** out);
 /* Membership; never fails (false for NULL). */
 RLMESH_API bool rlmesh_space_contains(const RLMeshSpace* space, const RLMeshValue* value);
-/* Python's == (normalized specs; a Dict's key order does not matter). */
+/* Compare normalized specs; a Dict's key order does not matter. */
 RLMESH_API bool rlmesh_space_equals(const RLMeshSpace* a, const RLMeshSpace* b);
 RLMESH_API RLMeshStatus rlmesh_space_repr(const RLMeshSpace* space, RLMeshBytes* out);
 
@@ -996,8 +993,8 @@ RLMESH_API RLMeshStatus rlmesh_discrete_n(const RLMeshDiscrete* space, int64_t* 
 RLMESH_API RLMeshStatus rlmesh_discrete_start(const RLMeshDiscrete* space, int64_t* out);
 
 /* Dict(spaces): copies each spec into a fresh child space; the keys sort at
- * construction, as Python's do. Duplicate or empty keys are
- * RLMESH_ERR_INVALID_ARGUMENT. Lend a space's spec with rlmesh_space_spec(). */
+ * construction. Duplicate or empty keys are RLMESH_ERR_INVALID_ARGUMENT. Lend a space's
+ * spec with rlmesh_space_spec(). */
 RLMESH_API RLMeshStatus rlmesh_dict_new(const RLMeshStr* spaces_keys,
                                         const RLMeshSpaceSpec* const* spaces, size_t spaces_len,
                                         RLMeshDict** out);
@@ -2803,7 +2800,7 @@ typedef struct RLMeshEnvFactoryServeOptions {
   int64_t num_envs;               /* 1; <= 1 serves one env */
   const char* workflow_edition;   /* NULL/""/blank = None */
   const RLMeshValue* make_kwargs; /* DICT; NULL = {} */
-  RLMeshExtCancelToken* cancel;   /* NULL = none, borrowed for the call (R-18, ENV-33) */
+  RLMeshExtCancelToken* cancel;   /* NULL = none, borrowed for the call */
 } RLMeshEnvFactoryServeOptions;
 #define RLMESH_ENV_FACTORY_SERVE_OPTIONS_INIT \
   {sizeof(RLMeshEnvFactoryServeOptions), 1, NULL, NULL, NULL}
@@ -2844,7 +2841,7 @@ typedef struct RLMeshEnvFactoryVtable {
 #define RLMESH_ENV_FACTORY_VTABLE_INIT \
   {sizeof(RLMeshEnvFactoryVtable), NULL, NULL, NULL, NULL, NULL, NULL}
 
-/* Factory. new runs the branch-table check; attributes NULL = INIT (R-20). */
+/* Factory. new runs the branch-table check; attributes NULL = INIT. */
 RLMESH_API RLMeshStatus rlmesh_env_factory_new(const RLMeshEnvFactoryVtable* vtable,
                                                void* user_data,
                                                const RLMeshEnvFactoryAttributes* attributes,
@@ -2852,8 +2849,9 @@ RLMESH_API RLMeshStatus rlmesh_env_factory_new(const RLMeshEnvFactoryVtable* vta
 RLMESH_API void rlmesh_env_factory_free(
     RLMeshEnvFactory* factory); /* never calls close; NULL no-op */
 RLMESH_API RLMeshStatus rlmesh_env_factory_prepare(RLMeshEnvFactory* factory);
-/* Stamps (ENV-17). On RLMESH_OK exactly one of *out_env / *out_vector_env is non-NULL (the
- * caller's) and the other is set to NULL; on any other status neither is written. */
+/* Stamps tags, branch parameters and reset-option keys on the made env. On RLMESH_OK
+ * exactly one of *out_env / *out_vector_env is non-NULL (the caller's) and the other is
+ * set to NULL; on any other status neither is written. */
 RLMESH_API RLMeshStatus rlmesh_env_factory_make(RLMeshEnvFactory* factory,
                                                 const RLMeshValue* kwargs /* DICT; NULL = {} */,
                                                 RLMeshEnv** out_env,
@@ -2867,10 +2865,10 @@ RLMESH_API RLMeshStatus rlmesh_env_factory_close(RLMeshEnvFactory* factory);
 RLMESH_API RLMeshStatus
 rlmesh_env_factory_serve(RLMeshEnvFactory* factory, const char* address,
                          const RLMeshEnvFactoryServeOptions* options /* NULL = INIT */);
-/* rlmesh_env_factory_describe / _describe_json: Core (COR-10); rlmesh_ext_env_server_describe_json:
- * COR-16. */
+/* Factory describe functions build metadata envelopes;
+ * rlmesh_ext_env_server_describe_json reads the server's resolved env. */
 
-/* Factory class-attribute getters (Stable in Python); they read the copied attributes. */
+/* Factory declaration getters; they read the copied attributes. */
 RLMESH_API RLMeshStatus rlmesh_env_factory_tags(const RLMeshEnvFactory* env_factory,
                                                 RLMeshEnvTags** out /* NULL = None */);
 RLMESH_API RLMeshStatus rlmesh_env_factory_reset_options(const RLMeshEnvFactory* env_factory,
@@ -2880,23 +2878,23 @@ RLMESH_API RLMeshStatus rlmesh_env_factory_tag_params(const RLMeshEnvFactory* en
 RLMESH_API RLMeshStatus rlmesh_env_factory_workflow_edition(const RLMeshEnvFactory* env_factory,
                                                             bool* out_has, RLMeshBytes* out);
 
-/* Lists (R-20): items are borrowed until the list is freed. */
+/* Lists: items are borrowed until the list is freed. */
 RLMESH_API size_t rlmesh_variant_list_len(const RLMeshVariantList* variant_list);
 RLMESH_API const RLMeshVariant* rlmesh_variant_list_get(const RLMeshVariantList* variant_list,
                                                         size_t index); /* NULL past the end */
 RLMESH_API void rlmesh_variant_list_free(RLMeshVariantList* variant_list);
 RLMESH_API size_t rlmesh_tag_param_list_len(const RLMeshTagParamList* tag_param_list);
-/* A lent struct (R-19): struct_size is the library's own sizeof; read a field only if
+/* A lent struct: struct_size is the library's own sizeof; read a field only if
  * offsetof(field) + sizeof(field) <= p->struct_size, else treat it as its _INIT value.
  * NULL past the end. */
 RLMESH_API const RLMeshTagParam* rlmesh_tag_param_list_get(const RLMeshTagParamList* tag_param_list,
                                                            size_t index);
 RLMESH_API void rlmesh_tag_param_list_free(RLMeshTagParamList* tag_param_list);
 
-/* Variant (a value handle; R-11). */
+/* Variant (a value handle). */
 typedef struct RLMeshVariantOptions {
   size_t struct_size;
-  const RLMeshValue* metadata; /* DICT, copied; NULL = {} (Python's **metadata) */
+  const RLMeshValue* metadata; /* DICT, copied; NULL = {} */
 } RLMeshVariantOptions;
 #define RLMESH_VARIANT_OPTIONS_INIT {sizeof(RLMeshVariantOptions), NULL}
 RLMESH_API RLMeshStatus rlmesh_variant_new(const char* id,
@@ -2911,7 +2909,7 @@ RLMESH_API const RLMeshValue* rlmesh_variant_metadata(
     const RLMeshVariant* variant); /* DICT; borrowed likewise */
 RLMESH_API RLMeshStatus rlmesh_variant_repr(const RLMeshVariant* variant, RLMeshBytes* out);
 RLMESH_API bool rlmesh_variant_equals(const RLMeshVariant* variant, const RLMeshVariant* variant_1);
-/* Variant fields are mutable, as Python's slots are (py/_variants.py:39-49). */
+/* Variant fields are mutable. */
 RLMESH_API RLMeshStatus rlmesh_variant_set_id(RLMeshVariant* variant, const char* id);
 RLMESH_API RLMeshStatus rlmesh_variant_set_params(RLMeshVariant* variant,
                                                   const RLMeshValue* params /* DICT, copied */);
@@ -2919,8 +2917,8 @@ RLMESH_API RLMeshStatus rlmesh_variant_set_metadata(RLMeshVariant* variant,
                                                     const RLMeshValue* metadata /* DICT, copied */);
 
 /* RLMeshVariantSink is lent to enumerate_variants for that callback only; never stored or freed. */
-/* Takes `variant` only on RLMESH_OK; on any other status the caller still owns it
- * and frees it (R-20's ownership rule, applied to a pushed handle). */
+/* Takes `variant` only on RLMESH_OK; on any other status the caller still owns it and
+ * frees it. */
 RLMESH_API RLMeshStatus rlmesh_variant_sink_push(RLMeshVariantSink* sink, RLMeshVariant* variant);
 
 #define RLMESH_ENV_FACTORY_SERVE_OPTIONS_MIN_SIZE sizeof(RLMeshEnvFactoryServeOptions)
@@ -2942,7 +2940,7 @@ typedef enum RLMeshSpecKind {
   RLMESH_SPEC_KIND_MODEL_SPEC = 2,
   RLMESH_SPEC_KIND_NO_ADAPTER = 3
 } RLMeshSpecKind;
-typedef struct RLMeshSpecArg { /* by value, frozen per ABI generation (R-19) */
+typedef struct RLMeshSpecArg { /* by value, frozen per ABI generation */
   RLMeshSpecKind kind;
   const RLMeshModelSpec* spec; /* MODEL_SPEC only; deep-copied by the consumer */
 } RLMeshSpecArg;
@@ -2956,10 +2954,10 @@ typedef struct RLMeshEpisodeState RLMeshEpisodeState; /* borrowed, valid for the
 /* true and *out = value when present (a stored NULL is a value); false when missing. */
 RLMESH_API bool rlmesh_episode_state_get(const RLMeshEpisodeState* episode_state, const char* key,
                                          void** out);
-/* R-20: on RLMESH_OK value (and free_value, NULL = none) pass to the state, and replacing
- * a key frees the old value first; on nonzero free_value is not called, the caller still
- * owns value, and the state is unchanged. Re-setting the same pointer keeps the
- * value alive and updates its free function without calling the previous one. */
+/* On RLMESH_OK value (and free_value, NULL = none) pass to the state, and replacing a
+ * key frees the old value first; on nonzero free_value is not called, the caller still
+ * owns value, and the state is unchanged. Re-setting the same pointer keeps the value
+ * alive and updates its free function without calling the previous one. */
 RLMESH_API RLMeshStatus rlmesh_episode_state_set(RLMeshEpisodeState* episode_state, const char* key,
                                                  void* value, void (*free_value)(void* user_data));
 RLMESH_API bool rlmesh_episode_state_remove(RLMeshEpisodeState* episode_state, const char* key);
@@ -2987,11 +2985,11 @@ typedef struct RLMeshPredictContext { /* struct_size = the library's sizeof */
   int64_t predict_seed;
   RLMeshEpisodeState* state;
 } RLMeshPredictContext;
-/* Lent (R-19): a reader treats any field struct_size does not cover as this value. */
+/* Lent: a reader treats any field struct_size does not cover as this value. */
 #define RLMESH_PREDICT_CONTEXT_INIT \
   {sizeof(RLMeshPredictContext), "", false, {0}, 0, 0, false, {0}, 0, NULL}
 
-typedef struct RLMeshLoadKey { /* by value, frozen per ABI generation (R-19) */
+typedef struct RLMeshLoadKey { /* by value, frozen per ABI generation */
   const char* name;            /* nonempty, unique */
   bool required;
   uint8_t _reserved[sizeof(size_t) - 1]; /* no default in load */
@@ -3027,7 +3025,7 @@ typedef struct RLMeshModelVtable {
   uint8_t _reserved1[2]; /* false */
   uint32_t native_chunk; /* static K for describe; 0 with has_native_chunk: ValueError class */
   const char* workflow_edition;   /* NULL = None */
-  const RLMeshLoadKey* load_keys; /* NULL = None: every key reaches load (MDL-19); R-13 */
+  const RLMeshLoadKey* load_keys; /* NULL = None: every key reaches load */
   size_t
       load_keys_len; /* entries, deep-copied; non-NULL with 0 = []; NULL with >0: RLMESH_ERR_TYPE */
 } RLMeshModelVtable;
@@ -3062,7 +3060,7 @@ typedef struct RLMeshExtModelServeOptions {
 typedef struct RLMeshModelServeOptions {
   size_t struct_size;
   const RLMeshServeOptions* options;     /* NULL = None (Env) */
-  RLMeshExtCancelToken* cancel;          /* NULL = none, borrowed (R-18) */
+  RLMeshExtCancelToken* cancel;          /* NULL = none, borrowed */
   const RLMeshExtModelServeOptions* ext; /* NULL = none */
 } RLMeshModelServeOptions;
 #define RLMESH_MODEL_SERVE_OPTIONS_INIT {sizeof(RLMeshModelServeOptions), NULL, NULL, NULL}
@@ -3151,8 +3149,8 @@ RLMESH_API RLMeshStatus rlmesh_env_factory_describe(RLMeshEnvFactory* obj,
 RLMESH_API RLMeshStatus rlmesh_env_factory_describe_json(RLMeshEnvFactory* obj,
                                                          const RLMeshDescribeJsonOptions* options,
                                                          RLMeshBytes* out);
-/* Fenced served-env shorthand (COR-16): reads the server's resolved snapshot,
- * including its host declaration, before/after start and shutdown. */
+/* Served-env describe shorthand: reads the server's resolved snapshot, including its host
+ * declaration, before/after start and shutdown. */
 RLMESH_API RLMeshStatus rlmesh_ext_env_server_describe_json(const RLMeshEnvServer* env_server,
                                                             RLMeshBytes* out);
 
@@ -3179,7 +3177,7 @@ typedef enum RLMeshEnvTargetKind {
   RLMESH_ENV_TARGET_KIND_VECTOR_ENV = 6,
   RLMESH_ENV_TARGET_KIND_ENV_FACTORY = 7
 } RLMeshEnvTargetKind;
-/* Frozen by-value layouts (RUN-27). Constructors borrow handles and addresses. */
+/* Frozen by-value layouts. Constructors borrow handles and addresses. */
 typedef struct RLMeshModelTarget {
   RLMeshModelTargetKind kind;
   const void* handle;
@@ -3787,14 +3785,13 @@ RLMESH_API RLMeshStatus rlmesh_run_result_advisories_get(const RLMeshRunResult* 
  * callback: a model's predict or an env's reset / step / render). */
 RLMESH_API void rlmesh_callback_set_error(const char* message, bool recoverable);
 
-/* Set this call's error as an exact class instead, as a Python author raises
- * ValueError or TypeError from a hook: in process the failing call reports that
- * class, its status and `message`; across the wire the peer sees an environment
- * or model failure. An environment or model class carries code INTERNAL and is
- * recoverable only as RLMESH_ERROR_CLASS_RECOVERABLE_ENVIRONMENT_EXCEPTION (a
- * recoverable model failure uses rlmesh_callback_set_error). INVALID or an
- * unknown value records RLMESH_ERROR_CLASS_RLMESH_EXCEPTION. The last call
- * before the callback returns wins. */
+/* Set this call's error as an exact class, such as ValueError or TypeError: in process
+ * the failing call reports that class, its status and `message`; across the wire the
+ * peer sees an environment or model failure. An environment or model class carries code
+ * INTERNAL and is recoverable only as
+ * RLMESH_ERROR_CLASS_RECOVERABLE_ENVIRONMENT_EXCEPTION (a recoverable model failure uses
+ * rlmesh_callback_set_error). INVALID or an unknown value records
+ * RLMESH_ERROR_CLASS_RLMESH_EXCEPTION. The last call before the callback returns wins. */
 RLMESH_API void rlmesh_callback_set_error_class(RLMeshErrorClass error_class, const char* message);
 /* Opaque host exception attached to this callback failure; ownership transfers.
  * Replacing, clearing or dropping an untaken payload calls free_payload once.
@@ -3940,12 +3937,11 @@ typedef struct RLMeshWorkloadRecordOptions {
 } RLMeshWorkloadRecordOptions;
 #define RLMESH_WORKLOAD_RECORD_OPTIONS_MIN_SIZE sizeof(RLMeshWorkloadRecordOptions)
 #define RLMESH_WORKLOAD_RECORD_OPTIONS_INIT {sizeof(RLMeshWorkloadRecordOptions), NULL, NULL, 0}
-/* Required strings cannot be NULL. Records copy values without adding
- * validation beyond C representation (matching Python's dataclasses).
- * Child lists: NULL/0 = empty, NULL/nonzero or a NULL element is refused.
- * _get returns a new owned snapshot; i >= len is ERR_INVALID_ARGUMENT.
- * Scalars/lengths return zero on NULL. Optional reads return false for None.
- * _to_dict returns an owned DICT; _repr returns owned UTF-8 bytes. */
+/* Required strings cannot be NULL. Records copy values without adding validation beyond
+ * C representation. Child lists: NULL/0 = empty, NULL/nonzero or a NULL element is
+ * refused. _get returns a new owned snapshot; i >= len is ERR_INVALID_ARGUMENT.
+ * Scalars/lengths return zero on NULL. Optional reads return false for None. _to_dict
+ * returns an owned DICT; _repr returns owned UTF-8 bytes. */
 RLMESH_API RLMeshStatus rlmesh_media_ref_new(const char* camera, const char* kind, const char* path,
                                              const char* format,
                                              const RLMeshMediaRefOptions* options,

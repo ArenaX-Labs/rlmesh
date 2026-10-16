@@ -1,9 +1,8 @@
-//! A one-lane vector env served as the scalar env it is (construction step
-//! 2; Python's `SingleLaneEnv`).
+//! A one-lane vector env served as a scalar env.
 //!
 //! The contract's `num_envs` is the only vector signal on the wire, so a
-//! batched simulator configured with one lane is served as a scalar lane: the
-//! runtime then owns its resets, per-episode seeds and `trial_index`.
+//! batched simulator configured with one lane is served as a scalar lane:
+//! the runtime then owns its resets, per-episode seeds and `trial_index`.
 
 use rlmesh_spaces::SpaceSpec as WireSpec;
 
@@ -24,7 +23,8 @@ pub(crate) struct SingleLaneEnv {
 }
 
 impl SingleLaneEnv {
-    /// Check the vector env's `autoreset_mode` by ENV-27's rule, then strip it.
+    /// Reject `SameStep` autoreset, validate the mode, then remove the
+    /// `autoreset_mode` metadata key.
     pub(crate) fn new(env: Box<dyn VectorEnv + Send>) -> Result<SingleLaneEnv> {
         let mut metadata = env.metadata().unwrap_or_default();
         if metadata.get(AUTORESET_KEY) == Some(&Value::Text("SameStep".to_string())) {

@@ -193,9 +193,10 @@ impl EncodingTransform for Encodings {
 /// an options field is a minor change by project policy.
 #[derive(Clone, Debug)]
 pub struct ResolveOptions {
-    /// The `trust_entrypoints` field, with Python’s meaning and default.
+    /// Allow registered custom-input entrypoints; defaults to false.
     pub trust_entrypoints: bool,
-    /// The `check_inverse` field, with Python’s meaning and default.
+    /// Check that distinct two-arm custom encodings are inverses; defaults
+    /// to true.
     pub check_inverse: bool,
 }
 impl Default for ResolveOptions {
@@ -340,13 +341,13 @@ fn check_inverse(encodings: &[CustomEncoding]) -> Result<()> {
     Ok(())
 }
 pub(crate) struct ResolvedParts {
-    /// The `plan` field, with Python’s meaning and default.
+    /// The resolved transformation plan.
     pub plan: core::ResolvedAdapter,
-    /// The `customs` field, with Python’s meaning and default.
+    /// Custom input transforms keyed by their placement in the input tree.
     pub customs: Customs,
-    /// The `encodings` field, with Python’s meaning and default.
+    /// Custom encodings used by the plan.
     pub encodings: Encodings,
-    /// The `input` field, with Python’s meaning and default.
+    /// The authored model-input tree.
     pub input: InputNode,
 }
 fn walk<'a>(n: &'a InputNode, path: NodePath, out: &mut Vec<(NodePath, &'a ModelLeaf)>) {
@@ -653,7 +654,7 @@ fn raw_map(raw: Value) -> Result<BTreeMap<String, core::Value>> {
     }
 }
 impl AdapterBase for Adapter {
-    /// Python’s `AdapterBase.transform_obs` operation.
+    /// Transform an environment observation into model input.
     fn transform_obs(&mut self, raw: Value) -> Result<Value> {
         let mut s = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let AdapterState {
@@ -680,7 +681,7 @@ impl AdapterBase for Adapter {
         .map_err(Error::from_apply)?;
         Ok(restore_shape(from_adapter(out)?, &parts.input))
     }
-    /// Python’s `AdapterBase.transform_action` operation.
+    /// Transform model output into an environment action.
     fn transform_action(&mut self, raw: Value) -> Result<Value> {
         let mut s = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let AdapterState {
@@ -702,7 +703,7 @@ impl AdapterBase for Adapter {
             .map_err(Error::from_apply)?;
         crate::binding::tensor_from_core(tensor).map(Value::Tensor)
     }
-    /// Python’s `AdapterBase.observe` operation.
+    /// Record an observation for stateful transforms.
     fn observe(&mut self, raw: Value) -> Result<()> {
         let mut s = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let AdapterState {
@@ -719,7 +720,7 @@ impl AdapterBase for Adapter {
         *step = tick + 1;
         core::observe_obs(&parts.plan, &raw_map(raw)?, "local", buffers).map_err(Error::from_apply)
     }
-    /// Python’s `AdapterBase.reset` operation.
+    /// Reset stateful transforms for a new episode.
     fn reset(&mut self) -> Result<()> {
         let mut s = self.0.lock().unwrap_or_else(|e| e.into_inner());
         s.buffers.clear();
@@ -727,7 +728,7 @@ impl AdapterBase for Adapter {
         s.current_step = 0;
         Ok(())
     }
-    /// Python’s `AdapterBase.explain` operation.
+    /// Describe the resolved transformation plan.
     fn explain(&self) -> Result<String> {
         Ok(self
             .0
@@ -758,22 +759,23 @@ pub(crate) fn restore_shape(value: Value, node: &InputNode) -> Value {
         (_, v) => v,
     }
 }
-/// An authored adapter protocol; defaults match Python's `AdapterBase`.
+/// An authored adapter protocol with no-op observe and reset hooks by
+/// default.
 pub trait AdapterBase {
-    /// Python’s `AdapterBase.transform_obs` operation.
+    /// Transform an environment observation into model input.
     fn transform_obs(&mut self, raw_obs: Value) -> Result<Value>;
-    /// Python’s `AdapterBase.transform_action` operation.
+    /// Transform model output into an environment action.
     fn transform_action(&mut self, raw_action: Value) -> Result<Value>;
-    /// Python’s `AdapterBase.observe` operation.
+    /// Record an observation for stateful transforms.
     fn observe(&mut self, raw_obs: Value) -> Result<()> {
         let _ = raw_obs;
         Ok(())
     }
-    /// Python’s `AdapterBase.reset` operation.
+    /// Reset stateful transforms for a new episode.
     fn reset(&mut self) -> Result<()> {
         Ok(())
     }
-    /// Python’s `AdapterBase.explain` operation.
+    /// Describe the resolved transformation plan.
     fn explain(&self) -> Result<String> {
         let name = std::any::type_name::<Self>()
             .split('<')
@@ -784,7 +786,7 @@ pub trait AdapterBase {
             .unwrap_or("AdapterBase");
         Ok(format!("{name} (custom adapter)"))
     }
-    /// Python’s `AdapterBase.wrap_predict` operation.
+    /// Wrap a predict function with observation and action transforms.
     fn wrap_predict<F>(self, predict_fn: F) -> WrappedPredict<Self, F>
     where
         Self: Sized,

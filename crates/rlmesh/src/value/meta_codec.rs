@@ -1,11 +1,10 @@
-//! [`Metadata`] on the wire (COR-26): the encoding Python's metadata codec
-//! gives a `dict`.
+//! [`Metadata`] on the wire.
 //!
-//! `None` → Null; `Bool`, `Int`, `Float`, `Bytes` and `List` keep their kind;
-//! `Text` → String; `Dict` → Map; `Tuple` → List; a `Tensor` → its elements
-//! as nested Lists by shape in C order (a 0-d tensor as its bare element), as
-//! NumPy's `tolist`. Decoding yields only the wire kinds, with maps in the
-//! wire's sorted key order.
+//! `None` → Null; `Bool`, `Int`, `Float`, `Bytes` and `List` keep their
+//! kind; `Text` → String; `Dict` → Map; `Tuple` → List; a `Tensor` → its
+//! elements as nested Lists by shape in C order (a 0-d tensor as its bare
+//! element), preserving element order. Decoding yields only the wire kinds,
+//! with maps in the wire's sorted key order.
 
 use rlmesh_spaces::{DType as CoreDType, MetaMap, MetaValue, Scalar, decode_scalars};
 

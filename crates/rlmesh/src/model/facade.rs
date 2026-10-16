@@ -18,12 +18,11 @@ use super::types::EpisodeInfo;
 use crate::editions::EditionSources;
 use crate::{BindAddress, Error, Kwargs, Result, ServeOptions, Value};
 
-/// ENV-7's cap on a `None` drain or close timeout, which a model serve
-/// takes too.
+/// The cap on a `None` drain or close timeout, which a model serve takes
+/// too.
 const SERVE_GRACE: Duration = Duration::from_secs(5);
 
-/// The options of [`Model::new`]: Python's `Model(..., spec=,
-/// on_episode_end=, on_close=, trust_entrypoints=)`.
+/// Options for [`Model::new`].
 #[derive(Default)]
 #[allow(clippy::type_complexity)] // Python's hook signatures, spelled out (MDL-21).
 pub struct ModelOptions {
@@ -48,8 +47,7 @@ impl fmt::Debug for ModelOptions {
     }
 }
 
-/// The options of [`Model::serve`]: Python's `serve(address, *, options=)`,
-/// plus the cancel token (R-18) and the fenced extras (MDL-20).
+/// Options for [`Model::serve`], including cancellation and native extras.
 #[derive(Clone, Debug, Default)]
 pub struct ModelServeOptions {
     /// The transport lifecycle policy; `None` drain and close timeouts take
@@ -62,9 +60,9 @@ pub struct ModelServeOptions {
     pub ext: Option<crate::ext::ModelServeOptions>,
 }
 
-/// A loaded model: Python's `rlmesh.Model`, built from a [`Policy`] (or a
-/// predict closure). A shared handle: clones drive the same model, and the
-/// last one dropped closes it if [`close`](Model::close) has not run.
+/// A loaded model built from a [`Policy`] or predict closure. A shared
+/// handle: clones drive the same model, and the last one dropped closes it
+/// if [`close`](Model::close) has not run.
 ///
 /// Every corner and hook call on one model, across every run and serve on
 /// it, runs one at a time, in submission order, on a library thread. A
@@ -127,7 +125,7 @@ pub struct PolicyDecl {
     pub spec: Option<SpecArg>,
     /// The policy's edition declaration.
     pub workflow_edition: Option<String>,
-    /// Whether the policy is an authored participant (COR-7).
+    /// Whether the policy is an authored participant.
     pub authored: bool,
     /// The describe qualname's type part.
     pub type_name: String,
@@ -643,7 +641,7 @@ pub(crate) struct Shared {
     worker: ThreadId,
     life: Arc<Life>,
     refuse: AtomicBool,
-    /// RUN-9: set while a run drives this model.
+    /// Set while a run drives this model.
     running: AtomicBool,
 }
 
@@ -783,8 +781,8 @@ impl Shared {
         Ok(())
     }
 
-    /// Claim the model's one run slot (RUN-9): a second run while one is in
-    /// progress fails at once with the `RuntimeError` class.
+    /// Claim the model's one run slot: a second run while one is in progress
+    /// fails at once with the `RuntimeError` class.
     pub(crate) fn claim_run(self: &Arc<Self>) -> Result<RunSlot> {
         if self.running.swap(true, Ordering::SeqCst) {
             return Err(Error::Runtime(
@@ -882,8 +880,8 @@ impl Shared {
     }
 }
 
-/// Check a config against `load`'s declared keys, in Python's order:
-/// a missing required key, then the unlisted keys.
+/// Check a config against `load`'s declared keys: a missing required key,
+/// then the unlisted keys.
 fn check_config(keys: Option<&[(String, bool)]>, config: &Kwargs, from_config: bool) -> Result<()> {
     let Some(keys) = keys else {
         return Ok(());
@@ -954,9 +952,9 @@ pub(crate) fn construct(
 }
 
 impl Model {
-    /// Build a model from `source`, loading it now with an empty config, as
-    /// Python's `MyModel()` does. A closure is a policy too
-    /// (`Model::new(|obs| Ok(..), ModelOptions::default())`).
+    /// Build a model from `source`, loading it now with an empty config. A
+    /// closure is a policy too (`Model::new(|obs| Ok(..),
+    /// ModelOptions::default())`).
     pub fn new<P: Policy>(source: P, options: ModelOptions) -> Result<Model> {
         construct(
             Box::new(Erased(source)),
@@ -966,8 +964,7 @@ impl Model {
         )
     }
 
-    /// Build `P::default()` and load it with `config`: Python's
-    /// `MyModel.from_config(**config)`.
+    /// Build `P::default()` and load it with `config`.
     pub fn from_config<P: Policy + Default>(config: Kwargs) -> Result<Model> {
         construct(
             Box::new(Erased(P::default())),
@@ -1028,9 +1025,9 @@ impl Model {
             .unwrap_or_else(|_| Err(Error::Internal("the model close was dropped".to_string())))
     }
 
-    /// Serve the model on `address` until the server stops, then close it:
-    /// Python's `Model.serve`. SIGINT stops it (drain, close) and fails with
-    /// the cancellation class; SIGTERM stops it and returns `Ok`.
+    /// Serve the model on `address` until the server stops, then close it.
+    /// SIGINT stops it (drain, close) and fails with the cancellation class;
+    /// SIGTERM stops it and returns `Ok`.
     pub fn serve(&self, address: &str, options: ModelServeOptions) -> Result<()> {
         if crate::env::server::in_async_context() {
             return Err(Error::Runtime(

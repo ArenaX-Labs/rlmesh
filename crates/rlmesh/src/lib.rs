@@ -1,10 +1,10 @@
 //! Rust SDK for RLMesh model-environment evaluation workflows.
 //!
-//! RLMesh connects a model to an environment over gRPC. This crate is the Rust
-//! facade over the transport, wire, and runtime crates, with the Python
-//! package's nouns and defaults. Python users should start with the `rlmesh`
-//! Python package; use this crate when serving or driving environments and
-//! models from Rust.
+//! RLMesh connects a model to an environment over gRPC. This crate is the
+//! Rust facade over the transport, wire, and runtime crates. RLMesh uses
+//! the same nouns and constructs in every language, following each
+//! language's conventions. Use this crate to serve or drive environments
+//! and models from Rust.
 //!
 //! # The two roles
 //!
@@ -24,23 +24,23 @@
 //!
 //! # Options structs
 //!
-//! Python's keyword arguments are options structs whose `Default` holds
-//! Python's defaults ([`EnvServerOptions`], [`ServeOptions`],
-//! [`EnvFactoryServeOptions`]). Build them with `..Default::default()`: by
-//! project policy appending an options field is a minor change, and a full
-//! struct literal without `..` is unsupported.
+//! Optional arguments use options structs with documented defaults
+//! ([`EnvServerOptions`], [`ServeOptions`], [`EnvFactoryServeOptions`]).
+//! Build them with `..Default::default()`: by project policy appending an
+//! options field is a minor change, and a full struct literal without `..`
+//! is unsupported.
 //!
 //! # Errors
 //!
-//! Fallible operations return [`Result`] (alias for `Result<T, `[`Error`]`>`).
-//! Each [`Error`] variant is one of the Python package's exception classes:
+//! Fallible operations return [`Result`], an alias for `Result<T, Error>`.
+//! Each [`Error`] variant identifies an error class:
 //! [`Error::class`] reports the exact class as an [`ErrorClass`], whose
-//! [`ErrorClass::is_subclass_of`] follows Python's inheritance, and `Display`
-//! is Python's `str(exc)`. The two domain failures are
-//! [`Error::Environment`] (carrying an [`ErrorCode`]) and [`Error::Model`] (a
-//! failure your [`Policy`] raised, carrying a [`ModelErrorCode`]). Both
-//! carry an `is_recoverable` flag surfaced by [`Error::is_recoverable`], which
-//! is false for every other variant.
+//! [`ErrorClass::is_subclass_of`] tests class inheritance. `Display`
+//! formats the error message. The two domain failures are
+//! [`Error::Environment`] (carrying an [`ErrorCode`]) and [`Error::Model`]
+//! (a failure your [`Policy`] raised, carrying a [`ModelErrorCode`]). Both
+//! carry an `is_recoverable` flag surfaced by [`Error::is_recoverable`],
+//! which is false for every other variant.
 //!
 //! # Example: serve an environment
 //!
@@ -150,12 +150,11 @@ pub use describe::{
 pub use dtype::{DType, Device};
 pub use editions::current_workflow_edition;
 
-/// The key a serialized describe envelope travels under (`rlmesh.describe.v1`):
-/// Python's `rlmesh.DESCRIBE_METADATA_KEY`.
+/// The key a serialized describe envelope travels under
+/// (`rlmesh.describe.v1`).
 pub const DESCRIBE_METADATA_KEY: &str = rlmesh_adapters::v1::DESCRIBE_METADATA_KEY;
 
-/// The describe envelope's schema version: Python's
-/// `rlmesh.DESCRIBE_SCHEMA_VERSION`.
+/// The describe envelope's schema version.
 pub const DESCRIBE_SCHEMA_VERSION: i64 = rlmesh_adapters::v1::DESCRIBE_SCHEMA_VERSION as i64;
 pub use env::{
     Env, EnvFactory, EnvFactoryExt, EnvFactoryServeOptions, EnvServer, EnvServerOptions, MadeEnv,
