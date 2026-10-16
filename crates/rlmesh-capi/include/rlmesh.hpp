@@ -1317,7 +1317,7 @@ class Space {
   ~Space() { rlmesh_space_free(ptr_); }
 
   const RLMeshSpace* raw() const { return ptr_; }
-  explicit Space(const SpaceSpec& s) : Space(from_spec(s)) {}
+  explicit Space(const SpaceSpec& spec) : Space(from_spec(spec)) {}
   SpaceSpec spec() const { return SpaceSpec::copy_of(rlmesh_space_spec(ptr_)); }
   /// A space converts to its spec (Dict's children are specs).
   operator SpaceSpec() const { return spec(); }  // NOLINT(google-explicit-constructor)
@@ -2324,22 +2324,22 @@ struct Image {
     if (c.part) v.part = std::string(detail::sv(c.part));
     return v;
   }
-  Image with_size(uint32_t n) const {
+  Image with_size(uint32_t size) const {
     auto v = *this;
     detail_adapter::Arena a;
     auto c = v.raw(a);
-    detail::check_status(rlmesh_image_with_size(&c, n));
+    detail::check_status(rlmesh_image_with_size(&c, size));
     v.height = c.height;
     v.width = c.width;
     return v;
   }
-  Image with_stride(uint32_t n) const {
-    if (n == 0 || offsets)
+  Image with_stride(uint32_t stride) const {
+    if (stride == 0 || offsets)
       throw ValueError("Image: stride must be >= 1 and cannot combine with offsets");
     auto value = *this;
     std::vector<int32_t> expanded;
     for (uint32_t i = 0; i < stack; ++i) {
-      const int64_t offset = -static_cast<int64_t>(stack - 1 - i) * n;
+      const int64_t offset = -static_cast<int64_t>(stack - 1 - i) * stride;
       if (offset < std::numeric_limits<int32_t>::min())
         throw ValueError("Image stride overflows offsets");
       expanded.push_back(static_cast<int32_t>(offset));
@@ -7070,7 +7070,7 @@ struct RecorderOptions {
 };
 struct RecorderAddOptions {
   std::optional<std::string> task{};
-  Metadata config{};
+  std::optional<Metadata> config{};
   bool included_in_metrics = true;
   RecorderAddOptions& with_task(std::optional<std::string> value) & {
     task = std::move(value);
@@ -7080,11 +7080,11 @@ struct RecorderAddOptions {
     task = std::move(value);
     return std::move(*this);
   }
-  RecorderAddOptions& with_config(Metadata value) & {
+  RecorderAddOptions& with_config(std::optional<Metadata> value) & {
     config = std::move(value);
     return *this;
   }
-  RecorderAddOptions with_config(Metadata value) && {
+  RecorderAddOptions with_config(std::optional<Metadata> value) && {
     config = std::move(value);
     return std::move(*this);
   }
@@ -7099,7 +7099,7 @@ struct RecorderAddOptions {
 };
 struct RecorderCaptureOptions {
   std::optional<std::string> task{};
-  Metadata config{};
+  std::optional<Metadata> config{};
   OptionalList<std::string> cameras{};
   std::shared_ptr<RunContext> session{};
   std::vector<std::string> video_info_keys = {"video_artifact_path", "video_url"};
@@ -7112,11 +7112,11 @@ struct RecorderCaptureOptions {
     task = std::move(value);
     return std::move(*this);
   }
-  RecorderCaptureOptions& with_config(Metadata value) & {
+  RecorderCaptureOptions& with_config(std::optional<Metadata> value) & {
     config = std::move(value);
     return *this;
   }
-  RecorderCaptureOptions with_config(Metadata value) && {
+  RecorderCaptureOptions with_config(std::optional<Metadata> value) && {
     config = std::move(value);
     return std::move(*this);
   }
@@ -7287,10 +7287,10 @@ class Recorder {
   WorkloadRecord add(const RunResult& result, std::string_view model, std::string_view env,
                      const RecorderAddOptions& options = {}) {
     auto r = detail::own<RLMeshRunResult, rlmesh_run_result_free>(result.raw());
-    Value cfg(options.config);
+    Value cfg(options.config.value_or(Metadata{}));
     RLMeshRecorderAddOptions c = RLMESH_RECORDER_ADD_OPTIONS_INIT;
     c.task = detail::ptr(options.task);
-    c.config = cfg.raw();
+    c.config = options.config ? cfg.raw() : nullptr;
     c.included_in_metrics = options.included_in_metrics;
     RLMeshWorkloadRecord* p = nullptr;
     detail::check_status(rlmesh_recorder_add(handle_.get(), r.get(), std::string(model).c_str(),
@@ -7300,10 +7300,10 @@ class Recorder {
   }
   std::unique_ptr<RunHooks> capture(std::string_view model, std::string_view env,
                                     const RecorderCaptureOptions& options = {}) {
-    Value cfg(options.config);
+    Value cfg(options.config.value_or(Metadata{}));
     RLMeshRecorderCaptureOptions c = RLMESH_RECORDER_CAPTURE_OPTIONS_INIT;
     c.task = detail::ptr(options.task);
-    c.config = cfg.raw();
+    c.config = options.config ? cfg.raw() : nullptr;
     c.included_in_metrics = options.included_in_metrics;
     std::vector<const char*> cameras, keys;
     const char* empty = nullptr;

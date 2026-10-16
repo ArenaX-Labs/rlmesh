@@ -33,6 +33,7 @@ def test_adapter_function_and_plumbing_labels() -> None:
     objects = collect_python_api_surface().to_contract()["rlmesh.adapters"]["objects"]
     assert objects["tag"]["kind"] == "function"
     assert "validate: bool = True" in objects["tag"]["signature"]
+    assert "signature" not in objects["Adapter"]
     members = objects["Adapter"]["members"]
     assert members["__init__"]["stability"] == "Internal"
     assert members["serve_route"]["stability"] == "Internal"

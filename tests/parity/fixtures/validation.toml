@@ -1,0 +1,55 @@
+
+[[scenario]]
+id = "validation_horizon_zero"
+family = "Errors"
+rules = ["R-21", "R-22"]
+operation = "validation"
+variant = "horizon_zero"
+expect = { error = "ValueError", text = "execution_horizon must be >= 1, got 0" }
+
+[[scenario]]
+id = "validation_horizon_large"
+family = "Errors"
+rules = ["R-21", "R-22"]
+operation = "validation"
+variant = "horizon_large"
+expect = { error = "ValueError", text = "execution_horizon must be <= 1024, got 1025" }
+
+[[scenario]]
+id = "validation_view_port"
+family = "Errors"
+rules = ["R-21", "R-22"]
+operation = "validation"
+variant = "view_port"
+expect = { error = "ValueError", text = "View.port must be in 1..65535; got 0" }
+
+[[scenario]]
+id = "validation_view_fps"
+family = "Errors"
+rules = ["R-21", "R-22"]
+operation = "validation"
+variant = "view_fps"
+expect = { error = "ValueError", text = "View.fps must be >= 1; got 0" }
+
+[[scenario]]
+id = "validation_view_quality"
+family = "Errors"
+rules = ["R-21", "R-22"]
+operation = "validation"
+variant = "view_quality"
+expect = { error = "ValueError", text = "View.quality must be in 1..100; got 0" }
+
+[[scenario]]
+id = "validation_view_step_hz"
+family = "Errors"
+rules = ["R-21", "R-22"]
+operation = "validation"
+variant = "view_step_hz"
+expect = { error = "ValueError", text = "View.step_hz must be a finite rate > 0 or None; got 0.0" }
+
+[[scenario]]
+id = "validation_dict_missing_key"
+family = "Errors"
+rules = ["R-15", "R-21", "R-22"]
+operation = "dict_error"
+expect = { error = "ValueError", text = "$.path: missing key 'k'" }

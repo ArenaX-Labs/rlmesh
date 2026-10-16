@@ -664,16 +664,16 @@ RLMESH_API const char* rlmesh_device_str(RLMeshDevice device);
  * copy creates independent storage. Strides are in bytes. */
 typedef struct RLMeshTensor RLMeshTensor;
 RLMESH_API RLMeshStatus rlmesh_tensor_new(const void* buffer, size_t buffer_len,
-                                          const size_t* shape, size_t ndim, RLMeshDType dtype,
+                                          const size_t* shape, size_t shape_len, RLMeshDType dtype,
                                           RLMeshTensor** out);
 RLMESH_API RLMeshTensor* rlmesh_tensor_clone(const RLMeshTensor* tensor);
 RLMESH_API void rlmesh_tensor_free(RLMeshTensor* tensor);
 RLMESH_API RLMeshDType rlmesh_tensor_dtype(const RLMeshTensor* tensor);
 RLMESH_API RLMeshDevice rlmesh_tensor_device(const RLMeshTensor* tensor);
-RLMESH_API RLMeshStatus rlmesh_tensor_shape(const RLMeshTensor* tensor, size_t* out, size_t cap,
-                                            size_t* out_len);
-RLMESH_API RLMeshStatus rlmesh_tensor_strides(const RLMeshTensor* tensor, size_t* out, size_t cap,
-                                              size_t* out_len);
+RLMESH_API RLMeshStatus rlmesh_tensor_shape(const RLMeshTensor* tensor, size_t* out,
+                                            size_t capacity, size_t* out_len);
+RLMESH_API RLMeshStatus rlmesh_tensor_strides(const RLMeshTensor* tensor, size_t* out,
+                                              size_t capacity, size_t* out_len);
 RLMESH_API RLMeshStatus rlmesh_tensor_ndim(const RLMeshTensor* tensor, size_t* out);
 RLMESH_API RLMeshStatus rlmesh_tensor_size(const RLMeshTensor* tensor, size_t* out);
 RLMESH_API RLMeshStatus rlmesh_tensor_nbytes(const RLMeshTensor* tensor, size_t* out);
@@ -681,7 +681,7 @@ RLMESH_API RLMeshStatus rlmesh_tensor_buffer(const RLMeshTensor* tensor, const v
                                              size_t* out_len);
 RLMESH_API bool rlmesh_tensor_is_contiguous(const RLMeshTensor* tensor);
 RLMESH_API RLMeshStatus rlmesh_tensor_reshape(const RLMeshTensor* tensor, const int64_t* shape,
-                                              size_t ndim, RLMeshTensor** out);
+                                              size_t shape_len, RLMeshTensor** out);
 RLMESH_API RLMeshStatus rlmesh_tensor_copy(const RLMeshTensor* tensor, RLMeshTensor** out);
 RLMESH_API RLMeshStatus rlmesh_tensor_tobytes(const RLMeshTensor* tensor, struct RLMeshBytes* out);
 RLMESH_API RLMeshStatus rlmesh_tensor_repr(const RLMeshTensor* tensor, struct RLMeshBytes* out);
@@ -896,15 +896,15 @@ typedef RLMeshSpace RLMeshBox;
 typedef RLMeshSpace RLMeshDiscrete;
 typedef RLMeshSpace RLMeshDict;
 
-/* Buffer rule for every (out, cap, out_len) call below: *out_len always gets
- * the full length; out == NULL with cap == 0 is a length query (RLMESH_OK); a
- * short cap returns RLMESH_ERR_INVALID_ARGUMENT and writes nothing. */
+/* Buffer rule for every (out, capacity, out_len) call below: *out_len always gets
+ * the full length; out == NULL with capacity == 0 is a length query (RLMESH_OK); a
+ * short capacity returns RLMESH_ERR_INVALID_ARGUMENT and writes nothing. */
 
 /* SpaceSpec: immutable data. An owned copy is freed with rlmesh_space_spec_free. */
 RLMESH_API RLMeshSpaceSpec* rlmesh_space_spec_clone(const RLMeshSpaceSpec* spec);
 RLMESH_API RLMeshSpaceKind rlmesh_space_spec_kind(const RLMeshSpaceSpec* spec);
 RLMESH_API RLMeshStatus rlmesh_space_spec_shape(const RLMeshSpaceSpec* spec, int64_t* out,
-                                                size_t cap, size_t* out_len);
+                                                size_t capacity, size_t* out_len);
 /* A Dict reads RLMESH_DTYPE_FLOAT32; INVALID for NULL. */
 RLMESH_API RLMeshDType rlmesh_space_spec_dtype(const RLMeshSpaceSpec* spec);
 /* A fresh space with its own sampler; never fails for a valid spec. */
@@ -924,7 +924,7 @@ RLMESH_API void rlmesh_space_free(RLMeshSpace* space);
 RLMESH_API const RLMeshSpaceSpec* rlmesh_space_spec(const RLMeshSpace* space);
 RLMESH_API RLMeshSpaceKind rlmesh_space_kind(const RLMeshSpace* space);
 RLMESH_API RLMeshDType rlmesh_space_dtype(const RLMeshSpace* space);
-RLMESH_API RLMeshStatus rlmesh_space_shape(const RLMeshSpace* space, int64_t* out, size_t cap,
+RLMESH_API RLMeshStatus rlmesh_space_shape(const RLMeshSpace* space, int64_t* out, size_t capacity,
                                            size_t* out_len);
 /* seed(seed): `seed` NULL draws one from OS entropy; the seed applied goes to
  * *out_seed (may be NULL). Restarts this space's stream only (a Dict's children
@@ -951,7 +951,7 @@ typedef struct RLMeshBoxOptions {
 #define RLMESH_BOX_OPTIONS_MIN_SIZE (offsetof(RLMeshBoxOptions, _reserved) + sizeof(uint32_t))
 
 RLMESH_API RLMeshStatus rlmesh_box_new(RLMeshBound low, RLMeshBound high, const int64_t* shape,
-                                       size_t ndim,
+                                       size_t shape_len,
                                        const RLMeshBoxOptions* options /* NULL = INIT */,
                                        RLMeshBox** out);
 /* Box(spec): a spec of another kind is RLMESH_ERR_INVALID_ARGUMENT. */
@@ -959,9 +959,9 @@ RLMESH_API RLMeshStatus rlmesh_box_from_spec(const RLMeshSpaceSpec* spec, RLMesh
 /* low / high: each entry's type_ is the domain it is stored in (BOOL, UINT or
  * INT for integer bounds, FLOAT otherwise). Whether a bound is None, uniform or
  * per element comes from rlmesh_box_bounds_kind, never from the entry count. */
-RLMESH_API RLMeshStatus rlmesh_box_low(const RLMeshBox* box, RLMeshBound* out, size_t cap,
+RLMESH_API RLMeshStatus rlmesh_box_low(const RLMeshBox* box, RLMeshBound* out, size_t capacity,
                                        size_t* out_len);
-RLMESH_API RLMeshStatus rlmesh_box_high(const RLMeshBox* box, RLMeshBound* out, size_t cap,
+RLMESH_API RLMeshStatus rlmesh_box_high(const RLMeshBox* box, RLMeshBound* out, size_t capacity,
                                         size_t* out_len);
 /* *out_has is false when the spec carries no bounds. */
 RLMESH_API RLMeshStatus rlmesh_box_bounds_kind(const RLMeshBox* box, bool* out_has,
@@ -970,7 +970,7 @@ RLMESH_API RLMeshStatus rlmesh_box_bounds_kind(const RLMeshBox* box, bool* out_h
  * the shape's element count). */
 RLMESH_API RLMeshStatus rlmesh_ext_box_elementwise_new(const RLMeshBound* low,
                                                        const RLMeshBound* high, size_t bounds_len,
-                                                       const int64_t* shape, size_t ndim,
+                                                       const int64_t* shape, size_t shape_len,
                                                        const RLMeshBoxOptions* options,
                                                        RLMeshBox** out);
 
@@ -2421,7 +2421,7 @@ RLMESH_API RLMeshStatus rlmesh_adapters_rotation_dims_get(size_t i,
                                                           RLMeshRotationEncoding* encoding,
                                                           uint32_t* dims);
 RLMESH_API RLMeshStatus rlmesh_image_with_size(RLMeshImage* image, uint32_t size);
-RLMESH_API RLMeshStatus rlmesh_rotation_from_matrix(const double rows[3][3], double value[6],
+RLMESH_API RLMeshStatus rlmesh_rotation_from_matrix(const double rows[3][3], double out_value[6],
                                                     RLMeshRotation* out);
 RLMESH_API RLMeshStatus rlmesh_adapters_previous(const char* role,
                                                  const RLMeshPreviousOptions* options,
@@ -2486,8 +2486,9 @@ RLMESH_API RLMeshStatus rlmesh_adapter_history_keys_get(const RLMeshAdapter* ada
 RLMESH_API RLMeshStatus rlmesh_adapter_history_windows_len(const RLMeshAdapter* adapter,
                                                            size_t* out);
 RLMESH_API RLMeshStatus rlmesh_adapter_history_windows_get(const RLMeshAdapter* adapter, size_t i,
-                                                           RLMeshStr* placement, uint64_t* span,
-                                                           uint64_t* frame_bytes);
+                                                           RLMeshStr* out_placement,
+                                                           uint64_t* out_span,
+                                                           uint64_t* out_frame_bytes);
 RLMESH_API RLMeshStatus rlmesh_adapter_wrap_predict(RLMeshAdapter* adapter,
                                                     RLMeshPredictFn predict_fn, void* user_data,
                                                     void (*free_user_data)(void* user_data),

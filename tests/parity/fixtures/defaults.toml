@@ -1,0 +1,56 @@
+# The scripted env resets to 0, adds one per step, terminates at 2 and rewards 1.
+[[scenario]]
+id = "default_episode"
+family = "Defaults"
+rules = ["R-6", "R-17"]
+operation = "run"
+expect = { episodes = 1, steps = 2, reward = 2.0, env_closes = 0, model_closes = 0, reusable = true }
+
+[[scenario]]
+id = "seeds_imply_episodes"
+family = "Defaults"
+rules = ["R-6", "R-13"]
+operation = "run"
+seeds = [0, 1]
+expect = { episodes = 2, steps = 4, reward = 2.0, env_closes = 0, model_closes = 0, reusable = true }
+
+[[scenario]]
+id = "mismatched_seeds"
+family = "Defaults"
+rules = ["R-6", "R-21", "R-22"]
+operation = "run"
+episodes = 2
+seeds = [0]
+expect = { error = "ValueError", text = "episodes=2 does not match len(seeds)=1: pass one seed per episode, or only one of the two" }
+
+[[scenario]]
+id = "empty_seeds"
+family = "Defaults"
+rules = ["R-13"]
+operation = "run"
+seeds = []
+expect = { episodes = 0, steps = 0, env_closes = 0, model_closes = 0, reusable = true }
+
+[[scenario]]
+id = "explicit_zero_episodes"
+family = "Defaults"
+rules = ["R-13"]
+operation = "run"
+episodes = 0
+expect = { episodes = 0, steps = 0, env_closes = 0, model_closes = 0, reusable = true }
+
+[[scenario]]
+id = "reset_positional_seed_and_trial"
+family = "Defaults"
+rules = ["R-7", "R-15"]
+operation = "reset_order"
+expect = { seed = 37, trial_index = 11, observation = 0, info_empty = true }
+
+[[scenario]]
+id = "cpp_recorder_absent_empty_metadata"
+family = "Defaults"
+rules = ["R-13", "RUN-20"]
+operation = "recorder_metadata"
+languages = ["cpp"]
+why = "C++ optional metadata setters must retain absence and explicit emptiness through add and capture."
+expect = { absent = true, empty = true, roundtrip = true, abi_presence = true }

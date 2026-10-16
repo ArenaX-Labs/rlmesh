@@ -1462,12 +1462,11 @@ apply. File references describe the code as audited.
 
 ## Enforcement
 
-**PLANNED. None of this exists yet.** Today the repo has the Python surface
-snapshot and its tests (`python/rlmesh/tests/api_surface/`) and extractors for
-the native surfaces used by the docs
-(`tools/rlmesh_api_surface/src/rlmesh_api_surface/rust_surface.py` from
-rustdoc JSON, `header_surface.py` from libclang). No Rust, C or C++ snapshot
-is committed, and nothing compares the languages.
+**E-1, E-2 and E-3 are implemented.** The reviewed mapping manifest and
+`mise run parity:check` compare the committed Stable Python snapshot with live
+Rust, C and C++ extraction. No native surface snapshot is committed. Shared
+behavioural fixtures exercise the four public APIs and check Rust defaults
+against the same manifest.
 
 ### E-1 Mapping manifest
 
@@ -1478,28 +1477,42 @@ symbol, keyed by its snapshot path. Members and parameters nest under it:
 ["rlmesh:Session.reset"]
 area = "running"
 rule = ["R-7.1"]
+parameters = { seed = { default = "None" }, trial_index = { default = "None" } }
 
 ["rlmesh:Session.reset".rust]
 status = "present"              # present | missing | bridge | exempt
 path = "rlmesh::Session::reset"
 also = ["rlmesh::Session::reset_async"]
-params = { seed = "seed", trial_index = "trial_index" }
+params = { seed = "rlmesh::Session::reset#seed", trial_index = "rlmesh::Session::reset#trial_index" }
 
 ["rlmesh:Session.reset".c]
-status = "missing"
+status = "present"
 path = "rlmesh_session_reset"
-gap = "G-7"
+params = { seed = "rlmesh_session_reset#seed", trial_index = "rlmesh_session_reset#trial_index" }
 
 ["rlmesh:Session.reset".cpp]
-status = "missing"
+status = "present"
 path = "rlmesh::Session::reset"
-gap = "G-7"
+params = { seed = "rlmesh::Session::reset#seed", trial_index = "rlmesh::Session::reset#trial_index" }
 ```
 
 - `status = "bridge"` cites R-24; `"exempt"` cites a decision (D-8, D-9).
 - `"missing"` requires a `gap` ID.
-- Options structs map each Python keyword to its field, with the default
-  written once as a Python literal (`default = "1"`).
+- Each symbol/member has its own snapshot-path table. Its `parameters` table
+  records every Stable parameter; options structs map each keyword to its field
+  as `Type#field`, with the default written once as a Python literal
+  (`default = "1"`). An `expression` preserves the snapshot spelling for a
+  symbolic default or a stub ellipsis; the resolved literal is source-reviewed.
+- `also` inventories individual translation types, helpers and members, never
+  a wildcard over a type's future members. `bridges` names R-24 parameters;
+  `translations` cites decisions for deliberate parameter translations.
+  `protocol` records C++ detected authoring methods (R-12), `injected` the
+  MDL-3/MDL-4 authoring inputs, `collection` the native collection access form,
+  and `factory_switch` the R-21 boolean translated into two Rust constructors.
+- `python -m rlmesh_api_surface.parity_draft --surfaces <dump.json> --output <draft.toml>` proposes mappings using the area tables and extracted surfaces;
+  it refuses to overwrite the reviewed manifest. Obtain review inputs with
+  `python -m rlmesh_api_surface.parity --dump <dump.json>`. Resolve every
+  `REVIEW` marker against the source before adopting a draft.
 - Rust-only and C-only exports are listed under `[ext]` and `[binding]` with
   their rule.
 
@@ -1507,7 +1520,19 @@ gap = "G-7"
 
 `mise run parity:check`: loads the Python snapshot, extracts the Rust surface
 (rustdoc JSON) and the two headers (libclang), and checks them against the
-manifest. It runs in `mise run check` and in CI.
+manifest. It runs in `mise run check` and in CI. The task also runs the
+checker's synthetic unit tests, including all seven rejection categories.
+Rust extraction includes hidden items to inventory `Error::Attached`, but skips
+`binding` module contents. Prelude and other re-export aliases are
+inventoried individually alongside their canonical paths. The C vendored DLPack definitions are
+explicitly inventoried as third-party binding content (SPC-19, SPC-30).
+
+CI uses its default C/C++ drivers and the existing pinned Rust toolchain and
+libclang dependency. A local host whose newer system headers cannot be read
+by libclang 18 can set `RLMESH_PARITY_HEADER_CC` and
+`RLMESH_PARITY_HEADER_CXX` to compatible drivers (for example
+`mise exec zig@0.13.0 -- zig cc` / `zig c++`). These affect header parsing
+only; Cargo and CI require no override.
 
 Acceptance criteria. The check fails when:
 
@@ -1545,12 +1570,33 @@ Acceptance criteria. The check fails when:
 
 ### E-3 Behavioural fixtures
 
-Snapshots check names and literals, not behaviour. Shared fixtures in
-`tests/parity/fixtures/*.toml` describe scenarios once; a runner per language
-(pytest, a Rust integration test, a C program and a C++ program built by the
-capi tests) executes each against the same in-repo scripted env and model and
-compares results. `mise run parity:fixtures` runs all four; it joins
-`test:ci`.
+Shared fixtures in `tests/parity/fixtures/*.toml` describe scenarios once.
+`tests/parity/python_runner.py`, the Rust integration test
+`crates/rlmesh/tests/parity_fixtures.rs`, and the C11 / C++17 programs in
+`tests/parity/` execute the same deterministic two-step counter env and constant
+model through their language's APIs. Pytest compares Python/C/C++ observations;
+the Rust runner compares the same fixtures via a lossless JSON projection.
+Every specified result, class, inheritance flag, code, recoverability flag and
+error text is checked. Scenarios restricted to a subset of languages declare
+`languages` and a required `why`; pytest includes that reason when skipping.
+`mise run parity:fixtures` runs all four and is a dependency of `test:ci`;
+`test:cxx` also builds and runs the native scenarios with its selected compilers
+at C++17 and C++20. `--repeat 10 --load` repeats the complete gate under one
+additional CPU worker. Endpoints are OS-assigned and synchronization uses
+channels or bounded state/completion waits, without fixed ports or sleeps.
+
+`tests/parity/generate_defaults.py` generates
+`crates/rlmesh/tests/parity_defaults.rs` directly from the reviewed manifest.
+It reads `[symbol.parameters.keyword].default` and the Rust `Type#field`
+parameter mapping, including the inventoried wrapper field for a whole options
+argument. It constructs each mapped options type once, checks every distinct
+Python default (90 fields across 22 types), and rejects conflicting duplicate
+mappings or unsupported literals. The fixture gate checks that the generated
+file is current; generator tests compare the manifest literals with live Python
+signatures. Required parameters, native-only cancellation/extension fields and
+options fields with no Python default are outside this comparison. See
+`tests/parity/README.md` for the runner protocol, CI prerequisites and
+ABI-minimum boundary notes.
 
 Required scenario families:
 

@@ -61,6 +61,24 @@ def test_c_prototype_and_callback_parameters_are_named() -> None:
         "options",
         "out",
     ]
+    assert functions["rlmesh_tensor_new"][3] == "shape_len"
+    assert functions["rlmesh_tensor_reshape"] == ["tensor", "shape", "shape_len", "out"]
+    assert "capacity" in functions["rlmesh_remote_vector_env_step"]
+    assert functions["rlmesh_rotation_from_matrix"] == ["rows", "out_value", "out"]
+    assert functions["rlmesh_adapter_history_windows_get"][-3:] == [
+        "out_placement",
+        "out_span",
+        "out_frame_bytes",
+    ]
+    for name in (
+        "rlmesh_tensor_shape",
+        "rlmesh_tensor_strides",
+        "rlmesh_space_shape",
+        "rlmesh_space_spec_shape",
+        "rlmesh_box_low",
+        "rlmesh_box_high",
+    ):
+        assert "capacity" in functions[name]
     # Output names follow the order the library writes them in.
     assert functions["rlmesh_text_limits"] == [
         "space",
@@ -708,3 +726,26 @@ def test_cpp_constexpr_variable_templates_are_constants(tmp_path: Path) -> None:
         "template <class T> inline constexpr bool Trait = true"
     )
     assert exports["Count"].kind == "constant"
+
+
+def test_cpp_image_initvar_parameter_names() -> None:
+    _, exports = _header("rlmesh.hpp", "c++", "c++17", "rlmesh")
+    signatures = {m.name: m.signature for m in exports["adapters::Image"].members}
+    assert signatures["with_size"] == "Image with_size(uint32_t size) const"
+    assert signatures["with_stride"] == "Image with_stride(uint32_t stride) const"
+    constructors = [
+        m.signature for m in exports["spaces::Space"].members if m.kind == "constructor"
+    ]
+    assert "explicit Space(const SpaceSpec& spec)" in constructors
+
+
+def test_rust_exports_retain_aliases_for_parity_inventory(tmp_path: Path) -> None:
+    (tmp_path / "rlmesh.json").write_text(json.dumps(_minimal_rustdoc()))
+    modules = collect_rust_api_surface(
+        repo_root=REPO_ROOT,
+        config=RustSurfaceConfig("rlmesh", "Stable", (), "", None),
+        json_dir=tmp_path,
+    )
+    export = next(e for m in modules for e in m.exports if e.name == "RemoteEnv")
+    assert export.qualified_name == "rlmesh::env::RemoteEnv"
+    assert export.aliases == ["rlmesh::RemoteEnv"]

@@ -22,6 +22,7 @@ from typing import (
     overload,
 )
 
+from .._editions import _caller_stacklevel  # pyright: ignore[reportPrivateUsage]
 from .._value_conversion import ValueBridge, identity_bridge, tree_map
 from ..types import EnvTarget, LocalEnvTarget, Value, ViewArg
 from ._calls import ModelCalls
@@ -1328,7 +1329,7 @@ class ModelBase(Generic[ObsT, ActT]):
             warnings.warn(
                 f"execution_horizon={execution_horizon} was requested but "
                 "the model defines no predict_chunk(); running un-chunked.",
-                stacklevel=2,
+                stacklevel=_caller_stacklevel(),
             )
         from ._eval import (
             EpisodeResult,
@@ -1598,7 +1599,7 @@ class ModelBase(Generic[ObsT, ActT]):
             warnings.warn(
                 f"execution_horizon={execution_horizon} was requested but "
                 "the model defines no predict_chunk(); running un-chunked.",
-                stacklevel=2,
+                stacklevel=_caller_stacklevel(),
             )
         return Session._create(  # pyright: ignore[reportPrivateUsage]
             predict=self._raw_predict,
@@ -1869,7 +1870,7 @@ def session(
             warnings.warn(
                 f"execution_horizon={execution_horizon} was requested but "
                 "RANDOM_SAMPLE defines no predict_chunk(); running un-chunked.",
-                stacklevel=2,
+                stacklevel=_caller_stacklevel(),
             )
         # A random baseline samples the env's action space and ignores observations,
         # so it adapts nothing -- skip adapter resolution even on a tagged env.

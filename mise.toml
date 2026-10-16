@@ -132,11 +132,11 @@ run = "uv run ruff format --check"
 
 [tasks."fmt:cxx"]
 description = "Format the C/C++ bindings and examples (clang-format)"
-run = "clang-format -i crates/rlmesh-capi/include/*.h* crates/rlmesh-capi/examples/*.c crates/rlmesh-capi/examples/*.cpp examples/chrono/src/*"
+run = "clang-format -i crates/rlmesh-capi/include/*.h* crates/rlmesh-capi/examples/*.c crates/rlmesh-capi/examples/*.cpp tests/parity/*.c tests/parity/*.cpp examples/chrono/src/*"
 
 [tasks."fmt:check:cxx"]
 description = "Check the C/C++ binding and example formatting"
-run = "clang-format --dry-run --Werror crates/rlmesh-capi/include/*.h* crates/rlmesh-capi/examples/*.c crates/rlmesh-capi/examples/*.cpp examples/chrono/src/*"
+run = "clang-format --dry-run --Werror crates/rlmesh-capi/include/*.h* crates/rlmesh-capi/examples/*.c crates/rlmesh-capi/examples/*.cpp tests/parity/*.c tests/parity/*.cpp examples/chrono/src/*"
 
 [tasks."fmt:check:proto"]
 description = "Check Protobuf formatting"
@@ -286,6 +286,7 @@ depends = [
   "policy:check",
   "protocol:baseline-verify",
   "protocol:breaking",
+  "parity:check",
 ]
 
 # ──────────────────────────────────────────────
@@ -297,6 +298,7 @@ depends = ["test:rust", "test:python", "test:cxx"]
 
 # The single test entrypoint CI runs after `check`; run it locally for CI parity.
 [tasks."test:ci"]
+depends = ["parity:fixtures"]
 description = "Everything CI tests: test + API surface + examples + system harness + installed-wheel system profile against a freshly built local wheel"
 run = [
   "mise run test",
@@ -319,7 +321,7 @@ file = "scripts/test-cxx-pkg.sh"
 description = "Run Rust workspace tests and doctests"
 run = '''
 export PYTHONPATH="$(python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')" &&
-  cargo nextest run --workspace --all-targets &&
+  cargo nextest run --workspace --all-targets -E 'not (binary(parity_fixtures) | binary(parity_defaults))' &&
   cargo test --workspace --doc
 '''
 
@@ -529,3 +531,10 @@ run = 'python scripts/release.py {{arg(name="version", var=true)}}'
 
 # Per-target wheel builds live in the parametrized file task
 # .mise/tasks/build/python/wheel (task: build:python:wheel <target>).
+
+[tasks."parity:check"]
+description = "Check the reviewed Stable Python to Rust/C/C++ parity manifest"
+run = [
+  "uv run pytest tools/rlmesh_api_surface/tests -q",
+  "uv run python -m rlmesh_api_surface.parity",
+]

@@ -312,6 +312,8 @@ void options_setters() {
   static_assert(std::is_aggregate_v<rlmesh::RecorderAddOptions>);
   {
     rlmesh::RecorderAddOptions options;
+    static_assert(std::is_same_v<decltype(options.config), std::optional<rlmesh::Metadata>>);
+    options.with_config(rlmesh::Metadata{}).with_config(std::nullopt);
     options.with_task(options.task)
         .with_config(options.config)
         .with_included_in_metrics(options.included_in_metrics);
@@ -323,6 +325,8 @@ void options_setters() {
   static_assert(std::is_aggregate_v<rlmesh::RecorderCaptureOptions>);
   {
     rlmesh::RecorderCaptureOptions options;
+    static_assert(std::is_same_v<decltype(options.config), std::optional<rlmesh::Metadata>>);
+    options.with_config(rlmesh::Metadata{}).with_config(std::nullopt);
     options.with_task(options.task)
         .with_config(options.config)
         .with_cameras(options.cameras)

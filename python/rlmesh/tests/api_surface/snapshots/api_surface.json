@@ -1660,7 +1660,6 @@
             "signature": "wrap_predict(predict_fn: Callable[[Any], object]) -> Callable[[Any], ActionT]"
           }
         },
-        "signature": "Adapter(plan: AdapterPlan, customs: Mapping[Placement, ObsTransform], obs_enc_shims: tuple[ObsEncShim, ...] = (), action_enc_shims: tuple[ActEncShim, ...] = ())",
         "stability": "Stable"
       },
       "AdapterBase": {

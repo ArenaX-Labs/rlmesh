@@ -1,0 +1,128 @@
+[[scenario]]
+id = "cancel_single_step"
+family = "Cancellation"
+rules = ["R-18"]
+operation = "cancel_step"
+expect = { error = "KeyboardInterrupt", episode_ends_before_reset = 0, episode_ends = 1, reusable = true }
+
+[[scenario]]
+id = "cancel_session_run"
+family = "Cancellation"
+rules = ["R-18"]
+operation = "cancel_run"
+expect = { error = "KeyboardInterrupt", episode_ends = 1, run_ends = 1, partial_episodes = 0, reusable = true }
+
+[[scenario]]
+id = "cancel_idle_rearms"
+family = "Cancellation"
+rules = ["R-18"]
+operation = "cancel_idle"
+languages = ["rust", "c", "cpp"]
+why = "Native cancel tokens can fire while idle; Python uses KeyboardInterrupt during an active call."
+expect = { error = "KeyboardInterrupt", text = "cancelled", failures = 2, cancelled_call_starts = 0, reusable = true }
+
+[[scenario]]
+id = "drop_run_future"
+family = "Cancellation"
+rules = ["R-17", "R-18"]
+operation = "drop_run"
+languages = ["rust"]
+why = "Dropping a Rust run future has no synchronous C/C++ or Python equivalent."
+expect = { run_ends = 0, episode_ends_before_reset = 0, episode_ends = 1, no_calls_after_drop = true, reusable = true }
+
+[[scenario]]
+id = "serve_server"
+family = "Cancellation"
+rules = ["R-18", "ENV-32", "ENV-33"]
+operation = "drop_serve"
+variant = "server"
+languages = ["rust"]
+why = "Drops the Rust serve_async future; synchronous EnvServer.serve has no cancel-token parameter in C/C++."
+expect = { stopped = true, env_closes = 1 }
+
+[[scenario]]
+id = "serve_wait"
+family = "Cancellation"
+rules = ["R-18", "ENV-32", "ENV-33"]
+operation = "drop_serve"
+variant = "wait"
+languages = ["rust"]
+why = "Drops a Rust wait_async future while leaving the server running; C/C++ expose only synchronous wait."
+expect = { running = true, env_closes = 1 }
+
+[[scenario]]
+id = "serve_factory_drop"
+family = "Cancellation"
+rules = ["R-18", "ENV-32", "ENV-33"]
+operation = "drop_serve"
+variant = "factory_drop"
+languages = ["rust"]
+why = "Drops the Rust factory serve_async future; C/C++ expose synchronous serve with explicit cancellation."
+expect = { env_closes = 1, prepares = 1 }
+
+[[scenario]]
+id = "serve_factory_cancel"
+family = "Cancellation"
+rules = ["R-18", "ENV-32", "ENV-33"]
+operation = "drop_serve"
+variant = "factory_cancel"
+languages = ["rust", "c", "cpp"]
+why = "Factory serve takes an explicit native cancel token; Python uses KeyboardInterrupt."
+expect = { error = "KeyboardInterrupt", env_closes = 1, prepares = 1 }
+
+[[scenario]]
+id = "serve_factory_idle"
+family = "Cancellation"
+rules = ["R-18", "ENV-32", "ENV-33"]
+operation = "drop_serve"
+variant = "factory_idle"
+languages = ["rust", "c", "cpp"]
+why = "An already-fired native cancel token fails before prepare; Python has no cancel-token argument."
+expect = { error = "KeyboardInterrupt", env_closes = 0, prepares = 0 }
+
+[[scenario]]
+id = "factory_cancel_idle"
+family = "Cancellation"
+rules = ["ENV-33"]
+operation = "factory_cancel"
+variant = "idle"
+languages = ["rust", "c", "cpp"]
+why = "An already-fired native cancel token fails before prepare; Python has no cancel-token argument."
+expect = { error = "KeyboardInterrupt", env_closes = 0, prepares = 0 }
+
+[[scenario]]
+id = "factory_cancel_serving"
+family = "Cancellation"
+rules = ["ENV-33"]
+operation = "factory_cancel"
+variant = "serving"
+languages = ["rust", "c", "cpp"]
+why = "Factory serve takes an explicit native cancel token; Python uses KeyboardInterrupt."
+expect = { error = "KeyboardInterrupt", env_closes = 1, prepares = 1 }
+
+[[scenario]]
+id = "serve_drop_does_not_wait_for_close"
+family = "Cancellation"
+rules = ["R-18", "ENV-32"]
+operation = "serve_drop_nonblocking"
+languages = ["rust"]
+why = "Tests nonblocking Rust future destruction; C/C++ and Python do not expose serve futures."
+expect = { nonblocking = true, env_closes = 1 }
+
+[[scenario]]
+id = "session_drop_closes_owned_connection"
+family = "Cancellation"
+rules = ["R-17", "R-18"]
+operation = "drop_owned_cleanup"
+languages = ["rust"]
+why = "Tests Rust session Drop cleanup of an owned connection and borrowed model."
+expect = { episode_ends = 1, env_closes = 0, model_closes = 0, reusable = true }
+
+[[scenario]]
+id = "drop_queued_predict_future"
+family = "Cancellation"
+rules = ["R-18"]
+operation = "drop_queued_predict"
+languages = ["rust"]
+why = "Tests dropping a queued Rust predict future before dispatch; other APIs are synchronous."
+expect = { no_calls_after_drop = true, reusable = true }

@@ -510,8 +510,12 @@ pub(crate) fn error_of_class(class: RLMeshErrorClass, message: &str) -> rlmesh::
         RLMeshErrorClass::RuntimeError => Error::Runtime(message),
         RLMeshErrorClass::OSError => Error::Os(message),
         RLMeshErrorClass::ConnectionError => Error::Connection(message),
-        // Rust's Timeout carries the deadline, not a text; a callback's has none.
-        RLMeshErrorClass::TimeoutError => Error::Timeout(std::time::Duration::ZERO),
+        // An authored TimeoutError has text, but no native deadline. Keep
+        // the text through the driver instead of fabricating a 0ns message.
+        RLMeshErrorClass::TimeoutError => rlmesh::binding::AttachedError::with_message(
+            Error::Timeout(std::time::Duration::ZERO),
+            message,
+        ),
         RLMeshErrorClass::KeyboardInterrupt => Error::Cancelled,
         RLMeshErrorClass::RLMeshException | RLMeshErrorClass::Invalid => Error::Internal(message),
     }
@@ -836,6 +840,17 @@ mod tests {
             assert_eq!(rlmesh_last_error_class(), class);
             assert_eq!(text(rlmesh_last_error_message()).as_deref(), Some(message));
         }
+    }
+
+    #[test]
+    fn authored_timeout_text_survives_host_attachment() {
+        let error = error_of_class(RLMeshErrorClass::TimeoutError, "scripted timeout");
+        let error = rlmesh::binding::AttachedError::attach(error, 7usize);
+        assert_eq!(error.class(), rlmesh::ErrorClass::TimeoutError);
+        assert_eq!(error.to_string(), "scripted timeout");
+        let error = CapiError::from(error);
+        assert_eq!(error.status, RLMeshStatus::Timeout);
+        assert_eq!(error.message, "scripted timeout");
     }
 
     #[test]
