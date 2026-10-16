@@ -53,6 +53,12 @@ def _release_status(version: str) -> str:
     return match.group("channel") or "stable"
 
 
+def _package_family(version: str) -> str:
+    """`0.<minor>` before 1.0, then the major: the rule policy:check enforces."""
+    major, minor = (int(part) for part in version.split(".")[:2])
+    return f"0.{minor}" if major == 0 else str(major)
+
+
 def _canonical_spec_sha256(path: Path) -> str:
     raw = path.read_bytes()
     if raw.startswith(b"\xef\xbb\xbf"):
@@ -271,6 +277,13 @@ def bump(old: str, new: str) -> None:
         count=1,
         flags=re.DOTALL,
     )
+    text = re.sub(
+        r'^package_family = "[^"]*"$',
+        f'package_family = "{_package_family(new)}"',
+        text,
+        count=1,
+        flags=re.MULTILINE,
+    )
     text = _update_workflow_manifest(text, new)
     rlmesh_toml.write_text(text)
     sync_packaged_supported_editions()
@@ -325,6 +338,9 @@ def selfcheck() -> None:
     assert _release_status("0.1.0-beta.2") == "beta"
     assert _release_status("0.1.0-rc.3") == "rc"
     assert _release_status("0.1.0") == "stable"
+    assert _package_family("0.1.1") == "0.1"
+    assert _package_family("0.2.0-rc.1") == "0.2"
+    assert _package_family("1.4.0") == "1"
     assert SEMVER.match("0.2.0") and SEMVER.match("1.0.0-rc.1")
     assert not SEMVER.match("0.1") and not SEMVER.match("0.1.0b3")
 
