@@ -182,7 +182,9 @@ for compiler in "${compilers[@]}"; do
     $compiler "${flags[@]}" -Wshadow -Wconversion -Wsign-conversion -fno-rtti \
       -c crates/rlmesh-capi/examples/cpp_hostile.cpp -o "$tmp/cpp_hostile.o"
     lifetime_flags=()
-    case "$compiler" in *g++*) lifetime_flags=(-Wdangling-reference) ;; esac
+    # Ask the compiler what it is: a name pattern like *g++* also matches clang++.
+    macros=$($compiler -dM -E -x c++ /dev/null 2>/dev/null)
+    [[ $macros == *__clang__* ]] || lifetime_flags=(-Wdangling-reference)
     $compiler "${flags[@]}" -Wshadow -Wconversion -Wsign-conversion "${lifetime_flags[@]}" \
       -c crates/rlmesh-capi/examples/cpp_review.cpp -o "$tmp/cpp_review.o"
     $compiler "${flags[@]}" -c crates/rlmesh-capi/examples/cpp_surface.cpp -o "$tmp/cpp_surface.o"
