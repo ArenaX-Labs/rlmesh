@@ -3,7 +3,7 @@
 #[cfg(unix)]
 use hyper_util::rt::TokioIo;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 #[cfg(unix)]
 use tokio::net::UnixStream;
 
@@ -32,8 +32,25 @@ use crate::states::ClientState;
 
 #[cfg(test)]
 use super::stream::dispatch_response;
-use super::stream::{Pending, new_pending, spawn_response_pump};
+use super::stream::{
+    Pending, StreamCompletion, new_pending, retire_session, spawn_response_pump,
+    wait_for_retiring_sessions,
+};
 use super::wire::{join_request_kind_name, proto_error_to_env_error};
+
+tokio::task_local! {
+    static REQUEST_DEADLINE: tokio::time::Instant;
+}
+
+/// Carry a facade's absolute call deadline into Join admission, so local
+/// teardown waits share the caller's remaining budget and refusal semantics.
+#[doc(hidden)]
+pub async fn with_request_deadline<F: std::future::Future>(
+    deadline: tokio::time::Instant,
+    future: F,
+) -> F::Output {
+    REQUEST_DEADLINE.scope(deadline, future).await
+}
 
 /// The result of an env handshake: the env contract plus the negotiated edition
 /// and the env's advertised window.
@@ -95,6 +112,8 @@ pub struct EnvClient {
     token: String,
     /// Session state shared by every clone: lifecycle, the Join stream, ids.
     shared: Arc<Shared>,
+    /// Unlike edition observers, only client clones keep the session alive.
+    _lifetime: Arc<ClientLifetime>,
     /// Endpoint-local op duration (ns) attached to the last Join response. The
     /// nested per-step telemetry message was replaced by this hot scalar
     /// (`JoinResponse.endpoint_total_ns`). Per handle: each lane reads its own.
@@ -153,6 +172,42 @@ impl std::fmt::Debug for PinnedEdition {
 struct JoinStream {
     tx: mpsc::Sender<JoinRequest>,
     pending: Pending,
+    retirement: Arc<JoinRetirement>,
+}
+
+struct JoinRetirement {
+    finished: StreamCompletion,
+    address: String,
+    retiring: AtomicBool,
+}
+
+impl JoinStream {
+    fn retire(&self) {
+        if !self.retirement.retiring.swap(true, Ordering::AcqRel) {
+            retire_session(&self.retirement.address, self.retirement.finished.clone());
+        }
+    }
+}
+
+/// Closing is terminal even when the caller drops the future or sending fails.
+struct CloseGuard(Arc<Shared>);
+
+impl Drop for CloseGuard {
+    fn drop(&mut self) {
+        self.0.set_stream(None);
+        self.0.set_state(ClientState::Closed);
+    }
+}
+
+struct ClientLifetime(Arc<Shared>);
+
+impl Drop for ClientLifetime {
+    fn drop(&mut self) {
+        // The final client half-closes even if an edition observer survives.
+        // set_stream registers the EOF barrier before dropping the sender.
+        self.0.set_stream(None);
+        self.0.set_state(ClientState::Closed);
+    }
 }
 
 impl Shared {
@@ -201,10 +256,14 @@ impl Shared {
     }
 
     fn set_stream(&self, stream: Option<JoinStream>) {
-        *self
+        let mut slot = self
             .stream
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = stream;
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(previous) = slot.as_ref() {
+            previous.retire();
+        }
+        *slot = stream;
     }
 
     fn ended_by(&self) -> Option<String> {
@@ -229,10 +288,10 @@ impl Shared {
             .stream
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if slot
-            .as_ref()
-            .is_some_and(|current| Arc::ptr_eq(&current.pending, pending))
+        if let Some(current) = slot.as_ref()
+            && Arc::ptr_eq(&current.pending, pending)
         {
+            current.retire();
             *slot = None;
             self.set_ended_by(Some(message));
         }
@@ -247,11 +306,6 @@ impl Shared {
         }
     }
 }
-
-/// How long a reset that reopens a session after a fatal error waits for the
-/// server to release the previous session's slot. The server frees it only
-/// after the ended session's in-flight work drains.
-const REOPEN_SLOT_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 fn session_ended_error(message: &str) -> GrpcError {
     EnvError {
@@ -318,6 +372,7 @@ impl EnvClient {
                 .map_err(|e| TransportError::ConnectFailed(e.to_string()))?
         };
 
+        let shared = Arc::new(Shared::new(ClientState::Connected, None));
         Ok(Self {
             client: crate::ACCEPTED_COMPRESSION.into_iter().fold(
                 EnvServiceClient::new(channel)
@@ -327,7 +382,8 @@ impl EnvClient {
             ),
             address: target.display_address().to_string(),
             token: token.to_string(),
-            shared: Arc::new(Shared::new(ClientState::Connected, None)),
+            shared: shared.clone(),
+            _lifetime: Arc::new(ClientLifetime(shared)),
             last_endpoint_total_ns: None,
             last_phases: EndpointPhases::default(),
             declared_workflow_edition: None,
@@ -511,7 +567,7 @@ impl EnvClient {
     /// Join session, so the env is usable again.
     pub async fn reset(&mut self, req: ResetRequest) -> Result<ResetResponse, GrpcError> {
         self.ensure_ready()?;
-        self.ensure_join_stream().await?;
+        self.ensure_join_stream(req.timeout_ms).await?;
 
         let env_req = JoinRequest {
             kind: Some(join_request::Kind::Reset(req)),
@@ -542,7 +598,7 @@ impl EnvClient {
     pub async fn step(&mut self, req: StepRequest) -> Result<StepResponse, GrpcError> {
         self.ensure_ready()?;
         self.ensure_session_not_ended()?;
-        self.ensure_join_stream().await?;
+        self.ensure_join_stream(req.timeout_ms).await?;
 
         let env_req = JoinRequest {
             kind: Some(join_request::Kind::Step(req)),
@@ -573,7 +629,7 @@ impl EnvClient {
     pub async fn render(&mut self, req: RenderRequest) -> Result<RenderResponse, GrpcError> {
         self.ensure_ready()?;
         self.ensure_session_not_ended()?;
-        self.ensure_join_stream().await?;
+        self.ensure_join_stream(req.timeout_ms).await?;
 
         let env_req = JoinRequest {
             kind: Some(join_request::Kind::Render(req)),
@@ -596,7 +652,8 @@ impl EnvClient {
     }
 
     /// Close this client's session on the server and tear down the local Join
-    /// stream.
+    /// stream, waiting for its terminal status so the server has released its
+    /// exclusive Join slot before another client connects.
     ///
     /// This ends the **session**, not the **server**: the served environment
     /// detaches the session and remains available for a subsequent client to
@@ -604,6 +661,8 @@ impl EnvClient {
     /// [`EnvClient::shutdown`] or the server's idle/drain policy for that.
     pub async fn close(&mut self) -> Result<CloseEnvsResponse, GrpcError> {
         self.ensure_ready()?;
+        let _close_guard = CloseGuard(self.shared.clone());
+        self.prepare_close();
 
         // A client that never opened the Join stream holds none of the server's
         // exclusive session slot, so there is nothing to close remotely. Opening
@@ -611,10 +670,14 @@ impl EnvClient {
         // active session and earn a FailedPrecondition from the server's
         // join_active CAS, exactly the lockout the lazy Join stream exists to
         // avoid (see `ensure_join_stream`). Short-circuit to a local-only close.
-        if self.shared.stream().is_none() {
+        let Some(mut finished) = self
+            .shared
+            .stream()
+            .map(|stream| stream.retirement.finished.clone())
+        else {
             self.close_local();
             return Ok(CloseEnvsResponse::default());
-        }
+        };
 
         let env_req = JoinRequest {
             kind: Some(join_request::Kind::Close(
@@ -629,6 +692,13 @@ impl EnvClient {
         self.last_endpoint_total_ns = res.endpoint_total_ns;
         self.last_phases = EndpointPhases::from_env_response(&res);
         self.close_local();
+
+        // A Close reply acknowledges the request, but older servers may still
+        // be draining the session's tracker afterwards. Half-close our request
+        // stream and wait for the response stream's terminal status as well.
+        // The Close reply confirms success even if the final transport status
+        // is lost or non-OK. Still await termination to support older servers.
+        let _ = finished.wait_for(|outcome| outcome.is_some()).await;
 
         match res.kind {
             Some(join_response::Kind::Close(ok)) => Ok(ok),
@@ -678,13 +748,25 @@ impl EnvClient {
     ///
     /// Dropping the Join stream releases the server's exclusive session slot
     /// once the server observes the stream end. If an operation is still
-    /// draining server-side, the slot frees only after it completes, so an
-    /// immediate reconnect can still be rejected briefly. The server completes
-    /// this session's in-flight episodes as truncated; their metadata is not
-    /// returned to this client. Use when a graceful [`EnvClient::close`] is
-    /// not possible (e.g. it timed out behind a long-draining operation).
+    /// draining server-side, the slot frees only after it completes. A later
+    /// local Join waits up to five seconds for this stream to finish; an
+    /// operation still draining after that can still cause a refusal. The
+    /// server completes this session's in-flight episodes as truncated; their
+    /// metadata is not returned to this client. Use when a graceful
+    /// [`EnvClient::close`] is not possible (e.g. it timed out behind a
+    /// long-draining operation).
     pub fn detach(&mut self) {
         self.close_local();
+    }
+
+    /// Order later local clients behind this session's pending teardown.
+    /// The owner must subsequently call `close` or `detach`; this hook lets
+    /// facade Drop implementations register before spawning async cleanup.
+    #[doc(hidden)]
+    pub fn prepare_close(&self) {
+        if let Some(stream) = self.shared.stream() {
+            stream.retire();
+        }
     }
 
     fn close_local(&mut self) {
@@ -700,7 +782,15 @@ impl EnvClient {
     /// an idle connected client must not lock other clients out of the env.
     /// Its first message pins the env to the session edition; the stream is
     /// not handed out until the env acks that, and a refusal releases it.
-    async fn ensure_join_stream(&mut self) -> Result<(), GrpcError> {
+    async fn ensure_join_stream(&mut self, timeout_ms: u64) -> Result<(), GrpcError> {
+        let deadline = REQUEST_DEADLINE
+            .try_with(|deadline| *deadline)
+            .ok()
+            .or_else(|| {
+                (timeout_ms > 0).then(|| {
+                    tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms)
+                })
+            });
         if self.shared.stream().is_some() {
             return Ok(());
         }
@@ -709,8 +799,7 @@ impl EnvClient {
         if self.shared.stream().is_some() {
             return Ok(());
         }
-        let reopening = self.shared.ended_by().is_some();
-        let (tx, response) = self.open_join(reopening).await?;
+        let (tx, response) = self.open_join(deadline).await?;
 
         let pending = new_pending();
         // The pump, not the request future, records a fatal reply: a caller
@@ -718,12 +807,21 @@ impl EnvClient {
         // session ended, so its next reset opens a fresh one.
         let session = Arc::downgrade(&self.shared);
         let stream_pending = pending.clone();
-        spawn_response_pump(response.into_inner(), pending.clone(), move |message| {
-            if let Some(shared) = session.upgrade() {
-                shared.end_session(&stream_pending, message);
-            }
-        });
-        self.shared.set_stream(Some(JoinStream { tx, pending }));
+        let finished =
+            spawn_response_pump(response.into_inner(), pending.clone(), move |message| {
+                if let Some(shared) = session.upgrade() {
+                    shared.end_session(&stream_pending, message);
+                }
+            });
+        self.shared.set_stream(Some(JoinStream {
+            tx,
+            pending,
+            retirement: Arc::new(JoinRetirement {
+                finished,
+                address: self.address.clone(),
+                retiring: AtomicBool::new(false),
+            }),
+        }));
         if let Err(error) = self.configure_session_edition().await {
             self.shared.set_stream(None);
             return Err(error);
@@ -732,12 +830,11 @@ impl EnvClient {
         Ok(())
     }
 
-    /// Open a Join stream. Reopening after a fatal error retries while the
-    /// server still holds the ended session's slot (it answers
-    /// `FailedPrecondition` until that session's teardown finishes).
+    /// Open a Join after any locally retired session finishes. Never retry a
+    /// refusal: a genuinely concurrent client still owns the exclusive slot.
     async fn open_join(
         &self,
-        reopening: bool,
+        deadline: Option<tokio::time::Instant>,
     ) -> Result<
         (
             mpsc::Sender<JoinRequest>,
@@ -745,27 +842,19 @@ impl EnvClient {
         ),
         GrpcError,
     > {
-        let deadline = tokio::time::Instant::now() + REOPEN_SLOT_WAIT;
-        loop {
-            let (tx, rx) = mpsc::channel::<JoinRequest>(32);
-            let request_stream = ReceiverStream::new(rx);
-            match self
-                .client
-                .clone()
-                .join(self.authorized_request(request_stream)?)
-                .await
-            {
-                Ok(response) => return Ok((tx, response)),
-                Err(status)
-                    if reopening
-                        && status.code() == tonic::Code::FailedPrecondition
-                        && tokio::time::Instant::now() < deadline =>
-                {
-                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-                }
-                Err(status) => return Err(crate::error::status_to_grpc_error(status)),
-            }
+        if !wait_for_retiring_sessions(&self.address, deadline).await {
+            return Err(crate::error::status_to_grpc_error(
+                super::wire::active_join_status(),
+            ));
         }
+        let (tx, rx) = mpsc::channel::<JoinRequest>(32);
+        let response = self
+            .client
+            .clone()
+            .join(self.authorized_request(ReceiverStream::new(rx))?)
+            .await
+            .map_err(crate::error::status_to_grpc_error)?;
+        Ok((tx, response))
     }
 
     /// Refuse a step/render once a non-recoverable error ended the session:
@@ -1073,17 +1162,24 @@ mod tests {
         let (request_tx, request_rx) = mpsc::channel(4);
         let pending = new_pending();
         let channel = Endpoint::from_static("http://127.0.0.1:1").connect_lazy();
+        let shared = Arc::new(Shared::new(
+            ClientState::Ready,
+            Some(JoinStream {
+                tx: request_tx,
+                pending: pending.clone(),
+                retirement: Arc::new(JoinRetirement {
+                    finished: tokio::sync::watch::channel(Some(Ok(()))).1,
+                    address: "tcp://127.0.0.1:1".to_string(),
+                    retiring: AtomicBool::new(false),
+                }),
+            }),
+        ));
         let client = EnvClient {
             client: EnvServiceClient::new(channel),
             token: String::new(),
             address: "tcp://127.0.0.1:1".to_string(),
-            shared: Arc::new(Shared::new(
-                ClientState::Ready,
-                Some(JoinStream {
-                    tx: request_tx,
-                    pending: pending.clone(),
-                }),
-            )),
+            shared: shared.clone(),
+            _lifetime: Arc::new(ClientLifetime(shared)),
             last_endpoint_total_ns: None,
             last_phases: EndpointPhases::default(),
             declared_workflow_edition: None,
@@ -1226,17 +1322,96 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn close_send_error_detaches_all_clones() {
+        let (mut client, request_rx, _) = ready_client_with_stream();
+        let other = client.clone();
+        drop(request_rx);
+        assert!(client.close().await.is_err());
+        assert_eq!(other.state(), ClientState::Closed);
+        assert!(other.shared.stream().is_none());
+    }
+
+    #[tokio::test]
+    async fn close_reply_error_detaches_all_clones() {
+        let (mut client, mut request_rx, pending) = ready_client_with_stream();
+        let mut closing = Box::pin(client.close());
+        assert!(futures::poll!(closing.as_mut()).is_pending());
+        request_rx.recv().await.unwrap();
+        dispatch_response(&pending, Some(Err(Status::unavailable("reply lost"))));
+        assert!(closing.await.is_err());
+        assert_eq!(client.state(), ClientState::Closed);
+        assert!(client.shared.stream().is_none());
+    }
+
+    #[tokio::test]
+    async fn close_cancellation_detaches_while_sending_or_awaiting_reply() {
+        for full_channel in [false, true] {
+            let (mut client, mut request_rx, _) = ready_client_with_stream();
+            let other = client.clone();
+            if full_channel {
+                let stream = client.shared.stream().unwrap();
+                for _ in 0..4 {
+                    stream.tx.send(JoinRequest::default()).await.unwrap();
+                }
+            }
+            let mut closing = Box::pin(client.close());
+            assert!(futures::poll!(closing.as_mut()).is_pending());
+            if !full_channel {
+                let request = request_rx.recv().await.unwrap();
+                assert!(matches!(request.kind, Some(join_request::Kind::Close(_))));
+            }
+            drop(closing);
+            assert_eq!(other.state(), ClientState::Closed);
+            assert!(other.shared.stream().is_none());
+            while request_rx.recv().await.is_some() {}
+        }
+    }
+
+    #[tokio::test]
+    async fn close_success_survives_a_non_ok_terminal_stream_status() {
+        let (mut client, mut request_rx, pending) = ready_client_with_stream();
+        let stream = client.shared.stream().unwrap();
+        let (finished, completion) = tokio::sync::watch::channel(None);
+        client.shared.set_stream(Some(JoinStream {
+            retirement: Arc::new(JoinRetirement {
+                finished: completion,
+                address: client.address.clone(),
+                retiring: AtomicBool::new(false),
+            }),
+            ..stream
+        }));
+        let mut closing = Box::pin(client.close());
+        assert!(futures::poll!(closing.as_mut()).is_pending());
+        let request = request_rx.recv().await.unwrap();
+        dispatch_response(
+            &pending,
+            Some(Ok(JoinResponse {
+                request_id: request.request_id,
+                kind: Some(join_response::Kind::Close(CloseEnvsResponse::default())),
+                ..Default::default()
+            })),
+        );
+        assert!(futures::poll!(closing.as_mut()).is_pending());
+        finished
+            .send(Some(Err(Status::unavailable("final status lost"))))
+            .unwrap();
+        assert!(closing.await.is_ok());
+    }
+
+    #[tokio::test]
     async fn close_on_never_used_client_is_local_only_and_opens_no_join() {
         // A client that handshook but never ran an operation has no Join stream.
         // close() must not open one just to tear it down; that would race any
         // other client's active session (server join_active CAS). It should
         // short-circuit to a local-only close.
         let channel = Endpoint::from_static("http://127.0.0.1:1").connect_lazy();
+        let shared = Arc::new(Shared::new(ClientState::Ready, None));
         let mut client = EnvClient {
             client: EnvServiceClient::new(channel),
             token: String::new(),
             address: "tcp://127.0.0.1:1".to_string(),
-            shared: Arc::new(Shared::new(ClientState::Ready, None)),
+            shared: shared.clone(),
+            _lifetime: Arc::new(ClientLifetime(shared)),
             last_endpoint_total_ns: None,
             last_phases: EndpointPhases::default(),
             declared_workflow_edition: None,
@@ -1324,16 +1499,21 @@ mod tests {
     /// records what it saw (`recording`).
     struct FakeEnvService {
         recorded: Option<Arc<std::sync::Mutex<Vec<JoinRequest>>>>,
+        close_barrier: Option<Arc<tokio::sync::Notify>>,
     }
 
     impl FakeEnvService {
         fn rejecting() -> Self {
-            Self { recorded: None }
+            Self {
+                recorded: None,
+                close_barrier: None,
+            }
         }
 
         fn recording(recorded: Arc<std::sync::Mutex<Vec<JoinRequest>>>) -> Self {
             Self {
                 recorded: Some(recorded),
+                close_barrier: None,
             }
         }
     }
@@ -1372,9 +1552,11 @@ mod tests {
                 return Err(Status::unavailable("join unavailable"));
             };
             let mut incoming = request.into_inner();
+            let close_barrier = self.close_barrier.clone();
             let (tx, rx) = mpsc::channel(8);
             tokio::spawn(async move {
                 while let Ok(Some(req)) = incoming.message().await {
+                    let close = matches!(req.kind, Some(join_request::Kind::Close(_)));
                     let kind = match &req.kind {
                         Some(join_request::Kind::Configure(_)) => {
                             join_response::Kind::Configure(ConfigureEnvResponse::default())
@@ -1396,6 +1578,12 @@ mod tests {
                     if tx.send(Ok(response)).await.is_err() {
                         break;
                     }
+                    if close {
+                        break;
+                    }
+                }
+                if let Some(barrier) = &close_barrier {
+                    barrier.notified().await;
                 }
             });
             Ok(Response::new(ReceiverStream::new(rx)))
@@ -1621,6 +1809,156 @@ mod tests {
             .expect("test server did not start");
         let handshake = client.handshake().await.expect("handshake");
         (client, handshake)
+    }
+
+    #[tokio::test]
+    async fn retiring_join_uses_the_remaining_call_budget() {
+        let barrier = Arc::new(tokio::sync::Notify::new());
+        let recorded = Arc::default();
+        let (address, _shutdown) = serve(FakeEnvService {
+            recorded: Some(Arc::clone(&recorded)),
+            close_barrier: Some(barrier.clone()),
+        });
+        let (mut previous, _) = ready_client(&address).await;
+        previous.reset(ResetRequest::default()).await.unwrap();
+        previous.detach();
+        let (mut next, _) = ready_client(&address).await;
+        let count = recorded.lock().unwrap().len();
+        // Direct transport callers carry their budget on the wire request.
+        let error = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            next.reset(ResetRequest {
+                timeout_ms: 10,
+                ..Default::default()
+            }),
+        )
+        .await
+        .expect("must honor the direct request budget")
+        .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                GrpcError::Transport(TransportError::Status {
+                    code: tonic::Code::FailedPrecondition,
+                    ..
+                })
+            ),
+            "{error:?}"
+        );
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(30);
+        let error = with_request_deadline(deadline, async {
+            // Earlier work has already consumed this call's entire budget.
+            tokio::time::sleep_until(deadline).await;
+            tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                next.reset(ResetRequest {
+                    timeout_ms: 1000,
+                    ..Default::default()
+                }),
+            )
+            .await
+            .expect("must use the remaining budget, not a fresh second")
+        })
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                GrpcError::Transport(TransportError::Status {
+                    code: tonic::Code::FailedPrecondition,
+                    ..
+                })
+            ),
+            "{error:?}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("already has an active Join session")
+        );
+        assert_eq!(
+            recorded.lock().unwrap().len(),
+            count,
+            "no new Join was opened"
+        );
+        barrier.notify_one();
+        // A refusal does not wedge the new client once the old stream drains.
+        next.reset(ResetRequest::default()).await.unwrap();
+        barrier.notify_one();
+        next.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn close_waits_for_stream_termination_after_the_reply() {
+        let barrier = Arc::new(tokio::sync::Notify::new());
+        let recorded = Arc::default();
+        let (address, _shutdown) = serve(FakeEnvService {
+            recorded: Some(recorded),
+            close_barrier: Some(barrier.clone()),
+        });
+        for _ in 0..20 {
+            let (mut client, _) = ready_client(&address).await;
+            client.reset(ResetRequest::default()).await.unwrap();
+            let pending = client.shared.stream().unwrap().pending;
+            let mut closing = Box::pin(client.close());
+            assert!(futures::poll!(closing.as_mut()).is_pending());
+            // Model a server paused between its Close reply and releasing the slot.
+            // Wait until the pump delivered the reply, then poll close directly:
+            // it must still be pending, independent of scheduler speed or load.
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                while !pending.lock().unwrap().as_ref().unwrap().is_empty() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            let early = futures::poll!(closing.as_mut());
+            barrier.notify_one();
+            assert!(
+                early.is_pending(),
+                "close returned before the server ended its Join stream"
+            );
+            tokio::time::timeout(std::time::Duration::from_secs(2), closing)
+                .await
+                .unwrap()
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn last_client_drop_orders_the_next_join_even_with_an_edition_observer() {
+        let barrier = Arc::new(tokio::sync::Notify::new());
+        let (address, _shutdown) = serve(FakeEnvService {
+            recorded: Some(Arc::default()),
+            close_barrier: Some(barrier.clone()),
+        });
+        let (client, _) = ready_client(&address).await;
+        let observer = client.pinned_edition();
+        let mut clone = client.clone();
+        drop(client);
+        // A surviving client clone still owns and can drive the session.
+        clone.reset(ResetRequest::default()).await.unwrap();
+        drop(clone);
+        assert!(
+            observer.0.stream().is_none(),
+            "observers must not retain the Join sender"
+        );
+
+        let (mut next, _) = ready_client(&address).await;
+        let mut reset = Box::pin(next.reset(ResetRequest::default()));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), &mut reset)
+                .await
+                .is_err(),
+            "the next Join overtook the dropped stream's EOF"
+        );
+        barrier.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(2), reset)
+            .await
+            .unwrap()
+            .unwrap();
+        barrier.notify_one();
+        next.close().await.unwrap();
     }
 
     fn recorded_kinds(recorded: &std::sync::Mutex<Vec<JoinRequest>>) -> Vec<join_request::Kind> {

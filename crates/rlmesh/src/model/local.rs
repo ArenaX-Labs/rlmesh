@@ -333,12 +333,13 @@ impl RuntimeEnv for EnvClientRuntimeEnv {
     }
 
     async fn close(&mut self, timeout: Duration) -> std::result::Result<(), String> {
-        let close = self.inner.close();
-        tokio::time::timeout(timeout, close)
-            .await
-            .map_err(|err| err.to_string())?
-            .map(|_| ())
-            .map_err(|err| err.to_string())
+        match tokio::time::timeout(timeout, self.inner.close()).await {
+            Ok(result) => result.map(|_| ()).map_err(|err| err.to_string()),
+            Err(err) => {
+                self.inner.detach();
+                Err(err.to_string())
+            }
+        }
     }
 }
 

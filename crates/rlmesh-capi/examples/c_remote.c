@@ -179,6 +179,22 @@ int main(void) {
   CHECK(cached == rlmesh_remote_env_observation_space(remote));
   state.remote = NULL;
   rlmesh_remote_env_free(remote);
+  /* A completed close/free must make the next session usable immediately. */
+  for (int i = 0; i < 100; ++i) {
+    CHECK(rlmesh_session_new(RLMESH_RANDOM_SAMPLE, rlmesh_env_server_target(server), NULL,
+                             &session) == RLMESH_OK);
+    CHECK(rlmesh_session_reset(session, NULL, NULL, &obs, &info) == RLMESH_OK);
+    rlmesh_value_free(obs);
+    rlmesh_value_free(info);
+    if (i % 2 == 0) CHECK(rlmesh_session_close(session) == RLMESH_OK);
+    rlmesh_session_free(session);
+    CHECK(rlmesh_remote_env_new(&eo, &remote) == RLMESH_OK);
+    CHECK(rlmesh_remote_env_reset(remote, NULL, NULL, &obs, &info) == RLMESH_OK);
+    rlmesh_value_free(obs);
+    rlmesh_value_free(info);
+    if (i % 2 == 0) CHECK(rlmesh_remote_env_close(remote) == RLMESH_OK);
+    rlmesh_remote_env_free(remote);
+  }
   /* RemoteModel keeps normalized input, clones, and sessions dial the facade. */
   RLMeshModelVtable mv = RLMESH_MODEL_VTABLE_INIT;
   mv.predict = predict;

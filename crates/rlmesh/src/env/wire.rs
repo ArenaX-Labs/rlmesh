@@ -884,6 +884,7 @@ mod tests {
         // Real time each step spends inside the env, so a reported split is
         // contained in a measured call regardless of build profile.
         step_delay: Duration,
+        step_gate: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
         // Errors the next steps fail with, in order (shared so a test can queue
         // them after the env moved into its server).
         step_failures: Arc<Mutex<std::collections::VecDeque<spaces::EnvRuntimeError>>>,
@@ -918,6 +919,7 @@ mod tests {
                 closes,
                 phases: EndpointPhases::default(),
                 step_delay: Duration::ZERO,
+                step_gate: None,
                 step_failures: Arc::default(),
             }
         }
@@ -965,6 +967,10 @@ mod tests {
             &mut self,
             req: StepRequest,
         ) -> std::result::Result<StepResult, spaces::EnvRuntimeError> {
+            if let Some((entered, release)) = &self.step_gate {
+                entered.notify_one();
+                release.notified().await;
+            }
             std::thread::sleep(self.step_delay);
             if let Some(error) = self.step_failures.lock().unwrap().pop_front() {
                 return Err(error);
@@ -1406,15 +1412,9 @@ mod tests {
         first.grpc().detach();
         drop(first);
 
-        // The slot frees once the server observes the stream end; retry until
-        // the second session is admitted.
-        let mut second = loop {
-            let mut candidate = RemoteEnv::connect(&address).await.unwrap();
-            match candidate.reset(ResetRequest::default()).await {
-                Ok(_) => break candidate,
-                Err(_) => tokio::time::sleep(Duration::from_millis(10)).await,
-            }
-        };
+        // The next local Join waits for the detached stream's termination.
+        let mut second = RemoteEnv::connect(&address).await.unwrap();
+        second.reset(ResetRequest::default()).await.unwrap();
 
         let step = second
             .step(StepRequest {
@@ -1667,6 +1667,128 @@ mod tests {
 
         assert!(client.shutdown("done").await.unwrap());
         shutdown_and_join(server).await;
+    }
+
+    #[tokio::test]
+    async fn retiring_join_with_short_request_timeout_returns_active_session_refusal() {
+        use crate::binding::env::CoreConnect;
+
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let mut env = DummyEnv::new();
+        env.step_gate = Some((entered.clone(), release.clone()));
+        let bound = EnvServer::new(env)
+            .bind_with_options(
+                BindAddress::parse("tcp://127.0.0.1:0").unwrap(),
+                ServeOptions::default(),
+            )
+            .await
+            .unwrap();
+        let address = bound.local_addr().to_string();
+        let server = tokio::spawn(bound.serve());
+        let mut client = rlmesh_grpc::EnvClient::connect(&address).await.unwrap();
+        client.handshake().await.unwrap();
+        client.reset(ProtoResetRequest::default()).await.unwrap();
+        let mut lane = client.clone();
+        let step = tokio::spawn(async move {
+            lane.step(ProtoStepRequest {
+                action: Some(
+                    encode_batched_partial_values(
+                        &[
+                            spaces::SpaceValue::Discrete(0),
+                            spaces::SpaceValue::Discrete(1),
+                        ],
+                        &spaces::spaces::DiscreteBuilder::new(3).build().unwrap(),
+                    )
+                    .unwrap(),
+                ),
+                ..Default::default()
+            })
+            .await
+        });
+        entered.notified().await;
+        client.detach();
+
+        let mut next = RemoteEnv::connect_with(
+            &address,
+            CoreConnect {
+                request_timeout: Some(Duration::from_millis(30)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let error = next.reset(ResetRequest::default()).await.unwrap_err();
+        release.notify_one();
+        step.await.unwrap().unwrap();
+        assert!(matches!(error, crate::Error::Connection(_)), "{error:?}");
+        assert!(
+            error
+                .to_string()
+                .contains("already has an active Join session"),
+            "{error}"
+        );
+
+        next.reset(ResetRequest::default())
+            .await
+            .expect("join after drain");
+        next.close().await.unwrap();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn runtime_env_close_timeout_detaches_the_session() {
+        use rlmesh_runtime::RuntimeEnv;
+
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let mut env = DummyEnv::new();
+        env.step_gate = Some((entered.clone(), release.clone()));
+        let bound = EnvServer::new(env)
+            .bind_with_options(
+                BindAddress::parse("tcp://127.0.0.1:0").unwrap(),
+                ServeOptions::default(),
+            )
+            .await
+            .unwrap();
+        let address = bound.local_addr().to_string();
+        let server = tokio::spawn(bound.serve());
+        let mut client = rlmesh_grpc::EnvClient::connect(&address).await.unwrap();
+        client.handshake().await.unwrap();
+        client.reset(ProtoResetRequest::default()).await.unwrap();
+        let mut lane = client.clone();
+        let step = tokio::spawn(async move {
+            lane.step(ProtoStepRequest {
+                action: Some(
+                    encode_batched_partial_values(
+                        &[
+                            spaces::SpaceValue::Discrete(0),
+                            spaces::SpaceValue::Discrete(1),
+                        ],
+                        &spaces::spaces::DiscreteBuilder::new(3).build().unwrap(),
+                    )
+                    .unwrap(),
+                ),
+                ..Default::default()
+            })
+            .await
+        });
+        entered.notified().await;
+        let mut adapter = crate::model::local::EnvClientRuntimeEnv::new(client);
+        let outcome = adapter.close(Duration::from_millis(20)).await;
+        let mut client = adapter.into_inner();
+        let state = client.state();
+        release.notify_one();
+        step.await.unwrap().unwrap();
+        assert!(outcome.is_err());
+        assert_eq!(state, rlmesh_grpc::states::ClientState::Closed);
+        assert!(client.reset(ProtoResetRequest::default()).await.is_err());
+        let mut next = RemoteEnv::connect(&address).await.unwrap();
+        next.reset(ResetRequest::default())
+            .await
+            .expect("join after timed-out close");
+        next.close().await.unwrap();
+        server.abort();
     }
 
     #[tokio::test]
