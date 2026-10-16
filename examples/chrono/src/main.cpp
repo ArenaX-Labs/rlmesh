@@ -84,8 +84,9 @@ int main(int argc, char** argv) try {
   const std::string renderer_name = renderer->describe();
 
   rlmesh::EnvServer server(chrono_reach::IndustrialReach(options, std::move(renderer)),
-                           {.address = describe ? "tcp://127.0.0.1:0" : address,
-                            .tags = chrono_reach::IndustrialReach::tags()});
+                           rlmesh::EnvServerOptions{}
+                               .with_address(describe ? "tcp://127.0.0.1:0" : address)
+                               .with_tags(chrono_reach::IndustrialReach::tags()));
   if (describe) {
     std::puts(rlmesh::ext::env_server_describe_json(server).c_str());
     return 0;

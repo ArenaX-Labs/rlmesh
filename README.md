@@ -53,7 +53,7 @@ Grab the [`rlmesh`](crates/rlmesh/README.md) crate. You'll need `protoc` install
 
 ## C and C++
 
-The [C API](crates/rlmesh-capi/README.md) (`rlmesh.h`) and the header-only [C++ API](crates/rlmesh-capi/README-cpp.md) (`rlmesh.hpp`, C++20, with RAII handles and exceptions) ship as a prebuilt package on each GitHub Release, with CMake and pkg-config support.
+The [C API](crates/rlmesh-capi/README.md) (`rlmesh.h`) and the header-only [C++ API](crates/rlmesh-capi/README-cpp.md) (`rlmesh.hpp`, C++17, with RAII handles and exceptions) ship as a prebuilt package on each GitHub Release, with CMake and pkg-config support.
 
 ```cpp
 rlmesh::Model model([](const rlmesh::Value&) { return rlmesh::Value(0); });

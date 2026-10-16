@@ -4,14 +4,14 @@ RLMesh connects models to environments for evaluation. Serve a Gymnasium-style e
 
 RLMesh aims to feel familiar in whichever language you use it from. Python, Rust, C and C++ share the same nouns and constructs (`Env`, `Space`, `Value`, `Model`, `run`, `Session`, `EnvServer`, `RemoteEnv`), each written in that language's own conventions and with helpers that only make sense there. What you learn here carries over, and every language talks to every other over the same wire.
 
-The header requires C++20 and exceptions (it stops with `#error` otherwise).
+The header requires C++17 and exceptions (it stops with `#error` otherwise), and is tested at C++17 and C++20. Both standards use the same header shape, so translation units built at either standard can share wrapper types. RTTI is not needed.
 
 ## Install
 
 `rlmesh.hpp` ships next to `rlmesh.h` in the same package and links the same library, so installation is the same as for C. The short version, with CMake and a prebuilt release (Linux x86_64, glibc 2.34 or newer):
 
 ```cmake
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 17)
 
 include(FetchContent)
 FetchContent_Declare(rlmesh
@@ -23,7 +23,7 @@ FetchContent_MakeAvailable(rlmesh)
 target_link_libraries(my_sim PRIVATE rlmesh::rlmesh)
 ```
 
-`find_package(rlmesh 5 CONFIG REQUIRED)` against an unpacked package and pkg-config (`c++ -std=c++20 sim.cpp $(pkg-config --cflags --libs rlmesh)`) work too. See [Install in the C guide](README.md#install) for every option, including building from source.
+`find_package(rlmesh 5 CONFIG REQUIRED)` against an unpacked package and pkg-config (`c++ -std=c++17 sim.cpp $(pkg-config --cflags --libs rlmesh)`) work too. See [Install in the C guide](README.md#install) for every option, including building from source.
 
 ## Quickstart
 
@@ -56,8 +56,7 @@ class Counter {
 };
 
 int main() try {
-  rlmesh::EnvServerOptions options;
-  options.address = "127.0.0.1:5555";
+  auto options = rlmesh::EnvServerOptions{}.with_address("127.0.0.1:5555");
   rlmesh::EnvServer server(Counter{}, options);
   std::printf("serving on %s\n", server.address().c_str());
   server.serve();  // blocks until shutdown; Ctrl-C throws rlmesh::ext::CancelledError
@@ -79,8 +78,7 @@ Run a model against it from another process. A lambda from observation to action
 
 int main() try {
   rlmesh::Model model([](const rlmesh::Value& /*observation*/) { return rlmesh::Value(0); });
-  rlmesh::RunOptions options;
-  options.episodes = 3;
+  auto options = rlmesh::RunOptions{}.with_episodes(3);
   rlmesh::RunResult result = model.run("127.0.0.1:5555", options);
   std::printf("%zu episodes, %lld steps, mean reward %.1f\n", result.num_episodes(),
               static_cast<long long>(result.total_steps()), result.mean_reward());
@@ -92,8 +90,8 @@ int main() try {
 ```
 
 ```bash
-c++ -std=c++20 serve.cpp $(pkg-config --cflags --libs rlmesh) -o serve && ./serve
-c++ -std=c++20 run.cpp $(pkg-config --cflags --libs rlmesh) -o run && ./run
+c++ -std=c++17 serve.cpp $(pkg-config --cflags --libs rlmesh) -o serve && ./serve
+c++ -std=c++17 run.cpp $(pkg-config --cflags --libs rlmesh) -o run && ./run
 # 3 episodes, 9 steps, mean reward 3.0
 ```
 
@@ -105,9 +103,13 @@ Neither side cares what language the other is written in: the same model can dri
 
 **Handles manage themselves.** Destructors release library objects without throwing. Values, tensors, spaces, `Model`, `RemoteModel` and adapters are cheap to copy: copies share the same underlying object (`Tensor::copy()` makes an independent copy of the data). Envs, remote envs, sessions, servers and recorders are move-only. Call `close()` explicitly when you want to observe cleanup errors; destruction swallows them.
 
-**Options are plain structs.** Every operation that takes options has an options struct (`RunOptions`, `SessionOptions`, `EnvServerOptions`, `RemoteEnvOptions`, `ModelOptions`, ...) whose members default to the documented defaults. Set the members you need and pass it, or pass nothing for all defaults. With C++20 you can also write the struct inline with designated initializers, as in `model.run(env, {.episodes = 3})`.
+**Options are plain structs.** Every operation that takes options has an options struct (`RunOptions`, `SessionOptions`, `EnvServerOptions`, `RemoteEnvOptions`, `ModelOptions`, ...) whose members default to the documented defaults. The portable spelling is `RunOptions{}.with_episodes(2).with_seeds({0, 1})`: each `with_<field>` setter returns the same object and works on both named options and temporaries. You can also assign members directly, or pass nothing for all defaults. With C++20 you can also write the struct inline with designated initializers, as in `model.run(env, {.episodes = 3})`.
 
-**Standard vocabulary types.** Optional values are `std::optional`; `rlmesh::OptionalList<T>` keeps "not set" distinct from an empty list (as in `RunOptions::seeds`). Durations are `std::chrono` durations (`rlmesh::Duration` is `std::chrono::duration<double>`), so a time limit is `options.max_episode = std::chrono::seconds(30)`. Text arguments take `std::string_view`, and tensor bytes come back as `std::span<const std::byte>`.
+**Standard vocabulary types.** Optional values are `std::optional`; `rlmesh::OptionalList<T>` keeps "not set" distinct from an empty list (as in `RunOptions::seeds`). Durations are `std::chrono` durations (`rlmesh::Duration` is `std::chrono::duration<double>`), so a time limit is `options.max_episode = std::chrono::seconds(30)`. Text arguments take `std::string_view`, and tensor bytes come back as `rlmesh::Span<const std::byte>`.
+
+**Borrowed contiguous views.** `rlmesh::Span<T>` provides `data`, `size`, `begin`, `end`, `operator[]` and `empty`. It accepts a pointer and count, vectors, `std::array` and C arrays; C++20 also accepts `std::span` through a constructor template. Batch policies take `rlmesh::Span<const Value>`, and `BatchPredictContext` is a `Span<const PredictContext>`. Keep the backing storage alive while a view is used.
+
+**Unreal and other hosts.** The header saves and restores common Unreal, X11 and Windows macros, including `check`, `None`, `Bool`, `min` and `max`, and compiles without RTTI. When a host defines an object-like macro such as `None` or `Bool`, undefine it in your code before spelling the matching scoped enumerator (`ValueKind::None`, `DType::Bool`). In Unreal, enable exceptions for the consuming module with `bEnableExceptions = true` in its `.Build.cs`.
 
 **Results unpack with structured bindings.** `reset` returns `rlmesh::ResetResult` (`std::tuple<Value, InfoDict>`) and `step` returns `rlmesh::StepResult` (`std::tuple<Value, double, bool, bool, InfoDict>`), so `auto [observation, reward, terminated, truncated, info] = env.step(action);` reads like Gymnasium.
 

@@ -1,4 +1,4 @@
-// Executable ABI 5 C++20 parity fixtures. Built with GCC and Clang by test:cxx.
+// Executable ABI 5 C++17 parity fixtures. Built with GCC and Clang by test:cxx.
 #include <cassert>
 #include <cstring>
 #include <future>
@@ -10,7 +10,8 @@
 using namespace rlmesh;
 using namespace rlmesh::spaces;
 namespace {
-static_assert(std::random_access_iterator<Dict::key_iterator>);
+static_assert(std::is_same_v<std::iterator_traits<Dict::key_iterator>::iterator_category,
+                             std::random_access_iterator_tag>);
 static_assert(!std::is_copy_constructible_v<Env>);
 static_assert(!std::is_copy_constructible_v<Session>);
 static_assert(!std::is_copy_constructible_v<RemoteEnv>);
@@ -20,13 +21,13 @@ static_assert(std::is_copy_constructible_v<ext::CancelToken>);
 static_assert(std::is_nothrow_move_constructible_v<ext::CancelToken>);
 static_assert(std::is_constructible_v<ServedEnv, Env&>);
 static_assert(std::is_constructible_v<ServedEnv, VectorEnv&>);
-static_assert(std::is_constructible_v<ServedEnv, std::span<const Env>&>);
+static_assert(std::is_constructible_v<ServedEnv, rlmesh::Span<const Env>&>);
 static_assert(!std::is_constructible_v<ServedEnv, Env&&>);
 static_assert(!std::is_constructible_v<ServedEnv, const Env&&>);
 static_assert(!std::is_constructible_v<ServedEnv, VectorEnv&&>);
 static_assert(!std::is_constructible_v<ServedEnv, const VectorEnv&&>);
-static_assert(!std::is_constructible_v<ServedEnv, std::span<const Env>&&>);
-static_assert(!std::is_constructible_v<ServedEnv, const std::span<const Env>&&>);
+static_assert(!std::is_constructible_v<ServedEnv, rlmesh::Span<const Env>&&>);
+static_assert(!std::is_constructible_v<ServedEnv, const rlmesh::Span<const Env>&&>);
 static_assert(!std::is_constructible_v<ServedEnv, std::vector<Env>&&>);
 static_assert(!std::is_constructible_v<ServedEnv, const std::vector<Env>&&>);
 static_assert(!std::is_constructible_v<Value, std::nullptr_t>);
@@ -66,7 +67,12 @@ struct Factory : EnvFactory<Factory> {
   void prepare() { ++prepares; }
   static std::vector<std::string> reset_options() { return {"trial_index"}; }
   static std::optional<std::vector<Variant>> enumerate_variants() {
-    return std::vector<Variant>{{.id = "default", .params = {}}};
+    return std::vector<Variant>{[&] {
+      rlmesh::Variant value{};
+      value.id = "default";
+      value.params = {};
+      return value;
+    }()};
   }
 };
 struct Loaded {
@@ -126,10 +132,14 @@ void values_spaces() {
   auto imported = Tensor::from_dlpack(std::move(dl));
   assert(!dl);
   assert(imported.shape() == t.shape());
-  auto writable = t.to_dlpack({.copy = true});
+  auto writable = t.to_dlpack(rlmesh::ToDlpackOptions{}.with_copy(true));
   assert(!(writable->flags & DLPACK_FLAG_BITMASK_READ_ONLY));
   Dict dict({{"p", Box(-1, 1, {2})}, {"id", Discrete(3)}});
   assert(dict.end() - dict.begin() == 2);
+  assert(std::distance(dict.begin(), dict.end()) == 2);
+  assert(dict.begin() < dict.end() && dict.begin() <= dict.end());
+  assert(dict.end() > dict.begin() && dict.end() >= dict.begin());
+  assert(dict.begin() != dict.end() && dict.begin() == dict.begin());
   assert(dict.begin()[0] == "id");
   auto child = dict["id"];
   child.seed(42);
@@ -145,7 +155,8 @@ void values_spaces() {
 void runs_sessions() {
   int closed = 0;
   {
-    Model first([](const Value&) { return Value(0); }, {.on_close = [&] { ++closed; }});
+    Model first([](const Value&) { return Value(0); },
+                rlmesh::ModelOptions{}.with_on_close([&] { ++closed; }));
     {
       auto copy = first;
       auto moved = std::move(copy);
@@ -162,16 +173,18 @@ void runs_sessions() {
   Model copy = model;
   Model moved = std::move(copy);
   Hooks hooks;
-  auto result = model.run(env, {.episodes = 2, .seeds = {0, 1}, .hooks = &hooks});
+  auto result =
+      model.run(env, rlmesh::RunOptions{}.with_episodes(2).with_seeds({0, 1}).with_hooks(&hooks));
   assert(result.num_episodes() == 2 && result.total_steps() == 4 && result.mean_reward() == 2 &&
          result.success_rate() == 1);
   assert(hooks.starts == 1 && hooks.steps == 4 && hooks.ends == 1);
   assert(object->closes == 0 && ends == 2);
   assert(moved.run(env).num_episodes() == 1);
-  assert(model.run(env, {.seeds = {4, 5}}).num_episodes() == 2);
-  assert(model.run(env, {.seeds = std::vector<int64_t>{}}).num_episodes() == 0);
+  assert(model.run(env, rlmesh::RunOptions{}.with_seeds({4, 5})).num_episodes() == 2);
+  assert(model.run(env, rlmesh::RunOptions{}.with_seeds(std::vector<int64_t>{})).num_episodes() ==
+         0);
   try {
-    model.run(env, {.episodes = 2, .seeds = {0}});
+    model.run(env, rlmesh::RunOptions{}.with_episodes(2).with_seeds({0}));
     assert(false);
   } catch (const ValueError&) {
   }
@@ -229,7 +242,7 @@ void runs_sessions() {
         called = true;
       }
     } refuse(s);
-    assert(s.run({.hooks = &refuse}).num_episodes() == 1);
+    assert(s.run(rlmesh::SessionRunOptions{}.with_hooks(&refuse)).num_episodes() == 1);
     assert(refuse.called && s.done());
   }
   assert(object->closes == 0);
@@ -252,9 +265,9 @@ void missing_dict_action_keys() {
   struct DictCounter : Counter {
     Space action_space() const { return Dict({{"nested", Dict({{"choice", Discrete(3)}})}}); }
   };
-  EnvServer server(DictCounter{}, {.address = "tcp://127.0.0.1:0"});
+  EnvServer server(DictCounter{}, rlmesh::EnvServerOptions{}.with_address("tcp://127.0.0.1:0"));
   server.start();
-  RemoteEnv remote({.address = server.address()});
+  RemoteEnv remote(rlmesh::RemoteEnvOptions{}.with_address(server.address()));
   remote.reset();
   Value missing(Metadata{{"nested", Value(Metadata{})}});
   try {
@@ -279,10 +292,11 @@ void session_target_lifetimes() {
   Env env(Counter{});
   int closed = 0;
   auto make_model = [&] {
-    return Model([](const Value&) { return 0; }, {.on_close = [&] { ++closed; }});
+    return Model([](const Value&) { return 0; },
+                 rlmesh::ModelOptions{}.with_on_close([&] { ++closed; }));
   };
   auto make_server = [] {
-    EnvServer server(Counter{}, {.address = "tcp://127.0.0.1:0"});
+    EnvServer server(Counter{}, rlmesh::EnvServerOptions{}.with_address("tcp://127.0.0.1:0"));
     server.start();
     return server;
   };
@@ -311,13 +325,13 @@ void session_target_lifetimes() {
   Model served([](const Value&) { return 0; });
   const auto address = [] {
     // Reserve an OS-selected TCP port, then release it for the model server.
-    EnvServer reservation(Counter{}, {.address = "tcp://127.0.0.1:0"});
+    EnvServer reservation(Counter{}, rlmesh::EnvServerOptions{}.with_address("tcp://127.0.0.1:0"));
     return reservation.address();
   }();
   ext::CancelToken stop;
   auto server = std::async(std::launch::async, [&] {
     try {
-      served.serve(address, {.cancel = stop});
+      served.serve(address, rlmesh::ModelServeOptions{}.with_cancel(stop));
     } catch (const ext::CancelledError&) {
     }
   });
@@ -327,14 +341,16 @@ void session_target_lifetimes() {
       throw RuntimeError("model server stopped before startup");
     }
     {
-      auto s = rlmesh::session(RemoteModel({.address = address}), make_server());
+      auto s = rlmesh::session(RemoteModel(rlmesh::RemoteModelOptions{}.with_address(address)),
+                               make_server());
       auto [obs, info] = s.reset();
       (void)info;
       assert(s.predict(obs) == Value(0));
       assert(std::get<1>(s.step(0)) == 1);
     }
     {
-      auto s = RemoteModel({.address = address}).session(make_server());
+      auto s =
+          RemoteModel(rlmesh::RemoteModelOptions{}.with_address(address)).session(make_server());
       assert(s.run().total_steps() == 2);
     }
   } catch (...) {
@@ -376,14 +392,14 @@ void exceptions() {
   } hook;
   Model model(Greedy{});
   try {
-    model.run(env, {.hooks = &hook});
+    model.run(env, rlmesh::RunOptions{}.with_hooks(&hook));
     assert(false);
   } catch (const OwnError& e) {
     assert(e.tag == 23);
   }
   set_warning_handler([](const Warning&) { throw OwnError(29); });
   try {
-    model.run(env, {.execution_horizon = 2});
+    model.run(env, rlmesh::RunOptions{}.with_execution_horizon(2));
     assert(false);
   } catch (const OwnError& e) {
     assert(e.tag == 29);
@@ -449,7 +465,7 @@ void foreign_error_payloads() {
     auto status = rlmesh_model_new(&vt, &kind, nullptr, &model);
     assert(status == RLMESH_ERR_INVALID_ARGUMENT && !model);
     try {
-      rlmesh::detail::check(status);
+      rlmesh::detail::check_status(status);
       assert(false);
     } catch (const ValueError& error) {
       assert(std::string(error.what()) == "foreign payload");
@@ -551,15 +567,15 @@ void vector_and_chunks() {
   int calls = 0;
   Env env(Counter{});
   Model chunk(ChunkPolicy{&calls});
-  assert(chunk.run(env, {.execution_horizon = 2}).total_steps() == 2);
+  assert(chunk.run(env, rlmesh::RunOptions{}.with_execution_horizon(2)).total_steps() == 2);
   assert(calls == 1);
   auto batch_policy = [](const Value&) { return BatchCounter{}.observations(); };
   Model scalar(batch_policy);
   VectorEnv vector(BatchCounter{});
-  auto result = scalar.run(vector, {.episodes = 2});
+  auto result = scalar.run(vector, rlmesh::RunOptions{}.with_episodes(2));
   assert(result.num_episodes() == 2);
   struct BatchPolicy {
-    std::vector<Value> predict_batch(std::span<const Value> observations,
+    std::vector<Value> predict_batch(rlmesh::Span<const Value> observations,
                                      BatchPredictContext contexts) {
       assert(observations.size() == contexts.size());
       std::vector<Value> out;
@@ -572,10 +588,11 @@ void vector_and_chunks() {
     }
   };
   Model model(BatchPolicy{});
-  EnvServer server(VectorEnv(BatchCounter{}), {.address = "tcp://127.0.0.1:0"});
+  EnvServer server(VectorEnv(BatchCounter{}),
+                   rlmesh::EnvServerOptions{}.with_address("tcp://127.0.0.1:0"));
   server.start();
   {
-    RemoteVectorEnv remote({.address = server.address()});
+    RemoteVectorEnv remote(rlmesh::RemoteEnvOptions{}.with_address(server.address()));
     assert(remote.num_envs() == 2);
     auto [obs, info] = remote.reset(VectorSeed(std::vector<int64_t>{0, 1}));
     (void)obs;
@@ -587,7 +604,7 @@ void vector_and_chunks() {
     assert(rewards.size() == 2 && terminated[0] && !truncated[1]);
     remote.close();
   }
-  assert(model.run(server, {.episodes = 2}).num_episodes() == 2);
+  assert(model.run(server, rlmesh::RunOptions{}.with_episodes(2)).num_episodes() == 2);
   server.shutdown();
 }
 void factories_remote_describe() {
@@ -604,12 +621,13 @@ void factories_remote_describe() {
   assert(policy.loads == 0 && policy.closes == 0 && policy.predictions == 0);
   Env description_env(Counter{});
   ServedEnv borrowed(description_env);
-  assert(!describe_json(policy, {.served_env = borrowed}).empty());
+  assert(!describe_json(policy, rlmesh::DescribeJsonOptions{}.with_served_env(borrowed)).empty());
   std::vector<Env> lanes;
   lanes.emplace_back(Counter{});
-  std::span<const Env> span(lanes);
+  rlmesh::Span<const Env> span(lanes);
   ServedEnv borrowed_span(span);
-  assert(!describe_json(policy, {.served_env = borrowed_span}).empty());
+  assert(
+      !describe_json(policy, rlmesh::DescribeJsonOptions{}.with_served_env(borrowed_span)).empty());
   assert(!describe_json(policy).empty());
   assert(policy.loads == 0 && policy.closes == 0 && policy.predictions == 0);
   Factory factory;
@@ -622,15 +640,23 @@ void factories_remote_describe() {
   assert(!describe(factory).empty());
   assert(!describe_json<Greedy>().empty());
   assert(!describe_json(factory).empty());
-  Variant v{.id = "x", .params = {{"n", 2}}, .metadata = {{"label", "variant"}}};
+  auto v = [&] {
+    Variant value{};
+    value.id = "x";
+    value.params = {{"n", 2}};
+    value.metadata = {{"label", "variant"}};
+    return value;
+  }();
   assert(to_string(v).find("Variant") != std::string::npos);
-  EnvServer server(Counter{}, {.address = "tcp://127.0.0.1:0",
-                               .options = ServeOptions{
-                                   .allow_remote_shutdown = true,
-                                   .workflow_edition = std::string(current_workflow_edition())}});
+  EnvServer server(
+      Counter{},
+      rlmesh::EnvServerOptions{}
+          .with_address("tcp://127.0.0.1:0")
+          .with_options(ServeOptions{}.with_allow_remote_shutdown(true).with_workflow_edition(
+              std::string(current_workflow_edition()))));
   server.start();
   {
-    RemoteEnv remote({.address = server.address()});
+    RemoteEnv remote(rlmesh::RemoteEnvOptions{}.with_address(server.address()));
     assert(!remote.env_id().empty());
     assert(remote.env_contract().id() == "CppCounter-v0");
     assert(model.run(remote).total_steps() == 2);
@@ -647,7 +673,7 @@ void factories_remote_describe() {
   assert(!server.wait(Duration(0)));
   server.shutdown();
   assert(server.wait(Duration(1)));
-  RemoteModel rm({.address = "tcp://127.0.0.1:1"});
+  RemoteModel rm(rlmesh::RemoteModelOptions{}.with_address("tcp://127.0.0.1:1"));
   auto rm_copy = rm;
   assert(rm_copy.address() == rm.address());
 }
@@ -657,9 +683,17 @@ struct Identity : adapters::AdapterBase {
 };
 void adapter_axis_presence() {
   using namespace adapters;
-  State state{.role = JOINT_POS, .dim = 1};
-  Actuator actuator{.role = ACTION_JOINT_POS, .dim = 1};
-  ModelSpec absent(state, Action{.components = {actuator}});
+  State state{};
+  state.role = JOINT_POS;
+  state.dim = 1;
+  Actuator actuator{};
+  actuator.role = ACTION_JOINT_POS;
+  actuator.dim = 1;
+  ModelSpec absent(state, [&] {
+    Action value{};
+    value.components = {actuator};
+    return value;
+  }());
   const auto* input = static_cast<const RLMeshState*>(rlmesh_model_spec_input(absent.raw())->leaf);
   assert(!input->has_scale && !input->axis_scale && !input->has_offset && !input->axis_offset);
   const auto* output = rlmesh_model_spec_output(absent.raw())->components[0];
@@ -669,7 +703,11 @@ void adapter_axis_presence() {
     (offset ? empty_state.offset : empty_state.scale) = std::vector<double>{};
     bool rejected = false;
     try {
-      ModelSpec invalid(empty_state, Action{.components = {actuator}});
+      ModelSpec invalid(empty_state, [&] {
+        Action value{};
+        value.components = {actuator};
+        return value;
+      }());
     } catch (const ValueError&) {
       rejected = true;
     }
@@ -678,7 +716,11 @@ void adapter_axis_presence() {
     (offset ? empty_actuator.offset : empty_actuator.scale) = std::vector<double>{};
     rejected = false;
     try {
-      ModelSpec invalid(state, Action{.components = {empty_actuator}});
+      ModelSpec invalid(state, [&] {
+        Action value{};
+        value.components = {empty_actuator};
+        return value;
+      }());
     } catch (const ValueError&) {
       rejected = true;
     }
@@ -688,49 +730,82 @@ void adapter_axis_presence() {
   state.offset = std::vector<double>{1};
   actuator.scale = std::vector<double>{2};
   actuator.offset = std::vector<double>{1};
-  ModelSpec present(state, Action{.components = {actuator}});
-  assert(present == ModelSpec(State{.role = JOINT_POS,
-                                    .dim = 1,
-                                    .scale = std::vector<double>{2},
-                                    .offset = std::vector<double>{1}},
-                              Action{.components = {actuator}}));
+  ModelSpec present(state, [&] {
+    Action value{};
+    value.components = {actuator};
+    return value;
+  }());
+  assert(present == ModelSpec(
+                        [&] {
+                          State value{};
+                          value.role = JOINT_POS;
+                          value.dim = 1;
+                          value.scale = std::vector<double>{2};
+                          value.offset = std::vector<double>{1};
+                          return value;
+                        }(),
+                        [&] {
+                          Action value{};
+                          value.components = {actuator};
+                          return value;
+                        }()));
 }
 void adapter_callable_identity() {
   using namespace adapters;
   ObsTransform observation([](const Value& value) { return value; });
   RotationTransform rotation([](const Value& value) { return value; });
-  Custom input{.transform = observation};
-  CustomEncoding encoding{
-      .base = RotationEncoding::EulerXyz, .from_base = rotation, .to_base = rotation};
-  Action action{.components = {{.role = ACTION_JOINT_POS, .dim = 3, .encoding = encoding}}};
+  Custom input{};
+  input.transform = observation;
+  CustomEncoding encoding{};
+  encoding.base = RotationEncoding::EulerXyz;
+  encoding.from_base = rotation;
+  encoding.to_base = rotation;
+  auto action = [&] {
+    Action value{};
+    value.components = {[&] {
+      rlmesh::adapters::Actuator value{};
+      value.role = ACTION_JOINT_POS;
+      value.dim = 3;
+      value.encoding = encoding;
+      return value;
+    }()};
+    return value;
+  }();
   detail_adapter::Arena arena;
   auto custom_action = action.components[0].raw(arena);
   assert(!custom_action.has_encoding && custom_action.custom_encoding);
   auto native_action =
-      Actuator{.role = ACTION_JOINT_POS, .dim = 3, .encoding = RotationEncoding::EulerXyz}.raw(
-          arena);
+      [&] {
+        Actuator value{};
+        value.role = ACTION_JOINT_POS;
+        value.dim = 3;
+        value.encoding = RotationEncoding::EulerXyz;
+        return value;
+      }()
+          .raw(arena);
   assert(native_action.has_encoding && !native_action.custom_encoding);
   ModelSpec spec(input, action);
-  Model model([](const Value&) { return 0; }, {.spec = spec});
+  Model model([](const Value&) { return 0; }, rlmesh::ModelOptions{}.with_spec(spec));
   const auto& reconstructed = std::get<ModelSpec>(*model.spec());
   auto raw_input = reconstructed.input().raw(arena);
   auto clone = Custom::from_raw(*static_cast<const RLMeshCustom*>(raw_input.leaf));
   assert(clone.transform->raw() != observation.raw());
   assert(clone == input);
-  assert(std::unordered_set<Custom>{input}.contains(clone));
+  assert(std::unordered_set<Custom>{input}.count(clone));
   assert(reconstructed.input() == spec.input());
   assert(reconstructed.output() == action);
   const auto& cloned_encoding =
       std::get<CustomEncoding>(*reconstructed.output().components[0].encoding);
   assert(std::get<RotationTransform>(*cloned_encoding.from_base).raw() != rotation.raw());
   assert(cloned_encoding == encoding);
-  assert(std::unordered_set<CustomEncoding>{encoding}.contains(cloned_encoding));
+  assert(std::unordered_set<CustomEncoding>{encoding}.count(cloned_encoding));
   assert(ObsTransform([](const Value& value) { return value; }) != observation);
   assert(RotationTransform([](const Value& value) { return value; }) != rotation);
 }
 void adapter_dict_equality() {
   using namespace adapters;
-  auto check = []<class Node>(Node a, Node b) {
+  auto check = [](auto a, auto b) {
+    using Node = decltype(a);
     auto first = Node::dict({{"a", a}, {"b", b}});
     auto reversed = Node::dict({{"b", b}, {"a", a}});
     assert(first == reversed && reversed == first);
@@ -741,25 +816,68 @@ void adapter_dict_equality() {
     assert(Node::tuple({a, b}) != Node::tuple({b, a}));
     assert(Node::dict({}) != Node::tuple({}));
   };
-  check(InputNode(adapters::Text{.role = "a"}), InputNode(adapters::Text{.role = "b"}));
-  check(ObsNode(TextTag{.role = "a"}), ObsNode(TextTag{.role = "b"}));
+  check(InputNode([&] {
+          adapters::Text value{};
+          value.role = "a";
+          return value;
+        }()),
+        InputNode([&] {
+          adapters::Text value{};
+          value.role = "b";
+          return value;
+        }()));
+  check(ObsNode([&] {
+          TextTag value{};
+          value.role = "a";
+          return value;
+        }()),
+        ObsNode([&] {
+          TextTag value{};
+          value.role = "b";
+          return value;
+        }()));
 }
 void adapter_hashes() {
   using namespace adapters;
-  adapters::Text text{.role = "instruction", .container = TextContainer::Str, .fill = ""};
-  assert(std::unordered_set<adapters::Text>{text}.contains(adapters::Text(text)));
-  assert(!std::unordered_set<adapters::Text>{text}.contains(adapters::Text{.role = "instruction"}));
-  ImageTag image{
-      .role = IMAGE_PRIMARY, .layout = ImageLayout::Chw, .upside_down = true, .part = "left"};
-  assert(std::unordered_set<ImageTag>{image}.contains(ImageTag(image)));
-  assert(!std::unordered_set<ImageTag>{image}.contains(ImageTag{.role = IMAGE_PRIMARY}));
-  assert(std::unordered_set<TextTag>{{.role = "instruction"}}.contains(
-      TextTag{.role = "instruction"}));
-  Custom entrypoint{.entrypoint = "example:transform"};
-  assert(std::unordered_set<Custom>{entrypoint}.contains(Custom(entrypoint)));
-  CustomEncoding encoding{
-      .base = RotationEncoding::EulerXyz, .from_base = "example:from", .to_base = "example:to"};
-  assert(std::unordered_set<CustomEncoding>{encoding}.contains(CustomEncoding(encoding)));
+  adapters::Text text{};
+  text.role = "instruction";
+  text.container = TextContainer::Str;
+  text.fill = "";
+  assert(std::unordered_set<adapters::Text>{text}.count(adapters::Text(text)));
+  assert(!std::unordered_set<adapters::Text>{text}.count([&] {
+    adapters::Text value{};
+    value.role = "instruction";
+    return value;
+  }()));
+  ImageTag image{};
+  image.role = IMAGE_PRIMARY;
+  image.layout = ImageLayout::Chw;
+  image.upside_down = true;
+  image.part = "left";
+  assert(std::unordered_set<ImageTag>{image}.count(ImageTag(image)));
+  assert(!std::unordered_set<ImageTag>{image}.count([&] {
+    ImageTag value{};
+    value.role = IMAGE_PRIMARY;
+    return value;
+  }()));
+  assert(std::unordered_set<TextTag>{[&] {
+           rlmesh::adapters::TextTag value{};
+           value.role = "instruction";
+           return value;
+         }()}
+             .count([&] {
+               TextTag value{};
+               value.role = "instruction";
+               return value;
+             }()));
+  Custom entrypoint{};
+  entrypoint.entrypoint = "example:transform";
+  assert(std::unordered_set<Custom>{entrypoint}.count(Custom(entrypoint)));
+  CustomEncoding encoding{};
+  encoding.base = RotationEncoding::EulerXyz;
+  encoding.from_base = "example:from";
+  encoding.to_base = "example:to";
+  assert(std::unordered_set<CustomEncoding>{encoding}.count(CustomEncoding(encoding)));
 }
 Value vector(float f) { return Tensor(&f, sizeof(f), {1}, DType::Float32); }
 struct Tagged {
@@ -774,14 +892,52 @@ struct Tagged {
 };
 void adapters_readers_recorder() {
   using namespace adapters;
-  EnvTags tags(StateTag{.role = JOINT_POS},
-               Action{.components = {{.role = ACTION_JOINT_POS, .dim = 1}}});
-  ModelSpec spec(State{.role = JOINT_POS, .dim = 1},
-                 Action{.components = {{.role = ACTION_JOINT_POS, .dim = 1}}});
-  assert(to_string(TextTag{.role = "instruction"}) == "TextTag(role='instruction')");
+  EnvTags tags(
+      [&] {
+        StateTag value{};
+        value.role = JOINT_POS;
+        return value;
+      }(),
+      [&] {
+        Action value{};
+        value.components = {[&] {
+          rlmesh::adapters::Actuator value{};
+          value.role = ACTION_JOINT_POS;
+          value.dim = 1;
+          return value;
+        }()};
+        return value;
+      }());
+  ModelSpec spec(
+      [&] {
+        State value{};
+        value.role = JOINT_POS;
+        value.dim = 1;
+        return value;
+      }(),
+      [&] {
+        Action value{};
+        value.components = {[&] {
+          rlmesh::adapters::Actuator value{};
+          value.role = ACTION_JOINT_POS;
+          value.dim = 1;
+          return value;
+        }()};
+        return value;
+      }());
+  assert(to_string([&] {
+           TextTag value{};
+           value.role = "instruction";
+           return value;
+         }()) == "TextTag(role='instruction')");
   assert(to_string(Constant{}) == "Constant(dim=1, fill=0.0)");
-  assert(to_string(Image{.role = IMAGE_PRIMARY}.with_stride(2)).find("offsets=(0,)") !=
-         std::string::npos);
+  assert(to_string([&] {
+           Image value{};
+           value.role = IMAGE_PRIMARY;
+           return value;
+         }()
+                       .with_stride(2))
+             .find("offsets=(0,)") != std::string::npos);
   assert(std::hash<Advisory>{}({AdvisorySeverity::Info, "hello"}) ==
          std::hash<Advisory>{}({AdvisorySeverity::Info, "hello"}));
   assert(ModelSpec::from_dict(spec.to_dict()) == spec);
@@ -789,9 +945,16 @@ void adapters_readers_recorder() {
   assert(EnvTags::from_json(tags.to_json()) == tags);
   assert(tags.observation_roles().states.size() == 1);
   Box space(-10, 10, {1});
-  ModelSpec missing(Custom{.entrypoint = "cpp:unregistered:input"}, spec.output());
+  ModelSpec missing(
+      [&] {
+        Custom value{};
+        value.entrypoint = "cpp:unregistered:input";
+        return value;
+      }(),
+      spec.output());
   try {
-    resolve(tags, space.spec(), space.spec(), missing, {.trust_entrypoints = true});
+    resolve(tags, space.spec(), space.spec(), missing,
+            rlmesh::adapters::ResolveOptions{}.with_trust_entrypoints(true));
     assert(false);
   } catch (const AdapterResolutionError& e) {
     assert(std::string(e.what()).find("unregistered custom input entrypoint") != std::string::npos);
@@ -810,7 +973,7 @@ void adapters_readers_recorder() {
   assert(!Tolerant<Frame>::parse("future_frame").known());
   Env env(Tagged{});
   tag(env, tags);
-  Model model([](const Value&) { return vector(0); }, {.spec = spec});
+  Model model([](const Value&) { return vector(0); }, rlmesh::ModelOptions{}.with_spec(spec));
   auto s = model.session(env);
   auto [o, i] = s.reset(0);
   (void)i;
@@ -820,22 +983,29 @@ void adapters_readers_recorder() {
   assert(s.observation_roles().states.size() == 1);
   auto sources = s.frame_sources();
   assert(sources.render && sources.render().as_int() == 1);
-  Recorder recorder({.result_set_id = "cpp-parity"});
-  auto capture = recorder.capture("policy", "env", {.session = s.run_context()});
-  auto result = s.run({.hooks = capture.get()});
+  Recorder recorder(rlmesh::RecorderOptions{}.with_result_set_id("cpp-parity"));
+  auto capture = recorder.capture("policy", "env",
+                                  rlmesh::RecorderCaptureOptions{}.with_session(s.run_context()));
+  auto result = s.run(rlmesh::SessionRunOptions{}.with_hooks(capture.get()));
   assert(result.num_episodes() == 1);
   assert(recorder.workloads().size() == 1);
   auto record = recorder.add(result, "policy", "env");
   assert(record.total_steps() == 1);
   assert(record.to_dict().contains_key("episodes"));
   assert(recorder.result_set_id() == "cpp-parity");
-  assert(recorder.to_dict({.recorded_at = "2026-01-01T00:00:00Z"}).contains_key("workloads"));
+  assert(recorder.to_dict(rlmesh::RecorderToDictOptions{}.with_recorded_at("2026-01-01T00:00:00Z"))
+             .contains_key("workloads"));
   recorder.close();
   View view = View::parse("terminal");
   view.validate();
   assert(view.backend == ViewBackend::Terminal);
   try {
-    View{.fps = 0}.validate();
+    [&] {
+      View value{};
+      value.fps = 0;
+      return value;
+    }()
+        .validate();
     assert(false);
   } catch (const ValueError&) {
   }

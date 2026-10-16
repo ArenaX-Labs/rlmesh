@@ -297,13 +297,14 @@ rlmesh::spaces::Space IndustrialReach::observation_space() const {
   using namespace rlmesh::spaces;
   const double inf = INFINITY;
   const int64_t size = options_.image_size;
-  return Dict({{"image", Box(0, 255, {size, size, 3}, {.dtype = rlmesh::DType::Uint8})},
-               {"joint_pos", Box(-inf, inf, {6})},
-               {"joint_vel", Box(-inf, inf, {6})},
-               {"joint_torque", Box(-inf, inf, {6})},
-               {"eef_pos", Box(-inf, inf, {3})},
-               {"target_pos", Box(-inf, inf, {3})},
-               {"instruction", Text(128)}});
+  return Dict(
+      {{"image", Box(0, 255, {size, size, 3}, BoxOptions{}.with_dtype(rlmesh::DType::Uint8))},
+       {"joint_pos", Box(-inf, inf, {6})},
+       {"joint_vel", Box(-inf, inf, {6})},
+       {"joint_torque", Box(-inf, inf, {6})},
+       {"eef_pos", Box(-inf, inf, {3})},
+       {"target_pos", Box(-inf, inf, {3})},
+       {"instruction", Text(128)}});
 }
 rlmesh::spaces::Space IndustrialReach::action_space() const {
   return rlmesh::spaces::Box(-1, 1, {3});

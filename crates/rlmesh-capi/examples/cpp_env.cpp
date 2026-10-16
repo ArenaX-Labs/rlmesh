@@ -1,4 +1,4 @@
-// A detected C++20 env with typed spaces, values and metadata.
+// A detected C++17 env with typed spaces, values and metadata.
 #include <cmath>
 #include <cstdio>
 #include <rlmesh.hpp>
@@ -26,7 +26,8 @@ class PointReach {
   explicit PointReach(bool announce) : announce_(announce) {}
   rlmesh::spaces::Space observation_space() const {
     using namespace rlmesh::spaces;
-    return Dict({{"camera", Box(0, 255, {8, 8, 3}, {.dtype = rlmesh::DType::Uint8})},
+    return Dict({{"camera", Box(0, 255, {8, 8, 3},
+                                rlmesh::spaces::BoxOptions{}.with_dtype(rlmesh::DType::Uint8))},
                  {"eef_pos", Box(-INFINITY, INFINITY, {3})},
                  {"target_pos", Box(-INFINITY, INFINITY, {3})}});
   }
@@ -77,12 +78,21 @@ int main(int argc, char** argv) try {
   const std::string address = argc > 1 ? argv[1] : "tcp://127.0.0.1:5555";
   const bool describe = address == "--describe";
   using namespace rlmesh::adapters;
-  EnvTags tags(ObsNode::dict({{"camera", ImageTag{.role = IMAGE_PRIMARY}},
-                              {"eef_pos", StateTag{.role = EEF_POS}}}),
-               Action{.components = {{.role = ACTION_DELTA_POS, .dim = 3}},
-                      .clip = std::pair<double, double>{-1, 1}});
+  ImageTag camera_tag{};
+  camera_tag.role = IMAGE_PRIMARY;
+  StateTag position_tag{};
+  position_tag.role = EEF_POS;
+  Actuator actuator{};
+  actuator.role = ACTION_DELTA_POS;
+  actuator.dim = 3;
+  Action action{};
+  action.components = {actuator};
+  action.clip = std::pair<double, double>{-1, 1};
+  EnvTags tags(ObsNode::dict({{"camera", camera_tag}, {"eef_pos", position_tag}}), action);
   rlmesh::EnvServer server(PointReach(!describe),
-                           {.address = describe ? "tcp://127.0.0.1:0" : address, .tags = tags});
+                           rlmesh::EnvServerOptions{}
+                               .with_address(describe ? "tcp://127.0.0.1:0" : address)
+                               .with_tags(tags));
   if (describe) {
     std::puts(rlmesh::ext::env_server_describe_json(server).c_str());
     return 0;

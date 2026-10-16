@@ -14,7 +14,7 @@ int main() {
   auto status = rlmesh_model_new(&vt, nullptr, nullptr, &model);
   assert(status == RLMESH_ERR_TYPE && !model);
   try {
-    rlmesh::detail::check(status);
+    rlmesh::detail::check_status(status);
     assert(false);
   } catch (const rlmesh::TypeError& error) {
     assert(std::string(error.what()) == "plugin exception");
@@ -27,7 +27,7 @@ int main() {
   status = rlmesh_model_new(&vt, nullptr, nullptr, &model);
   assert(status == RLMESH_ERR_MODEL && !model);
   try {
-    rlmesh::detail::check(status);
+    rlmesh::detail::check_status(status);
     assert(false);
   } catch (const std::logic_error& error) {
     assert(std::string(error.what()) == "main exception");
