@@ -76,7 +76,7 @@ The experimental C API moves to **ABI generation 5** (`RLMESH_ABI_VERSION` 5, SO
 
 #### C++
 
-- `rlmesh.hpp` now requires C++17 and exceptions (`#error` otherwise); `-fno-exceptions` builds are no longer supported. `Result<T>`, `Error`, `RLMESH_TRY`, the aborting `value()` / `unwrap()` accessors, `ValueRef`, `SpaceRef`, the worker `Batch` / `Request`, `RunReport` and the ABI-4 wrapper types are removed. Fallible calls return their value and throw the Python package's exception class instead (see Added); write `try` / `catch` where you checked a `Result`. A `Model` is built from a policy or callable whose `predict` takes and returns `rlmesh::Value`, and options are aggregates with Python's field names and `std::chrono::duration<double>` durations that drop the `_seconds` suffix (`max_episode_seconds` becomes `max_episode`).
+- `rlmesh.hpp` keeps its C++17 minimum and now requires exceptions (`#error` otherwise); `-fno-exceptions` builds are no longer supported. `Result<T>`, `Error`, `RLMESH_TRY`, the aborting `value()` / `unwrap()` accessors, `ValueRef`, `SpaceRef`, the worker `Batch` / `Request`, `RunReport` and the ABI-4 wrapper types are removed. Fallible calls return their value and throw the corresponding exception class instead (see Added); write `try` / `catch` where you checked a `Result`. A `Model` is built from a policy or callable whose `predict` takes and returns `rlmesh::Value`, and options are aggregates with named fields and `std::chrono::duration<double>` durations that drop the `_seconds` suffix (`max_episode_seconds` becomes `max_episode`).
 
 ### Added
 

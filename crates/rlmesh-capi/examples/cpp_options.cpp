@@ -187,6 +187,46 @@ void options_setters() {
         .with_connect_timeout(options.connect_timeout)
         .with_request_timeout(options.request_timeout);
   }
+  static_assert(std::is_aggregate_v<rlmesh::View>);
+  {
+    rlmesh::View options;
+    options.with_backend(options.backend)
+        .with_port(options.port)
+        .with_fps(options.fps)
+        .with_source(options.source)
+        .with_format(options.format)
+        .with_quality(options.quality)
+        .with_hold(options.hold)
+        .with_step_hz(options.step_hz);
+    std::move(options)
+        .with_backend(options.backend)
+        .with_port(options.port)
+        .with_fps(options.fps)
+        .with_source(options.source)
+        .with_format(options.format)
+        .with_quality(options.quality)
+        .with_hold(options.hold)
+        .with_step_hz(options.step_hz);
+  }
+  static_assert(std::is_aggregate_v<rlmesh::RemoteModelOptions>);
+  {
+    rlmesh::RemoteModelOptions options;
+    options.with_address(options.address)
+        .with_host(options.host)
+        .with_port(options.port)
+        .with_path(options.path)
+        .with_transport(options.transport)
+        .with_connect_timeout(options.connect_timeout)
+        .with_request_timeout(options.request_timeout);
+    std::move(options)
+        .with_address(options.address)
+        .with_host(options.host)
+        .with_port(options.port)
+        .with_path(options.path)
+        .with_transport(options.transport)
+        .with_connect_timeout(options.connect_timeout)
+        .with_request_timeout(options.request_timeout);
+  }
   static_assert(std::is_aggregate_v<rlmesh::RunOptions>);
   {
     rlmesh::RunOptions options;

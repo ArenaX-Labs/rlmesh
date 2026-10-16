@@ -67,9 +67,6 @@
 #include <memory>
 #include <optional>
 #include <ostream>
-#if __has_include(<span>)
-#include <span>
-#endif
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -85,6 +82,14 @@ namespace rlmesh {
 /// A borrowed contiguous view. The caller keeps the underlying storage alive.
 /// This type has the same representation in C++17 and C++20.
 template <class T>
+class Span;
+namespace detail {
+template <class T>
+struct IsSpan : std::false_type {};
+template <class T>
+struct IsSpan<Span<T>> : std::true_type {};
+}  // namespace detail
+template <class T>
 class Span {
   T* data_ = nullptr;
   size_t size_ = 0;
@@ -97,22 +102,13 @@ class Span {
   constexpr Span(T* data, size_t size) noexcept : data_(data), size_(size) {}
   template <class U, std::enable_if_t<std::is_convertible_v<U (*)[], T (*)[]>, int> = 0>
   constexpr Span(Span<U> view) noexcept : data_(view.data()), size_(view.size()) {}
-  template <class U, size_t N, std::enable_if_t<std::is_convertible_v<U (*)[], T (*)[]>, int> = 0>
-  constexpr Span(U (&values)[N]) noexcept : data_(values), size_(N) {}
-  template <class U, size_t N, std::enable_if_t<std::is_convertible_v<U (*)[], T (*)[]>, int> = 0>
-  constexpr Span(std::array<U, N>& values) noexcept : data_(values.data()), size_(N) {}
-  template <class U, size_t N,
-            std::enable_if_t<std::is_convertible_v<const U (*)[], T (*)[]>, int> = 0>
-  constexpr Span(const std::array<U, N>& values) noexcept : data_(values.data()), size_(N) {}
-  template <class U, class A, std::enable_if_t<std::is_convertible_v<U (*)[], T (*)[]>, int> = 0>
-  Span(std::vector<U, A>& values) noexcept : data_(values.data()), size_(values.size()) {}
-  template <class U, class A,
-            std::enable_if_t<std::is_convertible_v<const U (*)[], T (*)[]>, int> = 0>
-  Span(const std::vector<U, A>& values) noexcept : data_(values.data()), size_(values.size()) {}
-#ifdef __cpp_lib_span
-  template <class U, size_t N, std::enable_if_t<std::is_convertible_v<U (*)[], T (*)[]>, int> = 0>
-  constexpr Span(std::span<U, N> view) noexcept : data_(view.data()), size_(view.size()) {}
-#endif
+  template <class R,
+            std::enable_if_t<!detail::IsSpan<std::remove_cv_t<std::remove_reference_t<R>>>::value &&
+                                 std::is_convertible_v<decltype(std::data(std::declval<R&>())), T*>,
+                             int> = 0,
+            class = decltype(std::size(std::declval<R&>()))>
+  constexpr Span(R&& values) noexcept(noexcept(std::data(values)) && noexcept(std::size(values)))
+      : data_(std::data(values)), size_(std::size(values)) {}
   constexpr T* data() const noexcept { return data_; }
   constexpr size_t size() const noexcept { return size_; }
   constexpr bool empty() const noexcept { return size_ == 0; }
@@ -120,6 +116,18 @@ class Span {
   constexpr iterator end() const noexcept { return size_ ? data_ + size_ : data_; }
   constexpr T& operator[](size_t index) const noexcept { return data_[index]; }
 };
+
+}  // namespace rlmesh
+#if defined(__cpp_lib_ranges)
+// The only standard-dependent declarations: these std templates exist in C++20.
+namespace std::ranges {
+template <class T>
+inline constexpr bool enable_borrowed_range<rlmesh::Span<T>> = true;
+template <class T>
+inline constexpr bool enable_view<rlmesh::Span<T>> = true;
+}  // namespace std::ranges
+#endif
+namespace rlmesh {
 
 namespace detail {
 template <class T>
@@ -133,11 +141,13 @@ inline constexpr bool is_detected = IsDetected<Expression, T>::value;
 template <class T>
 inline constexpr bool value_integer =
     std::is_integral_v<T> && !std::is_same_v<T, bool> && !std::is_same_v<T, char> &&
-    !std::is_same_v<T, wchar_t> && !std::is_same_v<T, char16_t> && !std::is_same_v<T, char32_t>
-#ifdef __cpp_char8_t
-    && !std::is_same_v<T, char8_t>
-#endif
-    ;
+    !std::is_same_v<T, wchar_t> && !std::is_same_v<T, char16_t> && !std::is_same_v<T, char32_t> &&
+    !std::is_same_v<T, decltype(u8'a')>;
+// Compare member types without accessing an incomplete enclosing class in
+// a hidden friend's exception specification (also supported by libclang).
+template <class... T>
+inline constexpr bool nothrow_equal =
+    (noexcept(std::declval<const T&>() == std::declval<const T&>()) && ...);
 template <class T>
 struct IsPolicyPointer : std::false_type {};
 template <class T>
@@ -183,8 +193,8 @@ inline std::string_view to_string(ModelErrorCode code) {
 }
 
 namespace detail {
-/// Tag for the library's own constructors, which carry a code; the public constructors
-/// take a message and optional recoverability.
+/// Tag for the library's own constructors, which carry a code; the public
+/// constructors take a message and optional recoverability.
 struct FromLibrary {};
 /// The wrapper's read of an authored exception's raw message (its `what()`
 /// carries the `[CODE]` prefix the wire adds again).
@@ -198,8 +208,8 @@ class RuntimeError : public std::runtime_error {
 };
 
 /// `RLMeshException`: an internal or server-side failure. The base of the
-/// rlmesh-specific classes; the general error classes (`ValueError`, `OSError`, ...)
-/// are not under it.
+/// rlmesh-specific classes; the general error classes (`ValueError`, `OSError`,
+/// ...) are not under it.
 class RLMeshException : public RuntimeError {
  public:
   explicit RLMeshException(const std::string& message) : RuntimeError(message) {}
@@ -212,9 +222,9 @@ class ProtocolException : public RLMeshException {
   explicit ProtocolException(const std::string& message) : RLMeshException(message) {}
 };
 
-/// `EnvironmentException`: the env reported a failure. Thrown from an env callback, it
-/// fails the request and ends the session (code `INTERNAL`). An authored one's `what()`
-/// is `[INTERNAL] message`.
+/// `EnvironmentException`: the env reported a failure. Thrown from an env
+/// callback, it fails the request and ends the session (code `INTERNAL`). An
+/// authored one's `what()` is `[INTERNAL] message`.
 class EnvironmentException : public RLMeshException {
  public:
   explicit EnvironmentException(std::string message)
@@ -255,8 +265,9 @@ class RecoverableEnvironmentException : public EnvironmentException {
       : EnvironmentException(std::move(message), code, true, tag) {}
 };
 
-/// `ModelException`: the model reported a failure. Throw `ModelException(msg, true)`
-/// from predict to fail one request as recoverable (code `INTERNAL`); its `what()` is
+/// `ModelException`: the model reported a failure. Throw `ModelException(msg,
+/// true)` from predict to fail one request as recoverable (code `INTERNAL`);
+/// its `what()` is
 /// `[INTERNAL] msg`.
 class ModelException : public RLMeshException {
  public:
@@ -523,8 +534,8 @@ void delete_state(void* p) {
 }  // namespace detail
 inline constexpr std::string_view VERSION = RLMESH_VERSION;
 
-/// The describe envelope's metadata key and schema version, and the env reset options
-/// key.
+/// The describe envelope's metadata key and schema version, and the env reset
+/// options key.
 inline constexpr std::string_view DESCRIBE_METADATA_KEY = RLMESH_DESCRIBE_METADATA_KEY;
 inline constexpr int64_t DESCRIBE_SCHEMA_VERSION = RLMESH_DESCRIBE_SCHEMA_VERSION;
 inline constexpr std::string_view ENV_RESET_OPTIONS_KEY = RLMESH_ENV_RESET_OPTIONS_KEY;
@@ -572,8 +583,8 @@ inline BuildInfo build_info() {
   return info;
 }
 
-/// The build's text representation (`BuildInfo(version="0.1.0", ...)`), as the library
-/// spells it. `info` is a `build_info()` result.
+/// The build's text representation (`BuildInfo(version="0.1.0", ...)`), as the
+/// library spells it. `info` is a `build_info()` result.
 inline std::string to_string(const BuildInfo& info) {
   std::ostringstream out;
   out << "BuildInfo(version=" << std::quoted(std::string(info.version))
@@ -594,7 +605,8 @@ auto operator<<(Stream& out, const BuildInfo& info) -> decltype(out << std::stri
   return out << to_string(info);
 }
 
-/// The bare `YYYY.MM` workflow edition this build runs at: the value to declare.
+/// The bare `YYYY.MM` workflow edition this build runs at: the value to
+/// declare.
 inline std::string_view current_workflow_edition() {
   return detail::sv(rlmesh_current_workflow_edition());
 }
@@ -622,10 +634,14 @@ struct Warning {
   WarningCategory category{};
   std::string message{};
 
-  bool operator==(const Warning& other) const {
-    return category == other.category && message == other.message;
+  friend bool operator==(const Warning& self, const Warning& other) noexcept(
+      detail::nothrow_equal<decltype(category), decltype(message)>) {
+    return self.category == other.category && self.message == other.message;
   }
-  bool operator!=(const Warning& other) const { return !(*this == other); }
+  friend bool operator!=(const Warning& self,
+                         const Warning& other) noexcept(noexcept(self == other)) {
+    return !(self == other);
+  }
 };
 
 /// `<Category>: <message>`.
@@ -742,7 +758,7 @@ struct ToDlpackOptions {
     dl_device = std::move(value);
     return *this;
   }
-  ToDlpackOptions&& with_dl_device(std::optional<std::pair<int32_t, int32_t>> value) && {
+  ToDlpackOptions with_dl_device(std::optional<std::pair<int32_t, int32_t>> value) && {
     dl_device = std::move(value);
     return std::move(*this);
   }
@@ -750,7 +766,7 @@ struct ToDlpackOptions {
     copy = std::move(value);
     return *this;
   }
-  ToDlpackOptions&& with_copy(bool value) && {
+  ToDlpackOptions with_copy(bool value) && {
     copy = std::move(value);
     return std::move(*this);
   }
@@ -879,9 +895,8 @@ class Value {
   Value(char) = delete;
   Value(wchar_t) = delete;
 
-#ifdef __cpp_char8_t
-  Value(char8_t) = delete;
-#endif
+  template <class C, std::enable_if_t<std::is_same_v<C, decltype(u8'a')>, int> = 0>
+  Value(C) = delete;
   Value(char16_t) = delete;
   Value(char32_t) = delete;
   template <class I, std::enable_if_t<detail::value_integer<I>, int> = 0>
@@ -896,7 +911,7 @@ class Value {
   template <class F, std::enable_if_t<std::is_floating_point_v<F>, int> = 0>
   Value(F v) {
     RLMeshValue* p = nullptr;
-    detail::check_status(rlmesh_value_float(v, &p));
+    detail::check_status(rlmesh_value_float(static_cast<double>(v), &p));
     handle_ = {p, rlmesh_value_free};
   }
   Value(const char* v) : Value(std::string_view(v ? v : "")) {
@@ -983,11 +998,17 @@ class Value {
     return v;
   }
   Metadata as_dict() const;
-  bool operator==(const Value& v) const { return rlmesh_value_equals(raw(), v.raw()); }
-  bool operator!=(const Value& other) const { return !(*this == other); }
 
  private:
   Value(RLMeshValue* p, int) : handle_(p, rlmesh_value_free) {}
+
+ public:
+  friend bool operator==(const Value& self, const Value& v) {
+    return rlmesh_value_equals(self.raw(), v.raw());
+  }
+  friend bool operator!=(const Value& self, const Value& other) noexcept(noexcept(self == other)) {
+    return !(self == other);
+  }
 };
 class Metadata {
   std::vector<std::pair<std::string, Value>> entries_{};
@@ -1025,15 +1046,19 @@ class Metadata {
   }
   size_t size() const { return entries_.size(); }
   bool empty() const { return entries_.empty(); }
-  bool operator==(const Metadata& m) const {
-    if (size() != m.size()) return false;
-    for (const auto& [k, v] : entries_) {
+
+  friend bool operator==(const Metadata& self, const Metadata& m) {
+    if (self.size() != m.size()) return false;
+    for (const auto& [k, v] : self.entries_) {
       auto i = m.find(k);
       if (i == m.end() || !(v == i->second)) return false;
     }
     return true;
   }
-  bool operator!=(const Metadata& other) const { return !(*this == other); }
+  friend bool operator!=(const Metadata& self,
+                         const Metadata& other) noexcept(noexcept(self == other)) {
+    return !(self == other);
+  }
 };
 using InfoDict = Metadata;
 using Kwargs = Metadata;
@@ -1070,8 +1095,6 @@ class OptionalList {
   std::optional<std::vector<T>> value_{};
 
  public:
-  bool operator==(const OptionalList& other) const { return value_ == other.value_; }
-  bool operator!=(const OptionalList& other) const { return !(*this == other); }
   OptionalList() = default;
   OptionalList(std::nullopt_t) {}
   OptionalList(std::vector<T> value) : value_(std::move(value)) {}
@@ -1080,6 +1103,15 @@ class OptionalList {
   explicit operator bool() const { return has_value(); }
   const std::vector<T>& operator*() const { return value_.value(); }
   const std::vector<T>* operator->() const { return &value_.value(); }
+
+  friend constexpr bool operator==(const OptionalList& self, const OptionalList& other) noexcept(
+      detail::nothrow_equal<decltype(value_)>) {
+    return self.value_ == other.value_;
+  }
+  friend constexpr bool operator!=(const OptionalList& self,
+                                   const OptionalList& other) noexcept(noexcept(self == other)) {
+    return !(self == other);
+  }
 };
 namespace spaces {
 
@@ -1189,7 +1221,7 @@ struct BoxOptions {
     dtype = std::move(value);
     return *this;
   }
-  BoxOptions&& with_dtype(DType value) && {
+  BoxOptions with_dtype(DType value) && {
     dtype = std::move(value);
     return std::move(*this);
   }
@@ -1203,7 +1235,7 @@ struct DiscreteOptions {
     start = std::move(value);
     return *this;
   }
-  DiscreteOptions&& with_start(int64_t value) && {
+  DiscreteOptions with_start(int64_t value) && {
     start = std::move(value);
     return std::move(*this);
   }
@@ -1211,7 +1243,7 @@ struct DiscreteOptions {
     dtype = std::move(value);
     return *this;
   }
-  DiscreteOptions&& with_dtype(DType value) && {
+  DiscreteOptions with_dtype(DType value) && {
     dtype = std::move(value);
     return std::move(*this);
   }
@@ -1262,8 +1294,8 @@ class Box;
 class Discrete;
 class Dict;
 
-/// A space: a spec plus its sampler. Copies share the handle, so two copies drive one
-/// RNG.
+/// A space: a spec plus its sampler. Copies share the handle, so two copies
+/// drive one RNG.
 class Space {
  public:
   /// `Space(spec)`.
@@ -1318,8 +1350,7 @@ class Space {
     return Value::adopt(out);
   }
   bool contains(const Value& value) const { return rlmesh_space_contains(ptr_, value.raw()); }
-  bool operator==(const Space& other) const { return rlmesh_space_equals(ptr_, other.ptr_); }
-  bool operator!=(const Space& other) const { return !(*this == other); }
+
   std::string to_string() const {
     RLMeshBytes bytes = {nullptr, 0, 0};
     rlmesh::detail::check_status(rlmesh_space_repr(ptr_, &bytes));
@@ -1333,6 +1364,14 @@ class Space {
  protected:
   explicit Space(RLMeshSpace* ptr) : ptr_(ptr) {}
   RLMeshSpace* ptr_{};
+
+ public:
+  friend bool operator==(const Space& self, const Space& other) {
+    return rlmesh_space_equals(self.ptr_, other.ptr_);
+  }
+  friend bool operator!=(const Space& self, const Space& other) noexcept(noexcept(self == other)) {
+    return !(self == other);
+  }
 };
 
 inline Space SpaceSpec::to_space() const {
@@ -1588,16 +1627,21 @@ class Dict : public Space {
     friend key_iterator operator+(difference_type n, key_iterator i) { return i += n; }
     friend key_iterator operator-(key_iterator i, difference_type n) { return i -= n; }
     friend difference_type operator-(key_iterator a, key_iterator b) { return a.index_ - b.index_; }
-    bool operator==(const key_iterator& other) const {
-      return dict_ == other.dict_ && index_ == other.index_;
-    }
-    bool operator!=(const key_iterator& other) const { return !(*this == other); }
+
     bool operator<(const key_iterator& other) const {
       return std::tie(dict_, index_) < std::tie(other.dict_, other.index_);
     }
     bool operator>(const key_iterator& other) const { return other < *this; }
     bool operator<=(const key_iterator& other) const { return !(other < *this); }
     bool operator>=(const key_iterator& other) const { return !(*this < other); }
+
+    friend constexpr bool operator==(const key_iterator& self, const key_iterator& other) noexcept {
+      return self.dict_ == other.dict_ && self.index_ == other.index_;
+    }
+    friend constexpr bool operator!=(const key_iterator& self,
+                                     const key_iterator& other) noexcept(noexcept(self == other)) {
+      return !(self == other);
+    }
   };
   key_iterator begin() const { return {ptr_, 0}; }
   key_iterator end() const { return {ptr_, static_cast<std::ptrdiff_t>(size())}; }
@@ -1638,7 +1682,7 @@ struct MultiDiscreteOptions {
     dtype = std::move(value);
     return *this;
   }
-  MultiDiscreteOptions&& with_dtype(DType value) && {
+  MultiDiscreteOptions with_dtype(DType value) && {
     dtype = std::move(value);
     return std::move(*this);
   }
@@ -1669,7 +1713,7 @@ struct TextOptions {
     min_length = std::move(value);
     return *this;
   }
-  TextOptions&& with_min_length(int64_t value) && {
+  TextOptions with_min_length(int64_t value) && {
     min_length = std::move(value);
     return std::move(*this);
   }
@@ -1677,7 +1721,7 @@ struct TextOptions {
     charset = std::move(value);
     return *this;
   }
-  TextOptions&& with_charset(std::optional<std::string> value) && {
+  TextOptions with_charset(std::optional<std::string> value) && {
     charset = std::move(value);
     return std::move(*this);
   }
@@ -1921,8 +1965,6 @@ class Tolerant {
     if (auto p = std::get_if<E>(&value_)) return std::string(adapters_string(*p));
     return std::get<std::string>(value_);
   }
-  bool operator==(const Tolerant& v) const { return to_string() == v.to_string(); }
-  bool operator!=(const Tolerant& other) const { return !(*this == other); }
 
  private:
   explicit Tolerant(std::string s) : value_(std::move(s)) {}
@@ -1930,6 +1972,15 @@ class Tolerant {
     using adapters::to_string;
     using rlmesh::to_string;
     return to_string(e);
+  }
+
+ public:
+  friend bool operator==(const Tolerant& self, const Tolerant& v) {
+    return self.to_string() == v.to_string();
+  }
+  friend bool operator!=(const Tolerant& self,
+                         const Tolerant& other) noexcept(noexcept(self == other)) {
+    return !(self == other);
   }
 };
 namespace detail_adapter {
@@ -1994,10 +2045,14 @@ class ObsTransform {
     handle_ = {p, rlmesh_obs_transform_free};
   }
   const RLMeshObsTransform* raw() const { return handle_.get(); }
-  bool operator==(const ObsTransform& v) const {
-    return rlmesh_obs_transform_equals(raw(), v.raw());
+
+  friend bool operator==(const ObsTransform& self, const ObsTransform& v) {
+    return rlmesh_obs_transform_equals(self.raw(), v.raw());
   }
-  bool operator!=(const ObsTransform& other) const { return !(*this == other); }
+  friend bool operator!=(const ObsTransform& self,
+                         const ObsTransform& other) noexcept(noexcept(self == other)) {
+    return !(self == other);
+  }
 };
 class RotationTransform {
   std::shared_ptr<RLMeshRotationTransform> handle_{};
@@ -2019,17 +2074,17 @@ class RotationTransform {
     handle_ = {p, rlmesh_rotation_transform_free};
   }
   const RLMeshRotationTransform* raw() const { return handle_.get(); }
-  bool operator==(const RotationTransform& v) const {
-    return rlmesh_rotation_transform_equals(raw(), v.raw());
+
+  friend bool operator==(const RotationTransform& self, const RotationTransform& v) {
+    return rlmesh_rotation_transform_equals(self.raw(), v.raw());
   }
-  bool operator!=(const RotationTransform& other) const { return !(*this == other); }
+  friend bool operator!=(const RotationTransform& self,
+                         const RotationTransform& other) noexcept(noexcept(self == other)) {
+    return !(self == other);
+  }
 };
 using EncodingArm = std::variant<RotationTransform, std::string>;
 struct Rotation {
-  bool operator==(const Rotation& other) const {
-    return encoding == other.encoding && value == other.value;
-  }
-  bool operator!=(const Rotation& other) const { return !(*this == other); }
   RotationEncoding encoding{};
   std::vector<double> value{};
   RLMeshRotation raw(detail_adapter::Arena&) const {
@@ -2051,13 +2106,17 @@ struct Rotation {
     detail::check_status(rlmesh_rotation_from_matrix(r, values, &c));
     return from_raw(c);
   }
+
+  friend bool operator==(const Rotation& self, const Rotation& other) noexcept(
+      detail::nothrow_equal<decltype(encoding), decltype(value)>) {
+    return self.encoding == other.encoding && self.value == other.value;
+  }
+  friend bool operator!=(const Rotation& self,
+                         const Rotation& other) noexcept(noexcept(self == other)) {
+    return !(self == other);
+  }
 };
 struct CustomEncoding {
-  bool operator==(const CustomEncoding& other) const {
-    return base == other.base && from_base == other.from_base && to_base == other.to_base &&
-           name == other.name;
-  }
-  bool operator!=(const CustomEncoding& other) const { return !(*this == other); }
   RotationEncoding base{};
   std::optional<EncodingArm> from_base{};
   std::optional<EncodingArm> to_base{};
@@ -2077,6 +2136,17 @@ struct CustomEncoding {
     uint32_t v = 0;
     detail::check_status(rlmesh_custom_encoding_width(&c, &v));
     return v;
+  }
+
+  friend bool operator==(const CustomEncoding& self, const CustomEncoding& other) noexcept(
+      detail::nothrow_equal<decltype(base), decltype(from_base), decltype(to_base),
+                            decltype(name)>) {
+    return self.base == other.base && self.from_base == other.from_base &&
+           self.to_base == other.to_base && self.name == other.name;
+  }
+  friend bool operator!=(const CustomEncoding& self,
+                         const CustomEncoding& other) noexcept(noexcept(self == other)) {
+    return !(self == other);
   }
 };
 inline RLMeshCustomEncoding CustomEncoding::raw(detail_adapter::Arena&) const {
@@ -2111,19 +2181,6 @@ using AxisValue = std::variant<double, std::vector<double>>;
 using ActionEncoding = std::variant<RotationEncoding, CustomEncoding>;
 using StackSpec = std::vector<int32_t>;
 struct Image {
-  bool operator==(const Image& other) const {
-    return role == other.role && height == other.height && width == other.width &&
-           layout == other.layout && channels == other.channels && dtype == other.dtype &&
-           normalize == other.normalize && lead_dims == other.lead_dims &&
-           upside_down == other.upside_down && resample == other.resample &&
-           allow_upscale == other.allow_upscale && fit == other.fit && optional == other.optional &&
-           fill == other.fill && stack == other.stack && crop == other.crop &&
-           crop_area == other.crop_area && crop_mode == other.crop_mode &&
-           jpeg_quality == other.jpeg_quality && channel_order == other.channel_order &&
-           render == other.render && offsets == other.offsets && stack_pad == other.stack_pad &&
-           part == other.part;
-  }
-  bool operator!=(const Image& other) const { return !(*this == other); }
   std::string role{};
   std::optional<uint32_t> height{};
   std::optional<uint32_t> width{};
@@ -2290,18 +2347,32 @@ struct Image {
     value.offsets = std::move(expanded);
     return value;
   }
+
+  friend bool operator==(const Image& self, const Image& other) noexcept(
+      detail::nothrow_equal<
+          decltype(role), decltype(height), decltype(width), decltype(layout), decltype(channels),
+          decltype(dtype), decltype(normalize), decltype(lead_dims), decltype(upside_down),
+          decltype(resample), decltype(allow_upscale), decltype(fit), decltype(optional),
+          decltype(fill), decltype(stack), decltype(crop), decltype(crop_area), decltype(crop_mode),
+          decltype(jpeg_quality), decltype(channel_order), decltype(render), decltype(offsets),
+          decltype(stack_pad), decltype(part)>) {
+    return self.role == other.role && self.height == other.height && self.width == other.width &&
+           self.layout == other.layout && self.channels == other.channels &&
+           self.dtype == other.dtype && self.normalize == other.normalize &&
+           self.lead_dims == other.lead_dims && self.upside_down == other.upside_down &&
+           self.resample == other.resample && self.allow_upscale == other.allow_upscale &&
+           self.fit == other.fit && self.optional == other.optional && self.fill == other.fill &&
+           self.stack == other.stack && self.crop == other.crop &&
+           self.crop_area == other.crop_area && self.crop_mode == other.crop_mode &&
+           self.jpeg_quality == other.jpeg_quality && self.channel_order == other.channel_order &&
+           self.render == other.render && self.offsets == other.offsets &&
+           self.stack_pad == other.stack_pad && self.part == other.part;
+  }
+  friend bool operator!=(const Image& self, const Image& other) noexcept(noexcept(self == other)) {
+    return !(self == other);
+  }
 };
 struct State {
-  bool operator==(const State& other) const {
-    return role == other.role && encoding == other.encoding && dim == other.dim &&
-           index == other.index && optional == other.optional && range == other.range &&
-           pad_to == other.pad_to && dtype == other.dtype && reshape == other.reshape &&
-           container == other.container && fill == other.fill && post_rotate == other.post_rotate &&
-           scale == other.scale && offset == other.offset && frame == other.frame &&
-           provenance == other.provenance && part == other.part && labels == other.labels &&
-           source == other.source && clip == other.clip;
-  }
-  bool operator!=(const State& other) const { return !(*this == other); }
   std::string role{};
   std::optional<std::variant<std::vector<Tolerant<RotationEncoding>>, CustomEncoding>> encoding{};
   std::optional<uint32_t> dim{};
@@ -2477,10 +2548,28 @@ struct State {
     if (c.has_clip) v.clip = std::pair<double, double>{c.clip[0], c.clip[1]};
     return v;
   }
+
+  friend bool operator==(const State& self, const State& other) noexcept(
+      detail::nothrow_equal<decltype(role), decltype(encoding), decltype(dim), decltype(index),
+                            decltype(optional), decltype(range), decltype(pad_to), decltype(dtype),
+                            decltype(reshape), decltype(container), decltype(fill),
+                            decltype(post_rotate), decltype(scale), decltype(offset),
+                            decltype(frame), decltype(provenance), decltype(part), decltype(labels),
+                            decltype(source), decltype(clip)>) {
+    return self.role == other.role && self.encoding == other.encoding && self.dim == other.dim &&
+           self.index == other.index && self.optional == other.optional &&
+           self.range == other.range && self.pad_to == other.pad_to && self.dtype == other.dtype &&
+           self.reshape == other.reshape && self.container == other.container &&
+           self.fill == other.fill && self.post_rotate == other.post_rotate &&
+           self.scale == other.scale && self.offset == other.offset && self.frame == other.frame &&
+           self.provenance == other.provenance && self.part == other.part &&
+           self.labels == other.labels && self.source == other.source && self.clip == other.clip;
+  }
+  friend bool operator!=(const State& self, const State& other) noexcept(noexcept(self == other)) {
+    return !(self == other);
+  }
 };
 struct Constant {
-  bool operator==(const Constant& other) const { return dim == other.dim && fill == other.fill; }
-  bool operator!=(const Constant& other) const { return !(*this == other); }
   uint32_t dim = 1;
   double fill = 0.0;
   RLMeshConstant raw(detail_adapter::Arena& a) const {
@@ -2496,12 +2585,17 @@ struct Constant {
     v.fill = c.fill;
     return v;
   }
+
+  friend constexpr bool operator==(const Constant& self, const Constant& other) noexcept(
+      detail::nothrow_equal<decltype(dim), decltype(fill)>) {
+    return self.dim == other.dim && self.fill == other.fill;
+  }
+  friend constexpr bool operator!=(const Constant& self,
+                                   const Constant& other) noexcept(noexcept(self == other)) {
+    return !(self == other);
+  }
 };
 struct Text {
-  bool operator==(const Text& other) const {
-    return role == other.role && container == other.container && fill == other.fill;
-  }
-  bool operator!=(const Text& other) const { return !(*this == other); }
   std::string role{};
   TextContainer container = TextContainer::Str;
   std::optional<std::string> fill{};
@@ -2523,12 +2617,16 @@ struct Text {
     if (c.has_fill) v.fill = std::string(c.fill.data ? c.fill.data : "", c.fill.len);
     return v;
   }
+
+  friend bool operator==(const Text& self, const Text& other) noexcept(
+      detail::nothrow_equal<decltype(role), decltype(container), decltype(fill)>) {
+    return self.role == other.role && self.container == other.container && self.fill == other.fill;
+  }
+  friend bool operator!=(const Text& self, const Text& other) noexcept(noexcept(self == other)) {
+    return !(self == other);
+  }
 };
 struct Custom {
-  bool operator==(const Custom& other) const {
-    return transform == other.transform && entrypoint == other.entrypoint;
-  }
-  bool operator!=(const Custom& other) const { return !(*this == other); }
   std::optional<ObsTransform> transform{};
   std::optional<std::string> entrypoint{};
   RLMeshCustom raw(detail_adapter::Arena& a) const {
@@ -2548,17 +2646,17 @@ struct Custom {
     if (c.entrypoint) v.entrypoint = std::string(detail::sv(c.entrypoint));
     return v;
   }
+
+  friend bool operator==(const Custom& self, const Custom& other) noexcept(
+      detail::nothrow_equal<decltype(transform), decltype(entrypoint)>) {
+    return self.transform == other.transform && self.entrypoint == other.entrypoint;
+  }
+  friend bool operator!=(const Custom& self,
+                         const Custom& other) noexcept(noexcept(self == other)) {
+    return !(self == other);
+  }
 };
 struct Actuator {
-  bool operator==(const Actuator& other) const {
-    return role == other.role && dim == other.dim && encoding == other.encoding &&
-           range == other.range && binary == other.binary && scale == other.scale &&
-           invert == other.invert && threshold == other.threshold && clip == other.clip &&
-           fill == other.fill && optional == other.optional && frame == other.frame &&
-           reference == other.reference && part == other.part && offset == other.offset &&
-           labels == other.labels;
-  }
-  bool operator!=(const Actuator& other) const { return !(*this == other); }
   std::optional<std::string> role{};
   uint32_t dim = 0;
   std::optional<ActionEncoding> encoding{};
@@ -2677,13 +2775,26 @@ struct Actuator {
     }
     return v;
   }
+
+  friend bool operator==(const Actuator& self, const Actuator& other) noexcept(
+      detail::nothrow_equal<decltype(role), decltype(dim), decltype(encoding), decltype(range),
+                            decltype(binary), decltype(scale), decltype(invert),
+                            decltype(threshold), decltype(clip), decltype(fill), decltype(optional),
+                            decltype(frame), decltype(reference), decltype(part), decltype(offset),
+                            decltype(labels)>) {
+    return self.role == other.role && self.dim == other.dim && self.encoding == other.encoding &&
+           self.range == other.range && self.binary == other.binary && self.scale == other.scale &&
+           self.invert == other.invert && self.threshold == other.threshold &&
+           self.clip == other.clip && self.fill == other.fill && self.optional == other.optional &&
+           self.frame == other.frame && self.reference == other.reference &&
+           self.part == other.part && self.offset == other.offset && self.labels == other.labels;
+  }
+  friend bool operator!=(const Actuator& self,
+                         const Actuator& other) noexcept(noexcept(self == other)) {
+    return !(self == other);
+  }
 };
 struct ImageTag {
-  bool operator==(const ImageTag& other) const {
-    return role == other.role && layout == other.layout && upside_down == other.upside_down &&
-           part == other.part;
-  }
-  bool operator!=(const ImageTag& other) const { return !(*this == other); }
   std::string role{};
   ImageLayout layout = ImageLayout::Hwc;
   bool upside_down = false;
@@ -2707,14 +2818,19 @@ struct ImageTag {
     if (c.part) v.part = std::string(detail::sv(c.part));
     return v;
   }
+
+  friend bool operator==(const ImageTag& self, const ImageTag& other) noexcept(
+      detail::nothrow_equal<decltype(role), decltype(layout), decltype(upside_down),
+                            decltype(part)>) {
+    return self.role == other.role && self.layout == other.layout &&
+           self.upside_down == other.upside_down && self.part == other.part;
+  }
+  friend bool operator!=(const ImageTag& self,
+                         const ImageTag& other) noexcept(noexcept(self == other)) {
+    return !(self == other);
+  }
 };
 struct StateTag {
-  bool operator==(const StateTag& other) const {
-    return role == other.role && encoding == other.encoding && range == other.range &&
-           frame == other.frame && provenance == other.provenance && part == other.part &&
-           labels == other.labels;
-  }
-  bool operator!=(const StateTag& other) const { return !(*this == other); }
   std::string role{};
   OptionalList<Tolerant<RotationEncoding>> encoding{};
   std::optional<std::pair<double, double>> range{};
@@ -2786,10 +2902,21 @@ struct StateTag {
     }
     return v;
   }
+
+  friend bool operator==(const StateTag& self, const StateTag& other) noexcept(
+      detail::nothrow_equal<decltype(role), decltype(encoding), decltype(range), decltype(frame),
+                            decltype(provenance), decltype(part), decltype(labels)>) {
+    return self.role == other.role && self.encoding == other.encoding &&
+           self.range == other.range && self.frame == other.frame &&
+           self.provenance == other.provenance && self.part == other.part &&
+           self.labels == other.labels;
+  }
+  friend bool operator!=(const StateTag& self,
+                         const StateTag& other) noexcept(noexcept(self == other)) {
+    return !(self == other);
+  }
 };
 struct TextTag {
-  bool operator==(const TextTag& other) const { return role == other.role; }
-  bool operator!=(const TextTag& other) const { return !(*this == other); }
   std::string role{};
   RLMeshTextTag raw(detail_adapter::Arena& a) const {
     (void)a;
@@ -2802,14 +2929,17 @@ struct TextTag {
     v.role = std::string(detail::sv(c.role));
     return v;
   }
+
+  friend bool operator==(const TextTag& self,
+                         const TextTag& other) noexcept(detail::nothrow_equal<decltype(role)>) {
+    return self.role == other.role;
+  }
+  friend bool operator!=(const TextTag& self,
+                         const TextTag& other) noexcept(noexcept(self == other)) {
+    return !(self == other);
+  }
 };
 struct Field {
-  bool operator==(const Field& other) const {
-    return role == other.role && dim == other.dim && encoding == other.encoding &&
-           range == other.range && frame == other.frame && provenance == other.provenance &&
-           part == other.part && labels == other.labels;
-  }
-  bool operator!=(const Field& other) const { return !(*this == other); }
   std::optional<std::string> role{};
   uint32_t dim = 0;
   OptionalList<Tolerant<RotationEncoding>> encoding{};
@@ -2884,14 +3014,22 @@ struct Field {
     }
     return v;
   }
+
+  friend bool operator==(const Field& self, const Field& other) noexcept(
+      detail::nothrow_equal<decltype(role), decltype(dim), decltype(encoding), decltype(range),
+                            decltype(frame), decltype(provenance), decltype(part),
+                            decltype(labels)>) {
+    return self.role == other.role && self.dim == other.dim && self.encoding == other.encoding &&
+           self.range == other.range && self.frame == other.frame &&
+           self.provenance == other.provenance && self.part == other.part &&
+           self.labels == other.labels;
+  }
+  friend bool operator!=(const Field& self, const Field& other) noexcept(noexcept(self == other)) {
+    return !(self == other);
+  }
 };
 using ConcatPart = std::variant<std::string, State, Constant>;
 struct Concat {
-  bool operator==(const Concat& other) const {
-    return parts == other.parts && pad_to == other.pad_to && dtype == other.dtype &&
-           reshape == other.reshape && container == other.container && clip == other.clip;
-  }
-  bool operator!=(const Concat& other) const { return !(*this == other); }
   std::vector<ConcatPart> parts{};
   std::optional<uint32_t> pad_to{};
   Tolerant<DType> dtype = DType::Float32;
@@ -2951,12 +3089,20 @@ struct Concat {
     if (c.has_clip) v.clip = std::pair<double, double>{c.clip[0], c.clip[1]};
     return v;
   }
+
+  friend bool operator==(const Concat& self, const Concat& other) noexcept(
+      detail::nothrow_equal<decltype(parts), decltype(pad_to), decltype(dtype), decltype(reshape),
+                            decltype(container), decltype(clip)>) {
+    return self.parts == other.parts && self.pad_to == other.pad_to && self.dtype == other.dtype &&
+           self.reshape == other.reshape && self.container == other.container &&
+           self.clip == other.clip;
+  }
+  friend bool operator!=(const Concat& self,
+                         const Concat& other) noexcept(noexcept(self == other)) {
+    return !(self == other);
+  }
 };
 struct Action {
-  bool operator==(const Action& other) const {
-    return components == other.components && clip == other.clip;
-  }
-  bool operator!=(const Action& other) const { return !(*this == other); }
   std::vector<Actuator> components{};
   std::optional<std::pair<double, double>> clip{};
   RLMeshAction raw(detail_adapter::Arena& a) const {
@@ -2986,10 +3132,17 @@ struct Action {
     detail::check_status(rlmesh_action_dim(&c, &n));
     return n;
   }
+
+  friend bool operator==(const Action& self, const Action& other) noexcept(
+      detail::nothrow_equal<decltype(components), decltype(clip)>) {
+    return self.components == other.components && self.clip == other.clip;
+  }
+  friend bool operator!=(const Action& self,
+                         const Action& other) noexcept(noexcept(self == other)) {
+    return !(self == other);
+  }
 };
 struct Split {
-  bool operator==(const Split& other) const { return fields == other.fields; }
-  bool operator!=(const Split& other) const { return !(*this == other); }
   std::vector<Field> fields{};
   RLMeshSplit raw(detail_adapter::Arena& a) const {
     RLMeshSplit c = RLMESH_SPLIT_INIT;
@@ -3004,6 +3157,14 @@ struct Split {
     for (size_t i = 0; i < c.fields_len; ++i) v.fields.push_back(Field::from_raw(*c.fields[i]));
     return v;
   }
+
+  friend bool operator==(const Split& self,
+                         const Split& other) noexcept(detail::nothrow_equal<decltype(fields)>) {
+    return self.fields == other.fields;
+  }
+  friend bool operator!=(const Split& self, const Split& other) noexcept(noexcept(self == other)) {
+    return !(self == other);
+  }
 };
 struct PreviousOptions {
   std::optional<std::string> part{};
@@ -3012,7 +3173,7 @@ struct PreviousOptions {
     part = std::move(value);
     return *this;
   }
-  PreviousOptions&& with_part(std::optional<std::string> value) && {
+  PreviousOptions with_part(std::optional<std::string> value) && {
     part = std::move(value);
     return std::move(*this);
   }
@@ -3020,7 +3181,7 @@ struct PreviousOptions {
     fill = std::move(value);
     return *this;
   }
-  PreviousOptions&& with_fill(double value) && {
+  PreviousOptions with_fill(double value) && {
     fill = std::move(value);
     return std::move(*this);
   }
@@ -3041,14 +3202,7 @@ class InputNode {
 
  public:
   friend std::string to_string(const InputNode&);
-  bool operator==(const InputNode& other) const {
-    if (auto left = std::get_if<1>(&value_)) {
-      auto right = std::get_if<1>(&other.value_);
-      return right && detail_adapter::dict_equal(*left, *right);
-    }
-    return value_ == other.value_;
-  }
-  bool operator!=(const InputNode& other) const { return !(*this == other); }
+
   template <class T, std::enable_if_t<std::is_constructible_v<ModelLeaf, T>, int> = 0>
   InputNode(T v) : value_(ModelLeaf(std::move(v))) {}
   static InputNode dict(std::vector<std::pair<std::string, InputNode>> v) {
@@ -3117,6 +3271,19 @@ class InputNode {
  private:
   template <class T>
   InputNode(T v, int) : value_(std::move(v)) {}
+
+ public:
+  friend bool operator==(const InputNode& self, const InputNode& other) {
+    if (auto left = std::get_if<1>(&self.value_)) {
+      auto right = std::get_if<1>(&other.value_);
+      return right && detail_adapter::dict_equal(*left, *right);
+    }
+    return self.value_ == other.value_;
+  }
+  friend bool operator!=(const InputNode& self,
+                         const InputNode& other) noexcept(noexcept(self == other)) {
+    return !(self == other);
+  }
 };
 class ObsNode {
   std::variant<ObsLeaf, std::vector<std::pair<std::string, ObsNode>>, std::vector<ObsNode>>
@@ -3124,14 +3291,7 @@ class ObsNode {
 
  public:
   friend std::string to_string(const ObsNode&);
-  bool operator==(const ObsNode& other) const {
-    if (auto left = std::get_if<1>(&value_)) {
-      auto right = std::get_if<1>(&other.value_);
-      return right && detail_adapter::dict_equal(*left, *right);
-    }
-    return value_ == other.value_;
-  }
-  bool operator!=(const ObsNode& other) const { return !(*this == other); }
+
   template <class T, std::enable_if_t<std::is_constructible_v<ObsLeaf, T>, int> = 0>
   ObsNode(T v) : value_(ObsLeaf(std::move(v))) {}
   static ObsNode dict(std::vector<std::pair<std::string, ObsNode>> v) {
@@ -3196,13 +3356,23 @@ class ObsNode {
  private:
   template <class T>
   ObsNode(T v, int) : value_(std::move(v)) {}
+
+ public:
+  friend bool operator==(const ObsNode& self, const ObsNode& other) {
+    if (auto left = std::get_if<1>(&self.value_)) {
+      auto right = std::get_if<1>(&other.value_);
+      return right && detail_adapter::dict_equal(*left, *right);
+    }
+    return self.value_ == other.value_;
+  }
+  friend bool operator!=(const ObsNode& self,
+                         const ObsNode& other) noexcept(noexcept(self == other)) {
+    return !(self == other);
+  }
 };
 struct ObservationRoles {
   std::vector<std::string> images{}, states{}, texts{};
-  bool operator==(const ObservationRoles& other) const {
-    return images == other.images && states == other.states && texts == other.texts;
-  }
-  bool operator!=(const ObservationRoles& other) const { return !(*this == other); }
+
   static ObservationRoles from_raw(const RLMeshObservationRoles& c) {
     ObservationRoles v;
     for (size_t i = 0; i < c.images_len; ++i) v.images.emplace_back(c.images[i]);
@@ -3210,14 +3380,20 @@ struct ObservationRoles {
     for (size_t i = 0; i < c.texts_len; ++i) v.texts.emplace_back(c.texts[i]);
     return v;
   }
+
+  friend bool operator==(const ObservationRoles& self, const ObservationRoles& other) noexcept(
+      detail::nothrow_equal<decltype(images), decltype(states), decltype(texts)>) {
+    return self.images == other.images && self.states == other.states && self.texts == other.texts;
+  }
+  friend bool operator!=(const ObservationRoles& self,
+                         const ObservationRoles& other) noexcept(noexcept(self == other)) {
+    return !(self == other);
+  }
 };
 struct Advisory {
   AdvisorySeverity severity = AdvisorySeverity::Info;
   std::string message{};
-  bool operator==(const Advisory& other) const {
-    return severity == other.severity && message == other.message;
-  }
-  bool operator!=(const Advisory& other) const { return !(*this == other); }
+
   RLMeshAdvisory raw() const {
     RLMeshAdvisory c = RLMESH_ADVISORY_INIT;
     c.severity = static_cast<RLMeshAdvisorySeverity>(severity);
@@ -3227,6 +3403,15 @@ struct Advisory {
   std::string repr() const {
     auto c = raw();
     return detail::text(rlmesh_advisory_repr, &c);
+  }
+
+  friend bool operator==(const Advisory& self, const Advisory& other) noexcept(
+      detail::nothrow_equal<decltype(severity), decltype(message)>) {
+    return self.severity == other.severity && self.message == other.message;
+  }
+  friend bool operator!=(const Advisory& self,
+                         const Advisory& other) noexcept(noexcept(self == other)) {
+    return !(self == other);
   }
 };
 inline std::string to_string(const Advisory& a) { return a.message; }
@@ -3281,9 +3466,16 @@ class ModelSpec {
     detail::check_status(rlmesh_model_spec_from_json(std::string(payload).c_str(), &p));
     return ModelSpec(p);
   }
-  bool operator==(const ModelSpec& v) const { return rlmesh_model_spec_equals(raw(), v.raw()); }
-  bool operator!=(const ModelSpec& other) const { return !(*this == other); }
+
   std::string to_string() const { return detail::text(rlmesh_model_spec_repr, raw()); }
+
+  friend bool operator==(const ModelSpec& self, const ModelSpec& v) {
+    return rlmesh_model_spec_equals(self.raw(), v.raw());
+  }
+  friend bool operator!=(const ModelSpec& self,
+                         const ModelSpec& other) noexcept(noexcept(self == other)) {
+    return !(self == other);
+  }
 };
 inline std::string to_string(const ModelSpec& v) { return v.to_string(); }
 inline std::ostream& operator<<(std::ostream& s, const ModelSpec& v) { return s << v.to_string(); }
@@ -3338,13 +3530,20 @@ class EnvTags {
     detail::check_status(rlmesh_env_tags_from_json(std::string(payload).c_str(), &p));
     return EnvTags(p);
   }
-  bool operator==(const EnvTags& v) const { return rlmesh_env_tags_equals(raw(), v.raw()); }
-  bool operator!=(const EnvTags& other) const { return !(*this == other); }
+
   std::string to_string() const { return detail::text(rlmesh_env_tags_repr, raw()); }
   ObservationRoles observation_roles() const {
     RLMeshObservationRoles c = RLMESH_OBSERVATION_ROLES_INIT;
     detail::check_status(rlmesh_env_tags_observation_roles(raw(), &c));
     return ObservationRoles::from_raw(c);
+  }
+
+  friend bool operator==(const EnvTags& self, const EnvTags& v) {
+    return rlmesh_env_tags_equals(self.raw(), v.raw());
+  }
+  friend bool operator!=(const EnvTags& self,
+                         const EnvTags& other) noexcept(noexcept(self == other)) {
+    return !(self == other);
   }
 };
 inline std::string to_string(const EnvTags& v) { return v.to_string(); }
@@ -3546,7 +3745,7 @@ struct ResolveOptions {
     trust_entrypoints = std::move(value);
     return *this;
   }
-  ResolveOptions&& with_trust_entrypoints(bool value) && {
+  ResolveOptions with_trust_entrypoints(bool value) && {
     trust_entrypoints = std::move(value);
     return std::move(*this);
   }
@@ -3554,7 +3753,7 @@ struct ResolveOptions {
     check_inverse = std::move(value);
     return *this;
   }
-  ResolveOptions&& with_check_inverse(bool value) && {
+  ResolveOptions with_check_inverse(bool value) && {
     check_inverse = std::move(value);
     return std::move(*this);
   }
@@ -3584,8 +3783,11 @@ using AdapterResolutionError = rlmesh::AdapterResolutionError;
 }  // namespace adapters
 namespace adapt = adapters;
 struct NoAdapter {
-  bool operator==(const NoAdapter&) const { return true; }
-  bool operator!=(const NoAdapter& other) const { return !(*this == other); }
+  friend constexpr bool operator==(const NoAdapter&, const NoAdapter&) noexcept { return true; }
+  friend constexpr bool operator!=(const NoAdapter& self,
+                                   const NoAdapter& other) noexcept(noexcept(self == other)) {
+    return !(self == other);
+  }
 };
 inline constexpr NoAdapter NO_ADAPTER{};
 using SpecArg = std::variant<adapters::ModelSpec, NoAdapter>;
@@ -3605,27 +3807,27 @@ using VectorStepResult =
 using VectorSeed = std::variant<int64_t, std::vector<int64_t>>;
 namespace detail {
 template <class T>
-using id_expression = decltype(std::declval<T&>().id());
+using id_expression = decltype((void)std::declval<T&>().id());
 template <class T>
-using render_mode_expression = decltype(std::declval<T&>().render_mode());
+using render_mode_expression = decltype((void)std::declval<T&>().render_mode());
 template <class T>
-using metadata_expression = decltype(std::declval<T&>().metadata());
+using metadata_expression = decltype((void)std::declval<T&>().metadata());
 template <class T>
-using render_expression = decltype(std::declval<T&>().render());
+using render_expression = decltype((void)std::declval<T&>().render());
 template <class T>
-using close_expression = decltype(std::declval<T&>().close());
+using close_expression = decltype((void)std::declval<T&>().close());
 template <class T>
-using prepare_expression = decltype(std::declval<T&>().prepare());
+using prepare_expression = decltype((void)std::declval<T&>().prepare());
 template <class T>
-using tags_expression = decltype(T::tags());
+using tags_expression = decltype((void)T::tags());
 template <class T>
-using reset_options_expression = decltype(T::reset_options());
+using reset_options_expression = decltype((void)T::reset_options());
 template <class T>
-using workflow_edition_expression = decltype(T::workflow_edition());
+using workflow_edition_expression = decltype((void)T::workflow_edition());
 template <class T>
-using tag_params_expression = decltype(T::tag_params());
+using tag_params_expression = decltype((void)T::tag_params());
 template <class T>
-using spec_expression = decltype(T::spec());
+using spec_expression = decltype((void)T::spec());
 template <class T>
 using allow_fusion_expression = decltype(T::allow_fusion);
 template <class T>
@@ -3635,24 +3837,36 @@ using load_keys_expression = decltype(T::load_keys);
 template <class T>
 using reset_member_expression = decltype(&T::reset);
 template <class T>
-using reset_expression = decltype(std::declval<T&>().reset());
+using reset_expression = decltype((void)std::declval<T&>().reset());
 template <class T>
-using reset_id_expression = decltype(std::declval<T&>().reset(std::string_view{}));
+using reset_id_expression = decltype((void)std::declval<T&>().reset(std::string_view{}));
 template <class T>
 using load_member_expression = decltype(&T::load);
 template <class T>
-using load_expression = decltype(std::declval<T&>().load());
+using load_expression = decltype((void)std::declval<T&>().load());
 template <class T>
-using load_kwargs_expression = decltype(std::declval<T&>().load(std::declval<const Kwargs&>()));
+using load_kwargs_expression =
+    decltype((void)std::declval<T&>().load(std::declval<const Kwargs&>()));
 template <class T>
 using on_episode_end_member_expression = decltype(&T::on_episode_end);
 template <class T>
-using on_episode_end_expression = decltype(std::declval<T&>().on_episode_end());
+using on_episode_end_expression = decltype((void)std::declval<T&>().on_episode_end());
 template <class T>
 using on_episode_end_id_expression =
-    decltype(std::declval<T&>().on_episode_end(std::string_view{}));
+    decltype((void)std::declval<T&>().on_episode_end(std::string_view{}));
+// Validation used a named lvalue; dispatch below deliberately tests a prvalue.
 template <class T>
-using loaded_native_chunk_expression = decltype(std::declval<T&>().loaded_native_chunk());
+using on_episode_end_lvalue_expression =
+    decltype((void)std::declval<T&>().on_episode_end(std::declval<std::string_view&>()));
+template <class T>
+using loaded_native_chunk_expression = decltype((void)std::declval<T&>().loaded_native_chunk());
+template <class From, class To, class = void>
+struct ConvertibleTo : std::false_type {};
+template <class From, class To>
+struct ConvertibleTo<From, To, std::void_t<decltype(static_cast<To>(std::declval<From>()))>>
+    : std::is_convertible<From, To> {};
+template <class From, class To>
+inline constexpr bool convertible_to = ConvertibleTo<From, To>::value;
 template <class E>
 using ScalarEnv_expression_0 = decltype(std::declval<E&>().observation_space());
 template <class E>
@@ -3668,8 +3882,8 @@ struct ScalarEnv_trait : std::false_type {};
 template <class E>
 struct ScalarEnv_trait<E, std::void_t<ScalarEnv_expression_0<E>, ScalarEnv_expression_1<E>,
                                       ScalarEnv_expression_2<E>, ScalarEnv_expression_3<E>>>
-    : std::bool_constant<std::is_convertible_v<ScalarEnv_expression_0<E>, spaces::Space> &&
-                         std::is_convertible_v<ScalarEnv_expression_1<E>, spaces::Space> &&
+    : std::bool_constant<convertible_to<ScalarEnv_expression_0<E>, spaces::Space> &&
+                         convertible_to<ScalarEnv_expression_1<E>, spaces::Space> &&
                          std::is_same_v<ScalarEnv_expression_2<E>, ResetResult> &&
                          std::is_same_v<ScalarEnv_expression_3<E>, StepResult>> {};
 template <class E>
@@ -3692,13 +3906,19 @@ template <class E>
 struct BatchedEnv_trait<E, std::void_t<BatchedEnv_expression_0<E>, BatchedEnv_expression_1<E>,
                                        BatchedEnv_expression_2<E>, BatchedEnv_expression_3<E>,
                                        BatchedEnv_expression_4<E>>>
-    : std::bool_constant<std::is_convertible_v<BatchedEnv_expression_0<E>, spaces::Space> &&
-                         std::is_convertible_v<BatchedEnv_expression_1<E>, spaces::Space> &&
-                         std::is_convertible_v<BatchedEnv_expression_2<E>, uint64_t> &&
+    : std::bool_constant<convertible_to<BatchedEnv_expression_0<E>, spaces::Space> &&
+                         convertible_to<BatchedEnv_expression_1<E>, spaces::Space> &&
+                         convertible_to<BatchedEnv_expression_2<E>, uint64_t> &&
                          std::is_same_v<BatchedEnv_expression_3<E>, ResetResult> &&
                          std::is_same_v<BatchedEnv_expression_4<E>, VectorStepResult>> {};
 template <class E>
 inline constexpr bool BatchedEnv = BatchedEnv_trait<E>::value;
+template <class N>
+uint64_t checked_num_envs(N count) {
+  if constexpr (std::is_signed_v<N>)
+    if (count < 0) throw ValueError("num_envs must not be negative");
+  return static_cast<uint64_t>(count);
+}
 inline std::optional<InfoDict> optional_info(const RLMeshValue* p) {
   if (p) return info(p);
   return {};
@@ -3717,10 +3937,11 @@ class Env {
   Env& operator=(Env&&) = default;
   template <class E, std::enable_if_t<detail::ScalarEnv<detail::remove_cvref_t<E>>, int> = 0>
   explicit Env(E&& e) : Env(std::make_shared<detail::remove_cvref_t<E>>(std::forward<E>(e))) {}
-  template <class E>
+  template <class E, std::enable_if_t<detail::ScalarEnv<E>, int> = 0>
   explicit Env(std::shared_ptr<E> source) {
     static_assert(detail::ScalarEnv<E>,
-                  "rlmesh::Env: incompatible observation/action spaces or reset/step signatures");
+                  "rlmesh::Env: incompatible observation/action spaces or "
+                  "reset/step signatures");
     if (!source) throw TypeError("env must not be null");
     auto state = std::make_unique<std::shared_ptr<E>>(std::move(source));
     auto& object = **state;
@@ -3808,17 +4029,17 @@ class VectorEnv {
   template <class E, std::enable_if_t<detail::BatchedEnv<detail::remove_cvref_t<E>>, int> = 0>
   explicit VectorEnv(E&& e)
       : VectorEnv(std::make_shared<detail::remove_cvref_t<E>>(std::forward<E>(e))) {}
-  template <class E>
+  template <class E, std::enable_if_t<detail::BatchedEnv<E>, int> = 0>
   explicit VectorEnv(std::shared_ptr<E> source) {
-    static_assert(
-        detail::BatchedEnv<E>,
-        "rlmesh::VectorEnv: incompatible observation/action spaces or reset/step signatures");
+    static_assert(detail::BatchedEnv<E>,
+                  "rlmesh::VectorEnv: incompatible observation/action spaces "
+                  "or reset/step signatures");
     if (!source) throw TypeError("env must not be null");
     struct State {
       std::shared_ptr<E> object;
       uint64_t num_envs;
     };
-    const auto num_envs = static_cast<uint64_t>(source->num_envs());
+    const auto num_envs = detail::checked_num_envs(source->num_envs());
     auto state = std::make_unique<State>(State{std::move(source), num_envs});
     auto& object = *state->object;
     auto observation_space = object.single_observation_space();
@@ -3870,10 +4091,10 @@ class VectorEnv {
           [&] {
             const auto& callback_state = *static_cast<State*>(u);
             auto& e = *callback_state.object;
-            if (e.num_envs() != callback_state.num_envs)
+            if (detail::checked_num_envs(e.num_envs()) != callback_state.num_envs)
               throw ValueError("vector num_envs changed after construction");
             auto [o, r, t, tr, i] = e.step(detail::optional_value(action));
-            if (e.num_envs() != callback_state.num_envs)
+            if (detail::checked_num_envs(e.num_envs()) != callback_state.num_envs)
               throw ValueError("vector num_envs changed during step");
             const auto n = static_cast<size_t>(callback_state.num_envs);
             if (r.size() != n || t.size() != n || tr.size() != n)
@@ -3928,12 +4149,14 @@ class ServedEnv {
   ServedEnv(const VectorEnv& e) : vector_(e.raw()) {}
   ServedEnv(VectorEnv&&) = delete;
   ServedEnv(const VectorEnv&&) = delete;
-  ServedEnv(const Span<const Env>& envs) { assign(envs); }
-  ServedEnv(Span<const Env>&&) = delete;
-  ServedEnv(const Span<const Env>&&) = delete;
-  ServedEnv(const std::vector<Env>& envs) { assign(envs); }
-  ServedEnv(std::vector<Env>&&) = delete;
-  ServedEnv(const std::vector<Env>&&) = delete;
+  template <class R, std::enable_if_t<std::is_constructible_v<Span<const Env>, R&>, int> = 0>
+  ServedEnv(R& envs) {
+    assign(Span<const Env>(envs));
+  }
+  template <class R, std::enable_if_t<!std::is_lvalue_reference_v<R> &&
+                                          std::is_constructible_v<Span<const Env>, R>,
+                                      int> = 0>
+  ServedEnv(R&&) = delete;
   const auto& lanes() const { return lanes_; }
   const RLMeshVectorEnv* vector() const { return vector_; }
 };
@@ -3965,7 +4188,7 @@ struct ServeOptions {
     allow_remote_shutdown = std::move(value);
     return *this;
   }
-  ServeOptions&& with_allow_remote_shutdown(bool value) && {
+  ServeOptions with_allow_remote_shutdown(bool value) && {
     allow_remote_shutdown = std::move(value);
     return std::move(*this);
   }
@@ -3973,7 +4196,7 @@ struct ServeOptions {
     idle_timeout = std::move(value);
     return *this;
   }
-  ServeOptions&& with_idle_timeout(std::optional<Duration> value) && {
+  ServeOptions with_idle_timeout(std::optional<Duration> value) && {
     idle_timeout = std::move(value);
     return std::move(*this);
   }
@@ -3981,7 +4204,7 @@ struct ServeOptions {
     drain_timeout = std::move(value);
     return *this;
   }
-  ServeOptions&& with_drain_timeout(std::optional<Duration> value) && {
+  ServeOptions with_drain_timeout(std::optional<Duration> value) && {
     drain_timeout = std::move(value);
     return std::move(*this);
   }
@@ -3989,7 +4212,7 @@ struct ServeOptions {
     close_timeout = std::move(value);
     return *this;
   }
-  ServeOptions&& with_close_timeout(std::optional<Duration> value) && {
+  ServeOptions with_close_timeout(std::optional<Duration> value) && {
     close_timeout = std::move(value);
     return std::move(*this);
   }
@@ -3997,7 +4220,7 @@ struct ServeOptions {
     compress_responses = std::move(value);
     return *this;
   }
-  ServeOptions&& with_compress_responses(bool value) && {
+  ServeOptions with_compress_responses(bool value) && {
     compress_responses = std::move(value);
     return std::move(*this);
   }
@@ -4005,7 +4228,7 @@ struct ServeOptions {
     workflow_edition = std::move(value);
     return *this;
   }
-  ServeOptions&& with_workflow_edition(std::optional<std::string> value) && {
+  ServeOptions with_workflow_edition(std::optional<std::string> value) && {
     workflow_edition = std::move(value);
     return std::move(*this);
   }
@@ -4019,7 +4242,7 @@ struct EnvServerOptions {
     token = std::move(value);
     return *this;
   }
-  EnvServerOptions&& with_token(std::optional<std::string> value) && {
+  EnvServerOptions with_token(std::optional<std::string> value) && {
     token = std::move(value);
     return std::move(*this);
   }
@@ -4027,7 +4250,7 @@ struct EnvServerOptions {
     peer_info_extra = std::move(value);
     return *this;
   }
-  EnvServerOptions&& with_peer_info_extra(std::map<std::string, std::string> value) && {
+  EnvServerOptions with_peer_info_extra(std::map<std::string, std::string> value) && {
     peer_info_extra = std::move(value);
     return std::move(*this);
   }
@@ -4035,7 +4258,7 @@ struct EnvServerOptions {
     publish_describe = std::move(value);
     return *this;
   }
-  EnvServerOptions&& with_publish_describe(bool value) && {
+  EnvServerOptions with_publish_describe(bool value) && {
     publish_describe = std::move(value);
     return std::move(*this);
   }
@@ -4047,7 +4270,7 @@ struct ModelServeOptions {
     token = std::move(value);
     return *this;
   }
-  ModelServeOptions&& with_token(std::optional<std::string> value) && {
+  ModelServeOptions with_token(std::optional<std::string> value) && {
     token = std::move(value);
     return std::move(*this);
   }
@@ -4055,7 +4278,7 @@ struct ModelServeOptions {
     predict_concurrency = std::move(value);
     return *this;
   }
-  ModelServeOptions&& with_predict_concurrency(std::optional<size_t> value) && {
+  ModelServeOptions with_predict_concurrency(std::optional<size_t> value) && {
     predict_concurrency = std::move(value);
     return std::move(*this);
   }
@@ -4074,7 +4297,7 @@ struct EnvServerOptions {
     address = std::move(value);
     return *this;
   }
-  EnvServerOptions&& with_address(std::optional<std::string> value) && {
+  EnvServerOptions with_address(std::optional<std::string> value) && {
     address = std::move(value);
     return std::move(*this);
   }
@@ -4082,7 +4305,7 @@ struct EnvServerOptions {
     port = std::move(value);
     return *this;
   }
-  EnvServerOptions&& with_port(std::optional<uint16_t> value) && {
+  EnvServerOptions with_port(std::optional<uint16_t> value) && {
     port = std::move(value);
     return std::move(*this);
   }
@@ -4090,7 +4313,7 @@ struct EnvServerOptions {
     path = std::move(value);
     return *this;
   }
-  EnvServerOptions&& with_path(std::optional<std::string> value) && {
+  EnvServerOptions with_path(std::optional<std::string> value) && {
     path = std::move(value);
     return std::move(*this);
   }
@@ -4098,7 +4321,7 @@ struct EnvServerOptions {
     transport = std::move(value);
     return *this;
   }
-  EnvServerOptions&& with_transport(std::optional<Transport> value) && {
+  EnvServerOptions with_transport(std::optional<Transport> value) && {
     transport = std::move(value);
     return std::move(*this);
   }
@@ -4106,7 +4329,7 @@ struct EnvServerOptions {
     options = std::move(value);
     return *this;
   }
-  EnvServerOptions&& with_options(std::optional<ServeOptions> value) && {
+  EnvServerOptions with_options(std::optional<ServeOptions> value) && {
     options = std::move(value);
     return std::move(*this);
   }
@@ -4114,7 +4337,7 @@ struct EnvServerOptions {
     tags = std::move(value);
     return *this;
   }
-  EnvServerOptions&& with_tags(std::optional<adapters::EnvTags> value) && {
+  EnvServerOptions with_tags(std::optional<adapters::EnvTags> value) && {
     tags = std::move(value);
     return std::move(*this);
   }
@@ -4122,7 +4345,7 @@ struct EnvServerOptions {
     close_env_on_shutdown = std::move(value);
     return *this;
   }
-  EnvServerOptions&& with_close_env_on_shutdown(bool value) && {
+  EnvServerOptions with_close_env_on_shutdown(bool value) && {
     close_env_on_shutdown = std::move(value);
     return std::move(*this);
   }
@@ -4130,7 +4353,7 @@ struct EnvServerOptions {
     ext = std::move(value);
     return *this;
   }
-  EnvServerOptions&& with_ext(std::optional<ext::EnvServerOptions> value) && {
+  EnvServerOptions with_ext(std::optional<ext::EnvServerOptions> value) && {
     ext = std::move(value);
     return std::move(*this);
   }
@@ -4138,7 +4361,7 @@ struct EnvServerOptions {
     host = std::move(value);
     return *this;
   }
-  EnvServerOptions&& with_host(std::optional<std::string> value) && {
+  EnvServerOptions with_host(std::optional<std::string> value) && {
     host = std::move(value);
     return std::move(*this);
   }
@@ -4241,7 +4464,7 @@ struct TagOptions {
     validate = std::move(value);
     return *this;
   }
-  TagOptions&& with_validate(bool value) && {
+  TagOptions with_validate(bool value) && {
     validate = std::move(value);
     return std::move(*this);
   }
@@ -4263,10 +4486,7 @@ struct Variant {
   std::string id{};
   Kwargs params{};
   Kwargs metadata = {};
-  bool operator==(const Variant& other) const {
-    return id == other.id && params == other.params && metadata == other.metadata;
-  }
-  bool operator!=(const Variant& other) const { return !(*this == other); }
+
   RLMeshVariant* raw() const {
     Value p(params), m(metadata);
     RLMeshVariantOptions c = RLMESH_VARIANT_OPTIONS_INIT;
@@ -4278,6 +4498,15 @@ struct Variant {
   static Variant from_raw(const RLMeshVariant* v) {
     return {detail::text(rlmesh_variant_id, v), detail::info(rlmesh_variant_params(v)),
             detail::info(rlmesh_variant_metadata(v))};
+  }
+
+  friend bool operator==(const Variant& self, const Variant& other) noexcept(
+      detail::nothrow_equal<decltype(id), decltype(params), decltype(metadata)>) {
+    return self.id == other.id && self.params == other.params && self.metadata == other.metadata;
+  }
+  friend bool operator!=(const Variant& self,
+                         const Variant& other) noexcept(noexcept(self == other)) {
+    return !(self == other);
   }
 };
 inline std::string to_string(const Variant& v) {
@@ -4299,7 +4528,7 @@ struct EnvFactoryServeOptions {
     num_envs = std::move(value);
     return *this;
   }
-  EnvFactoryServeOptions&& with_num_envs(int64_t value) && {
+  EnvFactoryServeOptions with_num_envs(int64_t value) && {
     num_envs = std::move(value);
     return std::move(*this);
   }
@@ -4307,7 +4536,7 @@ struct EnvFactoryServeOptions {
     workflow_edition = std::move(value);
     return *this;
   }
-  EnvFactoryServeOptions&& with_workflow_edition(std::optional<std::string> value) && {
+  EnvFactoryServeOptions with_workflow_edition(std::optional<std::string> value) && {
     workflow_edition = std::move(value);
     return std::move(*this);
   }
@@ -4315,7 +4544,7 @@ struct EnvFactoryServeOptions {
     make_kwargs = std::move(value);
     return *this;
   }
-  EnvFactoryServeOptions&& with_make_kwargs(Kwargs value) && {
+  EnvFactoryServeOptions with_make_kwargs(Kwargs value) && {
     make_kwargs = std::move(value);
     return std::move(*this);
   }
@@ -4323,7 +4552,7 @@ struct EnvFactoryServeOptions {
     cancel = std::move(value);
     return *this;
   }
-  EnvFactoryServeOptions&& with_cancel(std::optional<ext::CancelToken> value) && {
+  EnvFactoryServeOptions with_cancel(std::optional<ext::CancelToken> value) && {
     cancel = std::move(value);
     return std::move(*this);
   }
@@ -4561,7 +4790,7 @@ struct ModelOptions {
     on_close = std::move(value);
     return *this;
   }
-  ModelOptions&& with_on_close(std::function<void()> value) && {
+  ModelOptions with_on_close(std::function<void()> value) && {
     on_close = std::move(value);
     return std::move(*this);
   }
@@ -4569,7 +4798,7 @@ struct ModelOptions {
     spec = std::move(value);
     return *this;
   }
-  ModelOptions&& with_spec(std::optional<SpecArg> value) && {
+  ModelOptions with_spec(std::optional<SpecArg> value) && {
     spec = std::move(value);
     return std::move(*this);
   }
@@ -4577,7 +4806,7 @@ struct ModelOptions {
     on_episode_end = std::move(value);
     return *this;
   }
-  ModelOptions&& with_on_episode_end(EpisodeEndHook value) && {
+  ModelOptions with_on_episode_end(EpisodeEndHook value) && {
     on_episode_end = std::move(value);
     return std::move(*this);
   }
@@ -4585,7 +4814,7 @@ struct ModelOptions {
     trust_entrypoints = std::move(value);
     return *this;
   }
-  ModelOptions&& with_trust_entrypoints(bool value) && {
+  ModelOptions with_trust_entrypoints(bool value) && {
     trust_entrypoints = std::move(value);
     return std::move(*this);
   }
@@ -4598,7 +4827,7 @@ struct ModelServeOptions {
     options = std::move(value);
     return *this;
   }
-  ModelServeOptions&& with_options(std::optional<ServeOptions> value) && {
+  ModelServeOptions with_options(std::optional<ServeOptions> value) && {
     options = std::move(value);
     return std::move(*this);
   }
@@ -4606,7 +4835,7 @@ struct ModelServeOptions {
     cancel = std::move(value);
     return *this;
   }
-  ModelServeOptions&& with_cancel(std::optional<ext::CancelToken> value) && {
+  ModelServeOptions with_cancel(std::optional<ext::CancelToken> value) && {
     cancel = std::move(value);
     return std::move(*this);
   }
@@ -4614,7 +4843,7 @@ struct ModelServeOptions {
     ext = std::move(value);
     return *this;
   }
-  ModelServeOptions&& with_ext(std::optional<ext::ModelServeOptions> value) && {
+  ModelServeOptions with_ext(std::optional<ext::ModelServeOptions> value) && {
     ext = std::move(value);
     return std::move(*this);
   }
@@ -4814,7 +5043,7 @@ struct PolicyTable {
                       detail::is_detected<detail::load_expression, P>,
                   "load must accept Kwargs or no arguments");
     static_assert(!(detail::is_detected<detail::on_episode_end_member_expression, P>) ||
-                      detail::is_detected<detail::on_episode_end_id_expression, P> ||
+                      detail::is_detected<detail::on_episode_end_lvalue_expression, P> ||
                       detail::is_detected<detail::on_episode_end_expression, P>,
                   "on_episode_end must accept episode_id or no arguments");
     static_assert(!(detail::is_detected<detail::load_expression, P>) ||
@@ -5043,18 +5272,27 @@ class Model {
 
  public:
   explicit Model(RLMeshModel* source) : handle_(source, rlmesh_model_free) { read_spec(); }
-  template <class P,
-            std::enable_if_t<!std::is_same_v<detail::remove_cvref_t<P>, Model> &&
-                                 !std::is_convertible_v<detail::remove_cvref_t<P>, RLMeshModel*> &&
-                                 !detail::IsPolicyPointer<detail::remove_cvref_t<P>>::value,
-                             int> = 0>
+  template <class P, std::enable_if_t<!std::is_base_of_v<Model, detail::remove_cvref_t<P>> &&
+                                          Policy<detail::remove_cvref_t<P>>,
+                                      int> = 0>
   explicit Model(P&& source, ModelOptions options = {})
       : Model(std::make_shared<detail::remove_cvref_t<P>>(std::forward<P>(source)),
               std::move(options)) {}
-  template <class P>
+  // Invalid policy objects get a deleted-constructor diagnostic without
+  // participating as constructible handles or intercepting null pointer
+  // constants.
+  template <class P,
+            std::enable_if_t<std::is_class_v<detail::remove_cvref_t<P>> &&
+                                 !std::is_base_of_v<Model, detail::remove_cvref_t<P>> &&
+                                 !Policy<detail::remove_cvref_t<P>> &&
+                                 !detail::IsPolicyPointer<detail::remove_cvref_t<P>>::value &&
+                                 !std::is_convertible_v<detail::remove_cvref_t<P>, RLMeshModel*>,
+                             int> = 0>
+  explicit Model(P&&, ModelOptions = {}) = delete;
+  template <class P, std::enable_if_t<Policy<P>, int> = 0>
   explicit Model(std::unique_ptr<P> source, ModelOptions options = {})
       : Model(std::shared_ptr<P>(std::move(source)), std::move(options)) {}
-  template <class P>
+  template <class P, std::enable_if_t<Policy<P>, int> = 0>
   explicit Model(std::shared_ptr<P> source, ModelOptions options = {}) {
     static_assert(Policy<P>,
                   "rlmesh::Model: the policy type has none of "
@@ -5171,7 +5409,7 @@ struct RemoteEnvOptions {
     address = std::move(value);
     return *this;
   }
-  RemoteEnvOptions&& with_address(std::optional<std::string> value) && {
+  RemoteEnvOptions with_address(std::optional<std::string> value) && {
     address = std::move(value);
     return std::move(*this);
   }
@@ -5179,7 +5417,7 @@ struct RemoteEnvOptions {
     port = std::move(value);
     return *this;
   }
-  RemoteEnvOptions&& with_port(std::optional<uint16_t> value) && {
+  RemoteEnvOptions with_port(std::optional<uint16_t> value) && {
     port = std::move(value);
     return std::move(*this);
   }
@@ -5187,7 +5425,7 @@ struct RemoteEnvOptions {
     path = std::move(value);
     return *this;
   }
-  RemoteEnvOptions&& with_path(std::optional<std::string> value) && {
+  RemoteEnvOptions with_path(std::optional<std::string> value) && {
     path = std::move(value);
     return std::move(*this);
   }
@@ -5195,7 +5433,7 @@ struct RemoteEnvOptions {
     transport = std::move(value);
     return *this;
   }
-  RemoteEnvOptions&& with_transport(std::optional<Transport> value) && {
+  RemoteEnvOptions with_transport(std::optional<Transport> value) && {
     transport = std::move(value);
     return std::move(*this);
   }
@@ -5203,7 +5441,7 @@ struct RemoteEnvOptions {
     connect_timeout = std::move(value);
     return *this;
   }
-  RemoteEnvOptions&& with_connect_timeout(std::optional<Duration> value) && {
+  RemoteEnvOptions with_connect_timeout(std::optional<Duration> value) && {
     connect_timeout = std::move(value);
     return std::move(*this);
   }
@@ -5211,7 +5449,7 @@ struct RemoteEnvOptions {
     workflow_edition = std::move(value);
     return *this;
   }
-  RemoteEnvOptions&& with_workflow_edition(std::optional<std::string> value) && {
+  RemoteEnvOptions with_workflow_edition(std::optional<std::string> value) && {
     workflow_edition = std::move(value);
     return std::move(*this);
   }
@@ -5219,7 +5457,7 @@ struct RemoteEnvOptions {
     host = std::move(value);
     return *this;
   }
-  RemoteEnvOptions&& with_host(std::optional<std::string> value) && {
+  RemoteEnvOptions with_host(std::optional<std::string> value) && {
     host = std::move(value);
     return std::move(*this);
   }
@@ -5227,7 +5465,7 @@ struct RemoteEnvOptions {
     request_timeout = std::move(value);
     return *this;
   }
-  RemoteEnvOptions&& with_request_timeout(std::optional<Duration> value) && {
+  RemoteEnvOptions with_request_timeout(std::optional<Duration> value) && {
     request_timeout = std::move(value);
     return std::move(*this);
   }
@@ -5257,7 +5495,7 @@ struct RemoteModelOptions {
     address = std::move(value);
     return *this;
   }
-  RemoteModelOptions&& with_address(std::optional<std::string> value) && {
+  RemoteModelOptions with_address(std::optional<std::string> value) && {
     address = std::move(value);
     return std::move(*this);
   }
@@ -5265,7 +5503,7 @@ struct RemoteModelOptions {
     port = std::move(value);
     return *this;
   }
-  RemoteModelOptions&& with_port(std::optional<uint16_t> value) && {
+  RemoteModelOptions with_port(std::optional<uint16_t> value) && {
     port = std::move(value);
     return std::move(*this);
   }
@@ -5273,7 +5511,7 @@ struct RemoteModelOptions {
     path = std::move(value);
     return *this;
   }
-  RemoteModelOptions&& with_path(std::optional<std::string> value) && {
+  RemoteModelOptions with_path(std::optional<std::string> value) && {
     path = std::move(value);
     return std::move(*this);
   }
@@ -5281,7 +5519,7 @@ struct RemoteModelOptions {
     transport = std::move(value);
     return *this;
   }
-  RemoteModelOptions&& with_transport(std::optional<Transport> value) && {
+  RemoteModelOptions with_transport(std::optional<Transport> value) && {
     transport = std::move(value);
     return std::move(*this);
   }
@@ -5289,7 +5527,7 @@ struct RemoteModelOptions {
     connect_timeout = std::move(value);
     return *this;
   }
-  RemoteModelOptions&& with_connect_timeout(std::optional<Duration> value) && {
+  RemoteModelOptions with_connect_timeout(std::optional<Duration> value) && {
     connect_timeout = std::move(value);
     return std::move(*this);
   }
@@ -5297,7 +5535,7 @@ struct RemoteModelOptions {
     host = std::move(value);
     return *this;
   }
-  RemoteModelOptions&& with_host(std::optional<std::string> value) && {
+  RemoteModelOptions with_host(std::optional<std::string> value) && {
     host = std::move(value);
     return std::move(*this);
   }
@@ -5305,7 +5543,7 @@ struct RemoteModelOptions {
     request_timeout = std::move(value);
     return *this;
   }
-  RemoteModelOptions&& with_request_timeout(std::optional<Duration> value) && {
+  RemoteModelOptions with_request_timeout(std::optional<Duration> value) && {
     request_timeout = std::move(value);
     return std::move(*this);
   }
@@ -5509,8 +5747,13 @@ class RemoteModel {
   Session session([[maybe_unused]] EnvTarget env) const;
 };
 struct RandomSample {
-  bool operator==(const RandomSample&) const { return true; }
-  bool operator!=(const RandomSample& other) const { return !(*this == other); }
+  friend constexpr bool operator==(const RandomSample&, const RandomSample&) noexcept {
+    return true;
+  }
+  friend constexpr bool operator!=(const RandomSample& self,
+                                   const RandomSample& other) noexcept(noexcept(self == other)) {
+    return !(self == other);
+  }
 };
 inline constexpr RandomSample RANDOM_SAMPLE{};
 inline std::string to_string(RandomSample) { return "RANDOM_SAMPLE"; }
@@ -5560,14 +5803,7 @@ struct EpisodeResult {
   double duration_s = 0;
   std::optional<double> predict_ms{}, step_ms{};
   std::optional<int64_t> trial{};
-  bool operator==(const EpisodeResult& other) const {
-    return index == other.index && seed == other.seed && steps == other.steps &&
-           reward == other.reward && terminated == other.terminated &&
-           truncated == other.truncated && success == other.success &&
-           duration_s == other.duration_s && predict_ms == other.predict_ms &&
-           step_ms == other.step_ms && trial == other.trial;
-  }
-  bool operator!=(const EpisodeResult& other) const { return !(*this == other); }
+
   RLMeshEpisodeResult raw() const {
     RLMeshEpisodeResult c = RLMESH_EPISODE_RESULT_INIT;
     c.index = index;
@@ -5601,6 +5837,22 @@ struct EpisodeResult {
             c.has_step_ms ? std::optional(c.step_ms) : std::nullopt,
             c.has_trial ? std::optional(c.trial) : std::nullopt};
   }
+
+  friend constexpr bool operator==(const EpisodeResult& self, const EpisodeResult& other) noexcept(
+      detail::nothrow_equal<decltype(index), decltype(seed), decltype(steps), decltype(reward),
+                            decltype(terminated), decltype(truncated), decltype(success),
+                            decltype(duration_s), decltype(predict_ms), decltype(step_ms),
+                            decltype(trial)>) {
+    return self.index == other.index && self.seed == other.seed && self.steps == other.steps &&
+           self.reward == other.reward && self.terminated == other.terminated &&
+           self.truncated == other.truncated && self.success == other.success &&
+           self.duration_s == other.duration_s && self.predict_ms == other.predict_ms &&
+           self.step_ms == other.step_ms && self.trial == other.trial;
+  }
+  friend constexpr bool operator!=(const EpisodeResult& self,
+                                   const EpisodeResult& other) noexcept(noexcept(self == other)) {
+    return !(self == other);
+  }
 };
 inline std::string to_string(const EpisodeResult& v) {
   auto c = v.raw();
@@ -5610,12 +5862,7 @@ struct TelemetryRow {
   std::string op{}, component{}, metric{}, unit{};
   int64_t count = 0;
   double avg = 0, p50 = 0, p95 = 0, p99 = 0;
-  bool operator==(const TelemetryRow& other) const {
-    return op == other.op && component == other.component && metric == other.metric &&
-           unit == other.unit && count == other.count && avg == other.avg && p50 == other.p50 &&
-           p95 == other.p95 && p99 == other.p99;
-  }
-  bool operator!=(const TelemetryRow& other) const { return !(*this == other); }
+
   RLMeshTelemetryRow* raw() const {
     RLMeshTelemetryRow* p = nullptr;
     detail::check_status(rlmesh_telemetry_row_new(op.c_str(), component.c_str(), metric.c_str(),
@@ -5633,6 +5880,20 @@ struct TelemetryRow {
             rlmesh_telemetry_row_p95(c),
             rlmesh_telemetry_row_p99(c)};
   }
+
+  friend bool operator==(const TelemetryRow& self, const TelemetryRow& other) noexcept(
+      detail::nothrow_equal<decltype(op), decltype(component), decltype(metric), decltype(unit),
+                            decltype(count), decltype(avg), decltype(p50), decltype(p95),
+                            decltype(p99)>) {
+    return self.op == other.op && self.component == other.component &&
+           self.metric == other.metric && self.unit == other.unit && self.count == other.count &&
+           self.avg == other.avg && self.p50 == other.p50 && self.p95 == other.p95 &&
+           self.p99 == other.p99;
+  }
+  friend bool operator!=(const TelemetryRow& self,
+                         const TelemetryRow& other) noexcept(noexcept(self == other)) {
+    return !(self == other);
+  }
 };
 inline std::string to_string(const TelemetryRow& v) {
   auto p = detail::own<RLMeshTelemetryRow, rlmesh_telemetry_row_free>(v.raw());
@@ -5642,11 +5903,7 @@ struct RunResult {
   std::vector<EpisodeResult> episodes{};
   std::vector<TelemetryRow> telemetry{};
   std::vector<adapters::Advisory> advisories{};
-  bool operator==(const RunResult& other) const {
-    return episodes == other.episodes && telemetry == other.telemetry &&
-           advisories == other.advisories;
-  }
-  bool operator!=(const RunResult& other) const { return !(*this == other); }
+
   size_t num_episodes() const { return episodes.size(); }
   int64_t total_steps() const {
     int64_t n = 0;
@@ -5722,6 +5979,16 @@ struct RunResult {
   std::string format_telemetry() const {
     auto p = detail::own<RLMeshRunResult, rlmesh_run_result_free>(raw());
     return detail::text(rlmesh_run_result_format_telemetry, p.get());
+  }
+
+  friend bool operator==(const RunResult& self, const RunResult& other) noexcept(
+      detail::nothrow_equal<decltype(episodes), decltype(telemetry), decltype(advisories)>) {
+    return self.episodes == other.episodes && self.telemetry == other.telemetry &&
+           self.advisories == other.advisories;
+  }
+  friend bool operator!=(const RunResult& self,
+                         const RunResult& other) noexcept(noexcept(self == other)) {
+    return !(self == other);
   }
 };
 inline std::string to_string(const RunResult& v) {
@@ -5804,9 +6071,18 @@ class SharedFunction<R(A...), EmptyError> {
     if (!function_) throw EmptyError("callable is empty");
     return (*function_)(std::forward<A>(args)...);
   }
-  bool operator==(const SharedFunction& other) const { return function_ == other.function_; }
-  bool operator!=(const SharedFunction& other) const { return !(*this == other); }
+
   const void* identity() const { return function_.get(); }
+
+  friend constexpr bool operator==(
+      const SharedFunction& self,
+      const SharedFunction& other) noexcept(noexcept(self.function_ == other.function_)) {
+    return self.function_ == other.function_;
+  }
+  friend constexpr bool operator!=(const SharedFunction& self,
+                                   const SharedFunction& other) noexcept(noexcept(self == other)) {
+    return !(self == other);
+  }
 };
 using ReadFn = SharedFunction<Value(const ReadItem&)>;
 using RenderFn = SharedFunction<Value()>;
@@ -5814,10 +6090,7 @@ struct FrameSources {
   std::vector<std::string> roles{};
   std::optional<std::string> render_label{};
   RenderFn render{};
-  bool operator==(const FrameSources& other) const {
-    return roles == other.roles && render_label == other.render_label && render == other.render;
-  }
-  bool operator!=(const FrameSources& other) const { return !(*this == other); }
+
   std::vector<std::string> labels() const {
     std::vector<std::string> v;
     if (render_label) v.push_back(*render_label);
@@ -5856,6 +6129,16 @@ struct FrameSources {
         return Value::adopt(frame);
       };
     return v;
+  }
+
+  friend bool operator==(const FrameSources& self, const FrameSources& other) noexcept(
+      detail::nothrow_equal<decltype(roles), decltype(render_label), decltype(render)>) {
+    return self.roles == other.roles && self.render_label == other.render_label &&
+           self.render == other.render;
+  }
+  friend bool operator!=(const FrameSources& self,
+                         const FrameSources& other) noexcept(noexcept(self == other)) {
+    return !(self == other);
   }
 };
 class RunContext {
@@ -5908,13 +6191,23 @@ struct StepEvent {
   InfoDict info{};
   double predict_ms = 0, step_ms = 0;
   ReadFn read{};
-  bool operator==(const StepEvent& other) const {
-    return episode == other.episode && seed == other.seed && step == other.step &&
-           observation == other.observation && action == other.action && reward == other.reward &&
-           terminated == other.terminated && truncated == other.truncated && info == other.info &&
-           predict_ms == other.predict_ms && step_ms == other.step_ms && read == other.read;
+
+  friend bool operator==(const StepEvent& self, const StepEvent& other) noexcept(
+      detail::nothrow_equal<decltype(episode), decltype(seed), decltype(step),
+                            decltype(observation), decltype(action), decltype(reward),
+                            decltype(terminated), decltype(truncated), decltype(info),
+                            decltype(predict_ms), decltype(step_ms), decltype(read)>) {
+    return self.episode == other.episode && self.seed == other.seed && self.step == other.step &&
+           self.observation == other.observation && self.action == other.action &&
+           self.reward == other.reward && self.terminated == other.terminated &&
+           self.truncated == other.truncated && self.info == other.info &&
+           self.predict_ms == other.predict_ms && self.step_ms == other.step_ms &&
+           self.read == other.read;
   }
-  bool operator!=(const StepEvent& other) const { return !(*this == other); }
+  friend bool operator!=(const StepEvent& self,
+                         const StepEvent& other) noexcept(noexcept(self == other)) {
+    return !(self == other);
+  }
 };
 class RunHooks {
  public:
@@ -5985,12 +6278,71 @@ struct View {
   uint8_t quality = 75;
   std::variant<bool, Duration> hold = false;
   std::optional<double> step_hz{};
-  bool operator==(const View& other) const {
-    return backend == other.backend && port == other.port && fps == other.fps &&
-           source == other.source && format == other.format && quality == other.quality &&
-           hold == other.hold && step_hz == other.step_hz;
+
+  View& with_backend(ViewBackend value) & {
+    backend = std::move(value);
+    return *this;
   }
-  bool operator!=(const View& other) const { return !(*this == other); }
+  View with_backend(ViewBackend value) && {
+    backend = std::move(value);
+    return std::move(*this);
+  }
+  View& with_port(uint16_t value) & {
+    port = std::move(value);
+    return *this;
+  }
+  View with_port(uint16_t value) && {
+    port = std::move(value);
+    return std::move(*this);
+  }
+  View& with_fps(uint64_t value) & {
+    fps = std::move(value);
+    return *this;
+  }
+  View with_fps(uint64_t value) && {
+    fps = std::move(value);
+    return std::move(*this);
+  }
+  View& with_source(std::optional<std::string> value) & {
+    source = std::move(value);
+    return *this;
+  }
+  View with_source(std::optional<std::string> value) && {
+    source = std::move(value);
+    return std::move(*this);
+  }
+  View& with_format(ViewFormat value) & {
+    format = std::move(value);
+    return *this;
+  }
+  View with_format(ViewFormat value) && {
+    format = std::move(value);
+    return std::move(*this);
+  }
+  View& with_quality(uint8_t value) & {
+    quality = std::move(value);
+    return *this;
+  }
+  View with_quality(uint8_t value) && {
+    quality = std::move(value);
+    return std::move(*this);
+  }
+  View& with_hold(std::variant<bool, Duration> value) & {
+    hold = std::move(value);
+    return *this;
+  }
+  View with_hold(std::variant<bool, Duration> value) && {
+    hold = std::move(value);
+    return std::move(*this);
+  }
+  View& with_step_hz(std::optional<double> value) & {
+    step_hz = std::move(value);
+    return *this;
+  }
+  View with_step_hz(std::optional<double> value) && {
+    step_hz = std::move(value);
+    return std::move(*this);
+  }
   RLMeshView raw() const {
     RLMeshView c = RLMESH_VIEW_INIT;
     c.backend = static_cast<RLMeshViewBackend>(backend);
@@ -6030,6 +6382,19 @@ struct View {
     if (c.has_step_hz) v.step_hz = c.step_hz;
     return v;
   }
+
+  friend bool operator==(const View& self, const View& other) noexcept(
+      detail::nothrow_equal<decltype(backend), decltype(port), decltype(fps), decltype(source),
+                            decltype(format), decltype(quality), decltype(hold),
+                            decltype(step_hz)>) {
+    return self.backend == other.backend && self.port == other.port && self.fps == other.fps &&
+           self.source == other.source && self.format == other.format &&
+           self.quality == other.quality && self.hold == other.hold &&
+           self.step_hz == other.step_hz;
+  }
+  friend bool operator!=(const View& self, const View& other) noexcept(noexcept(self == other)) {
+    return !(self == other);
+  }
 };
 inline std::string to_string(const View& v) {
   auto c = v.raw();
@@ -6054,7 +6419,7 @@ struct RunOptions {
     episodes = std::move(value);
     return *this;
   }
-  RunOptions&& with_episodes(std::optional<uint64_t> value) && {
+  RunOptions with_episodes(std::optional<uint64_t> value) && {
     episodes = std::move(value);
     return std::move(*this);
   }
@@ -6062,7 +6427,7 @@ struct RunOptions {
     seeds = std::move(value);
     return *this;
   }
-  RunOptions&& with_seeds(OptionalList<int64_t> value) && {
+  RunOptions with_seeds(OptionalList<int64_t> value) && {
     seeds = std::move(value);
     return std::move(*this);
   }
@@ -6070,7 +6435,7 @@ struct RunOptions {
     max_episode_steps = std::move(value);
     return *this;
   }
-  RunOptions&& with_max_episode_steps(std::optional<uint64_t> value) && {
+  RunOptions with_max_episode_steps(std::optional<uint64_t> value) && {
     max_episode_steps = std::move(value);
     return std::move(*this);
   }
@@ -6078,7 +6443,7 @@ struct RunOptions {
     max_episode = std::move(value);
     return *this;
   }
-  RunOptions&& with_max_episode(std::optional<Duration> value) && {
+  RunOptions with_max_episode(std::optional<Duration> value) && {
     max_episode = std::move(value);
     return std::move(*this);
   }
@@ -6086,7 +6451,7 @@ struct RunOptions {
     hooks = std::move(value);
     return *this;
   }
-  RunOptions&& with_hooks(RunHooks* value) && {
+  RunOptions with_hooks(RunHooks* value) && {
     hooks = std::move(value);
     return std::move(*this);
   }
@@ -6094,7 +6459,7 @@ struct RunOptions {
     instruction = std::move(value);
     return *this;
   }
-  RunOptions&& with_instruction(std::optional<std::string> value) && {
+  RunOptions with_instruction(std::optional<std::string> value) && {
     instruction = std::move(value);
     return std::move(*this);
   }
@@ -6102,7 +6467,7 @@ struct RunOptions {
     close_env = std::move(value);
     return *this;
   }
-  RunOptions&& with_close_env(bool value) && {
+  RunOptions with_close_env(bool value) && {
     close_env = std::move(value);
     return std::move(*this);
   }
@@ -6110,7 +6475,7 @@ struct RunOptions {
     trust_entrypoints = std::move(value);
     return *this;
   }
-  RunOptions&& with_trust_entrypoints(std::optional<bool> value) && {
+  RunOptions with_trust_entrypoints(std::optional<bool> value) && {
     trust_entrypoints = std::move(value);
     return std::move(*this);
   }
@@ -6118,7 +6483,7 @@ struct RunOptions {
     execution_horizon = std::move(value);
     return *this;
   }
-  RunOptions&& with_execution_horizon(uint32_t value) && {
+  RunOptions with_execution_horizon(uint32_t value) && {
     execution_horizon = std::move(value);
     return std::move(*this);
   }
@@ -6126,7 +6491,7 @@ struct RunOptions {
     prefetch_lead = std::move(value);
     return *this;
   }
-  RunOptions&& with_prefetch_lead(uint64_t value) && {
+  RunOptions with_prefetch_lead(uint64_t value) && {
     prefetch_lead = std::move(value);
     return std::move(*this);
   }
@@ -6134,7 +6499,7 @@ struct RunOptions {
     view = std::move(value);
     return *this;
   }
-  RunOptions&& with_view(std::optional<View> value) && {
+  RunOptions with_view(std::optional<View> value) && {
     view = std::move(value);
     return std::move(*this);
   }
@@ -6142,7 +6507,7 @@ struct RunOptions {
     workflow_edition = std::move(value);
     return *this;
   }
-  RunOptions&& with_workflow_edition(std::optional<std::string> value) && {
+  RunOptions with_workflow_edition(std::optional<std::string> value) && {
     workflow_edition = std::move(value);
     return std::move(*this);
   }
@@ -6150,7 +6515,7 @@ struct RunOptions {
     trial_index_base = std::move(value);
     return *this;
   }
-  RunOptions&& with_trial_index_base(uint64_t value) && {
+  RunOptions with_trial_index_base(uint64_t value) && {
     trial_index_base = std::move(value);
     return std::move(*this);
   }
@@ -6158,7 +6523,7 @@ struct RunOptions {
     cancel = std::move(value);
     return *this;
   }
-  RunOptions&& with_cancel(std::optional<ext::CancelToken> value) && {
+  RunOptions with_cancel(std::optional<ext::CancelToken> value) && {
     cancel = std::move(value);
     return std::move(*this);
   }
@@ -6175,7 +6540,7 @@ struct SessionOptions {
     instruction = std::move(value);
     return *this;
   }
-  SessionOptions&& with_instruction(std::optional<std::string> value) && {
+  SessionOptions with_instruction(std::optional<std::string> value) && {
     instruction = std::move(value);
     return std::move(*this);
   }
@@ -6183,7 +6548,7 @@ struct SessionOptions {
     close_env = std::move(value);
     return *this;
   }
-  SessionOptions&& with_close_env(bool value) && {
+  SessionOptions with_close_env(bool value) && {
     close_env = std::move(value);
     return std::move(*this);
   }
@@ -6191,7 +6556,7 @@ struct SessionOptions {
     trust_entrypoints = std::move(value);
     return *this;
   }
-  SessionOptions&& with_trust_entrypoints(std::optional<bool> value) && {
+  SessionOptions with_trust_entrypoints(std::optional<bool> value) && {
     trust_entrypoints = std::move(value);
     return std::move(*this);
   }
@@ -6199,7 +6564,7 @@ struct SessionOptions {
     execution_horizon = std::move(value);
     return *this;
   }
-  SessionOptions&& with_execution_horizon(uint32_t value) && {
+  SessionOptions with_execution_horizon(uint32_t value) && {
     execution_horizon = std::move(value);
     return std::move(*this);
   }
@@ -6207,7 +6572,7 @@ struct SessionOptions {
     view = std::move(value);
     return *this;
   }
-  SessionOptions&& with_view(std::optional<View> value) && {
+  SessionOptions with_view(std::optional<View> value) && {
     view = std::move(value);
     return std::move(*this);
   }
@@ -6215,7 +6580,7 @@ struct SessionOptions {
     workflow_edition = std::move(value);
     return *this;
   }
-  SessionOptions&& with_workflow_edition(std::optional<std::string> value) && {
+  SessionOptions with_workflow_edition(std::optional<std::string> value) && {
     workflow_edition = std::move(value);
     return std::move(*this);
   }
@@ -6223,7 +6588,7 @@ struct SessionOptions {
     cancel = std::move(value);
     return *this;
   }
-  SessionOptions&& with_cancel(std::optional<ext::CancelToken> value) && {
+  SessionOptions with_cancel(std::optional<ext::CancelToken> value) && {
     cancel = std::move(value);
     return std::move(*this);
   }
@@ -6240,7 +6605,7 @@ struct SessionRunOptions {
     episodes = std::move(value);
     return *this;
   }
-  SessionRunOptions&& with_episodes(std::optional<uint64_t> value) && {
+  SessionRunOptions with_episodes(std::optional<uint64_t> value) && {
     episodes = std::move(value);
     return std::move(*this);
   }
@@ -6248,7 +6613,7 @@ struct SessionRunOptions {
     seeds = std::move(value);
     return *this;
   }
-  SessionRunOptions&& with_seeds(OptionalList<int64_t> value) && {
+  SessionRunOptions with_seeds(OptionalList<int64_t> value) && {
     seeds = std::move(value);
     return std::move(*this);
   }
@@ -6256,7 +6621,7 @@ struct SessionRunOptions {
     max_episode_steps = std::move(value);
     return *this;
   }
-  SessionRunOptions&& with_max_episode_steps(std::optional<uint64_t> value) && {
+  SessionRunOptions with_max_episode_steps(std::optional<uint64_t> value) && {
     max_episode_steps = std::move(value);
     return std::move(*this);
   }
@@ -6264,7 +6629,7 @@ struct SessionRunOptions {
     max_episode = std::move(value);
     return *this;
   }
-  SessionRunOptions&& with_max_episode(std::optional<Duration> value) && {
+  SessionRunOptions with_max_episode(std::optional<Duration> value) && {
     max_episode = std::move(value);
     return std::move(*this);
   }
@@ -6272,7 +6637,7 @@ struct SessionRunOptions {
     hooks = std::move(value);
     return *this;
   }
-  SessionRunOptions&& with_hooks(RunHooks* value) && {
+  SessionRunOptions with_hooks(RunHooks* value) && {
     hooks = std::move(value);
     return std::move(*this);
   }
@@ -6280,7 +6645,7 @@ struct SessionRunOptions {
     trial_index_base = std::move(value);
     return *this;
   }
-  SessionRunOptions&& with_trial_index_base(uint64_t value) && {
+  SessionRunOptions with_trial_index_base(uint64_t value) && {
     trial_index_base = std::move(value);
     return std::move(*this);
   }
@@ -6288,7 +6653,7 @@ struct SessionRunOptions {
     cancel = std::move(value);
     return *this;
   }
-  SessionRunOptions&& with_cancel(std::optional<ext::CancelToken> value) && {
+  SessionRunOptions with_cancel(std::optional<ext::CancelToken> value) && {
     cancel = std::move(value);
     return std::move(*this);
   }
@@ -6478,12 +6843,7 @@ struct MediaRef {
   std::string camera{}, kind{}, path{}, format{};
   std::optional<int64_t> frame_count{}, width{}, height{};
   std::optional<double> fps{};
-  bool operator==(const MediaRef& other) const {
-    return camera == other.camera && kind == other.kind && path == other.path &&
-           format == other.format && frame_count == other.frame_count && width == other.width &&
-           height == other.height && fps == other.fps;
-  }
-  bool operator!=(const MediaRef& other) const { return !(*this == other); }
+
   RLMeshMediaRef* raw() const {
     RLMeshMediaRefOptions c = RLMESH_MEDIA_REF_OPTIONS_INIT;
     c.has_frame_count = frame_count.has_value();
@@ -6522,6 +6882,19 @@ struct MediaRef {
     detail::check_status(rlmesh_media_ref_to_dict(p.get(), &v));
     return Value::adopt(v).as_dict();
   }
+
+  friend bool operator==(const MediaRef& self, const MediaRef& other) noexcept(
+      detail::nothrow_equal<decltype(camera), decltype(kind), decltype(path), decltype(format),
+                            decltype(frame_count), decltype(width), decltype(height),
+                            decltype(fps)>) {
+    return self.camera == other.camera && self.kind == other.kind && self.path == other.path &&
+           self.format == other.format && self.frame_count == other.frame_count &&
+           self.width == other.width && self.height == other.height && self.fps == other.fps;
+  }
+  friend bool operator!=(const MediaRef& self,
+                         const MediaRef& other) noexcept(noexcept(self == other)) {
+    return !(self == other);
+  }
 };
 struct EpisodeRecord {
   int64_t index = 0;
@@ -6533,14 +6906,7 @@ struct EpisodeRecord {
   double duration_s = 0;
   bool included_in_metrics = true;
   std::vector<MediaRef> media{};
-  bool operator==(const EpisodeRecord& other) const {
-    return index == other.index && seed == other.seed && steps == other.steps &&
-           reward == other.reward && terminated == other.terminated &&
-           truncated == other.truncated && success == other.success &&
-           duration_s == other.duration_s && included_in_metrics == other.included_in_metrics &&
-           media == other.media;
-  }
-  bool operator!=(const EpisodeRecord& other) const { return !(*this == other); }
+
   RLMeshEpisodeRecord* raw() const {
     RLMeshEpisodeRecordOptions c = RLMESH_EPISODE_RECORD_OPTIONS_INIT;
     c.has_success = success.has_value();
@@ -6587,16 +6953,27 @@ struct EpisodeRecord {
     detail::check_status(rlmesh_episode_record_to_dict(p.get(), &v));
     return Value::adopt(v).as_dict();
   }
+
+  friend bool operator==(const EpisodeRecord& self, const EpisodeRecord& other) noexcept(
+      detail::nothrow_equal<decltype(index), decltype(seed), decltype(steps), decltype(reward),
+                            decltype(terminated), decltype(truncated), decltype(success),
+                            decltype(duration_s), decltype(included_in_metrics), decltype(media)>) {
+    return self.index == other.index && self.seed == other.seed && self.steps == other.steps &&
+           self.reward == other.reward && self.terminated == other.terminated &&
+           self.truncated == other.truncated && self.success == other.success &&
+           self.duration_s == other.duration_s &&
+           self.included_in_metrics == other.included_in_metrics && self.media == other.media;
+  }
+  friend bool operator!=(const EpisodeRecord& self,
+                         const EpisodeRecord& other) noexcept(noexcept(self == other)) {
+    return !(self == other);
+  }
 };
 struct WorkloadRecord {
   std::string model{}, env{}, task{};
   Metadata config{};
   std::vector<EpisodeRecord> episodes{};
-  bool operator==(const WorkloadRecord& other) const {
-    return model == other.model && env == other.env && task == other.task &&
-           config == other.config && episodes == other.episodes;
-  }
-  bool operator!=(const WorkloadRecord& other) const { return !(*this == other); }
+
   RLMeshWorkloadRecord* raw() const {
     RLMeshWorkloadRecordOptions c = RLMESH_WORKLOAD_RECORD_OPTIONS_INIT;
     Value cfg(config);
@@ -6650,6 +7027,17 @@ struct WorkloadRecord {
     auto p = detail::own<RLMeshWorkloadRecord, rlmesh_workload_record_free>(raw());
     return rlmesh_workload_record_total_steps(p.get());
   }
+
+  friend bool operator==(const WorkloadRecord& self, const WorkloadRecord& other) noexcept(
+      detail::nothrow_equal<decltype(model), decltype(env), decltype(task), decltype(config),
+                            decltype(episodes)>) {
+    return self.model == other.model && self.env == other.env && self.task == other.task &&
+           self.config == other.config && self.episodes == other.episodes;
+  }
+  friend bool operator!=(const WorkloadRecord& self,
+                         const WorkloadRecord& other) noexcept(noexcept(self == other)) {
+    return !(self == other);
+  }
 };
 struct RecorderOptions {
   std::optional<std::string> result_set_id{};
@@ -6659,7 +7047,7 @@ struct RecorderOptions {
     result_set_id = std::move(value);
     return *this;
   }
-  RecorderOptions&& with_result_set_id(std::optional<std::string> value) && {
+  RecorderOptions with_result_set_id(std::optional<std::string> value) && {
     result_set_id = std::move(value);
     return std::move(*this);
   }
@@ -6667,7 +7055,7 @@ struct RecorderOptions {
     fps = std::move(value);
     return *this;
   }
-  RecorderOptions&& with_fps(uint64_t value) && {
+  RecorderOptions with_fps(uint64_t value) && {
     fps = std::move(value);
     return std::move(*this);
   }
@@ -6675,7 +7063,7 @@ struct RecorderOptions {
     quality = std::move(value);
     return *this;
   }
-  RecorderOptions&& with_quality(uint8_t value) && {
+  RecorderOptions with_quality(uint8_t value) && {
     quality = std::move(value);
     return std::move(*this);
   }
@@ -6688,7 +7076,7 @@ struct RecorderAddOptions {
     task = std::move(value);
     return *this;
   }
-  RecorderAddOptions&& with_task(std::optional<std::string> value) && {
+  RecorderAddOptions with_task(std::optional<std::string> value) && {
     task = std::move(value);
     return std::move(*this);
   }
@@ -6696,7 +7084,7 @@ struct RecorderAddOptions {
     config = std::move(value);
     return *this;
   }
-  RecorderAddOptions&& with_config(Metadata value) && {
+  RecorderAddOptions with_config(Metadata value) && {
     config = std::move(value);
     return std::move(*this);
   }
@@ -6704,7 +7092,7 @@ struct RecorderAddOptions {
     included_in_metrics = std::move(value);
     return *this;
   }
-  RecorderAddOptions&& with_included_in_metrics(bool value) && {
+  RecorderAddOptions with_included_in_metrics(bool value) && {
     included_in_metrics = std::move(value);
     return std::move(*this);
   }
@@ -6720,7 +7108,7 @@ struct RecorderCaptureOptions {
     task = std::move(value);
     return *this;
   }
-  RecorderCaptureOptions&& with_task(std::optional<std::string> value) && {
+  RecorderCaptureOptions with_task(std::optional<std::string> value) && {
     task = std::move(value);
     return std::move(*this);
   }
@@ -6728,7 +7116,7 @@ struct RecorderCaptureOptions {
     config = std::move(value);
     return *this;
   }
-  RecorderCaptureOptions&& with_config(Metadata value) && {
+  RecorderCaptureOptions with_config(Metadata value) && {
     config = std::move(value);
     return std::move(*this);
   }
@@ -6736,7 +7124,7 @@ struct RecorderCaptureOptions {
     cameras = std::move(value);
     return *this;
   }
-  RecorderCaptureOptions&& with_cameras(OptionalList<std::string> value) && {
+  RecorderCaptureOptions with_cameras(OptionalList<std::string> value) && {
     cameras = std::move(value);
     return std::move(*this);
   }
@@ -6744,7 +7132,7 @@ struct RecorderCaptureOptions {
     session = std::move(value);
     return *this;
   }
-  RecorderCaptureOptions&& with_session(std::shared_ptr<RunContext> value) && {
+  RecorderCaptureOptions with_session(std::shared_ptr<RunContext> value) && {
     session = std::move(value);
     return std::move(*this);
   }
@@ -6752,7 +7140,7 @@ struct RecorderCaptureOptions {
     video_info_keys = std::move(value);
     return *this;
   }
-  RecorderCaptureOptions&& with_video_info_keys(std::vector<std::string> value) && {
+  RecorderCaptureOptions with_video_info_keys(std::vector<std::string> value) && {
     video_info_keys = std::move(value);
     return std::move(*this);
   }
@@ -6760,7 +7148,7 @@ struct RecorderCaptureOptions {
     included_in_metrics = std::move(value);
     return *this;
   }
-  RecorderCaptureOptions&& with_included_in_metrics(bool value) && {
+  RecorderCaptureOptions with_included_in_metrics(bool value) && {
     included_in_metrics = std::move(value);
     return std::move(*this);
   }
@@ -6771,7 +7159,7 @@ struct RecorderToDictOptions {
     recorded_at = std::move(value);
     return *this;
   }
-  RecorderToDictOptions&& with_recorded_at(std::optional<std::string> value) && {
+  RecorderToDictOptions with_recorded_at(std::optional<std::string> value) && {
     recorded_at = std::move(value);
     return std::move(*this);
   }
@@ -6783,7 +7171,7 @@ struct RecorderExportOptions {
     archive = std::move(value);
     return *this;
   }
-  RecorderExportOptions&& with_archive(std::optional<bool> value) && {
+  RecorderExportOptions with_archive(std::optional<bool> value) && {
     archive = std::move(value);
     return std::move(*this);
   }
@@ -6791,7 +7179,7 @@ struct RecorderExportOptions {
     recorded_at = std::move(value);
     return *this;
   }
-  RecorderExportOptions&& with_recorded_at(std::optional<std::string> value) && {
+  RecorderExportOptions with_recorded_at(std::optional<std::string> value) && {
     recorded_at = std::move(value);
     return std::move(*this);
   }
@@ -6994,7 +7382,7 @@ struct DescribeOptions {
     kind = std::move(value);
     return *this;
   }
-  DescribeOptions&& with_kind(std::optional<DescribeKind> value) && {
+  DescribeOptions with_kind(std::optional<DescribeKind> value) && {
     kind = std::move(value);
     return std::move(*this);
   }
@@ -7002,7 +7390,7 @@ struct DescribeOptions {
     generated_at = std::move(value);
     return *this;
   }
-  DescribeOptions&& with_generated_at(std::optional<std::string> value) && {
+  DescribeOptions with_generated_at(std::optional<std::string> value) && {
     generated_at = std::move(value);
     return std::move(*this);
   }
@@ -7029,7 +7417,7 @@ struct DescribeJsonOptions {
     kind = std::move(value);
     return *this;
   }
-  DescribeJsonOptions&& with_kind(std::optional<DescribeKind> value) && {
+  DescribeJsonOptions with_kind(std::optional<DescribeKind> value) && {
     kind = std::move(value);
     return std::move(*this);
   }
@@ -7037,7 +7425,7 @@ struct DescribeJsonOptions {
     generated_at = std::move(value);
     return *this;
   }
-  DescribeJsonOptions&& with_generated_at(std::optional<std::string> value) && {
+  DescribeJsonOptions with_generated_at(std::optional<std::string> value) && {
     generated_at = std::move(value);
     return std::move(*this);
   }
@@ -7045,7 +7433,7 @@ struct DescribeJsonOptions {
     served_env = std::move(value);
     return *this;
   }
-  DescribeJsonOptions&& with_served_env(std::optional<ServedEnv> value) && {
+  DescribeJsonOptions with_served_env(std::optional<ServedEnv> value) && {
     served_env = std::move(value);
     return std::move(*this);
   }
@@ -7053,7 +7441,7 @@ struct DescribeJsonOptions {
     workflow_edition = std::move(value);
     return *this;
   }
-  DescribeJsonOptions&& with_workflow_edition(std::optional<std::string> value) && {
+  DescribeJsonOptions with_workflow_edition(std::optional<std::string> value) && {
     workflow_edition = std::move(value);
     return std::move(*this);
   }

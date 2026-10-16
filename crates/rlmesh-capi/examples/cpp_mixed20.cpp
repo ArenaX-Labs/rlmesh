@@ -1,4 +1,5 @@
 #include <cassert>
+#include <span>
 
 #include "cpp_mixed.hpp"
 

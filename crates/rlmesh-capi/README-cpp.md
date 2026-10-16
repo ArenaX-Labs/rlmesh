@@ -4,7 +4,7 @@ RLMesh connects models to environments for evaluation. Serve a Gymnasium-style e
 
 RLMesh aims to feel familiar in whichever language you use it from. Python, Rust, C and C++ share the same nouns and constructs (`Env`, `Space`, `Value`, `Model`, `run`, `Session`, `EnvServer`, `RemoteEnv`), each written in that language's own conventions and with helpers that only make sense there. What you learn here carries over, and every language talks to every other over the same wire.
 
-The header requires C++17 and exceptions (it stops with `#error` otherwise), and is tested at C++17 and C++20. Both standards use the same header shape, so translation units built at either standard can share wrapper types. RTTI is not needed.
+The header requires C++17 and exceptions (it stops with `#error` otherwise), and is tested at C++17 and C++20. Every RLMesh entity has one token-identical definition in C++17 and C++20, so translation units built at either standard can share wrapper types (ODR). Standard or feature macros never select RLMesh definitions or members. Apart from the top-level version/exceptions guards, the sole exception is `std::ranges::enable_borrowed_range` and `std::ranges::enable_view` specializations for `rlmesh::Span<T>`, guarded by `#if defined(__cpp_lib_ranges)`; these add no RLMesh members. RTTI is not needed.
 
 ## Install
 
@@ -107,7 +107,7 @@ Neither side cares what language the other is written in: the same model can dri
 
 **Standard vocabulary types.** Optional values are `std::optional`; `rlmesh::OptionalList<T>` keeps "not set" distinct from an empty list (as in `RunOptions::seeds`). Durations are `std::chrono` durations (`rlmesh::Duration` is `std::chrono::duration<double>`), so a time limit is `options.max_episode = std::chrono::seconds(30)`. Text arguments take `std::string_view`, and tensor bytes come back as `rlmesh::Span<const std::byte>`.
 
-**Borrowed contiguous views.** `rlmesh::Span<T>` provides `data`, `size`, `begin`, `end`, `operator[]` and `empty`. It accepts a pointer and count, vectors, `std::array` and C arrays; C++20 also accepts `std::span` through a constructor template. Batch policies take `rlmesh::Span<const Value>`, and `BatchPredictContext` is a `Span<const PredictContext>`. Keep the backing storage alive while a view is used.
+**Borrowed contiguous views.** `rlmesh::Span<T>` provides `data`, `size`, `begin`, `end`, `operator[]` and `empty`. It accepts a pointer and count, or any contiguous range with `std::data` and `std::size` whose element pointer converts to `T*` (including vectors, `std::array`, C arrays and user-included C++20 `std::span`). The same constructor template serves both standards; the header does not include `<span>`. In C++20 it is a borrowed ranges view, converts to `std::span` through that type's range constructor, and supports policies taking `std::span<const Value>` and `std::span<const PredictContext>`. Named contiguous ranges of environments also construct `ServedEnv`; temporaries are rejected to protect the borrowed handles. Batch policies take `rlmesh::Span<const Value>`, and `BatchPredictContext` is a `Span<const PredictContext>`. Keep the backing storage alive while a view is used.
 
 **Unreal and other hosts.** The header saves and restores common Unreal, X11 and Windows macros, including `check`, `None`, `Bool`, `min` and `max`, and compiles without RTTI. When a host defines an object-like macro such as `None` or `Bool`, undefine it in your code before spelling the matching scoped enumerator (`ValueKind::None`, `DType::Bool`). In Unreal, enable exceptions for the consuming module with `bEnableExceptions = true` in its `.Build.cs`.
 
@@ -271,7 +271,7 @@ Every served env and model runs at a workflow edition, which pins what a session
 
 ## Compatibility
 
-The C++ API is **Experimental**. It is header-only and compiled into your program, and it changes together with the C ABI it wraps (generation 5, `RLMESH_ABI_VERSION`); a binary built against another generation will not load. See [Compatibility in the C guide](README.md#compatibility) and the [compatibility policy](https://rlmesh.dev/docs/releases/compatibility/). Use one C++ standard across a program's translation units: a served env reports the language, standard and compiler it was built with in its describe envelope.
+The C++ API is **Experimental**. It is header-only and compiled into your program, and it changes together with the C ABI it wraps (generation 5, `RLMESH_ABI_VERSION`); a binary built against another generation will not load. See [Compatibility in the C guide](README.md#compatibility) and the [compatibility policy](https://rlmesh.dev/docs/releases/compatibility/). C++17 and C++20 translation units may share wrapper types in one binary. A served env reports its host language and compiler in its describe envelope; it omits the optional `language_version` because the binary may mix standards.
 
 ## Examples
 

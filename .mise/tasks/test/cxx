@@ -175,12 +175,16 @@ for compiler in "${compilers[@]}"; do
     printf '#include <rlmesh.hpp>\n' |
       $compiler "${flags[@]}" -c -x c++ - -o "$tmp/header_cxx.o"
     # Parse and instantiate authoring templates under hostile host macros.
-    $compiler "${flags[@]}" -Wshadow -Wconversion -fno-rtti \
+    $compiler "${flags[@]}" -Wshadow -Wconversion -Wsign-conversion -fno-rtti \
       -c crates/rlmesh-capi/examples/cpp_hostile.cpp -o "$tmp/cpp_hostile.o"
+    lifetime_flags=()
+    case "$compiler" in *g++*) lifetime_flags=(-Wdangling-reference) ;; esac
+    $compiler "${flags[@]}" -Wshadow -Wconversion -Wsign-conversion "${lifetime_flags[@]}" \
+      -c crates/rlmesh-capi/examples/cpp_review.cpp -o "$tmp/cpp_review.o"
     $compiler "${flags[@]}" -c crates/rlmesh-capi/examples/cpp_surface.cpp -o "$tmp/cpp_surface.o"
     $compiler "${flags[@]}" -c crates/rlmesh-capi/examples/cpp_options.cpp -o "$tmp/cpp_options.o"
     $compiler "${flags[@]}" -c examples/chrono/src/scripted_model.cpp -o "$tmp/chrono_scripted_model.o"
-    for example in cpp_core cpp_errors cpp_runtime cpp_spaces cpp_parity cpp_box_cleanup cpp_constants cpp_span; do
+    for example in cpp_core cpp_errors cpp_runtime cpp_spaces cpp_parity cpp_box_cleanup cpp_constants cpp_span cpp_review; do
       $compiler "${flags[@]}" "crates/rlmesh-capi/examples/$example.cpp" "${link[@]}" -o "$tmp/$example"
       "$tmp/$example"
     done
@@ -213,12 +217,22 @@ for compiler in "${compilers[@]}"; do
     fi
     rg -q 'rlmesh.hpp requires exceptions' "$tmp/noexceptions.log"
   done
+  echo "==> C++17/C++20 header tokens are identical ($compiler)"
+  for standard in 17 20; do
+    printf '#include <rlmesh.hpp>\n' |
+      $compiler -std=c++$standard "${compiler_quiet[@]}" -I "$inc" -E -x c++ - \
+        -o "$tmp/shape$standard.ii"
+  done
+  python crates/rlmesh-capi/examples/cpp_shape.py "$inc/rlmesh.hpp" \
+    "$tmp/shape17.ii" "$tmp/shape20.ii"
+  mixed_flags=()
+  case "$compiler" in *g++*) mixed_flags=(-flto -Wodr) ;; esac
   echo "==> C++17 and C++20 translation units share wrapper types ($compiler)"
-  $compiler -std=c++17 "${warn[@]}" "${compiler_quiet[@]}" -I "$inc" \
+  $compiler -std=c++17 "${mixed_flags[@]}" "${warn[@]}" "${compiler_quiet[@]}" -I "$inc" \
     -c crates/rlmesh-capi/examples/cpp_mixed17.cpp -o "$tmp/cpp_mixed17.o"
-  $compiler -std=c++20 "${warn[@]}" "${compiler_quiet[@]}" -I "$inc" \
+  $compiler -std=c++20 "${mixed_flags[@]}" "${warn[@]}" "${compiler_quiet[@]}" -I "$inc" \
     -c crates/rlmesh-capi/examples/cpp_mixed20.cpp -o "$tmp/cpp_mixed20.o"
-  $compiler "$tmp/cpp_mixed17.o" "$tmp/cpp_mixed20.o" "${link[@]}" -o "$tmp/cpp_mixed"
+  $compiler "${mixed_flags[@]}" "${warn[@]}" "$tmp/cpp_mixed17.o" "$tmp/cpp_mixed20.o" "${link[@]}" -o "$tmp/cpp_mixed"
   "$tmp/cpp_mixed"
   if printf '#include <rlmesh.hpp>\n' |
     $compiler -std=c++14 -I "$inc" -c -x c++ - -o "$tmp/oldstandard.o" >"$tmp/oldstandard.log" 2>&1; then

@@ -43,7 +43,7 @@ struct HostEnv {
 struct HostVectorEnv {
   rlmesh::spaces::Space single_observation_space() { return rlmesh::spaces::Discrete(2); }
   rlmesh::spaces::Space single_action_space() { return single_observation_space(); }
-  uint64_t num_envs() { return 1; }
+  int num_envs() { return 1; }
   rlmesh::ResetResult reset(std::optional<rlmesh::VectorSeed>,
                             const std::optional<rlmesh::InfoDict>&) {
     return {0, {}};
@@ -55,6 +55,7 @@ struct HostVectorEnv {
 };
 }  // namespace
 void hostile_api() {
+  rlmesh::Value floating(1.0L);
   rlmesh::Env scalar(HostEnv{});
   rlmesh::VectorEnv vector(HostVectorEnv{});
   rlmesh::Model policy(Greedy{});
