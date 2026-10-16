@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
-#MISE description="Assemble a local C/C++ package (headers + prebuilt libs + CMake/pkg-config metadata) and tar it for the host triple"
+#MISE description="Assemble a C/C++ package (headers + prebuilt libs + CMake/pkg-config metadata) and tar it for the host triple, or for Windows with --target windows"
 #MISE dir="{{ config_root }}"
+#USAGE flag "--target <target>" help="host (default) or windows: cross-build x86_64-pc-windows-msvc with cargo-xwin (needs clang on PATH)" {
+#USAGE   choices "host" "windows"
+#USAGE }
 
-# Local packaging only — host triple, no CI / publish / cross-compile. Assembles
-# prebuilt artifacts (cargo-built cdylib + staticlib, hand-authored headers) and the
-# metadata pointing consumers at them; CMake is never run as a build system here.
+# Packaging only, no CI / publish. Assembles prebuilt artifacts (cargo-built
+# libraries, hand-authored headers) and the metadata pointing consumers at them;
+# CMake is never run as a build system here.
 set -euo pipefail
+
+target="${usage_target:-host}"
 
 crate="crates/rlmesh-capi"
 inc="$PWD/$crate/include"
@@ -17,37 +22,62 @@ inc="$PWD/$crate/include"
 version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"   # 0.1.0-beta.2
 abi_gen="$(sed -n 's/^#define RLMESH_ABI_VERSION \([0-9][0-9]*\)$/\1/p' "$inc/rlmesh.h")"  # 1
 : "${abi_gen:?could not parse RLMESH_ABI_VERSION from $inc/rlmesh.h}"
-triple="$(rustc -vV | sed -n 's/host: //p')"                            # x86_64-unknown-linux-gnu
+if [ "$target" = windows ]; then
+  triple=x86_64-pc-windows-msvc
+else
+  triple="$(rustc -vV | sed -n 's/host: //p')"                          # x86_64-unknown-linux-gnu
+fi
 
 name="rlmesh-${version}-${triple}"
 out="$PWD/target/capi-pkg"
 stage="$out/$name"
 echo "==> packaging $name (ABI generation $abi_gen)"
 
-# 1. Release-build the staticlib + cdylib, then relink the cdylib with an explicit
+# 1. Release-build the libraries.
+#    Host: build the staticlib + cdylib, then relink the cdylib with an explicit
 #    versioned SONAME (a Rust cdylib carries none by default). Without it a consumer
 #    binary records the build-machine absolute path in DT_NEEDED; with it the binary
 #    records librlmesh_capi.so.${abi_gen} and the loader refuses a different ABI
 #    generation. Deps cache between the two.
-cargo build -p rlmesh-capi --release --lib
-cargo rustc -p rlmesh-capi --release --lib --crate-type cdylib -- \
-  -C link-arg=-Wl,-soname,librlmesh_capi.so.${abi_gen}
+#    Windows: cross-build with cargo-xwin, which fetches the MSVC CRT and Windows
+#    SDK (accepting Microsoft's license for them, as maturin does for the wheels).
+if [ "$target" = windows ]; then
+  rustup target add "$triple"
+  XWIN_ACCEPT_LICENSE=1 cargo xwin build -p rlmesh-capi --release --lib --target "$triple"
+else
+  cargo build -p rlmesh-capi --release --lib
+  cargo rustc -p rlmesh-capi --release --lib --crate-type cdylib -- \
+    -C link-arg=-Wl,-soname,librlmesh_capi.so.${abi_gen}
+fi
 
 # 2. Fresh staging tree.
 rm -rf "$stage"
-mkdir -p "$stage/include" "$stage/lib/cmake/rlmesh" "$stage/lib/pkgconfig"
+mkdir -p "$stage/include" "$stage/lib/cmake/rlmesh"
 
-# 3. Headers + licenses + the two libs (verbatim — include/ is the one header authority).
+# 3. Headers + licenses + the libs (verbatim — include/ is the one header authority).
 cp "$inc/rlmesh.h" "$inc/rlmesh.hpp" "$inc/dlpack.LICENSE" "$stage/include/"
 cp LICENSE-APACHE LICENSE-MIT          "$stage/"
-# Stage the cdylib under its real SONAME + a librlmesh_capi.so dev symlink: the
-# linker reads the SONAME (records the versioned DT_NEEDED) while find_package and
-# -lrlmesh_capi still resolve through the bare name at link time.
-cp target/release/librlmesh_capi.so    "$stage/lib/librlmesh_capi.so.${abi_gen}"
-ln -sf "librlmesh_capi.so.${abi_gen}"  "$stage/lib/librlmesh_capi.so"
-cp target/release/librlmesh_capi.a     "$stage/lib/"
+if [ "$target" = windows ]; then
+  # The DLL goes in bin/ and its import library in lib/ under the name MSVC
+  # projects link (rustc writes it as rlmesh_capi.dll.lib). The Rust staticlib is
+  # left out: it is over 100 MB and pulls in the whole Rust runtime.
+  built="target/$triple/release"
+  mkdir -p "$stage/bin"
+  cp "$built/rlmesh_capi.dll" "$built/rlmesh_capi.pdb" "$stage/bin/"
+  cp "$built/rlmesh_capi.dll.lib" "$stage/lib/rlmesh_capi.lib"
+else
+  # Stage the cdylib under its real SONAME + a librlmesh_capi.so dev symlink: the
+  # linker reads the SONAME (records the versioned DT_NEEDED) while find_package and
+  # -lrlmesh_capi still resolve through the bare name at link time.
+  cp target/release/librlmesh_capi.so    "$stage/lib/librlmesh_capi.so.${abi_gen}"
+  ln -sf "librlmesh_capi.so.${abi_gen}"  "$stage/lib/librlmesh_capi.so"
+  cp target/release/librlmesh_capi.a     "$stage/lib/"
+fi
 
 # 4. pkg-config metadata (non-CMake consumers). ${pcfiledir} keeps it relocatable.
+#    Windows consumers use CMake or link the import library directly.
+if [ "$target" != windows ]; then
+mkdir -p "$stage/lib/pkgconfig"
 cat > "$stage/lib/pkgconfig/rlmesh.pc" <<EOF
 prefix=\${pcfiledir}/../..
 includedir=\${prefix}/include
@@ -61,6 +91,7 @@ Libs: -L\${libdir} -lrlmesh_capi
 # Native libs the Rust runtime pulls in; a static (.a) link also needs: -lgcc_s -lutil -lrt -lc
 Libs.private: -lpthread -ldl -lm
 EOF
+fi
 
 # 5. CMake config-version: PACKAGE_VERSION is the ABI generation, so the canonical
 #    SameMajorVersion template now genuinely rejects a different ABI generation —
@@ -129,6 +160,22 @@ Or fetch the release tarball at configure time:
     FetchContent_Declare(rlmesh URL <tarball URL> URL_HASH SHA256=<its .sha256>)
     FetchContent_MakeAvailable(rlmesh)
     target_link_libraries(app PRIVATE rlmesh::rlmesh)
+EOF
+if [ "$target" = windows ]; then
+cat >> "$stage/README.md" <<'EOF'
+
+## MSVC without CMake
+Add <this>/include to the include path, link <this>/lib/rlmesh_capi.lib (the
+import library), and ship bin/rlmesh_capi.dll beside your .exe. The headers need
+/std:c++17 (C++) and exception handling (/EHsc).
+
+## Notes
+- Built with the MSVC toolchain (x86_64-pc-windows-msvc) against the UCRT, which
+  ships with Windows 10 and later.
+- bin/rlmesh_capi.pdb holds the DLL's debug symbols.
+EOF
+else
+cat >> "$stage/README.md" <<'EOF'
 
 ## pkg-config
     export PKG_CONFIG_PATH=<this>/lib/pkgconfig
@@ -139,6 +186,7 @@ Or fetch the release tarball at configure time:
 - The .so is found at run time via your rpath / LD_LIBRARY_PATH — stage it beside
   your binary or add <this>/lib.
 EOF
+fi
 
 # 9. Tar from \$out so the archive's single root is the versioned dir, plus the
 #    checksum a FetchContent URL_HASH pins.

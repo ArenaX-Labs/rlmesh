@@ -33,18 +33,17 @@ if(NOT TARGET rlmesh::rlmesh)
 
   # Static: opt-in, only for fully-static engine targets with no other Rust. A
   # Rust staticlib carries no system libs, so it re-declares the full native set
-  # (rustc --print=native-static-libs). Present only when the archive was packaged.
-  if(EXISTS "${_rlmesh_static}")
+  # (rustc --print=native-static-libs). Present only when the archive was packaged;
+  # the Windows package has none, and its lib/rlmesh_capi.lib is the DLL's import
+  # library.
+  if(NOT WIN32 AND EXISTS "${_rlmesh_static}")
     add_library(rlmesh::rlmesh_static STATIC IMPORTED)
     set_target_properties(rlmesh::rlmesh_static PROPERTIES
       IMPORTED_LOCATION             "${_rlmesh_static}"
       INTERFACE_INCLUDE_DIRECTORIES "${_rlmesh_root}/include"
       # Direct symbols, so the header must not declare them __declspec(dllimport).
-      INTERFACE_COMPILE_DEFINITIONS "RLMESH_STATIC")
-    if(NOT WIN32)
-      set_target_properties(rlmesh::rlmesh_static PROPERTIES
-        INTERFACE_LINK_LIBRARIES "gcc_s;util;rt;pthread;m;dl;c")
-    endif()
+      INTERFACE_COMPILE_DEFINITIONS "RLMESH_STATIC"
+      INTERFACE_LINK_LIBRARIES      "gcc_s;util;rt;pthread;m;dl;c")
   endif()
 endif()
 

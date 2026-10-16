@@ -23,7 +23,7 @@ FetchContent_MakeAvailable(rlmesh)
 target_link_libraries(my_sim PRIVATE rlmesh::rlmesh)
 ```
 
-`find_package(rlmesh 5 CONFIG REQUIRED)` against an unpacked package and pkg-config (`c++ -std=c++17 sim.cpp $(pkg-config --cflags --libs rlmesh)`) work too. See [Install in the C guide](README.md#install) for every option, including building from source.
+`find_package(rlmesh 5 CONFIG REQUIRED)` against an unpacked package and pkg-config (`c++ -std=c++17 sim.cpp $(pkg-config --cflags --libs rlmesh)`) work too. A Windows (MSVC) package ships with each release as well; compile with `/std:c++17 /EHsc`. See [Install in the C guide](README.md#install) for every option, including [Windows](README.md#windows-msvc) and building from source.
 
 ## Quickstart
 

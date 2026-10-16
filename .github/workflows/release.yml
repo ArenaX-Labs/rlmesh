@@ -2,7 +2,7 @@ name: Release
 
 # Tag push vX.Y.Z -> build the full wheel matrix (Linux + macOS runners), system-test
 # the built artifacts on each platform, then publish: crates.io + PyPI via OIDC
-# trusted publishing, and the GitHub Release with the C/C++ package attached. workflow_dispatch on a tag re-runs it;
+# trusted publishing, and the GitHub Release with the C/C++ packages (Linux and Windows) attached. workflow_dispatch on a tag re-runs it;
 # the ref guard keeps branch dispatches from burning the wheel matrix for nothing.
 
 on:
@@ -57,6 +57,10 @@ jobs:
 
       - name: Package the C/C++ library
         run: mise run --skip-tools release:cxx:package
+
+      # Cross-built from Linux, like the Windows wheels: no Windows runner.
+      - name: Package the C/C++ library for Windows (MSVC)
+        run: mise run --skip-tools release:cxx:package --target windows
 
       - name: Upload the C/C++ package
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

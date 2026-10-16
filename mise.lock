@@ -328,6 +328,25 @@ url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9
 url_api = "https://api.github.com/repos/nextest-rs/nextest/releases/assets/579617054"
 provenance = "github-attestations"
 
+[[tools."github:rust-cross/cargo-xwin"]]
+version = "0.23.1"
+backend = "github:rust-cross/cargo-xwin"
+
+[tools."github:rust-cross/cargo-xwin"."platforms.linux-x64"]
+checksum = "sha256:c492c6dfb7e5ac0eee586b796e0fc950ba13077e7f0bbb046f445d71790d5360"
+url = "https://github.com/rust-cross/cargo-xwin/releases/download/v0.23.1/cargo-xwin-v0.23.1.x86_64-unknown-linux-musl.tar.gz"
+url_api = "https://api.github.com/repos/rust-cross/cargo-xwin/releases/assets/512900063"
+
+[tools."github:rust-cross/cargo-xwin"."platforms.macos-arm64"]
+checksum = "sha256:1d74345d23ec744728124a0244696e9f21340fbb4b8a59cc1e39ba4ab18d8113"
+url = "https://github.com/rust-cross/cargo-xwin/releases/download/v0.23.1/cargo-xwin-v0.23.1.universal2-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/rust-cross/cargo-xwin/releases/assets/512896327"
+
+[tools."github:rust-cross/cargo-xwin"."platforms.windows-x64"]
+checksum = "sha256:114534c57cdcca604f59c9d70024583d20ff7c5505677f06247e971184a23872"
+url = "https://github.com/rust-cross/cargo-xwin/releases/download/v0.23.1/cargo-xwin-v0.23.1.windows-x64.zip"
+url_api = "https://api.github.com/repos/rust-cross/cargo-xwin/releases/assets/512901066"
+
 [[tools.maturin]]
 version = "1.15.0"
 backend = "github:PyO3/maturin"
