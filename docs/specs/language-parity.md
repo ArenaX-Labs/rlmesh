@@ -1,6 +1,6 @@
 # Language parity
 
-Status: Reviewed (Opus rounds 2–6); user decisions settled 2026-10-15; implementation in progress.
+Status: Reviewed (Opus rounds 2–6); user decisions settled 2026-10-15; implemented in Python, Rust, C (ABI 5) and C++20.
 
 RLMesh is one library in four languages: Python (the reference), Rust (the
 `rlmesh` facade crate), C (`crates/rlmesh-capi/include/rlmesh.h`) and C++
@@ -29,8 +29,9 @@ this spec does not change it.
    `<AREA>-n` for decisions and `<AREA>-P<n>` for Python changes (`COR`, `SPC`,
    `ENV`, `MDL`, `RUN`, `RMT`, `ADP`). Cite them in code review and commit
    messages.
-4. "User (accepted default)" marks a choice applied everywhere until the user
-   settles it. Every one is listed under [Pending decisions](#pending-decisions).
+4. "User (accepted default)" marks a default the user accepted on
+   2026-10-15. Every one is listed under
+   [Decisions accepted by the user](#decisions-accepted-by-the-user).
 
 ## Files
 

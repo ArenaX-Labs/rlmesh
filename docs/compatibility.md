@@ -21,7 +21,7 @@ Bridge APIs for selecting a `ValueBridge`; application code normally uses
 
 ## Preview and Experimental
 
-Preview APIs are intended to become stable but may still change with migration notes. Experimental APIs may change or disappear. Preview is reserved for the intended-stable-but-still-moving case and is currently unused; today's labels are only Stable and Experimental.
+Preview APIs are intended to become stable but may still change with migration notes. Experimental APIs may change or disappear. In the Python package today's labels are only Stable and Experimental; Preview currently applies only to the `rlmesh` Rust facade crate (see [Native APIs](#native-apis-rust-c-and-c)).
 
 Torch and JAX backends and sandbox helpers are experimental. The `MultiBinary`, `MultiDiscrete`, `Text`, and `Tuple` space wrappers are also experimental; see [gymnasium](https://rlmesh.dev/docs/start/gymnasium/) for the per-space stability labels, which track the API surface policy in `api_metadata.json`.
 
@@ -31,9 +31,15 @@ Torch and JAX backends and sandbox helpers are experimental. The `MultiBinary`, 
 > [!WARNING]
 > The `rlmesh-wire-v1` protocol generation stabilized at 0.1.0, and the supported-generation window holds that single generation. A future incompatible wire change mints a new generation rather than mutating v1, and it would live only in the runtime (see [The runtime is the interpreter](#the-runtime-is-the-interpreter)). Prerelease and local builds carry exact cohort suffixes, so mismatched moving builds fail loudly instead of guessing they are compatible.
 
-## Rust crates
+## Native APIs: Rust, C and C++
 
-Most Rust crates are internal implementation detail with no stability promise: they are published to crates.io so the Python extension can build, but their Rust API may change at any time and there is no plan to stabilize it. The exceptions are the `rlmesh` facade crate and the CLI commands, the Rust-side surfaces we intend to stabilize. Stabilizing the facade API is a near-term goal (see the roadmap below); until then, build on the Python package. Every crate declares a `rust-version` matching the toolchain pinned in `mise.toml`, which CI builds and tests with; it moves up with that toolchain. See [versioning](versioning.md).
+The `rlmesh` Rust facade crate, the C API (`rlmesh.h`) and the C++ header (`rlmesh.hpp`) share the Python package's nouns and constructs (envs, spaces, values, models, runs, sessions, remote clients and the same error classes and texts), each in its own language's conventions. Their changes are recorded in the [changelog](../CHANGELOG.md), breaking ones with a migration note. None of them carries Python's Stable promise yet:
+
+- **Rust facade (`rlmesh` crate): Preview.** It is intended to become stable but may still change in a `0.x` minor release, with a migration note. `rlmesh::ext` holds documented Rust-only extras and is part of the facade. `rlmesh::binding` is `#[doc(hidden)]` plumbing for the in-repo bindings (the Python extension and the C API): it is Internal and exempt from SemVer, so do not depend on it.
+- **C API (`rlmesh.h`): Experimental.** Binary compatibility is tracked by the ABI generation, currently 5: `RLMESH_ABI_VERSION`, the `librlmesh_capi.so.5` SONAME and the CMake package version. A layout or enum change, a signature retype or a removed symbol bumps the generation, which may happen in any minor release; binaries and sources built for another generation do not load or build against it. Within a generation, a sized struct (options, vtables, attributes, out-structs) grows only by appending optional fields whose all-zero bytes mean the default, so a caller compiled against an older header keeps working; a field that must be supplied needs a new generation. A struct below its `RLMESH_<NAME>_MIN_SIZE` is refused, and a newer caller's nonzero bytes past the library's struct size are refused rather than ignored. C-only extras are fenced under `rlmesh_ext_` / `RLMeshExt` names.
+- **C++ header (`rlmesh.hpp`): Experimental.** A header-only C++20 wrapper over the C API, compiled into each consumer; it changes together with the C API it wraps. It requires C++20 and exceptions. C++-only extras live in `rlmesh::ext`.
+
+The other Rust crates are internal implementation detail with no stability promise: they are published to crates.io so the Python extension can build, but their Rust API may change at any time and there is no plan to stabilize it. The CLI commands are the other Rust-side surface we intend to stabilize. Every crate declares a `rust-version` matching the toolchain pinned in `mise.toml`, which CI builds and tests with; it moves up with that toolchain. See [versioning](versioning.md).
 
 ## Framework Version Floors
 
@@ -104,7 +110,7 @@ The wire and behavioral contracts are sealed at v0.1.0. Further work extends the
 - **Second edition, when a real semantic change requires one.** Mint a second workflow edition and exercise negotiation and the defaults table against a real semantic change.
 - **Included in v0.1.0: per-leg ceilings and the relay seam.** The runtime records each leg's decodable dtypes, capabilities, and message cap. Its relay policy checks the contract and payloads before forwarding them. Conversion for an older leg is a policy the managed platform may supply; the OSS default refuses.
 - **`rlmesh init`.** A scaffolder that writes the edition declaration into a new project, so declaring is the default rather than a step to remember.
-- **Rust facade API, near term.** Stabilize the `rlmesh` facade crate and the CLI commands once they settle; the other crates stay internal with no stability promise.
+- **Native APIs, near term.** Promote the `rlmesh` facade crate from Preview to Stable and stabilize the CLI commands once they settle. The other crates stay internal with no stability promise.
 - **v1.0, date not set.** Broader API stabilization. The wire-v1 and sealed-edition commitments already apply from v0.1.0.
 
 ## Value conformance

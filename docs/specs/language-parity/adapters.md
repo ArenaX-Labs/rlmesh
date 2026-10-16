@@ -232,8 +232,10 @@ C's `_len` / `_get` (D-2) instead of hard-coding the list.
 absent or holds None; a present value that is not a Dict is
 `AdapterResolutionError` in every language
 (`pyad/specs/model.py:131-139`, `pyad/specs/env_tags.py:560-568`). Every
-other `from_*` failure is the plain ValueError class. A single-part `Concat` reads back as `State`, as
-in Python (`pyad/specs/model.py:103-108`).
+other `from_*` failure is the plain ValueError class. A `Concat` whose only
+part is a parameterized `State` serializes exactly like that `State` and reads
+back as it, as in Python (`pyad/specs/model.py:103-108`); a single `Constant`
+part stays a `Concat`.
 
 Repr text (ADP-28). For the dataclasses, whose `str` is their `repr`, Rust
 `Display`, C++ `operator<<` / `to_string()` and the C `_repr` functions

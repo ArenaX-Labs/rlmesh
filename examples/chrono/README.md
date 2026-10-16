@@ -121,6 +121,5 @@ docker run --rm --device nvidia.com/gpu=all -p 50051:50051 chrono-reach:vulkan -
 - `run_model.py`: the Python model, with its `ModelSpec` and a scripted or random policy.
 
 The native wrapper requires C++20 and exceptions. Building the simulation also
-requires the Project Chrono SDK; the wrapper migration was reviewed against the
-header, but the Chrono simulation could not be built on the development host
-without that SDK. The standalone scripted model is compiled by `test:cxx`.
+requires the Project Chrono SDK, so CI does not build it; `test:cxx` compiles
+only the standalone scripted model.

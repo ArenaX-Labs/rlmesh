@@ -16,11 +16,12 @@ After `1.0`, RLMesh follows standard SemVer, with breaking changes only in a maj
 The version contract applies to the **Python package** (`rlmesh` on PyPI), and only to symbols labeled **Stable**. See [compatibility](compatibility.md) for the full stability surface and what each label promises.
 
 - **Stable** is the surface we intend to keep and will change carefully, with a migration note. It is not frozen until 1.0.
+- **Preview** is intended to become stable but may still change in a minor release, with a migration note. Today it labels only the `rlmesh` Rust facade crate.
 - **Experimental** may change or disappear at any time, without a migration note.
 
-## The Rust crates are internal
+## Rust, C and C++
 
-RLMesh publishes its Rust crates to crates.io so the Python extension can build. Most of them are internal implementation detail with no stability promise: their Rust API may change at any time and there is no plan to stabilize it. The exceptions are the `rlmesh` facade crate and the CLI commands, the Rust-side surfaces we intend to stabilize. Stabilizing the facade API is a near-term goal; see [compatibility](compatibility.md) for the roadmap. Until it lands, build on the Python package.
+RLMesh publishes its Rust crates to crates.io so the Python extension can build. Most of them are internal implementation detail with no stability promise: their Rust API may change at any time and there is no plan to stabilize it. The `rlmesh` facade crate is Preview; the C API (`rlmesh.h`) and the C++ header (`rlmesh.hpp`) are Experimental, with binary compatibility tracked by the C ABI generation rather than the package version. The CLI commands are the other Rust-side surface we intend to stabilize. [Compatibility](compatibility.md#native-apis-rust-c-and-c) has the details and the roadmap; for the strongest promise, build on the Python package.
 
 ## Workflow editions and the version contract
 

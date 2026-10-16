@@ -1,430 +1,23 @@
-# rlmesh-capi
+# RLMesh C API
 
-Experimental C ABI for RLMesh, plus a header-only C++20 wrapper, for both sides
-of the wire:
+RLMesh connects models to environments for evaluation. Serve a Gymnasium-style environment in one process and drive it with a model from another, on the same machine or across the network. `rlmesh.h` is the C API: a C11 header over a prebuilt shared library, for simulators and policies written in C, or for any language that binds to C.
 
-- **Models.** A C or C++ program implements `predict`, and the RLMesh runtime
-  does the rest: connect to an environment, decode observations, encode actions,
-  run episodes, or serve the model as a gRPC `ModelService` endpoint.
-- **Environments.** A C or C++ simulator implements `reset` / `step` (and
-  optionally `render` / `close`), declares its spaces and adapter tags, and is
-  served as a gRPC `EnvService` endpoint that any RLMesh model — Python, Rust,
-  C++ — drives.
+RLMesh aims to feel familiar in whichever language you use it from. Python, Rust, C and C++ share the same nouns and constructs (`Env`, `Space`, `Value`, `Model`, `run`, `Session`, `EnvServer`, `RemoteEnv`), each written in that language's own conventions and with helpers that only make sense there. What you learn here carries over, and every language talks to every other over the same wire.
 
-Status: alpha. The ABI (`RLMESH_ABI_VERSION`) will break before 1.0.
+Writing C++? Use [`rlmesh.hpp`](README-cpp.md), the C++20 API over this header, with RAII handles and exceptions.
 
-Ordinary output slots need not be initialized: successful writes never read or
-free their previous contents. Free any previously owned result before reusing
-its slot. Sized output structs still require their `_INIT` / `struct_size`.
-Input bool fields must contain a 0 or 1 byte; malformed representations return
-`RLMESH_ERR_INVALID_ARGUMENT` before the library reads a typed struct.
+## Install
 
-## ABI 5 values and tensors
+### Prebuilt package
 
-ABI 5 replaces the space-specific value projection with immutable core
-`RLMeshValue` handles: None, Bool, Int, Float, Text, Bytes, Tensor, List,
-Tuple and Dict. A Discrete action is an Int; a Box observation and a
-MultiBinary or MultiDiscrete sample are Tensors. Constructors return a
-status and fill an owned handle. `rlmesh_value_clone` shares a reference;
-`rlmesh_value_free` releases it. Composite constructors retain references to
-children, so callers still free their own handles after success or failure.
-Dicts preserve insertion order, permit empty and embedded-NUL keys, and
-replace repeated keys in place. Space sampling uses the facade Value conversion,
-so sampled Dicts follow their spec's declaration order (including a remote
-spec whose keys are not sorted). Space membership uses facade acceptance:
-extra Dict keys are ignored and a one-element integer Tensor can be a
-Discrete member; missing required keys and out-of-range values are refused.
-Metadata and InfoDict use the same Dict kind.
+Each [GitHub Release](https://github.com/ArenaX-Labs/rlmesh/releases) carries `rlmesh-<version>-x86_64-unknown-linux-gnu.tar.gz` (Linux x86_64, glibc 2.34 or newer) and its `.sha256`. It holds `rlmesh.h` and `rlmesh.hpp`, the shared library (`librlmesh_capi.so.5`) and a static archive, plus CMake and pkg-config metadata. No Rust toolchain is needed.
 
-Text and dict keys use length-bearing `RLMeshStr`. Reads of another kind
-return `RLMESH_ERR_TYPE`; numeric reads are strict. Missing keys and indices
-succeed with NULL, while present empty strings have non-NULL data. Borrowed
-children and bytes remain valid while a handle sharing their parent lives.
-
-`RLMeshTensor` is now opaque. `rlmesh_tensor_new` copies a buffer using the
-`RLMeshDType` enum; shape and strides use `(out, cap, out_len)` buffers,
-with NULL/0 for a length query and no partial writes for a short buffer.
-Strides are in bytes. Clone, Value conversion and contiguous reshape share
-read-only storage; `rlmesh_tensor_copy` makes independent storage. An
-`rlmesh_value_as_tensor` result is an owned shared reference to free with
-`rlmesh_tensor_free`. The C++ compatibility Tensor shares that owned handle
-on copy, so its data, shape and strides survive the source Value and other
-Tensor copies. The old tensor POD, DLPack dtype triple, tensor release
-function and package-semver ABI accessors are removed. Use
-`rlmesh_build_info` for package identity. Package SONAME generation is read
-from `RLMESH_ABI_VERSION`, now 5.
-
-`RLMeshEnvContract` replaces `RLMeshContract`. The library builds it; callers
-can retain it with `rlmesh_env_contract_clone` (or the `env` / `spec` aliases)
-and free it with `rlmesh_env_contract_free`. Its id, spaces, optional render
-mode, lane count, typed metadata, `to_dict` and repr follow the facade.
-`rlmesh_trial_index` takes a Value dict and an optional lane, using Python's
-integer/float conversion and per-lane validation directly from the facade.
-
-The C env/model/run and remote interfaces below use the facade surface.
-The fenced compatibility sections document the old paths still needed by
-the C++ wrapper. C++ receives only compatibility changes;
-its full parity API is a separate wave.
-
-`rlmesh_tensor_from_dlpack` and `rlmesh_tensor_to_dlpack` use versioned
-`struct DLManagedTensorVersioned` descriptors through the Rust facade.
-Import copies CPU data and calls the producer's deleter only on success;
-on error the caller still owns the descriptor. Export shares read-only
-storage by default; `RLMeshToDlpackOptions options = RLMESH_TO_DLPACK_OPTIONS_INIT`
-with `options.copy = true` exports independent writable storage. Pass NULL
-for default options. The only supported `dl_device` is `(kDLCPU, 0)`, also
-reported by `rlmesh_tensor_dlpack_device`. Options require `struct_size`,
-zero reserved fields and zero unknown trailing bytes. All failed exchange
-calls set a provided output pointer to NULL; an invalid output cannot consume
-an import. An exported descriptor owns its data and metadata after the
-source tensor is freed; release it exactly once with `exported->deleter(exported)`.
-See [`examples/c_dlpack.c`](examples/c_dlpack.c) for imports, exports and ownership.
-
-`rlmesh.h` embeds the complete, unchanged upstream DLPack v1.0 header under
-`DLPACK_DLPACK_H_`, with its Apache-2.0 license in `include/dlpack.LICENSE`.
-It supports either include order with DLPack 1.x headers and rejects a
-pre-1.0 DLPack header included first. The native API has no legacy descriptor,
-stream or Python capsule negotiation parameters. The C++ DLPack wrapper is
-deferred to the C++20 wave.
-
-## Describe
-
-`rlmesh_model_vtable_describe` / `_describe_json` describe static policy
-fields without constructing a Model or invoking any slot, including load and
-loaded_native_chunk. They use the same declaration checks as Model construction.
-`rlmesh_model_describe` / `_describe_json` describe an instance, keeping the
-static native_chunk and declarations while reading the model's current spec.
-`rlmesh_env_factory_describe` / `_describe_json` use the facade's representative
-branch builds, badges, discriminants and variant catalogs. Factory hooks are
-exclusive; each representative env is closed and freed before return.
-
-Use `RLMESH_DESCRIBE_OPTIONS_INIT` or `RLMESH_DESCRIBE_JSON_OPTIONS_INIT`;
-NULL means INIT. `has_kind` cross-checks ENV or MODEL, and generated_at is
-validated by the facade. Describe returns an owned Value dict; describe_json
-returns owned bytes. JSON options can borrow scalar lanes (only lane zero is
-read) or a native vector env in place of the default build. A present empty
-lane list, NULL lane, or both served forms fails with InvalidArgument. The
-borrowed env is never closed. An env leased by a server uses the shorthand below.
-
-C identity is `native:<id>` (UnknownEnv-v1 for a failed/unnamed default build)
-or `native:model`, with the C runtime and declared parameter order. Factory
-serving publishes that same native identity. A NULL workflow_edition resolves
-and records an edition refusal; a non-NULL value bypasses resolution and
-validation, including an explicit empty string.
-
-`rlmesh_ext_env_server_describe_json` (COR-16) reads the facade's cached
-served-env envelope with the server's resolved edition and host declaration,
-including when publication is disabled. It remains readable after start and
-shutdown, never rebuilds an env, and never re-resolves the edition. It adds no
-public Rust extra. `examples/c_describe.c` exercises the family and sizing rules.
-
-## ABI 5 sizing and space names
-
-Every shared sized input uses its ABI-5 sizeof as MIN_SIZE: NULL options use
-INIT, below-minimum sizes fail with InvalidArgument, and nonzero unknown tail
-bytes fail with TypeError naming the struct and byte offset. Current fields
-are all within that minimum; future appended fields need whole-field checks.
-Sized outputs preserve the caller's struct_size and leave unknown fields at
-the caller's INIT values.
-`rlmesh_space_dtype` reads a Space handle; `rlmesh_space_spec_dtype` reads a
-spec. Space and SpaceSpec use distinct free functions. Box, Discrete and Dict
-have typed constructors and readers; Experimental MultiBinary, MultiDiscrete,
-Text and Tuple now construct Space handles too. Every temporary legacy export
-and callback record has been removed. `examples/c_abi5.c` covers strict sizes
-and output boundaries.
-
-## Stable adapters
-
-`RLMeshEnvTags` and `RLMeshModelSpec` are immutable facade values. Build them
-from typed `RLMeshObsNode` / `RLMeshInputNode` trees and sized leaves, or use
-the dict / JSON / metadata constructors. Constructors copy input data; clone
-shares the immutable lent tree. Dict keys and text fill use `RLMeshStr`, so
-embedded NULs are preserved. Authored order is kept for access and observation
-roles; serialized objects use the facade's canonical sorted JSON. Canonical
-reads can change a state leaf's representation, as in Python's codec.
-
-Every sized leaf and options record requires its `RLMESH_*_INIT` minimum,
-zero reserved bytes and zero unknown input tails. Frozen node arrays retain
-their stride; Action components and Split fields are arrays of leaf pointers.
-The C fixture asserts that every sized adapter record has explicit padding.
-The Zig gate compiles those assertions for both 32-bit x86 and ARM, including
-their different double alignments.
-Tolerant vocabulary values use `OTHER` plus text; closed enums refuse it.
-Image stride is expanded when a spec consumes the leaf, and lent images carry
-offsets rather than stride sugar.
-
-Transform handles retain shared callable identity across clones, leaves and
-specs. A successful `_new` takes `user_data`; its optional `free_user_data`
-runs once when the last reference drops. The callback must support concurrent
-calls, receives a borrowed Value, and transfers an owned output even on error.
-A failed constructor leaves state with its caller. Callback errors preserve
-their recorded error class.
-
-`rlmesh_adapters_tag` / `_tag_vector` validate through the facade before
-replacing the env wrapper, leaving the original handle unchanged on failure.
-`rlmesh_adapters_resolve` / `_resolve_from_contract` return a shared Adapter
-that executes the facade engine, serializing per-step calls and explain.
-`rlmesh_adapter_new` implements AdapterBase with a C vtable; Adapter-only
-history/advisory queries on that handle fail with TypeError. `wrap_predict`
-returns an owned reusable callable that keeps its adapter and callback state
-alive until freed.
-
-Attach a spec through `RLMeshModelOptions.spec` or the policy vtable. The
-model retains it. `RLMESH_SPEC_KIND_NO_ADAPTER` explicitly bypasses adaptation;
-a tagged env with no model spec otherwise fails with AdapterResolutionError.
-Trusted custom-input entrypoints resolve through the fenced
-`rlmesh_ext_register_entrypoint` registry. Custom-encoding string arms remain
-describe-only and are refused by resolve. See `examples/c_adapters.c`.
-
-## Remote clients
-
-`rlmesh_remote_env_new` and `rlmesh_remote_vector_env_new` connect through
-facade clients; `rlmesh_remote_model_new` validates without dialing. Use the
-corresponding options INIT macro (NULL means INIT), with address or the
-host/port/path/transport helpers. Timeout seconds use the facade's zero/None,
-finite and sign rules. Token-bearing constructors are fenced under `rlmesh_ext_`.
-
-Remote envs expose cached spaces, specs, metadata and contract pointers until
-free, including after close. All immutable accessors and cancel_handle work
-while I/O or a session borrows the client; selected_workflow_edition reads the
-facade's shared edition cell, including session pins. Overlapping I/O is a
-RuntimeError. A Session or run target borrows the client exclusively and
-returns it afterward; freeing during a call is the caller's error.
-
-Reset and step return owned Value handles in tuple order. A vector step uses
-one capacity/out_len for reward and termination arrays, and refuses a short
-buffer before I/O without changing any output. Render delegates PNG decoding
-to the facade's Tensor conversion. Close is idempotent; other I/O after close
-fails with RuntimeError. Free is required even after a failed close.
-RemoteModel clones share the facade handle and can create concurrent sessions
-against addresses, EnvServers and remote env targets.
-
-## Running and sessions
-
-`rlmesh_run` and `rlmesh_model_run` accept frozen by-value model/env targets
-and `RLMESH_RUN_OPTIONS_INIT`. Options use Python's `episodes`, `seeds`,
-`max_episode_steps`, `max_episode_seconds`, execution settings and trial base;
-`has_*` flags distinguish an explicit zero from absence. NULL seeds means
-None; a non-NULL pointer with length zero means an empty list. Both the native
-Model loop and RANDOM_SAMPLE session loop delegate to the facade.
-
-RunHooks are owned vtable handles, borrowed exclusively for a run. Callbacks
-run on the calling thread, receive lent sized EpisodeResult/StepEvent structs,
-and may clone RunResult or RunContext handles to retain them. Hook errors
-follow the facade's first-error rule and still trigger on_run_end once.
-Results, telemetry, equality, repr and aggregates use facade result types.
-
-`rlmesh_session_new` / `rlmesh_model_session` create a lazy facade Session.
-Reset, predict, step, run, context access, cancellation and close keep the
-facade's state machine. A session leases local envs/factories until free;
-its borrowed model and server handles must outlive it. Within its own hooks,
-only the RunContext members contract/num_envs/read/frame_sources can query the session; stateful
-re-entry fails with RuntimeError. Closing/freeing a session never closes its
-model. Cancellation tokens are retained independently from the caller's token
-handle. Free drains local callbacks before releasing the lease.
-
-Create tokens with `rlmesh_ext_cancel_token_new(&token)` and share them with
-`rlmesh_ext_cancel_token_clone(token, &copy)`; both return a status and an owned
-reference. `rlmesh_ext_cancel_token_cancel(token)` returns a status and fires
-the same token through any clone. Free references independently. Repeated
-fires coalesce, and a consumed cancellation re-arms the shared token (R-18).
-
-`RunOptions.instruction` and `SessionOptions.instruction` copy the optional
-text and use the facade's input injection. Read items copy a semantic role or
-an Image/State/Text leaf. Session readers retain a facade adapter independently
-of the session and return Value dicts; roles keep declaration order. Direct
-session/context/event reads return the selected value. An authored RunContext
-vtable must provide all four protocol slots; slot outputs transfer ownership,
-including on failure.
-
-FrameSources owns its roles and labels. A library-made render source borrows
-its session/context and preserves the facade's closed, busy and hook-thread
-checks. A local context reaches render only during its hook dispatch; direct
-Session frame sources can render while the session is idle. Session-made sources
-retain weak state: render returns RuntimeError after the session is freed, without
-prolonging its env lease. Context-made sources retain the context, including
-sources transferred from C callbacks. Missing optional outputs set `out_has=false` and
-leave the value/bytes output untouched. Equality compares callable sources as
-specified, and repr uses the facade formatter.
-
-RunResult constructors copy typed Advisory records. Returned advisory messages
-are borrowed while a shared result handle lives. Advisory lists from the engine
-are available on real runs and sessions. See `examples/c_reads.c`.
-
-## View and Recorder
-
-`RLMeshView view = RLMESH_VIEW_INIT` supplies Python's defaults: terminal,
-port 8008, 30 fps, JPEG quality 75, no selected source, hold or stepping rate.
-`rlmesh_view_parse` accepts Python's shorthand (`term`, `tty`, `http:PORT`,
-`both`), ignoring surrounding whitespace and ASCII case. Initialize its
-output with `RLMESH_VIEW_INIT`; the parser sets `source` to NULL, preserves
-the caller's `struct_size`, and leaves unknown output bytes untouched.
-`rlmesh_view_validate`, `_equals` and `_repr` use the facade. Invalid enum
-discriminants and undersized structs are refused.
-Seconds holds accept every finite nonnegative value, saturating overflow to
-Rust's `Duration::MAX`; negative, NaN and infinite values are refused.
-
-Set `RunOptions.view` or `SessionOptions.view` to a View pointer; the consuming
-call copies its fields and source string. A local `rlmesh_model_run` refuses
-a set view as Python does; use a session for local model viewing. The facade
-owns terminal/HTTP rendering, pacing, hold, skip and quit behavior. C++ View
-and Recorder wrappers remain part of the separate C++20 wave.
-
-`rlmesh_recorder_new(NULL, &recorder)` uses 30 fps, quality 60 and a generated
-result-set id. `rlmesh_recorder_add` records completed runs;
-`rlmesh_recorder_capture` returns an ordinary owned `RLMeshRunHooks` handle
-for runs, sessions or manual `rlmesh_run_hooks_on_*` dispatch. Captures retain
-their explicit context and the recorder's shared state until hooks are freed.
-NULL `cameras` discovers sources; a non-NULL list with length zero records
-metrics only and permits vector envs. NULL `video_info_keys` selects Python's
-default pair; a non-NULL empty list disables video-path discovery. Camera and
-video-key strings, task/model/env labels and config Dict values are copied.
-The facade writes AV1 media and delivers best-effort capture warnings.
-
-Calls on a recorder serialize internally. `rlmesh_recorder_close` is
-idempotent and removes staged media. `rlmesh_recorder_free` closes with errors
-swallowed, as required by the C API; retained capture hooks can still record
-metrics, while further media staging needs an open recorder. Folder and ZIP
-exports use the facade's writer. Refused targets and filesystem failures
-return `RLMESH_ERR_OS`; exporting removed staged media after close returns
-`RLMESH_ERR_RUNTIME` before writing. Metric-only exports still work after close.
-
-WorkloadRecord, EpisodeRecord and MediaRef are immutable snapshot handles.
-Constructors copy their inputs, `_get` returns an independently owned snapshot,
-and `_free` releases each handle. Scalar/length reads of NULL return zero;
-optional accessors return false for None, and out-of-range `_get` calls return
-`RLMESH_ERR_INVALID_ARGUMENT`. Record construction follows Python's dataclasses
-without adding numeric validation. Typed Dict conversion, equality, repr and
-workload aggregates come from the facade. Every new options type has
-`RLMESH_*_INIT`, `_MIN_SIZE` and the ABI-5 size/tail checks; NULL options use
-the defaults, while `{0}` is refused. See `examples/c_recorder.c` for ownership,
-real capture, exports, manual dispatch and sized-input tests.
-
-## Env authoring and servers
-
-`rlmesh_env_new(vtable, user_data, attributes, out)` and
-`rlmesh_vector_env_new` wrap the facade's Gymnasium-shaped protocols. Reset
-and step use Value handles and tuple-ordered outputs; info is a Value dict,
-not JSON. Vtables include `free_user_data`; ownership transfers only on a
-successful constructor. Free releases state without calling close. Close is
-idempotent, and callbacks run serially for each handle.
-
-`rlmesh_env_server_new` borrows a list of scalar handles;
-`rlmesh_env_server_new_vector` borrows a native vector handle. Construction
-binds and derives the contract through the facade. `start`, `serve`, `wait`
-and `shutdown` keep its state machine, validation and thread behavior. The
-server holds an exclusive lease on each env until free; duplicate or busy
-handles fail with RuntimeError. Server free drains C callbacks even when a
-facade shutdown deadline has expired.
-
-Use `RLMESH_ENV_VTABLE_INIT`, `RLMESH_ENV_ATTRIBUTES_INIT`,
-`RLMESH_VECTOR_ENV_VTABLE_INIT`, `RLMESH_VECTOR_ENV_ATTRIBUTES_INIT`,
-`RLMESH_ENV_SERVER_OPTIONS_INIT` and `RLMESH_SERVE_OPTIONS_INIT`.
-All new structs have `struct_size` and `_MIN_SIZE`; zero initialization is
-refused, and nonzero unknown trailing bytes fail with TypeError. Serve
-options use seconds and explicit `has_*` fields, including for zero.
-`examples/c_env_api.c` exercises the C API; C++ uses these same handles
-through detected Env/VectorEnv adapters and an owning EnvServer.
-
-`RLMeshEnvFactory` takes a sized vtable and copied attributes (tags,
-TagParam discriminants, reset options and workflow edition). All hooks use
-the facade's branch checks, default binding, stamping and serving pipeline.
-Hooks are exclusive, including re-entry from a callback; attribute getters
-can run concurrently. Factory free releases state without calling close.
-`rlmesh_env_factory_make` returns one owned scalar or vector handle, with
-typed metadata stamped by the facade. A Variant catalog uses an owned sink;
-Variant fields are mutable and mapping fields are Value dicts. TagParam and
-Variant lists lend items until the list is freed. A reusable
-`RLMeshExtCancelToken` can cancel factory serving from another thread.
-`examples/c_factory.c` covers these contracts, including live serving and
-cancellation. Factory serving drains all C callbacks before it returns.
-
-## Policy and Model
-
-`RLMeshModelVtable` defines any of the four prediction corners. NULL slots
-are absent, and `context_corners` marks only the slots that receive a
-`RLMeshPredictContext`. `rlmesh_model_new` delegates declarations, loading,
-corner synthesis, serialization and the episode store to the facade Model.
-`rlmesh_model_from_config` checks declared load keys before calling load.
-The loaded native chunk is read once. Context state uses borrowed
-`RLMeshEpisodeState` handles with owned `void*` values and deleters.
-
-Use `RLMESH_MODEL_VTABLE_INIT`, `RLMESH_MODEL_OPTIONS_INIT` and
-`RLMESH_MODEL_SERVE_OPTIONS_INIT`; zero initialization is refused. On a
-constructor error neither policy nor hook state is adopted, no close hook
-runs, and the output is NULL. Clone shares the model. Close is terminal,
-serialized and idempotent; the last C model free drains callbacks and releases
-policy and hook state once. Getter data remains valid while any C clone
-lives. Serve uses the shared ServeOptions and reusable cancellation token.
-An already-fired token refuses serving without closing the model.
-
-`examples/c_policy.c` covers the C API. C++ detects the four Policy corners
-and shares the same Model/run/session implementation.
-
-## Layout
-
-- `include/rlmesh.h` — the C ABI (C11). Hand-authored; the single header authority.
-- `include/rlmesh.hpp` — RAII C++ wrapper over the C ABI (no exceptions, `Result<T>`).
-- `examples/c_model.c`, `examples/cpp_model.cpp` — a zero-action model in each language.
-- `examples/cpp_env.cpp` — a tagged C++ env (a point reaching a target, with a camera); `--describe` prints its image-label envelope.
-- `examples/c_env.c` — a minimal C env printing its describe envelope.
-- `examples/cpp_surface.cpp` — compile-only: names every wrapper type so a broken template fails CI.
-- `examples/consumer/` — a CMake project consuming the packaged library via `find_package(rlmesh)`.
-- `src/` — the Rust side: `extern "C"` projections over the core `rlmesh` crate.
-
-## Quick demo
-
-Serve any RLMesh environment, then point the C++ model at it:
-
-```bash
-# terminal 1: the Python quickstart env (or `cargo run -p rlmesh --example serve_env`)
-uv run python examples/python/quickstart/serve.py --address 127.0.0.1:5555
-
-# terminal 2: build the library and the C++ example, run 3 episodes
-cargo build -p rlmesh-capi --lib
-zig c++ -std=c++20 -I crates/rlmesh-capi/include crates/rlmesh-capi/examples/cpp_model.cpp \
-  -L target/debug -lrlmesh_capi -Wl,-rpath,"$PWD/target/debug" -o /tmp/cpp_model
-/tmp/cpp_model tcp://127.0.0.1:5555 3
-```
-
-A C++ policy takes a typed observation and returns a typed action. To sample
-from the remote environment's action space:
-
-```cpp
-#include <rlmesh.hpp>
-
-int main() try {
-  rlmesh::RemoteEnv env({.address = "tcp://127.0.0.1:5555"});
-  auto space = env.action_space();
-  rlmesh::Model model([space](const rlmesh::Value&) { return space.sample(); });
-  auto result = model.run(env, {.episodes = 2, .seeds = {0, 1}});
-  auto session = model.session(env);
-  auto [observation, info] = session.reset(0);
-  auto [next, reward, terminated, truncated, next_info] =
-      session.step(session.predict(observation));
-} catch (const std::exception& error) {
-  return 1;
-}
-```
-
-See [`cpp_model.cpp`](examples/cpp_model.cpp), [`cpp_env.cpp`](examples/cpp_env.cpp),
-and the corresponding [`c_model.c`](examples/c_model.c) and
-[`c_env.c`](examples/c_env.c) for complete consumers. ABI 5 removes every
-`rlmesh_ext_legacy_*` export; C and C++ now use the same facade APIs.
-
-## Using it from CMake
-
-Each GitHub Release from 0.1.1 on carries a prebuilt package,
-`rlmesh-<version>-x86_64-unknown-linux-gnu.tar.gz` (Linux x86_64, glibc 2.34 or
-newer), and its `.sha256`. It holds both headers, the shared and static
-libraries, and CMake and pkg-config metadata, so no Rust toolchain is needed.
-
-Fetch it at configure time:
+With CMake, fetch it at configure time:
 
 ```cmake
 include(FetchContent)
 FetchContent_Declare(rlmesh
-  URL https://github.com/ArenaX-Labs/rlmesh/releases/download/v0.1.1/rlmesh-0.1.1-x86_64-unknown-linux-gnu.tar.gz
+  URL https://github.com/ArenaX-Labs/rlmesh/releases/download/v<version>/rlmesh-<version>-x86_64-unknown-linux-gnu.tar.gz
   URL_HASH SHA256=<the release's .sha256>
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 FetchContent_MakeAvailable(rlmesh)
@@ -435,93 +28,418 @@ target_link_libraries(my_sim PRIVATE rlmesh::rlmesh)
 Or unpack it anywhere and use `find_package`:
 
 ```cmake
-find_package(rlmesh CONFIG REQUIRED)  # -Drlmesh_DIR=<unpacked>/lib/cmake/rlmesh
+find_package(rlmesh 5 CONFIG REQUIRED)  # -Drlmesh_DIR=<unpacked>/lib/cmake/rlmesh
 target_link_libraries(my_sim PRIVATE rlmesh::rlmesh)
 ```
 
-`rlmesh::rlmesh` links the shared library, which CMake's build rpath finds;
-install your binary beside it or set an install rpath. `rlmesh::rlmesh_static`
-is for fully static targets with no other Rust library linked in. The package
-version is the ABI generation (`RLMESH_ABI_VERSION`), so
-`find_package(rlmesh 5)` refuses a package of another ABI generation; call
-`rlmesh_abi_check()` at startup to catch a header and library from different
-releases.
+Without CMake, use pkg-config:
+
+```bash
+export PKG_CONFIG_PATH=<unpacked>/lib/pkgconfig
+cc -std=c11 serve.c $(pkg-config --cflags --libs rlmesh) -o serve
+```
+
+`rlmesh::rlmesh` links the shared library; install your binary beside it, set an rpath, or add `<unpacked>/lib` to `LD_LIBRARY_PATH`. `rlmesh::rlmesh_static` is for fully static targets that link no other Rust library. The CMake package version is the ABI generation, so `find_package(rlmesh 5)` refuses a package built for another generation.
+
+### From source
+
+From a checkout of this repository (needs Rust and `protoc`):
+
+```bash
+cargo build -p rlmesh-capi --release   # target/release/librlmesh_capi.{so,a}
+cc -std=c11 -I crates/rlmesh-capi/include serve.c \
+  -L target/release -lrlmesh_capi -Wl,-rpath,"$PWD/target/release" -lpthread -ldl -lm -o serve
+```
+
+`mise run release:cxx:package` assembles the same package as a release for the host platform, under `target/capi-pkg/`.
+
+## Quickstart
+
+Serve an environment. The env is a vtable of callbacks plus your own state pointer:
+
+```c
+/* serve.c: a three-step counter env on 127.0.0.1:5555 */
+#include <rlmesh.h>
+#include <stdio.h>
+
+typedef struct Counter {
+  int64_t steps;
+} Counter;
+
+static RLMeshStatus counter_reset(void* self, const int64_t* seed, const RLMeshValue* options,
+                                  RLMeshValue** out_observation, RLMeshValue** out_info) {
+  (void)seed;
+  (void)options;
+  (void)out_info; /* left NULL: an empty info dict */
+  ((Counter*)self)->steps = 0;
+  return rlmesh_value_int(0, out_observation);
+}
+
+static RLMeshStatus counter_step(void* self, const RLMeshValue* action,
+                                 RLMeshValue** out_observation, double* out_reward,
+                                 bool* out_terminated, bool* out_truncated,
+                                 RLMeshValue** out_info) {
+  Counter* counter = (Counter*)self;
+  (void)action;
+  (void)out_info;
+  counter->steps += 1;
+  *out_reward = 1.0;
+  *out_terminated = counter->steps >= 3;
+  *out_truncated = false;
+  return rlmesh_value_int(counter->steps, out_observation);
+}
+
+int main(void) {
+  static Counter counter;
+  RLMeshSpace* observation_space = NULL;
+  RLMeshSpace* action_space = NULL;
+  RLMeshEnv* env = NULL;
+  RLMeshEnvServer* server = NULL;
+  RLMeshEnvVtable vtable = RLMESH_ENV_VTABLE_INIT;
+  RLMeshEnvAttributes attributes = RLMESH_ENV_ATTRIBUTES_INIT;
+  RLMeshEnvServerOptions options = RLMESH_ENV_SERVER_OPTIONS_INIT;
+  RLMeshStatus status;
+
+  vtable.reset = counter_reset;
+  vtable.step = counter_step;
+  options.address = "127.0.0.1:5555";
+
+  status = rlmesh_discrete_new(4, NULL, &observation_space);
+  if (status == RLMESH_OK) status = rlmesh_discrete_new(2, NULL, &action_space);
+  if (status == RLMESH_OK) {
+    attributes.observation_space = observation_space;
+    attributes.action_space = action_space;
+    attributes.id = "Counter-v0";
+    status = rlmesh_env_new(&vtable, &counter, &attributes, &env);
+  }
+  if (status == RLMESH_OK) status = rlmesh_env_server_new(&env, 1, &options, &server);
+  if (status == RLMESH_OK) {
+    puts("serving on 127.0.0.1:5555");
+    status = rlmesh_env_server_serve(server); /* blocks until shutdown or Ctrl-C */
+  }
+  if (status != RLMESH_OK && status != RLMESH_ERR_CANCELLED) {
+    fprintf(stderr, "error: %s\n", rlmesh_last_error_message());
+  }
+  rlmesh_env_server_free(server); /* free the server before the env it serves */
+  rlmesh_env_free(env);
+  rlmesh_space_free(action_space);
+  rlmesh_space_free(observation_space);
+  return status == RLMESH_OK || status == RLMESH_ERR_CANCELLED ? 0 : 1;
+}
+```
+
+Run a model against it from another process. A model is a vtable too; the smallest one fills in `predict`:
+
+```c
+/* run.c: run a constant policy for three episodes */
+#include <rlmesh.h>
+#include <stdio.h>
+
+static RLMeshStatus predict(void* self, const RLMeshValue* observation,
+                            const RLMeshPredictContext* context, RLMeshValue** out_action) {
+  (void)self;
+  (void)observation;
+  (void)context; /* NULL unless requested through context_corners */
+  return rlmesh_value_int(0, out_action);
+}
+
+int main(void) {
+  RLMeshModelVtable vtable = RLMESH_MODEL_VTABLE_INIT;
+  RLMeshRunOptions options = RLMESH_RUN_OPTIONS_INIT;
+  RLMeshModel* model = NULL;
+  RLMeshRunResult* result = NULL;
+  RLMeshStatus status;
+
+  vtable.predict = predict;
+  options.has_episodes = true;
+  options.episodes = 3;
+
+  status = rlmesh_model_new(&vtable, NULL, NULL, &model);
+  if (status == RLMESH_OK) {
+    status =
+        rlmesh_model_run(model, rlmesh_address_target("127.0.0.1:5555"), &options, &result);
+  }
+  if (status != RLMESH_OK) {
+    fprintf(stderr, "error: %s\n", rlmesh_last_error_message());
+  } else {
+    printf("%zu episodes, %lld steps, mean reward %.1f\n", rlmesh_run_result_num_episodes(result),
+           (long long)rlmesh_run_result_total_steps(result), rlmesh_run_result_mean_reward(result));
+  }
+  rlmesh_run_result_free(result);
+  rlmesh_model_free(model);
+  return status == RLMESH_OK ? 0 : 1;
+}
+```
+
+```bash
+cc -std=c11 serve.c $(pkg-config --cflags --libs rlmesh) -o serve && ./serve
+cc -std=c11 run.c $(pkg-config --cflags --libs rlmesh) -o run && ./run
+# 3 episodes, 9 steps, mean reward 3.0
+```
+
+Neither side cares what language the other is written in: the same model can drive an env served from Python, Rust or C++, and the Python, Rust and C++ clients can drive this env.
+
+## How the C API works
+
+These rules hold across the whole header, so they are worth reading once.
+
+**Handles and ownership.** Every object is an opaque handle (`RLMeshValue*`, `RLMeshSpace*`, `RLMeshModel*`, ...) created by a `rlmesh_<type>_new` (or similar) call that writes it to an `out` parameter. You own what you create and release it with `rlmesh_<type>_free`; every free function accepts NULL. Handles that hold resources also have `rlmesh_<type>_close`, which is idempotent and reports cleanup errors; free is still required after close. Pointers returned by accessors (a remote env's `action_space`, a dict entry from `rlmesh_value_dict_get`) are borrowed and stay valid while a handle sharing their parent lives.
+
+**Outputs.** An out slot need not be initialized, and a successful call never reads or frees what it held, so free a previous result before reusing the slot. Variable-length text comes back as `RLMeshBytes` (free with `rlmesh_bytes_free`). Numeric arrays use `(out, cap, out_len)` buffers: pass `NULL, 0` to query the length, and a short buffer writes nothing.
+
+**Strings.** Inputs that may hold any text, such as dict keys and text values, are length-bearing `RLMeshStr`; `rlmesh_str("...")` wraps a NUL-terminated string. Plain `const char*` options (addresses, ids) are NUL-terminated UTF-8, and NULL means "not set".
+
+**Options structs and `_INIT`.** Every options struct, vtable, attributes record and out-struct starts with `struct_size` and has an `RLMESH_<NAME>_INIT` macro holding the defaults. Start from the macro and set the fields you need, or pass NULL for all defaults. An optional number is a value plus a `has_` flag (`has_episodes`, `has_port`, `has_max_episode_seconds`), so an explicit zero is distinct from "not set". A seed list is a pointer plus a length; a NULL pointer means no seeds, while a non-NULL pointer with length zero is an explicit empty list.
+
+**User data.** Constructors that take callbacks also take a `void* user_data`, passed back to every callback. The library takes ownership of it only when the constructor returns `RLMESH_OK`; the vtable's `free_user_data` (NULL for none) then runs once, after the last library reference is gone.
+
+**Threads.** Error details are per thread (see [Errors](#errors)). Callbacks may run on library threads, so their state must be safe to use from another thread; an env's callbacks run one at a time.
+
+## Core concepts
+
+### Values and tensors
+
+`RLMeshValue` is an immutable, shareable value of one of ten kinds: None, Bool, Int, Float, Text, Bytes, Tensor, List, Tuple and Dict. Observations, actions and info dicts are all values: a Discrete action is an Int, a Box observation a Tensor, a Dict observation a Dict. Dicts keep insertion order. Composite constructors retain their children, so you still free your own handles:
+
+```c
+RLMeshValue* x = NULL;
+RLMeshValue* label = NULL;
+RLMeshValue* observation = NULL;
+const RLMeshValue* field = NULL;
+double value = 0.0;
+
+rlmesh_value_float(0.5, &x);
+rlmesh_value_text(rlmesh_str("left"), &label);
+{
+  RLMeshStr keys[] = {rlmesh_str("x"), rlmesh_str("label")};
+  const RLMeshValue* values[] = {x, label};
+  rlmesh_value_dict(keys, values, 2, &observation); /* retains x and label */
+}
+rlmesh_value_free(x);
+rlmesh_value_free(label);
+
+/* Borrowed; NULL (with RLMESH_OK) when the key is absent. */
+if (rlmesh_value_dict_get(observation, rlmesh_str("x"), &field) == RLMESH_OK && field != NULL &&
+    rlmesh_value_as_float(field, &value) == RLMESH_OK) {
+  printf("x = %f\n", value);
+}
+rlmesh_value_free(observation);
+```
+
+Reads are strict: `rlmesh_value_as_float` on an Int returns `RLMESH_ERR_TYPE`. `rlmesh_value_kind` tells you what you hold.
+
+`RLMeshTensor` is an immutable n-dimensional array. `rlmesh_tensor_new(buffer, len, shape, ndim, dtype, &out)` copies a buffer; `rlmesh_tensor_buffer` reads one back; strides are in bytes. Tensors exchange data with other libraries through DLPack: `rlmesh_tensor_from_dlpack` imports a `DLManagedTensorVersioned` (the DLPack 1.0 header is bundled in `rlmesh.h`) and `rlmesh_tensor_to_dlpack` exports one.
+
+### Spaces
+
+`RLMeshSpace` is a space with its own random sampler. `rlmesh_box_new`, `rlmesh_discrete_new` and `rlmesh_dict_new` build the common kinds (`RLMeshBox`, `RLMeshDiscrete` and `RLMeshDict` are the same handle type), and MultiBinary, MultiDiscrete, Text and Tuple constructors are available as Experimental. A space seeds, samples and checks membership; `rlmesh_space_spec` lends its immutable `RLMeshSpaceSpec`:
+
+```c
+const int64_t shape[] = {3};
+RLMeshSpace* box = NULL;
+RLMeshValue* sample = NULL;
+const uint64_t seed = 7;
+
+rlmesh_box_new(rlmesh_bound_float(-1.0), rlmesh_bound_float(1.0), shape, 1, NULL, &box);
+rlmesh_space_seed(box, &seed, NULL);
+rlmesh_space_sample(box, &sample); /* a float32 Tensor of shape [3] */
+if (rlmesh_space_contains(box, sample)) puts("sample is in the box");
+rlmesh_value_free(sample);
+rlmesh_space_free(box);
+```
+
+### Environments and servers
+
+An env is an `RLMeshEnvVtable` (`reset` and `step` are required; `render`, `close` and `free_user_data` are optional) plus `RLMeshEnvAttributes` naming its spaces, id, render mode and metadata. `reset` and `step` exchange values in Gymnasium's order, and a NULL info means an empty dict. `rlmesh_vector_env_new` builds a natively batched env from an `RLMeshVectorEnvVtable`.
+
+`rlmesh_env_server_new` serves one or more envs (several copies serve concurrent sessions) and `rlmesh_env_server_new_vector` a vector env. The server binds at construction; `rlmesh_env_server_address` reports where. `rlmesh_env_server_serve` blocks on the calling thread; `rlmesh_env_server_start` serves in the background, after which `rlmesh_env_server_wait` and `rlmesh_env_server_shutdown` control it. The server leases its envs until it is freed, so free the server first.
+
+`RLMeshEnvFactory` (`rlmesh_env_factory_new`) builds envs on demand, with discriminant parameters (`RLMeshTagParam`), a catalog of named variants, and `rlmesh_env_factory_serve`. See [`examples/c_env_api.c`](examples/c_env_api.c) and [`examples/c_factory.c`](examples/c_factory.c).
+
+### Models
+
+An `RLMeshModelVtable` fills in any of four prediction corners: `predict` (one observation to one action), `predict_batch`, `predict_chunk` (one observation to several actions) and `predict_chunk_batch`. Optional slots cover `load`, `on_episode_end` and `close`, and fields declare a `spec` for adapters, a `workflow_edition`, `load_keys` and a static `native_chunk`. `rlmesh_model_new` builds a model and `rlmesh_model_from_config` builds one from a config dict passed to `load`.
+
+A corner whose bit is set in `context_corners` receives an `RLMeshPredictContext`: the episode id, its seed, the predict index, a derived per-predict seed and an `RLMeshEpisodeState` for per-episode scratch data (`rlmesh_episode_state_get` / `_set` / `_remove`):
+
+```c
+static RLMeshStatus predict(void* self, const RLMeshValue* observation,
+                            const RLMeshPredictContext* context, RLMeshValue** out_action) {
+  (void)self;
+  (void)observation;
+  printf("episode %s, predict %llu\n", context->episode_id,
+         (unsigned long long)context->predict_index);
+  return rlmesh_value_int((int64_t)(context->predict_index % 2), out_action);
+}
+
+/* ... */
+vtable.predict = predict;
+vtable.context_corners = RLMESH_CORNER_PREDICT;
+```
+
+`rlmesh_model_serve` serves a model as an endpoint other runs can use. See [`examples/c_policy.c`](examples/c_policy.c).
+
+### Running and sessions
+
+`rlmesh_model_run` drives whole episodes and returns an `RLMeshRunResult` (`rlmesh_run_result_num_episodes`, `_total_steps`, `_mean_reward`, `_success_rate`, `_episodes_get` for each `RLMeshEpisodeResult`, plus telemetry). The env argument is an `RLMeshEnvTarget`, made from an address (`rlmesh_address_target`), a running server (`rlmesh_env_server_target`), a remote client (`rlmesh_remote_env_target`), or a local env, vector env or factory (`rlmesh_env_target`, served on a private loopback for the run). `rlmesh_run` also takes an `RLMeshModelTarget`: a model (`rlmesh_model_target`), a remote model, or `RLMESH_RANDOM_SAMPLE`, a baseline that samples the action space. A run borrows its targets: it never closes the model and closes the env only when `close_env` is set.
+
+`RLMeshRunOptions` covers `episodes`, `seeds`, `max_episode_steps`, `max_episode_seconds`, `hooks`, `instruction`, `close_env` and more. `RLMeshRunHooks` (built with `rlmesh_run_hooks_new` from an `RLMeshRunHooksVtable`) observe a run on the calling thread: run start and end, episode start and end, and every step.
+
+For step-by-step control, open a session. Nothing connects until first use, and closing a session never closes the model:
+
+```c
+RLMeshSession* session = NULL;
+RLMeshValue* observation = NULL;
+RLMeshValue* info = NULL;
+const int64_t seed = 0;
+bool done = false;
+
+if (rlmesh_model_session(model, rlmesh_address_target("127.0.0.1:5555"), NULL, &session) ==
+        RLMESH_OK &&
+    rlmesh_session_reset(session, &seed, NULL, &observation, &info) == RLMESH_OK) {
+  while (!done) {
+    RLMeshValue* action = NULL;
+    RLMeshValue* next = NULL;
+    RLMeshValue* step_info = NULL;
+    double reward = 0.0;
+    bool terminated = false, truncated = false;
+    if (rlmesh_session_predict(session, observation, &action) != RLMESH_OK) break;
+    RLMeshStatus status = rlmesh_session_step(session, action, &next, &reward, &terminated,
+                                              &truncated, &step_info);
+    rlmesh_value_free(action);
+    if (status != RLMESH_OK) break;
+    rlmesh_value_free(observation);
+    rlmesh_value_free(step_info);
+    observation = next;
+    done = terminated || truncated;
+  }
+}
+rlmesh_value_free(observation);
+rlmesh_value_free(info);
+if (session != NULL) rlmesh_session_close(session);
+rlmesh_session_free(session);
+```
+
+`rlmesh_session_run` runs whole episodes inside an open session. See [`examples/c_run.c`](examples/c_run.c).
+
+### Remote clients
+
+`rlmesh_remote_env_new` connects to a served env so you can step it directly, Gymnasium style; `rlmesh_remote_vector_env_new` does the same for a vector env. `rlmesh_remote_model_new` points at a served model; it validates its options without connecting, and runs and sessions connect as they need to. Addresses are `host:port`, `tcp://host:port` or `unix:///path/to.sock`, or set `host`, `port`, `path` and `transport` separately in the options.
+
+```c
+RLMeshRemoteEnvOptions options = RLMESH_REMOTE_ENV_OPTIONS_INIT;
+RLMeshRemoteEnv* env = NULL;
+RLMeshValue* observation = NULL;
+RLMeshValue* info = NULL;
+RLMeshValue* action = NULL;
+double reward = 0.0;
+bool terminated = false, truncated = false;
+
+options.address = "127.0.0.1:5555";
+options.has_request_timeout_seconds = true;
+options.request_timeout_seconds = 5.0;
+if (rlmesh_remote_env_new(&options, &env) == RLMESH_OK &&
+    rlmesh_remote_env_reset(env, NULL, NULL, &observation, &info) == RLMESH_OK &&
+    rlmesh_space_sample(rlmesh_remote_env_action_space(env), &action) == RLMESH_OK) {
+  rlmesh_value_free(observation);
+  rlmesh_value_free(info);
+  rlmesh_remote_env_step(env, action, &observation, &reward, &terminated, &truncated, &info);
+}
+rlmesh_value_free(action);
+rlmesh_value_free(observation);
+rlmesh_value_free(info);
+if (env != NULL) rlmesh_remote_env_close(env);
+rlmesh_remote_env_free(env);
+```
+
+See [`examples/c_remote.c`](examples/c_remote.c).
+
+### Adapters
+
+When a model and an env describe their observations and actions differently (camera names, state layouts, action components), adapters bridge them declaratively. An env publishes `RLMeshEnvTags` (the `tags` field of the server options, or `rlmesh_adapters_tag`), a model declares an `RLMeshModelSpec`, and RLMesh resolves an adapter for each route. Both are built from typed node trees or from their dict and JSON forms. See [`examples/c_adapters.c`](examples/c_adapters.c).
+
+### View, Recorder and describe
+
+`RLMeshView` (`RLMESH_VIEW_INIT`, or `rlmesh_view_parse` with `"term"` or `"http:8008"`) shows live frames when set on session options. `rlmesh_recorder_new` collects run results or captures live runs through the hooks from `rlmesh_recorder_capture`, and exports them with media as a folder or ZIP bundle ([`examples/c_recorder.c`](examples/c_recorder.c)). `rlmesh_model_describe` and `rlmesh_env_factory_describe` report declarations ([`examples/c_describe.c`](examples/c_describe.c)), and `rlmesh_build_info` the library's version, protocol generation and workflow editions.
+
+## Errors
+
+Every fallible call returns an `RLMeshStatus`: `RLMESH_OK`, or a code for the kind of failure (`RLMESH_ERR_INVALID_ARGUMENT`, `RLMESH_ERR_TYPE`, `RLMESH_ERR_ENVIRONMENT`, `RLMESH_ERR_MODEL`, `RLMESH_ERR_CONNECTION`, `RLMESH_ERR_TIMEOUT`, `RLMESH_ERR_PROTOCOL`, `RLMESH_ERR_RUNTIME`, `RLMESH_ERR_CANCELLED`, ...). After a failure, the calling thread can read the details until its next RLMesh call:
+
+- `rlmesh_last_error_message()`: the message, the same text every RLMesh language reports for that failure.
+- `rlmesh_last_error_class()`: the exact class, finer than the status (for example `RLMESH_ERROR_CLASS_RECOVERABLE_ENVIRONMENT_EXCEPTION`); `rlmesh_error_class_is_subclass` tests family membership and `rlmesh_error_class_name` names it.
+- `rlmesh_last_error_is_recoverable()` and `rlmesh_last_error_code()` for environment and model failures.
+
+```c
+RLMeshStatus status = rlmesh_model_run(model, target, &options, &result);
+if (status != RLMESH_OK) {
+  RLMeshErrorClass cls = rlmesh_last_error_class();
+  if (rlmesh_error_class_is_subclass(cls, RLMESH_ERROR_CLASS_OS_ERROR)) {
+    fprintf(stderr, "could not reach the env: %s\n", rlmesh_last_error_message());
+  } else {
+    fprintf(stderr, "%s: %s\n", rlmesh_error_class_name(cls), rlmesh_last_error_message());
+  }
+}
+```
+
+A callback fails by setting the error and returning nonzero. `rlmesh_callback_set_error(message, recoverable)` reports an environment or model failure; a recoverable env error fails one request while the client keeps its session. `rlmesh_callback_set_error_class` reports an exact class instead, such as `RLMESH_ERROR_CLASS_VALUE_ERROR`:
+
+```c
+static RLMeshStatus arm_step(void* self, const RLMeshValue* action, RLMeshValue** out_observation,
+                             double* out_reward, bool* out_terminated, bool* out_truncated,
+                             RLMeshValue** out_info) {
+  (void)self;
+  (void)action;
+  (void)out_observation;
+  (void)out_reward;
+  (void)out_terminated;
+  (void)out_truncated;
+  (void)out_info;
+  rlmesh_callback_set_error("target out of reach", true);
+  return RLMESH_ERR_ENVIRONMENT;
+}
+```
+
+## Workflow editions
+
+Every served env and model runs at a workflow edition, which pins what a session means across upgrades. Declare one (the `workflow_edition` field of `RLMeshServeOptions`, the model vtable, or the run and session options, or the `RLMESH_WORKFLOW_EDITION` environment variable); a participant that declares none floats to the newest edition and warns once. `rlmesh_current_workflow_edition()` returns the edition to declare. See the [documentation](https://rlmesh.dev/docs/).
+
+## C-only extras
+
+Additions that exist only for native callers carry the `rlmesh_ext_` prefix (types `RLMeshExt...`):
+
+- Cancellation: `rlmesh_ext_cancel_token_new`, `_clone`, `_cancel` and `_free`. Put a token in the `cancel` field of run, session or serve options and cancel it from any thread; the call in flight returns `RLMESH_ERR_CANCELLED`. Remote clients and sessions expose their token through `_cancel_handle`.
+- Bearer-token endpoints: `RLMeshExtEnvServerOptions` and `RLMeshExtModelServeOptions` (through the `ext` field of the serve options) and `rlmesh_ext_remote_env_new_with_token` and friends.
+- `rlmesh_ext_env_server_describe_json` for a served env's describe envelope, `rlmesh_ext_register_entrypoint` for trusted custom adapter transforms, and helpers such as `rlmesh_ext_dtype_size`.
+
+## Compatibility
+
+The C API is **Experimental**. Binary compatibility is tracked by the ABI generation, currently 5: `RLMESH_ABI_VERSION`, the `librlmesh_capi.so.5` SONAME and the CMake package version all carry it. An incompatible change (a struct layout, an enum value, a signature or a removed symbol) bumps the generation, which can happen in any minor release; a binary built for another generation will not load. Within a generation, structs grow only by appending optional fields whose zero bytes mean the default, so code compiled against an older header keeps working. Call `rlmesh_abi_check()` at startup if you load the library with `dlopen` or otherwise bypass the SONAME. `RLMESH_VERSION` is the header's package version and `rlmesh_build_info()` reports the linked library's. See the [compatibility policy](https://rlmesh.dev/docs/releases/compatibility/).
+
+The header is C11 and also compiles warning-free as C++98 and C++20. It bundles the upstream DLPack 1.0 header (license in [`include/dlpack.LICENSE`](include/dlpack.LICENSE)). Creating a model or env handle ignores `SIGPIPE` on POSIX unless your program installed its own handler, so a peer that disconnects mid-write cannot kill the process.
 
 ## C++20
 
-Include `rlmesh.hpp` and enable C++20 and exceptions. Fallible calls throw the
-R-21 exception class: `ValueError`, `TypeError`, `RuntimeError`, `OSError`
-(with `ConnectionError` and `TimeoutError` subclasses), or the
-`RLMeshException` family. `ext::CancelledError` has no `std::exception` base,
-so handle it explicitly. An exception thrown by an authored policy, env,
-adapter, hook, or warning handler is rethrown unchanged when its error returns
-in process. Remote errors preserve their documented class, code, text and
-recoverability.
+[`rlmesh.hpp`](include/rlmesh.hpp) is a header-only C++20 API over this header, with RAII handles, exceptions, `std::optional`, `std::chrono` and designated-initializer options. It has its own guide: [RLMesh C++ API](README-cpp.md).
 
-`Model` detects `predict`, `predict_chunk`, `predict_batch` and
-`predict_chunk_batch`, independently detecting each corner's context and
-execution-horizon parameters. Callables work directly. Optional policy members
-include `load`, `on_episode_end`, `close`, and static spec/load/edition/chunk
-declarations. `Model::from_config<Policy>(kwargs)` applies load declarations.
-`types::PredictContext` exposes episode ids, optional seeds, predict indices,
-and a typed `EpisodeState`. Batch contexts use `std::span`.
+## Examples
 
-`Env` and `VectorEnv` detect Gymnasium-shaped methods and space getters.
-`EnvServer` owns the env handles passed to it. Supply a `std::shared_ptr<E>`
-when the host also needs the simulation. `EnvFactory<F>` uses CRTP to capture
-static declarations, and `make_env` applies factory stamping. Factories cannot
-be copied or moved; their C handles are built on first use. A foreground
-`serve()` runs lane zero on the caller; `start()` runs callbacks on library
-threads. `shutdown()` reports errors; destruction drains and swallows cleanup
-errors.
+[`examples/`](examples) holds runnable programs, all built and run by `mise run test:cxx`:
 
-`Value`, `Tensor`, spaces, `Model`, `RemoteModel`, and adapters share their
-underlying objects on copy. `Tensor::copy()` explicitly copies data. Env,
-remote-env, session, server and recorder handles are move-only. Runs and
-sessions borrow targets; keep their model and env handles alive until the
-session is destroyed. A run never closes its model, and closes an env only
-when `close_env` is set. Call `close()` explicitly to observe cleanup errors.
+- [`c_model.c`](examples/c_model.c): a model that reads the env's action space and runs episodes against a remote env.
+- [`c_env.c`](examples/c_env.c): a minimal env and its served describe envelope.
+- Per-area programs: `c_spaces.c`, `c_dlpack.c`, `c_env_api.c`, `c_factory.c`, `c_policy.c`, `c_run.c`, `c_reads.c`, `c_remote.c`, `c_adapters.c`, `c_describe.c`, `c_recorder.c`, `c_core.c` and `c_abi5.c` (struct sizing rules).
+- [`consumer/`](examples/consumer): a CMake project that builds against the installed package.
 
-Options are aggregates with Python defaults and support designated
-initializers. Optional scalars use `std::optional`; `OptionalList<T>` preserves
-None versus an empty list. Durations use `std::chrono::duration<double>` and
-drop the `_seconds` suffix. Reset and step return tuples for structured
-bindings. `ext::CancelToken` copies share a reusable cancellation source.
+## Development
 
-`adapters` (also `adapt`) exposes typed spec/tag trees, tolerant vocabularies,
-transforms, resolution, history and custom `AdapterBase` subclasses. Use
-`std::shared_ptr` for custom adapters; `wrap_predict` retains ownership.
-`Session` exposes readers, frame sources and retained run contexts. `RunHooks`,
-`RunResult`, `EpisodeResult`, `View`, and `Recorder` use the same names and
-fields as Python. Tensor DLPack descriptors use `ext::DlpackPtr`; imports
-consume ownership only on success, and exports retain their storage.
+- `mise run dev:heavy -- mise run test:cxx`: compile the headers as C11, C++98 and C++20, build and run every example, and exercise C and C++ models and envs over real gRPC. `CC` and `CXX` override the default `zig cc` / `zig c++`.
+- `mise run test:cxx:pkg`: build the package, then build `examples/consumer` against it through pkg-config, `find_package` and FetchContent.
+- `mise run fmt:cxx`: format the headers and examples.
 
-The old `Result<T>`, `RLMESH_TRY`, aborting accessors, `ValueRef`, `SpaceRef`,
-worker `Batch`/`Request`, `Environment`, and combined `EnvConfig` are removed.
-`-fno-exceptions` is unsupported. The executable fixtures in
-[`cpp_parity.cpp`](examples/cpp_parity.cpp) cover the new surface.
+## Links
 
-## Host runtime in describe
-
-The C++ server supplies its host declaration through ABI 5
-`RLMeshExtEnvServerOptions.host_runtime_json`. In C, initializing that record
-with `RLMESH_EXT_ENV_SERVER_OPTIONS_INIT` does the same. The header detects the
-translation unit's language, standard and compiler. Shared model/factory
-Describe reports C's native runtime; served env Describe includes the host's.
-Use one C++ standard across a binary's translation units.
-
-The optional C host JSON accepts `language`, `language_version`,
-`toolchain` (`name` and `major.minor` version), and `framework_versions`.
-Invalid declarations fail creation. The library owns component, package,
-OS/architecture and protocol/edition identity. C++ supplies this declaration
-automatically; its fenced server options expose token, peer metadata and
-publication settings.
-
-## Tasks
-
-- `mise run dev:heavy -- mise run test:cxx` — compile the C11 and C++20 headers,
-  run GCC and Clang C++ parity fixtures, and exercise C/C++ over real gRPC.
-  The C header also compiles as C++98; C++ requires exceptions.
-- `mise run test:cxx:pkg` — build installed-package consumers through pkg-config,
-  CMake `find_package`, and FetchContent (a separate packaging gate).
-- `mise run fmt:cxx` — format the headers and native examples.
+- Documentation: https://rlmesh.dev/docs/
+- C++ API: [README-cpp.md](README-cpp.md)
+- Rust crate: https://crates.io/crates/rlmesh
+- Python package: https://pypi.org/project/rlmesh/
