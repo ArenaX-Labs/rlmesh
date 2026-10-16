@@ -65,6 +65,25 @@ def _model() -> Any:
     return Model(lambda obs: np.zeros(2, np.float32))
 
 
+def test_back_to_back_sessions_release_the_join_slot() -> None:
+    server = rlmesh.EnvServer(CountEnv(), "127.0.0.1:0")
+    server.start()
+    model = _model()
+    try:
+        for iteration in range(50):
+            env = rlmesh.numpy.RemoteEnv(server.address)
+            env.reset()
+            if iteration % 2 == 0:
+                env.close()
+            del env
+            with model.session(server.address) as session:
+                session.reset()
+            assert model.run(server.address, episodes=1).num_episodes == 1
+    finally:
+        model.close()
+        server.shutdown()
+
+
 def test_run_seeds_set_episode_count_and_echo_on_result() -> None:
     env = CountEnv(episode_len=3)
     try:

@@ -7,13 +7,57 @@ use std::error::Error as StdError;
 use std::sync::{Arc, Mutex};
 
 use rlmesh_proto::env::v1::{JoinResponse, join_response};
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 use tonic::Status;
 
 /// Callers awaiting a response, keyed by `request_id`. `None` once the stream
 /// has ended: a late registration then fails fast instead of hanging.
 pub(super) type Pending =
     Arc<Mutex<Option<HashMap<String, oneshot::Sender<Result<JoinResponse, Status>>>>>>;
+
+/// The terminal outcome of the response stream, independently of any reply.
+pub(super) type StreamCompletion = watch::Receiver<Option<Result<(), Status>>>;
+
+// Only sessions whose owner has started closing/dropping are registered here.
+// An active client never makes another client wait instead of being refused.
+static RETIRING: Mutex<Vec<(String, StreamCompletion)>> = Mutex::new(Vec::new());
+
+pub(super) fn retire_session(address: &str, completion: StreamCompletion) {
+    let mut retiring = RETIRING.lock().unwrap_or_else(|e| e.into_inner());
+    retiring.retain(|(_, completion)| {
+        completion.borrow().is_none() && completion.has_changed().is_ok()
+    });
+    retiring.push((address.to_string(), completion));
+}
+
+/// Order a new local Join behind teardown already started for this address.
+/// This covers nonblocking Drop and detach, which cannot await a remote peer.
+/// The grace is bounded: an operation still draining afterwards genuinely
+/// owns the slot. Return false when the call budget expires so the caller can
+/// report an active-session refusal. After the full grace, let the server
+/// decide admission if the caller still has time.
+pub(super) async fn wait_for_retiring_sessions(
+    address: &str,
+    deadline: Option<tokio::time::Instant>,
+) -> bool {
+    let sessions: Vec<_> = RETIRING
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .filter(|(target, _)| target == address)
+        .map(|(_, completion)| completion.clone())
+        .collect();
+    let grace = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    let until = deadline.map_or(grace, |deadline| deadline.min(grace));
+    let completed = tokio::time::timeout_at(until, async {
+        for mut completion in sessions {
+            let _ = completion.wait_for(|outcome| outcome.is_some()).await;
+        }
+    })
+    .await
+    .is_ok();
+    completed || deadline.is_none_or(|deadline| deadline > grace)
+}
 
 pub(super) fn new_pending() -> Pending {
     Arc::new(Mutex::new(Some(HashMap::new())))
@@ -66,9 +110,10 @@ pub(super) fn spawn_response_pump(
     mut response_stream: tonic::Streaming<JoinResponse>,
     pending: Pending,
     on_fatal: impl Fn(String) + Send + 'static,
-) {
+) -> StreamCompletion {
+    let (finished_tx, finished_rx) = watch::channel(None);
     tokio::spawn(async move {
-        loop {
+        let outcome = loop {
             match response_stream.message().await {
                 Ok(Some(msg)) => {
                     if let Some(join_response::Kind::Error(error)) = &msg.kind
@@ -81,7 +126,7 @@ pub(super) fn spawn_response_pump(
                 Ok(None) => {
                     tracing::debug!("env join stream ended");
                     dispatch_response(&pending, None);
-                    break;
+                    break Ok(());
                 }
                 Err(error) => {
                     tracing::error!(
@@ -92,10 +137,12 @@ pub(super) fn spawn_response_pump(
                     );
                     // Surface the real Status to the pending callers instead of
                     // letting them observe only an opaque "connection closed".
-                    dispatch_response(&pending, Some(Err(error)));
-                    break;
+                    dispatch_response(&pending, Some(Err(error.clone())));
+                    break Err(error);
                 }
             }
-        }
+        };
+        let _ = finished_tx.send(Some(outcome));
     });
+    finished_rx
 }

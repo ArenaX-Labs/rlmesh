@@ -210,9 +210,15 @@ async fn bounded<T>(
     future: impl std::future::Future<Output = Result<T>>,
 ) -> Result<T> {
     match timeout {
-        Some(timeout) => tokio::time::timeout(timeout, future)
+        Some(timeout) => {
+            let deadline = tokio::time::Instant::now() + timeout;
+            rlmesh_grpc::env::client::with_request_deadline(
+                deadline,
+                tokio::time::timeout_at(deadline, future),
+            )
             .await
-            .map_err(|_| Error::Timeout(timeout))?,
+            .map_err(|_| Error::Timeout(timeout))?
+        }
         None => future.await,
     }
 }
@@ -764,6 +770,11 @@ impl EnvClientCore {
         }
     }
 
+    /// Register owned cleanup before it is queued by a nonblocking Drop.
+    pub(crate) fn prepare_close(&self) {
+        self.inner.prepare_close();
+    }
+
     /// Ask the server to shut itself down; an accepted request closes this
     /// client locally.
     pub async fn shutdown<'r>(&mut self, reason: impl Into<Option<&'r str>>) -> Result<bool> {
@@ -936,6 +947,7 @@ fn teardown(mut core: Box<EnvClientCore>) {
         return;
     }
     if in_async_context() {
+        core.prepare_close();
         runtime().spawn(async move {
             if let Err(err) = core.close().await {
                 tracing::warn!("closing a dropped remote env client failed: {err}");

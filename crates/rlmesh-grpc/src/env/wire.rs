@@ -36,3 +36,10 @@ pub(super) fn join_request_kind_name(req: &JoinRequest) -> &'static str {
         None => "empty",
     }
 }
+
+/// Shared by admission and local teardown expiry so callers see one refusal.
+pub(super) fn active_join_status() -> tonic::Status {
+    tonic::Status::failed_precondition(
+        "environment already has an active Join session; only one client may be connected at a time",
+    )
+}

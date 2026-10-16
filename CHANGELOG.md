@@ -223,6 +223,7 @@ The C API (`rlmesh.h`, ABI 5) exposes values, spaces, envs, models, runs and ses
 
 #### All languages
 
+- Back-to-back environment sessions and runs no longer fail spuriously with an active-session refusal after the previous client closes, detaches, or is dropped. The server releases its Join slot before sending the Close reply, including for older clients. A new Join from the same process waits up to five seconds, bounded by its request timeout, for a dropped or detached client's stream to finish; a stream still draining after that and genuinely concurrent clients receive the active-session refusal.
 - DLPack 1.0 exports requested with `copy=True` set the standard `IS_COPIED` flag as well as exposing writable, independent storage, and DLPack imports reject overflowing sizes and strides before accessing producer data.
 - Model and env servers disable Nagle's algorithm on accepted TCP connections, which removed a ~40 ms stall on some env steps.
 - Served model endpoints enforce `RLMESH_MODEL_ENDPOINT_TOKEN` when set, taking precedence over token options, and served env endpoints enforce `RLMESH_ENV_ENDPOINT_TOKEN` the same way. Empty or invalid environment values fail startup instead of disabling authentication, as does a token no client could send in an HTTP header (leading or trailing whitespace such as a secret file's trailing newline, or control or non-ASCII characters): the error names the variable and the problem, and the value is never trimmed.

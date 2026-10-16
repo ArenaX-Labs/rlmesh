@@ -1059,6 +1059,54 @@ fn remote_model_sessions_drive_every_remote_target() {
 }
 
 #[test]
+fn back_to_back_sessions_release_the_join_slot() {
+    let server = steps_server();
+    let model = ones();
+    for iteration in 0..100 {
+        let mut session = model.session(&server, SessionOptions::default()).unwrap();
+        session.reset(None, None).unwrap();
+        if iteration % 2 == 0 {
+            session.close().unwrap();
+        }
+        drop(session);
+
+        let mut remote =
+            crate::RemoteEnv::new(crate::RemoteEnvOptions::default().address(server.address()))
+                .unwrap();
+        remote.reset(None, None).unwrap();
+        if iteration % 2 == 0 {
+            remote.close().unwrap();
+        }
+        drop(remote);
+    }
+    server.shutdown().unwrap();
+}
+
+#[tokio::test]
+async fn back_to_back_async_drops_release_the_join_slot() {
+    let server = crate::EnvServer::new(Steps::new(), quick()).unwrap();
+    server.start().unwrap();
+    let model = ones();
+    for _ in 0..100 {
+        let mut session = model
+            .session_async(&server, SessionOptions::default())
+            .await
+            .unwrap();
+        session.reset_async(None, None).await.unwrap();
+        drop(session);
+
+        let mut remote = crate::RemoteEnv::new_async(
+            crate::RemoteEnvOptions::default().address(server.address()),
+        )
+        .await
+        .unwrap();
+        remote.reset_async(None, None).await.unwrap();
+        drop(remote);
+    }
+    server.shutdown_async().await.unwrap();
+}
+
+#[test]
 fn a_native_run_dials_a_borrowed_remote_env_s_address() {
     let server = steps_server();
     let mut remote =

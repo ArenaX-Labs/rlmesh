@@ -163,6 +163,7 @@ impl Drop for EnvLease<'_> {
                     handle.give_back(core);
                 }
             } else {
+                core.prepare_close();
                 super::drive::runtime().spawn(async move {
                     let _ = core.close().await;
                 });
@@ -1870,6 +1871,14 @@ impl Drop for Session<'_> {
                 }
             );
             if detached || core.episode.open || core.connected.is_some() {
+                if let EnvPort::Remote {
+                    client: Some(client),
+                    borrowed: false,
+                    ..
+                } = &core.env
+                {
+                    client.prepare_close();
+                }
                 super::drive::runtime().spawn(async move {
                     let _ = core.release(close_env).await;
                 });

@@ -325,10 +325,7 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
             .is_err()
         {
             tracing::warn!("rejecting Join stream: environment already has an active session");
-            return Err(Status::failed_precondition(
-                "environment already has an active Join session; only one client may be connected \
-                 at a time",
-            ));
+            return Err(super::wire::active_join_status());
         }
         let join_slot = JoinSlotGuard(self.join_active.clone());
 
@@ -345,7 +342,8 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
         tokio::spawn(async move {
             // Hold the slot guard for the lifetime of this stream; dropping it
             // (on normal completion, error, or task cancellation) frees the slot.
-            let _join_slot = join_slot;
+            let join_slot = join_slot;
+            let mut terminal_response = None;
             // Lane-scoped ops (a step/reset naming `env_indices` on a lane-capable
             // env) run concurrently: each is its own task and replies as it
             // completes, correlated by request_id. Everything else (whole-vector
@@ -422,19 +420,18 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
                     res.kind,
                     Some(join_response::Kind::Error(ref error)) if !error.is_recoverable
                 );
-                let send_result = tx.send(Ok(res)).await;
-
-                if send_result.is_err() {
-                    tracing::warn!(
-                        "env join response receiver closed before response could be delivered"
-                    );
-                    break;
-                }
-
                 if close_after || fatal {
                     if fatal {
                         tracing::error!("closing env join stream after a non-recoverable error");
                     }
+                    terminal_response = Some(res);
+                    break;
+                }
+
+                if tx.send(Ok(res)).await.is_err() {
+                    tracing::warn!(
+                        "env join response receiver closed before response could be delivered"
+                    );
                     break;
                 }
             }
@@ -454,6 +451,14 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
                     "completed episodes left active by an abruptly-ended session"
                 );
             }
+            // A terminal reply and response EOF are session-release barriers.
+            // Do this explicitly: sending the Close reply before cleanup let a
+            // client reconnect while this task still owned the exclusive slot.
+            drop(join_slot);
+            if let Some(response) = terminal_response {
+                let _ = tx.send(Ok(response)).await;
+            }
+            drop(tx);
         });
 
         Ok(Response::new(ReceiverStream::new(rx)))
@@ -1192,6 +1197,7 @@ mod tests {
         op_lock: tokio::sync::Mutex<()>,
         /// The edition pins and resets it received, in order.
         events: std::sync::Mutex<Vec<String>>,
+        pinned: tokio::sync::Notify,
     }
 
     impl ScriptedVectorEnv {
@@ -1206,6 +1212,7 @@ mod tests {
                 probe: None,
                 op_lock: tokio::sync::Mutex::new(()),
                 events: std::sync::Mutex::new(Vec::new()),
+                pinned: tokio::sync::Notify::new(),
             }
         }
 
@@ -1246,6 +1253,7 @@ mod tests {
         }
         fn pin_workflow_edition(&self, edition: rlmesh_proto::Edition) {
             self.events.lock().unwrap().push(format!("pin:{edition}"));
+            self.pinned.notify_one();
         }
         async fn reset(
             &self,
@@ -1568,6 +1576,81 @@ mod tests {
 
         let _ = shutdown_tx.send(());
         let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server).await;
+    }
+
+    #[tokio::test]
+    async fn join_slot_is_released_before_close_reply_without_reading_eof() {
+        use rlmesh_proto::env::v1::env_service_client::EnvServiceClient;
+        use rlmesh_proto::env::v1::env_service_server::EnvServiceServer;
+        use rlmesh_proto::env::v1::{CloseEnvsRequest, JoinRequest, join_request, join_response};
+        use tokio_stream::wrappers::ReceiverStream;
+
+        let service = GrpcEnvServer::new(ScriptedVectorEnv::handshake_only());
+        let env = service.env.clone();
+        let tracker = service.episode_tracker.clone();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(EnvServiceServer::new(service))
+                .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
+                .await
+        });
+        let mut client = EnvServiceClient::connect(format!("http://{address}"))
+            .await
+            .unwrap();
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        let mut first = client
+            .join(ReceiverStream::new(rx))
+            .await
+            .unwrap()
+            .into_inner();
+
+        // Queue Close's tracker lock first, then hold the next lock to pause
+        // the final sweep. The first-request pin signals immediately before
+        // Close awaits the tracker on this single-threaded test runtime.
+        let initial = tracker.lock().await;
+        tx.send(JoinRequest {
+            request_id: "close".to_string(),
+            kind: Some(join_request::Kind::Close(CloseEnvsRequest::default())),
+        })
+        .await
+        .unwrap();
+        env.pinned.notified().await;
+        let pause = tracker.lock();
+        tokio::pin!(pause);
+        assert!(futures::poll!(pause.as_mut()).is_pending());
+        drop(initial);
+        let pause = pause.await;
+
+        // An old server sends Close before the paused sweep. Keep the pause
+        // if that reply arrives, so the second Join deterministically catches
+        // the still-held slot. A fixed server waits until the sweep completes.
+        let reply =
+            tokio::time::timeout(std::time::Duration::from_millis(100), first.message()).await;
+        let mut pause = Some(pause);
+        let reply = match reply {
+            Ok(reply) => reply,
+            Err(_) => {
+                drop(pause.take());
+                first.message().await
+            }
+        }
+        .unwrap()
+        .unwrap();
+        assert_eq!(reply.request_id, "close");
+        assert!(matches!(reply.kind, Some(join_response::Kind::Close(_))));
+
+        // Match older pinned clients: read ONLY Close, keeping both halves of
+        // the first Join alive, and never read or wait for its EOF.
+        let (_tx2, rx2) = tokio::sync::mpsc::channel::<JoinRequest>(1);
+        let second = client.join(ReceiverStream::new(rx2)).await;
+        assert!(second.is_ok(), "Join after Close reply refused: {second:?}");
+        drop(pause);
+        drop((tx, first, second));
+        server.abort();
     }
 
     #[tokio::test]
