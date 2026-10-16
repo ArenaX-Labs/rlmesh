@@ -1171,7 +1171,7 @@ fn drive<E: Environment + Send + Sync + 'static>(
                 activity_tx,
             );
             let (_health, health_service) = rlmesh_grpc::health::serving_health_service().await;
-            let router = tonic::transport::Server::builder()
+            let router = rlmesh_grpc::lifecycle::server_builder()
                 .add_service(health_service)
                 .add_service(service);
             let serve_result = listener.serve(router, shutdown, Some(drain_timeout)).await;

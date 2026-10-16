@@ -702,7 +702,7 @@ where
     );
     let serve_result = match listener {
         BoundListener::Tcp(listener) => await_server_shutdown(
-            tonic::transport::Server::builder()
+            rlmesh_grpc::lifecycle::server_builder()
                 .add_service(service)
                 // Nagle off on accepted connections. A step response is one
                 // large write (an image observation is ~200 KB); with Nagle on,
@@ -721,7 +721,7 @@ where
         #[cfg(unix)]
         BoundListener::Unix { listener, path } => {
             let result = await_server_shutdown(
-                tonic::transport::Server::builder()
+                rlmesh_grpc::lifecycle::server_builder()
                     .add_service(service)
                     .serve_with_incoming_shutdown(
                         UnixListenerStream::new(listener),

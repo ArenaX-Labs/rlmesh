@@ -18,6 +18,24 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+/// Interval between the HTTP/2 PINGs every RLMesh server sends on an idle
+/// connection, so a proxy or load balancer in front of it does not reap a
+/// Join stream that waits between episodes.
+pub const SERVER_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
+
+/// How long a server waits for a PING's acknowledgement before it closes the
+/// connection as dead.
+pub const SERVER_KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The tonic server builder every RLMesh env and model server starts from:
+/// HTTP/2 keepalive PINGs every [`SERVER_KEEPALIVE_INTERVAL`], answered
+/// within [`SERVER_KEEPALIVE_TIMEOUT`].
+pub fn server_builder() -> tonic::transport::Server {
+    tonic::transport::Server::builder()
+        .http2_keepalive_interval(Some(SERVER_KEEPALIVE_INTERVAL))
+        .http2_keepalive_timeout(Some(SERVER_KEEPALIVE_TIMEOUT))
+}
+
 /// Deployment-level opt-in that lets a served environment honor the remote
 /// `shutdown` RPC ("1"/"true", case-insensitive). Orchestrators that queue env
 /// workloads (e.g. the managed platform's workload admission) set this on env

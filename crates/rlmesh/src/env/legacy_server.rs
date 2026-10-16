@@ -179,7 +179,7 @@ async fn bind_environment<T: Environment + Send + Sync + 'static>(
         activity_tx,
     );
     let (_health_reporter, health_service) = rlmesh_grpc::health::serving_health_service().await;
-    let router = tonic::transport::Server::builder()
+    let router = rlmesh_grpc::lifecycle::server_builder()
         .add_service(health_service)
         .add_service(service);
     let env: Arc<dyn Environment + Send + Sync> = env;

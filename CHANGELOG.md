@@ -191,6 +191,8 @@ The C API (`rlmesh.h`, ABI 5) exposes values, spaces, envs, models, runs and ses
 
 #### Python
 
+- Env and model servers send HTTP/2 keepalive pings every 30 s (10 s to answer), so a proxy or load balancer in front of them no longer drops a Join stream that idles between episodes.
+
 - Model run and session warnings identify the caller’s source location, including calls through the top-level run helper, so module warning filters apply to user code.
 
 - `describe(rlmesh.Model(policy))` describes what `describe(policy)` does: the target qualname, the edition declaration, the `load` params, the variants, the predict corners and a class-level `native_chunk` come from the wrapped policy (only `model_spec` is the model's own). Before, they came from the `rlmesh.Model` wrapper class (`rlmesh._native:Model`, no corners). `describe(rlmesh.Model(predict_callable))` keeps the wrapper's model kind and reads its declarations from the callable.
