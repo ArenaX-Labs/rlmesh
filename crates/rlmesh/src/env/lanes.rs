@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 
 use super::Env;
-use crate::spaces::{self, CloseRequest, MetaMap, MetaValue, RenderRequest, RenderResult};
+use crate::binding::spaces::{self, CloseRequest, MetaMap, MetaValue, RenderRequest, RenderResult};
 use rlmesh_proto::{EndpointPhases, elapsed_ns};
 
 /// The op result plus the lane's phase split for it (queue wait included).

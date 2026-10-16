@@ -1,4 +1,4 @@
-use crate::spaces;
+use crate::binding::spaces;
 
 pub use spaces::{CloseRequest, RenderRequest, RenderResult};
 

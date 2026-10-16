@@ -17,10 +17,10 @@ use crate::spaces::{
     rlmesh_space_box, rlmesh_space_box_bounds, rlmesh_space_box_elementwise,
     rlmesh_space_copy_nvec, rlmesh_space_copy_shape, rlmesh_space_dict, rlmesh_space_dict_get,
     rlmesh_space_dict_get_at, rlmesh_space_dict_key, rlmesh_space_discrete,
-    rlmesh_space_discrete_n, rlmesh_space_free, rlmesh_space_len, rlmesh_space_text_charset,
+    rlmesh_space_discrete_n, rlmesh_space_len, rlmesh_space_spec_free, rlmesh_space_text_charset,
     rlmesh_space_text_length, rlmesh_space_tuple, rlmesh_space_tuple_get, rlmesh_space_type,
 };
-use crate::value::dtype::RLMeshDType;
+use crate::value::dtype::RLMeshDLPackDType;
 use crate::value::handle::{
     RLMeshValue, RLMeshValueKind, rlmesh_value_array_len, rlmesh_value_as_discrete,
     rlmesh_value_as_tensor, rlmesh_value_as_text, rlmesh_value_box, rlmesh_value_copy_multi_binary,
@@ -37,7 +37,7 @@ fn round_trip(_spec: &SpaceSpec, value: *mut RLMeshValue, check: impl FnOnce(*co
     unsafe { rlmesh_value_free(value) };
 }
 
-const F32: RLMeshDType = RLMeshDType {
+const F32: RLMeshDLPackDType = RLMeshDLPackDType {
     code: 2,
     bits: 32,
     lanes: 1,
@@ -226,8 +226,8 @@ fn header_abi_version_macros_match_crate() {
 fn header_dtype_macros_match_core() {
     // The header's `RLMESH_<NAME>` dtype macros are hand-authored; assert each
     // `RLMESH_DTYPE_INIT(code, bits, lanes)` triple still matches what core's
-    // `RLMeshDType::from_core` produces, so the C constants can't silently drift.
-    let triple = |name: &str| -> RLMeshDType {
+    // `RLMeshDLPackDType::from_core` produces, so the C constants can't silently drift.
+    let triple = |name: &str| -> RLMeshDLPackDType {
         let prefix = format!("#define {name} RLMESH_DTYPE_INIT(");
         let rest = HEADER
             .lines()
@@ -240,7 +240,7 @@ fn header_dtype_macros_match_core() {
             3,
             "{name} expects a (code, bits, lanes) triple"
         );
-        RLMeshDType {
+        RLMeshDLPackDType {
             code: parts[0].parse().expect("code"),
             bits: parts[1].parse().expect("bits"),
             lanes: parts[2].parse().expect("lanes"),
@@ -256,7 +256,7 @@ fn header_dtype_macros_match_core() {
     ] {
         assert_eq!(
             Some(triple(name)),
-            RLMeshDType::from_core(dtype),
+            RLMeshDLPackDType::from_core(dtype),
             "header dtype macro {name} drifted from core"
         );
     }
@@ -1024,8 +1024,8 @@ fn space_key(spec: *const RLMeshSpaceSpec, index: usize) -> String {
     String::from_utf8(bytes.to_vec()).expect("utf-8 key")
 }
 
-fn capi_dtype(dtype: DType) -> RLMeshDType {
-    RLMeshDType::from_core(dtype).expect("a C dtype")
+fn capi_dtype(dtype: DType) -> RLMeshDLPackDType {
+    RLMeshDLPackDType::from_core(dtype).expect("a C dtype")
 }
 
 /// The owned spec behind a builder handle.
@@ -1064,7 +1064,7 @@ fn a_dict_space_the_builder_rejects_takes_none_of_its_children() {
         RLMeshStatus::Ok
     );
     assert_eq!(len, 2);
-    unsafe { rlmesh_space_free(dict) };
+    unsafe { rlmesh_space_spec_free(dict) };
 }
 
 #[test]
@@ -1078,7 +1078,7 @@ fn a_tuple_space_with_a_null_child_takes_none_of_the_others() {
     );
     let tuple = unsafe { rlmesh_space_tuple([child].as_ptr(), 1) };
     assert_eq!(unsafe { rlmesh_space_type(tuple) }, RLMeshValueKind::Tuple);
-    unsafe { rlmesh_space_free(tuple) };
+    unsafe { rlmesh_space_spec_free(tuple) };
 }
 
 #[test]
@@ -1145,7 +1145,7 @@ fn unsigned_box_bounds_above_i64_max_round_trip_exactly() {
         )
     };
     assert_eq!(typed_high(built_spec(uniform)), high_value.to_le_bytes());
-    unsafe { rlmesh_space_free(uniform) };
+    unsafe { rlmesh_space_spec_free(uniform) };
 
     let shape = [2i64];
     let elementwise = unsafe {
@@ -1171,7 +1171,7 @@ fn unsigned_box_bounds_above_i64_max_round_trip_exactly() {
     };
     assert_eq!(typed.low, expect([0, low_value]));
     assert_eq!(typed.high, expect([high_value, high_value]));
-    unsafe { rlmesh_space_free(elementwise) };
+    unsafe { rlmesh_space_spec_free(elementwise) };
 
     // The signed edge still builds: i64::MIN is exactly -2^63.
     let shape = [1i64];
@@ -1185,5 +1185,5 @@ fn unsigned_box_bounds_above_i64_max_round_trip_exactly() {
         )
     };
     assert!(!signed.is_null());
-    unsafe { rlmesh_space_free(signed) };
+    unsafe { rlmesh_space_spec_free(signed) };
 }

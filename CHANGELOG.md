@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ### Added
 
+- The experimental C API has Python's spaces as a stateful handle: `RLMeshSpace` (with `RLMeshBox`, `RLMeshDiscrete` and `RLMeshDict` as typedefs of it) built with `rlmesh_box_new(low, high, shape, ndim, options, &out)`, `rlmesh_discrete_new(n, options, &out)` and `rlmesh_dict_new(keys, specs, n, &out)`, or from a spec with `rlmesh_space_new`, `rlmesh_*_from_spec` and `rlmesh_spaces_space_from_spec`; `rlmesh_space_seed` (a `uint64_t`, `NULL` draws one), `rlmesh_space_sample`, `rlmesh_space_contains`, `rlmesh_space_equals`, `rlmesh_space_repr`, `rlmesh_space_clone` (shares the sampler) and `rlmesh_space_free`. Bounds are typed `RLMeshBound`s (`rlmesh_bound_int`, `_uint`, `_float`, `_bool`) read back exactly with `rlmesh_box_low`/`_high`/`_bounds_kind`; `rlmesh_ext_box_elementwise_new` builds a per-element Box. Dict keys are length-bearing `RLMeshStr` (`rlmesh_str()`), read with `rlmesh_dict_key_at`/`_value_at`/`_get`/`_len`/`_contains_key`. `RLMeshDType` is now the dtype enum (`RLMESH_DTYPE_FLOAT32`, ..., `rlmesh_dtype_str`, `rlmesh_ext_dtype_size`) taken by `RLMeshBoxOptions` and `RLMeshDiscreteOptions` (`_INIT`, `_MIN_SIZE`); the spec readers `rlmesh_space_spec_kind`/`_shape`/`_dtype`/`_repr`/`_clone`/`_free` return `RLMeshSpaceKind` and the enum.
+
+- The experimental C++ wrapper has the same spaces in `rlmesh::spaces`: `Space` (copies share the sampler; `seed`, `sample`, `contains`, `==`, `to_string`, `as_box`/`as_discrete`/`as_dict`), `Box`, `Discrete` and `Dict` with `create(...)`/`from_spec(...)` factories returning `Result` and, with exceptions, constructors that throw (`Box(-1.0, 1.0, {3})`, `Discrete(4, {.start = 1})`, `Dict({{"pos", box}, ...})`), `SpaceSpec`, implicit `Bound` with `as_int`/`as_uint`/`as_float`/`as_bool`, `BoxBound`, `SpaceKind`, `BoundsKind`, `rlmesh::DType`, and `rlmesh::ext::box_elementwise`.
+
+- The Rust crate has Python's spaces: `rlmesh::spaces::{Space, Box, Discrete, Dict, SpaceSpec, space_from_spec}` with `seed` (a `u64`, returned), `sample`, `contains`, `kind`/`shape`/`dtype`, Box `low`/`high`/`bounds_kind` as exact typed `Bound`s, Discrete `n`/`start`, and Dict's read-only mapping in declaration order (`keys`, `values`, `items`, `get`, `len`, `contains_key`, `d["key"]`). Clones of a space share its sampler; `as_box()`/`TryFrom` downcast and `From` upcasts to `Space`. `rlmesh::Tensor` is Python's `Tensor` (`new`, `shape`, `dtype`, `ndim`, `size`, `nbytes`, byte `strides`, `device`, `buffer`, `is_contiguous`, `reshape`, `copy`, `tobytes`), `rlmesh::DType` the twelve dtypes with Python's spellings, and `rlmesh::ext` holds the Rust-only extras (`TensorExt`, `SpaceExt::contains_detail`, `Storage`, `dtype_size`). Values are still the wire `SpaceValue`.
+
 - The experimental C++ wrapper defines the Python package's exception classes with Python's inheritance when exceptions are enabled: `rlmesh::RLMeshException` (a `rlmesh::RuntimeError`), `ProtocolException`, `EnvironmentException`, `RecoverableEnvironmentException` and `ModelException` under it, and `ValueError` (`AdapterResolutionError`), `TypeError`, `RuntimeError`, `OSError` (`ConnectionError`, `TimeoutError`) outside it; `rlmesh::ext::CancelledError` derives from no `std::` exception. `rlmesh::throw_error(error)` and `Result::value_or_throw()` throw the class an `Error` reports, and `Error::error_class()` / `detail_code()` expose it. A predict may throw `rlmesh::ModelException(msg, true)` and an env callback `rlmesh::RecoverableEnvironmentException(msg)` to fail one request as recoverable; any other exception stays a permanent failure. `Result<T>` and `-fno-exceptions` builds are unchanged.
 
 - The experimental C API reports the Python exception class of every error: `rlmesh_last_error_class()` returns an `RLMeshErrorClass` (`RLMESH_ERROR_CLASS_RECOVERABLE_ENVIRONMENT_EXCEPTION`, `RLMESH_ERROR_CLASS_CONNECTION_ERROR`, ...), with `rlmesh_error_class_name` and `rlmesh_error_class_is_subclass` following Python's inheritance. `rlmesh_last_error_code` and `rlmesh_last_error_code_str` read an environment or model error's code (`RLMeshErrorCode`, `RLMeshModelErrorCode`; `rlmesh_error_code_str`, `rlmesh_model_error_code_str`). New statuses `RLMESH_ERR_PROTOCOL` (9), `RLMESH_ERR_TYPE` (10), `RLMESH_ERR_RUNTIME` (11) and `RLMESH_ERR_OS` (12) join the existing ones, whose values are unchanged. The additions are additive: the ABI version is unchanged.
@@ -43,6 +49,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ### Fixed
 
+- An integer `Box` samples in its dtype's exact integer domain instead of through `float`: a `uint64` Box with bounds above 2^63 no longer saturates at 2^63 - 1, and `int64`/`uint64` bounds beyond 2^53 no longer round. Samples of integer Boxes whose bounds are exact as floats, and of bool Boxes, are unchanged.
+
 - Model and env servers disable Nagle's algorithm on accepted TCP connections, which removed a ~40 ms stall on some env steps.
 
 - Served model endpoints enforce `RLMESH_MODEL_ENDPOINT_TOKEN` when set, taking precedence over token options. Empty or invalid environment values fail startup instead of disabling authentication, as does a token no client could send in an HTTP header (leading or trailing whitespace such as a secret file's trailing newline, or control or non-ASCII characters): the error names the variable and the problem, and the value is never trimmed.
@@ -75,7 +83,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ### Changed
 
-- Adapter resolution errors for a missing role now suggest near matches among the roles the other side offers (`did you mean "x/goal_body"?`), and, when an `x/` role is involved, say that `x/` roles bind only to the identical string. The suggestion is only a hint: binding still matches roles exactly, and one registered role is never suggested for another. The zero-fill caution for an optional state input names the absent role and part (`zero-filled because the env offers no match for "proprio/eef_pos" (part "right_arm")`) instead of only counting components.
+- C API: the DLPack `(code, bits, lanes)` dtype struct is renamed `RLMeshDLPackDType` (deprecated; the tensor and value functions and the old space builders still take it), so `RLMeshDType` can name the dtype enum; the layout and the `RLMESH_F32`-style macros are unchanged. An owned spec from the old `rlmesh_space_*` builders is freed with `rlmesh_space_spec_free`; `rlmesh_space_free` now takes the new `RLMeshSpace` handle, and still frees an owned spec passed by a binary built against the previous header. The old builders are deprecated in favour of `rlmesh_box_new`, `rlmesh_discrete_new` and `rlmesh_dict_new`. The ABI version is unchanged.
+
+- Rust: `rlmesh::spaces` is the shared spaces module above; the wire types it re-exported (spec payloads and builders, `SpaceValue`, the core `Tensor` and `DType`, `MetaMap`, render and request types) moved to the hidden `rlmesh::binding::spaces`. The crate-root `rlmesh::SpaceSpec`, `SpaceValue`, `EnvContract` and the prelude are unchanged; `rlmesh::binding::space_spec_wire` gives the wire spec of a `spaces::SpaceSpec` for the `Env` trait.
+
+- `Space.seed()` is annotated `-> int`: it always returned the seed it applied (one drawn from OS entropy for `seed=None`), never `None`.
+
+- `Box(spec)`, `Discrete(spec)` and the experimental `MultiBinary(spec)`, `MultiDiscrete(spec)` and `Text(spec)` raise `ValueError` for a spec of another kind, as `Dict(spec)` and `Tuple(spec)` already did. `Box` and `MultiBinary`/`MultiDiscrete` used to wrap any kind, and `Discrete` and `Text` failed with `KeyError`.
+
+- `Discrete`'s `dtype` is annotated with the three dtypes it accepts, `"int64"`, `"int32"` and `"uint8"`; the runtime check is unchanged.
+
+- A `Box` with integer bounds on an integer or bool dtype (`bounds_kind == "typed_uniform"`) reads `low` and `high` as one number, as a float Box does, instead of a one-element list. `Box(0, 255, [2], "uint8").high` is `255`. The describe envelope's space JSON is unchanged.
+
+- `Box` refuses a fractional bound on an integer or bool dtype with `ValueError` instead of truncating it: `Box(0.5, 3.7, [2], "int32")` was the range 0..3. Integral floats (`Box(0.0, 10.0, [1], "int64")`) are accepted and stored exactly.
+
+- `Box.contains` requires the space's exact shape, as Gymnasium does: a `(6,)` value is not a member of a `(2, 3)` Box, and a bare number is not a member of a `(1,)` Box. Before, only the element count and dtype were checked. Dict and Tuple members check their Box children the same way.
+
+- `RANDOM_SAMPLE` seeds the action-space sampler with each episode's reset seed, so a seeded run reproduces its actions; an episode without a seed keeps the running stream. Before, the sampler always drew from OS entropy.
+
+- `Tensor(buffer, shape, dtype)` raises `ValueError` instead of `OverflowError` when the element or byte count overflows, like its other invalid arguments.
 
 - C API errors follow the Python classes: a wrong-kind value or space read returns `RLMESH_ERR_TYPE` instead of `RLMESH_ERR_INVALID_VALUE`, which is deprecated and no longer returned; a malformed tensor or non-UTF-8 text is `RLMESH_ERR_INVALID_ARGUMENT`; a server-side failure (a failed bind) is `RLMESH_ERR_INTERNAL` instead of `RLMESH_ERR_TRANSPORT`, which is renamed `RLMESH_ERR_CONNECTION` and kept as a deprecated alias; a protocol failure is `RLMESH_ERR_PROTOCOL` instead of `RLMESH_ERR_INTERNAL`. `rlmesh_last_error_message` is Python's `str(exc)`: the `connection error:`, `environment error:`, `model error:` and `internal error:` prefixes are gone, environment and model errors read `[CODE] message`, and a timeout reads `operation timed out after 5s`. `rlmesh_last_error_is_recoverable` is nonzero only for a recoverable environment or model error, no longer for a timeout or connection failure.
 
@@ -94,6 +120,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - `RemoteEnv` and `RemoteVectorEnv` log a warning, once per client, when an env's own `info` key shadows a runtime-reserved one (`episode_ids`, `completed_episodes`). The env's value is still kept.
 
 - The live viewer shows the env's first declared image role by default instead of its `render()` frame. The role rides the step response, while `render()` costs one more env round trip per drawn frame; `render` stays selectable, and `View(source="render")` asks for it.
+
+- Adapter resolution errors for a missing role now suggest near matches among the roles the other side offers (`did you mean "x/goal_body"?`), and, when an `x/` role is involved, say that `x/` roles bind only to the identical string. The suggestion is only a hint: binding still matches roles exactly, and one registered role is never suggested for another. The zero-fill caution for an optional state input names the absent role and part (`zero-filled because the env offers no match for "proprio/eef_pos" (part "right_arm")`) instead of only counting components.
 
 ## [0.1.0] - 2026-09-23
 

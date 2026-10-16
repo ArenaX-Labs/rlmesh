@@ -376,4 +376,65 @@ rlmesh::Status env_server(const std::string& address) {
   return moved.serve();
 }
 
+// The spaces wrapper (rlmesh::spaces), through its no-exception factories.
+rlmesh::Status spaces_surface(const rlmesh::Value& value) {
+  using namespace rlmesh::spaces;
+  rlmesh::spaces::BoxOptions box_options;
+  box_options.dtype = rlmesh::DType::Int32;
+  auto box = Box::create(0, 10, {2}, box_options);
+  if (!box) return box.error();
+  (void)box->low();
+  (void)box->high();
+  (void)box->bounds_kind();
+  rlmesh::spaces::DiscreteOptions discrete_options;
+  discrete_options.start = 1;
+  auto discrete = Discrete::create(4, discrete_options);
+  if (!discrete) return discrete.error();
+  (void)(discrete->n() + discrete->start());
+  std::vector<std::pair<std::string, SpaceSpec>> children;
+  children.emplace_back("a", box->spec());
+  children.emplace_back("b", *discrete);
+  auto dict = Dict::create(children);
+  if (!dict) return dict.error();
+  (void)dict->size();
+  (void)dict->keys();
+  (void)dict->values();
+  (void)dict->items();
+  (void)dict->key_at(0);
+  (void)dict->get("a");
+  (void)dict->contains_key("b");
+  Space space = *dict;
+  (void)space.seed();
+  (void)space.seed(uint64_t{7});
+  auto sample = space.sample();
+  if (!sample) return sample.error();
+  (void)space.contains(value);
+  (void)(space == *box);
+  (void)space.to_string();
+  (void)space.as_box();
+  (void)space.as_discrete();
+  (void)space.as_dict();
+  SpaceSpec spec = space.spec();
+  (void)spec.kind();
+  (void)spec.shape();
+  (void)spec.dtype();
+  (void)spec.to_string();
+  auto again = spec.to_space();
+  if (!again) return again.error();
+  auto typed = space_from_spec(spec);
+  if (!typed) return typed.error();
+  (void)Box::from_spec(spec);
+  (void)Discrete::from_spec(spec);
+  (void)Dict::from_spec(spec);
+  Bound bound = 1.5;
+  (void)bound.type();
+  (void)bound.raw();
+  (void)to_string(SpaceKind::Box);
+  (void)to_string(BoundsKind::Uniform);
+  (void)rlmesh::to_string(rlmesh::DType::Float32);
+  auto per = rlmesh::ext::box_elementwise({0, 1}, {2, 3}, {2});
+  if (!per) return per.error();
+  return rlmesh::ok();
+}
+
 }  // namespace surface

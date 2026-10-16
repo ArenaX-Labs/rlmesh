@@ -87,13 +87,24 @@ fn sample_box<R: rand::Rng + ?Sized>(
     rng: &mut R,
 ) -> Result<Tensor, SpaceError> {
     let numel = numel(&space.shape);
-    let (low, high) = box_bounds(spec, numel.max(1), space.dtype);
-    let scalars = low
-        .iter()
-        .zip(high.iter())
-        .take(numel)
-        .map(|(low, high)| sample_box_scalar(rng, *low, *high, space.dtype))
-        .collect::<Result<Vec<_>, _>>()?;
+    let scalars = if is_integer_dtype(space.dtype) {
+        // Integer elements sample in the dtype's exact domain: typed bounds
+        // decode to integers, never through `f64`, so `uint64` bounds above
+        // 2^63 and `int64` bounds beyond 2^53 are honoured exactly.
+        let (low, high) = integer_box_bounds(spec, numel.max(1), space.dtype);
+        low.iter()
+            .zip(high.iter())
+            .take(numel)
+            .map(|(low, high)| sample_integer_box_scalar(rng, *low, *high, space.dtype))
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        let (low, high) = box_bounds(spec, numel.max(1), space.dtype);
+        low.iter()
+            .zip(high.iter())
+            .take(numel)
+            .map(|(low, high)| sample_box_scalar(rng, *low, *high, space.dtype))
+            .collect::<Result<Vec<_>, _>>()?
+    };
 
     // The sampler treats `Unspecified` specs as float32, matching the codecs.
     let dtype = normalize_dtype(space.dtype);
@@ -106,6 +117,7 @@ fn sample_box<R: rand::Rng + ?Sized>(
         .map_err(|err| SpaceError::invalid("$", err.to_string()))
 }
 
+/// Per-element `f64` bounds for the non-integer (float and bool) dtypes.
 fn box_bounds(spec: &BoxSpec, numel: usize, dtype: DType) -> (Vec<f64>, Vec<f64>) {
     match &spec.bounds {
         Some(BoxBounds::Uniform(bounds)) => (vec![bounds.low; numel], vec![bounds.high; numel]),
@@ -113,9 +125,7 @@ fn box_bounds(spec: &BoxSpec, numel: usize, dtype: DType) -> (Vec<f64>, Vec<f64>
             elementwise_or_default(bounds.low.as_slice(), numel, f64::NEG_INFINITY),
             elementwise_or_default(bounds.high.as_slice(), numel, f64::INFINITY),
         ),
-        // Typed byte bounds are decoded with the space dtype into f64 for
-        // sampling. The sampler only needs an approximate range, so the f64
-        // view is acceptable here even for int64/uint64.
+        // Typed byte bounds of a float or bool dtype are exact in `f64`.
         Some(BoxBounds::TypedUniform(bounds)) => {
             let low = decode_typed_one(&bounds.low, dtype).unwrap_or(f64::NEG_INFINITY);
             let high = decode_typed_one(&bounds.high, dtype).unwrap_or(f64::INFINITY);
@@ -146,6 +156,69 @@ fn decode_typed_many(bytes: &[u8], dtype: DType, numel: usize, default: f64) -> 
     }
 }
 
+/// One side of an integer Box element in the dtype's exact domain (`i128`
+/// holds every `i64` and `u64`); `None` is an open side.
+type IntEdge = Option<i128>;
+
+/// Per-element integer edges for an integer dtype. Float bounds round inward
+/// (`ceil(low)`, `floor(high)`, as Gymnasium); typed bounds decode exactly.
+fn integer_box_bounds(spec: &BoxSpec, numel: usize, dtype: DType) -> (Vec<IntEdge>, Vec<IntEdge>) {
+    fn float_low(low: f64) -> IntEdge {
+        low.is_finite().then(|| low.ceil() as i128)
+    }
+    fn float_high(high: f64) -> IntEdge {
+        high.is_finite().then(|| high.floor() as i128)
+    }
+    fn float_edges(values: &[f64], numel: usize, edge: fn(f64) -> IntEdge) -> Vec<IntEdge> {
+        if values.len() == numel {
+            values.iter().map(|value| edge(*value)).collect()
+        } else {
+            vec![None; numel]
+        }
+    }
+    let typed_one = |bytes: &[u8]| -> IntEdge {
+        decode_scalars(bytes, dtype)
+            .ok()
+            .and_then(|scalars| scalars.first().map(|s| scalar_to_int_edge(*s, dtype)))
+    };
+    let typed_many = |bytes: &[u8]| -> Vec<IntEdge> {
+        match decode_scalars(bytes, dtype) {
+            Ok(scalars) if scalars.len() == numel => scalars
+                .into_iter()
+                .map(|s| Some(scalar_to_int_edge(s, dtype)))
+                .collect(),
+            _ => vec![None; numel],
+        }
+    };
+    match &spec.bounds {
+        Some(BoxBounds::Uniform(bounds)) => (
+            vec![float_low(bounds.low); numel],
+            vec![float_high(bounds.high); numel],
+        ),
+        Some(BoxBounds::Elementwise(bounds)) => (
+            float_edges(bounds.low.as_slice(), numel, float_low),
+            float_edges(bounds.high.as_slice(), numel, float_high),
+        ),
+        Some(BoxBounds::TypedUniform(bounds)) => (
+            vec![typed_one(&bounds.low); numel],
+            vec![typed_one(&bounds.high); numel],
+        ),
+        Some(BoxBounds::TypedElementwise(bounds)) => {
+            (typed_many(&bounds.low), typed_many(&bounds.high))
+        }
+        Some(BoxBounds::Unbounded(_)) | None => (vec![None; numel], vec![None; numel]),
+    }
+}
+
+/// A decoded typed bound as an exact integer: `Uint64` reads unsigned.
+fn scalar_to_int_edge(scalar: Scalar, dtype: DType) -> i128 {
+    match scalar {
+        Scalar::Int(_) if dtype == DType::Uint64 => i128::from(scalar.as_u64()),
+        Scalar::Float(value) => value as i128,
+        other => i128::from(other.as_i64()),
+    }
+}
+
 /// Validated elementwise bounds always carry one value per element; anything
 /// else falls back to the unbounded default for sampling purposes.
 fn elementwise_or_default(values: &[f64], len: usize, default: f64) -> Vec<f64> {
@@ -156,16 +229,13 @@ fn elementwise_or_default(values: &[f64], len: usize, default: f64) -> Vec<f64> 
     }
 }
 
+/// Sample one float or bool Box element.
 fn sample_box_scalar<R: rand::Rng + ?Sized>(
     rng: &mut R,
     low: f64,
     high: f64,
     dtype: DType,
 ) -> Result<Scalar, SpaceError> {
-    if is_integer_dtype(dtype) {
-        return sample_integer_box_scalar(rng, low, high, dtype);
-    }
-
     let value = sample_continuous(rng, low, high)?;
     if matches!(dtype, DType::Bool) {
         return Ok(Scalar::Bool(value.round() != 0.0));
@@ -198,36 +268,37 @@ fn sample_continuous<R: rand::Rng + ?Sized>(
     Ok(value)
 }
 
-/// Sample an integer-dtype Box element with a uniform integer distribution
-/// over `[ceil(low), floor(high)]`, matching Gymnasium instead of rounding a
-/// continuous uniform (which biases the endpoints).
+/// Sample an integer-dtype Box element uniformly over its integer edges,
+/// matching Gymnasium instead of rounding a continuous uniform (which biases
+/// the endpoints). The draw stays in the dtype's domain: `i64` ranges draw on
+/// `i64`, and a range above `i64::MAX` (only `uint64` has one) draws on `u64`.
 fn sample_integer_box_scalar<R: rand::Rng + ?Sized>(
     rng: &mut R,
-    low: f64,
-    high: f64,
+    low: IntEdge,
+    high: IntEdge,
     dtype: DType,
 ) -> Result<Scalar, SpaceError> {
     // Clamp the open ends to the dtype's representable range so an unbounded
     // integer Box still samples a finite value.
     let (dtype_lo, dtype_hi) = integer_dtype_bounds(dtype);
-    let lo = if low.is_finite() {
-        low.ceil()
-    } else {
-        dtype_lo
-    };
-    let hi = if high.is_finite() {
-        high.floor()
-    } else {
-        dtype_hi
-    };
+    let lo = low.unwrap_or(dtype_lo);
+    let hi = high.unwrap_or(dtype_hi);
     if lo > hi {
         return Err(SpaceError::invalid(
             "$",
-            format!("cannot sample integer Box element with low {low} greater than high {high}"),
+            format!("cannot sample integer Box element with low {lo} greater than high {hi}"),
         ));
     }
-    let lo = lo as i64;
-    let hi = hi as i64;
+    let (i64_min, i64_max) = (i128::from(i64::MIN), i128::from(i64::MAX));
+    if hi > i64_max && lo >= 0 {
+        let hi = u64::try_from(hi).unwrap_or(u64::MAX);
+        let lo = u64::try_from(lo).unwrap_or(u64::MAX).min(hi);
+        // Bit-cast back: the encoder writes a `Uint64` element as `as u64`.
+        return Ok(Scalar::Int(rng.random_range(lo..=hi) as i64));
+    }
+    // Saturate edges outside `i64` (a float bound beyond the 64-bit range).
+    let lo = lo.clamp(i64_min, i64_max) as i64;
+    let hi = hi.clamp(i64_min, i64_max) as i64;
     Ok(Scalar::Int(rng.random_range(lo..=hi)))
 }
 
@@ -246,20 +317,18 @@ fn is_integer_dtype(dtype: DType) -> bool {
 }
 
 /// Conservative finite sampling bounds for an unbounded integer Box element.
-/// These stay well within `i64` so `random_range` cannot overflow.
-fn integer_dtype_bounds(dtype: DType) -> (f64, f64) {
+/// 64-bit dtypes keep to +/-2^53 (as before), well inside `i64`.
+fn integer_dtype_bounds(dtype: DType) -> (i128, i128) {
     match dtype {
-        DType::Bool => (0.0, 1.0),
-        DType::Uint8 => (0.0, u8::MAX as f64),
-        DType::Int8 => (i8::MIN as f64, i8::MAX as f64),
-        DType::Int16 => (i16::MIN as f64, i16::MAX as f64),
-        DType::Uint16 => (0.0, u16::MAX as f64),
-        DType::Int32 => (i32::MIN as f64, i32::MAX as f64),
-        DType::Uint32 => (0.0, u32::MAX as f64),
-        // Keep i64/u64 within a range that round-trips through f64 exactly.
-        DType::Int64 => (-(1i64 << 53) as f64, (1i64 << 53) as f64),
-        DType::Uint64 => (0.0, (1u64 << 53) as f64),
-        _ => (-(1i64 << 53) as f64, (1i64 << 53) as f64),
+        DType::Bool => (0, 1),
+        DType::Uint8 => (0, i128::from(u8::MAX)),
+        DType::Int8 => (i128::from(i8::MIN), i128::from(i8::MAX)),
+        DType::Int16 => (i128::from(i16::MIN), i128::from(i16::MAX)),
+        DType::Uint16 => (0, i128::from(u16::MAX)),
+        DType::Int32 => (i128::from(i32::MIN), i128::from(i32::MAX)),
+        DType::Uint32 => (0, i128::from(u32::MAX)),
+        DType::Uint64 => (0, 1i128 << 53),
+        _ => (-(1i128 << 53), 1i128 << 53),
     }
 }
 
@@ -567,15 +636,75 @@ mod tests {
     #[test]
     fn uint64_max_bound_decodes_to_positive_for_sampling() {
         let spec = typed_uniform_spec(0, -1, DType::Uint64);
-        let (low, high) = box_bounds(&spec, 1, DType::Uint64);
-        assert_eq!(low, vec![0.0]);
-        assert_eq!(high, vec![u64::MAX as f64], "u64::MAX must decode positive");
+        let (low, high) = integer_box_bounds(&spec, 1, DType::Uint64);
+        assert_eq!(low, vec![Some(0)]);
+        assert_eq!(
+            high,
+            vec![Some(i128::from(u64::MAX))],
+            "u64::MAX must decode positive and exact"
+        );
 
         let mut rng = ChaCha12Rng::seed_from_u64(7);
         let sampled = sample_integer_box_scalar(&mut rng, low[0], high[0], DType::Uint64);
         assert!(
             sampled.is_ok(),
             "sampling a [0, u64::MAX] Uint64 box must not error: {sampled:?}"
+        );
+    }
+
+    fn box_u64_samples(spec: &SpaceSpec, seeds: std::ops::Range<u64>) -> Vec<u64> {
+        seeds
+            .flat_map(|seed| {
+                let SpaceValue::Box(tensor) = sample_seeded(spec, seed).unwrap() else {
+                    panic!("expected a Box value");
+                };
+                tensor
+                    .to_contiguous_bytes()
+                    .as_chunks::<8>()
+                    .0
+                    .iter()
+                    .map(|chunk| u64::from_le_bytes(*chunk))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    // SPC-P4: integer elements sample in the dtype's own domain.
+    #[test]
+    fn uint64_bounds_above_i64_max_sample_exactly() {
+        let low = (1u64 << 63) + 10;
+        let high = (1u64 << 63) + 13;
+        let spec = BoxSpaceBuilder::uint_scalar(low, high, vec![16])
+            .dtype(DType::Uint64)
+            .build()
+            .unwrap();
+        let samples = box_u64_samples(&spec, 0..8);
+        assert!(
+            samples.iter().all(|v| (low..=high).contains(v)),
+            "{samples:?}"
+        );
+        // Every value of the four-wide range is reachable (no saturation).
+        for v in low..=high {
+            assert!(samples.contains(&v), "{v} never sampled: {samples:?}");
+        }
+    }
+
+    #[test]
+    fn int64_bounds_beyond_2_53_sample_exactly() {
+        let low = (1i64 << 60) + 1;
+        let high = (1i64 << 60) + 3;
+        let spec = BoxSpaceBuilder::int_scalar(low, high, vec![16])
+            .dtype(DType::Int64)
+            .build()
+            .unwrap();
+        let samples = box_u64_samples(&spec, 0..8);
+        for v in &samples {
+            let v = *v as i64;
+            assert!((low..=high).contains(&v), "{v} outside [{low}, {high}]");
+        }
+        assert!(
+            samples.contains(&((low + 1) as u64)),
+            "inner value never sampled"
         );
     }
 

@@ -218,23 +218,23 @@ def test_box_integer_bounds_are_exact_to_the_full_64_bit_range() -> None:
     # An exact Python int must not round-trip through a double: float() would
     # round anything above 2**53 and saturate a uint64 bound at i64::MAX, which
     # is the full-range exactness docs/compatibility.md promises.
-    assert spaces.Box(0, 2**64 - 1, shape=[1], dtype="uint64").high == [2**64 - 1]
+    assert spaces.Box(0, 2**64 - 1, shape=[1], dtype="uint64").high == 2**64 - 1
     int64 = spaces.Box(-(2**63), 2**63 - 1, shape=[1], dtype="int64")
-    assert int64.low == [-(2**63)]
-    assert int64.high == [2**63 - 1]
-    assert spaces.Box(0, 2**53 + 1, shape=[1], dtype="int64").high == [2**53 + 1]
+    assert int64.low == -(2**63)
+    assert int64.high == 2**63 - 1
+    assert spaces.Box(0, 2**53 + 1, shape=[1], dtype="int64").high == 2**53 + 1
 
 
 def test_box_float_bounds_are_unchanged() -> None:
     from rlmesh import spaces
 
-    # Floats keep the double path, including a float-form bound on an integer
-    # dtype (truncated into the integer domain) and the fully open range.
+    # Floats keep the double path, an integral float bound on an integer dtype
+    # reads as that integer, and the fully open range stays unbounded.
     box = spaces.Box(-1.5, 1.5, shape=[2], dtype="float32")
     assert box.bounds_kind == "uniform"
     assert box.low == -1.5
     assert box.high == 1.5
-    assert spaces.Box(0.0, 10.0, shape=[1], dtype="int64").high == [10]
+    assert spaces.Box(0.0, 10.0, shape=[1], dtype="int64").high == 10
     unbounded = spaces.Box(float("-inf"), float("inf"), shape=[1], dtype="float32")
     assert unbounded.bounds_kind == "unbounded"
     assert spaces.Box("-inf", 1.0, shape=[1], dtype="float32").low == float("-inf")
@@ -246,3 +246,93 @@ def test_box_rejects_nan_bounds() -> None:
     for low, high in ((float("nan"), 1.0), (0.0, float("nan"))):
         with pytest.raises(ValueError, match="NaN"):
             spaces.Box(low, high, shape=[1], dtype="float32")
+
+
+def test_space_seed_always_returns_the_seed() -> None:
+    from rlmesh import spaces
+
+    # SPC-P1: seed() returns the seed it applied, drawn when None is given.
+    box = spaces.Box(-1.0, 1.0, shape=[2])
+    drawn = box.seed()
+    assert isinstance(drawn, int)
+    assert box.seed(2**64 - 1) == 2**64 - 1
+
+
+@pytest.mark.parametrize(
+    ("cls", "spec_kind"),
+    [
+        ("Box", "discrete"),
+        ("Discrete", "box"),
+        ("Dict", "box"),
+        ("MultiBinary", "box"),
+        ("MultiDiscrete", "box"),
+        ("Text", "box"),
+        ("Tuple", "box"),
+    ],
+)
+def test_from_spec_refuses_a_spec_of_another_kind(cls: str, spec_kind: str) -> None:
+    from rlmesh import spaces
+
+    # SPC-P2 / SPC-P10: every wrapper refuses another kind with ValueError
+    # (Box used to wrap any kind; Discrete and Text failed with KeyError).
+    spec = (
+        spaces.Discrete(3).spec
+        if spec_kind == "discrete"
+        else spaces.Box(0.0, 1.0, shape=[1]).spec
+    )
+    with pytest.raises(ValueError, match="SpaceSpec"):
+        getattr(spaces, cls)(spec)
+
+
+def test_typed_uniform_box_bounds_read_as_scalars() -> None:
+    from rlmesh import spaces
+
+    # SPC-P5: a typed uniform Box reads low/high as one number, as uniform does.
+    box = spaces.Box(0, 255, shape=[2, 2], dtype="uint8")
+    assert box.bounds_kind == "typed_uniform"
+    assert box.low == 0
+    assert box.high == 255
+    # The describe-envelope dict form keeps its one-element list.
+    details = cast(dict[str, object], box.spec._to_dict()["details"])
+    assert details["low"] == [0]
+
+
+@pytest.mark.parametrize("dtype", ["int32", "uint8", "bool"])
+def test_box_refuses_fractional_bounds_on_integral_dtypes(dtype: str) -> None:
+    from rlmesh import spaces
+
+    # SPC-P6: Box(0.5, 3.7, ..., "int32") used to truncate to 0..3.
+    with pytest.raises(ValueError, match="not an integer"):
+        spaces.Box(0.5, 1.0, shape=[2], dtype=dtype)
+    with pytest.raises(ValueError, match="not an integer"):
+        spaces.Box(0, 3.7, shape=[2], dtype=dtype)
+    with pytest.raises(ValueError, match="not an integer"):
+        spaces.Box(0.5, float("inf"), shape=[2], dtype=dtype)
+    # Integral floats are exact and accepted.
+    assert spaces.Box(0.0, 1.0, shape=[2], dtype=dtype).high == 1
+
+
+def test_box_contains_requires_the_exact_shape() -> None:
+    from rlmesh import Tensor, spaces
+
+    # SPC-P7: the element count alone no longer makes a member.
+    box = spaces.Box(0.0, 1.0, shape=[2, 3])
+    assert box.contains([[0.5] * 3] * 2)
+    assert not box.contains([0.5] * 6)
+    assert box.contains(Tensor(b"\0" * 24, [2, 3], "float32"))
+    assert not box.contains(Tensor(b"\0" * 24, [6], "float32"))
+    assert not box.contains([[0.5] * 3, [0.5] * 2])  # ragged
+    # A bare number has shape (), so it is not a member of a (1,) Box.
+    assert not spaces.Box(0.0, 1.0, shape=[1]).contains(0.5)
+    assert spaces.Box(0.0, 1.0, shape=[1]).contains([0.5])
+    nested = spaces.Dict({"pos": box})
+    assert nested.contains({"pos": [[0.5] * 3] * 2})
+    assert not nested.contains({"pos": [0.5] * 6})
+
+
+def test_tensor_element_count_overflow_is_a_value_error() -> None:
+    from rlmesh import Tensor
+
+    # SPC-P9: was OverflowError.
+    with pytest.raises(ValueError, match="overflow"):
+        Tensor(b"", [2**62, 2**62], "float32")

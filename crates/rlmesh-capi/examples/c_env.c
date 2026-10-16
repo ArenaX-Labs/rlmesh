@@ -21,10 +21,16 @@ static int step(void* data, const RLMeshValue* action, RLMeshStepResult* out) {
 int main(void) {
   RLMeshEnvConfig config = rlmesh_env_config_init();
   config.id = "CExample-v0";
-  RLMeshSpaceSpec* observation = rlmesh_space_discrete(2, 0);
-  RLMeshSpaceSpec* action = rlmesh_space_discrete(2, 0);
-  config.observation_space = observation;
-  config.action_space = action;
+  RLMeshDiscrete* observation = NULL;
+  RLMeshDiscrete* action = NULL;
+  if (rlmesh_discrete_new(2, NULL, &observation) != RLMESH_OK ||
+      rlmesh_discrete_new(2, NULL, &action) != RLMESH_OK) {
+    fprintf(stderr, "space failed: %s\n", rlmesh_last_error_message());
+    return 1;
+  }
+  /* The config borrows each space's spec; the env copies it. */
+  config.observation_space = rlmesh_space_spec(observation);
+  config.action_space = rlmesh_space_spec(action);
   RLMeshEnvVtable vtable = {sizeof(RLMeshEnvVtable), reset, step, NULL, NULL};
   RLMeshEnv* env = NULL;
   RLMeshStatus status = rlmesh_env_new(&vtable, &config, NULL, &env);

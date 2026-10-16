@@ -1114,3 +1114,22 @@ def test_run_end_hook_sees_the_telemetry() -> None:
 
     result = rlmesh.session(rlmesh.Model(lambda obs: 0), _TinyEnv()).run(hooks=Hooks())
     assert seen and seen[0].telemetry == result.telemetry != ()
+
+
+def test_random_sample_seeds_its_sampler_with_each_episode_seed() -> None:
+    # SPC-P8: a seeded episode seeds RANDOM_SAMPLE's action sampler, so the same
+    # seed reproduces the same actions; an unseeded episode keeps the stream.
+    from rlmesh import spaces
+
+    class _WideEnv(_TinyEnv):
+        def __init__(self) -> None:
+            super().__init__()
+            self.action_space = spaces.Discrete(1_000_000)
+
+    def actions(seed: int) -> list[object]:
+        with rlmesh.session(rlmesh.RANDOM_SAMPLE, _WideEnv()) as session:
+            obs, _ = session.reset(seed=seed)
+            return [session.predict(obs) for _ in range(4)]
+
+    assert actions(11) == actions(11)
+    assert actions(11) != actions(12)

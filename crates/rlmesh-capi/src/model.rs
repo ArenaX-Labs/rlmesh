@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use rlmesh::spaces::SpaceValue;
+use rlmesh::binding::spaces::SpaceValue;
 use rlmesh::{
     BindAddress, CancellationToken, ConnectAddress, EpisodeInfo, Error, ModelHandler,
     ModelObservation, ModelWorker, RunLocalOptions, RuntimeReport, ServeModelOptions, ServeOptions,
@@ -942,7 +942,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use rlmesh::ModelRouteContext;
-    use rlmesh::spaces::{DType, EnvContract, Tensor, spaces::DiscreteBuilder};
+    use rlmesh::binding::spaces::{DType, EnvContract, Tensor, spaces::DiscreteBuilder};
     use rlmesh_spaces::MetaValue;
 
     use super::*;
@@ -1581,7 +1581,7 @@ mod tests {
     impl SmokeEnv {
         fn new(resets: Arc<std::sync::Mutex<ResetLog>>) -> Self {
             let space = |high: f64| {
-                rlmesh::spaces::spaces::BoxSpaceBuilder::scalar(0.0, high, vec![1])
+                rlmesh::binding::spaces::spaces::BoxSpaceBuilder::scalar(0.0, high, vec![1])
                     .dtype(DType::Uint8)
                     .build()
                     .expect("space")

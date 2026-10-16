@@ -8,7 +8,7 @@ from .._rlmesh import text_space_spec
 from ..specs import SpaceSpec
 from ..types import Value
 from ._base import Space
-from ._internals import spec_details
+from ._internals import require_spec_kind, spec_details
 
 
 @final
@@ -33,7 +33,7 @@ class Text(Space[Value]):
         charset: str | None = None,
     ) -> None:
         spec = (
-            max_length
+            require_spec_kind(max_length, "text")
             if isinstance(max_length, SpaceSpec)
             else text_space_spec(max_length, min_length, charset)
         )

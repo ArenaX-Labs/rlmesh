@@ -7,7 +7,7 @@ use std::ffi::{CStr, c_char, c_void};
 
 use rlmesh_spaces::{SpaceValue, Tensor, dtype_size};
 
-use super::dtype::RLMeshDType;
+use super::dtype::RLMeshDLPackDType;
 use super::tensor::{RLMESH_DEVICE_CPU, RLMESH_TENSOR_FLAG_READ_ONLY, RLMeshTensor};
 use crate::abi::status::{CapiError, RLMeshStatus, guard, guard_ptr, guard_value};
 
@@ -67,7 +67,7 @@ pub unsafe extern "C" fn rlmesh_value_as_tensor(
         let SpaceValue::Box(tensor) = value else {
             return Err(CapiError::type_error("value is not a Box tensor"));
         };
-        let dtype = RLMeshDType::from_core(tensor.dtype())
+        let dtype = RLMeshDLPackDType::from_core(tensor.dtype())
             .ok_or_else(|| CapiError::type_error("unsupported dtype"))?;
         let storage = tensor.storage().as_slice();
         // SAFETY: `byte_offset()` is within the tensor's own storage slice, so the

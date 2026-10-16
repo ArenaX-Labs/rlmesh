@@ -16,7 +16,7 @@ use tokio_stream::wrappers::TcpListenerStream;
 
 use super::server::{Admission, ModelRouteConfig, handle_model_request};
 use super::*;
-use crate::{BindAddress, ConnectAddress, Result, ServeOptions, spaces};
+use crate::{BindAddress, ConnectAddress, Result, ServeOptions, binding::spaces};
 
 struct SmokeEnv {
     obs_space: spaces::SpaceSpec,

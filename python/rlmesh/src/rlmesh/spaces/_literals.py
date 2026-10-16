@@ -22,6 +22,9 @@ DType: TypeAlias = FloatDType | IntDType | BoolDType
 # coerces it to a name string and the Rust ``DType`` enum validates it.
 FloatDTypeLike: TypeAlias = FloatDType | object
 IntDTypeLike: TypeAlias = IntDType | object
+# Discrete accepts only these three integer dtypes (checked natively).
+DiscreteDType: TypeAlias = Literal["int64", "int32", "uint8"]
+DiscreteDTypeLike: TypeAlias = DiscreteDType | object
 
 # Infinite bounds: ``float(...)`` already parses these, so they work as Box
 # bounds with no runtime change -- the literal just adds autocomplete.

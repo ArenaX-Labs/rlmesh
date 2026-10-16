@@ -13,7 +13,7 @@ mod wire;
 
 use async_trait::async_trait;
 
-use crate::spaces;
+use crate::binding::spaces;
 pub use rlmesh_proto::{EndpointPhases, lane_skew_ns};
 
 pub use client::{RemoteEnv, RemoteVectorEnv};

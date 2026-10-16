@@ -10,7 +10,7 @@ from .._value_conversion import ValueBridge
 from ..specs import SpaceSpec
 from ..types import Value
 from ._base import NewOutputT, Space
-from ._internals import spec_details
+from ._internals import require_spec_kind, spec_details
 
 
 @final
@@ -26,9 +26,7 @@ class Tuple(Space[Value]):
 
     def __init__(self, spaces: Iterable[Space[Any] | SpaceSpec] | SpaceSpec) -> None:
         if isinstance(spaces, SpaceSpec):
-            if spaces.kind != "tuple":
-                raise ValueError(f"expected tuple SpaceSpec, got {spaces.kind!r}")
-            spec = spaces
+            spec = require_spec_kind(spaces, "tuple")
         else:
             entries: list[object] = list(spaces)
             spec = tuple_space_spec(entries)
