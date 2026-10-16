@@ -13,7 +13,7 @@ pub(crate) const MAX_EXECUTION_HORIZON: u32 = 1024;
 /// The keywords of `rlmesh.run` and `Model.run`.
 ///
 /// Build with `..Default::default()`. Adding an options field is a minor
-/// change by project policy. The `view` keyword arrives with the viewer.
+/// change by project policy.
 pub struct RunOptions<'h> {
     /// The exact number of episodes: one by default, `seeds.len()` when only
     /// seeds are given; the two must agree when both are. `Some(0)` runs
@@ -30,6 +30,8 @@ pub struct RunOptions<'h> {
     pub hooks: Option<&'h mut dyn RunHooks>,
     /// Override each text input of a spec’d model for this call.
     pub instruction: Option<String>,
+    /// Live viewer; a local `Model::run` refuses a set view (RUN-4).
+    pub view: Option<crate::View>,
     /// Shut the caller's env down when the run ends.
     pub close_env: bool,
     /// Override the model's `trust_entrypoints` for this run.
@@ -60,6 +62,7 @@ impl Default for RunOptions<'_> {
             close_env: false,
             trust_entrypoints: None,
             instruction: None,
+            view: None,
             execution_horizon: 1,
             prefetch_lead: 0,
             workflow_edition: None,
@@ -77,6 +80,7 @@ impl fmt::Debug for RunOptions<'_> {
             .field("max_episode_steps", &self.max_episode_steps)
             .field("max_episode", &self.max_episode)
             .field("hooks", &self.hooks.as_ref().map(|_| "<hooks>"))
+            .field("view", &self.view)
             .field("close_env", &self.close_env)
             .field("trust_entrypoints", &self.trust_entrypoints)
             .field("execution_horizon", &self.execution_horizon)
@@ -93,6 +97,8 @@ impl fmt::Debug for RunOptions<'_> {
 pub struct SessionOptions {
     /// Override each text input of a spec’d model for this call.
     pub instruction: Option<String>,
+    /// Live viewer for the session's manual and automatic steps.
+    pub view: Option<crate::View>,
     /// Shut the caller's env down when the session closes.
     pub close_env: bool,
     /// Override the model's `trust_entrypoints` for this session.
@@ -113,6 +119,7 @@ impl Default for SessionOptions {
             close_env: false,
             trust_entrypoints: None,
             instruction: None,
+            view: None,
             execution_horizon: 1,
             workflow_edition: None,
             cancel: None,

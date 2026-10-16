@@ -77,12 +77,17 @@ pub(crate) async fn run_model(
         close_env,
         trust_entrypoints,
         instruction,
+        view,
         execution_horizon,
         prefetch_lead,
         workflow_edition,
         trial_index_base,
         cancel,
     } = options;
+    if let Some(view) = view {
+        view.validate()?;
+        return Err(Error::Type("view is a session() option for a local model: use model.session(env, view=...).run(...) for it.".into()));
+    }
     // RUN-5: what the options alone decide, before anything dials.
     let budget = episode_budget(episodes, seeds.as_deref())?;
     check_horizon(execution_horizon, shared.decl.native_chunk)?;

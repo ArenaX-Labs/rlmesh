@@ -209,6 +209,14 @@ struct Core {
     /// The call in flight's cancellation (R-18).
     cancel: CancellationToken,
     subscriptions: Arc<Vec<crate::ext::CancelSubscription>>,
+    viewer: Option<Arc<std::sync::Mutex<crate::view::ViewerDriver>>>,
+    episode_started: Instant,
+    run_episode: i64,
+    run_episodes: i64,
+    last_predict_ms: f64,
+    last_step_ms: f64,
+    last_pace: Duration,
+    last_view_failed: bool,
 }
 
 /// Fail `future` with the cancellation class once `cancel` fires.
@@ -252,6 +260,102 @@ fn reject_vector_env(num_envs: u64) -> Result<()> {
 }
 
 impl Core {
+    async fn feed_view(&mut self, observation: Value) -> Result<()> {
+        let Some(viewer) = self.viewer.clone() else {
+            return Ok(());
+        };
+        let context = self.context.clone();
+        let elapsed = self.episode_started.elapsed().as_secs_f64();
+        let hud = rlmesh_viewer::Hud {
+            step: self.episode.steps,
+            reward: self.episode.reward,
+            outcome: if self.episode.terminated {
+                "terminated"
+            } else if self.episode.truncated {
+                "truncated"
+            } else {
+                "running"
+            }
+            .into(),
+            episode: self.run_episode,
+            episodes: self.run_episodes,
+            seed: self.episode.seed.unwrap_or(-1),
+            elapsed_s: elapsed,
+            sps: self.episode.steps as f64 / elapsed.max(f64::EPSILON),
+            model_ms: self.last_predict_ms,
+            env_ms: self.last_step_ms,
+            ..Default::default()
+        };
+        let skip = self
+            .port
+            .call(move |side| {
+                super::read::dispatch(context.id, side.env.as_mut(), || {
+                    let mut driver = viewer.lock().unwrap_or_else(|e| e.into_inner());
+                    match driver.feed(&*context, observation, hud) {
+                        Ok(skip) => Ok(skip),
+                        Err(err) => {
+                            driver.disable();
+                            crate::warnings::warn(
+                                WarningCategory::UserWarning,
+                                format!("rlmesh view: disabled after feed error: {err}"),
+                            )?;
+                            Ok(false)
+                        }
+                    }
+                })
+            })
+            .await?;
+        if skip {
+            self.episode.truncated = true;
+        }
+        Ok(())
+    }
+
+    async fn close_view(&mut self) -> Result<()> {
+        let Some(viewer) = self.viewer.clone() else {
+            return Ok(());
+        };
+        let hold = viewer.lock().unwrap_or_else(|e| e.into_inner()).hold();
+        if !self.last_view_failed && hold != crate::ViewHold::Off {
+            let quittable = viewer.lock().unwrap_or_else(|e| e.into_inner()).quittable();
+            if hold == crate::ViewHold::UntilQuit && !quittable {
+                self.port.call(|_| crate::warnings::warn(WarningCategory::UserWarning,
+                    "rlmesh view: hold=True needs an interactive terminal to quit from (pass a number of seconds to hold without one); closing the viewer instead.")).await?;
+            } else {
+                let started = Instant::now();
+                loop {
+                    if viewer.lock().unwrap_or_else(|e| e.into_inner()).quit {
+                        break;
+                    }
+                    if let crate::ViewHold::For(duration) = hold
+                        && started.elapsed() >= duration
+                    {
+                        break;
+                    }
+                    let viewer = viewer.clone();
+                    let context = self.context.clone();
+                    self.port
+                        .call(move |side| {
+                            super::read::dispatch(context.id, side.env.as_mut(), || {
+                                viewer
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .held(&*context)
+                            })
+                        })
+                        .await?;
+                    cancellable(&self.cancel, async {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        Ok(())
+                    })
+                    .await?;
+                }
+            }
+        }
+        viewer.lock().unwrap_or_else(|e| e.into_inner()).disable();
+        Ok(())
+    }
+
     async fn local_call<R: Send + 'static>(
         &self,
         call: impl for<'x, 'c> FnOnce(&'x mut CallerSide<'c>) -> Result<R> + Send + 'static,
@@ -557,10 +661,19 @@ impl Core {
             seed,
             ..Episode::default()
         };
+        self.episode_started = Instant::now();
+        self.feed_view(observation.clone()).await?;
         Ok((observation, info))
     }
 
     async fn predict(&mut self, observation: Value) -> Result<Value> {
+        let started = Instant::now();
+        let result = self.predict_inner(observation).await;
+        self.last_predict_ms = ms_since(started);
+        result
+    }
+
+    async fn predict_inner(&mut self, observation: Value) -> Result<Value> {
         self.check_model_open()?;
         self.ensure_connected().await?;
         if self.episode.id.is_empty() {
@@ -661,11 +774,32 @@ impl Core {
         if let Some(telemetry) = &mut self.telemetry {
             telemetry.record("env.step", "env", ms_since(started));
         }
+        self.last_step_ms = ms_since(started);
         self.episode.reward += reward;
         self.episode.steps += 1;
         self.episode.terminated = terminated;
         self.episode.truncated = truncated;
-        Ok((observation, reward, terminated, truncated, info))
+        self.feed_view(observation.clone()).await?;
+        self.last_pace = Duration::ZERO;
+        if let Some(viewer) = &self.viewer {
+            let delay = viewer.lock().unwrap_or_else(|e| e.into_inner()).delay();
+            if !delay.is_zero() {
+                let started = Instant::now();
+                cancellable(&self.cancel, async {
+                    tokio::time::sleep(delay).await;
+                    Ok(())
+                })
+                .await?;
+                self.last_pace = started.elapsed();
+            }
+        }
+        Ok((
+            observation,
+            reward,
+            terminated,
+            self.episode.truncated,
+            info,
+        ))
     }
 
     fn done(&self) -> bool {
@@ -686,6 +820,7 @@ impl Core {
     async fn run(&mut self, plan: RunPlan) -> Result<RunResult> {
         self.check_model_open()?;
         self.ensure_connected().await?;
+        self.run_episodes = plan.episodes.min(i64::MAX as u64) as i64;
         self.telemetry = Some(Telemetry::default());
         let mut results = Vec::new();
         let outcome = self.run_episodes(&plan, &mut results).await;
@@ -704,6 +839,7 @@ impl Core {
             Ok(())
         };
         let ended = self.end_episode().await;
+        self.last_view_failed = outcome.is_err() || run_end.is_err() || ended.is_err();
         outcome?;
         run_end?;
         ended?;
@@ -722,6 +858,7 @@ impl Core {
         let walks_trials = self.connected()?.trial_option;
         let step_cap = plan.max_episode_steps.unwrap_or(MAX_STEPS_PER_EPISODE);
         for i in 0..plan.episodes {
+            self.run_episode = i as i64 + 1;
             let index = i as i64;
             let seed = plan
                 .seeds
@@ -757,12 +894,16 @@ impl Core {
                     self.step(action.clone()).await?;
                 let t2 = Instant::now();
                 let predict_ms = (t1 - t0).as_secs_f64() * 1000.0;
-                let step_ms = (t2 - t1).as_secs_f64() * 1000.0;
+                let step_ms = self.last_step_ms;
+                self.last_predict_ms = predict_ms;
                 if let Some(telemetry) = &mut self.telemetry {
                     telemetry.record(
                         "runner.round",
                         "runner",
-                        (t2 - round_start).as_secs_f64() * 1000.0,
+                        (t2 - round_start)
+                            .saturating_sub(self.last_pace)
+                            .as_secs_f64()
+                            * 1000.0,
                     );
                 }
                 round_start = t2;
@@ -814,6 +955,13 @@ impl Core {
             if plan.hooks {
                 self.hook(move |hooks| hooks.on_episode_end(&episode))
                     .await?;
+            }
+            if self
+                .viewer
+                .as_ref()
+                .is_some_and(|v| v.lock().unwrap_or_else(|e| e.into_inner()).quit)
+            {
+                break;
             }
         }
         Ok(())
@@ -955,10 +1103,14 @@ impl<'a> Session<'a> {
             close_env,
             trust_entrypoints,
             instruction,
+            view,
             execution_horizon,
             workflow_edition,
             cancel,
         } = options;
+        if let Some(view) = &view {
+            view.validate()?;
+        }
         let context = LibraryContext::new();
         let (model_port, edition) = match model {
             Some(model) => {
@@ -1088,6 +1240,15 @@ impl<'a> Session<'a> {
                 telemetry: None,
                 cancel: CancellationToken::new(),
                 subscriptions: Arc::default(),
+                viewer: view
+                    .map(|v| Arc::new(std::sync::Mutex::new(crate::view::ViewerDriver::new(v)))),
+                episode_started: Instant::now(),
+                run_episode: 0,
+                run_episodes: 0,
+                last_predict_ms: 0.0,
+                last_step_ms: 0.0,
+                last_pace: Duration::ZERO,
+                last_view_failed: false,
             },
             env: caller_env,
             queue,
@@ -1113,10 +1274,14 @@ impl<'a> Session<'a> {
             close_env,
             trust_entrypoints,
             instruction,
+            view,
             execution_horizon,
             workflow_edition,
             cancel,
         } = options;
+        if let Some(view) = &view {
+            view.validate()?;
+        }
         if instruction.is_some() {
             return Err(Error::invalid_argument(
                 "instruction= is not supported for RemoteModel sessions",
@@ -1271,6 +1436,15 @@ impl<'a> Session<'a> {
                 telemetry: None,
                 cancel: CancellationToken::new(),
                 subscriptions: Arc::default(),
+                viewer: view
+                    .map(|v| Arc::new(std::sync::Mutex::new(crate::view::ViewerDriver::new(v)))),
+                episode_started: Instant::now(),
+                run_episode: 0,
+                run_episodes: 0,
+                last_predict_ms: 0.0,
+                last_step_ms: 0.0,
+                last_pace: Duration::ZERO,
+                last_view_failed: false,
             },
             env: CallerEnv::None,
             queue,
@@ -1434,8 +1608,11 @@ impl<'a> Session<'a> {
             trial_index_base,
             hooks: hooks.is_some(),
         };
-        self.call(mode, hooks, cancel, move |core| Box::pin(core.run(plan)))
-            .await
+        let result = self
+            .call(mode, hooks, cancel, move |core| Box::pin(core.run(plan)))
+            .await;
+        self.core.last_view_failed = result.is_err();
+        result
     }
 
     /// Whether the current episode has terminated or truncated.
@@ -1601,6 +1778,12 @@ impl<'a> Session<'a> {
         if self.closed {
             return Ok(());
         }
+        let hold = self
+            .call(mode, None, None, |core| Box::pin(core.close_view()))
+            .await;
+        if let Some(viewer) = self.core.viewer.take() {
+            viewer.lock().unwrap_or_else(|e| e.into_inner()).disable();
+        }
         let close_env = self.close_env;
         let released = self
             .call(mode, None, None, move |core| {
@@ -1610,7 +1793,7 @@ impl<'a> Session<'a> {
         self.closed = true;
         self.core.context.close();
         self.give_back();
-        let mut first = released;
+        let mut first = hold.and(released);
         if close_env && let Some(server) = self.server {
             first = first.and(match mode {
                 Mode::Sync => server.shutdown(),
@@ -1637,6 +1820,9 @@ impl Drop for Session<'_> {
             return;
         }
         self.closed = true;
+        if let Some(viewer) = self.core.viewer.take() {
+            viewer.lock().unwrap_or_else(|e| e.into_inner()).disable();
+        }
         self.core.context.close();
         if super::drive::in_async_context() {
             // Queue the owned episode end before a later model close can refuse it.
@@ -1669,6 +1855,14 @@ impl Drop for Session<'_> {
                     telemetry: None,
                     cancel: CancellationToken::new(),
                     subscriptions: Arc::default(),
+                    viewer: None,
+                    episode_started: Instant::now(),
+                    run_episode: 0,
+                    run_episodes: 0,
+                    last_predict_ms: 0.0,
+                    last_step_ms: 0.0,
+                    last_pace: Duration::ZERO,
+                    last_view_failed: false,
                 },
             );
             let close_env = self.close_env;

@@ -90,7 +90,8 @@
     "rlmesh.spaces",
     "rlmesh.types",
     "rlmesh.specs",
-    "rlmesh.platform"
+    "rlmesh.platform",
+    "rlmesh.recorder"
   ],
   "modules": {
     "rlmesh": {
@@ -152,6 +153,12 @@
       "stability": "Experimental",
       "status": "Experimental.",
       "title": "rlmesh.platform"
+    },
+    "rlmesh.recorder": {
+      "title": "rlmesh.recorder",
+      "description": "Portable evaluation bundles, recorded workloads, episodes, and media references.",
+      "stability": "Stable",
+      "status": "Stable recording and bundle schema."
     }
   },
   "exports": {
@@ -560,6 +567,19 @@
           "stability": "Bridge"
         }
       }
+    },
+    "rlmesh.recorder.ResultSet": {
+      "stability": "Internal"
+    },
+    "rlmesh.recorder.EpisodeRecord": {
+      "members": {
+        "from_result": {
+          "stability": "Internal"
+        }
+      }
+    },
+    "rlmesh.recorder.SCHEMA": {
+      "description": "Schema tag stamped onto every exported result bundle: rlmesh.result.v1."
     }
   },
   "native": {
