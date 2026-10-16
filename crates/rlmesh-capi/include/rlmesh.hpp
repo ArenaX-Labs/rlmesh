@@ -885,9 +885,12 @@ class Request {
 };
 
 /// Options for Model::run_local — the C RLMeshRunOptions, field for field.
-/// Default-constructed == the C defaults (run until the env ends, no caps).
+/// Default-constructed == the C defaults (one episode, no caps).
 struct RunOptions {
-  /// Stop after this many episodes (0 = until the env ends).
+  /// The exact episode count, resolved like Python's run(episodes=...).
+  /// 0 = unset: one episode, or one per seed when `episode_seeds` is given; a
+  /// non-zero count with `episode_seeds` must match the seed count. There is no
+  /// unbounded run, and 0 cannot mean "run nothing" (see rlmesh.h).
   uint64_t max_episodes = 0;
   /// Seed episode 0 with `base_seed`; later episodes derive from it.
   bool seeded = false;
@@ -999,7 +1002,9 @@ class Model {
   Model(const Model&) = delete;
   Model& operator=(const Model&) = delete;
 
-  /// Frees the handle. NEVER destroy a Model from inside one of its own
+  /// Frees the handle, which closes the model: the on_close hook runs here
+  /// unless a serve already ran it (run_local borrows the model and never
+  /// closes it). NEVER destroy a Model from inside one of its own
   /// callbacks (predict / on_episode_end / on_close): that drops the runtime the
   /// callback is running on. Destroy it from a thread that is not executing it,
   /// after run_local / serve has returned.

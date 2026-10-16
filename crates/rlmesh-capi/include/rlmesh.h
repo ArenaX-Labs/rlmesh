@@ -376,8 +376,9 @@ RLMESH_API RLMeshStatus rlmesh_contract_adapter_tags_json(const RLMeshContract* 
  * not send it). `predict_seed` mixes the episode's reset seed with that ordinal
  * (rlmesh.predict_seed in the SDK) so a stochastic policy can seed each forward
  * reproducibly under interleaving; it is meaningful only when `seeded`, 0
- * otherwise. The capi holds at most 4096 live episodes: past that the least
- * recently predicted one is evicted through on_episode_end. */
+ * otherwise. The capi holds at most 65536 live episodes and never evicts one:
+ * a predict that would start a new episode past that fails with
+ * RLMESH_ERR_INTERNAL (Python raises RuntimeError) before the callback runs. */
 typedef struct RLMeshEpisode {
   const char* id;
   bool seeded; /* whether `seed` carries an explicit reset seed */
@@ -427,7 +428,9 @@ RLMESH_API void rlmesh_callback_set_error(const char* message, bool recoverable)
  * outside a Box's bounds is left to the environment's own policy.
  *
  * `on_episode_end` fires when the runtime drops an episode; `episode_id` NULL
- * means every episode of `env_id`. `on_close` fires once at shutdown. */
+ * means every episode of `env_id`. `on_close` fires once per handle: when a
+ * serve stops, or at rlmesh_model_free; a run_local borrows the model and
+ * never fires it. */
 typedef struct RLMeshModelVtable {
   size_t struct_size;
   int (*predict)(void* user_data, const RLMeshObservation* obs, RLMeshValue** out_actions);
@@ -444,10 +447,17 @@ typedef struct RLMeshModel RLMeshModel;
 RLMESH_API RLMeshStatus rlmesh_model_new(const RLMeshModelVtable* vtable, void* user_data,
                                          RLMeshModel** out);
 
-/* Run options for rlmesh_model_run_local. NULL == defaults (run until the env
- * ends, unseeded, no caps). Every field is "unset" at 0 / NULL. */
+/* Run options for rlmesh_model_run_local. NULL == defaults (one episode,
+ * unseeded, no caps). Every field is "unset" at 0 / NULL.
+ *
+ * Episode budget (Python's run(episodes=...)): max_episodes is the exact
+ * episode count. 0 = unset: one episode, or one per seed when episode_seeds is
+ * given. A non-zero count with episode_seeds must equal num_episode_seeds
+ * (RLMESH_ERR_INVALID_ARGUMENT otherwise). There is no unbounded run.
+ * TODO(docs/specs/language-parity/running.md): Python's episodes=0 (run
+ * nothing) is not expressible here, since 0 means unset. */
 typedef struct RLMeshRunOptions {
-  uint64_t max_episodes;        /* 0 = until the env ends */
+  uint64_t max_episodes;        /* exact episode count; 0 = unset (1, or the seed count) */
   bool seeded;                  /* whether base_seed is set */
   int64_t base_seed;            /* seed for episode 0; later episodes derive from it */
   int64_t max_episode_steps;    /* truncate an episode after this many steps; 0 = unset */
@@ -511,7 +521,10 @@ RLMESH_API RLMeshStatus rlmesh_model_serve(RLMeshModel* model, const char* bind_
  * RLMESH_ERR_CANCELLED, since it has no report to give. */
 RLMESH_API void rlmesh_model_cancel(RLMeshModel* model);
 
-/* Free a model handle. NULL is a no-op. Must NOT be called from inside one of
+/* Free a model handle. NULL is a no-op. Freeing closes the model: on_close
+ * fires here, on the calling thread, unless a serve already fired it
+ * (rlmesh_model_run_local borrows the model and never closes it, as Python's
+ * Model.run does). Must NOT be called from inside one of
  * this model's own callbacks (it drops the runtime the callback is running on);
  * doing so is contained rather than fatal, but leaves the handle undefined. */
 RLMESH_API void rlmesh_model_free(RLMeshModel* model);

@@ -1503,7 +1503,10 @@ class ModelBase(Generic[ObsT, ActT]):
     def _run_local(
         self, env_address: str, *, execution_horizon: int = 1, prefetch_lead: int = 0
     ) -> dict[str, Any]:
-        """Native worker loop against a remote env, until the env ends.
+        """Native worker loop against a remote env, for one episode.
+
+        The native default budget, as for :meth:`run` with ``episodes=None``;
+        :meth:`_run_local_for_episodes` takes an explicit count.
 
         Returns the runtime report as ``{"episodes", "telemetry"}``: one
         ``EpisodeResult``-shaped dict per completed episode, plus the session
