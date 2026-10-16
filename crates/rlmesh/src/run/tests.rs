@@ -1628,19 +1628,14 @@ fn dropping_remote_session_creation_returns_the_borrowed_env() {
 #[test]
 fn cancelling_a_failed_model_dial_does_not_poison_the_next_call() {
     let server = steps_server();
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let cancel = crate::ext::CancelToken::new();
+    let peer = FailedDial::new(cancel.clone());
     let model = crate::RemoteModel::new(
         crate::RemoteModelOptions::default()
-            .address(listener.local_addr().unwrap().to_string())
-            .connect_timeout(Duration::from_millis(100)),
+            .address(&peer.address)
+            .connect_timeout(Duration::from_secs(5)),
     )
     .unwrap();
-    let cancel = crate::ext::CancelToken::new();
-    let fired = cancel.clone();
-    let thread = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(30));
-        fired.cancel();
-    });
     let error = model
         .session(
             &server,
@@ -1650,8 +1645,8 @@ fn cancelling_a_failed_model_dial_does_not_poison_the_next_call() {
             },
         )
         .unwrap_err();
-    thread.join().unwrap();
     assert_eq!(error, crate::Error::Cancelled);
+    assert_eq!(peer.requests.load(Ordering::SeqCst), 1);
     let error = model
         .session(
             &server,
@@ -1661,11 +1656,8 @@ fn cancelling_a_failed_model_dial_does_not_poison_the_next_call() {
             },
         )
         .unwrap_err();
-    assert_ne!(
-        error,
-        crate::Error::Cancelled,
-        "the next dial must see its own error"
-    );
+    assert_eq!(error.class(), ErrorClass::ConnectionError);
+    assert_eq!(peer.requests.load(Ordering::SeqCst), 2);
     server.shutdown().unwrap();
 }
 
@@ -1705,27 +1697,85 @@ fn dropped_native_run_closes_its_factory_env() {
 
 #[test]
 fn cancellation_wins_over_a_failed_env_dial_too() {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let address = listener.local_addr().unwrap().to_string();
     let cancel = crate::ext::CancelToken::new();
-    let fired = cancel.clone();
-    let peer = std::thread::spawn(move || {
-        let (stream, _) = listener.accept().unwrap();
-        fired.cancel();
-        drop(stream);
-    });
+    let peer = FailedDial::new(cancel.clone());
     let model =
         crate::RemoteModel::new(crate::RemoteModelOptions::default().address("127.0.0.1:1"))
             .unwrap();
-    let result = model.session(
-        address.as_str(),
-        SessionOptions {
-            cancel: Some(cancel),
+    super::drive::block_on_library(async {
+        let options = || SessionOptions {
+            cancel: Some(cancel.clone()),
             ..Default::default()
-        },
-    );
-    peer.join().unwrap();
-    assert_eq!(result.unwrap_err(), crate::Error::Cancelled);
+        };
+        // Bound the test itself: address-target env dials have no timeout
+        // option, and RMT-6 observes a token only after the dial returns.
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            model.session_async(peer.address.as_str(), options()),
+        )
+        .await
+        .expect("the peer refuses the env handshake");
+        assert_eq!(result.unwrap_err(), crate::Error::Cancelled);
+        assert_eq!(peer.requests.load(Ordering::SeqCst), 1);
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            model.session_async(peer.address.as_str(), options()),
+        )
+        .await
+        .expect("the next env dial also returns");
+        assert_eq!(result.unwrap_err().class(), ErrorClass::ConnectionError);
+        assert_eq!(peer.requests.load(Ordering::SeqCst), 2);
+    });
+}
+
+/// Refuse a dial at the RPC boundary, firing cancellation on its first RPC.
+/// Closing a raw TCP socket can race transport reconnects, and joining a
+/// blocking accept hangs if the client fails before connecting at all.
+struct FailedDial {
+    address: String,
+    requests: Arc<AtomicUsize>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl FailedDial {
+    fn new(cancel: crate::ext::CancelToken) -> Self {
+        super::drive::block_on_library(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap().to_string();
+            let requests = Arc::new(AtomicUsize::new(0));
+            let received = requests.clone();
+            let (_, health) = tonic_health::server::health_reporter();
+            let task = tokio::spawn(async move {
+                tonic::transport::Server::builder()
+                    .layer(tonic::service::InterceptorLayer::new(
+                        move |_: tonic::Request<()>| {
+                            if received.fetch_add(1, Ordering::SeqCst) == 0 {
+                                cancel.cancel();
+                            }
+                            Err::<tonic::Request<()>, _>(tonic::Status::unavailable(
+                                "test dial rejected",
+                            ))
+                        },
+                    ))
+                    .add_service(health)
+                    .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
+                    .await
+                    .unwrap();
+            });
+            Self {
+                address,
+                requests,
+                task,
+            }
+        })
+    }
+}
+
+impl Drop for FailedDial {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
 }
 
 struct ViewedSteps(Steps);
