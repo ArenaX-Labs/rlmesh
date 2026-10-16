@@ -14,7 +14,7 @@
 static RLMeshValue* zero_action(const RLMeshSpaceSpec* action) {
   switch (rlmesh_space_type(action)) {
     case RLMESH_VALUE_BOX: {
-      RLMeshDType dtype = rlmesh_space_dtype(action);
+      RLMeshDLPackDType dtype = rlmesh_space_dtype(action);
       size_t ndim = rlmesh_space_ndim(action);
       int64_t shape[16];
       if (ndim > 16) {

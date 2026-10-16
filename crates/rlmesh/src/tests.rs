@@ -3,14 +3,18 @@ use rlmesh_grpc::error::{EnvError, EnvErrorCode};
 
 #[test]
 fn reexports_space_types() {
-    let spec = spaces::EnvContract {
+    let spec = binding::spaces::EnvContract {
         id: "test-env".to_string(),
         observation_space: Some(
-            spaces::spaces::BoxSpaceBuilder::scalar(-1.0, 1.0, vec![4])
+            binding::spaces::spaces::BoxSpaceBuilder::scalar(-1.0, 1.0, vec![4])
                 .build()
                 .unwrap(),
         ),
-        action_space: Some(spaces::spaces::DiscreteBuilder::new(2).build().unwrap()),
+        action_space: Some(
+            binding::spaces::spaces::DiscreteBuilder::new(2)
+                .build()
+                .unwrap(),
+        ),
         num_envs: 1,
         ..Default::default()
     };

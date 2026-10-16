@@ -17,7 +17,7 @@ use std::process::{Command, ExitCode};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use rlmesh::spaces;
+use rlmesh::binding::spaces;
 
 /// Steps per episode: reset → obs 0, then one step per further predict, the
 /// last of which terminates.

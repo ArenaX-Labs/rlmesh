@@ -404,7 +404,7 @@ mod tests {
         parse(&String::from_utf8(unsafe { out.into_vec() }).expect("utf-8"))
     }
 
-    const F32: crate::value::dtype::RLMeshDType = crate::value::dtype::RLMeshDType {
+    const F32: crate::value::dtype::RLMeshDLPackDType = crate::value::dtype::RLMeshDLPackDType {
         code: 2,
         bits: 32,
         lanes: 1,
@@ -444,7 +444,7 @@ mod tests {
         use std::ffi::CString;
 
         use crate::env::{RLMeshEnvConfig, RLMeshEnvVtable, rlmesh_env_new};
-        use crate::spaces::{rlmesh_space_box, rlmesh_space_dict, rlmesh_space_free};
+        use crate::spaces::{rlmesh_space_box, rlmesh_space_dict, rlmesh_space_spec_free};
 
         let three = [3i64];
         let eef = unsafe { rlmesh_space_box(F32, three.as_ptr(), 1, -bound, bound) };
@@ -506,8 +506,8 @@ mod tests {
             )
         };
         unsafe {
-            rlmesh_space_free(obs);
-            rlmesh_space_free(act);
+            rlmesh_space_spec_free(obs);
+            rlmesh_space_spec_free(act);
         }
         if status == RLMeshStatus::Ok {
             Ok(env)

@@ -13,7 +13,7 @@ use super::wire::{
     proto_episode_metadata_to_public, protocol_error_to_error, validate_action_count,
     validate_count,
 };
-use crate::{ConnectAddress, EnvironmentError, Error, ErrorCode, Result, spaces};
+use crate::{ConnectAddress, EnvironmentError, Error, ErrorCode, Result, binding::spaces};
 
 /// A client handle to a remote vector environment server.
 ///

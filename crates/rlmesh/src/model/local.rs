@@ -17,7 +17,7 @@ use super::wire::{
     ModelAction, check_actions_conform, encode_replay_frames, model_action_to_endpoint_response,
     model_observation_from_endpoint_request,
 };
-use crate::{Error, Result, spaces};
+use crate::{Error, Result, binding::spaces};
 
 /// Connect to the env, resolve the handler's route, and drive the runtime
 /// loop to completion. The route resolves before driving, exactly as the

@@ -165,20 +165,49 @@ RLMESH_API bool rlmesh_error_class_is_subclass(RLMeshErrorClass cls, RLMeshError
 
 /* ---- dtype + tensor ----------------------------------------------------- */
 
-/* DLPack (code, bits, lanes): code is DLDataTypeCode (int=0, uint=1, float=2,
- * bfloat=4, bool=6); lanes is always 1. */
-typedef struct RLMeshDType {
+/* An element dtype: Python's dtype strings. The numbers are the wire's.
+ * RLMESH_DTYPE_OTHER exists only for Adapters' tolerant dtype fields; every
+ * spaces input refuses it, as it refuses INVALID and unknown values, and no
+ * spaces output returns it. */
+typedef enum RLMeshDType {
+  RLMESH_DTYPE_INVALID = 0,
+  RLMESH_DTYPE_BOOL = 1,
+  RLMESH_DTYPE_UINT8 = 2,
+  RLMESH_DTYPE_UINT16 = 3,
+  RLMESH_DTYPE_UINT32 = 4,
+  RLMESH_DTYPE_UINT64 = 5,
+  RLMESH_DTYPE_INT8 = 6,
+  RLMESH_DTYPE_INT16 = 7,
+  RLMESH_DTYPE_INT32 = 8,
+  RLMESH_DTYPE_INT64 = 9,
+  RLMESH_DTYPE_FLOAT16 = 10,
+  RLMESH_DTYPE_FLOAT32 = 11,
+  RLMESH_DTYPE_FLOAT64 = 12,
+  RLMESH_DTYPE_OTHER = 1000
+} RLMeshDType;
+
+/* Python's spelling ("float32"), static storage; NULL for INVALID, OTHER or an
+ * unknown value. */
+RLMESH_API const char* rlmesh_dtype_str(RLMeshDType dtype);
+/* Byte size of one element; 0 for INVALID, OTHER or an unknown value. */
+RLMESH_API size_t rlmesh_ext_dtype_size(RLMeshDType dtype);
+
+/* Deprecated: the DLPack (code, bits, lanes) dtype the tensor and value API and
+ * the old space builders still take, until RLMeshTensor becomes an opaque handle
+ * (ABI 5). Called RLMeshDType before; new code uses the enum above. code is
+ * DLDataTypeCode (int=0, uint=1, float=2, bfloat=4, bool=6); lanes is always 1. */
+typedef struct RLMeshDLPackDType {
   uint8_t code;
   uint8_t bits;
   uint16_t lanes;
-} RLMeshDType;
+} RLMeshDLPackDType;
 
 #ifdef __cplusplus
 #define RLMESH_DTYPE_INIT(c, b, l) \
-  RLMeshDType { (uint8_t)(c), (uint8_t)(b), (uint16_t)(l) }
+  RLMeshDLPackDType { (uint8_t)(c), (uint8_t)(b), (uint16_t)(l) }
 #else
 #define RLMESH_DTYPE_INIT(c, b, l) \
-  (RLMeshDType) { (uint8_t)(c), (uint8_t)(b), (uint16_t)(l) }
+  (RLMeshDLPackDType) { (uint8_t)(c), (uint8_t)(b), (uint16_t)(l) }
 #endif
 #define RLMESH_F32 RLMESH_DTYPE_INIT(2, 32, 1)
 #define RLMESH_F64 RLMESH_DTYPE_INIT(2, 64, 1)
@@ -191,7 +220,7 @@ typedef struct RLMeshDType {
 #define RLMESH_TENSOR_FLAG_READ_ONLY ((uint64_t)1)
 
 /* Element byte size, or 0 if unsupported (or lanes != 1). */
-RLMESH_API size_t rlmesh_dtype_size(RLMeshDType dtype);
+RLMESH_API size_t rlmesh_dtype_size(RLMeshDLPackDType dtype);
 
 /* A DLPack-shaped tensor view. `strides` is in element counts (NULL = row-major
  * contiguous); `data` points at element 0. A tensor returned by value is a
@@ -205,7 +234,7 @@ typedef struct RLMeshTensor {
   int32_t ndim;
   const int64_t* shape;
   const int64_t* strides;
-  RLMeshDType dtype;
+  RLMeshDLPackDType dtype;
   int32_t device_type;
   int32_t device_id;
   uint64_t flags;
@@ -318,7 +347,7 @@ RLMESH_API uint32_t rlmesh_contract_num_envs(const RLMeshContract* contract);
  * for Text, the per-element category counts for MultiDiscrete, and a child walk
  * for Dict/Tuple. RLMESH_VALUE_INVALID when `spec` is NULL or unspecified. */
 RLMESH_API RLMeshValueKind rlmesh_space_type(const RLMeshSpaceSpec* spec);
-RLMESH_API RLMeshDType rlmesh_space_dtype(const RLMeshSpaceSpec* spec);
+RLMESH_API RLMeshDLPackDType rlmesh_space_dtype(const RLMeshSpaceSpec* spec);
 /* Rank; 0 for a scalar shape or a NULL spec. */
 RLMESH_API size_t rlmesh_space_ndim(const RLMeshSpaceSpec* spec);
 /* Shape into `out` (capacity `cap`); a NULL `out` is OK for a rank-0 space. */
@@ -368,19 +397,21 @@ RLMESH_API RLMeshStatus rlmesh_space_text_charset(const RLMeshSpaceSpec* spec, c
 RLMESH_API RLMeshStatus rlmesh_space_copy_nvec(const RLMeshSpaceSpec* spec, int64_t* out,
                                                size_t cap);
 
-/* Space builders (the env-authoring side). Each returns an OWNED space, or NULL
- * on error (detail in rlmesh_last_error_message()); free with rlmesh_space_free
- * unless a composite builder adopted it. A float Box takes +-INFINITY for an
+/* Deprecated space builders: use rlmesh_box_new, rlmesh_discrete_new,
+ * rlmesh_dict_new and rlmesh_ext_box_elementwise_new below, and lend their spec
+ * with rlmesh_space_spec(). Each returns an OWNED spec, or NULL on error (detail
+ * in rlmesh_last_error_message()); free it with rlmesh_space_spec_free unless a
+ * composite builder adopted it. A float Box takes +-INFINITY for an
  * unbounded side; an integer-dtype Box needs finite whole-number bounds the
  * dtype can represent (none negative for an unsigned dtype): an out-of-range
  * bound is RLMESH_ERR_INVALID_ARGUMENT, never clamped. A double holds every
  * integer only up to 2^53: a larger 64-bit bound is the double's exact value. */
-RLMESH_API RLMeshSpaceSpec* rlmesh_space_box(RLMeshDType dtype, const int64_t* shape, size_t ndim,
-                                             double low, double high);
+RLMESH_API RLMeshSpaceSpec* rlmesh_space_box(RLMeshDLPackDType dtype, const int64_t* shape,
+                                             size_t ndim, double low, double high);
 /* Per-element bounds: `low` / `high` each hold the shape's element count. */
-RLMESH_API RLMeshSpaceSpec* rlmesh_space_box_elementwise(RLMeshDType dtype, const int64_t* shape,
-                                                         size_t ndim, const double* low,
-                                                         const double* high);
+RLMESH_API RLMeshSpaceSpec* rlmesh_space_box_elementwise(RLMeshDLPackDType dtype,
+                                                         const int64_t* shape, size_t ndim,
+                                                         const double* low, const double* high);
 RLMESH_API RLMeshSpaceSpec* rlmesh_space_discrete(int64_t n, int64_t start);
 RLMESH_API RLMeshSpaceSpec* rlmesh_space_multi_binary(const int64_t* shape, size_t ndim);
 RLMESH_API RLMeshSpaceSpec* rlmesh_space_multi_discrete(const int64_t* nvec, size_t n);
@@ -394,8 +425,9 @@ RLMESH_API RLMeshSpaceSpec* rlmesh_space_text(int64_t min_length, int64_t max_le
 RLMESH_API RLMeshSpaceSpec* rlmesh_space_dict(const char* const* keys,
                                               RLMeshSpaceSpec* const* children, size_t n);
 RLMESH_API RLMeshSpaceSpec* rlmesh_space_tuple(RLMeshSpaceSpec* const* children, size_t n);
-/* Free an owned space. Not for a borrowed contract space or child. */
-RLMESH_API void rlmesh_space_free(RLMeshSpaceSpec* spec);
+/* Free an owned spec (a builder's or rlmesh_space_spec_clone's). Not for a
+ * borrowed contract space, child or rlmesh_space_spec() result. NULL is a no-op. */
+RLMESH_API void rlmesh_space_spec_free(RLMeshSpaceSpec* spec);
 
 /* ---- bytes -------------------------------------------------------------- */
 
@@ -411,6 +443,230 @@ typedef struct RLMeshBytes {
 } RLMeshBytes;
 
 RLMESH_API void rlmesh_bytes_free(RLMeshBytes bytes);
+
+/* ---- spaces (Python's rlmesh.spaces) ------------------------------------ */
+
+/* UTF-8 text with its length. Inputs may hold NUL; `data` may be NULL only when
+ * `len` is 0. Outputs are borrowed from their parent and NOT NUL-terminated. */
+typedef struct RLMeshStr {
+  const char* data;
+  size_t len;
+} RLMeshStr;
+
+/* Wrap a NUL-terminated string (NULL gives the empty text). */
+static inline RLMeshStr rlmesh_str(const char* s) {
+  RLMeshStr out;
+  size_t len = 0;
+  if (s != NULL) {
+    while (s[len] != '\0') {
+      ++len;
+    }
+  }
+  out.data = s;
+  out.len = len;
+  return out;
+}
+
+/* A space's kind (Python's `kind`); output only. UNKNOWN is a spec with no
+ * payload and what a NULL handle reads. */
+typedef enum RLMeshSpaceKind {
+  RLMESH_SPACE_KIND_UNKNOWN = 0,
+  RLMESH_SPACE_KIND_BOX = 1,
+  RLMESH_SPACE_KIND_DISCRETE = 2,
+  RLMESH_SPACE_KIND_MULTI_BINARY = 3,
+  RLMESH_SPACE_KIND_MULTI_DISCRETE = 4,
+  RLMESH_SPACE_KIND_TEXT = 5,
+  RLMESH_SPACE_KIND_DICT = 10,
+  RLMESH_SPACE_KIND_TUPLE = 11
+} RLMeshSpaceKind;
+
+/* How a Box stores its bounds (Python's `bounds_kind`). */
+typedef enum RLMeshBoundsKind {
+  RLMESH_BOUNDS_KIND_INVALID = 0,
+  RLMESH_BOUNDS_KIND_UNBOUNDED = 1,
+  RLMESH_BOUNDS_KIND_UNIFORM = 2,
+  RLMESH_BOUNDS_KIND_ELEMENTWISE = 3,
+  RLMESH_BOUNDS_KIND_TYPED_UNIFORM = 4,
+  RLMESH_BOUNDS_KIND_TYPED_ELEMENTWISE = 5
+} RLMeshBoundsKind;
+
+/* Python's spellings ("multi_binary", "typed_uniform"), static storage; NULL
+ * for an unknown value (and for RLMESH_BOUNDS_KIND_INVALID). */
+RLMESH_API const char* rlmesh_space_kind_str(RLMeshSpaceKind kind);
+RLMESH_API const char* rlmesh_bounds_kind_str(RLMeshBoundsKind kind);
+
+/* One Box bound, exact in its domain: read `value` per `type_`. INVALID is
+ * refused on input. Build one with the rlmesh_bound_* helpers. */
+typedef enum RLMeshBoundType {
+  RLMESH_BOUND_TYPE_INVALID = 0,
+  RLMESH_BOUND_TYPE_BOOL = 1,
+  RLMESH_BOUND_TYPE_INT = 2,
+  RLMESH_BOUND_TYPE_UINT = 3,
+  RLMESH_BOUND_TYPE_FLOAT = 4
+} RLMeshBoundType;
+
+typedef struct RLMeshBound {
+  RLMeshBoundType type_;
+  union {
+    bool b;
+    int64_t i;
+    uint64_t u;
+    double f; /* +-INFINITY is Python's "inf"; NaN is refused */
+  } value;
+} RLMeshBound;
+
+static inline RLMeshBound rlmesh_bound_bool(bool v) {
+  RLMeshBound out;
+  out.value.u = 0;
+  out.type_ = RLMESH_BOUND_TYPE_BOOL;
+  out.value.b = v;
+  return out;
+}
+static inline RLMeshBound rlmesh_bound_int(int64_t v) {
+  RLMeshBound out;
+  out.type_ = RLMESH_BOUND_TYPE_INT;
+  out.value.i = v;
+  return out;
+}
+static inline RLMeshBound rlmesh_bound_uint(uint64_t v) {
+  RLMeshBound out;
+  out.type_ = RLMESH_BOUND_TYPE_UINT;
+  out.value.u = v;
+  return out;
+}
+static inline RLMeshBound rlmesh_bound_float(double v) {
+  RLMeshBound out;
+  out.type_ = RLMESH_BOUND_TYPE_FLOAT;
+  out.value.f = v;
+  return out;
+}
+
+/* A space: a spec plus its sampler. RLMeshBox, RLMeshDiscrete and RLMeshDict
+ * are the same handle (pass a Dict to rlmesh_space_* without a cast); clone and
+ * free every kind with rlmesh_space_clone / rlmesh_space_free. A typed accessor
+ * (rlmesh_box_low, rlmesh_discrete_n, rlmesh_dict_get, ...) on a handle of
+ * another kind returns RLMESH_ERR_TYPE; check rlmesh_space_kind first. */
+typedef struct RLMeshSpace RLMeshSpace;
+typedef RLMeshSpace RLMeshBox;
+typedef RLMeshSpace RLMeshDiscrete;
+typedef RLMeshSpace RLMeshDict;
+
+/* Buffer rule for every (out, cap, out_len) call below: *out_len always gets
+ * the full length; out == NULL with cap == 0 is a length query (RLMESH_OK); a
+ * short cap returns RLMESH_ERR_INVALID_ARGUMENT and writes nothing. */
+
+/* SpaceSpec: immutable data. An owned copy is freed with rlmesh_space_spec_free. */
+RLMESH_API RLMeshSpaceSpec* rlmesh_space_spec_clone(const RLMeshSpaceSpec* spec);
+RLMESH_API RLMeshSpaceKind rlmesh_space_spec_kind(const RLMeshSpaceSpec* spec);
+RLMESH_API RLMeshStatus rlmesh_space_spec_shape(const RLMeshSpaceSpec* spec, int64_t* out,
+                                                size_t cap, size_t* out_len);
+/* A Dict reads RLMESH_DTYPE_FLOAT32, as in Python; INVALID for NULL. */
+RLMESH_API RLMeshDType rlmesh_space_spec_dtype(const RLMeshSpaceSpec* spec);
+/* A fresh space with its own sampler; never fails for a valid spec. */
+RLMESH_API RLMeshStatus rlmesh_space_spec_to_space(const RLMeshSpaceSpec* spec, RLMeshSpace** out);
+/* Gymnasium-style text, Python's repr; free with rlmesh_bytes_free. */
+RLMESH_API RLMeshStatus rlmesh_space_spec_repr(const RLMeshSpaceSpec* spec, RLMeshBytes* out);
+/* Python's space_from_spec: refuses a spec with no payload. */
+RLMESH_API RLMeshStatus rlmesh_spaces_space_from_spec(const RLMeshSpaceSpec* spec,
+                                                      RLMeshSpace** out);
+
+/* Space(spec), clone (shares the sampler), free. rlmesh_space_free also frees
+ * an owned spec, as it did before RLMeshSpace existed; new code frees specs with
+ * rlmesh_space_spec_free. */
+RLMESH_API RLMeshStatus rlmesh_space_new(const RLMeshSpaceSpec* spec, RLMeshSpace** out);
+RLMESH_API RLMeshSpace* rlmesh_space_clone(const RLMeshSpace* space);
+RLMESH_API void rlmesh_space_free(RLMeshSpace* space);
+/* The space's spec, borrowed while any handle sharing the space lives. */
+RLMESH_API const RLMeshSpaceSpec* rlmesh_space_spec(const RLMeshSpace* space);
+RLMESH_API RLMeshSpaceKind rlmesh_space_kind(const RLMeshSpace* space);
+RLMESH_API RLMeshStatus rlmesh_space_shape(const RLMeshSpace* space, int64_t* out, size_t cap,
+                                           size_t* out_len);
+/* seed(seed): `seed` NULL draws one from OS entropy; the seed applied goes to
+ * *out_seed (may be NULL). Restarts this space's stream only (a Dict's children
+ * keep their own). */
+RLMESH_API RLMeshStatus rlmesh_space_seed(const RLMeshSpace* space, const uint64_t* seed,
+                                          uint64_t* out_seed);
+/* An owned value; free with rlmesh_value_free. */
+RLMESH_API RLMeshStatus rlmesh_space_sample(const RLMeshSpace* space, RLMeshValue** out);
+/* Membership; never fails (false for NULL). */
+RLMESH_API bool rlmesh_space_contains(const RLMeshSpace* space, const RLMeshValue* value);
+/* Python's == (normalized specs; a Dict's key order does not matter). */
+RLMESH_API bool rlmesh_space_equals(const RLMeshSpace* a, const RLMeshSpace* b);
+RLMESH_API RLMeshStatus rlmesh_space_repr(const RLMeshSpace* space, RLMeshBytes* out);
+
+/* Box(low, high, shape, dtype). (-inf, inf) is unbounded for any dtype; on an
+ * integer or bool dtype finite bounds are stored exactly and must be whole
+ * numbers (0.5 is RLMESH_ERR_INVALID_ARGUMENT); NaN is refused. */
+typedef struct RLMeshBoxOptions {
+  size_t struct_size;
+  RLMeshDType dtype; /* RLMESH_DTYPE_FLOAT32 */
+  uint32_t _reserved;
+} RLMeshBoxOptions;
+#define RLMESH_BOX_OPTIONS_INIT {sizeof(RLMeshBoxOptions), RLMESH_DTYPE_FLOAT32, 0}
+#define RLMESH_BOX_OPTIONS_MIN_SIZE (offsetof(RLMeshBoxOptions, _reserved) + sizeof(uint32_t))
+
+RLMESH_API RLMeshStatus rlmesh_box_new(RLMeshBound low, RLMeshBound high, const int64_t* shape,
+                                       size_t ndim,
+                                       const RLMeshBoxOptions* options /* NULL = INIT */,
+                                       RLMeshBox** out);
+/* Box(spec): a spec of another kind is RLMESH_ERR_INVALID_ARGUMENT. */
+RLMESH_API RLMeshStatus rlmesh_box_from_spec(const RLMeshSpaceSpec* spec, RLMeshBox** out);
+/* low / high: each entry's type_ is the domain it is stored in (BOOL, UINT or
+ * INT for integer bounds, FLOAT otherwise). Whether a bound is None, uniform or
+ * per element comes from rlmesh_box_bounds_kind, never from the entry count. */
+RLMESH_API RLMeshStatus rlmesh_box_low(const RLMeshBox* box, RLMeshBound* out, size_t cap,
+                                       size_t* out_len);
+RLMESH_API RLMeshStatus rlmesh_box_high(const RLMeshBox* box, RLMeshBound* out, size_t cap,
+                                        size_t* out_len);
+/* *out_has is false when the spec carries no bounds. */
+RLMESH_API RLMeshStatus rlmesh_box_bounds_kind(const RLMeshBox* box, bool* out_has,
+                                               RLMeshBoundsKind* out);
+/* C-only extra: a Box with one bound pair per element (`bounds_len` must equal
+ * the shape's element count). */
+RLMESH_API RLMeshStatus rlmesh_ext_box_elementwise_new(const RLMeshBound* low,
+                                                       const RLMeshBound* high, size_t bounds_len,
+                                                       const int64_t* shape, size_t ndim,
+                                                       const RLMeshBoxOptions* options,
+                                                       RLMeshBox** out);
+
+/* Discrete(n, start, dtype): dtype is INT64, INT32 or UINT8. */
+typedef struct RLMeshDiscreteOptions {
+  size_t struct_size;
+  int64_t start;     /* 0 */
+  RLMeshDType dtype; /* RLMESH_DTYPE_INT64 */
+  uint32_t _reserved;
+} RLMeshDiscreteOptions;
+#define RLMESH_DISCRETE_OPTIONS_INIT {sizeof(RLMeshDiscreteOptions), 0, RLMESH_DTYPE_INT64, 0}
+#define RLMESH_DISCRETE_OPTIONS_MIN_SIZE \
+  (offsetof(RLMeshDiscreteOptions, _reserved) + sizeof(uint32_t))
+
+RLMESH_API RLMeshStatus rlmesh_discrete_new(int64_t n,
+                                            const RLMeshDiscreteOptions* options /* NULL = INIT */,
+                                            RLMeshDiscrete** out);
+RLMESH_API RLMeshStatus rlmesh_discrete_from_spec(const RLMeshSpaceSpec* spec,
+                                                  RLMeshDiscrete** out);
+RLMESH_API RLMeshStatus rlmesh_discrete_n(const RLMeshDiscrete* space, int64_t* out);
+RLMESH_API RLMeshStatus rlmesh_discrete_start(const RLMeshDiscrete* space, int64_t* out);
+
+/* Dict(spaces): copies each spec into a fresh child space; the keys sort at
+ * construction, as Python's do. Duplicate or empty keys are
+ * RLMESH_ERR_INVALID_ARGUMENT. Lend a space's spec with rlmesh_space_spec(). */
+RLMESH_API RLMeshStatus rlmesh_dict_new(const RLMeshStr* keys, const RLMeshSpaceSpec* const* specs,
+                                        size_t n, RLMeshDict** out);
+RLMESH_API RLMeshStatus rlmesh_dict_from_spec(const RLMeshSpaceSpec* spec, RLMeshDict** out);
+RLMESH_API RLMeshStatus rlmesh_dict_len(const RLMeshDict* dict, size_t* out);
+/* Declaration order; both borrowed while any handle sharing the Dict lives. A
+ * child is the same space (and sampler) on every read. An index past the end
+ * reads as absent: RLMESH_OK with *out = {NULL, 0} / NULL (a present key's
+ * `data` is never NULL). */
+RLMESH_API RLMeshStatus rlmesh_dict_key_at(const RLMeshDict* dict, size_t i, RLMeshStr* out);
+RLMESH_API RLMeshStatus rlmesh_dict_value_at(const RLMeshDict* dict, size_t i,
+                                             const RLMeshSpace** out);
+/* d[key], borrowed; *out = NULL (and RLMESH_OK) when absent. */
+RLMESH_API RLMeshStatus rlmesh_dict_get(const RLMeshDict* dict, RLMeshStr key,
+                                        const RLMeshSpace** out);
+/* key in d, into *out; RLMESH_ERR_TYPE on another kind. */
+RLMESH_API RLMeshStatus rlmesh_dict_contains_key(const RLMeshDict* dict, RLMeshStr key, bool* out);
 
 /* ---- adapters (experimental) -------------------------------------------- */
 

@@ -165,8 +165,9 @@ to an environment that declares that reset option.
 ## Environment contract
 
 `rlmesh_env_new(vtable, config, user_data, &env)` takes the callbacks and an
-`RLMeshEnvConfig`: the observation and action spaces (built with the
-`rlmesh_space_*` builders), an id, the adapter `EnvTags` as JSON, the reset
+`RLMeshEnvConfig`: the observation and action spaces (built with
+`rlmesh_box_new`, `rlmesh_discrete_new` or `rlmesh_dict_new` and lent with
+`rlmesh_space_spec(space)`), an id, the adapter `EnvTags` as JSON, the reset
 options the env understands (`trial_index`), a render mode, and extra metadata.
 The tags are validated against the spaces right there, the same publish-time
 check Python's `adapters.tag()` runs, so a typo fails `rlmesh_env_new` rather

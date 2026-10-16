@@ -51,7 +51,15 @@ fn space_spec_details_impl<'py>(
         .as_ref()
         .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("space spec is missing"))?
     {
-        SpaceKind::Box(spec) => add_box_details(&details, spec, space.dtype)?,
+        // `_details()` (the wrapper's view) reads a typed uniform bound as one
+        // number, as `uniform` does; `_to_dict()` keeps the describe-envelope
+        // form (a one-element list), which `space_spec_to_json` also renders.
+        SpaceKind::Box(spec) => add_box_details(
+            &details,
+            spec,
+            space.dtype,
+            matches!(nested, NestedSpaceMode::Spec),
+        )?,
         SpaceKind::Discrete(spec) => {
             details.set_item("n", spec.n)?;
             details.set_item("start", spec.start)?;
@@ -122,7 +130,12 @@ fn nested_space<'py>(
     }
 }
 
-fn add_box_details(details: &Bound<'_, PyDict>, spec: &BoxSpec, dtype: DType) -> PyResult<()> {
+fn add_box_details(
+    details: &Bound<'_, PyDict>,
+    spec: &BoxSpec,
+    dtype: DType,
+    scalar_typed_uniform: bool,
+) -> PyResult<()> {
     match &spec.bounds {
         Some(BoxBounds::Unbounded(_)) => {
             details.set_item("bounds_kind", "unbounded")?;
@@ -142,8 +155,15 @@ fn add_box_details(details: &Bound<'_, PyDict>, spec: &BoxSpec, dtype: DType) ->
         Some(BoxBounds::TypedUniform(bounds)) => {
             details.set_item("bounds_kind", "typed_uniform")?;
             let py = details.py();
-            details.set_item("low", typed_bounds_to_py(py, &bounds.low, dtype)?)?;
-            details.set_item("high", typed_bounds_to_py(py, &bounds.high, dtype)?)?;
+            let low = typed_bounds_to_py(py, &bounds.low, dtype)?;
+            let high = typed_bounds_to_py(py, &bounds.high, dtype)?;
+            if scalar_typed_uniform && low.len() == 1 && high.len() == 1 {
+                details.set_item("low", low.get_item(0)?)?;
+                details.set_item("high", high.get_item(0)?)?;
+            } else {
+                details.set_item("low", low)?;
+                details.set_item("high", high)?;
+            }
         }
         Some(BoxBounds::TypedElementwise(bounds)) => {
             details.set_item("bounds_kind", "typed_elementwise")?;

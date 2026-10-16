@@ -3,7 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use super::types::ModelObservation;
-use crate::{Result, spaces};
+use crate::{Result, binding::spaces};
 
 /// Resolves per-env adapter state (e.g. an env→model adapter) when an adapter is
 /// resolved.

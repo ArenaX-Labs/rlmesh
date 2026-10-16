@@ -9,8 +9,8 @@ from .._rlmesh import multi_binary_space_spec
 from ..specs import SpaceSpec
 from ..types import Value
 from ._base import Space
+from ._internals import require_spec_kind, spec_details
 from ._internals import shape as space_shape
-from ._internals import spec_details
 
 
 @final
@@ -27,7 +27,7 @@ class MultiBinary(Space[Value]):
 
     def __init__(self, shape: int | Sequence[int] | SpaceSpec) -> None:
         spec = (
-            shape
+            require_spec_kind(shape, "multi_binary")
             if isinstance(shape, SpaceSpec)
             else multi_binary_space_spec(
                 space_shape([shape] if isinstance(shape, int) else shape)

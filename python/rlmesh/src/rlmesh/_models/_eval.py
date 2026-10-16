@@ -1056,6 +1056,10 @@ class Session(Generic[ObsT, ActT]):
             self._telemetry.record(
                 "env.reset", "env", (time.perf_counter() - t0) * 1000.0
             )
+        if self._predict is RANDOM_SAMPLE and seed is not None:
+            # A seeded episode seeds the random baseline's sampler too, so a
+            # seeded run reproduces; an unseeded one keeps the running stream.
+            self._client.action_space.seed(seed)
         if self._model_client is not None:
             # Mark a reset boundary on the served route; the seed rides too, as
             # the served model's context["episode_seed"] on every predict of

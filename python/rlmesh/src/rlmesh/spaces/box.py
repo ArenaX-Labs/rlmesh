@@ -9,7 +9,7 @@ from .._rlmesh import box_space_spec
 from ..specs import SpaceSpec
 from ..types import Value
 from ._base import Space
-from ._internals import dtype_name, require_float, spec_details
+from ._internals import dtype_name, require_float, require_spec_kind, spec_details
 from ._internals import shape as normalize_shape
 from ._literals import Bound, FloatDTypeLike
 
@@ -51,7 +51,7 @@ class Box(Space[Value]):
         dtype: FloatDTypeLike = "float32",
     ) -> None:
         spec = (
-            low
+            require_spec_kind(low, "box")
             if isinstance(low, SpaceSpec)
             else box_space_spec(
                 _bound(low, "low"),

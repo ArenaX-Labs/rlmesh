@@ -87,6 +87,15 @@ struct ExportHolder<M> {
 }
 
 /// Export `tensor` as a legacy `"dltensor"` capsule.
+/// The DLPack `DLDeviceType` of a tensor's device (`kDLCPU` is 1).
+pub(crate) fn dl_device_type(device: rlmesh_spaces::Device) -> i32 {
+    match device {
+        rlmesh_spaces::Device::Cpu => 1,
+        // No other device exists yet; 0 is no DLPack device.
+        _ => 0,
+    }
+}
+
 pub(crate) fn export_legacy<'py>(py: Python<'py>, tensor: &Tensor) -> PyResult<Bound<'py, PyAny>> {
     let holder = new_holder(
         tensor,
@@ -187,7 +196,7 @@ unsafe fn dl_tensor_for<M>(raw: *mut ExportHolder<M>, tensor: &Tensor) -> DLTens
                 .as_ptr()
                 .wrapping_add(tensor.byte_offset()) as *mut c_void,
             device: DLDevice {
-                device_type: i32::from(tensor.device()),
+                device_type: dl_device_type(tensor.device()),
                 device_id: 0,
             },
             ndim: (*raw).shape.len() as i32,

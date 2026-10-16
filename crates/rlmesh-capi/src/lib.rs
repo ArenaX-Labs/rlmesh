@@ -8,6 +8,7 @@ mod codec;
 mod describe;
 mod env;
 mod model;
+mod space_handle;
 mod spaces;
 mod value;
 

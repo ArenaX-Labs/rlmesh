@@ -3883,7 +3883,7 @@
           },
           "seed": {
             "kind": "function",
-            "signature": "seed(seed: int | None = None) -> int | None"
+            "signature": "seed(seed: int | None = None) -> int"
           },
           "shape": {
             "kind": "property",
@@ -3930,7 +3930,7 @@
           },
           "seed": {
             "kind": "function",
-            "signature": "seed(seed: int | None = None) -> int | None"
+            "signature": "seed(seed: int | None = None) -> int"
           },
           "shape": {
             "kind": "property",
@@ -3981,7 +3981,7 @@
           },
           "seed": {
             "kind": "function",
-            "signature": "seed(seed: int | None = None) -> int | None"
+            "signature": "seed(seed: int | None = None) -> int"
           },
           "shape": {
             "kind": "property",
@@ -4000,7 +4000,7 @@
             "signature": "to_gymnasium_space() -> object"
           }
         },
-        "signature": "Discrete(n: int | SpaceSpec, start: int = 0, dtype: IntDTypeLike = 'int64')",
+        "signature": "Discrete(n: int | SpaceSpec, start: int = 0, dtype: DiscreteDTypeLike = 'int64')",
         "stability": "Stable"
       },
       "MultiBinary": {
@@ -4028,7 +4028,7 @@
           },
           "seed": {
             "kind": "function",
-            "signature": "seed(seed: int | None = None) -> int | None"
+            "signature": "seed(seed: int | None = None) -> int"
           },
           "shape": {
             "kind": "property",
@@ -4075,7 +4075,7 @@
           },
           "seed": {
             "kind": "function",
-            "signature": "seed(seed: int | None = None) -> int | None"
+            "signature": "seed(seed: int | None = None) -> int"
           },
           "shape": {
             "kind": "property",
@@ -4114,7 +4114,7 @@
           },
           "seed": {
             "kind": "function",
-            "signature": "seed(seed: int | None = None) -> int | None"
+            "signature": "seed(seed: int | None = None) -> int"
           },
           "shape": {
             "kind": "property",
@@ -4191,7 +4191,7 @@
           },
           "seed": {
             "kind": "function",
-            "signature": "seed(seed: int | None = None) -> int | None"
+            "signature": "seed(seed: int | None = None) -> int"
           },
           "shape": {
             "kind": "property",
@@ -4230,7 +4230,7 @@
           },
           "seed": {
             "kind": "function",
-            "signature": "seed(seed: int | None = None) -> int | None"
+            "signature": "seed(seed: int | None = None) -> int"
           },
           "shape": {
             "kind": "property",
