@@ -25,7 +25,7 @@ use crate::abi::status::{
     CapiError, RLMeshStatus, clear_last_error, guard, guard_value, last_error_message,
     last_error_recoverable,
 };
-use crate::spaces::RLMeshContract;
+use crate::spaces::RLMeshEnvContract;
 use crate::value::handle::RLMeshValue;
 
 /// Predict callback: read the decoded per-env observations in `obs`, run the
@@ -37,20 +37,20 @@ use crate::value::handle::RLMeshValue;
 ///
 /// The return is read as a plain `c_int` (not the `RLMeshStatus` enum) so an
 /// out-of-range value from a C author is not undefined behavior.
-pub type RLMeshPredictFn = unsafe extern "C" fn(
+pub type RLMeshExtLegacyPredictFn = unsafe extern "C" fn(
     user_data: *mut c_void,
-    obs: *const RLMeshObservation,
+    obs: *const RLMeshExtLegacyObservation,
     out_actions: *mut *mut RLMeshValue,
 ) -> c_int;
 /// A no-argument lifecycle callback (`on_close`).
-pub type RLMeshLifecycleFn = unsafe extern "C" fn(user_data: *mut c_void);
+pub type RLMeshExtLegacyLifecycleFn = unsafe extern "C" fn(user_data: *mut c_void);
 /// Episode teardown callback: `episode_id` NULL means every episode of `env_id`.
-pub type RLMeshEpisodeEndFn =
+pub type RLMeshExtLegacyEpisodeEndFn =
     unsafe extern "C" fn(user_data: *mut c_void, env_id: *const c_char, episode_id: *const c_char);
 
 /// One row's episode identity within a predict request.
 #[repr(C)]
-pub struct RLMeshEpisode {
+pub struct RLMeshExtLegacyEpisode {
     /// Runtime-minted episode id (NUL-terminated, never repeats).
     pub id: *const c_char,
     /// Whether `seed` carries an explicit reset seed.
@@ -171,7 +171,7 @@ impl EpisodeStore {
 /// What a predict callback receives. Pointers are valid only for the duration of
 /// the call.
 #[repr(C)]
-pub struct RLMeshObservation {
+pub struct RLMeshExtLegacyObservation {
     /// `num_envs` decoded observation values (borrowed), or NULL when the
     /// request carries no observation or the contract declares no observation
     /// space.
@@ -181,7 +181,7 @@ pub struct RLMeshObservation {
     /// Spaces/metadata for the route. Never NULL on a predict the runtime
     /// delivers (the route pins a contract with an action space before the
     /// first predict); check it anyway if you like.
-    pub contract: *const RLMeshContract,
+    pub contract: *const RLMeshEnvContract,
     /// NUL-terminated.
     pub session_id: *const c_char,
     /// NUL-terminated.
@@ -189,22 +189,22 @@ pub struct RLMeshObservation {
     /// NUL-terminated.
     pub request_id: *const c_char,
     /// `num_envs` entries; row `i` of `observations` belongs to `episodes[i]`.
-    pub episodes: *const RLMeshEpisode,
+    pub episodes: *const RLMeshExtLegacyEpisode,
 }
 
-/// The model callback vtable. Set `struct_size = sizeof(RLMeshModelVtable)`;
-/// fields beyond that are ignored (append-only). `predict` is required.
+/// The model callback vtable. Set `struct_size = sizeof(RLMeshExtLegacyModelVtable)`;
+/// unknown trailing bytes must be zero. `predict` is required.
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct RLMeshModelVtable {
+pub struct RLMeshExtLegacyModelVtable {
     /// Size of the struct the caller compiled against.
     pub struct_size: usize,
     /// Required: map a batch of observations to one action per row.
-    pub predict: Option<RLMeshPredictFn>,
+    pub predict: Option<RLMeshExtLegacyPredictFn>,
     /// Optional: drop per-episode state.
-    pub on_episode_end: Option<RLMeshEpisodeEndFn>,
+    pub on_episode_end: Option<RLMeshExtLegacyEpisodeEndFn>,
     /// Optional: the worker/session is shutting down.
-    pub on_close: Option<RLMeshLifecycleFn>,
+    pub on_close: Option<RLMeshExtLegacyLifecycleFn>,
 }
 
 /// Set the current callback's error message + recoverability (read by the capi
@@ -250,21 +250,21 @@ unsafe impl Send for UserData {}
 /// An owned model handle: the callback vtable plus a tokio runtime.
 ///
 /// The handle is **not** a concurrency primitive: run at most one
-/// `rlmesh_model_run_local` / `rlmesh_model_serve` on it at a time. The only
-/// call that may overlap a running one is [`rlmesh_model_cancel`], which is
+/// `rlmesh_ext_legacy_model_run_local` / `rlmesh_ext_legacy_model_serve` on it at a time. The only
+/// call that may overlap a running one is [`rlmesh_ext_legacy_model_cancel`], which is
 /// explicitly cross-thread.
-pub struct RLMeshModel {
-    vtable: RLMeshModelVtable,
+pub struct RLMeshExtLegacyModel {
+    vtable: RLMeshExtLegacyModelVtable,
     user_data: UserData,
     runtime: tokio::runtime::Runtime,
     cancel: CancellationToken,
     /// The handle's one `on_close` gate, shared by every handler built over it:
     /// a run borrows the model (never closes it), a serve closes it when it
-    /// stops, and `rlmesh_model_free` closes it if nothing did.
+    /// stops, and `rlmesh_ext_legacy_model_free` closes it if nothing did.
     close: Arc<CloseGate>,
 }
 
-impl Drop for RLMeshModel {
+impl Drop for RLMeshExtLegacyModel {
     /// Free is the C caller's close: fire `on_close` here unless a serve
     /// already did. Runs on the freeing thread; no run is active by contract.
     fn drop(&mut self) {
@@ -278,7 +278,7 @@ impl Drop for RLMeshModel {
 }
 
 struct CModelHandler {
-    vtable: RLMeshModelVtable,
+    vtable: RLMeshExtLegacyModelVtable,
     user_data: UserData,
     /// Per-episode predict ordinals, keyed by episode id (see [`EpisodeStore`]).
     episodes: EpisodeStore,
@@ -287,7 +287,7 @@ struct CModelHandler {
 }
 
 /// Keeps the C `on_close` to one call per handle, ordered after any predict
-/// still inside the C callback. `rlmesh_model_serve`'s cancel arm shares the
+/// still inside the C callback. `rlmesh_ext_legacy_model_serve`'s cancel arm shares the
 /// gate with the handler the server owns: cancelling drops the server future,
 /// so its own close path never runs, while the connection tasks tonic spawned
 /// can still be in a callback.
@@ -300,9 +300,9 @@ struct CloseGate {
 
 impl CModelHandler {
     /// A handler over `model`'s vtable. The vtable is `Copy` (the capi took its
-    /// own copy at `rlmesh_model_new`), so this is free. Every handler over one
+    /// own copy at `rlmesh_ext_legacy_model_new`), so this is free. Every handler over one
     /// model shares its close gate, so only one of them runs the C `on_close`.
-    fn new(model: &RLMeshModel) -> Self {
+    fn new(model: &RLMeshExtLegacyModel) -> Self {
         Self {
             vtable: model.vtable,
             user_data: model.user_data,
@@ -393,13 +393,13 @@ impl ModelHandler for CModelHandler {
                 .iter()
                 .map(|episode| cstring(&episode.episode_id))
                 .collect();
-            let episodes: Vec<RLMeshEpisode> = route
+            let episodes: Vec<RLMeshExtLegacyEpisode> = route
                 .episodes
                 .iter()
                 .zip(&episode_ids)
                 .zip(&contexts)
                 .map(
-                    |((episode, id), &(predict_index, predict_seed))| RLMeshEpisode {
+                    |((episode, id), &(predict_index, predict_seed))| RLMeshExtLegacyEpisode {
                         id: id.as_ptr(),
                         seeded: episode.seed.is_some(),
                         seed: episode.seed.unwrap_or_default(),
@@ -408,18 +408,24 @@ impl ModelHandler for CModelHandler {
                     },
                 )
                 .collect();
-            let lane_ptrs: Option<Vec<*const RLMeshValue>> = lanes.as_ref().map(|lanes| {
+            let lanes: Option<Vec<RLMeshValue>> = lanes.map(|lanes| {
+                let spec = contract
+                    .as_ref()
+                    .and_then(|c| c.observation_space.as_ref())
+                    .expect("decoded lanes have a spec");
                 lanes
-                    .iter()
-                    .map(|value| std::ptr::from_ref(value).cast::<RLMeshValue>())
+                    .into_iter()
+                    .map(|v| RLMeshValue::new(rlmesh::binding::value_from_space(spec, v)))
                     .collect()
             });
-            // `RLMeshContract` is repr(transparent) over `EnvContract`: borrow the
-            // shared Arc's contract for the call rather than cloning it per predict.
-            let contract_ptr = contract.as_deref().map_or(std::ptr::null(), |c| {
-                std::ptr::from_ref(c).cast::<RLMeshContract>()
-            });
-            let view = RLMeshObservation {
+            let lane_ptrs: Option<Vec<*const RLMeshValue>> = lanes
+                .as_ref()
+                .map(|lanes| lanes.iter().map(std::ptr::from_ref).collect());
+            let contract_handle = contract.as_deref().cloned().map(RLMeshEnvContract::new);
+            let contract_ptr = contract_handle
+                .as_ref()
+                .map_or(std::ptr::null(), std::ptr::from_ref);
+            let view = RLMeshExtLegacyObservation {
                 observations: lane_ptrs
                     .as_ref()
                     .map_or(std::ptr::null(), |ptrs| ptrs.as_ptr()),
@@ -438,9 +444,9 @@ impl ModelHandler for CModelHandler {
             let status = unsafe { predict(user_data.0, &view, out.as_mut_ptr()) };
             // Reclaim every written handle whatever the status: on success they are
             // the actions, on failure they must not leak.
-            let actions: Vec<Option<SpaceValue>> = out
+            let actions: Vec<Option<rlmesh::Value>> = out
                 .into_iter()
-                .map(|ptr| (!ptr.is_null()).then(|| unsafe { Box::from_raw(ptr) }.0))
+                .map(|ptr| (!ptr.is_null()).then(|| unsafe { Box::from_raw(ptr) }.value().clone()))
                 .collect();
             if status != 0 {
                 return Err(callback_error("model predict declined"));
@@ -455,9 +461,17 @@ impl ModelHandler for CModelHandler {
                 .into_iter()
                 .enumerate()
                 .map(|(row, action)| {
-                    action.ok_or_else(|| {
+                    let action = action.ok_or_else(|| {
                         Error::model(format!("predict returned OK but left action {row} unset"))
-                    })
+                    })?;
+                    match contract.as_ref().and_then(|c| c.action_space.as_ref()) {
+                        Some(spec) => rlmesh::binding::value_to_space(spec, &action),
+                        // The legacy handler permits routes with no contract. A
+                        // tensor already carries the wire layout in that case.
+                        None => Ok(SpaceValue::Box(
+                            rlmesh::binding::tensor_core(action.as_tensor()?).clone(),
+                        )),
+                    }
                 })
                 .collect()
         })
@@ -514,67 +528,19 @@ impl ModelHandler for CModelHandler {
     }
 }
 
-/// Read field `T` at `offset` only when `struct_size` covers it (else None), so a
-/// caller that compiled against a smaller header is never read past.
-///
-/// # Safety
-/// `base` points at the caller's vtable allocation of at least `struct_size` bytes.
-pub(crate) unsafe fn vtable_field<T: Copy>(
-    base: *const u8,
-    struct_size: usize,
-    offset: usize,
-) -> Option<T> {
-    (struct_size >= offset.saturating_add(std::mem::size_of::<T>()))
-        .then(|| unsafe { base.add(offset).cast::<T>().read_unaligned() })
-}
-
-/// Read the caller's vtable honoring its `struct_size` (append-only contract):
-/// callbacks past `struct_size` are absent, not garbage read out of bounds.
+/// Read an ABI-5 input vtable with its full minimum and checked zero tail.
 ///
 /// # Safety
 /// `ptr` is non-NULL and points at a vtable whose first `struct_size` bytes are valid.
-unsafe fn read_vtable(ptr: *const RLMeshModelVtable) -> Result<RLMeshModelVtable, CapiError> {
-    let base = ptr.cast::<u8>();
-    // struct_size is the first repr(C) field (offset 0); the caller set it.
-    let struct_size = unsafe { (*ptr).struct_size };
-    if struct_size == 0 {
-        return Err(CapiError::invalid_arg("vtable struct_size is 0"));
+unsafe fn read_vtable(
+    ptr: *const RLMeshExtLegacyModelVtable,
+) -> Result<RLMeshExtLegacyModelVtable, CapiError> {
+    let v = unsafe { crate::abi::sizing::read(ptr, "RLMeshExtLegacyModelVtable") }?
+        .ok_or_else(|| CapiError::invalid_arg("null vtable"))?;
+    if v.predict.is_none() {
+        return Err(CapiError::invalid_arg("vtable predict is null"));
     }
-    let predict = match unsafe {
-        vtable_field::<Option<RLMeshPredictFn>>(
-            base,
-            struct_size,
-            std::mem::offset_of!(RLMeshModelVtable, predict),
-        )
-    } {
-        None => {
-            return Err(CapiError::invalid_arg(
-                "vtable struct_size too small for predict",
-            ));
-        }
-        Some(None) => return Err(CapiError::invalid_arg("vtable predict is null")),
-        some => some.flatten(),
-    };
-    Ok(RLMeshModelVtable {
-        struct_size,
-        predict,
-        on_episode_end: unsafe {
-            vtable_field::<Option<RLMeshEpisodeEndFn>>(
-                base,
-                struct_size,
-                std::mem::offset_of!(RLMeshModelVtable, on_episode_end),
-            )
-        }
-        .flatten(),
-        on_close: unsafe {
-            vtable_field::<Option<RLMeshLifecycleFn>>(
-                base,
-                struct_size,
-                std::mem::offset_of!(RLMeshModelVtable, on_close),
-            )
-        }
-        .flatten(),
-    })
+    Ok(v)
 }
 
 /// Create a model from a callback vtable. `predict` and `struct_size` are
@@ -584,10 +550,10 @@ unsafe fn read_vtable(ptr: *const RLMeshModelVtable) -> Result<RLMeshModelVtable
 /// # Safety
 /// `vtable` must be valid; `user_data` is passed unchanged to every callback.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_model_new(
-    vtable: *const RLMeshModelVtable,
+pub unsafe extern "C" fn rlmesh_ext_legacy_model_new(
+    vtable: *const RLMeshExtLegacyModelVtable,
     user_data: *mut c_void,
-    out: *mut *mut RLMeshModel,
+    out: *mut *mut RLMeshExtLegacyModel,
 ) -> RLMeshStatus {
     guard(|| {
         if vtable.is_null() {
@@ -600,7 +566,7 @@ pub unsafe extern "C" fn rlmesh_model_new(
             .enable_all()
             .build()
             .map_err(|err| CapiError::internal(format!("failed to build runtime: {err}")))?;
-        let model = Box::new(RLMeshModel {
+        let model = Box::new(RLMeshExtLegacyModel {
             vtable,
             user_data: UserData(user_data),
             runtime,
@@ -612,10 +578,12 @@ pub unsafe extern "C" fn rlmesh_model_new(
     })
 }
 
-/// Options for `rlmesh_model_run_local`. Pass NULL for defaults (one unseeded
+/// Options for `rlmesh_ext_legacy_model_run_local`. Pass NULL for defaults (one unseeded
 /// episode, Python's `run()` default). Every field is unset at 0 / NULL.
 #[repr(C)]
-pub struct RLMeshRunOptions {
+#[derive(Clone, Copy)]
+pub struct RLMeshExtLegacyRunOptions {
+    pub struct_size: usize,
     /// The exact number of episodes to run, resolved like Python's
     /// `run(episodes=...)`. 0 = unset: one episode, or one per seed when
     /// `episode_seeds` is given. A non-zero count with `episode_seeds` must
@@ -651,10 +619,10 @@ pub struct RLMeshRunOptions {
     pub trial_index_base: u64,
 }
 
-/// What a finished `rlmesh_model_run_local` reports: plain scalars, no handle.
+/// What a finished `rlmesh_ext_legacy_model_run_local` reports: plain scalars, no handle.
 #[repr(C)]
 #[derive(Clone, Copy, Default, Debug, PartialEq)]
-pub struct RLMeshRunReport {
+pub struct RLMeshExtLegacyRunReport {
     /// Episodes that completed during the run.
     pub total_episodes: i64,
     /// Environment steps taken across the whole run.
@@ -669,13 +637,13 @@ pub struct RLMeshRunReport {
     pub truncated_episodes: i64,
 }
 
-fn run_report(report: &RuntimeReport) -> RLMeshRunReport {
+fn run_report(report: &RuntimeReport) -> RLMeshExtLegacyRunReport {
     let total_reward: f64 = report
         .episodes
         .iter()
         .map(|episode| episode.cumulative_reward)
         .sum();
-    RLMeshRunReport {
+    RLMeshExtLegacyRunReport {
         total_episodes: report.total_episodes,
         total_steps: report.total_steps,
         total_reward,
@@ -689,10 +657,13 @@ fn run_report(report: &RuntimeReport) -> RLMeshRunReport {
     }
 }
 
-fn run_local_options(address: ConnectAddress, options: *const RLMeshRunOptions) -> RunLocalOptions {
+fn run_local_options(
+    address: ConnectAddress,
+    options: *const RLMeshExtLegacyRunOptions,
+) -> RunLocalOptions {
     let mut run = RunLocalOptions::new(address);
     // SAFETY: the export's contract is that `options` is NULL or a valid
-    // `RLMeshRunOptions` for the duration of the call.
+    // `RLMeshExtLegacyRunOptions` for the duration of the call.
     let Some(options) = (unsafe { options.as_ref() }) else {
         return run;
     };
@@ -731,13 +702,13 @@ fn run_local_options(address: ConnectAddress, options: *const RLMeshRunOptions) 
 ///
 /// # Safety
 /// `model` must be a live handle; `env_address` a valid C string; `options` NULL
-/// or a valid `RLMeshRunOptions`; `out_report` NULL or writable.
+/// or a valid `RLMeshExtLegacyRunOptions`; `out_report` NULL or writable.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_model_run_local(
-    model: *mut RLMeshModel,
+pub unsafe extern "C" fn rlmesh_ext_legacy_model_run_local(
+    model: *mut RLMeshExtLegacyModel,
     env_address: *const c_char,
-    options: *const RLMeshRunOptions,
-    out_report: *mut RLMeshRunReport,
+    options: *const RLMeshExtLegacyRunOptions,
+    out_report: *mut RLMeshExtLegacyRunReport,
 ) -> RLMeshStatus {
     guard(|| {
         let model =
@@ -746,6 +717,7 @@ pub unsafe extern "C" fn rlmesh_model_run_local(
         let address = ConnectAddress::parse(address)
             .map_err(|err| CapiError::invalid_arg(format!("invalid env address: {err}")))?;
         let handler = CModelHandler::new(model);
+        unsafe { crate::abi::sizing::read(options, "RLMeshExtLegacyRunOptions") }?;
         let run = run_local_options(address, options);
         // Python raises ValueError for a seed count that disagrees with the
         // episode count; refuse it here as an argument error, before dialing.
@@ -777,11 +749,13 @@ pub unsafe extern "C" fn rlmesh_model_run_local(
     })
 }
 
-/// Serve options for `rlmesh_model_serve`. A NULL pointer means all defaults (no
+/// Serve options for `rlmesh_ext_legacy_model_serve`. A NULL pointer means all defaults (no
 /// auth, no remote shutdown, no timeouts — serves until the process is killed). A
 /// 0 timeout / concurrency means "unset".
 #[repr(C)]
-pub struct RLMeshServeOptions {
+#[derive(Clone, Copy)]
+pub struct RLMeshExtLegacyServeOptions {
+    pub struct_size: usize,
     /// Bearer token required on requests; NULL or "" disables auth.
     pub token: *const c_char,
     /// Honor a client-issued shutdown request.
@@ -805,10 +779,12 @@ pub struct RLMeshServeOptions {
 
 fn serve_model_options(
     bind: BindAddress,
-    options: *const RLMeshServeOptions,
+    options: *const RLMeshExtLegacyServeOptions,
 ) -> Result<ServeModelOptions, CapiError> {
     let mut model_options = ServeModelOptions::new(bind);
-    let Some(c_options) = (unsafe { options.as_ref() }) else {
+    let Some(c_options) =
+        unsafe { crate::abi::sizing::read(options, "RLMeshExtLegacyServeOptions") }?
+    else {
         return Ok(model_options);
     };
     if !c_options.token.is_null() {
@@ -821,15 +797,17 @@ fn serve_model_options(
         .serve_options(serve_options(options)?))
 }
 
-/// The core [`ServeOptions`] an `RLMeshServeOptions` names (NULL = defaults),
+/// The core [`ServeOptions`] an `RLMeshExtLegacyServeOptions` names (NULL = defaults),
 /// shared by the model and environment servers. The token and the predict
 /// concurrency are left to each caller: the model server carries them on
 /// `ServeModelOptions`, the environment server its token on its `ext`.
-pub(crate) fn serve_options(options: *const RLMeshServeOptions) -> Result<ServeOptions, CapiError> {
+pub(crate) fn serve_options(
+    options: *const RLMeshExtLegacyServeOptions,
+) -> Result<ServeOptions, CapiError> {
     // SAFETY: the exports' contract is that `options` is NULL or a valid
-    // `RLMeshServeOptions` for the duration of the call.
-    let options = unsafe { options.as_ref() };
-    let call = match options {
+    // `RLMeshExtLegacyServeOptions` for the duration of the call.
+    let options = unsafe { crate::abi::sizing::read(options, "RLMeshExtLegacyServeOptions") }?;
+    let call = match &options {
         Some(options) if !options.workflow_edition.is_null() => {
             Some(cstr_to_str(options.workflow_edition)?)
         }
@@ -866,17 +844,17 @@ pub(crate) fn serve_options(options: *const RLMeshServeOptions) -> Result<ServeO
 /// Serve the model as a `ModelService` endpoint at `bind_address` (e.g.
 /// `tcp://127.0.0.1:50051` or `unix:///path.sock`). Blocking — returns when the
 /// server stops: a remote shutdown request, an idle timeout, or
-/// `rlmesh_model_cancel`. The same vtable backs every predict, exactly as
-/// `rlmesh_model_run_local`. `options` may be NULL for defaults.
+/// `rlmesh_ext_legacy_model_cancel`. The same vtable backs every predict, exactly as
+/// `rlmesh_ext_legacy_model_run_local`. `options` may be NULL for defaults.
 ///
 /// # Safety
 /// `model` must be a live handle; `bind_address` a valid C string; `options` NULL
-/// or a valid `RLMeshServeOptions`.
+/// or a valid `RLMeshExtLegacyServeOptions`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_model_serve(
-    model: *mut RLMeshModel,
+pub unsafe extern "C" fn rlmesh_ext_legacy_model_serve(
+    model: *mut RLMeshExtLegacyModel,
     bind_address: *const c_char,
-    options: *const RLMeshServeOptions,
+    options: *const RLMeshExtLegacyServeOptions,
 ) -> RLMeshStatus {
     guard(|| {
         let model =
@@ -905,7 +883,7 @@ pub unsafe extern "C" fn rlmesh_model_serve(
     })
 }
 
-/// Stop a blocking `rlmesh_model_run_local` / `rlmesh_model_serve` running on
+/// Stop a blocking `rlmesh_ext_legacy_model_run_local` / `rlmesh_ext_legacy_model_serve` running on
 /// `model`. Designed to be called from a thread other than the one blocked in
 /// the run (a signal handler's worker, a UI thread); it returns immediately and
 /// the blocked call unwinds shortly after. A NULL `model` is a no-op.
@@ -913,14 +891,14 @@ pub unsafe extern "C" fn rlmesh_model_serve(
 /// Cancellation is terminal for the handle: a cancelled model refuses further
 /// runs (each returns at once). Create a new model to run again.
 ///
-/// A cancelled `rlmesh_model_serve` returns `RLMESH_OK` after the close hook; a
-/// cancelled `rlmesh_model_run_local` -- this one, or any later one on the
+/// A cancelled `rlmesh_ext_legacy_model_serve` returns `RLMESH_OK` after the close hook; a
+/// cancelled `rlmesh_ext_legacy_model_run_local` -- this one, or any later one on the
 /// handle -- returns `RLMESH_ERR_CANCELLED`, since it has no report to give.
 ///
 /// # Safety
 /// `model` must be NULL or a live handle that is not being freed concurrently.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_model_cancel(model: *mut RLMeshModel) {
+pub unsafe extern "C" fn rlmesh_ext_legacy_model_cancel(model: *mut RLMeshExtLegacyModel) {
     guard_value((), || {
         if let Some(model) = unsafe { model.as_ref() } {
             model.cancel.cancel();
@@ -931,7 +909,7 @@ pub unsafe extern "C" fn rlmesh_model_cancel(model: *mut RLMeshModel) {
 /// Free a model handle. NULL is a no-op.
 ///
 /// Freeing closes the model: `on_close` fires here, on the calling thread,
-/// unless a serve already fired it. `rlmesh_model_run_local` borrows the model
+/// unless a serve already fired it. `rlmesh_ext_legacy_model_run_local` borrows the model
 /// and never closes it.
 ///
 /// Must NOT be called from inside one of the model's own callbacks: freeing the
@@ -944,7 +922,7 @@ pub unsafe extern "C" fn rlmesh_model_cancel(model: *mut RLMeshModel) {
 /// # Safety
 /// `model` must be NULL or a handle this thread owns and has not freed.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_model_free(model: *mut RLMeshModel) {
+pub unsafe extern "C" fn rlmesh_ext_legacy_model_free(model: *mut RLMeshExtLegacyModel) {
     guard_value((), || {
         if !model.is_null() {
             drop(unsafe { Box::from_raw(model) });
@@ -978,7 +956,9 @@ mod tests {
 
     use super::*;
     use crate::abi::status::rlmesh_last_error_is_recoverable;
-    use crate::value::handle::rlmesh_value_discrete;
+    fn rlmesh_value_discrete(n: i64) -> *mut RLMeshValue {
+        crate::value::handle::into_handle(rlmesh::Value::Int(n))
+    }
 
     /// A distinctive allocation size nothing else in the test binary requests, so
     /// "the capi freed the row" is observable without sampling ambient churn:
@@ -1013,7 +993,7 @@ mod tests {
     #[global_allocator]
     static ALLOC: ProbeAlloc = ProbeAlloc;
 
-    /// One `RLMeshEpisode` row as the C side read it, copied out of the call.
+    /// One `RLMeshExtLegacyEpisode` row as the C side read it, copied out of the call.
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct SeenEpisode {
         id: String,
@@ -1043,7 +1023,7 @@ mod tests {
 
     impl Counters {
         /// # Safety
-        /// `user_data` is the `&Counters` a test handed to `rlmesh_model_new`.
+        /// `user_data` is the `&Counters` a test handed to `rlmesh_ext_legacy_model_new`.
         unsafe fn of<'a>(user_data: *mut c_void) -> &'a Self {
             unsafe { &*user_data.cast::<Self>() }
         }
@@ -1053,7 +1033,10 @@ mod tests {
     }
 
     fn owned(value: SpaceValue) -> *mut RLMeshValue {
-        Box::into_raw(Box::new(RLMeshValue(value)))
+        crate::value::handle::into_handle(rlmesh::binding::value_from_space(
+            &rlmesh_spaces::SpaceSpec::default(),
+            value,
+        ))
     }
 
     fn u8_box(byte: u8) -> SpaceValue {
@@ -1062,7 +1045,7 @@ mod tests {
 
     unsafe extern "C" fn noop_predict(
         _: *mut c_void,
-        _: *const RLMeshObservation,
+        _: *const RLMeshExtLegacyObservation,
         _: *mut *mut RLMeshValue,
     ) -> c_int {
         0
@@ -1074,7 +1057,7 @@ mod tests {
     /// expects; also records whether the observation row reached C as NULL.
     unsafe extern "C" fn counting_predict(
         user_data: *mut c_void,
-        obs: *const RLMeshObservation,
+        obs: *const RLMeshExtLegacyObservation,
         out: *mut *mut RLMeshValue,
     ) -> c_int {
         let counters = unsafe { Counters::of(user_data) };
@@ -1129,10 +1112,10 @@ mod tests {
     }
 
     /// `counting_predict` that stays inside the C callback long enough for a
-    /// concurrent `rlmesh_model_cancel` to land mid-predict.
+    /// concurrent `rlmesh_ext_legacy_model_cancel` to land mid-predict.
     unsafe extern "C" fn slow_counting_predict(
         user_data: *mut c_void,
-        obs: *const RLMeshObservation,
+        obs: *const RLMeshExtLegacyObservation,
         out: *mut *mut RLMeshValue,
     ) -> c_int {
         let counters = unsafe { Counters::of(user_data) };
@@ -1146,13 +1129,13 @@ mod tests {
     /// Echo policy: action = observation (Discrete), so the round trip is checkable.
     unsafe extern "C" fn echo_predict(
         _: *mut c_void,
-        obs: *const RLMeshObservation,
+        obs: *const RLMeshExtLegacyObservation,
         out: *mut *mut RLMeshValue,
     ) -> c_int {
         let obs = unsafe { &*obs };
         for row in 0..obs.num_envs {
             let value = unsafe { &**obs.observations.add(row) };
-            let SpaceValue::Discrete(n) = &value.0 else {
+            let rlmesh::Value::Int(n) = value.value() else {
                 return RLMeshStatus::Type as c_int;
             };
             unsafe { *out.add(row) = rlmesh_value_discrete(*n) };
@@ -1166,7 +1149,7 @@ mod tests {
     /// declining in parallel would land inside its before/after window.
     unsafe extern "C" fn half_then_fail(
         _: *mut c_void,
-        _: *const RLMeshObservation,
+        _: *const RLMeshExtLegacyObservation,
         out: *mut *mut RLMeshValue,
     ) -> c_int {
         unsafe { decline_after_row(out, PROBE) }
@@ -1176,7 +1159,7 @@ mod tests {
     /// message and status rather than the free.
     unsafe extern "C" fn decline_with_a_row(
         _: *mut c_void,
-        _: *const RLMeshObservation,
+        _: *const RLMeshExtLegacyObservation,
         out: *mut *mut RLMeshValue,
     ) -> c_int {
         unsafe { decline_after_row(out, 8) }
@@ -1190,9 +1173,9 @@ mod tests {
         RLMeshStatus::Model as c_int
     }
 
-    fn full_vtable() -> RLMeshModelVtable {
-        RLMeshModelVtable {
-            struct_size: std::mem::size_of::<RLMeshModelVtable>(),
+    fn full_vtable() -> RLMeshExtLegacyModelVtable {
+        RLMeshExtLegacyModelVtable {
+            struct_size: std::mem::size_of::<RLMeshExtLegacyModelVtable>(),
             predict: Some(noop_predict),
             on_episode_end: Some(noop_episode_end),
             on_close: Some(noop_close),
@@ -1200,18 +1183,18 @@ mod tests {
     }
 
     /// The vtable a live-runtime test uses: every hook wired to `Counters`.
-    fn counting_vtable() -> RLMeshModelVtable {
-        RLMeshModelVtable {
-            struct_size: std::mem::size_of::<RLMeshModelVtable>(),
+    fn counting_vtable() -> RLMeshExtLegacyModelVtable {
+        RLMeshExtLegacyModelVtable {
+            struct_size: std::mem::size_of::<RLMeshExtLegacyModelVtable>(),
             predict: Some(counting_predict),
             on_episode_end: Some(counting_episode_end),
             on_close: Some(counting_close),
         }
     }
 
-    fn handler(predict: RLMeshPredictFn) -> CModelHandler {
+    fn handler(predict: RLMeshExtLegacyPredictFn) -> CModelHandler {
         CModelHandler {
-            vtable: RLMeshModelVtable {
+            vtable: RLMeshExtLegacyModelVtable {
                 predict: Some(predict),
                 ..full_vtable()
             },
@@ -1253,9 +1236,10 @@ mod tests {
         (row.predict_index, row.predict_seed)
     }
 
-    /// Every field of `RLMeshRunOptions` unset, the way a C caller's `{0}` is.
-    fn unset_run_options() -> RLMeshRunOptions {
-        RLMeshRunOptions {
+    /// Every field of `RLMeshExtLegacyRunOptions` unset, the way a C caller's `{0}` is.
+    fn unset_run_options() -> RLMeshExtLegacyRunOptions {
+        RLMeshExtLegacyRunOptions {
+            struct_size: std::mem::size_of::<RLMeshExtLegacyRunOptions>(),
             max_episodes: 0,
             seeded: false,
             base_seed: 0,
@@ -1558,24 +1542,16 @@ mod tests {
     }
 
     #[test]
-    fn read_vtable_honors_truncated_struct_size() {
-        // A caller that compiled against only {struct_size, predict} reports a
-        // smaller size; the later callbacks must read as None even though they are
-        // non-null in this fully-allocated struct (the OOB-read regression guard).
+    fn read_vtable_rejects_abi4_prefix() {
         let mut vtable = full_vtable();
-        vtable.struct_size = std::mem::offset_of!(RLMeshModelVtable, on_episode_end);
-        let Ok(read) = (unsafe { read_vtable(&vtable) }) else {
-            panic!("predict must be covered");
-        };
-        assert!(read.predict.is_some());
-        assert!(read.on_episode_end.is_none());
-        assert!(read.on_close.is_none());
+        vtable.struct_size = std::mem::offset_of!(RLMeshExtLegacyModelVtable, on_episode_end);
+        assert!(unsafe { read_vtable(&vtable) }.is_err());
     }
 
     #[test]
     fn read_vtable_rejects_size_too_small_for_predict() {
         let mut vtable = full_vtable();
-        vtable.struct_size = std::mem::offset_of!(RLMeshModelVtable, predict);
+        vtable.struct_size = std::mem::offset_of!(RLMeshExtLegacyModelVtable, predict);
         assert!(unsafe { read_vtable(&vtable) }.is_err());
         vtable.struct_size = 0;
         assert!(unsafe { read_vtable(&vtable) }.is_err());
@@ -1754,10 +1730,13 @@ mod tests {
         }
     }
 
-    fn new_model(vtable: &RLMeshModelVtable, user_data: *mut c_void) -> *mut RLMeshModel {
-        let mut model: *mut RLMeshModel = std::ptr::null_mut();
+    fn new_model(
+        vtable: &RLMeshExtLegacyModelVtable,
+        user_data: *mut c_void,
+    ) -> *mut RLMeshExtLegacyModel {
+        let mut model: *mut RLMeshExtLegacyModel = std::ptr::null_mut();
         assert_eq!(
-            unsafe { rlmesh_model_new(vtable, user_data, &mut model) },
+            unsafe { rlmesh_ext_legacy_model_new(vtable, user_data, &mut model) },
             RLMeshStatus::Ok
         );
         model
@@ -1770,7 +1749,8 @@ mod tests {
         let model = new_model(&counting_vtable(), counters.user_data());
         let address = CString::new(env.address.clone()).expect("address");
         let seeds = [11_i64, 22, 33];
-        let options = RLMeshRunOptions {
+        let options = RLMeshExtLegacyRunOptions {
+            struct_size: std::mem::size_of::<RLMeshExtLegacyRunOptions>(),
             max_episodes: 3,
             episode_seeds: seeds.as_ptr(),
             num_episode_seeds: seeds.len(),
@@ -1778,9 +1758,10 @@ mod tests {
             trial_index_base: 100,
             ..unset_run_options()
         };
-        let mut report = RLMeshRunReport::default();
-        let status =
-            unsafe { rlmesh_model_run_local(model, address.as_ptr(), &options, &mut report) };
+        let mut report = RLMeshExtLegacyRunReport::default();
+        let status = unsafe {
+            rlmesh_ext_legacy_model_run_local(model, address.as_ptr(), &options, &mut report)
+        };
         assert_eq!(status, RLMeshStatus::Ok, "{}", last_error_message());
 
         assert_eq!(report.total_episodes, 3);
@@ -1814,9 +1795,9 @@ mod tests {
         // Cancellation is terminal, and says so with its own status: the next run
         // on this handle stops at once rather than reporting a generic internal
         // error a caller would have to string-match.
-        unsafe { rlmesh_model_cancel(model) };
+        unsafe { rlmesh_ext_legacy_model_cancel(model) };
         let cancelled = unsafe {
-            rlmesh_model_run_local(
+            rlmesh_ext_legacy_model_run_local(
                 model,
                 address.as_ptr(),
                 std::ptr::null(),
@@ -1831,7 +1812,7 @@ mod tests {
         );
         // A cancelled run does not close the model either; the free does, once.
         assert_eq!(counters.closes.load(Ordering::SeqCst), 0);
-        unsafe { rlmesh_model_free(model) };
+        unsafe { rlmesh_ext_legacy_model_free(model) };
         assert_eq!(counters.closes.load(Ordering::SeqCst), 1);
     }
 
@@ -1845,7 +1826,7 @@ mod tests {
         let address = CString::new(env.address.clone()).expect("address");
         for _ in 0..2 {
             let status = unsafe {
-                rlmesh_model_run_local(
+                rlmesh_ext_legacy_model_run_local(
                     model,
                     address.as_ptr(),
                     std::ptr::null(),
@@ -1856,7 +1837,7 @@ mod tests {
             assert_eq!(counters.closes.load(Ordering::SeqCst), 0);
         }
         assert_eq!(counters.predicts.load(Ordering::SeqCst), 2);
-        unsafe { rlmesh_model_free(model) };
+        unsafe { rlmesh_ext_legacy_model_free(model) };
         assert_eq!(counters.closes.load(Ordering::SeqCst), 1);
     }
 
@@ -1871,37 +1852,51 @@ mod tests {
         let address = CString::new(env.address.clone()).expect("address");
 
         // NULL options and a zeroed struct both run exactly one episode.
-        let mut report = RLMeshRunReport::default();
+        let mut report = RLMeshExtLegacyRunReport::default();
         let status = unsafe {
-            rlmesh_model_run_local(model, address.as_ptr(), std::ptr::null(), &mut report)
+            rlmesh_ext_legacy_model_run_local(
+                model,
+                address.as_ptr(),
+                std::ptr::null(),
+                &mut report,
+            )
         };
         assert_eq!(status, RLMeshStatus::Ok, "{}", last_error_message());
         assert_eq!(report.total_episodes, 1);
         let unset = unset_run_options();
-        let status =
-            unsafe { rlmesh_model_run_local(model, address.as_ptr(), &unset, &mut report) };
+        let status = unsafe {
+            rlmesh_ext_legacy_model_run_local(model, address.as_ptr(), &unset, &mut report)
+        };
         assert_eq!(status, RLMeshStatus::Ok, "{}", last_error_message());
         assert_eq!(report.total_episodes, 1);
 
         // Seeds alone set the count.
         let seeds = [5_i64, 6];
-        let seeded = RLMeshRunOptions {
+        let seeded = RLMeshExtLegacyRunOptions {
+            struct_size: std::mem::size_of::<RLMeshExtLegacyRunOptions>(),
             episode_seeds: seeds.as_ptr(),
             num_episode_seeds: seeds.len(),
             ..unset_run_options()
         };
-        let status =
-            unsafe { rlmesh_model_run_local(model, address.as_ptr(), &seeded, &mut report) };
+        let status = unsafe {
+            rlmesh_ext_legacy_model_run_local(model, address.as_ptr(), &seeded, &mut report)
+        };
         assert_eq!(status, RLMeshStatus::Ok, "{}", last_error_message());
         assert_eq!(report.total_episodes, 2);
 
         // A count that disagrees with the seeds is refused.
-        let mismatched = RLMeshRunOptions {
+        let mismatched = RLMeshExtLegacyRunOptions {
+            struct_size: std::mem::size_of::<RLMeshExtLegacyRunOptions>(),
             max_episodes: 3,
             ..seeded
         };
         let status = unsafe {
-            rlmesh_model_run_local(model, address.as_ptr(), &mismatched, std::ptr::null_mut())
+            rlmesh_ext_legacy_model_run_local(
+                model,
+                address.as_ptr(),
+                &mismatched,
+                std::ptr::null_mut(),
+            )
         };
         assert_eq!(status, RLMeshStatus::InvalidArgument);
         assert!(
@@ -1909,7 +1904,7 @@ mod tests {
             "{}",
             last_error_message()
         );
-        unsafe { rlmesh_model_free(model) };
+        unsafe { rlmesh_ext_legacy_model_free(model) };
     }
 
     #[test]
@@ -1917,21 +1912,21 @@ mod tests {
         // The driver used to flatten every failure to Internal/non-recoverable;
         // a C decline must arrive as RLMESH_ERR_MODEL with its own message.
         let env = EnvHarness::start();
-        let vtable = RLMeshModelVtable {
+        let vtable = RLMeshExtLegacyModelVtable {
             predict: Some(decline_with_a_row),
             ..full_vtable()
         };
         let model = new_model(&vtable, std::ptr::null_mut());
         let address = CString::new(env.address.clone()).expect("address");
         let status = unsafe {
-            rlmesh_model_run_local(
+            rlmesh_ext_legacy_model_run_local(
                 model,
                 address.as_ptr(),
                 std::ptr::null(),
                 std::ptr::null_mut(),
             )
         };
-        unsafe { rlmesh_model_free(model) };
+        unsafe { rlmesh_ext_legacy_model_free(model) };
 
         assert_eq!(status, RLMeshStatus::Model);
         assert!(
@@ -1944,7 +1939,7 @@ mod tests {
 
     unsafe extern "C" fn fail_with_a_type_error(
         _: *mut c_void,
-        _: *const RLMeshObservation,
+        _: *const RLMeshExtLegacyObservation,
         _: *mut *mut RLMeshValue,
     ) -> c_int {
         unsafe { rlmesh_callback_set_error_class(8, c"bad observation".as_ptr()) };
@@ -1956,21 +1951,21 @@ mod tests {
         // R-12: a class set with rlmesh_callback_set_error_class is the run's
         // error class and text in process, as a Python author's TypeError.
         let env = EnvHarness::start();
-        let vtable = RLMeshModelVtable {
+        let vtable = RLMeshExtLegacyModelVtable {
             predict: Some(fail_with_a_type_error),
             ..full_vtable()
         };
         let model = new_model(&vtable, std::ptr::null_mut());
         let address = CString::new(env.address.clone()).expect("address");
         let status = unsafe {
-            rlmesh_model_run_local(
+            rlmesh_ext_legacy_model_run_local(
                 model,
                 address.as_ptr(),
                 std::ptr::null(),
                 std::ptr::null_mut(),
             )
         };
-        unsafe { rlmesh_model_free(model) };
+        unsafe { rlmesh_ext_legacy_model_free(model) };
         assert_eq!(status, RLMeshStatus::Type, "{}", last_error_message());
         assert_eq!(
             crate::abi::status::rlmesh_last_error_class(),
@@ -1980,7 +1975,7 @@ mod tests {
         assert_eq!(rlmesh_last_error_is_recoverable(), 0);
     }
 
-    /// `RLMeshServeOptions.workflow_edition` is the served model's sticky
+    /// `RLMeshExtLegacyServeOptions.workflow_edition` is the served model's sticky
     /// declaration: it reaches `ServeOptions`, NULL/"" declares nothing, and a
     /// name this build cannot drive is refused where the host typed it, naming
     /// both the value and the retained list.
@@ -1993,7 +1988,8 @@ mod tests {
         // it on a prerelease build, which is why the literal is not hardcoded.
         let current = rlmesh::binding::CURRENT_WORKFLOW_EDITION;
         let declared = CString::new(current).expect("edition cstr");
-        let options = RLMeshServeOptions {
+        let options = RLMeshExtLegacyServeOptions {
+            struct_size: std::mem::size_of::<RLMeshExtLegacyServeOptions>(),
             workflow_edition: declared.as_ptr(),
             ..serve_options(false)
         };
@@ -2003,7 +1999,8 @@ mod tests {
         assert_eq!(resolved.serve.workflow_edition.as_deref(), Some(current));
 
         for blank in [std::ptr::null(), c"".as_ptr(), c"   ".as_ptr()] {
-            let options = RLMeshServeOptions {
+            let options = RLMeshExtLegacyServeOptions {
+                struct_size: std::mem::size_of::<RLMeshExtLegacyServeOptions>(),
                 workflow_edition: blank,
                 ..serve_options(false)
             };
@@ -2014,7 +2011,8 @@ mod tests {
         }
 
         let unknown = CString::new("2099.01").expect("edition cstr");
-        let options = RLMeshServeOptions {
+        let options = RLMeshExtLegacyServeOptions {
+            struct_size: std::mem::size_of::<RLMeshExtLegacyServeOptions>(),
             workflow_edition: unknown.as_ptr(),
             ..serve_options(false)
         };
@@ -2044,7 +2042,8 @@ mod tests {
             .unwrap_or_else(|_| panic!("resolves: {}", last_error_message()));
         assert_eq!(resolved.workflow_edition.as_deref(), Some(current));
         let explicit = CString::new(rlmesh::binding::CURRENT_WORKFLOW_EDITION).expect("cstr");
-        let options = RLMeshServeOptions {
+        let options = RLMeshExtLegacyServeOptions {
+            struct_size: std::mem::size_of::<RLMeshExtLegacyServeOptions>(),
             workflow_edition: explicit.as_ptr(),
             ..serve_options(false)
         };
@@ -2065,9 +2064,9 @@ mod tests {
     /// Hand a raw model/args tuple to a serve thread. The test joins it before
     /// dropping anything it points at.
     struct ServeArgs {
-        model: *mut RLMeshModel,
+        model: *mut RLMeshExtLegacyModel,
         bind: *const c_char,
-        options: *const RLMeshServeOptions,
+        options: *const RLMeshExtLegacyServeOptions,
     }
     // SAFETY: every test joins the serve thread before dropping model/bind/options.
     unsafe impl Send for ServeArgs {}
@@ -2080,8 +2079,9 @@ mod tests {
             .port()
     }
 
-    fn serve_options(allow_remote_shutdown: bool) -> RLMeshServeOptions {
-        RLMeshServeOptions {
+    fn serve_options(allow_remote_shutdown: bool) -> RLMeshExtLegacyServeOptions {
+        RLMeshExtLegacyServeOptions {
+            struct_size: std::mem::size_of::<RLMeshExtLegacyServeOptions>(),
             token: std::ptr::null(),
             allow_remote_shutdown,
             idle_timeout_ms: 0,
@@ -2115,7 +2115,7 @@ mod tests {
         };
         let server = std::thread::spawn(move || {
             let args = args;
-            unsafe { rlmesh_model_serve(args.model, args.bind, args.options) }
+            unsafe { rlmesh_ext_legacy_model_serve(args.model, args.bind, args.options) }
         });
 
         let runtime = tokio::runtime::Runtime::new().expect("client runtime");
@@ -2149,7 +2149,7 @@ mod tests {
         assert_eq!(server.join().expect("serve thread"), RLMeshStatus::Ok);
         assert_eq!(counters.predicts.load(Ordering::SeqCst), 1);
         assert_eq!(counters.closes.load(Ordering::SeqCst), 1);
-        unsafe { rlmesh_model_free(model) };
+        unsafe { rlmesh_ext_legacy_model_free(model) };
         // The serve already closed the model; the free does not close it again.
         assert_eq!(counters.closes.load(Ordering::SeqCst), 1);
     }
@@ -2169,7 +2169,7 @@ mod tests {
         };
         let server = std::thread::spawn(move || {
             let args = args;
-            unsafe { rlmesh_model_serve(args.model, args.bind, args.options) }
+            unsafe { rlmesh_ext_legacy_model_serve(args.model, args.bind, args.options) }
         });
 
         // Wait until the server is really accepting, so the cancel races nothing.
@@ -2181,10 +2181,10 @@ mod tests {
         });
 
         // Remote shutdown is off and there is no idle timeout: only cancel ends it.
-        unsafe { rlmesh_model_cancel(model) };
+        unsafe { rlmesh_ext_legacy_model_cancel(model) };
         assert_eq!(server.join().expect("serve thread"), RLMeshStatus::Ok);
         assert_eq!(counters.closes.load(Ordering::SeqCst), 1);
-        unsafe { rlmesh_model_free(model) };
+        unsafe { rlmesh_ext_legacy_model_free(model) };
     }
 
     #[test]
@@ -2196,7 +2196,7 @@ mod tests {
         let port = reserve_port();
         let address = format!("tcp://127.0.0.1:{port}");
         let counters = Counters::default();
-        let vtable = RLMeshModelVtable {
+        let vtable = RLMeshExtLegacyModelVtable {
             predict: Some(slow_counting_predict),
             ..counting_vtable()
         };
@@ -2210,7 +2210,7 @@ mod tests {
         };
         let server = std::thread::spawn(move || {
             let args = args;
-            unsafe { rlmesh_model_serve(args.model, args.bind, args.options) }
+            unsafe { rlmesh_ext_legacy_model_serve(args.model, args.bind, args.options) }
         });
 
         // A client that keeps one predict in flight while this thread cancels.
@@ -2251,7 +2251,7 @@ mod tests {
             1,
             "the C predict callback never started"
         );
-        unsafe { rlmesh_model_cancel(model) };
+        unsafe { rlmesh_ext_legacy_model_cancel(model) };
 
         assert_eq!(server.join().expect("serve thread"), RLMeshStatus::Ok);
         client.join().expect("client thread");
@@ -2265,6 +2265,6 @@ mod tests {
             0,
             "on_close waited for the in-flight predict"
         );
-        unsafe { rlmesh_model_free(model) };
+        unsafe { rlmesh_ext_legacy_model_free(model) };
     }
 }

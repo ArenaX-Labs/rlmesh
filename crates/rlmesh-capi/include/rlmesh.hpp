@@ -720,54 +720,68 @@ inline void set_warning_handler(std::function<void(const Warning&)> handler) {
 
 // ---- dtype + tensor ---------------------------------------------------------
 
-/// The RLMeshDLPackDType of a C++ element type (float, double, int32_t, int64_t,
+/// The RLMeshDType of a C++ element type (float, double, int32_t, int64_t,
 /// uint8_t, bool).
 template <class T>
-constexpr RLMeshDLPackDType dtype_of() {
+constexpr RLMeshDType dtype_of() {
   static_assert(std::is_same<T, float>::value || std::is_same<T, double>::value ||
                     std::is_same<T, int32_t>::value || std::is_same<T, int64_t>::value ||
                     std::is_same<T, uint8_t>::value || std::is_same<T, bool>::value,
                 "rlmesh::dtype_of: unsupported element type");
   if constexpr (std::is_same<T, float>::value) {
-    return RLMESH_F32;
+    return RLMESH_DTYPE_FLOAT32;
   } else if constexpr (std::is_same<T, double>::value) {
-    return RLMESH_F64;
+    return RLMESH_DTYPE_FLOAT64;
   } else if constexpr (std::is_same<T, int32_t>::value) {
-    return RLMESH_I32;
+    return RLMESH_DTYPE_INT32;
   } else if constexpr (std::is_same<T, int64_t>::value) {
-    return RLMESH_I64;
+    return RLMESH_DTYPE_INT64;
   } else if constexpr (std::is_same<T, bool>::value) {
-    return RLMESH_BOOL;
+    return RLMESH_DTYPE_BOOL;
   } else {
-    return RLMESH_U8;
+    return RLMESH_DTYPE_UINT8;
   }
 }
 
-/// A borrowed, DLPack-shaped tensor view (valid while its source value lives).
+/// Compatibility view over an owned ABI 5 tensor reference. Copies share the
+/// opaque handle and retain its storage independently from the source Value;
+/// shape/stride vectors belong to each copy.
 class Tensor {
  public:
-  explicit Tensor(const RLMeshTensor& raw) : raw_(raw) {}
-
-  const void* data() const { return raw_.data; }
-  RLMeshDLPackDType dtype() const { return raw_.dtype; }
-  int32_t ndim() const { return raw_.ndim; }
-  const int64_t* shape() const { return raw_.shape; }
-  const int64_t* strides() const { return raw_.strides; }
-  bool is_contiguous() const { return raw_.strides == nullptr; }
+  explicit Tensor(RLMeshTensor* raw) : raw_(raw, rlmesh_tensor_free) {
+    size_t n = 0;
+    rlmesh_tensor_ndim(raw, &n);
+    std::vector<size_t> shape(n), strides(n);
+    rlmesh_tensor_shape(raw, shape.data(), n, &n);
+    rlmesh_tensor_strides(raw, strides.data(), n, &n);
+    shape_.assign(shape.begin(), shape.end());
+    size_t width = rlmesh_ext_dtype_size(rlmesh_tensor_dtype(raw));
+    for (size_t stride : strides) strides_.push_back(static_cast<int64_t>(stride / width));
+  }
+  const void* data() const {
+    const void* out = nullptr;
+    size_t n = 0;
+    rlmesh_tensor_buffer(raw_.get(), &out, &n);
+    return out;
+  }
+  RLMeshDType dtype() const { return rlmesh_tensor_dtype(raw_.get()); }
+  int32_t ndim() const { return static_cast<int32_t>(shape_.size()); }
+  const int64_t* shape() const { return shape_.data(); }
+  const int64_t* strides() const { return is_contiguous() ? nullptr : strides_.data(); }
+  bool is_contiguous() const { return rlmesh_tensor_is_contiguous(raw_.get()); }
   size_t numel() const {
-    size_t n = 1;
-    for (int32_t i = 0; i < raw_.ndim; ++i) n *= static_cast<size_t>(raw_.shape[i]);
+    size_t n = 0;
+    rlmesh_tensor_size(raw_.get(), &n);
     return n;
   }
-  /// Flat element pointer for `[0, numel())` — valid only when `is_contiguous()`;
-  /// nullptr for a strided view (walk `shape()`/`strides()` instead).
   template <class T>
   const T* as() const {
-    return is_contiguous() ? static_cast<const T*>(raw_.data) : nullptr;
+    return is_contiguous() ? static_cast<const T*>(data()) : nullptr;
   }
 
  private:
-  RLMeshTensor raw_;
+  std::shared_ptr<RLMeshTensor> raw_;
+  std::vector<int64_t> shape_, strides_;
 };
 
 // ---- values -----------------------------------------------------------------
@@ -782,7 +796,7 @@ class ValueRef {
   RLMeshValueKind kind() const { return rlmesh_value_kind(ptr_); }
 
   Result<Tensor> as_tensor() const {
-    RLMeshTensor out{};
+    RLMeshTensor* out = nullptr;
     if (RLMeshStatus status = rlmesh_value_as_tensor(ptr_, &out); status != RLMESH_OK) {
       return Error::from_last(status);
     }
@@ -791,7 +805,7 @@ class ValueRef {
 
   Result<int64_t> as_discrete() const {
     int64_t out = 0;
-    if (RLMeshStatus status = rlmesh_value_as_discrete(ptr_, &out); status != RLMESH_OK) {
+    if (RLMeshStatus status = rlmesh_value_as_int(ptr_, &out); status != RLMESH_OK) {
       return Error::from_last(status);
     }
     return out;
@@ -799,43 +813,35 @@ class ValueRef {
 
   /// Borrowed UTF-8 bytes (NOT NUL-terminated), valid while the value lives.
   Result<std::string_view> as_text() const {
-    const char* data = nullptr;
-    size_t len = 0;
-    if (RLMeshStatus status = rlmesh_value_as_text(ptr_, &data, &len); status != RLMESH_OK) {
+    RLMeshStr out{};
+    if (RLMeshStatus status = rlmesh_value_as_text(ptr_, &out); status != RLMESH_OK)
       return Error::from_last(status);
-    }
-    return std::string_view(data, len);
+    return std::string_view(out.data, out.len);
   }
 
-  /// Element count of a MultiBinary / MultiDiscrete value.
+  /// Compatibility reads for the tensor representation of array spaces.
   Result<size_t> array_len() const {
-    size_t out = 0;
-    if (RLMeshStatus status = rlmesh_value_array_len(ptr_, &out); status != RLMESH_OK) {
-      return Error::from_last(status);
-    }
-    return out;
+    auto t = as_tensor();
+    if (!t) return t.error();
+    return t->numel();
   }
-
   Result<std::vector<uint8_t>> as_multi_binary() const {
-    auto len = array_len();
-    if (!len) return len.error();
-    std::vector<uint8_t> out(*len);
-    if (RLMeshStatus status = rlmesh_value_copy_multi_binary(ptr_, out.data(), out.size());
-        status != RLMESH_OK) {
-      return Error::from_last(status);
-    }
-    return out;
+    auto t = as_tensor();
+    if (!t) return t.error();
+    if (!t->is_contiguous() ||
+        (t->dtype() != RLMESH_DTYPE_INT8 && t->dtype() != RLMESH_DTYPE_UINT8 &&
+         t->dtype() != RLMESH_DTYPE_BOOL))
+      return Error(RLMESH_ERR_TYPE, "expected a contiguous byte tensor");
+    auto p = t->as<uint8_t>();
+    return std::vector<uint8_t>(p, p + t->numel());
   }
-
   Result<std::vector<int64_t>> as_multi_discrete() const {
-    auto len = array_len();
-    if (!len) return len.error();
-    std::vector<int64_t> out(*len);
-    if (RLMeshStatus status = rlmesh_value_copy_multi_discrete(ptr_, out.data(), out.size());
-        status != RLMESH_OK) {
-      return Error::from_last(status);
-    }
-    return out;
+    auto t = as_tensor();
+    if (!t) return t.error();
+    if (!t->is_contiguous() || t->dtype() != RLMESH_DTYPE_INT64)
+      return Error(RLMESH_ERR_TYPE, "expected a contiguous int64 tensor");
+    auto p = t->as<int64_t>();
+    return std::vector<int64_t>(p, p + t->numel());
   }
 
   /// Child count of a Dict / Tuple value.
@@ -849,25 +855,25 @@ class ValueRef {
 
   /// Tuple child `index`; nullopt when this is not a Tuple or `index` is absent.
   std::optional<ValueRef> at(size_t index) const {
-    const RLMeshValue* child = rlmesh_value_tuple_get(ptr_, index);
+    const RLMeshValue* child = nullptr;
+    if (rlmesh_value_get(ptr_, index, &child) != RLMESH_OK) return std::nullopt;
     if (child == nullptr) return std::nullopt;
     return ValueRef(child);
   }
 
-  /// Dict key `index`, in sorted key order (borrowed, NOT NUL-terminated).
+  /// Dict key `index`, in insertion order (borrowed, NOT NUL-terminated).
   Result<std::string_view> key(size_t index) const {
-    const char* data = nullptr;
-    size_t len = 0;
-    if (RLMeshStatus status = rlmesh_value_dict_key(ptr_, index, &data, &len);
-        status != RLMESH_OK) {
+    RLMeshStr out{};
+    if (RLMeshStatus status = rlmesh_value_dict_key_at(ptr_, index, &out); status != RLMESH_OK)
       return Error::from_last(status);
-    }
-    return std::string_view(data, len);
+    return std::string_view(out.data ? out.data : "", out.len);
   }
 
   /// Dict child by key; nullopt when this is not a Dict or the key is absent.
   std::optional<ValueRef> get(const std::string& key) const {
-    const RLMeshValue* child = rlmesh_value_dict_get(ptr_, key.c_str());
+    const RLMeshValue* child = nullptr;
+    RLMeshStr name{key.data(), key.size()};
+    if (rlmesh_value_dict_get(ptr_, name, &child) != RLMESH_OK) return std::nullopt;
     if (child == nullptr) return std::nullopt;
     return ValueRef(child);
   }
@@ -875,12 +881,13 @@ class ValueRef {
   /// Dict child `index`, in the same sorted key order as `key(index)`; nullopt
   /// when this is not a Dict or `index` is out of range.
   std::optional<ValueRef> at_key(size_t index) const {
-    const RLMeshValue* child = rlmesh_value_dict_get_at(ptr_, index);
+    const RLMeshValue* child = nullptr;
+    if (rlmesh_value_dict_value_at(ptr_, index, &child) != RLMESH_OK) return std::nullopt;
     if (child == nullptr) return std::nullopt;
     return ValueRef(child);
   }
 
-  /// Every (key, child) of a Dict, in sorted key order — NOT the declaration
+  /// Every (key, child) of a Dict, in insertion order — NOT the declaration
   /// order `SpaceRef::items()` walks. Pair a value child with its space by key.
   Result<std::vector<std::pair<std::string_view, ValueRef>>> items() const {
     auto count = size();
@@ -928,22 +935,42 @@ class Value {
   }
   ValueRef ref() const { return ValueRef(ptr_); }
 
-  static Result<Value> discrete(int64_t value) { return adopt(rlmesh_value_discrete(value)); }
+  static Result<Value> discrete(int64_t value) {
+    RLMeshValue* out = nullptr;
+    auto status = rlmesh_value_int(value, &out);
+    if (status != RLMESH_OK) return Error::from_last(status);
+    return Value(out);
+  }
 
   static Result<Value> text(std::string_view text) {
-    return adopt(rlmesh_value_text(text.data(), text.size()));
+    RLMeshValue* out = nullptr;
+    RLMeshStr view{text.data(), text.size()};
+    auto status = rlmesh_value_text(view, &out);
+    if (status != RLMESH_OK) return Error::from_last(status);
+    return Value(out);
   }
 
   /// Copy a contiguous row-major buffer into a Box value.
-  static Result<Value> box(const void* data, RLMeshDLPackDType dtype, std::vector<int64_t> shape) {
-    RLMeshTensor tensor{};
-    tensor.data = data;
-    tensor.ndim = static_cast<int32_t>(shape.size());
-    tensor.shape = shape.data();
-    tensor.strides = nullptr;
-    tensor.dtype = dtype;
-    tensor.device_type = RLMESH_DEVICE_CPU;
-    return adopt(rlmesh_value_box(&tensor));
+  static Result<Value> box(const void* data, RLMeshDType dtype, std::vector<int64_t> shape) {
+    std::vector<size_t> dims;
+    size_t nbytes = rlmesh_ext_dtype_size(dtype);
+    for (int64_t dim : shape) {
+      if (dim < 0) return Error(RLMESH_ERR_INVALID_ARGUMENT, "negative shape");
+      dims.push_back(static_cast<size_t>(dim));
+      nbytes *= static_cast<size_t>(dim);
+    }
+    RLMeshTensor* tensor = nullptr;
+    auto status = rlmesh_tensor_new(data, nbytes, dims.data(), dims.size(), dtype, &tensor);
+    if (status != RLMESH_OK) return Error::from_last(status);
+    RLMeshValue* out = nullptr;
+    status = rlmesh_value_tensor(tensor, &out);
+    if (status != RLMESH_OK) {
+      Error e = Error::from_last(status);
+      rlmesh_tensor_free(tensor);
+      return e;
+    }
+    rlmesh_tensor_free(tensor);
+    return Value(out);
   }
 
   /// Box from typed elements; the dtype follows T (see `dtype_of`).
@@ -953,38 +980,35 @@ class Value {
   }
 
   static Result<Value> multi_binary(const std::vector<uint8_t>& bits) {
-    return adopt(rlmesh_value_multi_binary(bits.data(), bits.size()));
+    std::vector<uint8_t> normalized;
+    for (uint8_t bit : bits) normalized.push_back(bit != 0);
+    return box(normalized.data(), RLMESH_DTYPE_INT8, {static_cast<int64_t>(bits.size())});
   }
 
   static Result<Value> multi_discrete(const std::vector<int64_t>& values) {
-    return adopt(rlmesh_value_multi_discrete(values.data(), values.size()));
+    return box(values.data(), RLMESH_DTYPE_INT64, {static_cast<int64_t>(values.size())});
   }
 
-  /// Tuple from owned children. On success the capi adopts every child; on
-  /// failure it adopts none, so this frees them all before returning.
+  /// Composite constructors retain child references in ABI 5.
   static Result<Value> tuple(std::vector<Value> children) {
-    std::vector<RLMeshValue*> raw;
-    raw.reserve(children.size());
-    for (Value& child : children) raw.push_back(child.release());
-    RLMeshValue* value = rlmesh_value_tuple(raw.data(), raw.size());
-    if (value == nullptr) return disown(raw);
-    return Value(value);
+    std::vector<const RLMeshValue*> raw;
+    for (auto& child : children) raw.push_back(child.raw());
+    RLMeshValue* out = nullptr;
+    auto status = rlmesh_value_tuple(raw.data(), raw.size(), &out);
+    if (status != RLMESH_OK) return Error::from_last(status);
+    return Value(out);
   }
-
-  /// Dict from owned (key, value) entries; keys must be unique. Same
-  /// all-or-nothing ownership as `tuple`.
   static Result<Value> dict(std::vector<std::pair<std::string, Value>> entries) {
-    std::vector<const char*> keys;
-    std::vector<RLMeshValue*> raw;
-    keys.reserve(entries.size());
-    raw.reserve(entries.size());
+    std::vector<RLMeshStr> keys;
+    std::vector<const RLMeshValue*> raw;
     for (auto& entry : entries) {
-      keys.push_back(entry.first.c_str());
-      raw.push_back(entry.second.release());
+      keys.push_back({entry.first.data(), entry.first.size()});
+      raw.push_back(entry.second.raw());
     }
-    RLMeshValue* value = rlmesh_value_dict(keys.data(), raw.data(), raw.size());
-    if (value == nullptr) return disown(raw);
-    return Value(value);
+    RLMeshValue* out = nullptr;
+    auto status = rlmesh_value_dict(keys.data(), raw.data(), raw.size(), &out);
+    if (status != RLMESH_OK) return Error::from_last(status);
+    return Value(out);
   }
 
  private:
@@ -1037,14 +1061,19 @@ class SpaceRef {
 
   const RLMeshSpaceSpec* raw() const { return ptr_; }
   bool valid() const { return ptr_ != nullptr; }
-  RLMeshValueKind kind() const { return rlmesh_space_type(ptr_); }
+  RLMeshSpaceKind kind() const { return rlmesh_space_spec_kind(ptr_); }
 
-  RLMeshDLPackDType dtype() const { return rlmesh_space_dtype(ptr_); }
-  size_t ndim() const { return rlmesh_space_ndim(ptr_); }
+  RLMeshDType dtype() const { return rlmesh_space_spec_dtype(ptr_); }
+  size_t ndim() const {
+    size_t n = 0;
+    if (ptr_) rlmesh_space_spec_shape(ptr_, nullptr, 0, &n);
+    return n;
+  }
 
   Result<std::vector<int64_t>> shape() const {
     std::vector<int64_t> out(ndim());
-    if (RLMeshStatus status = rlmesh_space_copy_shape(ptr_, out.data(), out.size());
+    size_t n = 0;
+    if (RLMeshStatus status = rlmesh_space_spec_shape(ptr_, out.data(), out.size(), &n);
         status != RLMESH_OK) {
       return Error::from_last(status);
     }
@@ -1064,7 +1093,7 @@ class SpaceRef {
   /// undeclared bound reads as -inf / +inf.
   Result<Bounds> bounds(size_t index) const {
     Bounds out{0, 0};
-    if (RLMeshStatus status = rlmesh_space_box_bounds(ptr_, index, &out.low, &out.high);
+    if (RLMeshStatus status = rlmesh_ext_legacy_space_box_bounds(ptr_, index, &out.low, &out.high);
         status != RLMESH_OK) {
       return Error::from_last(status);
     }
@@ -1074,7 +1103,7 @@ class SpaceRef {
   /// A Discrete space's category count and first value (`start ..= start+n-1`).
   Result<DiscreteRange> discrete() const {
     DiscreteRange out{0, 0};
-    if (RLMeshStatus status = rlmesh_space_discrete_n(ptr_, &out.n, &out.start);
+    if (RLMeshStatus status = rlmesh_ext_legacy_space_discrete_n(ptr_, &out.n, &out.start);
         status != RLMESH_OK) {
       return Error::from_last(status);
     }
@@ -1084,7 +1113,7 @@ class SpaceRef {
   /// A Text space's length limits, in characters.
   Result<TextLength> text_length() const {
     TextLength out{0, 0};
-    if (RLMeshStatus status = rlmesh_space_text_length(ptr_, &out.min, &out.max);
+    if (RLMeshStatus status = rlmesh_ext_legacy_space_text_length(ptr_, &out.min, &out.max);
         status != RLMESH_OK) {
       return Error::from_last(status);
     }
@@ -1096,7 +1125,8 @@ class SpaceRef {
   Result<std::string_view> charset() const {
     const char* data = nullptr;
     size_t len = 0;
-    if (RLMeshStatus status = rlmesh_space_text_charset(ptr_, &data, &len); status != RLMESH_OK) {
+    if (RLMeshStatus status = rlmesh_ext_legacy_space_text_charset(ptr_, &data, &len);
+        status != RLMESH_OK) {
       return Error::from_last(status);
     }
     return std::string_view(data, len);
@@ -1107,7 +1137,7 @@ class SpaceRef {
     auto count = numel();
     if (!count) return count.error();
     std::vector<int64_t> out(*count);
-    if (RLMeshStatus status = rlmesh_space_copy_nvec(ptr_, out.data(), out.size());
+    if (RLMeshStatus status = rlmesh_ext_legacy_space_copy_nvec(ptr_, out.data(), out.size());
         status != RLMESH_OK) {
       return Error::from_last(status);
     }
@@ -1117,7 +1147,7 @@ class SpaceRef {
   /// Child count of a Dict / Tuple space.
   Result<size_t> size() const {
     size_t out = 0;
-    if (RLMeshStatus status = rlmesh_space_len(ptr_, &out); status != RLMESH_OK) {
+    if (RLMeshStatus status = rlmesh_ext_legacy_space_len(ptr_, &out); status != RLMESH_OK) {
       return Error::from_last(status);
     }
     return out;
@@ -1125,7 +1155,7 @@ class SpaceRef {
 
   /// Tuple child `index`; nullopt when this is not a Tuple or `index` is absent.
   std::optional<SpaceRef> at(size_t index) const {
-    const RLMeshSpaceSpec* child = rlmesh_space_tuple_get(ptr_, index);
+    const RLMeshSpaceSpec* child = rlmesh_ext_legacy_space_tuple_get(ptr_, index);
     if (child == nullptr) return std::nullopt;
     return SpaceRef(child);
   }
@@ -1134,7 +1164,7 @@ class SpaceRef {
   Result<std::string_view> key(size_t index) const {
     const char* data = nullptr;
     size_t len = 0;
-    if (RLMeshStatus status = rlmesh_space_dict_key(ptr_, index, &data, &len);
+    if (RLMeshStatus status = rlmesh_ext_legacy_space_dict_key(ptr_, index, &data, &len);
         status != RLMESH_OK) {
       return Error::from_last(status);
     }
@@ -1143,7 +1173,7 @@ class SpaceRef {
 
   /// Dict child by key; nullopt when this is not a Dict or the key is absent.
   std::optional<SpaceRef> get(const std::string& key) const {
-    const RLMeshSpaceSpec* child = rlmesh_space_dict_get(ptr_, key.c_str());
+    const RLMeshSpaceSpec* child = rlmesh_ext_legacy_space_dict_get(ptr_, key.c_str());
     if (child == nullptr) return std::nullopt;
     return SpaceRef(child);
   }
@@ -1151,7 +1181,7 @@ class SpaceRef {
   /// Dict child `index`, in the same declaration order as `key(index)`; nullopt
   /// when this is not a Dict or `index` is out of range.
   std::optional<SpaceRef> at_key(size_t index) const {
-    const RLMeshSpaceSpec* child = rlmesh_space_dict_get_at(ptr_, index);
+    const RLMeshSpaceSpec* child = rlmesh_ext_legacy_space_dict_get_at(ptr_, index);
     if (child == nullptr) return std::nullopt;
     return SpaceRef(child);
   }
@@ -1180,50 +1210,34 @@ class SpaceRef {
 namespace detail {
 
 /// Store `scalar` into `dst` as `dtype`; false for a dtype we cannot encode.
-inline bool store_scalar(uint8_t* dst, RLMeshDLPackDType dtype, double scalar) {
+inline bool store_scalar(uint8_t* dst, RLMeshDType dtype, double scalar) {
   auto put = [&](auto typed) {
     std::memcpy(dst, &typed, sizeof(typed));
     return true;
   };
-  if (dtype.lanes != 1) return false;
-  switch (dtype.code) {
-    case 0:  // int
-      switch (dtype.bits) {
-        case 8:
-          return put(static_cast<int8_t>(scalar));
-        case 16:
-          return put(static_cast<int16_t>(scalar));
-        case 32:
-          return put(static_cast<int32_t>(scalar));
-        case 64:
-          return put(static_cast<int64_t>(scalar));
-        default:
-          return false;
-      }
-    case 1:  // uint
-      switch (dtype.bits) {
-        case 8:
-          return put(static_cast<uint8_t>(scalar));
-        case 16:
-          return put(static_cast<uint16_t>(scalar));
-        case 32:
-          return put(static_cast<uint32_t>(scalar));
-        case 64:
-          return put(static_cast<uint64_t>(scalar));
-        default:
-          return false;
-      }
-    case 2:  // float
-      switch (dtype.bits) {
-        case 32:
-          return put(static_cast<float>(scalar));
-        case 64:
-          return put(scalar);
-        default:
-          return false;
-      }
-    case 6:  // bool
-      return dtype.bits == 8 && put(static_cast<uint8_t>(scalar != 0.0 ? 1 : 0));
+  switch (dtype) {
+    case RLMESH_DTYPE_INT8:
+      return put(static_cast<int8_t>(scalar));
+    case RLMESH_DTYPE_INT16:
+      return put(static_cast<int16_t>(scalar));
+    case RLMESH_DTYPE_INT32:
+      return put(static_cast<int32_t>(scalar));
+    case RLMESH_DTYPE_INT64:
+      return put(static_cast<int64_t>(scalar));
+    case RLMESH_DTYPE_UINT8:
+      return put(static_cast<uint8_t>(scalar));
+    case RLMESH_DTYPE_UINT16:
+      return put(static_cast<uint16_t>(scalar));
+    case RLMESH_DTYPE_UINT32:
+      return put(static_cast<uint32_t>(scalar));
+    case RLMESH_DTYPE_UINT64:
+      return put(static_cast<uint64_t>(scalar));
+    case RLMESH_DTYPE_FLOAT32:
+      return put(static_cast<float>(scalar));
+    case RLMESH_DTYPE_FLOAT64:
+      return put(scalar);
+    case RLMESH_DTYPE_BOOL:
+      return put(static_cast<uint8_t>(scalar != 0.0));
     default:
       return false;
   }
@@ -1238,9 +1252,9 @@ inline bool store_scalar(uint8_t* dst, RLMeshDLPackDType dtype, double scalar) {
 /// `n` for MultiBinary([n]) — and Dict / Tuple recursed.
 inline Result<Value> zeros_for(SpaceRef space) {
   switch (space.kind()) {
-    case RLMESH_VALUE_BOX: {
-      RLMeshDLPackDType dtype = space.dtype();
-      size_t stride = rlmesh_dtype_size(dtype);
+    case RLMESH_SPACE_KIND_BOX: {
+      RLMeshDType dtype = space.dtype();
+      size_t stride = rlmesh_ext_dtype_size(dtype);
       if (stride == 0) return Error(RLMESH_ERR_TYPE, "unsupported Box dtype");
       auto shape = space.shape();
       if (!shape) return shape.error();
@@ -1259,12 +1273,12 @@ inline Result<Value> zeros_for(SpaceRef space) {
       }
       return Value::box(bytes.data(), dtype, std::move(*shape));
     }
-    case RLMESH_VALUE_DISCRETE: {
+    case RLMESH_SPACE_KIND_DISCRETE: {
       auto range = space.discrete();
       if (!range) return range.error();
       return Value::discrete(range->start);
     }
-    case RLMESH_VALUE_TEXT: {
+    case RLMESH_SPACE_KIND_TEXT: {
       auto length = space.text_length();
       if (!length) return length.error();
       size_t min = length->min > 0 ? static_cast<size_t>(length->min) : 0;
@@ -1287,17 +1301,17 @@ inline Result<Value> zeros_for(SpaceRef space) {
       for (size_t i = 0; i < min; ++i) text.append(fill);
       return Value::text(text);
     }
-    case RLMESH_VALUE_MULTI_BINARY: {
+    case RLMESH_SPACE_KIND_MULTI_BINARY: {
       auto count = space.numel();
       if (!count) return count.error();
       return Value::multi_binary(std::vector<uint8_t>(*count, 0));
     }
-    case RLMESH_VALUE_MULTI_DISCRETE: {
+    case RLMESH_SPACE_KIND_MULTI_DISCRETE: {
       auto counts = space.nvec();
       if (!counts) return counts.error();
       return Value::multi_discrete(std::vector<int64_t>(counts->size(), 0));
     }
-    case RLMESH_VALUE_TUPLE: {
+    case RLMESH_SPACE_KIND_TUPLE: {
       auto count = space.size();
       if (!count) return count.error();
       std::vector<Value> children;
@@ -1311,7 +1325,7 @@ inline Result<Value> zeros_for(SpaceRef space) {
       }
       return Value::tuple(std::move(children));
     }
-    case RLMESH_VALUE_DICT: {
+    case RLMESH_SPACE_KIND_DICT: {
       auto fields = space.items();
       if (!fields) return fields.error();
       std::vector<std::pair<std::string, Value>> entries;
@@ -1323,7 +1337,7 @@ inline Result<Value> zeros_for(SpaceRef space) {
       }
       return Value::dict(std::move(entries));
     }
-    case RLMESH_VALUE_INVALID:
+    case RLMESH_SPACE_KIND_UNKNOWN:
     default:
       return Error(RLMESH_ERR_INVALID_ARGUMENT, "no value fits an unspecified space");
   }
@@ -1347,7 +1361,7 @@ struct Episode {
 /// observation per sub-env, all borrowed for the duration of the call.
 class Batch {
  public:
-  explicit Batch(const RLMeshObservation* raw) : raw_(raw) {}
+  explicit Batch(const RLMeshExtLegacyObservation* raw) : raw_(raw) {}
 
   /// Rows in this request (the route's `num_envs`).
   size_t size() const { return raw_->num_envs; }
@@ -1367,7 +1381,7 @@ class Batch {
   /// Row `i`'s episode; an empty Episode when `i` is out of range.
   Episode episode(size_t i) const {
     if (raw_->episodes == nullptr || i >= raw_->num_envs) return Episode{};
-    const RLMeshEpisode& row = raw_->episodes[i];
+    const RLMeshExtLegacyEpisode& row = raw_->episodes[i];
     return Episode{detail::sv(row.id), row.seeded ? std::optional<int64_t>(row.seed) : std::nullopt,
                    row.predict_index,
                    row.seeded ? std::optional<int64_t>(row.predict_seed) : std::nullopt};
@@ -1377,16 +1391,17 @@ class Batch {
   std::string_view session_id() const { return detail::sv(raw_->session_id); }
   std::string_view request_id() const { return detail::sv(raw_->request_id); }
 
-  const RLMeshContract* contract() const { return raw_->contract; }
+  const RLMeshEnvContract* contract() const { return raw_->contract; }
   SpaceRef action_space() const {
-    return SpaceRef(raw_->contract ? rlmesh_contract_action_space(raw_->contract) : nullptr);
+    return SpaceRef(raw_->contract ? rlmesh_env_contract_action_space(raw_->contract) : nullptr);
   }
   SpaceRef observation_space() const {
-    return SpaceRef(raw_->contract ? rlmesh_contract_observation_space(raw_->contract) : nullptr);
+    return SpaceRef(raw_->contract ? rlmesh_env_contract_observation_space(raw_->contract)
+                                   : nullptr);
   }
 
  private:
-  const RLMeshObservation* raw_;
+  const RLMeshExtLegacyObservation* raw_;
 };
 
 /// The single-env view a `Model::from_predict` policy receives: one
@@ -1412,7 +1427,7 @@ class Request {
   Episode episode_;
 };
 
-/// Options for Model::run_local — the C RLMeshRunOptions, field for field.
+/// Options for Model::run_local — the C RLMeshExtLegacyRunOptions, field for field.
 /// Default-constructed == the C defaults (one episode, no caps).
 struct RunOptions {
   /// The exact episode count, resolved like Python's run(episodes=...).
@@ -1439,7 +1454,7 @@ struct RunOptions {
   uint64_t trial_index_base = 0;
 };
 
-/// What a finished run reports (the C RLMeshRunReport).
+/// What a finished run reports (the C RLMeshExtLegacyRunReport).
 struct RunReport {
   int64_t total_episodes = 0;
   int64_t total_steps = 0;
@@ -1449,7 +1464,7 @@ struct RunReport {
   int64_t truncated_episodes = 0;
 };
 
-/// Options for Model::serve — the C RLMeshServeOptions with owned/typed fields.
+/// Options for Model::serve — the C RLMeshExtLegacyServeOptions with owned/typed fields.
 /// A zero duration or concurrency means "unset".
 struct ServeOptions {
   /// Bearer token clients must present; empty disables auth.
@@ -1520,7 +1535,7 @@ class Model {
   }
   Model& operator=(Model&& other) noexcept {
     if (this != &other) {
-      if (model_ != nullptr) rlmesh_model_free(model_);
+      if (model_ != nullptr) rlmesh_ext_legacy_model_free(model_);
       model_ = other.model_;
       other.model_ = nullptr;
       state_ = std::move(other.state_);
@@ -1537,13 +1552,13 @@ class Model {
   /// callback is running on. Destroy it from a thread that is not executing it,
   /// after run_local / serve has returned.
   ~Model() {
-    if (model_ != nullptr) rlmesh_model_free(model_);
+    if (model_ != nullptr) rlmesh_ext_legacy_model_free(model_);
   }
 
   /// Drive against a remote environment. Blocking; returns the run's report.
   Result<RunReport> run_local(std::string_view env_address, const RunOptions& options = {}) {
     std::string address(env_address);
-    RLMeshRunOptions raw{};
+    RLMeshExtLegacyRunOptions raw = RLMESH_EXT_LEGACY_RUN_OPTIONS_INIT;
     raw.max_episodes = options.max_episodes;
     raw.seeded = options.seeded;
     raw.base_seed = options.base_seed;
@@ -1555,8 +1570,8 @@ class Model {
     raw.num_episode_seeds = options.episode_seeds.size();
     raw.trial_indexed = options.trial_indexed;
     raw.trial_index_base = options.trial_index_base;
-    RLMeshRunReport report{};
-    RLMeshStatus status = rlmesh_model_run_local(model_, address.c_str(), &raw, &report);
+    RLMeshExtLegacyRunReport report{};
+    RLMeshStatus status = rlmesh_ext_legacy_model_run_local(model_, address.c_str(), &raw, &report);
     if (status != RLMESH_OK) return Error::from_last(status);
     return RunReport{report.total_episodes, report.total_steps,         report.total_reward,
                      report.mean_reward,    report.terminated_episodes, report.truncated_episodes};
@@ -1566,7 +1581,7 @@ class Model {
   /// idle timeout, or `cancel()`.
   Status serve(std::string_view bind_address, const ServeOptions& options = {}) {
     std::string address(bind_address);
-    RLMeshServeOptions raw{};
+    RLMeshExtLegacyServeOptions raw = RLMESH_EXT_LEGACY_SERVE_OPTIONS_INIT;
     raw.token = options.token.empty() ? nullptr : options.token.c_str();
     raw.allow_remote_shutdown = options.allow_remote_shutdown;
     raw.idle_timeout_ms = static_cast<uint64_t>(options.idle_timeout.count());
@@ -1575,7 +1590,7 @@ class Model {
     raw.predict_concurrency = options.predict_concurrency;
     raw.workflow_edition =
         options.workflow_edition.empty() ? nullptr : options.workflow_edition.c_str();
-    RLMeshStatus status = rlmesh_model_serve(model_, address.c_str(), &raw);
+    RLMeshStatus status = rlmesh_ext_legacy_model_serve(model_, address.c_str(), &raw);
     if (status != RLMESH_OK) return Error::from_last(status);
     return ok();
   }
@@ -1583,7 +1598,7 @@ class Model {
   /// Stop a blocking run_local / serve. Thread-safe and the one member callable
   /// while the model is running (including from inside a callback); terminal —
   /// a cancelled model refuses further runs.
-  void cancel() { rlmesh_model_cancel(model_); }
+  void cancel() { rlmesh_ext_legacy_model_cancel(model_); }
 
  private:
   struct State {
@@ -1592,19 +1607,19 @@ class Model {
     CloseFn on_close;
   };
 
-  Model(RLMeshModel* model, std::unique_ptr<State> state)
+  Model(RLMeshExtLegacyModel* model, std::unique_ptr<State> state)
       : model_(model), state_(std::move(state)) {}
 
   static Result<Model> create(PredictBatchFn predict) {
     auto state = std::make_unique<State>();
     state->predict = std::move(predict);
-    RLMeshModelVtable vtable{};
-    vtable.struct_size = sizeof(RLMeshModelVtable);
+    RLMeshExtLegacyModelVtable vtable{};
+    vtable.struct_size = sizeof(RLMeshExtLegacyModelVtable);
     vtable.predict = &trampoline_predict;
     vtable.on_episode_end = &trampoline_episode_end;
     vtable.on_close = &trampoline_close;
-    RLMeshModel* raw = nullptr;
-    RLMeshStatus status = rlmesh_model_new(&vtable, state.get(), &raw);
+    RLMeshExtLegacyModel* raw = nullptr;
+    RLMeshStatus status = rlmesh_ext_legacy_model_new(&vtable, state.get(), &raw);
     if (status != RLMESH_OK) return Error::from_last(status);
     return Model(raw, std::move(state));
   }
@@ -1616,7 +1631,7 @@ class Model {
     return static_cast<int>(error.code() == RLMESH_OK ? RLMESH_ERR_MODEL : error.code());
   }
 
-  static int trampoline_predict(void* user_data, const RLMeshObservation* obs,
+  static int trampoline_predict(void* user_data, const RLMeshExtLegacyObservation* obs,
                                 RLMeshValue** out_actions) noexcept {
     auto* state = static_cast<State*>(user_data);
     Batch batch(obs);
@@ -1672,7 +1687,7 @@ class Model {
 #endif
   }
 
-  RLMeshModel* model_ = nullptr;
+  RLMeshExtLegacyModel* model_ = nullptr;
   std::unique_ptr<State> state_;
 };
 
@@ -1708,9 +1723,9 @@ class Space {
   /// A Box with one bound pair for every element. A float dtype takes
   /// +-INFINITY for an unbounded side; an integer one needs finite whole bounds
   /// the dtype can represent (out of range is an error, never clamped).
-  static Result<Space> box(RLMeshDLPackDType dtype, const std::vector<int64_t>& shape, double low,
+  static Result<Space> box(RLMeshDType dtype, const std::vector<int64_t>& shape, double low,
                            double high) {
-    return adopt(rlmesh_space_box(dtype, shape.data(), shape.size(), low, high));
+    return adopt(rlmesh_ext_legacy_space_box(dtype, shape.data(), shape.size(), low, high));
   }
   /// Box with the dtype following T (see `dtype_of`).
   template <class T>
@@ -1718,30 +1733,30 @@ class Space {
     return box(dtype_of<T>(), shape, low, high);
   }
   /// A Box with per-element bounds (`low` / `high` hold the element count each).
-  static Result<Space> box(RLMeshDLPackDType dtype, const std::vector<int64_t>& shape,
+  static Result<Space> box(RLMeshDType dtype, const std::vector<int64_t>& shape,
                            const std::vector<double>& low, const std::vector<double>& high) {
     size_t numel = 1;
     for (int64_t dim : shape) numel *= static_cast<size_t>(dim < 0 ? 0 : dim);
     if (low.size() != numel || high.size() != numel) {
       return Error(RLMESH_ERR_INVALID_ARGUMENT, "Box bounds must hold one value per element");
     }
-    return adopt(
-        rlmesh_space_box_elementwise(dtype, shape.data(), shape.size(), low.data(), high.data()));
+    return adopt(rlmesh_ext_legacy_space_box_elementwise(dtype, shape.data(), shape.size(),
+                                                         low.data(), high.data()));
   }
   static Result<Space> discrete(int64_t n, int64_t start = 0) {
-    return adopt(rlmesh_space_discrete(n, start));
+    return adopt(rlmesh_ext_legacy_space_discrete(n, start));
   }
   static Result<Space> multi_binary(const std::vector<int64_t>& shape) {
-    return adopt(rlmesh_space_multi_binary(shape.data(), shape.size()));
+    return adopt(rlmesh_ext_legacy_space_multi_binary(shape.data(), shape.size()));
   }
   static Result<Space> multi_discrete(const std::vector<int64_t>& nvec) {
-    return adopt(rlmesh_space_multi_discrete(nvec.data(), nvec.size()));
+    return adopt(rlmesh_ext_legacy_space_multi_discrete(nvec.data(), nvec.size()));
   }
   /// `charset` empty allows any character.
   static Result<Space> text(int64_t min_length, int64_t max_length,
                             const std::string& charset = {}) {
-    return adopt(
-        rlmesh_space_text(min_length, max_length, charset.empty() ? nullptr : charset.c_str()));
+    return adopt(rlmesh_ext_legacy_space_text(min_length, max_length,
+                                              charset.empty() ? nullptr : charset.c_str()));
   }
   /// Dict from owned (key, space) entries, stored sorted by key; keys
   /// non-empty and unique.
@@ -1755,7 +1770,7 @@ class Space {
       keys.push_back(entry.first.c_str());
       raw.push_back(entry.second.release());
     }
-    RLMeshSpaceSpec* space = rlmesh_space_dict(keys.data(), raw.data(), raw.size());
+    RLMeshSpaceSpec* space = rlmesh_ext_legacy_space_dict(keys.data(), raw.data(), raw.size());
     if (space == nullptr) return disown(raw);
     return Space(space);
   }
@@ -1763,7 +1778,7 @@ class Space {
     std::vector<RLMeshSpaceSpec*> raw;
     raw.reserve(children.size());
     for (Space& child : children) raw.push_back(child.release());
-    RLMeshSpaceSpec* space = rlmesh_space_tuple(raw.data(), raw.size());
+    RLMeshSpaceSpec* space = rlmesh_ext_legacy_space_tuple(raw.data(), raw.size());
     if (space == nullptr) return disown(raw);
     return Space(space);
   }
@@ -2347,7 +2362,7 @@ class Environment {
   virtual void close() {}
 };
 
-/// What an env declares (the C RLMeshEnvConfig with owned fields). The spaces
+/// What an env declares (the C RLMeshExtLegacyEnvConfig with owned fields). The spaces
 /// are cloned at `EnvServer::create`, so this need not outlive it.
 struct EnvConfig {
   std::string id;
@@ -2415,7 +2430,7 @@ class EnvServer {
     for (const std::string& option : config.reset_options) options.push_back(option.c_str());
     auto opt = [](const std::string& text) { return text.empty() ? nullptr : text.c_str(); };
 
-    RLMeshEnvConfig raw = rlmesh_env_config_init();
+    RLMeshExtLegacyEnvConfig raw = rlmesh_ext_legacy_env_config_init();
     raw.id = opt(config.id);
     raw.observation_space = config.observation_space->raw();
     raw.action_space = config.action_space->raw();
@@ -2428,15 +2443,15 @@ class EnvServer {
     raw.variants_catalog_json = opt(config.variants_catalog_json);
     raw.host_runtime_json = opt(config.host_runtime_json);
 
-    RLMeshEnvVtable vtable{};
-    vtable.struct_size = sizeof(RLMeshEnvVtable);
+    RLMeshExtLegacyEnvVtable vtable{};
+    vtable.struct_size = sizeof(RLMeshExtLegacyEnvVtable);
     vtable.reset = &trampoline_reset;
     vtable.step = &trampoline_step;
     vtable.render = &trampoline_render;
     vtable.close = &trampoline_close;
-    RLMeshEnv* handle = nullptr;
+    RLMeshExtLegacyEnv* handle = nullptr;
     RLMeshStatus status =
-        rlmesh_env_new_lanes(&vtable, &raw, user_data.data(), user_data.size(), &handle);
+        rlmesh_ext_legacy_env_new_lanes(&vtable, &raw, user_data.data(), user_data.size(), &handle);
     if (status != RLMESH_OK) return Error::from_last(status);
     return EnvServer(handle, std::move(states));
   }
@@ -2446,7 +2461,7 @@ class EnvServer {
   }
   EnvServer& operator=(EnvServer&& other) noexcept {
     if (this != &other) {
-      if (env_ != nullptr) rlmesh_env_free(env_);
+      if (env_ != nullptr) rlmesh_ext_legacy_env_free(env_);
       env_ = other.env_;
       other.env_ = nullptr;
       states_ = std::move(other.states_);
@@ -2457,7 +2472,7 @@ class EnvServer {
   EnvServer& operator=(const EnvServer&) = delete;
   /// Frees the handle; never from inside one of the env's own callbacks.
   ~EnvServer() {
-    if (env_ != nullptr) rlmesh_env_free(env_);
+    if (env_ != nullptr) rlmesh_ext_legacy_env_free(env_);
   }
 
   /// Bind without serving; returns the resolved address (e.g. the port the OS
@@ -2465,7 +2480,7 @@ class EnvServer {
   /// apply to an env.
   Result<std::string> bind(std::string_view bind_address, const ServeOptions& options = {}) {
     std::string address(bind_address);
-    RLMeshServeOptions raw{};
+    RLMeshExtLegacyServeOptions raw = RLMESH_EXT_LEGACY_SERVE_OPTIONS_INIT;
     raw.token = options.token.empty() ? nullptr : options.token.c_str();
     raw.allow_remote_shutdown = options.allow_remote_shutdown;
     raw.idle_timeout_ms = static_cast<uint64_t>(options.idle_timeout.count());
@@ -2474,7 +2489,7 @@ class EnvServer {
     raw.workflow_edition =
         options.workflow_edition.empty() ? nullptr : options.workflow_edition.c_str();
     RLMeshBytes resolved{};
-    RLMeshStatus status = rlmesh_env_bind(env_, address.c_str(), &raw, &resolved);
+    RLMeshStatus status = rlmesh_ext_legacy_env_bind(env_, address.c_str(), &raw, &resolved);
     if (status != RLMESH_OK) return Error::from_last(status);
     std::string out(reinterpret_cast<const char*>(resolved.data), resolved.len);
     rlmesh_bytes_free(resolved);
@@ -2487,7 +2502,7 @@ class EnvServer {
   /// handshake.
   Result<std::string> describe_json() const {
     RLMeshBytes bytes{};
-    RLMeshStatus status = rlmesh_env_describe_json(env_, &bytes);
+    RLMeshStatus status = rlmesh_ext_legacy_env_describe_json(env_, &bytes);
     if (status != RLMESH_OK) return Error::from_last(status);
     std::string out(reinterpret_cast<const char*>(bytes.data), bytes.len);
     rlmesh_bytes_free(bytes);
@@ -2501,13 +2516,13 @@ class EnvServer {
   /// waits for an in-flight call (one the drain timeout gave up on) and for
   /// every `close`, however long it takes.
   Status serve() {
-    RLMeshStatus status = rlmesh_env_serve(env_);
+    RLMeshStatus status = rlmesh_ext_legacy_env_serve(env_);
     if (status != RLMESH_OK) return Error::from_last(status);
     return ok();
   }
 
   /// Stop a blocking serve from any thread. Terminal.
-  void cancel() { rlmesh_env_cancel(env_); }
+  void cancel() { rlmesh_ext_legacy_env_cancel(env_); }
 
  private:
   struct State {
@@ -2516,7 +2531,7 @@ class EnvServer {
     std::string info_json;
   };
 
-  EnvServer(RLMeshEnv* env, std::vector<std::unique_ptr<State>> states)
+  EnvServer(RLMeshExtLegacyEnv* env, std::vector<std::unique_ptr<State>> states)
       : env_(env), states_(std::move(states)) {}
 
   static int fail(const Error& error) {
@@ -2529,8 +2544,8 @@ class EnvServer {
     return state->info_json.empty() ? nullptr : state->info_json.c_str();
   }
 
-  static int trampoline_reset(void* user_data, const RLMeshResetArgs* args,
-                              RLMeshResetResult* out) noexcept {
+  static int trampoline_reset(void* user_data, const RLMeshExtLegacyResetArgs* args,
+                              RLMeshExtLegacyResetResult* out) noexcept {
     auto* state = static_cast<State*>(user_data);
     ResetArgs request;
     if (args->seeded) request.seed = args->seed;
@@ -2557,7 +2572,7 @@ class EnvServer {
   }
 
   static int trampoline_step(void* user_data, const RLMeshValue* action,
-                             RLMeshStepResult* out) noexcept {
+                             RLMeshExtLegacyStepResult* out) noexcept {
     auto* state = static_cast<State*>(user_data);
     std::optional<ValueRef> borrowed;
     if (action != nullptr) borrowed = ValueRef(action);
@@ -2618,7 +2633,7 @@ class EnvServer {
 #endif
   }
 
-  RLMeshEnv* env_ = nullptr;
+  RLMeshExtLegacyEnv* env_ = nullptr;
   std::vector<std::unique_ptr<State>> states_;  // one per lane
 };
 

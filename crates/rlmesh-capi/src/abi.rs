@@ -1,5 +1,6 @@
 #![allow(unsafe_code)] // FFI: no_mangle exports.
 
+pub(crate) mod sizing;
 pub(crate) mod status;
 
 /// Ignore SIGPIPE in the host process, unless the host installed its own
@@ -34,34 +35,17 @@ pub(crate) fn ignore_sigpipe() {
 /// ONLY on a binary-incompatible change: a `repr(C)` layout change or
 /// enum-discriminant reorder, an `extern "C"` signature retype, or removing a
 /// symbol. Appending a field to a `struct_size`-guarded vtable (the model.rs
-/// pattern) is NOT a break and must not bump this — but `RLMeshServeOptions`
+/// pattern) is NOT a break and must not bump this — but `RLMeshExtLegacyServeOptions`
 /// carries no `struct_size`, so growing IT is a layout change and does bump this
-/// (generation 4 added `RLMeshServeOptions.workflow_edition`). A consumer gates
+/// (generation 4 added `RLMeshExtLegacyServeOptions.workflow_edition`). A consumer gates
 /// on it via the header's
 /// `RLMESH_ABI_VERSION` macro + `rlmesh_abi_check()`; the versioned SONAME
 /// (`librlmesh_capi.so.N`) makes the loader enforce the same generation.
-pub const RLMESH_ABI_VERSION: u32 = 4;
+pub const RLMESH_ABI_VERSION: u32 = 5;
 
 /// The linked library's ABI generation (see [`RLMESH_ABI_VERSION`]). A consumer
 /// compares this against the `RLMESH_ABI_VERSION` macro it compiled against.
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_abi_version() -> u32 {
     RLMESH_ABI_VERSION
-}
-
-/// Package (marketing) semver major — informational only. Do NOT gate ABI
-/// compatibility on this; use [`rlmesh_abi_version`].
-#[unsafe(no_mangle)]
-pub extern "C" fn rlmesh_abi_version_major() -> u32 {
-    env!("CARGO_PKG_VERSION_MAJOR").parse::<u32>().unwrap_or(0)
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn rlmesh_abi_version_minor() -> u32 {
-    env!("CARGO_PKG_VERSION_MINOR").parse::<u32>().unwrap_or(0)
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn rlmesh_abi_version_patch() -> u32 {
-    env!("CARGO_PKG_VERSION_PATCH").parse::<u32>().unwrap_or(0)
 }

@@ -96,6 +96,13 @@ impl fmt::Debug for Describable<'_> {
 }
 
 impl Describable<'static> {
+    /// An in-repo binding's type-level declarations; runs no policy slot.
+    pub(crate) fn from_declaration(decl: PolicyDecl) -> Result<Describable<'static>> {
+        decl.validate()?;
+        let spec = decl.spec.clone();
+        Ok(Describable(Target::Model { decl, spec }))
+    }
+
     /// The model type form: `P`'s declarations only, no user code run.
     pub fn model<P: Policy>() -> Describable<'static> {
         let decl = PolicyDecl::of::<P>();
@@ -152,7 +159,7 @@ trait FactoryForm {
     fn catalog(&self) -> Option<Result<Json>>;
     fn workflow_edition(&self) -> Option<String>;
     /// One representative build's `env_spec` (or a badge).
-    fn env_spec(&mut self, branch: &Kwargs) -> Json;
+    fn env_spec(&mut self, branch: &Kwargs, native: bool) -> BuiltSpec;
 }
 
 struct TypeForm<F>(std::marker::PhantomData<fn() -> F>);
@@ -221,19 +228,42 @@ fn served_spec(served: &ServedRead<'_>) -> Result<Json> {
     }
 }
 
+/// A representative env's spaces and native identity, from the same build.
+struct BuiltSpec {
+    spec: Json,
+    id: String,
+}
+fn native_id(id: Option<String>) -> String {
+    id.filter(|id| !id.is_empty())
+        .unwrap_or_else(|| "UnknownEnv-v1".into())
+}
+
 /// Build one env on `factory` for `branch`, read its spaces and close it.
-fn build_spec<F: EnvFactory>(factory: &mut F, branch: &Kwargs) -> Json {
+fn build_spec<F: EnvFactory>(factory: &mut F, branch: &Kwargs, native: bool) -> BuiltSpec {
     let built = factory.prepare().and_then(|()| factory.make_env(branch));
     let mut made = match built {
         Ok(made) => made,
-        Err(err) => return badge(&err),
+        Err(err) => {
+            return BuiltSpec {
+                spec: badge(&err),
+                id: native_id(None),
+            };
+        }
     };
+    let id = native_id(if native {
+        match &made {
+            MadeEnv::Env(e) => e.id(),
+            MadeEnv::Vector(e) => e.id(),
+        }
+    } else {
+        None
+    });
     let spec = made_spec(&made).unwrap_or_else(|err| badge(&err));
     let _ = match &mut made {
         MadeEnv::Env(env) => env.close(),
         MadeEnv::Vector(env) => env.close(),
     };
-    spec
+    BuiltSpec { spec, id }
 }
 
 impl<F: EnvFactory + Default> FactoryForm for TypeForm<F> {
@@ -258,8 +288,8 @@ impl<F: EnvFactory + Default> FactoryForm for TypeForm<F> {
     fn workflow_edition(&self) -> Option<String> {
         F::workflow_edition()
     }
-    fn env_spec(&mut self, branch: &Kwargs) -> Json {
-        build_spec(&mut F::default(), branch)
+    fn env_spec(&mut self, branch: &Kwargs, native: bool) -> BuiltSpec {
+        build_spec(&mut F::default(), branch, native)
     }
 }
 
@@ -285,8 +315,8 @@ impl<F: EnvFactory> FactoryForm for InstanceForm<'_, F> {
     fn workflow_edition(&self) -> Option<String> {
         F::workflow_edition()
     }
-    fn env_spec(&mut self, branch: &Kwargs) -> Json {
-        build_spec(self.0, branch)
+    fn env_spec(&mut self, branch: &Kwargs, native: bool) -> BuiltSpec {
+        build_spec(self.0, branch, native)
     }
 }
 
@@ -408,7 +438,7 @@ fn model_pieces(
         })
         .collect();
     let mut pieces = json!({
-        "target": { "entrypoint": null, "qualname": format!("rust:{}", decl.type_name) },
+        "target": { "entrypoint": null, "qualname": if host.language == "rust" {format!("rust:{}", decl.type_name)} else {"native:model".into()} },
         "params": { "param_spec": null, "signature_tier": signature_tier },
         "runtime": runtime_json(host, preferred.as_deref(), error),
         "model_spec": match spec {
@@ -448,16 +478,31 @@ fn factory_pieces(
         })
         .collect::<Result<Vec<_>>>()?;
     let env_tags = form.tags().unwrap_or(Json::Null);
-    let env_spec = match &served {
-        Some(served) => served_spec(served).unwrap_or_else(|err| badge(&err)),
-        None => form.env_spec(&Kwargs::new()),
+    let built = match &served {
+        Some(served) => BuiltSpec {
+            spec: served_spec(served).unwrap_or_else(|err| badge(&err)),
+            id: native_id(if host.language != "rust" {
+                match served {
+                    ServedRead::Env(e) => e.id(),
+                    ServedRead::Vector(e) => e.id(),
+                }
+            } else {
+                None
+            }),
+        },
+        None => form.env_spec(&Kwargs::new(), host.language != "rust"),
+    };
+    let qualname = if host.language == "rust" {
+        format!("rust:{}", form.type_name())
+    } else {
+        format!("native:{}", built.id)
     };
     let mut pieces = json!({
-        "target": { "entrypoint": null, "qualname": format!("rust:{}", form.type_name()) },
+        "target": { "entrypoint": null, "qualname": qualname },
         "params": { "param_spec": null, "signature_tier": signature_tier },
         "runtime": runtime_json(host, preferred.as_deref(), error),
         "env_tags": env_tags,
-        "env_spec": env_spec,
+        "env_spec": built.spec,
     });
     match form.catalog() {
         None => {}
@@ -474,7 +519,10 @@ fn factory_pieces(
                     let (branch_tags, branch_spec) = if default {
                         (pieces["env_tags"].clone(), pieces["env_spec"].clone())
                     } else {
-                        (form.tags_for(binding), form.env_spec(binding))
+                        (
+                            form.tags_for(binding),
+                            form.env_spec(binding, host.language != "rust").spec,
+                        )
                     };
                     out.push(json!({
                         "params": value_to_json(&Value::Dict(binding.clone()))?,
@@ -539,13 +587,22 @@ pub(crate) fn envelope(
 
 /// `obj`'s metadata envelope: Python's `rlmesh.describe`.
 pub fn describe<'a>(obj: impl Into<Describable<'a>>, options: DescribeOptions) -> Result<Metadata> {
-    let text = describe_json(
+    metadata(obj.into(), options, &Host::rust())
+}
+
+pub(crate) fn metadata(
+    obj: Describable<'_>,
+    options: DescribeOptions,
+    host: &Host,
+) -> Result<Metadata> {
+    let text = envelope(
         obj,
         DescribeJsonOptions {
             kind: options.kind,
             generated_at: options.generated_at,
             ..Default::default()
         },
+        host,
     )?;
     let json: Json = serde_json::from_str(&text)
         .map_err(|err| Error::Internal(format!("describe envelope is not JSON: {err}")))?;

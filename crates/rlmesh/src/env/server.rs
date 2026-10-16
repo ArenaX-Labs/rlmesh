@@ -145,6 +145,7 @@ struct Shared {
     id: u64,
     address: String,
     contract: EnvContract,
+    binding_description: Mutex<Option<String>>,
     token: Option<String>,
     shutdown: ShutdownTrigger,
     state: Mutex<State>,
@@ -257,6 +258,50 @@ impl EnvServer {
         publish: Publish,
     ) -> Result<EnvServer> {
         Self::build(Served::Vector(env), options, Some(publish), true)
+    }
+
+    /// Override publication identity for an in-repo non-Rust binding, before
+    /// starting the server. The facade still builds and validates the envelope.
+    pub(crate) fn binding_host(
+        &self,
+        component: &'static str,
+        language: &'static str,
+        extra: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<()> {
+        let mut state = lock(&self.shared.state);
+        let State::Ready(resources) = &mut *state else {
+            return Err(Error::Runtime("server has already started".into()));
+        };
+        let envelope = env_envelope(
+            &self.shared.contract,
+            None,
+            None,
+            &DescribingHost {
+                component,
+                language,
+                extra,
+            },
+            resources.grpc.workflow_edition.as_deref(),
+            matches!(resources.served, Served::Vector(_)),
+        )?;
+        *lock(&self.shared.binding_description) = Some(envelope.clone());
+        if resources
+            .grpc
+            .peer_info_extra
+            .contains_key(DESCRIBE_METADATA_KEY)
+        {
+            resources
+                .grpc
+                .peer_info_extra
+                .insert(DESCRIBE_METADATA_KEY.into(), envelope);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn binding_description(&self) -> Result<String> {
+        lock(&self.shared.binding_description)
+            .clone()
+            .ok_or_else(|| Error::Runtime("server has no binding description".into()))
     }
 
     /// The loopback server a run or session stands up in front of a local
@@ -413,6 +458,7 @@ impl EnvServer {
                     None,
                     &DescribingHost::rust(),
                     edition.as_deref(),
+                    matches!(served, Served::Vector(_)),
                 )?;
                 peer_info_extra.insert(DESCRIBE_METADATA_KEY.to_string(), envelope);
             }
@@ -446,6 +492,7 @@ impl EnvServer {
                 id: NEXT_SERVER.fetch_add(1, Ordering::Relaxed),
                 address,
                 contract,
+                binding_description: Mutex::new(None),
                 token: checked_token,
                 shutdown: ShutdownTrigger::new(),
                 state: Mutex::new(State::Ready(Box::new(Resources {
@@ -519,17 +566,25 @@ impl EnvServer {
     /// first, `Ok(true)` once it has stopped. The call that observes the stop
     /// returns the serve error, once. `timeout` may be zero.
     pub fn wait(&self, timeout: Option<Duration>) -> Result<bool> {
+        self.wait_outcome(timeout)?
+            .transpose()
+            .map(|stopped| stopped.is_some())
+    }
+
+    /// Keep a stopped server's serve result separate from wait misuse, so
+    /// bindings can report the stopped flag even when serving failed.
+    pub(crate) fn wait_outcome(&self, timeout: Option<Duration>) -> Result<Option<Result<()>>> {
         refuse_in_async_context("wait")?;
         let started = Instant::now();
         loop {
             if let Some(result) = self.poll_wait()? {
-                return result.map(|()| true);
+                return Ok(Some(result));
             }
             let nap = match timeout {
                 Some(timeout) => {
                     let elapsed = started.elapsed();
                     if elapsed >= timeout {
-                        return Ok(false);
+                        return Ok(None);
                     }
                     (timeout - elapsed).min(Duration::from_millis(10))
                 }

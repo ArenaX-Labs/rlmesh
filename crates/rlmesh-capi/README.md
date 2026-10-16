@@ -13,6 +13,370 @@ of the wire:
 
 Status: alpha. The ABI (`RLMESH_ABI_VERSION`) will break before 1.0.
 
+Ordinary output slots need not be initialized: successful writes never read or
+free their previous contents. Free any previously owned result before reusing
+its slot. Sized output structs still require their `_INIT` / `struct_size`.
+Input bool fields must contain a 0 or 1 byte; malformed representations return
+`RLMESH_ERR_INVALID_ARGUMENT` before the library reads a typed struct.
+
+## ABI 5 values and tensors
+
+ABI 5 replaces the space-specific value projection with immutable core
+`RLMeshValue` handles: None, Bool, Int, Float, Text, Bytes, Tensor, List,
+Tuple and Dict. A Discrete action is an Int; a Box observation and a
+MultiBinary or MultiDiscrete sample are Tensors. Constructors return a
+status and fill an owned handle. `rlmesh_value_clone` shares a reference;
+`rlmesh_value_free` releases it. Composite constructors retain references to
+children, so callers still free their own handles after success or failure.
+Dicts preserve insertion order, permit empty and embedded-NUL keys, and
+replace repeated keys in place. Space sampling uses the facade Value conversion,
+so sampled Dicts follow their spec's declaration order (including a remote
+spec whose keys are not sorted). Space membership uses facade acceptance:
+extra Dict keys are ignored and a one-element integer Tensor can be a
+Discrete member; missing required keys and out-of-range values are refused.
+Metadata and InfoDict use the same Dict kind.
+
+Text and dict keys use length-bearing `RLMeshStr`. Reads of another kind
+return `RLMESH_ERR_TYPE`; numeric reads are strict. Missing keys and indices
+succeed with NULL, while present empty strings have non-NULL data. Borrowed
+children and bytes remain valid while a handle sharing their parent lives.
+
+`RLMeshTensor` is now opaque. `rlmesh_tensor_new` copies a buffer using the
+`RLMeshDType` enum; shape and strides use `(out, cap, out_len)` buffers,
+with NULL/0 for a length query and no partial writes for a short buffer.
+Strides are in bytes. Clone, Value conversion and contiguous reshape share
+read-only storage; `rlmesh_tensor_copy` makes independent storage. An
+`rlmesh_value_as_tensor` result is an owned shared reference to free with
+`rlmesh_tensor_free`. The C++ compatibility Tensor shares that owned handle
+on copy, so its data, shape and strides survive the source Value and other
+Tensor copies. The old tensor POD, DLPack dtype triple, tensor release
+function and package-semver ABI accessors are removed. Use
+`rlmesh_build_info` for package identity. Package SONAME generation is read
+from `RLMESH_ABI_VERSION`, now 5.
+
+`RLMeshEnvContract` replaces `RLMeshContract`. The library builds it; callers
+can retain it with `rlmesh_env_contract_clone` (or the `env` / `spec` aliases)
+and free it with `rlmesh_env_contract_free`. Its id, spaces, optional render
+mode, lane count, typed metadata, `to_dict` and repr follow the facade.
+`rlmesh_trial_index` takes a Value dict and an optional lane, using Python's
+integer/float conversion and per-lane validation directly from the facade.
+
+The C env/model/run and remote interfaces below use the facade surface.
+The fenced compatibility sections document the old paths still needed by
+the C++ wrapper. C++ receives only compatibility changes;
+its full parity API is a separate wave.
+
+`rlmesh_tensor_from_dlpack` and `rlmesh_tensor_to_dlpack` use versioned
+`struct DLManagedTensorVersioned` descriptors through the Rust facade.
+Import copies CPU data and calls the producer's deleter only on success;
+on error the caller still owns the descriptor. Export shares read-only
+storage by default; `RLMeshToDlpackOptions options = RLMESH_TO_DLPACK_OPTIONS_INIT`
+with `options.copy = true` exports independent writable storage. Pass NULL
+for default options. The only supported `dl_device` is `(kDLCPU, 0)`, also
+reported by `rlmesh_tensor_dlpack_device`. Options require `struct_size`,
+zero reserved fields and zero unknown trailing bytes. All failed exchange
+calls set a provided output pointer to NULL; an invalid output cannot consume
+an import. An exported descriptor owns its data and metadata after the
+source tensor is freed; release it exactly once with `exported->deleter(exported)`.
+See [`examples/c_dlpack.c`](examples/c_dlpack.c) for imports, exports and ownership.
+
+`rlmesh.h` embeds the complete, unchanged upstream DLPack v1.0 header under
+`DLPACK_DLPACK_H_`, with its Apache-2.0 license in `include/dlpack.LICENSE`.
+It supports either include order with DLPack 1.x headers and rejects a
+pre-1.0 DLPack header included first. The native API has no legacy descriptor,
+stream or Python capsule negotiation parameters. The C++ DLPack wrapper is
+deferred to the C++20 wave.
+
+## Describe
+
+`rlmesh_model_vtable_describe` / `_describe_json` describe static policy
+fields without constructing a Model or invoking any slot, including load and
+loaded_native_chunk. They use the same declaration checks as Model construction.
+`rlmesh_model_describe` / `_describe_json` describe an instance, keeping the
+static native_chunk and declarations while reading the model's current spec.
+`rlmesh_env_factory_describe` / `_describe_json` use the facade's representative
+branch builds, badges, discriminants and variant catalogs. Factory hooks are
+exclusive; each representative env is closed and freed before return.
+
+Use `RLMESH_DESCRIBE_OPTIONS_INIT` or `RLMESH_DESCRIBE_JSON_OPTIONS_INIT`;
+NULL means INIT. `has_kind` cross-checks ENV or MODEL, and generated_at is
+validated by the facade. Describe returns an owned Value dict; describe_json
+returns owned bytes. JSON options can borrow scalar lanes (only lane zero is
+read) or a native vector env in place of the default build. A present empty
+lane list, NULL lane, or both served forms fails with InvalidArgument. The
+borrowed env is never closed. An env leased by a server uses the shorthand below.
+
+C identity is `native:<id>` (UnknownEnv-v1 for a failed/unnamed default build)
+or `native:model`, with the C runtime and declared parameter order. Factory
+serving publishes that same native identity. A NULL workflow_edition resolves
+and records an edition refusal; a non-NULL value bypasses resolution and
+validation, including an explicit empty string.
+
+`rlmesh_ext_env_server_describe_json` (COR-16) reads the facade's cached
+served-env envelope with the server's resolved edition and host declaration,
+including when publication is disabled. It remains readable after start and
+shutdown, never rebuilds an env, and never re-resolves the edition. It adds no
+public Rust extra. `examples/c_describe.c` exercises the family and sizing rules.
+
+## ABI 5 sizing and space names
+
+Every shared sized input uses its ABI-5 sizeof as MIN_SIZE: NULL options use
+INIT, below-minimum sizes fail with InvalidArgument, and nonzero unknown tail
+bytes fail with TypeError naming the struct and byte offset. Current fields
+are all within that minimum; future appended fields need whole-field checks.
+Sized outputs preserve the caller's struct_size and leave unknown fields at
+the caller's INIT values.
+The same minimum/tail checks now apply to compatibility input vtables/config,
+RunOptions and ServeOptions; the latter two gained struct_size and INIT macros.
+ABI-4 prefix layouts are refused, including a config missing host_runtime_json.
+
+`rlmesh_space_dtype` now takes a Space handle; use `rlmesh_space_spec_dtype`
+for a spec. The old unfenced space builders/readers are removed. The separate
+C++ wave still needs its previous spec builder/read API, retained temporarily
+as `rlmesh_ext_legacy_space_*`; new C code uses typed Box/Discrete/Dict
+constructors and their readers. Experimental MultiBinary/MultiDiscrete/Text/
+Tuple authoring is not yet exposed by the Rust facade and remains on that
+compatibility path. `examples/c_abi5.c` covers strict sizes and output bounds.
+
+The remaining compatibility surface is explicitly limited to what the current
+C++ header needs: 18 space helpers, 11 old model/env control exports, one inline
+config helper and six frozen callback/result records. [LEGACY_ABI.md](LEGACY_ABI.md)
+lists every symbol and record, its wrapper dependency and its replacement path.
+The wrapper now uses the canonical SpaceSpec kind/dtype/shape readers; the four
+redundant legacy readers and the unused scalar legacy env constructor are gone.
+Space and SpaceSpec also use distinct free functions, without the ABI-4 pointer
+registry/fallback. The C++20 wave will remove the inventoried remainder.
+
+## Stable adapters
+
+`RLMeshEnvTags` and `RLMeshModelSpec` are immutable facade values. Build them
+from typed `RLMeshObsNode` / `RLMeshInputNode` trees and sized leaves, or use
+the dict / JSON / metadata constructors. Constructors copy input data; clone
+shares the immutable lent tree. Dict keys and text fill use `RLMeshStr`, so
+embedded NULs are preserved. Authored order is kept for access and observation
+roles; serialized objects use the facade's canonical sorted JSON. Canonical
+reads can change a state leaf's representation, as in Python's codec.
+
+Every sized leaf and options record requires its `RLMESH_*_INIT` minimum,
+zero reserved bytes and zero unknown input tails. Frozen node arrays retain
+their stride; Action components and Split fields are arrays of leaf pointers.
+The C fixture asserts that every sized adapter record has explicit padding.
+The Zig gate compiles those assertions for both 32-bit x86 and ARM, including
+their different double alignments.
+Tolerant vocabulary values use `OTHER` plus text; closed enums refuse it.
+Image stride is expanded when a spec consumes the leaf, and lent images carry
+offsets rather than stride sugar.
+
+Transform handles retain shared callable identity across clones, leaves and
+specs. A successful `_new` takes `user_data`; its optional `free_user_data`
+runs once when the last reference drops. The callback must support concurrent
+calls, receives a borrowed Value, and transfers an owned output even on error.
+A failed constructor leaves state with its caller. Callback errors preserve
+their recorded error class.
+
+`rlmesh_adapters_tag` / `_tag_vector` validate through the facade before
+replacing the env wrapper, leaving the original handle unchanged on failure.
+`rlmesh_adapters_resolve` / `_resolve_from_contract` return a shared Adapter
+that executes the facade engine, serializing per-step calls and explain.
+`rlmesh_adapter_new` implements AdapterBase with a C vtable; Adapter-only
+history/advisory queries on that handle fail with TypeError. `wrap_predict`
+returns an owned reusable callable that keeps its adapter and callback state
+alive until freed.
+
+Attach a spec through `RLMeshModelOptions.spec` or the policy vtable. The
+model retains it. `RLMESH_SPEC_KIND_NO_ADAPTER` explicitly bypasses adaptation;
+a tagged env with no model spec otherwise fails with AdapterResolutionError.
+Trusted custom-input entrypoints resolve through the fenced
+`rlmesh_ext_register_entrypoint` registry. Custom-encoding string arms remain
+describe-only and are refused by resolve. See `examples/c_adapters.c`.
+
+## Remote clients
+
+`rlmesh_remote_env_new` and `rlmesh_remote_vector_env_new` connect through
+facade clients; `rlmesh_remote_model_new` validates without dialing. Use the
+corresponding options INIT macro (NULL means INIT), with address or the
+host/port/path/transport helpers. Timeout seconds use the facade's zero/None,
+finite and sign rules. Token-bearing constructors are fenced under `rlmesh_ext_`.
+
+Remote envs expose cached spaces, specs, metadata and contract pointers until
+free, including after close. All immutable accessors and cancel_handle work
+while I/O or a session borrows the client; selected_workflow_edition reads the
+facade's shared edition cell, including session pins. Overlapping I/O is a
+RuntimeError. A Session or run target borrows the client exclusively and
+returns it afterward; freeing during a call is the caller's error.
+
+Reset and step return owned Value handles in tuple order. A vector step uses
+one capacity/out_len for reward and termination arrays, and refuses a short
+buffer before I/O without changing any output. Render delegates PNG decoding
+to the facade's Tensor conversion. Close is idempotent; other I/O after close
+fails with RuntimeError. Free is required even after a failed close.
+RemoteModel clones share the facade handle and can create concurrent sessions
+against addresses, EnvServers and remote env targets.
+
+## Running and sessions
+
+`rlmesh_run` and `rlmesh_model_run` accept frozen by-value model/env targets
+and `RLMESH_RUN_OPTIONS_INIT`. Options use Python's `episodes`, `seeds`,
+`max_episode_steps`, `max_episode_seconds`, execution settings and trial base;
+`has_*` flags distinguish an explicit zero from absence. NULL seeds means
+None; a non-NULL pointer with length zero means an empty list. Both the native
+Model loop and RANDOM_SAMPLE session loop delegate to the facade.
+
+RunHooks are owned vtable handles, borrowed exclusively for a run. Callbacks
+run on the calling thread, receive lent sized EpisodeResult/StepEvent structs,
+and may clone RunResult or RunContext handles to retain them. Hook errors
+follow the facade's first-error rule and still trigger on_run_end once.
+Results, telemetry, equality, repr and aggregates use facade result types.
+
+`rlmesh_session_new` / `rlmesh_model_session` create a lazy facade Session.
+Reset, predict, step, run, context access, cancellation and close keep the
+facade's state machine. A session leases local envs/factories until free;
+its borrowed model and server handles must outlive it. Within its own hooks,
+only the RunContext members contract/num_envs/read/frame_sources can query the session; stateful
+re-entry fails with RuntimeError. Closing/freeing a session never closes its
+model. Cancellation tokens are retained independently from the caller's token
+handle. Free drains local callbacks before releasing the lease.
+
+Create tokens with `rlmesh_ext_cancel_token_new(&token)` and share them with
+`rlmesh_ext_cancel_token_clone(token, &copy)`; both return a status and an owned
+reference. `rlmesh_ext_cancel_token_cancel(token)` returns a status and fires
+the same token through any clone. Free references independently. Repeated
+fires coalesce, and a consumed cancellation re-arms the shared token (R-18).
+
+`RunOptions.instruction` and `SessionOptions.instruction` copy the optional
+text and use the facade's input injection. Read items copy a semantic role or
+an Image/State/Text leaf. Session readers retain a facade adapter independently
+of the session and return Value dicts; roles keep declaration order. Direct
+session/context/event reads return the selected value. An authored RunContext
+vtable must provide all four protocol slots; slot outputs transfer ownership,
+including on failure.
+
+FrameSources owns its roles and labels. A library-made render source borrows
+its session/context and preserves the facade's closed, busy and hook-thread
+checks. A local context reaches render only during its hook dispatch; direct
+Session frame sources can render while the session is idle. Session-made sources
+retain weak state: render returns RuntimeError after the session is freed, without
+prolonging its env lease. Context-made sources retain the context, including
+sources transferred from C callbacks. Missing optional outputs set `out_has=false` and
+leave the value/bytes output untouched. Equality compares callable sources as
+specified, and repr uses the facade formatter.
+
+RunResult constructors copy typed Advisory records. Returned advisory messages
+are borrowed while a shared result handle lives. Advisory lists from the engine
+are available on real runs and sessions. See `examples/c_reads.c`.
+
+## View and Recorder
+
+`RLMeshView view = RLMESH_VIEW_INIT` supplies Python's defaults: terminal,
+port 8008, 30 fps, JPEG quality 75, no selected source, hold or stepping rate.
+`rlmesh_view_parse` accepts Python's shorthand (`term`, `tty`, `http:PORT`,
+`both`), ignoring surrounding whitespace and ASCII case. Initialize its
+output with `RLMESH_VIEW_INIT`; the parser sets `source` to NULL, preserves
+the caller's `struct_size`, and leaves unknown output bytes untouched.
+`rlmesh_view_validate`, `_equals` and `_repr` use the facade. Invalid enum
+discriminants and undersized structs are refused.
+Seconds holds accept every finite nonnegative value, saturating overflow to
+Rust's `Duration::MAX`; negative, NaN and infinite values are refused.
+
+Set `RunOptions.view` or `SessionOptions.view` to a View pointer; the consuming
+call copies its fields and source string. A local `rlmesh_model_run` refuses
+a set view as Python does; use a session for local model viewing. The facade
+owns terminal/HTTP rendering, pacing, hold, skip and quit behavior. C++ View
+and Recorder wrappers remain part of the separate C++20 wave.
+
+`rlmesh_recorder_new(NULL, &recorder)` uses 30 fps, quality 60 and a generated
+result-set id. `rlmesh_recorder_add` records completed runs;
+`rlmesh_recorder_capture` returns an ordinary owned `RLMeshRunHooks` handle
+for runs, sessions or manual `rlmesh_run_hooks_on_*` dispatch. Captures retain
+their explicit context and the recorder's shared state until hooks are freed.
+NULL `cameras` discovers sources; a non-NULL list with length zero records
+metrics only and permits vector envs. NULL `video_info_keys` selects Python's
+default pair; a non-NULL empty list disables video-path discovery. Camera and
+video-key strings, task/model/env labels and config Dict values are copied.
+The facade writes AV1 media and delivers best-effort capture warnings.
+
+Calls on a recorder serialize internally. `rlmesh_recorder_close` is
+idempotent and removes staged media. `rlmesh_recorder_free` closes with errors
+swallowed, as required by the C API; retained capture hooks can still record
+metrics, while further media staging needs an open recorder. Folder and ZIP
+exports use the facade's writer. Refused targets and filesystem failures
+return `RLMESH_ERR_OS`; exporting removed staged media after close returns
+`RLMESH_ERR_RUNTIME` before writing. Metric-only exports still work after close.
+
+WorkloadRecord, EpisodeRecord and MediaRef are immutable snapshot handles.
+Constructors copy their inputs, `_get` returns an independently owned snapshot,
+and `_free` releases each handle. Scalar/length reads of NULL return zero;
+optional accessors return false for None, and out-of-range `_get` calls return
+`RLMESH_ERR_INVALID_ARGUMENT`. Record construction follows Python's dataclasses
+without adding numeric validation. Typed Dict conversion, equality, repr and
+workload aggregates come from the facade. Every new options type has
+`RLMESH_*_INIT`, `_MIN_SIZE` and the ABI-5 size/tail checks; NULL options use
+the defaults, while `{0}` is refused. See `examples/c_recorder.c` for ownership,
+real capture, exports, manual dispatch and sized-input tests.
+
+## Env authoring and servers
+
+`rlmesh_env_new(vtable, user_data, attributes, out)` and
+`rlmesh_vector_env_new` wrap the facade's Gymnasium-shaped protocols. Reset
+and step use Value handles and tuple-ordered outputs; info is a Value dict,
+not JSON. Vtables include `free_user_data`; ownership transfers only on a
+successful constructor. Free releases state without calling close. Close is
+idempotent, and callbacks run serially for each handle.
+
+`rlmesh_env_server_new` borrows a list of scalar handles;
+`rlmesh_env_server_new_vector` borrows a native vector handle. Construction
+binds and derives the contract through the facade. `start`, `serve`, `wait`
+and `shutdown` keep its state machine, validation and thread behavior. The
+server holds an exclusive lease on each env until free; duplicate or busy
+handles fail with RuntimeError. Server free drains C callbacks even when a
+facade shutdown deadline has expired.
+
+Use `RLMESH_ENV_VTABLE_INIT`, `RLMESH_ENV_ATTRIBUTES_INIT`,
+`RLMESH_VECTOR_ENV_VTABLE_INIT`, `RLMESH_VECTOR_ENV_ATTRIBUTES_INIT`,
+`RLMESH_ENV_SERVER_OPTIONS_INIT` and `RLMESH_SERVE_OPTIONS_INIT`.
+All new structs have `struct_size` and `_MIN_SIZE`; zero initialization is
+refused, and nonzero unknown trailing bytes fail with TypeError. Serve
+options use seconds and explicit `has_*` fields, including for zero.
+`examples/c_env_api.c` exercises the new API. The C++ wrapper's existing
+combined env/server path now calls the fenced `rlmesh_ext_legacy_*` bridge;
+its full C++ parity migration remains separate.
+
+`RLMeshEnvFactory` takes a sized vtable and copied attributes (tags,
+TagParam discriminants, reset options and workflow edition). All hooks use
+the facade's branch checks, default binding, stamping and serving pipeline.
+Hooks are exclusive, including re-entry from a callback; attribute getters
+can run concurrently. Factory free releases state without calling close.
+`rlmesh_env_factory_make` returns one owned scalar or vector handle, with
+typed metadata stamped by the facade. A Variant catalog uses an owned sink;
+Variant fields are mutable and mapping fields are Value dicts. TagParam and
+Variant lists lend items until the list is freed. A reusable
+`RLMeshExtCancelToken` can cancel factory serving from another thread.
+`examples/c_factory.c` covers these contracts, including live serving and
+cancellation. Factory serving drains all C callbacks before it returns.
+
+## Policy and Model
+
+`RLMeshModelVtable` defines any of the four prediction corners. NULL slots
+are absent, and `context_corners` marks only the slots that receive a
+`RLMeshPredictContext`. `rlmesh_model_new` delegates declarations, loading,
+corner synthesis, serialization and the episode store to the facade Model.
+`rlmesh_model_from_config` checks declared load keys before calling load.
+The loaded native chunk is read once. Context state uses borrowed
+`RLMeshEpisodeState` handles with owned `void*` values and deleters.
+
+Use `RLMESH_MODEL_VTABLE_INIT`, `RLMESH_MODEL_OPTIONS_INIT` and
+`RLMESH_MODEL_SERVE_OPTIONS_INIT`; zero initialization is refused. On a
+constructor error neither policy nor hook state is adopted, no close hook
+runs, and the output is NULL. Clone shares the model. Close is terminal,
+serialized and idempotent; the last C model free drains callbacks and releases
+policy and hook state once. Getter data remains valid while any C clone
+lives. Serve uses the shared ServeOptions and reusable cancellation token.
+An already-fired token refuses serving without closing the model.
+
+`examples/c_policy.c` covers the modern API. The older model-driving example
+and the C++ wrapper use the `rlmesh_ext_legacy_model_*` bridge below until
+the run/session and C++ migrations replace that consumer path.
+
 ## Layout
 
 - `include/rlmesh.h` — the C ABI (C11). Hand-authored; the single header authority.
@@ -74,17 +438,20 @@ And in C:
 ```c
 #include <rlmesh.h>
 
-static int predict(void* ud, const RLMeshObservation* obs, RLMeshValue** out) {
-  for (size_t i = 0; i < obs->num_envs; ++i) out[i] = rlmesh_value_discrete(0);
+static int predict(void* ud, const RLMeshExtLegacyObservation* obs, RLMeshValue** out) {
+  for (size_t i = 0; i < obs->num_envs; ++i) {
+    RLMeshStatus status = rlmesh_value_int(0, &out[i]);
+    if (status != RLMESH_OK) return status;
+  }
   return RLMESH_OK;
 }
 
 int main(void) {
-  RLMeshModelVtable vt = {.struct_size = sizeof vt, .predict = predict};
-  RLMeshModel* model;
-  rlmesh_model_new(&vt, NULL, &model);
-  RLMeshStatus rc = rlmesh_model_run_local(model, "tcp://127.0.0.1:5555", NULL, NULL);
-  rlmesh_model_free(model);
+  RLMeshExtLegacyModelVtable vt = {.struct_size = sizeof vt, .predict = predict};
+  RLMeshExtLegacyModel* model;
+  rlmesh_ext_legacy_model_new(&vt, NULL, &model);
+  RLMeshStatus rc = rlmesh_ext_legacy_model_run_local(model, "tcp://127.0.0.1:5555", NULL, NULL);
+  rlmesh_ext_legacy_model_free(model);
   return rc == RLMESH_OK ? 0 : 1;
 }
 ```
@@ -120,21 +487,21 @@ target_link_libraries(my_sim PRIVATE rlmesh::rlmesh)
 install your binary beside it or set an install rpath. `rlmesh::rlmesh_static`
 is for fully static targets with no other Rust library linked in. The package
 version is the ABI generation (`RLMESH_ABI_VERSION`), so
-`find_package(rlmesh 4)` refuses a package of another ABI generation; call
+`find_package(rlmesh 5)` refuses a package of another ABI generation; call
 `rlmesh_abi_check()` at startup to catch a header and library from different
 releases.
 
 ## Model contract
 
 `predict` receives `num_envs` decoded observation values (one per sub-env) plus
-routing metadata (session, env, request ids; one `RLMeshEpisode` per row). It
+routing metadata (session, env, request ids; one `RLMeshExtLegacyEpisode` per row). It
 writes one owned action value per row into `out_actions` and returns `RLMESH_OK`,
 or returns nonzero after `rlmesh_callback_set_error(...)` to decline. The runtime
 validates each action against the route's action space before it reaches the
 wire: a structural mismatch fails the step, a Box-bounds overshoot is left to the
 environment's own policy.
 
-Each `RLMeshEpisode` row carries the episode's `id` and reset `seed` (when
+Each `RLMeshExtLegacyEpisode` row carries the episode's `id` and reset `seed` (when
 `seeded`), plus the same per-predict context the Python SDK stamps on a predict:
 `predict_index`, the re-plan ordinal within the episode (0 on the first predict
 under that id, then +1 per predict), and `predict_seed`, a reproducible mix of
@@ -147,14 +514,14 @@ callback runs.
 
 Optional hooks: `on_episode_end(env_id, episode_id)` when the runtime drops an
 episode (`episode_id == NULL` means every episode of that env), and `on_close`
-once per handle: when a serve stops, or at `rlmesh_model_free`. A run borrows
+once per handle: when a serve stops, or at `rlmesh_ext_legacy_model_free`. A run borrows
 the model and never closes it, as Python's `Model.run` does. Callbacks run on a worker thread; `user_data` must be safe to
 use from a thread other than the one that created it, and a callback must not
-re-enter its own model handle. `rlmesh_model_run_local` fills an optional
-`RLMeshRunReport`; `rlmesh_model_cancel` stops a blocking run/serve from another
+re-enter its own model handle. `rlmesh_ext_legacy_model_run_local` fills an optional
+`RLMeshExtLegacyRunReport`; `rlmesh_ext_legacy_model_cancel` stops a blocking run/serve from another
 thread.
 
-`RLMeshRunOptions` bounds and seeds a run: `max_episodes` (the exact episode
+`RLMeshExtLegacyRunOptions` bounds and seeds a run: `max_episodes` (the exact episode
 count, as in the Python SDK's `run(episodes=...)`; 0 runs one episode, or one per
 seed when `episode_seeds` is given, never "until the env ends"), `base_seed` (when
 `seeded`) or explicit `episode_seeds`, the per-episode step/time caps,
@@ -164,30 +531,31 @@ to an environment that declares that reset option.
 
 ## Environment contract
 
-`rlmesh_env_new(vtable, config, user_data, &env)` takes the callbacks and an
-`RLMeshEnvConfig`: the observation and action spaces (built with
+`rlmesh_ext_legacy_env_new_lanes(vtable, config, user_data, num_lanes, &env)` takes the callbacks and an
+`RLMeshExtLegacyEnvConfig`: the observation and action spaces (built with
 `rlmesh_box_new`, `rlmesh_discrete_new` or `rlmesh_dict_new` and lent with
 `rlmesh_space_spec(space)`), an id, the adapter `EnvTags` as JSON, the reset
 options the env understands (`trial_index`), a render mode, and extra metadata.
 The tags are validated against the spaces right there, the same publish-time
-check Python's `adapters.tag()` runs, so a typo fails `rlmesh_env_new` rather
+check Python's `adapters.tag()` runs, so a typo fails `rlmesh_ext_legacy_env_new_lanes` rather
 than a model's resolve. The tag JSON grammar (leaf kinds, fields, defaults, and
 validation) is specified in [`docs/specs/env_tags.v1.md`](../../docs/specs/env_tags.v1.md).
 
-Then `rlmesh_env_bind` (learn the address, e.g. for port 0) and
-`rlmesh_env_serve` (blocks). `rlmesh_env_cancel` from any thread drains the
+Then `rlmesh_ext_legacy_env_bind` (learn the address, e.g. for port 0) and
+`rlmesh_ext_legacy_env_serve` (blocks). `rlmesh_ext_legacy_env_cancel` from any thread drains the
 server, runs `close` once, and lets `serve` return `RLMESH_OK`.
 
-When `rlmesh_env_serve` (or `rlmesh_env_free`) returns, no callback is running
+When `rlmesh_ext_legacy_env_serve` (or `rlmesh_ext_legacy_env_free`) returns, no callback is running
 and none will run again, so the callback state behind `user_data` can be freed
 right after. Serve waits for a callback still in flight, such as a `step` the
 `drain_timeout_ms` gave up on, and for every lane's `close`, however long it
 takes: a callback that never returns blocks serve. `close_timeout_ms` does not
 apply to an env.
 
-`rlmesh_env_describe_json` (C++: `EnvServer::describe_json()`) returns the env's
+The compatibility `rlmesh_ext_legacy_env_describe_json` (C++:
+`EnvServer::describe_json()`) returns the env's
 `rlmesh.describe.v1` envelope: the spaces, the tags, and the edition handshake,
-the same artifact `rlmesh describe` emits for a Python env. `rlmesh_env_bind`
+the same artifact `rlmesh describe` emits for a Python env. `rlmesh_ext_legacy_env_bind`
 puts it on that endpoint's handshake too (each env bound in a process reports
 its own), so the managed platform can read an image without a label; bake it
 as the image's `dev.rlmesh.describe` label to describe the image before it
@@ -195,7 +563,7 @@ runs.
 
 An image that serves several named scenarios (each picked by the make kwargs or
 environment variables a `dev.rlmesh.package` scenario sets) lists them in
-`RLMeshEnvConfig.variants_catalog_json` (C++: `EnvConfig::variants_catalog_json`),
+`RLMeshExtLegacyEnvConfig.variants_catalog_json` (C++: `EnvConfig::variants_catalog_json`),
 a JSON array of `{"id", "params", "metadata"}` with unique ids. The envelope
 carries it as `variants.catalog`, as `enumerate_variants` does for a Python env,
 so the platform can match the label's scenarios to it.
@@ -240,9 +608,9 @@ runs on its own thread, concurrently with the others, so each `user_data` must
 be its own simulation. `num_lanes == 0` is rejected.
 
 A simulation bound to the thread that created it (a GL or Vulkan context, Isaac
-Sim) sets `RLMeshEnvConfig.foreground = true`: `rlmesh_env_serve` then runs the
+Sim) sets `RLMeshExtLegacyEnvConfig.foreground = true`: `rlmesh_ext_legacy_env_serve` then runs the
 server on a helper thread and every callback, `close` included, on the thread
-that called it, until the server stops. `rlmesh_env_cancel` works as before,
+that called it, until the server stops. `rlmesh_ext_legacy_env_cancel` works as before,
 and PNG encoding stays off that thread. A foreground env serves exactly one
 lane: `rlmesh_env_new_lanes` rejects `foreground` with more than one.
 
@@ -271,7 +639,7 @@ snapshots it. Nothing throws — `value()` / `unwrap()` abort instead, and the
 header compiles under `-fno-exceptions`. `RLMESH_TRY(expr)` propagates an error
 out of a `Result`-returning function.
 
-`run_local` takes a `RunOptions` (the C `RLMeshRunOptions` field for field, with
+`run_local` takes a `RunOptions` (the C `RLMeshExtLegacyRunOptions` field for field, with
 `episode_seeds` as a `std::vector`) and returns a `RunReport`; `serve` takes a
 `ServeOptions` (owned token, `std::chrono` timeouts). `Model::cancel()` is the one member callable while
 `run_local` / `serve` blocks — including from another thread; a cancelled
@@ -300,7 +668,7 @@ runtime in each config instead of relying on that default.
 In C, initialize the config with the header helper, then fill its spaces:
 
 ```c
-RLMeshEnvConfig config = rlmesh_env_config_init();
+RLMeshExtLegacyEnvConfig config = rlmesh_ext_legacy_env_config_init();
 config.observation_space = observation;
 config.action_space = action;
 ```
@@ -311,7 +679,7 @@ absent (including MSVC's default C mode), `language_version` is omitted.
 It also detects C++ when the C header is included from a C++ translation unit.
 `RLMESH_HOST_RUNTIME_JSON` exposes the detected declaration as a `const char*`.
 
-For an explicit declaration, set `RLMeshEnvConfig.host_runtime_json` (C++:
+For an explicit declaration, set `RLMeshExtLegacyEnvConfig.host_runtime_json` (C++:
 `EnvConfig::host_runtime_json`) to a JSON object like:
 
 ```json
@@ -335,12 +703,9 @@ the library. Invalid declarations fail creation with `RLMESH_ERR_INVALID_ARGUMEN
 
 `NULL` (C++: an empty string) preserves the legacy runtime exactly: `"c"` with
 no language version or compiler. Hosts built against older headers also keep
-that output. A new header with an old library silently emits the old `"c"`
-output too, even though both use ABI 4 and `rlmesh_abi_check()` passes: the old
-library ignores the appended field. The field is guarded by `struct_size`, so
-ABI generation 4 is unchanged. Existing C callers that zero-initialize a config
-can adopt `rlmesh_env_config_init()` to opt into detection. Native models do
-not currently emit a describe envelope and have no model config to extend.
+that output. ABI 5 refuses older config prefixes. For the legacy env config below, callers
+can adopt `rlmesh_ext_legacy_env_config_init()` to opt into detection. The legacy
+model worker has no host-runtime config; shared Model Describe uses C's runtime.
 
 ## Tasks
 

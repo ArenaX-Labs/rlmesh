@@ -289,10 +289,10 @@ rlmesh::Status drive(const std::string& address) {
 rlmesh::Result<rlmesh::Space> spaces() {
   auto image = rlmesh::Space::box<uint8_t>({8, 8, 3}, 0, 255);
   if (!image) return image.error();
-  auto bounded =
-      rlmesh::Space::box(RLMESH_F32, {2}, std::vector<double>{-1, -2}, std::vector<double>{1, 2});
+  auto bounded = rlmesh::Space::box(RLMESH_DTYPE_FLOAT32, {2}, std::vector<double>{-1, -2},
+                                    std::vector<double>{1, 2});
   if (!bounded) return bounded.error();
-  auto raw = rlmesh::Space::box(RLMESH_F64, {3}, -1.0, 1.0);
+  auto raw = rlmesh::Space::box(RLMESH_DTYPE_FLOAT64, {3}, -1.0, 1.0);
   if (!raw) return raw.error();
   auto discrete = rlmesh::Space::discrete(4, 1);
   if (!discrete) return discrete.error();

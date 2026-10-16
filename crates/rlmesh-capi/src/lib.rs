@@ -5,13 +5,30 @@
 mod abi;
 mod adapters;
 mod build;
+mod cancel;
 mod codec;
+mod contract;
 mod describe;
+mod describe_api;
 mod env;
+mod env_api;
+mod env_factory;
+mod env_server;
+mod ffi;
 mod model;
+mod model_api;
+mod recorder;
+mod remote_api;
+mod run_api;
+mod run_hooks;
+mod run_read;
+mod run_results;
+mod session_api;
 mod space_handle;
 mod spaces;
 mod value;
+mod variant;
+mod view;
 
 #[cfg(test)]
 mod tests;
