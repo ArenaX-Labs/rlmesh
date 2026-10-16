@@ -202,6 +202,11 @@ for compiler in "${compilers[@]}"; do
     $compiler "${flags[@]}" crates/rlmesh-capi/examples/cpp_payload.cpp \
       "$tmp/libcpp_payload_plugin.so" "${link[@]}" -o "$tmp/cpp_payload"
     "$tmp/cpp_payload"
+    # The Unreal plugin's game-thread env, which needs no Unreal headers.
+    $compiler "${flags[@]}" -Wshadow -Wconversion -Wsign-conversion -fno-rtti \
+      -I integrations/unreal/RLMesh/Source/RLMeshUnreal/Public \
+      integrations/unreal/RLMesh/Tests/game_thread_env_test.cpp "${link[@]}" -o "$tmp/unreal_game_thread_env"
+    "$tmp/unreal_game_thread_env"
     for example in cpp_model cpp_env; do
       $compiler "${flags[@]}" "crates/rlmesh-capi/examples/$example.cpp" \
         "${link[@]}" -o "$tmp/$example"

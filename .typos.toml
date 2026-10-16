@@ -13,6 +13,8 @@ writeable = "writeable"
 termnal = "termnal"
 # libclang's cursor-kind spelling.
 PARM = "PARM"
+# Unreal Engine's prefix (UE_LOG) in the Unreal plugin.
+UE = "UE"
 
 # C and C++ sources (the C API, the Chrono example's kinematics and ray
 # tracer) name vectors and points with two-letter math identifiers (`ba`,
