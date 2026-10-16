@@ -15,8 +15,8 @@ def _capsule_name_is(capsule: object, name: bytes) -> bool:
     return _PyCapsule_IsValid(capsule, name) == 1
 
 
-def _np_version(np: object) -> tuple[int, int]:
-    major, minor = str(np.__version__).split(".")[:2]  # type: ignore[attr-defined]
+def _version(module: object) -> tuple[int, int]:
+    major, minor = str(module.__version__).split(".")[:2]  # type: ignore[attr-defined]
     return int(major), int(minor)
 
 
@@ -101,7 +101,7 @@ def test_numpy_from_dlpack_roundtrip() -> None:
     np = pytest.importorskip("numpy")
     import rlmesh
 
-    if _np_version(np) < (1, 23):
+    if _version(np) < (1, 23):
         pytest.skip("public np.from_dlpack requires numpy >= 1.23")
 
     data = struct.pack("<6f", 1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
@@ -113,7 +113,7 @@ def test_numpy_from_dlpack_roundtrip() -> None:
     assert array.tolist() == [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
 
     # numpy >= 2.1 requests the versioned capsule and honors READ_ONLY.
-    if _np_version(np) >= (2, 1):
+    if _version(np) >= (2, 1):
         assert array.flags.writeable is False
 
     # The exported view shares memory with the tensor.
@@ -125,7 +125,7 @@ def test_numpy_from_dlpack_copy_is_writable() -> None:
     np = pytest.importorskip("numpy")
     import rlmesh
 
-    if _np_version(np) < (2, 1):
+    if _version(np) < (2, 1):
         pytest.skip("np.from_dlpack(copy=...) requires numpy >= 2.1")
 
     tensor = rlmesh.Tensor(struct.pack("<2q", 7, 8), [2], "int64")
@@ -142,14 +142,14 @@ def test_numpy_sees_int64_and_bool_dtypes() -> None:
     np = pytest.importorskip("numpy")
     import rlmesh
 
-    if _np_version(np) < (1, 23):
+    if _version(np) < (1, 23):
         pytest.skip("public np.from_dlpack requires numpy >= 1.23")
 
     int_tensor = rlmesh.Tensor(struct.pack("<2q", -1, 2**60), [2], "int64")
     assert np.from_dlpack(int_tensor).dtype == np.int64
     assert np.from_dlpack(int_tensor).tolist() == [-1, 2**60]
 
-    if _np_version(np) >= (1, 25):  # numpy DLPack bool support
+    if _version(np) >= (1, 25):  # numpy DLPack bool support
         bool_tensor = rlmesh.Tensor(b"\x01\x00", [2], "bool")
         assert np.from_dlpack(bool_tensor).dtype == np.bool_
         assert np.from_dlpack(bool_tensor).tolist() == [True, False]
@@ -210,7 +210,7 @@ def test_from_dlpack_imports_numpy_arrays() -> None:
     assert tensor.is_contiguous() is True
     assert tensor.tobytes() == np.ascontiguousarray(view).tobytes()
 
-    if _np_version(np) >= (1, 25):  # numpy DLPack bool support
+    if _version(np) >= (1, 25):  # numpy DLPack bool support
         bools = np.array([True, False, True])
         tensor = rlmesh.Tensor.from_dlpack(bools)
         assert tensor.dtype == "bool"
@@ -468,7 +468,7 @@ def test_numpy_dlpack_dtype_and_source_lifetimes(dtype: str) -> None:
 
     import rlmesh
 
-    if _np_version(np) < (1, 25):
+    if _version(np) < (1, 25):
         pytest.skip("all scalar DLPack dtypes require numpy >= 1.25")
     source = np.array([0, 1, 1, 0], dtype=dtype).reshape(2, 2)
     expected = source.tobytes()
@@ -521,6 +521,9 @@ def test_torch_dlpack_roundtrip_and_lifetimes(dtype: str) -> None:
     import gc
 
     import rlmesh
+
+    if dtype == "bool" and _version(torch) < (2, 0):
+        pytest.skip("torch DLPack bool support requires torch >= 2.0")
 
     source = torch.tensor([[0, 1, 1], [1, 0, 1]], dtype=getattr(torch, dtype))
     view = source.T[:, ::2]
