@@ -6,14 +6,18 @@
     if (!(__VA_ARGS__))                                                        \
       abort();                                                                 \
   } while (0)
+#include <cstdio>
 #include <cstdlib>
 #include <dlfcn.h>
 #include <iostream>
 #include <memory>
 #include <rlmesh.hpp>
 #include <sstream>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <thread>
 #include <type_traits>
+#include <unistd.h>
 // Observe the real ABI boundary, then forward to the linked library. Recorder
 // stores both missing and empty config as {}, so a roundtrip alone cannot catch
 // a wrapper accidentally converting an absent optional into an empty dict.
@@ -193,6 +197,104 @@ void current_error() {
   } catch (const ext::CancelledError &e) {
     error(e, "KeyboardInterrupt");
   }
+}
+
+// The current exception's record, with every `value` (a port, a socket
+// path) in its text masked.
+void current_error_masked(const std::string &value, const std::string &mask) {
+  std::ostringstream captured;
+  auto *previous = std::cout.rdbuf(captured.rdbuf());
+  current_error();
+  std::cout.rdbuf(previous);
+  std::string text = captured.str();
+  for (size_t at = text.find(value); !value.empty() && at != std::string::npos;
+       at = text.find(value, at + mask.size()))
+    text.replace(at, value.size(), mask);
+  std::cout << text;
+}
+void wait_for_socket(const std::string &path) {
+  for (int i = 0; i < 1000; ++i) {
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    REQUIRE(fd >= 0);
+    sockaddr_un addr{};
+    addr.sun_family = AF_UNIX;
+    std::snprintf(addr.sun_path, sizeof addr.sun_path, "%s", path.c_str());
+    int connected =
+        connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof addr);
+    ::close(fd);
+    if (connected == 0)
+      return;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  std::abort();
+}
+// A served model reached with an api_key, over TLS, or driving a local env.
+void remote_auth(const std::string &variant, Env &env, Model &model,
+                 const std::shared_ptr<Script> &state) {
+  if (variant == "invalid_header") {
+    try {
+      RemoteModel(RemoteModelOptions{}
+                      .with_address("https://localhost:1")
+                      .with_api_key("bad\nkey"));
+      REQUIRE(false);
+    } catch (...) {
+      current_error();
+    }
+    return;
+  }
+  if (variant == "https_to_plaintext") {
+    EnvServer server(Counter{std::make_shared<Script>()},
+                     EnvServerOptions{}.with_address("tcp://127.0.0.1:0"));
+    server.start();
+    const std::string address = server.address();
+    const std::string port = address.substr(address.rfind(':') + 1);
+    RemoteModel remote(
+        RemoteModelOptions{}.with_address("https://127.0.0.1:" + port));
+    try {
+      run(remote, env);
+      REQUIRE(false);
+    } catch (...) {
+      current_error_masked(port, "PORT");
+    }
+    server.shutdown();
+    return;
+  }
+  char dir[] = "/tmp/rlmesh-parity-XXXXXX";
+  REQUIRE(mkdtemp(dir) != nullptr);
+  const std::string path = std::string(dir) + "/model.sock";
+  const std::string address = "unix://" + path;
+  const bool keyed =
+      variant == "api_key_rejected" || variant == "api_key_accepted";
+  ext::CancelToken cancel;
+  ModelServeOptions serve_options;
+  serve_options.cancel = cancel;
+  if (keyed)
+    serve_options.ext = ext::ModelServeOptions{}.with_token("right-key");
+  std::thread serving([&] {
+    try {
+      model.serve(address, serve_options);
+    } catch (...) {
+    }
+  });
+  wait_for_socket(path);
+  auto options = RemoteModelOptions{}.with_address(address);
+  if (variant == "api_key_rejected")
+    options.api_key = "wrong-key";
+  else if (variant == "api_key_accepted")
+    options.api_key = "right-key";
+  RemoteModel remote(options);
+  try {
+    auto result = run(remote, env);
+    std::cout << "\"episodes\":" << result.num_episodes()
+              << ",\"steps\":" << result.total_steps()
+              << ",\"env_closes\":" << state->env_closes;
+  } catch (...) {
+    current_error_masked(path, "SOCKET");
+  }
+  cancel.cancel();
+  serving.join();
+  ::unlink(path.c_str());
+  ::rmdir(dir);
 }
 
 struct KeyedPolicy {
@@ -389,6 +491,8 @@ int main(int argc, char **argv) {
         std::cout << ",\"reusable\":true";
       }
       server.shutdown();
+    } else if (op == "remote_auth") {
+      remote_auth(variant, env, model, state);
     } else if (op == "busy_remote") {
       EnvServer server(Counter{state},
                        EnvServerOptions{}.with_address("tcp://127.0.0.1:0"));
