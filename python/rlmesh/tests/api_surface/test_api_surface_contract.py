@@ -19,3 +19,14 @@ def test_stable_public_api_has_documentation() -> None:
     surface = collect_python_api_surface()
 
     assert surface.missing_stable_documentation() == []
+
+
+def test_adapter_function_and_plumbing_labels() -> None:
+    objects = collect_python_api_surface().to_contract()["rlmesh.adapters"]["objects"]
+    assert objects["tag"]["kind"] == "function"
+    assert "validate: bool = True" in objects["tag"]["signature"]
+    members = objects["Adapter"]["members"]
+    assert members["__init__"]["stability"] == "Internal"
+    assert members["serve_route"]["stability"] == "Internal"
+    assert members["transform_obs_value"]["stability"] == "Bridge"
+    assert members["transform_action_value"]["stability"] == "Bridge"

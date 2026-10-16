@@ -159,12 +159,12 @@ struct TypeForm<F>(std::marker::PhantomData<fn() -> F>);
 struct InstanceForm<'a, F>(&'a mut F);
 
 fn tags_json<F: EnvFactory>() -> Option<Json> {
-    F::tags().map(|tags| tags.to_json())
+    F::tags().map(|tags| tags.wire_json().unwrap_or(Json::Null))
 }
 
 fn branch_tags_json<F: EnvFactory>(branch: &Kwargs) -> Json {
     match F::tags_for(branch) {
-        Ok(Some(tags)) => tags.to_json(),
+        Ok(Some(tags)) => tags.wire_json().unwrap_or(Json::Null),
         Ok(None) => Json::Null,
         Err(err) => json!({ "error": err.to_string() }),
     }
@@ -412,7 +412,7 @@ fn model_pieces(
         "params": { "param_spec": null, "signature_tier": signature_tier },
         "runtime": runtime_json(host, preferred.as_deref(), error),
         "model_spec": match spec {
-            Some(SpecArg::ModelSpec(spec)) => spec.to_json(),
+            Some(SpecArg::ModelSpec(spec)) => spec.wire_json().unwrap_or(Json::Null),
             _ => Json::Null,
         },
     });

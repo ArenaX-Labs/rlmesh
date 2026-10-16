@@ -31,7 +31,8 @@ use crate::model::handler::{ModelHandler, PredictFrames, ResolveOptions};
 use crate::spaces::Space;
 use crate::value::space_codec;
 use crate::{
-    EnvContract, EnvServer, Error, InfoDict, MadeEnv, Model, Result, Value, WarningCategory,
+    EnvContract, EnvServer, Error, InfoDict, MadeEnv, Metadata, Model, Result, Value,
+    WarningCategory,
 };
 
 /// The native session loop's per-episode step bound (the edition default
@@ -326,6 +327,13 @@ impl Core {
                 }
             }
         }
+        if let EnvPort::Remote {
+            client: Some(client),
+            ..
+        } = &self.env
+        {
+            self.context.remote_render(client.render_callback());
+        }
         self.context.connect(contract.clone());
         self.connected = Some(Connected {
             trial_option: declares_trial_option(&contract),
@@ -618,11 +626,9 @@ impl Core {
         &self,
         call: impl FnOnce(&mut dyn RunHooks) -> Result<()> + Send + 'static,
     ) -> Result<()> {
+        let id = self.context.id;
         self.port
-            .call(move |side| match side.hooks.as_deref_mut() {
-                Some(hooks) => call(hooks),
-                None => Ok(()),
-            })
+            .call(move |side| side.hook(id, call).map(|_| ()))
             .await
     }
 
@@ -634,6 +640,7 @@ impl Core {
         let outcome = self.run_episodes(&plan, &mut results).await;
         let telemetry = self.telemetry.take().map(|t| t.rows()).unwrap_or_default();
         let result = RunResult {
+            advisories: self.context.advisories(),
             episodes: results,
             telemetry,
         };
@@ -719,6 +726,7 @@ impl Core {
                 info = step_info;
                 if plan.hooks {
                     let event = StepEvent {
+                        read: super::read::read_fn(self.context.clone(), previous.clone()),
                         episode: index,
                         seed,
                         step,
@@ -895,10 +903,12 @@ impl<'a> Session<'a> {
         let SessionOptions {
             close_env,
             trust_entrypoints,
+            instruction,
             execution_horizon,
             workflow_edition,
             cancel,
         } = options;
+        let context = LibraryContext::new();
         let (model_port, edition) = match model {
             Some(model) => {
                 let shared = model.shared();
@@ -923,8 +933,12 @@ impl<'a> Session<'a> {
                     )?;
                 }
                 let trust = trust_entrypoints.unwrap_or(shared.decl.trust_entrypoints);
-                let handler =
-                    crate::model::bridge::engine_handler_trusting(Arc::clone(shared), trust);
+                let handler = crate::model::bridge::engine_handler_configured(
+                    Arc::clone(shared),
+                    trust,
+                    instruction,
+                    Some(context.clone()),
+                );
                 (
                     ModelPort::Local(Box::new(LocalModel {
                         shared: Arc::clone(shared),
@@ -1016,7 +1030,7 @@ impl<'a> Session<'a> {
                 model: model_port,
                 env: env_port,
                 port,
-                context: LibraryContext::new(),
+                context,
                 edition,
                 connected: None,
                 episode: Episode::default(),
@@ -1046,10 +1060,16 @@ impl<'a> Session<'a> {
         let SessionOptions {
             close_env,
             trust_entrypoints,
+            instruction,
             execution_horizon,
             workflow_edition,
             cancel,
         } = options;
+        if instruction.is_some() {
+            return Err(Error::invalid_argument(
+                "instruction= is not supported for RemoteModel sessions",
+            ));
+        }
         if trust_entrypoints.is_some() {
             return Err(Error::invalid_argument(
                 "trust_entrypoints= applies to local model sources; it is not supported for \
@@ -1249,6 +1269,7 @@ impl<'a> Session<'a> {
         if let CallerEnv::Factory(factory, made @ None) = &mut self.env {
             *made = Some(mode.call(|| factory.make())?);
         }
+        let _context_busy = self.core.context.busy()?;
         self.core.cancel = CancellationToken::new();
         let tokens = std::iter::once(self.cancel.clone()).chain(cancel).collect();
         let _watch = CancelWatch::start(tokens, self.core.cancel.clone())?;
@@ -1423,6 +1444,81 @@ impl<'a> Session<'a> {
             Box::pin(core.selected_workflow_edition())
         })
         .await
+    }
+
+    /// Resolve a reusable reader for semantic roles or single-role input leaves.
+    pub fn reader(&mut self, items: &[super::ReadItem]) -> Result<super::Reader> {
+        let contract = self.contract()?;
+        super::read::reader(contract, items)
+    }
+    /// The async twin of `reader`.
+    pub async fn reader_async(&mut self, items: &[super::ReadItem]) -> Result<super::Reader> {
+        let contract = self.contract_async().await?;
+        super::read::reader(contract, items)
+    }
+    /// Read a role or leaf from an observation.
+    pub fn read(&mut self, observation: &Value, item: impl Into<super::ReadItem>) -> Result<Value> {
+        self.contract()?;
+        self.core.context.read(observation, &item.into())
+    }
+    /// The async twin of `read`.
+    pub async fn read_async(
+        &mut self,
+        observation: &Value,
+        item: impl Into<super::ReadItem>,
+    ) -> Result<Value> {
+        self.contract_async().await?;
+        self.core.context.read(observation, &item.into())
+    }
+    /// Observation roles grouped by modality in authored declaration order.
+    pub fn observation_roles(&mut self) -> Result<crate::adapters::ObservationRoles> {
+        let contract = self.contract()?;
+        Ok(crate::adapters::EnvTags::from_metadata(
+            contract.metadata().unwrap_or(&Metadata::new()),
+        )?
+        .map_or_else(Default::default, |t| t.observation_roles()))
+    }
+    /// The async twin of `observation_roles`.
+    pub async fn observation_roles_async(&mut self) -> Result<crate::adapters::ObservationRoles> {
+        let contract = self.contract_async().await?;
+        Ok(crate::adapters::EnvTags::from_metadata(
+            contract.metadata().unwrap_or(&Metadata::new()),
+        )?
+        .map_or_else(Default::default, |t| t.observation_roles()))
+    }
+    /// Discover sources, borrowing this session for its render callable.
+    pub fn frame_sources(&mut self) -> Result<super::FrameSources<'_>> {
+        let contract = self.contract()?.clone();
+        self.sources(contract)
+    }
+    /// The async twin of `frame_sources`.
+    pub async fn frame_sources_async(&mut self) -> Result<super::FrameSources<'_>> {
+        let contract = self.contract_async().await?.clone();
+        self.sources(contract)
+    }
+    fn sources(&mut self, contract: EnvContract) -> Result<super::FrameSources<'_>> {
+        let roles = super::read::image_roles(Some(&contract))?;
+        let label = super::read::render_label(&contract, &roles);
+        let render = label
+            .as_ref()
+            .map(|_| super::RenderFn::new(|| self.render_current()));
+        Ok(super::FrameSources {
+            roles,
+            render_label: label,
+            render,
+        })
+    }
+    fn render_current(&mut self) -> Result<Value> {
+        if self.closed {
+            return Err(closed_error());
+        }
+        if let Some(mut env) = self.env.local() {
+            return match &mut env {
+                LocalEnv::Env(e) => e.render().map(|v| v.unwrap_or(Value::None)),
+                LocalEnv::Vector(e) => e.render().map(|v| v.unwrap_or(Value::None)),
+            };
+        }
+        self.core.context.render()
     }
 
     /// This session as its hooks see it (connects first). The context fails

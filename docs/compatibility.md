@@ -13,6 +13,12 @@ Stable workflows include documented public APIs, supported CLI flows, and suppor
 - A participant authored against a sealed workflow edition keeps working with later releases of the other participants, and the session runs at its declared edition. What that covers today, and what it does not yet, is under [Workflow Editions](#workflow-editions) below.
 - New features may require newer packages or capabilities, but older stable workflows either keep working or fail clearly.
 
+The adapter authoring and resolution surface is Stable. `Adapter.__init__`
+and `Adapter.serve_route` are Internal binding plumbing. The
+`Adapter.transform_obs_value` and `Adapter.transform_action_value` methods are
+Bridge APIs for selecting a `ValueBridge`; application code normally uses
+`transform_obs` and `transform_action`.
+
 ## Preview and Experimental
 
 Preview APIs are intended to become stable but may still change with migration notes. Experimental APIs may change or disappear. Preview is reserved for the intended-stable-but-still-moving case and is currently unused; today's labels are only Stable and Experimental.

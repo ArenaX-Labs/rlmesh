@@ -67,6 +67,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ### Fixed
 
+- Retained Python run contexts expose a local env render source only during hook dispatch on that thread. Saved render callables reject use outside dispatch, during another session operation, after session close or drop, and during a recursive render. Direct idle `Session.frame_sources()` and remote session contexts still render.
+
+- A single `Previous(...)` model input retains `source="action"` when read back from dict or JSON; a nonzero initial fill no longer fails reconstruction as an observation-source state.
+
+- Custom adapter inputs on the native model engine retain integer and boolean kinds, `None`, and tuples instead of coercing scalars to floats or tuples to lists.
+
+- Model run, session and serve resolution now use the tolerant contract-tag reader: unknown, unreferenced env leaf kinds no longer fail a strict preflight (ADP-P1).
+- `Advisory.severity` is typed as `Literal["info", "caution"]` in the generated Python stub (ADP-P2).
+- The API surface generator records `rlmesh.adapters.tag` as the function, including its `validate` keyword, when a loaded child module shadows its import (ADP-P3).
+- Adapter construction and `serve_route` are labelled Internal; `transform_obs_value` and `transform_action_value` are labelled Bridge (ADP-P4).
+- `adapters.tag(validate=True)` validates vector env tags against their single-lane observation and action spaces (ADP-P5).
+- Tag serialization failures raise `AdapterResolutionError` also with `validate=False`; metadata stays unchanged on failure (ADP-P6).
+- Advisories compare and hash by severity and message, including equality of `RunResult.advisories` (ADP-P7).
+- Unknown `State` and `Concat` dtypes fail at adapter resolution with `AdapterResolutionError`, before the first prediction (ADP-P8).
+- `ModelSpec.to_json()` and `EnvTags.to_json()` emit the shared compact, sorted UTF-8 JSON format. Parsed values are unchanged; older JSON remains readable (ADP-P9).
+- Equal custom encodings sharing the same callbacks are inverse-checked once per resolve, including separately constructed equal values (ADP-P10).
+
 - `EnvServer.shutdown()` called from inside one of the server's own env callbacks under `start()` triggers the drain and returns, as it already did under `serve()`; the owner's `wait()` or `shutdown()` reports the stop. Before, it waited on its own callback and failed with `serve failed: close timed out` after both 5 s caps.
 
 - A vector env served with `start()` runs every call on one dedicated thread for the server's life, as each lane already did, so a thread-bound vector env (a GL context) works there; before, its calls could hop threads on the blocking pool.

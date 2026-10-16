@@ -6,7 +6,9 @@
 //! model, and closes the env only on `close_env`.
 
 pub(crate) mod drive;
-mod hooks;
+pub(crate) mod hooks;
+mod read;
+pub use read::{FrameSources, ReadFn, ReadItem, Reader, RenderFn};
 mod lent;
 mod native;
 mod options;
@@ -138,6 +140,7 @@ async fn run_session_loop<'a>(
         hooks,
         close_env,
         trust_entrypoints,
+        instruction,
         execution_horizon,
         prefetch_lead,
         workflow_edition,
@@ -157,6 +160,7 @@ async fn run_session_loop<'a>(
     let session_options = SessionOptions {
         close_env,
         trust_entrypoints,
+        instruction,
         execution_horizon,
         workflow_edition,
         cancel: None,

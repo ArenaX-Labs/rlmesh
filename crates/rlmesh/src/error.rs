@@ -1,7 +1,7 @@
 use std::fmt;
 use std::time::Duration;
 
-use rlmesh_adapters::v1::AdapterResolutionError;
+use crate::adapters::AdapterResolutionError;
 use rlmesh_grpc::error::{EnvError, EnvErrorCode};
 
 /// The result type used throughout this crate: `Result<T, `[`Error`]`>`.
@@ -357,14 +357,11 @@ impl Error {
     }
 
     /// Tags that do not fit their spaces: Python's `AdapterResolutionError`.
-    pub(crate) fn adapter_resolution(message: impl Into<String>) -> Self {
+    pub fn adapter_resolution(message: impl Into<String>) -> Self {
         let message = message.into();
         Self::InvalidArgument(InvalidArgumentError {
             message: message.clone(),
-            adapter_resolution: Some(AdapterResolutionError {
-                code: rlmesh_adapters::v1::ErrorCode::InvalidTag,
-                message,
-            }),
+            adapter_resolution: Some(AdapterResolutionError::new()),
         })
     }
 
@@ -429,7 +426,12 @@ impl Error {
     /// An adapter-apply failure is the model declining a malformed
     /// observation/action, not a transport fault: surface it as a model error.
     pub(crate) fn from_apply(value: rlmesh_adapters::v1::ApplyError) -> Self {
-        Self::model(value.message)
+        value
+            .source
+            .as_ref()
+            .and_then(|source| source.downcast_ref::<Error>())
+            .cloned()
+            .unwrap_or_else(|| Self::invalid_argument(value.message))
     }
 
     /// Map a gRPC client/server error onto the facade taxonomy.

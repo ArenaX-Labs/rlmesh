@@ -59,7 +59,7 @@ macro_rules! resolve_walk {
                 (PathSeg::Key($key), Value::Map($map)) => {
                     $map.$map_get($key).ok_or_else(|| $missing_key)?
                 }
-                (PathSeg::Index($index), Value::List($items)) => {
+                (PathSeg::Index($index), Value::List($items) | Value::Tuple($items)) => {
                     let $len = $items.len();
                     $items.$list_get(*$index).ok_or_else(|| $oob)?
                 }
@@ -185,6 +185,10 @@ fn value_kind(value: &Value) -> &'static str {
         Value::Tensor(_) => "a tensor",
         Value::Text(_) => "text",
         Value::Bytes(_) => "bytes",
+        Value::None => "None",
+        Value::Bool(_) => "a bool",
+        Value::Int(_) => "an integer",
+        Value::Tuple(_) => "a tuple",
         Value::Number(_) => "a number",
         Value::List(_) => "a list",
         Value::Map(_) => "a map",
@@ -194,9 +198,12 @@ fn value_kind(value: &Value) -> &'static str {
 /// Return a flat float32 vector from a raw numeric value.
 pub fn numeric_vector(value: &Value) -> Result<Vec<f32>, ApplyError> {
     match value {
+        Value::None => Err(ApplyError::new("expected a numeric value, got None")),
         Value::Tensor(tensor) => Ok(value::to_f32_vec(tensor)),
+        Value::Int(number) => Ok(vec![*number as f32]),
+        Value::Bool(flag) => Ok(vec![f32::from(u8::from(*flag))]),
         Value::Number(number) => Ok(vec![*number as f32]),
-        Value::List(items) => {
+        Value::List(items) | Value::Tuple(items) => {
             let mut out = Vec::with_capacity(items.len());
             for item in items {
                 out.extend(numeric_vector(item)?);

@@ -244,6 +244,10 @@ fn value_summary(value: &Value) -> String {
         Value::Tensor(tensor) => format!("{}{:?}", tensor.dtype().name(), tensor.shape()),
         Value::Text(text) => format!("text(len={})", text.len()),
         Value::Bytes(bytes) => format!("bytes(len={})", bytes.len()),
+        Value::None => "None".into(),
+        Value::Int(_) => "int".into(),
+        Value::Bool(_) => "bool".into(),
+        Value::Tuple(v) => format!("tuple(len={})", v.len()),
         Value::Number(_) => "number".to_owned(),
         Value::List(items) => match items.first() {
             Some(first) => format!("list(len={}, first={})", items.len(), value_summary(first)),

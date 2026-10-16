@@ -76,6 +76,7 @@ pub(crate) async fn run_model(
         mut hooks,
         close_env,
         trust_entrypoints,
+        instruction,
         execution_horizon,
         prefetch_lead,
         workflow_edition,
@@ -111,10 +112,13 @@ pub(crate) async fn run_model(
     let context = LibraryContext::new();
     let relay = hooks
         .is_some()
-        .then(|| Arc::new(HookRelay::new(driver.clone())));
+        .then(|| Arc::new(HookRelay::new(driver.clone(), context.clone())));
+    let ended = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let plan = Plan {
+        ended: ended.clone(),
         shared: Arc::clone(shared),
         trust: trust_entrypoints.unwrap_or(shared.decl.trust_entrypoints),
+        instruction,
         budget,
         seeds: seeds.unwrap_or_default(),
         caps,
@@ -144,26 +148,29 @@ pub(crate) async fn run_model(
             .unwrap_or(if watch.fired() { Error::Cancelled } else { err })),
     };
     match (outcome, hooks) {
-        (Ok(result), Some(hooks)) => {
+        (Ok(result), Some(hooks)) if !ended.load(std::sync::atomic::Ordering::SeqCst) => {
             mode.call(|| hooks.on_run_end(&result))?;
             Ok(result)
         }
-        (Ok(result), None) => Ok(result),
-        (Err(err), Some(hooks)) => {
+        (Ok(result), _) => Ok(result),
+        (Err(err), Some(hooks)) if !ended.load(std::sync::atomic::Ordering::SeqCst) => {
             let partial = RunResult {
+                advisories: Vec::new(),
                 episodes: relay.map(|relay| relay.results()).unwrap_or_default(),
                 telemetry: Vec::new(),
             };
             let _ = mode.call(|| hooks.on_run_end(&partial));
             Err(err)
         }
-        (Err(err), None) => Err(err),
+        (Err(err), _) => Err(err),
     }
 }
 
 struct Plan {
+    ended: Arc<std::sync::atomic::AtomicBool>,
     shared: Arc<crate::model::facade::Shared>,
     trust: bool,
+    instruction: Option<String>,
     budget: u64,
     seeds: Vec<i64>,
     caps: super::options::Caps,
@@ -239,12 +246,13 @@ async fn run_body(
         made = Some(mode.call(|| factory.make())?);
     }
     let built = made.is_some();
-    let mut local: Option<LocalEnv<'_>> = match (&mut env, &mut made) {
-        (_, Some(MadeEnv::Env(env))) => Some(LocalEnv::Env(&mut **env)),
-        (_, Some(MadeEnv::Vector(env))) => Some(LocalEnv::Vector(&mut **env)),
-        (EnvKind::Env(env), None) => Some(LocalEnv::Env(&mut **env)),
-        (EnvKind::Vector(env), None) => Some(LocalEnv::Vector(&mut **env)),
-        _ => None,
+    let (mut local, remote_handle) = match (&mut env, &mut made) {
+        (_, Some(MadeEnv::Env(env))) => (Some(LocalEnv::Env(&mut **env)), None),
+        (_, Some(MadeEnv::Vector(env))) => (Some(LocalEnv::Vector(&mut **env)), None),
+        (EnvKind::Env(env), None) => (Some(LocalEnv::Env(&mut **env)), None),
+        (EnvKind::Vector(env), None) => (Some(LocalEnv::Vector(&mut **env)), None),
+        (EnvKind::Remote(handle), None) => (None, Some(&mut **handle)),
+        _ => (None, None),
     };
     let dial = match (remote, &local) {
         (Some(dial), _) => Dial {
@@ -297,8 +305,14 @@ async fn run_body(
     let shared = Arc::clone(&plan.shared);
     let trust = plan.trust;
     let connected = Arc::clone(&context);
+    let adapter_context = context.clone();
     let core = async move {
-        let mut handler = crate::model::bridge::engine_handler_trusting(shared, trust);
+        let mut handler = crate::model::bridge::engine_handler_configured(
+            shared,
+            trust,
+            plan.instruction,
+            Some(adapter_context),
+        );
         drive_local(&mut handler, run, driver, runtime_hooks, &move |contract| {
             if let Ok(contract) = crate::EnvContract::from_wire(contract) {
                 connected.connect(contract);
@@ -347,7 +361,7 @@ async fn run_body(
     }
     // A caller's local env closes on the opt-in; one built here always.
     if is_local && (plan.close_env || built) {
-        let closed = match side.env.take() {
+        let closed = match side.env.as_mut() {
             Some(LocalEnv::Env(env)) => mode.call(|| env.close()),
             Some(LocalEnv::Vector(env)) => mode.call(|| env.close()),
             None => Ok(()),
@@ -356,7 +370,7 @@ async fn run_body(
     }
     // A caller's remote client shuts its env down on the opt-in.
     if plan.close_env
-        && let EnvKind::Remote(handle) = &mut env
+        && let Some(handle) = remote_handle
     {
         let shut = match handle.lend() {
             Ok(mut client) => {
@@ -371,9 +385,34 @@ async fn run_body(
         };
         release = release.and(shut);
     }
-    let report = report?;
-    release?;
-    Ok(results::from_report(&report))
+    let outcome = report.and_then(|report| {
+        release.map(|()| {
+            let mut result = results::from_report(&report);
+            result.advisories = context.advisories();
+            result
+        })
+    });
+    if side.hooks.is_some() {
+        plan.ended.store(true, std::sync::atomic::Ordering::SeqCst);
+        let partial = match &outcome {
+            Ok(result) => result.clone(),
+            Err(_) => RunResult {
+                episodes: relay.as_ref().map(|r| r.results()).unwrap_or_default(),
+                advisories: context.advisories(),
+                ..Default::default()
+            },
+        };
+        let callback = mode.call(|| side.hook(context.id, |hooks| hooks.on_run_end(&partial)));
+        match outcome {
+            Ok(result) => {
+                callback?;
+                Ok(result)
+            }
+            Err(error) => Err(error),
+        }
+    } else {
+        outcome
+    }
 }
 
 /// Per-episode bookkeeping the relay keeps between events.
@@ -406,6 +445,7 @@ pub(crate) struct HookRelay {
     driver: CancellationToken,
     error: Mutex<Option<Error>>,
     state: Mutex<RelayState>,
+    context: Arc<LibraryContext>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -429,12 +469,13 @@ fn decode_lanes(
 }
 
 impl HookRelay {
-    fn new(driver: CancellationToken) -> HookRelay {
+    fn new(driver: CancellationToken, context: Arc<LibraryContext>) -> HookRelay {
         HookRelay {
             port: Mutex::new(None),
             driver,
             error: Mutex::new(None),
             state: Mutex::new(RelayState::default()),
+            context,
         }
     }
 
@@ -463,12 +504,8 @@ impl HookRelay {
         let Some(port) = lock(&self.port).clone() else {
             return;
         };
-        let result = port
-            .call(move |side| match side.hooks.as_deref_mut() {
-                Some(hooks) => call(hooks),
-                None => Ok(()),
-            })
-            .await;
+        let id = self.context.id;
+        let result = port.call(move |side| side.hook(id, call).map(|_| ())).await;
         if let Err(err) = result {
             self.fail(err);
         }
@@ -574,11 +611,13 @@ impl RuntimeHooks for HookRelay {
                     ));
                     return Ok(());
                 };
+                let observation = group.observations.get(lane).cloned().unwrap_or(Value::None);
                 events.push(StepEvent {
+                    read: super::read::read_fn(self.context.clone(), observation.clone()),
                     episode: episode.index,
                     seed: episode.seed,
                     step: episode.steps,
-                    observation: group.observations.get(lane).cloned().unwrap_or(Value::None),
+                    observation,
                     action,
                     reward: event.rewards.get(lane).copied().unwrap_or_default(),
                     terminated: event.terminated.get(lane).copied().unwrap_or_default(),

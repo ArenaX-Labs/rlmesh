@@ -347,3 +347,17 @@ impl Drop for CancelWatch {
         }
     }
 }
+
+impl CallerSide<'_> {
+    pub(crate) fn hook<R>(
+        &mut self,
+        id: u64,
+        call: impl FnOnce(&mut dyn RunHooks) -> Result<R>,
+    ) -> Result<Option<R>> {
+        let Self { env, hooks } = self;
+        match hooks.as_deref_mut() {
+            Some(hooks) => super::read::dispatch(id, env.as_mut(), || call(hooks)).map(Some),
+            None => Ok(None),
+        }
+    }
+}

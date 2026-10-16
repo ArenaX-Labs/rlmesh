@@ -179,7 +179,7 @@ pub trait EnvFactoryExt: EnvFactory + sealed::Sealed {
                 Value::List(reset_options.into_iter().map(Value::Text).collect()),
             );
         }
-        Ok(stamp(made, tags, fragment))
+        stamp(made, tags, fragment)
     }
 
     /// This factory type's describe envelope: Python's `EnvFactory.describe()`
@@ -546,30 +546,30 @@ fn kwargs_repr(binding: &Kwargs) -> String {
 
 /// Stamp a made env: tags (unvalidated, as Python's `validate=False`) and a
 /// metadata fragment.
-fn stamp(made: MadeEnv, tags: Option<EnvTags>, fragment: Metadata) -> MadeEnv {
+fn stamp(made: MadeEnv, tags: Option<EnvTags>, fragment: Metadata) -> Result<MadeEnv> {
     if tags.is_none() && fragment.is_empty() {
-        return made;
+        return Ok(made);
     }
     let merge = |metadata: Option<Metadata>| {
         let mut metadata = metadata.unwrap_or_default();
         if let Some(tags) = &tags {
-            tags.stamp(&mut metadata);
+            tags.stamp(&mut metadata)?;
         }
         for (key, value) in &fragment {
             metadata.insert(key.to_string(), value.clone());
         }
-        metadata
+        Ok::<_, Error>(metadata)
     };
-    match made {
+    Ok(match made {
         MadeEnv::Env(env) => {
-            let metadata = merge(env.metadata());
+            let metadata = merge(env.metadata())?;
             MadeEnv::Env(Box::new(Tagged::with_metadata(env, metadata)))
         }
         MadeEnv::Vector(env) => {
-            let metadata = merge(env.metadata());
+            let metadata = merge(env.metadata())?;
             MadeEnv::Vector(Box::new(StampedVector { env, metadata }))
         }
-    }
+    })
 }
 
 /// A vector env serving stamped metadata.

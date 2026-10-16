@@ -12,8 +12,8 @@ pub(crate) const MAX_EXECUTION_HORIZON: u32 = 1024;
 
 /// The keywords of `rlmesh.run` and `Model.run`.
 ///
-/// Build with `..Default::default()`. Python's `instruction` and `view`
-/// keywords arrive with the adapters surface and the viewer.
+/// Build with `..Default::default()`. Adding an options field is a minor
+/// change by project policy. The `view` keyword arrives with the viewer.
 pub struct RunOptions<'h> {
     /// The exact number of episodes: one by default, `seeds.len()` when only
     /// seeds are given; the two must agree when both are. `Some(0)` runs
@@ -28,6 +28,8 @@ pub struct RunOptions<'h> {
     pub max_episode: Option<Duration>,
     /// Observer callbacks, borrowed for the call.
     pub hooks: Option<&'h mut dyn RunHooks>,
+    /// Override each text input of a spec’d model for this call.
+    pub instruction: Option<String>,
     /// Shut the caller's env down when the run ends.
     pub close_env: bool,
     /// Override the model's `trust_entrypoints` for this run.
@@ -57,6 +59,7 @@ impl Default for RunOptions<'_> {
             hooks: None,
             close_env: false,
             trust_entrypoints: None,
+            instruction: None,
             execution_horizon: 1,
             prefetch_lead: 0,
             workflow_edition: None,
@@ -88,6 +91,8 @@ impl fmt::Debug for RunOptions<'_> {
 /// The keywords of `rlmesh.session` and `Model.session`.
 #[derive(Clone, Debug)]
 pub struct SessionOptions {
+    /// Override each text input of a spec’d model for this call.
+    pub instruction: Option<String>,
     /// Shut the caller's env down when the session closes.
     pub close_env: bool,
     /// Override the model's `trust_entrypoints` for this session.
@@ -107,6 +112,7 @@ impl Default for SessionOptions {
         SessionOptions {
             close_env: false,
             trust_entrypoints: None,
+            instruction: None,
             execution_horizon: 1,
             workflow_edition: None,
             cancel: None,
@@ -232,4 +238,19 @@ pub(crate) fn check_prefetch(prefetch_lead: u64) -> Result<u32> {
             u32::MAX
         ))
     })
+}
+
+impl RunOptions<'_> {
+    /// Set the text override.
+    pub fn instruction(mut self, value: impl Into<String>) -> Self {
+        self.instruction = Some(value.into());
+        self
+    }
+}
+impl SessionOptions {
+    /// Set the text override.
+    pub fn instruction(mut self, value: impl Into<String>) -> Self {
+        self.instruction = Some(value.into());
+        self
+    }
 }

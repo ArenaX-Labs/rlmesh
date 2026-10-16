@@ -7,9 +7,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use rlmesh_adapters::v1::{
-    ENV_METADATA_KEY, NoCustoms, NoEncodings, SpaceView, Value as AdapterValue, resolve,
-};
+use rlmesh_adapters::v1::{ENV_METADATA_KEY, Value as AdapterValue};
 
 use super::engine::{AdaptedModelHandler, ShortChunkWarned, short_chunk_text};
 use super::facade::{Row, Shared};
@@ -33,14 +31,25 @@ pub(crate) fn engine_handler_trusting(
     shared: Arc<Shared>,
     trust_entrypoints: bool,
 ) -> AdaptedModelHandler {
+    engine_handler_configured(shared, trust_entrypoints, None, None)
+}
+
+pub(crate) fn engine_handler_configured(
+    shared: Arc<Shared>,
+    trust_entrypoints: bool,
+    instruction: Option<String>,
+    context: Option<Arc<crate::run::hooks::LibraryContext>>,
+) -> AdaptedModelHandler {
     let resolver = Arc::new(SpecResolver {
         spec: shared.decl.spec.clone(),
         trust_entrypoints,
+        context,
     });
     AdaptedModelHandler::new(
         Arc::new(ModelPredict {
             shared,
             warned: ShortChunkWarned::default(),
+            instruction,
         }),
         Some(resolver),
     )
@@ -52,10 +61,13 @@ pub(crate) fn to_adapter(value: &Value) -> Result<AdapterValue> {
         Value::Tensor(tensor) => AdapterValue::Tensor(tensor.core().clone()),
         Value::Text(text) => AdapterValue::Text(text.clone()),
         Value::Bytes(bytes) => AdapterValue::Bytes(bytes.clone()),
-        Value::Int(number) => AdapterValue::Number(*number as f64),
+        Value::Int(number) => AdapterValue::Int(*number),
         Value::Float(number) => AdapterValue::Number(*number),
-        Value::Bool(flag) => AdapterValue::Number(f64::from(u8::from(*flag))),
-        Value::List(items) | Value::Tuple(items) => {
+        Value::Bool(flag) => AdapterValue::Bool(*flag),
+        Value::Tuple(items) => {
+            AdapterValue::Tuple(items.iter().map(to_adapter).collect::<Result<_>>()?)
+        }
+        Value::List(items) => {
             AdapterValue::List(items.iter().map(to_adapter).collect::<Result<_>>()?)
         }
         Value::Dict(map) => AdapterValue::Map(
@@ -63,13 +75,7 @@ pub(crate) fn to_adapter(value: &Value) -> Result<AdapterValue> {
                 .map(|(key, item)| Ok((key.to_string(), to_adapter(item)?)))
                 .collect::<Result<BTreeMap<_, _>>>()?,
         ),
-        Value::None => {
-            return Err(Error::Type(
-                "a model value cannot be None here; expected Tensor, str, bytes, number, list, \
-                 tuple, or dict"
-                    .to_string(),
-            ));
-        }
+        Value::None => AdapterValue::None,
         #[allow(unreachable_patterns)]
         _ => return Err(Error::Type("unsupported model value".to_string())),
     })
@@ -78,6 +84,12 @@ pub(crate) fn to_adapter(value: &Value) -> Result<AdapterValue> {
 /// An engine adapter value as a facade value.
 pub(crate) fn from_adapter(value: AdapterValue) -> Result<Value> {
     Ok(match value {
+        AdapterValue::None => Value::None,
+        AdapterValue::Bool(b) => Value::Bool(b),
+        AdapterValue::Int(i) => Value::Int(i),
+        AdapterValue::Tuple(items) => {
+            Value::Tuple(items.into_iter().map(from_adapter).collect::<Result<_>>()?)
+        }
         AdapterValue::Tensor(tensor) => Value::Tensor(crate::binding::tensor_from_core(tensor)?),
         AdapterValue::Text(text) => Value::Text(text),
         AdapterValue::Bytes(bytes) => Value::Bytes(bytes),
@@ -295,6 +307,7 @@ pub(crate) fn unstack_value(value: Value, n: usize) -> Result<Vec<Value>> {
 /// The model's predict hole: every corner and hook call queued on the
 /// model's thread.
 struct ModelPredict {
+    instruction: Option<String>,
     shared: Arc<Shared>,
     /// The spec-less route's short-chunk once-set (the spec'd routes use the
     /// engine's).
@@ -321,13 +334,27 @@ impl ModelPredict {
     }
 }
 
+impl ModelPredict {
+    fn input(&self, value: AdapterValue) -> Result<Value> {
+        let value = from_adapter(value)?;
+        Ok(match &self.shared.decl.spec {
+            Some(SpecArg::ModelSpec(spec)) => crate::adapters::inject_instruction(
+                crate::adapters::restore_shape(value, spec.input()),
+                spec.input(),
+                self.instruction.as_deref(),
+            ),
+            _ => value,
+        })
+    }
+}
+
 impl PredictFn for ModelPredict {
     fn predict(
         &self,
         model_input: AdapterValue,
         episode: Option<&EpisodeInfo>,
     ) -> Result<AdapterValue> {
-        let input = from_adapter(model_input)?;
+        let input = self.input(model_input)?;
         let row = Row::of(episode);
         let action = self.shared.call(move |core| core.predict(input, &row))?;
         to_adapter(&action)
@@ -342,7 +369,7 @@ impl PredictFn for ModelPredict {
         if !self.shared.decl.has_chunk() {
             return Ok(None);
         }
-        let input = from_adapter(model_input)?;
+        let input = self.input(model_input)?;
         let row = Row::of(episode);
         let chunk = self
             .shared
@@ -361,7 +388,7 @@ impl PredictFn for ModelPredict {
     ) -> Result<Vec<AdapterValue>> {
         let inputs = inputs
             .into_iter()
-            .map(from_adapter)
+            .map(|v| self.input(v))
             .collect::<Result<Vec<_>>>()?;
         let rows = rows(episodes);
         let actions = self
@@ -382,7 +409,7 @@ impl PredictFn for ModelPredict {
     ) -> Result<Vec<AdapterValue>> {
         let inputs = inputs
             .into_iter()
-            .map(from_adapter)
+            .map(|v| self.input(v))
             .collect::<Result<Vec<_>>>()?;
         let rows = rows(episodes);
         let chunks = self
@@ -555,6 +582,7 @@ impl PredictFn for ModelPredict {
 /// for `NO_ADAPTER` or a spec-less model on an untagged env, an adapter
 /// for a spec, and a refusal for a tagged env with no spec.
 struct SpecResolver {
+    context: Option<Arc<crate::run::hooks::LibraryContext>>,
     spec: Option<SpecArg>,
     trust_entrypoints: bool,
 }
@@ -574,13 +602,9 @@ impl RouteResolver for SpecResolver {
             .clone()
             .map(crate::binding::metadata_from_wire)
             .unwrap_or_default();
-        let tags = if metadata.contains_key(ENV_METADATA_KEY) {
-            crate::adapters::EnvTags::from_metadata(&metadata)?
-        } else {
-            None
-        };
+        let tagged = metadata.contains_key(ENV_METADATA_KEY);
         let spec = match &self.spec {
-            None if tags.is_some() => {
+            None if tagged => {
                 return Err(Error::adapter_resolution(
                     "the env publishes adapter tags but this model has spec=None; pass \
                      spec=<ModelSpec> to adapt, or spec=NO_ADAPTER if the model adapts its own \
@@ -591,12 +615,6 @@ impl RouteResolver for SpecResolver {
             Some(SpecArg::NoAdapter) => return Ok(None),
             Some(SpecArg::ModelSpec(spec)) => spec,
         };
-        let tags = tags.ok_or_else(|| {
-            Error::adapter_resolution(
-                "this model has a spec but the env publishes no adapter tags; tag the env, or \
-                 serve the model with spec=NO_ADAPTER",
-            )
-        })?;
         let observation_space = env_contract
             .observation_space
             .clone()
@@ -605,20 +623,34 @@ impl RouteResolver for SpecResolver {
             .action_space
             .clone()
             .ok_or_else(|| Error::invalid_argument("env contract missing action_space"))?;
-        let adapter = resolve(
-            tags.wire(),
-            &SpaceView::from(&observation_space),
-            &SpaceView::from(&action_space),
-            spec.wire(),
-            self.trust_entrypoints,
-        )
-        .map_err(|err| Error::adapter_resolution(err.message))?;
+        let contract = crate::EnvContract::from_wire(env_contract)?;
+        let tags = crate::adapters::contract_tags(&contract)?;
+        let parts = crate::adapters::resolve_parts(
+            &tags,
+            contract.observation_space(),
+            contract.action_space(),
+            spec,
+            crate::adapters::ResolveOptions {
+                trust_entrypoints: self.trust_entrypoints,
+                ..Default::default()
+            },
+        )?;
+        if let Some(context) = &self.context {
+            context.set_advisories(
+                parts
+                    .plan
+                    .advisories()
+                    .into_iter()
+                    .map(crate::adapters::Advisory::from_core)
+                    .collect(),
+            );
+        }
         Ok(Some(RouteConfig::new(
-            adapter,
+            parts.plan,
             observation_space,
             action_space,
-            Box::new(NoCustoms),
-            Box::new(NoEncodings),
+            Box::new(parts.customs),
+            Box::new(parts.encodings),
         )))
     }
 }
@@ -671,10 +703,10 @@ mod tests {
     fn values_cross_the_adapter_seam() {
         let value = Value::Tuple(vec![Value::Int(2), Value::Text("x".into())]);
         let adapter = to_adapter(&value).unwrap();
+        assert_eq!(from_adapter(adapter).unwrap(), value);
         assert_eq!(
-            from_adapter(adapter).unwrap(),
-            Value::List(vec![Value::Float(2.0), Value::Text("x".into())])
+            from_adapter(to_adapter(&Value::None).unwrap()).unwrap(),
+            Value::None
         );
-        assert!(to_adapter(&Value::None).is_err());
     }
 }
