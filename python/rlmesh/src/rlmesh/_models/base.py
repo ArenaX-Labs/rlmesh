@@ -714,6 +714,9 @@ class ModelBase(Generic[ObsT, ActT]):
         self._raw_predict_chunk_batch = raw_predict_chunk_batch
         self.spec = resolved_spec
         self._policy = policy
+        #: A bare predict callable, whose own attribute is its edition
+        #: declaration (``None`` for a subclass or a wrapped policy).
+        self._edition_source: object = source if policy is None else None
         self._on_close = on_close if on_close is not None else coerced_on_close
         #: The episode-end edge both paths drive: drop the store entry, then fire
         #: the model's own hook with the id that ended.
@@ -1497,7 +1500,13 @@ class ModelBase(Generic[ObsT, ActT]):
         self._require_device_support()
         self._install_worker().serve(
             address,
-            serve_options_declaring(options, declared=type(self).workflow_edition),
+            serve_options_declaring(
+                options,
+                # The options' own edition is this call's value, ahead of
+                # RLMESH_WORKFLOW_EDITION, as EnvServer adopts it (COR-6).
+                call=options.workflow_edition if options is not None else None,
+                declared=self._class_workflow_edition(),
+            ),
         )
 
     def _run_local(
@@ -1569,10 +1578,27 @@ class ModelBase(Generic[ObsT, ActT]):
 
         return resolve_workflow_edition(
             call=call,
-            declared=type(self).workflow_edition,
-            # A subclass has a home for the declaration; a wrapped callable has none.
-            authored=self._policy is self,
+            declared=self._class_workflow_edition(),
+            # A subclass or a wrapped policy has a home for the declaration; a
+            # wrapped bare callable has none.
+            authored=self._policy is not None,
         )
+
+    def _class_workflow_edition(self) -> str | None:
+        """The type-level edition declaration this model carries.
+
+        A subclass's own; for a wrapping ``Model(policy)``, the wrapped policy
+        type's (``describe`` reads the same one); for a bare callable, the
+        callable's attribute.
+        """
+        if self._policy is self:
+            owner: object = type(self)
+        elif self._policy is not None:
+            owner = type(self._policy)
+        else:
+            owner = self._edition_source
+        declared = getattr(owner, "workflow_edition", None)
+        return declared if isinstance(declared, str) else None
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}()"

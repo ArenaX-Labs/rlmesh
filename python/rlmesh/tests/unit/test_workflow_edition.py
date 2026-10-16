@@ -265,6 +265,32 @@ class TestOneTimeWarning:
         assert nudges[0].category is rlmesh.WorkflowEditionWarning
         assert Path(nudges[0].filename) == Path(__file__)
 
+    def test_a_wrapped_policy_declares_and_is_nudged_like_a_subclass(
+        self, recwarn: pytest.WarningsRecorder
+    ) -> None:
+        # Model(policy) reads the policy type's declaration and, floating, is
+        # authored: the policy type is where the declaration lives (COR-P6).
+        class Declared:
+            workflow_edition = EDITION
+
+            def predict(self, obs: Any) -> Any:
+                return obs
+
+        class Floating:
+            def predict(self, obs: Any) -> Any:
+                return obs
+
+        declared = rlmesh.Model(Declared())
+        assert declared._declared_workflow_edition(None) == EDITION  # pyright: ignore[reportPrivateUsage]
+        assert [w for w in recwarn if "workflow edition" in str(w.message)] == []
+        assert rlmesh.Model(Floating())._declared_workflow_edition(None) is None  # pyright: ignore[reportPrivateUsage]
+        nudges = [w for w in recwarn if "workflow edition" in str(w.message)]
+        assert len(nudges) == 1
+        # A bare callable has nowhere to declare and stays quiet.
+        _editions._warned = False  # pyright: ignore[reportPrivateUsage]
+        assert rlmesh.Model(lambda obs: obs)._declared_workflow_edition(None) is None  # pyright: ignore[reportPrivateUsage]
+        assert len([w for w in recwarn if "workflow edition" in str(w.message)]) == 1
+
     def test_the_empty_env_var_floats_deliberately_and_stays_quiet(
         self, monkeypatch: pytest.MonkeyPatch, recwarn: pytest.WarningsRecorder
     ) -> None:
@@ -389,6 +415,25 @@ class TestServeOptionsDeclaring:
         options = serve_options_declaring(call=EDITION)
         assert options is not None
         assert options.workflow_edition == EDITION
+
+    def test_model_serve_adopts_its_options_edition_over_the_env_var(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # ServeOptions.workflow_edition is Model.serve's own value, as EnvServer
+        # takes it: ahead of RLMESH_WORKFLOW_EDITION (COR-P2).
+        served: list[ServeOptions | None] = []
+
+        class Worker:
+            def serve(self, address: str, options: ServeOptions | None) -> None:
+                _ = address
+                served.append(options)
+
+        model = rlmesh.Model(lambda obs: obs)
+        monkeypatch.setattr(model, "_install_worker", Worker)
+        monkeypatch.setenv(WORKFLOW_EDITION_ENV_VAR, UNKNOWN_EDITION)
+        model.serve("127.0.0.1:0", options=ServeOptions(workflow_edition=EDITION))
+        assert served[0] is not None
+        assert served[0].workflow_edition == EDITION
 
     def test_declaring_nothing_without_options_stays_none(self) -> None:
         # Byte-identical to a build without the field: no declaration goes out.

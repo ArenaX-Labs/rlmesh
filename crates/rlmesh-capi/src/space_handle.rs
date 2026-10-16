@@ -480,7 +480,7 @@ pub extern "C" fn rlmesh_space_sample(
         if out.is_null() {
             return Err(CapiError::invalid_arg("null out"));
         }
-        let value = require_space(space)?.sample()?;
+        let value = rlmesh::binding::space_sample_wire(require_space(space)?)?;
         write_out(out, into_handle(value))
     })
 }
@@ -495,7 +495,7 @@ pub extern "C" fn rlmesh_space_contains(
         // SAFETY: RLMeshValue is repr(transparent) over the value.
         let value = unsafe { value.as_ref() };
         match (space_ref(space), value) {
-            (Some(space), Some(value)) => space.contains(&value.0),
+            (Some(space), Some(value)) => rlmesh::binding::space_contains_wire(space, &value.0),
             _ => false,
         }
     })

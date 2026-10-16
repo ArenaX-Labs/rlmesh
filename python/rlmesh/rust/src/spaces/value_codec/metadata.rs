@@ -5,6 +5,7 @@ use pyo3::types::{PyAny, PyBool, PyBytes, PyDict, PyInt, PyList, PyTuple};
 use rlmesh_spaces::{MetaMap, MetaValue};
 
 use super::normalization::normalize_metadata_value;
+use crate::spaces::tensor::extract_tensor;
 
 pub(crate) fn meta_map_to_pydict<'py>(
     py: Python<'py>,
@@ -32,6 +33,15 @@ fn py_any_to_meta_value(value: &Bound<'_, PyAny>) -> PyResult<MetaValue> {
 
     if normalized.is_none() {
         return Ok(MetaValue::Null);
+    }
+    // An `rlmesh.Tensor` is the nested list of its elements, as a NumPy array
+    // (`tolist`) is: the shared `Value` encoding (COR-26, COR-P10).
+    if let Some(tensor) = extract_tensor(&normalized)? {
+        let tensor = rlmesh::binding::tensor_from_core(tensor.inner.clone())
+            .map_err(crate::types::to_py_err)?;
+        return rlmesh::binding::meta_value_to_wire(&rlmesh::Value::Tensor(tensor))
+            // The one refusal is an element past int64, Python's OverflowError.
+            .map_err(|err| pyo3::exceptions::PyOverflowError::new_err(err.to_string()));
     }
     // `bytes` must be matched before the sequence and integer paths: it is
     // neither a list nor a scalar, and carries raw binary exactly.

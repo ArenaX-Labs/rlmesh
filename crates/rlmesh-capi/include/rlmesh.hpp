@@ -173,6 +173,9 @@ namespace detail {
 /// Tag for the library's own constructors, which carry a code; the public
 /// constructors take Python's authoring arguments.
 struct FromLibrary {};
+/// The wrapper's read of an authored exception's raw message (its `what()`
+/// carries the `[CODE]` prefix the wire adds again).
+struct ExceptionText;
 }  // namespace detail
 
 /// Python's builtin `RuntimeError`: misuse and local refusals.
@@ -197,22 +200,32 @@ class ProtocolException : public RLMeshException {
 };
 
 /// `EnvironmentException`: the env reported a failure. Thrown from an env
-/// callback, it fails the request and ends the session (code `INTERNAL`).
+/// callback, it fails the request and ends the session (code `INTERNAL`). An
+/// authored one's `what()` is `[INTERNAL] message`, as Python's `str()`.
 class EnvironmentException : public RLMeshException {
  public:
   explicit EnvironmentException(std::string message)
-      : EnvironmentException(std::move(message), ErrorCode::Internal, false,
-                             detail::FromLibrary{}) {}
+      : EnvironmentException(std::move(message), false, detail::FromLibrary{}) {}
   EnvironmentException(std::string message, ErrorCode code, bool is_recoverable,
                        detail::FromLibrary)
-      : RLMeshException(message), code_(code), recoverable_(is_recoverable) {}
+      : RLMeshException(message), code_(code), recoverable_(is_recoverable), raw_(message) {}
 
   ErrorCode code() const { return code_; }
   bool is_recoverable() const { return recoverable_; }
 
+ protected:
+  /// An authored exception: code `INTERNAL`, text `[INTERNAL] message`.
+  EnvironmentException(std::string message, bool is_recoverable, detail::FromLibrary)
+      : RLMeshException("[INTERNAL] " + message),
+        code_(ErrorCode::Internal),
+        recoverable_(is_recoverable),
+        raw_(std::move(message)) {}
+
  private:
+  friend struct detail::ExceptionText;
   ErrorCode code_;
   bool recoverable_;
+  std::string raw_;
 };
 
 /// `RecoverableEnvironmentException`: the request failed, the session stays
@@ -220,30 +233,40 @@ class EnvironmentException : public RLMeshException {
 class RecoverableEnvironmentException : public EnvironmentException {
  public:
   explicit RecoverableEnvironmentException(std::string message)
-      : EnvironmentException(std::move(message), ErrorCode::Internal, true, detail::FromLibrary{}) {
-  }
+      : EnvironmentException(std::move(message), true, detail::FromLibrary{}) {}
   RecoverableEnvironmentException(std::string message, ErrorCode code, detail::FromLibrary tag)
       : EnvironmentException(std::move(message), code, true, tag) {}
 };
 
 /// `ModelException`: the model reported a failure. Throw
 /// `ModelException(msg, true)` from predict to fail one request as recoverable
-/// (code `INTERNAL`).
+/// (code `INTERNAL`); its `what()` is `[INTERNAL] msg`, as Python's `str()`.
 class ModelException : public RLMeshException {
  public:
   explicit ModelException(std::string message, bool is_recoverable = false)
-      : ModelException(std::move(message), ModelErrorCode::Internal, is_recoverable,
-                       detail::FromLibrary{}) {}
+      : RLMeshException("[INTERNAL] " + message),
+        code_(ModelErrorCode::Internal),
+        recoverable_(is_recoverable),
+        raw_(std::move(message)) {}
   ModelException(std::string message, ModelErrorCode code, bool is_recoverable, detail::FromLibrary)
-      : RLMeshException(message), code_(code), recoverable_(is_recoverable) {}
+      : RLMeshException(message), code_(code), recoverable_(is_recoverable), raw_(message) {}
 
   ModelErrorCode code() const { return code_; }
   bool is_recoverable() const { return recoverable_; }
 
  private:
+  friend struct detail::ExceptionText;
   ModelErrorCode code_;
   bool recoverable_;
+  std::string raw_;
 };
+
+namespace detail {
+struct ExceptionText {
+  static const std::string& raw(const EnvironmentException& error) { return error.raw_; }
+  static const std::string& raw(const ModelException& error) { return error.raw_; }
+};
+}  // namespace detail
 
 /// Python's `ValueError`: an invalid argument value, address or options field.
 class ValueError : public std::invalid_argument {
@@ -334,6 +357,70 @@ class CancelledError {
       throw RLMeshException(message);
   }
 }
+
+namespace detail {
+
+/// Record the exception being handled as the running callback's error
+/// (X-10): an exception of the Python classes keeps its class
+/// (`rlmesh_callback_set_error_class`), as a Python author's `TypeError`
+/// propagates as itself; any other exception is the callback kind's failure
+/// with its `what()`. Returns the nonzero status the trampoline returns.
+inline int record_current_exception(RLMeshStatus kind, const char* unknown) noexcept {
+  RLMeshErrorClass cls = RLMESH_ERROR_CLASS_INVALID;
+  std::string text;
+  try {
+    throw;
+  } catch (const RecoverableEnvironmentException& e) {
+    cls = RLMESH_ERROR_CLASS_RECOVERABLE_ENVIRONMENT_EXCEPTION;
+    text = ExceptionText::raw(e);
+  } catch (const EnvironmentException& e) {
+    cls = RLMESH_ERROR_CLASS_ENVIRONMENT_EXCEPTION;
+    text = ExceptionText::raw(e);
+  } catch (const ModelException& e) {
+    cls = RLMESH_ERROR_CLASS_MODEL_EXCEPTION;
+    text = ExceptionText::raw(e);
+  } catch (const ProtocolException& e) {
+    cls = RLMESH_ERROR_CLASS_PROTOCOL_EXCEPTION;
+    text = e.what();
+  } catch (const RLMeshException& e) {
+    cls = RLMESH_ERROR_CLASS_RLMESH_EXCEPTION;
+    text = e.what();
+  } catch (const AdapterResolutionError& e) {
+    cls = RLMESH_ERROR_CLASS_ADAPTER_RESOLUTION_ERROR;
+    text = e.what();
+  } catch (const ValueError& e) {
+    cls = RLMESH_ERROR_CLASS_VALUE_ERROR;
+    text = e.what();
+  } catch (const TypeError& e) {
+    cls = RLMESH_ERROR_CLASS_TYPE_ERROR;
+    text = e.what();
+  } catch (const RuntimeError& e) {
+    cls = RLMESH_ERROR_CLASS_RUNTIME_ERROR;
+    text = e.what();
+  } catch (const TimeoutError& e) {
+    cls = RLMESH_ERROR_CLASS_TIMEOUT_ERROR;
+    text = e.what();
+  } catch (const ConnectionError& e) {
+    cls = RLMESH_ERROR_CLASS_CONNECTION_ERROR;
+    text = e.what();
+  } catch (const OSError& e) {
+    cls = RLMESH_ERROR_CLASS_OS_ERROR;
+    text = e.what();
+  } catch (const ext::CancelledError& e) {
+    cls = RLMESH_ERROR_CLASS_KEYBOARD_INTERRUPT;
+    text = e.what();
+  } catch (const std::exception& e) {
+    rlmesh_callback_set_error(e.what(), false);
+    return static_cast<int>(kind);
+  } catch (...) {
+    rlmesh_callback_set_error(unknown, false);
+    return static_cast<int>(kind);
+  }
+  rlmesh_callback_set_error_class(cls, text.c_str());
+  return static_cast<int>(kind);
+}
+
+}  // namespace detail
 
 #endif  // __cpp_exceptions
 
@@ -474,6 +561,162 @@ inline Status ok() { return Status(); }
     std::move(*rlmesh_try_);                      \
   })
 #endif
+
+// ---- build info, editions, warnings -----------------------------------------
+
+/// This header's package version, SemVer (`RLMESH_VERSION`); `build_info()`
+/// reports the linked library's.
+inline constexpr std::string_view VERSION = RLMESH_VERSION;
+
+/// The describe envelope's metadata key and schema version, and the env reset
+/// options key: Python's `rlmesh.DESCRIBE_METADATA_KEY`, ...
+inline constexpr std::string_view DESCRIBE_METADATA_KEY = RLMESH_DESCRIBE_METADATA_KEY;
+inline constexpr int64_t DESCRIBE_SCHEMA_VERSION = RLMESH_DESCRIBE_SCHEMA_VERSION;
+inline constexpr std::string_view ENV_RESET_OPTIONS_KEY = RLMESH_ENV_RESET_OPTIONS_KEY;
+
+/// Where a build's cohort came from (Python's `BuildInfo.build_source`).
+enum class BuildSource : int32_t {
+  Release = RLMESH_BUILD_SOURCE_RELEASE,
+  Package = RLMESH_BUILD_SOURCE_PACKAGE,
+  Git = RLMESH_BUILD_SOURCE_GIT,
+};
+
+/// Python's spelling (`"release"`).
+inline std::string_view to_string(BuildSource source) {
+  return detail::sv(rlmesh_build_source_str(static_cast<RLMeshBuildSource>(source)));
+}
+
+/// The linked library's identity: Python's `rlmesh.BuildInfo`. Every view is
+/// static, with process lifetime.
+struct BuildInfo {
+  std::string_view version;
+  std::string_view protocol_generation;
+  std::string_view workflow_edition;
+  std::string_view workflow_edition_base;
+  std::vector<std::string_view> supported_workflow_editions;  ///< newest first
+  std::string_view build_cohort;
+  BuildSource build_source = BuildSource::Package;
+  std::optional<std::string_view> git;
+};
+
+/// This library's build identity (`rlmesh.build_info()`).
+inline BuildInfo build_info() {
+  RLMeshBuildInfo raw = RLMESH_BUILD_INFO_INIT;
+  RLMeshStatus status = rlmesh_build_info(&raw);
+  if (status != RLMESH_OK) detail::die("rlmesh_build_info", Error::from_last(status));
+  BuildInfo info;
+  info.version = detail::sv(raw.version);
+  info.protocol_generation = detail::sv(raw.protocol_generation);
+  info.workflow_edition = detail::sv(raw.workflow_edition);
+  info.workflow_edition_base = detail::sv(raw.workflow_edition_base);
+  for (size_t i = 0; i < raw.supported_workflow_editions_len; ++i) {
+    info.supported_workflow_editions.push_back(detail::sv(raw.supported_workflow_editions[i]));
+  }
+  info.build_cohort = detail::sv(raw.build_cohort);
+  info.build_source = static_cast<BuildSource>(raw.build_source);
+  if (raw.git != nullptr) info.git = detail::sv(raw.git);
+  return info;
+}
+
+/// Python's `repr(build_info())` (`BuildInfo(version="0.1.0", ...)`), as the
+/// library spells it. `info` is a `build_info()` result.
+inline std::string to_string(const BuildInfo& info) {
+  (void)info;  // the static identity: there is only the one
+  RLMeshBytes bytes = {nullptr, 0, 0};
+  RLMeshStatus status = rlmesh_build_info_repr(&bytes);
+  if (status != RLMESH_OK) detail::die("rlmesh_build_info_repr", Error::from_last(status));
+  std::string text(reinterpret_cast<const char*>(bytes.data), bytes.len);
+  rlmesh_bytes_free(bytes);
+  return text;
+}
+
+template <class Stream>
+auto operator<<(Stream& out, const BuildInfo& info) -> decltype(out << std::string()) {
+  return out << to_string(info);
+}
+
+/// The bare `YYYY.MM` workflow edition this build runs at: the value to declare.
+inline std::string_view current_workflow_edition() {
+  return detail::sv(rlmesh_current_workflow_edition());
+}
+
+/// A warning's category: Python's warning classes (values of the C enum).
+enum class WarningCategory : int32_t {
+  UserWarning = RLMESH_WARNING_CATEGORY_USER_WARNING,
+  RuntimeWarning = RLMESH_WARNING_CATEGORY_RUNTIME_WARNING,
+  WorkflowEditionWarning = RLMESH_WARNING_CATEGORY_WORKFLOW_EDITION_WARNING,
+};
+
+/// Python's class name (`"WorkflowEditionWarning"`).
+inline std::string_view name(WarningCategory category) {
+  return detail::sv(rlmesh_warning_category_name(static_cast<RLMeshWarningCategory>(category)));
+}
+
+/// Python's `issubclass(cls, base)`.
+inline bool is_subclass_of(WarningCategory cls, WarningCategory base) {
+  return rlmesh_warning_category_is_subclass(static_cast<RLMeshWarningCategory>(cls),
+                                             static_cast<RLMeshWarningCategory>(base));
+}
+
+/// One warning.
+struct Warning {
+  WarningCategory category;
+  std::string message;
+
+  bool operator==(const Warning& other) const {
+    return category == other.category && message == other.message;
+  }
+  bool operator!=(const Warning& other) const { return !(*this == other); }
+};
+
+/// `<Category>: <message>`.
+template <class Stream>
+auto operator<<(Stream& out, const Warning& warning) -> decltype(out << std::string()) {
+  return out << std::string(name(warning.category)) + ": " + warning.message;
+}
+
+namespace detail {
+
+using WarningHandler = std::function<void(const Warning&)>;
+
+inline RLMeshStatus warning_trampoline(void* user_data, RLMeshWarningCategory category,
+                                       const char* message) {
+  auto* handler = static_cast<WarningHandler*>(user_data);
+#if defined(__cpp_exceptions)
+  try {
+    (*handler)(Warning{static_cast<WarningCategory>(category), std::string(sv(message))});
+  } catch (...) {
+    return static_cast<RLMeshStatus>(
+        record_current_exception(RLMESH_ERR_INTERNAL, "unknown C++ exception"));
+  }
+#else
+  (*handler)(Warning{static_cast<WarningCategory>(category), std::string(sv(message))});
+#endif
+  return RLMESH_OK;
+}
+
+inline void free_warning_handler(void* user_data) {
+  delete static_cast<WarningHandler*>(user_data);
+}
+
+}  // namespace detail
+
+/// Install the process-wide warning handler; an empty `handler` restores the
+/// default (stderr, each distinct warning once). A handler that throws fails
+/// the call that warned, with the exception's `what()` as an `RLMeshException`.
+inline void set_warning_handler(std::function<void(const Warning&)> handler) {
+  if (!handler) {
+    (void)rlmesh_set_warning_handler(nullptr, nullptr, nullptr);
+    return;
+  }
+  auto* owned = new detail::WarningHandler(std::move(handler));
+  RLMeshStatus status =
+      rlmesh_set_warning_handler(&detail::warning_trampoline, owned, &detail::free_warning_handler);
+  if (status != RLMESH_OK) {
+    delete owned;
+    detail::die("rlmesh_set_warning_handler", Error::from_last(status));
+  }
+}
 
 // ---- dtype + tensor ---------------------------------------------------------
 
@@ -1392,11 +1635,10 @@ class Model {
 #if defined(__cpp_exceptions)
     } catch (const ModelException& error) {
       // Only a ModelException's own flag makes a model failure recoverable.
-      return fail(Error(RLMESH_ERR_MODEL, error.what(), error.is_recoverable()));
-    } catch (const std::exception& error) {
-      return fail(Error(RLMESH_ERR_MODEL, error.what()));
+      return fail(
+          Error(RLMESH_ERR_MODEL, detail::ExceptionText::raw(error), error.is_recoverable()));
     } catch (...) {
-      return fail(Error(RLMESH_ERR_MODEL, "unknown C++ exception in predict"));
+      return detail::record_current_exception(RLMESH_ERR_MODEL, "unknown C++ exception in predict");
     }
 #endif
   }
@@ -2304,11 +2546,11 @@ class EnvServer {
 #if defined(__cpp_exceptions)
     } catch (const EnvironmentException& error) {
       // Only an EnvironmentException's own flag makes an env failure recoverable.
-      return fail(Error(RLMESH_ERR_ENVIRONMENT, error.what(), error.is_recoverable()));
-    } catch (const std::exception& error) {
-      return fail(Error(RLMESH_ERR_ENVIRONMENT, error.what()));
+      return fail(
+          Error(RLMESH_ERR_ENVIRONMENT, detail::ExceptionText::raw(error), error.is_recoverable()));
     } catch (...) {
-      return fail(Error(RLMESH_ERR_ENVIRONMENT, "unknown C++ exception in reset"));
+      return detail::record_current_exception(RLMESH_ERR_ENVIRONMENT,
+                                              "unknown C++ exception in reset");
     }
 #endif
   }
@@ -2332,11 +2574,11 @@ class EnvServer {
 #if defined(__cpp_exceptions)
     } catch (const EnvironmentException& error) {
       // Only an EnvironmentException's own flag makes an env failure recoverable.
-      return fail(Error(RLMESH_ERR_ENVIRONMENT, error.what(), error.is_recoverable()));
-    } catch (const std::exception& error) {
-      return fail(Error(RLMESH_ERR_ENVIRONMENT, error.what()));
+      return fail(
+          Error(RLMESH_ERR_ENVIRONMENT, detail::ExceptionText::raw(error), error.is_recoverable()));
     } catch (...) {
-      return fail(Error(RLMESH_ERR_ENVIRONMENT, "unknown C++ exception in step"));
+      return detail::record_current_exception(RLMESH_ERR_ENVIRONMENT,
+                                              "unknown C++ exception in step");
     }
 #endif
   }
@@ -2353,11 +2595,11 @@ class EnvServer {
 #if defined(__cpp_exceptions)
     } catch (const EnvironmentException& error) {
       // Only an EnvironmentException's own flag makes an env failure recoverable.
-      return fail(Error(RLMESH_ERR_ENVIRONMENT, error.what(), error.is_recoverable()));
-    } catch (const std::exception& error) {
-      return fail(Error(RLMESH_ERR_ENVIRONMENT, error.what()));
+      return fail(
+          Error(RLMESH_ERR_ENVIRONMENT, detail::ExceptionText::raw(error), error.is_recoverable()));
     } catch (...) {
-      return fail(Error(RLMESH_ERR_ENVIRONMENT, "unknown C++ exception in render"));
+      return detail::record_current_exception(RLMESH_ERR_ENVIRONMENT,
+                                              "unknown C++ exception in render");
     }
 #endif
   }

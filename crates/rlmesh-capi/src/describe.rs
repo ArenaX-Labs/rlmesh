@@ -183,7 +183,7 @@ pub(crate) fn envelope(
     let preferred = workflow_edition
         .map(str::trim)
         .filter(|edition| !edition.is_empty())
-        .unwrap_or(rlmesh::CURRENT_WORKFLOW_EDITION);
+        .unwrap_or(rlmesh::binding::CURRENT_WORKFLOW_EDITION);
     let mut pieces = json!({
         "target": {"entrypoint": null, "qualname": format!("native:{}", contract.id)},
         "env_spec": {
@@ -197,8 +197,8 @@ pub(crate) fn envelope(
             "package_version": env!("CARGO_PKG_VERSION"),
             "os": std::env::consts::OS,
             "arch": std::env::consts::ARCH,
-            "protocol_generation": rlmesh::PROTOCOL_GENERATION,
-            "supported_workflow_editions": rlmesh::supported_workflow_editions(),
+            "protocol_generation": rlmesh::binding::PROTOCOL_GENERATION,
+            "supported_workflow_editions": rlmesh::binding::supported_workflow_editions(),
             "preferred_workflow_edition": preferred,
         },
     });
@@ -307,14 +307,17 @@ mod tests {
         assert_eq!(runtime["language"], "c");
         assert!(runtime.get("language_version").is_none());
         assert!(runtime.get("framework_versions").is_none());
-        assert_eq!(runtime["protocol_generation"], rlmesh::PROTOCOL_GENERATION);
+        assert_eq!(
+            runtime["protocol_generation"],
+            rlmesh::binding::PROTOCOL_GENERATION
+        );
         assert_eq!(
             runtime["preferred_workflow_edition"],
-            rlmesh::CURRENT_WORKFLOW_EDITION
+            rlmesh::binding::CURRENT_WORKFLOW_EDITION
         );
         assert_eq!(
             runtime["supported_workflow_editions"],
-            json!(rlmesh::supported_workflow_editions())
+            json!(rlmesh::binding::supported_workflow_editions())
         );
     }
 
@@ -546,7 +549,7 @@ mod tests {
         use crate::env::rlmesh_env_free;
 
         // A host's own process-wide override fields are left as they are.
-        rlmesh::update_peer_info_override(|info| info.os_version = "6.1".into());
+        rlmesh::binding::update_peer_info_override(|info| info.os_version = "6.1".into());
 
         let first = native_env("Native-v0", 2.0);
         let second = native_env("Other-v0", 5.0);
@@ -562,14 +565,22 @@ mod tests {
         );
         assert_eq!(
             before["runtime"]["preferred_workflow_edition"],
-            rlmesh::CURRENT_WORKFLOW_EDITION
+            rlmesh::binding::CURRENT_WORKFLOW_EDITION
         );
 
         // Bound with a declared edition: the envelope (and the handshake copy)
         // declares exactly what the server sends.
-        let base = rlmesh::CURRENT_WORKFLOW_EDITION.split('-').next().unwrap();
+        let base = rlmesh::binding::CURRENT_WORKFLOW_EDITION
+            .split('-')
+            .next()
+            .unwrap();
         let first_address = bind(first, "127.0.0.1:0", base).expect("bind the first env");
-        bind(second, "127.0.0.1:0", rlmesh::CURRENT_WORKFLOW_EDITION).expect("bind the second");
+        bind(
+            second,
+            "127.0.0.1:0",
+            rlmesh::binding::CURRENT_WORKFLOW_EDITION,
+        )
+        .expect("bind the second");
         let after = describe_json(first);
         assert_eq!(after["runtime"]["preferred_workflow_edition"], base);
 
@@ -581,7 +592,7 @@ mod tests {
         assert_eq!(describe_json(third), third_before);
         unsafe { rlmesh_env_free(third) };
         assert!(
-            rlmesh::peer_info_override()
+            rlmesh::binding::peer_info_override()
                 .is_none_or(|info| !info.extra.contains_key(DESCRIBE_METADATA_KEY)),
             "the describe is per server, not process-wide"
         );
@@ -596,7 +607,7 @@ mod tests {
         assert_eq!(other_eef["details"]["low"], -5.0);
         assert_eq!(
             second_after["runtime"]["preferred_workflow_edition"],
-            rlmesh::CURRENT_WORKFLOW_EDITION
+            rlmesh::binding::CURRENT_WORKFLOW_EDITION
         );
         assert_eq!(
             describe_json(first),
@@ -604,7 +615,7 @@ mod tests {
             "binding the second left the first alone"
         );
         assert_eq!(
-            rlmesh::peer_info_override().map(|info| info.os_version),
+            rlmesh::binding::peer_info_override().map(|info| info.os_version),
             Some("6.1".into()),
             "other override fields are kept"
         );
@@ -680,7 +691,12 @@ mod tests {
             before["runtime"]["toolchain"],
             json!({"name":"gcc","version":"14.2"})
         );
-        bind(cpp, "127.0.0.1:0", rlmesh::CURRENT_WORKFLOW_EDITION).expect("bind C++ env");
+        bind(
+            cpp,
+            "127.0.0.1:0",
+            rlmesh::binding::CURRENT_WORKFLOW_EDITION,
+        )
+        .expect("bind C++ env");
         assert_eq!(
             describe_json(cpp),
             before,

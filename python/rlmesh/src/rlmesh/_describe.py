@@ -132,8 +132,15 @@ def describe_json(
     if isinstance(obj, str):
         entrypoint = obj
         obj = resolve_entrypoint(obj, label="describe entrypoint")
-    kind, method = _kind_and_method(obj, kind)
-    pieces = _gather(obj, method, kind, entrypoint, served_env, workflow_edition)
+    if _is_empty_lane_list(served_env):
+        raise ValueError("served_env must hold at least one lane env, got []")
+    # A wrapping rlmesh.Model(policy) describes its policy's declarations, as
+    # describe(policy) would; only its spec is its own.
+    declared = _declaring_object(obj)
+    kind, method = _kind_and_method(declared, kind)
+    pieces = _gather(
+        declared, method, kind, entrypoint, served_env, workflow_edition, spec_of=obj
+    )
     # default=repr keeps describe total: an exotic catalog/param value renders as
     # a string rather than crashing the artifact; allow_nan=False matches the Rust
     # codec's RFC-8259 strictness (NaN/Infinity are rejected, not silently passed).
@@ -168,8 +175,14 @@ def _gather(
     entrypoint: str | None,
     served_env: object | None = None,
     workflow_edition: str | None = None,
+    *,
+    spec_of: object | None = None,
 ) -> dict[str, Any]:
-    """Assemble the per-language raw pieces; Rust owns the wrapper + serialization."""
+    """Assemble the per-language raw pieces; Rust owns the wrapper + serialization.
+
+    ``spec_of`` is the object whose ``spec`` a model envelope reports (a
+    wrapping ``Model``); every type-level item is ``obj``'s.
+    """
     spec, target, enumerate_fn, catalog_fn = _resolve_target(obj, method)
     pieces: dict[str, Any] = {
         "target": _target(obj, entrypoint),
@@ -188,17 +201,68 @@ def _gather(
         if contracts is not None:
             pieces["env_contracts"] = contracts
     else:
-        pieces["model_spec"] = _model_spec(obj)
+        pieces["model_spec"] = _model_spec(obj if spec_of is None else spec_of)
         corners = _corners(obj)
         if corners:
             pieces["corners"] = corners
-        # The model's declared native chunk length K, when it declares one at the
-        # class level. A K set in load() is invisible here on purpose: describe
-        # runs on the class, without weights.
-        native_chunk = getattr(obj, "native_chunk", None)
-        if isinstance(native_chunk, int) and not isinstance(native_chunk, bool):
+        native_chunk = _declared_native_chunk(obj, corners)
+        if native_chunk is not None:
             pieces["native_chunk"] = native_chunk
     return pieces
+
+
+def _declaring_object(obj: object) -> object:
+    """The object whose type carries ``obj``'s declarations.
+
+    A wrapping ``rlmesh.Model(policy)`` declares through its policy (its type),
+    or through the bare predict callable it wraps; a ``Model`` subclass, and
+    anything else, through itself.
+    """
+    from ._models.base import ModelBase  # lazy: the classmethods import this module
+
+    if not _is_model_instance(obj, ModelBase):
+        return obj
+    model = cast("Any", obj)
+    policy: object = model._policy
+    if policy is obj:
+        return obj
+    if policy is not None:
+        return policy
+    source: object = model._edition_source
+    return source if source is not None else obj
+
+
+def _is_model_instance(obj: object, base: type) -> bool:
+    return isinstance(obj, base)
+
+
+def _is_empty_lane_list(served_env: object) -> bool:
+    return isinstance(served_env, list) and not cast("list[object]", served_env)
+
+
+def _declared_native_chunk(obj: object, corners: Sequence[str]) -> int | None:
+    """The model's static native chunk length K, read from the type.
+
+    Never an instance attribute: a K that ``load()`` set from a checkpoint is
+    invisible here on purpose, since describe reads only what the type
+    declares. A declaration the model's construction or resolve would refuse
+    is refused here too, rather than recorded.
+    """
+    cls = obj if isinstance(obj, type) or inspect.isroutine(obj) else type(obj)
+    native_chunk = getattr(cls, "native_chunk", None)
+    if not isinstance(native_chunk, int) or isinstance(native_chunk, bool):
+        return None
+    if "predict_chunk" not in corners and "predict_chunk_batch" not in corners:
+        raise TypeError(
+            "native_chunk declares how long ONE action chunk is, but this model "
+            "defines no predict_chunk() / predict_chunk_batch(). Add a chunk "
+            "corner, or drop native_chunk."
+        )
+    if native_chunk < 1:
+        raise ValueError(
+            f"native_chunk must be >= 1 (or None when undeclared), got {native_chunk!r}"
+        )
+    return native_chunk
 
 
 def _corners(obj: object) -> list[str]:
@@ -234,11 +298,21 @@ def _kind_and_method(obj: object, kind: str | None) -> tuple[str, str]:
     ``_authoring``/``_models`` <-> ``describe`` import cycle (the classmethods
     import this module).
     """
+    cls = obj if isinstance(obj, type) else type(obj)
     if kind is not None:
         if kind not in ("env", "model"):
             raise ValueError(f"kind must be 'env' or 'model', got {kind!r}")
+        # The object fixes its kind; an explicit one is a cross-check. A bare
+        # callable (neither make nor predict) takes the kind it is given.
+        has_make, has_predict = hasattr(cls, "make"), hasattr(cls, "predict")
+        if (kind == "env" and not has_make and has_predict) or (
+            kind == "model" and not has_predict and has_make
+        ):
+            missing = "make" if kind == "env" else "predict"
+            raise ValueError(
+                f"kind={kind!r} contradicts {obj!r}, which has no {missing}()"
+            )
         return kind, "make" if kind == "env" else "load"
-    cls = obj if isinstance(obj, type) else type(obj)
     if hasattr(cls, "predict"):
         return "model", "load"
     if hasattr(cls, "make"):

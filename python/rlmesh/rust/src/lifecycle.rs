@@ -94,7 +94,7 @@ impl PyServeOptions {
 #[cfg_attr(feature = "stub-gen", gen_stub_pyfunction)]
 #[pyfunction]
 pub fn current_workflow_edition() -> &'static str {
-    rlmesh_proto::WORKFLOW_EDITION_BASE
+    rlmesh::current_workflow_edition()
 }
 
 /// The identity of this build of the native core: package version, protocol
@@ -110,13 +110,13 @@ impl PyBuildInfo {
     /// The `rlmesh` package version the native core was built as.
     #[getter]
     fn version(&self) -> &'static str {
-        env!("CARGO_PKG_VERSION")
+        rlmesh::build_info().version
     }
 
     /// The wire protocol generation this build speaks (`rlmesh-wire-v1`).
     #[getter]
     fn protocol_generation(&self) -> &'static str {
-        rlmesh_proto::PROTOCOL_GENERATION
+        rlmesh::build_info().protocol_generation
     }
 
     /// The exact workflow edition spelling this build advertises: the sealed
@@ -124,14 +124,14 @@ impl PyBuildInfo {
     /// source build.
     #[getter]
     fn workflow_edition(&self) -> &'static str {
-        rlmesh_proto::CURRENT_WORKFLOW_EDITION
+        rlmesh::build_info().workflow_edition
     }
 
     /// The sealed `YYYY.MM` base of `workflow_edition`, the same on every build
     /// of the edition; what `current_workflow_edition()` returns.
     #[getter]
     fn workflow_edition_base(&self) -> &'static str {
-        rlmesh_proto::WORKFLOW_EDITION_BASE
+        rlmesh::build_info().workflow_edition_base
     }
 
     /// Every workflow edition this build can drive a session at, newest first:
@@ -140,7 +140,11 @@ impl PyBuildInfo {
     /// handshake will.
     #[getter]
     fn supported_workflow_editions(&self) -> Vec<String> {
-        rlmesh_proto::supported_workflow_editions()
+        rlmesh::build_info()
+            .supported_workflow_editions
+            .iter()
+            .map(|edition| (*edition).to_string())
+            .collect()
     }
 
     /// The cohort that spells `workflow_edition`: `stable` on a sealed release,
@@ -148,7 +152,7 @@ impl PyBuildInfo {
     /// source build.
     #[getter]
     fn build_cohort(&self) -> &'static str {
-        rlmesh_proto::BUILD_COHORT
+        rlmesh::build_info().build_cohort
     }
 
     /// Where the cohort came from: `release` (a release build), `package` (a
@@ -156,7 +160,7 @@ impl PyBuildInfo {
     /// stamped from its commit).
     #[getter]
     fn build_source(&self) -> &'static str {
-        rlmesh_proto::BUILD_SOURCE
+        rlmesh::build_info().build_source.as_str()
     }
 
     /// The git state a source build was stamped from — the short commit sha,
@@ -164,22 +168,11 @@ impl PyBuildInfo {
     /// or `None` when the build was not stamped from git.
     #[getter]
     fn git(&self) -> Option<&'static str> {
-        rlmesh_proto::BUILD_COHORT.strip_prefix("dev.")
+        rlmesh::build_info().git
     }
 
     fn __repr__(&self) -> String {
-        format!(
-            "BuildInfo(version={:?}, protocol_generation={:?}, workflow_edition={:?}, \
-             workflow_edition_base={:?}, build_cohort={:?}, build_source={:?}, git={})",
-            self.version(),
-            self.protocol_generation(),
-            self.workflow_edition(),
-            self.workflow_edition_base(),
-            self.build_cohort(),
-            self.build_source(),
-            self.git()
-                .map_or("None".to_string(), |git| format!("{git:?}")),
-        )
+        rlmesh::build_info().to_string()
     }
 }
 
@@ -202,9 +195,34 @@ pub fn build_info() -> PyBuildInfo {
 #[cfg_attr(feature = "stub-gen", gen_stub_pyfunction)]
 #[pyfunction]
 pub fn validate_workflow_edition(edition: &str) -> PyResult<String> {
-    rlmesh_proto::parse_declared_edition(edition)
-        .map(|_| edition.trim().to_string())
-        .map_err(pyo3::exceptions::PyValueError::new_err)
+    rlmesh::binding::validate_workflow_edition(edition).map_err(crate::types::to_py_err)
+}
+
+/// The facade resolver's rungs (COR-6): the call's value,
+/// `RLMESH_WORKFLOW_EDITION`, the served peer's option, the class
+/// declaration. Returns the winner (validated and trimmed) and whether
+/// resolution stopped at a set-but-blank variable; `(None, False)` leaves
+/// Python's `pyproject.toml` rung and the float warning to the caller.
+#[cfg_attr(feature = "stub-gen", gen_stub_pyfunction)]
+#[pyfunction]
+#[pyo3(signature = (*, call=None, option=None, declared=None))]
+pub fn resolve_workflow_edition_rungs(
+    call: Option<&str>,
+    option: Option<&str>,
+    declared: Option<&str>,
+) -> PyResult<(Option<String>, bool)> {
+    use rlmesh::binding::{EditionResolution, EditionSources};
+    let resolution = rlmesh::binding::resolve_workflow_edition_rungs(EditionSources {
+        call,
+        option,
+        declared,
+    })
+    .map_err(crate::types::to_py_err)?;
+    Ok(match resolution {
+        EditionResolution::Declared(edition) => (Some(edition), false),
+        EditionResolution::FloatsDeliberately => (None, true),
+        EditionResolution::Undeclared => (None, false),
+    })
 }
 
 /// Normalize an optional declared edition: blank declares nothing, anything

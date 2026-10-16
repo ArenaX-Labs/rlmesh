@@ -33,7 +33,6 @@ from __future__ import annotations
 
 import contextvars
 import inspect
-import os
 import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
@@ -136,17 +135,18 @@ def resolve_workflow_edition(
     Raises:
         ValueError: If the winning value names an edition this build cannot run.
     """
-    if call is not None and call.strip():
-        return validate_workflow_edition(call)
-    environment = os.environ.get(WORKFLOW_EDITION_ENV_VAR)
-    if environment is not None and not environment.strip():
+    # Rungs 1-4 are the native resolver's, shared with every language (COR-6);
+    # Python layers its project-file rung and its own warning on top (D-7).
+    resolved, deliberate = load_native("resolve_workflow_edition_rungs")(
+        call=call, option=option, declared=declared
+    )
+    if resolved is not None:
+        return str(resolved)
+    if deliberate:
         # Set-but-empty is the documented "deliberately undeclared" switch: it
-        # ends resolution here rather than falling through to the surfaces
+        # ends resolution there rather than falling through to the surfaces
         # below it, and suppresses the float warning.
         return None
-    for candidate in (environment, option, declared):
-        if candidate is not None and candidate.strip():
-            return validate_workflow_edition(candidate)
     project = _from_pyproject()
     if project is not None and project.strip():
         return validate_workflow_edition(project)

@@ -160,3 +160,51 @@ def test_sanitized_info_survives_a_served_reset() -> None:
             remote.close()
     finally:
         server.shutdown()
+
+
+def _int32_tensor(values: list[int], shape: list[int]) -> rlmesh.Tensor:
+    import struct
+
+    return rlmesh.Tensor(struct.pack(f"<{len(values)}i", *values), shape, "int32")
+
+
+def test_a_tensor_becomes_the_nested_list_of_its_elements() -> None:
+    # As a NumPy array does through tolist (COR-P10).
+    info = {
+        "grid": _int32_tensor([1, 2, 3, 4, 5, 6], [2, 3]),
+        "scalar": _int32_tensor([7], []),
+        "flags": rlmesh.Tensor(b"\x01\x00", [2], "bool"),
+    }
+    assert rlmesh.sanitize_metadata(info) == {
+        "grid": [[1, 2, 3], [4, 5, 6]],
+        "scalar": 7,
+        "flags": [True, False],
+    }
+
+
+class _TensorInfoEnv(_RichInfoEnv):
+    """An env whose reset info carries a raw rlmesh.Tensor."""
+
+    def reset(  # pyright: ignore[reportIncompatibleMethodOverride]
+        self, *, seed: int | None = None, options: dict[str, object] | None = None
+    ) -> tuple[int, dict[str, Any]]:
+        return 0, {"grid": _int32_tensor([1, 2, 3, 4], [2, 2])}
+
+
+def test_the_metadata_codec_encodes_a_tensor_as_lists() -> None:
+    try:
+        server = rlmesh.EnvServer(_TensorInfoEnv(), host="127.0.0.1", port=0)
+    except ConnectionError as exc:
+        if "Operation not permitted" in str(exc):
+            pytest.skip("local tcp bind is not permitted in this environment")
+        raise
+    server.start()
+    try:
+        remote = _connect_with_retry(rlmesh.RemoteEnv, server.address)
+        try:
+            _obs, info = remote.reset(seed=1)
+            assert info["grid"] == [[1, 2], [3, 4]]
+        finally:
+            remote.close()
+    finally:
+        server.shutdown()

@@ -152,6 +152,10 @@ pub fn rlmesh(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<lifecycle::PyServeOptions>()?;
     m.add_function(wrap_pyfunction!(lifecycle::current_workflow_edition, m)?)?;
     m.add_function(wrap_pyfunction!(lifecycle::validate_workflow_edition, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        lifecycle::resolve_workflow_edition_rungs,
+        m
+    )?)?;
     m.add_class::<lifecycle::PyBuildInfo>()?;
     m.add_function(wrap_pyfunction!(lifecycle::build_info, m)?)?;
 

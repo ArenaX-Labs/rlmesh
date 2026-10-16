@@ -124,9 +124,10 @@ def _header(header: str, language: str, standard: str, namespace: str | None):
 def test_c_header_sections_and_declarations() -> None:
     modules, exports = _header("rlmesh.h", "c", "c11", None)
 
-    assert [module.name for module in modules][:3] == [
+    assert [module.name for module in modules][:4] == [
         "rlmesh.h",
         "rlmesh.h: status + errors",
+        "rlmesh.h: build info, editions, warnings",
         "rlmesh.h: dtype + tensor",
     ]
     status = exports["RLMeshStatus"]
