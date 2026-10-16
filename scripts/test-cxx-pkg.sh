@@ -31,7 +31,7 @@ cargo build -p rlmesh-capi --bin e2e_harness
 # 3. pkg-config leg: resolve flags from the package, build against the shipped .so.
 echo "==> pkg-config: build cpp_model against the installed package"
 flags="$(PKG_CONFIG_PATH="$pkg/lib/pkgconfig" pkg-config --cflags --libs rlmesh)"
-$CXX -std=c++17 "${quiet[@]}" $flags -Wl,-rpath,"$pkg/lib" "$src" -o "$tmp/cpp_model_pc"
+$CXX -std=c++20 "${quiet[@]}" $flags -Wl,-rpath,"$pkg/lib" "$src" -o "$tmp/cpp_model_pc"
 echo "==> pkg-config: end-to-end vs a live env"
 target/debug/e2e_harness "$tmp/cpp_model_pc"
 
@@ -45,7 +45,7 @@ if command -v cmake >/dev/null 2>&1; then
   echo "==> cmake find_package: end-to-end vs a live env"
   target/debug/e2e_harness "$tmp/build/cpp_model"
   echo "==> cmake find_package: native env describe runtimes"
-  "$tmp/build/cpp_env" --describe | python scripts/check-native-runtime.py c++ 17
+  "$tmp/build/cpp_env" --describe | python scripts/check-native-runtime.py c++ 20
   "$tmp/build/c_env" | python scripts/check-native-runtime.py c 11
 
   # 5. FetchContent leg: the tarball by URL and its published checksum, the way a

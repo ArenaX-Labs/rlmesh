@@ -54,7 +54,7 @@ impl RunContext for Context {
         let observation = RLMeshValue::new(observation.clone());
         let item = crate::run_read::RLMeshReadItem(item.clone());
         let mut out = std::ptr::null_mut();
-        crate::abi::status::clear_last_error();
+        let _callback_frame = crate::abi::status::CallbackFrame::enter();
         let status = unsafe {
             self.v.read.expect("validated read slot")(
                 self.user as *mut c_void,
@@ -75,7 +75,7 @@ impl RunContext for Context {
             .try_lock()
             .map_err(|_| rlmesh::Error::Runtime("context callback is already active".into()))?;
         let mut out = std::ptr::null_mut();
-        crate::abi::status::clear_last_error();
+        let _callback_frame = crate::abi::status::CallbackFrame::enter();
         let status = unsafe {
             self.v.frame_sources.expect("validated frame_sources slot")(
                 self.user as *mut c_void,
@@ -100,7 +100,7 @@ impl RunContext for Context {
             .try_lock()
             .map_err(|_| rlmesh::Error::Runtime("context callback is already active".into()))?;
         let mut out = std::ptr::null_mut();
-        crate::abi::status::clear_last_error();
+        let _callback_frame = crate::abi::status::CallbackFrame::enter();
         let status = unsafe {
             self.v.contract.expect("validated context callback")(self.user as *mut c_void, &mut out)
         };
@@ -125,7 +125,7 @@ impl RunContext for Context {
             .try_lock()
             .map_err(|_| rlmesh::Error::Runtime("context callback is already active".into()))?;
         let mut n = 0;
-        crate::abi::status::clear_last_error();
+        let _callback_frame = crate::abi::status::CallbackFrame::enter();
         if unsafe {
             self.v.num_envs.expect("validated context callback")(self.user as *mut c_void, &mut n)
         } != 0
@@ -369,7 +369,7 @@ impl RunHooks for Hooks {
         }
         self.context = Some(RLMeshRunContext(context));
         if let Some(f) = self.v.on_run_start {
-            crate::abi::status::clear_last_error();
+            let _callback_frame = crate::abi::status::CallbackFrame::enter();
             callback(unsafe {
                 f(
                     self.user as *mut c_void,
@@ -384,7 +384,7 @@ impl RunHooks for Hooks {
             return h.on_episode_start(e, s);
         }
         if let Some(f) = self.v.on_episode_start {
-            crate::abi::status::clear_last_error();
+            let _callback_frame = crate::abi::status::CallbackFrame::enter();
             callback(unsafe {
                 f(
                     self.user as *mut c_void,
@@ -422,7 +422,7 @@ impl RunHooks for Hooks {
                 .map_or(std::ptr::null(), std::ptr::from_ref),
         };
         if let Some(f) = self.v.on_step {
-            crate::abi::status::clear_last_error();
+            let _callback_frame = crate::abi::status::CallbackFrame::enter();
             callback(unsafe { f(self.user as *mut c_void, &lent) })?;
         }
         Ok(())
@@ -432,7 +432,7 @@ impl RunHooks for Hooks {
             return h.on_episode_end(e);
         }
         if let Some(f) = self.v.on_episode_end {
-            crate::abi::status::clear_last_error();
+            let _callback_frame = crate::abi::status::CallbackFrame::enter();
             callback(unsafe { f(self.user as *mut c_void, &RLMeshEpisodeResult::from_core(e)) })?;
         }
         Ok(())
@@ -442,7 +442,7 @@ impl RunHooks for Hooks {
             return h.on_run_end(r);
         }
         if let Some(f) = self.v.on_run_end {
-            crate::abi::status::clear_last_error();
+            let _callback_frame = crate::abi::status::CallbackFrame::enter();
             callback(unsafe { f(self.user as *mut c_void, &RLMeshRunResult::new(r.clone())) })?;
         }
         Ok(())

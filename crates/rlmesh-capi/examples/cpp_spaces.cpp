@@ -27,7 +27,7 @@ int main() {
   // The Shape example (throwing constructors).
   auto obs = Dict({{"pos", Box(-1.0, 1.0, {3})}, {"id", Discrete(4, {.start = 1})}});
   CHECK(obs.seed(7) == 7);
-  rlmesh::Value x = obs.sample().value_or_throw();
+  rlmesh::Value x = obs.sample();
   CHECK(obs.contains(x));
   CHECK(obs.keys() == (std::vector<std::string>{"id", "pos"}));
   CHECK(obs.size() == 2);
@@ -51,8 +51,7 @@ int main() {
 
   // Typed bounds read back exactly.
   Box wide =
-      Box::create(uint64_t{0}, std::numeric_limits<uint64_t>::max(), {2}, {rlmesh::DType::Uint64})
-          .value_or_throw();
+      Box::create(uint64_t{0}, std::numeric_limits<uint64_t>::max(), {2}, {rlmesh::DType::Uint64});
   CHECK(std::get<Bound>(*wide.high()).as_uint() == std::numeric_limits<uint64_t>::max());
   CHECK(wide.bounds_kind() == BoundsKind::TypedUniform);
   bool threw_type = false;
@@ -71,39 +70,42 @@ int main() {
     threw_value = true;
   }
   CHECK(threw_value);
-  CHECK(!Discrete::from_spec(pos->spec()).has_value());
-  CHECK(Discrete::from_spec(pos->spec()).error().error_class() == RLMESH_ERROR_CLASS_VALUE_ERROR);
+  try {
+    Discrete bad(pos->spec());
+    CHECK(false);
+  } catch (const rlmesh::ValueError&) {
+  }
 
   // Seeding reproduces; copies share the sampler.
   Discrete d(1000);
   Discrete copy = d;
   d.seed(3);
-  rlmesh::Value a = d.sample().value_or_throw();
+  rlmesh::Value a = d.sample();
   copy.seed(3);
-  rlmesh::Value b = d.sample().value_or_throw();
-  CHECK(a.ref().as_discrete().value_or(-1) == b.ref().as_discrete().value_or(-2));
+  rlmesh::Value b = d.sample();
+  CHECK(a.as_int() == b.as_int());
   CHECK(d.n() == 1000 && d.start() == 0);
 
   // Per-element bounds (C++-only extra).
-  Box per =
-      rlmesh::ext::box_elementwise({0, -5}, {1, 5}, {2}, {rlmesh::DType::Int64}).value_or_throw();
+  Box per = rlmesh::ext::box_elementwise({0, -5}, {1, 5}, {2}, {rlmesh::DType::Int64});
   CHECK(std::get<std::vector<Bound>>(*per.low())[1].as_int() == -5);
 
   // Tensor copies retain storage after the Value and the first view die.
   std::optional<rlmesh::Tensor> retained, another;
   {
     const float data[] = {1.25f, -3.5f};
-    auto source = rlmesh::Value::box(data, RLMESH_DTYPE_FLOAT32, {2}).value_or_throw();
-    auto tensor = source.ref().as_tensor().value_or_throw();
+    rlmesh::Value source = rlmesh::Tensor(data, sizeof(data), {2}, rlmesh::DType::Float32);
+    auto tensor = source.as_tensor();
     retained = tensor;
     another = tensor;
     *retained = *another;
   }
-  CHECK(retained->data() == another->data());
+  CHECK(retained->buffer().data() == another->buffer().data());
   another.reset();
-  CHECK(retained->dtype() == RLMESH_DTYPE_FLOAT32 && retained->ndim() == 1);
-  CHECK(retained->shape()[0] == 2 && retained->numel() == 2);
-  CHECK(retained->as<float>()[0] == 1.25f && retained->as<float>()[1] == -3.5f);
+  CHECK(retained->dtype() == rlmesh::DType::Float32 && retained->ndim() == 1);
+  CHECK(retained->shape()[0] == 2 && retained->size() == 2);
+  CHECK(reinterpret_cast<const float*>(retained->buffer().data())[0] == 1.25f &&
+        reinterpret_cast<const float*>(retained->buffer().data())[1] == -3.5f);
 
   if (failures != 0) {
     std::fprintf(stderr, "%d check(s) failed\n", failures);

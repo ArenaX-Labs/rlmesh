@@ -2841,8 +2841,6 @@ dependencies = [
  "async-trait",
  "libc",
  "rlmesh",
- "rlmesh-adapters",
- "rlmesh-grpc",
  "rlmesh-spaces",
  "serde_json",
  "tokio",

@@ -1,6 +1,6 @@
 # rlmesh-capi
 
-Experimental C ABI for RLMesh, plus a header-only C++17 wrapper, for both sides
+Experimental C ABI for RLMesh, plus a header-only C++20 wrapper, for both sides
 of the wire:
 
 - **Models.** A C or C++ program implements `predict`, and the RLMesh runtime
@@ -126,26 +126,12 @@ bytes fail with TypeError naming the struct and byte offset. Current fields
 are all within that minimum; future appended fields need whole-field checks.
 Sized outputs preserve the caller's struct_size and leave unknown fields at
 the caller's INIT values.
-The same minimum/tail checks now apply to compatibility input vtables/config,
-RunOptions and ServeOptions; the latter two gained struct_size and INIT macros.
-ABI-4 prefix layouts are refused, including a config missing host_runtime_json.
-
-`rlmesh_space_dtype` now takes a Space handle; use `rlmesh_space_spec_dtype`
-for a spec. The old unfenced space builders/readers are removed. The separate
-C++ wave still needs its previous spec builder/read API, retained temporarily
-as `rlmesh_ext_legacy_space_*`; new C code uses typed Box/Discrete/Dict
-constructors and their readers. Experimental MultiBinary/MultiDiscrete/Text/
-Tuple authoring is not yet exposed by the Rust facade and remains on that
-compatibility path. `examples/c_abi5.c` covers strict sizes and output bounds.
-
-The remaining compatibility surface is explicitly limited to what the current
-C++ header needs: 18 space helpers, 11 old model/env control exports, one inline
-config helper and six frozen callback/result records. [LEGACY_ABI.md](LEGACY_ABI.md)
-lists every symbol and record, its wrapper dependency and its replacement path.
-The wrapper now uses the canonical SpaceSpec kind/dtype/shape readers; the four
-redundant legacy readers and the unused scalar legacy env constructor are gone.
-Space and SpaceSpec also use distinct free functions, without the ABI-4 pointer
-registry/fallback. The C++20 wave will remove the inventoried remainder.
+`rlmesh_space_dtype` reads a Space handle; `rlmesh_space_spec_dtype` reads a
+spec. Space and SpaceSpec use distinct free functions. Box, Discrete and Dict
+have typed constructors and readers; Experimental MultiBinary, MultiDiscrete,
+Text and Tuple now construct Space handles too. Every temporary legacy export
+and callback record has been removed. `examples/c_abi5.c` covers strict sizes
+and output boundaries.
 
 ## Stable adapters
 
@@ -337,9 +323,8 @@ Use `RLMESH_ENV_VTABLE_INIT`, `RLMESH_ENV_ATTRIBUTES_INIT`,
 All new structs have `struct_size` and `_MIN_SIZE`; zero initialization is
 refused, and nonzero unknown trailing bytes fail with TypeError. Serve
 options use seconds and explicit `has_*` fields, including for zero.
-`examples/c_env_api.c` exercises the new API. The C++ wrapper's existing
-combined env/server path now calls the fenced `rlmesh_ext_legacy_*` bridge;
-its full C++ parity migration remains separate.
+`examples/c_env_api.c` exercises the C API; C++ uses these same handles
+through detected Env/VectorEnv adapters and an owning EnvServer.
 
 `RLMeshEnvFactory` takes a sized vtable and copied attributes (tags,
 TagParam discriminants, reset options and workflow edition). All hooks use
@@ -373,9 +358,8 @@ policy and hook state once. Getter data remains valid while any C clone
 lives. Serve uses the shared ServeOptions and reusable cancellation token.
 An already-fired token refuses serving without closing the model.
 
-`examples/c_policy.c` covers the modern API. The older model-driving example
-and the C++ wrapper use the `rlmesh_ext_legacy_model_*` bridge below until
-the run/session and C++ migrations replace that consumer path.
+`examples/c_policy.c` covers the C API. C++ detects the four Policy corners
+and shares the same Model/run/session implementation.
 
 ## Layout
 
@@ -398,63 +382,35 @@ uv run python examples/python/quickstart/serve.py --address 127.0.0.1:5555
 
 # terminal 2: build the library and the C++ example, run 3 episodes
 cargo build -p rlmesh-capi --lib
-zig c++ -std=c++17 -I crates/rlmesh-capi/include crates/rlmesh-capi/examples/cpp_model.cpp \
+zig c++ -std=c++20 -I crates/rlmesh-capi/include crates/rlmesh-capi/examples/cpp_model.cpp \
   -L target/debug -lrlmesh_capi -Wl,-rpath,"$PWD/target/debug" -o /tmp/cpp_model
 /tmp/cpp_model tcp://127.0.0.1:5555 3
 ```
 
-The whole model, in C++:
+A C++ policy takes a typed observation and returns a typed action. To sample
+from the remote environment's action space:
 
 ```cpp
-#include <cstdio>
 #include <rlmesh.hpp>
 
-int main() {
-  // One action per predict: the neutral value of whatever the route's action
-  // space turns out to be (Box, Discrete, Text, Multi*, Dict, Tuple).
-  auto model = rlmesh::Model::from_predict([](const rlmesh::Request& request) {
-    return rlmesh::zeros_for(request.action_space());
-  });
-  if (!model) return 1;
-  model->on_episode_end([](std::string_view, std::string_view id) { /* ... */ })
-      .on_close([] { /* ... */ });
-
-  rlmesh::RunOptions options;
-  options.max_episodes = 3;
-  options.seeded = true;
-  options.base_seed = 7;
-  auto report = model->run_local("tcp://127.0.0.1:5555", options);
-  if (!report) {
-    std::fprintf(stderr, "run failed: %s\n", report.error().message().c_str());
-    return 1;
-  }
-  std::printf("%lld episodes, mean reward %.2f\n",
-              static_cast<long long>(report->total_episodes), report->mean_reward);
+int main() try {
+  rlmesh::RemoteEnv env({.address = "tcp://127.0.0.1:5555"});
+  auto space = env.action_space();
+  rlmesh::Model model([space](const rlmesh::Value&) { return space.sample(); });
+  auto result = model.run(env, {.episodes = 2, .seeds = {0, 1}});
+  auto session = model.session(env);
+  auto [observation, info] = session.reset(0);
+  auto [next, reward, terminated, truncated, next_info] =
+      session.step(session.predict(observation));
+} catch (const std::exception& error) {
+  return 1;
 }
 ```
 
-And in C:
-
-```c
-#include <rlmesh.h>
-
-static int predict(void* ud, const RLMeshExtLegacyObservation* obs, RLMeshValue** out) {
-  for (size_t i = 0; i < obs->num_envs; ++i) {
-    RLMeshStatus status = rlmesh_value_int(0, &out[i]);
-    if (status != RLMESH_OK) return status;
-  }
-  return RLMESH_OK;
-}
-
-int main(void) {
-  RLMeshExtLegacyModelVtable vt = {.struct_size = sizeof vt, .predict = predict};
-  RLMeshExtLegacyModel* model;
-  rlmesh_ext_legacy_model_new(&vt, NULL, &model);
-  RLMeshStatus rc = rlmesh_ext_legacy_model_run_local(model, "tcp://127.0.0.1:5555", NULL, NULL);
-  rlmesh_ext_legacy_model_free(model);
-  return rc == RLMESH_OK ? 0 : 1;
-}
-```
+See [`cpp_model.cpp`](examples/cpp_model.cpp), [`cpp_env.cpp`](examples/cpp_env.cpp),
+and the corresponding [`c_model.c`](examples/c_model.c) and
+[`c_env.c`](examples/c_env.c) for complete consumers. ABI 5 removes every
+`rlmesh_ext_legacy_*` export; C and C++ now use the same facade APIs.
 
 ## Using it from CMake
 
@@ -491,231 +447,81 @@ version is the ABI generation (`RLMESH_ABI_VERSION`), so
 `rlmesh_abi_check()` at startup to catch a header and library from different
 releases.
 
-## Model contract
+## C++20
 
-`predict` receives `num_envs` decoded observation values (one per sub-env) plus
-routing metadata (session, env, request ids; one `RLMeshExtLegacyEpisode` per row). It
-writes one owned action value per row into `out_actions` and returns `RLMESH_OK`,
-or returns nonzero after `rlmesh_callback_set_error(...)` to decline. The runtime
-validates each action against the route's action space before it reaches the
-wire: a structural mismatch fails the step, a Box-bounds overshoot is left to the
-environment's own policy.
+Include `rlmesh.hpp` and enable C++20 and exceptions. Fallible calls throw the
+R-21 exception class: `ValueError`, `TypeError`, `RuntimeError`, `OSError`
+(with `ConnectionError` and `TimeoutError` subclasses), or the
+`RLMeshException` family. `ext::CancelledError` has no `std::exception` base,
+so handle it explicitly. An exception thrown by an authored policy, env,
+adapter, hook, or warning handler is rethrown unchanged when its error returns
+in process. Remote errors preserve their documented class, code, text and
+recoverability.
 
-Each `RLMeshExtLegacyEpisode` row carries the episode's `id` and reset `seed` (when
-`seeded`), plus the same per-predict context the Python SDK stamps on a predict:
-`predict_index`, the re-plan ordinal within the episode (0 on the first predict
-under that id, then +1 per predict), and `predict_seed`, a reproducible mix of
-the episode seed and that ordinal (`rlmesh.predict_seed` in the SDK; meaningful
-only when `seeded`). The capi counts these per episode id and drops the counter
-when the episode ends, holding at most 65,536 live episodes as the Python SDK
-does. It never evicts one: a predict that would start a new episode past that
-fails (`RLMESH_ERR_INTERNAL`, where Python raises `RuntimeError`) before the
-callback runs.
+`Model` detects `predict`, `predict_chunk`, `predict_batch` and
+`predict_chunk_batch`, independently detecting each corner's context and
+execution-horizon parameters. Callables work directly. Optional policy members
+include `load`, `on_episode_end`, `close`, and static spec/load/edition/chunk
+declarations. `Model::from_config<Policy>(kwargs)` applies load declarations.
+`types::PredictContext` exposes episode ids, optional seeds, predict indices,
+and a typed `EpisodeState`. Batch contexts use `std::span`.
 
-Optional hooks: `on_episode_end(env_id, episode_id)` when the runtime drops an
-episode (`episode_id == NULL` means every episode of that env), and `on_close`
-once per handle: when a serve stops, or at `rlmesh_ext_legacy_model_free`. A run borrows
-the model and never closes it, as Python's `Model.run` does. Callbacks run on a worker thread; `user_data` must be safe to
-use from a thread other than the one that created it, and a callback must not
-re-enter its own model handle. `rlmesh_ext_legacy_model_run_local` fills an optional
-`RLMeshExtLegacyRunReport`; `rlmesh_ext_legacy_model_cancel` stops a blocking run/serve from another
-thread.
+`Env` and `VectorEnv` detect Gymnasium-shaped methods and space getters.
+`EnvServer` owns the env handles passed to it. Supply a `std::shared_ptr<E>`
+when the host also needs the simulation. `EnvFactory<F>` uses CRTP to capture
+static declarations, and `make_env` applies factory stamping. Factories cannot
+be copied or moved; their C handles are built on first use. A foreground
+`serve()` runs lane zero on the caller; `start()` runs callbacks on library
+threads. `shutdown()` reports errors; destruction drains and swallows cleanup
+errors.
 
-`RLMeshExtLegacyRunOptions` bounds and seeds a run: `max_episodes` (the exact episode
-count, as in the Python SDK's `run(episodes=...)`; 0 runs one episode, or one per
-seed when `episode_seeds` is given, never "until the env ends"), `base_seed` (when
-`seeded`) or explicit `episode_seeds`, the per-episode step/time caps,
-`execution_horizon`, and `trial_index_base` (when `trial_indexed`) — the first
-trial ordinal the episodes walk, delivered as `reset(options={"trial_index": k})`
-to an environment that declares that reset option.
+`Value`, `Tensor`, spaces, `Model`, `RemoteModel`, and adapters share their
+underlying objects on copy. `Tensor::copy()` explicitly copies data. Env,
+remote-env, session, server and recorder handles are move-only. Runs and
+sessions borrow targets; keep their model and env handles alive until the
+session is destroyed. A run never closes its model, and closes an env only
+when `close_env` is set. Call `close()` explicitly to observe cleanup errors.
 
-## Environment contract
+Options are aggregates with Python defaults and support designated
+initializers. Optional scalars use `std::optional`; `OptionalList<T>` preserves
+None versus an empty list. Durations use `std::chrono::duration<double>` and
+drop the `_seconds` suffix. Reset and step return tuples for structured
+bindings. `ext::CancelToken` copies share a reusable cancellation source.
 
-`rlmesh_ext_legacy_env_new_lanes(vtable, config, user_data, num_lanes, &env)` takes the callbacks and an
-`RLMeshExtLegacyEnvConfig`: the observation and action spaces (built with
-`rlmesh_box_new`, `rlmesh_discrete_new` or `rlmesh_dict_new` and lent with
-`rlmesh_space_spec(space)`), an id, the adapter `EnvTags` as JSON, the reset
-options the env understands (`trial_index`), a render mode, and extra metadata.
-The tags are validated against the spaces right there, the same publish-time
-check Python's `adapters.tag()` runs, so a typo fails `rlmesh_ext_legacy_env_new_lanes` rather
-than a model's resolve. The tag JSON grammar (leaf kinds, fields, defaults, and
-validation) is specified in [`docs/specs/env_tags.v1.md`](../../docs/specs/env_tags.v1.md).
+`adapters` (also `adapt`) exposes typed spec/tag trees, tolerant vocabularies,
+transforms, resolution, history and custom `AdapterBase` subclasses. Use
+`std::shared_ptr` for custom adapters; `wrap_predict` retains ownership.
+`Session` exposes readers, frame sources and retained run contexts. `RunHooks`,
+`RunResult`, `EpisodeResult`, `View`, and `Recorder` use the same names and
+fields as Python. Tensor DLPack descriptors use `ext::DlpackPtr`; imports
+consume ownership only on success, and exports retain their storage.
 
-Then `rlmesh_ext_legacy_env_bind` (learn the address, e.g. for port 0) and
-`rlmesh_ext_legacy_env_serve` (blocks). `rlmesh_ext_legacy_env_cancel` from any thread drains the
-server, runs `close` once, and lets `serve` return `RLMESH_OK`.
-
-When `rlmesh_ext_legacy_env_serve` (or `rlmesh_ext_legacy_env_free`) returns, no callback is running
-and none will run again, so the callback state behind `user_data` can be freed
-right after. Serve waits for a callback still in flight, such as a `step` the
-`drain_timeout_ms` gave up on, and for every lane's `close`, however long it
-takes: a callback that never returns blocks serve. `close_timeout_ms` does not
-apply to an env.
-
-The compatibility `rlmesh_ext_legacy_env_describe_json` (C++:
-`EnvServer::describe_json()`) returns the env's
-`rlmesh.describe.v1` envelope: the spaces, the tags, and the edition handshake,
-the same artifact `rlmesh describe` emits for a Python env. `rlmesh_ext_legacy_env_bind`
-puts it on that endpoint's handshake too (each env bound in a process reports
-its own), so the managed platform can read an image without a label; bake it
-as the image's `dev.rlmesh.describe` label to describe the image before it
-runs.
-
-An image that serves several named scenarios (each picked by the make kwargs or
-environment variables a `dev.rlmesh.package` scenario sets) lists them in
-`RLMeshExtLegacyEnvConfig.variants_catalog_json` (C++: `EnvConfig::variants_catalog_json`),
-a JSON array of `{"id", "params", "metadata"}` with unique ids. The envelope
-carries it as `variants.catalog`, as `enumerate_variants` does for a Python env,
-so the platform can match the label's scenarios to it.
-
-By default the env is served as one lane: every callback runs on one dedicated
-thread, one call at a time. `reset` gets the seed and trial index (and every
-reset option as JSON); `step` borrows the action and writes an owned
-observation, the reward, the terminated/truncated flags and an optional info
-JSON object; `render` writes an owned uint8 `[H, W, 3]` image that the capi
-PNG-encodes. A callback fails a request by returning nonzero after
-`rlmesh_callback_set_error`; that client's session ends and the env keeps
-serving.
-
-In C++, subclass `rlmesh::Environment` and hand it to `rlmesh::EnvServer`:
-
-```cpp
-class Reach : public rlmesh::Environment {
-  rlmesh::Result<rlmesh::ResetOutput> reset(const rlmesh::ResetArgs& args) override;
-  rlmesh::Result<rlmesh::StepOutput> step(std::optional<rlmesh::ValueRef> action) override;
-};
-
-rlmesh::EnvConfig config;
-config.observation_space = rlmesh::Space::box<float>({3}, -1, 1).unwrap();
-config.action_space = rlmesh::Space::box<float>({3}, -1, 1).unwrap();
-config.adapter_tags_json = R"({"observation": {...}, "action": {...}})";
-auto server = rlmesh::EnvServer::create(std::make_unique<Reach>(), config);
-std::printf("listening on %s\n", server->bind("0.0.0.0:50051")->c_str());
-server->serve();
-```
-
-Any model drives it, for example from Python:
-`rlmesh.numpy.Model(predict, spec=SPEC).run("127.0.0.1:50051", episodes=3)`.
-`examples/chrono/` is a full Project Chrono simulation served this way.
-
-### Lanes and the foreground thread
-
-`rlmesh_env_new_lanes(vtable, config, user_data, num_lanes, &env)` serves
-`num_lanes` independent simulations as the lanes of one `num_envs = num_lanes`
-endpoint, for a model that batches across them. Lane `i` passes `user_data[i]`
-to its callbacks; every lane shares the vtable and config (one contract) but
-runs on its own thread, concurrently with the others, so each `user_data` must
-be its own simulation. `num_lanes == 0` is rejected.
-
-A simulation bound to the thread that created it (a GL or Vulkan context, Isaac
-Sim) sets `RLMeshExtLegacyEnvConfig.foreground = true`: `rlmesh_ext_legacy_env_serve` then runs the
-server on a helper thread and every callback, `close` included, on the thread
-that called it, until the server stops. `rlmesh_ext_legacy_env_cancel` works as before,
-and PNG encoding stays off that thread. A foreground env serves exactly one
-lane: `rlmesh_env_new_lanes` rejects `foreground` with more than one.
-
-In C++, `EnvServer::create` also takes a
-`std::vector<std::unique_ptr<Environment>>`, one lane per element, and
-`EnvConfig::foreground` selects the foreground thread.
-
-### In C++
-
-`Model::from_predict` takes a single-env policy — `Result<Value>(const Request&)`,
-where `Request` carries `observation()` (a `std::optional<ValueRef>`, absent when
-the route sends none), `episode()` (an `Episode`: `id`, optional `seed`,
-`predict_index`, optional `predict_seed`), and `action_space()` /
-`observation_space()` as `SpaceRef`. `Model::from_predict_batch` takes the whole `Batch` and returns one
-action per row. `zeros_for(SpaceRef)` builds the neutral action for _any_ space,
-so a policy never has to switch on the kind to get started.
-
-`ValueRef` reads all seven value kinds and `SpaceRef` walks a space spec (bounds,
-`n`/`start`, text limits + charset, `nvec`, dict/tuple children by key or by
-index); `Value`'s constructors build all seven, honoring the C constructors'
-all-or-nothing ownership.
-
-Every fallible call returns `Result<T>` (`Status` is `Result<void>`): a capi call
-has already recorded its message on the thread, and `Error::from_last(status)`
-snapshots it. Nothing throws — `value()` / `unwrap()` abort instead, and the
-header compiles under `-fno-exceptions`. `RLMESH_TRY(expr)` propagates an error
-out of a `Result`-returning function.
-
-`run_local` takes a `RunOptions` (the C `RLMeshExtLegacyRunOptions` field for field, with
-`episode_seeds` as a `std::vector`) and returns a `RunReport`; `serve` takes a
-`ServeOptions` (owned token, `std::chrono` timeouts). `Model::cancel()` is the one member callable while
-`run_local` / `serve` blocks — including from another thread; a cancelled
-`serve` returns cleanly, a cancelled `run_local` fails with
-`Error::is_cancelled()`. Never destroy a `Model` from inside its own callback.
+The old `Result<T>`, `RLMESH_TRY`, aborting accessors, `ValueRef`, `SpaceRef`,
+worker `Batch`/`Request`, `Environment`, and combined `EnvConfig` are removed.
+`-fno-exceptions` is unsupported. The executable fixtures in
+[`cpp_parity.cpp`](examples/cpp_parity.cpp) cover the new surface.
 
 ## Host runtime in describe
 
-`rlmesh.hpp` fills `EnvConfig::host_runtime_json` automatically from the host's
-translation unit: `language: "c++"`, the standard (`"17"`, `"20"`, `"23"`, etc.)
-from `__cplusplus` (or `_MSVC_LANG`), and the compiler under
-`toolchain: {"name": "gcc", "version": "16.2"}`. Names are `gcc`, `clang`, or
-`msvc`; versions use `major.minor`, including MSVC (`_MSC_VER` 1944 becomes
-`"19.44"`). Detection does not populate `framework_versions`; that map is for
-frameworks the host explicitly declares, such as Torch.
-Clang is detected before its GNU compatibility macros. An unknown compiler is
-omitted. This reports the compiler that built the host, rather than Rust's
-compiler that built the ABI library.
+The C++ server supplies its host declaration through ABI 5
+`RLMeshExtEnvServerOptions.host_runtime_json`. In C, initializing that record
+with `RLMESH_EXT_ENV_SERVER_OPTIONS_INIT` does the same. The header detects the
+translation unit's language, standard and compiler. Shared model/factory
+Describe reports C's native runtime; served env Describe includes the host's.
+Use one C++ standard across a binary's translation units.
 
-The C++ `EnvConfig` default is inline. A binary that mixes C++ standards across
-translation units has differing inline definitions (an ODR violation); the
-reported standard may be whichever definition the linker keeps, depending on
-link order. Use one standard throughout the binary, or explicitly declare the
-runtime in each config instead of relying on that default.
-
-In C, initialize the config with the header helper, then fill its spaces:
-
-```c
-RLMeshExtLegacyEnvConfig config = rlmesh_ext_legacy_env_config_init();
-config.observation_space = observation;
-config.action_space = action;
-```
-
-The helper sets `struct_size`, zeroes other fields, and declares `"c"` with the
-standard from `__STDC_VERSION__` (`"11"`, `"17"`, etc.). When that macro is
-absent (including MSVC's default C mode), `language_version` is omitted.
-It also detects C++ when the C header is included from a C++ translation unit.
-`RLMESH_HOST_RUNTIME_JSON` exposes the detected declaration as a `const char*`.
-
-For an explicit declaration, set `RLMeshExtLegacyEnvConfig.host_runtime_json` (C++:
-`EnvConfig::host_runtime_json`) to a JSON object like:
-
-```json
-{
-  "language": "c++",
-  "language_version": "20",
-  "toolchain": { "name": "clang", "version": "19.1" },
-  "framework_versions": { "torch": "2.1" }
-}
-```
-
-Only these four optional keys are accepted: `language` and `language_version`
-are strings; `framework_versions` maps framework names to version strings;
-`toolchain` is an object containing exactly the string fields `name` and
-`version`, with the compiler names and `major.minor` format above. All strings
-and framework names are trimmed, then rejected if empty. Framework names that
-collide after trimming are rejected. The declaration is copied at creation and
-remains on the envelope after bind, including its per-server handshake copy. Component,
-package version, OS/architecture, and protocol/edition fields remain owned by
-the library. Invalid declarations fail creation with `RLMESH_ERR_INVALID_ARGUMENT`.
-
-`NULL` (C++: an empty string) preserves the legacy runtime exactly: `"c"` with
-no language version or compiler. Hosts built against older headers also keep
-that output. ABI 5 refuses older config prefixes. For the legacy env config below, callers
-can adopt `rlmesh_ext_legacy_env_config_init()` to opt into detection. The legacy
-model worker has no host-runtime config; shared Model Describe uses C's runtime.
+The optional C host JSON accepts `language`, `language_version`,
+`toolchain` (`name` and `major.minor` version), and `framework_versions`.
+Invalid declarations fail creation. The library owns component, package,
+OS/architecture and protocol/edition identity. C++ supplies this declaration
+automatically; its fenced server options expose token, peer metadata and
+publication settings.
 
 ## Tasks
 
-- `mise run test:cxx` — compile the headers as C11 and C++17 under `-Werror`
-  (the C header also compiles as C++98 under `-pedantic`),
-  build the examples, run each model end-to-end against a live env, and drive
-  the C++ env with a model (`e2e_env_harness`), and check C11/C17 and C++17/C++20
-  describe runtimes and byte-for-byte legacy defaults.
-- `mise run test:cxx:pkg` — package (`release:cxx:package`) and build the C++
-  model against the installed package via pkg-config, CMake `find_package`, and
-  CMake `FetchContent` from the tarball URL, plus the native env describe
-  runtimes through the CMake consumer.
-- `mise run fmt:cxx` — clang-format the headers and examples.
+- `mise run dev:heavy -- mise run test:cxx` — compile the C11 and C++20 headers,
+  run GCC and Clang C++ parity fixtures, and exercise C/C++ over real gRPC.
+  The C header also compiles as C++98; C++ requires exceptions.
+- `mise run test:cxx:pkg` — build installed-package consumers through pkg-config,
+  CMake `find_package`, and FetchContent (a separate packaging gate).
+- `mise run fmt:cxx` — format the headers and native examples.

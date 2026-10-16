@@ -6,9 +6,7 @@
 use std::ffi::{CString, c_char, c_void};
 use std::sync::LazyLock;
 
-use crate::abi::status::{
-    CapiError, RLMeshStatus, clear_last_error, guard, guard_value, last_error_message,
-};
+use crate::abi::status::{CapiError, RLMeshStatus, callback_message, guard, guard_value};
 use crate::codec::RLMeshBytes;
 
 /// `RLMeshBuildSource`.
@@ -258,14 +256,14 @@ impl CHandler {
     fn call(&self, warning: &rlmesh::Warning) -> rlmesh::Result<()> {
         let message = c_string(&warning.message.replace('\0', ""));
         let category = RLMeshWarningCategory::of(warning.category) as i32;
-        clear_last_error();
+        let _callback_frame = crate::abi::status::CallbackFrame::enter();
         let status = guard_value(-1, || unsafe {
             (self.handler)(self.user_data, category, message.as_ptr())
         });
         if status == 0 {
             return Ok(());
         }
-        let detail = last_error_message();
+        let detail = callback_message();
         let detail = if detail.is_empty() {
             format!("warning handler failed with status {status}")
         } else {
@@ -273,10 +271,12 @@ impl CHandler {
         };
         // A class the handler set (`rlmesh_callback_set_error_class`) is the
         // error's class; otherwise it is an RLMeshException (R-23).
-        Err(match crate::abi::status::take_callback_class() {
-            Some(class) => crate::abi::status::error_of_class(class, &detail),
-            None => rlmesh::Error::Internal(detail),
-        })
+        Err(crate::abi::status::attach_callback_payload(
+            match crate::abi::status::take_callback_class() {
+                Some(class) => crate::abi::status::error_of_class(class, &detail),
+                None => rlmesh::Error::Internal(detail),
+            },
+        ))
     }
 }
 

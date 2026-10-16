@@ -2,7 +2,7 @@
 #![allow(unsafe_code)] // C callbacks and documented owner-borrowing render thunks.
 use crate::abi::{
     sizing,
-    status::{CapiError, RLMeshStatus, clear_last_error, guard, guard_value},
+    status::{CapiError, RLMeshStatus, guard, guard_value},
 };
 use crate::adapters::{
     self as ad, RLMeshAdaptersText, RLMeshImage, RLMeshObservationRoles, RLMeshState,
@@ -471,7 +471,7 @@ pub unsafe extern "C" fn rlmesh_frame_sources_new(
         });
         let render = render.map(|f| {
             RenderFn::new(move || {
-                clear_last_error();
+                let _callback_frame = crate::abi::status::CallbackFrame::enter();
                 let mut out = std::ptr::null_mut();
                 let status = unsafe { f(captured.user as *mut c_void, &mut out) };
                 let value = unsafe { ffi::take(out) };
@@ -644,5 +644,13 @@ pub unsafe extern "C" fn rlmesh_frame_sources_equals(
             return false;
         };
         p.projection == q.projection && p.source == q.source
+    })
+}
+
+/// Binding-only callable-presence query: labels and render are independent.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_ext_frame_sources_has_render(p: *const RLMeshFrameSources) -> bool {
+    guard_value(false, || {
+        unsafe { p.as_ref() }.is_some_and(|p| p.source != Source::Absent)
     })
 }

@@ -121,11 +121,13 @@ ChVector3d IndustrialReach::tcp_position() const {
 
 double IndustrialReach::distance() const { return (tcp_position() - target_).Length(); }
 
-rlmesh::Result<rlmesh::ResetOutput> IndustrialReach::reset(const rlmesh::ResetArgs& args) {
-  if (args.seed) {
-    rng_.seed(static_cast<uint64_t>(*args.seed));
-  } else if (args.trial_index) {
-    rng_.seed(static_cast<uint64_t>(*args.trial_index) * 7919u + 17u);
+rlmesh::ResetResult IndustrialReach::reset(std::optional<int64_t> seed,
+                                           const std::optional<rlmesh::InfoDict>& options) {
+  const auto trial = rlmesh::trial_index(options);
+  if (seed) {
+    rng_.seed(static_cast<uint64_t>(*seed));
+  } else if (trial) {
+    rng_.seed(static_cast<uint64_t>(*trial) * 7919u + 17u);
   }
   build_world();
   steps_ = 0;
@@ -151,26 +153,22 @@ rlmesh::Result<rlmesh::ResetOutput> IndustrialReach::reset(const rlmesh::ResetAr
   }
 
   std::printf("episode %d: seed=%lld trial=%lld target=(%.3f, %.3f, %.3f)\n", episodes_,
-              static_cast<long long>(args.seed.value_or(-1)),
-              static_cast<long long>(args.trial_index.value_or(-1)), target_.x(), target_.y(),
-              target_.z());
+              static_cast<long long>(seed.value_or(-1)), static_cast<long long>(trial.value_or(-1)),
+              target_.x(), target_.y(), target_.z());
   std::fflush(stdout);
 
   auto observation = observe();
-  if (!observation) return observation.error();
-  std::ostringstream info;
-  info << "{\"target\": [" << target_.x() << ", " << target_.y() << ", " << target_.z() << "]}";
-  return rlmesh::ResetOutput{observation.unwrap(), info.str()};
+  return {std::move(observation),
+          {{"target", rlmesh::Value::list({target_.x(), target_.y(), target_.z()})}}};
 }
 
-rlmesh::Result<rlmesh::StepOutput> IndustrialReach::step(std::optional<rlmesh::ValueRef> action) {
-  if (!system_) return rlmesh::Error(RLMESH_ERR_ENVIRONMENT, "step before reset");
-  if (!action) return rlmesh::Error(RLMESH_ERR_INVALID_VALUE, "step without an action");
+rlmesh::StepResult IndustrialReach::step(std::optional<rlmesh::Value> action) {
+  if (!system_) throw rlmesh::EnvironmentException("step before reset");
+  if (!action) throw rlmesh::TypeError("step without an action");
   auto tensor = action->as_tensor();
-  if (!tensor) return tensor.error();
-  const float* delta = tensor->as<float>();
-  if (delta == nullptr || tensor->numel() != 3) {
-    return rlmesh::Error(RLMESH_ERR_INVALID_VALUE, "expected a contiguous float32[3] action");
+  const float* delta = reinterpret_cast<const float*>(tensor.buffer().data());
+  if (tensor.dtype() != rlmesh::DType::Float32 || tensor.size() != 3) {
+    throw rlmesh::TypeError("expected a contiguous float32[3] action");
   }
 
   // Move the tool command, then let Chrono drive the joints there: the IK
@@ -204,23 +202,25 @@ rlmesh::Result<rlmesh::StepOutput> IndustrialReach::step(std::optional<rlmesh::V
   const bool truncated = !success_ && steps_ >= options_.max_steps;
   const auto observe_start = Clock::now();
   auto observation = observe();
-  if (!observation) return observation.error();
   const double observe_ms = ms_since(observe_start);
   // Where this step's wall time went, so a driver can profile the env.
-  std::ostringstream info;
-  info << "{\"is_success\": " << (success_ ? "true" : "false") << ", \"distance\": " << dist
-       << ", \"sim_time\": " << system_->GetChTime() << ", \"substeps\": " << substeps
-       << ", \"physics_ms\": " << physics_ms << ", \"ik_ms\": " << ik_ms
-       << ", \"observe_ms\": " << observe_ms << "}";
-  return rlmesh::StepOutput{observation.unwrap(), -dist + (success_ ? 1.0 : 0.0), success_,
-                            truncated, info.str()};
+  return {std::move(observation),
+          -dist + (success_ ? 1.0 : 0.0),
+          success_,
+          truncated,
+          {{"is_success", success_},
+           {"distance", dist},
+           {"sim_time", system_->GetChTime()},
+           {"substeps", substeps},
+           {"physics_ms", physics_ms},
+           {"ik_ms", ik_ms},
+           {"observe_ms", observe_ms}}};
 }
 
-rlmesh::Result<std::optional<rlmesh::Value>> IndustrialReach::render() {
+std::optional<rlmesh::Value> IndustrialReach::render() {
   if (!system_) return std::optional<rlmesh::Value>();
   auto frame = camera(options_.render_size);
-  if (!frame) return frame.error();
-  return std::optional<rlmesh::Value>(frame.unwrap());
+  return std::optional<rlmesh::Value>(frame);
 }
 
 void IndustrialReach::close() {
@@ -230,7 +230,7 @@ void IndustrialReach::close() {
   system_.reset();
 }
 
-rlmesh::Result<rlmesh::Value> IndustrialReach::camera(int size) const {
+rlmesh::Value IndustrialReach::camera(int size) const {
   scene::Scene scene;
   const scene::Vec3 steel(0.93, 0.55, 0.12);  // industrial orange
   const scene::Vec3 joint(0.18, 0.19, 0.22);
@@ -258,78 +258,65 @@ rlmesh::Result<rlmesh::Value> IndustrialReach::camera(int size) const {
     if (i % 2 == 0) scene.spheres.push_back({rt(trail_[i]), 0.006, {0.98, 0.85, 0.2}});
   }
   try {
-    return rlmesh::Value::box(renderer_->render(scene, scene::Camera{}, size, size),
-                              {size, size, 3});
+    const auto pixels = renderer_->render(scene, scene::Camera{}, size, size);
+    return rlmesh::Tensor(pixels.data(), pixels.size(),
+                          {static_cast<size_t>(size), static_cast<size_t>(size), 3},
+                          rlmesh::DType::Uint8);
   } catch (const std::exception& error) {
-    return rlmesh::Error(RLMESH_ERR_ENVIRONMENT, std::string("camera: ") + error.what());
+    throw rlmesh::EnvironmentException(std::string("camera: ") + error.what());
   }
 }
 
-rlmesh::Result<rlmesh::Value> IndustrialReach::observe() const {
+rlmesh::Value IndustrialReach::observe() const {
   auto image = camera(options_.image_size);
-  if (!image) return image.error();
-  auto joint_pos = rlmesh::Value::box(to_floats(robot_->GetMotorsPos()), {6});
-  if (!joint_pos) return joint_pos.error();
-  auto joint_vel = rlmesh::Value::box(to_floats(robot_->GetMotorsPosDt()), {6});
-  if (!joint_vel) return joint_vel.error();
-  auto joint_torque = rlmesh::Value::box(to_floats(robot_->GetMotorsForce()), {6});
-  if (!joint_torque) return joint_torque.error();
-  auto eef = rlmesh::Value::box(to_floats(tcp_position()), {3});
-  if (!eef) return eef.error();
-  auto target = rlmesh::Value::box(to_floats(target_), {3});
-  if (!target) return target.error();
-  auto instruction = rlmesh::Value::text(kInstruction);
-  if (!instruction) return instruction.error();
+  const auto tensor = [](const std::vector<float>& data) -> rlmesh::Value {
+    return rlmesh::Tensor(data.data(), data.size() * sizeof(float), {data.size()},
+                          rlmesh::DType::Float32);
+  };
+  auto joint_pos = tensor(to_floats(robot_->GetMotorsPos()));
+  auto joint_vel = tensor(to_floats(robot_->GetMotorsPosDt()));
+  auto joint_torque = tensor(to_floats(robot_->GetMotorsForce()));
+  auto eef = tensor(to_floats(tcp_position()));
+  auto target = tensor(to_floats(target_));
+  auto instruction = rlmesh::Value(kInstruction);
 
   std::vector<std::pair<std::string, rlmesh::Value>> entries;
-  entries.emplace_back("image", image.unwrap());
-  entries.emplace_back("joint_pos", joint_pos.unwrap());
-  entries.emplace_back("joint_vel", joint_vel.unwrap());
-  entries.emplace_back("joint_torque", joint_torque.unwrap());
-  entries.emplace_back("eef_pos", eef.unwrap());
-  entries.emplace_back("target_pos", target.unwrap());
-  entries.emplace_back("instruction", instruction.unwrap());
-  return rlmesh::Value::dict(std::move(entries));
+  entries.emplace_back("image", image);
+  entries.emplace_back("joint_pos", joint_pos);
+  entries.emplace_back("joint_vel", joint_vel);
+  entries.emplace_back("joint_torque", joint_torque);
+  entries.emplace_back("eef_pos", eef);
+  entries.emplace_back("target_pos", target);
+  entries.emplace_back("instruction", instruction);
+  rlmesh::Metadata metadata;
+  for (auto& [key, value] : entries) metadata.insert_or_assign(key, std::move(value));
+  return metadata;
 }
 
-rlmesh::Result<rlmesh::EnvConfig> IndustrialReach::config(const Options& options) {
+rlmesh::spaces::Space IndustrialReach::observation_space() const {
+  using namespace rlmesh::spaces;
   const double inf = INFINITY;
-  const int64_t size = options.image_size;
-  std::vector<std::pair<std::string, rlmesh::Space>> fields;
-  auto add = [&](const char* key, rlmesh::Result<rlmesh::Space> space) -> rlmesh::Status {
-    if (!space) return space.error();
-    fields.emplace_back(key, space.unwrap());
-    return rlmesh::ok();
-  };
-  for (rlmesh::Status status : {
-           add("image", rlmesh::Space::box<uint8_t>({size, size, 3}, 0, 255)),
-           add("joint_pos", rlmesh::Space::box<float>({6}, -inf, inf)),
-           add("joint_vel", rlmesh::Space::box<float>({6}, -inf, inf)),
-           add("joint_torque", rlmesh::Space::box<float>({6}, -inf, inf)),
-           add("eef_pos", rlmesh::Space::box<float>({3}, -inf, inf)),
-           add("target_pos", rlmesh::Space::box<float>({3}, -inf, inf)),
-           add("instruction", rlmesh::Space::text(1, 128)),
-       }) {
-    if (!status) return status.error();
-  }
-  auto observation = rlmesh::Space::dict(std::move(fields));
-  if (!observation) return observation.error();
-  auto action = rlmesh::Space::box<float>({3}, -1.0, 1.0);
-  if (!action) return action.error();
-
-  rlmesh::EnvConfig config;
-  config.id = "ChronoIndustrialReach-v0";
-  config.observation_space = observation.unwrap();
-  config.action_space = action.unwrap();
-  config.adapter_tags_json = kTags;
-  config.reset_options = {"trial_index"};
-  config.render_mode = "rgb_array";
-  std::ostringstream metadata;
-  metadata << R"({"simulator": "Project Chrono )" << CHRONO_VERSION
-           << R"(", "robot": "IndustrialRobot6dof", "renderer": ")" << options.renderer
-           << R"(", "max_episode_steps": )" << options.max_steps << "}";
-  config.metadata_json = metadata.str();
-  return config;
+  const int64_t size = options_.image_size;
+  return Dict({{"image", Box(0, 255, {size, size, 3}, {.dtype = rlmesh::DType::Uint8})},
+               {"joint_pos", Box(-inf, inf, {6})},
+               {"joint_vel", Box(-inf, inf, {6})},
+               {"joint_torque", Box(-inf, inf, {6})},
+               {"eef_pos", Box(-inf, inf, {3})},
+               {"target_pos", Box(-inf, inf, {3})},
+               {"instruction", Text(128)}});
 }
-
+rlmesh::spaces::Space IndustrialReach::action_space() const {
+  return rlmesh::spaces::Box(-1, 1, {3});
+}
+rlmesh::adapters::EnvTags IndustrialReach::tags() {
+  return rlmesh::adapters::EnvTags::from_json(kTags);
+}
+std::optional<rlmesh::Metadata> IndustrialReach::metadata() const {
+  return rlmesh::Metadata{
+      {"simulator", std::string("Project Chrono ") + CHRONO_VERSION},
+      {"robot", "IndustrialRobot6dof"},
+      {"renderer", options_.renderer},
+      {"max_episode_steps", options_.max_steps},
+      {std::string(rlmesh::ENV_RESET_OPTIONS_KEY), rlmesh::Value::list({"trial_index"})}};
+}
 }  // namespace chrono_reach

@@ -35,23 +35,31 @@ def test_c_field_keeps_its_own_trailing_comment() -> None:
 
 def test_cpp_signatures_read_past_a_truncated_extent() -> None:
     # libclang ends this template's extent at its name when skipping bodies.
-    _, exports = _header("rlmesh.hpp", "c++", "c++17", "rlmesh")
-    (and_then,) = [m for m in exports["Result"].members if m.name == "and_then"]
-    assert and_then.signature.startswith("template <class F> auto and_then(F&& fn) &&")
-    # A constructor stops before its member-initializer list.
-    (error,) = [m for m in exports["Error"].members if m.kind == "constructor"]
-    assert error.signature == (
-        "Error(RLMeshStatus code, std::string message, bool recoverable = false)"
+    _, exports = _header("rlmesh.hpp", "c++", "c++20", "rlmesh")
+    (from_config,) = [m for m in exports["Model"].members if m.name == "from_config"]
+    assert from_config.signature == (
+        "template <class P> static Model from_config(const Kwargs& config)"
     )
-
-
-def test_cpp_explicit_specialization_documents_separately() -> None:
-    _, exports = _header("rlmesh.hpp", "c++", "c++17", "rlmesh")
-    void = exports["Result<void>"]
-    assert void.qualified_name == "rlmesh::Result<void>"
-    assert "Result() = default" in [member.signature for member in void.members]
+    # A constructor stops before its member-initializer list.
+    (error,) = [m for m in exports["RuntimeError"].members if m.kind == "constructor"]
+    assert error.signature == ("explicit RuntimeError(const std::string& message)")
+    constructors = [
+        m.signature for m in exports["Model"].members if m.kind == "constructor"
+    ]
     assert (
-        exports["Result"].signature == "template <class T> class [[nodiscard]] Result"
+        "template <class P> requires Policy<P> "
+        "explicit Model(std::shared_ptr<P> p, ModelOptions options = {})"
+    ) in constructors
+
+
+def test_cpp_partial_specialization_documents_its_members() -> None:
+    _, exports = _header("rlmesh.hpp", "c++", "c++20", "rlmesh")
+    function = exports["SharedFunction<R (A...), EmptyError>"]
+    assert function.qualified_name == "rlmesh::SharedFunction<R (A...), EmptyError>"
+    assert "SharedFunction() = default" in [m.signature for m in function.members]
+    assert (
+        function.signature == "template <class R, class EmptyError, class... A> "
+        "class SharedFunction<R(A...), EmptyError>"
     )
 
 
@@ -174,22 +182,63 @@ def test_c_header_sections_and_declarations() -> None:
 
 
 def test_cpp_header_classes_and_members() -> None:
-    modules, exports = _header("rlmesh.hpp", "c++", "c++17", "rlmesh")
+    modules, exports = _header("rlmesh.hpp", "c++", "c++20", "rlmesh")
 
-    assert modules[0].name == "rlmesh.hpp: errors + results"
+    assert modules[0].name == "rlmesh.hpp"
     model = exports["Model"]
     assert model.qualified_name == "rlmesh::Model"
     signatures = {member.name: member for member in model.members}
-    assert signatures["from_predict"].kind == "static method"
+    assert signatures["from_config"].kind == "static method"
     assert (
-        signatures["from_predict"].signature
-        == "static Result<Model> from_predict(PredictFn predict)"
+        signatures["from_config"].signature
+        == "template <class P> static Model from_config(const Kwargs& config)"
     )
+    assert exports["EnvFactory"].signature == (
+        "template <class F> class EnvFactory : public EnvFactoryBase"
+    )
+    assert exports["Policy"].kind == "concept"
+    assert "concept Policy =" in exports["Policy"].signature
     assert (
-        exports["Result"].signature == "template <class T> class [[nodiscard]] Result"
+        exports["RuntimeError"].signature
+        == "class RuntimeError : public std::runtime_error"
     )
-    # Nothing from rlmesh::detail is documented.
-    assert not any(name.startswith("detail") for name in exports)
+    assert exports["ext::CancelledError"].signature == "class CancelledError"
+    assert exports["spaces::Box"].qualified_name == "rlmesh::spaces::Box"
+    assert exports["specs::EnvContract"].qualified_name == "rlmesh::specs::EnvContract"
+    assert (
+        exports["adapters::ModelSpec"].qualified_name == "rlmesh::adapters::ModelSpec"
+    )
+    assert exports["recorder::SCHEMA"].kind == "constant"
+    assert exports["adapters::PARTS"].kind == "function"
+    assert exports["adapters::ROTATION_DIMS"].kind == "function"
+    assert "Result" not in exports
+    assert "Error" not in exports
+    # Internal namespaces stay out, including those reopened later in the header.
+    assert not any(
+        part.startswith("detail") for name in exports for part in name.split("::")
+    )
+
+
+def test_cpp_snapshot_uses_the_manifest_standard(tmp_path: Path) -> None:
+    assert (
+        write_native_docs_api_surface(
+            language="cpp",
+            output_dir=tmp_path,
+            repo_root=REPO_ROOT,
+            manifest_path=REPO_ROOT / "rlmesh.toml",
+            package_version="dev",
+            check=False,
+        )
+        == 0
+    )
+    snapshot = json.loads((tmp_path / "dev.json").read_text(encoding="utf-8"))
+    assert snapshot["kind"] == "rlmesh.cpp-api-surface"
+    exports = {
+        export["qualifiedName"]
+        for module in snapshot["surface"]["modules"]
+        for export in module["exports"]
+    }
+    assert exports >= {"rlmesh::Model", "rlmesh::Policy", "rlmesh::spaces::Box"}
 
 
 def test_rust_signatures_render_like_source() -> None:
@@ -393,7 +442,7 @@ def _fixture(tmp_path: Path, source: str, language: str = "c++"):
         config=HeaderSurfaceConfig(
             header=name,
             language=language,
-            standard="c++17" if language == "c++" else "c11",
+            standard="c++20" if language == "c++" else "c11",
             stability="Experimental",
             namespace="ns" if language == "c++" else None,
             source_repo="ArenaX-Labs/rlmesh",
@@ -418,6 +467,39 @@ def test_specialization_naming_ignores_declaration_order(tmp_path: Path) -> None
     assert [m.name for m in exports["Result"].members] == ["value"]
     assert exports["Result<void>"].qualified_name == "ns::Result<void>"
     assert [m.name for m in exports["Result<void>"].members] == ["ok"]
+
+
+def test_cpp_reopened_namespaces_keep_distinct_exports(tmp_path: Path) -> None:
+    exports = _fixture(
+        tmp_path,
+        "namespace ns {\n"
+        "namespace detail { struct Hidden {}; }\n"
+        "namespace a { struct Options { int count; }; }\n"
+        "}\n"
+        "namespace ns {\n"
+        "namespace a { int open(); }\n"
+        "namespace b { struct Options { bool enabled; }; }\n"
+        "namespace b { namespace detail_impl { struct Hidden {}; } }\n"
+        "namespace alias = a;\n"
+        "template <class T> using List = T*;\n"
+        "template <class T> concept Policy = requires(T p) { p.predict(); };\n"
+        "}\n",
+    )
+    assert set(exports) == {
+        "a::Options",
+        "a::open",
+        "b::Options",
+        "alias",
+        "List",
+        "Policy",
+    }
+    assert exports["a::Options"].qualified_name == "ns::a::Options"
+    assert [m.name for m in exports["a::Options"].members] == ["count"]
+    assert [m.name for m in exports["b::Options"].members] == ["enabled"]
+    assert exports["alias"].signature == "namespace alias = a"
+    assert exports["List"].signature == "template <class T> using List = T*"
+    assert exports["Policy"].kind == "concept"
+    assert exports["Policy"].signature.endswith("requires(T p) { p.predict(); }")
 
 
 def test_url_ending_a_block_comment_keeps_the_docs(tmp_path: Path) -> None:

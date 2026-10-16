@@ -2,7 +2,7 @@
 #![allow(unsafe_code)] // FFI callbacks, borrowed contexts and ownership transfer.
 use crate::abi::{
     sizing,
-    status::{CapiError, RLMeshStatus, clear_last_error, guard, guard_value},
+    status::{CapiError, RLMeshStatus, guard, guard_value},
 };
 use crate::cancel::RLMeshExtCancelToken;
 use crate::codec::RLMeshBytes;
@@ -310,7 +310,7 @@ impl CPolicy {
             .as_ref()
             .map_or(std::ptr::null(), |c| std::ptr::from_ref(&c.raw));
         let mut out = std::ptr::null_mut();
-        clear_last_error();
+        let _callback_frame = crate::abi::status::CallbackFrame::enter();
         let s = unsafe {
             match horizon {
                 None => self
@@ -352,7 +352,7 @@ impl CPolicy {
         });
         let ctx = contexts.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
         let mut out = vec![std::ptr::null_mut(); obs.len()];
-        clear_last_error();
+        let _callback_frame = crate::abi::status::CallbackFrame::enter();
         let s = unsafe {
             match horizon {
                 None => self
@@ -390,7 +390,7 @@ impl DynPolicy for CPolicy {
     fn load(&mut self, config: &Metadata) -> rlmesh::Result<()> {
         if let Some(load) = self.vt.load {
             let config = RLMeshValue::new(Value::Dict(config.clone()));
-            clear_last_error();
+            let _callback_frame = crate::abi::status::CallbackFrame::enter();
             status(unsafe { load(self.owner.ptr, &config) })?;
         } else {
             struct DefaultLoad;
@@ -399,7 +399,7 @@ impl DynPolicy for CPolicy {
         }
         if let Some(f) = self.vt.loaded_native_chunk {
             let (mut has, mut value) = (false, 0);
-            clear_last_error();
+            let _callback_frame = crate::abi::status::CallbackFrame::enter();
             status(unsafe { f(self.owner.ptr, &mut has, &mut value) })?;
             self.native_chunk = has.then_some(value);
         }
@@ -440,7 +440,7 @@ impl DynPolicy for CPolicy {
     fn on_episode_end(&mut self, id: &str) -> rlmesh::Result<()> {
         if let Some(f) = self.vt.on_episode_end {
             let id = CString::new(id).unwrap_or_default();
-            clear_last_error();
+            let _callback_frame = crate::abi::status::CallbackFrame::enter();
             status(unsafe { f(self.owner.ptr, id.as_ptr()) })?;
         }
         Ok(())
@@ -449,7 +449,7 @@ impl DynPolicy for CPolicy {
         if self.owner.owned.load(Ordering::Acquire)
             && let Some(f) = self.vt.close
         {
-            clear_last_error();
+            let _callback_frame = crate::abi::status::CallbackFrame::enter();
             status(unsafe { f(self.owner.ptr) })?;
         }
         Ok(())
@@ -539,14 +539,14 @@ unsafe fn construct(
             let hooks = Arc::clone(&hooks);
             opts.on_episode_end = Some(Box::new(move |id| {
                 let id = CString::new(id).unwrap_or_default();
-                clear_last_error();
+                let _callback_frame = crate::abi::status::CallbackFrame::enter();
                 status(unsafe { f(hooks.ptr(), id.as_ptr()) })
             }));
         }
         if let Some(f) = o.on_close {
             let hooks = Arc::clone(&hooks);
             opts.on_close = Some(Box::new(move || {
-                clear_last_error();
+                let _callback_frame = crate::abi::status::CallbackFrame::enter();
                 status(unsafe { f(hooks.ptr()) })
             }));
         }

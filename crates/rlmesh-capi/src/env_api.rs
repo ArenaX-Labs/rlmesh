@@ -2,7 +2,7 @@
 #![allow(unsafe_code)] // FFI callbacks, caller pointers and handle ownership.
 use crate::abi::{
     sizing,
-    status::{CapiError, RLMeshStatus, clear_last_error, guard, guard_value},
+    status::{CapiError, RLMeshStatus, guard, guard_value},
 };
 use crate::ffi;
 use crate::space_handle::RLMeshSpace;
@@ -192,7 +192,7 @@ fn render(ud: &UserData, slot: Option<Render>, closed: bool) -> rlmesh::Result<O
         return Ok(None);
     };
     let mut out = std::ptr::null_mut();
-    clear_last_error();
+    let _callback_frame = crate::abi::status::CallbackFrame::enter();
     let status = unsafe { f(ud.ptr, &mut out) };
     let value = unsafe { ffi::take(out) };
     callback(status)?;
@@ -203,7 +203,7 @@ fn close(ud: &UserData, slot: Option<Close>, closed: &mut bool) -> rlmesh::Resul
         return Ok(());
     }
     if let Some(f) = slot {
-        clear_last_error();
+        let _callback_frame = crate::abi::status::CallbackFrame::enter();
         callback(unsafe { f(ud.ptr) })?;
     }
     Ok(())
@@ -242,7 +242,7 @@ impl Env for CEnv {
         open(self.closed)?;
         let options = options.map(|o| RLMeshValue::new(Value::Dict(o.clone())));
         let (mut obs, mut info) = (std::ptr::null_mut(), std::ptr::null_mut());
-        clear_last_error();
+        let _callback_frame = crate::abi::status::CallbackFrame::enter();
         let status = unsafe {
             self.vt.reset.expect("validated reset")(
                 self.ud.ptr,
@@ -264,7 +264,7 @@ impl Env for CEnv {
         let action = action.map(RLMeshValue::new);
         let (mut obs, mut info) = (std::ptr::null_mut(), std::ptr::null_mut());
         let (mut reward, mut terminated, mut truncated) = (0.0, false, false);
-        clear_last_error();
+        let _callback_frame = crate::abi::status::CallbackFrame::enter();
         let status = unsafe {
             self.vt.step.expect("validated step")(
                 self.ud.ptr,
@@ -303,7 +303,7 @@ impl VectorEnv for CVectorEnv {
         });
         let options = options.map(|o| RLMeshValue::new(Value::Dict(o.clone())));
         let (mut obs, mut info) = (std::ptr::null_mut(), std::ptr::null_mut());
-        clear_last_error();
+        let _callback_frame = crate::abi::status::CallbackFrame::enter();
         let status = unsafe {
             self.vt.reset.expect("validated reset")(
                 self.ud.ptr,
@@ -330,7 +330,7 @@ impl VectorEnv for CVectorEnv {
         let mut truncated = vec![false; n];
         let actions = RLMeshValue::new(actions);
         let (mut obs, mut info) = (std::ptr::null_mut(), std::ptr::null_mut());
-        clear_last_error();
+        let _callback_frame = crate::abi::status::CallbackFrame::enter();
         let status = unsafe {
             self.vt.step.expect("validated step")(
                 self.ud.ptr,

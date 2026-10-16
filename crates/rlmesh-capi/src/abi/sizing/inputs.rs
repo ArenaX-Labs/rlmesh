@@ -88,8 +88,6 @@ input!(crate::adapters::RLMeshTextTag);
 input!(crate::adapters::runtime::RLMeshAdapterVtable);
 input!(crate::describe_api::RLMeshDescribeJsonOptions, has_kind);
 input!(crate::describe_api::RLMeshDescribeOptions, has_kind);
-input!(crate::env::RLMeshExtLegacyEnvConfig, foreground);
-input!(crate::env::RLMeshExtLegacyEnvVtable);
 input!(crate::env_api::RLMeshEnvAttributes);
 input!(crate::env_api::RLMeshEnvVtable);
 input!(crate::env_api::RLMeshVectorEnvAttributes);
@@ -115,17 +113,6 @@ input!(
     has_drain_timeout_seconds,
     has_close_timeout_seconds,
     compress_responses
-);
-input!(crate::model::RLMeshExtLegacyModelVtable);
-input!(
-    crate::model::RLMeshExtLegacyRunOptions,
-    seeded,
-    close_env,
-    trial_indexed
-);
-input!(
-    crate::model::RLMeshExtLegacyServeOptions,
-    allow_remote_shutdown
 );
 input!(
     crate::model_api::RLMeshExtModelServeOptions,

@@ -1,7 +1,7 @@
 //! Common binding conversions and callback ownership.
 #![allow(unsafe_code)] // C input pointers and callback-owned handles.
 use crate::abi::status::{
-    CapiError, error_of_class, last_error_message, last_error_recoverable, take_callback_class,
+    CapiError, callback_message, callback_recoverable, error_of_class, take_callback_class,
 };
 use crate::codec::RLMeshBytes;
 use crate::value::handle::{RLMeshValue, value_ref, write_out};
@@ -51,22 +51,23 @@ pub(crate) fn duration(value: f64, name: &str) -> Result<Duration, CapiError> {
     })
 }
 pub(crate) fn callback_error(kind: &str) -> Error {
-    let message = last_error_message();
+    let message = callback_message();
     let message = if message.is_empty() {
         format!("{kind} callback failed")
     } else {
         message
     };
     if let Some(class) = take_callback_class() {
-        return error_of_class(class, &message);
+        return crate::abi::status::attach_callback_payload(error_of_class(class, &message));
     }
-    match (kind, last_error_recoverable()) {
+    let error = match (kind, callback_recoverable()) {
         ("hook" | "context", _) => Error::Internal(message),
         ("env", true) => Error::environment_recoverable(message),
         ("env", false) => Error::environment(message),
         (_, true) => Error::model_recoverable(message),
         (_, false) => Error::model(message),
-    }
+    };
+    crate::abi::status::attach_callback_payload(error)
 }
 /// Take a callback out-handle even on failure; NULL is an absent value.
 pub(crate) unsafe fn take(ptr: *mut RLMeshValue) -> Option<Value> {

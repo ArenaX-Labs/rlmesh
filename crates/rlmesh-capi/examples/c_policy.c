@@ -50,7 +50,49 @@ static RLMeshStatus decline_adapter_load(void* ud, const RLMeshValue* config) {
                                   "adapter unavailable");
   return RLMESH_ERR_INVALID_ARGUMENT;
 }
+typedef struct PayloadState {
+  int typed, frees;
+} PayloadState;
+static const char payload_tag;
+static void free_payload(void* p) {
+  ++((PayloadState*)p)->frees;
+  (void)rlmesh_last_error_class(); /* owner deleters may reenter the library */
+}
+static RLMeshStatus payload_load(void* ud, const RLMeshValue* config) {
+  (void)config;
+  PayloadState* s = (PayloadState*)ud;
+  rlmesh_callback_set_error_class(RLMESH_ERROR_CLASS_VALUE_ERROR, "foreign payload");
+  if (s->typed)
+    rlmesh_ext_callback_set_tagged_error_payload(s, free_payload, &payload_tag);
+  else
+    rlmesh_ext_callback_set_error_payload(s, free_payload);
+  return RLMESH_ERR_INVALID_ARGUMENT;
+}
+static void payload_ownership(void) {
+  for (int typed = 0; typed < 2; ++typed) {
+    PayloadState state = {typed, 0};
+    RLMeshModelVtable vt = RLMESH_MODEL_VTABLE_INIT;
+    vt.predict = predict;
+    vt.load = payload_load;
+    RLMeshModel* model = NULL;
+    CHECK(rlmesh_model_new(&vt, &state, NULL, &model) == RLMESH_ERR_INVALID_ARGUMENT && !model);
+    void* payload = NULL;
+    void (*release)(void*) = NULL;
+    const void* tag = NULL;
+    CHECK(rlmesh_ext_last_error_take_payload_owned(NULL, &release, &tag) ==
+          RLMESH_ERR_INVALID_ARGUMENT);
+    CHECK(state.frees == 0);
+    CHECK(rlmesh_ext_last_error_take_payload_owned(&payload, &release, &tag) == RLMESH_OK);
+    CHECK(payload == &state && release == free_payload && tag == (typed ? &payload_tag : NULL));
+    CHECK(state.frees == 0);
+    release(payload);
+    CHECK(state.frees == 1);
+    CHECK(rlmesh_ext_last_error_take_payload_owned(&payload, &release, &tag) == RLMESH_OK);
+    CHECK(!payload && !release && !tag && state.frees == 1);
+  }
+}
 int main(void) {
+  payload_ownership();
   State state = {0};
   RLMeshModelVtable vt = RLMESH_MODEL_VTABLE_INIT;
   vt.predict = predict;
