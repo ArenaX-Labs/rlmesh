@@ -6,7 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ## [Unreleased]
 
+- C ABI generation 5 rebases `RLMeshValue` on the Rust facade's core Value and Metadata, with all ten value kinds, strict typed reads, insertion-ordered dicts, length-bearing text and shared immutable handles. Composite constructors retain their children. `RLMeshTensor` becomes an opaque facade handle with copying construction, shared clones and reshapes, byte strides, read-only buffers and explicit deep copies. Removes the tensor POD, DLPack dtype triple, old value projection and package-semver ABI accessors; packaging now selects SONAME 5. C and C++ examples use the new C calls; native DLPack support remains deferred.
+
 ### Added
+
+- C View/Recorder parity projects through the Rust facade: sized View parsing, validation, equality and repr; copied run/session viewing options; serialized Recorder calls, live capture hooks, folder/ZIP export and immutable WorkloadRecord/EpisodeRecord/MediaRef snapshots. Capture hooks retain contexts and recorder state, work with manual hook dispatch, and share the facade's AV1 capture and warning behavior. New options follow ABI-5 sizing rules with Python defaults and C ownership tests.
+
+- C ABI 5 tensors import and export versioned CPU DLPack through the Rust facade. Imports copy and consume the producer only on success; shared read-only or copied writable exports retain their data and metadata after the source is freed. Sized `RLMeshToDlpackOptions` and device queries match the shared surface. The C header vendors the complete upstream DLPack v1.0 header and Apache-2.0 license, with include-order and ownership tests.
+
+- C ABI 5 completes adapter-dependent running APIs: copied read items, facade readers, session/context/event reads, observation roles, owner-borrowing frame sources and render callbacks, instruction injection on runs/sessions, and typed copied/lent result advisories. Authored RunContext vtables now require all four protocol slots.
+
+- C ABI 5 exposes Stable typed adapter trees and vocabularies, immutable EnvTags/ModelSpec values, shared transform callbacks, transactional env tagging, facade resolution and per-step execution, advisories/history, AdapterBase vtables and reusable owned wrapped-predict handles. C models retain attached typed specs and trusted custom-input entrypoints use the fenced facade registry; obsolete JSON plan exports are removed.
+
+- The C Describe family now uses the Rust facade: sized options/kind, model vtable/type and instance forms, and factory branch/catalog descriptions with typed dict or canonical JSON output. Type forms never call policy slots; declaration checks match Model construction, instance descriptions retain static chunk declarations, and C native identity/runtime and edition refusal rules match the spec. COR-16's fenced EnvServer shorthand caches the resolved host/edition snapshot, readable even after shutdown or with publication disabled. C factory serving publishes the same native Describe identity.
+
+- ABI-5 C/C++ regression coverage for facade space membership (extra Dict keys and one-element integer tensors), sampled Dict declaration order from nonalphabetical remote specs, length-bearing embedded-NUL dict construction/lookup, and tensor copies retaining storage after their source Value dies. These behaviors are already provided by the Value/tensor rebase; C++ Tensor copies share the opaque owned handle.
+
+- C RemoteEnv, RemoteVectorEnv and shared RemoteModel handles now use facade clients, sized constructor options and token extensions. Remote env accessors retain cache identity and remain usable during exclusive I/O/session borrows; selected editions read the facade's shared pin cell. Typed reset/step/render/shutdown/close, retained cancellation, remote run/session targets, and vector buffers with pre-I/O capacity checks are covered by live C gRPC tests.
+
+- C facade-backed `rlmesh_run` / `rlmesh_model_run`, Python-named sized RunOptions, local/address/server/factory targets and RANDOM_SAMPLE. RunHooks and retained RunContexts expose caller-thread callbacks, first-error delivery and typed step/result records. Immutable RunResult and TelemetryRow handles provide facade aggregates, repr and equality. C Sessions add lazy reset/predict/step/run, contexts, retained cancellation and close, with exclusive env borrowing and checked hook re-entry. Adapter-dependent instruction/view/read/advisory APIs remain deferred.
+
+- C `RLMeshModel` wraps the facade Model through a four-corner Policy vtable with per-corner context opt-in, checked load keys, config construction, loaded native chunks, shared clones, hook overrides, close/serve and reusable cancellation. PredictContext exposes facade-owned episode state with C value deleters. Constructor failures retain caller ownership; the last C reference drains callbacks and releases policy/hook state once. The C++ wrapper's prior worker-based model path is fenced under legacy extension names.
+
+- C `RLMeshEnvFactory`, TagParam lists and mutable Variant catalogs use the facade's default binding, branch checks, metadata stamping and serving pipeline. Factory hooks are exclusive and report re-entry as RuntimeError; callback state transfers only on successful construction, and free never closes the factory. Reusable C cancellation tokens stop serving and all C env callbacks are drained before return.
+
+- C env authoring and serving now project through the Rust facade: separate `RLMeshEnv`, `RLMeshVectorEnv` and `RLMeshEnvServer` handles, Gymnasium-shaped callbacks with typed info, owned callback state, exclusive borrowing, close-once behavior, and server start/serve/wait/shutdown. New options and vtables use ABI-5 `struct_size`/`INIT`/`MIN_SIZE` rules; ServeOptions uses seconds and explicit optional fields. Server free drains C callbacks beyond a shutdown deadline. The existing C++ wrapper's combined env/server path uses a fenced legacy bridge until its separate parity wave.
+
+- C exposes the immutable `RLMeshEnvContract` facade surface (id, spaces, render mode, lane count, typed metadata, aliases, cloning, dict conversion and repr), replacing `RLMeshContract`. `rlmesh_trial_index` reads typed reset-option dicts and validates optional vector lanes through the Rust facade.
 
 - `rlmesh.FrameSources` is now a Stable root export. `rlmesh.recorder` and its `WorkloadRecord`, `EpisodeRecord`, `MediaRef`, and `SCHEMA` exports are Stable; `ResultSet` and `EpisodeRecord.from_result` remain Internal (RUN-P5 / RUN-17).
 
@@ -72,6 +98,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - The Rust crate's `RemoteModel` is Python's env-agnostic handle: `RemoteModel::new(RemoteModelOptions)` checks the address and timeouts without I/O (clones share it), and `session(env, SessionOptions)` / `session_async` dial the model and bind it to an address, an `EnvServer` or a borrowed `RemoteEnv`, pinning the env to the session's edition floor. `rlmesh::run` and `rlmesh::session` take `&RemoteModel` as their model and drive it on the session loop. `ext::remote_model_with_token` is the Rust-only token form.
 
 ### Fixed
+
+- The C header compiles warning-free as C++98 under GCC as well as Clang. Pedantic diagnostics are suppressed only around the unchanged vendored DLPack header.
+
+- C ABI 5 cancellation now follows R-18's status/out-parameter constructor and shared-clone API. Run hooks clear stale callback errors; setting episode state to the same pointer updates its deleter without freeing the value.
+- C input structs reject invalid bool bytes before typed reads. Output slots are initialized without reading or dropping their previous bytes, and raw handle/output helpers carry explicit Rust safety contracts. Session destruction from its own hooks is refused; retained frame sources use weak session state and report RuntimeError after destruction, including sources transferred through C contexts.
+
+- C View holds now accept every finite nonnegative number of seconds, saturating values too large for Rust's `Duration` to `Duration::MAX`. Negative, NaN and infinite holds remain ValueError-class failures at validation and consuming calls.
+
+- C `rlmesh_env_server_wait` now sets its stopped output before returning a background serve error, while misuse and invalid inputs leave the output untouched. The facade keeps these outcomes distinct through a binding seam, without polling the server a second time.
+
+- C callbacks setting `ADAPTER_RESOLUTION_ERROR` now preserve that exact last-error class while returning `RLMESH_ERR_INVALID_ARGUMENT`, instead of collapsing to ValueError.
 
 - DLPack 1.0 exports requested with `copy=True` now set the standard `IS_COPIED` flag as well as exposing writable, independent storage. DLPack imports reject overflowing sizes and strides before accessing producer data.
 
@@ -160,6 +197,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 ### Changed
 
 - Integer Box bounds must fit together in a signed or unsigned 64-bit range (SPC-P6). Bound pairs such as `Box(-1, 2**63, [1], "int64")` and `Box(0, 2**64, [1], "uint64")` raise `ValueError` instead of rounding or saturating.
+
+- ABI-5 cleanup removes the four redundant fenced legacy space kind/dtype/rank/shape readers and the unused scalar legacy env constructor; the C++ wrapper and compatibility C examples use canonical spec readers and the lane constructor. Space free no longer guesses whether a pointer is an ABI-4 spec, and its global ownership registry is removed. An exact inventory and header audit limit the remaining 29 legacy exports, one inline helper and six frozen callback/result records to existing C++ wrapper dependencies; their final migration remains the C++20 wave.
+
+- C ABI 5 removes old unfenced space builder/reader names and makes `rlmesh_space_dtype` take the Space handle; specs use `rlmesh_space_spec_dtype`. The separate C++ wave temporarily retains its previous spec helpers under explicit legacy extension names. Legacy compatibility input vtables/config now enforce ABI-5 minima and zero unknown tails; run/serve options gain `struct_size`, INIT and MIN_SIZE macros. Older ABI-4 prefixes are refused, with C tests for zero initialization, unknown settings and extended output boundaries.
 
 - `Model.run`'s hooks run on the thread that called `Model.run`, between the native loop's steps, instead of on a worker thread of the extension's blocking pool; they still run one at a time with the env idle, and the first exception still aborts the run. A hook's own sync rlmesh calls (a `RemoteModel` session's `predict`, a `RemoteEnv.render`) and thread-bound state (a GL context, `threading.local`) now see the caller's thread.
 

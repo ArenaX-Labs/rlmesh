@@ -20,3 +20,5 @@ termnal = "termnal"
 [type.cpp]
 extend-glob = ["*.h"]
 extend-ignore-identifiers-re = ["^[a-z]{2}$"]
+# SPC-19 requires the upstream DLPack v1.0 block verbatim, including its typos.
+extend-ignore-re = ["(?s)#ifndef DLPACK_DLPACK_H_.*?#endif  // DLPACK_DLPACK_H_"]

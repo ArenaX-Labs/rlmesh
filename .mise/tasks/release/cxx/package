@@ -38,7 +38,7 @@ rm -rf "$stage"
 mkdir -p "$stage/include" "$stage/lib/cmake/rlmesh" "$stage/lib/pkgconfig"
 
 # 3. Headers + licenses + the two libs (verbatim — include/ is the one header authority).
-cp "$inc/rlmesh.h" "$inc/rlmesh.hpp"   "$stage/include/"
+cp "$inc/rlmesh.h" "$inc/rlmesh.hpp" "$inc/dlpack.LICENSE" "$stage/include/"
 cp LICENSE-APACHE LICENSE-MIT          "$stage/"
 # Stage the cdylib under its real SONAME + a librlmesh_capi.so dev symlink: the
 # linker reads the SONAME (records the versioned DT_NEEDED) while find_package and

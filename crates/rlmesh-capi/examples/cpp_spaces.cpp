@@ -89,6 +89,22 @@ int main() {
       rlmesh::ext::box_elementwise({0, -5}, {1, 5}, {2}, {rlmesh::DType::Int64}).value_or_throw();
   CHECK(std::get<std::vector<Bound>>(*per.low())[1].as_int() == -5);
 
+  // Tensor copies retain storage after the Value and the first view die.
+  std::optional<rlmesh::Tensor> retained, another;
+  {
+    const float data[] = {1.25f, -3.5f};
+    auto source = rlmesh::Value::box(data, RLMESH_DTYPE_FLOAT32, {2}).value_or_throw();
+    auto tensor = source.ref().as_tensor().value_or_throw();
+    retained = tensor;
+    another = tensor;
+    *retained = *another;
+  }
+  CHECK(retained->data() == another->data());
+  another.reset();
+  CHECK(retained->dtype() == RLMESH_DTYPE_FLOAT32 && retained->ndim() == 1);
+  CHECK(retained->shape()[0] == 2 && retained->numel() == 2);
+  CHECK(retained->as<float>()[0] == 1.25f && retained->as<float>()[1] == -3.5f);
+
   if (failures != 0) {
     std::fprintf(stderr, "%d check(s) failed\n", failures);
     return 1;

@@ -12,46 +12,60 @@
 
 /* A zero action shaped like the route's action space (Box or Discrete). */
 static RLMeshValue* zero_action(const RLMeshSpaceSpec* action) {
-  switch (rlmesh_space_type(action)) {
-    case RLMESH_VALUE_BOX: {
-      RLMeshDLPackDType dtype = rlmesh_space_dtype(action);
-      size_t ndim = rlmesh_space_ndim(action);
+  switch (rlmesh_space_spec_kind(action)) {
+    case RLMESH_SPACE_KIND_BOX: {
+      RLMeshDType dtype = rlmesh_space_spec_dtype(action);
+      size_t ndim = 0;
+      if (rlmesh_space_spec_shape(action, NULL, 0, &ndim) != RLMESH_OK) return NULL;
       int64_t shape[16];
+      size_t dims[16];
       if (ndim > 16) {
         rlmesh_callback_set_error("action rank exceeds 16", false);
         return NULL;
       }
-      if (rlmesh_space_copy_shape(action, shape, ndim) != RLMESH_OK) {
+      if (rlmesh_space_spec_shape(action, shape, ndim, &ndim) != RLMESH_OK) {
         return NULL; /* last-error already set */
       }
       size_t numel = 1;
       for (size_t i = 0; i < ndim; ++i) {
-        numel *= (size_t)shape[i];
+        dims[i] = (size_t)shape[i];
+        numel *= dims[i];
       }
-      size_t nbytes = numel * rlmesh_dtype_size(dtype);
+      size_t nbytes = numel * rlmesh_ext_dtype_size(dtype);
       uint8_t* zeros = (uint8_t*)calloc(nbytes ? nbytes : 1, 1);
-      RLMeshTensor tensor = {0};
-      tensor.data = zeros;
-      tensor.ndim = (int32_t)ndim;
-      tensor.shape = shape;
-      tensor.dtype = dtype;
-      tensor.device_type = RLMESH_DEVICE_CPU;
-      RLMeshValue* value = rlmesh_value_box(&tensor); /* copies */
+      RLMeshTensor* tensor = NULL;
+      RLMeshValue* value = NULL;
+      RLMeshStatus status = rlmesh_tensor_new(zeros, nbytes, dims, ndim, dtype, &tensor);
+      if (status == RLMESH_OK) status = rlmesh_value_tensor(tensor, &value);
+      if (status != RLMESH_OK) {
+        free(zeros);
+        return NULL;
+      }
+      rlmesh_tensor_free(tensor);
       free(zeros);
       return value;
     }
-    case RLMESH_VALUE_DISCRETE:
-      return rlmesh_value_discrete(0);
+    case RLMESH_SPACE_KIND_DISCRETE: {
+      RLMeshValue* value = NULL;
+      rlmesh_value_int(0, &value);
+      return value;
+    }
     default:
       rlmesh_callback_set_error("c_model handles Box/Discrete only", false);
       return NULL;
   }
 }
 
-static int predict(void* user_data, const RLMeshObservation* obs, RLMeshValue** out_actions) {
+static int predict(void* user_data, const RLMeshExtLegacyObservation* obs,
+                   RLMeshValue** out_actions) {
   (void)user_data;
+  if (obs->contract != NULL) {
+    RLMeshValue* details = NULL;
+    if (rlmesh_env_contract_to_dict(obs->contract, &details) != RLMESH_OK) return RLMESH_ERR_MODEL;
+    rlmesh_value_free(details);
+  }
   const RLMeshSpaceSpec* action =
-      obs->contract ? rlmesh_contract_action_space(obs->contract) : NULL;
+      obs->contract ? rlmesh_env_contract_action_space(obs->contract) : NULL;
   if (action == NULL) {
     rlmesh_callback_set_error("no action space on contract", false);
     return RLMESH_ERR_MODEL;
@@ -59,14 +73,14 @@ static int predict(void* user_data, const RLMeshObservation* obs, RLMeshValue** 
   for (size_t i = 0; i < obs->num_envs; ++i) {
     /* Each row names its episode and how many times this episode has been
      * predicted; a seeded episode also carries a per-predict sampling seed. */
-    const RLMeshEpisode* episode = &obs->episodes[i];
+    const RLMeshExtLegacyEpisode* episode = &obs->episodes[i];
     printf("episode %s: predict %llu", episode->id, (unsigned long long)episode->predict_index);
     if (episode->seeded) {
       printf(" seed %lld", (long long)episode->predict_seed);
     }
     if (obs->observations != NULL) {
       int64_t n = 0;
-      if (rlmesh_value_as_discrete(obs->observations[i], &n) == RLMESH_OK) {
+      if (rlmesh_value_as_int(obs->observations[i], &n) == RLMESH_OK) {
         printf(" obs %lld", (long long)n);
       }
     }
@@ -92,36 +106,36 @@ static void on_close(void* user_data) {
 
 int main(int argc, char** argv) {
   const char* address = argc > 1 ? argv[1] : "tcp://127.0.0.1:5555";
-  RLMeshRunOptions options = {0};
+  RLMeshExtLegacyRunOptions options = RLMESH_EXT_LEGACY_RUN_OPTIONS_INIT;
   options.seeded = true; /* deterministic env resets */
   options.base_seed = 7;
   if (argc > 2) {
     options.max_episodes = strtoull(argv[2], NULL, 10);
   }
 
-  RLMeshModelVtable vtable = {0};
+  RLMeshExtLegacyModelVtable vtable = {0};
   vtable.struct_size = sizeof(vtable);
   vtable.predict = predict;
   vtable.on_episode_end = on_episode_end;
   vtable.on_close = on_close;
 
-  RLMeshModel* model = NULL;
-  if (rlmesh_model_new(&vtable, NULL, &model) != RLMESH_OK) {
+  RLMeshExtLegacyModel* model = NULL;
+  if (rlmesh_ext_legacy_model_new(&vtable, NULL, &model) != RLMESH_OK) {
     fprintf(stderr, "failed to create model: %s\n", rlmesh_last_error_message());
     return 1;
   }
 
   printf("connecting to %s ...\n", address);
-  RLMeshRunReport report = {0};
-  RLMeshStatus status = rlmesh_model_run_local(model, address, &options, &report);
+  RLMeshExtLegacyRunReport report = {0};
+  RLMeshStatus status = rlmesh_ext_legacy_model_run_local(model, address, &options, &report);
   if (status != RLMESH_OK) {
     /* Read the message BEFORE the next capi call on this thread -- including
-     * rlmesh_model_free -- which invalidates it. */
+     * rlmesh_ext_legacy_model_free -- which invalidates it. */
     fprintf(stderr, "run failed: %s\n", rlmesh_last_error_message());
-    rlmesh_model_free(model);
+    rlmesh_ext_legacy_model_free(model);
     return 1;
   }
-  rlmesh_model_free(model);
+  rlmesh_ext_legacy_model_free(model);
 
   printf("run report: episodes=%lld steps=%lld reward=%.1f mean=%.1f\n",
          (long long)report.total_episodes, (long long)report.total_steps, report.total_reward,

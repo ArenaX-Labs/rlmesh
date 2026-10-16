@@ -65,9 +65,10 @@ Caught catch_all(const rlmesh::Error& error) {
 int main() {
   // A wrong-kind read through the C ABI is TypeError: not a ValueError, not an
   // RLMeshException.
-  RLMeshValue* text = rlmesh_value_text("x", 1);
+  RLMeshValue* text = nullptr;
+  rlmesh_value_text(rlmesh_str("x"), &text);
   int64_t out = 0;
-  RLMeshStatus status = rlmesh_value_as_discrete(text, &out);
+  RLMeshStatus status = rlmesh_value_as_int(text, &out);
   check(status == RLMESH_ERR_TYPE, "wrong-kind read returns RLMESH_ERR_TYPE");
   rlmesh::Error type_error = rlmesh::Error::from_last(status);
   check(type_error.error_class() == RLMESH_ERROR_CLASS_TYPE_ERROR, "class is TYPE_ERROR");

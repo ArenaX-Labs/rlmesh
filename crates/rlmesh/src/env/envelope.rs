@@ -34,6 +34,7 @@ pub(crate) fn env_envelope(
     catalog: Option<&Json>,
     host: &DescribingHost,
     workflow_edition: Option<&str>,
+    vector: bool,
 ) -> Result<String> {
     let space = |spec: &crate::spaces::SpaceSpec, which: &str| {
         space_spec_to_json(spec.wire())
@@ -68,6 +69,7 @@ pub(crate) fn env_envelope(
     }
     let mut pieces = json!({
         "target": {"entrypoint": null, "qualname": qualname},
+        "params": {"param_spec":null,"signature_tier":[]},
         "env_spec": {
             "observation_space": space(contract.observation_space(), "observation_space")?,
             "action_space": space(contract.action_space(), "action_space")?,
@@ -75,6 +77,9 @@ pub(crate) fn env_envelope(
         "env_tags": env_tags,
         "runtime": runtime,
     });
+    if vector {
+        pieces["env_spec"]["num_envs"] = json!(contract.num_envs());
+    }
     if let Some(catalog) = catalog {
         pieces["variants"] = json!({ "catalog": catalog });
     }
