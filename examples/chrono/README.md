@@ -74,7 +74,7 @@ target/chrono-env/chrono_reach_model 127.0.0.1:50051 6
 # episodes=6 steps=67 terminated=6 truncated=0 mean_reward=-0.38
 ```
 
-The example reads `eef_pos` and `target_pos` by key. The C++20 API also supports typed adapter specs when a policy needs semantic adaptation.
+The example reads `eef_pos` and `target_pos` by key. The C++17 API also supports typed adapter specs when a policy needs semantic adaptation.
 
 ## Run it as a container
 
@@ -110,7 +110,7 @@ docker run --rm --device nvidia.com/gpu=all -p 50051:50051 chrono-reach:vulkan -
 
 ## Layout
 
-- `src/reach_env.{h,cpp}`: the Chrono scene, the detected C++20 env, and its spaces and tags.
+- `src/reach_env.{h,cpp}`: the Chrono scene, the detected C++17 env, and its spaces and tags.
 - `src/scene.h`: the camera's scene, shared by both renderers.
 - `src/renderer.{h,cpp}`: the renderer interface and `--renderer` backends.
 - `src/raytracer.h`: the CPU camera.
@@ -120,6 +120,6 @@ docker run --rm --device nvidia.com/gpu=all -p 50051:50051 chrono-reach:vulkan -
 - `src/scripted_model.cpp`: the scripted policy as a C++ model.
 - `run_model.py`: the Python model, with its `ModelSpec` and a scripted or random policy.
 
-The native wrapper requires C++20 and exceptions. Building the simulation also
+The native wrapper requires C++17 and exceptions. Building the simulation also
 requires the Project Chrono SDK, so CI does not build it; `test:cxx` compiles
 only the standalone scripted model.

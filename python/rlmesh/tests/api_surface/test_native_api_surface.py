@@ -156,9 +156,10 @@ def test_c_field_keeps_its_own_trailing_comment() -> None:
     )
 
 
-def test_cpp_signatures_read_past_a_truncated_extent() -> None:
+@pytest.mark.parametrize("standard", ["c++17", "c++20"])
+def test_cpp_signatures_read_past_a_truncated_extent(standard: str) -> None:
     # libclang ends this template's extent at its name when skipping bodies.
-    _, exports = _header("rlmesh.hpp", "c++", "c++20", "rlmesh")
+    _, exports = _header("rlmesh.hpp", "c++", standard, "rlmesh")
     (from_config,) = [m for m in exports["Model"].members if m.name == "from_config"]
     assert from_config.signature == (
         "template <class P> static Model from_config(const Kwargs& config)"
@@ -170,13 +171,14 @@ def test_cpp_signatures_read_past_a_truncated_extent() -> None:
         m.signature for m in exports["Model"].members if m.kind == "constructor"
     ]
     assert (
-        "template <class P> requires Policy<P> "
+        "template <class P> "
         "explicit Model(std::shared_ptr<P> source, ModelOptions options = {})"
     ) in constructors
 
 
-def test_cpp_partial_specialization_documents_its_members() -> None:
-    _, exports = _header("rlmesh.hpp", "c++", "c++20", "rlmesh")
+@pytest.mark.parametrize("standard", ["c++17", "c++20"])
+def test_cpp_partial_specialization_documents_its_members(standard: str) -> None:
+    _, exports = _header("rlmesh.hpp", "c++", standard, "rlmesh")
     function = exports["SharedFunction<R (A...), EmptyError>"]
     assert function.qualified_name == "rlmesh::SharedFunction<R (A...), EmptyError>"
     assert "SharedFunction() = default" in [m.signature for m in function.members]
@@ -304,8 +306,9 @@ def test_c_header_sections_and_declarations() -> None:
     assert "RLMESH_H" not in exports
 
 
-def test_cpp_header_classes_and_members() -> None:
-    modules, exports = _header("rlmesh.hpp", "c++", "c++20", "rlmesh")
+@pytest.mark.parametrize("standard", ["c++17", "c++20"])
+def test_cpp_header_classes_and_members(standard: str) -> None:
+    modules, exports = _header("rlmesh.hpp", "c++", standard, "rlmesh")
 
     assert modules[0].name == "rlmesh.hpp"
     model = exports["Model"]
@@ -319,8 +322,8 @@ def test_cpp_header_classes_and_members() -> None:
     assert exports["EnvFactory"].signature == (
         "template <class F> class EnvFactory : public EnvFactoryBase"
     )
-    assert exports["Policy"].kind == "concept"
-    assert "concept Policy =" in exports["Policy"].signature
+    assert exports["Policy"].kind == "constant"
+    assert "inline constexpr bool Policy =" in exports["Policy"].signature
     assert (
         exports["RuntimeError"].signature
         == "class RuntimeError : public std::runtime_error"
@@ -689,3 +692,19 @@ def test_library_defines_preserve_valueless_configuration(monkeypatch) -> None:
     assert calls == [
         ["custom-cxx", "--target=test", "-dM", "-E", "-x", "c++", "/dev/null"]
     ]
+
+
+def test_cpp_constexpr_variable_templates_are_constants(tmp_path: Path) -> None:
+    exports = _fixture(
+        tmp_path,
+        "namespace ns {\n"
+        "template <class T> inline constexpr bool Trait = true;\n"
+        "template <class T> constexpr int Count = sizeof(T);\n"
+        "}\n",
+    )
+    assert set(exports) == {"Trait", "Count"}
+    assert exports["Trait"].kind == "constant"
+    assert exports["Trait"].signature == (
+        "template <class T> inline constexpr bool Trait = true"
+    )
+    assert exports["Count"].kind == "constant"

@@ -35,7 +35,7 @@ _PLUMBING_MACRO = re.compile(
 class HeaderSurfaceConfig:
     header: str  # repo-relative
     language: str  # "c" or "c++"
-    standard: str  # "c11", "c++20"
+    standard: str  # "c11", "c++17", "c++20"
     stability: str
     namespace: str | None  # the C++ namespace to document; None for C
     source_repo: str
@@ -223,6 +223,12 @@ class _HeaderCollector:
             self._add(cursor, name, "concept", self._statement_text(cursor))
         elif kind == "VAR_DECL":
             self._add(cursor, name, "constant", self._statement_text(cursor))
+        elif kind == "UNEXPOSED_DECL":
+            # libclang 18 exposes C++17 constexpr variable templates this way
+            # rather than as VAR_DECL (for example the public Policy trait).
+            text = self._statement_text(cursor)
+            if re.match(r"template\s*<.*>\s*(?:inline\s+)?constexpr\b", text):
+                self._add(cursor, name, "constant", text)
 
     def _record(self, cursor: ci.Cursor, name: str) -> None:
         if not cursor.is_definition():

@@ -1,4 +1,4 @@
-// Native C++20 policy driving the Chrono env.
+// Native C++17 policy driving the Chrono env.
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -25,12 +25,13 @@ int main(int argc, char** argv) try {
         return rlmesh::Tensor(action.data(), action.size() * sizeof(float), {3},
                               rlmesh::DType::Float32);
       },
-      {.on_episode_end = [](std::string_view id) {
+      rlmesh::ModelOptions{}.with_on_episode_end([](std::string_view id) {
         std::printf("episode %.*s done\n", static_cast<int>(id.size()), id.data());
-      }});
+      }));
   std::vector<int64_t> seeds;
   for (uint64_t i = 0; i < episodes; ++i) seeds.push_back(static_cast<int64_t>(7 + i));
-  auto result = model.run(address, {.episodes = episodes, .seeds = std::move(seeds)});
+  auto result =
+      model.run(address, rlmesh::RunOptions{}.with_episodes(episodes).with_seeds(std::move(seeds)));
   std::printf("episodes=%zu steps=%lld mean_reward=%.2f\n", result.num_episodes(),
               static_cast<long long>(result.total_steps()), result.mean_reward());
   return 0;

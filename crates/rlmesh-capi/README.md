@@ -4,7 +4,7 @@ RLMesh connects models to environments for evaluation. Serve a Gymnasium-style e
 
 RLMesh aims to feel familiar in whichever language you use it from. Python, Rust, C and C++ share the same nouns and constructs (`Env`, `Space`, `Value`, `Model`, `run`, `Session`, `EnvServer`, `RemoteEnv`), each written in that language's own conventions and with helpers that only make sense there. What you learn here carries over, and every language talks to every other over the same wire.
 
-Writing C++? Use [`rlmesh.hpp`](README-cpp.md), the C++20 API over this header, with RAII handles and exceptions.
+Writing C++? Use [`rlmesh.hpp`](README-cpp.md), the C++17 API over this header, with RAII handles and exceptions.
 
 ## Install
 
@@ -416,11 +416,11 @@ Additions that exist only for native callers carry the `rlmesh_ext_` prefix (typ
 
 The C API is **Experimental**. Binary compatibility is tracked by the ABI generation, currently 5: `RLMESH_ABI_VERSION`, the `librlmesh_capi.so.5` SONAME and the CMake package version all carry it. An incompatible change (a struct layout, an enum value, a signature or a removed symbol) bumps the generation, which can happen in any minor release; a binary built for another generation will not load. Within a generation, structs grow only by appending optional fields whose zero bytes mean the default, so code compiled against an older header keeps working. Call `rlmesh_abi_check()` at startup if you load the library with `dlopen` or otherwise bypass the SONAME. `RLMESH_VERSION` is the header's package version and `rlmesh_build_info()` reports the linked library's. See the [compatibility policy](https://rlmesh.dev/docs/releases/compatibility/).
 
-The header is C11 and also compiles warning-free as C++98 and C++20. It bundles the upstream DLPack 1.0 header (license in [`include/dlpack.LICENSE`](include/dlpack.LICENSE)). Creating a model or env handle ignores `SIGPIPE` on POSIX unless your program installed its own handler, so a peer that disconnects mid-write cannot kill the process.
+The header is C11 and also compiles warning-free as C++98, C++17 and C++20. It bundles the upstream DLPack 1.0 header (license in [`include/dlpack.LICENSE`](include/dlpack.LICENSE)). Creating a model or env handle ignores `SIGPIPE` on POSIX unless your program installed its own handler, so a peer that disconnects mid-write cannot kill the process.
 
-## C++20
+## C++17
 
-[`rlmesh.hpp`](include/rlmesh.hpp) is a header-only C++20 API over this header, with RAII handles, exceptions, `std::optional`, `std::chrono` and designated-initializer options. It has its own guide: [RLMesh C++ API](README-cpp.md).
+[`rlmesh.hpp`](include/rlmesh.hpp) is a header-only C++17 API over this header, with RAII handles, exceptions, `std::optional`, `std::chrono` and aggregate options with portable `with_<field>` setters (designated initializers are a C++20 convenience). It has its own guide: [RLMesh C++ API](README-cpp.md).
 
 ## Examples
 
@@ -433,7 +433,7 @@ The header is C11 and also compiles warning-free as C++98 and C++20. It bundles 
 
 ## Development
 
-- `mise run dev:heavy -- mise run test:cxx`: compile the headers as C11, C++98 and C++20, build and run every example, and exercise C and C++ models and envs over real gRPC. `CC` and `CXX` override the default `zig cc` / `zig c++`.
+- `mise run dev:heavy -- mise run test:cxx`: compile the headers as C11, C++98, C++17 and C++20, build and run every example, and exercise C and C++ models and envs over real gRPC. `CC` and `CXX` override the compilers; locally, the default checks both zig’s bundled Clang and GCC when installed, at both C++ standards.
 - `mise run test:cxx:pkg`: build the package, then build `examples/consumer` against it through pkg-config, `find_package` and FetchContent.
 - `mise run fmt:cxx`: format the headers and examples.
 

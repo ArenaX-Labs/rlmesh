@@ -1,4 +1,4 @@
-// c++ -std=c++20 -I<include> cpp_model.cpp -lrlmesh_capi -o cpp_model
+// c++ -std=c++17 -I<include> cpp_model.cpp -lrlmesh_capi -o cpp_model
 #include <cstdio>
 #include <cstdlib>
 #include <rlmesh.hpp>
@@ -6,7 +6,7 @@
 int main(int argc, char** argv) try {
   const std::string address = argc > 1 ? argv[1] : "tcp://127.0.0.1:5555";
   const uint64_t episodes = argc > 2 ? std::strtoull(argv[2], nullptr, 10) : 3;
-  rlmesh::RemoteEnv env({.address = address});
+  rlmesh::RemoteEnv env(rlmesh::RemoteEnvOptions{}.with_address(address));
   auto action_space = env.action_space();
   rlmesh::Model model(
       [action_space](const rlmesh::Value&, const rlmesh::PredictContext& context) {
@@ -18,12 +18,13 @@ int main(int argc, char** argv) try {
         std::puts("");
         return action_space.sample();
       },
-      {.on_episode_end = [](std::string_view id) {
+      rlmesh::ModelOptions{}.with_on_episode_end([](std::string_view id) {
         std::printf("episode end: %.*s\n", static_cast<int>(id.size()), id.data());
-      }});
+      }));
   std::vector<int64_t> seeds;
   for (uint64_t i = 0; i < episodes; ++i) seeds.push_back(static_cast<int64_t>(7 + i));
-  auto result = model.run(env, {.episodes = episodes, .seeds = std::move(seeds)});
+  auto result =
+      model.run(env, rlmesh::RunOptions{}.with_episodes(episodes).with_seeds(std::move(seeds)));
   std::printf("run report: episodes=%zu steps=%lld mean=%.1f\n", result.num_episodes(),
               static_cast<long long>(result.total_steps()), result.mean_reward());
   return 0;

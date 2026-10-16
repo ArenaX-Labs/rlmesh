@@ -24,7 +24,8 @@ int main() {
   using namespace rlmesh::spaces;
 
   // The Shape example (throwing constructors).
-  auto obs = Dict({{"pos", Box(-1.0, 1.0, {3})}, {"id", Discrete(4, {.start = 1})}});
+  auto obs = Dict({{"pos", Box(-1.0, 1.0, {3})},
+                   {"id", Discrete(4, rlmesh::spaces::DiscreteOptions{}.with_start(1))}});
   CHECK(obs.seed(7) == 7);
   rlmesh::Value x = obs.sample();
   CHECK(obs.contains(x));
