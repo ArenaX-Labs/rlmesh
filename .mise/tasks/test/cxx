@@ -82,7 +82,7 @@ if printf '#define DLPACK_DLPACK_H_\n#include <rlmesh.h>\n' |
   echo "ERROR: a pre-1.0 DLPack header was accepted" >&2
   exit 1
 fi
-rg -q 'RLMesh requires DLPack 1.0 or newer' "$tmp/old_dlpack.log"
+grep -qE 'RLMesh requires DLPack 1.0 or newer' "$tmp/old_dlpack.log"
 # Compile-only layout assertions cover both 32-bit double-alignment conventions.
 # Other compilers still check their native layout when c_adapters runs below.
 case "$CC" in *zig*)
@@ -223,7 +223,7 @@ for compiler in "${compilers[@]}"; do
         -o "$tmp/noexceptions.o" >"$tmp/noexceptions.log" 2>&1; then
       echo "ERROR: wrapper accepted disabled exceptions" >&2; exit 1
     fi
-    rg -q 'rlmesh.hpp requires exceptions' "$tmp/noexceptions.log"
+    grep -qE 'rlmesh.hpp requires exceptions' "$tmp/noexceptions.log"
   done
   echo "==> C++17/C++20 header tokens are identical ($compiler)"
   for standard in 17 20; do
@@ -247,6 +247,6 @@ for compiler in "${compilers[@]}"; do
     $compiler -std=c++14 -I "$inc" -c -x c++ - -o "$tmp/oldstandard.o" >"$tmp/oldstandard.log" 2>&1; then
     echo "ERROR: wrapper accepted C++14" >&2; exit 1
   fi
-  rg -q 'rlmesh.hpp requires C\+\+17' "$tmp/oldstandard.log"
+  grep -qE 'rlmesh.hpp requires C\+\+17' "$tmp/oldstandard.log"
 done
 echo "==> test:cxx OK"
