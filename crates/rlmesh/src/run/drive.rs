@@ -1,14 +1,14 @@
-//! Driving a borrowed future on the caller (R-16, R-17, RUN-8, RUN-25).
+//! Driving a borrowed future on the caller.
 //!
-//! A run or session call is one future over owned (`'static`) state. Whatever
-//! it needs from the caller's borrows -- a local env's `reset` / `step`, a
-//! run hook -- it sends as a [`Job`] through a [`CallerPort`] and awaits. The
-//! sync entry points poll the future on the calling thread in segments (the
-//! library's own parking executor, inside the library runtime's
-//! `Handle::enter`, never tokio's `block_on`) and run each job between
-//! segments, outside any async execution context, so a hook or an env method
-//! may make sync rlmesh calls. The `_async` twins run the jobs inside their
-//! own future, with the driving flag set.
+//! A run or session call is one future over owned (`'static`) state.
+//! Whatever it needs from the caller's borrows -- a local env's `reset` /
+//! `step`, a run hook -- it sends as a [`Job`] through a [`CallerPort`] and
+//! awaits. The sync entry points poll the future on the calling thread in
+//! segments (the library's own parking executor, inside the library
+//! runtime's `Handle::enter`, never tokio's `block_on`) and run each job
+//! between segments, outside any async execution context, so a hook or an
+//! env method may make sync rlmesh calls. The `_async` twins run the jobs
+//! inside their own future, with the driving flag set.
 
 use std::cell::Cell;
 use std::future::Future;
@@ -37,7 +37,7 @@ pub(crate) fn runtime() -> &'static tokio::runtime::Runtime {
 
 thread_local! {
     /// Set while this thread polls a library driver segment or handles a job
-    /// inside an `_async` twin (R-16).
+    /// inside an `_async` twin.
     static DRIVING: Cell<bool> = const { Cell::new(false) };
 }
 
@@ -211,7 +211,7 @@ pub(crate) fn block_on_caller<F: Future>(
 }
 
 /// The `_async` form of [`block_on_caller`]: each poll enters the library
-/// runtime (RUN-8) and jobs run inside this future with the driving flag set.
+/// runtime and jobs run inside this future with the driving flag set.
 pub(crate) async fn await_on_caller<F: Future>(
     future: F,
     queue: &mut CallerQueue,
@@ -235,7 +235,7 @@ pub(crate) async fn await_on_caller<F: Future>(
 }
 
 /// Run `f` with the driving flag set: a callback an `_async` twin runs
-/// inside its own future (R-16).
+/// inside its own future.
 pub(crate) fn as_driving<R>(f: impl FnOnce() -> R) -> R {
     let _driving = Driving::set();
     f()
@@ -256,8 +256,8 @@ pub(crate) fn run_sync<F: Future>(future: F) -> F::Output {
 }
 
 /// Drive `future` to completion on this thread inside the library runtime's
-/// context (a client's sync call, R-17): the runtime's workers drive its I/O
-/// and timers while this thread parks. Never tokio's `block_on`, so it cannot
+/// context (a client's sync call): the runtime's workers drive its I/O and
+/// timers while this thread parks. Never tokio's `block_on`, so it cannot
 /// panic on nesting; the caller has checked it is not in an async context.
 pub(crate) fn block_on_library<F: Future>(future: F) -> F::Output {
     let _enter = runtime().enter();
@@ -277,8 +277,8 @@ pub(crate) fn block_on_library<F: Future>(future: F) -> F::Output {
 }
 
 /// Poll `future` inside the library runtime's context on whichever executor
-/// awaits it (a client's `_async` twin, RMT-7), so its timers and sockets
-/// register with the library runtime.
+/// awaits it (a client's `_async` twin), so its timers and sockets register
+/// with the library runtime.
 pub(crate) async fn in_library<F: Future>(future: F) -> F::Output {
     let mut future = pin!(future);
     std::future::poll_fn(move |cx| {
@@ -288,8 +288,8 @@ pub(crate) async fn in_library<F: Future>(future: F) -> F::Output {
     .await
 }
 
-/// R-16's condition: a tokio task (or `spawn_blocking` closure) or a library
-/// driver segment is running on this thread.
+/// Async-context condition: a tokio task (or `spawn_blocking` closure) or a
+/// library driver segment is running on this thread.
 pub(crate) fn in_async_context() -> bool {
     tokio::task::try_id().is_some() || driving()
 }
@@ -304,7 +304,7 @@ pub(crate) fn refuse_in_async_context(call: &str) -> Result<()> {
     Ok(())
 }
 
-/// Watches R-18 tokens and cancels the driver when one fires.
+/// Watches cancellation tokens and cancels the driver when one fires.
 pub(crate) struct CancelWatch {
     fired: Arc<std::sync::atomic::AtomicBool>,
     tokens: Arc<Vec<crate::ext::CancelSubscription>>,

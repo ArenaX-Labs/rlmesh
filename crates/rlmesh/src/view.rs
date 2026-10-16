@@ -28,7 +28,7 @@ pub enum ViewFormat {
     Png,
 }
 impl ViewBackend {
-    /// Python's backend spelling.
+    /// The backend name.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Terminal => "terminal",
@@ -43,7 +43,7 @@ impl fmt::Display for ViewBackend {
     }
 }
 impl ViewFormat {
-    /// Python's format spelling.
+    /// The format name.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Jpeg => "jpeg",
@@ -78,7 +78,7 @@ impl From<Duration> for ViewHold {
     }
 }
 
-/// Live display options, with Python's `View` defaults.
+/// Live display options.
 #[derive(Clone, Debug, PartialEq)]
 pub struct View {
     /// Terminal, HTTP, or both.
@@ -139,7 +139,7 @@ impl View {
         }
         Ok(())
     }
-    /// Parse Python's case-insensitive shorthand, ignoring outer whitespace.
+    /// Parse case-insensitive shorthand, ignoring outer whitespace.
     pub fn parse(text: &str) -> Result<Self> {
         let spec = text.trim().to_ascii_lowercase();
         let mut view = Self::default();

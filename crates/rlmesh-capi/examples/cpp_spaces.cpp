@@ -1,6 +1,5 @@
-// The spaces C++ wrapper, Python's rlmesh.spaces: the parity spec's Shape
-// example, typed bounds, downcasts and error classes. Exits nonzero on the
-// first failed check.
+// The spaces C++ wrapper: shapes, typed bounds, downcasts and error classes.
+// Exits nonzero on the first failed check.
 #include <cmath>
 #include <cstdio>
 #include <limits>

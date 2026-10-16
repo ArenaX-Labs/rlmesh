@@ -24,7 +24,7 @@ impl Default for DiscreteOptions {
     }
 }
 
-/// The integers `start .. start + n`: Python's `rlmesh.spaces.Discrete`.
+/// The integers `start .. start + n`.
 #[derive(Clone)]
 #[repr(transparent)]
 pub struct Discrete(Space);

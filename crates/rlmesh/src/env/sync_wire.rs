@@ -27,12 +27,12 @@ use crate::specs::EnvContract;
 use crate::value::{meta_codec, space_codec};
 use crate::{Error, InfoDict, Metadata, Result, Value};
 
-/// The id an env with none serves (ENV-6).
+/// The id an env with none serves.
 pub(crate) const UNKNOWN_ENV_ID: &str = "UnknownEnv-v1";
 
 const AUTORESET_KEY: &str = "autoreset_mode";
 
-/// ENV-27: the autoreset mode an env's metadata declares.
+/// The autoreset mode an env's metadata declares.
 pub(crate) fn autoreset_mode(metadata: Option<&Metadata>) -> Result<AutoresetMode> {
     let Some(value) = metadata.and_then(|metadata| metadata.get(AUTORESET_KEY)) else {
         return Ok(AutoresetMode::Disabled);
@@ -96,9 +96,9 @@ pub(crate) fn vector_contract_of(env: &dyn VectorEnv) -> Result<EnvContract> {
     ))
 }
 
-/// ENV-35: an authored `{op}` failure as the client receives it, code
-/// `INTERNAL` and the text `"{op} failed: {message}"`, recoverable only for a
-/// recoverable Environment-class error.
+/// An authored `{op}` failure as the client receives it, code `INTERNAL` and
+/// the text `"{op} failed: {message}"`, recoverable only for a recoverable
+/// Environment-class error.
 pub(crate) fn authored_failure(op: &str, err: &Error) -> EnvRuntimeError {
     let (message, recoverable) = match err {
         Error::Environment(env) => (env.message.clone(), env.is_recoverable),

@@ -1,4 +1,4 @@
-//! Spaces: Python's `rlmesh.spaces`.
+//! Spaces and their samplers.
 //!
 //! A [`SpaceSpec`] is immutable data describing a space. A [`Space`] is a
 //! spec plus its sampler, a shared handle whose clones drive one RNG.
@@ -44,7 +44,7 @@ pub use box_space::{Bound, BoundsKind, Box, BoxBound, BoxOptions};
 pub use dict::{Dict, DictItems, DictKeys, DictSpaces, DictValues};
 pub use discrete::{Discrete, DiscreteOptions};
 
-/// A space's kind: Python's `kind` strings.
+/// A space's kind, with its wire spelling.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum SpaceKind {
@@ -67,7 +67,7 @@ pub enum SpaceKind {
 }
 
 impl SpaceKind {
-    /// Python's spelling (`"multi_binary"`).
+    /// The canonical spelling (`"multi_binary"`).
     pub fn as_str(self) -> &'static str {
         match self {
             SpaceKind::Box => "box",
@@ -101,12 +101,11 @@ impl fmt::Display for SpaceKind {
     }
 }
 
-/// Immutable data describing a space: Python's `SpaceSpec`. Clones share.
+/// Immutable data describing a space. Clones share storage.
 ///
 /// Get one from a space (`SpaceSpec::from(&space)`), a remote contract, or
-/// [`Space::spec`]; [`to_space`](Self::to_space) makes a fresh space from it.
-/// There is no `PartialEq`: Python compares specs by identity (compare
-/// spaces instead).
+/// [`Space::spec`]; [`to_space`](Self::to_space) makes a fresh space from
+/// it. There is no `PartialEq`; compare spaces instead.
 #[derive(Clone)]
 pub struct SpaceSpec(Arc<WireSpec>);
 
@@ -140,7 +139,7 @@ impl SpaceSpec {
     }
 }
 
-/// Gymnasium style, as Python's `repr`: `Box(-1.0, 1.0, (3,), float32)`.
+/// Gymnasium-style text: `Box(-1.0, 1.0, (3,), float32)`.
 impl fmt::Display for SpaceSpec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&*self.0, f)
@@ -161,10 +160,10 @@ struct Inner {
     children: OnceLock<DictSpaces>,
 }
 
-/// A space: a spec plus its sampler (Python's `Space`).
+/// A space: a spec plus its sampler.
 ///
-/// Clones share one handle, so two names drive one RNG, as in Python. `seed`,
-/// `sample` and `contains` may run concurrently.
+/// Clones share one handle, so two names drive one RNG. `seed`, `sample` and
+/// `contains` may run concurrently.
 #[derive(Clone)]
 pub struct Space(Arc<Inner>);
 
@@ -269,8 +268,8 @@ fn wrong_kind(expected: SpaceKind, actual: SpaceKind) -> Error {
     Error::invalid_argument(format!("expected {expected} SpaceSpec, got '{actual}'"))
 }
 
-/// Normalized spec equality (Python's `spec_to_dict` comparison): Dict
-/// children compare by key, whatever their order.
+/// Normalized spec equality: Dict children compare by key, whatever their
+/// order.
 fn spec_eq(a: &WireSpec, b: &WireSpec) -> bool {
     if a.shape != b.shape || DType::from_core(a.dtype) != DType::from_core(b.dtype) {
         return false;
@@ -293,7 +292,7 @@ fn spec_eq(a: &WireSpec, b: &WireSpec) -> bool {
     }
 }
 
-/// Spaces compare by spec, as Python's `Space.__eq__`; there is no `Hash`.
+/// Spaces compare by spec; there is no `Hash`.
 impl PartialEq for Space {
     fn eq(&self, other: &Self) -> bool {
         spec_eq(self.0.spec.wire(), other.0.spec.wire())
@@ -324,8 +323,8 @@ impl From<&Space> for SpaceSpec {
     }
 }
 
-/// The typed space for `spec` (Python's `space_from_spec`). Refuses a spec
-/// with no payload (`unknown`) with the ValueError class.
+/// The typed space for `spec`. Refuses a spec with no payload (`unknown`)
+/// with the ValueError class.
 pub fn space_from_spec(spec: SpaceSpec) -> Result<Space> {
     if spec.kind() == SpaceKind::Unknown {
         return Err(Error::invalid_argument(
@@ -407,7 +406,7 @@ macro_rules! space_newtype {
 
         impl $ty {
             /// A space for `spec`; a spec of another kind is the ValueError
-            /// class (Python's constructor given a spec).
+            /// class.
             pub fn from_spec(spec: crate::spaces::SpaceSpec) -> crate::Result<Self> {
                 Self::try_from(crate::spaces::Space::new(spec))
             }

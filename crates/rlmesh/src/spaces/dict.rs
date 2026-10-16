@@ -11,12 +11,12 @@ use rlmesh_spaces::types::SpaceKind as WireKind;
 use super::{Space, SpaceSpec, space_newtype};
 use crate::{Error, Result};
 
-/// Named child spaces: Python's `rlmesh.spaces.Dict`.
+/// Named child spaces.
 ///
 /// Read it as a mapping in the spec's declaration order (a Dict built here
-/// sorts its keys, as Python's does; a remote spec keeps its own order).
-/// Each child is a space of its own with its own sampler, shared by every
-/// handle of this Dict: seeding or sampling the Dict leaves them alone.
+/// sorts its keys; a remote spec keeps its own order). Each child is a space
+/// of its own with its own sampler, shared by every handle of this Dict:
+/// seeding or sampling the Dict leaves them alone.
 #[derive(Clone)]
 #[repr(transparent)]
 pub struct Dict(Space);
@@ -46,7 +46,7 @@ impl Dict {
         Ok(Dict(Space::new(SpaceSpec::from_wire(spec))))
     }
 
-    /// The children as a read-only mapping (Python's `.spaces`).
+    /// The children as a read-only mapping.
     pub fn spaces(&self) -> &DictSpaces {
         self.0.dict_children()
     }
@@ -66,7 +66,7 @@ impl Dict {
         self.spaces().items()
     }
 
-    /// The keys (Python's `iter(d)`).
+    /// The keys in declaration order.
     pub fn iter(&self) -> DictKeys<'_> {
         self.spaces().iter()
     }
@@ -106,8 +106,7 @@ impl<'a> IntoIterator for &'a Dict {
     }
 }
 
-/// A Dict's children: an ordered, read-only map (Python's
-/// `MappingProxyType`).
+/// A Dict's children: an ordered, read-only map.
 pub struct DictSpaces {
     keys: Vec<String>,
     values: Vec<Space>,

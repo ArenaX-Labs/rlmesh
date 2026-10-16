@@ -1,11 +1,12 @@
-//! Env authoring and serving: Python's Gymnasium env shape, [`EnvServer`],
+//! Env authoring and serving: Gymnasium-shaped environments, [`EnvServer`],
 //! [`EnvFactory`] and the remote clients.
 //!
-//! An author writes an env in Gymnasium shape ([`Env`], or [`VectorEnv`] for a
-//! natively batched one) and the library derives everything else: the
+//! An author writes an env in Gymnasium shape ([`Env`], or [`VectorEnv`] for
+//! a natively batched one) and the library derives everything else: the
 //! [`EnvServer`] reads the spaces, id, render mode and metadata once at
-//! construction and builds the served [`EnvContract`](crate::specs::EnvContract).
-//! Authoring is sync; a lane runs on its own thread for the server's life.
+//! construction and builds the served
+//! [`EnvContract`](crate::specs::EnvContract). Authoring is sync; a lane
+//! runs on its own thread for the server's life.
 
 pub(crate) mod batch;
 pub(crate) mod client;
@@ -36,16 +37,17 @@ pub use trial::trial_index;
 use crate::spaces::Space;
 use crate::{InfoDict, Metadata, Result, Value};
 
-/// One environment in Gymnasium shape: Python's `EnvLike` protocol.
+/// One environment in Gymnasium shape.
 ///
 /// `reset` returns `(observation, info)` and `step` returns `(observation,
-/// reward, terminated, truncated, info)`, as Gymnasium's do. The server reads
-/// the spaces, `render_mode`, `metadata` and `id` once, when it is built.
+/// reward, terminated, truncated, info)`, as Gymnasium's do. The server
+/// reads the spaces, `render_mode`, `metadata` and `id` once, when it is
+/// built.
 ///
 /// A failure is an [`Error`](crate::Error): return
-/// [`Error::environment_recoverable`](crate::Error::environment_recoverable) to
-/// fail one request and keep the client's session; any other error ends it,
-/// and the client reads `[INTERNAL] {op} failed: {message}`.
+/// [`Error::environment_recoverable`](crate::Error::environment_recoverable)
+/// to fail one request and keep the client's session; any other error ends
+/// it, and the client reads `[INTERNAL] {op} failed: {message}`.
 pub trait Env {
     /// The space observations belong to.
     fn observation_space(&self) -> Space;
@@ -53,12 +55,11 @@ pub trait Env {
     /// The space actions belong to.
     fn action_space(&self) -> Space;
 
-    /// Start an episode: Python's `reset(*, seed=None, options=None)`.
+    /// Start an episode with an optional seed and reset options.
     fn reset(&mut self, seed: Option<i64>, options: Option<&InfoDict>)
     -> Result<(Value, InfoDict)>;
 
-    /// Apply one action. The action is `None` when the request carries none,
-    /// as Python calls `step(None)`.
+    /// Apply one action. The action is `None` when the request carries none.
     fn step(&mut self, action: Option<Value>) -> Result<(Value, f64, bool, bool, InfoDict)>;
 
     /// The current frame as an image value (cast to uint8; `[H, W, 3]`,
@@ -74,28 +75,28 @@ pub trait Env {
         Ok(())
     }
 
-    /// Python's `render_mode`; `None` by default.
+    /// The render mode; `None` by default.
     fn render_mode(&self) -> Option<String> {
         None
     }
 
-    /// Python's `metadata` dict; `None` by default. Its `autoreset_mode` key
+    /// The metadata dictionary; `None` by default. Its `autoreset_mode` key
     /// sets the served autoreset mode.
     fn metadata(&self) -> Option<Metadata> {
         None
     }
 
-    /// Python's `spec.id`; `None` serves `"UnknownEnv-v1"`.
+    /// The environment identifier; `None` serves `"UnknownEnv-v1"`.
     fn id(&self) -> Option<String> {
         None
     }
 }
 
-/// The seed a [`VectorEnv`] reset receives: Python's `int | list[int]` (None
-/// is `Option::None`).
+/// The seed a [`VectorEnv`] reset receives: one seed or one per lane.
+/// `Option::None` leaves the reset unseeded.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VectorSeed {
-    /// One seed for the whole vector (Python passes an int).
+    /// One seed for the whole vector.
     One(i64),
     /// One seed per sub-environment.
     Each(Vec<i64>),
@@ -119,14 +120,14 @@ impl From<&[i64]> for VectorSeed {
     }
 }
 
-/// A natively batched environment: Python's `VectorEnvLike` protocol.
+/// A natively batched environment.
 ///
-/// `actions` and observations use the batched layout a default Python vector
-/// env sees: a Box, MultiBinary or MultiDiscrete batch is one stacked
-/// `Tensor` of shape `[num_envs, *shape]`, a Discrete batch one int64 `Tensor`
-/// of shape `[num_envs]`, a Dict or Tuple batch is batched per child, and any
-/// other kind is a `List` of per-lane values. Returned observations may also
-/// give a stacked kind as a `List` of per-lane values.
+/// `actions` and observations use the batched layout: a Box, MultiBinary or
+/// MultiDiscrete batch is one stacked `Tensor` of shape `[num_envs,
+/// *shape]`, a Discrete batch one int64 `Tensor` of shape `[num_envs]`, a
+/// Dict or Tuple batch is batched per child, and any other kind is a `List`
+/// of per-lane values. Returned observations may also give a stacked kind as
+/// a `List` of per-lane values.
 pub trait VectorEnv {
     /// The number of sub-environments stepped together.
     fn num_envs(&self) -> u64;
@@ -159,17 +160,17 @@ pub trait VectorEnv {
         Ok(())
     }
 
-    /// Python's `render_mode`; `None` by default.
+    /// The render mode; `None` by default.
     fn render_mode(&self) -> Option<String> {
         None
     }
 
-    /// Python's `metadata` dict; `None` by default.
+    /// The metadata dictionary; `None` by default.
     fn metadata(&self) -> Option<Metadata> {
         None
     }
 
-    /// Python's `spec.id`; `None` serves `"UnknownEnv-v1"`.
+    /// The environment identifier; `None` serves `"UnknownEnv-v1"`.
     fn id(&self) -> Option<String> {
         None
     }

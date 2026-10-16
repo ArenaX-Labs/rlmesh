@@ -1,4 +1,4 @@
-//! Portable evaluation bundles: Python's `rlmesh.recorder`.
+//! Portable evaluation bundles.
 mod capture;
 mod export;
 mod records;
@@ -208,7 +208,7 @@ fn document(id: &str, state: &State, recorded_at: Option<String>) -> Metadata {
 /// Accumulate workloads and export a portable result bundle.
 ///
 /// Capture hooks retain shared state independently of this handle. Returned
-/// workload values are snapshots; a hook can accumulate several runs (RUN-18).
+/// workload values are snapshots; a hook can accumulate several runs.
 /// Explicit `close` removes staged assets; dropping a handle leaves live
 /// capture hooks valid and the last owner removes staging.
 pub struct Recorder {
@@ -223,7 +223,7 @@ impl std::fmt::Debug for Recorder {
     }
 }
 impl Recorder {
-    /// Construct with Python's defaults and validation.
+    /// Construct a recorder, validating its capture and export options.
     pub fn new(options: RecorderOptions) -> Result<Self> {
         if options.fps == 0 {
             return Err(Error::invalid_argument(

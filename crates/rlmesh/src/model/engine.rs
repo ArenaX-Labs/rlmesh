@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 /// The episodes (or, for an anonymous lane, the routes) already warned that
-/// their model returned a chunk shorter than the horizon: Python's Session
-/// warns once per episode (MDL-P11).
+/// their model returned a chunk shorter than the horizon; warns once per
+/// episode.
 #[derive(Debug, Default)]
 pub(crate) struct ShortChunkWarned(Mutex<HashSet<String>>);
 
@@ -173,7 +173,7 @@ pub struct AdaptedModelHandler {
     /// (`Arc`) because the work runs on `spawn_blocking` threads.
     adapter_ns: Arc<AtomicU64>,
     /// The episodes the short-chunk warning already fired for (see
-    /// [`take_prefix`]): once per episode, as Python's Session warns.
+    /// [`take_prefix`]): once per episode.
     short_chunk_warned: Arc<ShortChunkWarned>,
     /// The endpoint-wide frame-window budget (see [`FRAME_HISTORY_LIMIT_ENV`]),
     /// read once here so every route is admitted against the same number.
@@ -687,7 +687,7 @@ fn take_prefix(
     Ok(frames)
 }
 
-/// Python's Session text for an undeclared model's short chunk (MDL-P11).
+/// Warning text for an undeclared model's short chunk.
 pub(crate) fn short_chunk_text(frames: usize, horizon: u32) -> String {
     format!(
         "the model returned {frames} actions for execution_horizon={horizon}; replaying what \

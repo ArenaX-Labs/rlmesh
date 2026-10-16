@@ -13,9 +13,9 @@ pub(crate) mod sealed {
 pub trait Vocabulary:
     Copy + Eq + Hash + fmt::Debug + Send + Sync + 'static + sealed::Sealed
 {
-    /// The exact Python vocabulary spelling.
+    /// The exact vocabulary spelling.
     fn as_str(self) -> &'static str;
-    /// Parse an exact Python vocabulary spelling.
+    /// Parse an exact vocabulary spelling.
     fn parse(text: &str) -> Option<Self>;
 }
 /// A known vocabulary value or a newer peer's spelling, retained verbatim.
@@ -27,11 +27,11 @@ pub enum Tolerant<E: Vocabulary> {
     Other(String),
 }
 impl<E: Vocabulary> Tolerant<E> {
-    /// Parse an exact Python vocabulary spelling.
+    /// Parse an exact vocabulary spelling.
     pub fn parse(text: &str) -> Self {
         E::parse(text).map_or_else(|| Self::Other(text.into()), Self::Known)
     }
-    /// The exact Python vocabulary spelling.
+    /// The exact vocabulary spelling.
     pub fn as_str(&self) -> &str {
         match self {
             Self::Known(e) => e.as_str(),
@@ -84,9 +84,9 @@ macro_rules! vocabulary {
         /// A typed adapter vocabulary or tree alternative.
         pub enum $name { $(#[doc = $text] $variant),+ }
         impl $name {
-            /// The exact Python vocabulary spelling.
+            /// The exact vocabulary spelling.
             pub fn as_str(self) -> &'static str { match self { $(Self::$variant => $text),+ } }
-            /// Parse an exact Python vocabulary spelling.
+            /// Parse an exact vocabulary spelling.
             pub fn parse(text: &str) -> Option<Self> { match text { $($text => Some(Self::$variant)),+, _ => None } }
         }
         impl sealed::Sealed for $name {}
@@ -129,9 +129,9 @@ impl RotationEncoding {
         }
     }
 }
-/// The corresponding Python adapter annotation.
+/// The corresponding adapter annotation.
 pub type StackSpec = Vec<i32>;
-/// The shared Python spelling or ordered vocabulary.
+/// The canonical spelling or ordered vocabulary.
 pub const ROTATION_DIMS: &[(RotationEncoding, u32)] = &[
     (RotationEncoding::AxisAngle, 3),
     (RotationEncoding::EulerXyz, 3),

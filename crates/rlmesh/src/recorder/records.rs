@@ -183,7 +183,7 @@ impl fmt::Display for EpisodeRecord {
         )
     }
 }
-/// A snapshot of one model × env × task cell (RUN-18).
+/// A snapshot of one model × env × task cell.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct WorkloadRecord {
     /// Model name.

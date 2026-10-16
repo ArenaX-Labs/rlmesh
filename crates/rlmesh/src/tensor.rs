@@ -1,4 +1,4 @@
-//! `rlmesh::Tensor`, Python's `rlmesh.Tensor`.
+//! Immutable tensors with shared storage.
 
 use std::fmt;
 
@@ -15,15 +15,13 @@ pub struct ToDlpackOptions {
     pub copy: bool,
 }
 
-/// An immutable n-dimensional array with shared storage: Python's
-/// `rlmesh.Tensor`.
+/// An immutable n-dimensional array with shared storage.
 ///
 /// The constructor copies its buffer; [`Clone`], [`buffer`](Self::buffer)
 /// and a contiguous [`reshape`](Self::reshape) share storage, and
 /// [`copy`](Self::copy) makes a fresh one. Strides are in bytes.
 ///
-/// `PartialEq` is structural (dtype, shape and element bytes), a Rust extra:
-/// Python compares tensors by identity.
+/// `PartialEq` compares dtype, shape and element bytes.
 #[derive(Clone)]
 pub struct Tensor {
     inner: CoreTensor,
@@ -139,7 +137,7 @@ impl Tensor {
     }
 }
 
-/// Python's `repr`: `Tensor(dtype="float32", shape=[2, 3], bytes=24)`.
+/// Text representation: `Tensor(dtype="float32", shape=[2, 3], bytes=24)`.
 impl fmt::Display for Tensor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(

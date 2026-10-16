@@ -1,12 +1,11 @@
-//! Python's `rlmesh.trial_index`.
+//! Trial ordinals delivered through reset options.
 
 use crate::{Error, InfoDict, Result, Value};
 
-/// The reserved `trial_index` reset option, or `None` when absent: Python's
-/// `rlmesh.trial_index(options, *, lane=None)`.
+/// The reserved `trial_index` reset option, or `None` when absent.
 ///
-/// The ordinal of the episode a `reset` starts, 0-based and walked in order by
-/// the runtime. Delivered only to an env that declared `"trial_index"` in
+/// The ordinal of the episode a `reset` starts, 0-based and walked in order
+/// by the runtime. Delivered only to an env that declared `"trial_index"` in
 /// [`EnvFactory::reset_options`](crate::EnvFactory::reset_options). A reset
 /// covering one lane carries a bare integer; a reset covering several lanes
 /// of a vector env carries a list, one ordinal per lane, read with `lane`

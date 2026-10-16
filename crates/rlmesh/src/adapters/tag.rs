@@ -5,7 +5,8 @@ use std::fmt;
 /// field is a minor change by project policy.
 #[derive(Clone, Debug)]
 pub struct TagOptions {
-    /// The `validate` field, with Python’s meaning and default.
+    /// Check the env's single-lane spaces against the tags; defaults to
+    /// true.
     pub validate: bool,
 }
 impl Default for TagOptions {

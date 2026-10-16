@@ -1,4 +1,4 @@
-//! Run hooks and the context a run hands them (RUN-6, RUN-7, RUN-8).
+//! Run hooks and the context a run hands them.
 
 use std::sync::{Arc, Mutex};
 
@@ -6,13 +6,13 @@ use super::{EpisodeResult, RunResult, StepEvent};
 use super::{FrameSources, ReadItem, RenderFn};
 use crate::{EnvContract, Error, Result, Value};
 
-/// Observer callbacks for a run: Python's `RunHooks`. Every default is a
-/// no-op; implement any subset.
+/// Observer callbacks for a run. Every default is a no-op; implement any
+/// subset.
 ///
 /// A sync run calls hooks on the thread that called it, outside any async
 /// execution context, so a hook may make sync rlmesh calls; under an
 /// `_async` twin they run inside its future, where a blocking rlmesh call
-/// fails with the `RuntimeError` class (RUN-8). A hook error aborts the run;
+/// fails with the `RuntimeError` class. A hook error aborts the run;
 /// [`on_run_end`](RunHooks::on_run_end) still fires exactly once with the
 /// completed episodes, and the run's own error wins over its error.
 pub trait RunHooks: Send {
@@ -48,7 +48,7 @@ pub trait RunHooks: Send {
     }
 }
 
-/// What a run exposes to its hooks: Python's `RunContext` protocol.
+/// What a run exposes to its hooks.
 pub trait RunContext: Send + Sync {
     /// The connected env's contract; `None` before the env is connected.
     fn contract(&self) -> Result<Option<EnvContract>>;
@@ -62,7 +62,7 @@ pub trait RunContext: Send + Sync {
 }
 
 /// The library's context: a native run's (valid for its whole life) or a
-/// session's (failing once the session has closed, RUN-7).
+/// session's (failing once the session has closed).
 type RemoteRender = Arc<dyn Fn() -> Result<Value> + Send + Sync>;
 pub(crate) struct LibraryContext {
     contract: Mutex<Option<EnvContract>>,

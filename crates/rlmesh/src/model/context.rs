@@ -1,5 +1,5 @@
 //! The per-episode context a context-reading corner receives, and the
-//! model's episode store behind it (Python's `_models/_episodes.py`).
+//! model's episode store behind it.
 
 use std::any::Any;
 use std::collections::HashMap;
@@ -14,8 +14,8 @@ pub(crate) const EPISODE_CAPACITY: usize = 65_536;
 /// The environment variable overriding [`EPISODE_CAPACITY`].
 pub(crate) const EPISODE_CAPACITY_ENV: &str = "RLMESH_EPISODE_CAPACITY";
 
-/// One episode's free state: Python's `PredictContext.state` dict, holding
-/// any `Send` value per key. It lives until the episode ends.
+/// One episode's free state, holding any `Send` value per key. It lives
+/// until the episode ends.
 #[derive(Default)]
 pub struct EpisodeState {
     entries: HashMap<String, Box<dyn Any + Send>>,
@@ -89,8 +89,7 @@ impl EpisodeState {
     }
 }
 
-/// What a context-reading corner learns about the episode it predicts for:
-/// Python's `rlmesh.types.PredictContext`.
+/// What a context-reading corner learns about the episode it predicts for.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct PredictContext<'a> {
@@ -107,8 +106,7 @@ pub struct PredictContext<'a> {
     pub state: &'a mut EpisodeState,
 }
 
-/// One context per row of a batched corner: Python's
-/// `BatchPredictContext = list[PredictContext]`.
+/// One context per row of a batched corner.
 pub type BatchPredictContext<'a> = [PredictContext<'a>];
 
 /// A row's context, owned while its corner runs: the store lends the

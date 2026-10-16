@@ -20,9 +20,9 @@ fn batch_error(message: impl Into<String>) -> Error {
     Error::Type(message.into())
 }
 
-/// Stack per-lane values into the batched layout of `spec` (Python's
-/// default numpy path): Box / MultiBinary / MultiDiscrete one stacked tensor,
-/// Discrete one int64 tensor, Dict / Tuple per child, anything else a List.
+/// Stack per-lane values into the batched layout of `spec`: Box /
+/// MultiBinary / MultiDiscrete one stacked tensor, Discrete one int64
+/// tensor, Dict / Tuple per child, anything else a List.
 pub(crate) fn stack_lanes(spec: &WireSpec, lanes: Vec<Value>) -> Result<Value> {
     match &spec.spec {
         Some(WireKind::Dict(dict)) => {
@@ -98,8 +98,8 @@ pub(crate) fn stack_lanes(spec: &WireSpec, lanes: Vec<Value>) -> Result<Value> {
     }
 }
 
-/// Split a batched value of `spec` into `num_envs` per-lane values. A List of
-/// per-lane values is accepted for any kind, as Python accepts any sequence.
+/// Split a batched value of `spec` into `num_envs` per-lane values. A List
+/// of per-lane values is accepted for any kind.
 pub(crate) fn unstack_lanes(spec: &WireSpec, batch: Value, num_envs: usize) -> Result<Vec<Value>> {
     let lanes = unstack_lanes_unchecked(spec, batch, num_envs)?;
     for lane in &lanes {
@@ -179,9 +179,9 @@ fn tensor_ints(tensor: &Tensor) -> Result<Vec<i64>> {
         .collect()
 }
 
-/// Lane 0 of a batched value, walking the per-lane `spec` (Python's
-/// `_lane0`): Dict and Tuple per child, anything else the first item of a
-/// List or the first slice of a Tensor.
+/// Lane 0 of a batched value, walking the per-lane `spec`: Dict and Tuple
+/// per child, anything else the first item of a List or the first slice of a
+/// Tensor.
 pub(crate) fn lane0(spec: &WireSpec, value: Value) -> Result<Value> {
     let lane = lane0_unchecked(spec, value)?;
     crate::value::space_codec::value_to_space(spec, &lane)?;
@@ -245,9 +245,9 @@ pub(crate) fn first_item(value: Value) -> Result<Value> {
     }
 }
 
-/// A one-lane batch of `action` (Python's `_batch1`): Dict and Tuple per
-/// child; a tensor gains a leading axis of 1; anything else, a Discrete int
-/// included, is a one-item List.
+/// A one-lane batch of `action`: Dict and Tuple per child; a tensor gains a
+/// leading axis of 1; anything else, a Discrete int included, is a one-item
+/// List.
 pub(crate) fn batch1(spec: &WireSpec, action: Value) -> Result<Value> {
     crate::value::space_codec::value_to_space(spec, &action)?;
     batch1_unchecked(spec, action)
@@ -322,7 +322,7 @@ pub(crate) fn info0(info: &Metadata) -> Metadata {
     lane
 }
 
-/// Python's `bool(mask[0])` for a mask value.
+/// Read the first mask element as a boolean.
 fn mask_lane0(mask: &Value) -> bool {
     match first_item(mask.clone()) {
         Ok(Value::Bool(flag)) => flag,
@@ -334,9 +334,9 @@ fn mask_lane0(mask: &Value) -> bool {
     }
 }
 
-/// PNG-encode a render frame by Python's lenient rule (ENV-5): any numeric
-/// image value cast to uint8; `[H, W, 3]`, `[H, W, 4]`, `[3, H, W]`,
-/// `[4, H, W]` and `[H, W]` encode, any other shape gives no frame.
+/// PNG-encode a render frame: any numeric image value cast to uint8; `[H, W,
+/// 3]`, `[H, W, 4]`, `[3, H, W]`, `[4, H, W]` and `[H, W]` encode, any other
+/// shape gives no frame.
 pub(crate) fn encode_frame(frame: &Value) -> Result<Option<Vec<u8>>> {
     let Some((shape, bytes)) = frame_u8(frame)? else {
         return Ok(None);

@@ -578,9 +578,9 @@ impl PredictFn for ModelPredict {
     }
 }
 
-/// Resolves the model's spec per route (Python's `resolve_adapter`): none
-/// for `NO_ADAPTER` or a spec-less model on an untagged env, an adapter
-/// for a spec, and a refusal for a tagged env with no spec.
+/// Resolves the model's spec per route: none for `NO_ADAPTER` or a spec-less
+/// model on an untagged env, an adapter for a spec, and a refusal for a
+/// tagged env with no spec.
 struct SpecResolver {
     context: Option<Arc<crate::run::hooks::LibraryContext>>,
     spec: Option<SpecArg>,

@@ -1,5 +1,5 @@
 //! `Session<'a>`: a model bound to one env, driven by hand or by
-//! `Session::run` (R-17, R-18, RUN-7, RUN-28).
+//! `Session::run`.
 
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
@@ -35,11 +35,10 @@ use crate::{
     WarningCategory,
 };
 
-/// The native session loop's per-episode step bound (the edition default
-/// Python's `_MAX_STEPS_PER_EPISODE` mirrors).
+/// The native session loop's per-episode step bound for this edition.
 const MAX_STEPS_PER_EPISODE: i64 = 100_000;
 
-/// How long Drop waits for owned cleanup outside an async runtime (R-17).
+/// How long Drop waits for owned cleanup outside an async runtime.
 const DROP_BOUND: Duration = Duration::from_secs(5);
 
 const SUCCESS_INFO_KEYS: [&str; 3] = ["is_success", "success", "task_success"];
@@ -48,8 +47,7 @@ fn closed_error() -> Error {
     Error::Runtime("session is closed".to_string())
 }
 
-/// One info value as a task outcome, or `None` when its kind carries none
-/// (Python's `_success_flag`).
+/// One info value as a task outcome, or `None` when its kind carries none.
 fn success_flag(value: &Value) -> Option<bool> {
     match value {
         Value::Bool(flag) => Some(*flag),
@@ -59,15 +57,14 @@ fn success_flag(value: &Value) -> Option<bool> {
     }
 }
 
-/// The env-reported task outcome of a step's info (Python's
-/// `_episode_success`).
+/// The env-reported task outcome of a step's info.
 fn episode_success(info: &InfoDict) -> Option<bool> {
     SUCCESS_INFO_KEYS
         .iter()
         .find_map(|key| info.get(key).and_then(success_flag))
 }
 
-/// The per-op samples one `Session::run` measures (Python's `_RunTelemetry`).
+/// The per-op samples one `Session::run` measures.
 #[derive(Default)]
 struct Telemetry {
     samples: HashMap<(&'static str, &'static str), Vec<f64>>,
@@ -206,7 +203,7 @@ struct Core {
     connected: Option<Connected>,
     episode: Episode,
     telemetry: Option<Telemetry>,
-    /// The call in flight's cancellation (R-18).
+    /// The call in flight's cancellation.
     cancel: CancellationToken,
     subscriptions: Arc<Vec<crate::ext::CancelSubscription>>,
     viewer: Option<Arc<std::sync::Mutex<crate::view::ViewerDriver>>>,
@@ -1062,12 +1059,11 @@ impl CallerEnv<'_> {
     }
 }
 
-/// A model bound to one env: Python's `Session`. Drive it with
-/// [`reset`](Session::reset) / [`predict`](Session::predict) /
-/// [`step`](Session::step), or pump whole episodes with
-/// [`run`](Session::run). It borrows the model and the env for `'a`
-/// (R-17); [`close`](Session::close) releases what it made, and Drop acts
-/// as `close` on an error (no viewer hold, errors swallowed).
+/// A model bound to one env. Drive it with [`reset`](Session::reset) /
+/// [`predict`](Session::predict) / [`step`](Session::step), or pump whole
+/// episodes with [`run`](Session::run). It borrows the model and the env for
+/// `'a`; [`close`](Session::close) releases what it made, and Drop acts as
+/// `close` on an error (no viewer hold, errors swallowed).
 pub struct Session<'a> {
     core: Core,
     env: CallerEnv<'a>,
@@ -1261,10 +1257,9 @@ impl<'a> Session<'a> {
         })
     }
 
-    /// Bind a served model to `env` and dial it (RMT-P1, RMT-P7, RMT-P12,
-    /// RMT-P13): options and the target's kind and arity are checked before
-    /// anything dials; an address is dialed before the model and closed again
-    /// if the model dial fails.
+    /// Bind a served model to `env` and dial it: options and the target's
+    /// kind and arity are checked before anything dials; an address is
+    /// dialed before the model and closed again if the model dial fails.
     pub(crate) async fn create_remote(
         model: &'a RemoteModel,
         env: EnvTarget<'a>,
@@ -1553,7 +1548,8 @@ impl<'a> Session<'a> {
         .await
     }
 
-    /// Apply one action to the env (R-15's five-tuple).
+    /// Apply one action to the env (`(observation, reward, terminated,
+    /// truncated, info)`).
     #[allow(clippy::type_complexity)]
     pub fn step(&mut self, action: Value) -> Result<(Value, f64, bool, bool, InfoDict)> {
         refuse_in_async_context("Session::step")?;
@@ -1582,7 +1578,7 @@ impl<'a> Session<'a> {
     }
 
     /// The async twin of [`run`](Session::run). Its hooks run inside this
-    /// future (RUN-8).
+    /// future.
     pub async fn run_async(&mut self, options: SessionRunOptions<'_>) -> Result<RunResult> {
         self.run_in(Mode::Async, options).await
     }
@@ -1742,7 +1738,7 @@ impl<'a> Session<'a> {
     }
 
     /// This session as its hooks see it (connects first). The context fails
-    /// with the `RuntimeError` class once the session has closed (RUN-7).
+    /// with the `RuntimeError` class once the session has closed.
     pub fn run_context(&mut self) -> Result<Arc<dyn RunContext>> {
         self.contract()?;
         Ok(self.core.context.clone())
@@ -1754,8 +1750,8 @@ impl<'a> Session<'a> {
         Ok(self.core.context.clone())
     }
 
-    /// The session's cancel token (R-18): the `SessionOptions::cancel` one,
-    /// or one the session made; the same token on every call.
+    /// The session's cancel token: the `SessionOptions::cancel` one, or one
+    /// the session made; the same token on every call.
     pub fn cancel_handle(&self) -> crate::ext::CancelToken {
         self.cancel.clone()
     }

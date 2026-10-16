@@ -1,5 +1,4 @@
-//! The remote env clients: Python's `RemoteEnv` and `RemoteVectorEnv`, over
-//! one any-arity core the bindings drive directly (`binding::EnvClientCore`).
+//! Remote environment clients over one core supporting any number of lanes.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,18 +28,17 @@ use crate::{
 };
 
 /// How long `close` waits for the server when the client has no request
-/// timeout (RMT-4): past it the client detaches locally.
+/// timeout: past it the client detaches locally.
 const CLOSE_GRACE: Duration = Duration::from_secs(5);
 
-/// The runtime-reserved info keys (RMT-18).
+/// The runtime-reserved info keys.
 const RUNTIME_INFO_KEYS: [&str; 2] = ["episode_ids", "completed_episodes"];
 
-/// The keywords of Python's `RemoteEnv(address=None, *, ...)` and
-/// `RemoteVectorEnv(...)` (RMT-3).
+/// Options for connecting to a single or vector environment.
 ///
 /// `address` excludes the helpers (`host`, `port`, `path`, `transport`);
 /// without either the constructor fails with the ValueError class. A zero
-/// timeout means no timeout, as `None` does (RMT-4).
+/// timeout means no timeout, as `None` does.
 #[derive(Clone, Debug, Default)]
 pub struct RemoteEnvOptions {
     /// The endpoint (`tcp://host:port`, `host:port` or `unix:///path`).
@@ -113,8 +111,8 @@ impl RemoteEnvOptions {
     }
 }
 
-/// Python's `normalize_connect_address`: one connect string from an address
-/// or the helpers, every refusal the ValueError class.
+/// Normalize a connect address: one connect string from an address or the
+/// helpers, every refusal the ValueError class.
 pub(crate) fn normalize_connect_address(
     address: Option<&str>,
     host: Option<&str>,
@@ -177,7 +175,7 @@ pub(crate) fn normalize_connect_address(
     ))
 }
 
-/// RMT-4: zero means no timeout, as `None` does.
+/// Zero means no timeout, as `None` does.
 pub(crate) fn normalize_timeout(timeout: Option<Duration>) -> Option<Duration> {
     timeout.filter(|timeout| !timeout.is_zero())
 }
@@ -197,8 +195,8 @@ pub(crate) fn timeout_from_secs(value: Option<f64>, field: &str) -> Result<Optio
     }
 }
 
-/// The wire `timeout_ms` for a request deadline (RMT-21): rounded up to
-/// whole milliseconds, 0 for none.
+/// The wire `timeout_ms` for a request deadline: rounded up to whole
+/// milliseconds, 0 for none.
 fn wire_timeout_ms(timeout: Option<Duration>) -> u64 {
     timeout.map_or(0, |timeout| {
         u64::try_from(timeout.as_nanos().div_ceil(1_000_000)).unwrap_or(u64::MAX)
@@ -206,7 +204,7 @@ fn wire_timeout_ms(timeout: Option<Duration>) -> u64 {
 }
 
 /// Bound `future` by `timeout`: a reply handled at or after the deadline is
-/// discarded and the call fails with the TimeoutError class (RMT-21).
+/// discarded and the call fails with the TimeoutError class.
 async fn bounded<T>(
     timeout: Option<Duration>,
     future: impl std::future::Future<Output = Result<T>>,
@@ -220,7 +218,7 @@ async fn bounded<T>(
 }
 
 /// A lane index for the wire (`uint32`): above `u32::MAX` is the ValueError
-/// class, before any I/O (RMT-P11).
+/// class, before any I/O.
 fn wire_lane(index: u64) -> Result<u32> {
     u32::try_from(index).map_err(|_| {
         Error::invalid_argument(format!(
@@ -231,7 +229,7 @@ fn wire_lane(index: u64) -> Result<u32> {
 }
 
 /// A shared read handle on a client's selected workflow edition: the
-/// handshake selection until a pin replaces it (RMT-20).
+/// handshake selection until a pin replaces it.
 #[derive(Clone, Debug)]
 pub struct EditionCell(rlmesh_grpc::env::PinnedEdition);
 
@@ -257,7 +255,7 @@ pub struct CoreConnect<'a> {
 
 /// The any-arity remote env client both [`RemoteEnv`] and
 /// [`RemoteVectorEnv`] wrap, and the Python extension drives directly
-/// (R-25: binding plumbing, exempt from semver).
+/// (binding plumbing, exempt from semver).
 pub struct EnvClientCore {
     inner: rlmesh_grpc::EnvClient,
     env_contract: spaces::EnvContract,
@@ -310,7 +308,7 @@ impl EnvClientCore {
 
     /// Dial `address` and handshake. A dial failure is the ConnectionError
     /// class, a refused handshake the ProtocolException class, an expired
-    /// `connect_timeout` the TimeoutError class (RMT-12).
+    /// `connect_timeout` the TimeoutError class.
     pub async fn connect_with(address: &str, options: CoreConnect<'_>) -> Result<Self> {
         let parsed = ConnectAddress::parse(address)?;
         check_token(options.token)?;
@@ -440,7 +438,7 @@ impl EnvClientCore {
 
     /// Pin the env to the session edition a model leg settled on (the
     /// three-way floor), replacing the handshake selection as the first Join
-    /// message (RMT-20).
+    /// message.
     pub fn pin_workflow_edition(&mut self, edition: &str) {
         self.selected_workflow_edition = edition.trim().to_string();
         self.inner
@@ -457,7 +455,7 @@ impl EnvClientCore {
         EditionCell(self.inner.pinned_edition())
     }
 
-    /// Name the client class closed-handle errors report (RMT-13).
+    /// Name the client class closed-handle errors report.
     pub fn set_name(&mut self, name: &'static str) {
         self.name = name;
     }
@@ -470,7 +468,7 @@ impl EnvClientCore {
     }
 
     /// Set a runtime-reserved info key unless the env reported its own; the
-    /// first collision per client is logged (RMT-18).
+    /// first collision per client is logged.
     fn insert_runtime_info(&mut self, info: &mut MetaMap, key: &'static str, value: MetaValue) {
         if !info.contains_key(key) {
             info.insert(key.to_string(), value);
@@ -736,8 +734,8 @@ impl EnvClientCore {
 
     /// Close this client's session (idempotent). Bounded by the request
     /// timeout, else a 5 s grace; on expiry or a lost connection it detaches
-    /// locally and succeeds (RMT-4). Other errors are returned, and the
-    /// client is closed either way.
+    /// locally and succeeds. Other errors are returned, and the client is
+    /// closed either way.
     pub async fn close(&mut self) -> Result<()> {
         if self.closed {
             return Ok(());
@@ -844,7 +842,7 @@ impl EnvClientCore {
         &mut self.inner
     }
 
-    /// Render lane `env_index` decoded to a uint8 frame (RMT-16).
+    /// Render lane `env_index` decoded to a uint8 frame.
     pub(crate) async fn render_value(&mut self, env_index: u64) -> Result<Option<Value>> {
         match self.render(env_index).await? {
             Some(png) => decode_render_png(&png).map(Some),
@@ -853,9 +851,9 @@ impl EnvClientCore {
     }
 }
 
-/// Decode a wire PNG frame to `(shape, raw uint8 bytes)`: `[H, W]`,
-/// `[H, W, 3]` or `[H, W, 4]`, other formats as RGBA. An undecodable frame
-/// is the ProtocolException class (RMT-P3).
+/// Decode a wire PNG frame to `(shape, raw uint8 bytes)`: `[H, W]`, `[H, W,
+/// 3]` or `[H, W, 4]`, other formats as RGBA. An undecodable frame is the
+/// ProtocolException class.
 pub(crate) fn decode_render_frame(png: &[u8]) -> Result<(Vec<usize>, Vec<u8>)> {
     use image::{DynamicImage, ImageFormat};
 
@@ -917,7 +915,7 @@ async fn connect_core(options: RemoteEnvOptions, token: &str) -> Result<EnvClien
     .await
 }
 
-/// Fail `future` with the cancellation class when `token` fires (R-18).
+/// Fail `future` with the cancellation class when `token` fires.
 async fn cancellable<T>(
     token: &crate::ext::CancelToken,
     future: impl std::future::Future<Output = Result<T>>,
@@ -931,8 +929,8 @@ async fn cancellable<T>(
     }
 }
 
-/// Close an unclosed core at scope exit (RMT-8): bounded on this thread
-/// outside a runtime, on a detached library task inside one.
+/// Close an unclosed core at scope exit: bounded on this thread outside a
+/// runtime, on a detached library task inside one.
 fn teardown(mut core: Box<EnvClientCore>) {
     if core.is_closed() {
         return;
@@ -948,8 +946,8 @@ fn teardown(mut core: Box<EnvClientCore>) {
     }
 }
 
-/// What both clients keep outside the per-call core, so accessors never
-/// wait on a call (RMT-17).
+/// What both clients keep outside the per-call core, so accessors never wait
+/// on a call.
 struct Shared {
     address: String,
     env_id: String,
@@ -977,7 +975,7 @@ impl Shared {
 }
 
 /// The client half a session can borrow: its core moves into the session for
-/// the borrow and comes back when the session ends (R-17).
+/// the borrow and comes back when the session ends.
 pub(crate) trait Lendable {
     /// The handle's canonical connect string.
     fn remote_address(&self) -> &str;
@@ -1023,7 +1021,7 @@ macro_rules! client_common {
             }
 
             /// The workflow edition this connection negotiated, or the last
-            /// edition a session pinned it to (RMT-20).
+            /// edition a session pinned it to.
             pub fn selected_workflow_edition(&self) -> &str {
                 match &self.core {
                     Some(core) => core.selected_workflow_edition(),
@@ -1056,7 +1054,7 @@ macro_rules! client_common {
                 self.shared.contract.action_space()
             }
 
-            /// This handle's cancel token (R-18): firing it fails the call in
+            /// This handle's cancel token: firing it fails the call in
             /// flight, or the next call.
             pub fn cancel_handle(&self) -> crate::ext::CancelToken {
                 self.cancel.clone()
@@ -1082,7 +1080,7 @@ macro_rules! client_common {
 
             /// Close this client's session (idempotent); the server keeps
             /// running. Errors other than a lost connection or an expired
-            /// bound are returned (RMT-4).
+            /// bound are returned.
             pub fn close(&mut self) -> Result<()> {
                 refuse_in_async_context(concat!($name, "::close"))?;
                 block_on_library(self.close_in())
@@ -1157,12 +1155,12 @@ macro_rules! client_common {
     };
 }
 
-/// A client for one remote env: Python's `RemoteEnv`.
+/// A client for one remote env.
 ///
 /// Construction dials and handshakes; the env's exclusive session slot is
 /// taken by the first `reset`, `step` or `render`. Calls block (each has an
-/// `_async` twin, R-16); `&mut self` serializes them. Dropping an unclosed
-/// client closes it with `close`'s bound (RMT-8).
+/// `_async` twin); `&mut self` serializes them. Dropping an unclosed client
+/// closes it with `close`'s bound.
 pub struct RemoteEnv {
     core: Option<Box<EnvClientCore>>,
     shared: Shared,
@@ -1173,10 +1171,10 @@ pub struct RemoteEnv {
 client_common!(RemoteEnv, "RemoteEnv");
 
 impl RemoteEnv {
-    /// Dial and handshake: Python's `RemoteEnv(...)`. Invalid options are
-    /// the ValueError class, a dial failure the ConnectionError class, a
-    /// refused handshake the ProtocolException class (RMT-12); an endpoint
-    /// with more than one env is refused.
+    /// Dial and handshake. Invalid options are the ValueError class, a dial
+    /// failure the ConnectionError class, a refused handshake the
+    /// ProtocolException class; an endpoint with more than one env is
+    /// refused.
     pub fn new(options: RemoteEnvOptions) -> Result<RemoteEnv> {
         refuse_in_async_context("RemoteEnv::new")?;
         block_on_library(Self::new_in(options, ""))
@@ -1199,18 +1197,18 @@ impl RemoteEnv {
         })
     }
 
-    /// The observation space (built once; RMT-9).
+    /// The observation space (built once).
     pub fn observation_space(&self) -> &Space {
         &self.shared.observation_space
     }
 
-    /// The action space (built once; RMT-9).
+    /// The action space (built once).
     pub fn action_space(&self) -> &Space {
         &self.shared.action_space
     }
 
     /// Start an episode: `(observation, info)`. `info` carries the
-    /// runtime-reserved `episode_ids` (RMT-18).
+    /// runtime-reserved `episode_ids`.
     pub fn reset(
         &mut self,
         seed: Option<i64>,
@@ -1279,7 +1277,7 @@ impl RemoteEnv {
 }
 
 /// A client for a remote vector env (two or more lanes stepped in lockstep):
-/// Python's `RemoteVectorEnv`. Observations and actions are one batched
+/// A remote vector environment. Observations and actions are one batched
 /// [`Value`]; rewards and flags are per-lane vectors.
 pub struct RemoteVectorEnv {
     core: Option<Box<EnvClientCore>>,
@@ -1291,8 +1289,8 @@ pub struct RemoteVectorEnv {
 client_common!(RemoteVectorEnv, "RemoteVectorEnv");
 
 impl RemoteVectorEnv {
-    /// Dial and handshake: Python's `RemoteVectorEnv(...)`. An endpoint with
-    /// fewer than two envs is refused (the ValueError class).
+    /// Dial and handshake. An endpoint with fewer than two envs is refused
+    /// (the ValueError class).
     pub fn new(options: RemoteEnvOptions) -> Result<RemoteVectorEnv> {
         refuse_in_async_context("RemoteVectorEnv::new")?;
         block_on_library(Self::new_in(options, ""))
@@ -1320,12 +1318,12 @@ impl RemoteVectorEnv {
         self.shared.num_envs
     }
 
-    /// One lane's observation space (built once; RMT-9).
+    /// One lane's observation space (built once).
     pub fn single_observation_space(&self) -> &Space {
         &self.shared.observation_space
     }
 
-    /// One lane's action space (built once; RMT-9).
+    /// One lane's action space (built once).
     pub fn single_action_space(&self) -> &Space {
         &self.shared.action_space
     }
@@ -1342,7 +1340,7 @@ impl RemoteVectorEnv {
 
     /// Reset every lane: the batched observation and the info (with one
     /// `episode_ids` entry per lane). An int seed is sent as a one-element
-    /// list, as Python does.
+    /// list.
     pub fn reset(
         &mut self,
         seed: Option<VectorSeed>,
@@ -1427,7 +1425,7 @@ impl RemoteVectorEnv {
     }
 }
 
-/// `ext::reset_lanes`' body (RMT-14).
+/// `ext::reset_lanes`' body.
 pub(crate) async fn reset_lanes_in(
     env: &mut RemoteVectorEnv,
     env_indices: &[u64],
@@ -1441,7 +1439,7 @@ pub(crate) async fn reset_lanes_in(
     env.reset_in(seed, options, lanes).await
 }
 
-/// The ext constructors' token check and dial (RMT-5).
+/// The ext constructors' token check and dial.
 pub(crate) fn check_token(token: &str) -> Result<()> {
     if !token.is_empty()
         && let Some(problem) = rlmesh_grpc::helpers::auth::token_header_problem(token)

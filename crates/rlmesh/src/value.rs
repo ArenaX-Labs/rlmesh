@@ -1,5 +1,4 @@
-//! `rlmesh::Value` and `rlmesh::Metadata`: Python's `rlmesh.types.Value` and
-//! `Metadata` / `InfoDict`.
+//! Values, metadata dictionaries and environment info.
 
 use indexmap::IndexMap;
 
@@ -8,17 +7,17 @@ use crate::{Error, Result, Tensor};
 pub(crate) mod meta_codec;
 pub(crate) mod space_codec;
 
-/// A value: Python's `rlmesh.types.Value`.
+/// A value exchanged with a model or environment.
 ///
-/// Exactly Python's kinds: the six primitives, [`Tensor`], `list`, `tuple`
-/// and `dict`. A Discrete action is an `Int`, a Box observation a `Tensor`;
+/// Supported kinds: the six primitives, [`Tensor`], `list`, `tuple` and
+/// `dict`. A Discrete action is an `Int`, a Box observation a `Tensor`;
 /// `bool` is not an `Int`.
 ///
 /// Reads are strict: [`as_float`](Self::as_float) refuses an `Int` and
 /// [`as_int`](Self::as_int) refuses a `Bool`, each with the TypeError class.
-/// Equality is kind-strict too, unlike Python's numeric `==`:
-/// `Int(1) != Float(1.0)` and `Bool(true) != Int(1)`; a `Float` compares as
-/// IEEE `f64` (NaN is unequal to itself), a `Dict` ignores order.
+/// Equality is kind-strict too: `Int(1) != Float(1.0)` and `Bool(true) !=
+/// Int(1)`; a `Float` compares as IEEE `f64` (NaN is unequal to itself), a
+/// `Dict` ignores order.
 #[derive(Clone, PartialEq, Debug)]
 #[non_exhaustive]
 pub enum Value {
@@ -44,7 +43,7 @@ pub enum Value {
     Dict(Metadata),
 }
 
-/// A value's kind: Python's `type(v)`.
+/// A value's kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ValueKind {
@@ -71,7 +70,7 @@ pub enum ValueKind {
 }
 
 impl ValueKind {
-    /// Python's type name (`"int"`, `"Tensor"`, `"NoneType"`).
+    /// The diagnostic type name (`"int"`, `"Tensor"`, `"NoneType"`).
     pub(crate) fn python_name(self) -> &'static str {
         match self {
             ValueKind::None => "NoneType",
@@ -263,22 +262,20 @@ impl From<Metadata> for Value {
     }
 }
 
-/// An insertion-ordered `str` → [`Value`] map: Python's `dict` as
-/// `rlmesh.types.Metadata`.
+/// An insertion-ordered string → [`Value`] map.
 ///
-/// Iteration follows insertion order, as a Python `dict`'s does; lookup and
-/// equality ignore order. [`insert`](Self::insert) on an existing key
-/// replaces the value in place and keeps its position;
-/// [`remove`](Self::remove) keeps the order of the remaining keys; collecting
-/// pairs with a repeated key keeps the first position and the last value, as
-/// `dict(pairs)` does.
+/// Iteration follows insertion order; lookup and equality ignore order.
+/// [`insert`](Self::insert) on an existing key replaces the value in place
+/// and keeps its position; [`remove`](Self::remove) keeps the order of the
+/// remaining keys; collecting pairs with a repeated key keeps the first
+/// position and the last value.
 #[derive(Clone, Debug, Default)]
 pub struct Metadata(IndexMap<String, Value>);
 
-/// Python's `InfoDict`: an env's `info`.
+/// An environment's `info` dictionary.
 pub type InfoDict = Metadata;
 
-/// Keyword arguments (`**kwargs`).
+/// Named construction or factory arguments.
 pub type Kwargs = Metadata;
 
 impl Metadata {
@@ -339,7 +336,7 @@ impl Metadata {
     }
 }
 
-/// Order-insensitive, as Python's `dict ==`; values compare kind-strictly.
+/// Order-insensitive equality; values compare kind-strictly.
 impl PartialEq for Metadata {
     fn eq(&self, other: &Self) -> bool {
         self.len() == other.len()

@@ -1,5 +1,4 @@
-//! Python's `ServeOptions`: the transport lifecycle policy shared by the env
-//! and model servers.
+//! Transport lifecycle policy shared by the env and model servers.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -12,17 +11,15 @@ pub(crate) use crate::ext::MODEL_ENDPOINT_TOKEN_ENV;
 /// Environment variable holding the token a served environment endpoint requires.
 pub(crate) use crate::ext::ENV_ENDPOINT_TOKEN_ENV;
 
-/// Transport lifecycle policy for a server: Python's `ServeOptions`.
+/// Transport lifecycle policy for a server.
 ///
-/// Fields keep Python's names, with the `_seconds` suffix dropped from the
-/// durations. The defaults are Python's: remote shutdown off, no idle
-/// shutdown, no drain or close bound (an env server caps each at 5 s), no
-/// declared edition, uncompressed responses. Options are plain data: the
-/// server that consumes them validates them (a timeout must be positive) and
-/// resolves the edition.
+/// Defaults: remote shutdown off, no idle shutdown, no drain or close bound
+/// (an env server caps each at 5 s), no declared edition, uncompressed
+/// responses. Options are plain data: the server that consumes them
+/// validates them (a timeout must be positive) and resolves the edition.
 ///
-/// Build one with `..Default::default()`; appending a field is a minor change
-/// by project policy, so a full struct literal is unsupported.
+/// Build one with `..Default::default()`; appending a field is a minor
+/// change by project policy, so a full struct literal is unsupported.
 #[derive(Debug, Clone, Default)]
 pub struct ServeOptions {
     /// Honor a client `shutdown` RPC. When `false`, remote shutdown requests
@@ -46,7 +43,7 @@ pub struct ServeOptions {
 }
 
 impl ServeOptions {
-    /// Python's checks, run by the consuming call: every timeout positive.
+    /// Validation run by the consuming call: every timeout positive.
     pub(crate) fn validate(&self) -> Result<()> {
         for (name, timeout) in [
             ("idle_timeout_seconds", self.idle_timeout),
@@ -97,8 +94,8 @@ pub(crate) fn env_endpoint_token(configured: Option<String>) -> Result<Option<St
     env_endpoint_token_from(configured, std::env::var(ENV_ENDPOINT_TOKEN_ENV))
 }
 
-/// A model server's token (MDL-20): `RLMESH_MODEL_ENDPOINT_TOKEN` when set
-/// (its failures are the `RLMeshException` class), else the configured
+/// A model server's token: `RLMESH_MODEL_ENDPOINT_TOKEN` when set (its
+/// failures are the `RLMeshException` class), else the configured
 /// `ext.token` (a token no header can carry is the `ValueError` class).
 pub(crate) fn model_endpoint_token(configured: Option<String>) -> Result<Option<String>> {
     configured_endpoint_token(

@@ -1,6 +1,5 @@
-//! The authoring side of a model: the [`Policy`] trait a Python `Model`
-//! subclass's members translate to, its declarations ([`Corners`],
-//! [`LoadKey`], [`SpecArg`]) and the closure forms.
+//! The authoring side of a model: the [`Policy`] trait, its declarations
+//! ([`Corners`], [`LoadKey`], [`SpecArg`]) and the closure forms.
 
 use std::fmt;
 
@@ -44,7 +43,7 @@ impl Corners {
         self.0 & (Corners::PREDICT_CHUNK.0 | Corners::PREDICT_CHUNK_BATCH.0) != 0
     }
 
-    /// The corner names in Python's `PREDICT_CORNERS` order.
+    /// The corner names in declaration order.
     pub(crate) fn names(self) -> Vec<&'static str> {
         [
             (Corners::PREDICT, "predict"),
@@ -87,9 +86,8 @@ impl LoadKey {
     }
 }
 
-/// What a model's `spec` may be: Python's `rlmesh.types.SpecArg` (a
-/// `ModelSpec` or [`NO_ADAPTER`]); `Option<SpecArg>`'s `None` is Python's
-/// `None`.
+/// What a model's `spec` may be: a `ModelSpec` or [`NO_ADAPTER`];
+/// `Option<SpecArg>`'s `None` leaves the spec undeclared.
 #[derive(Clone, Debug, PartialEq)]
 #[allow(clippy::large_enum_variant)] // Two arms, as Python's SpecArg.
 pub enum SpecArg {
@@ -105,11 +103,11 @@ impl From<ModelSpec> for SpecArg {
     }
 }
 
-/// Python's `rlmesh.NO_ADAPTER`.
+/// Disable adapter resolution.
 pub const NO_ADAPTER: SpecArg = SpecArg::NoAdapter;
 
 /// The text a corner listed in [`Policy::CORNERS`] (or `CONTEXT`) but not
-/// written fails with (R-22).
+/// written fails with.
 fn unwritten(method: &str, list: &str, entry: &str) -> Error {
     Error::Runtime(format!(
         "{method} is not implemented: the policy lists {entry} in {list} but does not \
@@ -117,35 +115,34 @@ fn unwritten(method: &str, list: &str, entry: &str) -> Error {
     ))
 }
 
-/// A model's authored members: the native counterpart of a Python `Model`
-/// subclass. Write the corners the model has and list them in
-/// [`CORNERS`](Policy::CORNERS); a corner that reads the per-episode context
-/// is listed in [`CONTEXT`](Policy::CONTEXT) too and written as its
+/// A model's declarations, predict operations and lifecycle hooks. Write the
+/// corners the model has and list them in [`CORNERS`](Policy::CORNERS); a
+/// corner that reads the per-episode context is listed in
+/// [`CONTEXT`](Policy::CONTEXT) too and written as its
 /// `<corner>_with_context` twin. Build the model with
 /// [`Model::new`](crate::Model::new) or
 /// [`Model::from_config`](crate::Model::from_config).
 ///
 /// Rust cannot see which methods an impl wrote, so the consts are the
-/// declaration: a corner listed but not written fails its first call with the
-/// `RuntimeError` class naming the entry, and a corner written but not listed
-/// is never called.
+/// declaration: a corner listed but not written fails its first call with
+/// the `RuntimeError` class naming the entry, and a corner written but not
+/// listed is never called.
 pub trait Policy: Send + 'static {
-    /// The corners this policy writes (Python's override detection).
+    /// The corners this policy implements.
     const CORNERS: Corners = Corners::PREDICT;
     /// The corners that read the context; each is called through its
     /// `_with_context` twin. Must be a subset of `CORNERS`.
     const CONTEXT: Corners = Corners::NONE;
     /// The static native chunk length K (describe reads this one).
     const NATIVE_CHUNK: Option<u32> = None;
-    /// The keywords `load` accepts; `None` forwards every key, as
-    /// `load(**kwargs)` does.
+    /// The parameter keys `load` accepts; `None` forwards every key.
     const LOAD_KEYS: Option<&'static [LoadKey]> = None;
-    /// Whether the policy type is an authored participant (COR-7); false only
-    /// for the closure forms, as a wrapped bare callable is not one.
+    /// Whether the policy type is an authored participant; false only for
+    /// the closure forms, as a wrapped bare callable is not one.
     #[doc(hidden)]
     const AUTHORED: bool = true;
 
-    /// The model's spec (Python's class attribute `spec`).
+    /// The model's adapter spec.
     fn spec() -> Option<SpecArg>
     where
         Self: Sized,
@@ -299,7 +296,7 @@ pub trait Policy: Send + 'static {
     }
 }
 
-/// A bare predict closure: Python's `Model(lambda obs: ...)`.
+/// A bare predict closure.
 impl<F> Policy for F
 where
     F: FnMut(Value) -> Result<Value> + Send + 'static,
@@ -311,8 +308,7 @@ where
     }
 }
 
-/// A predict closure that reads the context: Python's
-/// `Model(lambda obs, context: ...)`. Built by [`with_context`].
+/// A predict closure that reads the context. Built by [`with_context`].
 pub struct WithContext<F>(F);
 
 impl<F> fmt::Debug for WithContext<F> {

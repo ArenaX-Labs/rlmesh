@@ -1,4 +1,4 @@
-//! Python's `rlmesh.specs`: the read-only contract an env endpoint serves.
+//! The read-only contract an env endpoint serves.
 
 use std::fmt;
 
@@ -8,10 +8,10 @@ use crate::spaces::SpaceSpec;
 use crate::value::meta_codec;
 use crate::{Error, Metadata, Result, Value};
 
-/// What an env endpoint serves: Python's `specs.EnvContract`.
+/// The contract an env endpoint serves.
 ///
-/// Only the library builds one (an [`EnvServer`](crate::EnvServer) derives it
-/// from the env; a remote client reads it from the handshake). Clones are
+/// Only the library builds one (an [`EnvServer`](crate::EnvServer) derives
+/// it from the env; a remote client reads it from the handshake). Clones are
 /// independent values.
 #[derive(Clone)]
 pub struct EnvContract {
@@ -55,18 +55,18 @@ impl EnvContract {
         self.metadata.as_ref()
     }
 
-    /// Python's `.env` alias: a copy of this contract.
+    /// The `env` alias: a copy of this contract.
     pub fn env(&self) -> EnvContract {
         self.clone()
     }
 
-    /// Python's `.spec` alias: a copy of this contract.
+    /// The `spec` alias: a copy of this contract.
     pub fn spec(&self) -> EnvContract {
         self.clone()
     }
 
-    /// Python's `to_dict()`: `id`, `render_mode`, `num_envs`, `metadata`, and
-    /// each space as `{kind, shape, dtype, details}`.
+    /// A dictionary containing `id`, `render_mode`, `num_envs`, `metadata`,
+    /// and each space as `{kind, shape, dtype, details}`.
     pub fn to_dict(&self) -> Metadata {
         let mut out = Metadata::new();
         out.insert("id", self.id.clone());
@@ -141,7 +141,7 @@ impl EnvContract {
         })
     }
 
-    /// The derived autoreset mode (not on Python's surface).
+    /// The derived autoreset mode.
     pub(crate) fn autoreset_mode(&self) -> AutoresetMode {
         self.autoreset_mode
     }
@@ -163,7 +163,7 @@ impl EnvContract {
     }
 }
 
-/// Python's `repr`: `EnvContract(id="CartPole-v1", num_envs=1)`.
+/// Text representation: `EnvContract(id="CartPole-v1", num_envs=1)`.
 impl fmt::Display for EnvContract {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -187,7 +187,7 @@ impl fmt::Debug for EnvContract {
     }
 }
 
-/// A space spec as Python's `spec_to_dict`: `{kind, shape, dtype, details}`.
+/// A space spec as a dictionary: `{kind, shape, dtype, details}`.
 pub(crate) fn spec_dict(spec: &SpaceSpec) -> Value {
     match rlmesh_adapters::v1::space_spec_to_json(spec.wire()) {
         Ok(json) => json_to_value(json),

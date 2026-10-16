@@ -1,11 +1,10 @@
-//! Describe: an env factory's or a model's metadata envelope, as Python's
-//! `rlmesh.describe` / `describe_json` build it (COR-10 to COR-14, COR-25).
+//! An env factory's or a model's metadata envelope.
 //!
 //! Natives have no module, qualname or signature to reflect, so the four
 //! reflected pieces have one native spelling each: `target.qualname` is
 //! `rust:<type name>`, `params` lists a model's `LOAD_KEYS` or a factory's
 //! `tag_params`, `runtime` is this host's `PeerInfo` plus the edition offer,
-//! and an `env_spec` badge's `error_type` is the R-21 class name.
+//! and an `env_spec` badge's `error_type` is the error-class name.
 
 use std::fmt;
 
@@ -22,7 +21,7 @@ use crate::{
     Value,
 };
 
-/// What `describe` treats its target as: Python's `kind="env"` / `"model"`.
+/// The target kind used by `describe`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DescribeKind {
     /// An env factory.
@@ -32,7 +31,7 @@ pub enum DescribeKind {
 }
 
 impl DescribeKind {
-    /// Python's spelling (`"env"`, `"model"`).
+    /// The canonical spelling (`"env"`, `"model"`).
     pub fn as_str(self) -> &'static str {
         match self {
             DescribeKind::Env => "env",
@@ -47,7 +46,7 @@ impl fmt::Display for DescribeKind {
     }
 }
 
-/// The keywords of Python's `describe(obj, *, kind=None, generated_at=None)`.
+/// Options for [`describe`].
 #[derive(Clone, Debug, Default)]
 pub struct DescribeOptions {
     /// A cross-check of the target's kind; a contradiction is the ValueError
@@ -58,8 +57,7 @@ pub struct DescribeOptions {
     pub generated_at: Option<String>,
 }
 
-/// The keywords of Python's `describe_json(obj, *, kind=None,
-/// generated_at=None, served_env=None, workflow_edition=None)`.
+/// Options for [`describe_json`].
 #[derive(Debug, Default)]
 pub struct DescribeJsonOptions<'a> {
     /// See [`DescribeOptions::kind`].
@@ -113,7 +111,7 @@ impl Describable<'static> {
 
 impl<'a> Describable<'a> {
     /// The env factory type form: each build default-constructs a fresh
-    /// factory, as Python's `cls()` does.
+    /// factory.
     pub fn env_factory<F: EnvFactory + Default + 'a>() -> Describable<'a> {
         Describable(Target::Factory(Box::new(TypeForm::<F>(
             std::marker::PhantomData,
@@ -190,7 +188,7 @@ fn catalog_json<F: EnvFactory>() -> Option<Result<Json>> {
     }
 }
 
-/// The badge a failed build or space read becomes (COR-25).
+/// The badge a failed build or space read becomes.
 fn badge(err: &Error) -> Json {
     json!({ "error": err.to_string(), "error_type": err.class().name() })
 }
@@ -320,7 +318,7 @@ impl<F: EnvFactory> FactoryForm for InstanceForm<'_, F> {
     }
 }
 
-/// Who is describing, for the envelope's `runtime` (COR-25).
+/// Who is describing, for the envelope's `runtime`.
 pub(crate) struct Host {
     pub(crate) component: &'static str,
     pub(crate) language: &'static str,
@@ -365,7 +363,7 @@ pub(crate) fn runtime_json(host: &Host, preferred: Option<&str>, error: Option<S
     runtime
 }
 
-/// COR-12: a given edition is used as given (blank: none); `None` runs the
+/// A given edition is used as given (blank: none); `None` runs the
 /// environment variable and the declaration, never warning, and records a
 /// refusal instead of failing.
 fn offer(declared: Option<&str>, given: Option<&str>) -> (Option<String>, Option<String>) {
@@ -585,7 +583,7 @@ pub(crate) fn envelope(
     .map_err(|err| Error::invalid_argument(format!("invalid describe envelope: {err}")))
 }
 
-/// `obj`'s metadata envelope: Python's `rlmesh.describe`.
+/// `obj`'s metadata envelope.
 pub fn describe<'a>(obj: impl Into<Describable<'a>>, options: DescribeOptions) -> Result<Metadata> {
     metadata(obj.into(), options, &Host::rust())
 }
@@ -614,7 +612,7 @@ pub(crate) fn metadata(
     }
 }
 
-/// `obj`'s canonical envelope string: Python's `rlmesh.describe_json`.
+/// `obj`'s canonical envelope string.
 pub fn describe_json<'a>(
     obj: impl Into<Describable<'a>>,
     options: DescribeJsonOptions<'a>,
@@ -623,8 +621,8 @@ pub fn describe_json<'a>(
 }
 
 impl Model {
-    /// `P`'s envelope: Python's `Model.describe()` classmethod. Reads `P`'s
-    /// declarations only; nothing is constructed or loaded.
+    /// `P`'s metadata envelope. Reads `P`'s declarations only; nothing is
+    /// constructed or loaded.
     pub fn describe<P: Policy>() -> Result<Metadata> {
         describe(
             Describable::model::<P>(),

@@ -9,8 +9,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// Classifies an [`EnvironmentError`] reported by an environment.
 ///
-/// The text form ([`ErrorCode::as_str`], `Display`) is Python's
-/// `EnvironmentException.code`.
+/// The text form ([`ErrorCode::as_str`], `Display`) is the wire code of the
+/// `EnvironmentException`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ErrorCode {
@@ -37,7 +37,7 @@ pub enum ErrorCode {
 }
 
 impl ErrorCode {
-    /// The code's wire spelling (`"INVALID_ACTION"`), as Python's `code`.
+    /// The code's wire spelling (`"INVALID_ACTION"`).
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Unspecified => "UNSPECIFIED",
@@ -56,8 +56,8 @@ impl ErrorCode {
 
 /// Classifies a [`ModelError`] reported by a model.
 ///
-/// The text form ([`ModelErrorCode::as_str`], `Display`) is Python's
-/// `ModelException.code`.
+/// The text form ([`ModelErrorCode::as_str`], `Display`) is the wire code of
+/// the `ModelException`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ModelErrorCode {
@@ -80,7 +80,7 @@ pub enum ModelErrorCode {
 }
 
 impl ModelErrorCode {
-    /// The code's wire spelling (`"INVALID_REQUEST"`), as Python's `code`.
+    /// The code's wire spelling (`"INVALID_REQUEST"`).
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Unspecified => "UNSPECIFIED",
@@ -102,12 +102,12 @@ pub struct EnvironmentError {
     pub code: ErrorCode,
     /// Human-readable description.
     pub message: String,
-    /// Whether the request failed but the session stays usable (Python's
-    /// `RecoverableEnvironmentException`).
+    /// Whether the request failed but the session stays usable
+    /// (`RecoverableEnvironmentException`).
     pub is_recoverable: bool,
 }
 
-/// A failure reported by a model (Python's `ModelException`).
+/// A failure reported by a model (`ModelException`).
 ///
 /// This is distinct from the transport/internal variants: it represents the
 /// model *declining* a request (e.g. an invalid observation), so the runtime
@@ -122,10 +122,9 @@ pub struct ModelError {
     pub is_recoverable: bool,
 }
 
-/// An invalid argument value, address or options field (Python's
-/// `ValueError`), or a failed adapter resolution (`AdapterResolutionError`, a
-/// `ValueError` subclass) when [`adapter_resolution`](Self::adapter_resolution)
-/// is set.
+/// An invalid argument value, address or options field (`ValueError`), or a
+/// failed adapter resolution (`AdapterResolutionError`, a `ValueError`
+/// subclass) when [`adapter_resolution`](Self::adapter_resolution) is set.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InvalidArgumentError {
     /// Human-readable description; the error's whole text.
@@ -150,13 +149,12 @@ impl fmt::Display for ModelError {
 
 impl std::error::Error for ModelError {}
 
-/// The exact class of an [`Error`]: one per exception class Python's Stable
-/// surface raises, spelled as Python spells it.
+/// The exact class of an [`Error`], using RLMesh's error-class vocabulary.
 ///
-/// Rust cannot nest enum variants, so a subclass without a variant of its own
-/// (`RecoverableEnvironmentException`, `AdapterResolutionError`) shares its
-/// parent's [`Error`] variant; [`Error::class`] still reports the exact class,
-/// and [`ErrorClass::is_subclass_of`] answers Python's `issubclass`.
+/// Rust cannot nest enum variants, so a subclass without a variant of its
+/// own (`RecoverableEnvironmentException`, `AdapterResolutionError`) shares
+/// its parent's [`Error`] variant; [`Error::class`] still reports the exact
+/// class, and [`ErrorClass::is_subclass_of`] tests class inheritance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ErrorClass {
@@ -207,7 +205,7 @@ impl ErrorClass {
         Self::KeyboardInterrupt,
     ];
 
-    /// Python's spelling of the class (`"RecoverableEnvironmentException"`).
+    /// The class name (`"RecoverableEnvironmentException"`).
     pub fn name(self) -> &'static str {
         match self {
             Self::RLMeshException => "RLMeshException",
@@ -226,8 +224,9 @@ impl ErrorClass {
         }
     }
 
-    /// The direct base class within this vocabulary, following Python's MRO
-    /// (`None` where the base is `Exception` or `BaseException`).
+    /// The direct base class within this vocabulary, following the
+    /// error-class hierarchy (`None` where the base is `Exception` or
+    /// `BaseException`).
     pub fn base(self) -> Option<ErrorClass> {
         match self {
             Self::RLMeshException => Some(Self::RuntimeError),
@@ -245,8 +244,8 @@ impl ErrorClass {
         }
     }
 
-    /// Python's `issubclass(self, base)`: reflexive, and true for every
-    /// ancestor (`ConnectionError` is a subclass of `OSError`).
+    /// Class inheritance test: reflexive, and true for every ancestor
+    /// (`ConnectionError` is a subclass of `OSError`).
     pub fn is_subclass_of(self, base: ErrorClass) -> bool {
         let mut class = Some(self);
         while let Some(current) = class {
@@ -267,14 +266,14 @@ impl fmt::Display for ErrorClass {
 
 /// The error type for every fallible operation in this crate.
 ///
-/// Each variant is one of Python's exception classes (see [`ErrorClass`]); a
-/// subclass with no variant of its own uses its parent's, and
-/// [`Error::class`] reports the exact class. `Display` is Python's
-/// `str(exc)`. Use [`Error::is_recoverable`] for Python's `is_recoverable`.
+/// Each variant identifies an error class (see [`ErrorClass`]); a subclass
+/// with no variant of its own uses its parent's, and [`Error::class`]
+/// reports the exact class. `Display` formats the message.
+/// [`Error::is_recoverable`] reports whether the session remains usable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Error {
-    /// An internal or server-side failure (Python's `RLMeshException`).
+    /// An internal or server-side failure (`RLMeshException`).
     Internal(String),
     /// A protocol failure: generation mismatch, refused edition, failed
     /// handshake or malformed message (`ProtocolException`).
@@ -307,12 +306,13 @@ pub enum Error {
 }
 
 impl Error {
-    /// Construct a non-recoverable model failure (code `Internal`), as
-    /// Python's `ModelException(message)`.
+    /// Construct a non-recoverable model failure (`ModelException`, code
+    /// `Internal`).
     ///
-    /// Use this from a [`crate::binding::model::ModelHandler::predict`] implementation to signal
-    /// that the model declined the request (e.g. a malformed observation),
-    /// rather than misreporting it as an internal/transport fault.
+    /// Use this from a [`crate::binding::model::ModelHandler::predict`]
+    /// implementation to signal that the model declined the request (e.g. a
+    /// malformed observation), rather than misreporting it as an
+    /// internal/transport fault.
     pub fn model(message: impl Into<String>) -> Self {
         Self::Model(ModelError {
             code: ModelErrorCode::Internal,
@@ -321,8 +321,8 @@ impl Error {
         })
     }
 
-    /// Construct a recoverable model failure (code `Internal`; the caller may
-    /// retry), as Python's `ModelException(message, is_recoverable=True)`.
+    /// Construct a recoverable model failure (code `Internal`; the caller
+    /// may retry).
     pub fn model_recoverable(message: impl Into<String>) -> Self {
         Self::Model(ModelError {
             code: ModelErrorCode::Internal,
@@ -331,8 +331,8 @@ impl Error {
         })
     }
 
-    /// Construct a non-recoverable environment failure (code `Internal`), as
-    /// Python's `EnvironmentException(message)`.
+    /// Construct a non-recoverable environment failure
+    /// (`EnvironmentException`, code `Internal`).
     pub fn environment(message: impl Into<String>) -> Self {
         Self::Environment(EnvironmentError {
             code: ErrorCode::Internal,
@@ -341,8 +341,8 @@ impl Error {
         })
     }
 
-    /// Construct a recoverable environment failure (code `Internal`), as
-    /// Python's `RecoverableEnvironmentException(message)`.
+    /// Construct a recoverable environment failure
+    /// (`RecoverableEnvironmentException`, code `Internal`).
     pub fn environment_recoverable(message: impl Into<String>) -> Self {
         Self::Environment(EnvironmentError {
             code: ErrorCode::Internal,
@@ -351,7 +351,7 @@ impl Error {
         })
     }
 
-    /// Construct an invalid-argument error (Python's `ValueError`).
+    /// Construct an invalid-argument error (`ValueError`).
     pub fn invalid_argument(message: impl Into<String>) -> Self {
         Self::InvalidArgument(InvalidArgumentError {
             message: message.into(),
@@ -359,7 +359,7 @@ impl Error {
         })
     }
 
-    /// Tags that do not fit their spaces: Python's `AdapterResolutionError`.
+    /// Tags that do not fit their spaces (`AdapterResolutionError`).
     pub fn adapter_resolution(message: impl Into<String>) -> Self {
         let message = message.into();
         Self::InvalidArgument(InvalidArgumentError {
@@ -375,7 +375,7 @@ impl Error {
     }
 
     /// A server-side failure (bind failed, ...): an `RLMeshException` whose
-    /// text keeps Python's `server error: message`.
+    /// text uses `server error: message`.
     pub(crate) fn server(message: impl fmt::Display) -> Self {
         Self::Internal(format!("server error: {message}"))
     }
@@ -404,8 +404,8 @@ impl Error {
         }
     }
 
-    /// Python's `getattr(exc, "is_recoverable", False)`: the Environment or
-    /// Model error's own flag, and false for every other class.
+    /// Whether the session remains usable: the Environment or Model error's
+    /// own flag, and false for every other class.
     pub fn is_recoverable(&self) -> bool {
         match self {
             Self::Attached(attached) => attached.error.is_recoverable(),

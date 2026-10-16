@@ -63,7 +63,7 @@ pub struct Rotation {
     pub value: Vec<f64>,
 }
 impl Rotation {
-    /// Construct this value with Python’s field defaults.
+    /// Construct a rotation from components in the given encoding.
     pub fn new(encoding: RotationEncoding, value: impl Into<Vec<f64>>) -> Self {
         Self {
             encoding,
@@ -115,16 +115,16 @@ impl From<Constant> for ConcatPart {
     }
 }
 #[derive(Clone, Debug, Default)]
-/// Python’s `PreviousOptions` adapter value.
-/// Build with `..Default::default()`; adding an options field is a minor change.
+/// Options for the `Previous` adapter. Build with `..Default::default()`;
+/// adding an options field is a minor change.
 pub struct PreviousOptions {
-    /// The `part` field, with Python’s meaning and default.
+    /// The desired body part, or `None` for the whole role (default).
     pub part: Option<String>,
-    /// The `fill` field, with Python’s meaning and default.
+    /// The value before the first action; defaults to zero.
     pub fill: f64,
 }
 #[allow(non_snake_case)]
-/// Python’s `Previous` adapter operation.
+/// Select values from a previous step.
 pub fn Previous(role: impl Into<String>, options: PreviousOptions) -> State {
     State {
         part: options.part,
@@ -173,9 +173,9 @@ impl Image {
 /// Non-fatal information from adapter resolution.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Advisory {
-    /// The `severity` field, with Python’s meaning and default.
+    /// The advisory's severity.
     pub severity: AdvisorySeverity,
-    /// The `message` field, with Python’s meaning and default.
+    /// The advisory's message.
     pub message: String,
 }
 impl std::fmt::Display for Advisory {
@@ -205,12 +205,13 @@ impl Advisory {
         }
     }
 }
-/// Python's resolution-error detail. The message lives on `InvalidArgumentError`.
+/// Adapter-resolution error details. The message lives on
+/// `InvalidArgumentError`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct AdapterResolutionError {}
 impl AdapterResolutionError {
-    /// Construct this value with Python’s field defaults.
+    /// Construct empty resolution-error details.
     pub fn new() -> Self {
         Self {}
     }

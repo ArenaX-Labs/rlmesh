@@ -273,7 +273,7 @@ int main(void) {
   cycle.children = &cycle;
   cycle.children_len = 1;
   CHECK(rlmesh_model_spec_new(&cycle, &action, &future) == RLMESH_ERR_INVALID_ARGUMENT && !future);
-  /* Invalid R-19 input, zero/nonzero future tails, and no ownership on refusal. */
+  /* Invalid struct_size input, zero/nonzero future tails, and no ownership on refusal. */
   RLMeshState bad = {0};
   RLMeshInputNode bad_node = rlmesh_input_node_state(&bad);
   CHECK(rlmesh_model_spec_new(&bad_node, &action, &future) == RLMESH_ERR_INVALID_ARGUMENT &&

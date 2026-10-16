@@ -1,12 +1,11 @@
-//! Build identity: Python's `rlmesh.build_info()` and `BuildInfo`.
+//! Build identity and release information.
 
 use std::fmt;
 
-/// This crate's version, in SemVer (`0.1.0-rc.12`); Python's `__version__`
-/// is the PEP 440 spelling of the same release (`0.1.0rc12`).
+/// This crate's version, in SemVer (`0.1.0-rc.12`).
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Where a build's cohort came from: Python's `BuildInfo.build_source`.
+/// Where a build's cohort came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum BuildSource {
@@ -19,7 +18,7 @@ pub enum BuildSource {
 }
 
 impl BuildSource {
-    /// Python's spelling (`"release"`, `"package"`, `"git"`).
+    /// The canonical spelling (`"release"`, `"package"`, `"git"`).
     pub fn as_str(self) -> &'static str {
         match self {
             BuildSource::Release => "release",
@@ -43,8 +42,7 @@ impl fmt::Display for BuildSource {
     }
 }
 
-/// The identity of this build: Python's `rlmesh.BuildInfo`. Every field is
-/// fixed at compile time.
+/// The identity of this build. Every field is fixed at compile time.
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
 pub struct BuildInfo {
@@ -87,7 +85,7 @@ pub fn build_info() -> BuildInfo {
     }
 }
 
-/// Python's `repr`: `BuildInfo(version="0.1.0", ..., git=None)`.
+/// Text representation: `BuildInfo(version="0.1.0", ..., git=None)`.
 impl fmt::Display for BuildInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(

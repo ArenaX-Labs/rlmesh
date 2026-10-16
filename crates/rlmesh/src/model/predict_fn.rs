@@ -16,15 +16,16 @@ use crate::{Result, model::types::ModelObservation};
 
 /// The model's predict callable plus its discovered lifecycle hooks.
 ///
-/// `predict` is the contract floor: one already-assembled model input → one raw
-/// action. The engine loops it per lane (single-sample) for a spec'd route and
-/// runs `apply_actions` after. A spec-LESS route (no adapter) bypasses the
-/// engine via [`predict_spec_less`](PredictFn::predict_spec_less), which gets the
-/// raw observation and preserves the pre-relocation batched path exactly.
+/// `predict` is the contract floor: one already-assembled model input → one
+/// raw action. The engine loops it per lane (single-sample) for a spec'd
+/// route and runs `apply_actions` after. A spec-LESS route (no adapter)
+/// bypasses the engine via
+/// [`predict_spec_less`](PredictFn::predict_spec_less), which gets the raw
+/// observation and preserves the pre-relocation batched path exactly.
 ///
-/// Methods take `&self`: the model's per-episode state lives in the host model
-/// object (e.g. a Python policy), not in this Rust handle, so a shared reference
-/// suffices and the engine can call back from a blocking worker thread.
+/// Methods take `&self`: the model's per-episode state lives in the host
+/// model object, not in this Rust handle, so a shared reference suffices and
+/// the engine can call back from a blocking worker thread.
 pub trait PredictFn: Send + Sync {
     /// Spec'd route: one lane's assembled model input → one raw action. The
     /// engine has already frame-stacked / customs'd / enc-shimmed the input.
@@ -36,19 +37,20 @@ pub trait PredictFn: Send + Sync {
     /// forward) there is no single-episode identity: `episode` is `None`.
     fn predict(&self, model_input: Value, episode: Option<&EpisodeInfo>) -> Result<Value>;
 
-    /// Single-sample CHUNK corner: one assembled model input → a *chunk* of raw
-    /// actions (the leading axis is the chunk axis, unstacked by
-    /// [`split_chunk`](rlmesh_adapters::v1::split_chunk)). `None` (the default)
-    /// means the model has no distinct chunk corner, so the engine falls back to
-    /// [`predict`](Self::predict). A model that authors a separate chunk policy
-    /// (e.g. a Python `predict_chunk`) returns `Some(chunk)`.
+    /// Single-sample CHUNK corner: one assembled model input → a *chunk* of
+    /// raw actions (the leading axis is the chunk axis, unstacked by
+    /// [`split_chunk`](rlmesh_adapters::v1::split_chunk)). `None` (the
+    /// default) means the model has no distinct chunk corner, so the engine
+    /// falls back to [`predict`](Self::predict). A model that authors a
+    /// separate chunk policy returns `Some(chunk)`.
     ///
-    /// `execution_horizon` is how many actions the runtime will execute before
-    /// re-planning (pinned at `ResolveAdapter`). The model returns its *native*
-    /// chunk; the engine executes a prefix of it (`split_chunk(...).take(h)`) and
-    /// discards the rest, so a fixed-size head ignores the value and is correct
-    /// either way. An autoregressive head may decode exactly `execution_horizon`
-    /// actions to avoid wasting decode on a longer natural chunk.
+    /// `execution_horizon` is how many actions the runtime will execute
+    /// before re-planning (pinned at `ResolveAdapter`). The model returns
+    /// its *native* chunk; the engine executes a prefix of it
+    /// (`split_chunk(...).take(h)`) and discards the rest, so a fixed-size
+    /// head ignores the value and is correct either way. An autoregressive
+    /// head may decode exactly `execution_horizon` actions to avoid wasting
+    /// decode on a longer natural chunk.
     ///
     /// `episode` follows the same contract as [`predict`](Self::predict):
     /// real identity per lane, `None` on the fused grouped path.
@@ -173,13 +175,13 @@ pub trait PredictFn: Send + Sync {
     }
 
     /// An evict-all `ResetAdapter` (no ids) for `env_id`: drop that env's
-    /// per-episode model state silently, firing no episode-end hook (MDL-8).
+    /// per-episode model state silently, firing no episode-end hook.
     fn on_route_reset(&self, _env_id: &str) -> Result<()> {
         Ok(())
     }
 
     /// A `ReleaseAdapter` for `env_id`: drop that env's per-episode model
-    /// state silently (MDL-8).
+    /// state silently.
     fn on_route_release(&self, _env_id: &str) -> Result<()> {
         Ok(())
     }

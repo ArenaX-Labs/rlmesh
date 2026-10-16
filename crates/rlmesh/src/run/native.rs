@@ -1,4 +1,4 @@
-//! `Model::run` on the native runtime loop (RUN-8, RUN-9, RUN-25).
+//! `Model::run` on the native runtime loop.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -49,7 +49,7 @@ impl Mode {
     }
 
     /// Run a caller-side callback (a hook, a local env call) as this mode
-    /// does: an `_async` twin runs it with the driving flag set (R-16).
+    /// does: an `_async` twin runs it with the driving flag set.
     pub(crate) fn call<R>(self, f: impl FnOnce() -> R) -> R {
         match self {
             Mode::Sync => f(),
@@ -466,10 +466,9 @@ struct RelayState {
     results: Vec<EpisodeResult>,
 }
 
-/// Turns the runtime's events into [`RunHooks`] calls on the caller
-/// (Python's `NativeHookRelay`): each is awaited, so hooks run serially and
-/// the env is idle while one runs. The first hook error is kept and cancels
-/// the run.
+/// Turns the runtime's events into [`RunHooks`] calls on the caller: each is
+/// awaited, so hooks run serially and the env is idle while one runs. The
+/// first hook error is kept and cancels the run.
 pub(crate) struct HookRelay {
     port: Mutex<Option<CallerPort>>,
     driver: CancellationToken,

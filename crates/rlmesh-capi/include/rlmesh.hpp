@@ -1,4 +1,6 @@
 // RLMesh C++20 API. Header-only projection of C ABI 5.
+// RLMesh uses the same nouns and constructs in every language, following each
+// language's conventions.
 // Copies of shared handles refer to the same library object. Call close() to
 // observe cleanup errors; destructors release ownership without throwing.
 #ifndef RLMESH_HPP
@@ -41,7 +43,7 @@
 
 #include "rlmesh.h"
 namespace rlmesh {
-/// An environment error's code (Python's `EnvironmentException.code`).
+/// An environment error's code (`EnvironmentException.code`).
 enum class ErrorCode : int32_t {
   Unspecified = RLMESH_ERROR_CODE_UNSPECIFIED,
   Timeout = RLMESH_ERROR_CODE_TIMEOUT,
@@ -55,7 +57,7 @@ enum class ErrorCode : int32_t {
   Closed = RLMESH_ERROR_CODE_CLOSED,
 };
 
-/// A model error's code (Python's `ModelException.code`).
+/// A model error's code (`ModelException.code`).
 enum class ModelErrorCode : int32_t {
   Unspecified = RLMESH_MODEL_ERROR_CODE_UNSPECIFIED,
   InvalidRequest = RLMESH_MODEL_ERROR_CODE_INVALID_REQUEST,
@@ -78,23 +80,23 @@ inline std::string_view to_string(ModelErrorCode code) {
 }
 
 namespace detail {
-/// Tag for the library's own constructors, which carry a code; the public
-/// constructors take Python's authoring arguments.
+/// Tag for the library's own constructors, which carry a code; the public constructors
+/// take a message and optional recoverability.
 struct FromLibrary {};
 /// The wrapper's read of an authored exception's raw message (its `what()`
 /// carries the `[CODE]` prefix the wire adds again).
 struct ExceptionText;
 }  // namespace detail
 
-/// Python's builtin `RuntimeError`: misuse and local refusals.
+/// `RuntimeError`: misuse and local refusals.
 class RuntimeError : public std::runtime_error {
  public:
   explicit RuntimeError(const std::string& message) : std::runtime_error(message) {}
 };
 
 /// `RLMeshException`: an internal or server-side failure. The base of the
-/// rlmesh-specific classes; the builtins (`ValueError`, `OSError`, ...) are not
-/// under it, as in Python.
+/// rlmesh-specific classes; the general error classes (`ValueError`, `OSError`, ...)
+/// are not under it.
 class RLMeshException : public RuntimeError {
  public:
   explicit RLMeshException(const std::string& message) : RuntimeError(message) {}
@@ -107,9 +109,9 @@ class ProtocolException : public RLMeshException {
   explicit ProtocolException(const std::string& message) : RLMeshException(message) {}
 };
 
-/// `EnvironmentException`: the env reported a failure. Thrown from an env
-/// callback, it fails the request and ends the session (code `INTERNAL`). An
-/// authored one's `what()` is `[INTERNAL] message`, as Python's `str()`.
+/// `EnvironmentException`: the env reported a failure. Thrown from an env callback, it
+/// fails the request and ends the session (code `INTERNAL`). An authored one's `what()`
+/// is `[INTERNAL] message`.
 class EnvironmentException : public RLMeshException {
  public:
   explicit EnvironmentException(std::string message)
@@ -150,9 +152,9 @@ class RecoverableEnvironmentException : public EnvironmentException {
       : EnvironmentException(std::move(message), code, true, tag) {}
 };
 
-/// `ModelException`: the model reported a failure. Throw
-/// `ModelException(msg, true)` from predict to fail one request as recoverable
-/// (code `INTERNAL`); its `what()` is `[INTERNAL] msg`, as Python's `str()`.
+/// `ModelException`: the model reported a failure. Throw `ModelException(msg, true)`
+/// from predict to fail one request as recoverable (code `INTERNAL`); its `what()` is
+/// `[INTERNAL] msg`.
 class ModelException : public RLMeshException {
  public:
   explicit ModelException(std::string message, bool is_recoverable = false)
@@ -184,7 +186,7 @@ struct ExceptionText {
 };
 }  // namespace detail
 
-/// Python's `ValueError`: an invalid argument value, address or options field.
+/// `ValueError`: an invalid argument value, address or options field.
 class ValueError : public std::invalid_argument {
  public:
   explicit ValueError(const std::string& message) : std::invalid_argument(message) {}
@@ -196,25 +198,25 @@ class AdapterResolutionError : public ValueError {
   explicit AdapterResolutionError(const std::string& message) : ValueError(message) {}
 };
 
-/// Python's `TypeError`: the wrong kind of value or object.
+/// `TypeError`: the wrong kind of value or object.
 class TypeError : public std::logic_error {
  public:
   explicit TypeError(const std::string& message) : std::logic_error(message) {}
 };
 
-/// Python's `OSError`: a filesystem failure.
+/// `OSError`: a filesystem failure.
 class OSError : public std::runtime_error {
  public:
   explicit OSError(const std::string& message) : std::runtime_error(message) {}
 };
 
-/// Python's `ConnectionError` (an `OSError`): a transport failure.
+/// `ConnectionError` (an `OSError`): a transport failure.
 class ConnectionError : public OSError {
  public:
   explicit ConnectionError(const std::string& message) : OSError(message) {}
 };
 
-/// Python's `TimeoutError` (an `OSError`): a connect or request deadline.
+/// `TimeoutError` (an `OSError`): a connect or request deadline.
 class TimeoutError : public OSError {
  public:
   explicit TimeoutError(const std::string& message) : OSError(message) {}
@@ -222,7 +224,7 @@ class TimeoutError : public OSError {
 
 namespace ext {
 
-/// Cancellation (Python's `KeyboardInterrupt`). Derives from no `std::`
+/// Cancellation (the `KeyboardInterrupt` error class). Derives from no `std::`
 /// exception, so `catch (const std::exception&)` does not swallow a cancel.
 class CancelledError {
  public:
@@ -418,26 +420,25 @@ void delete_state(void* p) {
 }  // namespace detail
 inline constexpr std::string_view VERSION = RLMESH_VERSION;
 
-/// The describe envelope's metadata key and schema version, and the env reset
-/// options key: Python's `rlmesh.DESCRIBE_METADATA_KEY`, ...
+/// The describe envelope's metadata key and schema version, and the env reset options
+/// key.
 inline constexpr std::string_view DESCRIBE_METADATA_KEY = RLMESH_DESCRIBE_METADATA_KEY;
 inline constexpr int64_t DESCRIBE_SCHEMA_VERSION = RLMESH_DESCRIBE_SCHEMA_VERSION;
 inline constexpr std::string_view ENV_RESET_OPTIONS_KEY = RLMESH_ENV_RESET_OPTIONS_KEY;
 
-/// Where a build's cohort came from (Python's `BuildInfo.build_source`).
+/// Where a build's cohort came from.
 enum class BuildSource : int32_t {
   Release = RLMESH_BUILD_SOURCE_RELEASE,
   Package = RLMESH_BUILD_SOURCE_PACKAGE,
   Git = RLMESH_BUILD_SOURCE_GIT,
 };
 
-/// Python's spelling (`"release"`).
+/// The canonical spelling (`"release"`).
 inline std::string_view to_string(BuildSource source) {
   return detail::sv(rlmesh_build_source_str(static_cast<RLMeshBuildSource>(source)));
 }
 
-/// The linked library's identity: Python's `rlmesh.BuildInfo`. Every view is
-/// static, with process lifetime.
+/// The linked library's identity. Every view is static, with process lifetime.
 struct BuildInfo {
   std::string_view version{};
   std::string_view protocol_generation{};
@@ -468,8 +469,8 @@ inline BuildInfo build_info() {
   return info;
 }
 
-/// Python's `repr(build_info())` (`BuildInfo(version="0.1.0", ...)`), as the
-/// library spells it. `info` is a `build_info()` result.
+/// The build's text representation (`BuildInfo(version="0.1.0", ...)`), as the library
+/// spells it. `info` is a `build_info()` result.
 inline std::string to_string(const BuildInfo& info) {
   std::ostringstream out;
   out << "BuildInfo(version=" << std::quoted(std::string(info.version))
@@ -495,19 +496,19 @@ inline std::string_view current_workflow_edition() {
   return detail::sv(rlmesh_current_workflow_edition());
 }
 
-/// A warning's category: Python's warning classes (values of the C enum).
+/// A warning's category (values of the C enum).
 enum class WarningCategory : int32_t {
   UserWarning = RLMESH_WARNING_CATEGORY_USER_WARNING,
   RuntimeWarning = RLMESH_WARNING_CATEGORY_RUNTIME_WARNING,
   WorkflowEditionWarning = RLMESH_WARNING_CATEGORY_WORKFLOW_EDITION_WARNING,
 };
 
-/// Python's class name (`"WorkflowEditionWarning"`).
+/// The class name (`"WorkflowEditionWarning"`).
 inline std::string_view name(WarningCategory category) {
   return detail::sv(rlmesh_warning_category_name(static_cast<RLMeshWarningCategory>(category)));
 }
 
-/// Python's `issubclass(cls, base)`.
+/// Test class inheritance, including identity.
 inline bool is_subclass_of(WarningCategory cls, WarningCategory base) {
   return rlmesh_warning_category_is_subclass(static_cast<RLMeshWarningCategory>(cls),
                                              static_cast<RLMeshWarningCategory>(base));
@@ -584,7 +585,7 @@ enum class DType : int {
   Float64 = RLMESH_DTYPE_FLOAT64,
 };
 
-/// Python's spelling ("float32"); empty for an unknown value.
+/// The canonical spelling ("float32"); empty for an unknown value.
 inline std::string_view to_string(DType dtype) {
   return detail::sv(rlmesh_dtype_str(static_cast<RLMeshDType>(dtype)));
 }
@@ -940,7 +941,7 @@ inline Metadata Value::as_dict() const {
 namespace detail {
 inline InfoDict info(const RLMeshValue* v) { return v ? Value::copy_of(v).as_dict() : InfoDict{}; }
 }  // namespace detail
-// OptionalList preserves None versus an explicitly empty list (R-13).
+// OptionalList preserves an absent value versus an explicitly empty list.
 template <class T>
 class OptionalList {
   std::optional<std::vector<T>> value_{};
@@ -958,7 +959,7 @@ class OptionalList {
 };
 namespace spaces {
 
-/// A space's kind (Python's `kind`).
+/// A space's kind.
 enum class SpaceKind : int {
   Unknown = RLMESH_SPACE_KIND_UNKNOWN,
   Box = RLMESH_SPACE_KIND_BOX,
@@ -970,7 +971,7 @@ enum class SpaceKind : int {
   Tuple = RLMESH_SPACE_KIND_TUPLE,
 };
 
-/// How a Box stores its bounds (Python's `bounds_kind`).
+/// How a Box stores its bounds.
 enum class BoundsKind : int {
   Unbounded = RLMESH_BOUNDS_KIND_UNBOUNDED,
   Uniform = RLMESH_BOUNDS_KIND_UNIFORM,
@@ -1024,7 +1025,7 @@ inline RLMeshStr str(std::string_view text) {
 class Bound {
  public:
   template <class T, class = std::enable_if_t<std::is_arithmetic_v<T>>>
-  Bound(T value) {  // NOLINT(google-explicit-constructor): Python takes a number
+  Bound(T value) {  // NOLINT(google-explicit-constructor): accepts numeric bounds
     if constexpr (std::is_same_v<T, bool>) {
       raw_ = rlmesh_bound_bool(value);
     } else if constexpr (std::is_floating_point_v<T>) {
@@ -1070,7 +1071,7 @@ struct DiscreteOptions {
 
 class Space;
 
-/// Immutable data describing a space (Python's `SpaceSpec`).
+/// Immutable data describing a space.
 class SpaceSpec {
  public:
   /// Copy a borrowed spec (a contract's, a space's, a child's).
@@ -1097,7 +1098,7 @@ class SpaceSpec {
   DType dtype() const { return static_cast<DType>(rlmesh_space_spec_dtype(ptr_)); }
   /// A fresh space with its own sampler.
   inline Space to_space() const;
-  /// Gymnasium-style text, Python's `repr`.
+  /// Gymnasium-style text.
   std::string to_string() const {
     RLMeshBytes bytes = {nullptr, 0, 0};
     rlmesh::detail::check(rlmesh_space_spec_repr(ptr_, &bytes));
@@ -1113,8 +1114,8 @@ class Box;
 class Discrete;
 class Dict;
 
-/// A space: a spec plus its sampler (Python's `Space`). Copies share the
-/// handle, so two copies drive one RNG.
+/// A space: a spec plus its sampler. Copies share the handle, so two copies drive one
+/// RNG.
 class Space {
  public:
   /// `Space(spec)`.
@@ -1193,7 +1194,7 @@ inline Space SpaceSpec::to_space() const {
   return Space::adopt(out);
 }
 
-/// Python's `space_from_spec`: refuses a spec with no payload.
+/// Build a space from a spec; refuses a spec with no payload.
 inline Space space_from_spec(const SpaceSpec& spec) {
   RLMeshSpace* out = nullptr;
   RLMeshStatus status = rlmesh_spaces_space_from_spec(spec.raw(), &out);
@@ -1231,7 +1232,7 @@ inline RLMeshBoxOptions box_options(const BoxOptions& options) {
 }
 }  // namespace detail
 
-/// A box of numbers in `[low, high]` (Python's `Box`).
+/// A box of numbers in `[low, high]`.
 class Box : public Space {
  public:
   /// `Box(low, high, shape, dtype)`.
@@ -1271,7 +1272,7 @@ class Box : public Space {
   explicit Box(RLMeshSpace* ptr, detail::Adopt) : Space(ptr) {}
 };
 
-/// The integers `start .. start + n` (Python's `Discrete`).
+/// The integers `start .. start + n`.
 class Discrete : public Space {
  public:
   static Discrete create(int64_t n, DiscreteOptions options = {}) {
@@ -1308,7 +1309,7 @@ class Discrete : public Space {
   explicit Discrete(RLMeshSpace* ptr, detail::Adopt) : Space(ptr) {}
 };
 
-/// Named child spaces (Python's `Dict`), read in declaration order.
+/// Named child spaces, read in declaration order.
 class Dict : public Space {
  public:
   /// `Dict(spaces)`: each spec is copied into a fresh child; keys sort.
