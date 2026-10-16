@@ -469,6 +469,11 @@ impl Error {
             // yet during boot), not an internal fault -- surface it as Connection
             // so dial-retry treats it as transient.
             rlmesh_grpc::error::Error::Cancelled(message) => Self::Connection(message),
+            // A token a header cannot carry is a bad argument, not a
+            // transport failure (RMT-5).
+            rlmesh_grpc::error::Error::Client(
+                error @ rlmesh_grpc::error::ClientError::InvalidToken(_),
+            ) => Self::invalid_argument(error.to_string()),
             rlmesh_grpc::error::Error::Client(error) => Self::Connection(error.to_string()),
             // rlmesh_grpc::error::Error is #[non_exhaustive].
             other => Self::Internal(other.to_string()),

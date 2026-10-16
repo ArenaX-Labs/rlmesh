@@ -9,7 +9,7 @@ mod server;
 mod stream;
 mod wire;
 
-pub use client::{EnvClient, EnvHandshake};
+pub use client::{EnvClient, EnvHandshake, PinnedEdition};
 pub use environment::{
     CloseEnvsResponse, EndpointPhases, Environment, RenderRequest, RenderResponse, ResetRequest,
     ResetResponse, StepRequest, StepResponse, lane_skew_ns,

@@ -9,7 +9,7 @@ use crate::{Error, Result};
 /// A client-side address for connecting to a running server.
 ///
 /// Build one with [`ConnectAddress::parse`], or pass a `&str` directly to the
-/// connect helpers (e.g. [`crate::RemoteEnv::connect`]).
+/// clients (e.g. [`crate::RemoteEnvOptions::address`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConnectAddress {
     /// A TCP endpoint, e.g. `tcp://host:port`.

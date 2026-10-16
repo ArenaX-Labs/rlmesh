@@ -252,6 +252,39 @@ pub(crate) fn run_sync<F: Future>(future: F) -> F::Output {
     }
 }
 
+/// Drive `future` to completion on this thread inside the library runtime's
+/// context (a client's sync call, R-17): the runtime's workers drive its I/O
+/// and timers while this thread parks. Never tokio's `block_on`, so it cannot
+/// panic on nesting; the caller has checked it is not in an async context.
+pub(crate) fn block_on_library<F: Future>(future: F) -> F::Output {
+    let _enter = runtime().enter();
+    let waker = Waker::from(Arc::new(Unpark(std::thread::current())));
+    let mut cx = Context::from_waker(&waker);
+    let mut future = pin!(future);
+    loop {
+        let polled = {
+            let _driving = Driving::set();
+            future.as_mut().poll(&mut cx)
+        };
+        if let Poll::Ready(out) = polled {
+            return out;
+        }
+        std::thread::park();
+    }
+}
+
+/// Poll `future` inside the library runtime's context on whichever executor
+/// awaits it (a client's `_async` twin, RMT-7), so its timers and sockets
+/// register with the library runtime.
+pub(crate) async fn in_library<F: Future>(future: F) -> F::Output {
+    let mut future = pin!(future);
+    std::future::poll_fn(move |cx| {
+        let _enter = runtime().enter();
+        future.as_mut().poll(cx)
+    })
+    .await
+}
+
 /// R-16's condition: a tokio task (or `spawn_blocking` closure) or a library
 /// driver segment is running on this thread.
 pub(crate) fn in_async_context() -> bool {

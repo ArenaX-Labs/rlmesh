@@ -54,16 +54,6 @@ class RemoteVectorEnvBase(RemoteClientBase[ValueT, ActionT]):
             workflow_edition=workflow_edition,
         )
 
-    def _post_handshake(self) -> None:
-        if self._env_contract.num_envs < 2:
-            try:
-                self._client.close()
-            finally:
-                raise ValueError(
-                    f"Endpoint {self._address!r} serves a single environment. "
-                    "Use RemoteEnv instead."
-                )
-
     def _adapt_metadata(self, metadata: Mapping[str, object]) -> Metadata:
         """Restore the Gymnasium ``AutoresetMode`` enum on the endpoint metadata.
 
@@ -79,7 +69,7 @@ class RemoteVectorEnvBase(RemoteClientBase[ValueT, ActionT]):
     @property
     def num_envs(self) -> int:
         """Number of environment instances served by the endpoint."""
-        return self._client.num_envs()
+        return self._env_contract.num_envs
 
     @property
     def single_observation_space(self) -> Space[ValueT]:

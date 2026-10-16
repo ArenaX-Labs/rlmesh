@@ -160,6 +160,8 @@ pub fn rlmesh(m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     m.add_class::<lifecycle::PyBuildInfo>()?;
     m.add_function(wrap_pyfunction!(lifecycle::build_info, m)?)?;
+    m.add_function(wrap_pyfunction!(model::check_remote_model_options, m)?)?;
+    m.add_function(wrap_pyfunction!(client::normalize_connect_address, m)?)?;
 
     m.add_class::<server::PyEnvServer>()?;
     m.add_class::<server::PyVectorEnvServer>()?;
@@ -167,6 +169,7 @@ pub fn rlmesh(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<model::PyModelClient>()?;
     m.add_class::<client::PyEnvClient>()?;
     m.add_class::<client::PyVectorEnvClient>()?;
+    m.add_class::<client::PyEditionCell>()?;
     m.add_class::<viewer::PyViewer>()?;
     m.add_class::<viewer::PyVideoWriter>()?;
     #[cfg(feature = "cli")]

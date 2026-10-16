@@ -1,6 +1,6 @@
 use crate::binding::spaces;
 
-pub use spaces::{CloseRequest, RenderRequest, RenderResult};
+pub use spaces::{CloseRequest, RenderRequest};
 
 /// Summary of one finished episode, reported on step completion and on close.
 #[derive(Debug, Clone, PartialEq, Default)]

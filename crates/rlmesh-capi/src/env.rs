@@ -1088,7 +1088,6 @@ mod tests {
     use std::ffi::CString;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use rlmesh::RemoteEnv;
     use rlmesh_spaces::DType;
     use rlmesh_spaces::Tensor;
 
@@ -1097,6 +1096,68 @@ mod tests {
     use crate::spaces::{rlmesh_space_box, rlmesh_space_dict, rlmesh_space_spec_free};
     use crate::value::dtype::RLMeshDLPackDType;
     use crate::value::handle::into_handle;
+
+    /// A scalar wire client over the binding core, as these tests drive one.
+    struct RemoteEnv(rlmesh::binding::env::EnvClientCore);
+
+    impl RemoteEnv {
+        async fn connect(address: &str) -> rlmesh::Result<RemoteEnv> {
+            rlmesh::binding::env::EnvClientCore::connect(address)
+                .await
+                .map(RemoteEnv)
+        }
+
+        fn env_contract(&self) -> &rlmesh::binding::spaces::EnvContract {
+            self.0.env_contract()
+        }
+
+        async fn reset(&mut self, req: ResetRequest) -> rlmesh::Result<ResetResult> {
+            let result = self
+                .0
+                .reset(rlmesh::binding::env::VectorResetRequest {
+                    seeds: req.seed.into_iter().collect(),
+                    options: req.options,
+                    timeout_ms: req.timeout_ms,
+                    env_indices: Vec::new(),
+                })
+                .await?;
+            Ok(ResetResult {
+                observation: result.observations.into_iter().next(),
+                info: result.info,
+                episode_id: result.episode_ids.into_iter().next(),
+            })
+        }
+
+        async fn step(&mut self, req: StepRequest) -> rlmesh::Result<StepResult> {
+            let result = self
+                .0
+                .step(rlmesh::binding::env::VectorStepRequest {
+                    actions: req.action.into_iter().collect(),
+                    timeout_ms: req.timeout_ms,
+                })
+                .await?;
+            Ok(StepResult {
+                observation: result.observations.into_iter().next(),
+                reward: result.rewards.first().copied().unwrap_or_default(),
+                terminated: result.terminated.first().copied().unwrap_or_default(),
+                truncated: result.truncated.first().copied().unwrap_or_default(),
+                info: result.info,
+            })
+        }
+
+        async fn render(&mut self, _req: RenderRequest) -> rlmesh::Result<RenderResult> {
+            Ok(RenderResult {
+                frame: self
+                    .0
+                    .render(0)
+                    .await?
+                    .map(|frame| rlmesh::binding::env::RenderFrame { frame }),
+            })
+        }
+
+        /// Drop the session without a Close round-trip.
+        fn detach(self) {}
+    }
 
     const F32: RLMeshDLPackDType = RLMeshDLPackDType {
         code: 2,
@@ -1537,7 +1598,7 @@ mod tests {
         });
         let runtime = tokio::runtime::Runtime::new().unwrap();
         runtime.block_on(async {
-            let mut client = rlmesh::RemoteVectorEnv::connect(&address)
+            let mut client = rlmesh::binding::env::EnvClientCore::connect(&address)
                 .await
                 .expect("connect");
             assert_eq!(client.num_envs(), 2);
@@ -1890,7 +1951,7 @@ mod tests {
         let server = spawn_serve(env);
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let client = runtime.spawn(async move {
-            let mut client = rlmesh::RemoteVectorEnv::connect(&address)
+            let mut client = rlmesh::binding::env::EnvClientCore::connect(&address)
                 .await
                 .expect("connect");
             client

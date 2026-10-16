@@ -4,9 +4,10 @@ Holds the connection/handshake/lifecycle and the space accessors common to
 :class:`rlmesh._client._remote_env.RemoteEnvBase` and
 :class:`rlmesh._client._remote_vector_env.RemoteVectorEnvBase`. The arity- and
 backend-specific pieces -- which native client to build (``_make_client``),
-post-handshake validation (``_post_handshake``), metadata adaptation
-(``_adapt_metadata``), and the step/reset shapes + space-cache attributes -- are
-subclass hooks/overrides. Not part of the public API.
+metadata adaptation (``_adapt_metadata``), and the step/reset shapes +
+space-cache attributes -- are subclass hooks/overrides. The native client dials,
+handshakes and checks the endpoint's arity in its constructor. Not part of the
+public API.
 """
 
 from __future__ import annotations
@@ -85,36 +86,21 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
             path=path,
             transport=transport,
         )
-        try:
-            self._client = self._make_client(
-                normalized_address,
-                connect_timeout_seconds,
-                request_timeout_seconds,
-                workflow_edition,
-            )
-        except ConnectionError as exc:
-            raise ConnectionError(
-                f"could not connect to an env at {normalized_address!r}; "
-                f"is the EnvServer running? ({exc})"
-            ) from None
+        # Dials, handshakes and checks the arity; a dial failure already
+        # reads "could not connect to an env at ...".
+        self._client = self._make_client(
+            normalized_address,
+            connect_timeout_seconds,
+            request_timeout_seconds,
+            workflow_edition,
+        )
         self._address = self._client.address()
-        try:
-            self._env_contract: EnvContract = self._client.handshake()
-        except ConnectionError as exc:
-            # The connected native client must not leak; close it before
-            # raising, and name the handshake so the failure is not mislabeled
-            # as the server being down.
-            try:
-                self._client.close()
-            finally:
-                raise ConnectionError(
-                    f"connected to an env at {normalized_address!r}, but the "
-                    f"handshake failed ({exc})"
-                ) from None
-        except BaseException:
-            self._client.close()
-            raise
-        self._post_handshake()
+        # A local conversion of the handshake's contract; no I/O.
+        self._env_contract: EnvContract = self._client.handshake()
+        # Accessors read state outside the client's per-call borrow, so they
+        # work while another thread is in a call.
+        self._env_id: str = self._client.env_id()
+        self._edition_cell = self._client.edition_cell()
 
     # --- arity / backend hooks -------------------------------------------------
     def _make_client(
@@ -126,9 +112,6 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
     ) -> Any:
         """Build and return the native client. Overridden per arity."""
         raise NotImplementedError
-
-    def _post_handshake(self) -> None:
-        """Validate the handshake. Default: accept any environment count."""
 
     def _adapt_metadata(self, metadata: Mapping[str, object]) -> Metadata:
         """Post-process endpoint metadata. Default: return it unchanged."""
@@ -147,7 +130,7 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
         A stable correlation identity, distinct from the human env name
         (`env_contract.id`).
         """
-        return self._client.env_id()
+        return self._env_id
 
     @property
     def selected_workflow_edition(self) -> str:
@@ -159,7 +142,7 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
         ``workflow_edition`` *declaration* surfaces on purpose: this is what was
         agreed, not what this side asked for.
         """
-        return cast("str", self._client.selected_workflow_edition())
+        return cast("str", self._edition_cell.get())
 
     def _session_offer(self) -> tuple[list[str], str | None]:
         """The env's handshake offer ``(CAN, WANT)``, for a served-model session's floor."""

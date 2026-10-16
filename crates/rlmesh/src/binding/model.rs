@@ -12,6 +12,7 @@ pub use crate::model::handler::{
 };
 pub use crate::model::local::{EnvClientRuntimeEnv, ModelHandlerRuntimeModel};
 pub use crate::model::predict_fn::{PredictFn, RouteConfig, RouteResolver};
+pub use crate::model::remote::{ModelClient, ModelConnect};
 pub use crate::model::server::BoundModelServer;
 pub use crate::model::types::{EpisodeInfo, HistoryFrame, ModelObservation, ModelRouteContext};
 pub use crate::model::worker::{ModelWorker, RunLocalOptions, ServeModelOptions};
