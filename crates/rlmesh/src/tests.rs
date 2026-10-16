@@ -72,14 +72,14 @@ fn facade_error_mapping_hides_core_error_types() {
 #[test]
 fn curated_spaces_facade_separates_the_two_request_families() {
     // The crate-root request types are the scalar env family.
-    let env_layer = crate::ResetRequest {
+    let env_layer = crate::binding::env::ResetRequest {
         seed: Some(7),
         ..Default::default()
     };
     assert_eq!(env_layer.seed, Some(7));
 
     // The vector env request family is explicit.
-    let vector_env = crate::VectorResetRequest {
+    let vector_env = crate::binding::env::VectorResetRequest {
         seeds: vec![1, 2, 3],
         ..Default::default()
     };
@@ -94,7 +94,7 @@ fn curated_spaces_facade_separates_the_two_request_families() {
             "env-layer and single-env ResetRequest must be distinct types"
         );
     }
-    assert_distinct::<crate::ResetRequest, crate::VectorResetRequest>();
+    assert_distinct::<crate::binding::env::ResetRequest, crate::binding::env::VectorResetRequest>();
 }
 
 #[test]

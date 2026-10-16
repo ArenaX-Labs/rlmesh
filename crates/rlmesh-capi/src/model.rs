@@ -813,13 +813,17 @@ fn serve_model_options(
     if !c_options.token.is_null() {
         model_options = model_options.token(cstr_to_str(c_options.token)?);
     }
-    Ok(model_options.serve_options(serve_options(options)?))
+    Ok(model_options
+        .predict_concurrency(
+            (c_options.predict_concurrency != 0).then_some(c_options.predict_concurrency),
+        )
+        .serve_options(serve_options(options)?))
 }
 
 /// The core [`ServeOptions`] an `RLMeshServeOptions` names (NULL = defaults),
-/// shared by the model and environment servers. The token is left to each
-/// caller: the model server carries it on `ServeModelOptions`, the environment
-/// server on `ServeOptions::token`.
+/// shared by the model and environment servers. The token and the predict
+/// concurrency are left to each caller: the model server carries them on
+/// `ServeModelOptions`, the environment server its token on its `ext`.
 pub(crate) fn serve_options(options: *const RLMeshServeOptions) -> Result<ServeOptions, CapiError> {
     // SAFETY: the exports' contract is that `options` is NULL or a valid
     // `RLMeshServeOptions` for the duration of the call.
@@ -853,8 +857,6 @@ pub(crate) fn serve_options(options: *const RLMeshServeOptions) -> Result<ServeO
         idle_timeout: ms(options.idle_timeout_ms),
         drain_timeout: ms(options.drain_timeout_ms),
         close_timeout: ms(options.close_timeout_ms),
-        predict_concurrency: (options.predict_concurrency != 0)
-            .then_some(options.predict_concurrency),
         workflow_edition,
         ..ServeOptions::default()
     })
@@ -1635,7 +1637,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl rlmesh::Env for SmokeEnv {
+    impl rlmesh::binding::env::Env for SmokeEnv {
         fn observation_space(&self) -> &rlmesh::SpaceSpec {
             &self.obs_space
         }
@@ -1648,8 +1650,8 @@ mod tests {
 
         async fn reset(
             &mut self,
-            req: rlmesh::ResetRequest,
-        ) -> Result<rlmesh::ResetResult, rlmesh::EnvRuntimeError> {
+            req: rlmesh::binding::env::ResetRequest,
+        ) -> Result<rlmesh::binding::env::ResetResult, rlmesh::EnvRuntimeError> {
             let trial = match req.options.as_ref().and_then(|o| o.get("trial_index")) {
                 Some(MetaValue::Int(trial)) => Some(*trial),
                 _ => None,
@@ -1657,7 +1659,7 @@ mod tests {
             let mut resets = self.resets.lock().expect("reset log");
             resets.seeds.push(req.seed);
             resets.trials.push(trial);
-            Ok(rlmesh::ResetResult {
+            Ok(rlmesh::binding::env::ResetResult {
                 observation: Some(u8_box(0)),
                 info: None,
                 episode_id: None,
@@ -1666,9 +1668,9 @@ mod tests {
 
         async fn step(
             &mut self,
-            _req: rlmesh::StepRequest,
-        ) -> Result<rlmesh::StepResult, rlmesh::EnvRuntimeError> {
-            Ok(rlmesh::StepResult {
+            _req: rlmesh::binding::env::StepRequest,
+        ) -> Result<rlmesh::binding::env::StepResult, rlmesh::EnvRuntimeError> {
+            Ok(rlmesh::binding::env::StepResult {
                 observation: Some(u8_box(1)),
                 reward: 1.0,
                 terminated: true,
@@ -1679,16 +1681,16 @@ mod tests {
 
         async fn render(
             &mut self,
-            _req: rlmesh::RenderRequest,
-        ) -> Result<rlmesh::RenderResult, rlmesh::EnvRuntimeError> {
-            Ok(rlmesh::RenderResult::default())
+            _req: rlmesh::binding::env::RenderRequest,
+        ) -> Result<rlmesh::binding::env::RenderResult, rlmesh::EnvRuntimeError> {
+            Ok(rlmesh::binding::env::RenderResult::default())
         }
 
         async fn close(
             &mut self,
-            _req: rlmesh::CloseRequest,
-        ) -> Result<rlmesh::CloseResult, rlmesh::EnvRuntimeError> {
-            Ok(rlmesh::CloseResult)
+            _req: rlmesh::binding::env::CloseRequest,
+        ) -> Result<rlmesh::binding::env::CloseResult, rlmesh::EnvRuntimeError> {
+            Ok(rlmesh::binding::env::CloseResult)
         }
     }
 
@@ -1714,7 +1716,7 @@ mod tests {
                     .build()
                     .expect("env runtime");
                 runtime.block_on(async move {
-                    let bound = rlmesh::EnvServer::new(SmokeEnv::new(env_resets))
+                    let bound = rlmesh::binding::env::WireEnvServer::new(SmokeEnv::new(env_resets))
                         .bind(BindAddress::Tcp {
                             host: "127.0.0.1".to_string(),
                             port: 0,

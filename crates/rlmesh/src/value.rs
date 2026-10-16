@@ -72,7 +72,7 @@ pub enum ValueKind {
 
 impl ValueKind {
     /// Python's type name (`"int"`, `"Tensor"`, `"NoneType"`).
-    fn python_name(self) -> &'static str {
+    pub(crate) fn python_name(self) -> &'static str {
         match self {
             ValueKind::None => "NoneType",
             ValueKind::Bool => "bool",

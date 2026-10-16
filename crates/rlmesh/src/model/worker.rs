@@ -243,17 +243,18 @@ impl From<ConnectAddress> for RunLocalOptions {
 
 /// Options for [`ModelWorker::serve`] / [`ModelWorker::serve_async`] /
 /// [`ModelWorker::bind_async`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct ServeModelOptions {
     /// Address to bind the model server to.
     pub address: BindAddress,
     /// Bearer token required on requests when `RLMESH_MODEL_ENDPOINT_TOKEN` is unset.
     /// Empty/`""` disables auth only when the environment variable is unset.
     ///
-    /// A non-empty [`ServeOptions::token`](crate::ServeOptions::token) in
-    /// `serve` takes precedence over this field; either one alone arms auth.
-    /// `RLMESH_MODEL_ENDPOINT_TOKEN`, when set, takes precedence over both.
+    /// `RLMESH_MODEL_ENDPOINT_TOKEN`, when set, takes precedence.
     pub token: String,
+    /// Maximum number of model Join-stream requests processed concurrently
+    /// per connection (pipelined predict). `None` applies the default cap.
+    pub predict_concurrency: Option<usize>,
     /// Transport serve options (idle/drain/close timeouts, remote shutdown).
     pub serve: ServeOptions,
 }
@@ -264,6 +265,7 @@ impl ServeModelOptions {
         Self {
             address,
             token: String::new(),
+            predict_concurrency: None,
             serve: ServeOptions::default(),
         }
     }
@@ -274,11 +276,14 @@ impl ServeModelOptions {
     }
 
     /// Require `token` on the `authorization` header when the environment token is unset.
-    ///
-    /// A non-empty [`ServeOptions::token`](crate::ServeOptions::token) set
-    /// through [`serve_options`](Self::serve_options) wins over this one.
     pub fn token(mut self, token: impl Into<String>) -> Self {
         self.token = token.into();
+        self
+    }
+
+    /// Set the predict concurrency cap.
+    pub fn predict_concurrency(mut self, predict_concurrency: Option<usize>) -> Self {
+        self.predict_concurrency = predict_concurrency;
         self
     }
 
@@ -403,6 +408,7 @@ impl<H: ModelHandler + 'static> ModelWorker<H> {
             self.handler,
             options.address,
             &effective_token,
+            options.predict_concurrency,
             options.serve,
         )
         .await
@@ -416,13 +422,11 @@ fn model_endpoint_token(
     options: &ServeModelOptions,
     environment: std::result::Result<String, std::env::VarError>,
 ) -> Result<String> {
-    let configured = options
-        .serve
-        .token
-        .clone()
-        .filter(|token| !token.is_empty())
-        .unwrap_or_else(|| options.token.clone());
-    crate::serve_options::endpoint_token(MODEL_ENDPOINT_TOKEN_ENV, configured, environment)
+    crate::serve_options::endpoint_token(
+        MODEL_ENDPOINT_TOKEN_ENV,
+        options.token.clone(),
+        environment,
+    )
 }
 
 #[cfg(test)]
@@ -431,19 +435,10 @@ mod tests {
 
     #[test]
     fn model_endpoint_token_precedence() {
-        for (nested, direct, expected) in [
-            (None, "", ""),
-            (None, "direct", "direct"),
-            (Some(""), "direct", "direct"),
-            (Some("nested"), "direct", "nested"),
-        ] {
+        for (direct, expected) in [("", ""), ("direct", "direct")] {
             let options = ServeModelOptions::parse("tcp://127.0.0.1:0")
                 .unwrap()
-                .token(direct)
-                .serve_options(ServeOptions {
-                    token: nested.map(str::to_string),
-                    ..ServeOptions::default()
-                });
+                .token(direct);
             assert_eq!(
                 model_endpoint_token(&options, Err(std::env::VarError::NotPresent)).unwrap(),
                 expected

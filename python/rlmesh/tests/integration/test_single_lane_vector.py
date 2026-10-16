@@ -60,3 +60,31 @@ def test_info_takes_lane_zero_and_honors_masks():
 def test_same_step_is_refused():
     with pytest.raises(ValueError, match="SAME_STEP"):
         SingleLaneEnv(_one_lane(gym.vector.AutoresetMode.SAME_STEP))
+
+
+class _Meta:
+    """A one-lane vector env stand-in carrying only metadata."""
+
+    num_envs = 1
+
+    def __init__(self, metadata):
+        self.metadata = metadata
+        self.single_observation_space = gym.spaces.Discrete(2)
+        self.single_action_space = gym.spaces.Discrete(2)
+
+
+@pytest.mark.parametrize(
+    "mode", [None, 3, "SameStep", "Bogus", gym.vector.AutoresetMode.SAME_STEP]
+)
+def test_an_invalid_autoreset_mode_is_refused(mode):
+    """ENV-P5: the one-lane view holds the key to the rule every env follows."""
+    with pytest.raises(ValueError):
+        SingleLaneEnv(_Meta({"autoreset_mode": mode}))
+
+
+@pytest.mark.parametrize(
+    "mode", ["NextStep", "Disabled", gym.vector.AutoresetMode.NEXT_STEP]
+)
+def test_a_valid_autoreset_mode_is_stripped(mode):
+    view = SingleLaneEnv(_Meta({"autoreset_mode": mode, "render_fps": 30}))
+    assert view.metadata == {"render_fps": 30}

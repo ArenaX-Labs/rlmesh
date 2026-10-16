@@ -2781,7 +2781,9 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "futures",
+ "image",
  "indexmap",
+ "libc",
  "rand 0.10.1",
  "rayon",
  "rlmesh-adapters",
@@ -2817,7 +2819,6 @@ name = "rlmesh-capi"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "image",
  "libc",
  "rlmesh",
  "rlmesh-adapters",

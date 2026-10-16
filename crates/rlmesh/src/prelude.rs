@@ -1,21 +1,18 @@
-//! Common imports for RLMesh users.
+//! Common imports for RLMesh authors: the authoring traits, the types their
+//! signatures name, and the error types.
 //!
-//! This prelude brings in the traits, servers, request/result types, errors,
-//! options, address types, and [`BinaryPayload`]
-//! used by environment and model implementations. It leaves the full space
-//! system under [`crate::binding::spaces`].
-//!
-//! [`crate::Result`] is not included. [`Env`] and [`VectorEnv`] methods use the
-//! two-argument `std::result::Result<_, EnvRuntimeError>` form.
+//! The model side still authors through the async [`ModelHandler`], so
+//! [`async_trait`](macro@crate::async_trait) and [`SpaceValue`] stay here
+//! until it moves to the sync `Policy`.
 
+pub use crate::adapters::EnvTags;
 pub use crate::async_trait;
-pub use crate::binding::spaces::BinaryPayload;
+pub use crate::spaces::Space;
 pub use crate::{
-    BindAddress, BoundEnvServer, BoundModelServer, CloseRequest, CloseResult, ConnectAddress, Env,
-    EnvContract, EnvRuntimeError, EnvServer, EnvironmentError, Error, ErrorClass, ErrorCode,
-    InfoDict, Kwargs, Metadata, ModelHandler, ModelObservation, ModelRouteContext, ModelWorker,
-    RemoteEnv, RemoteVectorEnv, RenderFrame, RenderRequest, RenderResult, ResetRequest,
-    ResetResult, RunLocalOptions, ServeModelOptions, ServeOptions, SpaceSpec, SpaceValue,
-    StepRequest, StepResult, Value, VectorCloseResult, VectorEnv, VectorEnvServer,
-    VectorResetRequest, VectorResetResult, VectorStepRequest, VectorStepResult,
+    BindAddress, BoundModelServer, ConnectAddress, Env, EnvContract, EnvFactory, EnvFactoryExt,
+    EnvFactoryServeOptions, EnvServer, EnvServerOptions, EnvironmentError, Error, ErrorClass,
+    ErrorCode, InfoDict, Kwargs, MadeEnv, Metadata, ModelHandler, ModelObservation,
+    ModelRouteContext, ModelWorker, RemoteEnv, RemoteVectorEnv, Result, RunLocalOptions,
+    ServeModelOptions, ServeOptions, SpaceValue, TagParam, Transport, Value, Variant,
+    VariantOptions, VectorEnv, VectorSeed,
 };

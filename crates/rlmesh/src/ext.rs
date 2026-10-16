@@ -128,3 +128,51 @@ impl SpaceExt for Space {
         )))
     }
 }
+
+/// The Rust- and C-only fields of an env server's options (ENV-12), reached
+/// through [`EnvServerOptions::ext`](crate::EnvServerOptions::ext).
+#[derive(Clone, Debug, Default)]
+pub struct EnvServerOptions {
+    /// Bearer token every request must carry. `RLMESH_ENV_ENDPOINT_TOKEN`,
+    /// when set, replaces it. `None` or empty disables authentication.
+    pub token: Option<String>,
+    /// Advisory entries this endpoint adds to its handshake `PeerInfo.extra`.
+    pub peer_info_extra: std::collections::BTreeMap<String, String>,
+    /// Publish the served env's describe envelope on the handshake, as a
+    /// factory serve does.
+    pub publish_describe: bool,
+}
+
+/// Python's `EnvTags` from its wire JSON (the form `EnvTags.to_dict()`
+/// writes), checked for unknown fields: the way Rust builds tags until the
+/// adapters surface lands.
+pub fn env_tags_from_json(json: &str) -> Result<crate::adapters::EnvTags> {
+    crate::adapters::EnvTags::from_json(json)
+}
+
+/// Cancellation (R-18): the native counterpart of Python's
+/// `KeyboardInterrupt`. Every clone is the same token, so [`cancel`] on any
+/// copy fires it. One `cancel()` fails the call in flight on the token or,
+/// when none is, the next call made with it, at its start; the token then
+/// re-arms. Repeated `cancel()` before that call fails counts once.
+///
+/// [`cancel`]: CancelToken::cancel
+#[derive(Clone, Debug, Default)]
+pub struct CancelToken(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl CancelToken {
+    /// A token that has not fired (equal to `default()`).
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Fire the token, from any thread.
+    pub fn cancel(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Consume a pending cancel: true once per firing (the re-arm).
+    pub(crate) fn take(&self) -> bool {
+        self.0.swap(false, std::sync::atomic::Ordering::SeqCst)
+    }
+}

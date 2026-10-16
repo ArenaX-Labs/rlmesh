@@ -2338,7 +2338,8 @@ class Environment {
   virtual Result<ResetOutput> reset(const ResetArgs& args) = 0;
   /// `action` is borrowed for the call; nullopt when the request carries none.
   virtual Result<StepOutput> step(std::optional<ValueRef> action) = 0;
-  /// A uint8 image Value ([H, W, 3], [H, W, 4] or [H, W]), or nullopt for no
+  /// A numeric image Value, cast to uint8 ([H, W, 3], [H, W, 4], [3, H, W],
+  /// [4, H, W] or [H, W]; any other shape is no frame), or nullopt for no
   /// frame. Declare `render_mode = "rgb_array"` in the EnvConfig to advertise it.
   virtual Result<std::optional<Value>> render() { return std::optional<Value>(); }
   /// The server stopped, or the EnvServer was destroyed without serving

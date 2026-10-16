@@ -292,12 +292,16 @@ def trial_index(
 
 
 def _as_ordinal(value: object) -> int | None:
-    """``value`` as an integer ordinal (any integral number, not a bool), else ``None``."""
+    """``value`` as an integer ordinal, else ``None``.
+
+    Any integral number but a bool, or an integral float in ``[-2**63, 2**63)``
+    (the range every language's ``trial_index`` returns).
+    """
     if isinstance(value, bool):
         return None
     if isinstance(value, numbers.Integral):
         return int(value)
-    if isinstance(value, float) and value.is_integer():
+    if isinstance(value, float) and value.is_integer() and -(2**63) <= value < 2**63:
         return int(value)
     return None
 

@@ -36,15 +36,12 @@ impl PyServeOptions {
                 idle_timeout: optional_duration("idle_timeout_seconds", idle_timeout_seconds)?,
                 drain_timeout: optional_duration("drain_timeout_seconds", drain_timeout_seconds)?,
                 close_timeout: optional_duration("close_timeout_seconds", close_timeout_seconds)?,
-                token: None,
                 // The Python model client wrapper is inherently single-flight
                 // (its `block_on` predict API serializes by construction), so the
                 // server-side concurrency cap is left at the default here. A
                 // future Python knob can surface it without a wire change.
-                predict_concurrency: None,
                 workflow_edition: checked_workflow_edition(workflow_edition)?,
                 compress_responses,
-                peer_info_extra: Default::default(),
             },
         })
     }

@@ -356,6 +356,18 @@ impl Error {
         })
     }
 
+    /// Tags that do not fit their spaces: Python's `AdapterResolutionError`.
+    pub(crate) fn adapter_resolution(message: impl Into<String>) -> Self {
+        let message = message.into();
+        Self::InvalidArgument(InvalidArgumentError {
+            message: message.clone(),
+            adapter_resolution: Some(AdapterResolutionError {
+                code: rlmesh_adapters::v1::ErrorCode::InvalidTag,
+                message,
+            }),
+        })
+    }
+
     /// An address that could not be parsed: a `ValueError` whose text is
     /// `invalid address: message`.
     pub(crate) fn invalid_address(message: impl fmt::Display) -> Self {

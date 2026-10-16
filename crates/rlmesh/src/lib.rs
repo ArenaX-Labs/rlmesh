@@ -1,17 +1,16 @@
 //! Rust SDK for RLMesh model-environment evaluation workflows.
 //!
 //! RLMesh connects a model to an environment over gRPC. This crate is the Rust
-//! facade over the transport, wire, and runtime crates. Python users should
-//! start with the `rlmesh` Python package; use this crate when serving or
-//! driving environments and models from Rust.
+//! facade over the transport, wire, and runtime crates, with the Python
+//! package's nouns and defaults. Python users should start with the `rlmesh`
+//! Python package; use this crate when serving or driving environments and
+//! models from Rust.
 //!
 //! # The two roles
 //!
-//! Most deployments have one environment server and one model worker.
-//!
-//! - **Serve an environment.** Implement [`Env`] for one environment and host
-//!   it with [`EnvServer`]. Implement [`VectorEnv`] and use
-//!   [`VectorEnvServer`] only for an explicit local batching fast path.
+//! - **Serve an environment.** Implement [`Env`] (or [`VectorEnv`]) in
+//!   Gymnasium shape and host it with [`EnvServer`], or implement
+//!   [`EnvFactory`] and call [`EnvFactoryExt::serve`].
 //!
 //! - **Drive or serve a model.** Implement [`ModelHandler`], then run it against
 //!   a remote environment with [`ModelWorker::run_local`] or serve it as an
@@ -19,12 +18,13 @@
 //!
 //! Use [`RemoteEnv`] when you want to step an environment server directly.
 //!
-//! # Bind-first servers
+//! # Options structs
 //!
-//! [`EnvServer::bind`] and [`ModelWorker::bind_async`] reserve the socket before
-//! serving and return the resolved address, including OS-assigned port 0. This
-//! avoids bind-drop-rebind races and poll-connect loops. Use the one-shot
-//! `serve`/`serve_async` methods when you do not need that address first.
+//! Python's keyword arguments are options structs whose `Default` holds
+//! Python's defaults ([`EnvServerOptions`], [`ServeOptions`],
+//! [`EnvFactoryServeOptions`]). Build them with `..Default::default()`: by
+//! project policy appending an options field is a minor change, and a full
+//! struct literal without `..` is unsupported.
 //!
 //! # Errors
 //!
@@ -38,59 +38,43 @@
 //! carry an `is_recoverable` flag surfaced by [`Error::is_recoverable`], which
 //! is false for every other variant.
 //!
-//! # Implementing the traits
-//!
-//! [`Env`], [`VectorEnv`], and [`ModelHandler`] are `async-trait` traits, so
-//! every impl carries `#[rlmesh::async_trait]`: this crate re-exports the macro
-//! as [`async_trait`](macro@async_trait) (also in the [`prelude`]), already at
-//! the version the traits were desugared with, so nothing beyond `rlmesh` needs
-//! to be in your `Cargo.toml`.
-//!
 //! # Example: serve an environment
 //!
 //! ```no_run
 //! use rlmesh::prelude::*;
+//! use rlmesh::spaces::{self, BoxOptions, Discrete, DiscreteOptions};
 //!
-//! struct MyEnv {
-//!     observation_space: SpaceSpec,
-//!     action_space: SpaceSpec,
-//!     contract: EnvContract,
+//! struct Cartpole {
+//!     observation_space: Space,
+//!     action_space: Space,
 //! }
 //!
-//! #[rlmesh::async_trait]
-//! impl Env for MyEnv {
-//!     fn observation_space(&self) -> &SpaceSpec { &self.observation_space }
-//!     fn action_space(&self) -> &SpaceSpec { &self.action_space }
-//!     fn env_contract(&self) -> &EnvContract { &self.contract }
-//!
-//!     // Env methods use the two-arg std::result::Result form.
-//!     async fn reset(&mut self, _req: ResetRequest)
-//!         -> Result<ResetResult, EnvRuntimeError>
+//! impl Env for Cartpole {
+//!     fn observation_space(&self) -> Space { self.observation_space.clone() }
+//!     fn action_space(&self) -> Space { self.action_space.clone() }
+//!     fn reset(&mut self, _seed: Option<i64>, _options: Option<&InfoDict>)
+//!         -> rlmesh::Result<(Value, InfoDict)>
 //!     {
-//!         Ok(ResetResult::default())
+//!         Ok((self.observation_space.sample()?, InfoDict::new()))
 //!     }
-//!     async fn step(&mut self, _req: StepRequest)
-//!         -> Result<StepResult, EnvRuntimeError>
+//!     fn step(&mut self, _action: Option<Value>)
+//!         -> rlmesh::Result<(Value, f64, bool, bool, InfoDict)>
 //!     {
-//!         Ok(StepResult::default())
-//!     }
-//!     async fn render(&mut self, _req: RenderRequest)
-//!         -> Result<RenderResult, EnvRuntimeError>
-//!     {
-//!         Ok(RenderResult::default())
-//!     }
-//!     async fn close(&mut self, _req: CloseRequest)
-//!         -> Result<CloseResult, EnvRuntimeError>
-//!     {
-//!         Ok(CloseResult::default())
+//!         Ok((self.observation_space.sample()?, 1.0, false, false, InfoDict::new()))
 //!     }
 //! }
 //!
-//! # async fn run(env: MyEnv) -> rlmesh::Result<()> {
-//! // Bind first when the caller needs the resolved address.
-//! let bound = EnvServer::new(env).bind(BindAddress::parse("tcp://127.0.0.1:0")?).await?;
-//! println!("listening on {}", bound.local_addr());
-//! bound.serve().await
+//! # fn run() -> rlmesh::Result<()> {
+//! let env = Cartpole {
+//!     observation_space: spaces::Box::new(-1.0, 1.0, [4], BoxOptions::default())?.into(),
+//!     action_space: Discrete::new(2, DiscreteOptions::default())?.into(),
+//! };
+//! let server = EnvServer::new(
+//!     env,
+//!     EnvServerOptions { address: Some("tcp://127.0.0.1:0".into()), ..Default::default() },
+//! )?;
+//! println!("listening on {}", server.address());
+//! server.serve()
 //! # }
 //! ```
 //!
@@ -98,6 +82,7 @@
 //!
 //! ```no_run
 //! use rlmesh::prelude::*;
+//! use rlmesh::binding::spaces::SpaceValue;
 //!
 //! struct MyModel;
 //!
@@ -123,6 +108,7 @@
 
 #![warn(missing_docs)]
 
+pub mod adapters;
 mod address;
 #[doc(hidden)]
 pub mod binding;
@@ -137,6 +123,7 @@ pub mod model;
 pub mod prelude;
 pub mod serve_options;
 pub mod spaces;
+pub mod specs;
 mod tensor;
 pub mod types;
 mod value;
@@ -146,10 +133,10 @@ mod warnings;
 pub use address::remove_stale_socket;
 pub use address::{BindAddress, ConnectAddress};
 pub use async_trait::async_trait;
-/// The wire space spec the [`Env`] and model traits take until they take
+/// The wire space spec the model traits take until they take
 /// [`spaces::Space`]; the shared spec type is [`spaces::SpaceSpec`].
 pub use binding::spaces::SpaceSpec;
-pub use binding::spaces::{EnvContract, EnvRuntimeError, RenderFrame, SpaceValue};
+pub use binding::spaces::{EnvRuntimeError, SpaceValue};
 pub use build_info::{BuildInfo, BuildSource, VERSION, build_info};
 pub use dtype::{DType, Device};
 pub use editions::current_workflow_edition;
@@ -162,10 +149,9 @@ pub const DESCRIBE_METADATA_KEY: &str = rlmesh_adapters::v1::DESCRIBE_METADATA_K
 /// `rlmesh.DESCRIBE_SCHEMA_VERSION`.
 pub const DESCRIBE_SCHEMA_VERSION: i64 = rlmesh_adapters::v1::DESCRIBE_SCHEMA_VERSION as i64;
 pub use env::{
-    BoundEnvServer, CloseRequest, CloseResult, EndpointPhases, Env, EnvServer, EpisodeMetadata,
-    RemoteEnv, RemoteVectorEnv, RenderRequest, RenderResult, ResetRequest, ResetResult,
-    StepRequest, StepResult, VectorCloseResult, VectorEnv, VectorEnvServer, VectorResetRequest,
-    VectorResetResult, VectorStepRequest, VectorStepResult,
+    Env, EnvFactory, EnvFactoryExt, EnvFactoryServeOptions, EnvServer, EnvServerOptions, MadeEnv,
+    RemoteEnv, RemoteVectorEnv, TagParam, Transport, Variant, VariantOptions, VectorEnv,
+    VectorSeed, trial_index,
 };
 pub use error::{
     EnvironmentError, Error, ErrorClass, ErrorCode, InvalidArgumentError, ModelError,
@@ -186,8 +172,9 @@ pub use rlmesh_runtime::{
     ObservationEmittedEvent, RuntimeHooks, StepCompletedEvent,
 };
 #[doc(no_inline)]
-pub use rlmesh_runtime::{ENV_RESET_OPTIONS_KEY, PeerCeiling, RuntimeReport, TRIAL_INDEX_OPTION};
+pub use rlmesh_runtime::{ENV_RESET_OPTIONS_KEY, PeerCeiling, RuntimeReport};
 pub use serve_options::{ENV_ENDPOINT_TOKEN_ENV, MODEL_ENDPOINT_TOKEN_ENV, ServeOptions};
+pub use specs::EnvContract;
 pub use tensor::Tensor;
 pub use tokio_util::sync::CancellationToken;
 pub use value::{InfoDict, Kwargs, Metadata, MetadataIter, Value, ValueKind};
