@@ -11,43 +11,31 @@ use rlmesh_proto::model::v1::{
 use rlmesh_runtime::PeerCeiling;
 use uuid::Uuid;
 
+use std::time::Duration;
+
 use crate::{ConnectAddress, Error, Result, binding::spaces};
 
-/// A client handle to a remote model (policy) server.
+/// Bound `future` by `timeout` with the TimeoutError class.
+async fn bounded<T>(
+    timeout: Option<Duration>,
+    future: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    match timeout {
+        Some(timeout) => tokio::time::timeout(timeout, future)
+            .await
+            .map_err(|_| Error::Timeout(timeout))?,
+        None => future.await,
+    }
+}
+
+/// The per-env served-model client a session drives (R-25: binding
+/// plumbing, exempt from semver; the shared surface is [`RemoteModel`]).
 ///
-/// The mirror image of [`RemoteEnv`](crate::RemoteEnv): connect with
-/// [`RemoteModel::connect`], then drive the policy by hand with
-/// [`reset`](RemoteModel::reset) / [`predict`](RemoteModel::predict). The same
-/// hand-written loop steps a [`RemoteEnv`](crate::RemoteEnv) and a `RemoteModel`
-/// in lockstep:
-///
-/// ```no_run
-/// use rlmesh::binding::env::{ResetRequest, StepRequest};
-/// use rlmesh::{RemoteEnv, RemoteModel};
-///
-/// # async fn drive(mut env: RemoteEnv, mut model: RemoteModel) -> rlmesh::Result<()> {
-/// let mut obs = env
-///     .reset(ResetRequest::default())
-///     .await?
-///     .observation
-///     .expect("env returned an observation");
-/// model.reset(None);
-/// loop {
-///     let action = model.predict(obs).await?;
-///     let step = env.step(StepRequest { action: Some(action), ..Default::default() }).await?;
-///     if step.terminated || step.truncated { break; }
-///     obs = step.observation.expect("env returned an observation");
-/// }
-/// # Ok(())
-/// # }
-/// ```
-///
-/// Use this when your code owns the loop; to hand the loop to rlmesh instead,
-/// see [`ModelWorker::run_local`](crate::binding::model::ModelWorker).
-///
-/// A `RemoteModel` drives a single env lane (`env_index = 0`): it configures one
-/// route from the env contract and sends one observation per `predict`.
-pub struct RemoteModel {
+/// Bound to one env contract (one route): drive it with
+/// [`reset`](ModelClient::reset) / [`predict`](ModelClient::predict), then
+/// [`close`](ModelClient::close) the route. It drives a single env lane
+/// (`env_index = 0`) and sends one observation per `predict`.
+pub struct ModelClient {
     inner: rlmesh_grpc::ModelClient,
     observation_space: Arc<spaces::SpaceSpec>,
     action_space: Arc<spaces::SpaceSpec>,
@@ -95,6 +83,23 @@ pub struct RemoteModel {
     /// This client's env-step counter: one per `predict` call (each call is one
     /// env step from the caller's side), stamped on rows and requests.
     step: i64,
+    /// Bound on each `predict` and the route close (RMT-4).
+    request_timeout: Option<Duration>,
+}
+
+/// How [`ModelClient::connect_with`] dials.
+#[derive(Clone, Debug, Default)]
+pub struct ModelConnect<'a> {
+    /// Endpoint token (empty: none).
+    pub token: &'a str,
+    /// The env's handshake offer; `None` stands in this build, undeclared.
+    pub env_offer: Option<SessionOffer>,
+    /// The runtime tier's declared edition (already resolved).
+    pub declared: Option<&'a str>,
+    /// Bound on the dial and handshake.
+    pub connect_timeout: Option<Duration>,
+    /// Bound on each `predict` and the route close.
+    pub request_timeout: Option<Duration>,
 }
 
 /// Per-instance session id, kept for correlation only.
@@ -110,7 +115,7 @@ fn single_lane_contract(mut env_contract: spaces::EnvContract) -> Result<spaces:
         env_contract.num_envs = 1;
     }
     if env_contract.num_envs > 1 {
-        return Err(Error::Internal(format!(
+        return Err(Error::invalid_argument(format!(
             "RemoteModel drives a single env, but the env contract reports num_envs={}; \
              use num_envs=1 (this client sends one observation per predict on lane 0)",
             env_contract.num_envs
@@ -119,11 +124,45 @@ fn single_lane_contract(mut env_contract: spaces::EnvContract) -> Result<spaces:
     Ok(env_contract)
 }
 
-impl RemoteModel {
+impl ModelClient {
+    /// Dial the model at `address` for the route of `env_contract`, with
+    /// bounds; a dial failure reads "could not connect to a model at ...".
+    pub async fn connect_with(
+        address: &str,
+        env_contract: spaces::EnvContract,
+        options: ModelConnect<'_>,
+    ) -> Result<Self> {
+        let env_offer = options
+            .env_offer
+            .unwrap_or_else(|| SessionOffer::new(rlmesh_proto::SUPPORTED_WORKFLOW_EDITIONS));
+        let connect = Self::connect_inner(
+            address,
+            options.token,
+            env_contract,
+            env_offer,
+            options.declared,
+        );
+        let mut client = match crate::env::client::normalize_timeout(options.connect_timeout) {
+            Some(timeout) => tokio::time::timeout(timeout, connect)
+                .await
+                .map_err(|_| Error::Timeout(timeout))?,
+            None => connect.await,
+        }
+        .map_err(|err| match err {
+            Error::Connection(message) => Error::Connection(format!(
+                "could not connect to a model at '{address}'; is the model being served? \
+                 ({message})"
+            )),
+            other => other,
+        })?;
+        client.request_timeout = crate::env::client::normalize_timeout(options.request_timeout);
+        Ok(client)
+    }
+
     /// Connect to a model server at `address` and perform the handshake.
     ///
     /// `env_contract` is the contract of the env this policy will be driven
-    /// against (take it from [`RemoteEnv::env_contract`](crate::RemoteEnv::env_contract));
+    /// against (the env client's wire contract);
     /// it pins the observation/action spaces this client encodes and decodes
     /// with, and is sent once to configure the model's route. It must carry both
     /// an observation and an action space.
@@ -138,7 +177,7 @@ impl RemoteModel {
     }
 
     /// Connect to a model server that requires a bearer token. An empty token
-    /// behaves like [`RemoteModel::connect`].
+    /// behaves like [`ModelClient::connect`].
     pub async fn connect_with_token(
         address: &str,
         token: &str,
@@ -184,8 +223,8 @@ impl RemoteModel {
     /// tier's offer. The selected edition is sent to the model in `ResolveAdapter`
     /// as authoritative over its own handshake.
     ///
-    /// `env_offer` is the env's advertised window; take it from
-    /// [`RemoteEnv::session_offer`](crate::RemoteEnv::session_offer).
+    /// `env_offer` is the env's advertised window (the env client's session
+    /// offer).
     pub async fn connect_with_env_offer(
         address: &str,
         token: &str,
@@ -262,6 +301,7 @@ impl RemoteModel {
             pending_end: Vec::new(),
             selected_workflow_edition,
             ceiling,
+            request_timeout: None,
         })
     }
 
@@ -299,7 +339,7 @@ impl RemoteModel {
         self.inner.address()
     }
 
-    /// Begin a new episode: the next [`predict`](RemoteModel::predict) marks a
+    /// Begin a new episode: the next [`predict`](ModelClient::predict) marks a
     /// reset boundary so the policy starts a fresh trajectory.
     ///
     /// Call this once before each episode's first `predict`. The client cannot
@@ -311,7 +351,7 @@ impl RemoteModel {
     /// `seed` is the explicit seed this episode was reset with, if any — rides
     /// on every `predict` of this episode as advisory context for the served
     /// model (its `predict`/`predict_chunk` `context` argument), mirroring the
-    /// seed you pass to the paired [`RemoteEnv::reset`](crate::RemoteEnv::reset).
+    /// seed the paired env reset was given.
     pub fn reset(&mut self, seed: Option<i64>) {
         // The client is the local id authority for the direct path: mint a fresh
         // UUIDv7 per episode (never repeats, time-ordered). The new id is itself
@@ -336,7 +376,7 @@ impl RemoteModel {
 
     /// Ask the policy for an action given `observation`.
     ///
-    /// You must call [`reset`](RemoteModel::reset) once before the first
+    /// You must call [`reset`](ModelClient::reset) once before the first
     /// `predict` of each episode: it is the only signal that marks an episode
     /// boundary on the wire, since this client cannot detect an episode's end
     /// from the server. The observation is encoded with the env contract's
@@ -409,11 +449,11 @@ impl RemoteModel {
                 step: self.history_on.then_some(step),
             };
 
-            let response = self
-                .inner
-                .predict(request)
-                .await
-                .map_err(Error::from_grpc)?;
+            let inner = &mut self.inner;
+            let response = bounded(self.request_timeout, async {
+                inner.predict(request).await.map_err(Error::from_grpc)
+            })
+            .await?;
 
             if response.actions.is_empty() {
                 return Err(Error::Internal(
@@ -449,9 +489,15 @@ impl RemoteModel {
     /// Close this client's route. Does not shut down the server or drain other
     /// clients sharing it. No-op if no route was ever configured.
     pub async fn close(&mut self) -> Result<()> {
+        let timeout = self.request_timeout;
+        bounded(timeout, self.close_route()).await
+    }
+
+    async fn close_route(&mut self) -> Result<()> {
         if !self.configured {
             return Ok(());
         }
+        self.configured = false;
         // The last episode ends here too: flush its end edge before the route goes
         // away, so the served model's `on_episode_end` fires for every episode.
         self.pending_end.extend(self.episode_id.take());
@@ -562,6 +608,8 @@ mod tests {
     fn single_lane_contract_rejects_vector_env() {
         let err = single_lane_contract(single_lane_test_contract(4))
             .expect_err("num_envs > 1 must be rejected");
+        // An argument value, not misuse (RMT-P13).
+        assert_eq!(err.class(), crate::ErrorClass::ValueError);
         assert!(err.to_string().contains("num_envs=4"), "{err}");
     }
 
@@ -587,4 +635,170 @@ mod tests {
     // the integration suite. The unit-level invariant — pending_reset is peeked,
     // not consumed, before the RPC, and cleared only after success — is enforced
     // structurally in predict() (no std::mem::take before the send).
+}
+
+/// The keywords of Python's `RemoteModel(address=None, *, ...)`: the same as
+/// [`RemoteEnvOptions`](crate::RemoteEnvOptions) without `workflow_edition`
+/// (RMT-3).
+#[derive(Clone, Debug, Default)]
+pub struct RemoteModelOptions {
+    /// The endpoint (`tcp://host:port`, `host:port` or `unix:///path`).
+    pub address: Option<String>,
+    /// TCP host helper (default `127.0.0.1`); needs `port`.
+    pub host: Option<String>,
+    /// TCP port helper.
+    pub port: Option<u16>,
+    /// Unix socket path helper; excludes `host` and `port`.
+    pub path: Option<String>,
+    /// Explicit transport.
+    pub transport: Option<crate::Transport>,
+    /// Bound on each session's dial to the model (zero: none).
+    pub connect_timeout: Option<Duration>,
+    /// Bound on each `predict` and route close of sessions off this handle
+    /// (zero: none).
+    pub request_timeout: Option<Duration>,
+}
+
+impl RemoteModelOptions {
+    /// Set `address`.
+    pub fn address(mut self, address: impl Into<String>) -> Self {
+        self.address = Some(address.into());
+        self
+    }
+
+    /// Set `host`.
+    pub fn host(mut self, host: impl Into<String>) -> Self {
+        self.host = Some(host.into());
+        self
+    }
+
+    /// Set `port`.
+    pub fn port(mut self, port: u16) -> Self {
+        self.port = Some(port);
+        self
+    }
+
+    /// Set `path`.
+    pub fn path(mut self, path: impl Into<String>) -> Self {
+        self.path = Some(path.into());
+        self
+    }
+
+    /// Set `transport`.
+    pub fn transport(mut self, transport: crate::Transport) -> Self {
+        self.transport = Some(transport);
+        self
+    }
+
+    /// Set `connect_timeout`.
+    pub fn connect_timeout(mut self, timeout: impl Into<Duration>) -> Self {
+        self.connect_timeout = Some(timeout.into());
+        self
+    }
+
+    /// Set `request_timeout`.
+    pub fn request_timeout(mut self, timeout: impl Into<Duration>) -> Self {
+        self.request_timeout = Some(timeout.into());
+        self
+    }
+}
+
+struct RemoteModelInner {
+    address: String,
+    token: String,
+    connect_timeout: Option<Duration>,
+    request_timeout: Option<Duration>,
+}
+
+/// A served model (policy) to bind envs to: Python's `RemoteModel`.
+///
+/// Construction does no I/O: it checks the address and timeouts, and
+/// [`session`](RemoteModel::session) dials. Clones share the handle; it is
+/// `Send + Sync`, and concurrent sessions off one handle are allowed.
+#[derive(Clone)]
+pub struct RemoteModel(Arc<RemoteModelInner>);
+
+impl RemoteModel {
+    /// Check the address and timeouts (the ValueError class) and keep the
+    /// address as given, so `"127.0.0.1:5555"` stays scheme-less.
+    pub fn new(options: RemoteModelOptions) -> Result<RemoteModel> {
+        Self::with_token(options, String::new())
+    }
+
+    pub(crate) fn with_token(options: RemoteModelOptions, token: String) -> Result<RemoteModel> {
+        let address = crate::env::client::normalize_connect_address(
+            options.address.as_deref(),
+            options.host.as_deref(),
+            options.port,
+            options.path.as_deref(),
+            options.transport,
+        )?;
+        ConnectAddress::parse(&address)?;
+        Ok(RemoteModel(Arc::new(RemoteModelInner {
+            address,
+            token,
+            connect_timeout: crate::env::client::normalize_timeout(options.connect_timeout),
+            request_timeout: crate::env::client::normalize_timeout(options.request_timeout),
+        })))
+    }
+
+    /// The model endpoint this handle dials, as given (normalized, not
+    /// canonicalized).
+    pub fn address(&self) -> &str {
+        &self.0.address
+    }
+
+    pub(crate) fn token(&self) -> &str {
+        &self.0.token
+    }
+
+    pub(crate) fn connect_timeout(&self) -> Option<Duration> {
+        self.0.connect_timeout
+    }
+
+    pub(crate) fn request_timeout(&self) -> Option<Duration> {
+        self.0.request_timeout
+    }
+
+    /// Bind this served model to `env` and dial it: Python's
+    /// `RemoteModel.session`. `env` is an address (dialed now and owned by
+    /// the session), an [`EnvServer`](crate::EnvServer) (dialed at first env
+    /// use), or a borrowed [`RemoteEnv`](crate::RemoteEnv); a local env is
+    /// the TypeError class and a multi-lane target the ValueError class.
+    /// `trust_entrypoints` set is the ValueError class (the served model
+    /// owns its adapter).
+    pub fn session<'a>(
+        &'a self,
+        env: impl Into<crate::EnvTarget<'a>>,
+        options: crate::SessionOptions,
+    ) -> Result<crate::Session<'a>> {
+        crate::run::drive::refuse_in_async_context("RemoteModel::session")?;
+        crate::run::drive::block_on_library(crate::Session::create_remote(
+            self,
+            env.into(),
+            options,
+        ))
+    }
+
+    /// The async twin of [`session`](RemoteModel::session).
+    pub async fn session_async<'a>(
+        &'a self,
+        env: impl Into<crate::EnvTarget<'a>>,
+        options: crate::SessionOptions,
+    ) -> Result<crate::Session<'a>> {
+        crate::run::drive::in_library(crate::Session::create_remote(self, env.into(), options))
+            .await
+    }
+}
+
+impl std::fmt::Display for RemoteModel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "RemoteModel(address='{}')", self.0.address)
+    }
+}
+
+impl std::fmt::Debug for RemoteModel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
 }

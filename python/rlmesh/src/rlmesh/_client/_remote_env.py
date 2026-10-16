@@ -51,17 +51,6 @@ class RemoteEnvBase(RemoteClientBase[ValueT, ActionT]):
             workflow_edition=workflow_edition,
         )
 
-    def _post_handshake(self) -> None:
-        if self._env_contract.num_envs > 1:
-            num_envs = self._env_contract.num_envs
-            try:
-                self._client.close()
-            finally:
-                raise ValueError(
-                    f"Endpoint {self._address!r} serves {num_envs} environments. "
-                    "Use RemoteVectorEnv instead."
-                )
-
     @property
     def observation_space(self) -> Space[ValueT]:
         """Observation space loaded from the remote environment contract."""

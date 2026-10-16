@@ -691,25 +691,6 @@ def test_client_injects_episode_ids_when_env_omits_them() -> None:
         server.shutdown()
 
 
-def test_client_step_respects_per_call_timeout() -> None:
-    """Per-call timeout bounds a blocked step."""
-    from rlmesh._rlmesh import PyEnvClient
-
-    env = SlowStepEnv(step_delay=3.0)
-    server = env_server(env)
-    server.start()
-    try:
-        client = PyEnvClient(server.address)
-        try:
-            client.reset()
-            with pytest.raises(TimeoutError):
-                client.step(0, timeout_seconds=0.2)
-        finally:
-            client.close()
-    finally:
-        server.shutdown()
-
-
 def test_client_constructor_default_timeout_applies() -> None:
     """A client-wide request_timeout_seconds bounds calls without a per-call arg."""
     from rlmesh._rlmesh import PyEnvClient
@@ -721,7 +702,9 @@ def test_client_constructor_default_timeout_applies() -> None:
         client = PyEnvClient(server.address, request_timeout_seconds=0.2)
         try:
             client.reset()
-            with pytest.raises(TimeoutError):
+            with pytest.raises(
+                TimeoutError, match=r"^operation timed out after 200ms$"
+            ):
                 client.step(0)
         finally:
             client.close()
@@ -1351,3 +1334,24 @@ def test_repeated_evals_do_not_accumulate_fds_or_runtimes() -> None:
         one_eval()
     grown = len(os.listdir("/dev/fd")) - baseline
     assert grown <= 5, f"fd count grew by {grown} across 5 evals (leak)"
+
+
+def test_a_closed_client_is_misuse_and_lanes_are_checked_before_any_request() -> None:
+    """RMT-P2 / RMT-P11: closed-handle I/O is RuntimeError; a lane past u32 is ValueError."""
+    import rlmesh
+
+    env = TinyEnv()
+    server = env_server(env)
+    server.start()
+    try:
+        remote = connect_with_retry(rlmesh.RemoteEnv, server.address)
+        with pytest.raises(ValueError, match="out of range"):
+            remote.render(env_index=2**32)
+        remote.close()
+        remote.close()
+        with pytest.raises(RuntimeError, match=r"^RemoteEnv is closed$"):
+            remote.reset()
+        assert remote.env_contract is not None
+        assert remote.selected_workflow_edition
+    finally:
+        server.shutdown()

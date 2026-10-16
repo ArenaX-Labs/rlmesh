@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sys
-from typing import Literal
+from typing import Literal, cast
 
 Transport = Literal["tcp", "unix"]
 
@@ -77,22 +77,20 @@ def normalize_connect_address(
     _validate_address_inputs(
         address, host=host, port=port, path=path, transport=transport
     )
-    if address is not None:
-        return address
-    if path is not None or transport == "unix":
-        if path is None:
-            raise ValueError("path is required when transport='unix'")
-        if not _supports_unix_transport():
-            raise ValueError(
-                "unix sockets are not supported on Windows; use tcp://host:port instead"
-            )
-        return f"unix://{path}"
-    if host is None and port is None:
-        raise ValueError("address or host/port is required")
-    resolved_host = host or "127.0.0.1"
-    if port is None:
-        raise ValueError("port is required when connecting with host/path helpers")
-    return f"tcp://{resolved_host}:{_normalize_port(port)}"
+    from .._load_native import load_native
+
+    # The composition and its refusals are the native facade's, shared by
+    # every language; only Python's own TypeError for a non-int port is here.
+    return cast(
+        "str",
+        load_native("normalize_connect_address")(
+            address,
+            host=host,
+            port=None if port is None else _normalize_port(port),
+            path=path,
+            transport=transport,
+        ),
+    )
 
 
 def _validate_address_inputs(

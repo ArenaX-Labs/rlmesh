@@ -844,3 +844,253 @@ fn a_session_refuses_a_vector_env() {
     assert_eq!(error.class(), ErrorClass::ValueError);
     assert!(error.to_string().contains("num_envs=2"), "{error}");
 }
+
+/// A model served on a free port by a library thread, stopped by `cancel`.
+struct ServedModel {
+    address: String,
+    cancel: crate::ext::CancelToken,
+    thread: Option<std::thread::JoinHandle<Result<()>>>,
+}
+
+impl ServedModel {
+    fn start() -> ServedModel {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let address = format!("tcp://127.0.0.1:{port}");
+        let cancel = crate::ext::CancelToken::new();
+        let serve_address = address.clone();
+        let serve_cancel = cancel.clone();
+        let thread = std::thread::spawn(move || {
+            ones().serve(
+                &serve_address,
+                crate::ModelServeOptions {
+                    cancel: Some(serve_cancel),
+                    ..Default::default()
+                },
+            )
+        });
+        // Wait until the model answers a handshake.
+        for _ in 0..200 {
+            let probe = drive::block_on_library(async {
+                crate::binding::model::ModelClient::connect(
+                    &address,
+                    crate::env::sync_wire::env_contract_of(&Steps::new())
+                        .unwrap()
+                        .to_wire()
+                        .unwrap(),
+                )
+                .await
+            });
+            if probe.is_ok() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        ServedModel {
+            address,
+            cancel,
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for ServedModel {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+fn steps_server() -> EnvServer {
+    let server = EnvServer::new(Steps::new(), quick()).unwrap();
+    server.start().unwrap();
+    server
+}
+
+#[test]
+fn remote_model_construction_checks_without_dialing() {
+    let err = crate::RemoteModel::new(crate::RemoteModelOptions::default()).unwrap_err();
+    assert_eq!(err.class(), ErrorClass::ValueError);
+    assert_eq!(err.to_string(), "address or host/port is required");
+    let err = crate::RemoteModel::new(crate::RemoteModelOptions::default().address("bogus://x"))
+        .unwrap_err();
+    assert_eq!(err.class(), ErrorClass::ValueError);
+    assert!(err.to_string().starts_with("invalid address: "), "{err}");
+    // Kept as given, and nothing listens there: construction does no I/O.
+    let model =
+        crate::RemoteModel::new(crate::RemoteModelOptions::default().address("127.0.0.1:1"))
+            .unwrap();
+    assert_eq!(model.address(), "127.0.0.1:1");
+    assert_eq!(model.to_string(), "RemoteModel(address='127.0.0.1:1')");
+    let shared = model.clone();
+    assert_eq!(shared.address(), model.address());
+    let err = crate::ext::remote_model_with_token(
+        crate::RemoteModelOptions::default().address("127.0.0.1:1"),
+        " padded",
+    )
+    .unwrap_err();
+    assert_eq!(err.class(), ErrorClass::ValueError);
+}
+
+#[test]
+fn remote_model_sessions_refuse_bad_targets_before_dialing() {
+    // Nothing serves the model: every refusal below precedes the dial.
+    let model =
+        crate::RemoteModel::new(crate::RemoteModelOptions::default().address("127.0.0.1:1"))
+            .unwrap();
+    let mut env = Steps::new();
+    let err = model
+        .session(&mut env, SessionOptions::default())
+        .unwrap_err();
+    assert_eq!(err.class(), ErrorClass::TypeError);
+    let server = steps_server();
+    let err = model
+        .session(
+            &server,
+            SessionOptions {
+                trust_entrypoints: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+    assert_eq!(err.class(), ErrorClass::ValueError);
+    let err = model
+        .session(
+            &server,
+            SessionOptions {
+                execution_horizon: 0,
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+    assert_eq!(err.class(), ErrorClass::ValueError);
+    let lanes = EnvServer::lanes(vec![Steps::new(), Steps::new()], quick()).unwrap();
+    let err = model
+        .session(&lanes, SessionOptions::default())
+        .unwrap_err();
+    assert_eq!(err.class(), ErrorClass::ValueError);
+    assert!(err.to_string().contains("num_envs=2"), "{err}");
+    // An unreachable model is the ConnectionError class, named.
+    let err = model
+        .session(server.address(), SessionOptions::default())
+        .unwrap_err();
+    assert_eq!(err.class(), ErrorClass::ConnectionError, "{err}");
+    assert!(
+        err.to_string()
+            .starts_with("could not connect to a model at '127.0.0.1:1'"),
+        "{err}"
+    );
+}
+
+#[test]
+fn remote_model_sessions_drive_every_remote_target() {
+    let served = ServedModel::start();
+    let model =
+        crate::RemoteModel::new(crate::RemoteModelOptions::default().address(&served.address))
+            .unwrap();
+    let server = steps_server();
+
+    // An address: dialed now, owned by the session.
+    let mut session = model
+        .session(server.address(), SessionOptions::default())
+        .unwrap();
+    assert!(!session.selected_workflow_edition().unwrap().is_empty());
+    let (observation, _) = session.reset(Some(1), None).unwrap();
+    let action = session.predict(observation).unwrap();
+    assert_eq!(action, Value::Int(1));
+    let (_, reward, _, _, _) = session.step(action).unwrap();
+    assert_eq!(reward, 1.0);
+    session.close().unwrap();
+
+    // A borrowed RemoteEnv: driven through its own connection, handed back
+    // pinned to the session's floor.
+    let mut remote =
+        crate::RemoteEnv::new(crate::RemoteEnvOptions::default().address(server.address()))
+            .unwrap();
+    let floor = {
+        let mut session = model
+            .session(&mut remote, SessionOptions::default())
+            .unwrap();
+        let result = session.run(SessionRunOptions::default()).unwrap();
+        assert_eq!(result.num_episodes(), 1);
+        assert_eq!(result.episodes[0].reward, 3.0);
+        session.selected_workflow_edition().unwrap()
+    };
+    assert_eq!(remote.selected_workflow_edition(), floor);
+    remote.reset(None, None).unwrap();
+    remote.close().unwrap();
+
+    // An EnvServer: dialed at first env use.
+    let mut session = model.session(&server, SessionOptions::default()).unwrap();
+    session.reset(None, None).unwrap();
+    drop(session);
+
+    // rlmesh::run over a served model runs the session loop.
+    let result = crate::run(
+        &model,
+        server.address(),
+        RunOptions {
+            episodes: Some(2),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(result.num_episodes(), 2);
+
+    // The async twin runs on any executor.
+    let address = server.address().to_string();
+    let result = futures::executor::block_on(async {
+        let mut session = model
+            .session_async(address.as_str(), SessionOptions::default())
+            .await?;
+        let out = session.run_async(SessionRunOptions::default()).await;
+        session.close_async().await?;
+        out
+    })
+    .unwrap();
+    assert_eq!(result.num_episodes(), 1);
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn a_native_run_dials_a_borrowed_remote_env_s_address() {
+    let server = steps_server();
+    let mut remote =
+        crate::RemoteEnv::new(crate::RemoteEnvOptions::default().address(server.address()))
+            .unwrap();
+    // An idle handle holds no session slot: the run dials its address.
+    let result = ones()
+        .run(
+            &mut remote,
+            RunOptions {
+                episodes: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(result.num_episodes(), 1);
+    // A handle that was driven holds the slot, and the run says so.
+    remote.reset(None, None).unwrap();
+    let err = ones()
+        .run(
+            &mut remote,
+            RunOptions {
+                episodes: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+    assert_eq!(err.class(), ErrorClass::RuntimeError, "{err}");
+    assert!(
+        err.to_string()
+            .starts_with("the target env already has an active session"),
+        "{err}"
+    );
+    remote.close().unwrap();
+    server.shutdown().unwrap();
+}

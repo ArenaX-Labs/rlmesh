@@ -8,7 +8,8 @@ use rlmesh::binding::model::{
     AdaptedModelHandler, EpisodeInfo, ModelObservation, ModelWorker, PredictFn, PredictFrames,
     RouteConfig, RouteResolver, RunLocalOptions, ServeModelOptions,
 };
-use rlmesh::{BindAddress, ConnectAddress, Error as RLMeshError, RemoteModel};
+use rlmesh::binding::model::{ModelClient, ModelConnect};
+use rlmesh::{BindAddress, ConnectAddress, Error as RLMeshError};
 use rlmesh_adapters::v1::Value;
 use rlmesh_spaces::{EnvContract, SpaceValue, spaces::SpaceSpec};
 use std::collections::HashMap;
@@ -1077,18 +1078,39 @@ impl Drop for PyModel {
     }
 }
 
+/// Check a `RemoteModel`'s address and timeouts as the native constructor
+/// does (RMT-P6): an address that does not parse (`invalid address: ...`)
+/// or a negative or non-finite timeout is ValueError. No I/O.
+#[cfg_attr(feature = "stub-gen", gen_stub_pyfunction)]
+#[pyfunction]
+#[pyo3(signature = (address, *, connect_timeout_seconds=None, request_timeout_seconds=None))]
+pub fn check_remote_model_options(
+    address: &str,
+    connect_timeout_seconds: Option<f64>,
+    request_timeout_seconds: Option<f64>,
+) -> PyResult<()> {
+    let connect_timeout =
+        crate::client::optional_timeout(connect_timeout_seconds, "connect_timeout_seconds")?;
+    let request_timeout =
+        crate::client::optional_timeout(request_timeout_seconds, "request_timeout_seconds")?;
+    let mut options = rlmesh::RemoteModelOptions::default().address(address);
+    options.connect_timeout = connect_timeout;
+    options.request_timeout = request_timeout;
+    rlmesh::RemoteModel::new(options).map_err(to_py_err)?;
+    Ok(())
+}
+
 /// Client handle to a model (policy) server: the model-side mirror of
 /// `PyEnvClient`. Bound to one env contract (one route) for its lifetime; the
 /// Python layer creates one per `rlmesh.session(model, env)`.
 #[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(module = "rlmesh._rlmesh")]
 pub struct PyModelClient {
-    inner: RemoteModel,
+    inner: ModelClient,
     runtime: &'static tokio::runtime::Runtime,
     observation_space: SpaceSpec,
     action_space: SpaceSpec,
     address: String,
-    default_timeout: Option<std::time::Duration>,
 }
 
 #[pymethods]
@@ -1108,50 +1130,38 @@ impl PyModelClient {
     ) -> PyResult<Self> {
         init_tracing("model_client");
         let contract = native_env_contract_from_py(env_contract)?;
-        let observation_space = contract.observation_space.clone().ok_or_else(|| {
-            pyo3::exceptions::PyRuntimeError::new_err("env contract missing observation_space")
-        })?;
-        let action_space = contract.action_space.clone().ok_or_else(|| {
-            pyo3::exceptions::PyRuntimeError::new_err("env contract missing action_space")
-        })?;
+        // `native_env_contract_from_py` always carries both spaces.
+        let observation_space = contract.observation_space.clone().unwrap_or_default();
+        let action_space = contract.action_space.clone().unwrap_or_default();
         let connect_timeout =
             crate::client::optional_timeout(connect_timeout_seconds, "connect_timeout_seconds")?;
-        let default_timeout =
+        let request_timeout =
             crate::client::optional_timeout(request_timeout_seconds, "request_timeout_seconds")?;
         let declared = crate::lifecycle::checked_workflow_edition(workflow_edition)?;
         // The env's handshake offer as the Python session captured it. Without
         // one the env tier stands in as this build, UNDECLARED: it must not
         // inherit `declared`, the runtime tier's WANT, or a refusal would print
         // a WANT the env never sent.
-        let env_offer = match env_offer {
-            Some((editions, preferred)) => rlmesh_proto::SessionOffer {
-                editions,
-                preferred,
-            },
-            None => rlmesh_proto::SessionOffer::new(rlmesh_proto::SUPPORTED_WORKFLOW_EDITIONS),
-        };
+        let env_offer = env_offer.map(|(editions, preferred)| rlmesh_proto::SessionOffer {
+            editions,
+            preferred,
+        });
         let runtime = model_runtime();
         let address = address.to_string();
         let mut inner = py.detach(|| {
-            let connect = RemoteModel::connect_declaring(
-                &address,
-                "",
-                contract,
-                env_offer,
-                declared.as_deref(),
-            );
-            match connect_timeout {
-                Some(timeout) => {
-                    match runtime.block_on(async { tokio::time::timeout(timeout, connect).await }) {
-                        Ok(result) => result.map_err(to_py_err),
-                        Err(_) => Err(pyo3::exceptions::PyTimeoutError::new_err(format!(
-                            "remote model connect timed out after {:.3}s",
-                            timeout.as_secs_f64()
-                        ))),
-                    }
-                }
-                None => runtime.block_on(connect).map_err(to_py_err),
-            }
+            runtime
+                .block_on(ModelClient::connect_with(
+                    &address,
+                    contract,
+                    ModelConnect {
+                        env_offer,
+                        declared: declared.as_deref(),
+                        connect_timeout,
+                        request_timeout,
+                        ..ModelConnect::default()
+                    },
+                ))
+                .map_err(to_py_err)
         })?;
         // Opt the served model into chunking (h > 1): pinned on ConfigureRoute and
         // replayed open-loop by RemoteModel. 1 = no chunking.
@@ -1163,7 +1173,6 @@ impl PyModelClient {
             observation_space,
             action_space,
             address,
-            default_timeout,
         })
     }
 
@@ -1207,40 +1216,38 @@ impl PyModelClient {
             ValueBackend::Native,
         )?;
         let runtime = self.runtime;
-        let timeout = self.default_timeout;
         let inner = &mut self.inner;
-        let action = py.detach(|| block_on_with_timeout(runtime, timeout, inner.predict(value)))?;
+        let action = py.detach(|| block_on_polling_signals(runtime, inner.predict(value)))?;
         Ok(space_value_to_py_neutral(py, &action, &self.action_space)?.unbind())
     }
 
     fn close(&mut self, py: Python<'_>) -> PyResult<()> {
         let runtime = self.runtime;
-        let timeout = self.default_timeout;
         let inner = &mut self.inner;
-        py.detach(|| block_on_with_timeout(runtime, timeout, inner.close()))
+        py.detach(|| block_on_polling_signals(runtime, inner.close()))
     }
 }
 
-/// Run one model RPC on `runtime` with the GIL released, honoring the client's
-/// optional request timeout; `None` blocks indefinitely (the pre-timeout
-/// behavior).
-fn block_on_with_timeout<T>(
+/// Run one model RPC on `runtime` with the GIL released, polling Python
+/// signals so Ctrl-C abandons it as it does an env call (RMT-P9). The
+/// request bound is the facade client's (RMT-4).
+fn block_on_polling_signals<T>(
     runtime: &tokio::runtime::Runtime,
-    timeout: Option<std::time::Duration>,
     rpc: impl Future<Output = rlmesh::Result<T>>,
 ) -> PyResult<T> {
-    match timeout {
-        Some(timeout) => {
-            match runtime.block_on(async { tokio::time::timeout(timeout, rpc).await }) {
-                Ok(result) => result.map_err(to_py_err),
-                Err(_) => Err(pyo3::exceptions::PyTimeoutError::new_err(format!(
-                    "remote model request timed out after {:.3}s",
-                    timeout.as_secs_f64()
-                ))),
+    runtime.block_on(async move {
+        let mut rpc = std::pin::pin!(rpc);
+        let mut poll = tokio::time::interval(crate::client::SIGNAL_POLL_INTERVAL);
+        poll.tick().await;
+        loop {
+            tokio::select! {
+                result = &mut rpc => return result.map_err(to_py_err),
+                _ = poll.tick() => {
+                    Python::attach(|py| py.check_signals())?;
+                }
             }
         }
-        None => runtime.block_on(rpc).map_err(to_py_err),
-    }
+    })
 }
 
 /// Reconstruct a native `EnvContract` from a Python contract object (the value

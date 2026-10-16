@@ -9,6 +9,7 @@ drive with ``reset`` / ``predict`` / ``step``.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar, cast
 
 from .._value_conversion import ValueBridge
@@ -20,6 +21,8 @@ if TYPE_CHECKING:
 
     from .._models._eval import Session
     from ..specs import EnvContract
+
+logger = logging.getLogger(__name__)
 
 ObsT = TypeVar("ObsT")
 ActT = TypeVar("ActT")
@@ -66,6 +69,15 @@ class RemoteModelBase(Generic[ObsT, ActT]):
             port=port,
             path=path,
             transport=transport,
+        )
+        from .._load_native import load_native
+
+        # The address must parse and the timeouts be non-negative and finite
+        # here, as RemoteEnv checks them, not at the first session(). No I/O.
+        load_native("check_remote_model_options")(
+            self._address,
+            connect_timeout_seconds=connect_timeout_seconds,
+            request_timeout_seconds=request_timeout_seconds,
         )
         self._connect_timeout_seconds = connect_timeout_seconds
         self._request_timeout_seconds = request_timeout_seconds
@@ -129,8 +141,10 @@ class RemoteModelBase(Generic[ObsT, ActT]):
         # leg carries the call, process, or project declaration. The env's
         # own offer still constrains the three-way floor.
         workflow_edition = resolve_workflow_edition(call=workflow_edition)
-        env, owns_env = dial_env_address(env)
+        # The call's declaration is also the dialed env's handshake declaration.
+        env, owns_env = dial_env_address(env, workflow_edition)
         try:
+            # A dial failure already reads "could not connect to a model at ...".
             client = load_native("PyModelClient")(
                 self._address,
                 env_contract_of(env),
@@ -140,13 +154,19 @@ class RemoteModelBase(Generic[ObsT, ActT]):
                 workflow_edition=workflow_edition,
                 env_offer=env_session_offer(env),
             )
-        except ConnectionError as exc:
-            raise ConnectionError(
-                f"could not connect to a model at {self._address!r}; "
-                f"is the model being served? ({exc})"
-            ) from None
+        except BaseException:
+            # An env dialed for this call is released before the error goes
+            # up, not left to the garbage collector.
+            if owns_env:
+                close_dialed_env(env)
+            raise
         return remote_session(
-            client, env, close_env=close_env, owns_env=owns_env, view=view
+            client,
+            env,
+            close_env=close_env,
+            owns_env=owns_env,
+            view=view,
+            workflow_edition=workflow_edition,
         )
 
     def __repr__(self) -> str:
@@ -164,17 +184,32 @@ def env_contract_of(env: object) -> EnvContract:
     return cast("EnvContract", contract)
 
 
-def dial_env_address(env: EnvTarget) -> tuple[EnvTarget, bool]:
+def dial_env_address(
+    env: EnvTarget, workflow_edition: str | None = None
+) -> tuple[EnvTarget, bool]:
     """Dial a bare ``env`` address into a ``RemoteEnv``; ``True`` when this dialed it.
 
     A handle dialed here is the session's own: it is released (its join slot
     freed) when the session closes, like a connection the session opens itself.
+    ``workflow_edition`` is the session's declaration, which the env handshake
+    carries ahead of the process and project ones.
     """
     if not isinstance(env, str):
         return env, False
     from .._native import RemoteEnv
 
-    return RemoteEnv(env), True
+    return RemoteEnv(env, workflow_edition=workflow_edition), True
+
+
+def close_dialed_env(env: object) -> None:
+    """Close an env a failed ``session()`` dialed; a close error is logged."""
+    close = getattr(env, "close", None)
+    if not callable(close):
+        return
+    try:
+        close()
+    except Exception as exc:  # the original error wins
+        logger.warning("closing the env a failed session dialed failed: %s", exc)
 
 
 def env_session_offer(env: object) -> tuple[list[str], str | None] | None:
@@ -198,6 +233,7 @@ def remote_session(
     close_env: bool = False,
     owns_env: bool = False,
     view: object = None,
+    workflow_edition: str | None = None,
 ) -> Session[Any, Any]:
     """Build a neutral :class:`Session` over a pre-built served-model ``client``.
 
@@ -218,6 +254,7 @@ def remote_session(
         close_env=close_env,
         owns_env=owns_env,
         view=view,
+        workflow_edition=workflow_edition,
     )
 
 

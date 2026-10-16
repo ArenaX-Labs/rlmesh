@@ -219,6 +219,13 @@ async fn run_body(
                 shutdown: None,
             })
         }
+        // The native loop dials a caller's client's address itself.
+        EnvKind::Remote(handle) => Some(Dial {
+            address: handle.remote_address().to_string(),
+            token: String::new(),
+            loopback: None,
+            shutdown: None,
+        }),
         _ => None,
     };
     let served = match &env {
@@ -303,7 +310,23 @@ async fn run_body(
         env: local.take(),
         hooks: drive::lend_hooks(hooks),
     };
-    let report = mode.drive(core, &mut queue, &mut side).await;
+    let report = mode
+        .drive(core, &mut queue, &mut side)
+        .await
+        .map_err(|err| match err {
+            Error::Runtime(message) | Error::Connection(message)
+                if message.contains("active Join session") =>
+            {
+                Error::Runtime(
+                    "the target env already has an active session: a RemoteEnv / \
+                     RemoteVectorEnv handle that was driven with reset()/step() holds the \
+                     env's single session slot. close() the handle (or its open session) \
+                     before run(), or drive it interactively via session()."
+                        .to_string(),
+                )
+            }
+            other => other,
+        });
     // Drop the port's queue first: a lane still waiting on a relayed call
     // fails at once instead of holding the loopback's drain.
     drop(queue);
@@ -330,6 +353,23 @@ async fn run_body(
             None => Ok(()),
         };
         release = release.and(closed);
+    }
+    // A caller's remote client shuts its env down on the opt-in.
+    if plan.close_env
+        && let EnvKind::Remote(handle) = &mut env
+    {
+        let shut = match handle.lend() {
+            Ok(mut client) => {
+                let out = match mode {
+                    Mode::Sync => drive::block_on_library(client.shutdown(None)),
+                    Mode::Async => client.shutdown(None).await,
+                };
+                handle.give_back(client);
+                out.map(|_| ())
+            }
+            Err(err) => Err(err),
+        };
+        release = release.and(shut);
     }
     let report = report?;
     release?;

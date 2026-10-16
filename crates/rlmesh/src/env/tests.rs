@@ -5,7 +5,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::*;
-use crate::binding::spaces::{SpaceValue, request};
 use crate::ext::TensorExt;
 use crate::spaces::{BoxOptions, Discrete, DiscreteOptions};
 use crate::{DType, Error, ErrorClass, Kwargs, Tensor};
@@ -47,6 +46,8 @@ struct Counter {
     step: i64,
     fail_step: Option<Error>,
     metadata: Option<Metadata>,
+    /// How long each step takes.
+    slow: Option<Duration>,
 }
 
 impl Counter {
@@ -56,6 +57,7 @@ impl Counter {
             step: 0,
             fail_step: None,
             metadata: None,
+            slow: None,
         }
     }
 
@@ -93,6 +95,9 @@ impl Env for Counter {
         if let Some(err) = self.fail_step.clone() {
             return Err(err);
         }
+        if let Some(slow) = self.slow {
+            std::thread::sleep(slow);
+        }
         self.step += 1;
         let reward = match action {
             Some(Value::Int(action)) => action as f64,
@@ -119,19 +124,17 @@ impl Env for Counter {
     }
 }
 
-fn reset(remote: &mut RemoteEnv, seed: Option<i64>) -> request::ResetResult {
-    client(remote.reset(request::ResetRequest {
-        seed,
-        ..Default::default()
-    }))
-    .unwrap()
+fn reset(remote: &mut RemoteEnv, seed: Option<i64>) -> (Value, InfoDict) {
+    remote.reset(seed, None).unwrap()
 }
 
-fn step(remote: &mut RemoteEnv, action: i64) -> crate::Result<request::StepResult> {
-    client(remote.step(request::StepRequest {
-        action: Some(SpaceValue::Discrete(action)),
-        ..Default::default()
-    }))
+#[allow(clippy::type_complexity)]
+fn step(remote: &mut RemoteEnv, action: i64) -> crate::Result<(Value, f64, bool, bool, InfoDict)> {
+    remote.step(Value::Int(action))
+}
+
+fn dial(address: &str) -> crate::Result<RemoteEnv> {
+    RemoteEnv::new(RemoteEnvOptions::default().address(address))
 }
 
 #[test]
@@ -156,13 +159,21 @@ fn a_started_server_serves_the_gymnasium_shape_and_closes_the_env() {
     server.start().unwrap();
     let err = server.start().unwrap_err();
     assert_eq!(err.class(), ErrorClass::RuntimeError);
-    let mut remote = client(RemoteEnv::connect(server.address())).unwrap();
-    let reset = reset(&mut remote, Some(1));
-    assert_eq!(reset.observation, Some(SpaceValue::Discrete(1)));
-    let step = step(&mut remote, 1).unwrap();
-    assert_eq!(step.observation, Some(SpaceValue::Discrete(2)));
-    assert_eq!(step.reward, 1.0);
-    let _ = client(remote.close());
+    let mut remote = dial(server.address()).unwrap();
+    let (observation, info) = reset(&mut remote, Some(1));
+    assert_eq!(observation, Value::Int(1));
+    assert!(matches!(info.get("episode_ids"), Some(Value::List(ids)) if ids.len() == 1));
+    let (observation, reward, _, _, info) = step(&mut remote, 1).unwrap();
+    assert_eq!(observation, Value::Int(2));
+    assert_eq!(reward, 1.0);
+    assert_eq!(info.get("completed_episodes"), Some(&Value::Int(0)));
+    remote.close().unwrap();
+    // close is idempotent; other I/O on a closed client is misuse (RMT-13).
+    remote.close().unwrap();
+    let err = remote.reset(None, None).unwrap_err();
+    assert_eq!(err.class(), ErrorClass::RuntimeError);
+    assert_eq!(err.to_string(), "RemoteEnv is closed");
+    assert_eq!(remote.env_contract().id(), "Counter-v0");
     drop(remote);
 
     assert!(!server.wait(Some(Duration::from_millis(20))).unwrap());
@@ -211,7 +222,7 @@ fn an_authored_failure_reads_op_failed_at_the_client() {
     env.fail_step = Some(Error::environment_recoverable("try again"));
     let server = EnvServer::new(env, quick()).unwrap();
     server.start().unwrap();
-    let mut remote = client(RemoteEnv::connect(server.address())).unwrap();
+    let mut remote = dial(server.address()).unwrap();
     reset(&mut remote, None);
     let err = step(&mut remote, 0).unwrap_err();
     assert_eq!(err.class(), ErrorClass::RecoverableEnvironmentException);
@@ -223,7 +234,7 @@ fn an_authored_failure_reads_op_failed_at_the_client() {
     env.fail_step = Some(Error::invalid_argument("boom"));
     let server = EnvServer::new(env, quick()).unwrap();
     server.start().unwrap();
-    let mut remote = client(RemoteEnv::connect(server.address())).unwrap();
+    let mut remote = dial(server.address()).unwrap();
     reset(&mut remote, None);
     let err = step(&mut remote, 0).unwrap_err();
     assert_eq!(err.class(), ErrorClass::EnvironmentException);
@@ -324,7 +335,7 @@ fn a_foreground_serve_runs_lane_0_on_the_caller() {
         std::thread::spawn(move || (std::thread::current().id(), server.serve()))
     };
     let mut remote = loop {
-        if let Ok(remote) = client(RemoteEnv::connect(&address)) {
+        if let Ok(remote) = dial(&address) {
             break remote;
         }
         std::thread::sleep(Duration::from_millis(10));
@@ -429,18 +440,32 @@ fn a_vector_env_sees_the_batched_layout() {
     .unwrap();
     assert_eq!(server.env_contract().num_envs(), 2);
     server.start().unwrap();
-    let mut remote = client(RemoteVectorEnv::connect(server.address())).unwrap();
-    client(remote.reset(crate::binding::env::VectorResetRequest {
-        seeds: vec![7],
-        ..Default::default()
-    }))
-    .unwrap();
-    let result = client(remote.step(crate::binding::env::VectorStepRequest {
-        actions: vec![SpaceValue::Discrete(1), SpaceValue::Discrete(2)],
-        ..Default::default()
-    }))
-    .unwrap();
-    assert_eq!(result.rewards, vec![0.5, 0.5]);
+    let mut remote =
+        RemoteVectorEnv::new(RemoteEnvOptions::default().address(server.address())).unwrap();
+    assert_eq!(remote.num_envs(), 2);
+    assert!(std::ptr::eq(
+        remote.observation_space(),
+        remote.single_observation_space()
+    ));
+    let (observation, info) = remote.reset(Some(VectorSeed::One(7)), None).unwrap();
+    assert_eq!(observation.as_tensor().unwrap().shape(), &[2, 2]);
+    assert!(matches!(info.get("episode_ids"), Some(Value::List(ids)) if ids.len() == 2));
+    let (_, rewards, terminated, _, info) = remote
+        .step(Value::List(vec![Value::Int(1), Value::Int(2)]))
+        .unwrap();
+    assert_eq!(rewards, vec![0.5, 0.5]);
+    assert_eq!(terminated, vec![false, false]);
+    assert_eq!(info.get("completed_episodes"), Some(&Value::Int(0)));
+    let err =
+        crate::ext::reset_lanes(&mut remote, &[u64::from(u32::MAX) + 1], None, None).unwrap_err();
+    assert_eq!(err.class(), ErrorClass::ValueError);
+    // A vector endpoint refuses the single-env client.
+    let err = dial(server.address()).unwrap_err();
+    assert_eq!(err.class(), ErrorClass::ValueError);
+    assert!(
+        err.to_string().contains("Use RemoteVectorEnv instead"),
+        "{err}"
+    );
     drop(remote);
     server.shutdown().unwrap();
     let seen = seen.lock().unwrap();
@@ -463,14 +488,14 @@ fn a_one_lane_vector_env_serves_as_a_scalar_lane() {
     .unwrap();
     assert_eq!(server.env_contract().num_envs(), 1);
     server.start().unwrap();
-    let mut remote = client(RemoteEnv::connect(server.address())).unwrap();
+    let mut remote = dial(server.address()).unwrap();
     reset(&mut remote, Some(3));
-    let step = client(remote.step(request::StepRequest {
-        action: Some(SpaceValue::Discrete(2)),
-        ..Default::default()
-    }))
-    .unwrap();
-    assert_eq!(step.reward, 0.5);
+    let (_, reward, _, _, _) = step(&mut remote, 2).unwrap();
+    assert_eq!(reward, 0.5);
+    // A one-lane endpoint refuses the vector client.
+    let err =
+        RemoteVectorEnv::new(RemoteEnvOptions::default().address(server.address())).unwrap_err();
+    assert_eq!(err.class(), ErrorClass::ValueError);
     drop(remote);
     server.shutdown().unwrap();
     let seen = seen.lock().unwrap();
@@ -678,5 +703,141 @@ fn blocking_calls_refuse_an_async_context() {
     assert_eq!(
         err.to_string(),
         "EnvServer::serve() blocks; call serve_async() from async code"
+    );
+}
+
+#[test]
+fn a_session_borrows_a_remote_env_and_hands_it_back() {
+    let counters = Arc::new(Counters::default());
+    let server = EnvServer::new(Counter::new(&counters), quick()).unwrap();
+    server.start().unwrap();
+    let mut remote = dial(server.address()).unwrap();
+    let edition = remote.selected_workflow_edition().to_string();
+    assert!(!edition.is_empty());
+    {
+        let mut session = crate::session(
+            crate::RANDOM_SAMPLE,
+            &mut remote,
+            crate::SessionOptions::default(),
+        )
+        .unwrap();
+        let (observation, info) = session.reset(Some(2), None).unwrap();
+        assert_eq!(observation, Value::Int(2));
+        assert!(info.contains_key("episode_ids"));
+        session.step(Value::Int(1)).unwrap();
+        assert_eq!(session.selected_workflow_edition().unwrap(), edition);
+        session.close().unwrap();
+    }
+    // The core is back: the handle drives on and reports the same edition.
+    assert_eq!(remote.selected_workflow_edition(), edition);
+    let (observation, _) = reset(&mut remote, Some(0));
+    assert_eq!(observation, Value::Int(0));
+    // A dropped session hands it back too.
+    drop(
+        crate::session(
+            crate::RANDOM_SAMPLE,
+            &mut remote,
+            crate::SessionOptions::default(),
+        )
+        .unwrap(),
+    );
+    step(&mut remote, 1).unwrap();
+    remote.close().unwrap();
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn async_twins_run_on_any_executor() {
+    let counters = Arc::new(Counters::default());
+    let server = EnvServer::new(Counter::new(&counters), quick()).unwrap();
+    server.start().unwrap();
+    let address = server.address().to_string();
+    futures::executor::block_on(async {
+        let mut remote = RemoteEnv::new_async(RemoteEnvOptions::default().address(&address))
+            .await
+            .unwrap();
+        let (observation, _) = remote.reset_async(Some(1), None).await.unwrap();
+        assert_eq!(observation, Value::Int(1));
+        let (_, reward, _, _, _) = remote.step_async(Value::Int(1)).await.unwrap();
+        assert_eq!(reward, 1.0);
+        assert_eq!(remote.render_async(None).await.unwrap(), None);
+        remote.close_async().await.unwrap();
+    });
+    // A sync call inside a runtime names its twin instead of blocking.
+    let inside = address.clone();
+    let err =
+        client(async { tokio::spawn(async move { dial(&inside) }).await.unwrap() }).unwrap_err();
+    assert_eq!(err.class(), ErrorClass::RuntimeError);
+    assert!(err.to_string().contains("RemoteEnv::new_async()"), "{err}");
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn a_request_past_its_timeout_is_a_timeout_error() {
+    let counters = Arc::new(Counters::default());
+    let mut env = Counter::new(&counters);
+    env.slow = Some(Duration::from_millis(400));
+    let server = EnvServer::new(env, quick()).unwrap();
+    server.start().unwrap();
+    let mut remote = RemoteEnv::new(
+        RemoteEnvOptions::default()
+            .address(server.address())
+            .request_timeout(Duration::from_millis(50)),
+    )
+    .unwrap();
+    reset(&mut remote, None);
+    let err = step(&mut remote, 1).unwrap_err();
+    assert_eq!(err.class(), ErrorClass::TimeoutError);
+    assert_eq!(err.to_string(), "operation timed out after 50ms");
+    drop(remote);
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn a_fired_cancel_handle_fails_one_call() {
+    let counters = Arc::new(Counters::default());
+    let server = EnvServer::new(Counter::new(&counters), quick()).unwrap();
+    server.start().unwrap();
+    let mut remote = dial(server.address()).unwrap();
+    remote.cancel_handle().cancel();
+    let err = remote.reset(None, None).unwrap_err();
+    assert_eq!(err.class(), ErrorClass::KeyboardInterrupt);
+    reset(&mut remote, None);
+    drop(remote);
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn construction_errors_follow_rmt_12() {
+    let err = RemoteEnv::new(RemoteEnvOptions::default()).unwrap_err();
+    assert_eq!(err.class(), ErrorClass::ValueError);
+    assert_eq!(err.to_string(), "address or host/port is required");
+    let err = dial("bogus://x").unwrap_err();
+    assert_eq!(err.class(), ErrorClass::ValueError);
+    assert!(err.to_string().starts_with("invalid address: "), "{err}");
+    let err = crate::ext::remote_env_with_token(
+        RemoteEnvOptions::default().address("tcp://127.0.0.1:1"),
+        "s3cret\n",
+    )
+    .unwrap_err();
+    assert_eq!(err.class(), ErrorClass::ValueError);
+    // Nothing listens on port 1.
+    let err = RemoteEnv::new(
+        RemoteEnvOptions::default()
+            .port(1)
+            .connect_timeout(Duration::from_secs(5)),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(
+            err.class(),
+            ErrorClass::ConnectionError | ErrorClass::TimeoutError
+        ),
+        "{err:?}"
+    );
+    assert!(
+        err.to_string()
+            .starts_with("could not connect to an env at 'tcp://127.0.0.1:1'"),
+        "{err}"
     );
 }

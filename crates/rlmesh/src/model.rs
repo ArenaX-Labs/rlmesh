@@ -10,7 +10,7 @@ pub(crate) mod handler;
 pub(crate) mod local;
 mod policy;
 pub(crate) mod predict_fn;
-mod remote;
+pub(crate) mod remote;
 pub(crate) mod server;
 pub(crate) mod types;
 mod wire;
@@ -20,7 +20,7 @@ pub use context::{BatchPredictContext, EpisodeState, PredictContext};
 pub use facade::{DynPolicy, Model, ModelOptions, ModelServeOptions, PolicyDecl};
 pub(crate) use facade::{construct, run_local};
 pub use policy::{Corners, LoadKey, NO_ADAPTER, Policy, SpecArg, WithContext, with_context};
-pub use remote::RemoteModel;
+pub use remote::{RemoteModel, RemoteModelOptions};
 pub use types::predict_seed;
 
 // The engine plumbing, public through `binding` (R-25); named here for the

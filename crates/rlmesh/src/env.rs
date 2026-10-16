@@ -8,7 +8,7 @@
 //! Authoring is sync; a lane runs on its own thread for the server's life.
 
 pub(crate) mod batch;
-mod client;
+pub(crate) mod client;
 pub(crate) mod envelope;
 pub(crate) mod factory;
 pub(crate) mod lanes;
@@ -25,7 +25,7 @@ pub(crate) mod wire;
 
 use std::sync::{Arc, Mutex};
 
-pub use client::{RemoteEnv, RemoteVectorEnv};
+pub use client::{RemoteEnv, RemoteEnvOptions, RemoteVectorEnv};
 pub use factory::{
     EnvFactory, EnvFactoryExt, EnvFactoryServeOptions, MadeEnv, TagParam, Variant, VariantOptions,
 };
