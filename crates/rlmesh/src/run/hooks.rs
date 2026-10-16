@@ -17,28 +17,33 @@ use crate::{EnvContract, Error, Result, Value};
 /// completed episodes, and the run's own error wins over its error.
 pub trait RunHooks: Send {
     /// Once per run, before the first episode, with the run's context.
-    fn on_run_start(&mut self, _context: Arc<dyn RunContext>) -> Result<()> {
+    fn on_run_start(&mut self, context: Arc<dyn RunContext>) -> Result<()> {
+        let _ = context;
         Ok(())
     }
 
     /// After each episode's reset returns (`episode` is 0-based).
-    fn on_episode_start(&mut self, _episode: i64, _seed: Option<i64>) -> Result<()> {
+    fn on_episode_start(&mut self, episode: i64, seed: Option<i64>) -> Result<()> {
+        let _ = (episode, seed);
         Ok(())
     }
 
     /// After each env step.
-    fn on_step(&mut self, _event: &StepEvent) -> Result<()> {
+    fn on_step(&mut self, event: &StepEvent) -> Result<()> {
+        let _ = event;
         Ok(())
     }
 
     /// With each completed episode's result.
-    fn on_episode_end(&mut self, _result: &EpisodeResult) -> Result<()> {
+    fn on_episode_end(&mut self, result: &EpisodeResult) -> Result<()> {
+        let _ = result;
         Ok(())
     }
 
     /// Exactly once when the run ends, also on an error or a cancel, with
     /// the (possibly partial) result.
-    fn on_run_end(&mut self, _result: &RunResult) -> Result<()> {
+    fn on_run_end(&mut self, result: &RunResult) -> Result<()> {
+        let _ = result;
         Ok(())
     }
 }

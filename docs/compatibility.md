@@ -19,11 +19,18 @@ and `Adapter.serve_route` are Internal binding plumbing. The
 Bridge APIs for selecting a `ValueBridge`; application code normally uses
 `transform_obs` and `transform_action`.
 
+`sanitize_metadata` is a Bridge API: it coerces Python objects into portable
+metadata and has no native-language counterpart.
+
 ## Preview and Experimental
 
 Preview APIs are intended to become stable but may still change with migration notes. Experimental APIs may change or disappear. In the Python package today's labels are only Stable and Experimental; Preview currently applies only to the `rlmesh` Rust facade crate (see [Native APIs](#native-apis-rust-c-and-c)).
 
 Torch and JAX backends and sandbox helpers are experimental. The `MultiBinary`, `MultiDiscrete`, `Text`, and `Tuple` space wrappers are also experimental; see [gymnasium](https://rlmesh.dev/docs/start/gymnasium/) for the per-space stability labels, which track the API surface policy in `api_metadata.json`.
+
+The `params` module and the `Model.params` and `EnvFactory.params` declarations
+are Experimental; their native counterparts are deferred until that surface is
+Stable.
 
 > [!WARNING]
 > The dtype values `int8/16` and `uint16/32/64` are not negotiated. A peer from an earlier release fails with a decode error naming the unknown dtype when it meets an environment that uses them: a clean refusal at the decoding peer, not a conversion. A per-leg dtype ceiling that refuses on the sending side instead is on the roadmap below.

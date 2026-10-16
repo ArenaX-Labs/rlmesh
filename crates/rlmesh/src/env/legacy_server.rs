@@ -27,7 +27,7 @@ impl<E: Env> WireEnvServer<E> {
     }
 
     /// Serve `envs` as lanes `0..envs.len()` of one `num_envs = N` endpoint
-    /// (see [`LaneEnv`](super::LaneEnv)): each lane owns its env on its own
+    /// with each lane owning its env on its own
     /// thread, so the lanes run concurrently. Every lane must carry the same
     /// contract; binding fails on an empty `envs` or on a lane that disagrees.
     pub fn lanes(envs: Vec<E>) -> Self {

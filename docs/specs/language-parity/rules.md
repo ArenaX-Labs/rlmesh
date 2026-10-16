@@ -1513,6 +1513,15 @@ Acceptance criteria. The check fails when:
 1. a Stable Python symbol, member, parameter or field has no manifest entry;
 2. a `present` entry names a native item that does not exist, or a field or
    parameter whose name differs from Python's after R-4;
+   The parameter-name check excludes only native parameters with no Python
+   counterpart: the receiver/handle corresponding to `self`; C `out` and
+   `out_*` parameters (R-15); pointer length/size companions (`*_len`, or
+   `len`/`count` paired with a pointer, R-5/R-20); `struct_size` (R-19);
+   callback state pointers named `user_data` or `ctx` (R-20); and the
+   options-struct parameter itself (R-6). These are structural rules in the
+   checker, not per-entry exemptions. Other positional parameter names must
+   match Python after R-4. A deliberate translation stated by a D-/area
+   decision must cite that decision in the manifest.
 3. a `missing` entry's native item exists (stale gap);
 4. a native public item is neither in the manifest nor under `ext` /
    `binding` / `rlmesh_ext_` (R-25), R-18's `cancel` fields and

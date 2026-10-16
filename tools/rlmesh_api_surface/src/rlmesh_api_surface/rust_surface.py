@@ -180,6 +180,7 @@ class _FacadeWalker:
         self.config = config
         self.module_order: list[tuple[str, _Crate, dict[str, Any]]] = []
         self.placements: dict[tuple[str, str], _Placement] = {}
+        self._walked: set[tuple[str, str, str]] = set()
 
     def collect(self) -> list[ApiModule]:
         self._walk(self.facade.name, self.facade, self.facade.root)
@@ -211,7 +212,12 @@ class _FacadeWalker:
         return modules
 
     def _walk(self, path: str, crate: _Crate, module: dict[str, Any]) -> None:
-        self.module_order.append((path, crate, module))
+        key = (path, crate.name, str(module["id"]))
+        if key in self._walked:
+            return
+        self._walked.add(key)
+        if not any(existing == path for existing, _, _ in self.module_order):
+            self.module_order.append((path, crate, module))
         for item_id in module["inner"]["module"]["items"]:
             item = crate.item(item_id)
             if item is None or item["visibility"] != "public":
@@ -227,9 +233,13 @@ class _FacadeWalker:
 
     def _use(self, path: str, crate: _Crate, use: dict[str, Any]) -> None:
         inner = use["inner"]["use"]
-        if inner["is_glob"] or inner.get("id") is None:
+        if inner.get("id") is None:
             return
         target_crate, target = self._resolve(crate, inner["id"])
+        if inner["is_glob"]:
+            if target is not None and _kind(target) == "module":
+                self._walk(path, target_crate, target)
+            return
         if target is None:
             external = crate.external_target(inner["id"])
             if external is None:

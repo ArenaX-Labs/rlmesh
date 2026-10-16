@@ -129,7 +129,8 @@
           },
           "params": {
             "kind": "attribute",
-            "signature": "params: ParamSpec | None"
+            "signature": "params: ParamSpec | None",
+            "stability": "Experimental"
           },
           "prepare": {
             "kind": "function",
@@ -322,7 +323,8 @@
           },
           "params": {
             "kind": "attribute",
-            "signature": "params: ParamSpec | None"
+            "signature": "params: ParamSpec | None",
+            "stability": "Experimental"
           },
           "predict": {
             "kind": "function",
@@ -1354,7 +1356,7 @@
       },
       "params": {
         "kind": "module",
-        "stability": "Stable"
+        "stability": "Experimental"
       },
       "predict_seed": {
         "kind": "function",
@@ -1369,7 +1371,7 @@
       "sanitize_metadata": {
         "kind": "function",
         "signature": "sanitize_metadata(info: Mapping[str, Any]) -> dict[str, Any]",
-        "stability": "Stable"
+        "stability": "Bridge"
       },
       "session": {
         "kind": "function",
@@ -3120,7 +3122,8 @@
           },
           "params": {
             "kind": "attribute",
-            "signature": "params: ParamSpec | None"
+            "signature": "params: ParamSpec | None",
+            "stability": "Experimental"
           },
           "prepare": {
             "kind": "function",
@@ -3190,7 +3193,8 @@
           },
           "params": {
             "kind": "attribute",
-            "signature": "params: ParamSpec | None"
+            "signature": "params: ParamSpec | None",
+            "stability": "Experimental"
           },
           "predict": {
             "kind": "function",

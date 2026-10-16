@@ -4,13 +4,16 @@ import json
 from pathlib import Path
 
 import pytest
+from clang import cindex as ci
 from rlmesh_api_surface.api_surface import REPO_ROOT, write_native_docs_api_surface
 from rlmesh_api_surface.header_surface import (
     HeaderSurfaceConfig,
+    _parse,
     collect_header_api_surface,
 )
 from rlmesh_api_surface.rust_surface import (
     RUSTDOC_FORMAT_VERSION,
+    RustSurfaceConfig,
     _canonical_path,
     _Crate,
     _function_signature,
@@ -18,7 +21,80 @@ from rlmesh_api_surface.rust_surface import (
     _item_signature,
     _ty,
     _unwrap_intra_doc_links,
+    collect_rust_api_surface,
 )
+
+
+def test_c_prototype_and_callback_parameters_are_named() -> None:
+    header = "crates/rlmesh-capi/include/rlmesh.h"
+    tu = _parse(
+        REPO_ROOT / header,
+        HeaderSurfaceConfig(header, "c", "c11", "Stable", None, "", None),
+    )
+    unnamed = [
+        cursor.location.line
+        for cursor in tu.cursor.walk_preorder()
+        if cursor.kind == ci.CursorKind.PARM_DECL
+        and cursor.location.file is not None
+        and Path(cursor.location.file.name).resolve() == (REPO_ROOT / header).resolve()
+        and not cursor.spelling
+    ]
+    assert unnamed == []
+    functions = {
+        cursor.spelling: [arg.spelling for arg in cursor.get_arguments()]
+        for cursor in tu.cursor.get_children()
+        if cursor.kind == ci.CursorKind.FUNCTION_DECL
+    }
+    assert functions["rlmesh_adapters_resolve"] == [
+        "env_tags",
+        "observation_space",
+        "action_space",
+        "model_spec",
+        "options",
+        "out",
+    ]
+    assert functions["rlmesh_run"] == ["model", "env", "options", "out"]
+    assert functions["rlmesh_model_run"] == [
+        "model",
+        "env_or_address",
+        "options",
+        "out",
+    ]
+
+
+def test_rust_glob_reexports_include_private_module_contents(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from rlmesh_api_surface import rust_surface
+
+    data = _minimal_rustdoc()
+    data["index"]["0"]["inner"]["module"]["items"] = [3, 4]
+    data["index"]["1"]["visibility"] = "crate"
+    data["index"]["3"]["inner"]["use"].update({"name": "*", "id": 1, "is_glob": True})
+    data["index"]["4"] = {
+        **data["index"]["3"],
+        "id": 4,
+    }
+    # A recursive glob must terminate and must not duplicate the module page.
+    data["index"]["1"]["inner"]["module"]["items"].append(5)
+    data["index"]["5"] = {
+        **data["index"]["3"],
+        "id": 5,
+        "inner": {"use": {"name": "*", "source": "crate::*", "id": 0, "is_glob": True}},
+    }
+    (tmp_path / "rlmesh.json").write_text(json.dumps(data))
+    monkeypatch.setattr(
+        rust_surface, "_cargo_workspace", lambda root: ({"rlmesh"}, tmp_path)
+    )
+    modules = collect_rust_api_surface(
+        repo_root=tmp_path,
+        config=RustSurfaceConfig("rlmesh", "Stable", (), "", None),
+        json_dir=tmp_path,
+    )
+    assert [module.name for module in modules] == ["rlmesh"]
+    assert [
+        export.qualified_name for module in modules for export in module.exports
+    ] == ["rlmesh::RemoteEnv"]
 
 
 def test_c_field_keeps_its_own_trailing_comment() -> None:
@@ -48,7 +124,7 @@ def test_cpp_signatures_read_past_a_truncated_extent() -> None:
     ]
     assert (
         "template <class P> requires Policy<P> "
-        "explicit Model(std::shared_ptr<P> p, ModelOptions options = {})"
+        "explicit Model(std::shared_ptr<P> source, ModelOptions options = {})"
     ) in constructors
 
 

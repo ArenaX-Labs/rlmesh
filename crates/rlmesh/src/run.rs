@@ -43,11 +43,16 @@ impl Model {
     /// thread (RUN-8). One run at a time per model (RUN-9).
     pub fn run<'e>(
         &self,
-        env: impl Into<EnvTarget<'e>>,
+        env_or_address: impl Into<EnvTarget<'e>>,
         options: RunOptions<'_>,
     ) -> Result<RunResult> {
         drive::refuse_in_async_context("Model::run")?;
-        drive::run_sync(native::run_model(self, env.into(), options, Mode::Sync))
+        drive::run_sync(native::run_model(
+            self,
+            env_or_address.into(),
+            options,
+            Mode::Sync,
+        ))
     }
 
     /// The async twin of [`run`](Model::run): hooks run inside this future,
@@ -55,10 +60,10 @@ impl Model {
     /// Dropping it cancels the run and fires no hook (R-18).
     pub async fn run_async<'e>(
         &self,
-        env: impl Into<EnvTarget<'e>>,
+        env_or_address: impl Into<EnvTarget<'e>>,
         options: RunOptions<'_>,
     ) -> Result<RunResult> {
-        native::run_model(self, env.into(), options, Mode::Async).await
+        native::run_model(self, env_or_address.into(), options, Mode::Async).await
     }
 
     /// Bind this model to `env` for driving by hand: Python's
@@ -66,20 +71,20 @@ impl Model {
     /// never closes the model.
     pub fn session<'a>(
         &'a self,
-        env: impl Into<EnvTarget<'a>>,
+        env_or_address: impl Into<EnvTarget<'a>>,
         options: SessionOptions,
     ) -> Result<Session<'a>> {
-        Session::create(Some(self), env.into(), options)
+        Session::create(Some(self), env_or_address.into(), options)
     }
 
     /// The async twin of [`session`](Model::session) (nothing dials at
     /// creation, so it never waits).
     pub async fn session_async<'a>(
         &'a self,
-        env: impl Into<EnvTarget<'a>>,
+        env_or_address: impl Into<EnvTarget<'a>>,
         options: SessionOptions,
     ) -> Result<Session<'a>> {
-        self.session(env, options)
+        self.session(env_or_address, options)
     }
 }
 

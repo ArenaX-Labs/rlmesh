@@ -553,21 +553,27 @@ pub(crate) fn resolve_parts(
 }
 /// Resolve authored env tags and a model spec against single-lane spaces.
 pub fn resolve(
-    tags: &EnvTags,
-    observation: &SpaceSpec,
-    action: &SpaceSpec,
-    spec: &ModelSpec,
+    env_tags: &EnvTags,
+    observation_space: &SpaceSpec,
+    action_space: &SpaceSpec,
+    model_spec: &ModelSpec,
     options: ResolveOptions,
 ) -> Result<Adapter> {
-    let tags = tags.wire().map_err(resolution_error)?;
-    core::reject_unknowns_env(&tags).map_err(resolution_error)?;
-    let parts = resolve_parts(&tags, observation, action, spec, options)?;
+    let env_tags = env_tags.wire().map_err(resolution_error)?;
+    core::reject_unknowns_env(&env_tags).map_err(resolution_error)?;
+    let parts = resolve_parts(
+        &env_tags,
+        observation_space,
+        action_space,
+        model_spec,
+        options,
+    )?;
     Ok(Adapter::new(parts))
 }
 /// Resolve a contract through the core's tolerant tag reader.
 pub fn resolve_from_contract(
     contract: &crate::EnvContract,
-    spec: &ModelSpec,
+    model_spec: &ModelSpec,
     options: ResolveOptions,
 ) -> Result<Adapter> {
     let tags = contract_tags(contract)?;
@@ -575,7 +581,7 @@ pub fn resolve_from_contract(
         &tags,
         contract.observation_space(),
         contract.action_space(),
-        spec,
+        model_spec,
         options,
     )?;
     Ok(Adapter::new(parts))
@@ -759,7 +765,8 @@ pub trait AdapterBase {
     /// Python’s `AdapterBase.transform_action` operation.
     fn transform_action(&mut self, raw_action: Value) -> Result<Value>;
     /// Python’s `AdapterBase.observe` operation.
-    fn observe(&mut self, _raw_obs: Value) -> Result<()> {
+    fn observe(&mut self, raw_obs: Value) -> Result<()> {
+        let _ = raw_obs;
         Ok(())
     }
     /// Python’s `AdapterBase.reset` operation.

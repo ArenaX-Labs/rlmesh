@@ -153,9 +153,9 @@ impl ModelSpec {
         Self::from_json(&codec::metadata_json(data)?)
     }
     /// Read and validate a JSON representation.
-    pub fn from_json(text: &str) -> Result<Self> {
+    pub fn from_json(payload: &str) -> Result<Self> {
         let wire: core::ModelSpec =
-            serde_json::from_str(text).map_err(|e| Error::invalid_argument(e.to_string()))?;
+            serde_json::from_str(payload).map_err(|e| Error::invalid_argument(e.to_string()))?;
         core::reject_unknowns_model(&wire).map_err(Error::invalid_argument)?;
         Self::new(
             codec::input_from(
@@ -169,8 +169,8 @@ impl ModelSpec {
         )
     }
     /// Read the versioned metadata key; absent or None yields None.
-    pub fn from_metadata(m: &Metadata) -> Result<Option<Self>> {
-        metadata_payload(m, MODEL_METADATA_KEY)?
+    pub fn from_metadata(metadata: &Metadata) -> Result<Option<Self>> {
+        metadata_payload(metadata, MODEL_METADATA_KEY)?
             .map(Self::from_dict)
             .transpose()
     }
@@ -250,9 +250,9 @@ impl EnvTags {
         Self::from_json(&codec::metadata_json(data)?)
     }
     /// Read and validate a JSON representation.
-    pub fn from_json(text: &str) -> Result<Self> {
+    pub fn from_json(payload: &str) -> Result<Self> {
         let wire: core::EnvTags =
-            serde_json::from_str(text).map_err(|e| Error::invalid_argument(e.to_string()))?;
+            serde_json::from_str(payload).map_err(|e| Error::invalid_argument(e.to_string()))?;
         core::reject_unknowns_env(&wire).map_err(Error::invalid_argument)?;
         Self::new(
             codec::obs_from(
@@ -266,8 +266,8 @@ impl EnvTags {
         )
     }
     /// Read the versioned metadata key; absent or None yields None.
-    pub fn from_metadata(m: &Metadata) -> Result<Option<Self>> {
-        metadata_payload(m, ENV_METADATA_KEY)?
+    pub fn from_metadata(metadata: &Metadata) -> Result<Option<Self>> {
+        metadata_payload(metadata, ENV_METADATA_KEY)?
             .map(Self::from_dict)
             .transpose()
     }

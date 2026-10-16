@@ -21,6 +21,14 @@ def test_stable_public_api_has_documentation() -> None:
     assert surface.missing_stable_documentation() == []
 
 
+def test_bridge_and_deferred_parameter_labels() -> None:
+    objects = collect_python_api_surface().to_contract()["rlmesh"]["objects"]
+    assert objects["sanitize_metadata"]["stability"] == "Bridge"
+    assert objects["params"]["stability"] == "Experimental"
+    for name in ("Model", "EnvFactory"):
+        assert objects[name]["members"]["params"]["stability"] == "Experimental"
+
+
 def test_adapter_function_and_plumbing_labels() -> None:
     objects = collect_python_api_surface().to_contract()["rlmesh.adapters"]["objects"]
     assert objects["tag"]["kind"] == "function"
