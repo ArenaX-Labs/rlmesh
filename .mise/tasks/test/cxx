@@ -231,14 +231,15 @@ for compiler in "${compilers[@]}"; do
   done
   python crates/rlmesh-capi/examples/cpp_shape.py "$inc/rlmesh.hpp" \
     "$tmp/shape17.ii" "$tmp/shape20.ii"
-  mixed_flags=()
-  case "$compiler" in *g++*) mixed_flags=(-flto -Wodr) ;; esac
+  # The token comparison above is the one-shape check. No LTO -Wodr here: older
+  # libstdc++ (GCC 13) defines std::optional and std::variant differently per
+  # standard, so it reports every wrapper type that holds one.
   echo "==> C++17 and C++20 translation units share wrapper types ($compiler)"
-  $compiler -std=c++17 "${mixed_flags[@]}" "${warn[@]}" "${compiler_quiet[@]}" -I "$inc" \
+  $compiler -std=c++17 "${warn[@]}" "${compiler_quiet[@]}" -I "$inc" \
     -c crates/rlmesh-capi/examples/cpp_mixed17.cpp -o "$tmp/cpp_mixed17.o"
-  $compiler -std=c++20 "${mixed_flags[@]}" "${warn[@]}" "${compiler_quiet[@]}" -I "$inc" \
+  $compiler -std=c++20 "${warn[@]}" "${compiler_quiet[@]}" -I "$inc" \
     -c crates/rlmesh-capi/examples/cpp_mixed20.cpp -o "$tmp/cpp_mixed20.o"
-  $compiler "${mixed_flags[@]}" "${warn[@]}" "$tmp/cpp_mixed17.o" "$tmp/cpp_mixed20.o" "${link[@]}" -o "$tmp/cpp_mixed"
+  $compiler "${warn[@]}" "$tmp/cpp_mixed17.o" "$tmp/cpp_mixed20.o" "${link[@]}" -o "$tmp/cpp_mixed"
   "$tmp/cpp_mixed"
   if printf '#include <rlmesh.hpp>\n' |
     $compiler -std=c++14 -I "$inc" -c -x c++ - -o "$tmp/oldstandard.o" >"$tmp/oldstandard.log" 2>&1; then
