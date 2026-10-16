@@ -1,0 +1,21 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "RLMesh",
+	"Description": "Serve Unreal game state as an RLMesh environment that any RLMesh model can drive.",
+	"Category": "AI",
+	"CreatedBy": "ArenaX Labs",
+	"CreatedByURL": "https://github.com/ArenaX-Labs/rlmesh",
+	"DocsURL": "https://github.com/ArenaX-Labs/rlmesh/tree/main/integrations/unreal/RLMesh",
+	"EnabledByDefault": false,
+	"CanContainContent": false,
+	"Modules": [
+		{
+			"Name": "RLMeshUnreal",
+			"Type": "Runtime",
+			"LoadingPhase": "Default",
+			"PlatformAllowList": ["Win64", "Linux"]
+		}
+	]
+}
