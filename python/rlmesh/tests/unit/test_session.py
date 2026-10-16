@@ -1133,3 +1133,69 @@ def test_random_sample_seeds_its_sampler_with_each_episode_seed() -> None:
 
     assert actions(11) == actions(11)
     assert actions(11) != actions(12)
+
+
+def test_a_session_offers_only_the_run_context_inside_its_own_hooks() -> None:
+    sess = rlmesh.session(rlmesh.Model(lambda obs: 0), _TinyEnv())
+    seen: dict[str, object] = {}
+
+    class Probe(rlmesh.RunHooks):
+        def on_run_start(self, context: Any) -> None:
+            seen["num_envs"] = context.num_envs
+            seen["contract"] = context.contract is not None
+            seen["frame_sources"] = context.frame_sources() is not None
+            for name, call in [
+                ("reset()", lambda: context.reset()),
+                ("step()", lambda: context.step(0)),
+                ("predict()", lambda: context.predict(0)),
+                ("run()", lambda: context.run()),
+                ("close()", lambda: context.close()),
+                ("done", lambda: context.done),
+                (
+                    "selected_workflow_edition",
+                    lambda: context.selected_workflow_edition,
+                ),
+                ("observation_roles()", lambda: context.observation_roles()),
+                ("reader()", lambda: context.reader("x")),
+            ]:
+                with pytest.raises(RuntimeError, match="own run hooks"):
+                    call()
+                seen[name] = True
+
+    result = sess.run(hooks=Probe())
+    assert result.num_episodes == 1
+    assert seen["num_envs"] == 1 and seen["contract"] is True
+    assert seen["close()"] is True
+    # Outside its hooks the session works again.
+    assert sess.done is True
+    sess.close()
+
+
+def test_the_runs_own_error_wins_over_the_last_episode_end() -> None:
+    class Failing(rlmesh.Model):
+        def predict(self, observation: Any) -> Any:
+            _ = observation
+            return 0
+
+        def on_episode_end(self, episode_id: str) -> None:
+            _ = episode_id
+            raise ValueError("episode end failed")
+
+    class Boom(rlmesh.RunHooks):
+        def on_step(self, event: rlmesh.StepEvent) -> None:
+            _ = event
+            raise KeyError("hook failed")
+
+    with rlmesh.session(Failing(), _TinyEnv()) as sess, pytest.raises(KeyError):
+        sess.run(hooks=Boom())
+
+    class EndBoom(rlmesh.RunHooks):
+        def on_run_end(self, result: rlmesh.RunResult) -> None:
+            _ = result
+            raise KeyError("run end failed")
+
+    # On success, on_run_end's error wins over the episode end's.
+    sess = rlmesh.session(Failing(), _TinyEnv())
+    with pytest.raises(KeyError, match="run end failed"):
+        sess.run(hooks=EndBoom())
+    sess._close(failed=True)  # pyright: ignore[reportPrivateUsage]

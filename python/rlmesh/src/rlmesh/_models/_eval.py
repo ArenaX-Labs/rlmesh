@@ -13,13 +13,14 @@ names :class:`Session` resolves as module globals: connection/contract synthesis
 
 from __future__ import annotations
 
+import contextlib
 import math
 import numbers
 import os
 import time
 import uuid
 import warnings
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
 from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeVar, cast
@@ -174,6 +175,60 @@ def _episode_success(info: Mapping[str, Any]) -> bool | None:
         if key in info and (flag := _success_flag(info[key])) is not None:
             return flag
     return None
+
+
+#: The runtime's bounds on the native loop's caps (``Option<i64>`` steps and a
+#: ``u32`` prefetch lead), checked on both loops so they validate alike.
+_MAX_EPISODE_STEPS = 2**63 - 1
+_MAX_PREFETCH_LEAD = 2**32 - 1
+
+
+def check_execution_horizon(execution_horizon: int, native_chunk: int | None) -> None:
+    """Refuse an ``execution_horizon`` outside ``1..=1024`` or past ``native_chunk``."""
+    if execution_horizon < 1:
+        raise ValueError(f"execution_horizon must be >= 1, got {execution_horizon}")
+    if execution_horizon > MAX_EXECUTION_HORIZON:
+        raise ValueError(
+            f"execution_horizon must be <= {MAX_EXECUTION_HORIZON}, got "
+            f"{execution_horizon}"
+        )
+    if native_chunk is not None and execution_horizon > native_chunk:
+        raise ValueError(
+            f"execution_horizon={execution_horizon} exceeds the model's declared "
+            f"native_chunk={native_chunk}: it cannot produce that many actions per "
+            f"predict. Lower the horizon to at most {native_chunk}."
+        )
+
+
+def check_episode_caps(
+    max_episode_steps: int | None, max_episode_seconds: float | None
+) -> None:
+    """Refuse a step cap outside ``1..=2**63-1`` and a time cap not ``> 0``.
+
+    NaN is refused (it is no cap a native caller can spell); ``inf`` is no cap.
+    """
+    if max_episode_steps is not None:
+        if max_episode_steps < 1:
+            raise ValueError(f"max_episode_steps must be >= 1, got {max_episode_steps}")
+        if max_episode_steps > _MAX_EPISODE_STEPS:
+            raise ValueError(
+                f"max_episode_steps must be <= {_MAX_EPISODE_STEPS}, got "
+                f"{max_episode_steps}"
+            )
+    if max_episode_seconds is not None and (
+        math.isnan(max_episode_seconds) or max_episode_seconds <= 0
+    ):
+        raise ValueError(f"max_episode_seconds must be > 0, got {max_episode_seconds}")
+
+
+def check_prefetch_lead(prefetch_lead: int) -> None:
+    """Refuse a ``prefetch_lead`` outside the runtime's ``0..=2**32-1``."""
+    if prefetch_lead < 0:
+        raise ValueError(f"prefetch_lead must be >= 0, got {prefetch_lead}")
+    if prefetch_lead > _MAX_PREFETCH_LEAD:
+        raise ValueError(
+            f"prefetch_lead must be <= {_MAX_PREFETCH_LEAD}, got {prefetch_lead}"
+        )
 
 
 def resolve_episode_budget(episodes: int | None, seeds: Sequence[int] | None) -> int:
@@ -737,6 +792,7 @@ class Session(Generic[ObsT, ActT]):
     _telemetry: _RunTelemetry | None
     _paced_s: float
     _run_failed: bool
+    _in_hooks: bool
 
     def __init__(self) -> None:
         raise TypeError(
@@ -775,19 +831,7 @@ class Session(Generic[ObsT, ActT]):
         :meth:`Model.session`, and the served handles' ``session``; the public
         ``__init__`` only rejects direct construction.
         """
-        if execution_horizon < 1:
-            raise ValueError(f"execution_horizon must be >= 1, got {execution_horizon}")
-        if execution_horizon > MAX_EXECUTION_HORIZON:
-            raise ValueError(
-                f"execution_horizon must be <= {MAX_EXECUTION_HORIZON}, got "
-                f"{execution_horizon}"
-            )
-        if native_chunk is not None and execution_horizon > native_chunk:
-            raise ValueError(
-                f"execution_horizon={execution_horizon} exceeds the model's declared "
-                f"native_chunk={native_chunk}: it cannot produce that many actions per "
-                f"predict. Lower the horizon to at most {native_chunk}."
-            )
+        check_execution_horizon(execution_horizon, native_chunk)
         self = object.__new__(cls)
         #: A local model's call gate (None for a served model): a session over
         #: a model that was closed refuses predict, step and run.
@@ -873,6 +917,9 @@ class Session(Generic[ObsT, ActT]):
         #: Whether the last `run` ended by raising (an env crash, Ctrl-C), so a
         #: later close skips the viewer's `View.hold` and releases at once.
         self._run_failed = False
+        #: Set while this session's own `run` calls a hook: the hook gets the
+        #: RunContext protocol only (RUN-28).
+        self._in_hooks = False
         return self
 
     def _new_replay(self) -> ChunkReplay:
@@ -888,6 +935,29 @@ class Session(Generic[ObsT, ActT]):
         """Reject any use of an explicitly closed session (no silent reconnect)."""
         if self._closed:
             raise RuntimeError("session is closed")
+
+    def _refuse_in_own_hooks(self, member: str) -> None:
+        """Reject ``member`` from inside this session's own run hooks.
+
+        A hook gets the run's :class:`RunContext`: ``contract``, ``num_envs``,
+        ``read`` and ``frame_sources``. Driving or closing the session under its
+        own loop would corrupt the loop's state.
+        """
+        if self._in_hooks:
+            raise RuntimeError(
+                f"Session.{member} cannot be used from inside this session's own run "
+                "hooks: a hook gets the run's RunContext (contract, num_envs, read, "
+                "frame_sources)"
+            )
+
+    @contextlib.contextmanager
+    def _own_hooks(self) -> Iterator[None]:
+        """Mark this session's own hook dispatch."""
+        self._in_hooks = True
+        try:
+            yield
+        finally:
+            self._in_hooks = False
 
     def _require_model_open(self, what: str) -> None:
         """Reject ``what`` on a local model that was closed, or from its own corner."""
@@ -957,6 +1027,7 @@ class Session(Generic[ObsT, ActT]):
         Named apart from the ``workflow_edition`` *declaration* surfaces: this
         is what was agreed, not what this side asked for.
         """
+        self._refuse_in_own_hooks("selected_workflow_edition")
         if self._model_client is not None:
             return self._model_client.selected_workflow_edition()
         self._ensure_connected()
@@ -971,6 +1042,7 @@ class Session(Generic[ObsT, ActT]):
     @property
     def done(self) -> bool:
         """Whether the current episode has terminated or truncated."""
+        self._refuse_in_own_hooks("done")
         return self._terminated or self._truncated
 
     def _feed_view(self, obs: object) -> None:
@@ -1048,6 +1120,7 @@ class Session(Generic[ObsT, ActT]):
         :attr:`EnvFactory.reset_options <rlmesh.EnvFactory.reset_options>`.
         Passing one to an env that did not warns and resets without it.
         """
+        self._refuse_in_own_hooks("reset()")
         self._ensure_connected()
         self._end_episode()
         options = None
@@ -1097,6 +1170,7 @@ class Session(Generic[ObsT, ActT]):
 
     def predict(self, observation: ObsT) -> ActT:
         """Map one env observation to an env-ready action (the model's adapter applied)."""
+        self._refuse_in_own_hooks("predict()")
         self._require_model_open("predict()")
         self._ensure_connected()
         if self._predict is RANDOM_SAMPLE:
@@ -1206,6 +1280,7 @@ class Session(Generic[ObsT, ActT]):
         With a viewer paced by :attr:`View.step_hz <rlmesh.View.step_hz>`, returns
         no sooner than the next step is due.
         """
+        self._refuse_in_own_hooks("step()")
         if self._model_calls is not None and self._model_calls.closed:
             raise RuntimeError(CLOSED_TEXT)
         self._ensure_connected()
@@ -1287,6 +1362,11 @@ class Session(Generic[ObsT, ActT]):
         A bare role is desugared to the env-native leaf for that role (by the env's
         own tag); pass an explicit leaf to override the encoding.
         """
+        self._refuse_in_own_hooks("reader()")
+        return self._reader(*items)
+
+    def _reader(self, *items: object) -> Reader:
+        """:meth:`reader` without the own-hooks guard (``read`` is a RunContext member)."""
         if not items:
             raise TypeError(
                 "reader() needs at least one role or model-input leaf to read"
@@ -1311,7 +1391,7 @@ class Session(Generic[ObsT, ActT]):
         self._require_open()
         reader = self._read_cache.get(item)
         if reader is None:
-            reader = self.reader(item)
+            reader = self._reader(item)
             self._read_cache[item] = reader
         return reader(observation)[reader.roles[0]]
 
@@ -1326,6 +1406,7 @@ class Session(Generic[ObsT, ActT]):
         from ..adapters import EnvTags
         from ..adapters import ObservationRoles as _ObservationRoles
 
+        self._refuse_in_own_hooks("observation_roles()")
         self._ensure_connected()
         env_tags = EnvTags.from_metadata(
             getattr(self._contract, "metadata", None) or {}
@@ -1357,9 +1438,9 @@ class Session(Generic[ObsT, ActT]):
         loop). Episode ``i`` walks trial ordinal ``trial_index_base + i``,
         delivered as ``reset(options={"trial_index": ...})`` to an env that
         declared the key in :attr:`EnvFactory.reset_options
-        <rlmesh.EnvFactory.reset_options>` (an env that did not never sees it,
-        and its :attr:`EpisodeResult.trial` stays ``None``); the base lets a local
-        eval walk the same states as a platform shard. ``hooks``
+        <rlmesh.EnvFactory.reset_options>` (an env that did not never sees it)
+        and recorded on :attr:`EpisodeResult.trial` either way; the base lets a
+        local eval walk the same states as a platform shard. ``hooks``
         (:class:`RunHooks`) observes the loop; hook exceptions propagate and
         abort the run, and :meth:`RunHooks.on_run_end` always fires exactly once
         with the completed episodes, even on an error or interrupt.
@@ -1371,17 +1452,13 @@ class Session(Generic[ObsT, ActT]):
         :func:`rlmesh.run` / :meth:`Model.run` own their internal session and
         close it for you.)
         """
-        if max_episode_steps is not None and max_episode_steps < 1:
-            raise ValueError(f"max_episode_steps must be >= 1, got {max_episode_steps}")
-        if max_episode_seconds is not None and max_episode_seconds <= 0:
-            raise ValueError(
-                f"max_episode_seconds must be > 0, got {max_episode_seconds}"
-            )
+        self._refuse_in_own_hooks("run()")
+        check_episode_caps(max_episode_steps, max_episode_seconds)
         if trial_index_base < 0:
             raise ValueError(f"trial_index_base must be >= 0, got {trial_index_base}")
+        n_episodes = resolve_episode_budget(episodes, seeds)
         self._require_model_open("run()")
         self._ensure_connected()
-        n_episodes = resolve_episode_budget(episodes, seeds)
         step_cap = (
             max_episode_steps
             if max_episode_steps is not None
@@ -1397,9 +1474,12 @@ class Session(Generic[ObsT, ActT]):
         # seed-only reset and no warning.
         walks_trials = declares_reset_option(self._contract, "trial_index")
         self._run_failed = True
+        run_raised = False
+        end_error: BaseException | None = None
         try:
             if hooks is not None:
-                hooks.on_run_start(self)
+                with self._own_hooks():
+                    hooks.on_run_start(self)
             for i in range(n_episodes):
                 self._ep_index = i + 1
                 seed = seeds[i] if seeds is not None and i < len(seeds) else None
@@ -1413,7 +1493,8 @@ class Session(Generic[ObsT, ActT]):
                 ep_start = time.perf_counter()
                 round_start = ep_start
                 if hooks is not None:
-                    hooks.on_episode_start(episode=i, seed=seed)
+                    with self._own_hooks():
+                        hooks.on_episode_start(episode=i, seed=seed)
                 predict_total_ms = 0.0
                 step_total_ms = 0.0
                 while not self.done and self._steps < step_cap:
@@ -1444,22 +1525,23 @@ class Session(Generic[ObsT, ActT]):
                         truncated = True
                         self._truncated = True
                     if hooks is not None:
-                        hooks.on_step(
-                            StepEvent(
-                                episode=i,
-                                seed=seed,
-                                step=step_index,
-                                observation=prev_obs,
-                                action=action,
-                                reward=reward,
-                                terminated=terminated,
-                                truncated=truncated,
-                                info=last_info,
-                                predict_ms=predict_ms,
-                                step_ms=step_ms,
-                                read=partial(self.read, prev_obs),
+                        with self._own_hooks():
+                            hooks.on_step(
+                                StepEvent(
+                                    episode=i,
+                                    seed=seed,
+                                    step=step_index,
+                                    observation=prev_obs,
+                                    action=action,
+                                    reward=reward,
+                                    terminated=terminated,
+                                    truncated=truncated,
+                                    info=last_info,
+                                    predict_ms=predict_ms,
+                                    step_ms=step_ms,
+                                    read=partial(self.read, prev_obs),
+                                )
                             )
-                        )
                 if not self._terminated and not self._truncated:
                     self._truncated = True
                 steps = self._steps
@@ -1478,25 +1560,39 @@ class Session(Generic[ObsT, ActT]):
                 )
                 results.append(episode)
                 if hooks is not None:
-                    hooks.on_episode_end(episode)
+                    with self._own_hooks():
+                        hooks.on_episode_end(episode)
                 # Viewer quit (`q` / Esc): stop early and return the partial result
                 # -- the just-recorded (truncated) episode is the last one. A real
                 # Ctrl-C still raises KeyboardInterrupt out of the loop above.
                 if self._view_driver is not None and self._view_driver.quit_requested():
                     break
             self._run_failed = False
+        except BaseException:
+            run_raised = True
+            raise
         finally:
             self._telemetry = None
             result = RunResult(episodes=tuple(results), telemetry=telemetry.rows())
             if hooks is not None:
                 try:
-                    hooks.on_run_end(result)
+                    with self._own_hooks():
+                        hooks.on_run_end(result)
                 except BaseException as exc:
                     run_end_error = exc
-            self._end_episode()
+            # The first error wins: the run's own, then on_run_end's, then the
+            # last episode end's (RUN-P11).
+            try:
+                self._end_episode()
+            except BaseException as exc:
+                if not run_raised and run_end_error is None:
+                    end_error = exc
         if run_end_error is not None:
             self._run_failed = True
             raise run_end_error
+        if end_error is not None:
+            self._run_failed = True
+            raise end_error
         return result
 
     def close(self) -> None:
@@ -1518,6 +1614,7 @@ class Session(Generic[ObsT, ActT]):
         Idempotent: later calls are no-ops, and any other use of a closed session
         raises ``RuntimeError``.
         """
+        self._refuse_in_own_hooks("close()")
         self._close(failed=self._run_failed)
 
     def _close(self, *, failed: bool) -> None:
@@ -1706,13 +1803,18 @@ class NativeHookRelay:
             episode = self._episodes.get(episode_id)
             if episode is None or autoreset_roll[lane]:
                 continue
+            if lane >= len(actions):
+                # The runtime always sends the action it stepped (RUN-21).
+                from .._rlmesh import RLMeshException
+
+                raise RLMeshException("the runtime reported a step without its action")
             observation = group.observations[lane]
             event = StepEvent(
                 episode=episode.index,
                 seed=episode.seed,
                 step=episode.steps,
                 observation=observation,
-                action=actions[lane] if lane < len(actions) else None,
+                action=actions[lane],
                 reward=rewards[lane],
                 terminated=terminated[lane],
                 truncated=truncated[lane],

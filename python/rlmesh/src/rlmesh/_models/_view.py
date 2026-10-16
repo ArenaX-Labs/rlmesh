@@ -177,14 +177,14 @@ def resolve_view(view: object) -> View | None:
             _, _, tail = spec.partition(":")
             if not tail:
                 return View(backend="http")
-            try:
-                port = int(tail)
-            except ValueError:
+            # ASCII digits only: no sign, separators, inner spaces or other
+            # scripts' digits, which ``int()`` would take.
+            if not (tail.isascii() and tail.isdigit()):
                 raise ValueError(
                     f"invalid view port {tail!r} in view={view!r}; use 'http:PORT' "
                     "with an integer port"
-                ) from None
-            return View(backend="http", port=port)
+                )
+            return View(backend="http", port=int(tail))
         raise ValueError(
             f"unrecognized view={view!r}; use 'terminal', 'http', 'http:PORT', "
             "'both', or a View(...)"

@@ -18,7 +18,7 @@ pub(crate) mod served;
 pub(crate) mod server;
 pub(crate) mod signals;
 mod single_lane;
-mod sync_wire;
+pub(crate) mod sync_wire;
 mod trial;
 pub(crate) mod types;
 pub(crate) mod wire;

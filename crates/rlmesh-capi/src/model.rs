@@ -17,10 +17,8 @@ use rlmesh::binding::model::{
     EpisodeInfo, ModelHandler, ModelObservation, ModelWorker, RunLocalOptions, ServeModelOptions,
 };
 use rlmesh::binding::spaces::SpaceValue;
-use rlmesh::{
-    BindAddress, CancellationToken, ConnectAddress, Error, RuntimeReport, ServeOptions,
-    predict_seed,
-};
+use rlmesh::binding::{CancellationToken, RuntimeReport};
+use rlmesh::{BindAddress, ConnectAddress, Error, ServeOptions, predict_seed};
 
 use crate::abi::status::{
     CapiError, RLMeshStatus, clear_last_error, guard, guard_value, last_error_message,

@@ -138,6 +138,17 @@ pub fn meta_value_from_wire(value: rlmesh_spaces::MetaValue) -> Value {
 /// The reserved reset-option key a reset's `trial_index` travels under.
 pub use rlmesh_runtime::TRIAL_INDEX_OPTION;
 
+/// The runtime driver's observer seam, its report and telemetry, and the
+/// driver's cancellation token: the bindings' native-loop plumbing (R-25).
+/// The shared surface is [`crate::RunHooks`], [`crate::RunResult`] and
+/// [`crate::ext::CancelToken`].
+pub use rlmesh_runtime::{
+    ActionReceivedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, HookError, NoopRuntimeHooks,
+    ObservationEmittedEvent, PeerCeiling, RuntimeHooks, RuntimeReport, StepCompletedEvent,
+    telemetry,
+};
+pub use tokio_util::sync::CancellationToken;
+
 /// The env envelope a served env publishes (ENV-13), for the C ABI:
 /// `qualname` overrides `native:<id>`; `component` and `language` name the
 /// describing host, `host_runtime` adds its runtime fields.

@@ -1,0 +1,235 @@
+//! The keyword arguments of `run`, `session` and `Session.run` (RUN-1, RUN-2),
+//! with Python's names, defaults and checks (RUN-5).
+
+use std::fmt;
+use std::time::Duration;
+
+use super::RunHooks;
+use crate::{Error, Result};
+
+/// The execution-horizon ceiling: Python's `MAX_EXECUTION_HORIZON`.
+pub(crate) const MAX_EXECUTION_HORIZON: u32 = 1024;
+
+/// The keywords of `rlmesh.run` and `Model.run`.
+///
+/// Build with `..Default::default()`. Python's `instruction` and `view`
+/// keywords arrive with the adapters surface and the viewer.
+pub struct RunOptions<'h> {
+    /// The exact number of episodes: one by default, `seeds.len()` when only
+    /// seeds are given; the two must agree when both are. `Some(0)` runs
+    /// nothing.
+    pub episodes: Option<u64>,
+    /// One reset seed per episode.
+    pub seeds: Option<Vec<i64>>,
+    /// Truncate an episode after this many steps (at least 1).
+    pub max_episode_steps: Option<u64>,
+    /// Truncate an episode after this wall time: Python's
+    /// `max_episode_seconds` (must be positive).
+    pub max_episode: Option<Duration>,
+    /// Observer callbacks, borrowed for the call.
+    pub hooks: Option<&'h mut dyn RunHooks>,
+    /// Shut the caller's env down when the run ends.
+    pub close_env: bool,
+    /// Override the model's `trust_entrypoints` for this run.
+    pub trust_entrypoints: Option<bool>,
+    /// Actions of each predicted chunk executed before re-planning
+    /// (1..=1024; default 1).
+    pub execution_horizon: u32,
+    /// Native-loop async inference: predict the next chunk while this many
+    /// replay frames remain (0 = off; at most `u32::MAX`).
+    pub prefetch_lead: u64,
+    /// The workflow edition this run declares, above
+    /// `RLMESH_WORKFLOW_EDITION` and the model's own.
+    pub workflow_edition: Option<String>,
+    /// The first trial ordinal; episode `i` walks `trial_index_base + i`.
+    pub trial_index_base: u64,
+    /// Cancels the run as Ctrl-C does in Python (R-18).
+    pub cancel: Option<crate::ext::CancelToken>,
+}
+
+impl Default for RunOptions<'_> {
+    fn default() -> Self {
+        RunOptions {
+            episodes: None,
+            seeds: None,
+            max_episode_steps: None,
+            max_episode: None,
+            hooks: None,
+            close_env: false,
+            trust_entrypoints: None,
+            execution_horizon: 1,
+            prefetch_lead: 0,
+            workflow_edition: None,
+            trial_index_base: 0,
+            cancel: None,
+        }
+    }
+}
+
+impl fmt::Debug for RunOptions<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RunOptions")
+            .field("episodes", &self.episodes)
+            .field("seeds", &self.seeds)
+            .field("max_episode_steps", &self.max_episode_steps)
+            .field("max_episode", &self.max_episode)
+            .field("hooks", &self.hooks.as_ref().map(|_| "<hooks>"))
+            .field("close_env", &self.close_env)
+            .field("trust_entrypoints", &self.trust_entrypoints)
+            .field("execution_horizon", &self.execution_horizon)
+            .field("prefetch_lead", &self.prefetch_lead)
+            .field("workflow_edition", &self.workflow_edition)
+            .field("trial_index_base", &self.trial_index_base)
+            .field("cancel", &self.cancel)
+            .finish()
+    }
+}
+
+/// The keywords of `rlmesh.session` and `Model.session`.
+#[derive(Clone, Debug)]
+pub struct SessionOptions {
+    /// Shut the caller's env down when the session closes.
+    pub close_env: bool,
+    /// Override the model's `trust_entrypoints` for this session.
+    pub trust_entrypoints: Option<bool>,
+    /// Actions of each predicted chunk executed before re-planning
+    /// (1..=1024; default 1).
+    pub execution_horizon: u32,
+    /// The workflow edition this session declares.
+    pub workflow_edition: Option<String>,
+    /// The session's cancel token (R-18): every session call watches it, and
+    /// [`Session::cancel_handle`](crate::Session::cancel_handle) returns it.
+    pub cancel: Option<crate::ext::CancelToken>,
+}
+
+impl Default for SessionOptions {
+    fn default() -> Self {
+        SessionOptions {
+            close_env: false,
+            trust_entrypoints: None,
+            execution_horizon: 1,
+            workflow_edition: None,
+            cancel: None,
+        }
+    }
+}
+
+/// The keywords of `Session.run`.
+#[derive(Default)]
+pub struct SessionRunOptions<'h> {
+    /// The exact number of episodes (see [`RunOptions::episodes`]).
+    pub episodes: Option<u64>,
+    /// One reset seed per episode.
+    pub seeds: Option<Vec<i64>>,
+    /// Truncate an episode after this many steps (at least 1).
+    pub max_episode_steps: Option<u64>,
+    /// Truncate an episode after this wall time (must be positive).
+    pub max_episode: Option<Duration>,
+    /// Observer callbacks, borrowed for the call.
+    pub hooks: Option<&'h mut dyn RunHooks>,
+    /// The first trial ordinal.
+    pub trial_index_base: u64,
+    /// Cancels this call (R-18), beside the session's own token.
+    pub cancel: Option<crate::ext::CancelToken>,
+}
+
+impl fmt::Debug for SessionRunOptions<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SessionRunOptions")
+            .field("episodes", &self.episodes)
+            .field("seeds", &self.seeds)
+            .field("max_episode_steps", &self.max_episode_steps)
+            .field("max_episode", &self.max_episode)
+            .field("hooks", &self.hooks.as_ref().map(|_| "<hooks>"))
+            .field("trial_index_base", &self.trial_index_base)
+            .field("cancel", &self.cancel)
+            .finish()
+    }
+}
+
+/// Python's `resolve_episode_budget`.
+pub(crate) fn episode_budget(episodes: Option<u64>, seeds: Option<&[i64]>) -> Result<u64> {
+    match (episodes, seeds) {
+        (None, Some(seeds)) => Ok(seeds.len() as u64),
+        (None, None) => Ok(1),
+        (Some(episodes), Some(seeds)) if seeds.len() as u64 != episodes => {
+            Err(Error::invalid_argument(format!(
+                "episodes={episodes} does not match len(seeds)={}: pass one seed per episode, \
+                 or only one of the two",
+                seeds.len()
+            )))
+        }
+        (Some(episodes), _) => Ok(episodes),
+    }
+}
+
+/// `execution_horizon` in 1..=1024 and at most a declared native chunk.
+pub(crate) fn check_horizon(horizon: u32, native_chunk: Option<u32>) -> Result<()> {
+    if horizon < 1 {
+        return Err(Error::invalid_argument(format!(
+            "execution_horizon must be >= 1, got {horizon}"
+        )));
+    }
+    if horizon > MAX_EXECUTION_HORIZON {
+        return Err(Error::invalid_argument(format!(
+            "execution_horizon must be <= {MAX_EXECUTION_HORIZON}, got {horizon}"
+        )));
+    }
+    if let Some(chunk) = native_chunk
+        && horizon > chunk
+    {
+        return Err(Error::invalid_argument(format!(
+            "execution_horizon={horizon} exceeds the model's declared native_chunk={chunk}: it \
+             cannot produce that many actions per predict. Lower the horizon to at most {chunk}."
+        )));
+    }
+    Ok(())
+}
+
+/// The per-episode caps, as the runtime takes them.
+pub(crate) struct Caps {
+    pub(crate) max_episode_steps: Option<i64>,
+    pub(crate) max_episode_seconds: Option<f64>,
+}
+
+/// `max_episode_steps` in 1..=i64::MAX and a positive `max_episode`.
+pub(crate) fn check_caps(
+    max_episode_steps: Option<u64>,
+    max_episode: Option<Duration>,
+) -> Result<Caps> {
+    let max_episode_steps = match max_episode_steps {
+        Some(0) => {
+            return Err(Error::invalid_argument(
+                "max_episode_steps must be >= 1, got 0",
+            ));
+        }
+        Some(steps) => Some(i64::try_from(steps).map_err(|_| {
+            Error::invalid_argument(format!(
+                "max_episode_steps must be <= {}, got {steps}",
+                i64::MAX
+            ))
+        })?),
+        None => None,
+    };
+    if max_episode == Some(Duration::ZERO) {
+        return Err(Error::invalid_argument(
+            "max_episode_seconds must be > 0, got 0.0",
+        ));
+    }
+    Ok(Caps {
+        max_episode_steps,
+        max_episode_seconds: max_episode
+            .filter(|cap| *cap != Duration::MAX)
+            .map(|cap| cap.as_secs_f64()),
+    })
+}
+
+/// `prefetch_lead` within the runtime's `u32` bound.
+pub(crate) fn check_prefetch(prefetch_lead: u64) -> Result<u32> {
+    u32::try_from(prefetch_lead).map_err(|_| {
+        Error::invalid_argument(format!(
+            "prefetch_lead must be <= {}, got {prefetch_lead}",
+            u32::MAX
+        ))
+    })
+}

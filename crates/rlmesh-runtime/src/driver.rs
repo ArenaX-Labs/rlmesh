@@ -194,7 +194,7 @@ pub trait RuntimeModel: Send + Sync {
 /// empty plan waits for the next event (a step or reset completing) — the
 /// driver forces a full plan when nothing else is in flight, so a scheduler
 /// cannot stall the route.
-pub trait PredictScheduler: Send {
+pub trait PredictScheduler: Send + Sync {
     fn plan(&mut self, waiting: &[usize], busy: usize) -> Vec<usize>;
 }
 

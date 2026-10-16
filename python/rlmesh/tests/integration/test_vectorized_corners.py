@@ -181,7 +181,7 @@ def test_run_refuses_a_chunk_horizon_on_a_vector_env() -> None:
         for k in ("predict", "predict_batch", "predict_chunk", "predict_chunk_batch")
     }
     env = adapt.tag(VecEnv(), _tags(), validate=False)
-    with pytest.raises(RuntimeError, match="execution_horizon=2 cannot be combined"):
+    with pytest.raises(ValueError, match="execution_horizon=2 cannot be combined"):
         _policy_cls(calls, [])().run(env, episodes=2, execution_horizon=2)
     assert calls["predict_chunk_batch"] == 0
 
@@ -237,7 +237,7 @@ def test_vectorized_chunked_route_is_refused_before_resolve() -> None:
     env = VecEnv()
     server = _serve_env(env)
     try:
-        with pytest.raises(RuntimeError, match="num_envs=2"):
+        with pytest.raises(ValueError, match="num_envs=2"):
             _policy_cls(calls, [])()._run_local_for_episodes(
                 server.address, episodes=1, execution_horizon=2
             )
