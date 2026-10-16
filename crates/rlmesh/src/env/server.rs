@@ -145,6 +145,7 @@ struct Shared {
     id: u64,
     address: String,
     contract: EnvContract,
+    token: Option<String>,
     shutdown: ShutdownTrigger,
     state: Mutex<State>,
     /// A serve thread nobody waits on any more (a dropped `serve_async`,
@@ -190,9 +191,10 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|err| err.into_inner())
 }
 
-/// R-16's condition: the thread is polling a tokio task.
+/// R-16's condition: the thread is polling a tokio task or a library
+/// driver segment.
 pub(crate) fn in_async_context() -> bool {
-    tokio::task::try_id().is_some()
+    crate::run::drive::in_async_context()
 }
 
 /// A blocking call made from async code fails with the RuntimeError class
@@ -209,7 +211,7 @@ pub(crate) fn refuse_in_async_context(call: &str) -> Result<()> {
 impl EnvServer {
     /// Serve one env: Python's `EnvServer(env, ...)`.
     pub fn new<E: Env + Send + 'static>(env: E, options: EnvServerOptions) -> Result<EnvServer> {
-        Self::build(Served::Lanes(vec![Box::new(env)]), options, None)
+        Self::build(Served::Lanes(vec![Box::new(env)]), options, None, false)
     }
 
     /// Serve `envs` as the lanes of one `num_envs = N` endpoint, each on its
@@ -227,6 +229,7 @@ impl EnvServer {
             ),
             options,
             None,
+            false,
         )
     }
 
@@ -236,7 +239,7 @@ impl EnvServer {
         env: V,
         options: EnvServerOptions,
     ) -> Result<EnvServer> {
-        Self::build(Served::Vector(Box::new(env)), options, None)
+        Self::build(Served::Vector(Box::new(env)), options, None, false)
     }
 
     /// A factory serve's server: the edition was resolved by the caller.
@@ -245,7 +248,7 @@ impl EnvServer {
         options: EnvServerOptions,
         publish: Publish,
     ) -> Result<EnvServer> {
-        Self::build(Served::Lanes(envs), options, Some(publish))
+        Self::build(Served::Lanes(envs), options, Some(publish), true)
     }
 
     pub(crate) fn vector_resolved(
@@ -253,17 +256,45 @@ impl EnvServer {
         options: EnvServerOptions,
         publish: Publish,
     ) -> Result<EnvServer> {
-        Self::build(Served::Vector(env), options, Some(publish))
+        Self::build(Served::Vector(env), options, Some(publish), true)
+    }
+
+    /// The loopback server a run or session stands up in front of a local
+    /// env: bound on `127.0.0.1`, publishing nothing, never closing the env
+    /// (its caller does) and taking the caller's resolved edition.
+    pub(crate) fn loopback(
+        env: crate::run::LoopbackEnv,
+        edition: Option<String>,
+    ) -> Result<EnvServer> {
+        let options = EnvServerOptions {
+            options: Some(ServeOptions {
+                workflow_edition: edition,
+                drain_timeout: Some(Duration::from_millis(100)),
+                ..Default::default()
+            }),
+            close_env_on_shutdown: false,
+            ..Default::default()
+        };
+        let served = match env {
+            crate::run::LoopbackEnv::Env(env) => Served::Lanes(vec![env]),
+            crate::run::LoopbackEnv::Vector(env) => Served::Vector(env),
+        };
+        Self::build(served, options, None, true)
+    }
+
+    /// The endpoint token this server checks, if any.
+    pub(crate) fn token(&self) -> Option<&str> {
+        self.shared.token.as_deref()
     }
 
     /// `factory`: a factory serve's publication, whose edition the caller
-    /// resolved.
+    /// resolved; `resolved_by_caller` also covers a run's loopback.
     fn build(
         served: Served,
         options: EnvServerOptions,
         factory: Option<Publish>,
+        resolved_by_caller: bool,
     ) -> Result<EnvServer> {
-        let resolved_by_caller = factory.is_some();
         // Step 1: at least one lane (the traits guarantee the spaces).
         let mut served = match served {
             Served::Lanes(lanes) if lanes.is_empty() => {
@@ -365,6 +396,7 @@ impl EnvServer {
         // Step 8: the endpoint token, before binding.
         let ext = options.ext.clone().unwrap_or_default();
         let token = env_endpoint_token(ext.token.clone())?;
+        let checked_token = token.clone().filter(|token| !token.is_empty());
         let mut peer_info_extra: BTreeMap<String, String> = ext.peer_info_extra.clone();
         match &factory {
             // A factory serve's describe is best-effort (step 5).
@@ -414,6 +446,7 @@ impl EnvServer {
                 id: NEXT_SERVER.fetch_add(1, Ordering::Relaxed),
                 address,
                 contract,
+                token: checked_token,
                 shutdown: ShutdownTrigger::new(),
                 state: Mutex::new(State::Ready(Box::new(Resources {
                     served,

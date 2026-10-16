@@ -3,7 +3,7 @@ from __future__ import annotations
 import io
 import threading
 import time
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pytest
@@ -525,3 +525,38 @@ def test_step_hz_paces_steps_without_bursting() -> None:
     time.sleep(0.1)  # a slow step: the schedule restarts instead of bursting
     assert driver.pace() == 0.0
     assert ViewerDriver(View()).pace() == 0.0
+
+
+@pytest.mark.parametrize(
+    "port", ["+9000", "9_000", "90 00", "\u0669\u0660\u0660\u0660"]
+)
+def test_resolve_view_takes_only_ascii_digits_for_the_port(port: str) -> None:
+    with pytest.raises(ValueError, match="invalid view port"):
+        resolve_view(f"http:{port}")
+
+
+def test_run_with_a_local_model_takes_view_false_as_none() -> None:
+    import rlmesh
+
+    class _Env:
+        def __init__(self) -> None:
+            from rlmesh import spaces
+
+            self.observation_space = spaces.Discrete(1)
+            self.action_space = spaces.Discrete(1)
+
+        def reset(self, *, seed: object = None, options: object = None) -> Any:
+            return 0, {}
+
+        def step(self, action: object) -> Any:
+            return 0, 1.0, True, False, {}
+
+        def close(self) -> None:
+            pass
+
+    with pytest.raises(TypeError, match="session\\(\\) option"):
+        rlmesh.run(rlmesh.Model(lambda obs: 0), _Env(), view=True)
+    with pytest.raises(TypeError, match="view must be"):
+        rlmesh.run(rlmesh.Model(lambda obs: 0), _Env(), view=cast("Any", 3))
+    result = rlmesh.run(rlmesh.Model(lambda obs: 0), _Env(), view=False)
+    assert result.num_episodes == 1

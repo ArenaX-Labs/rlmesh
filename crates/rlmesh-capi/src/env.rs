@@ -22,12 +22,13 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 
 use async_trait::async_trait;
+use rlmesh::binding::CancellationToken;
 use rlmesh::binding::TRIAL_INDEX_OPTION;
 use rlmesh::binding::env::{
     BoundWireEnvServer as BoundEnvServer, CloseRequest, CloseResult, Env, RenderRequest,
     RenderResult, ResetRequest, ResetResult, StepRequest, StepResult, WireEnvServer as EnvServer,
 };
-use rlmesh::{BindAddress, CancellationToken, ENV_RESET_OPTIONS_KEY};
+use rlmesh::{BindAddress, ENV_RESET_OPTIONS_KEY};
 use rlmesh_adapters::v1::{ENV_METADATA_KEY, EnvTags, SpaceView, join, reject_unknowns_env};
 use rlmesh_spaces::errors::EnvRuntimeError;
 use rlmesh_spaces::{EnvContract, MetaMap, MetaValue, RenderFrame, SpaceSpec, SpaceValue};

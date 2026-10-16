@@ -6,7 +6,9 @@ import contextlib
 import contextvars
 import functools
 import inspect
+import math
 import os
+import threading
 import warnings
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import (
@@ -610,6 +612,8 @@ class ModelBase(Generic[ObsT, ActT]):
         # The model's one call gate: every corner and hook call, from every
         # session, run and serve on this model, runs through it one at a time.
         self._calls = ModelCalls()
+        #: Held while a run drives this model (RUN-9).
+        self._run_slot = threading.Lock()
         self._bridge.ensure_available()
 
         # A Model subclass overrides at least one predict corner (plus optionally
@@ -1219,8 +1223,8 @@ class ModelBase(Generic[ObsT, ActT]):
         built-in bound as :meth:`Session.run <rlmesh.Session.run>`). Explicit
         seeds and caps need the runtime to own resets, so they are refused
         before any episode starts on an autoresetting vector env (drive it
-        with ``episodes``; seeds on a driver-reset vector env must be a
-        multiple of ``num_envs``). Every episode walks a trial
+        with ``episodes``; on a driver-reset vector env seeds are consumed one
+        per episode start, in any count). Every episode walks a trial
         ordinal, ``trial_index_base + i`` for episode ``i``: the runtime
         delivers it as ``reset(options={"trial_index": ...})`` to an env that
         declared the key in :attr:`EnvFactory.reset_options
@@ -1262,10 +1266,60 @@ class ModelBase(Generic[ObsT, ActT]):
         (``view=``) is a :meth:`session` option.
         """
         self._calls.check_open("run()")
-        if execution_horizon < 1:
-            raise ValueError(f"execution_horizon must be >= 1, got {execution_horizon}")
-        if prefetch_lead < 0:
-            raise ValueError(f"prefetch_lead must be >= 0, got {prefetch_lead}")
+        # One run at a time (RUN-9): a second run while one is in progress
+        # would share this model's per-run state, so it fails at once.
+        if not self._run_slot.acquire(blocking=False):
+            raise RuntimeError(
+                "run() is already in progress on this model; a model runs one run "
+                "at a time"
+            )
+        try:
+            return self._run_holding_slot(
+                env_or_address,
+                seeds=seeds,
+                episodes=episodes,
+                max_episode_steps=max_episode_steps,
+                max_episode_seconds=max_episode_seconds,
+                hooks=hooks,
+                instruction=instruction,
+                close_env=close_env,
+                trust_entrypoints=trust_entrypoints,
+                execution_horizon=execution_horizon,
+                prefetch_lead=prefetch_lead,
+                trial_index_base=trial_index_base,
+                workflow_edition=workflow_edition,
+            )
+        finally:
+            self._run_slot.release()
+
+    def _run_holding_slot(
+        self,
+        env_or_address: LocalEnvTarget,
+        *,
+        seeds: Sequence[int] | None = None,
+        episodes: int | None = None,
+        max_episode_steps: int | None = None,
+        max_episode_seconds: float | None = None,
+        hooks: RunHooks | None = None,
+        instruction: str | None = None,
+        close_env: bool = False,
+        trust_entrypoints: bool | None = None,
+        execution_horizon: int = 1,
+        prefetch_lead: int = 0,
+        trial_index_base: int = 0,
+        workflow_edition: str | None = None,
+    ) -> RunResult:
+        """:meth:`run`'s body, holding the model's run slot."""
+        from ._eval import (
+            check_episode_caps,
+            check_execution_horizon,
+            check_prefetch_lead,
+        )
+
+        # Everything the options alone decide fails before anything dials.
+        check_execution_horizon(execution_horizon, self._native_chunk())
+        check_episode_caps(max_episode_steps, max_episode_seconds)
+        check_prefetch_lead(prefetch_lead)
         if trial_index_base < 0:
             raise ValueError(f"trial_index_base must be >= 0, got {trial_index_base}")
         declared_edition = self._declared_workflow_edition(workflow_edition)
@@ -1309,7 +1363,13 @@ class ModelBase(Generic[ObsT, ActT]):
                     episodes=episodes,
                     seeds=seeds,
                     max_episode_steps=max_episode_steps,
-                    max_episode_seconds=max_episode_seconds,
+                    # ``inf`` is no cap, as None is (a NEXT_STEP env takes both).
+                    max_episode_seconds=(
+                        None
+                        if max_episode_seconds is not None
+                        and math.isinf(max_episode_seconds)
+                        else max_episode_seconds
+                    ),
                     close_env=close_env,
                     execution_horizon=execution_horizon,
                     prefetch_lead=prefetch_lead,
@@ -1902,7 +1962,10 @@ def run(
     from ._eval import RANDOM_SAMPLE
 
     if model is not RANDOM_SAMPLE and not _served_handle(model):
-        if view is not None:
+        from ._view import resolve_view
+
+        # False is "no viewer", as None is; a wrong type stays a TypeError.
+        if resolve_view(view) is not None:
             raise TypeError(
                 "view is a session() option for a local model: use "
                 "model.session(env, view=...).run(...) for it."
@@ -1935,6 +1998,13 @@ def run(
             "served model or RANDOM_SAMPLE runs through the Python session loop, "
             "which does not prefetch. Remove prefetch_lead or run a local Model."
         )
+    from ._eval import check_episode_caps, resolve_episode_budget
+
+    # What the options alone decide fails before the session dials anything.
+    resolve_episode_budget(episodes, seeds)
+    check_episode_caps(max_episode_steps, max_episode_seconds)
+    if trial_index_base < 0:
+        raise ValueError(f"trial_index_base must be >= 0, got {trial_index_base}")
     sess = session(
         model,
         env,

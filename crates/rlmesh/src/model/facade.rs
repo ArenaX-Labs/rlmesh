@@ -643,6 +643,17 @@ pub(crate) struct Shared {
     worker: ThreadId,
     life: Arc<Life>,
     refuse: AtomicBool,
+    /// RUN-9: set while a run drives this model.
+    running: AtomicBool,
+}
+
+/// Holds a model's run slot; released on drop.
+pub(crate) struct RunSlot(Arc<Shared>);
+
+impl Drop for RunSlot {
+    fn drop(&mut self) {
+        self.0.running.store(false, Ordering::SeqCst);
+    }
 }
 
 fn closed_error() -> Error {
@@ -698,6 +709,7 @@ impl Shared {
                 changed: Condvar::new(),
             }),
             refuse: AtomicBool::new(false),
+            running: AtomicBool::new(false),
         }))
     }
 
@@ -749,6 +761,18 @@ impl Shared {
         })?;
         rx.recv()
             .map_err(|_| Error::Internal("the model call was dropped".to_string()))?
+    }
+
+    /// Claim the model's one run slot (RUN-9): a second run while one is in
+    /// progress fails at once with the `RuntimeError` class.
+    pub(crate) fn claim_run(self: &Arc<Self>) -> Result<RunSlot> {
+        if self.running.swap(true, Ordering::SeqCst) {
+            return Err(Error::Runtime(
+                "run() is already in progress on this model; a model runs one run at a time"
+                    .to_string(),
+            ));
+        }
+        Ok(RunSlot(Arc::clone(self)))
     }
 
     /// Refuse a new run or serve once `close()` has begun.
@@ -1187,6 +1211,7 @@ pub(crate) async fn run_local(
     let shared = model.shared();
     shared.check_not_reentrant("run")?;
     shared.admit()?;
+    let _slot = shared.claim_run()?;
     if options.execution_horizon > 1 && !shared.decl.has_chunk() {
         crate::warnings::warn(
             crate::WarningCategory::UserWarning,

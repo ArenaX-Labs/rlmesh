@@ -19,13 +19,26 @@ use super::wire::{
 };
 use crate::{Error, Result, binding::spaces};
 
+/// One native run's resolved inputs.
+pub(crate) struct LocalRun {
+    pub(crate) address: String,
+    pub(crate) token: String,
+    /// The resolved budget (at least 1).
+    pub(crate) episodes: u64,
+    pub(crate) base_seed: Option<i64>,
+    pub(crate) seeds: Vec<i64>,
+    pub(crate) trial_index_base: Option<u64>,
+    pub(crate) max_episode_steps: Option<i64>,
+    pub(crate) max_episode_seconds: Option<f64>,
+    pub(crate) close_env: bool,
+    pub(crate) execution_horizon: u32,
+    pub(crate) prefetch_lead: u32,
+    pub(crate) workflow_edition: Option<String>,
+}
+
 /// Connect to the env, resolve the handler's route, and drive the runtime
-/// loop to completion. The route resolves before driving, exactly as the
-/// served path does at `ResolveAdapter`: that arms the spec'd engine path
-/// (adapter, per-episode frame buffers, batched/chunked predict corners) and
-/// pins the execution horizon — without it every predict would fall into the
-/// spec-less branch. The handler is dropped when the run ends, so there is no
-/// release step.
+/// loop to completion (the binding's run path). The run borrows the handler;
+/// a zero-episode budget never dials the env.
 pub(super) async fn run_local<H>(
     handler: &mut H,
     options: super::worker::RunLocalOptions,
@@ -38,16 +51,47 @@ where
     // Python's budget (`resolve_episode_budget`): one episode by default, one
     // per seed when only seeds are given. Zero runs nothing, so the env is
     // never dialed -- exactly Python's `run(episodes=0)`.
-    let max_episodes = options.episode_budget()?;
-    if max_episodes == 0 {
+    let episodes = options.episode_budget()?;
+    if episodes == 0 {
         return Ok(empty_report());
     }
-    let mut env = rlmesh_grpc::EnvClient::connect_with_token(
-        &options.env_address.to_string(),
-        &options.token,
-    )
-    .await
-    .map_err(Error::from_grpc)?;
+    let run = LocalRun {
+        address: options.env_address.to_string(),
+        token: options.token,
+        episodes,
+        base_seed: options.base_seed,
+        seeds: options.episode_seeds,
+        trial_index_base: options.trial_index_base,
+        max_episode_steps: options.max_episode_steps,
+        max_episode_seconds: options.max_episode_seconds,
+        close_env: options.close_env,
+        execution_horizon: options.execution_horizon,
+        prefetch_lead: options.prefetch_lead,
+        workflow_edition: options.workflow_edition,
+    };
+    drive_local(handler, run, cancellation, hooks, &|_| {}).await
+}
+
+/// Connect to the env, resolve the handler's route, and drive the runtime
+/// loop to completion. The route resolves before driving, exactly as the
+/// served path does at `ResolveAdapter`: that arms the spec'd engine path
+/// (adapter, per-episode frame buffers, batched/chunked predict corners) and
+/// pins the execution horizon -- without it every predict would fall into the
+/// spec-less branch. `connected` sees the env's contract once the handshake
+/// answered, before the route resolves.
+pub(crate) async fn drive_local<H>(
+    handler: &mut H,
+    options: LocalRun,
+    cancellation: tokio_util::sync::CancellationToken,
+    hooks: Arc<dyn RuntimeHooks>,
+    connected: &(dyn Fn(&spaces::EnvContract) + Send + Sync),
+) -> Result<RuntimeReport>
+where
+    H: ModelHandler + 'static,
+{
+    let mut env = rlmesh_grpc::EnvClient::connect_with_token(&options.address, &options.token)
+        .await
+        .map_err(Error::from_grpc)?;
     // The runtime tier's WANT rides this leg's handshake and caps the env-leg
     // negotiation, so it has to be declared before the handshake goes out.
     env.declare_workflow_edition(options.workflow_edition.clone());
@@ -69,6 +113,7 @@ where
                 .to_string(),
         ));
     }
+    connected(&env_contract);
     // The runtime is the env-id authority (R1); for the in-process path mint a
     // UUIDv7 container id. The human env name lives on the SDK's own contract.
     let env_id = crate::mint_id();
@@ -78,8 +123,9 @@ where
     // Action chunking across a lockstep vector env would replay one whole-batch
     // chunk for every lane, and a lane that ends mid-chunk invalidates the buffer
     // for all of them. A lane endpoint replays per lane, so it is fine there.
+    // The options and the env decide it together: ValueError at connect (RUN-P1).
     if num_envs > 1 && !subset_step && options.execution_horizon > 1 {
-        return Err(Error::Internal(format!(
+        return Err(Error::invalid_argument(format!(
             "execution_horizon={} cannot be combined with a lockstep vector env (num_envs={num_envs}): \
              chunk replay is whole-batch, so one lane's episode end discards every lane's \
              buffered frames. Use num_envs=1, a lane endpoint, or execution_horizon=1.",
@@ -116,8 +162,8 @@ where
         env_contract: env_contract_to_proto(&env_contract),
         num_envs,
         base_seed: options.base_seed,
-        episode_seeds: options.episode_seeds,
-        max_episodes: Some(max_episodes),
+        episode_seeds: options.seeds,
+        max_episodes: Some(options.episodes),
         trial_index_base: options.trial_index_base,
         max_episode_steps: options.max_episode_steps,
         max_episode_seconds: options.max_episode_seconds,
@@ -140,7 +186,7 @@ where
 }
 
 /// The report of a zero-episode run: nothing ran, nothing was measured.
-fn empty_report() -> RuntimeReport {
+pub(crate) fn empty_report() -> RuntimeReport {
     RuntimeReport {
         session_id: format!("local-{}", std::process::id()),
         env_id: String::new(),
@@ -212,6 +258,9 @@ fn run_error(error: RuntimeError) -> Error {
         },
         RuntimeError::OperationTimeout { timeout, .. } => Error::Timeout(timeout),
         RuntimeError::Protocol(_) => Error::Protocol(message),
+        // A spec the options and the env cannot run together (autoreset,
+        // vector-env refusals): ValueError at connect (RUN-P1).
+        RuntimeError::InvalidSpec(_) => Error::invalid_argument(message),
         _ => Error::Internal(message),
     }
 }

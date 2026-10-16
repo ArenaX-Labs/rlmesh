@@ -15,6 +15,11 @@
 //! - **Serve a model.** Implement [`Policy`] (or write a predict closure),
 //!   build a [`Model`] from it, and host it with [`Model::serve`].
 //!
+//! - **Run a model against an env.** [`Model::run`] (or [`run`]) drives
+//!   episodes on the native loop and returns a [`RunResult`]; [`RunHooks`]
+//!   observe it. [`Model::session`] (or [`session`]) returns a [`Session`]
+//!   to drive by hand.
+//!
 //! Use [`RemoteEnv`] when you want to step an environment server directly.
 //!
 //! # Options structs
@@ -125,6 +130,7 @@ mod error;
 pub mod ext;
 mod model;
 pub mod prelude;
+mod run;
 pub mod serve_options;
 pub mod spaces;
 pub mod specs;
@@ -164,18 +170,15 @@ pub use model::{
     predict_seed, with_context,
 };
 #[doc(no_inline)]
-pub use rlmesh_runtime::telemetry;
-#[doc(no_inline)]
-pub use rlmesh_runtime::{
-    ActionReceivedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, HookError, NoopRuntimeHooks,
-    ObservationEmittedEvent, RuntimeHooks, StepCompletedEvent,
+pub use rlmesh_runtime::ENV_RESET_OPTIONS_KEY;
+pub use run::{
+    EnvTarget, EpisodeResult, ModelTarget, RANDOM_SAMPLE, RandomSample, RunContext, RunHooks,
+    RunOptions, RunResult, Session, SessionOptions, SessionRunOptions, StepEvent, TelemetryRow,
+    run, run_async, session, session_async,
 };
-#[doc(no_inline)]
-pub use rlmesh_runtime::{ENV_RESET_OPTIONS_KEY, PeerCeiling, RuntimeReport};
 pub use serve_options::{ENV_ENDPOINT_TOKEN_ENV, MODEL_ENDPOINT_TOKEN_ENV, ServeOptions};
 pub use specs::EnvContract;
 pub use tensor::Tensor;
-pub use tokio_util::sync::CancellationToken;
 pub use value::{InfoDict, Kwargs, Metadata, MetadataIter, Value, ValueKind};
 pub use warnings::{Warning, WarningCategory, WarningHandler, set_warning_handler};
 

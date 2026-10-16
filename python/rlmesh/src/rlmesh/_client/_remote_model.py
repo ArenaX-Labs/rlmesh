@@ -118,6 +118,12 @@ class RemoteModelBase(Generic[ObsT, ActT]):
             )
         from .._editions import resolve_workflow_edition
         from .._load_native import load_native
+        from .._models._eval import check_execution_horizon
+        from .._models._view import resolve_view
+
+        # What the options alone decide fails before the env or model is dialed.
+        check_execution_horizon(execution_horizon, None)
+        view = resolve_view(view)
 
         # This handle is the runtime tier of the session it opens, so the model
         # leg carries the call, process, or project declaration. The env's

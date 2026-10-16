@@ -2,10 +2,10 @@
 //! [`Model`] handle, the per-episode context, and the engine plumbing the
 //! bindings drive (re-exported through `binding`).
 
-mod bridge;
+pub(crate) mod bridge;
 mod context;
 pub(crate) mod engine;
-mod facade;
+pub(crate) mod facade;
 pub(crate) mod handler;
 pub(crate) mod local;
 mod policy;

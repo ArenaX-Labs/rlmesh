@@ -24,9 +24,18 @@ use crate::{DType, Error, Metadata, Result, Tensor, Value};
 /// The engine handler for one model: its predict hole and its route
 /// resolver (always present, so every route resolves, spec'd or not).
 pub(crate) fn engine_handler(shared: Arc<Shared>) -> AdaptedModelHandler {
+    let trust = shared.decl.trust_entrypoints;
+    engine_handler_trusting(shared, trust)
+}
+
+/// [`engine_handler`] with a run's or session's `trust_entrypoints`.
+pub(crate) fn engine_handler_trusting(
+    shared: Arc<Shared>,
+    trust_entrypoints: bool,
+) -> AdaptedModelHandler {
     let resolver = Arc::new(SpecResolver {
         spec: shared.decl.spec.clone(),
-        trust_entrypoints: shared.decl.trust_entrypoints,
+        trust_entrypoints,
     });
     AdaptedModelHandler::new(
         Arc::new(ModelPredict {
