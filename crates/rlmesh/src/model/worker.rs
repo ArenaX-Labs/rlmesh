@@ -32,7 +32,7 @@ impl<H> ModelWorker<H> {
 ///
 /// Build with [`RunLocalOptions::new`] (or `RunLocalOptions::parse` from a
 /// string address) and the chaining setters covering the run axes:
-/// `for_episodes` (run a bounded number of episodes), `base_seed` /
+/// `for_episodes` (the episode count), `base_seed` /
 /// `episode_seeds` (deterministic env seeding), the episode caps, and
 /// `execution_horizon` (action chunking) with `prefetch_lead` (async
 /// inference over the chunk replay).
@@ -43,14 +43,21 @@ pub struct RunLocalOptions {
     /// Bearer token sent on every request to that environment server;
     /// empty/`""` connects unauthenticated.
     pub token: String,
-    /// Stop after this many episodes; `None` runs until the env ends.
+    /// The exact number of episodes the run executes, resolved like Python's
+    /// `run(episodes=...)` (see [`RunLocalOptions::episode_budget`]): `None`
+    /// runs one episode, or one per seed when `episode_seeds` is non-empty;
+    /// `Some(0)` runs nothing (the env is not even dialed); `Some(n)` with
+    /// non-empty `episode_seeds` must match the seed count. There is no
+    /// "until the env ends" budget.
     pub max_episodes: Option<u64>,
     /// Base seed threaded into the runtime session for deterministic env
     /// reset seeding; `None` leaves seeding to the env.
     pub base_seed: Option<i64>,
     /// Explicit per-episode reset seeds, consumed in episode-start order.
     /// Overrides `base_seed` when non-empty; requires an env with autoreset
-    /// disabled (see `RuntimeSessionSpec::episode_seeds`).
+    /// disabled (see `RuntimeSessionSpec::episode_seeds`). Non-empty seeds set
+    /// the episode budget when `max_episodes` is `None` (one episode per seed)
+    /// and must match it otherwise; empty means "no seeds given".
     pub episode_seeds: Vec<i64>,
     /// First trial ordinal this run's episodes walk; `None` walks from 0. The
     /// runtime mints one ordinal per episode and delivers it as
@@ -66,9 +73,9 @@ pub struct RunLocalOptions {
     pub max_episode_seconds: Option<f64>,
     /// Ask the env to close when the run ends.
     pub close_env: bool,
-    /// Fire the handler's `on_close` when the run ends (the default: the
-    /// worker is consumed, so the model is done). Off when the handler
-    /// outlives the run -- a borrowed model the caller closes itself.
+    /// Fire the handler's `on_close` when the run ends. Off by default: like
+    /// Python's `Model.run`, a run borrows the model and the caller closes it.
+    /// Turn it on when the run is the model's last use and should close it.
     pub close_model: bool,
     /// How many actions of each predicted chunk the runtime executes before
     /// re-planning (1 = no chunking). Pinned onto the route at resolve, exactly
@@ -94,7 +101,7 @@ pub struct RunLocalOptions {
 }
 
 impl RunLocalOptions {
-    /// Run against `env_address` until the environment ends.
+    /// Run one episode against `env_address` (Python's default budget).
     pub fn new(env_address: ConnectAddress) -> Self {
         Self {
             env_address,
@@ -106,7 +113,7 @@ impl RunLocalOptions {
             max_episode_steps: None,
             max_episode_seconds: None,
             close_env: false,
-            close_model: true,
+            close_model: false,
             execution_horizon: 1,
             prefetch_lead: 0,
             workflow_edition: None,
@@ -125,10 +132,37 @@ impl RunLocalOptions {
         self
     }
 
-    /// Stop after `max_episodes` episodes.
+    /// Run exactly `max_episodes` episodes (0 runs nothing).
     pub fn for_episodes(mut self, max_episodes: u64) -> Self {
         self.max_episodes = Some(max_episodes);
         self
+    }
+
+    /// The exact number of episodes this run executes, resolved like Python's
+    /// `resolve_episode_budget`: one when neither `max_episodes` nor
+    /// `episode_seeds` is given, the seed count when only seeds are, and
+    /// `max_episodes` otherwise, which must then equal the seed count (a seed
+    /// per episode, no unseeded tail). Zero runs nothing.
+    ///
+    /// # Errors
+    ///
+    /// `max_episodes` and a non-empty `episode_seeds` whose counts differ.
+    pub fn episode_budget(&self) -> Result<u64> {
+        let seeds = self.episode_seeds.len() as u64;
+        match self.max_episodes {
+            None if seeds > 0 => Ok(seeds),
+            None => Ok(1),
+            Some(episodes) if seeds > 0 && seeds != episodes => {
+                // Python raises ValueError here; the facade has no
+                // invalid-argument variant yet (see
+                // docs/specs/language-parity/rules.md R-21).
+                Err(Error::Internal(format!(
+                    "max_episodes={episodes} does not match len(episode_seeds)={seeds}: \
+                     pass one seed per episode, or only one of the two"
+                )))
+            }
+            Some(episodes) => Ok(episodes),
+        }
     }
 
     /// Set the base seed used for deterministic env reset seeding.
@@ -186,7 +220,8 @@ impl RunLocalOptions {
         self
     }
 
-    /// Keep the handler open after the run (see [`close_model`](Self::close_model)).
+    /// Fire the handler's `on_close` when the run ends (off by default: the
+    /// run borrows the model; see [`close_model`](Self::close_model)).
     pub fn close_model(mut self, close_model: bool) -> Self {
         self.close_model = close_model;
         self
@@ -263,9 +298,9 @@ impl From<BindAddress> for ServeModelOptions {
 impl<H: ModelHandler + 'static> ModelWorker<H> {
     /// Run the handler in-process against a remote environment (blocking).
     ///
-    /// Drives the model/env loop on a private Tokio runtime until the env ends
-    /// (or `options.max_episodes` episodes complete). Returns the session's
-    /// [`RuntimeReport`].
+    /// Drives the model/env loop on a private Tokio runtime for the run's
+    /// episode budget (see [`RunLocalOptions::episode_budget`]; one episode by
+    /// default). Returns the session's [`RuntimeReport`].
     ///
     /// # Panics
     ///

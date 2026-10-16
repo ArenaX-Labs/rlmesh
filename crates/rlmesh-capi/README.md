@@ -140,18 +140,23 @@ Each `RLMeshEpisode` row carries the episode's `id` and reset `seed` (when
 under that id, then +1 per predict), and `predict_seed`, a reproducible mix of
 the episode seed and that ordinal (`rlmesh.predict_seed` in the SDK; meaningful
 only when `seeded`). The capi counts these per episode id and drops the counter
-when the episode ends, holding at most 4096 live episodes — past that the least
-recently predicted one is evicted through `on_episode_end`.
+when the episode ends, holding at most 65,536 live episodes as the Python SDK
+does. It never evicts one: a predict that would start a new episode past that
+fails (`RLMESH_ERR_INTERNAL`, where Python raises `RuntimeError`) before the
+callback runs.
 
 Optional hooks: `on_episode_end(env_id, episode_id)` when the runtime drops an
 episode (`episode_id == NULL` means every episode of that env), and `on_close`
-once at shutdown. Callbacks run on a worker thread; `user_data` must be safe to
+once per handle: when a serve stops, or at `rlmesh_model_free`. A run borrows
+the model and never closes it, as Python's `Model.run` does. Callbacks run on a worker thread; `user_data` must be safe to
 use from a thread other than the one that created it, and a callback must not
 re-enter its own model handle. `rlmesh_model_run_local` fills an optional
 `RLMeshRunReport`; `rlmesh_model_cancel` stops a blocking run/serve from another
 thread.
 
-`RLMeshRunOptions` bounds and seeds a run: `max_episodes`, `base_seed` (when
+`RLMeshRunOptions` bounds and seeds a run: `max_episodes` (the exact episode
+count, as in the Python SDK's `run(episodes=...)`; 0 runs one episode, or one per
+seed when `episode_seeds` is given, never "until the env ends"), `base_seed` (when
 `seeded`) or explicit `episode_seeds`, the per-episode step/time caps,
 `execution_horizon`, and `trial_index_base` (when `trial_indexed`) — the first
 trial ordinal the episodes walk, delivered as `reset(options={"trial_index": k})`

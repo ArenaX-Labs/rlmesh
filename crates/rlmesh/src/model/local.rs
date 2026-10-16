@@ -35,6 +35,13 @@ pub(super) async fn run_local<H>(
 where
     H: ModelHandler + 'static,
 {
+    // Python's budget (`resolve_episode_budget`): one episode by default, one
+    // per seed when only seeds are given. Zero runs nothing, so the env is
+    // never dialed -- exactly Python's `run(episodes=0)`.
+    let max_episodes = options.episode_budget()?;
+    if max_episodes == 0 {
+        return Ok(empty_report());
+    }
     let mut env = rlmesh_grpc::EnvClient::connect_with_token(
         &options.env_address.to_string(),
         &options.token,
@@ -110,7 +117,7 @@ where
         num_envs,
         base_seed: options.base_seed,
         episode_seeds: options.episode_seeds,
-        max_episodes: options.max_episodes,
+        max_episodes: Some(max_episodes),
         trial_index_base: options.trial_index_base,
         max_episode_steps: options.max_episode_steps,
         max_episode_seconds: options.max_episode_seconds,
@@ -130,6 +137,22 @@ where
         .run_with_cancellation_reason(cancellation, "interrupted by the host (signal)")
         .await
         .map_err(run_error)
+}
+
+/// The report of a zero-episode run: nothing ran, nothing was measured.
+fn empty_report() -> RuntimeReport {
+    RuntimeReport {
+        session_id: format!("local-{}", std::process::id()),
+        env_id: String::new(),
+        total_steps: 0,
+        total_episodes: 0,
+        episodes: Vec::new(),
+        telemetry: rlmesh_runtime::telemetry::Snapshot {
+            horizon: rlmesh_runtime::telemetry::Horizon::Session,
+            rows: Vec::new(),
+        },
+        advisories: Vec::new(),
+    }
 }
 
 /// What the served env on the other end of `handshake` can decode.
