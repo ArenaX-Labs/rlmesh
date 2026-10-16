@@ -62,7 +62,7 @@ impl SmokeEnv {
 }
 
 #[async_trait]
-impl crate::Env for SmokeEnv {
+impl crate::binding::env::Env for SmokeEnv {
     fn observation_space(&self) -> &spaces::SpaceSpec {
         &self.obs_space
     }
@@ -172,7 +172,7 @@ async fn user_set_base_seed_reaches_the_env_reset_seeds() {
         let reset_seeds = Arc::new(Mutex::new(Vec::new()));
         let env = SmokeEnv::recording(Arc::clone(&reset_seeds));
         // Bind first so the listener is accepting before run_local connects.
-        let bound = crate::EnvServer::new(env)
+        let bound = crate::binding::env::WireEnvServer::new(env)
             .bind(BindAddress::Tcp {
                 host: "127.0.0.1".to_string(),
                 port: 0,
@@ -253,7 +253,7 @@ fn episode_budget_resolves_like_python() {
 /// A run with no explicit budget runs one episode, not "until the env ends".
 #[tokio::test]
 async fn run_local_defaults_to_one_episode() {
-    let bound = crate::EnvServer::new(SmokeEnv::new())
+    let bound = crate::binding::env::WireEnvServer::new(SmokeEnv::new())
         .bind(BindAddress::Tcp {
             host: "127.0.0.1".to_string(),
             port: 0,
@@ -279,7 +279,7 @@ async fn run_local_defaults_to_one_episode() {
 /// only when the caller asks with `close_model(true)`.
 #[tokio::test]
 async fn run_local_borrows_the_model_unless_asked_to_close_it() {
-    let bound = crate::EnvServer::new(SmokeEnv::new())
+    let bound = crate::binding::env::WireEnvServer::new(SmokeEnv::new())
         .bind(BindAddress::Tcp {
             host: "127.0.0.1".to_string(),
             port: 0,
@@ -382,7 +382,8 @@ fn run_local_and_serve_options_cover_all_axes() {
 
     let default_serve = ServeModelOptions::new(BindAddress::parse("tcp://0.0.0.0:1").unwrap());
     assert!(default_serve.token.is_empty());
-    assert_eq!(default_serve.serve, ServeOptions::default());
+    assert!(!default_serve.serve.allow_remote_shutdown);
+    assert_eq!(default_serve.predict_concurrency, None);
 }
 
 #[tokio::test]
@@ -1140,7 +1141,7 @@ async fn public_env_runtime_adapter_drives_a_remote_env_with_telemetry() {
     let env_server = tokio::spawn(async move {
         tonic::transport::Server::builder()
             .add_service(rlmesh_grpc::env::env_service(
-                crate::env::WireLaneAdapter::new(vec![SmokeEnv::new()]).unwrap(),
+                crate::binding::env::WireLaneAdapter::new(vec![SmokeEnv::new()]).unwrap(),
             ))
             .serve_with_incoming(TcpListenerStream::new(listener))
             .await
@@ -1220,7 +1221,7 @@ impl AutoresetVectorEnv {
 }
 
 #[async_trait]
-impl crate::VectorEnv for AutoresetVectorEnv {
+impl crate::binding::env::VectorEnv for AutoresetVectorEnv {
     fn observation_space(&self) -> &spaces::SpaceSpec {
         &self.obs_space
     }
@@ -1236,12 +1237,12 @@ impl crate::VectorEnv for AutoresetVectorEnv {
 
     async fn reset(
         &mut self,
-        _req: crate::VectorResetRequest,
-    ) -> std::result::Result<crate::VectorResetResult, spaces::EnvRuntimeError> {
+        _req: crate::binding::env::VectorResetRequest,
+    ) -> std::result::Result<crate::binding::env::VectorResetResult, spaces::EnvRuntimeError> {
         let n = self.terminal_after.len();
         self.lane_step = vec![0; n];
         self.pending = vec![false; n];
-        Ok(crate::VectorResetResult {
+        Ok(crate::binding::env::VectorResetResult {
             observations: (0..n).map(|_| Self::lane_obs()).collect(),
             info: None,
             episode_ids: Vec::new(),
@@ -1250,8 +1251,8 @@ impl crate::VectorEnv for AutoresetVectorEnv {
 
     async fn step(
         &mut self,
-        _req: crate::VectorStepRequest,
-    ) -> std::result::Result<crate::VectorStepResult, spaces::EnvRuntimeError> {
+        _req: crate::binding::env::VectorStepRequest,
+    ) -> std::result::Result<crate::binding::env::VectorStepResult, spaces::EnvRuntimeError> {
         let n = self.terminal_after.len();
         let mut rewards = vec![1.0; n];
         let mut terminated = vec![false; n];
@@ -1269,7 +1270,7 @@ impl crate::VectorEnv for AutoresetVectorEnv {
                 }
             }
         }
-        Ok(crate::VectorStepResult {
+        Ok(crate::binding::env::VectorStepResult {
             observations: (0..n).map(|_| Self::lane_obs()).collect(),
             rewards,
             terminated,
@@ -1290,8 +1291,8 @@ impl crate::VectorEnv for AutoresetVectorEnv {
     async fn close(
         &mut self,
         _req: spaces::CloseRequest,
-    ) -> std::result::Result<crate::VectorCloseResult, spaces::EnvRuntimeError> {
-        Ok(crate::VectorCloseResult::default())
+    ) -> std::result::Result<crate::binding::env::VectorCloseResult, spaces::EnvRuntimeError> {
+        Ok(crate::binding::env::VectorCloseResult::default())
     }
 }
 
@@ -1327,7 +1328,7 @@ async fn run_local_refuses_chunking_on_a_vector_env() {
     // lane's buffered frames. The served engine cannot see this (ResolveAdapter
     // carries no lane count), so `run_local` — where the handshake's num_envs and
     // the pinned horizon are both in scope — refuses the pairing before resolving.
-    let bound = crate::VectorEnvServer::new(AutoresetVectorEnv::new(vec![2, 3]))
+    let bound = crate::binding::env::WireVectorEnvServer::new(AutoresetVectorEnv::new(vec![2, 3]))
         .bind(BindAddress::Tcp {
             host: "127.0.0.1".to_string(),
             port: 0,
@@ -1362,7 +1363,7 @@ async fn next_step_episode_ids_round_trip_through_the_real_env_server() {
     // pushes them down, the env server adopts them and (under NEXT_STEP) rolls a
     // lane on autoreset, and the model sees the rolled ids — proving the
     // pending_roll push-down + adoption + echo + resolve loop works on the wire.
-    let bound = crate::VectorEnvServer::new(AutoresetVectorEnv::new(vec![2, 3]))
+    let bound = crate::binding::env::WireVectorEnvServer::new(AutoresetVectorEnv::new(vec![2, 3]))
         .bind(BindAddress::Tcp {
             host: "127.0.0.1".to_string(),
             port: 0,
@@ -1460,7 +1461,7 @@ async fn model_bind_resolves_port_zero_before_serving() {
 /// whether this build is sealed or a prerelease cohort.
 #[tokio::test]
 async fn a_declared_edition_no_peer_can_run_is_refused_at_the_env_handshake() {
-    let bound = crate::EnvServer::new(SmokeEnv::new())
+    let bound = crate::binding::env::WireEnvServer::new(SmokeEnv::new())
         .bind_with_options(
             BindAddress::Tcp {
                 host: "127.0.0.1".to_string(),
@@ -2029,9 +2030,9 @@ async fn bound_ordering_server(
             })
             .serve_options(ServeOptions {
                 allow_remote_shutdown: true,
-                predict_concurrency,
                 ..ServeOptions::default()
-            }),
+            })
+            .predict_concurrency(predict_concurrency),
         )
         .await
         .unwrap();
@@ -2613,68 +2614,6 @@ async fn model_server_refuses_compressed_requests_before_auth() {
     server.abort();
 }
 
-/// `ServeOptions::token` documents itself as the auth knob for an endpoint, so a
-/// model bound with the token set only there must reject an untokened client:
-/// `bind_async` resolves the effective token from both `ServeModelOptions::token`
-/// and the nested `ServeOptions::token`.
-#[tokio::test]
-async fn model_serve_options_token_is_enforced_by_the_server() {
-    let predicts = Arc::new(AtomicUsize::new(0));
-    let bound = ModelWorker::new(SmokeModel {
-        predicts: Arc::clone(&predicts),
-        closes: Arc::new(AtomicUsize::new(0)),
-    })
-    .bind_async(
-        ServeModelOptions::new(BindAddress::Tcp {
-            host: "127.0.0.1".to_string(),
-            port: 0,
-        })
-        // Only the nested ServeOptions carries the token; ServeModelOptions::token
-        // stays empty.
-        .serve_options(ServeOptions {
-            allow_remote_shutdown: true,
-            token: Some("serve-options-token".to_string()),
-            ..ServeOptions::default()
-        }),
-    )
-    .await
-    .unwrap();
-    let (port, server) = spawn_bound_server(bound);
-    let address = format!("tcp://127.0.0.1:{port}");
-    let env_contract = SmokeEnv::new().env_contract;
-
-    let error = crate::RemoteModel::connect(&address, env_contract.clone())
-        .await
-        .err()
-        .expect("an untokened client must be rejected when ServeOptions sets a token");
-    assert!(
-        error.to_string().contains("invalid route token"),
-        "expected an unauthenticated rejection, got {error}"
-    );
-
-    // The same token lets a client in, and its predict reaches the handler.
-    let mut model =
-        crate::RemoteModel::connect_with_token(&address, "serve-options-token", env_contract)
-            .await
-            .unwrap();
-    model.reset(None);
-    model
-        .predict(spaces::SpaceValue::Box(
-            spaces::Tensor::from_vec(vec![5u8], vec![1], spaces::DType::Uint8).unwrap(),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(predicts.load(Ordering::SeqCst), 1);
-    drop(model);
-
-    let mut shutdown_client = rlmesh_grpc::ModelClient::connect(&address, "serve-options-token")
-        .await
-        .unwrap();
-    shutdown_client.handshake().await.unwrap();
-    assert!(shutdown_client.shutdown("done").await.unwrap().accepted);
-    shutdown_and_join(server).await;
-}
-
 /// Run with a private environment in a subprocess: changing process-wide env
 /// vars in this parallel test suite could accidentally authenticate other servers.
 #[tokio::test]
@@ -2705,7 +2644,6 @@ async fn model_endpoint_environment_token_is_enforced() {
             .unwrap()
             .token("direct-token")
             .serve_options(ServeOptions {
-                token: Some("nested-token".to_string()),
                 allow_remote_shutdown: true,
                 ..ServeOptions::default()
             }),
@@ -2720,12 +2658,7 @@ async fn model_endpoint_environment_token_is_enforced() {
     .await
     .unwrap();
 
-    for token in [
-        None,
-        Some("wrong-token"),
-        Some("direct-token"),
-        Some("nested-token"),
-    ] {
+    for token in [None, Some("wrong-token"), Some("direct-token")] {
         let metadata = token.map(|token| {
             token
                 .parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
@@ -2787,15 +2720,16 @@ async fn model_endpoint_environment_token_is_enforced() {
 /// token-protected env server, so the env client must be built with it.
 #[tokio::test]
 async fn run_local_options_token_reaches_a_token_protected_env() {
-    let bound = crate::EnvServer::new(SmokeEnv::new())
-        .bind_with_options(
+    let bound = crate::binding::env::WireEnvServer::new(SmokeEnv::new())
+        .bind_with_ext(
             BindAddress::Tcp {
                 host: "127.0.0.1".to_string(),
                 port: 0,
             },
-            ServeOptions {
+            ServeOptions::default(),
+            crate::ext::EnvServerOptions {
                 token: Some("env-token".to_string()),
-                ..ServeOptions::default()
+                ..Default::default()
             },
         )
         .await
@@ -3022,7 +2956,7 @@ async fn served_legs_learn_this_builds_ceilings() {
     let env_server = tokio::spawn(async move {
         tonic::transport::Server::builder()
             .add_service(rlmesh_grpc::env::env_service(
-                crate::env::WireLaneAdapter::new(vec![SmokeEnv::new()]).unwrap(),
+                crate::binding::env::WireLaneAdapter::new(vec![SmokeEnv::new()]).unwrap(),
             ))
             .serve_with_incoming(TcpListenerStream::new(listener))
             .await

@@ -9,7 +9,8 @@ use pyo3::types::{PyAny, PyDict, PyTuple};
 use pyo3_stub_gen::derive::{gen_methods_from_python, gen_stub_pyclass};
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::inventory::submit;
-use rlmesh::{ConnectAddress, RemoteVectorEnv, VectorResetResult, VectorStepResult};
+use rlmesh::binding::env::{VectorResetResult, VectorStepResult};
+use rlmesh::{ConnectAddress, RemoteVectorEnv};
 use rlmesh_spaces::spaces::SpaceSpec;
 use rlmesh_spaces::{RenderFrame as NativeRenderFrame, RenderRequest as NativeRenderRequest};
 
@@ -257,7 +258,7 @@ impl ClientCore {
     ) -> PyResult<VectorResetResult> {
         let timeout_ms = Self::timeout_ms(timeout);
         self.run_rpc(py, timeout, move |client| {
-            Box::pin(client.reset(rlmesh::VectorResetRequest {
+            Box::pin(client.reset(rlmesh::binding::env::VectorResetRequest {
                 seeds,
                 options,
                 timeout_ms,
@@ -275,7 +276,7 @@ impl ClientCore {
     ) -> PyResult<VectorStepResult> {
         let timeout_ms = Self::timeout_ms(timeout);
         self.run_rpc(py, timeout, move |client| {
-            Box::pin(client.step(rlmesh::VectorStepRequest {
+            Box::pin(client.step(rlmesh::binding::env::VectorStepRequest {
                 actions,
                 timeout_ms,
             }))

@@ -11,103 +11,81 @@
 //! ```
 #![allow(clippy::print_stdout)]
 
-use rlmesh::SpaceValue;
 use rlmesh::prelude::*;
 use rlmesh::spaces::{Discrete, DiscreteOptions};
-
-/// The `Env` trait takes the wire spec until it takes `spaces::Space`.
-fn wire_spec(space: Discrete) -> SpaceSpec {
-    rlmesh::binding::space_spec_wire(space.spec()).clone()
-}
 
 /// A three-step counter. The observation is the step index, every action earns
 /// a reward of 1.0, and the episode terminates after the third step.
 struct CounterEnv {
-    observation_space: SpaceSpec,
-    action_space: SpaceSpec,
-    contract: EnvContract,
+    observation_space: Space,
+    action_space: Space,
     step: i64,
 }
 
 impl CounterEnv {
-    fn new() -> Self {
-        let observation_space = wire_spec(
-            Discrete::new(5, DiscreteOptions::default())
-                .expect("discrete observation space spec is valid"),
-        );
-        let action_space = wire_spec(
-            Discrete::new(2, DiscreteOptions::default())
-                .expect("discrete action space spec is valid"),
-        );
-        let contract = EnvContract {
-            id: "CounterEnv-v0".to_string(),
-            observation_space: Some(observation_space.clone()),
-            action_space: Some(action_space.clone()),
-            num_envs: 1,
-            ..Default::default()
-        };
-        Self {
-            observation_space,
-            action_space,
-            contract,
+    fn new() -> rlmesh::Result<Self> {
+        Ok(Self {
+            observation_space: Discrete::new(5, DiscreteOptions::default())?.into(),
+            action_space: Discrete::new(2, DiscreteOptions::default())?.into(),
             step: 0,
-        }
+        })
     }
 }
 
-#[rlmesh::async_trait]
 impl Env for CounterEnv {
-    fn observation_space(&self) -> &SpaceSpec {
-        &self.observation_space
+    fn observation_space(&self) -> Space {
+        self.observation_space.clone()
     }
 
-    fn action_space(&self) -> &SpaceSpec {
-        &self.action_space
+    fn action_space(&self) -> Space {
+        self.action_space.clone()
     }
 
-    fn env_contract(&self) -> &EnvContract {
-        &self.contract
+    fn id(&self) -> Option<String> {
+        Some("CounterEnv-v0".to_string())
     }
 
-    async fn reset(&mut self, _req: ResetRequest) -> Result<ResetResult, EnvRuntimeError> {
+    fn reset(
+        &mut self,
+        _seed: Option<i64>,
+        _options: Option<&InfoDict>,
+    ) -> rlmesh::Result<(Value, InfoDict)> {
         self.step = 0;
-        Ok(ResetResult {
-            observation: Some(SpaceValue::Discrete(self.step)),
-            info: None,
-            episode_id: None,
-        })
+        Ok((Value::Int(self.step), InfoDict::new()))
     }
 
-    async fn step(&mut self, _req: StepRequest) -> Result<StepResult, EnvRuntimeError> {
+    fn step(
+        &mut self,
+        _action: Option<Value>,
+    ) -> rlmesh::Result<(Value, f64, bool, bool, InfoDict)> {
         self.step += 1;
-        Ok(StepResult {
-            observation: Some(SpaceValue::Discrete(self.step % 5)),
-            reward: 1.0,
-            terminated: self.step >= 3,
-            truncated: false,
-            info: None,
-        })
-    }
-
-    async fn render(&mut self, _req: RenderRequest) -> Result<RenderResult, EnvRuntimeError> {
-        Ok(RenderResult::default())
-    }
-
-    async fn close(&mut self, _req: CloseRequest) -> Result<CloseResult, EnvRuntimeError> {
-        Ok(CloseResult)
+        Ok((
+            Value::Int(self.step % 5),
+            1.0,
+            self.step >= 3,
+            false,
+            InfoDict::new(),
+        ))
     }
 }
 
-#[tokio::main]
-async fn main() -> rlmesh::Result<()> {
+fn main() -> rlmesh::Result<()> {
     let address = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "127.0.0.1:5555".to_string());
 
-    // Bind first so the resolved address is known before serving.
-    let server = EnvServer::new(CounterEnv::new())
-        .bind(BindAddress::parse(&address)?)
-        .await?;
-    println!("serving CounterEnv on {}", server.local_addr());
-    server.serve().await
+    // The server binds at construction, so the resolved address is known
+    // before serving. `serve()` blocks; Ctrl-C drains and closes the env.
+    let server = EnvServer::new(
+        CounterEnv::new()?,
+        EnvServerOptions {
+            address: Some(address),
+            ..Default::default()
+        },
+    )?;
+    println!("serving CounterEnv on {}", server.address());
+    match server.serve() {
+        Err(rlmesh::Error::Cancelled) => Ok(()),
+        other => other,
+    }
 }

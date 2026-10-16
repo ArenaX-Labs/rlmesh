@@ -22,9 +22,10 @@ use crate::{ConnectAddress, Error, Result, binding::spaces};
 /// in lockstep:
 ///
 /// ```no_run
-/// use rlmesh::prelude::*;
+/// use rlmesh::binding::env::{ResetRequest, StepRequest};
+/// use rlmesh::{RemoteEnv, RemoteModel};
 ///
-/// # async fn drive(mut env: RemoteEnv, mut model: rlmesh::RemoteModel) -> rlmesh::Result<()> {
+/// # async fn drive(mut env: RemoteEnv, mut model: RemoteModel) -> rlmesh::Result<()> {
 /// let mut obs = env
 ///     .reset(ResetRequest::default())
 ///     .await?

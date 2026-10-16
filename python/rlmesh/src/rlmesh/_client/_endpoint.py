@@ -115,6 +115,8 @@ def _validate_address_inputs(
         return
     if path is not None and any(value is not None for value in (host, port)):
         raise ValueError("path cannot be combined with host or port")
+    if path is not None and transport == "tcp":
+        raise ValueError("path cannot be combined with transport='tcp'")
     if transport == "unix" and any(value is not None for value in (host, port)):
         raise ValueError("unix transport cannot be combined with host or port")
 

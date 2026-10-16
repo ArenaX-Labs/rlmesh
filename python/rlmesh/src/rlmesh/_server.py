@@ -75,6 +75,22 @@ def _stop_server(server: PyEnvServer | PyVectorEnvServer) -> None:
 EXPECTED_ENV_BRANCH_VAR = "RLMESH_EXPECTED_ENV_BRANCH"
 
 
+def _check_spaces(env: object, *, vector: bool) -> None:
+    """Refuse an env without its two spaces with ``TypeError``.
+
+    A missing ``reset``/``step``/``close`` is refused the same way, and this
+    runs before anything reads the spaces (the one-lane view, ``tag``).
+    """
+    names = (
+        ("single_observation_space", "single_action_space")
+        if vector
+        else ("observation_space", "action_space")
+    )
+    for name in names:
+        if not hasattr(env, name):
+            raise TypeError(f"env must have '{name}'")
+
+
 def _check_expected_branch(env: object) -> None:
     """Refuse to serve a contract branch the caller did not ask for.
 
@@ -202,9 +218,12 @@ class EnvServer:
                     "lanes must be scalar environments; serve a vectorized env "
                     "on its own instead of inside a list"
                 )
+            for lane in lanes:
+                _check_spaces(lane, vector=False)
             is_vector = False
         else:
             is_vector = _is_vector_env(env)
+            _check_spaces(env, vector=is_vector)
             if is_vector and getattr(env, "num_envs", None) == 1:
                 from ._single_lane import SingleLaneEnv
 

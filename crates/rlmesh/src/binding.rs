@@ -3,6 +3,7 @@
 //! Hidden from the docs and exempt from semver: nothing here is part of the
 //! shared surface, and it changes with the bindings.
 
+pub mod env;
 pub mod spaces;
 
 pub use crate::editions::{
@@ -27,10 +28,22 @@ pub fn resolve_workflow_edition(
 
 use crate::{Error, Metadata, Result, ServeOptions, Tensor, Value};
 
-/// The transport's options for `options` (the env server the Python binding
-/// hosts itself).
-pub fn serve_options_to_grpc(options: ServeOptions) -> rlmesh_grpc::ServeOptions {
-    options.to_grpc()
+/// The transport's options for `options` and an env endpoint `token` (the env
+/// server the Python binding hosts itself).
+pub fn serve_options_to_grpc(
+    options: ServeOptions,
+    token: Option<String>,
+) -> rlmesh_grpc::ServeOptions {
+    options.to_grpc(crate::serve_options::WireExtras {
+        token,
+        ..Default::default()
+    })
+}
+
+/// The env endpoint token `RLMESH_ENV_ENDPOINT_TOKEN` sets, checked as every
+/// env server checks it (an invalid value is the `RLMeshException` class).
+pub fn env_endpoint_token() -> Result<Option<String>> {
+    crate::serve_options::env_endpoint_token(None)
 }
 
 /// The shared [`crate::spaces::SpaceSpec`] for a wire spec.
@@ -115,4 +128,57 @@ pub fn meta_value_to_wire(value: &Value) -> Result<rlmesh_spaces::MetaValue> {
 /// One wire value decoded as a [`Value`].
 pub fn meta_value_from_wire(value: rlmesh_spaces::MetaValue) -> Value {
     crate::value::meta_codec::value_from_wire(value)
+}
+
+/// The reserved reset-option key a reset's `trial_index` travels under.
+pub use rlmesh_runtime::TRIAL_INDEX_OPTION;
+
+/// The env envelope a served env publishes (ENV-13), for the C ABI:
+/// `qualname` overrides `native:<id>`; `component` and `language` name the
+/// describing host, `host_runtime` adds its runtime fields.
+pub fn env_describe_envelope(
+    contract: &crate::EnvContract,
+    qualname: Option<&str>,
+    catalog: Option<&serde_json::Value>,
+    component: &'static str,
+    language: &'static str,
+    host_runtime: serde_json::Map<String, serde_json::Value>,
+    workflow_edition: Option<&str>,
+) -> Result<String> {
+    crate::env::envelope::env_envelope(
+        contract,
+        qualname,
+        catalog,
+        &crate::env::envelope::DescribingHost {
+            component,
+            language,
+            extra: host_runtime,
+        },
+        workflow_edition,
+    )
+}
+
+/// The shared contract for a wire contract (refuses one without spaces).
+pub fn env_contract_from_wire(wire: &rlmesh_spaces::EnvContract) -> Result<crate::EnvContract> {
+    crate::EnvContract::from_wire(wire)
+}
+
+/// The wire contract behind a shared one.
+pub fn env_contract_to_wire(contract: &crate::EnvContract) -> Result<rlmesh_spaces::EnvContract> {
+    contract.to_wire()
+}
+
+/// ENV-11's scoped signal installation for the Python binding's foreground
+/// serve: SIGTERM stops the server through `trigger` and the previous
+/// disposition is restored when the scope drops; SIGINT stays Python's.
+pub fn foreground_sigterm_scope(
+    trigger: rlmesh_grpc::lifecycle::ShutdownTrigger,
+) -> crate::env::signals::SignalScope {
+    crate::env::signals::enter_with(trigger, false)
+}
+
+/// PNG-encode a render frame by Python's lenient rule (ENV-5); `None` for a
+/// value that is no image.
+pub fn encode_render_frame(frame: &Value) -> Result<Option<Vec<u8>>> {
+    crate::env::batch::encode_frame(frame)
 }

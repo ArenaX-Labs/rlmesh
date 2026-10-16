@@ -56,6 +56,62 @@ impl BoundListener {
         }
     }
 
+    /// Bind the listener for `addr` without an async context (std listeners
+    /// registered with `runtime`). A bind failure is the `ConnectionError`
+    /// class.
+    pub(crate) fn bind_sync(addr: BindAddress, runtime: &tokio::runtime::Handle) -> Result<Self> {
+        let _entered = runtime.enter();
+        match addr {
+            BindAddress::Tcp { host, port } => {
+                let listener =
+                    std::net::TcpListener::bind((host.as_str(), port)).map_err(|err| {
+                        Error::Connection(format!("failed to bind tcp listener: {err}"))
+                    })?;
+                listener
+                    .set_nonblocking(true)
+                    .map_err(|err| Error::Connection(err.to_string()))?;
+                TcpListener::from_std(listener)
+                    .map(Self::Tcp)
+                    .map_err(|err| Error::Connection(err.to_string()))
+            }
+            BindAddress::Unix { path } => {
+                #[cfg(not(unix))]
+                {
+                    let _ = path;
+                    Err(Error::invalid_argument(
+                        "unix sockets are not supported on Windows; use tcp://host:port instead",
+                    ))
+                }
+                #[cfg(unix)]
+                {
+                    crate::address::remove_stale_socket(&path)
+                        .map_err(|err| Error::Connection(err.to_string()))?;
+                    let listener =
+                        std::os::unix::net::UnixListener::bind(&path).map_err(|err| {
+                            Error::Connection(format!(
+                                "failed to bind unix socket '{}': {err}",
+                                path.display()
+                            ))
+                        })?;
+                    listener
+                        .set_nonblocking(true)
+                        .map_err(|err| Error::Connection(err.to_string()))?;
+                    UnixListener::from_std(listener)
+                        .map(|listener| Self::Unix { listener, path })
+                        .map_err(|err| Error::Connection(err.to_string()))
+                }
+            }
+        }
+    }
+
+    /// Release the listener (unlinking a Unix socket file).
+    pub(crate) fn release(self) {
+        #[cfg(unix)]
+        if let Self::Unix { path, .. } = &self {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
     /// The resolved address the listener is bound to.
     ///
     /// For a TCP listener bound to port 0 this returns the OS-assigned port.

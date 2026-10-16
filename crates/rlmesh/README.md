@@ -11,12 +11,12 @@ This is the Rust-side surface we intend to stabilize. It is not stable yet and c
 rlmesh = "0.1.0"
 ```
 
-`Env`, `VectorEnv`, and `ModelHandler` are `async-trait` traits: annotate your impls with `#[rlmesh::async_trait]`, the macro this crate re-exports. If you would rather name the macro directly, add `async-trait = "0.1"` beside `rlmesh` and use `#[async_trait::async_trait]`.
+`Env` and `VectorEnv` are sync traits in Gymnasium shape (`reset(seed, options)` returns `(observation, info)`, `step(action)` returns `(observation, reward, terminated, truncated, info)`). `ModelHandler` is still an `async-trait` trait: annotate its impls with `#[rlmesh::async_trait]`, the macro this crate re-exports.
 
 ## What it provides
 
-- The scalar `Env` trait and explicit `VectorEnv` trait for environment bindings.
-- `EnvServer` / `RemoteEnv` and `VectorEnvServer` / `RemoteVectorEnv` for serving and connecting to environments.
+- The `Env` and `VectorEnv` traits, and `EnvFactory` with `Variant` and `TagParam`, as in the Python package.
+- `EnvServer` (one env, a list of lanes, or a vector env) and `RemoteEnv` / `RemoteVectorEnv` for serving and connecting to environments.
 - `ModelWorker` for model-side workflows.
 - Re-exported space, value, lifecycle, and error types used by the SDK.
 

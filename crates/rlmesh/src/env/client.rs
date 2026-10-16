@@ -61,7 +61,7 @@ impl RemoteVectorEnv {
     }
 
     /// Connect to an env server that requires a bearer token (see
-    /// [`ServeOptions::token`](crate::ServeOptions::token)). An empty token
+    /// `ext::EnvServerOptions::token`). An empty token
     /// behaves like [`RemoteVectorEnv::connect`].
     pub async fn connect_with_token(address: &str, token: &str) -> Result<Self> {
         Self::connect_to_with_token(ConnectAddress::parse(address)?, token).await
