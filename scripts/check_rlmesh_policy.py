@@ -340,6 +340,9 @@ service S {
     assert _check_rust_version("stable", "1.99")
     assert _check_rust_version(None, "1.99")
     assert _check_rust_version("1.99", None)
+    assert not _check_capi_version('#define RLMESH_VERSION "0.2.0-rc.1"\n', "0.2.0-rc.1")
+    assert _check_capi_version('#define RLMESH_VERSION "0.1.0"\n', "0.2.0")
+    assert _check_capi_version("/* no macro */\n", "0.2.0")
 
     print("policy self-check passed")
 
@@ -408,6 +411,7 @@ def validate_rlmesh_policy(*, repo_root: Path, manifest_path: Path) -> list[str]
     )
     errors.extend(_validate_doc_versions(repo_root, workspace_version))
     errors.extend(_validate_rust_version(repo_root))
+    errors.extend(_validate_capi_version(repo_root, workspace_version))
 
     return errors
 
@@ -1537,6 +1541,29 @@ def _validate_rust_version(repo_root: Path) -> list[str]:
         _read_toml(repo_root / "Cargo.toml").get("workspace", {}).get("package", {})
     )
     return _check_rust_version(mise_rust, package.get("rust-version"))
+
+
+CAPI_HEADER = Path("crates/rlmesh-capi/include/rlmesh.h")
+
+
+def _validate_capi_version(repo_root: Path, workspace_version: str | None) -> list[str]:
+    header = repo_root / CAPI_HEADER
+    if workspace_version is None or not header.is_file():
+        return []
+    return _check_capi_version(header.read_text(encoding="utf-8"), workspace_version)
+
+
+def _check_capi_version(header_text: str, workspace_version: str) -> list[str]:
+    """``RLMESH_VERSION`` in the hand-written C header is the workspace version."""
+    match = re.search(r'^#define RLMESH_VERSION "([^"]*)"$', header_text, re.MULTILINE)
+    if match is None:
+        return [f"{CAPI_HEADER} must #define RLMESH_VERSION as a string literal"]
+    if match.group(1) != workspace_version:
+        return [
+            f"{CAPI_HEADER} RLMESH_VERSION is {match.group(1)!r} but the workspace "
+            f"version is {workspace_version!r}; scripts/bump_version.py keeps them equal"
+        ]
+    return []
 
 
 def _check_rust_version(mise_rust: Any, rust_version: Any) -> list[str]:

@@ -96,3 +96,10 @@ fn curated_spaces_facade_separates_the_two_request_families() {
     }
     assert_distinct::<crate::ResetRequest, crate::VectorResetRequest>();
 }
+
+#[test]
+fn describe_and_reset_keys_match_python() {
+    assert_eq!(crate::DESCRIBE_METADATA_KEY, "rlmesh.describe.v1");
+    assert_eq!(crate::DESCRIBE_SCHEMA_VERSION, 1);
+    assert_eq!(crate::ENV_RESET_OPTIONS_KEY, "rlmesh.env.v1.reset_options");
+}

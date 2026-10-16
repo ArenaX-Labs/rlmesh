@@ -5,7 +5,27 @@
 
 pub mod spaces;
 
-use crate::{Error, Result, ServeOptions, Tensor};
+pub use crate::editions::{
+    EditionResolution, EditionSources, resolve_rungs as resolve_workflow_edition_rungs,
+    validate_workflow_edition,
+};
+/// The build's wire identity and the host-supplied handshake `PeerInfo`
+/// override, for a non-Rust host (the C ABI) that describes itself.
+pub use rlmesh_proto::{
+    CURRENT_WORKFLOW_EDITION, PROTOCOL_GENERATION, PeerInfoOverride, parse_declared_edition,
+    peer_info_override, supported_workflow_editions, update_peer_info_override,
+};
+
+/// Resolve a native participant's workflow edition (COR-6): rungs 1 to 4,
+/// warning once per process when an `authored` participant floats.
+pub fn resolve_workflow_edition(
+    sources: EditionSources<'_>,
+    authored: bool,
+) -> Result<Option<String>> {
+    crate::editions::resolve_native(sources, authored)
+}
+
+use crate::{Error, Metadata, Result, ServeOptions, Tensor, Value};
 
 /// The transport's options for `options` (the env server the Python binding
 /// hosts itself).
@@ -46,4 +66,53 @@ pub fn box_elementwise(
 ) -> Result<crate::spaces::Box> {
     let spec = crate::spaces::box_space::box_elementwise_spec(low, high, shape, options.dtype)?;
     crate::spaces::Box::from_spec(spec)
+}
+
+/// Draw a wire value from `space` (the C ABI's values are still wire values).
+pub fn space_sample_wire(space: &crate::spaces::Space) -> Result<rlmesh_spaces::SpaceValue> {
+    space.sample_wire()
+}
+
+/// Whether the wire `value` is a member of `space`.
+pub fn space_contains_wire(
+    space: &crate::spaces::Space,
+    value: &rlmesh_spaces::SpaceValue,
+) -> bool {
+    rlmesh_spaces::contains(space.spec().wire(), value).is_ok()
+}
+
+/// The shared [`Value`] for a wire value of the space `spec` (SPC-10).
+pub fn value_from_space(
+    spec: &rlmesh_spaces::SpaceSpec,
+    value: rlmesh_spaces::SpaceValue,
+) -> Value {
+    crate::value::space_codec::value_from_space(spec, value)
+}
+
+/// The wire value of the space `spec` for `value` (SPC-5), unchecked.
+pub fn value_to_space(
+    spec: &rlmesh_spaces::SpaceSpec,
+    value: &Value,
+) -> Result<rlmesh_spaces::SpaceValue> {
+    crate::value::space_codec::value_to_space(spec, value)
+}
+
+/// A [`Metadata`] encoded for the wire (COR-26).
+pub fn metadata_to_wire(map: &Metadata) -> Result<rlmesh_spaces::MetaMap> {
+    crate::value::meta_codec::metadata_to_wire(map)
+}
+
+/// A wire map decoded as [`Metadata`], in the wire's sorted order.
+pub fn metadata_from_wire(map: rlmesh_spaces::MetaMap) -> Metadata {
+    crate::value::meta_codec::metadata_from_wire(map)
+}
+
+/// One [`Value`] encoded for the wire (COR-26).
+pub fn meta_value_to_wire(value: &Value) -> Result<rlmesh_spaces::MetaValue> {
+    crate::value::meta_codec::value_to_wire(value)
+}
+
+/// One wire value decoded as a [`Value`].
+pub fn meta_value_from_wire(value: rlmesh_spaces::MetaValue) -> Value {
+    crate::value::meta_codec::value_from_wire(value)
 }

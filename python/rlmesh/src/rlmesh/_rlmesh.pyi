@@ -80,6 +80,7 @@ __all__ = [
     "multi_binary_space_spec",
     "multi_discrete_space_spec",
     "predict_seed",
+    "resolve_workflow_edition_rungs",
     "run_cli",
     "sandbox_reap_orphans",
     "sandbox_start_env",
@@ -721,6 +722,15 @@ def multi_binary_space_spec(shape: list[int], dtype: str | None = None) -> Space
 def multi_discrete_space_spec(nvec: list[int], dtype: str | None = None) -> SpaceSpec: ...
 
 def predict_seed(episode_seed: int, predict_index: int) -> int: ...
+
+def resolve_workflow_edition_rungs(*, call: typing.Optional[builtins.str] = None, option: typing.Optional[builtins.str] = None, declared: typing.Optional[builtins.str] = None) -> tuple[typing.Optional[builtins.str], builtins.bool]:
+    r"""
+    The facade resolver's rungs (COR-6): the call's value,
+    `RLMESH_WORKFLOW_EDITION`, the served peer's option, the class
+    declaration. Returns the winner (validated and trimmed) and whether
+    resolution stopped at a set-but-blank variable; `(None, False)` leaves
+    Python's `pyproject.toml` rung and the float warning to the caller.
+    """
 
 def run_cli(args: list[str]) -> int: ...
 

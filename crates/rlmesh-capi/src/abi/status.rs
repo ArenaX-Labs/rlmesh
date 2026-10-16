@@ -58,6 +58,26 @@ pub enum RLMeshErrorClass {
 }
 
 impl RLMeshErrorClass {
+    /// The class a C value names; `None` for INVALID or an unknown value.
+    pub(crate) fn from_c(value: i32) -> Option<Self> {
+        Some(match value {
+            1 => Self::RLMeshException,
+            2 => Self::ProtocolException,
+            3 => Self::EnvironmentException,
+            4 => Self::RecoverableEnvironmentException,
+            5 => Self::ModelException,
+            6 => Self::ValueError,
+            7 => Self::AdapterResolutionError,
+            8 => Self::TypeError,
+            9 => Self::RuntimeError,
+            10 => Self::OSError,
+            11 => Self::ConnectionError,
+            12 => Self::TimeoutError,
+            13 => Self::KeyboardInterrupt,
+            _ => return None,
+        })
+    }
+
     fn from_rust(class: ErrorClass) -> Self {
         match class {
             ErrorClass::RLMeshException => Self::RLMeshException,
@@ -314,6 +334,57 @@ pub(crate) fn store_last_error(message: &str, recoverable: bool, status: RLMeshS
     let mut err = CapiError::new(status, message);
     err.recoverable = recoverable;
     store(&err);
+    CALLBACK_CLASS.with(|slot| slot.set(None));
+}
+
+/// Record a callback's failure of an exact class
+/// (`rlmesh_callback_set_error_class`); INVALID or an unknown value records
+/// `RLMeshException`. Only `RecoverableEnvironmentException` is recoverable.
+pub(crate) fn store_last_error_class(message: &str, class: i32) {
+    let class = RLMeshErrorClass::from_c(class).unwrap_or(RLMeshErrorClass::RLMeshException);
+    let error = error_of_class(class, message);
+    let mut err = CapiError::from(error);
+    err.message = message.to_string();
+    store(&err);
+    CALLBACK_CLASS.with(|slot| slot.set(Some(class)));
+}
+
+thread_local! {
+    /// The class the running callback set with
+    /// `rlmesh_callback_set_error_class`, so a nested export's own failure
+    /// is not mistaken for it.
+    static CALLBACK_CLASS: std::cell::Cell<Option<RLMeshErrorClass>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The class the callback that just returned set, if it set one.
+pub(crate) fn take_callback_class() -> Option<RLMeshErrorClass> {
+    CALLBACK_CLASS.with(|slot| slot.take())
+}
+
+/// The facade error a callback's recorded class stands for.
+pub(crate) fn error_of_class(class: RLMeshErrorClass, message: &str) -> rlmesh::Error {
+    use rlmesh::Error;
+    let message = message.to_string();
+    match class {
+        RLMeshErrorClass::ProtocolException => Error::Protocol(message),
+        RLMeshErrorClass::EnvironmentException => Error::environment(message),
+        RLMeshErrorClass::RecoverableEnvironmentException => {
+            Error::environment_recoverable(message)
+        }
+        RLMeshErrorClass::ModelException => Error::model(message),
+        RLMeshErrorClass::ValueError | RLMeshErrorClass::AdapterResolutionError => {
+            Error::invalid_argument(message)
+        }
+        RLMeshErrorClass::TypeError => Error::Type(message),
+        RLMeshErrorClass::RuntimeError => Error::Runtime(message),
+        RLMeshErrorClass::OSError => Error::Os(message),
+        RLMeshErrorClass::ConnectionError => Error::Connection(message),
+        // Rust's Timeout carries the deadline, not a text; a callback's has none.
+        RLMeshErrorClass::TimeoutError => Error::Timeout(std::time::Duration::ZERO),
+        RLMeshErrorClass::KeyboardInterrupt => Error::Cancelled,
+        RLMeshErrorClass::RLMeshException | RLMeshErrorClass::Invalid => Error::Internal(message),
+    }
 }
 
 /// Called before invoking a callback so a decline that does not set an error
@@ -321,6 +392,7 @@ pub(crate) fn store_last_error(message: &str, recoverable: bool, status: RLMeshS
 /// (20-review-spec B3).
 pub(crate) fn clear_last_error() {
     LAST_ERROR.with(|slot| *slot.borrow_mut() = None);
+    CALLBACK_CLASS.with(|slot| slot.set(None));
 }
 
 pub(crate) fn last_error_message() -> String {

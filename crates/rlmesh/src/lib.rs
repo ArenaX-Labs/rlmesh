@@ -127,7 +127,9 @@ mod address;
 #[doc(hidden)]
 pub mod binding;
 mod bound;
+mod build_info;
 mod dtype;
+mod editions;
 pub mod env;
 mod error;
 pub mod ext;
@@ -136,6 +138,9 @@ pub mod prelude;
 pub mod serve_options;
 pub mod spaces;
 mod tensor;
+pub mod types;
+mod value;
+mod warnings;
 
 #[cfg(unix)]
 pub use address::remove_stale_socket;
@@ -145,7 +150,17 @@ pub use async_trait::async_trait;
 /// [`spaces::Space`]; the shared spec type is [`spaces::SpaceSpec`].
 pub use binding::spaces::SpaceSpec;
 pub use binding::spaces::{EnvContract, EnvRuntimeError, RenderFrame, SpaceValue};
+pub use build_info::{BuildInfo, BuildSource, VERSION, build_info};
 pub use dtype::{DType, Device};
+pub use editions::current_workflow_edition;
+
+/// The key a serialized describe envelope travels under (`rlmesh.describe.v1`):
+/// Python's `rlmesh.DESCRIBE_METADATA_KEY`.
+pub const DESCRIBE_METADATA_KEY: &str = rlmesh_adapters::v1::DESCRIBE_METADATA_KEY;
+
+/// The describe envelope's schema version: Python's
+/// `rlmesh.DESCRIBE_SCHEMA_VERSION`.
+pub const DESCRIBE_SCHEMA_VERSION: i64 = rlmesh_adapters::v1::DESCRIBE_SCHEMA_VERSION as i64;
 pub use env::{
     BoundEnvServer, CloseRequest, CloseResult, EndpointPhases, Env, EnvServer, EpisodeMetadata,
     RemoteEnv, RemoteVectorEnv, RenderRequest, RenderResult, ResetRequest, ResetResult,
@@ -163,13 +178,6 @@ pub use model::{
     ResolveOptions, RouteConfig, RouteNeeds, RouteResolver, RunLocalOptions, ServeModelOptions,
     predict_seed,
 };
-pub use rlmesh_proto::{CURRENT_WORKFLOW_EDITION, parse_declared_edition};
-/// The build's wire identity and the host-supplied handshake `PeerInfo`
-/// override, for a non-Rust host (the C ABI) that describes itself.
-pub use rlmesh_proto::{
-    PROTOCOL_GENERATION, PeerInfoOverride, peer_info_override, supported_workflow_editions,
-    update_peer_info_override,
-};
 #[doc(no_inline)]
 pub use rlmesh_runtime::telemetry;
 #[doc(no_inline)]
@@ -182,6 +190,8 @@ pub use rlmesh_runtime::{ENV_RESET_OPTIONS_KEY, PeerCeiling, RuntimeReport, TRIA
 pub use serve_options::{ENV_ENDPOINT_TOKEN_ENV, MODEL_ENDPOINT_TOKEN_ENV, ServeOptions};
 pub use tensor::Tensor;
 pub use tokio_util::sync::CancellationToken;
+pub use value::{InfoDict, Kwargs, Metadata, MetadataIter, Value, ValueKind};
+pub use warnings::{Warning, WarningCategory, WarningHandler, set_warning_handler};
 
 /// Mint one fresh routing/episode id (UUIDv7 — time-ordered, sortable by creation,
 /// never repeats). The single id-format home for this crate's id authorities (the

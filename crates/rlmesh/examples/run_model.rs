@@ -11,8 +11,8 @@
 //! ```
 #![allow(clippy::print_stdout)]
 
+use rlmesh::SpaceValue;
 use rlmesh::prelude::*;
-use rlmesh::spaces::SpaceValue;
 
 /// A model that always takes action 0, one per lane. The codec encodes the
 /// typed value against the route's action space, so the same `predict` works

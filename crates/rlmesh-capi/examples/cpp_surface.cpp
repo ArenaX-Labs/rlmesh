@@ -437,4 +437,28 @@ rlmesh::Status spaces_surface(const rlmesh::Value& value) {
   return rlmesh::ok();
 }
 
+void core_surface() {
+  rlmesh::BuildInfo info = rlmesh::build_info();
+  (void)info.version;
+  (void)info.protocol_generation;
+  (void)info.workflow_edition;
+  (void)info.workflow_edition_base;
+  (void)info.supported_workflow_editions;
+  (void)info.build_cohort;
+  (void)rlmesh::to_string(info.build_source);
+  (void)info.git;
+  (void)rlmesh::to_string(info);
+  (void)rlmesh::VERSION;
+  (void)rlmesh::current_workflow_edition();
+  (void)rlmesh::DESCRIBE_METADATA_KEY;
+  (void)rlmesh::DESCRIBE_SCHEMA_VERSION;
+  (void)rlmesh::ENV_RESET_OPTIONS_KEY;
+  rlmesh::Warning warning{rlmesh::WarningCategory::UserWarning, "note"};
+  (void)(warning == warning);
+  (void)rlmesh::name(warning.category);
+  (void)rlmesh::is_subclass_of(warning.category, rlmesh::WarningCategory::UserWarning);
+  rlmesh::set_warning_handler([](const rlmesh::Warning&) {});
+  rlmesh::set_warning_handler({});
+}
+
 }  // namespace surface

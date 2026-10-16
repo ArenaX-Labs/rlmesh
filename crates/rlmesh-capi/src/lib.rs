@@ -4,6 +4,7 @@
 
 mod abi;
 mod adapters;
+mod build;
 mod codec;
 mod describe;
 mod env;

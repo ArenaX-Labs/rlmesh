@@ -250,6 +250,12 @@ def bump(old: str, new: str) -> None:
         [(rf'version = "(=?){o}"', rf'version = "\g<1>{new}"')],
     )
 
+    # The C header's hand-written RLMESH_VERSION (policy:check keeps it equal).
+    sub_file(
+        ROOT / "crates/rlmesh-capi/include/rlmesh.h",
+        [(rf'#define RLMESH_VERSION "{o}"', f'#define RLMESH_VERSION "{new}"')],
+    )
+
     # Python package manifests use the PEP 440 spelling.
     for py in ("pyproject.toml", "python/rlmesh/pyproject.toml"):
         sub_file(ROOT / py, [(rf'version = "{op}"', f'version = "{new_pep}"')])

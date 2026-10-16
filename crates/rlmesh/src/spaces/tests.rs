@@ -178,15 +178,15 @@ fn unknown_specs_hold_but_do_not_sample() {
     assert_eq!(spec.dtype(), DType::Float32);
     let space = spec.to_space();
     assert_eq!(space.sample().unwrap_err().class(), ErrorClass::ValueError);
-    assert!(!space.contains(&SpaceValue::Discrete(0)));
+    assert!(!space.contains(&Value::Int(0)));
     assert!(space_from_spec(spec).is_err());
 }
 
 #[test]
 fn contains_detail_explains_a_refusal() {
     let space = unit_box();
-    assert!(!space.contains(&SpaceValue::Discrete(0)));
-    assert!(space.contains_detail(&SpaceValue::Discrete(0)).is_err());
+    assert!(!space.contains(&Value::Int(0)));
+    assert!(space.contains_detail(&Value::Int(0)).is_err());
     let sample = space.sample().unwrap();
     assert!(space.contains_detail(&sample).is_ok());
 }
@@ -198,4 +198,79 @@ fn kind_spellings_match_python() {
         BoundsKind::TypedElementwise.to_string(),
         "typed_elementwise"
     );
+}
+
+#[test]
+fn samples_are_values_of_python_kinds() {
+    let pos = unit_box();
+    let id = Discrete::new(4, DiscreteOptions::default()).unwrap();
+    let obs = Dict::new([("pos", SpaceSpec::from(&pos)), ("id", SpaceSpec::from(&id))]).unwrap();
+    obs.seed(Some(1));
+    let value = obs.sample().unwrap();
+    let map = value.as_dict().unwrap();
+    // A Dict samples in the space's declaration order.
+    assert_eq!(
+        map.keys().collect::<Vec<_>>(),
+        obs.keys().collect::<Vec<_>>()
+    );
+    let tensor = map.get("pos").unwrap().as_tensor().unwrap();
+    assert_eq!(
+        (tensor.shape(), tensor.dtype()),
+        (&[3usize][..], DType::Float32)
+    );
+    let n = map.get("id").unwrap().as_int().unwrap();
+    assert!((0..4).contains(&n));
+}
+
+#[test]
+fn contains_takes_the_values_python_accepts() {
+    let ints = Box::new(
+        0,
+        5,
+        [2],
+        BoxOptions {
+            dtype: DType::Int32,
+        },
+    )
+    .unwrap();
+    assert!(ints.contains(&Value::List(vec![Value::Int(1), Value::Bool(true)])));
+    // Integer dtypes never take a float, even an integral one.
+    assert!(!ints.contains(&Value::List(vec![Value::Float(1.0), Value::Int(1)])));
+    // The exact shape: a bare number is no member of a (2,) Box.
+    assert!(!ints.contains(&Value::Int(1)));
+    assert!(!ints.contains(&Value::List(vec![Value::Int(9), Value::Int(1)])));
+    let floats = unit_box();
+    assert!(floats.contains(&Value::Tuple(vec![
+        Value::Int(0),
+        Value::Float(0.5),
+        Value::Bool(false)
+    ])));
+    let wrong_dtype = crate::Tensor::new(&[0; 12], &[3], DType::Int32).unwrap();
+    assert!(!floats.contains(&Value::Tensor(wrong_dtype)));
+    let flags = Box::new(false, true, [1], BoxOptions { dtype: DType::Bool }).unwrap();
+    assert!(flags.contains(&Value::List(vec![Value::Float(0.5)])));
+
+    let id = Discrete::new(
+        3,
+        DiscreteOptions {
+            start: 1,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(id.contains(&Value::Int(3)));
+    assert!(id.contains(&Value::Bool(true)));
+    assert!(id.contains(&Value::Float(2.0)));
+    assert!(!id.contains(&Value::Float(2.5)));
+    assert!(!id.contains(&Value::Int(0)));
+    let one = crate::Tensor::new(&2i64.to_le_bytes(), &[1], DType::Int64).unwrap();
+    assert!(id.contains(&Value::Tensor(one)));
+    assert!(!id.contains(&Value::from("2")));
+
+    let obs = Dict::new([("id", SpaceSpec::from(&id))]).unwrap();
+    let extra: crate::Metadata = [("id", Value::Int(1)), ("other", Value::None)]
+        .into_iter()
+        .collect();
+    assert!(obs.contains(&Value::Dict(extra)));
+    assert!(!obs.contains(&Value::Dict(crate::Metadata::new())));
 }

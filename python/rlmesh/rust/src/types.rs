@@ -62,6 +62,42 @@ __init__.__qualname__ = "ModelException.__init__"
 ModelException.__init__ = __init__
 "#;
 
+/// `str(exc)` of an environment or model exception is `[CODE] message`
+/// (R-22, COR-P8): an authored `EnvironmentException("bad")` reads
+/// `[INTERNAL] bad`, as Rust, C and C++ spell the same error. `message` is
+/// what `BaseException.__str__` returns (the constructor's argument).
+const CODED_EXCEPTION_STR: &std::ffi::CStr = cr#"
+def __str__(self):
+    return f"[{self.code}] {BaseException.__str__(self)}"
+
+__str__.__qualname__ = "EnvironmentException.__str__"
+EnvironmentException.__str__ = __str__
+ModelException.__str__ = __str__
+"#;
+
+/// The message an environment or model exception was raised with, without
+/// its `[CODE]` prefix (`BaseException.__str__`); `str(exc)` for any other.
+pub(crate) fn raw_exception_text(value: &Bound<'_, PyAny>) -> String {
+    let py = value.py();
+    let raw = if value.is_instance_of::<EnvironmentException>()
+        || value.is_instance_of::<ModelException>()
+    {
+        py.get_type::<pyo3::exceptions::PyBaseException>()
+            .call_method1("__str__", (value,))
+            .and_then(|text| text.extract::<String>())
+    } else {
+        value.str().map(|text| text.to_string())
+    };
+    raw.unwrap_or_default()
+}
+
+/// The wire message of an author's exception (COR-27): an environment or
+/// model exception's raw message, `str(exc)` for any other; no phase or type
+/// name, since the receiver adds `[CODE] ` once.
+pub(crate) fn py_err_text(err: &PyErr) -> String {
+    Python::attach(|py| raw_exception_text(err.value(py)))
+}
+
 /// Convert rlmesh facade Error to Python exception.
 ///
 /// Note: We can't implement `From<Error> for PyErr` due to orphan rules,
@@ -88,7 +124,8 @@ pub fn to_py_err(err: Error) -> PyErr {
 /// `is_recoverable` as attributes. Every code raises the Environment family,
 /// including `TIMEOUT`, `INVALID_ACTION` and `CANCELLED`.
 fn env_error_to_py(err: EnvironmentError) -> PyErr {
-    let msg = err.to_string();
+    // The raw message: `str(exc)` adds the code (`[CODE] message`).
+    let msg = err.message.clone();
     let py_err = if err.is_recoverable {
         RecoverableEnvironmentException::new_err(msg)
     } else {
@@ -101,7 +138,7 @@ fn env_error_to_py(err: EnvironmentError) -> PyErr {
 /// Convert a model error to `ModelException`, carrying its `code` and
 /// `is_recoverable` as attributes.
 fn model_error_to_py(err: ModelError) -> PyErr {
-    let py_err = ModelException::new_err(err.to_string());
+    let py_err = ModelException::new_err(err.message.clone());
     annotate(&py_err, err.code.as_str(), err.is_recoverable);
     py_err
 }
@@ -140,10 +177,7 @@ pub(crate) fn model_callback_error(err: &PyErr) -> Error {
     Python::attach(|py| {
         let value = err.value(py);
         if value.is_instance_of::<ModelException>() {
-            let message = value
-                .str()
-                .map(|text| text.to_string())
-                .unwrap_or_else(|_| err.to_string());
+            let message = raw_exception_text(value);
             let is_recoverable = value
                 .getattr("is_recoverable")
                 .and_then(|flag| flag.is_truthy())
@@ -154,7 +188,7 @@ pub(crate) fn model_callback_error(err: &PyErr) -> Error {
                 is_recoverable,
             })
         } else {
-            Error::Internal(err.to_string())
+            Error::Internal(raw_exception_text(value))
         }
     })
 }
@@ -169,7 +203,7 @@ pub fn register_exceptions(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let environment = py.get_type::<EnvironmentException>();
     environment.setattr("code", ErrorCode::Internal.as_str())?;
     environment.setattr("is_recoverable", false)?;
-    m.add("EnvironmentException", environment)?;
+    m.add("EnvironmentException", &environment)?;
     let recoverable = py.get_type::<RecoverableEnvironmentException>();
     recoverable.setattr("is_recoverable", true)?;
     m.add("RecoverableEnvironmentException", recoverable)?;
@@ -180,6 +214,8 @@ pub fn register_exceptions(m: &Bound<'_, PyModule>) -> PyResult<()> {
     globals.set_item("RLMeshException", py.get_type::<RLMeshException>())?;
     globals.set_item("ModelException", &model)?;
     py.run(MODEL_EXCEPTION_INIT, Some(&globals), None)?;
+    globals.set_item("EnvironmentException", &environment)?;
+    py.run(CODED_EXCEPTION_STR, Some(&globals), None)?;
     m.add("ModelException", model)?;
     Ok(())
 }
@@ -213,6 +249,9 @@ mod tests {
     fn raised(err: Error) -> (String, String, Option<String>, Option<bool>) {
         let py_err = to_py_err(err);
         Python::attach(|py| {
+            // The class attributes and `__str__` the module installs.
+            let module = PyModule::new(py, "_rlmesh_test").unwrap();
+            register_exceptions(&module).unwrap();
             let value = py_err.value(py);
             let class = value.get_type().name().unwrap().to_string();
             let text = value.str().unwrap().to_string();
@@ -256,6 +295,9 @@ mod tests {
         assert_eq!(recoverable, Some(true));
         Python::attach(|py| {
             let value = to_py_err(Error::model("x")).into_value(py);
+            // The raw message is the argument; `str()` adds the code (COR-P8).
+            let args = value.bind(py).getattr("args").unwrap();
+            assert_eq!(args.get_item(0).unwrap().extract::<String>().unwrap(), "x");
             assert!(value.bind(py).is_instance_of::<RLMeshException>());
             assert!(value.bind(py).is_instance_of::<PyRuntimeError>());
         });

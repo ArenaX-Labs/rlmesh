@@ -104,6 +104,15 @@ int main() {
   check(rlmesh::to_string(rlmesh::ErrorCode::InvalidAction) == "INVALID_ACTION",
         "to_string(ErrorCode)");
   check(!rlmesh::ModelException("x").is_recoverable(), "ModelException defaults to permanent");
+  // An authored error reads `[INTERNAL] message`, as Python's str() and Rust's
+  // Display of the same error (COR-5, COR-20).
+  check(std::string(authored.what()) == "[INTERNAL] declined", "authored ModelException text");
+  check(std::string(rlmesh::EnvironmentException("bad").what()) == "[INTERNAL] bad",
+        "authored EnvironmentException text");
+  rlmesh::RecoverableEnvironmentException hiccup("hiccup");
+  check(std::string(hiccup.what()) == "[INTERNAL] hiccup" && hiccup.is_recoverable() &&
+            hiccup.code() == rlmesh::ErrorCode::Internal,
+        "authored RecoverableEnvironmentException");
 
   // The builtins stay outside RLMeshException, as in Python.
   Caught misuse = catch_all(rlmesh::Error(RLMESH_ERR_RUNTIME, "closed"));

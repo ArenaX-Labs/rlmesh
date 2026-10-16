@@ -339,6 +339,78 @@ def test_model_envelope_carries_a_declared_native_chunk() -> None:
     assert "native_chunk" not in rlmesh.describe(_CamArmFactory)
 
 
+def test_native_chunk_comes_from_the_type_and_must_be_valid() -> None:
+    # An instance K (one load() set from a checkpoint) is invisible: describe
+    # reports what the type declares (COR-P7).
+    model = _DeclaringModel()
+    model.native_chunk = 7  # pyright: ignore[reportAttributeAccessIssue]
+    assert rlmesh.describe(model)["native_chunk"] == 30
+
+    # A declaration construction or resolve would refuse is refused (COR-P9).
+    class _NoChunkCorner:
+        native_chunk = 4
+
+        def predict(self, observation: object) -> object:
+            return 0
+
+    with pytest.raises(TypeError, match="no predict_chunk"):
+        rlmesh.describe(_NoChunkCorner)
+
+    class _ZeroChunk(_DeclaringModel):
+        native_chunk = 0
+
+    with pytest.raises(ValueError, match="native_chunk must be >= 1"):
+        rlmesh.describe(_ZeroChunk)
+
+
+class _WrappedPolicy:
+    workflow_edition = rlmesh.current_workflow_edition()
+
+    def load(self, checkpoint: str = "best") -> None:
+        _ = checkpoint
+
+    def predict(self, observation: object) -> object:
+        return 0
+
+    def predict_batch(self, observations: object) -> object:
+        return observations
+
+
+def test_a_wrapping_model_describes_its_policy() -> None:
+    # rlmesh.Model(policy) reports the policy's type-level items, as
+    # describe(policy) does; only the spec is the wrapper's (COR-P3).
+    wrapped = rlmesh.describe(
+        rlmesh.Model(_WrappedPolicy(), spec=_SpeccedModel._spec())  # pyright: ignore[reportPrivateUsage]
+    )
+    direct = rlmesh.describe(_WrappedPolicy())
+    assert wrapped["target"] == direct["target"]
+    assert wrapped["target"]["qualname"].endswith(":_WrappedPolicy")
+    assert wrapped["params"] == direct["params"]
+    assert wrapped["corners"] == direct["corners"] == ["predict", "predict_batch"]
+    assert (
+        wrapped["runtime"]["preferred_workflow_edition"]
+        == direct["runtime"]["preferred_workflow_edition"]
+    )
+    assert direct["model_spec"] is None
+    assert wrapped["model_spec"] is not None
+
+
+def test_an_explicit_kind_must_match_the_object() -> None:
+    # COR-P1: the object fixes its kind; a contradicting kind is refused.
+    with pytest.raises(ValueError, match="contradicts"):
+        rlmesh.describe(_TinyModel, kind="env")
+    with pytest.raises(ValueError, match="contradicts"):
+        rlmesh.describe(_CamArmFactory, kind="model")
+    # A bare callable still takes the kind it is given.
+    assert rlmesh.describe(lambda obs: 0, kind="model")["kind"] == "model"
+
+
+def test_an_empty_served_env_list_is_a_value_error() -> None:
+    # COR-P5: ValueError, not IndexError.
+    with pytest.raises(ValueError, match="served_env"):
+        rlmesh.describe_json(_CamArmFactory, served_env=[])
+
+
 def test_classmethod_matches_function() -> None:
     assert _CamArmFactory.describe() == rlmesh.describe(_CamArmFactory)
     assert _TinyModel.describe() == rlmesh.describe(_TinyModel)

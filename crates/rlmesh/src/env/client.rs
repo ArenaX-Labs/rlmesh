@@ -459,6 +459,12 @@ impl RemoteEnv {
         self.inner.session_offer()
     }
 
+    /// The workflow edition the handshake selected for this session: Python's
+    /// `RemoteEnv.selected_workflow_edition`.
+    pub fn selected_workflow_edition(&self) -> &str {
+        self.inner.selected_workflow_edition()
+    }
+
     /// Pin the env to the session edition a model leg settled on; see
     /// [`RemoteVectorEnv::pin_workflow_edition`].
     pub fn pin_workflow_edition(&mut self, selected_workflow_edition: &str) {
