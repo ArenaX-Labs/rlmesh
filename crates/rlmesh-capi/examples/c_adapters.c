@@ -353,6 +353,13 @@ int main(void) {
   rlmesh_value_free(converted);
   rlmesh_adapter_free(alias);
   rlmesh_model_spec_free(custom_spec);
+  custom.entrypoint = "abi5:unregistered:input";
+  CHECK(rlmesh_model_spec_new(&custom_input, &action, &custom_spec) == RLMESH_OK);
+  CHECK(rlmesh_adapters_resolve(tags, rlmesh_space_spec(space), rlmesh_space_spec(space),
+                                custom_spec, &trusted, &alias) == RLMESH_ERR_INVALID_ARGUMENT &&
+        !alias && rlmesh_last_error_class() == RLMESH_ERROR_CLASS_ADAPTER_RESOLUTION_ERROR);
+  CHECK(strstr(rlmesh_last_error_message(), "unregistered custom input entrypoint") != NULL);
+  rlmesh_model_spec_free(custom_spec);
   RLMeshObsTransform* replacement = NULL;
   CHECK(rlmesh_obs_transform_new(identity, NULL, NULL, &replacement) == RLMESH_OK);
   CHECK(rlmesh_ext_register_entrypoint("abi5:identity", replacement) == RLMESH_OK &&

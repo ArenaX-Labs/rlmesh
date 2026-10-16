@@ -492,10 +492,10 @@ fn decode_lanes(
         space_spec_from_proto(space.clone()).map_err(|err| Error::Protocol(err.to_string()))?;
     let values = decode_batched_partial_values(Some(&leaves_value(leaves)), &space, lanes)
         .map_err(|err| Error::Protocol(err.to_string()))?;
-    Ok(values
+    values
         .into_iter()
         .map(|value| space_codec::value_from_space(&space, value))
-        .collect())
+        .collect()
 }
 
 impl HookRelay {

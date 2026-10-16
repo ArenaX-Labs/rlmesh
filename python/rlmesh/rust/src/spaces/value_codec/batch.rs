@@ -8,12 +8,12 @@ use std::collections::BTreeMap;
 
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict, PyList, PyTuple};
-use rlmesh_spaces::SpaceValue;
 use rlmesh_spaces::spaces::{SpaceKind, SpaceSpec};
+use rlmesh_spaces::{Conformance, SpaceValue, conform};
 
 use super::ValueBackend;
 use super::codec::{
-    encode_i64_sequence_bytes, py_any_to_space_value_with_backend, space_value_to_py_neutral,
+    encode_i64_sequence_bytes, py_any_to_space_value_unchecked, space_value_to_py_neutral,
     space_value_to_py_with_backend, tensor_from_shape,
 };
 use super::normalization::normalize_space_value_input;
@@ -76,7 +76,7 @@ fn dict_column(values: &[SpaceValue], key: &str) -> PyResult<Vec<SpaceValue>> {
         .iter()
         .map(|value| match value {
             SpaceValue::Dict(fields) => fields.get(key).cloned().ok_or_else(|| {
-                pyo3::exceptions::PyKeyError::new_err(format!("missing RLMesh dict key '{key}'"))
+                crate::types::ProtocolException::new_err(format!("missing RLMesh dict key '{key}'"))
             }),
             _ => Err(batch_kind_err("Dict")),
         })
@@ -110,6 +110,22 @@ pub(crate) fn py_any_to_batched_space_values_with_backend(
     num_envs: usize,
     backend: ValueBackend,
 ) -> PyResult<Vec<SpaceValue>> {
+    let values = py_any_to_batched_space_values_unchecked(py, value, space, num_envs, backend)?;
+    for value in &values {
+        if let Conformance::Structural(err) = conform(space, value) {
+            return Err(pyo3::exceptions::PyValueError::new_err(err.to_string()));
+        }
+    }
+    Ok(values)
+}
+
+fn py_any_to_batched_space_values_unchecked(
+    py: Python<'_>,
+    value: &Bound<'_, PyAny>,
+    space: &SpaceSpec,
+    num_envs: usize,
+    backend: ValueBackend,
+) -> PyResult<Vec<SpaceValue>> {
     if num_envs == 0 {
         return Ok(vec![]);
     }
@@ -123,21 +139,23 @@ pub(crate) fn py_any_to_batched_space_values_with_backend(
                 .iter()
                 .zip(spec.spaces.iter())
                 .map(|(key, child_space)| {
-                    let child = dict.get_item(key)?.ok_or_else(|| {
-                        pyo3::exceptions::PyKeyError::new_err(format!("missing dict key '{key}'"))
-                    })?;
-                    py_any_to_batched_space_values_with_backend(
-                        py,
-                        &child,
-                        child_space,
-                        num_envs,
-                        backend,
-                    )
+                    dict.get_item(key)?
+                        .map(|child| {
+                            py_any_to_batched_space_values_unchecked(
+                                py,
+                                &child,
+                                child_space,
+                                num_envs,
+                                backend,
+                            )
+                        })
+                        .transpose()
                 })
                 .collect::<PyResult<Vec<_>>>()?;
 
             let mut values = vec![BTreeMap::new(); num_envs];
             for ((key, _), batch) in spec.keys.iter().zip(spec.spaces.iter()).zip(child_batches) {
+                let Some(batch) = batch else { continue };
                 if batch.len() != num_envs {
                     return Err(pyo3::exceptions::PyValueError::new_err(format!(
                         "dict batch for key '{key}' expected {num_envs} values, got {}",
@@ -173,7 +191,7 @@ pub(crate) fn py_any_to_batched_space_values_with_backend(
                 .iter()
                 .zip(spec.spaces.iter())
                 .map(|(item, child_space)| {
-                    py_any_to_batched_space_values_with_backend(
+                    py_any_to_batched_space_values_unchecked(
                         py,
                         item,
                         child_space,
@@ -200,7 +218,7 @@ pub(crate) fn py_any_to_batched_space_values_with_backend(
         }
         _ => batched_items(value, num_envs)?
             .iter()
-            .map(|item| py_any_to_space_value_with_backend(py, item, space, backend))
+            .map(|item| py_any_to_space_value_unchecked(py, item, space, backend))
             .collect(),
     }
 }

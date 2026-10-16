@@ -110,11 +110,11 @@ pub fn space_contains_wire(
 pub fn value_from_space(
     spec: &rlmesh_spaces::SpaceSpec,
     value: rlmesh_spaces::SpaceValue,
-) -> Value {
+) -> Result<Value> {
     crate::value::space_codec::value_from_space(spec, value)
 }
 
-/// The wire value of the space `spec` for `value` (SPC-5), unchecked.
+/// The wire value of the space `spec` for `value` (SPC-5), structurally checked.
 pub fn value_to_space(
     spec: &rlmesh_spaces::SpaceSpec,
     value: &Value,

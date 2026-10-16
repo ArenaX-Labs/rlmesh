@@ -12,6 +12,10 @@ This release brings the Rust facade crate (`rlmesh`), the C API (`rlmesh.h`, now
 
 #### Python
 
+- Trusted custom-input entrypoints that cannot be imported or whose attribute path cannot be resolved raise `AdapterResolutionError`, chained from the original `ImportError` / `AttributeError`, through `resolve`, `Model`, `run` and `session` (before: those lookup errors escaped). Malformed entrypoint strings still raise `ValueError`; non-callable targets still raise `TypeError`. Native unregistered entrypoints already use `AdapterResolutionError`.
+
+- Missing keys in Dict-space values raise `ValueError` with native structural-conformance text and the value's path when encoding, including batched lanes (before: `KeyError`). Missing keys when decoding received single or batched values raise `ProtocolException` instead of `KeyError`. Existing call-site error wrappers remain; Dict `__getitem__` still raises `KeyError`. Rust, C and C++ now use the same structural encoding text and reject malformed received Dict values as protocol errors.
+
 - Every error an env reports raises `EnvironmentException` (or `RecoverableEnvironmentException`) with its `code`, including the codes `TIMEOUT`, `INVALID_ACTION` and `CANCELLED`, which raised `TimeoutError`, `ValueError` and `RuntimeError`. This breaks an `except TimeoutError` or `except ValueError` around an env call; catch `EnvironmentException` and read `code`. A client-side deadline still raises `TimeoutError`.
 - `str()` of an authored env or model exception gains its code prefix: `EnvironmentException("bad")`, `RecoverableEnvironmentException("bad")` and `ModelException("bad")` read `[INTERNAL] bad`, as the same error reads in Rust, C and C++ and once it crosses the wire. `args[0]` is the raw message, including on the exceptions the clients raise, whose `str()` is unchanged. Read `args[0]` where you need the bare message.
 - The remote text of a Python env failure is `{op} failed: {message}` with no type name: an env that raises `ValueError("x")` in `step` reaches the client as `[INTERNAL] step failed: x` (it read `[INTERNAL] step failed: ValueError: x`), and an authored `EnvironmentException("bad")` as `[INTERNAL] step failed: bad`, as from a Rust, C or C++ env. A served model's failure reads `[INTERNAL] x` in every language, instead of carrying the type name or a doubled `[INTERNAL] [INTERNAL]` prefix. Servers send the message without the code and the client adds it once.
@@ -172,6 +176,7 @@ The C API (`rlmesh.h`, ABI 5) projects the Rust facade, so every C call has the 
 #### All languages
 
 - A lane endpoint served from Rust, C or C++ reports each range warning (`rlmesh.conformance.warning`) once per lane for the server's life, as a Python server does, instead of once for all lanes; a vector env still reports once for all its lanes.
+- The Rust `run_model` quickstart uses `Model::run` with a `Policy` and public `RunOptions` instead of the internal binding runner, and reports the episode and step totals. It still connects to the paired `serve_env` example.
 
 ### Fixed
 

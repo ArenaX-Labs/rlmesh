@@ -248,6 +248,33 @@ void runs_sessions() {
   (void)info;
   assert(s.predict(obs).as_int() == 3);
 }
+void missing_dict_action_keys() {
+  struct DictCounter : Counter {
+    Space action_space() const { return Dict({{"nested", Dict({{"choice", Discrete(3)}})}}); }
+  };
+  EnvServer server(DictCounter{}, {.address = "tcp://127.0.0.1:0"});
+  server.start();
+  RemoteEnv remote({.address = server.address()});
+  remote.reset();
+  Value missing(Metadata{{"nested", Value(Metadata{})}});
+  try {
+    remote.step(missing);
+    assert(false);
+  } catch (const ValueError& e) {
+    assert(std::string(e.what()) == "$.nested: missing key 'choice'");
+  }
+  // The C entrypoint preserves the same class and text before any I/O.
+  RLMeshValue *obs = nullptr, *info = nullptr;
+  double reward = 0;
+  bool terminated = false, truncated = false;
+  assert(rlmesh_remote_env_step(remote.raw(), missing.raw(), &obs, &reward, &terminated, &truncated,
+                                &info) == RLMESH_ERR_INVALID_ARGUMENT);
+  assert(rlmesh_last_error_class() == RLMESH_ERROR_CLASS_VALUE_ERROR);
+  assert(std::string(rlmesh_last_error_message()) == "$.nested: missing key 'choice'");
+  assert(!obs && !info);
+  remote.close();
+  server.shutdown();
+}
 void session_target_lifetimes() {
   Env env(Counter{});
   int closed = 0;
@@ -762,6 +789,13 @@ void adapters_readers_recorder() {
   assert(EnvTags::from_json(tags.to_json()) == tags);
   assert(tags.observation_roles().states.size() == 1);
   Box space(-10, 10, {1});
+  ModelSpec missing(Custom{.entrypoint = "cpp:unregistered:input"}, spec.output());
+  try {
+    resolve(tags, space.spec(), space.spec(), missing, {.trust_entrypoints = true});
+    assert(false);
+  } catch (const AdapterResolutionError& e) {
+    assert(std::string(e.what()).find("unregistered custom input entrypoint") != std::string::npos);
+  }
   auto adapter = resolve(tags, space.spec(), space.spec(), spec);
   auto wrapped = adapter.wrap_predict([](const Value& v) { return v; });
   assert(wrapped(vector(2)).as_tensor().size() == 1);
@@ -814,6 +848,7 @@ int main() try {
   policy_context_precedence();
   runs_sessions();
   session_target_lifetimes();
+  missing_dict_action_keys();
   exceptions();
   foreign_error_payloads();
   factories_remote_describe();

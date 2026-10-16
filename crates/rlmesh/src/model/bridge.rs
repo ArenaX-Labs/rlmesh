@@ -458,7 +458,7 @@ impl PredictFn for ModelPredict {
                 .decoded_lanes()?
                 .into_iter()
                 .map(|lane| crate::binding::value_from_space(&observation_space, lane))
-                .collect()
+                .collect::<Result<_>>()?
         } else {
             Vec::new()
         };

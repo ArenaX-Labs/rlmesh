@@ -548,3 +548,29 @@ fn custom_encoding_numeric_tensors_do_not_pass_through_json() {
     let tensor = output.as_tensor().unwrap();
     assert!(f64::from_le_bytes(tensor.tobytes()[0..8].try_into().unwrap()).is_nan());
 }
+
+#[test]
+fn trusted_unregistered_custom_entrypoint_is_resolution_error() {
+    let spec = ModelSpec::new(
+        Custom {
+            transform: None,
+            entrypoint: Some("parity:unregistered:input".into()),
+        },
+        action(),
+    )
+    .unwrap();
+    let err = resolve(
+        &flat_tags(),
+        &box_spec(1),
+        &box_spec(1),
+        &spec,
+        ResolveOptions::default().trust_entrypoints(true),
+    )
+    .err()
+    .unwrap();
+    assert_eq!(err.class(), ErrorClass::AdapterResolutionError);
+    assert!(
+        err.to_string()
+            .contains("unregistered custom input entrypoint")
+    );
+}

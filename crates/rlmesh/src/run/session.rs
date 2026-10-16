@@ -696,7 +696,7 @@ impl Core {
                 if let Some(telemetry) = &mut self.telemetry {
                     telemetry.record("model.predict", "model", ms_since(started));
                 }
-                return Ok(space_codec::value_from_space(&connected.action, action));
+                return space_codec::value_from_space(&connected.action, action);
             }
             ModelPort::Local(model) => model,
         };
@@ -760,10 +760,10 @@ impl Core {
             if let Some(lane) = frame.into_iter().next() {
                 model
                     .replay
-                    .push_back(space_codec::value_from_space(&connected.action, lane));
+                    .push_back(space_codec::value_from_space(&connected.action, lane)?);
             }
         }
-        Ok(space_codec::value_from_space(&connected.action, action))
+        space_codec::value_from_space(&connected.action, action)
     }
 
     async fn step(&mut self, action: Value) -> Result<(Value, f64, bool, bool, InfoDict)> {

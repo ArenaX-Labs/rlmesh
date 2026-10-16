@@ -17,14 +17,14 @@ use rlmesh::{EnvServer, EnvServerOptions};
 
 /// A three-step counter. The observation is the step index, every action earns
 /// a reward of 1.0, and the episode terminates after the third step.
-struct CounterEnv {
+pub(crate) struct CounterEnv {
     observation_space: Space,
     action_space: Space,
     step: i64,
 }
 
 impl CounterEnv {
-    fn new() -> rlmesh::Result<Self> {
+    pub(crate) fn new() -> rlmesh::Result<Self> {
         Ok(Self {
             observation_space: Discrete::new(5, DiscreteOptions::default())?.into(),
             action_space: Discrete::new(2, DiscreteOptions::default())?.into(),

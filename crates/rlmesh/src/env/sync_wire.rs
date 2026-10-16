@@ -318,7 +318,9 @@ impl legacy::Env for SyncLane {
         self.run("step", move |env| {
             let action = req
                 .action
-                .map(|action| space_codec::value_from_space(&action_space, action));
+                .map(|action| space_codec::value_from_space(&action_space, action))
+                .transpose()
+                .map_err(|err| EnvRuntimeError::InvalidValue(err.to_string()))?;
             let (observation, reward, terminated, truncated, info) = env
                 .step(action)
                 .map_err(|err| authored_failure("step", &err))?;
@@ -464,7 +466,8 @@ impl legacy::VectorEnv for SyncVector {
                     .actions
                     .into_iter()
                     .map(|action| space_codec::value_from_space(&action_space, action))
-                    .collect();
+                    .collect::<crate::Result<Vec<_>>>()
+                    .map_err(|err| EnvRuntimeError::InvalidValue(err.to_string()))?;
                 let actions = stack_lanes(&action_space, lanes)
                     .map_err(|err| EnvRuntimeError::InvalidValue(err.to_string()))?;
                 let (observation, rewards, terminated, truncated, info) = env

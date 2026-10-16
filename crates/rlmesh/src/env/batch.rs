@@ -101,6 +101,14 @@ pub(crate) fn stack_lanes(spec: &WireSpec, lanes: Vec<Value>) -> Result<Value> {
 /// Split a batched value of `spec` into `num_envs` per-lane values. A List of
 /// per-lane values is accepted for any kind, as Python accepts any sequence.
 pub(crate) fn unstack_lanes(spec: &WireSpec, batch: Value, num_envs: usize) -> Result<Vec<Value>> {
+    let lanes = unstack_lanes_unchecked(spec, batch, num_envs)?;
+    for lane in &lanes {
+        crate::value::space_codec::value_to_space(spec, lane)?;
+    }
+    Ok(lanes)
+}
+
+fn unstack_lanes_unchecked(spec: &WireSpec, batch: Value, num_envs: usize) -> Result<Vec<Value>> {
     if let Value::List(items) = batch {
         return check_width(items, num_envs);
     }
@@ -108,12 +116,12 @@ pub(crate) fn unstack_lanes(spec: &WireSpec, batch: Value, num_envs: usize) -> R
         (Some(WireKind::Dict(dict)), Value::Dict(mut map)) => {
             let mut lanes = vec![Metadata::new(); num_envs];
             for (key, child) in dict.keys.iter().zip(&dict.spaces) {
-                let column = map.remove(key).ok_or_else(|| {
-                    batch_error(format!("a batched observation is missing key '{key}'"))
-                })?;
+                let Some(column) = map.remove(key) else {
+                    continue;
+                };
                 for (lane, value) in lanes
                     .iter_mut()
-                    .zip(unstack_lanes(child, column, num_envs)?)
+                    .zip(unstack_lanes_unchecked(child, column, num_envs)?)
                 {
                     lane.insert(key.clone(), value);
                 }
@@ -125,7 +133,7 @@ pub(crate) fn unstack_lanes(spec: &WireSpec, batch: Value, num_envs: usize) -> R
             for (child, column) in tuple.spaces.iter().zip(children) {
                 for (lane, value) in lanes
                     .iter_mut()
-                    .zip(unstack_lanes(child, column, num_envs)?)
+                    .zip(unstack_lanes_unchecked(child, column, num_envs)?)
                 {
                     lane.push(value);
                 }
@@ -175,14 +183,19 @@ fn tensor_ints(tensor: &Tensor) -> Result<Vec<i64>> {
 /// `_lane0`): Dict and Tuple per child, anything else the first item of a
 /// List or the first slice of a Tensor.
 pub(crate) fn lane0(spec: &WireSpec, value: Value) -> Result<Value> {
+    let lane = lane0_unchecked(spec, value)?;
+    crate::value::space_codec::value_to_space(spec, &lane)?;
+    Ok(lane)
+}
+
+fn lane0_unchecked(spec: &WireSpec, value: Value) -> Result<Value> {
     match (&spec.spec, value) {
         (Some(WireKind::Dict(dict)), Value::Dict(mut map)) => {
             let mut out = Metadata::new();
             for (key, child) in dict.keys.iter().zip(&dict.spaces) {
-                let column = map
-                    .remove(key)
-                    .ok_or_else(|| batch_error(format!("observation is missing key '{key}'")))?;
-                out.insert(key.clone(), lane0(child, column)?);
+                if let Some(column) = map.remove(key) {
+                    out.insert(key.clone(), lane0_unchecked(child, column)?);
+                }
             }
             Ok(Value::Dict(out))
         }
@@ -195,7 +208,7 @@ pub(crate) fn lane0(spec: &WireSpec, value: Value) -> Result<Value> {
                     .spaces
                     .iter()
                     .zip(items)
-                    .map(|(child, item)| lane0(child, item))
+                    .map(|(child, item)| lane0_unchecked(child, item))
                     .collect::<Result<_>>()?,
             ))
         }
@@ -236,6 +249,11 @@ pub(crate) fn first_item(value: Value) -> Result<Value> {
 /// child; a tensor gains a leading axis of 1; anything else, a Discrete int
 /// included, is a one-item List.
 pub(crate) fn batch1(spec: &WireSpec, action: Value) -> Result<Value> {
+    crate::value::space_codec::value_to_space(spec, &action)?;
+    batch1_unchecked(spec, action)
+}
+
+fn batch1_unchecked(spec: &WireSpec, action: Value) -> Result<Value> {
     match &spec.spec {
         Some(WireKind::Dict(dict)) => {
             let Value::Dict(mut map) = action else {
@@ -246,10 +264,9 @@ pub(crate) fn batch1(spec: &WireSpec, action: Value) -> Result<Value> {
             };
             let mut out = Metadata::new();
             for (key, child) in dict.keys.iter().zip(&dict.spaces) {
-                let item = map
-                    .remove(key)
-                    .ok_or_else(|| batch_error(format!("action is missing key '{key}'")))?;
-                out.insert(key.clone(), batch1(child, item)?);
+                if let Some(item) = map.remove(key) {
+                    out.insert(key.clone(), batch1_unchecked(child, item)?);
+                }
             }
             Ok(Value::Dict(out))
         }
@@ -265,7 +282,7 @@ pub(crate) fn batch1(spec: &WireSpec, action: Value) -> Result<Value> {
                     .spaces
                     .iter()
                     .zip(items)
-                    .map(|(child, item)| batch1(child, item))
+                    .map(|(child, item)| batch1_unchecked(child, item))
                     .collect::<Result<_>>()?,
             ))
         }
@@ -437,6 +454,34 @@ mod tests {
 
     fn wire(space: impl Into<Space>) -> WireSpec {
         space.into().spec().wire().clone()
+    }
+
+    #[test]
+    fn missing_batched_dict_keys_use_native_conformance_text() {
+        use rlmesh_spaces::spaces::{DictSpaceBuilder, DiscreteBuilder};
+        let space = DictSpaceBuilder::new()
+            .insert(
+                "nested",
+                DictSpaceBuilder::new()
+                    .insert("choice", DiscreteBuilder::new(3).build().unwrap())
+                    .build()
+                    .unwrap(),
+            )
+            .build()
+            .unwrap();
+        let value = Value::Dict(
+            [("nested", Value::Dict(Metadata::new()))]
+                .into_iter()
+                .collect(),
+        );
+        for err in [
+            unstack_lanes(&space, value.clone(), 2).unwrap_err(),
+            lane0(&space, value.clone()).unwrap_err(),
+            batch1(&space, value).unwrap_err(),
+        ] {
+            assert_eq!(err.class(), crate::ErrorClass::ValueError);
+            assert_eq!(err.to_string(), "$.nested: missing key 'choice'");
+        }
     }
 
     #[test]
