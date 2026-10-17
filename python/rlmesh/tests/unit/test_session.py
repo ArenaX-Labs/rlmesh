@@ -899,6 +899,25 @@ def test_session_closes_a_factory_env_when_adapter_resolution_fails() -> None:
     assert closed == [1]
 
 
+def test_remote_session_closes_a_factory_env_when_its_bridge_fails() -> None:
+    closed: list[int] = []
+
+    class _BridgelessEnv(_ClosingEnv):
+        @property
+        def _bridge(self) -> object:
+            raise RuntimeError("no bridge for this env")
+
+    class Factory(rlmesh.EnvFactory):
+        def make(self) -> _BridgelessEnv:
+            return _BridgelessEnv(closed)
+
+    # Nothing listens on port 1, but the bridge fails before any dial.
+    with pytest.raises(RuntimeError, match="no bridge for this env"):
+        rlmesh.RemoteModel("127.0.0.1:1").session(Factory())
+
+    assert closed == [1]
+
+
 def test_session_close_releases_the_env_when_episode_end_raises() -> None:
     def fail(*_: object) -> None:
         raise ValueError("end hook failed")

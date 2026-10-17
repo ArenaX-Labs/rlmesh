@@ -1519,7 +1519,7 @@ mod tests {
                 Ok(_) => panic!("unauthenticated connect must be rejected when a token is set"),
                 Err(err) if !server.is_finished() => {
                     let message = err.to_string();
-                    if message.contains("invalid env token") {
+                    if message.contains("rejected the API key") {
                         break message;
                     }
                     // Not yet listening; retry.
@@ -1528,7 +1528,7 @@ mod tests {
                 Err(err) => panic!("env server did not start: {err}"),
             }
         };
-        assert!(connect_error.contains("invalid env token"));
+        assert!(connect_error.contains("rejected the API key"));
 
         // A token-bearing facade client connects and handshakes successfully.
         let env = RemoteEnv::connect_with_token(&address, "s3cret")

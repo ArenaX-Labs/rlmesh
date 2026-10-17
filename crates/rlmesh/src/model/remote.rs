@@ -154,12 +154,8 @@ impl ModelClient {
                 .map_err(|_| Error::Timeout(timeout))?,
             None => connect.await,
         }
-        .map_err(|err| match err {
-            Error::Connection(message) => Error::Connection(format!(
-                "could not connect to a model at '{address}'; is the model being served? \
-                 ({message})"
-            )),
-            other => other,
+        .map_err(|err| {
+            crate::error::dial_failure(err, "a model", address, "is the model being served?")
         })?;
         client.request_timeout = crate::env::client::normalize_timeout(options.request_timeout);
         Ok(client)
@@ -844,6 +840,7 @@ impl RemoteModel {
             self,
             env.into(),
             options,
+            crate::run::Mode::Sync,
         ))
     }
 
@@ -853,8 +850,13 @@ impl RemoteModel {
         env: impl Into<crate::EnvTarget<'a>>,
         options: crate::SessionOptions,
     ) -> Result<crate::Session<'a>> {
-        crate::run::drive::in_library(crate::Session::create_remote(self, env.into(), options))
-            .await
+        crate::run::drive::in_library(crate::Session::create_remote(
+            self,
+            env.into(),
+            options,
+            crate::run::Mode::Async,
+        ))
+        .await
     }
 }
 

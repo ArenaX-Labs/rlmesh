@@ -149,7 +149,7 @@ pub fn parse_env_connect_target(addr: &str) -> Result<EnvConnectTarget, Error> {
     }
 
     if let Some(target) = addr.strip_prefix("tcp://") {
-        validate_tcp_authority(target)?;
+        validate_tcp_authority("tcp://", target)?;
         return Ok(EnvConnectTarget {
             endpoint: format!("http://{target}"),
             address: format!("tcp://{target}"),
@@ -158,7 +158,7 @@ pub fn parse_env_connect_target(addr: &str) -> Result<EnvConnectTarget, Error> {
     }
 
     if let Some(target) = addr.strip_prefix("http://") {
-        validate_tcp_authority(target)?;
+        validate_tcp_authority("http://", target)?;
         return Ok(EnvConnectTarget {
             endpoint: addr.to_string(),
             address: addr.to_string(),
@@ -168,7 +168,7 @@ pub fn parse_env_connect_target(addr: &str) -> Result<EnvConnectTarget, Error> {
 
     reject_nontcp_scheme(addr)?;
 
-    validate_tcp_authority(addr)?;
+    validate_tcp_authority("", addr)?;
     Ok(EnvConnectTarget {
         endpoint: format!("http://{addr}"),
         address: format!("tcp://{addr}"),
@@ -243,15 +243,16 @@ pub fn normalize_tcp_session_address(addr: &str) -> Result<String, Error> {
         )
         .into());
     }
-    if let Some(target) = addr
-        .strip_prefix("tcp://")
-        .or_else(|| addr.strip_prefix("http://"))
-    {
-        validate_tcp_authority(target)?;
+    if let Some(target) = addr.strip_prefix("tcp://") {
+        validate_tcp_authority("tcp://", target)?;
+        return Ok(format!("tcp://{target}"));
+    }
+    if let Some(target) = addr.strip_prefix("http://") {
+        validate_tcp_authority("http://", target)?;
         return Ok(format!("tcp://{target}"));
     }
     reject_nontcp_scheme(addr)?;
-    validate_tcp_authority(addr)?;
+    validate_tcp_authority("", addr)?;
     Ok(format!("tcp://{addr}"))
 }
 
@@ -272,16 +273,7 @@ fn reject_nontcp_scheme(addr: &str) -> Result<(), Error> {
 /// remainder: port 443 when omitted; a path other than `/`, a query, a
 /// fragment or userinfo is refused.
 fn parse_https_authority(rest: &str) -> Result<(String, u16), Error> {
-    // Never echo userinfo, a query or a fragment (they can carry a secret),
-    // nor a path: only the authority is shown.
-    let shown = if rest.contains(['@', '?', '#']) {
-        "https://<redacted>".to_string()
-    } else {
-        match rest.split_once('/') {
-            Some((authority, path)) if !path.is_empty() => format!("https://{authority}/…"),
-            _ => format!("https://{}", rest.trim_end_matches('/')),
-        }
-    };
+    let shown = shown_address("https://", rest);
     let invalid = |reason: &str| -> Error {
         TransportError::InvalidAddress(format!("{shown}: {reason}")).into()
     };
@@ -330,29 +322,48 @@ fn parse_https_authority(rest: &str) -> Result<(String, u16), Error> {
     Ok((host.to_string(), port))
 }
 
-fn validate_tcp_authority(authority: &str) -> Result<(), Error> {
+/// A plaintext address's `host:port` remainder after `scheme` (`tcp://`,
+/// `http://` or none): userinfo, a query, a fragment and a path are refused.
+fn validate_tcp_authority(scheme: &str, authority: &str) -> Result<(), Error> {
+    let shown = shown_address(scheme, authority);
+    let invalid = |reason: &str| -> Error {
+        TransportError::InvalidAddress(format!("{shown}: {reason}")).into()
+    };
     if authority.contains('@') {
-        // Userinfo can carry a secret: refuse it without echoing it.
-        return Err(TransportError::InvalidAddress(
-            "an address cannot carry credentials; use api_key".to_string(),
-        )
-        .into());
+        return Err(invalid("an address cannot carry credentials; use api_key"));
     }
-    let (host, port) = authority.rsplit_once(':').ok_or_else(|| {
-        TransportError::InvalidAddress(format!(
-            "missing port in tcp session endpoint '{authority}'"
-        ))
-    })?;
+    if authority.contains(['?', '#']) {
+        return Err(invalid(
+            "an address cannot have a query or fragment; give only host:port",
+        ));
+    }
+    if authority.contains('/') {
+        return Err(invalid(
+            "a tcp endpoint cannot have a path; give only host:port",
+        ));
+    }
+    let (host, port) = authority
+        .rsplit_once(':')
+        .ok_or_else(|| invalid("missing port"))?;
     if host.is_empty() {
-        return Err(TransportError::InvalidAddress(format!(
-            "missing host in tcp session endpoint '{authority}'"
-        ))
-        .into());
+        return Err(invalid("missing host"));
     }
-    let _ = port.parse::<u16>().map_err(|error| {
-        TransportError::InvalidAddress(format!("invalid tcp port '{port}': {error}"))
-    })?;
+    let _ = port
+        .parse::<u16>()
+        .map_err(|error| invalid(&format!("invalid port '{port}': {error}")))?;
     Ok(())
+}
+
+/// A refused address as its errors show it: never its userinfo, query or
+/// fragment (they can carry a secret), nor a path; only the authority.
+fn shown_address(scheme: &str, rest: &str) -> String {
+    if rest.contains(['@', '?', '#']) {
+        return format!("{scheme}<redacted>");
+    }
+    match rest.split_once('/') {
+        Some((authority, path)) if !path.is_empty() => format!("{scheme}{authority}/…"),
+        _ => format!("{scheme}{}", rest.trim_end_matches('/')),
+    }
 }
 
 fn parse_port(value: &str, context: &str) -> Result<u16, Error> {
@@ -467,6 +478,12 @@ mod tests {
             "tcp://user:SECRET@models.example:1",
             "http://user:SECRET@models.example:1",
             "user:SECRET@models.example:1",
+            "http://localhost:1?api_key=SECRET",
+            "http://localhost?api_key=SECRET",
+            "tcp://localhost:1#SECRET",
+            "tcp://localhost:1/SECRET",
+            "localhost:1?api_key=SECRET",
+            "localhost:1/v1?api_key=SECRET",
         ] {
             let error = parse_env_connect_target(address).unwrap_err().to_string();
             assert!(!error.contains("SECRET"), "{address}: {error}");

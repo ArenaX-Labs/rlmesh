@@ -367,12 +367,8 @@ impl EnvClientCore {
                 .map_err(|_| Error::Timeout(timeout))?,
             None => dial.await,
         }
-        .map_err(|err| match err {
-            Error::Connection(message) => Error::Connection(format!(
-                "could not connect to an env at '{address}'; is the EnvServer running? \
-                 ({message})"
-            )),
-            other => other,
+        .map_err(|err| {
+            crate::error::dial_failure(err, "an env", address, "is the EnvServer running?")
         })?;
         core.request_timeout = normalize_timeout(options.request_timeout);
         Ok(core)

@@ -24,7 +24,7 @@ pub use results::{EpisodeResult, RunResult, StepEvent, TelemetryRow};
 pub use session::Session;
 pub use targets::{EnvTarget, ModelTarget, RANDOM_SAMPLE, RandomSample};
 
-use native::Mode;
+pub(crate) use native::Mode;
 use targets::ModelKind;
 
 use crate::{Env, Error, Model, Result, VectorEnv};

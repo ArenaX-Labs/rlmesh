@@ -35,28 +35,36 @@ impl std::fmt::Debug for TlsTrust {
 
 impl TlsTrust {
     /// Read and check the PEM bundle at `path`: it must hold at least one
-    /// certificate and nothing that fails to parse. A failure is
+    /// certificate, and every certificate must parse as a trust anchor (the
+    /// TLS stack would otherwise drop it silently). A failure is
     /// [`ClientError::InvalidTlsCaFile`], before any dial.
     pub fn from_ca_file(path: &Path) -> Result<Self, Error> {
-        use rustls::pki_types::{CertificateDer, pem::PemObject};
-        let invalid = |reason: String| -> Error {
-            ClientError::InvalidTlsCaFile(format!("tls_ca_file '{}' {reason}", path.display()))
-                .into()
-        };
-        let pem =
-            std::fs::read(path).map_err(|error| invalid(format!("cannot be read: {error}")))?;
-        let mut count = 0usize;
-        for certificate in CertificateDer::pem_slice_iter(&pem) {
-            certificate.map_err(|error| {
-                invalid(format!("is not a valid PEM certificate bundle: {error}"))
-            })?;
-            count += 1;
-        }
-        if count == 0 {
-            return Err(invalid("holds no PEM certificate".to_string()));
-        }
+        let pem = std::fs::read(path)
+            .map_err(|error| invalid_ca_file(path, &format!("cannot be read: {error}")))?;
+        check_ca_bundle(&pem).map_err(|reason| invalid_ca_file(path, &reason))?;
         Ok(Self::Bundle(pem.into()))
     }
+}
+
+fn invalid_ca_file(path: &Path, reason: &str) -> Error {
+    ClientError::InvalidTlsCaFile(format!("tls_ca_file '{}' {reason}", path.display())).into()
+}
+
+/// Why a PEM bundle cannot serve as a CA bundle, if it cannot.
+fn check_ca_bundle(pem: &[u8]) -> Result<(), String> {
+    use rustls::pki_types::{CertificateDer, pem::PemObject};
+    let mut roots = rustls::RootCertStore::empty();
+    for certificate in CertificateDer::pem_slice_iter(pem) {
+        let certificate = certificate
+            .map_err(|error| format!("is not a valid PEM certificate bundle: {error}"))?;
+        roots
+            .add(certificate)
+            .map_err(|error| format!("holds a certificate that does not parse: {error}"))?;
+    }
+    if roots.is_empty() {
+        return Err("holds no PEM certificate".to_string());
+    }
+    Ok(())
 }
 
 /// One root set a system-trust TLS dial may use.
@@ -216,5 +224,20 @@ mod tests {
     #[test]
     fn system_trust_is_native_roots_with_a_web_pki_fallback_only() {
         assert_eq!(SYSTEM_TRUST_ATTEMPTS, [Roots::Native, Roots::WebPki]);
+    }
+
+    #[test]
+    fn a_ca_bundle_must_hold_certificates_that_parse() {
+        assert_eq!(
+            check_ca_bundle(b"not a certificate").unwrap_err(),
+            "holds no PEM certificate"
+        );
+        // A well-formed PEM block whose DER is the bytes "abc".
+        let garbage = b"-----BEGIN CERTIFICATE-----\nYWJj\n-----END CERTIFICATE-----\n";
+        let error = check_ca_bundle(garbage).unwrap_err();
+        assert!(
+            error.starts_with("holds a certificate that does not parse: "),
+            "{error}"
+        );
     }
 }

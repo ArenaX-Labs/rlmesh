@@ -27,6 +27,11 @@ import pytest
 
 trustme = pytest.importorskip("trustme")
 
+# The served models listen on Unix sockets.
+pytestmark = pytest.mark.skipif(
+    os.name != "posix", reason="Unix sockets are POSIX-only"
+)
+
 
 def _wait_for_socket(path: str) -> None:
     deadline = time.monotonic() + 10.0
@@ -287,6 +292,21 @@ def test_an_https_address_with_a_path_is_a_value_error() -> None:
         rlmesh.RemoteModel("https://models.example/v1")
 
 
+@pytest.mark.parametrize("scheme", ["http", "https"])
+def test_a_refused_address_never_echoes_a_secret(scheme: str) -> None:
+    import rlmesh
+
+    for address in (
+        f"{scheme}://localhost:1?api_key=SECRET",
+        f"{scheme}://localhost:1#SECRET",
+        f"{scheme}://user:SECRET@localhost:1",
+        f"{scheme}://localhost:1/SECRET",
+    ):
+        with pytest.raises(ValueError) as raised:
+            rlmesh.RemoteModel(address)
+        assert "SECRET" not in str(raised.value), address
+
+
 def test_an_unusable_ca_file_is_a_value_error(tmp_path: Path) -> None:
     import rlmesh
 
@@ -296,6 +316,11 @@ def test_an_unusable_ca_file_is_a_value_error(tmp_path: Path) -> None:
     bad.write_text("not a certificate")
     with pytest.raises(ValueError, match="holds no PEM certificate"):
         rlmesh.RemoteModel("https://localhost:1", tls_ca_file=bad)
+    # A well-formed PEM block whose DER is not a certificate (the bytes "abc").
+    garbage = tmp_path / "garbage.pem"
+    garbage.write_text("-----BEGIN CERTIFICATE-----\nYWJj\n-----END CERTIFICATE-----\n")
+    with pytest.raises(ValueError, match="holds a certificate that does not parse"):
+        rlmesh.RemoteModel("https://localhost:1", tls_ca_file=garbage)
     with pytest.raises(ValueError, match="only to an https:// address"):
         rlmesh.RemoteModel("127.0.0.1:1", tls_ca_file=bad)
 
@@ -358,6 +383,9 @@ def test_a_wrong_or_missing_api_key_is_a_connection_error(
     )
     with pytest.raises(ConnectionError) as raised:
         _run_one(model, CountEnv())
+    assert "the server rejected the API key; pass the key it expects as api_key" in str(
+        raised.value
+    )
     assert "right-key" not in str(raised.value)
     if api_key is not None:
         assert api_key not in str(raised.value)

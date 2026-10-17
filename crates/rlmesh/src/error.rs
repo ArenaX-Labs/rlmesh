@@ -458,6 +458,12 @@ impl Error {
                     Self::Connection(format!("message too large: {size} > {max}"))
                 }
                 TransportError::Unavailable(message) => Self::Connection(message),
+                // The server refused the key: say where a key comes from,
+                // never what was sent (R-22).
+                TransportError::Status {
+                    code: tonic::Code::Unauthenticated,
+                    ..
+                } => Self::Connection(KEY_REJECTED.to_string()),
                 TransportError::Status { code, message } => {
                     Self::Connection(format!("{code:?}: {message}"))
                 }
@@ -491,6 +497,27 @@ impl Error {
             // rlmesh_grpc::error::Error is #[non_exhaustive].
             other => Self::Internal(other.to_string()),
         }
+    }
+}
+
+/// A server's refusal of the client's key (gRPC `Unauthenticated`), the same
+/// text in every language. It names where a key comes from, never the key.
+pub(crate) const KEY_REJECTED: &str = "the server rejected the API key; pass the key it \
+     expects as api_key (or set RLMESH_API_KEY for an https:// address)";
+
+/// A client's dial failure, the one formatter for env and model clients:
+/// `could not connect to {peer} at '{address}'; {hint} ({cause})`, or
+/// `could not connect to {peer} at '{address}': {cause}` when the server
+/// rejected the key (serving is not in doubt then). Other classes pass through.
+pub(crate) fn dial_failure(err: Error, peer: &str, address: &str, hint: &str) -> Error {
+    match err {
+        Error::Connection(cause) if cause == KEY_REJECTED => Error::Connection(format!(
+            "could not connect to {peer} at '{address}': {cause}"
+        )),
+        Error::Connection(cause) => Error::Connection(format!(
+            "could not connect to {peer} at '{address}'; {hint} ({cause})"
+        )),
+        other => other,
     }
 }
 

@@ -1792,6 +1792,52 @@ fn dropping_remote_session_creation_closes_the_factory_env() {
     );
 }
 
+/// A factory whose `make` makes a sync rlmesh call (`RemoteEnv::new`, which
+/// fails for want of an address) and records how that call failed.
+struct SyncCallingFactory(Arc<Mutex<Vec<ErrorClass>>>);
+
+impl EnvFactory for SyncCallingFactory {
+    fn make(&mut self, _kwargs: &Kwargs) -> Result<MadeEnv> {
+        let err = crate::RemoteEnv::new(crate::RemoteEnvOptions::default()).unwrap_err();
+        self.0.lock().unwrap().push(err.class());
+        Ok(MadeEnv::env(Steps::new()))
+    }
+}
+
+#[test]
+fn remote_session_creation_runs_the_factory_as_its_caller() {
+    // Nothing listens on port 1: creation fails at the model dial, after make().
+    let model = crate::RemoteModel::new(
+        crate::RemoteModelOptions::default()
+            .address("127.0.0.1:1")
+            .connect_timeout(Duration::from_secs(5)),
+    )
+    .unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let mut factory = SyncCallingFactory(Arc::clone(&seen));
+    // The sync entry point runs make() as its caller would, so a sync call in
+    // it fails for its own reason.
+    assert!(
+        model
+            .session(EnvTarget::factory(&mut factory), SessionOptions::default())
+            .is_err()
+    );
+    // The async twin runs it inside its own future, where a sync call is
+    // refused.
+    super::drive::block_on_library(async {
+        assert!(
+            model
+                .session_async(EnvTarget::factory(&mut factory), SessionOptions::default())
+                .await
+                .is_err()
+        );
+    });
+    assert_eq!(
+        *seen.lock().unwrap(),
+        [ErrorClass::ValueError, ErrorClass::RuntimeError]
+    );
+}
+
 #[test]
 fn plaintext_api_keys_warn_once_per_address() {
     let _lock = crate::warnings::tests::HANDLER_LOCK

@@ -1280,11 +1280,14 @@ impl<'a> Session<'a> {
 
     /// Bind a served model to `env` and dial it: options and the target's
     /// kind and arity are checked before anything dials; an address is
-    /// dialed before the model and closed again if the model dial fails.
+    /// dialed before the model and closed again if the model dial fails. A
+    /// local env's contract getters and a factory's `make` run as `mode`'s
+    /// caller-side callbacks.
     pub(crate) async fn create_remote(
         model: &'a RemoteModel,
         env: EnvTarget<'a>,
         options: SessionOptions,
+        mode: Mode,
     ) -> Result<Session<'a>> {
         let SessionOptions {
             close_env,
@@ -1345,7 +1348,7 @@ impl<'a> Session<'a> {
                 return Err(local_vector_refusal());
             }
             EnvKind::Env(env) => {
-                let contract = crate::env::sync_wire::env_contract_of(&*env)?;
+                let contract = mode.call(|| crate::env::sync_wire::env_contract_of(&*env))?;
                 single_lane(contract.num_envs())?;
                 let wire = contract.to_wire()?;
                 caller_env = CallerEnv::Borrowed(LocalEnv::Env(env));
@@ -1355,10 +1358,11 @@ impl<'a> Session<'a> {
                 // The guard closes the made env if creation fails or its
                 // future is dropped mid-dial; it moves into the session only
                 // once the session exists.
-                let made = super::native::OwnedMadeEnv(Some(factory.make()?), false);
+                let made = super::native::OwnedMadeEnv(Some(mode.call(|| factory.make())?), false);
                 let wire = match &made.0 {
                     Some(MadeEnv::Env(env)) => {
-                        let contract = crate::env::sync_wire::env_contract_of(&**env)?;
+                        let contract =
+                            mode.call(|| crate::env::sync_wire::env_contract_of(&**env))?;
                         single_lane(contract.num_envs())?;
                         contract.to_wire()?
                     }

@@ -176,30 +176,26 @@ class RemoteModelBase(Generic[ObsT, ActT]):
             if isinstance(env, str) or _native_contract(env) is not None
             else classify_env_target(env)[0]
         )
-        bridge = None
-        if kind in ("env", "factory"):
-            # A local env is stepped on this thread; the model is bound with
-            # the contract an EnvServer would publish for it. A factory's env
-            # is built now and is the session's own.
+        local = kind in ("env", "factory")
+        if local:
+            # A local env is stepped on this thread. A factory's env is built
+            # now and is the session's own.
             env, owns_env = (
                 (factory_env(env), True) if kind == "factory" else (env, False)
             )
-            try:
-                contract = load_native("local_env_contract")(env)
-            except BaseException:
-                if owns_env:
-                    close_dialed_env(env)
-                raise
-            # A raw local env hands out its own arrays (numpy for gymnasium).
-            bridge = adapter_env_bridge(env)
-            env_offer = None
         else:
             # The call's declaration is also the dialed env's handshake declaration.
             env, owns_env = dial_env_address(env, workflow_edition)
-            contract = None
-            env_offer = None
         try:
-            if contract is None:
+            bridge = None
+            env_offer = None
+            if local:
+                # The model is bound with the contract an EnvServer would
+                # publish for the env, which hands out its own arrays (numpy
+                # for gymnasium).
+                contract = load_native("local_env_contract")(env)
+                bridge = adapter_env_bridge(env)
+            else:
                 contract = env_contract_of(env)
                 env_offer = env_session_offer(env)
             # A dial failure already reads "could not connect to a model at ...".
@@ -214,21 +210,22 @@ class RemoteModelBase(Generic[ObsT, ActT]):
                 api_key=self._api_key.value,
                 tls_ca_file=self._tls_ca_file,
             )
+            return remote_session(
+                client,
+                env,
+                close_env=close_env,
+                owns_env=owns_env,
+                view=view,
+                workflow_edition=workflow_edition,
+                bridge=bridge,
+            )
         except BaseException:
-            # An env dialed or built for this call is released before the
-            # error goes up, not left to the garbage collector.
+            # Until the session owns it, an env dialed or built for this call
+            # is released before the error goes up, not left to the garbage
+            # collector.
             if owns_env:
                 close_dialed_env(env)
             raise
-        return remote_session(
-            client,
-            env,
-            close_env=close_env,
-            owns_env=owns_env,
-            view=view,
-            workflow_edition=workflow_edition,
-            bridge=bridge,
-        )
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}(address={self._address!r})"

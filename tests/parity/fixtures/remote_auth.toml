@@ -12,7 +12,7 @@ family = "Remote auth"
 rules = ["R-22"]
 operation = "remote_auth"
 variant = "api_key_rejected"
-expect = { error = "ConnectionError", text = "could not connect to a model at 'unix://SOCKET'; is the model being served? (Unauthenticated: invalid route token)" }
+expect = { error = "ConnectionError", text = "could not connect to a model at 'unix://SOCKET': the server rejected the API key; pass the key it expects as api_key (or set RLMESH_API_KEY for an https:// address)" }
 
 [[scenario]]
 id = "api_key_accepted"

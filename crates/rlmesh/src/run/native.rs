@@ -49,10 +49,11 @@ impl Mode {
     }
 
     /// Run a caller-side callback (a hook, a local env call) as this mode
-    /// does: an `_async` twin runs it with the driving flag set.
+    /// does: a sync entry point runs it with the driving flag clear, even
+    /// inside its own library poll; an `_async` twin with the flag set.
     pub(crate) fn call<R>(self, f: impl FnOnce() -> R) -> R {
         match self {
-            Mode::Sync => f(),
+            Mode::Sync => drive::as_caller(f),
             Mode::Async => drive::as_driving(f),
         }
     }

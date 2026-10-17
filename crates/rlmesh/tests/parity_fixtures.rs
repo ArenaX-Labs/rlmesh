@@ -1148,14 +1148,7 @@ fn remote_auth(variant: &str, env: &mut ScriptedEnv, model: &Model) -> Json {
             )
         })
     };
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while std::os::unix::net::UnixStream::connect(&path).is_err() {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the model never served"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    wait_for_socket(&path);
     let mut options = RemoteModelOptions::default().address(&address);
     options.api_key = match variant {
         "api_key_rejected" => Some("wrong-key".into()),
@@ -1175,6 +1168,26 @@ fn remote_auth(variant: &str, env: &mut ScriptedEnv, model: &Model) -> Json {
     let _ = serving.join().unwrap();
     let _ = std::fs::remove_dir_all(&dir);
     out
+}
+
+/// Wait until a model serves on the Unix socket at `path`.
+#[cfg(unix)]
+fn wait_for_socket(path: &str) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while std::os::unix::net::UnixStream::connect(path).is_err() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the model never served"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// `remote_auth` serves its model on a Unix socket (no port race), which
+/// this platform lacks.
+#[cfg(not(unix))]
+fn wait_for_socket(_path: &str) {
+    panic!("remote_auth serves the model on a Unix socket, which this platform lacks");
 }
 
 /// A process-unique suffix for scratch paths.

@@ -19,8 +19,11 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 /// Interval between the HTTP/2 PINGs every RLMesh server sends on an idle
-/// connection, so a proxy or load balancer in front of it does not reap a
-/// Join stream that waits between episodes.
+/// connection: they detect a dead peer and keep NAT mappings and proxies
+/// that count PINGs as traffic open for a Join stream that waits between
+/// episodes. Many L7 load balancers (AWS ALB among them) do not reset their
+/// idle timer on a PING; their stream idle timeout must exceed the longest
+/// gap between predicts.
 pub const SERVER_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 
 /// How long a server waits for a PING's acknowledgement before it closes the
