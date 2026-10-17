@@ -429,7 +429,7 @@ Every served env and model runs at a workflow edition, which pins what a session
 Additions that exist only for native callers carry the `rlmesh_ext_` prefix (types `RLMeshExt...`):
 
 - Cancellation: `rlmesh_ext_cancel_token_new`, `_clone`, `_cancel` and `_free`. Put a token in the `cancel` field of run, session or serve options and cancel it from any thread; the call in flight returns `RLMESH_ERR_CANCELLED`. Remote clients and sessions expose their token through `_cancel_handle`.
-- Bearer-token endpoints: `RLMeshExtEnvServerOptions` and `RLMeshExtModelServeOptions` (through the `ext` field of the serve options) and `rlmesh_ext_remote_env_new_with_token` and friends.
+- Bearer-token endpoints: `RLMeshExtEnvServerOptions` and `RLMeshExtModelServeOptions` (through the `ext` field of the serve options) set the token a server expects; clients send it as `api_key`.
 - `rlmesh_ext_env_server_describe_json` for a served env's describe envelope, `rlmesh_ext_register_entrypoint` for trusted custom adapter transforms, and helpers such as `rlmesh_ext_dtype_size`.
 
 ## Compatibility

@@ -147,6 +147,8 @@ fn defaults_match_python_literals() {
         value.workflow_edition.is_none(),
         "rlmesh:RemoteEnv.workflow_edition"
     );
+    assert!(value.api_key.is_none(), "rlmesh:RemoteEnv.api_key");
+    assert!(value.tls_ca_file.is_none(), "rlmesh:RemoteEnv.tls_ca_file");
     let value = rlmesh::RemoteModelOptions::default();
     assert!(value.address.is_none(), "rlmesh:RemoteModel.address");
     assert!(value.host.is_none(), "rlmesh:RemoteModel.host");
@@ -160,6 +162,11 @@ fn defaults_match_python_literals() {
     assert!(
         value.request_timeout.is_none(),
         "rlmesh:RemoteModel.request_timeout_seconds"
+    );
+    assert!(value.api_key.is_none(), "rlmesh:RemoteModel.api_key");
+    assert!(
+        value.tls_ca_file.is_none(),
+        "rlmesh:RemoteModel.tls_ca_file"
     );
     let value = rlmesh::RunResult::default();
     assert!(value.episodes.is_empty(), "rlmesh:RunResult.episodes");

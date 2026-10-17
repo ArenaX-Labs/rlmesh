@@ -70,7 +70,7 @@ def test_environment_token_is_enforced_and_reaches_run_loopback() -> None:
             try:
                 rlmesh.RemoteEnv(server.address)
             except ConnectionError as error:
-                assert "Unauthenticated" in str(error), error
+                assert "rejected the API key" in str(error), error
             else:
                 raise AssertionError("a client without the token must be rejected")
         finally:

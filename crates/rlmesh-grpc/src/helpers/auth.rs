@@ -58,8 +58,9 @@ pub fn token_header_problem(token: &str) -> Option<&'static str> {
     }
 }
 
-/// Attach `token` to a client request's `authorization` metadata. An empty
-/// token sends none; a token a header cannot carry fails with a message naming
+/// Attach `token` to a client request's `authorization` metadata as
+/// `Bearer <token>` (servers accept it raw or in that form; a token already
+/// in that form is sent as given). An empty token sends none; a token a header cannot carry fails with a message naming
 /// the problem (never the token) instead of a transport error.
 pub(crate) fn authorize<T>(
     request: &mut tonic::Request<T>,
@@ -72,7 +73,12 @@ pub(crate) fn authorize<T>(
     if let Some(problem) = token_header_problem(token) {
         return Err(ClientError::InvalidToken(problem));
     }
-    let value = token
+    let value = if strip_bearer_scheme(token).is_some() {
+        token.to_string()
+    } else {
+        format!("Bearer {token}")
+    };
+    let value = value
         .parse()
         .map_err(|_| ClientError::InvalidToken("is not a valid header value"))?;
     request.metadata_mut().insert("authorization", value);
@@ -149,7 +155,15 @@ mod tests {
         authorize(&mut request, "").unwrap();
         assert!(request.metadata().get("authorization").is_none());
         authorize(&mut request, "s3cret").unwrap();
-        assert_eq!(request.metadata().get("authorization").unwrap(), "s3cret");
+        assert_eq!(
+            request.metadata().get("authorization").unwrap(),
+            "Bearer s3cret"
+        );
+        authorize(&mut request, "bearer s3cret").unwrap();
+        assert_eq!(
+            request.metadata().get("authorization").unwrap(),
+            "bearer s3cret"
+        );
 
         let error = crate::error::Error::from(
             authorize(&mut tonic::Request::new(()), "s3cret\n").unwrap_err(),

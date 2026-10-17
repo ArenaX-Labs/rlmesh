@@ -1,16 +1,10 @@
 //! Environment client transport implementation using Tonic.
 
-#[cfg(unix)]
-use hyper_util::rt::TokioIo;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
-#[cfg(unix)]
-use tokio::net::UnixStream;
 
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
-#[cfg(unix)]
-use tower::service_fn;
 
 use rlmesh_proto::core::v1::{
     EnvContract, ShutdownRequest as CoreShutdownRequest, ShutdownResponse as CoreShutdownResponse,
@@ -333,44 +327,18 @@ impl EnvClient {
     /// metadata header of every request. An empty token sends no header and is
     /// equivalent to [`EnvClient::connect`].
     pub async fn connect_with_token(addr: &str, token: &str) -> Result<Self, GrpcError> {
+        Self::connect_with(addr, &crate::Credentials::token(token)).await
+    }
+
+    /// Connect to an EnvService server with `credentials`: the token every
+    /// request carries and the TLS trust of an `https://` address.
+    pub async fn connect_with(
+        addr: &str,
+        credentials: &crate::Credentials,
+    ) -> Result<Self, GrpcError> {
         let target = parse_env_connect_target(addr)?;
-
-        #[cfg(unix)]
-        let channel = if let Some(socket_path) = target.unix_path().cloned() {
-            let endpoint = crate::configure_endpoint(
-                tonic::transport::Endpoint::from_shared(target.endpoint().to_string())
-                    .map_err(|e| TransportError::ConnectFailed(e.to_string()))?,
-            );
-
-            endpoint
-                .connect_with_connector(service_fn(move |_: tonic::transport::Uri| {
-                    let socket_path = socket_path.clone();
-                    async move { UnixStream::connect(socket_path).await.map(TokioIo::new) }
-                }))
-                .await
-                .map_err(|e| TransportError::ConnectFailed(e.to_string()))?
-        } else {
-            let endpoint = crate::configure_endpoint(
-                tonic::transport::Endpoint::from_shared(target.endpoint().to_string())
-                    .map_err(|e| TransportError::ConnectFailed(e.to_string()))?,
-            );
-            endpoint
-                .connect()
-                .await
-                .map_err(|e| TransportError::ConnectFailed(e.to_string()))?
-        };
-
-        #[cfg(not(unix))]
-        let channel = {
-            let endpoint = crate::configure_endpoint(
-                tonic::transport::Endpoint::from_shared(target.endpoint().to_string())
-                    .map_err(|e| TransportError::ConnectFailed(e.to_string()))?,
-            );
-            endpoint
-                .connect()
-                .await
-                .map_err(|e| TransportError::ConnectFailed(e.to_string()))?
-        };
+        let channel = crate::dial::dial(&target, &credentials.trust).await?;
+        let token = credentials.token.as_str();
 
         let shared = Arc::new(Shared::new(ClientState::Connected, None));
         Ok(Self {
@@ -1600,6 +1568,176 @@ mod tests {
                 }),
             }))
         }
+    }
+
+    /// A throwaway CA and a `localhost` / `127.0.0.1` server certificate:
+    /// `(ca_pem, cert_pem, key_pem)`.
+    fn test_pki() -> (String, String, String) {
+        use rcgen::{BasicConstraints, CertificateParams, IsCa, Issuer, KeyPair};
+        let ca_key = KeyPair::generate().unwrap();
+        let mut ca_params = CertificateParams::new(Vec::<String>::new()).unwrap();
+        ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        let ca_cert = ca_params.self_signed(&ca_key).unwrap();
+        let issuer = Issuer::new(ca_params, ca_key);
+        let key = KeyPair::generate().unwrap();
+        let cert = CertificateParams::new(vec!["localhost".to_string(), "127.0.0.1".to_string()])
+            .unwrap()
+            .signed_by(&key, &issuer)
+            .unwrap();
+        (ca_cert.pem(), cert.pem(), key.serialize_pem())
+    }
+
+    /// Serve `PlainEnv` over TLS (or plaintext with `tls: None`) on a
+    /// loopback port, recording each request's `authorization` header.
+    async fn serve_env(
+        tls: Option<(String, String)>,
+    ) -> (
+        std::net::SocketAddr,
+        Arc<std::sync::Mutex<Vec<String>>>,
+        oneshot::Sender<()>,
+    ) {
+        use crate::env::server::GrpcEnvServer;
+        use crate::lifecycle::{ServeOptions, ShutdownTrigger};
+        use rlmesh_proto::env::v1::env_service_server::EnvServiceServer;
+
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = Arc::clone(&seen);
+        let service = tonic::service::interceptor::InterceptedService::new(
+            EnvServiceServer::new(GrpcEnvServer::new_with_options(
+                PlainEnv::new("tls-env"),
+                ShutdownTrigger::new(),
+                ServeOptions::default(),
+                None,
+            )),
+            move |request: tonic::Request<()>| {
+                if let Some(value) = request.metadata().get("authorization") {
+                    record
+                        .lock()
+                        .unwrap()
+                        .push(value.to_str().unwrap_or_default().to_string());
+                }
+                Ok(request)
+            },
+        );
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let mut builder = tonic::transport::Server::builder();
+        if let Some((cert, key)) = tls {
+            builder = builder
+                .tls_config(
+                    tonic::transport::ServerTlsConfig::new()
+                        .identity(tonic::transport::Identity::from_pem(cert, key)),
+                )
+                .unwrap();
+        }
+        tokio::spawn(async move {
+            builder
+                .add_service(service)
+                .serve_with_incoming_shutdown(
+                    tokio_stream::wrappers::TcpListenerStream::new(listener),
+                    async {
+                        let _ = shutdown_rx.await;
+                    },
+                )
+                .await
+        });
+        (addr, seen, shutdown_tx)
+    }
+
+    fn trust(pem: &str) -> crate::TlsTrust {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "rlmesh-test-ca-{}-{}.pem",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::write(&path, pem).unwrap();
+        let trust = crate::TlsTrust::from_ca_file(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        trust
+    }
+
+    #[tokio::test]
+    async fn https_dials_tls_and_sends_a_bearer_token() {
+        let (ca, cert, key) = test_pki();
+        let (addr, seen, shutdown) = serve_env(Some((cert, key))).await;
+        let credentials = crate::Credentials {
+            token: "s3cret".to_string(),
+            trust: trust(&ca),
+        };
+        let address = format!("https://localhost:{}", addr.port());
+        let mut client = EnvClient::connect_with(&address, &credentials)
+            .await
+            .unwrap();
+        assert_eq!(client.address(), address);
+        client.handshake().await.unwrap();
+        assert_eq!(seen.lock().unwrap().as_slice(), ["Bearer s3cret"]);
+        let _ = shutdown.send(());
+    }
+
+    #[tokio::test]
+    async fn tls_failures_name_the_handshake() {
+        let (_, cert, key) = test_pki();
+        let (other_ca, _, _) = test_pki();
+        let (addr, _, shutdown) = serve_env(Some((cert, key))).await;
+        let untrusted = crate::Credentials {
+            token: String::new(),
+            trust: trust(&other_ca),
+        };
+        let error =
+            EnvClient::connect_with(&format!("https://localhost:{}", addr.port()), &untrusted)
+                .await
+                .err()
+                .expect("an untrusted certificate must fail")
+                .to_string();
+        assert!(
+            error.contains(&format!(
+                "TLS handshake with localhost:{} failed",
+                addr.port()
+            )),
+            "{error}"
+        );
+        assert!(error.contains("invalid peer certificate"), "{error}");
+        let _ = shutdown.send(());
+
+        // https:// against a plaintext server fails the handshake too.
+        let (plain, _, shutdown) = serve_env(None).await;
+        let error = EnvClient::connect_with(&format!("https://{plain}"), &untrusted)
+            .await
+            .err()
+            .expect("a plaintext server cannot complete TLS")
+            .to_string();
+        assert!(error.contains("TLS handshake with 127.0.0.1:"), "{error}");
+        let _ = shutdown.send(());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn model_client_dials_a_unix_socket() {
+        let path = std::env::temp_dir().join(format!("rlmesh-model-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let (_reporter, health) = crate::health::serving_health_service().await;
+        tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(health)
+                .serve_with_incoming_shutdown(
+                    tokio_stream::wrappers::UnixListenerStream::new(listener),
+                    async {
+                        let _ = shutdown_rx.await;
+                    },
+                )
+                .await
+        });
+        let address = format!("unix://{}", path.display());
+        let client = crate::ModelClient::connect(&address, "").await.unwrap();
+        assert_eq!(client.address(), address);
+        let _ = shutdown_tx.send(());
+        let _ = std::fs::remove_file(&path);
     }
 
     #[tokio::test]

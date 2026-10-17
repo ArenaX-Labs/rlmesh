@@ -92,6 +92,8 @@ pub struct ModelClient {
 pub struct ModelConnect<'a> {
     /// Endpoint token (empty: none).
     pub token: &'a str,
+    /// The certificate authorities an `https://` dial trusts.
+    pub trust: rlmesh_grpc::TlsTrust,
     /// The env's handshake offer; `None` stands in this build, undeclared.
     pub env_offer: Option<SessionOffer>,
     /// The runtime tier's declared edition (already resolved).
@@ -135,9 +137,13 @@ impl ModelClient {
         let env_offer = options
             .env_offer
             .unwrap_or_else(|| SessionOffer::new(rlmesh_proto::SUPPORTED_WORKFLOW_EDITIONS));
+        let credentials = rlmesh_grpc::Credentials {
+            token: options.token.to_string(),
+            trust: options.trust,
+        };
         let connect = Self::connect_inner(
             address,
-            options.token,
+            &credentials,
             env_contract,
             env_offer,
             options.declared,
@@ -148,12 +154,8 @@ impl ModelClient {
                 .map_err(|_| Error::Timeout(timeout))?,
             None => connect.await,
         }
-        .map_err(|err| match err {
-            Error::Connection(message) => Error::Connection(format!(
-                "could not connect to a model at '{address}'; is the model being served? \
-                 ({message})"
-            )),
-            other => other,
+        .map_err(|err| {
+            crate::error::dial_failure(err, "a model", address, "is the model being served?")
         })?;
         client.request_timeout = crate::env::client::normalize_timeout(options.request_timeout);
         Ok(client)
@@ -207,7 +209,8 @@ impl ModelClient {
         env_offer: SessionOffer,
         declared: Option<&str>,
     ) -> Result<Self> {
-        Self::connect_inner(address, token, env_contract, env_offer, declared).await
+        let credentials = rlmesh_grpc::Credentials::token(token);
+        Self::connect_inner(address, &credentials, env_contract, env_offer, declared).await
     }
 
     /// Connect to a model server and reconcile the **route workflow edition**
@@ -231,12 +234,13 @@ impl ModelClient {
         env_contract: spaces::EnvContract,
         env_offer: SessionOffer,
     ) -> Result<Self> {
-        Self::connect_inner(address, token, env_contract, env_offer, None).await
+        let credentials = rlmesh_grpc::Credentials::token(token);
+        Self::connect_inner(address, &credentials, env_contract, env_offer, None).await
     }
 
     async fn connect_inner(
         address: &str,
-        token: &str,
+        credentials: &rlmesh_grpc::Credentials,
         env_contract: spaces::EnvContract,
         env_offer: SessionOffer,
         declared: Option<&str>,
@@ -259,7 +263,7 @@ impl ModelClient {
         // Model first: the runtime learns the model's window before it can pick
         // the edition. (The env was already handshaked by the caller; its offer
         // narrows the floor here.)
-        let mut inner = rlmesh_grpc::ModelClient::connect(&address.to_string(), token)
+        let mut inner = rlmesh_grpc::ModelClient::connect_with(&address.to_string(), credentials)
             .await
             .map_err(Error::from_grpc)?;
         inner.declare_workflow_edition(declared.map(str::to_string));
@@ -643,9 +647,11 @@ mod tests {
 
 /// Options for connecting to a served model: the same as
 /// [`RemoteEnvOptions`](crate::RemoteEnvOptions) without `workflow_edition`.
-#[derive(Clone, Debug, Default)]
+/// `Debug` never prints the `api_key`.
+#[derive(Clone, Default)]
 pub struct RemoteModelOptions {
-    /// The endpoint (`tcp://host:port`, `host:port` or `unix:///path`).
+    /// The endpoint (`tcp://host:port`, `host:port`, `https://host[:port]`
+    /// or `unix:///path`).
     pub address: Option<String>,
     /// TCP host helper (default `127.0.0.1`); needs `port`.
     pub host: Option<String>,
@@ -660,6 +666,28 @@ pub struct RemoteModelOptions {
     /// Bound on each `predict` and route close of sessions off this handle
     /// (zero: none).
     pub request_timeout: Option<Duration>,
+    /// The key sent as `authorization: Bearer <key>` on every model request;
+    /// `None` reads `RLMESH_API_KEY` for an `https://` address only, `""`
+    /// sends none.
+    pub api_key: Option<String>,
+    /// A PEM bundle an `https://` dial trusts instead of the system roots.
+    pub tls_ca_file: Option<std::path::PathBuf>,
+}
+
+impl std::fmt::Debug for RemoteModelOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RemoteModelOptions")
+            .field("address", &self.address)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("path", &self.path)
+            .field("transport", &self.transport)
+            .field("connect_timeout", &self.connect_timeout)
+            .field("request_timeout", &self.request_timeout)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field("tls_ca_file", &self.tls_ca_file)
+            .finish()
+    }
 }
 
 impl RemoteModelOptions {
@@ -704,11 +732,26 @@ impl RemoteModelOptions {
         self.request_timeout = Some(timeout.into());
         self
     }
+
+    /// Set `api_key`.
+    pub fn api_key(mut self, api_key: impl Into<String>) -> Self {
+        self.api_key = Some(api_key.into());
+        self
+    }
+
+    /// Set `tls_ca_file`.
+    pub fn tls_ca_file(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.tls_ca_file = Some(path.into());
+        self
+    }
 }
 
 struct RemoteModelInner {
     address: String,
-    token: String,
+    /// Checked at `new`; resolved fresh at each session dial (RMT-22), so a
+    /// rotated `RLMESH_API_KEY` or CA bundle reaches the next session.
+    api_key: Option<String>,
+    tls_ca_file: Option<std::path::PathBuf>,
     connect_timeout: Option<Duration>,
     request_timeout: Option<Duration>,
 }
@@ -722,13 +765,13 @@ struct RemoteModelInner {
 pub struct RemoteModel(Arc<RemoteModelInner>);
 
 impl RemoteModel {
-    /// Check the address and timeouts (the ValueError class) and keep the
-    /// address as given, so `"127.0.0.1:5555"` stays scheme-less.
+    /// Check the address, timeouts, `api_key` and `tls_ca_file` (the
+    /// ValueError class) and keep the address as given, so
+    /// `"127.0.0.1:5555"` stays scheme-less. Checks `tls_ca_file` and
+    /// `RLMESH_API_KEY` now (each session dial reads them again); no network
+    /// I/O. An explicit `api_key` for a plaintext address that is not
+    /// loopback warns (`UserWarning`, once per address per process).
     pub fn new(options: RemoteModelOptions) -> Result<RemoteModel> {
-        Self::with_token(options, String::new())
-    }
-
-    pub(crate) fn with_token(options: RemoteModelOptions, token: String) -> Result<RemoteModel> {
         let address = crate::env::client::normalize_connect_address(
             options.address.as_deref(),
             options.host.as_deref(),
@@ -737,11 +780,20 @@ impl RemoteModel {
             options.transport,
         )?;
         ConnectAddress::parse(&address)?;
+        let connect_timeout = crate::env::client::normalize_timeout(options.connect_timeout);
+        let request_timeout = crate::env::client::normalize_timeout(options.request_timeout);
+        crate::credentials::resolve(
+            &address,
+            options.api_key.as_deref(),
+            options.tls_ca_file.as_deref(),
+            true,
+        )?;
         Ok(RemoteModel(Arc::new(RemoteModelInner {
             address,
-            token,
-            connect_timeout: crate::env::client::normalize_timeout(options.connect_timeout),
-            request_timeout: crate::env::client::normalize_timeout(options.request_timeout),
+            api_key: options.api_key,
+            tls_ca_file: options.tls_ca_file,
+            connect_timeout,
+            request_timeout,
         })))
     }
 
@@ -751,8 +803,14 @@ impl RemoteModel {
         &self.0.address
     }
 
-    pub(crate) fn token(&self) -> &str {
-        &self.0.token
+    /// The credentials a session dial sends, resolved now (RMT-22).
+    pub(crate) fn auth(&self) -> Result<crate::credentials::ClientAuth> {
+        crate::credentials::resolve(
+            &self.0.address,
+            self.0.api_key.as_deref(),
+            self.0.tls_ca_file.as_deref(),
+            false,
+        )
     }
 
     pub(crate) fn connect_timeout(&self) -> Option<Duration> {
@@ -766,8 +824,10 @@ impl RemoteModel {
     /// Bind this served model to `env` and dial it. `env` is an address
     /// (dialed now and owned by the session), an
     /// [`EnvServer`](crate::EnvServer) (dialed at first env use), or a
-    /// borrowed [`RemoteEnv`](crate::RemoteEnv); a local env is the
-    /// TypeError class and a multi-lane target the ValueError class.
+    /// borrowed [`RemoteEnv`](crate::RemoteEnv), or a local env (stepped
+    /// on the caller's side; a factory's env is built now and closed with the
+    /// session). A local vector env is the TypeError class and a multi-lane
+    /// target the ValueError class.
     /// `trust_entrypoints` set is the ValueError class (the served model
     /// owns its adapter).
     pub fn session<'a>(
@@ -780,6 +840,7 @@ impl RemoteModel {
             self,
             env.into(),
             options,
+            crate::run::Mode::Sync,
         ))
     }
 
@@ -789,8 +850,13 @@ impl RemoteModel {
         env: impl Into<crate::EnvTarget<'a>>,
         options: crate::SessionOptions,
     ) -> Result<crate::Session<'a>> {
-        crate::run::drive::in_library(crate::Session::create_remote(self, env.into(), options))
-            .await
+        crate::run::drive::in_library(crate::Session::create_remote(
+            self,
+            env.into(),
+            options,
+            crate::run::Mode::Async,
+        ))
+        .await
     }
 }
 

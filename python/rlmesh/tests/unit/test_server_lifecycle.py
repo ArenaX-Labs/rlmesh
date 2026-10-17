@@ -1,8 +1,9 @@
-"""EnvServer lifecycle: a server must never outlive the interpreter.
+"""Server lifecycle: a server must never outlive the interpreter.
 
 A server that is still alive when CPython finalizes kills the process with a
 signal -- its serve and lane threads keep calling into an interpreter that is
-being torn down -- so ``EnvServer`` stops and joins itself from a finalizer.
+being torn down -- so ``EnvServer`` stops and joins itself from a finalizer,
+and a model still serving is closed from an ``atexit`` hook.
 The exit paths are exercised in a child process: a negative ``returncode`` is a
 signal death (SIGABRT/SIGSEGV), which is exactly the failure being guarded.
 
@@ -108,6 +109,35 @@ def test_an_explicitly_stopped_server_exits_cleanly(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.skipif(os.name != "posix", reason="unix sockets are POSIX-only")
+def test_a_model_still_serving_at_exit_is_closed_before_finalization(
+    tmp_path: Path, socket_dir: Path
+) -> None:
+    path = socket_dir / "model.sock"
+    result = _run_child(
+        tmp_path,
+        "import os, threading, time\n"
+        f"address = 'unix://{path}'\n"
+        "model = rlmesh.Model(\n"
+        "    lambda observation: 0,\n"
+        "    on_close=lambda: print('MODEL_CLOSED', flush=True),\n"
+        ")\n"
+        "threading.Thread(target=model.serve, args=(address,), daemon=True).start()\n"
+        f"while not os.path.exists({str(path)!r}):\n"
+        "    time.sleep(0.01)\n"
+        "rlmesh.run(rlmesh.RemoteModel(address), TinyEnv(), episodes=2,"
+        " max_episode_steps=5)\n"
+        "session = rlmesh.RemoteModel(address).session(TinyEnv())\n"
+        "session.reset()\n",
+    )
+
+    # The serve's daemon thread polled and answered from native threads; the
+    # atexit hook closes the model (stopping the serve) while the interpreter
+    # is still alive, so nothing calls into it as it finalizes.
+    assert result.returncode == 0, result.stderr
+    assert "MODEL_CLOSED" in result.stdout
 
 
 def test_a_script_that_raises_while_holding_a_server_reports_the_error(

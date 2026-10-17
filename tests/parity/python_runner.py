@@ -194,6 +194,8 @@ def execute(case):
                     return observed
                 finally:
                     first.close()
+        if operation == "remote_auth":
+            return remote_auth(case["variant"], env, model)
         if operation == "busy_remote":
             with rlmesh.EnvServer(env, address="tcp://127.0.0.1:0") as server:
                 server.start()
@@ -382,6 +384,76 @@ def execute(case):
         return error_record(error)
     finally:
         model.close()
+
+
+def masked(record, value, mask):
+    """Replace a run-specific address part (a port, a socket path) in the text."""
+    record["text"] = record["text"].replace(value, mask)
+    return record
+
+
+def remote_auth(variant, env, model):
+    """A served model reached with an api_key, over TLS, or driving a local env."""
+    if variant == "invalid_header":
+        rlmesh.RemoteModel("https://localhost:1", api_key="bad\nkey")
+        raise AssertionError("an api_key with a newline was accepted")
+    if variant == "local_model_https_env":
+        with rlmesh.EnvServer(ScriptedEnv(), address="tcp://127.0.0.1:0") as server:
+            server.start()
+            port = server.address.rsplit(":", 1)[1]
+            try:
+                model.run(f"https://127.0.0.1:{port}")
+            except ConnectionError as error:
+                return masked(error_record(error), port, "PORT")
+            raise AssertionError("https:// reached a plaintext env server")
+    if variant == "https_to_plaintext":
+        with rlmesh.EnvServer(ScriptedEnv(), address="tcp://127.0.0.1:0") as server:
+            server.start()
+            port = server.address.rsplit(":", 1)[1]
+            try:
+                rlmesh.run(rlmesh.RemoteModel(f"https://127.0.0.1:{port}"), env)
+            except ConnectionError as error:
+                return masked(error_record(error), port, "PORT")
+            raise AssertionError("https:// reached a plaintext server")
+    import socket
+    import tempfile
+    import time
+
+    path = os.path.join(tempfile.mkdtemp(), "model.sock")
+    previous = os.environ.get("RLMESH_MODEL_ENDPOINT_TOKEN")
+    if variant in ("api_key_rejected", "api_key_accepted"):
+        os.environ["RLMESH_MODEL_ENDPOINT_TOKEN"] = "right-key"
+    thread = threading.Thread(target=model.serve, args=(f"unix://{path}",))
+    thread.start()
+    try:
+        deadline = time.monotonic() + 10
+        while True:
+            with socket.socket(socket.AF_UNIX) as probe:
+                if probe.connect_ex(path) == 0:
+                    break
+            if time.monotonic() > deadline:
+                raise AssertionError("the model never served")
+            time.sleep(0.01)
+    finally:
+        if previous is None:
+            os.environ.pop("RLMESH_MODEL_ENDPOINT_TOKEN", None)
+        else:
+            os.environ["RLMESH_MODEL_ENDPOINT_TOKEN"] = previous
+    key = {"api_key_rejected": "wrong-key", "api_key_accepted": "right-key"}
+    try:
+        served = rlmesh.RemoteModel(f"unix://{path}", api_key=key.get(variant))
+        try:
+            result = rlmesh.run(served, env)
+        except ConnectionError as error:
+            return masked(error_record(error), path, "SOCKET")
+        return {
+            "episodes": result.num_episodes,
+            "steps": result.total_steps,
+            "env_closes": env.closes,
+        }
+    finally:
+        model.close()
+        thread.join(10)
 
 
 def check_warning_error():

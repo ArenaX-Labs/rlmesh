@@ -122,6 +122,7 @@ mod address;
 pub mod binding;
 mod bound;
 mod build_info;
+mod credentials;
 mod describe;
 mod dlpack;
 mod dtype;

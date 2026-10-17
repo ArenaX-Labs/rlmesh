@@ -17,6 +17,7 @@
 //! [`health`] wires the standard `grpc.health.v1` service.
 
 pub mod connect;
+pub mod dial;
 pub mod env;
 pub mod error;
 pub mod floor;
@@ -81,6 +82,7 @@ pub(crate) fn configure_endpoint(
 }
 
 pub use connect::{ConnectOptions, retry_connect};
+pub use dial::{Credentials, TlsTrust};
 pub use env::{EnvClient, EnvHandshake};
 pub use floor::env_floor;
 pub use lifecycle::{ALLOW_REMOTE_SHUTDOWN_ENV, DEFAULT_PREDICT_CONCURRENCY, ServeOptions};

@@ -58,3 +58,13 @@ variant = "lent"
 languages = ["c"]
 why = "Tests C ABI struct_size and unknown-tail rules; other APIs hide the raw ABI structs."
 expect = { unknown_default = true, library_size = true }
+
+[[scenario]]
+id = "c_sizing_abi5_remote"
+family = "C sizing"
+rules = ["R-19"]
+operation = "sizing"
+variant = "abi5_remote"
+languages = ["c"]
+why = "Tests C ABI struct_size for fields appended after ABI 5; other APIs hide the raw ABI structs."
+expect = { error = "ValueError", text = "RLMeshRemoteEnvOptions.struct_size MIN_SIZE+1 ends inside a field" }

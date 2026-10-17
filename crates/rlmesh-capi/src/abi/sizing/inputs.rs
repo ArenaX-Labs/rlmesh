@@ -3,6 +3,21 @@
 use super::SizedInput;
 
 macro_rules! input {
+    ($ty:ty; first_appended = $min:ident; appended = [$($appended:ident),*] $(; bools = [$($bool:ident),*])?) => {
+        // SAFETY: as below; all-zero is valid for every field (pointers,
+        // integers, floats, bools).
+        unsafe impl SizedInput for $ty {
+            const BOOL_FIELDS: &'static [(usize, &'static str)] = &[
+                $($((std::mem::offset_of!($ty, $bool), stringify!($bool)),)*)?
+            ];
+            // The first appended field starts at the ABI-5 sizeof.
+            const MIN_SIZE: usize = std::mem::offset_of!($ty, $min);
+            const APPENDED_ENDS: &'static [usize] = &[
+                $(std::mem::offset_of!($ty, $appended)
+                    + crate::abi::sizing::inputs::field_size(|v: &$ty| &v.$appended),)*
+            ];
+        }
+    };
     ($ty:ty $(, $field:ident)*) => {
         // SAFETY: listed bools are the only restricted scalar representations;
         // remaining fields are C integers, floats, raw pointers or nullable callbacks.
@@ -155,18 +170,16 @@ input!(
 );
 input!(crate::recorder::records::RLMeshWorkloadRecordOptions);
 input!(
-    crate::remote_api::RLMeshRemoteEnvOptions,
-    has_port,
-    has_transport,
-    has_connect_timeout_seconds,
-    has_request_timeout_seconds
+    crate::remote_api::RLMeshRemoteEnvOptions;
+    first_appended = _reserved;
+    appended = [_reserved, api_key, tls_ca_file];
+    bools = [has_port, has_transport, has_connect_timeout_seconds, has_request_timeout_seconds]
 );
 input!(
-    crate::remote_api::RLMeshRemoteModelOptions,
-    has_port,
-    has_transport,
-    has_connect_timeout_seconds,
-    has_request_timeout_seconds
+    crate::remote_api::RLMeshRemoteModelOptions;
+    first_appended = api_key;
+    appended = [api_key, tls_ca_file];
+    bools = [has_port, has_transport, has_connect_timeout_seconds, has_request_timeout_seconds]
 );
 input!(
     crate::run_api::RLMeshRunOptions,
@@ -218,3 +231,65 @@ input!(
 );
 input!(crate::variant::RLMeshVariantOptions);
 input!(crate::view::RLMeshView, has_step_hz);
+
+/// The size of the field `get` projects, in a const context.
+pub(crate) const fn field_size<T, F>(_get: fn(&T) -> &F) -> usize {
+    std::mem::size_of::<F>()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SizedInput;
+    use crate::remote_api::{RLMeshRemoteEnvOptions, RLMeshRemoteModelOptions};
+    use std::ffi::c_char;
+
+    /// The ABI-5 layouts, as an ABI-5 caller compiled them.
+    #[repr(C)]
+    #[allow(dead_code)]
+    struct Abi5Env {
+        struct_size: usize,
+        address: *const c_char,
+        host: *const c_char,
+        has_port: bool,
+        port: u16,
+        path: *const c_char,
+        has_transport: bool,
+        transport: i32,
+        has_connect_timeout_seconds: bool,
+        connect_timeout_seconds: f64,
+        has_request_timeout_seconds: bool,
+        request_timeout_seconds: f64,
+        workflow_edition: *const c_char,
+    }
+    #[repr(C)]
+    #[allow(dead_code)]
+    struct Abi5Model {
+        struct_size: usize,
+        address: *const c_char,
+        host: *const c_char,
+        has_port: bool,
+        port: u16,
+        path: *const c_char,
+        has_transport: bool,
+        transport: i32,
+        has_connect_timeout_seconds: bool,
+        connect_timeout_seconds: f64,
+        has_request_timeout_seconds: bool,
+        request_timeout_seconds: f64,
+    }
+
+    #[test]
+    fn appended_remote_fields_start_past_the_abi5_sizeof_on_this_target() {
+        assert_eq!(
+            <RLMeshRemoteEnvOptions as SizedInput>::MIN_SIZE,
+            std::mem::size_of::<Abi5Env>()
+        );
+        assert_eq!(
+            <RLMeshRemoteModelOptions as SizedInput>::MIN_SIZE,
+            std::mem::size_of::<Abi5Model>()
+        );
+        assert!(
+            std::mem::offset_of!(RLMeshRemoteEnvOptions, api_key) >= std::mem::size_of::<Abi5Env>()
+        );
+    }
+}

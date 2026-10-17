@@ -48,8 +48,14 @@ Callable defaults without a field require an explicit `default_skip` reason.
 Required keywords and native-only fields with no Python default (including
 cancellation/extensions and DLPack bridge options) are outside this comparison.
 
-C ABI 5 currently makes `_MIN_SIZE` equal to the full known struct size, so its
-minimum-sized fixture supplies `_INIT` for all known fields. Extended input,
+C ABI 5 makes `_MIN_SIZE` equal to the full ABI-5 struct size, so its
+minimum-sized fixture supplies `_INIT` for all known fields. The remote client
+options gained `api_key` and `tls_ca_file` after ABI 5; their `_MIN_SIZE`
+stays at the ABI-5 size, and `c_sizing_abi5_remote` checks that a struct
+sized there reads the appended fields as NULL and that a size ending inside a
+field is refused. `remote_auth.toml` serves the scripted model on a Unix
+socket in a fresh temporary directory (no port race) and masks the socket path
+or port in error text as `SOCKET` / `PORT`. Extended input,
 out-struct and lent-reader cases exercise unknown appended fields without
 inventing a product field or ABI generation just for a test.
 

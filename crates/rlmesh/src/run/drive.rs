@@ -241,6 +241,13 @@ pub(crate) fn as_driving<R>(f: impl FnOnce() -> R) -> R {
     f()
 }
 
+/// Run `f` with the driving flag clear: a sync entry point's caller-side
+/// callback, which may make sync rlmesh calls of its own.
+pub(crate) fn as_caller<R>(f: impl FnOnce() -> R) -> R {
+    let _caller = Driving(DRIVING.with(|cell| cell.replace(false)));
+    f()
+}
+
 /// Poll a sync entry point's outer future, which waits only inside its own
 /// [`block_on_caller`] segments, on this thread without the driving flag.
 pub(crate) fn run_sync<F: Future>(future: F) -> F::Output {

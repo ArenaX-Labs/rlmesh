@@ -23,6 +23,7 @@ futures = { workspace = true }
 half = { workspace = true }
 hyper-util = { workspace = true, features = ["tokio"] }
 prost = { workspace = true }
+rustls = { workspace = true }
 rayon = { workspace = true }
 tokio = { workspace = true, features = ["net", "rt", "sync", "time"] }
 tokio-stream = { workspace = true }
@@ -37,6 +38,7 @@ tracing = { workspace = true }
 [dev-dependencies]
 http-body-util = { workspace = true }
 proptest = { workspace = true }
+rcgen = { workspace = true }
 tokio = { workspace = true, features = ["macros"] }
 zstd = { workspace = true }
 

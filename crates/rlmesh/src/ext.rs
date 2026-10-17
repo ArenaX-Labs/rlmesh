@@ -205,58 +205,6 @@ pub fn model_spec_from_json(json: &str) -> Result<crate::adapters::ModelSpec> {
     crate::adapters::ModelSpec::from_json(json)
 }
 
-/// A [`RemoteEnv`](crate::RemoteEnv) that sends `token` on every request.
-/// `""` sends none; a token a header cannot carry is the ValueError class
-/// before any dial. Otherwise as [`RemoteEnv::new`](crate::RemoteEnv::new).
-pub fn remote_env_with_token(
-    options: crate::RemoteEnvOptions,
-    token: &str,
-) -> Result<crate::RemoteEnv> {
-    crate::env::client::check_token(token)?;
-    crate::run::drive::refuse_in_async_context("remote_env_with_token")?;
-    crate::run::drive::block_on_library(crate::RemoteEnv::new_in(options, token))
-}
-
-/// The async twin of [`remote_env_with_token`].
-pub async fn remote_env_with_token_async(
-    options: crate::RemoteEnvOptions,
-    token: &str,
-) -> Result<crate::RemoteEnv> {
-    crate::env::client::check_token(token)?;
-    crate::run::drive::in_library(crate::RemoteEnv::new_in(options, token)).await
-}
-
-/// A [`RemoteVectorEnv`](crate::RemoteVectorEnv) that sends `token` on every
-/// request.
-pub fn remote_vector_env_with_token(
-    options: crate::RemoteEnvOptions,
-    token: &str,
-) -> Result<crate::RemoteVectorEnv> {
-    crate::env::client::check_token(token)?;
-    crate::run::drive::refuse_in_async_context("remote_vector_env_with_token")?;
-    crate::run::drive::block_on_library(crate::RemoteVectorEnv::new_in(options, token))
-}
-
-/// The async twin of [`remote_vector_env_with_token`].
-pub async fn remote_vector_env_with_token_async(
-    options: crate::RemoteEnvOptions,
-    token: &str,
-) -> Result<crate::RemoteVectorEnv> {
-    crate::env::client::check_token(token)?;
-    crate::run::drive::in_library(crate::RemoteVectorEnv::new_in(options, token)).await
-}
-
-/// A [`RemoteModel`](crate::RemoteModel) whose sessions send `token` on
-/// every model request. `""` sends none; a token a header cannot carry is
-/// the ValueError class here, before any dial. No I/O.
-pub fn remote_model_with_token(
-    options: crate::RemoteModelOptions,
-    token: &str,
-) -> Result<crate::RemoteModel> {
-    crate::env::client::check_token(token)?;
-    crate::RemoteModel::with_token(options, token.to_string())
-}
-
 /// Partial reset: reset the listed lanes (an empty slice resets all of them;
 /// a per-lane seed list aligns with `env_indices`) and return the batched
 /// observation of every lane and the info with every lane's `episode_ids`.

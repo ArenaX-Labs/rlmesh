@@ -47,6 +47,32 @@ env.close()
 
 More in [`examples/python`](examples/python): adapters, Docker sandboxes, bring-your-own containers.
 
+### Endpoint authentication
+
+A served model or env requires a key when it is started with
+`RLMESH_MODEL_ENDPOINT_TOKEN` / `RLMESH_ENV_ENDPOINT_TOKEN`. Clients send one
+with `api_key=` (`authorization: Bearer <key>`), and an `https://` address
+dials over TLS, so a policy behind a TLS load balancer drives your local env
+directly:
+
+```python
+import rlmesh
+
+model = rlmesh.RemoteModel("https://models.example.com", api_key="...")
+result = rlmesh.run(model, MyEnv(), episodes=10)
+```
+
+Without `api_key`, clients read `RLMESH_API_KEY`, and send it only to
+`https://` addresses. `tls_ca_file=` trusts a private CA bundle instead of the
+system roots. The same options exist in Rust (`RemoteModelOptions::api_key`),
+C (`RLMeshRemoteModelOptions.api_key`) and C++ (`with_api_key`).
+
+Servers send HTTP/2 keepalive PINGs on idle connections. They detect a dead
+peer and keep NAT mappings and proxies that count PINGs as traffic alive, but
+many L7 load balancers (AWS ALB among them) do not reset their idle timer on a
+PING: set the proxy's stream idle timeout above the longest gap between
+predicts, including the env's reset between episodes.
+
 ## Rust
 
 Grab the [`rlmesh`](crates/rlmesh/README.md) crate. You'll need `protoc` installed (`apt install protobuf-compiler` / `brew install protobuf`) since the gRPC stubs are generated at build time.

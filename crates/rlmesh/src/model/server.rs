@@ -109,7 +109,7 @@ where
     let listener = BoundListener::bind(address).await?;
     let local_addr = listener.local_addr()?;
     let (_health_reporter, health_service) = rlmesh_grpc::health::serving_health_service().await;
-    let router = tonic::transport::Server::builder()
+    let router = rlmesh_grpc::lifecycle::server_builder()
         .add_service(health_service)
         .add_service(service);
     // Upcast so the bound handle does not leak the handler generic; only the

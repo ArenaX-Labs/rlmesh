@@ -16,6 +16,15 @@ pub enum ConnectAddress {
     Tcp(String),
     /// A Unix-domain socket path (Unix only).
     Unix(PathBuf),
+    /// A TLS endpoint, `https://host[:port]` (port 443 by default), dialed
+    /// over HTTP/2 negotiated by ALPN `h2`.
+    Https {
+        /// The server host (an IPv6 address without brackets): the name its
+        /// certificate must carry.
+        host: String,
+        /// The server port.
+        port: u16,
+    },
 }
 
 /// A server-side address to bind a listener to.
@@ -40,27 +49,36 @@ pub enum BindAddress {
 }
 
 impl ConnectAddress {
-    /// Parse a connect target such as `host:port`, `tcp://host:port`, or
-    /// `unix:///path/to.sock`.
+    /// Parse a connect target such as `host:port`, `tcp://host:port`,
+    /// `https://host[:port]`, or `unix:///path/to.sock`.
     ///
     /// # Errors
     ///
     /// Returns [`Error::InvalidArgument`](crate::Error::InvalidArgument) if `value` is not a
     /// recognized address (including a `unix://` path on Windows, where Unix
-    /// sockets are unsupported).
+    /// sockets are unsupported, and an `https://` address with a path).
     pub fn parse(value: impl AsRef<str>) -> Result<Self> {
         let target = parse_env_connect_target(value.as_ref()).map_err(Error::from_grpc)?;
+        if let Some((host, port)) = target.tls_server() {
+            return Ok(Self::Https {
+                host: host.to_string(),
+                port,
+            });
+        }
         Ok(match target.unix_path() {
             Some(path) => Self::Unix(path.clone()),
             None => Self::Tcp(target.display_address().to_string()),
         })
     }
 
-    /// The address rendered as a connect string (`tcp://...` or `unix://...`).
+    /// The address rendered as a connect string (`tcp://...`,
+    /// `https://host:port` or `unix://...`).
     pub fn as_str(&self) -> String {
         match self {
             Self::Tcp(value) => value.clone(),
             Self::Unix(path) => format!("unix://{}", path.display()),
+            Self::Https { host, port } if host.contains(':') => format!("https://[{host}]:{port}"),
+            Self::Https { host, port } => format!("https://{host}:{port}"),
         }
     }
 }

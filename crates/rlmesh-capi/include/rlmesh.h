@@ -3547,11 +3547,35 @@ typedef struct RLMeshRemoteEnvOptions {
   bool has_request_timeout_seconds;
   double request_timeout_seconds;
   const char* workflow_edition;
+  /* Appended after ABI 5 (read only when struct_size covers them; NULL is the
+   * default). _reserved (0) starts exactly at the ABI-5 sizeof on every
+   * target, so the fields after it never overlap an ABI-5 caller's tail
+   * padding. api_key is sent as `authorization: Bearer <key>`; NULL reads
+   * RLMESH_API_KEY for an https:// address only, "" sends none. tls_ca_file
+   * is a PEM bundle an https:// dial trusts instead of the system roots. */
+  uint64_t _reserved;
+  const char* api_key;
+  const char* tls_ca_file;
 } RLMeshRemoteEnvOptions;
-#define RLMESH_REMOTE_ENV_OPTIONS_MIN_SIZE sizeof(RLMeshRemoteEnvOptions)
-#define RLMESH_REMOTE_ENV_OPTIONS_INIT                                   \
-  {sizeof(RLMeshRemoteEnvOptions), NULL,  NULL, false, 0,   NULL, false, \
-   RLMESH_TRANSPORT_INVALID,       false, 0.0,  false, 0.0, NULL}
+/* The ABI-5 sizeof. */
+#define RLMESH_REMOTE_ENV_OPTIONS_MIN_SIZE offsetof(RLMeshRemoteEnvOptions, _reserved)
+#define RLMESH_REMOTE_ENV_OPTIONS_INIT \
+  {sizeof(RLMeshRemoteEnvOptions),     \
+   NULL,                               \
+   NULL,                               \
+   false,                              \
+   0,                                  \
+   NULL,                               \
+   false,                              \
+   RLMESH_TRANSPORT_INVALID,           \
+   false,                              \
+   0.0,                                \
+   false,                              \
+   0.0,                                \
+   NULL,                               \
+   0,                                  \
+   NULL,                               \
+   NULL}
 typedef struct RLMeshRemoteModelOptions {
   size_t struct_size;
   const char* address;
@@ -3565,11 +3589,15 @@ typedef struct RLMeshRemoteModelOptions {
   double connect_timeout_seconds;
   bool has_request_timeout_seconds;
   double request_timeout_seconds;
+  /* Appended after ABI 5, as in RLMeshRemoteEnvOptions. */
+  const char* api_key;
+  const char* tls_ca_file;
 } RLMeshRemoteModelOptions;
-#define RLMESH_REMOTE_MODEL_OPTIONS_MIN_SIZE sizeof(RLMeshRemoteModelOptions)
-#define RLMESH_REMOTE_MODEL_OPTIONS_INIT                                  \
-  {sizeof(RLMeshRemoteModelOptions), NULL,  NULL, false, 0,  NULL, false, \
-   RLMESH_TRANSPORT_INVALID,         false, 0.0,  false, 0.0}
+/* The ABI-5 sizeof: its last field is a double, so it has no tail padding. */
+#define RLMESH_REMOTE_MODEL_OPTIONS_MIN_SIZE offsetof(RLMeshRemoteModelOptions, api_key)
+#define RLMESH_REMOTE_MODEL_OPTIONS_INIT                                   \
+  {sizeof(RLMeshRemoteModelOptions), NULL,  NULL, false, 0,   NULL, false, \
+   RLMESH_TRANSPORT_INVALID,         false, 0.0,  false, 0.0, NULL, NULL}
 /* Env construction connects; Model construction only validates. Remote I/O
  * is exclusive, while immutable accessors/cancellation may overlap any call.
  * Accessor pointers remain borrowed until free, including after close. */
@@ -3579,13 +3607,6 @@ RLMESH_API RLMeshStatus rlmesh_remote_vector_env_new(const RLMeshRemoteEnvOption
                                                      RLMeshRemoteVectorEnv** out);
 RLMESH_API RLMeshStatus rlmesh_remote_model_new(const RLMeshRemoteModelOptions* options,
                                                 RLMeshRemoteModel** out);
-RLMESH_API RLMeshStatus rlmesh_ext_remote_env_new_with_token(const RLMeshRemoteEnvOptions* options,
-                                                             const char* token,
-                                                             RLMeshRemoteEnv** out);
-RLMESH_API RLMeshStatus rlmesh_ext_remote_vector_env_new_with_token(
-    const RLMeshRemoteEnvOptions* options, const char* token, RLMeshRemoteVectorEnv** out);
-RLMESH_API RLMeshStatus rlmesh_ext_remote_model_new_with_token(
-    const RLMeshRemoteModelOptions* options, const char* token, RLMeshRemoteModel** out);
 RLMESH_API RLMeshStatus rlmesh_remote_model_clone(const RLMeshRemoteModel* remote_model,
                                                   RLMeshRemoteModel** out);
 RLMESH_API RLMeshStatus rlmesh_remote_model_address(const RLMeshRemoteModel* remote_model,

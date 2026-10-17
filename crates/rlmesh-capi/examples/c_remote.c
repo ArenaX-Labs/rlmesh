@@ -92,9 +92,10 @@ int main(void) {
   eo.transport = RLMESH_TRANSPORT_TCP;
   CHECK(rlmesh_remote_env_new(&eo, &remote) == RLMESH_ERR_INVALID_ARGUMENT);
   eo.has_transport = false;
-  CHECK(rlmesh_ext_remote_env_new_with_token(&eo, " hidden-endpoint-token", &remote) ==
-        RLMESH_ERR_INVALID_ARGUMENT);
+  eo.api_key = " hidden-endpoint-token";
+  CHECK(rlmesh_remote_env_new(&eo, &remote) == RLMESH_ERR_INVALID_ARGUMENT && remote == NULL);
   CHECK(strstr(rlmesh_last_error_message(), "hidden-endpoint-token") == NULL);
+  eo.api_key = NULL;
   RLMeshRemoteModelOptions mo = RLMESH_REMOTE_MODEL_OPTIONS_INIT;
   mo.address = "127.0.0.1:1";
   CHECK(rlmesh_remote_model_new(&mo, &rm) == RLMESH_OK);
@@ -224,20 +225,28 @@ int main(void) {
   CHECK(rlmesh_remote_model_clone(rm, &clone) == RLMESH_OK);
   rlmesh_remote_model_free(rm);
   rm = clone;
+  /* A plain local env, with no EnvServer: stepped on this thread. */
   RLMeshEnv* local = NULL;
   CHECK(rlmesh_env_new(&ev, &state, &attrs, &local) == RLMESH_OK);
-  CHECK(rlmesh_remote_model_session(rm, rlmesh_env_target(local), NULL, &session) ==
-            RLMESH_ERR_TYPE &&
-        session == NULL);
-  rlmesh_env_free(local);
   struct timespec delay = {0, 1000000};
   RLMeshStatus connected = RLMESH_ERR_CONNECTION;
   for (int i = 0; i < 500 && connected == RLMESH_ERR_CONNECTION; ++i) {
-    connected = rlmesh_remote_model_session(rm, rlmesh_env_server_target(server), NULL, &session);
+    connected = rlmesh_remote_model_session(rm, rlmesh_env_target(local), NULL, &session);
     if (connected == RLMESH_ERR_CONNECTION) nanosleep(&delay, NULL);
   }
   CHECK(connected == RLMESH_OK && session);
   RLMeshRunResult* result = NULL;
+  CHECK(rlmesh_session_run(session, NULL, &result) == RLMESH_OK);
+  CHECK(rlmesh_run_result_num_episodes(result) == 1 && rlmesh_run_result_total_steps(result) == 1);
+  rlmesh_run_result_free(result);
+  result = NULL;
+  CHECK(rlmesh_session_close(session) == RLMESH_OK);
+  rlmesh_session_free(session);
+  session = NULL;
+  rlmesh_env_free(local);
+  CHECK(rlmesh_remote_model_session(rm, rlmesh_env_server_target(server), NULL, &session) ==
+            RLMESH_OK &&
+        session);
   CHECK(rlmesh_session_run(session, NULL, &result) == RLMESH_OK);
   CHECK(rlmesh_run_result_num_episodes(result) == 1 && rlmesh_run_result_total_steps(result) == 1);
   rlmesh_run_result_free(result);

@@ -2750,7 +2750,7 @@ async fn run_local_options_token_reaches_a_token_protected_env() {
     .await
     .expect_err("a token-protected env must reject an untokened run_local");
     assert!(
-        untokened.to_string().contains("invalid env token"),
+        untokened.to_string().contains("rejected the API key"),
         "expected an unauthenticated rejection, got {untokened}"
     );
 

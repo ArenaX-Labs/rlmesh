@@ -10,6 +10,7 @@ drive with ``reset`` / ``predict`` / ``step``.
 from __future__ import annotations
 
 import logging
+import os
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar, cast
 
 from .._value_conversion import ValueBridge
@@ -37,7 +38,8 @@ class RemoteModelBase(Generic[ObsT, ActT]):
 
     Args:
         address: Model endpoint address such as ``"tcp://127.0.0.1:5555"``,
-            ``"127.0.0.1:5555"``, or ``"unix:///tmp/model.sock"``.
+            ``"127.0.0.1:5555"``, ``"https://models.example"`` (TLS, port 443
+            by default) or ``"unix:///tmp/model.sock"``.
         host: TCP host helper used when ``address`` is omitted.
         port: TCP port helper used when ``address`` is omitted.
         path: Unix socket path helper used when ``address`` is omitted.
@@ -47,6 +49,12 @@ class RemoteModelBase(Generic[ObsT, ActT]):
         request_timeout_seconds: Optional per-request bound applied to every
             predict/close RPC of sessions off this handle; ``None`` (default)
             waits indefinitely.
+        api_key: Key sent as ``authorization: Bearer <key>`` on every model
+            request. ``None`` (default) reads ``RLMESH_API_KEY`` for an
+            ``https://`` address only; ``""`` sends none. Never shown in
+            errors or repr.
+        tls_ca_file: PEM bundle an ``https://`` dial trusts instead of the
+            system roots (like ``curl --cacert``).
     """
 
     _bridge: ClassVar[ValueBridge]
@@ -61,6 +69,8 @@ class RemoteModelBase(Generic[ObsT, ActT]):
         transport: Transport | None = None,
         connect_timeout_seconds: float | None = None,
         request_timeout_seconds: float | None = None,
+        api_key: str | None = None,
+        tls_ca_file: str | os.PathLike[str] | None = None,
     ) -> None:
         self._bridge.ensure_available()
         self._address = normalize_connect_address(
@@ -72,15 +82,22 @@ class RemoteModelBase(Generic[ObsT, ActT]):
         )
         from .._load_native import load_native
 
-        # The address must parse and the timeouts be non-negative and finite
-        # here, as RemoteEnv checks them, not at the first session(). No I/O.
+        ca_file = None if tls_ca_file is None else os.fspath(tls_ca_file)
+        # The address must parse, the timeouts be non-negative and finite, the
+        # key fit a header and the CA bundle load here, as RemoteEnv checks
+        # them, not at the first session(). No network I/O.
         load_native("check_remote_model_options")(
             self._address,
             connect_timeout_seconds=connect_timeout_seconds,
             request_timeout_seconds=request_timeout_seconds,
+            api_key=api_key,
+            tls_ca_file=ca_file,
         )
         self._connect_timeout_seconds = connect_timeout_seconds
         self._request_timeout_seconds = request_timeout_seconds
+        # Held behind a redacting wrapper: never part of repr, vars() or errors.
+        self._api_key = _Secret(api_key)
+        self._tls_ca_file = ca_file
 
     @property
     def address(self) -> str:
@@ -101,8 +118,12 @@ class RemoteModelBase(Generic[ObsT, ActT]):
         """Bind this served policy to ``env`` and return a :class:`rlmesh.Session`.
 
         ``env`` is an env client (e.g. ``RemoteEnv``/``SandboxEnv``) exposing an
-        ``env_contract``; that contract -- including the env's adapter tags -- is sent
-        to the model server, which resolves its adapter for this env. ``instruction``
+        ``env_contract``, an address to dial, or a plain local env (or an
+        :class:`~rlmesh.EnvFactory`, whose env the session builds and closes),
+        stepped on the caller's thread with no EnvServer. The env's contract --
+        including its adapter tags -- is sent to the model server, which
+        resolves its adapter for this env. A local vector env is a TypeError:
+        a served model drives a single env. ``instruction``
         and ``trust_entrypoints`` apply to local models and are rejected here (the
         served model owns its adapter). ``view`` opts into the built-in live viewer
         over this client's own env loop (see :func:`rlmesh.run`).
@@ -141,36 +162,85 @@ class RemoteModelBase(Generic[ObsT, ActT]):
         # leg carries the call, process, or project declaration. The env's
         # own offer still constrains the three-way floor.
         workflow_edition = resolve_workflow_edition(call=workflow_edition)
-        # The call's declaration is also the dialed env's handshake declaration.
-        env, owns_env = dial_env_address(env, workflow_edition)
+        from .._models._connect import (
+            _native_contract,  # pyright: ignore[reportPrivateUsage]
+            adapter_env_bridge,
+            classify_env_target,
+            factory_env,
+        )
+
+        # An address or a handle publishing a contract keeps the served path;
+        # anything else classifies as the local loops do.
+        kind = (
+            "handle"
+            if isinstance(env, str) or _native_contract(env) is not None
+            else classify_env_target(env)[0]
+        )
+        local = kind in ("env", "factory")
+        if local:
+            # A local env is stepped on this thread. A factory's env is built
+            # now and is the session's own.
+            env, owns_env = (
+                (factory_env(env), True) if kind == "factory" else (env, False)
+            )
+        else:
+            # The call's declaration is also the dialed env's handshake declaration.
+            env, owns_env = dial_env_address(env, workflow_edition)
         try:
+            bridge = None
+            env_offer = None
+            if local:
+                # The model is bound with the contract an EnvServer would
+                # publish for the env, which hands out its own arrays (numpy
+                # for gymnasium).
+                contract = load_native("local_env_contract")(env)
+                bridge = adapter_env_bridge(env)
+            else:
+                contract = env_contract_of(env)
+                env_offer = env_session_offer(env)
             # A dial failure already reads "could not connect to a model at ...".
             client = load_native("PyModelClient")(
                 self._address,
-                env_contract_of(env),
+                contract,
                 execution_horizon,
                 connect_timeout_seconds=self._connect_timeout_seconds,
                 request_timeout_seconds=self._request_timeout_seconds,
                 workflow_edition=workflow_edition,
-                env_offer=env_session_offer(env),
+                env_offer=env_offer,
+                api_key=self._api_key.value,
+                tls_ca_file=self._tls_ca_file,
+            )
+            return remote_session(
+                client,
+                env,
+                close_env=close_env,
+                owns_env=owns_env,
+                view=view,
+                workflow_edition=workflow_edition,
+                bridge=bridge,
             )
         except BaseException:
-            # An env dialed for this call is released before the error goes
-            # up, not left to the garbage collector.
+            # Until the session owns it, an env dialed or built for this call
+            # is released before the error goes up, not left to the garbage
+            # collector.
             if owns_env:
                 close_dialed_env(env)
             raise
-        return remote_session(
-            client,
-            env,
-            close_env=close_env,
-            owns_env=owns_env,
-            view=view,
-            workflow_edition=workflow_edition,
-        )
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}(address={self._address!r})"
+
+
+class _Secret:
+    """A value whose repr never shows it (an API key)."""
+
+    __slots__ = ("value",)
+
+    def __init__(self, value: str | None) -> None:
+        self.value = value
+
+    def __repr__(self) -> str:
+        return "<redacted>" if self.value else "None"
 
 
 def env_contract_of(env: object) -> EnvContract:
@@ -234,18 +304,20 @@ def remote_session(
     owns_env: bool = False,
     view: object = None,
     workflow_edition: str | None = None,
+    bridge: ValueBridge | None = None,
 ) -> Session[Any, Any]:
     """Build a neutral :class:`Session` over a pre-built served-model ``client``.
 
-    Selects the env's own ``_bridge`` (matching its value types) if it exposes one,
-    else the identity bridge. ``owner`` is a managed source the session keeps alive and
+    Uses ``bridge`` when given (a local env's), else the env's own ``_bridge``
+    (matching its value types) if it exposes one, else the identity bridge. ``owner`` is a managed source the session keeps alive and
     shuts down on close (e.g. a ``SandboxModel`` container); a cheap container-less
     handle passes none.
     """
     from .._models._eval import Session
     from .._value_conversion import identity_bridge
 
-    bridge = getattr(env, "_bridge", identity_bridge)
+    if bridge is None:
+        bridge = getattr(env, "_bridge", identity_bridge)
     return Session._create(  # pyright: ignore[reportPrivateUsage]
         env=env,
         model_client=client,

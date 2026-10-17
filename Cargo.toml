@@ -44,13 +44,21 @@ rlmesh-viewer = { version = "=0.1.0", path = "crates/rlmesh-viewer" }
 rayon = "1.10"
 prost = "0.14"
 prost-types = "0.14"
-tonic = { version = "0.14", features = ["gzip", "zstd"] }
+tonic = { version = "0.14", features = [
+  "gzip",
+  "zstd",
+  "tls-ring",
+  "tls-native-roots",
+  "tls-webpki-roots",
+] }
 tonic-health = "0.14"
 tonic-prost = "0.14"
 tonic-prost-build = "0.14"
 hyper-util = "0.1"
 # Test-only: raw gRPC request bodies and a zstd decompression bomb.
 http-body-util = "0.1"
+# Test-only: a throwaway CA and server certificate for TLS tests.
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
 zstd = "0.13"
 
 # Async Runtime

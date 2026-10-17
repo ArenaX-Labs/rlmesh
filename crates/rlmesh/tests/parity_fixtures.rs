@@ -323,6 +323,7 @@ fn execute(case: &Json) -> Json {
             server.shutdown().unwrap();
             out
         }
+        "remote_auth" => remote_auth(case["variant"].as_str().unwrap(), &mut env, &model),
         "busy_remote" => {
             let server = EnvServer::new(
                 env,
@@ -1061,6 +1062,142 @@ fn drop_owned_cleanup() -> Json {
     let out = json!({"episode_ends": episode_ends, "env_closes": count(&counts.closes), "model_closes": count(&counts.model_closes), "reusable": true});
     server.shutdown().unwrap();
     out
+}
+
+/// Replace a run-specific address part (a port, a socket path) in the text.
+fn masked(mut record: Json, value: &str, mask: &str) -> Json {
+    let text = record["text"].as_str().unwrap().replace(value, mask);
+    record["text"] = json!(text);
+    record
+}
+
+/// A served model reached with an api_key, over TLS, or driving a local env.
+fn remote_auth(variant: &str, env: &mut ScriptedEnv, model: &Model) -> Json {
+    match variant {
+        "invalid_header" => {
+            return error_record(
+                RemoteModel::new(
+                    RemoteModelOptions::default()
+                        .address("https://localhost:1")
+                        .api_key("bad\nkey"),
+                )
+                .unwrap_err(),
+            );
+        }
+        "local_model_https_env" => {
+            let server = EnvServer::new(
+                ScriptedEnv::new(&Arc::default()),
+                EnvServerOptions {
+                    address: Some("tcp://127.0.0.1:0".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            server.start().unwrap();
+            let port = server.address().rsplit(':').next().unwrap().to_string();
+            let error = model
+                .run(
+                    format!("https://127.0.0.1:{port}").as_str(),
+                    RunOptions::default(),
+                )
+                .unwrap_err();
+            server.shutdown().unwrap();
+            return masked(error_record(error), &port, "PORT");
+        }
+        "https_to_plaintext" => {
+            let server = EnvServer::new(
+                ScriptedEnv::new(&Arc::default()),
+                EnvServerOptions {
+                    address: Some("tcp://127.0.0.1:0".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            server.start().unwrap();
+            let port = server.address().rsplit(':').next().unwrap().to_string();
+            let served = RemoteModel::new(
+                RemoteModelOptions::default().address(format!("https://127.0.0.1:{port}")),
+            )
+            .unwrap();
+            let error = run(&served, &mut *env, RunOptions::default()).unwrap_err();
+            server.shutdown().unwrap();
+            return masked(error_record(error), &port, "PORT");
+        }
+        _ => {}
+    }
+    let dir = std::env::temp_dir().join(format!("rlmesh-parity-{}", mint_parity_id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("model.sock").display().to_string();
+    let address = format!("unix://{path}");
+    let cancel = ext::CancelToken::new();
+    let token =
+        matches!(variant, "api_key_rejected" | "api_key_accepted").then(|| "right-key".to_string());
+    let serving = {
+        let (model, address, cancel) = (model.clone(), address.clone(), cancel.clone());
+        std::thread::spawn(move || {
+            model.serve(
+                &address,
+                ModelServeOptions {
+                    cancel: Some(cancel),
+                    ext: Some(ext::ModelServeOptions {
+                        token,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            )
+        })
+    };
+    wait_for_socket(&path);
+    let mut options = RemoteModelOptions::default().address(&address);
+    options.api_key = match variant {
+        "api_key_rejected" => Some("wrong-key".into()),
+        "api_key_accepted" => Some("right-key".into()),
+        _ => None,
+    };
+    let served = RemoteModel::new(options).unwrap();
+    let out = match run(&served, &mut *env, RunOptions::default()) {
+        Ok(result) => json!({
+            "episodes": result.num_episodes(),
+            "steps": result.total_steps(),
+            "env_closes": count(&env.counts.closes),
+        }),
+        Err(error) => masked(error_record(error), &path, "SOCKET"),
+    };
+    cancel.cancel();
+    let _ = serving.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    out
+}
+
+/// Wait until a model serves on the Unix socket at `path`.
+#[cfg(unix)]
+fn wait_for_socket(path: &str) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while std::os::unix::net::UnixStream::connect(path).is_err() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the model never served"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// `remote_auth` serves its model on a Unix socket (no port race), which
+/// this platform lacks.
+#[cfg(not(unix))]
+fn wait_for_socket(_path: &str) {
+    panic!("remote_auth serves the model on a Unix socket, which this platform lacks");
+}
+
+/// A process-unique suffix for scratch paths.
+fn mint_parity_id() -> String {
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    format!(
+        "{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::SeqCst)
+    )
 }
 
 fn drop_queued_predict() -> Json {

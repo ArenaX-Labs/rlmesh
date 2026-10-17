@@ -13,6 +13,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <time.h>
+#include <unistd.h>
 
 #define OK(call)                                                               \
   do {                                                                         \
@@ -52,14 +56,35 @@ static void quoted(const char *text) {
     }
   putchar('"');
 }
-static void error_fields(void) {
+/* The last error's text with every `value` (a port, a socket path) masked. */
+static char *masked_message(const char *value, const char *mask) {
+  const char *text = rlmesh_last_error_message();
+  size_t len = strlen(text), vlen = value ? strlen(value) : 0;
+  char *out = (char *)malloc(len * (strlen(mask ? mask : "") + 1) + 1);
+  REQUIRE(out != NULL);
+  char *w = out;
+  for (const char *p = text; *p;) {
+    if (vlen && !strncmp(p, value, vlen)) {
+      w += sprintf(w, "%s", mask);
+      p += vlen;
+    } else
+      *w++ = *p++;
+  }
+  *w = 0;
+  return out;
+}
+static void error_fields_masked(const char *value, const char *mask);
+static void error_fields(void) { error_fields_masked(NULL, NULL); }
+static void error_fields_masked(const char *value, const char *mask) {
   RLMeshErrorClass cls = rlmesh_last_error_class();
   bool recoverable = rlmesh_last_error_is_recoverable();
   const char *code = rlmesh_last_error_code_str();
   printf("\"error\":");
   quoted(rlmesh_error_class_name(cls));
   printf(",\"text\":");
-  quoted(rlmesh_last_error_message());
+  char *message = masked_message(value, mask);
+  quoted(message);
+  free(message);
   printf(",\"code\":");
   quoted(code);
   printf(",\"recoverable\":%s,\"runtime_base\":%s,\"os_base\":%s,\"value_"
@@ -244,6 +269,132 @@ static RLMeshErrorClass find_class(const char *name) {
   }
   abort();
 }
+typedef struct Serving {
+  RLMeshModel *model;
+  const char *address;
+  RLMeshExtCancelToken *cancel;
+  const char *token;
+} Serving;
+static void *serve_model(void *arg) {
+  Serving *serving = (Serving *)arg;
+  RLMeshExtModelServeOptions extra = RLMESH_EXT_MODEL_SERVE_OPTIONS_INIT;
+  extra.token = serving->token;
+  RLMeshModelServeOptions options = RLMESH_MODEL_SERVE_OPTIONS_INIT;
+  options.cancel = serving->cancel;
+  options.ext = &extra;
+  (void)rlmesh_model_serve(serving->model, serving->address, &options);
+  return NULL;
+}
+static void wait_for_socket(const char *path) {
+  for (int i = 0; i < 1000; ++i) {
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    REQUIRE(fd >= 0);
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof addr);
+    addr.sun_family = AF_UNIX;
+    snprintf(addr.sun_path, sizeof addr.sun_path, "%s", path);
+    int connected = connect(fd, (struct sockaddr *)&addr, sizeof addr);
+    close(fd);
+    if (connected == 0)
+      return;
+    struct timespec pause = {0, 10000000};
+    nanosleep(&pause, NULL);
+  }
+  abort();
+}
+/* A served model reached with an api_key, over TLS, or driving a local env. */
+static void remote_auth(const char *variant, RLMeshEnv *env, RLMeshModel *model,
+                        const RLMeshEnvVtable *ev, Script *s,
+                        const RLMeshEnvAttributes *attrs) {
+  RLMeshRunResult *result = NULL;
+  if (!strcmp(variant, "invalid_header")) {
+    RLMeshRemoteModelOptions mo = RLMESH_REMOTE_MODEL_OPTIONS_INIT;
+    mo.address = "https://localhost:1";
+    mo.api_key = "bad\nkey";
+    RLMeshRemoteModel *remote = NULL;
+    REQUIRE(rlmesh_remote_model_new(&mo, &remote) != RLMESH_OK);
+    error_fields();
+    return;
+  }
+  if (!strcmp(variant, "https_to_plaintext") ||
+      !strcmp(variant, "local_model_https_env")) {
+    Script other = *s;
+    RLMeshEnv *plain = NULL;
+    OK(rlmesh_env_new(ev, &other, attrs, &plain));
+    RLMeshEnvServerOptions so = RLMESH_ENV_SERVER_OPTIONS_INIT;
+    so.address = "tcp://127.0.0.1:0";
+    RLMeshEnvServer *server = NULL;
+    OK(rlmesh_env_server_new(&plain, 1, &so, &server));
+    OK(rlmesh_env_server_start(server));
+    RLMeshBytes address = {NULL, 0, 0};
+    OK(rlmesh_env_server_address(server, &address));
+    char port[16] = {0}, url[64];
+    size_t colon = address.len;
+    while (colon > 0 && ((const char *)address.data)[colon - 1] != ':')
+      --colon;
+    REQUIRE(colon > 0 && address.len - colon < sizeof port);
+    memcpy(port, (const char *)address.data + colon, address.len - colon);
+    snprintf(url, sizeof url, "https://127.0.0.1:%s", port);
+    if (!strcmp(variant, "local_model_https_env")) {
+      REQUIRE(rlmesh_model_run(model, rlmesh_address_target(url), NULL,
+                               &result) != RLMESH_OK);
+      error_fields_masked(port, "PORT");
+    } else {
+      RLMeshRemoteModelOptions mo = RLMESH_REMOTE_MODEL_OPTIONS_INIT;
+      mo.address = url;
+      RLMeshRemoteModel *remote = NULL;
+      OK(rlmesh_remote_model_new(&mo, &remote));
+      REQUIRE(rlmesh_run(rlmesh_remote_model_target(remote),
+                         rlmesh_env_target(env), NULL, &result) != RLMESH_OK);
+      error_fields_masked(port, "PORT");
+      rlmesh_remote_model_free(remote);
+    }
+    OK(rlmesh_env_server_shutdown(server));
+    rlmesh_env_server_free(server);
+    rlmesh_bytes_free(address);
+    rlmesh_env_free(plain);
+    return;
+  }
+  char dir[] = "/tmp/rlmesh-parity-XXXXXX";
+  REQUIRE(mkdtemp(dir) != NULL);
+  char path[128], address[160];
+  snprintf(path, sizeof path, "%s/model.sock", dir);
+  snprintf(address, sizeof address, "unix://%s", path);
+  Serving serving = {model, address, NULL, NULL};
+  OK(rlmesh_ext_cancel_token_new(&serving.cancel));
+  bool keyed = !strcmp(variant, "api_key_rejected") ||
+               !strcmp(variant, "api_key_accepted");
+  if (keyed)
+    serving.token = "right-key";
+  pthread_t thread;
+  REQUIRE(pthread_create(&thread, NULL, serve_model, &serving) == 0);
+  wait_for_socket(path);
+  RLMeshRemoteModelOptions mo = RLMESH_REMOTE_MODEL_OPTIONS_INIT;
+  mo.address = address;
+  if (!strcmp(variant, "api_key_rejected"))
+    mo.api_key = "wrong-key";
+  else if (!strcmp(variant, "api_key_accepted"))
+    mo.api_key = "right-key";
+  RLMeshRemoteModel *remote = NULL;
+  OK(rlmesh_remote_model_new(&mo, &remote));
+  if (rlmesh_run(rlmesh_remote_model_target(remote), rlmesh_env_target(env),
+                 NULL, &result) != RLMESH_OK)
+    error_fields_masked(path, "SOCKET");
+  else {
+    printf("\"episodes\":%llu,\"steps\":%llu,\"env_closes\":%d",
+           (unsigned long long)rlmesh_run_result_num_episodes(result),
+           (unsigned long long)rlmesh_run_result_total_steps(result),
+           s->env_closes);
+    rlmesh_run_result_free(result);
+  }
+  rlmesh_remote_model_free(remote);
+  OK(rlmesh_ext_cancel_token_cancel(serving.cancel));
+  REQUIRE(pthread_join(thread, NULL) == 0);
+  rlmesh_ext_cancel_token_free(serving.cancel);
+  unlink(path);
+  rmdir(dir);
+}
+
 int main(int argc, char **argv) {
   REQUIRE(argc == 6);
   const char *op = argv[1];
@@ -479,6 +630,8 @@ int main(int argc, char **argv) {
     printf(",\"reusable\":true");
     OK(rlmesh_env_server_shutdown(server));
     rlmesh_env_server_free(server);
+  } else if (!strcmp(op, "remote_auth")) {
+    remote_auth(variant, env, model, &ev, &s, &attrs);
   } else if (!strcmp(op, "busy_remote")) {
     RLMeshEnvServerOptions so = RLMESH_ENV_SERVER_OPTIONS_INIT;
     so.address = "tcp://127.0.0.1:0";
@@ -590,6 +743,25 @@ int main(int argc, char **argv) {
       OK(rlmesh_model_run(model, rlmesh_env_target(env), &opts, &result));
       printf("\"episodes\":%llu",
              (unsigned long long)rlmesh_run_result_num_episodes(result));
+    } else if (!strcmp(variant, "abi5_remote")) {
+      /* An ABI-5 caller's struct_size stops before the appended api_key and
+       * tls_ca_file: they read as NULL. A size inside one is refused. */
+      RLMeshRemoteModelOptions mo = RLMESH_REMOTE_MODEL_OPTIONS_INIT;
+      mo.address = "127.0.0.1:1";
+      mo.api_key = "never-read\n";
+      mo.struct_size = RLMESH_REMOTE_MODEL_OPTIONS_MIN_SIZE;
+      RLMeshRemoteModel *remote = NULL;
+      OK(rlmesh_remote_model_new(&mo, &remote));
+      rlmesh_remote_model_free(remote);
+      RLMeshRemoteEnvOptions eo = RLMESH_REMOTE_ENV_OPTIONS_INIT;
+      eo.struct_size = RLMESH_REMOTE_ENV_OPTIONS_MIN_SIZE + 1;
+      RLMeshRemoteEnv *renv = NULL;
+      REQUIRE(rlmesh_remote_env_new(&eo, &renv) != RLMESH_OK);
+      /* The size differs per target; the text masks it. */
+      char inside[32];
+      snprintf(inside, sizeof inside, "%zu",
+               (size_t)(RLMESH_REMOTE_ENV_OPTIONS_MIN_SIZE + 1));
+      error_fields_masked(inside, "MIN_SIZE+1");
     } else if (!strcmp(variant, "out")) {
       OK(rlmesh_model_run(model, rlmesh_env_target(env), NULL, &result));
       struct ExtendedOut {

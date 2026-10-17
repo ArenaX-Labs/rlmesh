@@ -199,6 +199,8 @@ class SandboxLifecycle:
             connect_timeout_seconds: float | None,
             request_timeout_seconds: float | None = None,
             workflow_edition: str | None = None,
+            api_key: str | None = None,
+            tls_ca_file: str | os.PathLike[str] | None = None,
         ) -> None: ...
 
     def _detach(self) -> None:

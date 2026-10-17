@@ -31,6 +31,12 @@ pub struct RLMeshRemoteEnvOptions {
     pub has_request_timeout_seconds: bool,
     pub request_timeout_seconds: f64,
     pub workflow_edition: *const c_char,
+    /// Appended after ABI 5; starts at the ABI-5 sizeof on every target.
+    pub _reserved: u64,
+    /// Appended after ABI 5: read only when `struct_size` covers it.
+    pub api_key: *const c_char,
+    /// Appended after ABI 5: read only when `struct_size` covers it.
+    pub tls_ca_file: *const c_char,
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -47,6 +53,10 @@ pub struct RLMeshRemoteModelOptions {
     pub connect_timeout_seconds: f64,
     pub has_request_timeout_seconds: bool,
     pub request_timeout_seconds: f64,
+    /// Appended after ABI 5: read only when `struct_size` covers it.
+    pub api_key: *const c_char,
+    /// Appended after ABI 5: read only when `struct_size` covers it.
+    pub tls_ca_file: *const c_char,
 }
 fn transport(has: bool, t: i32) -> Result<Option<rlmesh::Transport>, CapiError> {
     if !has {
@@ -79,6 +89,8 @@ unsafe fn env_options(p: *const RLMeshRemoteEnvOptions) -> Result<RemoteEnvOptio
             "request_timeout_seconds",
         )?,
         workflow_edition: unsafe { ffi::text(o.workflow_edition) }?,
+        api_key: unsafe { ffi::text(o.api_key) }?,
+        tls_ca_file: unsafe { ffi::text(o.tls_ca_file) }?.map(Into::into),
     })
 }
 unsafe fn model_options(
@@ -103,6 +115,8 @@ unsafe fn model_options(
                 .then_some(o.request_timeout_seconds),
             "request_timeout_seconds",
         )?,
+        api_key: unsafe { ffi::text(o.api_key) }?,
+        tls_ca_file: unsafe { ffi::text(o.tls_ca_file) }?.map(Into::into),
     })
 }
 struct Common {
@@ -241,23 +255,6 @@ fn env_output(c: RemoteEnv, out: *mut *mut RLMeshRemoteEnv) -> Result<(), CapiEr
     }
 }
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_ext_remote_env_new_with_token(
-    o: *const RLMeshRemoteEnvOptions,
-    token: *const c_char,
-    out: *mut *mut RLMeshRemoteEnv,
-) -> RLMeshStatus {
-    guard(|| {
-        unsafe {
-            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
-            write_out(out, std::ptr::null_mut())
-        }?;
-        let token =
-            unsafe { ffi::text(token) }?.ok_or_else(|| CapiError::invalid_arg("null token"))?;
-        let c = rlmesh::ext::remote_env_with_token(unsafe { env_options(o) }?, &token)?;
-        env_output(c, out)
-    })
-}
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_remote_vector_env_new(
     o: *const RLMeshRemoteEnvOptions,
     out: *mut *mut RLMeshRemoteVectorEnv,
@@ -297,23 +294,6 @@ fn vector_output(
     }
 }
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_ext_remote_vector_env_new_with_token(
-    o: *const RLMeshRemoteEnvOptions,
-    token: *const c_char,
-    out: *mut *mut RLMeshRemoteVectorEnv,
-) -> RLMeshStatus {
-    guard(|| {
-        unsafe {
-            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
-            write_out(out, std::ptr::null_mut())
-        }?;
-        let token =
-            unsafe { ffi::text(token) }?.ok_or_else(|| CapiError::invalid_arg("null token"))?;
-        let c = rlmesh::ext::remote_vector_env_with_token(unsafe { env_options(o) }?, &token)?;
-        vector_output(c, out)
-    })
-}
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_remote_model_new(
     o: *const RLMeshRemoteModelOptions,
     out: *mut *mut RLMeshRemoteModel,
@@ -324,26 +304,6 @@ pub unsafe extern "C" fn rlmesh_remote_model_new(
             write_out(out, std::ptr::null_mut())
         }?;
         let c = RemoteModel::new(unsafe { model_options(o) }?)?;
-        unsafe {
-            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
-            write_out(out, Box::into_raw(Box::new(RLMeshRemoteModel(c))))
-        }
-    })
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_ext_remote_model_new_with_token(
-    o: *const RLMeshRemoteModelOptions,
-    token: *const c_char,
-    out: *mut *mut RLMeshRemoteModel,
-) -> RLMeshStatus {
-    guard(|| {
-        unsafe {
-            /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
-            write_out(out, std::ptr::null_mut())
-        }?;
-        let token =
-            unsafe { ffi::text(token) }?.ok_or_else(|| CapiError::invalid_arg("null token"))?;
-        let c = rlmesh::ext::remote_model_with_token(unsafe { model_options(o) }?, &token)?;
         unsafe {
             /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
             write_out(out, Box::into_raw(Box::new(RLMeshRemoteModel(c))))

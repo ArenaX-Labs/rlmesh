@@ -89,7 +89,18 @@ pub(crate) async fn drive_local<H>(
 where
     H: ModelHandler + 'static,
 {
-    let mut env = rlmesh_grpc::EnvClient::connect_with_token(&options.address, &options.token)
+    // An address carries what a RemoteEnv dialed with no api_key would
+    // (RLMESH_API_KEY over https://, RMT-22); a loopback server's token wins.
+    let auth = crate::credentials::resolve(&options.address, None, None, false)?;
+    let credentials = rlmesh_grpc::Credentials {
+        token: if options.token.is_empty() {
+            auth.token().to_string()
+        } else {
+            options.token.clone()
+        },
+        trust: auth.trust().clone(),
+    };
+    let mut env = rlmesh_grpc::EnvClient::connect_with(&options.address, &credentials)
         .await
         .map_err(Error::from_grpc)?;
     // The runtime tier's WANT rides this leg's handshake and caps the env-leg

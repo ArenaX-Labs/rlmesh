@@ -16,7 +16,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::error::{Error as GrpcError, ProtocolError, TransportError};
-use crate::helpers::normalize_tcp_session_address;
+use crate::helpers::parse_env_connect_target;
 use crate::states::ClientState;
 
 use super::stream::{PendingResponses, spawn_response_pump};
@@ -83,15 +83,24 @@ impl ModelClient {
     /// Connect to a ModelService server, sending `token` on the `authorization`
     /// metadata header of every request (an empty token disables auth).
     pub async fn connect(address: &str, token: &str) -> Result<Self, GrpcError> {
-        let address = normalize_tcp_session_address(address)?;
-        let endpoint = crate::configure_endpoint(
-            tonic::transport::Endpoint::from_shared(address.replacen("tcp://", "http://", 1))
-                .map_err(|err| TransportError::InvalidAddress(err.to_string()))?,
-        );
-        let channel = endpoint
-            .connect()
-            .await
-            .map_err(|err| TransportError::ConnectFailed(err.to_string()))?;
+        Self::connect_with(address, &crate::Credentials::token(token)).await
+    }
+
+    /// Connect to a ModelService server with `credentials`: the token every
+    /// request carries and the TLS trust of an `https://` address. `address`
+    /// is `host:port`, `tcp://`, `http://`, `https://` or (on Unix) `unix://`.
+    pub async fn connect_with(
+        address: &str,
+        credentials: &crate::Credentials,
+    ) -> Result<Self, GrpcError> {
+        let target = parse_env_connect_target(address)?;
+        let channel = crate::dial::dial(&target, &credentials.trust).await?;
+        // A plaintext address reads `tcp://...` whichever spelling dialed it.
+        let address = match target.display_address().strip_prefix("http://") {
+            Some(authority) => format!("tcp://{authority}"),
+            None => target.display_address().to_string(),
+        };
+        let token = credentials.token.as_str();
 
         Ok(Self {
             address,

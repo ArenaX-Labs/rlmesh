@@ -680,7 +680,7 @@ fn run_local_blocking(
                     result = &mut run => return RunOutcome::Done(result),
                     _ = poll.tick() => {
                         let checked = jobs
-                            .run(|| Python::attach(|py| py.check_signals()))
+                            .run(crate::client::check_signals)
                             .await;
                         if let Ok(Err(err)) = checked {
                             cancellation.cancel();
@@ -1028,7 +1028,7 @@ impl PyModel {
                     tokio::select! {
                         result = &mut serve => return result.map_err(to_py_err),
                         _ = poll.tick() => {
-                            if let Err(err) = Python::attach(|py| py.check_signals()) {
+                            if let Err(err) = crate::client::check_signals() {
                                 shutdown.trigger("python signal");
                                 let _ = (&mut serve).await;
                                 return Err(err);
@@ -1067,7 +1067,7 @@ submit! {
     gen_methods_from_python! {
         r#"
 class PyModelClient:
-    def __init__(self, address: str, env_contract: EnvContract, execution_horizon: int = 1, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, env_offer: tuple[list[str], str | None] | None = None) -> None: ...
+    def __init__(self, address: str, env_contract: EnvContract, execution_horizon: int = 1, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, env_offer: tuple[list[str], str | None] | None = None, api_key: str | None = None, tls_ca_file: str | None = None) -> None: ...
     def address(self) -> str: ...
     def env_id(self) -> str: ...
     def selected_workflow_edition(self) -> str: ...
@@ -1086,16 +1086,20 @@ impl Drop for PyModel {
     }
 }
 
-/// Check a `RemoteModel`'s address and timeouts as the native constructor
-/// does (RMT-P6): an address that does not parse (`invalid address: ...`)
-/// or a negative or non-finite timeout is ValueError. No I/O.
+/// Check a `RemoteModel`'s address, timeouts, `api_key` and `tls_ca_file`
+/// as the native constructor does (RMT-P6): an address that does not parse
+/// (`invalid address: ...`), a negative or non-finite timeout, a key a
+/// header cannot carry or an unreadable CA bundle is ValueError. An explicit
+/// key for a plaintext non-loopback address warns. No network I/O.
 #[cfg_attr(feature = "stub-gen", gen_stub_pyfunction)]
 #[pyfunction]
-#[pyo3(signature = (address, *, connect_timeout_seconds=None, request_timeout_seconds=None))]
+#[pyo3(signature = (address, *, connect_timeout_seconds=None, request_timeout_seconds=None, api_key=None, tls_ca_file=None))]
 pub fn check_remote_model_options(
     address: &str,
     connect_timeout_seconds: Option<f64>,
     request_timeout_seconds: Option<f64>,
+    api_key: Option<String>,
+    tls_ca_file: Option<String>,
 ) -> PyResult<()> {
     let connect_timeout =
         crate::client::optional_timeout(connect_timeout_seconds, "connect_timeout_seconds")?;
@@ -1104,8 +1108,27 @@ pub fn check_remote_model_options(
     let mut options = rlmesh::RemoteModelOptions::default().address(address);
     options.connect_timeout = connect_timeout;
     options.request_timeout = request_timeout;
+    options.api_key = api_key;
+    options.tls_ca_file = tls_ca_file.map(Into::into);
     rlmesh::RemoteModel::new(options).map_err(to_py_err)?;
     Ok(())
+}
+
+/// The wire contract of a local env, derived as an `EnvServer` would publish
+/// it, for a served-model session that steps the env on the caller's side.
+/// A vector env (`num_envs` or `single_*` spaces) is TypeError: a served
+/// model drives a single env. No I/O.
+#[cfg_attr(feature = "stub-gen", gen_stub_pyfunction)]
+#[pyfunction]
+pub fn local_env_contract(py: Python<'_>, env: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    let (contract, uses_vector_api) = crate::server::py_environment::derive_env_contract(env)?;
+    if uses_vector_api || contract.num_envs > 1 {
+        return Err(pyo3::exceptions::PyTypeError::new_err(
+            "a served model drives a single env (RemoteModel is single-lane); got a local \
+             vector env: pass a single env, or serve the vector env and run a local model",
+        ));
+    }
+    env_contract_to_py(py, &contract)
 }
 
 /// Client handle to a model (policy) server: the model-side mirror of
@@ -1125,7 +1148,7 @@ pub struct PyModelClient {
 impl PyModelClient {
     #[new]
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (address, env_contract, execution_horizon=1, *, connect_timeout_seconds=None, request_timeout_seconds=None, workflow_edition=None, env_offer=None))]
+    #[pyo3(signature = (address, env_contract, execution_horizon=1, *, connect_timeout_seconds=None, request_timeout_seconds=None, workflow_edition=None, env_offer=None, api_key=None, tls_ca_file=None))]
     fn new(
         py: Python<'_>,
         address: &str,
@@ -1135,6 +1158,8 @@ impl PyModelClient {
         request_timeout_seconds: Option<f64>,
         workflow_edition: Option<String>,
         env_offer: Option<(Vec<String>, Option<String>)>,
+        api_key: Option<String>,
+        tls_ca_file: Option<String>,
     ) -> PyResult<Self> {
         init_tracing("model_client");
         let contract = native_env_contract_from_py(env_contract)?;
@@ -1146,6 +1171,14 @@ impl PyModelClient {
         let request_timeout =
             crate::client::optional_timeout(request_timeout_seconds, "request_timeout_seconds")?;
         let declared = crate::lifecycle::checked_workflow_edition(workflow_edition)?;
+        // `RemoteModel` already checked these and warned (check_remote_model_options).
+        let auth = rlmesh::binding::client_auth(
+            address,
+            api_key.as_deref(),
+            tls_ca_file.as_deref().map(std::path::Path::new),
+            false,
+        )
+        .map_err(to_py_err)?;
         // The env's handshake offer as the Python session captured it. Without
         // one the env tier stands in as this build, UNDECLARED: it must not
         // inherit `declared`, the runtime tier's WANT, or a refusal would print
@@ -1162,11 +1195,12 @@ impl PyModelClient {
                     &address,
                     contract,
                     ModelConnect {
+                        token: auth.token(),
+                        trust: auth.trust().clone(),
                         env_offer,
                         declared: declared.as_deref(),
                         connect_timeout,
                         request_timeout,
-                        ..ModelConnect::default()
                     },
                 ))
                 .map_err(to_py_err)
@@ -1251,7 +1285,7 @@ fn block_on_polling_signals<T>(
             tokio::select! {
                 result = &mut rpc => return result.map_err(to_py_err),
                 _ = poll.tick() => {
-                    Python::attach(|py| py.check_signals())?;
+                    crate::client::check_signals()?;
                 }
             }
         }

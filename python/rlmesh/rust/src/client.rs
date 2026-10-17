@@ -24,6 +24,13 @@ use crate::types::{space_value_size, to_py_err};
 /// Interval for polling Python signals during blocked RPCs.
 pub(crate) const SIGNAL_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
+/// Poll for a pending Python signal from a thread blocked in native code.
+/// A daemon thread can outlive the interpreter; once it has finalized there is
+/// no signal to see, and attaching would crash the exiting process.
+pub(crate) fn check_signals() -> PyResult<()> {
+    Python::try_attach(|py| py.check_signals()).unwrap_or(Ok(()))
+}
+
 /// pyo3 answers a re-entrant `&mut self` call with a bare
 /// `RuntimeError: Already borrowed`; say what actually happened instead.
 fn single_caller_error(class: &str) -> PyErr {
@@ -74,6 +81,7 @@ struct ClientCore {
 }
 
 impl ClientCore {
+    #[allow(clippy::too_many_arguments)]
     fn connect(
         role: &'static str,
         public: &'static str,
@@ -81,6 +89,8 @@ impl ClientCore {
         connect_timeout_seconds: Option<f64>,
         request_timeout_seconds: Option<f64>,
         workflow_edition: Option<String>,
+        api_key: Option<&str>,
+        tls_ca_file: Option<&std::path::Path>,
     ) -> PyResult<Self> {
         init_tracing(role);
         let profiler = ProfileCollector::new(role);
@@ -104,13 +114,16 @@ impl ClientCore {
         )
         .map_err(to_py_err)?;
         let declared = crate::lifecycle::checked_workflow_edition(workflow_edition)?;
+        let auth =
+            rlmesh::binding::client_auth(address, api_key, tls_ca_file, true).map_err(to_py_err)?;
 
         let mut client = Python::attach(|py| {
             py.detach(|| {
                 runtime.block_on(EnvClientCore::connect_with(
                     address,
                     CoreConnect {
-                        token: "",
+                        token: auth.token(),
+                        trust: auth.trust().clone(),
                         declared: declared.as_deref(),
                         connect_timeout,
                         request_timeout,
@@ -183,7 +196,7 @@ impl ClientCore {
                         result = &mut rpc => return RpcOutcome::Done(result),
                         _ = poll.tick() => {
                             // Re-acquire the GIL only to check for pending signals.
-                            if let Err(err) = Python::attach(|py| py.check_signals()) {
+                            if let Err(err) = check_signals() {
                                 return RpcOutcome::Signal(err);
                             }
                         }
@@ -276,12 +289,14 @@ macro_rules! client_class {
         #[pymethods]
         impl $Class {
             #[new]
-            #[pyo3(signature = (address, *, connect_timeout_seconds=None, request_timeout_seconds=None, workflow_edition=None))]
+            #[pyo3(signature = (address, *, connect_timeout_seconds=None, request_timeout_seconds=None, workflow_edition=None, api_key=None, tls_ca_file=None))]
             fn new(
                 address: &str,
                 connect_timeout_seconds: Option<f64>,
                 request_timeout_seconds: Option<f64>,
                 workflow_edition: Option<String>,
+                api_key: Option<String>,
+                tls_ca_file: Option<String>,
             ) -> PyResult<Self> {
                 Ok(Self {
                     core: ClientCore::connect(
@@ -291,6 +306,8 @@ macro_rules! client_class {
                         connect_timeout_seconds,
                         request_timeout_seconds,
                         workflow_edition,
+                        api_key.as_deref(),
+                        tls_ca_file.as_deref().map(std::path::Path::new),
                     )?,
                 })
             }
@@ -557,7 +574,7 @@ submit! {
     gen_methods_from_python! {
         r#"
 class PyEnvClient:
-    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None: ...
+    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | None = None) -> None: ...
     def address(self) -> str: ...
     def env_id(self) -> str: ...
     def selected_workflow_edition(self) -> str: ...
@@ -581,7 +598,7 @@ submit! {
     gen_methods_from_python! {
         r#"
 class PyVectorEnvClient:
-    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None: ...
+    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, api_key: str | None = None, tls_ca_file: str | None = None) -> None: ...
     def address(self) -> str: ...
     def env_id(self) -> str: ...
     def selected_workflow_edition(self) -> str: ...

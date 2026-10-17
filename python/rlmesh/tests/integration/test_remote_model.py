@@ -112,12 +112,93 @@ def test_remote_model_drives_a_served_env_in_the_symmetric_loop() -> None:
         env_server.shutdown()
 
 
-def test_session_requires_an_env_contract() -> None:
+def test_session_refuses_a_target_that_is_not_an_env() -> None:
     import rlmesh
 
-    model = rlmesh.RemoteModel(f"127.0.0.1:{_free_port()}")
-    with pytest.raises(TypeError, match="env_contract"):
+    # Refused before any dial: nothing needs to listen.
+    model = rlmesh.RemoteModel("127.0.0.1:1")
+    with pytest.raises(TypeError, match="reset\\(\\) and step\\(\\)"):
         rlmesh.session(model, object())
+
+
+def test_served_model_drives_a_plain_local_env() -> None:
+    """No EnvServer: the local env is stepped on this thread, and the served
+    model is bound with the contract an EnvServer would publish for it."""
+    import gymnasium as gym
+    import numpy as np
+    import rlmesh
+
+    class BoxEnv:
+        observation_space = gym.spaces.Box(-10.0, 10.0, (3,), np.float32)
+        action_space = gym.spaces.Box(-10.0, 10.0, (2,), np.float32)
+
+        def __init__(self) -> None:
+            self.n = 0
+            self.actions: list[Any] = []
+            self.closed = False
+
+        def reset(self, *, seed: Any = None, options: Any = None) -> tuple[Any, Any]:
+            _ = seed, options
+            self.n = 0
+            return np.zeros(3, np.float32), {}
+
+        def step(self, action: Any) -> tuple[Any, Any, Any, Any, Any]:
+            self.n += 1
+            self.actions.append(action)
+            return np.full(3, self.n, np.float32), 1.0, self.n >= 3, False, {}
+
+        def close(self) -> None:
+            self.closed = True
+
+    seen: list[Any] = []
+
+    class Policy(rlmesh.numpy.Model):
+        def predict(self, observation: Any) -> Any:
+            seen.append(observation.copy())
+            return np.asarray([observation[0], -observation[0]], np.float32)
+
+    import os
+    import tempfile
+
+    # A Unix socket in a fresh directory: no port race, and the serve thread
+    # is stopped and joined below.
+    directory = tempfile.mkdtemp(prefix="rlmesh-remote-")
+    model_address = f"unix://{os.path.join(directory, 'model.sock')}"
+    policy = Policy()
+    serving = threading.Thread(target=policy.serve, args=(model_address,))
+    serving.start()
+    env = BoxEnv()
+    try:
+        sess = _connect_model_with_retry(model_address, env)
+        try:
+            result = sess.run(episodes=1)
+            assert result.episodes[0].steps == 3
+        finally:
+            sess.close()
+    finally:
+        policy.close()
+        serving.join(10)
+        assert not serving.is_alive()
+    assert [float(obs[0]) for obs in seen] == [0.0, 1.0, 2.0]
+    assert isinstance(env.actions[1], np.ndarray)
+    assert env.actions[1].tolist() == [1.0, -1.0]
+    # The caller's env is not the session's to close.
+    assert not env.closed
+
+
+def test_served_model_refuses_a_local_vector_env() -> None:
+    import gymnasium as gym
+    import rlmesh
+
+    vector = gym.vector.SyncVectorEnv(
+        [lambda: gym.make("CartPole-v1"), lambda: gym.make("CartPole-v1")]
+    )
+    try:
+        model = rlmesh.RemoteModel("127.0.0.1:1")
+        with pytest.raises(TypeError, match="single-lane"):
+            rlmesh.session(model, vector)
+    finally:
+        vector.close()
 
 
 class ThreeStepEnv(TinyEnv):
