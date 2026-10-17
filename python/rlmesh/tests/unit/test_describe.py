@@ -540,6 +540,20 @@ def test_check_labels_flags_the_push_blockers() -> None:
     labels[PACKAGE_LABEL] = '{"schemaVersion":1,"checkpoints":[{"name":"ok"}]}'
     assert any("no uri" in message for message in check_labels(labels).failed)
 
+    # A checkpoint's entrypoint is checked as the platform reads it.
+    labels[PACKAGE_LABEL] = (
+        '{"schemaVersion":1,"checkpoints":[{"name":"ok","uri":"hf://x",'
+        '"entrypoint":"libero.main:Policy"}]}'
+    )
+    assert check_labels(labels).failed == []
+    labels[PACKAGE_LABEL] = (
+        '{"schemaVersion":1,"checkpoints":[{"name":"ok","uri":"hf://x",'
+        '"entrypoint":"libero.main"}]}'
+    )
+    assert any(
+        "is not module:Class" in message for message in check_labels(labels).failed
+    )
+
 
 def test_check_labels_surfaces_badges_and_soft_claims_as_warnings() -> None:
     import json
