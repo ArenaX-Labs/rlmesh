@@ -1279,7 +1279,6 @@ def _check_package(raw: str, report: CheckReport) -> None:
                     f"{PACKAGE_LABEL} checkpoint {name!r} entrypoint {entrypoint!r} "
                     "is not module:Class"
                 )
-            _check_trained_on(name, entry_map.get("trainedOn"), failures)
             if entry_map.get("default"):
                 defaults += 1
         if defaults > 1:
@@ -1287,38 +1286,6 @@ def _check_package(raw: str, report: CheckReport) -> None:
                 f"{PACKAGE_LABEL} declares {defaults} default checkpoints; "
                 "the platform uses the first"
             )
-
-
-def _check_trained_on(name: object, trained_on: object, failures: list[str]) -> None:
-    """Check a checkpoint's ``trainedOn``: what it was trained for.
-
-    ``[{"env": NAME, "scenarios": [KEY, ...]}]``, which the platform pairs and
-    picks the checkpoint by.
-    """
-    if trained_on is None:
-        return
-    at = f"{PACKAGE_LABEL} checkpoint {name!r} trainedOn"
-    if not isinstance(trained_on, list):
-        failures.append(f"{at} must be a list of {{env, scenarios}} objects")
-        return
-    for entry in cast("list[object]", trained_on):
-        if not isinstance(entry, Mapping):
-            failures.append(f"{at} entries must be {{env, scenarios}} objects")
-            continue
-        entry_map = cast("Mapping[str, object]", entry)
-        env = entry_map.get("env")
-        if not isinstance(env, str) or not env:
-            failures.append(f"{at} entry {dict(entry_map)!r} names no env")
-        scenarios = entry_map.get("scenarios")
-        if scenarios is not None and (
-            not isinstance(scenarios, list)
-            or not all(
-                isinstance(key, str) and key for key in cast("list[object]", scenarios)
-            )
-        ):
-            failures.append(f"{at} {env!r} scenarios must be a list of scenario keys")
-        for key in sorted(entry_map.keys() - {"env", "scenarios"}):
-            failures.append(f"{at} {env!r} has unknown key {key!r}")
 
 
 def _docker_labels(image: str) -> Mapping[str, str] | None:

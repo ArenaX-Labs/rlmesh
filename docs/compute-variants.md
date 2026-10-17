@@ -137,7 +137,7 @@ Version-level keys (`name`, `description`, `checkpoints`, `compatibility`, `capa
 
 ### Checkpoints
 
-A model version lists its weights as `[[checkpoints]]`. One image serves all of them: the container is the runtime, and each checkpoint says which class serves it and what it was trained for.
+A model version lists its weights as `[[checkpoints]]`. One image serves all of them: the container is the runtime, and each checkpoint says which class serves it.
 
 ```toml
 [[checkpoints]]
@@ -146,26 +146,23 @@ uri = "hf://model/acme/pi05-libero"
 default = true
 entrypoint = "libero.main:OpenPILibero"
 params.config = "pi05_libero"
-trainedOn = [{ env = "libero", scenarios = ["libero_spatial/*", "libero_object/*"] }]
 
 [[checkpoints]]
 name = "pi05-droid"
 uri = "hf://model/acme/pi05-droid"
 entrypoint = "droid.main:OpenPIDroid"
 params.config = "pi05_droid"
-trainedOn = [{ env = "droid" }]
 ```
 
-| Key          | Meaning                                                                                                                                                                                                                                        |
-| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `name`       | How a workload names it: a DNS label (`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`, at most 63 characters).                                                                                                                                               |
-| `uri`        | Where its weights are (`hf://`, `s3://`, `gs://`, or a path).                                                                                                                                                                                  |
-| `default`    | The checkpoint a workload naming none falls back to.                                                                                                                                                                                           |
-| `params`     | Bound to the served class's `load()` params (`RLMESH_MAKE_KWARGS`).                                                                                                                                                                            |
-| `entrypoint` | The `module:Class` that serves it. The platform sets it as `RLMESH_SERVE_TARGET`, which `python -m rlmesh.serve` serves instead of its command-line target, so its I/O spec is that class's. Default: the image's command.                     |
-| `trainedOn`  | What it was trained for: `[{env, scenarios}]`, an environment name and optionally the scenario keys (`group/scenario`, `*` matches within a segment). The platform picks the checkpoint trained on a task's scenario, then on its environment. |
+| Key          | Meaning                                                                                                                                                                                                                    |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`       | How a workload names it: a DNS label (`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`, at most 63 characters).                                                                                                                           |
+| `uri`        | Where its weights are (`hf://`, `s3://`, `gs://`, or a path).                                                                                                                                                              |
+| `default`    | The checkpoint a workload naming none falls back to.                                                                                                                                                                       |
+| `params`     | Bound to the served class's `load()` params (`RLMESH_MAKE_KWARGS`).                                                                                                                                                        |
+| `entrypoint` | The `module:Class` that serves it. The platform sets it as `RLMESH_SERVE_TARGET`, which `python -m rlmesh.serve` serves instead of its command-line target, so its I/O spec is that class's. Default: the image's command. |
 
-`rlmesh check-image` fails a malformed `entrypoint` or `trainedOn` before the push.
+`rlmesh check-image` fails a malformed `entrypoint` before the push.
 
 ### Without `rlmesh.toml`: the label by hand
 

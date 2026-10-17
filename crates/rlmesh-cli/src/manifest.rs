@@ -528,7 +528,7 @@ gpu.count = 1
     }
 
     #[test]
-    fn checkpoints_carry_their_entrypoint_and_what_they_were_trained_on() {
+    fn checkpoints_carry_their_entrypoint() {
         let (manifest, _) = ok(r#"
 name = "openpi"
 
@@ -538,14 +538,12 @@ uri = "hf://model/acme/pi05-libero"
 default = true
 entrypoint = "libero.main:OpenPILibero"
 params.config = "pi05_libero"
-trainedOn = [{ env = "libero", scenarios = ["libero_spatial/*"] }]
 "#);
         assert_eq!(
             manifest.version["checkpoints"],
             json!([{
                 "name": "pi05-libero", "uri": "hf://model/acme/pi05-libero", "default": true,
                 "entrypoint": "libero.main:OpenPILibero", "params": {"config": "pi05_libero"},
-                "trainedOn": [{"env": "libero", "scenarios": ["libero_spatial/*"]}],
             }])
         );
     }
