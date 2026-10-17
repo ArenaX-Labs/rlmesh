@@ -24,6 +24,13 @@ use crate::types::{space_value_size, to_py_err};
 /// Interval for polling Python signals during blocked RPCs.
 pub(crate) const SIGNAL_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
+/// Poll for a pending Python signal from a thread blocked in native code.
+/// A daemon thread can outlive the interpreter; once it has finalized there is
+/// no signal to see, and attaching would crash the exiting process.
+pub(crate) fn check_signals() -> PyResult<()> {
+    Python::try_attach(|py| py.check_signals()).unwrap_or(Ok(()))
+}
+
 /// pyo3 answers a re-entrant `&mut self` call with a bare
 /// `RuntimeError: Already borrowed`; say what actually happened instead.
 fn single_caller_error(class: &str) -> PyErr {
@@ -189,7 +196,7 @@ impl ClientCore {
                         result = &mut rpc => return RpcOutcome::Done(result),
                         _ = poll.tick() => {
                             // Re-acquire the GIL only to check for pending signals.
-                            if let Err(err) = Python::attach(|py| py.check_signals()) {
+                            if let Err(err) = check_signals() {
                                 return RpcOutcome::Signal(err);
                             }
                         }

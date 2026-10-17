@@ -531,7 +531,7 @@ fn wait_background_server(
         // do) or Ctrl-C is discarded and wait() can never be interrupted. The
         // state stays RunningBackground, so the caller's shutdown() still
         // drains and closes the env.
-        Python::attach(|py| py.check_signals())?;
+        crate::client::check_signals()?;
     }
 }
 
@@ -664,7 +664,7 @@ fn run_server(
     // request too; the deferring handler EnvServer.serve() installs asks for
     // one itself.
     run_foreground(jobs, || {
-        if Python::attach(|py| py.check_signals()).is_err() {
+        if crate::client::check_signals().is_err() {
             signal_shutdown.trigger("sigint");
         }
     });

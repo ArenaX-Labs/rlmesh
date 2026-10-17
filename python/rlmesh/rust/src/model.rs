@@ -680,7 +680,7 @@ fn run_local_blocking(
                     result = &mut run => return RunOutcome::Done(result),
                     _ = poll.tick() => {
                         let checked = jobs
-                            .run(|| Python::attach(|py| py.check_signals()))
+                            .run(crate::client::check_signals)
                             .await;
                         if let Ok(Err(err)) = checked {
                             cancellation.cancel();
@@ -1028,7 +1028,7 @@ impl PyModel {
                     tokio::select! {
                         result = &mut serve => return result.map_err(to_py_err),
                         _ = poll.tick() => {
-                            if let Err(err) = Python::attach(|py| py.check_signals()) {
+                            if let Err(err) = crate::client::check_signals() {
                                 shutdown.trigger("python signal");
                                 let _ = (&mut serve).await;
                                 return Err(err);
@@ -1285,7 +1285,7 @@ fn block_on_polling_signals<T>(
             tokio::select! {
                 result = &mut rpc => return result.map_err(to_py_err),
                 _ = poll.tick() => {
-                    Python::attach(|py| py.check_signals())?;
+                    crate::client::check_signals()?;
                 }
             }
         }

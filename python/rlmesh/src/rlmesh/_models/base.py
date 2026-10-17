@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import contextlib
 import contextvars
 import functools
@@ -10,6 +11,7 @@ import math
 import os
 import threading
 import warnings
+import weakref
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import (
     TYPE_CHECKING,
@@ -439,6 +441,31 @@ def suppress_autoload() -> Iterator[None]:
         yield
     finally:
         _suppress_autoload.reset(token)
+
+
+#: Models that started a ``serve`` in this process, by ``id`` (a model need not
+#: be hashable), held weakly.
+_serving_models: weakref.WeakValueDictionary[int, ModelBase[Any, Any]] = (
+    weakref.WeakValueDictionary()
+)
+
+
+def _close_serving_models() -> None:
+    """Close every model still serving when the interpreter exits.
+
+    A serve left running (typically on a daemon thread) keeps native threads
+    calling into Python, and one that does so once finalization has begun
+    kills the process with a signal. ``atexit`` runs while the interpreter is
+    still whole, and ``close()`` is how a serve is stopped: it drains the serve,
+    waits for in-flight calls and fires the close hook, as the serve's own end
+    would. A model already closed is a no-op.
+    """
+    for model in list(_serving_models.values()):
+        with contextlib.suppress(Exception):
+            model.close()
+
+
+_ = atexit.register(_close_serving_models)
 
 
 class ModelBase(Generic[ObsT, ActT]):
@@ -1659,6 +1686,7 @@ class ModelBase(Generic[ObsT, ActT]):
         # close() stops this serve (drain); the serve then returns and its own
         # close below is that one.
         token = self._calls.register_serve(worker.stop_serving)
+        _serving_models[id(self)] = self
         try:
             worker.serve(address, declared)
         except BaseException:
