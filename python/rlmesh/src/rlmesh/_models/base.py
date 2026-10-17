@@ -1013,7 +1013,7 @@ class ModelBase(Generic[ObsT, ActT]):
         bridge = self._bridge
         raw_predict = self._raw_predict
 
-        def configure(env_contract: object) -> object:
+        def configure(env_contract: object, *, fill_missing: bool = False) -> object:
             """Resolve the served route: a native plan plus neutral host holes.
 
             The Rust engine drives the result (it owns the per-episode frame
@@ -1021,12 +1021,14 @@ class ModelBase(Generic[ObsT, ActT]):
             model returns ``None``. Trust is read at resolve time (not
             captured at worker build), so a ``run()``'s per-call
             ``trust_entrypoints`` override stays scoped to that run even
-            though the worker itself is cached.
+            though the worker itself is cached. ``fill_missing`` is a transfer
+            the runtime asked for: fill what the env lacks instead of refusing.
             """
             adapter = resolve_adapter(
                 spec,
                 cast("Any", env_contract),
                 trust_entrypoints=self._trust_entrypoints,
+                fill_missing=fill_missing,
             )
             if self._native_run is not None:
                 self._native_run.contract = env_contract

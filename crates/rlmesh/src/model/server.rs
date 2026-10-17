@@ -250,6 +250,8 @@ where
                     capabilities::MODEL_CONCURRENT_PREDICT_V1,
                     // It negotiates and ingests observation history on Predict.
                     capabilities::MODEL_OBSERVATION_HISTORY_V1,
+                    // It fills what the env lacks when a route asks for a transfer.
+                    capabilities::MODEL_FILL_MISSING_V1,
                 ]),
                 supported_workflow_editions: supported_workflow_editions(),
                 preferred_workflow_edition: declared_workflow_edition(
@@ -711,6 +713,7 @@ async fn handle_resolve_adapter(
                 ResolveOptions {
                     execution_horizon,
                     delivers_history: request.delivers_history,
+                    fill_missing: request.fill_missing,
                 },
             )
             .await

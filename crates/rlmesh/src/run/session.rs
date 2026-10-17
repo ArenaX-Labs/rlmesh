@@ -476,6 +476,7 @@ impl Core {
                             ResolveOptions {
                                 execution_horizon: model.horizon,
                                 delivers_history: true,
+                                fill_missing: false,
                             },
                         )
                         .await?;

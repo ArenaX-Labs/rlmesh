@@ -709,7 +709,8 @@ fn run_local_blocking(
 /// The per-route resolver the served model exposes via `route_setup`. Runs the
 /// Python `configure_fn` (which resolves the spec into a native plan + neutral
 /// host holes) off the predict lock and hands the engine a [`RouteConfig`];
-/// `None` is a spec-less / `NO_ADAPTER` route.
+/// `None` is a spec-less / `NO_ADAPTER` route. A transfer route calls it with
+/// `fill_missing=True`.
 struct PyRouteResolver {
     configure_fn: Py<PyAny>,
 }
@@ -720,6 +721,7 @@ impl RouteResolver for PyRouteResolver {
         &self,
         _route_key: &str,
         env_contract: &EnvContract,
+        fill_missing: bool,
     ) -> rlmesh::Result<Option<RouteConfig>> {
         let configure_fn = Python::attach(|py| self.configure_fn.clone_ref(py));
         let contract = env_contract.clone();
@@ -728,7 +730,15 @@ impl RouteResolver for PyRouteResolver {
         tokio::task::spawn_blocking(move || {
             Python::attach(|py| -> PyResult<Option<RouteConfig>> {
                 let contract_py = env_contract_to_py(py, &contract)?;
-                let resolved = configure_fn.call1(py, (contract_py,))?;
+                // The keyword only on a transfer, so a configure_fn that
+                // predates it keeps working on every native route.
+                let resolved = if fill_missing {
+                    let kwargs = pyo3::types::PyDict::new(py);
+                    kwargs.set_item("fill_missing", true)?;
+                    configure_fn.call(py, (contract_py,), Some(&kwargs))?
+                } else {
+                    configure_fn.call1(py, (contract_py,))?
+                };
                 let resolved = resolved.bind(py);
                 if resolved.is_none() {
                     return Ok(None);

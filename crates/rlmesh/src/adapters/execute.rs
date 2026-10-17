@@ -386,6 +386,7 @@ pub(crate) fn resolve_parts(
     action: &SpaceSpec,
     spec: &ModelSpec,
     options: ResolveOptions,
+    fill_missing: bool,
 ) -> Result<ResolvedParts> {
     let run = || {
         let mut wire = spec.wire()?;
@@ -453,12 +454,15 @@ pub(crate) fn resolve_parts(
         if options.check_inverse {
             check_inverse(&all_encodings)?
         }
-        let plan = core::resolve(
+        let plan = core::resolve_with(
             tags,
             &core::SpaceView::from(observation.wire()),
             &core::SpaceView::from(action.wire()),
             &wire,
-            true,
+            core::ResolveOptions {
+                trust_entrypoints: true,
+                fill_missing,
+            },
         )
         .map_err(resolution_error)?;
         let mut encodings = Encodings::default();
@@ -568,6 +572,7 @@ pub fn resolve(
         action_space,
         model_spec,
         options,
+        false,
     )?;
     Ok(Adapter::new(parts))
 }
@@ -584,6 +589,7 @@ pub fn resolve_from_contract(
         contract.action_space(),
         model_spec,
         options,
+        false,
     )?;
     Ok(Adapter::new(parts))
 }

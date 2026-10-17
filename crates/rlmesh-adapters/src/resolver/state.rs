@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use super::action::ModelOutputs;
-use super::{LeafKey, Result, bind, check_geometry, check_provenance, err};
+use super::{Fills, LeafKey, Result, bind, check_geometry, check_provenance, err};
 use crate::advisory::Advisory;
 use crate::error::ErrorCode;
 use crate::fmt::{missing_role_hint, quoted, quoted_accept_set, quoted_encoding, quoted_leaf_keys};
@@ -377,6 +377,7 @@ pub(super) fn plan_state(
     outputs: &ModelOutputs<'_>,
     unknown_roles: &BTreeMap<String, String>,
     advisories: &mut Vec<Advisory>,
+    fills: &mut Fills,
 ) -> Result<StatePlan> {
     let at = quoted(&placement.to_string());
     if rlmesh_spaces::DType::from_name(&model_input.dtype).is_none() {
@@ -442,8 +443,20 @@ pub(super) fn plan_state(
             // fail loud before the optional zero-fill silently degrades it. A
             // role the env genuinely lacks falls through to the optional branch.
             super::reject_referenced_unknown(role, &placement, unknown_roles)?;
-            if component.optional {
+            // A transfer fills a required part as if it were optional, except
+            // a custom packing, which has no zero form.
+            let transfer = !component.optional && fills.missing && !is_custom;
+            if component.optional || transfer {
                 let width = fill_width(component, role, &at)?;
+                if transfer {
+                    fills.made.push(Advisory::caution(format!(
+                        "transfer: model input {at} needs state role {}{} the env does not \
+                         offer; it gets {width} dims of {}",
+                        quoted(role),
+                        part_suffix(component.part.as_deref()),
+                        folded_fill(component),
+                    )));
+                }
                 for (name, axis) in [
                     ("axis_scale", component.axis_scale.as_deref()),
                     ("axis_offset", component.axis_offset.as_deref()),
@@ -585,6 +598,35 @@ pub(super) fn plan_state(
         } else {
             env_state.dim
         };
+        // A transfer takes the narrower env part it has and pads the model's
+        // remaining dims with the part's fill (a two-finger gripper fed a
+        // one-dim one), when nothing addresses the dims one by one.
+        let mut pad = 0;
+        let narrowed;
+        let component = match (source_width, component.dim) {
+            (Some(width), Some(dim))
+                if dim > width
+                    && fills.missing
+                    && component.index.is_none()
+                    && component.labels.is_none()
+                    && component.axis_scale.is_none()
+                    && component.axis_offset.is_none() =>
+            {
+                pad = dim - width;
+                fills.made.push(Advisory::caution(format!(
+                    "transfer: model input {at} needs {dim} dims of state role {} but the env \
+                     offers {width}; the other {pad} get {}",
+                    quoted(role),
+                    folded_fill(component),
+                )));
+                narrowed = ConcatPart {
+                    dim: Some(width),
+                    ..component.clone()
+                };
+                &narrowed
+            }
+            _ => component,
+        };
         if let Some(width) = source_width {
             if let Some(index) = component.index {
                 if index >= width {
@@ -662,9 +704,20 @@ pub(super) fn plan_state(
             previous: None,
             frame,
             provenance,
-            part: bound.part,
+            part: bound.part.clone(),
             width,
         });
+        if pad > 0 {
+            // Not an absent role: the env has it, narrower. The transfer
+            // caution above says what was padded.
+            pieces.push(fill_piece(
+                pad,
+                folded_fill(component),
+                None,
+                bound.part,
+                component,
+            ));
+        }
     }
     // Known only when every piece's width is (and no pathological spec overflows
     // the sum): a host-side shim can address a slice only in that case.

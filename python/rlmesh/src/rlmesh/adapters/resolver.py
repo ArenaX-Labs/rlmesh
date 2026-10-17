@@ -548,6 +548,7 @@ def _resolve_with_env_json(
     *,
     trust_entrypoints: bool,
     check_inverse: bool,
+    fill_missing: bool = False,
 ) -> Adapter:
     """Shared resolve body, parameterized on the env tags JSON.
 
@@ -567,6 +568,7 @@ def _resolve_with_env_json(
             observation_space,
             action_space,
             json.dumps(wire),
+            fill_missing=fill_missing,
         )
     except ValueError as exc:
         raise AdapterResolutionError(str(exc)) from None
@@ -602,6 +604,28 @@ def resolve_from_contract(
         AdapterResolutionError: If the contract carries no tags, or
             resolution fails.
     """
+    return _resolve_from_contract(
+        contract,
+        model_spec,
+        trust_entrypoints=trust_entrypoints,
+        check_inverse=check_inverse,
+    )
+
+
+def _resolve_from_contract(
+    contract: EnvContract,
+    model_spec: ModelSpec,
+    *,
+    trust_entrypoints: bool = False,
+    check_inverse: bool = True,
+    fill_missing: bool = False,
+) -> Adapter:
+    """:func:`resolve_from_contract`, plus the served path's transfer.
+
+    ``fill_missing`` fills what the env lacks instead of refusing the pair, each
+    fill a ``transfer:`` caution in the plan's advisories. Only a served model
+    resolves this way, when the runtime asks for a transfer.
+    """
     metadata = cast("dict[str, Any] | None", contract.metadata) or {}
     # Consume path: pass the peer's raw contract tags straight to the tolerant
     # native READ door, NOT through EnvTags.from_metadata (the strict publish
@@ -635,6 +659,7 @@ def resolve_from_contract(
         model_spec,
         trust_entrypoints=trust_entrypoints,
         check_inverse=check_inverse,
+        fill_missing=fill_missing,
     )
 
 

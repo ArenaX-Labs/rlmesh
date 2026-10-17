@@ -68,6 +68,13 @@ message ResolveAdapterRequest {
   // stacked adapter at h > 1 (the model cannot keep a correct window without
   // the frames). Answered by `ResolveAdapterResponse.history`.
   bool delivers_history = 5;
+
+  // Transfer: run the model on an env it was not built for. The model fills
+  // what the env lacks (a blank camera, a zero state part, an empty text, an
+  // env actuator held at its fill) instead of refusing the route, and reports
+  // each fill as a caution. Sent only to a model advertising
+  // `rlmesh.model.fill_missing.v1`; an older model would refuse the route.
+  bool fill_missing = 6;
 }
 
 // What a resolved route's adapter keeps a frame window for, answered when the

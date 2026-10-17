@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use super::state::{check_axis_width, label_permutation, part_suffix};
-use super::{LeafKey, Result, bind, check_geometry, err, index_by_key};
+use super::{Fills, LeafKey, Result, bind, check_geometry, err, index_by_key};
 use crate::advisory::Advisory;
 use crate::error::ErrorCode;
 use crate::fmt::{missing_role_hint, quoted, quoted_encoding, quoted_leaf_keys};
@@ -203,6 +203,7 @@ pub(super) fn plan_action(
     env: &Action,
     outputs: &ModelOutputs<'_>,
     advisories: &mut Vec<Advisory>,
+    fills: &mut Fills,
 ) -> Result<ActionPlan> {
     // `clip` is an env-side actuator clamp on the assembled action vector (read
     // as `env.clip` below); a clip declared on the *model* action layout is
@@ -293,7 +294,16 @@ pub(super) fn plan_action(
             // `optional` zero-fill, reusing the opaque branch's fill segment. The
             // role is kept on the segment so `describe` can flag the fabrication;
             // apply ignores it once `fill` is set.
-            if env_component.optional {
+            if !env_component.optional && fills.missing {
+                fills.made.push(Advisory::caution(format!(
+                    "transfer: env action needs role {}{} the model does not output; it is \
+                     held at {}",
+                    quoted(role),
+                    part_suffix(env_component.part.as_deref()),
+                    env_component.fill,
+                )));
+            }
+            if env_component.optional || fills.missing {
                 segments.push(ActionSegment {
                     role: Some(role.clone()),
                     start: 0,
@@ -497,7 +507,13 @@ mod tests {
         env: &Action,
         advisories: &mut Vec<Advisory>,
     ) -> super::Result<ActionPlan> {
-        plan_action(model, env, &index_outputs(model)?, advisories)
+        plan_action(
+            model,
+            env,
+            &index_outputs(model)?,
+            advisories,
+            &mut super::super::Fills::new(false),
+        )
     }
 
     fn component(role: &str) -> Actuator {

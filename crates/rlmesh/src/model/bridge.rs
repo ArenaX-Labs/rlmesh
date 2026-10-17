@@ -593,6 +593,7 @@ impl RouteResolver for SpecResolver {
         &self,
         _route_key: &str,
         env_contract: &EnvContract,
+        fill_missing: bool,
     ) -> Result<Option<RouteConfig>> {
         if matches!(self.spec, Some(SpecArg::NoAdapter)) {
             return Ok(None);
@@ -634,6 +635,7 @@ impl RouteResolver for SpecResolver {
                 trust_entrypoints: self.trust_entrypoints,
                 ..Default::default()
             },
+            fill_missing,
         )?;
         if let Some(context) = &self.context {
             context.set_advisories(

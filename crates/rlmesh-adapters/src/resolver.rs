@@ -444,6 +444,40 @@ fn collect_leaves<'spec>(
     }
 }
 
+/// How a pair resolves, beyond its two specs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ResolveOptions {
+    /// Allow a custom input to name a registered host entrypoint.
+    pub trust_entrypoints: bool,
+    /// Transfer: run the model on an env it was not built for. What the env
+    /// lacks is filled instead of refusing the pair: a required camera gets a
+    /// blank frame, a required state part its fill (zeros), a required text
+    /// an empty string, and an env actuator the model does not drive is held
+    /// at its fill. A model action no env actuator takes is dropped, as it
+    /// always is. Every fill is a caution in the plan's advisories, prefixed
+    /// `transfer:`, so a result can say what its model never saw. What has no
+    /// fill (a custom input or packing, an unsized input) still fails.
+    pub fill_missing: bool,
+}
+
+/// What the planners may fabricate when the env lacks what the pair needs,
+/// and the cautions saying what they did.
+pub(super) struct Fills {
+    /// [`ResolveOptions::fill_missing`].
+    pub(super) missing: bool,
+    /// One caution per fill made only because of `missing`.
+    pub(super) made: Vec<Advisory>,
+}
+
+impl Fills {
+    pub(super) fn new(missing: bool) -> Self {
+        Self {
+            missing,
+            made: Vec::new(),
+        }
+    }
+}
+
 /// Derive a [`ResolvedAdapter`] for an env/model pair.
 ///
 /// The env side is given as the [`EnvTags`] observation/action tree over its
@@ -458,6 +492,31 @@ pub fn resolve(
     model_spec: &ModelSpec,
     trust_entrypoints: bool,
 ) -> Result<ResolvedAdapter> {
+    resolve_with(
+        env_tags,
+        observation_space,
+        action_space,
+        model_spec,
+        ResolveOptions {
+            trust_entrypoints,
+            ..ResolveOptions::default()
+        },
+    )
+}
+
+/// [`resolve`] under explicit [`ResolveOptions`].
+pub fn resolve_with(
+    env_tags: &EnvTags,
+    observation_space: &SpaceView,
+    action_space: &SpaceView,
+    model_spec: &ModelSpec,
+    options: ResolveOptions,
+) -> Result<ResolvedAdapter> {
+    let ResolveOptions {
+        trust_entrypoints,
+        fill_missing,
+    } = options;
+    let mut fills = Fills::new(fill_missing);
     // READ-door taint (§8): a *bare* (non-`x-`) unknown field on a recognized
     // kind is must-understand — an old core silently applying its own default
     // for a modifier it never parsed is worse than failing. Fail closed, on both
@@ -544,6 +603,7 @@ pub fn resolve(
                 &images_by_role,
                 &unknown_roles,
                 &mut quiet,
+                &mut fills,
             )?),
             ModelLeaf::State(input) => ObsPlan::State(state::plan_state(
                 input,
@@ -552,12 +612,14 @@ pub fn resolve(
                 &outputs,
                 &unknown_roles,
                 &mut quiet,
+                &mut fills,
             )?),
             ModelLeaf::Text(input) => ObsPlan::Text(text::plan_text(
                 input,
                 placement,
                 &texts_by_role,
                 &unknown_roles,
+                &mut fills,
             )?),
             ModelLeaf::Custom(input) => {
                 ObsPlan::Custom(custom::plan_custom(input, placement, trust_entrypoints)?)
@@ -594,8 +656,13 @@ pub fn resolve(
         })
         .collect();
 
-    let action_plan =
-        action::plan_action(&model_spec.output, &env_spec.action, &outputs, &mut quiet)?;
+    let action_plan = action::plan_action(
+        &model_spec.output,
+        &env_spec.action,
+        &outputs,
+        &mut quiet,
+        &mut fills,
+    )?;
 
     // Model-side ad-hoc roles the env does not answer. An ad-hoc role matches
     // only on the exact string, so a typo or a private name silently degrades
@@ -644,6 +711,24 @@ pub fn resolve(
             .filter_map(|actuator| actuator.role.as_deref())
             .filter(|role| !env_action_roles.contains(role)),
     );
+    if fill_missing {
+        // A model action no env actuator takes is dropped in any resolve; a
+        // transfer says so, since the model was trained to act through it.
+        let dropped: BTreeSet<&str> = model_spec
+            .output
+            .components
+            .iter()
+            .filter_map(|actuator| actuator.role.as_deref())
+            .filter(|role| !env_action_roles.contains(role))
+            .collect();
+        fills.made.extend(dropped.into_iter().map(|role| {
+            Advisory::caution(format!(
+                "transfer: model action role {} has no env actuator; it is dropped",
+                quoted(role)
+            ))
+        }));
+    }
+    advisories.append(&mut fills.made);
     advisories.extend(
         ad_hoc
             .into_iter()
@@ -2226,6 +2311,208 @@ mod provenance_tests {
                 .contains(r#"unrecognized provenance ["guessed"]"#),
             "{}",
             err.message
+        );
+    }
+}
+
+#[cfg(test)]
+mod transfer_tests {
+    use super::{ResolveOptions, resolve_with};
+    use crate::advisory::AdvisorySeverity;
+    use crate::error::ErrorCode;
+    use crate::space_view::SpaceView;
+    use crate::spec::{EnvTags, ModelSpec};
+
+    // A Metaworld-like env: one camera, the end-effector position, and a
+    // position-delta arm with a gripper.
+    const ENV_TAGS: &str = r#"{"observation":{
+        "cam":{"type":"image","role":"image/primary"},
+        "eef":{"type":"state","role":"proprio/eef_pos"}},
+      "action":{"components":[{"role":"action/delta_eef_pos","dim":3},
+                              {"role":"action/gripper","dim":1}]}}"#;
+    const OBS_SPACE: &str = r#"{"kind":"dict","dtype":"unspecified","keys":["cam","eef"],"children":[
+        {"kind":"box","shape":[8,8,3],"dtype":"uint8"},
+        {"kind":"box","shape":[3],"dtype":"float32"}]}"#;
+    const ACTION_SPACE: &str = r#"{"kind":"box","shape":[4],"dtype":"float32"}"#;
+
+    // A LIBERO-trained policy: a wrist camera, the end-effector rotation and
+    // an instruction the env above does not have, and a rotation delta it
+    // cannot take.
+    const MODEL: &str = r#"{"input":{
+        "base":{"type":"image","role":"image/primary","height":8,"width":8,"channels":3},
+        "wrist":{"type":"image","role":"image/wrist","height":8,"width":8,"channels":3},
+        "state":{"type":"state","components":[{"role":"proprio/eef_pos","dim":3},
+                                              {"role":"proprio/eef_rot","dim":3}]},
+        "prompt":{"type":"text","role":"text/instruction"}},
+      "output":{"components":[{"role":"action/delta_eef_pos","dim":3},
+                              {"role":"action/delta_eef_rot","dim":3},
+                              {"role":"action/gripper","dim":1}]}}"#;
+
+    // The same env without its camera.
+    const BLIND_TAGS: &str = r#"{"observation":{"eef":{"type":"state","role":"proprio/eef_pos"}},
+      "action":{"components":[{"role":"action/delta_eef_pos","dim":3},
+                              {"role":"action/gripper","dim":1}]}}"#;
+    const BLIND_SPACE: &str = r#"{"kind":"dict","dtype":"unspecified","keys":["eef"],"children":[
+        {"kind":"box","shape":[3],"dtype":"float32"}]}"#;
+
+    fn resolve(
+        env_tags: &str,
+        model: &str,
+        fill_missing: bool,
+    ) -> Result<crate::plans::ResolvedAdapter, crate::error::AdapterResolutionError> {
+        resolve_on(env_tags, OBS_SPACE, model, fill_missing)
+    }
+
+    fn resolve_on(
+        env_tags: &str,
+        obs_space: &str,
+        model: &str,
+        fill_missing: bool,
+    ) -> Result<crate::plans::ResolvedAdapter, crate::error::AdapterResolutionError> {
+        let tags: EnvTags = serde_json::from_str(env_tags).expect("parse env tags");
+        let spec: ModelSpec = serde_json::from_str(model).expect("parse model spec");
+        let space = |json: &str| -> SpaceView { serde_json::from_str(json).expect("parse space") };
+        resolve_with(
+            &tags,
+            &space(obs_space),
+            &space(ACTION_SPACE),
+            &spec,
+            ResolveOptions {
+                fill_missing,
+                ..ResolveOptions::default()
+            },
+        )
+    }
+
+    fn transfer_notes(adapter: &crate::plans::ResolvedAdapter) -> Vec<String> {
+        adapter
+            .advisories()
+            .into_iter()
+            .filter(|a| a.message.starts_with("transfer:"))
+            .inspect(|a| assert_eq!(a.severity, AdvisorySeverity::Caution, "{a:?}"))
+            .map(|a| a.message)
+            .collect()
+    }
+
+    #[test]
+    fn a_native_resolve_still_refuses_what_the_env_lacks() {
+        let error = resolve(ENV_TAGS, MODEL, false).expect_err("native refuses");
+        assert_eq!(error.code, ErrorCode::MissingRole);
+    }
+
+    #[test]
+    fn a_transfer_fills_every_gap_and_says_so() {
+        let adapter = resolve(ENV_TAGS, MODEL, true).expect("transfer resolves");
+        let notes = transfer_notes(&adapter);
+        for expected in [
+            "\"proprio/eef_rot\" the env does not offer; it gets 3 dims of 0",
+            "\"text/instruction\" the env does not offer; it gets an empty string",
+            "\"action/delta_eef_rot\" has no env actuator; it is dropped",
+        ] {
+            assert!(
+                notes.iter().any(|note| note.contains(expected)),
+                "{expected:?} not in {notes:#?}"
+            );
+        }
+        assert_eq!(notes.len(), 3, "{notes:#?}");
+        // A missing camera takes the env's only one, as in any resolve: real
+        // pixels beat a blank frame, and the rebind is its own caution.
+        assert!(
+            adapter
+                .advisories()
+                .iter()
+                .any(|a| a.message.contains("bound to the env's only camera")),
+            "{:#?}",
+            adapter.advisories()
+        );
+        // With no camera at all, the cameras are blanked.
+        let adapter = resolve_on(BLIND_TAGS, BLIND_SPACE, MODEL, true).expect("resolves");
+        let notes = transfer_notes(&adapter);
+        for role in ["image/primary", "image/wrist"] {
+            let expected = format!("\"{role}\" the env does not offer; it gets a blank frame");
+            assert!(
+                notes.iter().any(|note| note.contains(&expected)),
+                "{expected:?} not in {notes:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_transfer_holds_an_env_actuator_the_model_does_not_drive() {
+        let model = r#"{"input":{"state":{"type":"state","components":[
+                {"role":"proprio/eef_pos","dim":3}]}},
+            "output":{"components":[{"role":"action/delta_eef_pos","dim":3}]}}"#;
+        assert_eq!(
+            resolve(ENV_TAGS, model, false)
+                .expect_err("native refuses")
+                .code,
+            ErrorCode::MissingRole
+        );
+        let adapter = resolve(ENV_TAGS, model, true).expect("transfer resolves");
+        assert_eq!(
+            transfer_notes(&adapter),
+            [
+                "transfer: env action needs role \"action/gripper\" the model does not output; \
+              it is held at 0"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_transfer_pads_a_narrower_state_part() {
+        // A two-finger gripper fed the env's one-dim gripper.
+        let tags = r#"{"observation":{"eef":{"type":"state","role":"proprio/gripper"}},
+          "action":{"components":[{"role":"action/delta_eef_pos","dim":3},
+                                  {"role":"action/gripper","dim":1}]}}"#;
+        let space = r#"{"kind":"dict","dtype":"unspecified","keys":["eef"],"children":[
+            {"kind":"box","shape":[1],"dtype":"float32"}]}"#;
+        let model = r#"{"input":{"state":{"type":"state","components":[
+                {"role":"proprio/gripper","dim":2}]}},
+            "output":{"components":[{"role":"action/delta_eef_pos","dim":3},
+                                    {"role":"action/gripper","dim":1}]}}"#;
+        assert_eq!(
+            resolve_on(tags, space, model, false)
+                .expect_err("native refuses")
+                .code,
+            ErrorCode::SliceOutOfRange
+        );
+        let adapter = resolve_on(tags, space, model, true).expect("transfer resolves");
+        assert_eq!(
+            transfer_notes(&adapter),
+            [
+                "transfer: model input \"state\" needs 2 dims of state role \"proprio/gripper\" \
+              but the env offers 1; the other 1 get 0"
+            ]
+        );
+        let crate::plans::ObsPlan::State(state) = &adapter.obs_plans[0] else {
+            panic!("a state plan");
+        };
+        assert_eq!(state.native_width, Some(2));
+    }
+
+    #[test]
+    fn a_transfer_between_a_matching_pair_changes_nothing() {
+        let model = r#"{"input":{"state":{"type":"state","components":[
+                {"role":"proprio/eef_pos","dim":3}]}},
+            "output":{"components":[{"role":"action/delta_eef_pos","dim":3},
+                                    {"role":"action/gripper","dim":1}]}}"#;
+        let native = resolve(ENV_TAGS, model, false).expect("resolves");
+        let transfer = resolve(ENV_TAGS, model, true).expect("resolves");
+        assert!(transfer_notes(&transfer).is_empty());
+        assert_eq!(native.describe(), transfer.describe());
+    }
+
+    #[test]
+    fn a_transfer_still_refuses_what_it_cannot_size() {
+        let model = r#"{"input":{"wrist":{"type":"image","role":"image/wrist"},
+                "base":{"type":"image","role":"image/primary"}},
+            "output":{"components":[{"role":"action/delta_eef_pos","dim":3},
+                                    {"role":"action/gripper","dim":1}]}}"#;
+        assert_eq!(
+            resolve_on(BLIND_TAGS, BLIND_SPACE, model, true)
+                .expect_err("an unsized camera has no blank frame")
+                .code,
+            ErrorCode::MissingWidth
         );
     }
 }

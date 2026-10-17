@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use super::state::part_suffix;
-use super::{LeafKey, Result, bind, err};
+use super::{Fills, LeafKey, Result, bind, err};
 use crate::advisory::Advisory;
 use crate::error::ErrorCode;
 use crate::fmt::{quoted, quoted_leaf_keys};
@@ -19,6 +19,7 @@ pub(super) fn plan_image(
     images_by_role: &BTreeMap<LeafKey, &EnvImage>,
     unknown_roles: &BTreeMap<String, String>,
     advisories: &mut Vec<Advisory>,
+    fills: &mut Fills,
 ) -> Result<ImagePlan> {
     let at = quoted(&placement.to_string());
     // `fill` only colors the zero-filled frame an `optional` camera
@@ -76,6 +77,15 @@ pub(super) fn plan_image(
         // frame), not a hard error -- the image-side analogue of an optional
         // state component.
         if model_input.optional {
+            return zero_fill_image_plan(model_input, placement);
+        }
+        if fills.missing {
+            fills.made.push(Advisory::caution(format!(
+                "transfer: model input {at} wants an image with role {}{} the env does not \
+                 offer; it gets a blank frame",
+                quoted(&model_input.role),
+                part_suffix(model_input.part.as_deref()),
+            )));
             return zero_fill_image_plan(model_input, placement);
         }
         return Err(err(
@@ -601,6 +611,7 @@ mod image_resolve_tests {
             images,
             &BTreeMap::new(),
             &mut Vec::new(),
+            &mut super::super::Fills::new(false),
         )
     }
 

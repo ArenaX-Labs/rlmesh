@@ -147,6 +147,7 @@ where
                 crate::model::ResolveOptions {
                     execution_horizon: options.execution_horizon,
                     delivers_history: true,
+                    fill_missing: false,
                 },
             )
             .await?;

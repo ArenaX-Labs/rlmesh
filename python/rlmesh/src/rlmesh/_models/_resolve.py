@@ -22,7 +22,10 @@ __all__ = ["reject_vector_env", "resolve_adapter"]
 
 
 def resolve_adapter(
-    spec: object | None, contract: EnvContract | None, trust_entrypoints: bool
+    spec: object | None,
+    contract: EnvContract | None,
+    trust_entrypoints: bool,
+    fill_missing: bool = False,
 ) -> Adapter | None:
     """Resolve the adapter from a model ``spec`` and an env contract.
 
@@ -40,12 +43,13 @@ def resolve_adapter(
     -- the old single-lane rejection is lifted. (Model-*internal* state, which the
     engine cannot key by episode, is gated to single-lane by a registration-time
     probe instead.)
+
+    ``fill_missing`` resolves a transfer, which the runtime asks a served model
+    for: what the env lacks is filled instead of refusing the route.
     """
-    from ..adapters import (
-        ENV_METADATA_KEY,
-        AdapterResolutionError,
-        ModelSpec,
-        resolve_from_contract,
+    from ..adapters import ENV_METADATA_KEY, AdapterResolutionError, ModelSpec
+    from ..adapters.resolver import (
+        _resolve_from_contract,  # pyright: ignore[reportPrivateUsage]
     )
 
     if spec is NO_ADAPTER:
@@ -68,7 +72,9 @@ def resolve_adapter(
         raise AdapterResolutionError(
             "resolving a spec'd adapter requires an env contract, but the env exposes none"
         )
-    return resolve_from_contract(contract, spec, trust_entrypoints=trust_entrypoints)
+    return _resolve_from_contract(
+        contract, spec, trust_entrypoints=trust_entrypoints, fill_missing=fill_missing
+    )
 
 
 def reject_vector_env(contract: EnvContract | None) -> None:

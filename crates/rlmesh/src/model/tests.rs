@@ -2953,7 +2953,8 @@ async fn remote_model_offers_history_only_to_a_model_that_advertises_it() {
 #[tokio::test]
 async fn served_legs_learn_this_builds_ceilings() {
     use rlmesh_proto::capabilities::{
-        ENV_SUBSET_STEP, MODEL_CONCURRENT_PREDICT_V1, MODEL_OBSERVATION_HISTORY_V1,
+        ENV_SUBSET_STEP, MODEL_CONCURRENT_PREDICT_V1, MODEL_FILL_MISSING_V1,
+        MODEL_OBSERVATION_HISTORY_V1,
     };
     use rlmesh_runtime::PeerCeiling;
 
@@ -3003,9 +3004,89 @@ async fn served_legs_learn_this_builds_ceilings() {
     assert_eq!(env_ceiling, this_build(&[ENV_SUBSET_STEP]));
     assert_eq!(
         model_ceiling,
-        this_build(&[MODEL_CONCURRENT_PREDICT_V1, MODEL_OBSERVATION_HISTORY_V1])
+        this_build(&[
+            MODEL_CONCURRENT_PREDICT_V1,
+            MODEL_OBSERVATION_HISTORY_V1,
+            MODEL_FILL_MISSING_V1,
+        ])
     );
     assert_eq!(env_ceiling.dtypes.len(), spaces::DType::ALL.len());
+}
+
+/// Records the `fill_missing` each resolve was asked for.
+#[derive(Default)]
+struct TransferRoute(Mutex<Vec<bool>>);
+
+#[async_trait]
+impl ModelRouteSetup for TransferRoute {
+    async fn resolve_adapter(
+        &self,
+        _: &str,
+        _: &spaces::EnvContract,
+        options: ResolveOptions,
+    ) -> Result<RouteNeeds> {
+        self.0.lock().await.push(options.fill_missing);
+        Ok(RouteNeeds::default())
+    }
+    async fn reset_adapter(&self, _: &str, _: &[String]) -> Result<()> {
+        Ok(())
+    }
+}
+
+struct TransferModel(Arc<TransferRoute>);
+
+#[async_trait]
+impl ModelHandler for TransferModel {
+    async fn predict(&mut self, _: ModelObservation) -> Result<Vec<spaces::SpaceValue>> {
+        Ok(vec![smoke_box_action()])
+    }
+    fn route_setup(&self) -> Option<Arc<dyn ModelRouteSetup>> {
+        Some(self.0.clone())
+    }
+}
+
+/// A transfer the runtime asks for on `ResolveAdapterRequest.fill_missing`
+/// reaches the served model's route setup; a native resolve does not ask.
+#[tokio::test]
+async fn a_served_model_is_asked_for_a_transfer_on_the_wire() {
+    let route = Arc::new(TransferRoute::default());
+    let bound = ModelWorker::new(TransferModel(route.clone()))
+        .bind_async(ServeModelOptions::new(BindAddress::Tcp {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+        }))
+        .await
+        .unwrap();
+    let (port, server) = spawn_bound_server(bound);
+    let channel = tonic::transport::Endpoint::from_shared(format!("http://127.0.0.1:{port}"))
+        .unwrap()
+        .connect()
+        .await
+        .unwrap();
+    let mut client =
+        rlmesh_proto::model::v1::model_service_client::ModelServiceClient::new(channel);
+    let (req_tx, req_rx) = mpsc::channel::<JoinRequest>(8);
+    let mut responses = client
+        .join(tonic::Request::new(
+            tokio_stream::wrappers::ReceiverStream::new(req_rx),
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    for (env_id, fill_missing) in [("native", false), ("transfer", true)] {
+        let mut request = resolve_adapter_request(env_id, env_id);
+        if let Some(join_request::Kind::ResolveAdapter(resolve)) = &mut request.kind {
+            resolve.fill_missing = fill_missing;
+        }
+        req_tx.send(request).await.unwrap();
+        let ack = responses.message().await.unwrap().unwrap();
+        assert!(
+            matches!(ack.kind, Some(join_response::Kind::ResolveAdapter(_))),
+            "{ack:?}"
+        );
+    }
+    assert_eq!(*route.0.lock().await, [false, true]);
+    server.abort();
 }
 
 struct DeadlineRoute {

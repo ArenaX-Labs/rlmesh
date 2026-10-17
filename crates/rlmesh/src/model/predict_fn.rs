@@ -245,10 +245,12 @@ impl RouteConfig {
 #[async_trait]
 pub trait RouteResolver: Send + Sync {
     /// Resolve `route_key`'s config from its `env_contract`, or `None` for a
-    /// spec-less route. An error fails route configuration.
+    /// spec-less route. An error fails route configuration. `fill_missing`
+    /// asks for a transfer: fill what the env lacks instead of refusing.
     async fn resolve(
         &self,
         route_key: &str,
         env_contract: &EnvContract,
+        fill_missing: bool,
     ) -> Result<Option<RouteConfig>>;
 }

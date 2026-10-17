@@ -5391,3 +5391,49 @@ def test_an_action_role_on_an_observation_tag_is_a_join_error() -> None:
     )
     with pytest.raises(adapt.AdapterResolutionError, match="an action kind"):
         resolve(env, spec)
+
+
+def test_a_served_transfer_fills_what_the_env_lacks():
+    # The served path's transfer: a model trained with a wrist camera and a
+    # rotation delta resolves against an env with neither, each fill said.
+    from rlmesh._models._resolve import resolve_adapter
+
+    contract = SimpleNamespace(
+        metadata={
+            adapt.ENV_METADATA_KEY: {
+                "observation": {
+                    "cam": {"type": "image", "role": adapt.IMAGE_PRIMARY},
+                    "side": {"type": "image", "role": adapt.IMAGE_SECONDARY},
+                },
+                "action": {"components": [{"role": adapt.ACTION_DELTA_POS, "dim": 3}]},
+            }
+        },
+        observation_space=gym.spaces.Dict(
+            {"cam": image_space(8, 8), "side": image_space(8, 8)}
+        ),
+        action_space=box(3, low=-1.0, high=1.0),
+    )
+    spec = adapt.ModelSpec(
+        input={
+            "base": adapt.Image(adapt.IMAGE_PRIMARY),
+            "wrist": adapt.Image(adapt.IMAGE_WRIST, height=8, width=8, channels=3),
+        },
+        output=adapt.Action(
+            adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
+            adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=3),
+        ),
+    )
+    with pytest.raises(adapt.AdapterResolutionError, match="image/wrist"):
+        resolve_adapter(spec, cast("Any", contract), trust_entrypoints=False)
+    adapter = resolve_adapter(
+        spec, cast("Any", contract), trust_entrypoints=False, fill_missing=True
+    )
+    assert adapter is not None
+    notes = sorted(
+        note.message
+        for note in adapter.advisories()
+        if note.message.startswith("transfer:")
+    )
+    assert len(notes) == 2, notes
+    assert "image/wrist" in notes[1] and "blank frame" in notes[1], notes
+    assert "action/delta_eef_rot" in notes[0] and "dropped" in notes[0], notes

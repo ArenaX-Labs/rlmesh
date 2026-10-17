@@ -246,6 +246,7 @@ fn model_resolve_adapter_request_bytes_are_frozen() {
         env_spec: Some(env_spec()),
         selected_workflow_edition: "2026.06".to_string(),
         execution_horizon: 4,
+        fill_missing: false,
     };
     assert_frozen(
         "model.v1.ResolveAdapterRequest",

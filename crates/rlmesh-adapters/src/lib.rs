@@ -59,7 +59,7 @@ pub mod v1 {
         ActionPlan, ActionSegment, CropPlan, CustomPlan, HistoryWindow, ImagePlan, ObsPlan,
         PreviousAction, ResolvedAdapter, StatePiece, StatePlan, TextPlan,
     };
-    pub use crate::resolver::resolve;
+    pub use crate::resolver::{ResolveOptions, resolve, resolve_with};
     pub use crate::space_json::{
         SpaceJsonError, space_dtype_name, space_kind_name, space_spec_to_json,
     };

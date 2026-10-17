@@ -366,6 +366,12 @@ pub mod capabilities {
     /// history sees no wire difference.
     pub const MODEL_OBSERVATION_HISTORY_V1: &str = "rlmesh.model.observation_history.v1";
 
+    /// A served model endpoint honors `ResolveAdapterRequest.fill_missing`:
+    /// asked to, it resolves a route its spec does not fully match by filling
+    /// what the env lacks, each fill a caution. The runtime checks it before
+    /// sending the flag, since an older model ignores it and refuses the route.
+    pub const MODEL_FILL_MISSING_V1: &str = "rlmesh.model.fill_missing.v1";
+
     /// A served env endpoint steps and resets lanes individually: a `Reset` or
     /// `Step` naming `env_indices` is honored (and answered partial-width)
     /// instead of rejected with `UNSUPPORTED`, and lane-scoped requests on one

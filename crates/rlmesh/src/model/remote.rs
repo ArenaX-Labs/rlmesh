@@ -562,6 +562,9 @@ impl ModelClient {
                 // replayed step's observation as a history row; offered only to
                 // a served model that advertised it ingests them.
                 delivers_history: self.inner.server_ingests_history(),
+                // A client session runs the pair it was given; transfer is a
+                // managed-runtime decision.
+                fill_missing: false,
             })
             .await
             .map_err(Error::from_grpc)?;

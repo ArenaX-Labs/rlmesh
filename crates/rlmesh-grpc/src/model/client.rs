@@ -167,6 +167,16 @@ impl ModelClient {
         )
     }
 
+    /// Whether the server advertised that it honors a transfer resolve
+    /// (`rlmesh.model.fill_missing.v1`). The emitter checks this before
+    /// setting `fill_missing`: an older server ignores it and refuses the route.
+    pub fn server_fills_missing(&self) -> bool {
+        rlmesh_proto::has_capability(
+            &self.server_capabilities,
+            capabilities::MODEL_FILL_MISSING_V1,
+        )
+    }
+
     /// The capabilities the server advertised at handshake; empty before it.
     pub fn server_capabilities(&self) -> &HashMap<String, String> {
         &self.server_capabilities

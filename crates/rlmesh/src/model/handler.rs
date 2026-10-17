@@ -66,6 +66,10 @@ pub struct ResolveOptions {
     /// A runtime that does not is refused a stacked adapter at a horizon above
     /// 1, since the window would hold only decision-point frames.
     pub delivers_history: bool,
+    /// Transfer: fill what the env lacks instead of refusing the route (see
+    /// [`ResolveOptions`](rlmesh_adapters::v1::ResolveOptions)'s `fill_missing`).
+    /// Sent only to a model advertising `rlmesh.model.fill_missing.v1`.
+    pub fill_missing: bool,
 }
 
 /// What a resolved route needs from the runtime, answered on

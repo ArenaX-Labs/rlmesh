@@ -1384,7 +1384,11 @@ impl ModelRouteSetup for AdaptedRouteSetup {
         // declared chunk covers. All three are configuration errors that would
         // otherwise surface as a mis-shaped action on every predict.
         check_horizon_doors(execution_horizon, native_chunk, self.predict.as_ref())?;
-        let Some(mut config) = self.resolver.resolve(env_id, env_contract).await? else {
+        let Some(mut config) = self
+            .resolver
+            .resolve(env_id, env_contract, options.fill_missing)
+            .await?
+        else {
             let horizon = execution_horizon.max(1);
             if horizon > 1 && !self.predict.has_chunk() {
                 tracing::warn!(
@@ -2002,6 +2006,7 @@ mod fused_route_tests {
             &self,
             _route_key: &str,
             env_contract: &EnvContract,
+            _fill_missing: bool,
         ) -> Result<Option<RouteConfig>> {
             let tags: EnvTags = serde_json::from_str(ENV_TAGS).expect("env tags parse");
             let spec: ModelSpec = serde_json::from_str(MODEL_SPEC).expect("model spec parse");
@@ -2281,6 +2286,7 @@ mod fused_route_tests {
                     ResolveOptions {
                         execution_horizon: horizon,
                         delivers_history: false,
+                        fill_missing: false,
                     },
                 )
                 .await
@@ -2530,6 +2536,7 @@ mod fused_route_tests {
             &self,
             _route_key: &str,
             env_contract: &EnvContract,
+            _fill_missing: bool,
         ) -> Result<Option<RouteConfig>> {
             let tags: EnvTags = serde_json::from_str(IMAGE_ENV_TAGS).expect("image env tags parse");
             let spec: ModelSpec =
@@ -2652,6 +2659,7 @@ mod fused_route_tests {
                     ResolveOptions {
                         execution_horizon: 10,
                         delivers_history: false,
+                        fill_missing: false,
                     },
                 )
                 .await
@@ -2806,6 +2814,7 @@ mod fused_route_tests {
             &self,
             _route_key: &str,
             _env_contract: &EnvContract,
+            _fill_missing: bool,
         ) -> Result<Option<RouteConfig>> {
             Ok(None)
         }
@@ -2828,6 +2837,7 @@ mod fused_route_tests {
                 ResolveOptions {
                     execution_horizon: horizon,
                     delivers_history: false,
+                    fill_missing: false,
                 },
             )
             .await
@@ -3068,6 +3078,7 @@ mod fused_route_tests {
             &self,
             _route_key: &str,
             env_contract: &EnvContract,
+            _fill_missing: bool,
         ) -> Result<Option<RouteConfig>> {
             let tags: EnvTags = serde_json::from_str(STACK_ENV_TAGS).expect("env tags parse");
             let spec: ModelSpec = serde_json::from_str(STACK_MODEL_SPEC).expect("spec parse");
@@ -3223,6 +3234,7 @@ mod fused_route_tests {
                 ResolveOptions {
                     execution_horizon: horizon,
                     delivers_history,
+                    fill_missing: false,
                 },
             )
             .await?;
@@ -3265,6 +3277,7 @@ mod fused_route_tests {
                 ResolveOptions {
                     execution_horizon: 4,
                     delivers_history: true,
+                    fill_missing: false,
                 },
             )
             .await
@@ -3329,6 +3342,7 @@ mod fused_route_tests {
                 ResolveOptions {
                     execution_horizon: 1,
                     delivers_history: true,
+                    fill_missing: false,
                 },
             )
             .await
@@ -3402,6 +3416,7 @@ mod fused_route_tests {
             &self,
             _route_key: &str,
             env_contract: &EnvContract,
+            _fill_missing: bool,
         ) -> Result<Option<RouteConfig>> {
             let tags: EnvTags = serde_json::from_str(PREVIOUS_ENV_TAGS).expect("env tags parse");
             let spec: ModelSpec = serde_json::from_str(self.0).expect("spec parse");
@@ -3585,6 +3600,7 @@ mod fused_route_tests {
                 ResolveOptions {
                     execution_horizon: horizon,
                     delivers_history,
+                    fill_missing: false,
                 },
             )
             .await?;
@@ -3842,6 +3858,7 @@ mod fused_route_tests {
                     ResolveOptions {
                         execution_horizon: 1,
                         delivers_history: true,
+                        fill_missing: false,
                     },
                 )
                 .await

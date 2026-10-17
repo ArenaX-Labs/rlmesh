@@ -25,11 +25,11 @@ use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString, PyT
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 use rlmesh_adapters::v1::{
     Advisory, ApplyError, CustomTransform, EncodingTransform, EnvTags, FrameBuffers, FramePolicy,
-    InputNode, ModelLeaf, ModelSpec, NoEncodings, NodePath, ObsPlan, PathSeg, ResolvedAdapter,
-    RolePolicy, SkipCustoms, SpaceView, SpaceViewKind, Value, assemble_obs,
+    InputNode, ModelLeaf, ModelSpec, NoEncodings, NodePath, ObsPlan, PathSeg, ResolveOptions,
+    ResolvedAdapter, RolePolicy, SkipCustoms, SpaceView, SpaceViewKind, Value, assemble_obs,
     build_describe_envelope, join, observe_obs, record_action, reject_unframed_roles_env,
     reject_unframed_roles_model, reject_unknowns_env, reject_unknowns_model,
-    reject_unsanctioned_roles_env, reject_unsanctioned_roles_model, resolve, roles,
+    reject_unsanctioned_roles_env, reject_unsanctioned_roles_model, resolve_with, roles,
 };
 use serde::de::DeserializeOwned;
 
@@ -767,28 +767,35 @@ impl PyAdapterPlan {
 /// entrypoint trust is enforced by the Python wrapper *before* this call
 /// (untrusted entrypoints never reach here), so the core resolves with
 /// trust granted: every custom input that arrives is already vetted and is
-/// kept as a host-filled hole.
+/// kept as a host-filled hole. `fill_missing` resolves a transfer: what the
+/// env lacks is filled, each fill a `transfer:` caution on the plan.
 #[cfg_attr(
     feature = "stub-gen",
     gen_stub_pyfunction(
         module = "rlmesh._rlmesh",
         python = r#"
-def adapters_resolve(env_tags_json: str, observation_space: object, action_space: object, model_spec_json: str) -> AdapterPlan: ...
+def adapters_resolve(env_tags_json: str, observation_space: object, action_space: object, model_spec_json: str, fill_missing: bool = False) -> AdapterPlan: ...
 "#
     )
 )]
 #[pyfunction]
+#[pyo3(signature = (env_tags_json, observation_space, action_space, model_spec_json, fill_missing = false))]
 pub fn adapters_resolve(
     env_tags_json: &str,
     observation_space: &Bound<'_, PyAny>,
     action_space: &Bound<'_, PyAny>,
     model_spec_json: &str,
+    fill_missing: bool,
 ) -> PyResult<PyAdapterPlan> {
     let tags: EnvTags = de_spec("env tags", env_tags_json)?;
     let model_spec: ModelSpec = de_spec("model spec", model_spec_json)?;
     let obs_view = SpaceView::from(&crate::spaces::parse_space(observation_space)?);
     let action_view = SpaceView::from(&crate::spaces::parse_space(action_space)?);
-    let adapter = resolve(&tags, &obs_view, &action_view, &model_spec, true)
+    let options = ResolveOptions {
+        trust_entrypoints: true,
+        fill_missing,
+    };
+    let adapter = resolve_with(&tags, &obs_view, &action_view, &model_spec, options)
         .map_err(|err| PyValueError::new_err(err.message))?;
     Ok(PyAdapterPlan {
         adapter,
