@@ -3607,13 +3607,6 @@ RLMESH_API RLMeshStatus rlmesh_remote_vector_env_new(const RLMeshRemoteEnvOption
                                                      RLMeshRemoteVectorEnv** out);
 RLMESH_API RLMeshStatus rlmesh_remote_model_new(const RLMeshRemoteModelOptions* options,
                                                 RLMeshRemoteModel** out);
-RLMESH_API RLMeshStatus rlmesh_ext_remote_env_new_with_token(const RLMeshRemoteEnvOptions* options,
-                                                             const char* token,
-                                                             RLMeshRemoteEnv** out);
-RLMESH_API RLMeshStatus rlmesh_ext_remote_vector_env_new_with_token(
-    const RLMeshRemoteEnvOptions* options, const char* token, RLMeshRemoteVectorEnv** out);
-RLMESH_API RLMeshStatus rlmesh_ext_remote_model_new_with_token(
-    const RLMeshRemoteModelOptions* options, const char* token, RLMeshRemoteModel** out);
 RLMESH_API RLMeshStatus rlmesh_remote_model_clone(const RLMeshRemoteModel* remote_model,
                                                   RLMeshRemoteModel** out);
 RLMESH_API RLMeshStatus rlmesh_remote_model_address(const RLMeshRemoteModel* remote_model,

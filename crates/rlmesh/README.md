@@ -303,7 +303,7 @@ When a model and an env describe their observations and actions differently (cam
 
 - `ext::CancelToken`: a cloneable cancellation handle. Pass it in `RunOptions::cancel` (or the session, serve and factory options) and call `cancel()` from anywhere; the call in flight fails with `Error::Cancelled`. `Session::cancel_handle` and `RemoteEnv::cancel_handle` return the token a handle already uses.
 - `ext::TensorExt` (zero-copy `from_vec`, `zeros`, `stack`, `unstack`, storage and stride access) and `ext::SpaceExt::contains_detail` (why a value is not in a space).
-- Bearer-token endpoints: `ext::EnvServerOptions` and `ext::ModelServeOptions` (through the `ext` field of the serve options) and `ext::remote_env_with_token`, `ext::remote_model_with_token` and friends.
+- Bearer-token endpoints: `ext::EnvServerOptions` and `ext::ModelServeOptions` (through the `ext` field of the serve options) set the token a server expects; clients send it as `api_key`.
 - Raw DLPack types in `ext::dlpack`, and `ext::register_entrypoint` for custom adapter transforms.
 
 ## Errors

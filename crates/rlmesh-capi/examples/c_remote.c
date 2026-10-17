@@ -92,9 +92,10 @@ int main(void) {
   eo.transport = RLMESH_TRANSPORT_TCP;
   CHECK(rlmesh_remote_env_new(&eo, &remote) == RLMESH_ERR_INVALID_ARGUMENT);
   eo.has_transport = false;
-  CHECK(rlmesh_ext_remote_env_new_with_token(&eo, " hidden-endpoint-token", &remote) ==
-        RLMESH_ERR_INVALID_ARGUMENT);
+  eo.api_key = " hidden-endpoint-token";
+  CHECK(rlmesh_remote_env_new(&eo, &remote) == RLMESH_ERR_INVALID_ARGUMENT && remote == NULL);
   CHECK(strstr(rlmesh_last_error_message(), "hidden-endpoint-token") == NULL);
+  eo.api_key = NULL;
   RLMeshRemoteModelOptions mo = RLMESH_REMOTE_MODEL_OPTIONS_INIT;
   mo.address = "127.0.0.1:1";
   CHECK(rlmesh_remote_model_new(&mo, &rm) == RLMESH_OK);

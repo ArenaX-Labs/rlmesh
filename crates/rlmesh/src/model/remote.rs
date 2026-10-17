@@ -776,12 +776,6 @@ impl RemoteModel {
     /// I/O. An explicit `api_key` for a plaintext address that is not
     /// loopback warns (`UserWarning`, once per address per process).
     pub fn new(options: RemoteModelOptions) -> Result<RemoteModel> {
-        Self::new_in(options, true)
-    }
-
-    /// `new`, warning about a plaintext key only with `warn` (the ext token
-    /// constructors pass `false`).
-    pub(crate) fn new_in(options: RemoteModelOptions, warn: bool) -> Result<RemoteModel> {
         let address = crate::env::client::normalize_connect_address(
             options.address.as_deref(),
             options.host.as_deref(),
@@ -796,7 +790,7 @@ impl RemoteModel {
             &address,
             options.api_key.as_deref(),
             options.tls_ca_file.as_deref(),
-            warn,
+            true,
         )?;
         Ok(RemoteModel(Arc::new(RemoteModelInner {
             address,

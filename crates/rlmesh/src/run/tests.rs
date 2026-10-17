@@ -937,9 +937,10 @@ fn remote_model_construction_checks_without_dialing() {
     assert_eq!(model.to_string(), "RemoteModel(address='127.0.0.1:1')");
     let shared = model.clone();
     assert_eq!(shared.address(), model.address());
-    let err = crate::ext::remote_model_with_token(
-        crate::RemoteModelOptions::default().address("127.0.0.1:1"),
-        " padded",
+    let err = crate::RemoteModel::new(
+        crate::RemoteModelOptions::default()
+            .address("127.0.0.1:1")
+            .api_key(" padded"),
     )
     .unwrap_err();
     assert_eq!(err.class(), ErrorClass::ValueError);
@@ -1792,7 +1793,7 @@ fn dropping_remote_session_creation_closes_the_factory_env() {
 }
 
 #[test]
-fn ext_token_constructors_do_not_warn_and_api_keys_warn_once_per_address() {
+fn plaintext_api_keys_warn_once_per_address() {
     let _lock = crate::warnings::tests::HANDLER_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
@@ -1803,16 +1804,6 @@ fn ext_token_constructors_do_not_warn_and_api_keys_warn_once_per_address() {
         Ok(())
     })));
     let address = "10.255.255.7:5555";
-    crate::ext::remote_model_with_token(
-        crate::RemoteModelOptions::default().address(address),
-        "legacy-token",
-    )
-    .unwrap();
-    assert!(
-        seen.lock().unwrap().is_empty(),
-        "{:?}",
-        seen.lock().unwrap()
-    );
     for _ in 0..2 {
         crate::RemoteModel::new(
             crate::RemoteModelOptions::default()

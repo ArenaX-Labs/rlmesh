@@ -205,99 +205,6 @@ pub fn model_spec_from_json(json: &str) -> Result<crate::adapters::ModelSpec> {
     crate::adapters::ModelSpec::from_json(json)
 }
 
-/// A [`RemoteEnv`](crate::RemoteEnv) that sends `token` on every request.
-/// `""` uses the options' `api_key` if set, else sends no key (never
-/// `RLMESH_API_KEY`); a token a header cannot carry is the ValueError class
-/// before any dial. Otherwise as
-/// [`RemoteEnv::new`](crate::RemoteEnv::new).
-///
-/// Superseded by [`RemoteEnvOptions::api_key`](crate::RemoteEnvOptions::api_key),
-/// which this forwards to.
-pub fn remote_env_with_token(
-    options: crate::RemoteEnvOptions,
-    token: &str,
-) -> Result<crate::RemoteEnv> {
-    crate::env::client::check_token(token)?;
-    crate::run::drive::refuse_in_async_context("remote_env_with_token")?;
-    crate::run::drive::block_on_library(crate::RemoteEnv::new_in(
-        explicit_key(options, token),
-        false,
-    ))
-}
-
-/// The async twin of [`remote_env_with_token`].
-pub async fn remote_env_with_token_async(
-    options: crate::RemoteEnvOptions,
-    token: &str,
-) -> Result<crate::RemoteEnv> {
-    crate::env::client::check_token(token)?;
-    crate::run::drive::in_library(crate::RemoteEnv::new_in(
-        explicit_key(options, token),
-        false,
-    ))
-    .await
-}
-
-/// A [`RemoteVectorEnv`](crate::RemoteVectorEnv) that sends `token` on every
-/// request.
-///
-/// Superseded by [`RemoteEnvOptions::api_key`](crate::RemoteEnvOptions::api_key),
-/// which this forwards to.
-pub fn remote_vector_env_with_token(
-    options: crate::RemoteEnvOptions,
-    token: &str,
-) -> Result<crate::RemoteVectorEnv> {
-    crate::env::client::check_token(token)?;
-    crate::run::drive::refuse_in_async_context("remote_vector_env_with_token")?;
-    crate::run::drive::block_on_library(crate::RemoteVectorEnv::new_in(
-        explicit_key(options, token),
-        false,
-    ))
-}
-
-/// The async twin of [`remote_vector_env_with_token`].
-pub async fn remote_vector_env_with_token_async(
-    options: crate::RemoteEnvOptions,
-    token: &str,
-) -> Result<crate::RemoteVectorEnv> {
-    crate::env::client::check_token(token)?;
-    crate::run::drive::in_library(crate::RemoteVectorEnv::new_in(
-        explicit_key(options, token),
-        false,
-    ))
-    .await
-}
-
-/// A [`RemoteModel`](crate::RemoteModel) whose sessions send `token` on
-/// every model request. `""` uses the options' `api_key` if set, else sends no
-/// key (never `RLMESH_API_KEY`); a token a header cannot carry is the
-/// ValueError class here, before any dial. No
-/// network I/O.
-///
-/// Superseded by [`RemoteModelOptions::api_key`](crate::RemoteModelOptions::api_key),
-/// which this forwards to.
-pub fn remote_model_with_token(
-    options: crate::RemoteModelOptions,
-    token: &str,
-) -> Result<crate::RemoteModel> {
-    crate::env::client::check_token(token)?;
-    let mut options = options;
-    if !token.is_empty() || options.api_key.is_none() {
-        options.api_key = Some(token.to_string());
-    }
-    crate::RemoteModel::new_in(options, false)
-}
-
-/// The ext token as an explicit `api_key`: a non-empty token wins; `""`
-/// keeps the options' own key, else means "send none", so these
-/// constructors never pick up `RLMESH_API_KEY`.
-fn explicit_key(mut options: crate::RemoteEnvOptions, token: &str) -> crate::RemoteEnvOptions {
-    if !token.is_empty() || options.api_key.is_none() {
-        options.api_key = Some(token.to_string());
-    }
-    options
-}
-
 /// Partial reset: reset the listed lanes (an empty slice resets all of them;
 /// a per-lane seed list aligns with `env_indices`) and return the batched
 /// observation of every lane and the info with every lane's `episode_ids`.
@@ -447,25 +354,5 @@ mod cancellation_regressions {
         drop(watch);
         token.cancel();
         assert!(token.take());
-    }
-
-    #[test]
-    fn ext_tokens_are_explicit_keys() {
-        let with = |key: Option<&str>| crate::RemoteEnvOptions {
-            api_key: key.map(str::to_string),
-            ..Default::default()
-        };
-        // A non-empty token wins over the options' key.
-        assert_eq!(
-            explicit_key(with(Some("a")), "t").api_key.as_deref(),
-            Some("t")
-        );
-        // "" keeps the options' own key.
-        assert_eq!(
-            explicit_key(with(Some("a")), "").api_key.as_deref(),
-            Some("a")
-        );
-        // "" with no key is an explicit "send none", so RLMESH_API_KEY is never read.
-        assert_eq!(explicit_key(with(None), "").api_key.as_deref(), Some(""));
     }
 }

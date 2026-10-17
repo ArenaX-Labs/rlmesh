@@ -943,9 +943,7 @@ fn decode_render_png(png: &[u8]) -> Result<Value> {
 
 /// Resolve the client's own declaration (Core's chain: the call, then the
 /// process and project surfaces) and dial with `options`.
-/// With `warn` false (the ext token constructors), a plaintext key does not
-/// warn.
-async fn connect_core(options: RemoteEnvOptions, warn: bool) -> Result<EnvClientCore> {
+async fn connect_core(options: RemoteEnvOptions) -> Result<EnvClientCore> {
     let address = normalize_connect_address(
         options.address.as_deref(),
         options.host.as_deref(),
@@ -958,7 +956,7 @@ async fn connect_core(options: RemoteEnvOptions, warn: bool) -> Result<EnvClient
         &address,
         options.api_key.as_deref(),
         options.tls_ca_file.as_deref(),
-        warn,
+        true,
     )?;
     let declared = crate::editions::resolve_native(
         crate::editions::EditionSources {
@@ -1244,16 +1242,16 @@ impl RemoteEnv {
     /// refused.
     pub fn new(options: RemoteEnvOptions) -> Result<RemoteEnv> {
         refuse_in_async_context("RemoteEnv::new")?;
-        block_on_library(Self::new_in(options, true))
+        block_on_library(Self::new_in(options))
     }
 
     /// The async twin of [`new`](Self::new).
     pub async fn new_async(options: RemoteEnvOptions) -> Result<RemoteEnv> {
-        in_library(Self::new_in(options, true)).await
+        in_library(Self::new_in(options)).await
     }
 
-    pub(crate) async fn new_in(options: RemoteEnvOptions, warn: bool) -> Result<RemoteEnv> {
-        let mut core = connect_core(options, warn).await?;
+    async fn new_in(options: RemoteEnvOptions) -> Result<RemoteEnv> {
+        let mut core = connect_core(options).await?;
         core.require_single()?;
         core.set_name("RemoteEnv");
         Ok(RemoteEnv {
@@ -1360,16 +1358,16 @@ impl RemoteVectorEnv {
     /// (the ValueError class).
     pub fn new(options: RemoteEnvOptions) -> Result<RemoteVectorEnv> {
         refuse_in_async_context("RemoteVectorEnv::new")?;
-        block_on_library(Self::new_in(options, true))
+        block_on_library(Self::new_in(options))
     }
 
     /// The async twin of [`new`](Self::new).
     pub async fn new_async(options: RemoteEnvOptions) -> Result<RemoteVectorEnv> {
-        in_library(Self::new_in(options, true)).await
+        in_library(Self::new_in(options)).await
     }
 
-    pub(crate) async fn new_in(options: RemoteEnvOptions, warn: bool) -> Result<RemoteVectorEnv> {
-        let mut core = connect_core(options, warn).await?;
+    async fn new_in(options: RemoteEnvOptions) -> Result<RemoteVectorEnv> {
+        let mut core = connect_core(options).await?;
         core.require_vector()?;
         core.set_name("RemoteVectorEnv");
         Ok(RemoteVectorEnv {
@@ -1506,8 +1504,8 @@ pub(crate) async fn reset_lanes_in(
     env.reset_in(seed, options, lanes).await
 }
 
-/// The ext constructors' token check and dial.
-pub(crate) fn check_token(token: &str) -> Result<()> {
+/// Refuse a token the authorization header cannot carry.
+fn check_token(token: &str) -> Result<()> {
     if !token.is_empty()
         && let Some(problem) = rlmesh_grpc::helpers::auth::token_header_problem(token)
     {

@@ -815,9 +815,10 @@ fn construction_errors_follow_rmt_12() {
     let err = dial("bogus://x").unwrap_err();
     assert_eq!(err.class(), ErrorClass::ValueError);
     assert!(err.to_string().starts_with("invalid address: "), "{err}");
-    let err = crate::ext::remote_env_with_token(
-        RemoteEnvOptions::default().address("tcp://127.0.0.1:1"),
-        "s3cret\n",
+    let err = RemoteEnv::new(
+        RemoteEnvOptions::default()
+            .address("tcp://127.0.0.1:1")
+            .api_key("s3cret\n"),
     )
     .unwrap_err();
     assert_eq!(err.class(), ErrorClass::ValueError);
