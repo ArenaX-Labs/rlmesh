@@ -101,6 +101,32 @@ def test_model_binding_is_forwarded(monkeypatch: pytest.MonkeyPatch) -> None:
     assert captured["binding"] == {"checkpoint": "x"}
 
 
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [(["pkg:Default"], "pkg:Checkpoint"), ([], "pkg:Checkpoint")],
+)
+def test_serve_target_overrides_the_model_entrypoint(
+    monkeypatch: pytest.MonkeyPatch, argv: list[str], expected: str
+) -> None:
+    # One family image serves every checkpoint: the platform sets the
+    # checkpoint's target over the image's CMD default.
+    resolved: list[str] = []
+    monkeypatch.setattr(
+        serve, "resolve_entrypoint", lambda target, **k: resolved.append(target)
+    )
+    monkeypatch.setattr(serve, "serve_model", lambda *a, **k: None)
+    monkeypatch.setenv("RLMESH_SERVE_TARGET", expected)
+    assert serve.main(argv) == 0
+    assert resolved == [expected]
+
+
+def test_serve_target_leaves_an_env_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = _capture_env(monkeypatch)
+    monkeypatch.setenv("RLMESH_SERVE_TARGET", "pkg:Model")
+    assert serve.main(["--env", "pkg:Env"]) == 0
+    assert "env" in captured
+
+
 def test_serve_env_reserved_names_are_positional_only() -> None:
     # env_source/address must be positional-only so a make-param named "address"
     # (or "env_source") rides in **make_kwargs instead of colliding.

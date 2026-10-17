@@ -528,6 +528,29 @@ gpu.count = 1
     }
 
     #[test]
+    fn checkpoints_carry_their_entrypoint_and_what_they_were_trained_on() {
+        let (manifest, _) = ok(r#"
+name = "openpi"
+
+[[checkpoints]]
+name = "pi05-libero"
+uri = "hf://model/acme/pi05-libero"
+default = true
+entrypoint = "libero.main:OpenPILibero"
+params.config = "pi05_libero"
+trainedOn = [{ env = "libero", scenarios = ["libero_spatial/*"] }]
+"#);
+        assert_eq!(
+            manifest.version["checkpoints"],
+            json!([{
+                "name": "pi05-libero", "uri": "hf://model/acme/pi05-libero", "default": true,
+                "entrypoint": "libero.main:OpenPILibero", "params": {"config": "pi05_libero"},
+                "trainedOn": [{"env": "libero", "scenarios": ["libero_spatial/*"]}],
+            }])
+        );
+    }
+
+    #[test]
     fn a_target_picks_the_stage_and_falls_back_to_the_top_level() {
         let (manifest, _) = ok(r#"
 name = "chrono"

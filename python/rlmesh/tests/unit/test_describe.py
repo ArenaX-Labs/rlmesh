@@ -540,6 +540,21 @@ def test_check_labels_flags_the_push_blockers() -> None:
     labels[PACKAGE_LABEL] = '{"schemaVersion":1,"checkpoints":[{"name":"ok"}]}'
     assert any("no uri" in message for message in check_labels(labels).failed)
 
+    # A checkpoint's entrypoint and trainedOn are checked as the platform reads them.
+    labels[PACKAGE_LABEL] = (
+        '{"schemaVersion":1,"checkpoints":[{"name":"ok","uri":"hf://x",'
+        '"entrypoint":"libero.main:Policy",'
+        '"trainedOn":[{"env":"libero","scenarios":["libero_spatial/*"]}]}]}'
+    )
+    assert check_labels(labels).failed == []
+    labels[PACKAGE_LABEL] = (
+        '{"schemaVersion":1,"checkpoints":[{"name":"ok","uri":"hf://x",'
+        '"entrypoint":"libero.main","trainedOn":[{"scenarios":[""],"suite":1}]}]}'
+    )
+    failed = check_labels(labels).failed
+    for expected in ("is not module:Class", "names no env", "scenario keys", "'suite'"):
+        assert any(expected in message for message in failed), (expected, failed)
+
 
 def test_check_labels_surfaces_badges_and_soft_claims_as_warnings() -> None:
     import json
