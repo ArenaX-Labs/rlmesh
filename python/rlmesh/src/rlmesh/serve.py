@@ -190,7 +190,15 @@ def _reject_vectorized_framework(
 def main(argv: Sequence[str] | None = None) -> int:
     """Parse ``[model | --env]`` and serve it on ``--address``/``RLMESH_ADDRESS``."""
     parser = argparse.ArgumentParser(prog="python -m rlmesh.serve")
-    parser.add_argument("model", nargs="?", help="module:Class for a model/policy")
+    parser.add_argument(
+        "model",
+        nargs="?",
+        help=(
+            "module:Class for a model/policy. RLMESH_SERVE_TARGET overrides it, so "
+            "one image serves every checkpoint whose package entry names its own "
+            "target."
+        ),
+    )
     parser.add_argument("--env", help="module:Class for an environment")
     parser.add_argument(
         "--address", default=os.environ.get("RLMESH_ADDRESS", "0.0.0.0:50051")
@@ -235,6 +243,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     args = parser.parse_args(argv)
+    if not args.env and (target := os.environ.get("RLMESH_SERVE_TARGET")):
+        args.model = target
 
     if bool(args.model) == bool(args.env):
         parser.error("provide exactly one of a model entrypoint or --env")

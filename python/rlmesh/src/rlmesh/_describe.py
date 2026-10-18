@@ -806,6 +806,10 @@ PACKAGE_LABEL = "dev.rlmesh.package"
 #: (DNS label); mirror its pattern so the failure happens before the push.
 _CHECKPOINT_NAME = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
 
+#: A checkpoint's ``entrypoint``: the ``module:Class`` ``rlmesh.serve`` loads
+#: for it (``RLMESH_SERVE_TARGET``), so one image serves every checkpoint.
+_ENTRYPOINT = re.compile(r"^[A-Za-z_][\w.]*:[A-Za-z_][\w.]*$")
+
 #: Exception types that always mean the env is broken, never that this machine
 #: lacks something: a ``TypeError`` in ``make`` is a bug wherever it runs, and
 #: a generic ``FileNotFoundError`` is an asset the author forgot, not a driver.
@@ -1266,6 +1270,14 @@ def _check_package(raw: str, report: CheckReport) -> None:
                 failures.append(
                     f"{PACKAGE_LABEL} checkpoint {name!r} has no uri; "
                     "the platform will drop it"
+                )
+            entrypoint = entry_map.get("entrypoint")
+            if entrypoint is not None and (
+                not isinstance(entrypoint, str) or not _ENTRYPOINT.match(entrypoint)
+            ):
+                failures.append(
+                    f"{PACKAGE_LABEL} checkpoint {name!r} entrypoint {entrypoint!r} "
+                    "is not module:Class"
                 )
             if entry_map.get("default"):
                 defaults += 1
