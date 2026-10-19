@@ -252,17 +252,22 @@ borrowed for that call and applies to it as well: a `cancel()` on either
 token fails the call. A `run` / `rlmesh.run` that builds its own session has
 only its `RunOptions.cancel`.
 
-C# twins bridge their `CancellationToken` as R-18 states: every twin
-(`RunAsync` on `RLMeshApi`, `Model` and `Session`, `SessionAsync`, and the
-session's single-call twins `ResetAsync`, `PredictAsync`, `StepAsync`, …)
-runs its C call in an operation cancel scope with a fresh per-operation
-`Ext.CancelToken` (X-12), so the token reaches only that call: the caller's
-own `Cancel` (in `RunOptions`, `SessionRunOptions` or `SessionOptions`) stays
-in its field and applies too, the session's `CancelHandle()` token is never
-fired by a `CancellationToken`, and neither R-18's completion race nor its
-admission race exists. A `SessionAsync`'s scope covers only the construction;
-the session keeps `SessionOptions.Cancel` (or its own token) for its life,
-as above.
+C# twins (design record, D-45) bridge their `CancellationToken` as R-18
+states: every twin (`RunAsync` on `RLMeshApi`, `Model` and `Session`,
+`SessionAsync`, and the session's single-call twins `ResetAsync`,
+`PredictAsync`, `StepAsync`) passes a fresh per-operation `Ext.CancelToken`
+explicitly: in X-12's `cancel` argument for `ResetAsync`, `PredictAsync`
+and `StepAsync` (`rlmesh_ext_session_reset` / `_predict` / `_step`), and in
+the `cancel` field of `RunOptions`, `SessionRunOptions` or `SessionOptions`
+for the others. So the token reaches only that call, the session's
+`CancelHandle()` token is never fired by a `CancellationToken`, and
+neither R-18's completion race nor its admission race exists. For the
+single-call twins the caller's own `Cancel` is untouched (the session's
+`SessionOptions.Cancel` stays watched with its handle token); a run or
+construction twin given both a set `Cancel` and a cancellable
+`CancellationToken` is refused with the ValueError class, as their one
+`cancel` field cannot carry two tokens (R-18). A `SessionAsync`'s token
+covers only the construction.
 
 ### `SessionOptions` and `SessionRunOptions`
 
@@ -968,7 +973,8 @@ so `_equals` is R-10's handle form. Equality and repr are the dataclasses'
   same handle and fail with `rlmesh::RuntimeError`. C# targets pass the same
   handle (an authored `IEnv` is wrapped in a C env handle for the call or
   session) and fail with `RLMesh.RuntimeError`; the session or run also holds
-  a `DangerousAddRef` on every handle it borrows (R-17 C#).
+  a reference on the ownership record of every handle it borrows (R-17 C#,
+  R-28).
 - **Served-model targets.** `RemoteModel.session` refuses a set
   `instruction` or `trust_entrypoints` with ValueError
   (`py/_client/_remote_model.py:109-118`), then takes its env as follows: an
@@ -1011,8 +1017,9 @@ so `_equals` is R-10's handle form. Equality and repr are the dataclasses'
   (the `__exit__`-on-exception path, always outside a runtime, so the model's
   `on_episode_end` runs and `close_env` closes a borrowed env on the
   disposing thread); a session reached only by the finalizer is freed on
-  R-28's cleanup thread. The session holds `DangerousAddRef` on the model,
-  env and remote handles it borrows until it is disposed or finalized, so a
+  R-28's cleanup thread. The session holds a reference on the ownership
+  records of the model, env and remote handles it borrows until its own
+  native free has finished, so a
   model or env disposed first stays alive natively (its own C# calls then
   throw `ObjectDisposedException`, D-41) while `Close()` on them is
   Python's close and fails the session's next call as Python does. After
@@ -1180,10 +1187,11 @@ RLMeshRunReport*)` (`h:478`) becomes `rlmesh_model_run` and `rlmesh_run`
 
 ### C#
 
-- Nothing exists yet (G-29): every C# cell in this file is the target. The
-  C# layer wraps the C ABI of this file one to one, so it needs no C change
-  for parity; its `Async` twins need X-12's operation cancel scope
-  (pending user approval, R-18); `RLMESH_RANDOM_SAMPLE` and every `_INIT` here
+- Design record (D-45): v0.2 builds none of this area in C#; every C# cell
+  in this file records the mapping for v2's binding, not a backlog. The
+  C# layer would wrap the C ABI of this file one to one, so it needs no C
+  change for parity; its single-call `Async` twins would use X-12's
+  explicit `cancel` variants (R-18); `RLMESH_RANDOM_SAMPLE` and every `_INIT` here
   (`RLMESH_RUN_OPTIONS_INIT`, `RLMESH_SESSION_OPTIONS_INIT`,
   `RLMESH_SESSION_RUN_OPTIONS_INIT`, `RLMESH_VIEW_INIT`, the recorder,
   record, result and hooks `_INIT`s) are managed factories (R-19 C#).

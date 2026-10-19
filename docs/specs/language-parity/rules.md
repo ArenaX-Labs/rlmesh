@@ -1,8 +1,9 @@
 # Language parity: rules
 
 Part of the [language parity spec](../language-parity.md). Status: Draft —
-reviewed round 6. Draft: C# column, C# review round 1 applied, pending
-user review (D-17 to D-44, R-28, X-11 to X-16, G-29).
+reviewed round 6. C#: a design record of the v1 surface (C# review rounds 1
+and 2 applied), of which v0.2 implements only the foundation (D-45), pending
+user review (D-17 to D-45, R-28, X-11 to X-16, G-29).
 
 These rules hold in every area file. An area that disagrees with a rule is
 wrong; fix the area, or change the rule here. IDs are stable: `R-n` rules,
@@ -718,8 +719,9 @@ Metadata Info)`), which deconstructs the same way. Hand-written structs
   sync rlmesh calls (a policy that queries a `RemoteModel`), as a Python
   `predict` can.
 - C and C++ have no async API.
-- **C# twins** (D-24). C# adds `<Name>Async` for exactly the calls that have
-  a Rust `_async` twin, named by R-4 (`Session.ResetAsync`,
+- **C# twins** (D-24; design record, D-45: v0.2 ships only `EnvServer`'s
+  `ServeAsync`, `WaitAsync` and `ShutdownAsync`, on the pool below). C#
+  adds `<Name>Async` for exactly the calls that have a Rust `_async` twin, named by R-4 (`Session.ResetAsync`,
   `RemoteEnv.StepAsync`, `Model.RunAsync`, `EnvServer.WaitAsync`), except
   where a constructor or a builder cannot be async and D-21's builder rule
   names the twin instead (`RemoteEnv.ConnectAsync`, RMT-24;
@@ -759,7 +761,8 @@ Metadata Info)`), which deconstructs the same way. Hand-written structs
   itself on the worker: hooks, relayed env ops and warnings run there
   between segments, outside any async context, so a sync rlmesh call made
   from them runs, where Rust's twin refuses it. Cancellation is R-18's C#
-  bullet: each twin's C call runs in its own operation cancel scope (X-12).
+  bullet: each twin hands its C call a per-operation token explicitly, in
+  X-12's `cancel` argument or the call's `cancel` field.
 
 - **No refusal in C#.** A sync C# call never refuses because it is made
   from async code. .NET exposes no reliable test: a `SynchronizationContext`
@@ -772,17 +775,15 @@ Metadata Info)`), which deconstructs the same way. Hand-written structs
   exception: every lane runs on library threads and no path that a twin
   takes installs a process-wide signal handler, so a twin is safe in an
   engine host. `EnvServer.ServeAsync` is `Start()` plus `WaitAsync()`
-  (ENV-40). `EnvFactory.ServeAsync` is the background factory serve
-  `rlmesh_ext_env_factory_start` (X-13), which runs the pre-serve steps,
-  publishes the describe envelope and returns a started `EnvServer`, plus
-  `WaitAsync()` (ENV-39). `Model.ServeAsync` is the sync C model serve on a
-  pool thread with `RLMeshExtModelServeOptions.no_signal_handlers` set
-  (X-15; MDL-24). Both depend on additions pending user approval (index,
-  [C ABI additions for v0.2](../language-parity.md#c-abi-additions-for-v02));
-  if either is rejected, its twin is left out of v0.2 (a G-29 gap in the
-  manifest), never shipped installing signal handlers. The sync `Serve()`
+  (ENV-40). In the design record, `EnvFactory.ServeAsync` is the
+  background factory serve `rlmesh_ext_env_factory_start` (X-13), run on
+  the caller's thread as `EnvServer.ServeAsync` runs `Start()`, so both
+  throw startup failures before returning a task, plus `WaitAsync()`
+  (ENV-39); `Model.ServeAsync` is the sync C model serve on a pool thread
+  with `RLMeshExtModelServeOptions.no_signal_handlers` set (X-15; MDL-24).
+  No twin is ever shipped installing signal handlers. The sync `Serve()`
   calls keep C's foreground behaviour (lane 0 on the caller, ENV-11's
-  handlers), for console hosts only (R-28).
+  handlers), for console hosts only (R-28); v0.2 ships no C# `Serve()`.
 
 ### R-17 Borrowing and `Session<'a>`
 
@@ -842,27 +843,31 @@ Metadata Info)`), which deconstructs the same way. Hand-written structs
   borrowed env; drop the session on a plain thread or call `close()` first.
 - C and C++ follow the same ownership: a session or run never frees what it
   borrowed; the caller frees handles after the session is freed.
-- **C#.** The compiler cannot check a borrow, so the wrapper makes freeing
-  out of order harmless instead. A `Session` (and a run, for its duration)
-  holds strong references to the managed model and env wrappers it borrows
-  and calls `SafeHandle.DangerousAddRef` on each of their handles, released
-  when the session is disposed or finalized. A model or env disposed while
-  a session uses it therefore stays alive natively until the session ends;
-  its later C# calls throw `ObjectDisposedException` (D-41), and the
-  session keeps working. `Close()` is different: closing a model or env
-  under a session is Python's `close()`, and the session's next call fails
-  as Python's does. Python's runtime checks are unchanged (a second session
-  on a busy env, a remote handle already driven with `reset` / `step`,
-  R-17). `Session.Dispose()` is `rlmesh_session_free`, so R-17's Session
-  Drop outside a runtime applies: errors swallowed, `on_episode_end` for an
-  open episode, the borrowed env closed with `close_env` on the disposing
-  thread, all finished when `Dispose()` returns. A session reached only by
-  the finalizer is freed on R-28's cleanup thread, never on the finalizer
-  thread, in this order: `rlmesh_session_free` runs to completion first,
-  and only then are the borrowed handles' references released
-  (`DangerousRelease`), because the native free still uses them; the queued
-  cleanup record owns the session pointer and those references together
-  (R-28 Finalization).
+- **C#** (design record for sessions and runs, D-45; the ownership rules
+  are the v0.2 foundation's, R-28). The compiler cannot check a borrow, so
+  the wrapper makes freeing out of order harmless instead. A `Session` (and
+  a run, for its duration) holds strong references to the managed model
+  and env wrappers it borrows and acquires a reference on each of their
+  ownership records (R-28 Ownership records), released only after its own
+  native free has finished. A model or env disposed while a session uses
+  it is closed as an owner at once (its later C# calls throw
+  `ObjectDisposedException`, D-41) and stays alive natively until the
+  session releases it; the session keeps working. `Close()` is different:
+  closing a model or env under a session is Python's `close()`, and the
+  session's next call fails as Python's does. Python's runtime checks are
+  unchanged (a second session on a busy env, a remote handle already driven
+  with `reset` / `step`, R-17). `Session.Dispose()` is `rlmesh_session_free`,
+  so R-17's Session Drop outside a runtime applies: errors swallowed,
+  `on_episode_end` for an open episode, the borrowed env closed with
+  `close_env`. It runs inline on the disposing thread when R-28's
+  `Dispose()` rule allows (no reference outstanding, not inside a callback,
+  not a library thread), and is then finished when `Dispose()` returns;
+  otherwise the free is queued to the cleanup thread and
+  `Ext.Lifetime.WaitFreed` waits for it. On every path
+  `rlmesh_session_free` runs to completion first and only then are the
+  borrowed records' references released, because the native free still
+  uses them; a queued cleanup record owns the session pointer and those
+  references together (R-28 Finalization).
 
 ### R-18 Cancellation
 
@@ -902,48 +907,63 @@ rlmesh_ext_cancel_token_free(RLMeshExtCancelToken*)` (NULL is a no-op;
     shares the token; `CancelHandle()` returns a new wrapper over the new
     reference C returns. The `cancel` options property is
     `Ext.CancelToken? Cancel { get; set; }`.
-- **Operation cancel scope** (X-12, fenced; pending user approval). A
-  `cancel` field reaches only the calls whose options carry one, and a
-  `cancel_handle()` token is shared by every call on its handle. An
-  operation-scoped token reaches any single call:
-  `rlmesh_ext_cancel_scope_enter(token)` makes `token` the calling thread's
-  operation token until `rlmesh_ext_cancel_scope_exit()`, and every call
-  that this rule makes cancellable (a call with a `cancel` field, a call on
-  a handle with `cancel_handle()`), made directly on that thread inside the
-  scope, also watches the scope token, subscribed at its admission and
-  released when it returns. The call then fails if any of its tokens fires
-  (its `cancel` field, its handle's token, the scope token), with this
-  rule's firing, re-arming and state-after-cancel semantics. A scope token
-  is never shared with another call, so firing it cannot reach another
-  thread's call, and a firing after the call returns reaches nothing.
-  Other calls ignore the scope. The library saves and clears the scope
-  before it invokes a callback on the thread and restores it after, as it
-  does R-12's pending error, so calls a callback makes are outside the
-  caller's scope. C++ gains `rlmesh::ext::CancelScope` (RAII over the two
-  calls); Rust needs none (it cancels by dropping futures). Full contract:
+- **Per-call cancel** (X-12, fenced; pending user approval). A `cancel`
+  field reaches only the calls whose options carry one, and a
+  `cancel_handle()` token is shared by every call on its handle. Seven
+  single calls gain an explicit per-call input:
+  `rlmesh_ext_session_reset` / `_predict` / `_step`,
+  `rlmesh_ext_remote_env_reset` / `_step` and
+  `rlmesh_ext_remote_vector_env_reset` / `_step`, each the unfenced call
+  plus a borrowed `cancel` token. The call watches it beside its handle's
+  token, subscribes both once at native admission (after the busy and
+  overlap checks, so a call refused there consumes no pending firing) and
+  carries the subscription explicitly through its watcher until it
+  returns; it fails if either fires, with this rule's firing, re-arming and
+  state-after-cancel semantics. No call reads a thread-local cancel scope.
+  C++ gains `rlmesh::ext` overloads; Rust needs none (it cancels by
+  dropping futures and through `cancel` fields). Full contract:
   [C ABI additions for v0.2](../language-parity.md#c-abi-additions-for-v02).
-- **C# twins and `CancellationToken`.** A twin's `cancellationToken`
-  bridges to a fresh `Ext.CancelToken` made for that one operation: on the
-  worker the twin enters it as the operation cancel scope (X-12), makes the
-  C call, exits the scope and frees the token; a registration on
-  `cancellationToken` calls the token's `Cancel()` (any thread) and is
-  disposed when the C call returns. The caller's own `Cancel` options
-  property, if set, still travels in the call's `cancel` field, so both
-  apply and neither replaces the other; a `CancellationToken` never fires a
-  token that another call shares. An already-cancelled `cancellationToken`
-  fails the twin before scheduling (R-16's C# twins bullet), as R-18's idle
-  `cancel()` fails the next call. A cancelled twin fails with
-  `Ext.CancelledError`, an `OperationCanceledException` whose
-  `CancellationToken` is the caller's, so the task ends `Canceled` as .NET
-  expects. Because the token belongs to one operation, neither race of the
-  shared-token design exists: a `CancellationToken` that fires after the C
-  call returned fires a token nothing watches (no completion race), and a
-  second twin refused for overlapping the first never subscribed the first
-  operation's token, so cancelling the second cannot interrupt the first
-  (no admission race); E-3 tests both deterministically. Sync C# calls use
-  no scope, except the long-running ones (`Run`, `Session.Run`, the
-  `Serve` calls), which run in a library-made scope so that R-28's shutdown
-  barrier can cancel them.
+- **C# and `CancellationToken`** (the bridge is v0.2 foundation, D-45; the
+  twins over it are design record, except `EnvServer`'s). A twin's
+  `cancellationToken` bridges to a fresh `Ext.CancelToken` made for that
+  one operation and passed explicitly: in X-12's `cancel` argument for the
+  seven single calls, or in the call's `cancel` field for a call that has
+  one. A registration on `cancellationToken` calls that token's `Cancel()`
+  (any thread); the registration's callback catches every exception, so
+  nothing escapes into the cancelling thread, often Unity's main thread.
+  Teardown runs in a fixed order: the C call returns, the registration is
+  disposed (which waits for a callback already running), and only then is
+  the token freed, so `Cancel()` never runs on a freed token. An
+  already-cancelled `cancellationToken` fails the twin before scheduling
+  (R-16's C# twins bullet), as R-18's idle `cancel()` fails the next call.
+  Because the token belongs to one operation, neither race of the
+  shared-token design exists (X-12: completion and admission); E-3 tests
+  both deterministically.
+  - **The caller's own `Cancel`.** A call whose options carry the caller's
+    `Cancel` has one native `cancel` field, and ABI 5 composes no tokens
+    natively (Lessons, cancellation). So in the design record a twin over
+    such a call with the caller's `Cancel` set and a cancellable
+    `cancellationToken` is refused with the ValueError class before
+    scheduling, instead of one silently replacing the other; either alone
+    works. Server twins are the exception: they cancel by shutting their
+    server down, not through a token, so the caller's `Cancel` stays in its
+    field and applies throughout (ENV-39, ENV-40). v2 composes sources
+    natively.
+  - **Which token fired.** A cancelled twin fails with `Ext.CancelledError`,
+    an `OperationCanceledException` whose `CancellationToken` is the twin's
+    `cancellationToken`, so the task ends `Canceled` as .NET expects. When
+    the caller's `Cancel`, a handle's `CancelHandle()` token or the shutdown
+    barrier fired instead, the error is the same class with the same
+    `CancellationToken`, which then reads as not cancelled; the task still
+    ends `Canceled`, because the `async` builder records any
+    `OperationCanceledException`.
+  - **Sync C# calls** pass no per-operation token, except the long-running
+    calls with a `cancel` field (`Run`, `Session.Run`, `EnvFactory.Serve`,
+    `Model.Serve`): with the caller's `Cancel` unset the wrapper puts a
+    library-made token there so that R-28's shutdown barrier can cancel
+    them; with it set, the barrier fires the caller's token (shutdown is
+    terminal). `EnvServer.Serve` needs no token: the barrier stops it by
+    shutting its server down.
 - **Firing and re-arming.** One `cancel()` fires once: it fails the call in
   flight on the token or, when none is, the next call made with that token,
   at its start. The token then re-arms, as one Ctrl-C raises one
@@ -1101,9 +1121,10 @@ Applies to every C options struct, out-struct, vtable and lent struct.
   ownership rule) the wrapper frees the `GCHandle` itself before throwing.
   Every trampoline catches every exception (X-11) and returns a status; no
   managed exception crosses a native frame. Each `GCHandle` handed to C as
-  `user_data`, `value` or `payload` is counted in one process-wide
-  trampoline registry from `Alloc` to the free callback that releases it,
-  which R-28's shutdown barrier waits on.
+  `user_data`, `value` or `payload` is a root of an ownership record (R-28)
+  from `Alloc` until its free callback has run and the native call that ran
+  it has been joined, and each trampoline counts its active frames; R-28's
+  shutdown barrier uses both (D-43).
 
 ### R-21 Errors
 
@@ -1491,8 +1512,10 @@ spans (Spaces SPC-31); an engine-specific bridge belongs to its integration
 ### R-26 Full parity is the target
 
 C, C++, C# and Rust each cover the whole Stable Python surface except R-24's
-bridges (C#: D-17, G-29). Until a symbol lands, its area table marks it missing; a missing
-symbol is a gap (G-n), not a design choice.
+bridges. Until a symbol lands, its area table marks it missing; a missing
+symbol is a gap (G-n), not a design choice. C# is the exception (D-17,
+D-45): its column is a design record of the v1 surface, superseded by v2,
+not a list of gaps (G-29).
 
 ### R-27 One home per shared type
 
@@ -1527,7 +1550,33 @@ symbol is a gap (G-n), not a design choice.
 C# runs on .NET 10, Mono (the Unity Editor) and Unity's IL2CPP (players)
 (D-19), on 64-bit targets only; WebGL, which has no threads, and 32-bit
 targets are unsupported (D-40). Every C# area mapping obeys these, and E-2 /
-E-3 check them.
+E-3 check them. This rule is the C# foundation that v0.2 implements (D-45);
+where a bullet names a handle kind v0.2 does not build (`Session`, `Model`,
+the remote clients, hooks, transforms), that part is design record.
+
+- **v0.2 surface** (D-45). The `RLMesh` package is labelled Experimental
+  (it joins [compatibility](../../compatibility.md)'s Native APIs list when
+  it ships) and exposes exactly what serving an authored env to a Python
+  client needs, with the area tables' names and semantics:
+  - authoring: `IEnv`, `IClose`, `IRender`, `ResetResult`, `StepResult`
+    (Env ENV-36);
+  - handles: `Env` with `Env.For` (ENV-37), `EnvServer` with its `Env` and
+    `IEnv` constructors, `Start()`, `Shutdown()`, `Wait(TimeSpan?)`,
+    `Address`, `Dispose()` and the twins `ServeAsync`, `WaitAsync`,
+    `ShutdownAsync` (ENV-40), `EnvServerOptions` and
+    `Ext.EnvServerOptions` with `HostRuntimeJson` (ENV-38);
+  - values: `Space` with `Box`, `Discrete` and `Dict`, `Value` with COR-29's
+    conversions, `Metadata`, `Tensor` with its copying constructor,
+    `Tobytes()` and the `Buffer()` lease (SPC-31);
+  - errors: R-21's classes with D-25's bases, and `Ext.CancelledError`;
+  - lifetime: `Ext.Lifetime` (D-43).
+
+  Nothing else of the C# column ships: no foreground `Serve()` (it installs
+  signal handlers, R-18), no vector envs, factories, models, sessions, runs,
+  remote clients, adapters, recorder, DLPack or warning handler. The
+  foundation's tests reach the other C calls they need (a remote client
+  driving the served env, a session over `RLMESH_RANDOM_SAMPLE`) through the
+  internal raw layer, visible to the test assembly only.
 
 - **No runtime code generation.** No `System.Reflection.Emit`,
   `DynamicMethod`, `Expression.Compile`, `dynamic` or runtime-generated
@@ -1552,7 +1601,9 @@ CallingConvention.Cdecl)]`, the name a `const string` in the raw layer;
   `NativeLibrary`, `LibraryImport` or `UnmanagedCallersOnly`, none of which
   exists in netstandard2.1; the net10.0 build may add a
   `NativeLibrary.SetDllImportResolver` as an optional extra for custom
-  install layouts (one of the two `#if` blocks E-2 allows).
+  install layouts (one of D-19's three allowed `#if` uses, with the
+  internal net10.0 unload hook of the shutdown barrier and the
+  `System.Half` overloads).
 - **ABI gate.** `rlmesh_abi_check` is a `static inline` header helper
   (`h:397`), not an export, and netstandard2.1 offers no assembly-load hook
   that IL2CPP is known to honour, so the gate is a hand-written
@@ -1569,19 +1620,55 @@ CallingConvention.Cdecl)]`, the name a `const string` in the raw layer;
   rooted for the process, `GCHandle` as `user_data`, every exception caught
   (X-11). `UnmanagedCallersOnly` and C# function pointers are not used:
   IL2CPP does not document them for reverse P/Invoke.
+- **Ownership records** (D-39). Every native handle the library holds is
+  one ownership record: the native pointer, its kind, the records it holds
+  references on (a session's model and env, R-17), the managed roots it
+  owns (`GCHandle`s and rooted delegates handed to C, R-20) and one
+  interlocked state word. The states are `Idle`, `InUse(n)` (n call-scoped
+  references, twins, borrowers and leases), `Transferring`, `Transferred`
+  (its pointer given to C, Env ENV-37), `Closing(n)` (disposed with n
+  references outstanding), `Freeing` and `Freed`. Every transition is a
+  compare-and-swap loop on that word, so calls, borrowing, disposal,
+  finalization, transfer and the shutdown barrier share one state machine;
+  no lock is held across native destruction or a callback.
+  - **Acquire** (each call-scoped reference, a twin, a borrower):
+    `Idle` / `InUse(n)` → `InUse(n+1)`; any other state throws
+    `ObjectDisposedException` (D-41). **Release:** `InUse(n+1)` →
+    `InUse(n)` (or `Idle`); `Closing(1)` → `Freeing`, and the releasing
+    thread then destroys the record (below).
+  - **`Dispose()`** closes the owner at once: `Idle` → `Freeing`, destroy;
+    `InUse(n)` → `Closing(n)`, return; any later state, no-op. It never
+    throws. So `Dispose()` returns after the native free only when it made
+    the free itself; otherwise the last release makes it, and
+    `Ext.Lifetime.WaitFreed(handle, timeout)` (`bool`) waits for `Freed`.
+  - **Where destruction runs.** Inline only on the thread whose `Dispose()`
+    took `Freeing`, and only when that thread is at callback depth 0 and is
+    not a library-owned thread (a twin worker, the pool, the cleanup or
+    teardown threads). Every other destruction (a last release at callback
+    depth > 0 or on a library thread, a finalizer-reached release, a
+    `Dispose()` from inside a callback) is queued to the cleanup thread, so
+    a corner that drops the last reference to its own `Model` never waits on
+    itself inside `rlmesh_model_free`. `Freed` is set after the native free
+    returns; the record's references on other records are released only
+    then.
+  - **Strong table.** Records whose free can run authored code or block, or
+    that own managed roots, are kept in a strong table from creation to
+    `Freed`, independent of wrapper reachability: a wrapper collected but
+    not yet finalized still has its record there, and its finalizer later
+    finds the record `Freeing` or `Freed` and does nothing. Inert records
+    (below) need no table: their `SafeHandle` is the record.
 - **Handle lifetime in calls.** The raw layer passes handles as `IntPtr`,
   which keeps no `SafeHandle` alive, so a disposed check followed by a
   pointer read would race `Dispose()` and the finalizer. Every wrapper call
-  takes a call-scoped reference on each handle it passes as a raw pointer
-  (`DangerousAddRef` inside a `try`, `DangerousRelease` in its `finally`),
-  before reading the pointer, and holds it until the outputs are copied,
-  borrowed outputs included; a concurrent `Dispose()` or finalization then
-  only defers the free to the last release. A twin takes these references
-  on the caller's thread before it schedules the call and releases them
-  when the C call has returned on the worker, so a cancelled or abandoned
-  twin, or the shutdown barrier below, never frees a handle under a running
-  call. A trampoline that wraps a handle passed to a callback takes the
-  same reference for the callback's duration.
+  acquires each record it passes as a raw pointer, inside a `try`, before
+  reading the pointer, and releases it in the `finally`, after the outputs
+  are copied, borrowed outputs included; a concurrent `Dispose()` or
+  finalization then only defers the free to the last release. A twin
+  acquires on the caller's thread before it schedules the call and
+  releases when the C call has returned on the worker, so a cancelled or
+  abandoned twin, or the shutdown barrier below, never frees a handle under
+  a running call. A trampoline that wraps a handle passed to a callback
+  acquires it for the callback's duration.
 - **Threads.** Where a callback runs depends on the call, as in C:
   1. a sync run or session over a local env, vector env or factory
      (`Run`, `Session.Reset` / `Step` / `Run`) relays env ops, hooks and
@@ -1591,7 +1678,7 @@ CallingConvention.Cdecl)]`, the name a `const string` in the raw layer;
      worker (R-16);
   2. `EnvFactory` callbacks (`Prepare`, `Make`, `TagsFor`,
      `EnumerateVariants`, `Close`) run on the thread that called into the
-     factory and are exclusive (`h:2750`, ENV-34);
+     factory and are exclusive (`h:2758-2761`, ENV-34);
   3. served envs (every lane under `Start()` and the serve twins, every
      lane but lane 0 under `Serve()`), served models and the corners and
      hooks of a `Model` driven by a session or run run on library threads,
@@ -1619,106 +1706,176 @@ CallingConvention.Cdecl)]`, the name a `const string` in the raw layer;
   switch can intervene. After every failing call the wrapper takes the
   error payload (R-12), so no C#-tagged payload is left in a thread's slot.
 - **Finalization** (D-39). Every handle's `SafeHandle` has a finalizer as a
-  safety net; `Dispose()` / `using` is the contract. A handle is released
-  by one of two paths:
-  - **Explicit.** `Dispose()` (after `Close()`, or alone) frees on the
-    disposing thread, inline, and returns only after the native free has
-    finished (R-17's Session Drop included). If a call, a twin or a
-    borrower still holds a reference (above, R-17), the free runs when the
-    last reference is released, on the releasing thread.
-  - **Finalizer.** A release not reached through `Dispose()` never frees on
-    the finalizer thread when the free can run authored callbacks or
-    block: `Session`, `Model`, `EnvServer`, `RemoteEnv`,
-    `RemoteVectorEnv`, `RemoteModel`, `Recorder` and its captures, `Env`,
-    `VectorEnv`, `EnvFactory`, `RunHooks`, `RunContext`, `AdapterBase`,
-    the transforms and wrapped predicts, `ReadFn` / `RenderFn`, and an
-    `Ext.DlpackTensor` that another producer exported (its deleter is
-    unknown code, Spaces SPC-31). Such a release queues a cleanup record to
-    one library-owned cleanup thread, which runs the free (inline when the
-    release already runs on that thread). The record owns the native
-    pointer and every reference its handle holds on other handles (a
-    session's borrowed model and env, R-17), and releases those references
-    only after the native free has finished, so no dependency is freed
-    under it. Inert handles (values, tensors, spaces, specs, contracts,
-    results, records, DLPack tensors the library exported) free inline on
-    the finalizer thread: their free runs no authored code and does not
-    block.
+  safety net; `Dispose()` / `using` is the contract. A finalizer performs
+  `Dispose()`'s transition on the record and never destroys on the
+  finalizer thread when the free can run authored callbacks or block:
+  `Env`, `EnvServer` and, in the design record, `Session`, `Model`,
+  `RemoteEnv`, `RemoteVectorEnv`, `RemoteModel`, `Recorder` and its
+  captures, `VectorEnv`, `EnvFactory`, `RunHooks`, `RunContext`,
+  `AdapterBase`, the transforms and wrapped predicts, `ReadFn` /
+  `RenderFn`, and an `Ext.DlpackTensor` that another producer exported (its
+  deleter is unknown code, Spaces SPC-31). Their destruction is queued to
+  one library-owned cleanup thread as a cleanup record that owns the native
+  pointer and the record's references on other records, and releases those
+  only after the native free has finished, so no dependency is freed under
+  it. Inert handles (values, tensors, spaces, specs, contracts, results,
+  records, DLPack tensors the library exported) free inline on the
+  finalizer thread: their free runs no authored code and does not block.
 
   An authored object held by a native vtable (`GCHandle` `user_data`) stays
-  reachable until the native side frees it, so a served env or model is
-  collected only after its server or `Model` is released; an undisposed
-  server is a leak, not a crash.
+  reachable until the native side frees it, so a served env is collected
+  only after its server is released; an undisposed server is a leak, not a
+  crash.
 
 - **Per-value cost.** `Value`, `Tensor`, `Space`, `SpaceSpec` and the other
   immutable wrappers are two objects each: the sealed wrapper and its
-  `SafeHandle`, the only finalizable one, whose finalizer frees the inert
-  native reference inline. No public member exposes the native pointer and
-  every call holds a call-scoped reference (above), so a wrapper can be
-  neither used after its free nor leaked past its collection. Children are
-  wrapped when read, not eagerly: an indexer read makes one wrapper pair,
-  `AsList()` / `AsTuple()` / `AsDict()` one pair per child, and a `Metadata`
-  read from C (an info dict, reset options) one pair per value; an empty
-  info dict makes no native wrapper. So `Session.Step` with a Box
-  observation, an empty info and a reused action makes one `Value` pair and
-  one empty `Metadata`: three managed objects, one of them finalizable. E-3's
-  C# runtime family holds this to a budget.
-- **Shutdown barrier** (D-43): a Unity Editor domain reload (Mono) or the
-  unload of a collectible `AssemblyLoadContext` (.NET 10); IL2CPP players
-  never reload. Function pointers and `GCHandle`s handed to C die with the
-  domain or context, so none may stay in native hands when it unloads.
-  These hold managed function pointers or `GCHandle`s: `Env`, `VectorEnv`
-  and `EnvFactory` vtables, `Model` vtables and the `ModelOptions` hooks,
-  `RunHooks`, `RunContext`, `AdapterBase`, obs and rotation transforms,
-  wrapped predicts, `ReadFn` / `RenderFn` (`rlmesh_frame_sources_new`),
-  episode-state values (`free_value`, MDL-25), error payloads
-  (`free_payload`, R-12), entrypoint registrations (`Ext.Entrypoints`,
-  MDL-11) and the warning handler (R-23). `public static bool
-Ext.Lifetime.Shutdown(TimeSpan timeout)` runs, in order:
-  1. **Refuse new work.** Every later C# call that would reach C throws
-     `ObjectDisposedException` (D-41), and `Ext.Lifetime.ShuttingDown`, a
-     `CancellationToken`, fires.
-  2. **Fail pending engine dispatch.** An integration's main-thread
-     dispatcher observes `ShuttingDown` and fails every queued and new
-     request (its trampoline reports the RuntimeError class), so no library
-     thread stays blocked on the thread that runs the barrier.
-  3. **Cancel operations.** Fire the operation token of every in-flight
-     twin and long-running sync call (R-18, X-12) and the `CancelHandle()`
-     token of every live `Session`, `RemoteEnv` and `RemoteVectorEnv`, and
-     trigger the stop of every running `EnvServer`.
-  4. **Join operations.** Wait until no C# call is inside C (each wrapper
-     counts its entry and return).
-  5. **Release handles.** Dispose every live handle in reverse creation
-     order on the explicit path (they are tracked through weak references,
-     so undisposed wrappers are included), unregister every entrypoint C#
-     registered (`rlmesh_ext_unregister_entrypoint`, X-16) and restore the
-     default warning handler.
-  6. **Drain native callbacks.** Wait until R-20's trampoline registry is
-     empty, that is until the library has called every `free_user_data`,
-     `free_value` and `free_payload` for a C# `GCHandle`, which it does only
-     after the last in-flight callback on that state has returned (R-20,
-     R-23); then run the queued cleanup records and stop the cleanup thread,
-     the twin workers and the pool.
-  7. **Release managed roots.** Free the `GCHandle`s still held on the
-     managed side (payloads taken but not yet rethrown, per-operation
-     tokens).
+  `SafeHandle`, which is also its inert record and the only finalizable
+  object, freeing the native reference inline. No public member exposes the
+  native pointer and every call holds a call-scoped reference (above), so a
+  wrapper can be neither used after its free nor leaked past its
+  collection. Children are wrapped when read, not eagerly: an indexer read
+  makes one wrapper pair, `AsList()` / `AsTuple()` / `AsDict()` one pair
+  per child, and a `Metadata` read from C (an info dict, reset options) one
+  pair per value; an empty info dict makes no native wrapper. So one step
+  of a C# env stepped through a session (a `Box` observation the env
+  returns from a cache, an empty info, a reused action) makes two
+  finalizable objects in the library: the action's `Value` handed to
+  `IEnv.Step` and the observation's `Value` returned to the caller. E-3's
+  benchmark holds this to a budget.
 
-  It returns `true` when every step completed and `false` when `timeout`
-  elapsed first; `Ext.Lifetime.Pending()` (`IReadOnlyList<string>`, the
-  handle kinds and counts still live) then says what is left, and `false`
-  means unloading is not safe. A call while one runs waits for it and
-  returns its result. The library calls it with a 5 s bound from
-  `AppDomain.CurrentDomain.DomainUnload` (Mono raises it at a domain
-  reload), from its own `AssemblyLoadContext.Unloading` (net10.0 build) and
-  from `AppDomain.ProcessExit` (CoreCLR raises no `DomainUnload`). The Unity
-  integration calls it earlier, from
-  `AssemblyReloadEvents.beforeAssemblyReload`, because the barrier must
-  finish before the unload starts: Mono aborts threads that are running
-  managed code when it unloads, and a `ThreadAbortException` re-raised at
-  the end of a trampoline's `catch` would cross a native frame. Library
-  threads that have called managed code stay attached to the runtime after
-  the barrier; whether Mono's reload waits on them is what D-44's Editor
-  reload test checks before v0.2, and a native quiesce call is proposed
-  only if that test shows a hang.
+- **Shutdown barrier** (D-43). Before the domain or context that loaded
+  RLMesh goes away (a Unity Editor domain reload under Mono, the unload of a
+  collectible `AssemblyLoadContext` on .NET 10), no function pointer or
+  `GCHandle` handed to C may remain in native hands and no reverse call may
+  still be running managed code; IL2CPP players never reload. The holders
+  are every record with managed roots: `Env` vtables, `EnvServer`s (their
+  envs), error payloads (`free_payload`, R-12) and per-operation tokens in
+  v0.2; in the design record also `VectorEnv` and `EnvFactory` vtables,
+  `Model` vtables and the `ModelOptions` hooks, `RunHooks`, `RunContext`,
+  `AdapterBase`, obs and rotation transforms, wrapped predicts, `ReadFn` /
+  `RenderFn` (`rlmesh_frame_sources_new`), episode-state values
+  (`free_value`, MDL-25), entrypoint registrations (`Ext.Entrypoints`,
+  MDL-11) and the warning handler (R-23). The API is
+  `public static bool Ext.Lifetime.Shutdown(TimeSpan timeout)`,
+  `IReadOnlyList<string> Ext.Lifetime.Pending()`, the
+  `CancellationToken Ext.Lifetime.ShuttingDown` and
+  `Ext.Lifetime.State` (`Open`, `ShuttingDown`, `Completed`, `Incomplete`).
+  1. **Admission gate.** One interlocked word holds an open bit and the
+     count of admitted operations. Every public entry point that reaches C
+     (a sync call, a twin, a constructor) enters it before it schedules
+     anything and leaves after it has adopted its outputs and released its
+     call-scoped references; a twin enters on the caller's thread and
+     leaves on its worker. `Shutdown` clears the open bit with one
+     compare-and-swap; every later entry throws `ObjectDisposedException`
+     (D-41). The gate never reopens in that domain: shutdown is terminal.
+     Never refused: the internal steps of operations already admitted (a
+     worker finishing its C call, a registration firing its token),
+     trampolines' input and output conversion and error reporting (X-11),
+     payload takes, cleanup and teardown work, and the barrier's own calls.
+     `Dispose()` stays allowed and only releases (it never throws).
+  2. **Refused contexts.** `Shutdown` returns `false` at once, without
+     closing the gate, when it is called on a thread inside a trampoline (a
+     per-thread callback depth above 0: a `ProcessExit` raised by
+     `Environment.Exit` or `Application.Quit` inside an env callback, or a
+     callback calling it), on a library-owned thread, or re-entrantly from
+     a `ShuttingDown` registration; `Pending()` then names the refusal. It
+     never waits on its own frame. A call from another thread while one is
+     running waits for the same outcome, up to its own timeout.
+  3. **Notify.** A teardown thread fires `ShuttingDown` (registrations run
+     there, never on the caller's thread). An integration's main-thread
+     dispatcher then fails every queued and later request (its trampoline
+     reports the RuntimeError class; Threads above): it checks
+     `ShuttingDown` and enqueues under one lock, so no request can be queued
+     after the queue was failed, and no library thread stays blocked on the
+     main thread.
+  4. **Cancel.** Without blocking, fire the per-operation token of every
+     admitted operation (R-18), the `CancelHandle()` token of every live
+     `Session`, `RemoteEnv` and `RemoteVectorEnv`, and the caller-set
+     `Cancel` of every admitted long-running call. Calls no token reaches
+     are named by `Pending()` until they return: dials (RMT-6), `RemoteModel`
+     calls, `Model.Close` waiting for in-flight predicts (X-7), `Recorder`
+     export, and a callback blocked in authored code.
+  5. **Teardown on tracked threads.** Everything that can block runs on
+     teardown threads the barrier creates and tracks, never on the caller's
+     thread: `rlmesh_env_server_shutdown` and `_free` for every server (an
+     env stuck in `step` holds its lane, and the server's `Drop` waits for
+     each lane's `finish`, `capi/env_server.rs`), every strong-table
+     record's native free in dependency order (a record releases its
+     references on others only after its own free returns), foreign DLPack
+     deleters, `rlmesh_ext_unregister_entrypoint` by identity for every
+     name C# registered (X-16), and the default warning handler restored
+     with `rlmesh_set_warning_handler(NULL, NULL, NULL)`, which frees the
+     old `user_data` only after the old handler's calls return (R-23).
+     Records without a dependency between them tear down in parallel, so
+     one stuck free holds up only what depends on it. The records come from
+     the strong table, not from wrappers, so collected but unfinalized
+     wrappers are included. While it waits, a teardown thread runs
+     `GC.Collect()` / `GC.WaitForPendingFinalizers()` rounds and the
+     cleanup thread keeps draining, so finalizer-queued records finish
+     too.
+  6. **Completion accounting.** A managed root counts as released only
+     when its free callback (`free_user_data`, `free_value`,
+     `free_payload`, a foreign deleter) has run and the native call that
+     ran it has returned to a thread the barrier joins: a teardown thread's
+     free returned, or the native operation that dropped the root was itself
+     joined by such a free (ABI 5 frees wait for the callbacks in flight on
+     their state: env and server frees, ENV-7; model close and free, which
+     also wait for the `on_episode_end` a session free left on the model's
+     queue past its bound, X-7 and R-17; the warning-handler setter, R-23). An empty root set
+     alone proves nothing: a free callback can still be returning, and a
+     record's cleanup can be what causes the free. After every root is
+     released and every teardown thread joined, the trampolines'
+     active-frame count (entered first, left in each trampoline's outermost
+     `finally`) must read zero; a reverse call from a native thread that no
+     joined call covers is reported by `Pending()`, never assumed finished
+     (v2 moves this accounting into the core: Lessons 7).
+  7. **Release managed roots.** Free the roots the managed side still
+     holds (payloads taken but not rethrown, per-operation tokens), stop the
+     cleanup thread, the workers and the pool, and set `Completed`.
+
+  One absolute deadline, `timeout` after the call starts, bounds every
+  wait, and every wait is a timed wait on a completion; the caller's thread
+  makes no native call, so it never blocks past the deadline. On expiry
+  `Shutdown` returns `false` and the state is `Incomplete`: the gate stays
+  closed; teardown threads keep running (never aborted); every unfinished
+  record keeps its native pointer, its references and its roots, and every
+  delegate stays rooted; `Pending()` lists each unfinished operation, each
+  unfinished record with its kind and the call it waits in, and the active
+  trampoline frames. A later `Shutdown` resumes waiting on the same
+  teardown and returns `true` once it completes. `false` means the domain
+  must not be unloaded. After `Completed`, `Shutdown` returns `true` at
+  once.
+
+  **Host preflight.** An unload notification cannot refuse an unload, so
+  safety comes from the host running the barrier to `true` before it starts
+  the unload, and deferring the unload when it returns `false`:
+  - **Unity Editor.** The integration holds
+    `EditorApplication.LockReloadAssemblies()` while RLMesh is in use. When
+    a reload is wanted (scripts recompiled, Play Mode entered with domain
+    reload enabled, its menu command) it calls `Shutdown(5 s)` on the main
+    thread, outside any callback, and calls `UnlockReloadAssemblies()` only
+    on `true`; on `false` it keeps the lock, so the reload stays deferred,
+    logs `Pending()` and offers a retry. Whether the lock defers every
+    reload path is what D-44's failed-barrier test checks.
+  - **.NET collectible contexts.** The host calls `Shutdown` and calls
+    `AssemblyLoadContext.Unload()` only on `true`.
+  - **Fallback diagnostics.** `AppDomain.DomainUnload` (Mono raises it at a
+    reload), the net10.0 build's internal `AssemblyLoadContext.Unloading`
+    hook and Unity's `AssemblyReloadEvents.beforeAssemblyReload` only
+    report: when the barrier has not completed they log `Pending()` as an
+    error, saying the unload is unsafe and may crash, and run `Shutdown`
+    with a 1 s bound as damage limitation; they never make an unload safe.
+    The barrier must finish before an unload starts because Mono aborts
+    threads that run managed code when it unloads, and a
+    `ThreadAbortException` re-raised at the end of a trampoline's `catch`
+    would cross a native frame.
+  - **Process exit.** `AppDomain.ProcessExit` calls `Shutdown(5 s)` for an
+    orderly stop (servers drained); a process exit needs no unload safety.
+
+  Library threads that have called managed code stay attached to the
+  runtime after the barrier; whether Mono's reload waits on them is what
+  D-44's Editor reload test checks before v0.2, and a native quiesce call is
+  proposed only if that test shows a hang.
 
 - **Memory.** No member of the shared surface returns a span over native
   memory. A `ReadOnlySpan<T>` does not keep its owner reachable, so with
@@ -1761,14 +1918,14 @@ Ext.Lifetime.Shutdown(TimeSpan timeout)` runs, in order:
 | D-14 | A C struct larger than the library's must have zero unknown trailing bytes (R-19), mirroring Python's TypeError for an unknown keyword.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Settled                              |
 | D-16 | Python is the reference for concepts, not for quirks. Where Python's current behaviour is accidental or inconsistent, Python changes to the target in the same minor release, with a changelog entry (listed as `P-n` / `<AREA>-P<n>`), instead of every language copying the quirk. Deliberate Python behaviour is matched exactly.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | User                                 |
 | D-15 | C++ `rlmesh::ext::CancelledError` derives from no `std::` exception, as `KeyboardInterrupt` is not an `Exception`: `catch (const std::exception&)` does not swallow a cancel, as `except Exception` does not. It still has `what()`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | Settled                              |
-| D-17 | C# is a fifth language at full parity (R-26), for game engines and simulators (Unity first, also Godot and Stride). The C# library wraps the C ABI one to one, as C++ does (D-2), and ships with v0.2. Engine integrations (`integrations/unity/`) sit on top and are outside this spec; their constraints shape R-28.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | User                                 |
+| D-17 | C# is a fifth language (R-26), for game engines and simulators (Unity first, also Godot and Stride). The C# library wraps the C ABI one to one, as C++ does (D-2). Engine integrations (`integrations/unity/`) sit on top and are outside this spec; their constraints shape R-28. Amended by the user on 2026-10-19 (D-45): full parity on the v1 surface is a design record, superseded by v2; v0.2 ships the foundation.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | User (amended by D-45)               |
 | D-18 | C# layout and layering. `csharp/` at the repo root (sibling of `python/`): `csharp/src/RLMesh/` is the NuGet package and root namespace `RLMesh`. Two layers: a raw P/Invoke layer generated from `rlmesh.h` by ClangSharpPInvokeGenerator (pinned 21.1.8.4; `-x c -std c11 -n RLMesh.Interop -m Native -l rlmesh_capi -c codegen=compatible --generate fnptr-codegen=false --generate funcs-with-body=false --generate helper-types`, with zig's clang builtin include directory and `--no-resource-directory-detection`, as verified in the spike, plus `--with-access-specifier *=Internal` so nothing generated is public) into `csharp/src/RLMesh/Interop/Native.g.cs`, `internal`, never hand-edited; `mise run csharp:generate` writes it and `mise run csharp:generate -- --check` (in `mise run check`) fails when it is stale. Named callback typedefs become Cdecl delegate types; anonymous callback fields become `IntPtr`; no `delegate*`. The `_INIT` macros and static inline helpers are not generated; the hand layer supplies them (R-19). The hand-written idiomatic layer is everything public.                                                                                                                             | Pending (C#)                         |
-| D-19 | C# targets `netstandard2.1` (Unity, Mono, Godot) and `net10.0`, the current LTS (.NET 8 support ends 2026-11-10). The public surface is consumable from C# 9 (R-28 language level). Only 64-bit targets ship: the generated layout is per-architecture (R-19). Both builds come from one source; `#if` is allowed only for the net10.0 `NativeLibrary.SetDllImportResolver` extra (R-28) and the `System.Half` overloads (SPC-31), and E-2 diffs the two public surfaces against that allowlist. The SDK is pinned by `global.json`, installed by mise (`dotnet = "10.0.402"`, `core:dotnet`); it builds both targets, and the tests run on the .NET 10 runtime.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Pending (C#)                         |
+| D-19 | C# targets `netstandard2.1` (Unity, Mono, Godot) and `net10.0`, the current LTS (.NET 8 support ends 2026-11-10). The public surface is consumable from C# 9 (R-28 language level). Only 64-bit targets ship: the generated layout is per-architecture (R-19). Both builds come from one source; `#if` is allowed only for the net10.0 `NativeLibrary.SetDllImportResolver` extra (R-28), the internal net10.0 `AssemblyLoadContext.Unloading` diagnostic hook of the shutdown barrier (D-43) and the `System.Half` overloads (SPC-31); the first two are internal, and E-2 diffs the two public surfaces against an allowlist holding only the third. The SDK is pinned by `global.json`, installed by mise (`dotnet = "10.0.402"`, `core:dotnet`); it builds both targets, and the tests run on the .NET 10 runtime.                                                                                                                                                                                                                                                                                                                                                                                                                           | Pending (C#)                         |
 | D-20 | C# naming is one transform of Python's name (R-4): `PascalCase` types, members and constants, `camelCase` parameters, `I`-prefixed interfaces, verbatim `@` for keyword parameters, no trailing `_`, the `Value` suffix for a member colliding with its type or `object`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | Pending (C#)                         |
 | D-21 | C# free functions. A Python module maps to a namespace (`rlmesh.spaces` → `RLMesh.Spaces`, `rlmesh.adapters` → `RLMesh.Adapters`, `rlmesh.specs` → `RLMesh.Specs`); its free functions and constants are static members of one static class per module named `<Module>Api`: `RLMesh.RLMeshApi`, `RLMesh.Spaces.SpacesApi`, `RLMesh.Adapters.AdaptersApi` (`using static RLMesh.RLMeshApi;` gives `Run(model, env)`). A static class cannot share its namespace's name (`RLMesh.RLMesh` breaks name lookup in every consumer), a lowercase `rlmesh` class (TorchSharp's style) breaks .NET convention, and a bare `Api` collides with user types and breaks the `<Module>Api` pattern. A free function named after the type it builds is that type's constructor, as D-6 makes it `_new` (`rlmesh.session(model, env)` → `new Session(model, env)`). A Python classmethod or staticmethod stays a static method on its type (`Model.FromConfig`, `Tensor.FromDlpack`); a module-level builder stays on the module class (`SpacesApi.SpaceFromSpec`). A builder that must be async is a static `<Name>Async` beside the constructor (`RemoteEnv.ConnectAsync`, RMT-24; `RLMeshApi.SessionAsync`, RUN-32), the one exception to R-16's twin naming. | Pending (C#)                         |
 | D-22 | C# keyword arguments are options classes (R-6): sealed, mutable `{ get; set; }` properties initialized to Python's defaults, `options = null` last. Rejected: `record` with `init` properties (synthesized equality is an unreviewed extra, conditional assembly needs `with` chains, and C# 9 has no `required`), and C# optional parameters (compile-time constants only, baked into callers).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Pending (C#)                         |
 | D-23 | C# R-7 calls use optional parameters, `null` meaning Python's default, or Python's constant for a non-optional scalar (R-7).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Pending (C#)                         |
-| D-24 | C# `Async` twins (R-16): the Rust twin list, `Task` / `Task<T>`, `CancellationToken` last. Each twin is a C# `async` method over the sync C call on a library-owned worker: one worker per exclusive handle (`Session`, `RemoteEnv`, `RemoteVectorEnv`), a small growing pool for the rest. Its token cancels through a per-operation cancel scope (R-18, X-12), so the caller's own `Cancel` still applies and neither the completion nor the admission race exists; an already-cancelled token fails before scheduling, and `await` rethrows the same `Ext.CancelledError`. No refusal of sync calls in async code; hooks under a twin run on its worker and may make sync calls. Serve twins install no signal handlers (X-13, X-15).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | Pending (C#)                         |
+| D-24 | C# `Async` twins (R-16): the Rust twin list, `Task` / `Task<T>`, `CancellationToken` last. Each twin is a C# `async` method over the sync C call on a library-owned worker: one worker per exclusive handle (`Session`, `RemoteEnv`, `RemoteVectorEnv`), a small growing pool for the rest. Its token reaches only its own operation as an explicit per-operation token (X-12's `cancel` argument or the call's `cancel` field, R-18), so neither the completion nor the admission race exists; a twin given both the caller's `Cancel` and a cancellable token over a call with one `cancel` field is refused until v2 composes tokens natively; an already-cancelled token fails before scheduling, and `await` rethrows the same `Ext.CancelledError`. No refusal of sync calls in async code; hooks under a twin run on its worker and may make sync calls. Serve twins install no signal handlers (X-13, X-15). v0.2 ships only `EnvServer.ServeAsync`, `WaitAsync` and `ShutdownAsync`, on the pool (D-45); the rest is design record.                                                                                                                                                                                                     | Pending (C#)                         |
 | D-25 | C# exception bases (R-21): `ValueError : ArgumentException`, `TypeError : InvalidCastException`, `RuntimeError : InvalidOperationException`, `OSError : IOException`, `Ext.CancelledError : OperationCanceledException`; the rest follow Python's tree, so `RLMeshException` and every rlmesh failure class below it are `InvalidOperationException`s too, and `catch (InvalidOperationException)` catches them with misuse and `ObjectDisposedException`, as `except RuntimeError` does in Python. `catch (Exception)` catches a cancellation (D-15 not reachable in .NET).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Pending (C#)                         |
 | D-26 | C# equality and hashing (R-10): `IEquatable<T>` + `Equals` + `==` where Python has `__eq__`; `GetHashCode` always agrees with `Equals`, content-based where Python hashes (floats included), coarse where Python's type is unhashable; identity types keep reference equality.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Pending (C#)                         |
 | D-27 | C# collections. Inputs take `IReadOnlyList<T>` (arrays and `List<T>` convert) or `ReadOnlySpan<T>` for numeric data, and are copied; `*args` is `params T[]`; outputs are `IReadOnlyList<T>`. List fields of value records are `RLMesh.EquatableList<T>` (immutable, `IReadOnlyList<T>`, structural `Equals` / `GetHashCode`, Python's list text), so a record's synthesized equality is Python's dataclass `==`; arrays and `List<T>` convert to it implicitly.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Pending (C#)                         |
@@ -1783,12 +1940,13 @@ Ext.Lifetime.Shutdown(TimeSpan timeout)` runs, in order:
 | D-36 | A C# string bound for a NUL-terminated C input that contains U+0000 is refused with the ValueError class before the call; unpaired surrogates likewise (R-5). The C++ wrapper, which truncates at `c_str()` today, makes the same refusal (`rlmesh::ValueError`) in the same release (v0.2), so the two wrappers over C agree. Text the wrapper builds from an exception it reports to C is sanitized instead (X-11).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | Pending (C#)                         |
 | D-37 | The C# warning handler is one `Action<Warning>?` set with `RLMeshApi.SetWarningHandler`, not a .NET `event` (R-23).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | Pending (C#)                         |
 | D-38 | C# callbacks run where C runs them (R-28 Threads): on the calling thread for a sync run or session over a local env and for factory callbacks, and on library threads, several at once, for served envs and models and a model behind a session or run. The library never marshals to a main thread or captures a `SynchronizationContext`; engine dispatch is the integration's job, calling inline when already on the main thread and failing pending requests when the shutdown barrier starts (D-43).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Pending (C#)                         |
-| D-39 | C# finalization (R-28): `SafeHandle` finalizers are a safety net. `Dispose()` frees inline on the disposing thread and returns after the native free; a release reached only by the finalizer for a handle whose free can run callbacks or block is queued to one library-owned cleanup thread, as a record that owns the native pointer and the handle's dependency references and releases those only after the native free. Inert handles free inline on the finalizer thread.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | Pending (C#)                         |
+| D-39 | C# ownership and finalization (R-28): one ownership record per native handle, with a compare-and-swap state word (`Idle`, `InUse(n)`, `Transferring`, `Transferred`, `Closing(n)`, `Freeing`, `Freed`) shared by calls, borrowing, disposal, finalization, transfer and the shutdown barrier. `Dispose()` closes the owner at once and destroys inline only when no reference remains and its thread is at callback depth 0 and not a library thread; every other destruction is queued to one library-owned cleanup thread, and `Ext.Lifetime.WaitFreed` waits for it. A finalizer-reached release of a handle whose free can run callbacks or block is always queued, as a cleanup record that owns the native pointer and the handle's dependency references and releases those only after the native free. Inert handles free inline on the finalizer thread. Records with roots or blocking frees live in a strong table until freed, independent of wrapper reachability.                                                                                                                                                                                                                                                                  | Pending (C#)                         |
 | D-40 | C# distribution. NuGet `RLMesh` carries `lib/netstandard2.1`, `lib/net10.0` and `runtimes/<rid>/native/` for each released 64-bit target; 32-bit targets and WebGL (no threads) are unsupported. Unity consumes the prebuilt netstandard2.1 assembly plus the native plugins, not the sources, so the implementation's language version is ours (D-19); a second netstandard2.1 build with `__Internal` serves statically linked platforms (iOS). A served env reports `{"language":"csharp","framework_versions":{"dotnet" or "mono": "<version>"}}` (C's `host_runtime_json` refuses a `toolchain` other than gcc, clang or msvc, `capi/describe.rs`) through `Ext.EnvServerOptions.HostRuntimeJson` and, pending X-14, `Ext.EnvFactoryServeOptions.HostRuntimeJson` (`null` = the wrapper's detected runtime, ENV-38; ENV-12, COR-25); the detection cannot tell IL2CPP from Mono, so the Unity integration sets the value. Describe's own runtime stays C's, as for C++.                                                                                                                                                                                                                                                                     | Pending (C#)                         |
 | D-41 | A call on a disposed C# wrapper throws `ObjectDisposedException` (an `InvalidOperationException`, as `RuntimeError` is, D-25): a C#-only state outside R-21, like a C++ moved-from object.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Pending (C#)                         |
-| D-42 | C# enforcement (E-1 to E-3): a `csharp` manifest column with overloads identified by normalized signature; live surfaces read from both built assemblies (netstandard2.1 and net10.0) by a System.Reflection.Metadata tool, diffed against an allowlist; IL checks for callbacks and forbidden references; the fixture runner run on the .NET 10 JIT against each assembly and, as a supplement, NativeAOT; C# option defaults checked by an executed generated test. NativeAOT is not evidence for Unity: D-44's Unity tests are.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | Pending (C#)                         |
-| D-43 | C# shutdown barrier (R-28): `Ext.Lifetime.Shutdown(TimeSpan timeout)` refuses new work, fails pending engine dispatch, cancels and joins operations, releases every handle that holds a managed function pointer or `GCHandle` (unregistering C#'s entrypoints, X-16, and resetting the warning handler), waits for every native free callback and the cleanup queue, then releases the remaining managed roots; it returns `false` on timeout, with `Pending()` naming what is left. Called from `DomainUnload`, `AssemblyLoadContext.Unloading` and `ProcessExit`, and by the Unity integration from `beforeAssemblyReload`. No native quiesce call: proposed only if D-44's Mono reload test shows a hang.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Pending (C#)                         |
-| D-44 | Unity support is claimed only after two v0.2 release gates pass: an IL2CPP player smoke test (a built player serves a C# env to a Python client and runs a C# model session) and a Mono Editor domain-reload test (serve, run, reload with the barrier, serve again, no crash or hang). How they run (Unity licence, manual or dispatch-only CI) is a pending user decision; NativeAOT and Mono-on-.NET fixture runs are supplements, not substitutes (E-3).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Pending (user decision on mechanism) |
+| D-42 | C# enforcement in v0.2 (E-2, E-3 foundation parts): the generated interop's staleness check, the ABI gate test, both assemblies built (netstandard2.1 and net10.0) and their public surfaces read by a System.Reflection.Metadata tool and diffed against an allowlist, IL checks for callbacks and forbidden references, field-wise layout and `_INIT` checks, trampoline and exception-containment fixtures, cancellation race tests, the shutdown and collectible-context fixture, the fixture runner on the .NET 10 JIT against each assembly and, as a supplement, NativeAOT, and an advisory benchmark. Deferred to v2: the manifest's `csharp` column, C#'s E-1 entries and E-2 acceptance criteria 1 to 7 (C# surface parity), and the generated C# defaults test. NativeAOT is not evidence for Unity: D-44's Unity tests are.                                                                                                                                                                                                                                                                                                                                                                                                          | Pending (C#)                         |
+| D-43 | C# shutdown barrier (R-28): `Ext.Lifetime.Shutdown(TimeSpan timeout)` closes a terminal admission gate that counts operations from before scheduling through output adoption and reference release (internal cleanup and error reporting exempt), refuses to run from callbacks, library threads and re-entrant notification, fires every operation and handle token, runs every potentially blocking native teardown (server shutdown and free, record frees, foreign deleters, X-16 unregistration by identity, the warning handler reset) on tracked teardown threads under one absolute deadline, drains finalizers and cleanup while waiting, and counts a managed root released only when its free has run and the native call that ran it has been joined, with the trampolines' frame count at zero. The caller never blocks past the deadline; on `false` everything unfinished is retained and `Pending()` names it. Hosts preflight: the Unity integration and .NET hosts run it to `true` before starting a reload or unload and defer it otherwise; unload notifications are fallback diagnostics. No native quiesce call: proposed only if D-44's Mono reload test shows a hang.                                                   | Pending (C#)                         |
+| D-44 | Unity support is claimed only after three v0.2 release gates pass: an IL2CPP player smoke test (a built player serves a C# env to a Python client), a Mono Editor domain-reload test (serve, reload with the barrier, serve again, no crash or hang) and a failed-barrier reload test (an env blocked in `step` makes `Shutdown` return `false`; the reload stays deferred and the Editor responsive; after the env is released a retry returns `true` and the reload proceeds). How they run (Unity licence, manual or dispatch-only CI) is a pending user decision; NativeAOT and Mono-on-.NET fixture runs are supplements, not substitutes (E-3).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | Pending (user decision on mechanism) |
+| D-45 | C# scope for v0.2 (the user's scope change, 2026-10-19). The protocol is redesigned for v2 (clocked sessions, typed channels, timed action chunks, leases, edge runtime, Zenoh, a Rust core); v0.2 ships on the current wire and v2 is a clean break with every binding a thin wrapper over the core's C ABI. So the C# column of every area is a design record of how C# maps onto the v1 surface, not a backlog, and v0.2 does not implement its public API (no part ships behind a flag, CLAUDE.md). v0.2 implements: the C ABI additions X-12 to X-16 that are approved; and the C# foundation: native library loading and the ABI gate, the generated interop layer (D-18), ownership records and `SafeHandle` types (R-28, D-39), callback trampolines with exception containment (X-11), cancellation plumbing (R-18's C# bridge), the shutdown barrier (D-43), NuGet and UPM packaging for `netstandard2.1` + `net10.0` (D-19, D-40), CI with the NativeAOT stand-in and the test harness (D-42). Its public surface is R-28's "v0.2 surface", what serving an authored env to a Python client needs, labelled Experimental. Lessons for the v2 C ABI are in the [index](../language-parity.md#lessons-for-the-v2-c-abi).                | User (scope); surface pending        |
 
 ### Review notes
 
@@ -2042,6 +2200,33 @@ bool* out)`: `rlmesh_step_event_equals`, `rlmesh_episode_result_equals`,
   C passes NULL for it (`capi/env_api.rs` `step`, `h:2693`), as Rust's `Option<Value>` and C++'s
   `std::optional<Value>` do, so `StepResult Step(Value? action)` is the
   matching C# form.
+- Scope change (the user, 2026-10-19; D-45): v2 supersedes the v1-shaped
+  API, so the C# column becomes a design record and v0.2 implements only
+  the foundation and the C ABI additions; the pending-decision index splits
+  into what v0.2 needs and design record; C#'s manifest column is deferred
+  to v2; the index gains Lessons for the v2 C ABI.
+- C# round 2, applied (two reviews against the round-1 commit; none
+  rejected; the round-1 `IEnv.Step` rejection was upheld by both): the
+  shutdown barrier redesigned as one admission gate, refused contexts,
+  tracked teardown threads under one deadline, joined-free completion
+  accounting, retained state on timeout and a host preflight protocol, with
+  unload events as diagnostics and a failed-barrier Unity gate (R-28, D-43,
+  D-44); one ownership state machine per handle for calls, borrowing,
+  disposal, finalization, transfer and the barrier, with deferred frees
+  queued off callbacks and library threads and `WaitFreed` (R-17, R-28,
+  D-39, ENV-37); `For` independent of GC timing (ENV-37); the DLPack import
+  state machine (SPC-31); X-12 replaced by seven explicit per-call cancel
+  variants subscribed at admission, with no thread-local scope, the twin
+  teardown order, the refused double-source case and the token reported on
+  a cancel (R-18, D-24); X-13's per-call gate collection moved into the
+  server, admission and scope released at return, the caller's `cancel`
+  watched for the whole serve, synchronous start for both serve twins
+  (ENV-39); X-14's validator described exactly; X-16 removes by identity
+  and drops outside the lock; the benchmark redefined with an advisory
+  timing ratio (E-3); `#if` for the internal unload hook (D-19); the factory
+  ownership citation is `h:2758-2761`; Model's `RLMeshExtModelServeOptions`
+  block follows the header's field order; C++ and C# signatures inside list
+  items moved into code blocks.
 
 ## Python changes
 
@@ -2157,27 +2342,30 @@ Each moves a native language onto the rules. Areas carry the details.
   Exceptions the runtime cannot catch (`StackOverflowException`, a
   fail-fast) end the process, as they would in any .NET host.
 
-- **X-12 Operation cancel scope** (R-18; C ABI addition, pending user
-  approval). `rlmesh_ext_cancel_scope_enter` / `_exit` give any cancellable
-  call an operation-scoped token; C++ `rlmesh::ext::CancelScope`; consumed
-  by C#'s twins and long-running sync calls. Contract and tests:
+- **X-12 Per-call cancel inputs** (R-18; C ABI addition, pending user
+  approval). Seven `rlmesh_ext_` variants of the session and remote-client
+  `reset` / `predict` / `step` calls take an explicit `cancel` token,
+  subscribed once at native admission; C++ `rlmesh::ext` overloads;
+  consumed by engine hosts and C#'s cancellation plumbing. Contract and
+  tests:
   [C ABI additions for v0.2](../language-parity.md#c-abi-additions-for-v02).
 - **X-13 Background factory serve** (ENV-39; pending user approval).
   `rlmesh_ext_env_factory_start` runs the factory serve's pre-serve steps,
-  publishes the describe envelope and returns a started `RLMeshEnvServer*`;
-  C++ `rlmesh::ext::start`, C# `Ext.EnvFactoryExtensions.Start` and
-  `EnvFactory.ServeAsync`.
+  publishes the describe envelope and returns a started `RLMeshEnvServer*`
+  that owns the made envs and watches the caller's `cancel`; C++
+  `rlmesh::ext::start`; C#'s `Start` and `EnvFactory.ServeAsync` are design
+  record.
 - **X-14 Factory serve host runtime** (ENV-12, ENV-38; pending user
   approval). `RLMeshEnvFactoryServeOptions.ext` with
-  `RLMeshExtEnvFactoryServeOptions.host_runtime_json`, so a C++ or C#
-  factory serve reports its own runtime instead of C's.
+  `RLMeshExtEnvFactoryServeOptions.host_runtime_json`, so a C++ factory
+  serve reports its own runtime instead of C's.
 - **X-15 Model serve without signal handlers** (MDL-24; pending user
   approval). `RLMeshExtModelServeOptions.no_signal_handlers`, consumed by
-  C#'s `Model.ServeAsync` and C++'s `ext::ModelServeOptions`.
+  C++'s `ext::ModelServeOptions`; C#'s `Model.ServeAsync` is design record.
 - **X-16 Entrypoint unregistration** (MDL-11, D-43; pending user approval).
-  `rlmesh_ext_unregister_entrypoint`, so the C# shutdown barrier can drop
-  the registry's references to C# transforms; C++ and Rust gain the same
-  `ext` call.
+  `rlmesh_ext_unregister_entrypoint`, removing a registration only by its
+  owner's identity, so an unloading plugin or C# domain drops its own
+  transforms and no one else's; C++ and Rust gain the same `ext` call.
 
 ## Shapes
 
@@ -2298,45 +2486,46 @@ exact `int` operator (COR-29); `Greedy` could equally be a `MonoBehaviour` (R-12
 The October 2026 audit found these gaps before implementation. G-1 to G-28
 are closed: Python and Rust by the parity waves, C by ABI 5 and C++ by the
 C++17 header. They describe pre-existing code, so none applies to C#, which
-starts at the target; G-29 tracks C# itself. `✓` closed (was a gap or
+starts at the target; G-29 records C# itself. `✓` closed (was a gap or
 partial), `—` matched already or does not apply, `open` not yet closed. File references describe the code as audited.
 
-| ID   | Gap                                                                                                                                                                                                                                                                                                                                      | Python      | Rust | C   | C++ | C#   |
-| ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | ---- | --- | --- | ---- |
-| G-1  | Episode budget is "until the env ends" (`max_episodes` unset), not Python's 1 or `len(seeds)` (`py/_models/_eval.py:178-195`)                                                                                                                                                                                                            | —           | ✓    | ✓   | ✓   | —    |
-| G-2  | A run closes the model (`close_model = true`, `rs/model/worker.rs:72,109`)                                                                                                                                                                                                                                                               | —           | ✓    | ✓   | ✓   | —    |
-| G-3  | Live episodes evicted at 4,096 (`capi/model.rs:73`); Python refuses past 65,536 (`py/_models/_episodes.py:25,110`)                                                                                                                                                                                                                       | —           | —    | ✓   | ✓   | —    |
-| G-4  | `episodes` / `seeds` named `max_episodes` / `episode_seeds` (`rs/model/worker.rs:47,54`; `h:450,457`)                                                                                                                                                                                                                                    | —           | ✓    | ✓   | ✓   | —    |
-| G-5  | Extra `seeded` / `base_seed` (`h:451-452`; `hpp:892-894`)                                                                                                                                                                                                                                                                                | —           | —    | ✓   | ✓   | —    |
-| G-6  | Model authoring is `ModelHandler` / `ModelWorker` / batch callback, not `Policy` + `Model`                                                                                                                                                                                                                                               | —           | ✓    | ✓   | ✓   | —    |
-| G-7  | No `Session`                                                                                                                                                                                                                                                                                                                             | —           | ✓    | ✓   | ✓   | —    |
-| G-8  | No remote clients                                                                                                                                                                                                                                                                                                                        | —           | —    | ✓   | ✓   | —    |
-| G-9  | Remote clients are async-only (`rs/env/client.rs:59-368`); no blocking primary                                                                                                                                                                                                                                                           | —           | ✓    | —   | —   | —    |
-| G-10 | Blocking calls panic inside a runtime (`rs/model/worker.rs:270-277`)                                                                                                                                                                                                                                                                     | —           | ✓    | —   | —   | —    |
-| G-11 | Env authoring uses request/result structs, not Gymnasium shape                                                                                                                                                                                                                                                                           | —           | ✓    | —   | —   | —    |
-| G-12 | Results are `RuntimeReport` or aggregates, not `RunResult` / `EpisodeResult`                                                                                                                                                                                                                                                             | —           | ✓    | ✓   | ✓   | —    |
-| G-13 | No `ModelSpec` or transforms; C has only resolve/describe of a plan (`h:334-359`)                                                                                                                                                                                                                                                        | —           | ✓    | ✓   | ✓   | —    |
-| G-14 | No `EnvFactory` / `Variant`                                                                                                                                                                                                                                                                                                              | —           | ✓    | ✓   | ✓   | —    |
-| G-15 | Spaces lack `sample` / `seed` on the shared surface (the sampler is internal, `crates/rlmesh-spaces/src/sample.rs`)                                                                                                                                                                                                                      | —           | ✓    | ✓   | ✓   | —    |
-| G-16 | Box bounds are `double` only (`h:272,298-302`); Rust carries typed bounds                                                                                                                                                                                                                                                                | —           | —    | ✓   | ✓   | —    |
-| G-17 | Two value types (`SpaceValue` vs the adapter `Value`)                                                                                                                                                                                                                                                                                    | —           | ✓    | ✓   | ✓   | —    |
-| G-18 | Metadata passed as JSON strings (X-3)                                                                                                                                                                                                                                                                                                    | —           | —    | ✓   | ✓   | —    |
-| G-19 | Editions: Rust has `workflow_edition` on serve and run (`rs/model/worker.rs:93`) and `selected_workflow_edition` on `RemoteVectorEnv` and `RemoteModel` (`rs/env/client.rs:139`, `rs/model/remote.rs:279`), but not on `RemoteEnv`, and no `current_workflow_edition()` or resolver chain; C and C++ declare only when serving (`h:492`) | —           | ✓    | ✓   | ✓   | —    |
-| G-20 | Error classes collapsed (R-21): no Protocol, Type, Runtime, Os; Server maps to `TRANSPORT` (`capi/abi/status.rs:59`)                                                                                                                                                                                                                     | ✓ (P-1–P-5) | ✓    | ✓   | ✓   | —    |
-| G-21 | No warning channel (R-23)                                                                                                                                                                                                                                                                                                                | —           | ✓    | ✓   | ✓   | —    |
-| G-22 | Cancellation: Rust re-exports `CancellationToken`; C `rlmesh_model_cancel` is terminal; no client interrupt                                                                                                                                                                                                                              | —           | ✓    | ✓   | ✓   | —    |
-| G-23 | `struct_size` missing on `RLMeshServeOptions` / `RLMeshRunOptions`, no minimum check anywhere (`capi/env.rs:575`, `capi/model.rs:527` refuse only 0)                                                                                                                                                                                     | —           | —    | ✓   | —   | —    |
-| G-24 | 0-as-unset sentinels (X-4)                                                                                                                                                                                                                                                                                                               | —           | —    | ✓   | ✓   | —    |
-| G-25 | C input enums use 0 as a real value (X-5)                                                                                                                                                                                                                                                                                                | —           | —    | ✓   | —   | —    |
-| G-26 | C++17, `Result<T>`, `-fno-exceptions` (`hpp:1-19`)                                                                                                                                                                                                                                                                                       | —           | —    | —   | ✓   | —    |
-| G-27 | Binding plumbing at the crate root and in the prelude (R-25)                                                                                                                                                                                                                                                                             | —           | ✓    | —   | —   | —    |
-| G-28 | `RLMESH_ABI_VERSION_MAJOR/MINOR/PATCH` carry the package semver (`h:44-52`); `RLMeshContract` not `RLMeshEnvContract`                                                                                                                                                                                                                    | —           | —    | ✓   | ✓   | —    |
-| G-29 | No C# library: the whole Stable surface is missing in C# (D-17, R-26); every area table's C# column is the target                                                                                                                                                                                                                        | —           | —    | —   | —   | open |
+| ID   | Gap                                                                                                                                                                                                                                                                                                                                      | Python      | Rust | C   | C++ | C#                   |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | ---- | --- | --- | -------------------- |
+| G-1  | Episode budget is "until the env ends" (`max_episodes` unset), not Python's 1 or `len(seeds)` (`py/_models/_eval.py:178-195`)                                                                                                                                                                                                            | —           | ✓    | ✓   | ✓   | —                    |
+| G-2  | A run closes the model (`close_model = true`, `rs/model/worker.rs:72,109`)                                                                                                                                                                                                                                                               | —           | ✓    | ✓   | ✓   | —                    |
+| G-3  | Live episodes evicted at 4,096 (`capi/model.rs:73`); Python refuses past 65,536 (`py/_models/_episodes.py:25,110`)                                                                                                                                                                                                                       | —           | —    | ✓   | ✓   | —                    |
+| G-4  | `episodes` / `seeds` named `max_episodes` / `episode_seeds` (`rs/model/worker.rs:47,54`; `h:450,457`)                                                                                                                                                                                                                                    | —           | ✓    | ✓   | ✓   | —                    |
+| G-5  | Extra `seeded` / `base_seed` (`h:451-452`; `hpp:892-894`)                                                                                                                                                                                                                                                                                | —           | —    | ✓   | ✓   | —                    |
+| G-6  | Model authoring is `ModelHandler` / `ModelWorker` / batch callback, not `Policy` + `Model`                                                                                                                                                                                                                                               | —           | ✓    | ✓   | ✓   | —                    |
+| G-7  | No `Session`                                                                                                                                                                                                                                                                                                                             | —           | ✓    | ✓   | ✓   | —                    |
+| G-8  | No remote clients                                                                                                                                                                                                                                                                                                                        | —           | —    | ✓   | ✓   | —                    |
+| G-9  | Remote clients are async-only (`rs/env/client.rs:59-368`); no blocking primary                                                                                                                                                                                                                                                           | —           | ✓    | —   | —   | —                    |
+| G-10 | Blocking calls panic inside a runtime (`rs/model/worker.rs:270-277`)                                                                                                                                                                                                                                                                     | —           | ✓    | —   | —   | —                    |
+| G-11 | Env authoring uses request/result structs, not Gymnasium shape                                                                                                                                                                                                                                                                           | —           | ✓    | —   | —   | —                    |
+| G-12 | Results are `RuntimeReport` or aggregates, not `RunResult` / `EpisodeResult`                                                                                                                                                                                                                                                             | —           | ✓    | ✓   | ✓   | —                    |
+| G-13 | No `ModelSpec` or transforms; C has only resolve/describe of a plan (`h:334-359`)                                                                                                                                                                                                                                                        | —           | ✓    | ✓   | ✓   | —                    |
+| G-14 | No `EnvFactory` / `Variant`                                                                                                                                                                                                                                                                                                              | —           | ✓    | ✓   | ✓   | —                    |
+| G-15 | Spaces lack `sample` / `seed` on the shared surface (the sampler is internal, `crates/rlmesh-spaces/src/sample.rs`)                                                                                                                                                                                                                      | —           | ✓    | ✓   | ✓   | —                    |
+| G-16 | Box bounds are `double` only (`h:272,298-302`); Rust carries typed bounds                                                                                                                                                                                                                                                                | —           | —    | ✓   | ✓   | —                    |
+| G-17 | Two value types (`SpaceValue` vs the adapter `Value`)                                                                                                                                                                                                                                                                                    | —           | ✓    | ✓   | ✓   | —                    |
+| G-18 | Metadata passed as JSON strings (X-3)                                                                                                                                                                                                                                                                                                    | —           | —    | ✓   | ✓   | —                    |
+| G-19 | Editions: Rust has `workflow_edition` on serve and run (`rs/model/worker.rs:93`) and `selected_workflow_edition` on `RemoteVectorEnv` and `RemoteModel` (`rs/env/client.rs:139`, `rs/model/remote.rs:279`), but not on `RemoteEnv`, and no `current_workflow_edition()` or resolver chain; C and C++ declare only when serving (`h:492`) | —           | ✓    | ✓   | ✓   | —                    |
+| G-20 | Error classes collapsed (R-21): no Protocol, Type, Runtime, Os; Server maps to `TRANSPORT` (`capi/abi/status.rs:59`)                                                                                                                                                                                                                     | ✓ (P-1–P-5) | ✓    | ✓   | ✓   | —                    |
+| G-21 | No warning channel (R-23)                                                                                                                                                                                                                                                                                                                | —           | ✓    | ✓   | ✓   | —                    |
+| G-22 | Cancellation: Rust re-exports `CancellationToken`; C `rlmesh_model_cancel` is terminal; no client interrupt                                                                                                                                                                                                                              | —           | ✓    | ✓   | ✓   | —                    |
+| G-23 | `struct_size` missing on `RLMeshServeOptions` / `RLMeshRunOptions`, no minimum check anywhere (`capi/env.rs:575`, `capi/model.rs:527` refuse only 0)                                                                                                                                                                                     | —           | —    | ✓   | —   | —                    |
+| G-24 | 0-as-unset sentinels (X-4)                                                                                                                                                                                                                                                                                                               | —           | —    | ✓   | ✓   | —                    |
+| G-25 | C input enums use 0 as a real value (X-5)                                                                                                                                                                                                                                                                                                | —           | —    | ✓   | —   | —                    |
+| G-26 | C++17, `Result<T>`, `-fno-exceptions` (`hpp:1-19`)                                                                                                                                                                                                                                                                                       | —           | —    | —   | ✓   | —                    |
+| G-27 | Binding plumbing at the crate root and in the prelude (R-25)                                                                                                                                                                                                                                                                             | —           | ✓    | —   | —   | —                    |
+| G-28 | `RLMESH_ABI_VERSION_MAJOR/MINOR/PATCH` carry the package semver (`h:44-52`); `RLMeshContract` not `RLMeshEnvContract`                                                                                                                                                                                                                    | —           | —    | ✓   | ✓   | —                    |
+| G-29 | No v1-shaped C# library: the C# column of every area is a design record, superseded by v2, not a backlog (D-17, D-45); v0.2 ships the C# foundation and R-28's Experimental env-serving surface                                                                                                                                          | —           | —    | —   | —   | design record (D-45) |
 
 ## Enforcement
 
 **E-1, E-2 and E-3 are implemented for Python, Rust, C and C++;** the C#
-additions in [C# enforcement](#c-enforcement) are a draft (D-42). The reviewed mapping manifest and
+additions in [C# enforcement](#c-enforcement) are a draft (D-42), of which
+v0.2 builds the foundation checks. The reviewed mapping manifest and
 `mise run parity:check` compare the committed Stable Python snapshot with live
 Rust, C and C++ extraction. No native surface snapshot is committed. Shared
 behavioural fixtures exercise the four public APIs and check Rust defaults
@@ -2535,11 +2724,15 @@ Required scenario families:
 
 ### C# enforcement
 
-Draft (D-42). Nothing below exists yet; `manifest.toml` gains its `csharp`
-tables when the C# library lands, and until then `parity:check` does not
-read a `csharp` column.
+Draft (D-42). Nothing below exists yet. v0.2 builds the foundation's
+checks: E-2's assembly checks and the E-3 fixtures marked v0.2. C# surface
+parity (the manifest's `csharp` column, E-2's acceptance criteria for C#,
+the generated defaults test and the fixture families that need the
+v1-shaped surface) is deferred to v2: there is no v1-shaped C# surface to
+compare (D-45), so until then `parity:check` reads no `csharp` column. The
+deferred parts stay here as design record.
 
-**E-1 manifest.** Every symbol table gains a `.csharp` table beside `.rust`,
+**E-1 manifest (deferred to v2).** Every symbol table would gain a `.csharp` table beside `.rust`,
 `.c` and `.cpp`, with the same `status` / `path` / `also` / `params` /
 `gap` keys and meanings, plus `overloads` where a member has several:
 
@@ -2582,9 +2775,8 @@ overloads = [
   Python parameter per overload (`params."M:…" = { env = "…#env" }`) when
   the overloads' parameter names differ; generic constraints are part of
   the inventoried signature (E-2) and compared as written.
-- Until the library lands every Stable entry's `.csharp` table is
-  `status = "missing"`, `gap = "G-29"`; the first C# wave can draft them
-  with `parity_draft` from the area tables' C# column. Its `table_hints`
+- No `.csharp` tables are written in v0.2; a v2 C# binding drafts them
+  with `parity_draft` from its own surface. Its `table_hints`
   reads only four-cell rows today, so with the C# column it reads no area
   table at all; it must accept the five-column rows (Python, Rust, C, C++,
   C#) before it is next used.
@@ -2596,7 +2788,8 @@ overloads = [
 - `[ext]` lists `RLMesh.Ext.*` and the fenced members on shared types
   (R-25). There is no C# `[binding]` list: the raw layer is internal.
 
-**E-2 extraction and check.** A small .NET tool,
+**E-2 extraction and check (v0.2, except the manifest comparison).** A
+small .NET tool,
 `tools/rlmesh_csharp_surface/` (net10.0 console app; no NuGet dependencies,
 System.Reflection.Metadata is in the BCL), reads both built assemblies,
 `lib/netstandard2.1/RLMesh.dll` (the one Unity consumes) and
@@ -2624,14 +2817,16 @@ the paths above, with one item per overload:
   `ExtensionAttribute` (the R-9 `AsString` / `Name` extensions are
   inventoried under their enum).
 
-The check runs against the netstandard2.1 dump and then diffs the two
-dumps: a public item present in one assembly only, or with another
+In v0.2 the tool diffs the two dumps and runs the R-28 checks below: a public item present in one assembly only, or with another
 signature, fails unless it is on the allowlist in the manifest's
 `[csharp.target_differences]` table, which today holds exactly the
 `System.Half` overloads (net10.0 only, SPC-31) and nothing else; the
-net10.0 `SetDllImportResolver` extra is internal and does not appear.
+net10.0 `SetDllImportResolver` extra and unload hook are internal and do
+not appear. The same task runs `mise run csharp:generate -- --check` (the
+generated interop is current, D-18).
 
-`parity.py` adds `csharp` to `LANGUAGES` and reads the dumps through
+Deferred to v2: `parity.py` adds `csharp` to `LANGUAGES` and reads the
+dumps through
 `--csharp-surface <surface.json>`, or builds the assemblies and runs the
 tool itself under `mise run dev:heavy`. Names map by R-4's C# transform
 (`native_name` gains a C# branch: `PascalCase` members, `camelCase`
@@ -2660,7 +2855,7 @@ C# with these readings:
 7. a C# exception class is missing or has another base than R-21's C#
    column.
 
-Plus R-28 checks on the assemblies' references and IL, with the method
+The R-28 checks on the assemblies' references and IL (v0.2), with the method
 bodies decoded by System.Reflection.Metadata (`MethodBodyBlock`,
 `GetILReader`):
 
@@ -2682,12 +2877,16 @@ bodies decoded by System.Reflection.Metadata (`MethodBodyBlock`,
 The build itself runs the trimming and AOT analyzers (`IsAotCompatible`,
 `IsTrimmable`) with warnings as errors for the net10.0 target.
 
-**E-3 fixtures.** `tests/parity/csharp_runner/` is a net10.0 console
-project implementing the same two-step counter env and action-zero model
-through the public C# API, and speaking the same runner protocol as
-`cpp_runner.cpp` (scenario in, JSON observation out). `run.py` builds it
-once per `parity:fixtures` (under the heavy lock, with the C library in the
-same build mode as the Python extension, or `RLMESH_RELEASE_BUILD=1`, so the
+**E-3 fixtures (v0.2).** `tests/parity/csharp_runner/` is a net10.0
+console project implementing the same two-step counter env through the
+public C# surface (R-28's v0.2 surface) and speaking the same runner
+protocol as `cpp_runner.cpp` (scenario in, JSON observation out). The model
+side is the action-zero model of a small C helper compiled with the
+fixtures, driven over the internal raw layer (a session, or a remote client
+against the C# env served with `Start()`), because the C# model and session
+surface is design record (D-45). `run.py` builds it once per
+`parity:fixtures` (under the heavy lock, with the C library in the same
+build mode as the Python extension, or `RLMESH_RELEASE_BUILD=1`, so the
 protocol cohort fingerprints match) and runs it in these configurations,
 each compared by pytest with Python, C and C++:
 
@@ -2707,67 +2906,53 @@ each compared by pytest with Python, C and C++:
   self-contained, Linux x64), the closest licence-free stand-in for the
   Unity Editor's JIT.
 
-`generate_defaults.py` gains a C# target emitting
-`csharp/tests/RLMesh.Tests/ParityDefaults.g.cs` from the manifest's
-`.csharp` `Type#Property` mappings, as it emits `parity_defaults.rs`; the
-gate checks that it is current and runs it, and it also checks that each
-call given `options = null` behaves as one given a freshly constructed
-options object. The fixture families apply to C# with these readings:
+The fixture families that apply to the foundation, with their C# readings:
 
-- **Defaults:** as written, through the options classes.
+- **ABI gate:** a stub `rlmesh_capi` reporting another generation makes the
+  first public call throw the RuntimeError class naming both generations,
+  and every later call throw it again, with no other C call made (R-28).
 - **Compile (C#):** a fixture project compiled with C# 9 against the
   netstandard2.1 assembly must fail exactly where the spec refuses at
   compile time (`Value v = 'a';`, `Value v = 1UL;`, COR-29) and compile
-  every other conversion each area lists (each integer type into `Value`,
-  each `Bound` source, SPC-35), checking each value's kind at run time.
-- **Borrowing:** as written, plus: a `Model` and env disposed while a
-  session uses them keep working until the session is disposed; a session
-  reached only by the finalizer frees on the cleanup thread and releases
-  its borrowed handles only after its native free (R-17, R-28); a
-  `Dispose()` racing a call on another thread defers the free and never
-  faults (R-28 Handle lifetime in calls).
-- **Cancellation:** as written with `Ext.CancelToken`; plus: a twin given a
-  `CancellationToken` that fires mid-call fails, the task ends `Canceled`,
-  and `catch (Ext.CancelledError)` after `await` catches the same object on
-  CoreCLR and Mono; the handle stays usable; an already-fired token fails
-  the twin before any C call (a scripted env counts call starts); a
-  cancelled `RunAsync` fires `on_run_end` once; with the caller's `Cancel`
-  set and the twin's token unfired, firing `Cancel` cancels the call (both
-  apply); and two deterministic races, driven by a scripted env that
-  blocks on a barrier: the twin's token fired after the C call returned
-  but before its registration is disposed leaves the next call unaffected
-  (completion), and a second twin on a busy session, refused with the
-  RuntimeError class, whose token is then fired, leaves the first call
-  running to its normal result (admission). C and C++ run the same two
-  races through `rlmesh_ext_cancel_scope_enter` / `ext::CancelScope`
-  (X-12).
+  every other conversion (each integer type into `Value`, each `Bound`
+  source, SPC-35), checking each value's kind at run time.
+- **Ownership:** a `Dispose()` racing a call on another thread defers the
+  free and never faults; a last release inside a callback, or on a library
+  thread, queues the free to the cleanup thread, and `WaitFreed` returns
+  `true` once it finished; `Dispose()` with no reference outstanding
+  returns after the native free; a finalizer-reached `EnvServer` frees on
+  the cleanup thread (R-28 Ownership records, Finalization).
+- **Env handles (ENV-37):** `Env.For` on one object from many threads
+  builds one native handle; `For`, drop without `Dispose`, `For` again
+  returns a wrapper over the same native handle whether or not a
+  collection ran in between (forced in one variant); `For` refuses only
+  while a server owns the handle after its wrapper was disposed.
+- **Cancellation:** X-12's tests (C, C++ and C#, the C# variant through
+  the plumbing: a `CancellationToken` bridged to a per-operation token
+  passed to `rlmesh_ext_remote_env_step` against a C#-served env that
+  blocks on a barrier): the token fired mid-call fails it, the task ends
+  `Canceled` and `catch (Ext.CancelledError)` after `await` catches the
+  same object on CoreCLR and Mono; an already-fired token fails before any
+  C call (the env counts call starts); the completion and admission races;
+  a pool worker reused after a cancelled operation carries nothing over;
+  `Cancel()` racing the registration's disposal never throws on the
+  cancelling thread and never touches a freed token.
 - **Serving (C#):** `EnvServer.ServeAsync` with an already-cancelled token
   never starts the server (no bind); one cancelled while serving drains,
   closes per `close_env_on_shutdown` and ends `Canceled`, with `Shutdown()`
   running on the twin's worker, not inside the token's `Cancel()`; a bind
-  failure throws from `ServeAsync` before it returns a task (ENV-40);
-  `EnvFactory.ServeAsync` and `Model.ServeAsync` leave the process's
-  SIGINT / SIGTERM dispositions unchanged while serving (checked with
-  `sigaction` from a C helper) and publish the factory's describe
-  envelope (X-13, X-15); a C# server and a C# factory serve with default
-  `Ext` options construct, and the handshake's PeerInfo reads
-  `language` `"csharp"` (ENV-38, X-14).
-- **Sync and async (C#):** a sync call from a hook under a twin succeeds
-  (no refusal, R-16); a sync call from a thread-pool thread and from inside
-  an `async` method succeeds; the twin's hooks run on one thread that is not
-  the caller's; 100 sequential `StepAsync` calls on one session use one
-  worker thread.
-- **Errors:** each R-21 row with the C# class and base; an exception a C#
-  callback throws comes back at the failing call as the same object
-  (reference-equal) with its original stack trace; with one `Model`
-  serving two sessions on two threads, each failing call rethrows its own
-  session's exception; a .NET exception outside the tree thrown in an env
-  callback reads as a non-recoverable `EnvironmentException` from Python
-  (X-11); an exception whose `Message` holds U+0000 and an unpaired
-  surrogate, and one whose `Message` getter throws, each fail the call with
-  the kind's class and X-11's sanitized or fallback text, never crash.
-- **Warnings:** as written; a throwing C# handler aborts the call and the
-  handler's exception is rethrown.
+  failure throws from `ServeAsync` before it returns a task (ENV-40); a C#
+  server with default `Ext` options constructs, and the handshake's
+  PeerInfo reads `language` `"csharp"` (ENV-38).
+- **Errors (trampolines):** each R-21 class an env callback can throw
+  reaches the Python client with its R-21 class, code and text; an
+  exception a C# env callback throws comes back, at a C# caller of the
+  internal session path, as the same object (reference-equal) with its
+  original stack trace; a .NET exception outside the tree reads as a
+  non-recoverable `EnvironmentException` from Python (X-11); an exception
+  whose `Message` holds U+0000 and an unpaired surrogate, and one whose
+  `Message` getter throws, each fail the call with the kind's class and
+  X-11's sanitized or fallback text, never crash.
 - **C sizing (C#):** each generated struct's `sizeof` and field offsets
   equal C's (a C helper compiled with the fixtures prints them); each
   managed `_INIT` factory equals C's `_INIT` field by field, explicit
@@ -2775,31 +2960,68 @@ options object. The fixture families apply to C# with these readings:
   NULL-ness (R-19); and real calls, not layouts, exercise the by-value and
   `bool` paths: a Box built with every `RLMeshBound` arm (bool, int, uint,
   float) reads its bounds back, every `bool` parameter, return and out
-  pointer kind round-trips both values, and every callback typedef is
-  invoked by C at least once.
+  pointer kind the v0.2 surface uses round-trips both values, and every
+  callback typedef the v0.2 surface installs is invoked by C at least once.
 - **C# runtime:** an env served from C# receives callbacks on several
   library threads at once; forcing `GC.Collect()` and
-  `GC.WaitForPendingFinalizers()` while serving and while a session runs
-  breaks nothing (delegates rooted, `GCHandle`s live); a tensor whose last
-  managed use was `Buffer()` survives a forced collection while its lease
-  is undisposed and its span reads the original bytes (R-28 Memory); a
-  finalizer-reached `Ext.DlpackTensor` from a C test producer whose deleter
-  blocks runs that deleter on the cleanup thread, not the finalizer thread.
-- **Shutdown barrier (C#):** a fixture loads `RLMesh.dll` into a collectible
-  `AssemblyLoadContext`, serves an env with `Start()`, runs a session over
-  a C# model, registers an entrypoint and a warning handler, leaves one
-  wrapper undisposed, calls `Ext.Lifetime.Shutdown`, expects `true`,
-  unloads the context, and checks through a `WeakReference` that it is
-  collected and through a C helper's callback counter that no callback ran
-  after `Shutdown` returned; a variant whose env blocks forever in `step`
-  expects `false` and a non-empty `Pending()`.
-- **Benchmark (C#):** a `Session.Step` loop over a local env with a
-  `Box(4,)` float32 observation, an empty info and a reused action
-  allocates at most 512 bytes and at most 2 finalizable objects per step on
-  the .NET 10 JIT (measured with `GC.GetAllocatedBytesForCurrentThread` and
-  a library counter of live handles over 10 000 steps after warm-up), keeps
-  the live-handle count bounded over 100 000 steps, and takes at most
-  1.25× the C++ runner's time per step on the same host.
+  `GC.WaitForPendingFinalizers()` while serving breaks nothing (delegates
+  rooted, `GCHandle`s live); a tensor whose last managed use was `Buffer()`
+  survives a forced collection while its lease is undisposed and its span
+  reads the original bytes (R-28 Memory).
+- **Shutdown barrier (C#):** a fixture loads `RLMesh.dll` into a
+  collectible `AssemblyLoadContext`, serves an env with `Start()`, drives
+  it from a C client, makes the env throw once (an error payload), and
+  leaves one `Env` wrapper undisposed and unreachable (created in a
+  non-inlined helper). As the host's preflight it calls
+  `Ext.Lifetime.Shutdown`, expects `true`, then unloads the context and
+  checks through a `WeakReference` that it is collected and through a C
+  helper's callback counter that no callback ran after `Shutdown` returned.
+  Variants: an env blocked forever in `step` makes `Shutdown(1 s)` return
+  `false` within the deadline plus a scheduling margin (the caller is not
+  blocked by the stuck free), `Pending()` names the server, the host does
+  not unload, and after the env is released a second `Shutdown` returns
+  `true` and the unload proceeds; `Shutdown` from inside an env callback,
+  from a `ShuttingDown` registration and from a pool worker each return
+  `false` at once; a call admitted before `Shutdown` finishes or is
+  cancelled, a call after it throws `ObjectDisposedException`, and
+  `Dispose()` after it does not throw; the `DomainUnload` / `Unloading`
+  diagnostics log `Pending()` when the host skipped the preflight.
+- **Benchmark (C#; v0.2):** one scenario, built twice. A local counter
+  env (an `Env` handle, so its callbacks run on the calling thread) with a
+  `Box(4,)` float32 observation is stepped through a session over
+  `RLMESH_RANDOM_SAMPLE` with a reused action; the env returns
+  one cached observation `Value` and one cached empty `Metadata` each step,
+  so the trampoline only clones native references and the env side
+  allocates nothing managed. The C# build drives `rlmesh_session_step`
+  through the internal raw layer from the runner and wraps the returned
+  observation as the public surface would; the C++ build uses the same env
+  logic through `rlmesh.hpp`. Both are release builds
+  (`RLMESH_RELEASE_BUILD=1`, the C# `Release` configuration) on the .NET 10
+  JIT after 1,000 warm-up steps. Measured over 10,000 steps, with
+  `GC.Collect()` / `GC.WaitForPendingFinalizers()` checkpoints before and
+  after:
+  - **Finalizable objects (gating):** a library counter of finalizable
+    `SafeHandle` constructions, cumulative, read at the checkpoints, is at
+    most 2 per step (the observation returned to the caller and the action
+    handed to `IEnv.Step`; R-28 Per-value cost).
+  - **Bytes (gating):** `GC.GetTotalAllocatedBytes(precise: true)`, which
+    counts every thread, grows by at most 512 bytes per step.
+  - **No leak (gating):** after 100,000 steps and a checkpoint, the
+    library's live-handle count equals its value before the loop.
+  - **Time (advisory):** five batches of 10,000 steps per build, C# and
+    C++ batches interleaved back to back under `mise run dev:heavy`; the
+    median C# time per step over the median C++ time per step is reported
+    against a 1.25× target and recorded, never failing the gate, because
+    this host is shared.
+
+**Deferred to v2** (design record, not built): the generated C# defaults
+test (`generate_defaults.py`'s C# target emitting
+`csharp/tests/RLMesh.Tests/ParityDefaults.g.cs`), and the families that need
+the v1-shaped surface: Defaults through the options classes, Borrowing
+(a `Model` and env disposed under a session), the twins' Sync and async
+behaviour (a sync call from a hook under a twin, 100 sequential
+`StepAsync` calls on one worker), Warnings (a throwing C# handler), and
+C#-model Errors (one `Model` serving two sessions).
 
 CI: the dotnet SDK joins the existing job's mise setup (D-19); no new job,
 runner or trigger is added. Adding it to CI needs the user's approval,
