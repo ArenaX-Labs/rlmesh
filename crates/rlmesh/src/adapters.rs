@@ -330,6 +330,6 @@ impl fmt::Display for EnvTags {
 #[cfg(test)]
 mod tests;
 
-pub(crate) use execute::{inject_instruction, register};
+pub(crate) use execute::{inject_instruction, register, unregister};
 
 pub(crate) use codec::format_json;

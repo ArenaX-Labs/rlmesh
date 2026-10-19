@@ -315,6 +315,25 @@ with another token is unaffected, and a call refused as busy or closed leaves
 the firing pending. Each call releases its subscription on return, including
 exceptional returns. The token must live until the call returns.
 
+## Entrypoint registration lifetime
+
+`rlmesh::ext::unregister_entrypoint(name, &transform)` returns true only when it
+removes the registration belonging to that transform. Copies share the same
+construction identity. Omitting the expected transform removes any registration;
+an unknown name or identity mismatch returns false. Empty names throw `ValueError`.
+
+```cpp
+rlmesh::ext::register_entrypoint("plugin:input", transform);
+bool removed = rlmesh::ext::unregister_entrypoint("plugin:input", &transform);
+```
+
+Resolved model and adapter routes retain their own transform references and
+continue working after removal. Subsequent resolves report
+`AdapterResolutionError`. The last reference releases the callable, outside the
+registry lock; a deleter can safely register or unregister another entrypoint.
+Rust exposes the same ownership rule through
+`rlmesh::ext::unregister_entrypoint(name, Some(&transform)) -> Result<bool>`.
+
 Cancellation is checked synchronously after native result processing and each
 subscription is detached under its token lock. A firing before that completion
 boundary reports cancellation even if the polling watcher has not run. With an

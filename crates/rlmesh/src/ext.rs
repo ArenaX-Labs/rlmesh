@@ -330,6 +330,17 @@ pub fn register_entrypoint(name: &str, transform: crate::adapters::ObsTransform)
     crate::adapters::register(name, transform)
 }
 
+/// Remove a trusted entrypoint when its transform has `expected`'s construction
+/// identity, or remove any registration when `expected` is `None`. Resolved
+/// routes keep their clones. Empty names are refused; unknown names return false.
+/// The removed transform is released outside the registry lock.
+pub fn unregister_entrypoint(
+    name: &str,
+    expected: Option<&crate::adapters::ObsTransform>,
+) -> Result<bool> {
+    crate::adapters::unregister(name, expected)
+}
+
 #[cfg(unix)]
 pub use crate::address::remove_stale_socket;
 /// Native endpoint parsing and stale Unix socket cleanup.

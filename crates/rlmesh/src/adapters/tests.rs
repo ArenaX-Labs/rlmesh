@@ -574,3 +574,168 @@ fn trusted_unregistered_custom_entrypoint_is_resolution_error() {
             .contains("unregistered custom input entrypoint")
     );
 }
+
+#[test]
+fn unregister_compares_identity_and_keeps_resolved_routes_alive() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    struct Freed(Arc<AtomicUsize>);
+    impl Drop for Freed {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    let name = "parity:unregister:routes";
+    let frees = Arc::new(AtomicUsize::new(0));
+    let owner = Freed(frees.clone());
+    let a = ObsTransform::from(|_: &Value| Ok(Value::Int(1)));
+    let b = ObsTransform::from(move |_: &Value| {
+        let _keep = &owner;
+        Ok(Value::Int(2))
+    });
+    crate::ext::register_entrypoint(name, a.clone()).unwrap();
+    crate::ext::register_entrypoint(name, b.clone()).unwrap();
+    assert!(!crate::ext::unregister_entrypoint(name, Some(&a)).unwrap());
+    let spec = ModelSpec::new(
+        Custom {
+            transform: None,
+            entrypoint: Some(name.into()),
+        },
+        action(),
+    )
+    .unwrap();
+    let mut route = resolve(
+        &flat_tags(),
+        &box_spec(1),
+        &box_spec(1),
+        &spec,
+        ResolveOptions::default().trust_entrypoints(true),
+    )
+    .unwrap();
+    // A cloned facade transform compares by Arc identity too.
+    assert!(crate::ext::unregister_entrypoint(name, Some(&b.clone())).unwrap());
+    drop(b);
+    assert_eq!(frees.load(Ordering::SeqCst), 0);
+    assert_eq!(route.transform_obs(floats(&[1.])).unwrap(), Value::Int(2));
+    assert_eq!(
+        resolve(
+            &flat_tags(),
+            &box_spec(1),
+            &box_spec(1),
+            &spec,
+            ResolveOptions::default().trust_entrypoints(true)
+        )
+        .err()
+        .unwrap()
+        .class(),
+        ErrorClass::AdapterResolutionError
+    );
+    assert!(!crate::ext::unregister_entrypoint(name, None).unwrap());
+    drop(route);
+    assert_eq!(frees.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        crate::ext::unregister_entrypoint("", None)
+            .unwrap_err()
+            .class(),
+        ErrorClass::ValueError
+    );
+}
+
+#[test]
+fn registry_replace_resolve_and_unregister_complete_safely_under_contention() {
+    use std::sync::{Arc, Barrier};
+    let name = "parity:unregister:concurrent";
+    let a = ObsTransform::from(|_: &Value| Ok(Value::Int(1)));
+    let b = ObsTransform::from(|_: &Value| Ok(Value::Int(2)));
+    let barrier = Arc::new(Barrier::new(3));
+    std::thread::scope(|scope| {
+        let writer_start = barrier.clone();
+        let (writer_a, writer_b) = (a.clone(), b.clone());
+        scope.spawn(move || {
+            writer_start.wait();
+            for i in 0..200 {
+                crate::ext::register_entrypoint(
+                    name,
+                    if i % 2 == 0 {
+                        writer_a.clone()
+                    } else {
+                        writer_b.clone()
+                    },
+                )
+                .unwrap();
+            }
+        });
+        let remover_start = Arc::clone(&barrier);
+        let expected = a.clone();
+        scope.spawn(move || {
+            remover_start.wait();
+            for i in 0..200 {
+                crate::ext::unregister_entrypoint(name, (i % 2 == 0).then_some(&expected)).unwrap();
+            }
+        });
+        // Resolve clones under the same lock; execution needs no registry lock.
+        barrier.wait();
+        let spec = ModelSpec::new(
+            Custom {
+                transform: None,
+                entrypoint: Some(name.into()),
+            },
+            action(),
+        )
+        .unwrap();
+        for _ in 0..200 {
+            match resolve(
+                &flat_tags(),
+                &box_spec(1),
+                &box_spec(1),
+                &spec,
+                ResolveOptions::default().trust_entrypoints(true),
+            ) {
+                Ok(mut route) => assert!(matches!(
+                    route.transform_obs(floats(&[1.])).unwrap(),
+                    Value::Int(1 | 2)
+                )),
+                Err(error) => assert_eq!(error.class(), ErrorClass::AdapterResolutionError),
+            }
+        }
+    });
+    crate::ext::unregister_entrypoint(name, None).unwrap();
+}
+
+#[test]
+fn registry_drops_removed_and_replaced_transforms_outside_its_lock() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    struct Reenter(Arc<AtomicUsize>);
+    impl Drop for Reenter {
+        fn drop(&mut self) {
+            let nested = "parity:unregister:reentrant:nested";
+            crate::ext::register_entrypoint(nested, ObsTransform::from(|v: &Value| Ok(v.clone())))
+                .unwrap();
+            assert!(crate::ext::unregister_entrypoint(nested, None).unwrap());
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    let name = "parity:unregister:reentrant";
+    let frees = Arc::new(AtomicUsize::new(0));
+    for replace in [false, true] {
+        let owner = Reenter(frees.clone());
+        let transform = ObsTransform::from(move |v: &Value| {
+            let _keep = &owner;
+            Ok(v.clone())
+        });
+        crate::ext::register_entrypoint(name, transform).unwrap();
+        if replace {
+            crate::ext::register_entrypoint(name, ObsTransform::from(|v: &Value| Ok(v.clone())))
+                .unwrap();
+        } else {
+            assert!(crate::ext::unregister_entrypoint(name, None).unwrap());
+        }
+    }
+    assert_eq!(frees.load(Ordering::SeqCst), 2);
+    crate::ext::unregister_entrypoint(name, None).unwrap();
+}
