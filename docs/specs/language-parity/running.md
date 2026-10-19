@@ -1017,7 +1017,7 @@ so `_equals` is R-10's handle form. Equality and repr are the dataclasses'
   (the `__exit__`-on-exception path, always outside a runtime, so the model's
   `on_episode_end` runs and `close_env` closes a borrowed env on the
   disposing thread); a session reached only by the finalizer is freed on
-  R-28's cleanup thread. The session holds a reference on the ownership
+  R-28's cleanup workers. The session holds a reference on the ownership
   records of the model, env and remote handles it borrows until its own
   native free has finished, so a
   model or env disposed first stays alive natively (its own C# calls then
