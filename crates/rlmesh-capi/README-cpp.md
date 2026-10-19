@@ -292,3 +292,32 @@ The C++ API is **Experimental**. It is header-only and compiled into your progra
 - C API: [README.md](README.md)
 - Rust crate: https://crates.io/crates/rlmesh
 - Python package: https://pypi.org/project/rlmesh/
+
+## Per-call cancellation
+
+`rlmesh::ext::reset(handle, token, ...)` and
+`rlmesh::ext::step(handle, token, action)` accept `Session`, `RemoteEnv` and
+`RemoteVectorEnv` handles and a borrowed `const ext::CancelToken&`.
+`rlmesh::ext::predict(session, token, observation)` cancels a session prediction.
+Reset's seed, trial index and options have the same defaults as the handle's
+ordinary methods. These overloads throw `ext::CancelledError` when either the
+per-call token or the handle token fires; subsequent calls remain allowed.
+
+```cpp
+rlmesh::ext::CancelToken cancel;
+auto result = rlmesh::ext::reset(session, cancel);
+// Another thread may call cancel.cancel() during this operation.
+auto step = rlmesh::ext::step(session, cancel, action);
+```
+
+An idle firing fails the next admitted call using the same token once. A call
+with another token is unaffected, and a call refused as busy or closed leaves
+the firing pending. Each call releases its subscription on return, including
+exceptional returns. The token must live until the call returns.
+
+Cancellation is checked synchronously after native result processing and each
+subscription is detached under its token lock. A firing before that completion
+boundary reports cancellation even if the polling watcher has not run. With an
+idle token, a firing after completion remains pending for its next call.
+Vector-step actions are validated before subscribing; malformed actions leave
+an idle firing pending.

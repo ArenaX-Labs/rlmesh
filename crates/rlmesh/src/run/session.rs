@@ -1540,13 +1540,21 @@ impl<'a> Session<'a> {
         if self.closed {
             return Err(closed_error());
         }
+        let _context_busy = self.core.context.busy()?;
+        let tokens: Vec<_> = std::iter::once(&self.cancel)
+            .chain(cancel.as_ref())
+            .map(crate::ext::CancelToken::subscribe)
+            .collect();
+        if tokens.iter().any(crate::ext::CancelSubscription::fired) {
+            return Err(Error::Cancelled);
+        }
+        // Factory callbacks can block or fail. Admission and subscriptions must
+        // precede them, and survive until the call's watcher takes ownership.
         if let CallerEnv::Factory(factory, made @ None) = &mut self.env {
             *made = Some(mode.call(|| factory.make())?);
         }
-        let _context_busy = self.core.context.busy()?;
         self.core.cancel = CancellationToken::new();
-        let tokens = std::iter::once(self.cancel.clone()).chain(cancel).collect();
-        let _watch = CancelWatch::start(tokens, self.core.cancel.clone())?;
+        let _watch = CancelWatch::from_subscriptions(tokens, self.core.cancel.clone())?;
         self.core.subscriptions = _watch.subscriptions();
         let Session {
             core, env, queue, ..
@@ -1559,6 +1567,41 @@ impl<'a> Session<'a> {
         // A job left queued by an abandoned call never runs later.
         while queue.try_recv().is_ok() {}
         out
+    }
+
+    pub(crate) fn reset_cancel(
+        &mut self,
+        seed: Option<i64>,
+        trial_index: Option<i64>,
+        cancel: Option<crate::ext::CancelToken>,
+    ) -> Result<(Value, InfoDict)> {
+        refuse_in_async_context("Session::reset")?;
+        run_sync(self.call(Mode::Sync, None, cancel, move |core| {
+            Box::pin(core.reset(seed, trial_index))
+        }))
+    }
+
+    pub(crate) fn predict_cancel(
+        &mut self,
+        observation: Value,
+        cancel: Option<crate::ext::CancelToken>,
+    ) -> Result<Value> {
+        refuse_in_async_context("Session::predict")?;
+        run_sync(self.call(Mode::Sync, None, cancel, move |core| {
+            Box::pin(core.predict(observation))
+        }))
+    }
+
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn step_cancel(
+        &mut self,
+        action: Value,
+        cancel: Option<crate::ext::CancelToken>,
+    ) -> Result<(Value, f64, bool, bool, InfoDict)> {
+        refuse_in_async_context("Session::step")?;
+        run_sync(self.call(Mode::Sync, None, cancel, move |core| {
+            Box::pin(core.step(action))
+        }))
     }
 
     /// Begin an episode: end the open one (the model's `on_episode_end`),

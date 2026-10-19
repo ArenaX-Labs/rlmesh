@@ -310,6 +310,11 @@ RLMESH_API RLMeshStatus rlmesh_ext_remote_vector_env_step(
   records the token's generation when it is taken. Nothing is read from or
   left in thread-local state, so a worker thread reused for another call
   carries nothing over, and a callback sees no caller token.
+- **Completion boundary.** After native result processing, the call checks each
+  captured subscription and detaches it atomically under the token lock. A
+  firing before that boundary reports `Cancelled`, even when the polling
+  watcher has not run; a firing afterward is pending when the token is idle.
+  No separate final check followed by unsubscribe may discard a firing.
 - **Released on return**, on success, failure or cancel. A firing after
   that reaches no call in flight; with no subscriber left it is pending
   (R-18's idle `cancel()`), so the next call made with the same token fails

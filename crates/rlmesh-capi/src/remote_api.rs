@@ -738,6 +738,17 @@ pub unsafe extern "C" fn rlmesh_remote_env_reset(
     obs: *mut *mut RLMeshValue,
     info: *mut *mut RLMeshValue,
 ) -> RLMeshStatus {
+    unsafe { rlmesh_ext_remote_env_reset(p, seed, options, std::ptr::null(), obs, info) }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_ext_remote_env_reset(
+    p: *mut RLMeshRemoteEnv,
+    seed: *const i64,
+    options: *const RLMeshValue,
+    cancel: *const RLMeshExtCancelToken,
+    obs: *mut *mut RLMeshValue,
+    info: *mut *mut RLMeshValue,
+) -> RLMeshStatus {
     guard(|| {
         unsafe {
             /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
@@ -748,9 +759,12 @@ pub unsafe extern "C" fn rlmesh_remote_env_reset(
             write_out(info, std::ptr::null_mut())
         }?;
         let options = ffi::dict(options)?;
-        let (v, i) = unsafe { borrow_env(p) }?
-            .get()
-            .reset(unsafe { seed.as_ref() }.copied(), options.as_ref())?;
+        let (v, i) = rlmesh::binding::calls::remote_env_reset(
+            unsafe { borrow_env(p) }?.get(),
+            unsafe { seed.as_ref() }.copied(),
+            options.as_ref(),
+            unsafe { cancel.as_ref() }.map(|c| &c.0),
+        )?;
         unsafe {
             /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
             write_out(obs, into_handle(v))
@@ -771,6 +785,30 @@ pub unsafe extern "C" fn rlmesh_remote_env_step(
     truncated: *mut bool,
     info: *mut *mut RLMeshValue,
 ) -> RLMeshStatus {
+    unsafe {
+        rlmesh_ext_remote_env_step(
+            p,
+            action,
+            std::ptr::null(),
+            obs,
+            reward,
+            terminated,
+            truncated,
+            info,
+        )
+    }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_ext_remote_env_step(
+    p: *mut RLMeshRemoteEnv,
+    action: *const RLMeshValue,
+    cancel: *const RLMeshExtCancelToken,
+    obs: *mut *mut RLMeshValue,
+    reward: *mut f64,
+    terminated: *mut bool,
+    truncated: *mut bool,
+    info: *mut *mut RLMeshValue,
+) -> RLMeshStatus {
     guard(|| {
         unsafe {
             /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
@@ -783,12 +821,14 @@ pub unsafe extern "C" fn rlmesh_remote_env_step(
         if reward.is_null() || terminated.is_null() || truncated.is_null() {
             return Err(CapiError::invalid_arg("null step output"));
         }
-        let (v, r, t, u, i) = unsafe { borrow_env(p) }?.get().step(
+        let (v, r, t, u, i) = rlmesh::binding::calls::remote_env_step(
+            unsafe { borrow_env(p) }?.get(),
             unsafe {
                 // SAFETY: the FFI contract supplies live handles and writable output storage.
                 value_ref(action)
             }?
             .clone(),
+            unsafe { cancel.as_ref() }.map(|c| &c.0),
         )?;
         unsafe {
             /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
@@ -821,6 +861,20 @@ pub unsafe extern "C" fn rlmesh_remote_vector_env_reset(
     obs: *mut *mut RLMeshValue,
     info: *mut *mut RLMeshValue,
 ) -> RLMeshStatus {
+    unsafe {
+        rlmesh_ext_remote_vector_env_reset(p, seeds, len, options, std::ptr::null(), obs, info)
+    }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_ext_remote_vector_env_reset(
+    p: *mut RLMeshRemoteVectorEnv,
+    seeds: *const i64,
+    len: usize,
+    options: *const RLMeshValue,
+    cancel: *const RLMeshExtCancelToken,
+    obs: *mut *mut RLMeshValue,
+    info: *mut *mut RLMeshValue,
+) -> RLMeshStatus {
     guard(|| {
         unsafe {
             /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
@@ -844,9 +898,12 @@ pub unsafe extern "C" fn rlmesh_remote_vector_env_reset(
             })
         };
         let options = ffi::dict(options)?;
-        let (v, i) = unsafe { borrow_vector(p) }?
-            .get()
-            .reset(seed, options.as_ref())?;
+        let (v, i) = rlmesh::binding::calls::remote_vector_env_reset(
+            unsafe { borrow_vector(p) }?.get(),
+            seed,
+            options.as_ref(),
+            unsafe { cancel.as_ref() }.map(|c| &c.0),
+        )?;
         unsafe {
             /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
             write_out(obs, into_handle(v))
@@ -861,6 +918,34 @@ pub unsafe extern "C" fn rlmesh_remote_vector_env_reset(
 pub unsafe extern "C" fn rlmesh_remote_vector_env_step(
     p: *mut RLMeshRemoteVectorEnv,
     actions: *const RLMeshValue,
+    obs: *mut *mut RLMeshValue,
+    rewards: *mut f64,
+    terminated: *mut bool,
+    truncated: *mut bool,
+    cap: usize,
+    len: *mut usize,
+    info: *mut *mut RLMeshValue,
+) -> RLMeshStatus {
+    unsafe {
+        rlmesh_ext_remote_vector_env_step(
+            p,
+            actions,
+            std::ptr::null(),
+            obs,
+            rewards,
+            terminated,
+            truncated,
+            cap,
+            len,
+            info,
+        )
+    }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_ext_remote_vector_env_step(
+    p: *mut RLMeshRemoteVectorEnv,
+    actions: *const RLMeshValue,
+    cancel: *const RLMeshExtCancelToken,
     obs: *mut *mut RLMeshValue,
     rewards: *mut f64,
     terminated: *mut bool,
@@ -892,12 +977,14 @@ pub unsafe extern "C" fn rlmesh_remote_vector_env_step(
             /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
             write_out(info, std::ptr::null_mut())
         }?;
-        let (v, r, t, u, i) = unsafe { borrow_vector(p) }?.get().step(
+        let (v, r, t, u, i) = rlmesh::binding::calls::remote_vector_env_step(
+            unsafe { borrow_vector(p) }?.get(),
             unsafe {
                 // SAFETY: the FFI contract supplies live handles and writable output storage.
                 value_ref(actions)
             }?
             .clone(),
+            unsafe { cancel.as_ref() }.map(|c| &c.0),
         )?;
         if r.len() != n || t.len() != n || u.len() != n {
             return Err(rlmesh::Error::Protocol("vector reply has wrong lane count".into()).into());

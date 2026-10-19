@@ -7646,6 +7646,100 @@ inline std::string_view to_string(ViewFormat v) {
   }
   return {};
 }
+
+namespace ext {
+inline ResetResult reset(Session& handle, const CancelToken& cancel,
+                         std::optional<int64_t> seed = {},
+                         std::optional<int64_t> trial_index = {}) {
+  RLMeshValue* o = nullptr;
+  RLMeshValue* i = nullptr;
+  detail::check_status(rlmesh_ext_session_reset(handle.raw(), detail::ptr(seed),
+                                                detail::ptr(trial_index), cancel.raw(), &o, &i));
+  auto obs = Value::adopt(o);
+  auto info = Value::adopt(i);
+  return {std::move(obs), info.as_dict()};
+}
+inline Value predict(Session& handle, const CancelToken& cancel, const Value& observation) {
+  RLMeshValue* p = nullptr;
+  detail::check_status(
+      rlmesh_ext_session_predict(handle.raw(), observation.raw(), cancel.raw(), &p));
+  return Value::adopt(p);
+}
+inline StepResult step(Session& handle, const CancelToken& cancel, const Value& action) {
+  RLMeshValue* o = nullptr;
+  RLMeshValue* i = nullptr;
+  double r = 0;
+  bool t = false, tr = false;
+  detail::check_status(
+      rlmesh_ext_session_step(handle.raw(), action.raw(), cancel.raw(), &o, &r, &t, &tr, &i));
+  auto obs = Value::adopt(o);
+  auto info = Value::adopt(i);
+  return {std::move(obs), r, t, tr, info.as_dict()};
+}
+inline ResetResult reset(RemoteEnv& handle, const CancelToken& cancel,
+                         std::optional<int64_t> seed = {},
+                         const std::optional<InfoDict>& options = {}) {
+  std::optional<Value> v;
+  if (options) v = Value(*options);
+  RLMeshValue* o = nullptr;
+  RLMeshValue* info = nullptr;
+  detail::check_status(rlmesh_ext_remote_env_reset(
+      handle.raw(), detail::ptr(seed), v ? v->raw() : nullptr, cancel.raw(), &o, &info));
+  auto observation = Value::adopt(o);
+  auto i = Value::adopt(info);
+  return {std::move(observation), i.as_dict()};
+}
+inline StepResult step(RemoteEnv& handle, const CancelToken& cancel, const Value& action) {
+  RLMeshValue* o = nullptr;
+  RLMeshValue* info = nullptr;
+  double r = 0;
+  bool t = false, tr = false;
+  detail::check_status(
+      rlmesh_ext_remote_env_step(handle.raw(), action.raw(), cancel.raw(), &o, &r, &t, &tr, &info));
+  auto observation = Value::adopt(o);
+  auto i = Value::adopt(info);
+  return {std::move(observation), r, t, tr, i.as_dict()};
+}
+inline ResetResult reset(RemoteVectorEnv& handle, const CancelToken& cancel,
+                         std::optional<VectorSeed> seed = {},
+                         const std::optional<InfoDict>& options = {}) {
+  std::optional<Value> v;
+  if (options) v = Value(*options);
+  RLMeshValue* o = nullptr;
+  RLMeshValue* info = nullptr;
+  std::vector<int64_t> seeds;
+  if (seed) {
+    if (auto p = std::get_if<int64_t>(&*seed))
+      seeds.push_back(*p);
+    else
+      seeds = std::get<std::vector<int64_t>>(*seed);
+  }
+  int64_t empty = 0;
+  detail::check_status(rlmesh_ext_remote_vector_env_reset(
+      handle.raw(), seed ? (seeds.empty() ? &empty : seeds.data()) : nullptr, seeds.size(),
+      v ? v->raw() : nullptr, cancel.raw(), &o, &info));
+  auto observation = Value::adopt(o);
+  auto i = Value::adopt(info);
+  return {std::move(observation), i.as_dict()};
+}
+inline VectorStepResult step(RemoteVectorEnv& handle, const CancelToken& cancel,
+                             const Value& actions) {
+  const auto n = static_cast<size_t>(handle.num_envs());
+  std::vector<double> rewards(n);
+  auto t = std::make_unique<bool[]>(n);
+  auto tr = std::make_unique<bool[]>(n);
+  RLMeshValue* o = nullptr;
+  RLMeshValue* info = nullptr;
+  size_t len = 0;
+  detail::check_status(rlmesh_ext_remote_vector_env_step(handle.raw(), actions.raw(), cancel.raw(),
+                                                         &o, rewards.data(), t.get(), tr.get(), n,
+                                                         &len, &info));
+  auto observation = Value::adopt(o);
+  auto i = Value::adopt(info);
+  return {std::move(observation), std::move(rewards), std::vector<bool>(t.get(), t.get() + len),
+          std::vector<bool>(tr.get(), tr.get() + len), i.as_dict()};
+}
+}  // namespace ext
 namespace ext {
 inline std::string env_server_describe_json(const EnvServer& server) {
   return detail::text(rlmesh_ext_env_server_describe_json, server.raw());

@@ -1432,3 +1432,29 @@ fn foreground_callback_shutdown_marks_the_server_stopped_at_once() {
     remote.close().unwrap();
     thread.join().unwrap().unwrap();
 }
+
+#[test]
+fn closed_client_refusal_keeps_its_idle_firing_pending() {
+    let counters = Arc::new(Counters::default());
+    let server = EnvServer::new(Counter::new(&counters), quick()).unwrap();
+    server.start().unwrap();
+    let mut remote = dial(server.address()).unwrap();
+    let token = remote.cancel_handle();
+    remote.close().unwrap();
+    token.cancel();
+    assert_eq!(
+        remote.reset(None, None).unwrap_err().class(),
+        ErrorClass::RuntimeError
+    );
+    assert_eq!(
+        remote.step(Value::Int(0)).unwrap_err().class(),
+        ErrorClass::RuntimeError
+    );
+    assert_eq!(
+        remote.render(None).unwrap_err().class(),
+        ErrorClass::RuntimeError
+    );
+    assert!(token.take());
+    assert!(!token.take());
+    server.shutdown().unwrap();
+}

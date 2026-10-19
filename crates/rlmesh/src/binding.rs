@@ -444,3 +444,6 @@ pub fn client_auth(
 ) -> Result<ClientAuth> {
     crate::credentials::resolve(address, api_key, tls_ca_file, warn)
 }
+
+/// Explicit per-call cancellation for native bindings.
+pub mod calls;

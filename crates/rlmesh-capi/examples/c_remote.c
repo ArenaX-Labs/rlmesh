@@ -158,6 +158,22 @@ int main(void) {
         reward == 2 && terminated && !truncated);
   rlmesh_value_free(obs);
   rlmesh_value_free(info);
+  CHECK(rlmesh_ext_cancel_token_new(&token) == RLMESH_OK);
+  CHECK(rlmesh_ext_remote_env_reset(remote, NULL, NULL, token, &obs, &info) == RLMESH_OK);
+  rlmesh_value_free(obs);
+  rlmesh_value_free(info);
+  CHECK(rlmesh_ext_cancel_token_cancel(token) == RLMESH_OK);
+  CHECK(rlmesh_ext_remote_env_step(remote, action, NULL, &obs, &reward, &terminated, &truncated,
+                                   &info) == RLMESH_OK);
+  rlmesh_value_free(obs);
+  rlmesh_value_free(info);
+  CHECK(rlmesh_ext_remote_env_step(remote, action, token, &obs, &reward, &terminated, &truncated,
+                                   &info) == RLMESH_ERR_CANCELLED);
+  CHECK(rlmesh_ext_remote_env_step(remote, action, token, &obs, &reward, &terminated, &truncated,
+                                   &info) == RLMESH_OK);
+  rlmesh_value_free(obs);
+  rlmesh_value_free(info);
+  rlmesh_ext_cancel_token_free(token);
   CHECK(rlmesh_remote_env_render(remote, UINT64_MAX, &obs) == RLMESH_ERR_INVALID_ARGUMENT &&
         obs == NULL);
   RLMeshSession* session = NULL;
@@ -301,6 +317,64 @@ int main(void) {
         len == 2 && rewards[0] == 2 && rewards[1] == 2 && terms[0] && terms[1]);
   rlmesh_value_free(obs);
   rlmesh_value_free(info);
+  CHECK(rlmesh_ext_cancel_token_new(&token) == RLMESH_OK);
+  CHECK(rlmesh_ext_remote_vector_env_reset(vector, NULL, 0, NULL, token, &obs, &info) == RLMESH_OK);
+  rlmesh_value_free(obs);
+  rlmesh_value_free(info);
+  CHECK(rlmesh_ext_cancel_token_cancel(token) == RLMESH_OK);
+  obs = action;
+  info = action;
+  len = 77;
+  CHECK(rlmesh_ext_remote_vector_env_step(vector, actions, token, &obs, rewards, terms, truncs, 1,
+                                          &len, &info) == RLMESH_ERR_INVALID_ARGUMENT);
+  CHECK(obs == action && info == action && len == 77);
+  CHECK(rlmesh_ext_remote_vector_env_step(vector, actions, token, &obs, rewards, terms, truncs, 2,
+                                          &len, &info) == RLMESH_ERR_CANCELLED);
+  CHECK(rlmesh_ext_remote_vector_env_step(vector, actions, token, &obs, rewards, terms, truncs, 2,
+                                          &len, &info) == RLMESH_OK);
+  rlmesh_value_free(obs);
+  rlmesh_value_free(info);
+  RLMeshTensor* malformed_tensor = NULL;
+  RLMeshValue* malformed = NULL;
+  const size_t wrong_shape[] = {1};
+  CHECK(rlmesh_tensor_new(data, sizeof(data[0]), wrong_shape, 1, RLMESH_DTYPE_INT64,
+                          &malformed_tensor) == RLMESH_OK);
+  CHECK(rlmesh_value_tensor(malformed_tensor, &malformed) == RLMESH_OK);
+  rlmesh_tensor_free(malformed_tensor);
+  RLMeshValue* wrong_width = malformed;
+  RLMeshValue* fractional = NULL;
+  CHECK(rlmesh_value_float(0.5, &fractional) == RLMESH_OK);
+  const RLMeshValue* fractional_lanes[] = {fractional, fractional};
+  CHECK(rlmesh_value_list(fractional_lanes, 2, &malformed) == RLMESH_OK);
+  rlmesh_value_free(fractional);
+  CHECK(rlmesh_ext_cancel_token_cancel(token) == RLMESH_OK);
+  CHECK(rlmesh_ext_remote_vector_env_step(vector, wrong_width, token, &obs, rewards, terms, truncs,
+                                          2, &len, &info) == RLMESH_ERR_TYPE);
+  CHECK(rlmesh_ext_remote_vector_env_step(vector, malformed, token, &obs, rewards, terms, truncs, 2,
+                                          &len, &info) == RLMESH_ERR_INVALID_ARGUMENT);
+  CHECK(rlmesh_ext_remote_vector_env_step(vector, actions, token, &obs, rewards, terms, truncs, 2,
+                                          &len, &info) == RLMESH_ERR_CANCELLED);
+  CHECK(rlmesh_ext_remote_vector_env_step(vector, actions, token, &obs, rewards, terms, truncs, 2,
+                                          &len, &info) == RLMESH_OK);
+  rlmesh_value_free(obs);
+  rlmesh_value_free(info);
+  RLMeshExtCancelToken* handle_token = NULL;
+  CHECK(rlmesh_remote_vector_env_cancel_handle(vector, &handle_token) == RLMESH_OK);
+  CHECK(rlmesh_ext_cancel_token_cancel(handle_token) == RLMESH_OK);
+  CHECK(rlmesh_remote_vector_env_step(vector, wrong_width, &obs, rewards, terms, truncs, 2, &len,
+                                      &info) == RLMESH_ERR_TYPE);
+  CHECK(rlmesh_remote_vector_env_step(vector, malformed, &obs, rewards, terms, truncs, 2, &len,
+                                      &info) == RLMESH_ERR_INVALID_ARGUMENT);
+  CHECK(rlmesh_remote_vector_env_step(vector, actions, &obs, rewards, terms, truncs, 2, &len,
+                                      &info) == RLMESH_ERR_CANCELLED);
+  CHECK(rlmesh_remote_vector_env_step(vector, actions, &obs, rewards, terms, truncs, 2, &len,
+                                      &info) == RLMESH_OK);
+  rlmesh_value_free(obs);
+  rlmesh_value_free(info);
+  rlmesh_ext_cancel_token_free(handle_token);
+  rlmesh_value_free(malformed);
+  rlmesh_value_free(wrong_width);
+  rlmesh_ext_cancel_token_free(token);
   rlmesh_value_free(actions);
   rlmesh_value_free(action);
   bool accepted = false;
