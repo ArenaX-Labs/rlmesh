@@ -978,9 +978,10 @@ rlmesh_ext_cancel_token_free(RLMeshExtCancelToken*)` (NULL is a no-op;
   KeyboardInterrupt. Repeated `cancel()` before that call fails counts once,
   as Python's signal flag coalesces repeated signals before its poll. This
   holds the same way for `cancel_handle()` tokens and `cancel` options
-  fields. Only `cancel` fields can put one token on concurrent calls
-  (`Session` and the remote handles refuse overlapping calls); then one
-  `cancel()` fails every call in flight on it.
+  fields and X-12's explicit per-call arguments. These inputs can put one
+  token on concurrent calls on different handles (`Session` and the remote
+  handles refuse overlapping calls on the same handle); then one `cancel()`
+  fails every call in flight on it.
 - **State after a cancel.** A cancelled call fails with R-21's cancellation
   class and leaves the handle as Python leaves it after KeyboardInterrupt:
   later calls are allowed. A cancelled single call (`reset`, `predict`,
