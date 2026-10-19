@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="RLMesh"><HintPath>../../src/RLMesh/bin/Debug/netstandard2.1/RLMesh.dll</HintPath></Reference>
+    <Compile Include="$(Fixture).cs" />
+  </ItemGroup>
+</Project>

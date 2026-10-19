@@ -1,0 +1,250 @@
+RLMesh Experimental public API
+R-28 serving surface; shutdown barrier and cancellation are deferred.
+Declared members; nullability and custom attributes are recorded in v0.2.json.
+
+class RLMesh.ConnectionError : RLMesh.OSError
+  #ctor(System.String) : System.Void
+  #ctor(System.String,System.Exception) : System.Void
+
+enum RLMesh.DType
+  Bool : 1
+  Float16 : 10
+  Float32 : 11
+  Float64 : 12
+  Int16 : 7
+  Int32 : 8
+  Int64 : 9
+  Int8 : 6
+  Uint16 : 3
+  Uint32 : 4
+  Uint64 : 5
+  Uint8 : 2
+  value__ : None
+
+class RLMesh.Env
+  implements System.IDisposable
+  Dispose() : System.Void
+  For(RLMesh.IEnv) : RLMesh.Env
+
+class RLMesh.EnvServer
+  implements System.IDisposable
+  #ctor(RLMesh.Env,RLMesh.EnvServerOptions) : System.Void
+  #ctor(RLMesh.IEnv,RLMesh.EnvServerOptions) : System.Void
+  Dispose() : System.Void
+  Shutdown() : System.Void
+  Start() : System.Void
+  Wait(System.Nullable`1{System.TimeSpan}) : System.Boolean
+  Address : System.String { get; }
+
+class RLMesh.EnvServerOptions
+  #ctor() : System.Void
+  Address : System.String { get; set; }
+  CloseEnvOnShutdown : System.Boolean { get; set; }
+  Ext : RLMesh.Ext.EnvServerOptions { get; set; }
+
+class RLMesh.EnvironmentException : RLMesh.RLMeshException
+  #ctor(System.String) : System.Void
+  #ctor(System.String,System.Exception) : System.Void
+  IsRecoverable : System.Boolean { get; }
+
+class RLMesh.Ext.EnvServerOptions
+  #ctor() : System.Void
+  HostRuntimeJson : System.String { get; set; }
+
+interface RLMesh.IClose
+  Close() : System.Void
+
+interface RLMesh.IEnv
+  Reset(System.Nullable`1{System.Int64},RLMesh.Metadata) : RLMesh.ResetResult
+  Step(RLMesh.Value) : RLMesh.StepResult
+  ActionSpace : RLMesh.Spaces.Space { get; }
+  ObservationSpace : RLMesh.Spaces.Space { get; }
+
+class RLMesh.Metadata
+  implements System.Collections.Generic.ICollection`1{System.Collections.Generic.KeyValuePair`2{System.String,RLMesh.Value}}
+  implements System.Collections.Generic.IDictionary`2{System.String,RLMesh.Value}
+  implements System.Collections.Generic.IEnumerable`1{System.Collections.Generic.KeyValuePair`2{System.String,RLMesh.Value}}
+  implements System.Collections.Generic.IReadOnlyCollection`1{System.Collections.Generic.KeyValuePair`2{System.String,RLMesh.Value}}
+  implements System.Collections.Generic.IReadOnlyDictionary`2{System.String,RLMesh.Value}
+  implements System.Collections.IEnumerable
+  implements System.IEquatable`1{RLMesh.Metadata}
+  #ctor() : System.Void
+  #ctor(System.Collections.Generic.IEnumerable`1{System.Collections.Generic.KeyValuePair`2{System.String,RLMesh.Value}}) : System.Void
+  Add(System.String,RLMesh.Value) : System.Void
+  ContainsKey(System.String) : System.Boolean
+  Equals(RLMesh.Metadata) : System.Boolean
+  Equals(System.Object) : System.Boolean
+  GetEnumerator() : System.Collections.Generic.IEnumerator`1{System.Collections.Generic.KeyValuePair`2{System.String,RLMesh.Value}}
+  GetHashCode() : System.Int32
+  Remove(System.String) : System.Boolean
+  TryGetValue(System.String,RLMesh.Value@) : System.Boolean
+  op_Equality(RLMesh.Metadata,RLMesh.Metadata) : System.Boolean
+  op_Inequality(RLMesh.Metadata,RLMesh.Metadata) : System.Boolean
+  Count : System.Int32 { get; }
+  Item : RLMesh.Value { get; set; }
+  Keys : System.Collections.Generic.ICollection`1{System.String} { get; }
+  Values : System.Collections.Generic.ICollection`1{RLMesh.Value} { get; }
+
+class RLMesh.OSError : System.IO.IOException
+  #ctor(System.String) : System.Void
+  #ctor(System.String,System.Exception) : System.Void
+
+class RLMesh.ProtocolException : RLMesh.RLMeshException
+  #ctor(System.String) : System.Void
+  #ctor(System.String,System.Exception) : System.Void
+
+class RLMesh.RLMeshException : RLMesh.RuntimeError
+  #ctor(System.String) : System.Void
+  #ctor(System.String,System.Exception) : System.Void
+
+class RLMesh.RecoverableEnvironmentException : RLMesh.EnvironmentException
+  #ctor(System.String) : System.Void
+  #ctor(System.String,System.Exception) : System.Void
+
+struct RLMesh.ResetResult
+  #ctor(RLMesh.Value,RLMesh.Metadata) : System.Void
+  Deconstruct(RLMesh.Value@,RLMesh.Metadata@) : System.Void
+  Info : RLMesh.Metadata { get; }
+  Observation : RLMesh.Value { get; }
+
+class RLMesh.RuntimeError : System.InvalidOperationException
+  #ctor(System.String) : System.Void
+  #ctor(System.String,System.Exception) : System.Void
+
+struct RLMesh.Spaces.Bound
+  op_Implicit(System.Boolean)~RLMesh.Spaces.Bound : RLMesh.Spaces.Bound
+  op_Implicit(System.Byte)~RLMesh.Spaces.Bound : RLMesh.Spaces.Bound
+  op_Implicit(System.Double)~RLMesh.Spaces.Bound : RLMesh.Spaces.Bound
+  op_Implicit(System.Int16)~RLMesh.Spaces.Bound : RLMesh.Spaces.Bound
+  op_Implicit(System.Int32)~RLMesh.Spaces.Bound : RLMesh.Spaces.Bound
+  op_Implicit(System.Int64)~RLMesh.Spaces.Bound : RLMesh.Spaces.Bound
+  op_Implicit(System.SByte)~RLMesh.Spaces.Bound : RLMesh.Spaces.Bound
+  op_Implicit(System.Single)~RLMesh.Spaces.Bound : RLMesh.Spaces.Bound
+  op_Implicit(System.UInt16)~RLMesh.Spaces.Bound : RLMesh.Spaces.Bound
+  op_Implicit(System.UInt32)~RLMesh.Spaces.Bound : RLMesh.Spaces.Bound
+  op_Implicit(System.UInt64)~RLMesh.Spaces.Bound : RLMesh.Spaces.Bound
+
+class RLMesh.Spaces.Box : RLMesh.Spaces.Space
+  #ctor(RLMesh.Spaces.Bound,RLMesh.Spaces.Bound,System.Collections.Generic.IReadOnlyList`1{System.Int64},RLMesh.Spaces.BoxOptions) : System.Void
+
+class RLMesh.Spaces.BoxOptions
+  #ctor() : System.Void
+  Dtype : RLMesh.DType { get; set; }
+
+class RLMesh.Spaces.Dict : RLMesh.Spaces.Space
+  implements System.Collections.Generic.IEnumerable`1{System.Collections.Generic.KeyValuePair`2{System.String,RLMesh.Spaces.Space}}
+  implements System.Collections.Generic.IReadOnlyCollection`1{System.Collections.Generic.KeyValuePair`2{System.String,RLMesh.Spaces.Space}}
+  implements System.Collections.Generic.IReadOnlyDictionary`2{System.String,RLMesh.Spaces.Space}
+  implements System.Collections.IEnumerable
+  #ctor(System.Collections.Generic.IEnumerable`1{System.Collections.Generic.KeyValuePair`2{System.String,RLMesh.Spaces.Space}}) : System.Void
+  ContainsKey(System.String) : System.Boolean
+  GetEnumerator() : System.Collections.Generic.IEnumerator`1{System.Collections.Generic.KeyValuePair`2{System.String,RLMesh.Spaces.Space}}
+  TryGetValue(System.String,RLMesh.Spaces.Space@) : System.Boolean
+  Count : System.Int32 { get; }
+  Item : RLMesh.Spaces.Space { get; }
+  Keys : System.Collections.Generic.IEnumerable`1{System.String} { get; }
+  Values : System.Collections.Generic.IEnumerable`1{RLMesh.Spaces.Space} { get; }
+
+class RLMesh.Spaces.Discrete : RLMesh.Spaces.Space
+  #ctor(System.Int64,RLMesh.Spaces.DiscreteOptions) : System.Void
+
+class RLMesh.Spaces.DiscreteOptions
+  #ctor() : System.Void
+  Dtype : RLMesh.DType { get; set; }
+  Start : System.Int64 { get; set; }
+
+class RLMesh.Spaces.Space
+
+struct RLMesh.StepResult
+  #ctor(RLMesh.Value,System.Double,System.Boolean,System.Boolean,RLMesh.Metadata) : System.Void
+  Deconstruct(RLMesh.Value@,System.Double@,System.Boolean@,System.Boolean@,RLMesh.Metadata@) : System.Void
+  Info : RLMesh.Metadata { get; }
+  Observation : RLMesh.Value { get; }
+  Reward : System.Double { get; }
+  Terminated : System.Boolean { get; }
+  Truncated : System.Boolean { get; }
+
+class RLMesh.Tensor
+  implements System.IDisposable
+  #ctor(System.ReadOnlySpan`1{System.Byte},System.Collections.Generic.IReadOnlyList`1{System.Int64},RLMesh.DType) : System.Void
+  Buffer() : RLMesh.TensorLease`1{System.Byte}
+  Dispose() : System.Void
+  Tobytes() : System.Byte[]
+  Dtype : RLMesh.DType { get; }
+  Shape : System.Collections.Generic.IReadOnlyList`1{System.Int64} { get; }
+
+class RLMesh.TensorLease`1
+  implements System.IDisposable
+  Dispose() : System.Void
+  Memory : System.ReadOnlyMemory`1{`0} { get; }
+  Span : System.ReadOnlySpan`1{`0} { get; }
+
+class RLMesh.TimeoutError : RLMesh.OSError
+  #ctor(System.String) : System.Void
+  #ctor(System.String,System.Exception) : System.Void
+
+class RLMesh.TypeError : System.InvalidCastException
+  #ctor(System.String) : System.Void
+  #ctor(System.String,System.Exception) : System.Void
+
+class RLMesh.Value
+  implements System.IEquatable`1{RLMesh.Value}
+  AsBool() : System.Boolean
+  AsBytes() : System.Byte[]
+  AsDict() : RLMesh.Metadata
+  AsFloat() : System.Double
+  AsInt() : System.Int64
+  AsList() : System.Collections.Generic.IReadOnlyList`1{RLMesh.Value}
+  AsTensor() : RLMesh.Tensor
+  AsText() : System.String
+  AsTuple() : System.Collections.Generic.IReadOnlyList`1{RLMesh.Value}
+  Bytes(System.ReadOnlySpan`1{System.Byte}) : RLMesh.Value
+  Dict(RLMesh.Metadata) : RLMesh.Value
+  Equals(RLMesh.Value) : System.Boolean
+  Equals(System.Object) : System.Boolean
+  FromUInt64(System.UInt64) : RLMesh.Value
+  GetHashCode() : System.Int32
+  List(RLMesh.Value[]) : RLMesh.Value
+  List(System.Collections.Generic.IEnumerable`1{RLMesh.Value}) : RLMesh.Value
+  TryGet(System.Int32,RLMesh.Value@) : System.Boolean
+  Tuple(RLMesh.Value[]) : RLMesh.Value
+  Tuple(System.Collections.Generic.IEnumerable`1{RLMesh.Value}) : RLMesh.Value
+  op_Equality(RLMesh.Value,RLMesh.Value) : System.Boolean
+  op_Implicit(RLMesh.Metadata)~RLMesh.Value : RLMesh.Value
+  op_Implicit(RLMesh.Tensor)~RLMesh.Value : RLMesh.Value
+  op_Implicit(System.Boolean)~RLMesh.Value : RLMesh.Value
+  op_Implicit(System.Byte)~RLMesh.Value : RLMesh.Value
+  op_Implicit(System.Char)~RLMesh.Value : RLMesh.Value
+  op_Implicit(System.Double)~RLMesh.Value : RLMesh.Value
+  op_Implicit(System.Int16)~RLMesh.Value : RLMesh.Value
+  op_Implicit(System.Int32)~RLMesh.Value : RLMesh.Value
+  op_Implicit(System.Int64)~RLMesh.Value : RLMesh.Value
+  op_Implicit(System.SByte)~RLMesh.Value : RLMesh.Value
+  op_Implicit(System.Single)~RLMesh.Value : RLMesh.Value
+  op_Implicit(System.String)~RLMesh.Value : RLMesh.Value
+  op_Implicit(System.UInt16)~RLMesh.Value : RLMesh.Value
+  op_Implicit(System.UInt32)~RLMesh.Value : RLMesh.Value
+  op_Implicit(System.UInt64)~RLMesh.Value : RLMesh.Value
+  op_Inequality(RLMesh.Value,RLMesh.Value) : System.Boolean
+  Count : System.Int32 { get; }
+  IsNone : System.Boolean { get; }
+  Item : RLMesh.Value { get; }
+  Kind : RLMesh.ValueKind { get; }
+  None : RLMesh.Value { get; }
+
+class RLMesh.ValueError : System.ArgumentException
+  #ctor(System.String) : System.Void
+  #ctor(System.String,System.Exception) : System.Void
+
+enum RLMesh.ValueKind
+  Bool : 2
+  Bytes : 6
+  Dict : 10
+  Float : 4
+  Int : 3
+  List : 8
+  None : 1
+  Tensor : 7
+  Text : 5
+  Tuple : 9
+  value__ : None

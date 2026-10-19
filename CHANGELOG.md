@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ## [Unreleased]
 
+- Added the Experimental C# `RLMesh` package for serving authored environments, with Box, Discrete and Dict spaces, tensors and values (`netstandard2.1` and `net10.0`).
+
 This release gives the Rust facade crate (`rlmesh`), the C API (`rlmesh.h`, now C ABI 5) and the C++ wrapper (`rlmesh.hpp`, now C++17) the same nouns, options, defaults and error classes as the Python package, each in its own language's conventions. Python also fixes several inconsistent behaviours along the way. Breaking changes are listed first, by language, each with what to do instead.
 
 ### Breaking

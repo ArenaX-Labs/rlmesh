@@ -1413,6 +1413,10 @@ dependencies = [
 ]
 
 [package.dev-dependencies]
+csharp = [
+    { name = "grpcio" },
+    { name = "rlmesh", extra = ["numpy"] },
+]
 dev = [
     { name = "basedpyright" },
     { name = "grpcio" },
@@ -1431,6 +1435,10 @@ dev = [
 requires-dist = [{ name = "rlmesh", editable = "python/rlmesh" }]
 
 [package.metadata.requires-dev]
+csharp = [
+    { name = "grpcio", specifier = "==1.75.1" },
+    { name = "rlmesh", extras = ["numpy"], editable = "python/rlmesh" },
+]
 dev = [
     { name = "basedpyright", specifier = "==1.36.1" },
     { name = "grpcio", specifier = "==1.75.1" },

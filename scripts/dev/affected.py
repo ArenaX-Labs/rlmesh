@@ -43,10 +43,11 @@ PYTHON_PREFIXES = ("python/", "pyproject.toml", "uv.lock")
 class Plan:
     rust: list[str] | None  # None means the whole workspace
     python: bool
+    csharp: bool = False
 
     def describe(self) -> str:
         rust = "all" if self.rust is None else (" ".join(self.rust) or "none")
-        return f"rust: {rust}\npython: {'yes' if self.python else 'no'}"
+        return f"rust: {rust}\npython: {'yes' if self.python else 'no'}\ncsharp: {'yes' if self.csharp else 'no'}"
 
 
 @dataclass(frozen=True)
@@ -96,7 +97,7 @@ def owner(path: PurePosixPath, workspace: Workspace) -> str | None:
 
 def plan(changed: list[str], workspace: Workspace) -> Plan:
     if any(path in WORKSPACE_INPUTS for path in changed):
-        return Plan(rust=None, python=True)
+        return Plan(rust=None, python=True, csharp=True)
 
     selected: set[str] = set()
     for path in changed:
@@ -115,7 +116,18 @@ def plan(changed: list[str], workspace: Workspace) -> Plan:
     python = EXTENSION_PACKAGE in selected or any(
         path.startswith(PYTHON_PREFIXES) for path in changed
     )
-    return Plan(rust=sorted(selected), python=python)
+    csharp = "rlmesh-capi" in selected or any(
+        path.startswith(("csharp/", "tools/rlmesh_csharp_surface/"))
+        or path == "crates/rlmesh-capi/include/rlmesh.h"
+        for path in changed
+    )
+    return Plan(rust=sorted(selected), python=python, csharp=csharp)
+
+
+def write_github_output(selection: Plan, path: Path) -> None:
+    """Append the shared C# selection to a GitHub Actions output file."""
+    with path.open("a") as output:
+        output.write(f"csharp={str(selection.csharp).lower()}\n")
 
 
 def git(*args: str) -> str:
@@ -140,11 +152,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--base", default="origin/main")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--github-output", type=Path)
     args = parser.parse_args()
 
     changed = changed_files(args.base)
     selection = plan(changed, load_workspace())
     print(f"{len(changed)} changed file(s) since {args.base}\n{selection.describe()}")
+    if args.github_output is not None:
+        write_github_output(selection, args.github_output)
     if args.dry_run:
         return
 
@@ -160,6 +175,9 @@ def main() -> None:
         # The editable install loads the in-tree .so; rebuild it if Rust moved.
         status |= run(["scripts/rebuild_ext_if_stale.sh"])
         status |= run(["mise", "run", "test:python"])
+    if selection.csharp:
+        # test:affected already owns the heavy lock; call the suite directly.
+        status |= run(["python", "csharp/tools/run.py", "test"], env)
     sys.exit(1 if status else 0)
 
 

@@ -36,6 +36,16 @@ jobs:
           python: "true"
           rust-components: "true"
 
+      - name: Select C# checks from affected crates and files
+        id: csharp_changes
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BASE: ${{ github.event.before }}
+        run: |
+          base="${PR_BASE:-${PUSH_BASE:-origin/main}}"
+          if [[ "$base" =~ ^0+$ ]]; then base="$(git rev-parse HEAD^)"; fi
+          python scripts/dev/affected.py --base "$base" --dry-run --github-output "$GITHUB_OUTPUT"
+
       # Setup installs the committed tool lock with --locked. Do not refresh
       # remote dependency metadata during verification.
       - name: Static checks
@@ -46,6 +56,17 @@ jobs:
       # profile against a wheel built from this checkout.
       - name: Tests
         run: mise run --skip-tools test:ci
+
+      - name: Install C# toolchain when affected
+        if: steps.csharp_changes.outputs.csharp == 'true'
+        run: |
+          mise trust csharp/mise.toml
+          mkdir -p "$HOME/.cache/rlmesh-csharp/tmp"
+          TMPDIR="$HOME/.cache/rlmesh-csharp/tmp" mise -C csharp install --locked dotnet zig
+
+      - name: C# interop, ownership and Python interoperability
+        if: steps.csharp_changes.outputs.csharp == 'true'
+        run: mise run --skip-tools test:csharp
 
       - name: Cross-version matrix against the already-built wheels
         run: mise run --skip-tools test:crossver:installed

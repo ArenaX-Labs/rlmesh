@@ -540,3 +540,27 @@ run = [
   "uv run pytest tools/rlmesh_api_surface/tests -q",
   "uv run python -m rlmesh_api_surface.parity",
 ]
+
+[tasks."csharp:interop:generate"]
+description = "Generate internal C# P/Invoke declarations from rlmesh.h"
+run = "mise run dev:heavy -- python csharp/tools/run.py generate"
+
+[tasks."csharp:interop:check"]
+description = "Check the generated C# interop for staleness"
+run = "mise run dev:heavy -- python csharp/tools/run.py interop-check"
+
+[tasks."csharp:generate"]
+description = "Generate C# interop (accepts --check)"
+run = 'mise run dev:heavy -- python csharp/tools/run.py generate {{arg(name="args", var=true, required=false)}}'
+
+[tasks."check:csharp"]
+description = "Check generated interop and both C# assembly surfaces"
+run = "mise run dev:heavy -- python csharp/tools/run.py check"
+
+[tasks."csharp:check"]
+description = "Alias for check:csharp"
+depends = ["check:csharp"]
+
+[tasks."test:csharp"]
+description = "Check C# interop and run ABI, ownership and Python interoperability tests"
+run = "mise run dev:heavy -- python csharp/tools/run.py test"
