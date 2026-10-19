@@ -1551,7 +1551,14 @@ impl<'a> Session<'a> {
         // Factory callbacks can block or fail. Admission and subscriptions must
         // precede them, and survive until the call's watcher takes ownership.
         if let CallerEnv::Factory(factory, made @ None) = &mut self.env {
-            *made = Some(mode.call(|| factory.make())?);
+            let result = mode.call(|| factory.make());
+            if tokens.iter().any(crate::ext::CancelSubscription::fired) {
+                // Match local_call: cancellation wins over a callback error.
+                // A successfully made env stays owned for later calls/close.
+                *made = result.ok();
+                return Err(Error::Cancelled);
+            }
+            *made = Some(result?);
         }
         self.core.cancel = CancellationToken::new();
         let _watch = CancelWatch::from_subscriptions(tokens, self.core.cancel.clone())?;

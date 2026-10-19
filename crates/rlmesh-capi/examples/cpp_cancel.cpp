@@ -181,6 +181,14 @@ void lazy_make() {
   cancelled([&] { ext::reset(failed, token); });
   CHECK(failing.builds == 1);  // Exceptional make released its subscription.
   ext::reset(failed, token);
+  Factory cancelled_make;
+  cancelled_make.fire = &token;
+  cancelled_make.fail = true;
+  auto interrupted = rlmesh::session(RANDOM_SAMPLE, cancelled_make);
+  cancelled([&] { ext::reset(interrupted, token); });
+  cancelled_make.fire = nullptr;
+  cancelled_make.fail = false;
+  ext::reset(interrupted, token);
   Factory reentrant;
   auto recursive = rlmesh::session(RANDOM_SAMPLE, reentrant);
   reentrant.reenter = &recursive;
