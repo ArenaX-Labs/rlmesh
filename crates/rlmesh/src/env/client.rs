@@ -977,11 +977,11 @@ async fn connect_core(options: RemoteEnvOptions) -> Result<EnvClientCore> {
 
 /// Fail `future` with the cancellation class when `token` fires.
 async fn cancellable<T>(
-    token: &crate::ext::CancelToken,
+    subscriptions: Vec<crate::ext::CancelSubscription>,
     future: impl std::future::Future<Output = Result<T>>,
 ) -> Result<T> {
     let driver = CancellationToken::new();
-    let _watch = CancelWatch::start(vec![token.clone()], driver.clone())?;
+    let _watch = CancelWatch::from_subscriptions(subscriptions, driver.clone())?;
     tokio::select! {
         biased;
         () = driver.cancelled() => Err(Error::Cancelled),
@@ -1065,9 +1065,40 @@ macro_rules! client_common {
                     Box<dyn std::future::Future<Output = Result<T>> + Send + 'c>,
                 >,
             ) -> Result<T> {
-                let token = self.cancel.clone();
+                let subscriptions = self.admit(None)?;
+                self.io_subscribed(subscriptions, op).await
+            }
+
+            fn admit(
+                &mut self,
+                cancel: Option<&crate::ext::CancelToken>,
+            ) -> Result<Vec<crate::ext::CancelSubscription>> {
                 let core = self.core_mut()?;
-                cancellable(&token, op(core)).await
+                core.check_open()?;
+                let subscriptions: Vec<_> = std::iter::once(&self.cancel)
+                    .chain(cancel)
+                    .map(crate::ext::CancelToken::subscribe)
+                    .collect();
+                if subscriptions
+                    .iter()
+                    .any(crate::ext::CancelSubscription::fired)
+                {
+                    return Err(Error::Cancelled);
+                }
+                Ok(subscriptions)
+            }
+
+            async fn io_subscribed<T>(
+                &mut self,
+                subscriptions: Vec<crate::ext::CancelSubscription>,
+                op: impl for<'c> FnOnce(
+                    &'c mut EnvClientCore,
+                ) -> std::pin::Pin<
+                    Box<dyn std::future::Future<Output = Result<T>> + Send + 'c>,
+                >,
+            ) -> Result<T> {
+                let core = self.core_mut()?;
+                cancellable(subscriptions, op(core)).await
             }
 
             /// The canonical connect string of the dialed endpoint.
@@ -1232,6 +1263,28 @@ pub struct RemoteEnv {
 client_common!(RemoteEnv, "RemoteEnv");
 
 impl RemoteEnv {
+    pub(crate) fn reset_cancel(
+        &mut self,
+        seed: Option<i64>,
+        options: Option<&InfoDict>,
+        cancel: Option<crate::ext::CancelToken>,
+    ) -> Result<(Value, InfoDict)> {
+        refuse_in_async_context("RemoteEnv::reset")?;
+        let subscriptions = self.admit(cancel.as_ref())?;
+        block_on_library(self.reset_in(seed, options, Some(subscriptions)))
+    }
+
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn step_cancel(
+        &mut self,
+        action: Value,
+        cancel: Option<crate::ext::CancelToken>,
+    ) -> Result<(Value, f64, bool, bool, InfoDict)> {
+        refuse_in_async_context("RemoteEnv::step")?;
+        let subscriptions = self.admit(cancel.as_ref())?;
+        block_on_library(self.step_in(action, Some(subscriptions)))
+    }
+
     /// Dial and handshake. Invalid options are the ValueError class, a dial
     /// failure the ConnectionError class, a refused handshake the
     /// ProtocolException class; an endpoint with more than one env is
@@ -1276,7 +1329,7 @@ impl RemoteEnv {
         options: Option<&InfoDict>,
     ) -> Result<(Value, InfoDict)> {
         refuse_in_async_context("RemoteEnv::reset")?;
-        block_on_library(self.reset_in(seed, options))
+        block_on_library(self.reset_in(seed, options, None))
     }
 
     /// The async twin of [`reset`](Self::reset).
@@ -1285,17 +1338,22 @@ impl RemoteEnv {
         seed: Option<i64>,
         options: Option<&InfoDict>,
     ) -> Result<(Value, InfoDict)> {
-        in_library(self.reset_in(seed, options)).await
+        in_library(self.reset_in(seed, options, None)).await
     }
 
     async fn reset_in(
         &mut self,
         seed: Option<i64>,
         options: Option<&InfoDict>,
+        subscriptions: Option<Vec<crate::ext::CancelSubscription>>,
     ) -> Result<(Value, InfoDict)> {
+        let subscriptions = match subscriptions {
+            Some(s) => s,
+            None => self.admit(None)?,
+        };
         let options = options.cloned();
         let (lanes, info) = self
-            .io(move |core| {
+            .io_subscribed(subscriptions, move |core| {
                 Box::pin(async move {
                     core.reset_values(seed.into_iter().collect(), options.as_ref(), Vec::new())
                         .await
@@ -1310,7 +1368,7 @@ impl RemoteEnv {
     #[allow(clippy::type_complexity)]
     pub fn step(&mut self, action: Value) -> Result<(Value, f64, bool, bool, InfoDict)> {
         refuse_in_async_context("RemoteEnv::step")?;
-        block_on_library(self.step_in(action))
+        block_on_library(self.step_in(action, None))
     }
 
     /// The async twin of [`step`](Self::step).
@@ -1319,13 +1377,23 @@ impl RemoteEnv {
         &mut self,
         action: Value,
     ) -> Result<(Value, f64, bool, bool, InfoDict)> {
-        in_library(self.step_in(action)).await
+        in_library(self.step_in(action, None)).await
     }
 
     #[allow(clippy::type_complexity)]
-    async fn step_in(&mut self, action: Value) -> Result<(Value, f64, bool, bool, InfoDict)> {
+    async fn step_in(
+        &mut self,
+        action: Value,
+        subscriptions: Option<Vec<crate::ext::CancelSubscription>>,
+    ) -> Result<(Value, f64, bool, bool, InfoDict)> {
+        let subscriptions = match subscriptions {
+            Some(s) => s,
+            None => self.admit(None)?,
+        };
         let (lanes, rewards, terminated, truncated, info) = self
-            .io(move |core| Box::pin(core.step_values(vec![action])))
+            .io_subscribed(subscriptions, move |core| {
+                Box::pin(core.step_values(vec![action]))
+            })
             .await?;
         Ok((
             lanes.into_iter().next().unwrap_or(Value::None),
@@ -1350,6 +1418,29 @@ pub struct RemoteVectorEnv {
 client_common!(RemoteVectorEnv, "RemoteVectorEnv");
 
 impl RemoteVectorEnv {
+    pub(crate) fn reset_cancel(
+        &mut self,
+        seed: Option<VectorSeed>,
+        options: Option<&InfoDict>,
+        cancel: Option<crate::ext::CancelToken>,
+    ) -> Result<(Value, InfoDict)> {
+        refuse_in_async_context("RemoteVectorEnv::reset")?;
+        let subscriptions = self.admit(cancel.as_ref())?;
+        block_on_library(self.reset_in(seed, options, Vec::new(), Some(subscriptions)))
+    }
+
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn step_cancel(
+        &mut self,
+        action: Value,
+        cancel: Option<crate::ext::CancelToken>,
+    ) -> Result<(Value, Vec<f64>, Vec<bool>, Vec<bool>, InfoDict)> {
+        refuse_in_async_context("RemoteVectorEnv::step")?;
+        let lanes = self.unstack_actions(action)?;
+        let subscriptions = self.admit(cancel.as_ref())?;
+        block_on_library(self.step_lanes_in(lanes, subscriptions))
+    }
+
     /// Dial and handshake. An endpoint with fewer than two envs is refused
     /// (the ValueError class).
     pub fn new(options: RemoteEnvOptions) -> Result<RemoteVectorEnv> {
@@ -1408,7 +1499,7 @@ impl RemoteVectorEnv {
         options: Option<&InfoDict>,
     ) -> Result<(Value, InfoDict)> {
         refuse_in_async_context("RemoteVectorEnv::reset")?;
-        block_on_library(self.reset_in(seed, options, Vec::new()))
+        block_on_library(self.reset_in(seed, options, Vec::new(), None))
     }
 
     /// The async twin of [`reset`](Self::reset).
@@ -1417,7 +1508,7 @@ impl RemoteVectorEnv {
         seed: Option<VectorSeed>,
         options: Option<&InfoDict>,
     ) -> Result<(Value, InfoDict)> {
-        in_library(self.reset_in(seed, options, Vec::new())).await
+        in_library(self.reset_in(seed, options, Vec::new(), None)).await
     }
 
     pub(crate) async fn reset_in(
@@ -1425,7 +1516,12 @@ impl RemoteVectorEnv {
         seed: Option<VectorSeed>,
         options: Option<&InfoDict>,
         env_indices: Vec<u32>,
+        subscriptions: Option<Vec<crate::ext::CancelSubscription>>,
     ) -> Result<(Value, InfoDict)> {
+        let subscriptions = match subscriptions {
+            Some(s) => s,
+            None => self.admit(None)?,
+        };
         let seeds = match seed {
             None => Vec::new(),
             Some(VectorSeed::One(seed)) => vec![seed],
@@ -1434,7 +1530,7 @@ impl RemoteVectorEnv {
         let options = options.cloned();
         let observation = self.shared.contract.observation_space().wire().clone();
         let (lanes, info) = self
-            .io(move |core| {
+            .io_subscribed(subscriptions, move |core| {
                 Box::pin(async move {
                     core.reset_values(seeds, options.as_ref(), env_indices)
                         .await
@@ -1465,16 +1561,28 @@ impl RemoteVectorEnv {
         in_library(self.step_in(actions)).await
     }
 
+    fn unstack_actions(&self, actions: Value) -> Result<Vec<Value>> {
+        let action = self.shared.contract.action_space().wire().clone();
+        super::batch::unstack_lanes(&action, actions, self.shared.num_envs as usize)
+    }
     #[allow(clippy::type_complexity)]
     async fn step_in(
         &mut self,
         actions: Value,
     ) -> Result<(Value, Vec<f64>, Vec<bool>, Vec<bool>, InfoDict)> {
-        let action = self.shared.contract.action_space().wire().clone();
+        let lanes = self.unstack_actions(actions)?;
+        let subscriptions = self.admit(None)?;
+        self.step_lanes_in(lanes, subscriptions).await
+    }
+    #[allow(clippy::type_complexity)]
+    async fn step_lanes_in(
+        &mut self,
+        lanes: Vec<Value>,
+        subscriptions: Vec<crate::ext::CancelSubscription>,
+    ) -> Result<(Value, Vec<f64>, Vec<bool>, Vec<bool>, InfoDict)> {
         let observation = self.shared.contract.observation_space().wire().clone();
-        let lanes = super::batch::unstack_lanes(&action, actions, self.shared.num_envs as usize)?;
         let (lanes, rewards, terminated, truncated, info) = self
-            .io(move |core| Box::pin(core.step_values(lanes)))
+            .io_subscribed(subscriptions, move |core| Box::pin(core.step_values(lanes)))
             .await?;
         Ok((
             super::batch::stack_lanes(&observation, lanes)?,
@@ -1497,7 +1605,7 @@ pub(crate) async fn reset_lanes_in(
         .iter()
         .map(|index| wire_lane(*index))
         .collect::<Result<Vec<u32>>>()?;
-    env.reset_in(seed, options, lanes).await
+    env.reset_in(seed, options, lanes, None).await
 }
 
 /// Refuse a token the authorization header cannot carry.

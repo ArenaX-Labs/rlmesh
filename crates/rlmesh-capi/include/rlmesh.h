@@ -3568,6 +3568,48 @@ RLMESH_API void rlmesh_session_free(RLMeshSession* session);
 /* ---- Remote clients ----------------------------------------------------- */
 typedef struct RLMeshRemoteEnv RLMeshRemoteEnv;
 typedef struct RLMeshRemoteVectorEnv RLMeshRemoteVectorEnv;
+
+/* Per-call cancellation: NULL matches the ordinary call. Borrowed for the call. */
+RLMESH_API RLMeshStatus rlmesh_ext_session_reset(RLMeshSession* session, const int64_t* seed,
+                                                 const int64_t* trial_index,
+                                                 const RLMeshExtCancelToken* cancel,
+                                                 RLMeshValue** out_observation,
+                                                 RLMeshValue** out_info);
+RLMESH_API RLMeshStatus rlmesh_ext_session_predict(RLMeshSession* session,
+                                                   const RLMeshValue* observation,
+                                                   const RLMeshExtCancelToken* cancel,
+                                                   RLMeshValue** out_action);
+RLMESH_API RLMeshStatus rlmesh_ext_session_step(RLMeshSession* session, const RLMeshValue* action,
+                                                const RLMeshExtCancelToken* cancel,
+                                                RLMeshValue** out_observation, double* out_reward,
+                                                bool* out_terminated, bool* out_truncated,
+                                                RLMeshValue** out_info);
+RLMESH_API RLMeshStatus rlmesh_ext_remote_env_reset(RLMeshRemoteEnv* remote_env,
+                                                    const int64_t* seed, const RLMeshValue* options,
+                                                    const RLMeshExtCancelToken* cancel,
+                                                    RLMeshValue** out_observation,
+                                                    RLMeshValue** out_info);
+RLMESH_API RLMeshStatus rlmesh_ext_remote_env_step(RLMeshRemoteEnv* remote_env,
+                                                   const RLMeshValue* action,
+                                                   const RLMeshExtCancelToken* cancel,
+                                                   RLMeshValue** out_observation,
+                                                   double* out_reward, bool* out_terminated,
+                                                   bool* out_truncated, RLMeshValue** out_info);
+RLMESH_API RLMeshStatus rlmesh_ext_remote_vector_env_reset(RLMeshRemoteVectorEnv* remote_vector_env,
+                                                           const int64_t* seed, size_t seed_len,
+                                                           const RLMeshValue* options,
+                                                           const RLMeshExtCancelToken* cancel,
+                                                           RLMeshValue** out_observation,
+                                                           RLMeshValue** out_info);
+/* A short capacity fails before I/O and leaves ALL outputs untouched. */
+RLMESH_API RLMeshStatus rlmesh_ext_remote_vector_env_step(RLMeshRemoteVectorEnv* remote_vector_env,
+                                                          const RLMeshValue* actions,
+                                                          const RLMeshExtCancelToken* cancel,
+                                                          RLMeshValue** out_observation,
+                                                          double* out_rewards, bool* out_terminated,
+                                                          bool* out_truncated, size_t capacity,
+                                                          size_t* out_len, RLMeshValue** out_info);
+
 typedef struct RLMeshRemoteModel RLMeshRemoteModel;
 typedef struct RLMeshRemoteEnvOptions {
   size_t struct_size;

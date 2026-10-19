@@ -123,6 +123,8 @@ The experimental C API moves to **ABI generation 5** (`RLMESH_ABI_VERSION` 5, SO
 
 #### C
 
+- `rlmesh_ext_session_reset`, `_predict`, `_step`, `rlmesh_ext_remote_env_reset`, `_step` and `rlmesh_ext_remote_vector_env_reset`, `_step` take an explicit borrowed per-call cancellation token; NULL preserves the original call behavior.
+
 The C API (`rlmesh.h`, ABI 5) exposes values, spaces, envs, models, runs and sessions through opaque handles and typed callbacks. Every new struct follows the ABI-5 sizing rules above; constructors transfer callback state only on success, and `free_user_data` runs once after the last library reference.
 
 - Factory serves can start in the background with `rlmesh_ext_env_factory_start` (C++ `rlmesh::ext::start`), returning an independently owned env server. Model serve options can disable signal handlers for embedding hosts. ABI-5 struct minima stay unchanged.
@@ -143,6 +145,7 @@ The C API (`rlmesh.h`, ABI 5) exposes values, spaces, envs, models, runs and ses
 
 #### C++
 
+- `rlmesh::ext::reset`, `predict` and `step` overloads take a handle and a `const CancelToken&` for explicit per-call cancellation on sessions and remote envs.
 - `rlmesh::Span<T>` supplies the contiguous views used by bytes, batch policies and contexts, with the same API at C++17 and C++20 and a C++20 `std::span` constructor. All options aggregates have chainable `with_<field>` setters for portable C++17 calls. The header saves and restores common Unreal, X11 and Windows macros, requires no RTTI, and is warning-free under `-Wshadow -Wconversion`.
 - `rlmesh.hpp` is a C++17 projection of C ABI 5 with named options, defaults and typed exceptions. The exception hierarchy is: `rlmesh::RLMeshException` (a `rlmesh::RuntimeError`) with `ProtocolException`, `EnvironmentException`, `RecoverableEnvironmentException` and `ModelException` under it, and `ValueError` (`AdapterResolutionError`), `TypeError`, `RuntimeError` and `OSError` (`ConnectionError`, `TimeoutError`) outside it; `rlmesh::ext::CancelledError` derives from no `std::` exception, so catch it explicitly. Authored `EnvironmentException("bad")`, `RecoverableEnvironmentException("bad")` and `ModelException("bad")` read `[INTERNAL] bad` from `what()`. A predict may throw `ModelException(msg, true)` and an env callback `RecoverableEnvironmentException(msg)` to fail one request as recoverable, and an exception thrown by an authored policy, env, adapter, hook or warning handler is rethrown unchanged when its error returns in process (a predict that throws `rlmesh::TypeError` fails the run with `rlmesh::TypeError`), including across library worker threads.
 - `Value`, `Tensor` (with DLPack through `ext::DlpackPtr`), `rlmesh::spaces` (`Space`, `Box`, `Discrete`, `Dict` and the experimental spaces, with throwing constructors such as `Box(-1.0, 1.0, {3})`, `Discrete(4, DiscreteOptions{}.with_start(1))` and `Dict({{"pos", box}, ...})`, typed `Bound`s and `ext::box_elementwise`), `EnvContract` and `adapters` (also `adapt`, with `PARTS()` and `ROTATION_DIMS()`). Copies of handles share the underlying library object; `Tensor::copy()` copies data.
@@ -161,6 +164,8 @@ The C API (`rlmesh.h`, ABI 5) exposes values, spaces, envs, models, runs and ses
 ### Changed
 
 #### Python
+
+- Native remote env calls check whether a client is closed before subscribing to cancellation: a closed client reports `RuntimeError` and leaves any idle firing pending. Native factory-backed sessions now check busy state and cancellation before lazy `make`: a pending firing skips construction, and reentrant calls during `make` report busy `RuntimeError`.
 
 - Internal and server-side failures raise `RLMeshException`, and protocol failures (a failed handshake, a malformed message, an invalid contract from the peer) raise `ProtocolException`, instead of a bare `RuntimeError`; a render frame that does not decode raises `ProtocolException` too. Both subclass `RuntimeError`, so existing catches keep matching.
 - An env code `UNSUPPORTED` reaches Python as `"UNSUPPORTED"` instead of `"INTERNAL"`.
@@ -183,6 +188,11 @@ The C API (`rlmesh.h`, ABI 5) exposes values, spaces, envs, models, runs and ses
 - The live viewer shows the env's first declared image role by default instead of its `render()` frame. The role rides the step response, while `render()` costs one more env round trip per drawn frame; `render` stays selectable, and `View(source="render")` asks for it.
 - Adapter resolution errors for a missing role now suggest near matches among the roles the other side offers (`did you mean "x/goal_body"?`), and, when an `x/` role is involved, say that `x/` roles bind only to the identical string. The suggestion is only a hint: binding still matches roles exactly, and one registered role is never suggested for another. The zero-fill caution for an optional state input names the absent role and part (`zero-filled because the env offers no match for "proprio/eef_pos" (part "right_arm")`) instead of only counting components.
 - `sanitize_metadata` is labelled Bridge (Python-only), and the `params` module with `Model.params` / `EnvFactory.params` is labelled Experimental.
+
+#### Rust
+
+- Remote env calls check closed state before subscribing to cancellation, returning `RuntimeError` without consuming an idle firing. Factory-backed sessions check busy state and cancellation before lazy `make`; pending cancellation skips construction, and reentrant calls during `make` return busy `RuntimeError`.
+- Remote and session calls, including run completion hooks, synchronously check cancellation when completing their result processing. A firing before completion returns `Cancelled`, even when the polling watcher has not run; a firing after completion remains pending when the token is idle.
 
 #### All languages
 

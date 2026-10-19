@@ -308,6 +308,33 @@ int main(void) {
   CHECK(result == NULL && rlmesh_last_error_class() == RLMESH_ERROR_CLASS_RLMESH_EXCEPTION);
   CHECK(strcmp(rlmesh_last_error_message(), "hook callback failed") == 0);
   rlmesh_run_hooks_free(stale_hooks);
+  /* X-12: all three C session calls, NULL equivalence and idle re-arming. */
+  so.cancel = NULL;
+  CHECK(rlmesh_session_new(RLMESH_RANDOM_SAMPLE, rlmesh_env_target(env), &so, &s.session) ==
+        RLMESH_OK);
+  CHECK(rlmesh_ext_cancel_token_new(&cancel) == RLMESH_OK);
+  CHECK(rlmesh_ext_session_reset(s.session, &seed, &trial, cancel, &obs, &info) == RLMESH_OK);
+  rlmesh_value_free(info);
+  CHECK(rlmesh_ext_session_predict(s.session, obs, cancel, &action) == RLMESH_OK);
+  rlmesh_value_free(obs);
+  CHECK(rlmesh_ext_session_step(s.session, action, cancel, &obs, &reward, &terminated, &truncated,
+                                &info) == RLMESH_OK);
+  rlmesh_value_free(obs);
+  rlmesh_value_free(info);
+  CHECK(rlmesh_ext_cancel_token_cancel(cancel) == RLMESH_OK);
+  CHECK(rlmesh_ext_session_predict(s.session, action, NULL, &obs) == RLMESH_OK);
+  rlmesh_value_free(obs);
+  CHECK(rlmesh_ext_session_predict(s.session, action, cancel, &obs) == RLMESH_ERR_CANCELLED);
+  CHECK(obs == NULL);
+  CHECK(rlmesh_ext_session_predict(s.session, action, cancel, &obs) == RLMESH_OK);
+  rlmesh_value_free(obs);
+  CHECK(rlmesh_ext_session_reset(s.session, &seed, &trial, NULL, &obs, &info) == RLMESH_OK);
+  rlmesh_value_free(obs);
+  rlmesh_value_free(info);
+  rlmesh_value_free(action);
+  rlmesh_ext_cancel_token_free(cancel);
+  rlmesh_session_free(s.session);
+  s.session = NULL;
   o.close_env = true;
   o.hooks = NULL;
   CHECK(rlmesh_run(RLMESH_RANDOM_SAMPLE, rlmesh_env_target(env), &o, &result) == RLMESH_OK &&

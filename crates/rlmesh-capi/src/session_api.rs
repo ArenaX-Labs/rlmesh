@@ -376,6 +376,17 @@ pub unsafe extern "C" fn rlmesh_session_reset(
     obs: *mut *mut RLMeshValue,
     info: *mut *mut RLMeshValue,
 ) -> RLMeshStatus {
+    unsafe { rlmesh_ext_session_reset(p, seed, trial, std::ptr::null(), obs, info) }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_ext_session_reset(
+    p: *mut RLMeshSession,
+    seed: *const i64,
+    trial: *const i64,
+    cancel: *const RLMeshExtCancelToken,
+    obs: *mut *mut RLMeshValue,
+    info: *mut *mut RLMeshValue,
+) -> RLMeshStatus {
     guard(|| {
         unsafe {
             /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
@@ -386,9 +397,11 @@ pub unsafe extern "C" fn rlmesh_session_reset(
             write_out(info, std::ptr::null_mut())
         }?;
         let (v, i) = with(p, |s| {
-            Ok(s.reset(
+            Ok(rlmesh::binding::calls::session_reset(
+                s,
                 unsafe { seed.as_ref() }.copied(),
                 unsafe { trial.as_ref() }.copied(),
+                unsafe { cancel.as_ref() }.map(|c| &c.0),
             )?)
         })?;
         unsafe {
@@ -407,18 +420,29 @@ pub extern "C" fn rlmesh_session_predict(
     obs: *const RLMeshValue,
     out: *mut *mut RLMeshValue,
 ) -> RLMeshStatus {
+    unsafe { rlmesh_ext_session_predict(p, obs, std::ptr::null(), out) }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_ext_session_predict(
+    p: *mut RLMeshSession,
+    obs: *const RLMeshValue,
+    cancel: *const RLMeshExtCancelToken,
+    out: *mut *mut RLMeshValue,
+) -> RLMeshStatus {
     guard(|| {
         unsafe {
             /* SAFETY: the FFI caller supplies live input handles and valid writable output storage for this call. */
             write_out(out, std::ptr::null_mut())
         }?;
         let v = with(p, |s| {
-            Ok(s.predict(
+            Ok(rlmesh::binding::calls::session_predict(
+                s,
                 unsafe {
                     // SAFETY: the FFI contract supplies live handles and writable output storage.
                     value_ref(obs)
                 }?
                 .clone(),
+                unsafe { cancel.as_ref() }.map(|c| &c.0),
             )?)
         })?;
         unsafe {
@@ -431,6 +455,30 @@ pub extern "C" fn rlmesh_session_predict(
 pub extern "C" fn rlmesh_session_step(
     p: *mut RLMeshSession,
     action: *const RLMeshValue,
+    obs: *mut *mut RLMeshValue,
+    reward: *mut f64,
+    terminated: *mut bool,
+    truncated: *mut bool,
+    info: *mut *mut RLMeshValue,
+) -> RLMeshStatus {
+    unsafe {
+        rlmesh_ext_session_step(
+            p,
+            action,
+            std::ptr::null(),
+            obs,
+            reward,
+            terminated,
+            truncated,
+            info,
+        )
+    }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_ext_session_step(
+    p: *mut RLMeshSession,
+    action: *const RLMeshValue,
+    cancel: *const RLMeshExtCancelToken,
     obs: *mut *mut RLMeshValue,
     reward: *mut f64,
     terminated: *mut bool,
@@ -450,12 +498,14 @@ pub extern "C" fn rlmesh_session_step(
             return Err(CapiError::invalid_arg("null step output"));
         }
         let (v, r, t, u, i) = with(p, |s| {
-            Ok(s.step(
+            Ok(rlmesh::binding::calls::session_step(
+                s,
                 unsafe {
                     // SAFETY: the FFI contract supplies live handles and writable output storage.
                     value_ref(action)
                 }?
                 .clone(),
+                unsafe { cancel.as_ref() }.map(|c| &c.0),
             )?)
         })?;
         unsafe {

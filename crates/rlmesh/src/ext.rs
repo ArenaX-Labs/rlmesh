@@ -344,6 +344,23 @@ mod cancellation_regressions {
     use super::*;
 
     #[test]
+    fn admission_subscription_retains_a_firing_before_watcher_creation() {
+        let token = CancelToken::new();
+        let subscription = token.subscribe();
+        token.cancel();
+        let result = crate::run::drive::CancelWatch::from_subscriptions(
+            vec![subscription],
+            tokio_util::sync::CancellationToken::new(),
+        );
+        assert!(matches!(result, Err(crate::Error::Cancelled)));
+        assert_eq!(token.0.lock().unwrap().subscribers, 0);
+        // A constructor that returns early must release even its fired input.
+        token.cancel();
+        assert!(token.take());
+        assert!(!token.take());
+    }
+
+    #[test]
     fn idle_cancel_after_a_finished_call_is_pending_even_before_its_watcher_exits() {
         let token = CancelToken::new();
         let watch = crate::run::drive::CancelWatch::start(

@@ -2210,3 +2210,23 @@ async fn async_view_run_and_dropping_a_pacing_future_leave_session_usable() {
     session.reset_async(None, None).await.unwrap();
     session.close_async().await.unwrap();
 }
+
+#[test]
+fn pending_cancellation_skips_lazy_factory_creation() {
+    let model = ones();
+    let mut factory = Factory {
+        closes: Arc::default(),
+        made: 0,
+    };
+    let mut session = model
+        .session(EnvTarget::factory(&mut factory), SessionOptions::default())
+        .unwrap();
+    let token = session.cancel_handle();
+    token.cancel();
+    assert_eq!(
+        session.reset(None, None).unwrap_err(),
+        crate::Error::Cancelled
+    );
+    drop(session);
+    assert_eq!(factory.made, 0);
+}

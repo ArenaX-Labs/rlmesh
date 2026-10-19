@@ -324,12 +324,21 @@ impl CancelWatch {
         tokens: Vec<crate::ext::CancelToken>,
         driver: tokio_util::sync::CancellationToken,
     ) -> Result<CancelWatch> {
-        let tokens: Arc<Vec<_>> = Arc::new(
+        Self::from_subscriptions(
             tokens
                 .iter()
                 .map(crate::ext::CancelToken::subscribe)
                 .collect(),
-        );
+            driver,
+        )
+    }
+
+    /// Own the subscriptions captured at admission, without subscribing again.
+    pub(crate) fn from_subscriptions(
+        tokens: Vec<crate::ext::CancelSubscription>,
+        driver: tokio_util::sync::CancellationToken,
+    ) -> Result<CancelWatch> {
+        let tokens = Arc::new(tokens);
         if tokens.iter().any(crate::ext::CancelSubscription::fired) {
             return Err(Error::Cancelled);
         }
