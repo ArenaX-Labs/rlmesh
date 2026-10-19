@@ -251,7 +251,7 @@ pub(crate) fn serve_host<F: EnvFactory>(
 }
 
 /// Steps 0 to 5 of a factory serve: the built, bound server.
-fn prepare_serve<F: EnvFactory>(
+pub(crate) fn prepare_serve<F: EnvFactory>(
     factory: &mut F,
     address: &str,
     options: &EnvFactoryServeOptions,
@@ -309,6 +309,8 @@ fn prepare_serve<F: EnvFactory>(
         let made = factory.make_env(&options.make_kwargs)?;
         let publish = Publish {
             envelope: describe_with(factory, crate::env::ServedEnv::from(&made)),
+            peer_runtime: (host.language != "rust")
+                .then(|| super::server::peer_runtime(host.language, &host.extra)),
         };
         match made {
             MadeEnv::Env(env) => EnvServer::lanes_resolved(vec![env], server_options, publish)?,
@@ -333,6 +335,8 @@ fn prepare_serve<F: EnvFactory>(
         );
         let publish = Publish {
             envelope: describe_with(factory, served),
+            peer_runtime: (host.language != "rust")
+                .then(|| super::server::peer_runtime(host.language, &host.extra)),
         };
         EnvServer::lanes_resolved(lanes, server_options, publish)?
     };
@@ -427,7 +431,9 @@ impl CancelWatcher {
 
 /// Bind `kwargs` with each discriminant's default; the branch binding when
 /// the factory declares discriminants.
-fn bind_discriminants<F: EnvFactory>(kwargs: &Kwargs) -> Result<(Kwargs, Option<Kwargs>)> {
+pub(crate) fn bind_discriminants<F: EnvFactory>(
+    kwargs: &Kwargs,
+) -> Result<(Kwargs, Option<Kwargs>)> {
     let params = F::tag_params();
     if params.is_empty() {
         return Ok((kwargs.clone(), None));

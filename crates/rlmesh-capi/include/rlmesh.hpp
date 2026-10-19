@@ -4266,6 +4266,15 @@ struct EnvServerOptions {
 struct ModelServeOptions {
   std::optional<std::string> token{};
   std::optional<size_t> predict_concurrency{};
+  bool no_signal_handlers = false;
+  ModelServeOptions& with_no_signal_handlers(bool value) & {
+    no_signal_handlers = value;
+    return *this;
+  }
+  ModelServeOptions with_no_signal_handlers(bool value) && {
+    no_signal_handlers = value;
+    return std::move(*this);
+  }
   ModelServeOptions& with_token(std::optional<std::string> value) & {
     token = std::move(value);
     return *this;
@@ -4366,7 +4375,15 @@ struct EnvServerOptions {
     return std::move(*this);
   }
 };
+class EnvServer;
+class EnvFactoryBase;
+struct EnvFactoryServeOptions;
+namespace ext {
+EnvServer start(EnvFactoryBase& factory, std::string_view address,
+                const EnvFactoryServeOptions& options);
+}
 class EnvServer {
+  friend EnvServer ext::start(EnvFactoryBase&, std::string_view, const EnvFactoryServeOptions&);
   friend class EnvTarget;
   struct State {
     // The server handle is destroyed before its borrowed lanes.
@@ -4416,6 +4433,13 @@ class EnvServer {
     }
     state_->handle.reset(p);
     state_->contract = specs::EnvContract::copy_of(rlmesh_env_server_env_contract(p));
+  }
+
+  explicit EnvServer(detail::Owned<RLMeshEnvServer, rlmesh_env_server_free> server,
+                     detail::FromLibrary)
+      : state_(std::make_shared<State>(Env(static_cast<RLMeshEnv*>(nullptr)))) {
+    state_->handle = std::move(server);
+    state_->contract = specs::EnvContract::copy_of(rlmesh_env_server_env_contract(raw()));
   }
 
  public:
@@ -4591,9 +4615,32 @@ class EnvFactoryBase {
     c.workflow_edition = detail::ptr(options.workflow_edition);
     c.make_kwargs = k.raw();
     if (options.cancel) c.cancel = options.cancel->raw();
+    RLMeshExtEnvFactoryServeOptions extra = RLMESH_EXT_ENV_FACTORY_SERVE_OPTIONS_INIT;
+    c.ext = &extra;
     detail::check_status(rlmesh_env_factory_serve(handle(), std::string(address).c_str(), &c));
   }
 };
+namespace ext {
+/// Prepare and start a factory server without signal handlers. The factory may
+/// be reused or destroyed on return; the returned server owns its made envs.
+inline EnvServer start(EnvFactoryBase& factory, std::string_view address,
+                       const EnvFactoryServeOptions& options = {}) {
+  Value k(options.make_kwargs);
+  RLMeshEnvFactoryServeOptions c = RLMESH_ENV_FACTORY_SERVE_OPTIONS_INIT;
+  c.num_envs = options.num_envs;
+  c.workflow_edition = detail::ptr(options.workflow_edition);
+  c.make_kwargs = k.raw();
+  if (options.cancel) c.cancel = options.cancel->raw();
+  RLMeshExtEnvFactoryServeOptions extra = RLMESH_EXT_ENV_FACTORY_SERVE_OPTIONS_INIT;
+  c.ext = &extra;
+  RLMeshEnvServer* server = nullptr;
+  detail::check_status(
+      rlmesh_ext_env_factory_start(factory.handle(), std::string(address).c_str(), &c, &server));
+  return EnvServer(detail::own<RLMeshEnvServer, rlmesh_env_server_free>(server),
+                   detail::FromLibrary{});
+}
+}  // namespace ext
+
 template <class F>
 class EnvFactory : public EnvFactoryBase {
   static RLMeshEnvFactory* build(EnvFactoryBase& base) {
@@ -5368,6 +5415,7 @@ class Model {
     RLMeshExtModelServeOptions extra = RLMESH_EXT_MODEL_SERVE_OPTIONS_INIT;
     if (options.ext) {
       extra.token = detail::ptr(options.ext->token);
+      extra.no_signal_handlers = options.ext->no_signal_handlers;
       extra.has_predict_concurrency = options.ext->predict_concurrency.has_value();
       if (options.ext->predict_concurrency)
         extra.predict_concurrency = *options.ext->predict_concurrency;

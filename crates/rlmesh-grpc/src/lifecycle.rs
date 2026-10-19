@@ -66,6 +66,14 @@ pub(crate) fn apply_remote_shutdown_opt_in(
     options
 }
 
+/// An endpoint's host language runtime, independent of process-wide identity.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PeerRuntime {
+    pub language: String,
+    pub language_version: String,
+    pub framework_versions: BTreeMap<String, String>,
+}
+
 /// Transport lifecycle policy shared by the env and model servers.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ServeOptions {
@@ -116,6 +124,9 @@ pub struct ServeOptions {
     /// servers in one process can each report their own (e.g. their own
     /// describe envelope). Empty by default. Ignored by the model server.
     pub peer_info_extra: BTreeMap<String, String>,
+    /// Endpoint-local host runtime, replacing the process defaults for these
+    /// fields. Ignored by the model server.
+    pub peer_runtime: Option<PeerRuntime>,
 }
 
 /// Default per-connection concurrency cap for pipelined model predict requests.
@@ -312,6 +323,7 @@ mod tests {
                 workflow_edition: None,
                 compress_responses: false,
                 peer_info_extra: BTreeMap::new(),
+                peer_runtime: None,
             }
         );
     }

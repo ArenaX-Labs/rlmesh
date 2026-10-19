@@ -3,7 +3,14 @@ from __future__ import annotations
 from copy import deepcopy
 
 import pytest
-from rlmesh_api_surface.parity import ERROR_BASES, Item, check, python_entries, snake
+from rlmesh_api_surface.parity import (
+    ERROR_BASES,
+    Item,
+    check,
+    extension_scope,
+    python_entries,
+    snake,
+)
 
 
 def fixture():
@@ -528,3 +535,11 @@ def test_detected_protocol_params_require_a_real_slot_and_call_arity():
     assert "predict" not in item.protocol_params
     protocol_metadata(source, item, {}, "RLMeshModelVtable", "P")
     assert "predict" not in item.protocols
+
+
+@pytest.mark.parametrize("language", ["rust", "c", "cpp"])
+def test_factory_host_extension_is_c_only(language):
+    prefix = "RLMesh" if language == "c" else "rlmesh::"
+    assert extension_scope(
+        prefix + "EnvFactoryServeOptions::ext", language, Item("field")
+    ) == (language == "c")

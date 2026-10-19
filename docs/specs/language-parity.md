@@ -1,6 +1,6 @@
 # Language parity
 
-Status: Reviewed (Opus rounds 2–6); user decisions settled 2026-10-15; implemented in Python, Rust, C (ABI 5) and C++17 (tested also at C++20; D-5 amended 2026-10-16). C# column: Reviewed (Opus and GPT rounds 1–3), 2026-10-19; a design record of how C# maps onto the v1 surface, merged as a document and not implemented as an API in v0.2 (D-45, scope change 2026-10-19). v0.2 implements the C# foundation with a minimal Experimental surface and the C ABI additions X-12 to X-16 (X-12, X-13 and X-15 approved by the user 2026-10-19; X-14 and X-16 pending).
+Status: Reviewed (Opus rounds 2–6); user decisions settled 2026-10-15; implemented in Python, Rust, C (ABI 5) and C++17 (tested also at C++20; D-5 amended 2026-10-16). C# column: Reviewed (Opus and GPT rounds 1–3), 2026-10-19; a design record of how C# maps onto the v1 surface, merged as a document and not implemented as an API in v0.2 (D-45, scope change 2026-10-19). v0.2 implements the C# foundation with a minimal Experimental surface and the C ABI additions X-12 to X-16 (all **Approved by the user, 2026-10-19**).
 
 RLMesh is one library in five languages: Python (the reference), Rust (the
 `rlmesh` facade crate), C (`crates/rlmesh-capi/include/rlmesh.h`), C++
@@ -33,8 +33,8 @@ v0.2 ships on the current wire; v2 is a clean break after it. So:
   and no part of it ships behind a flag (D-45). The few env-serving types
   v0.2 exposes are Experimental and may change for v2.
 - **v0.2 implements** (D-45): the additive C ABI changes X-12 to X-16
-  ([below](#c-abi-additions-for-v02)), each pending user approval, and the
-  C# foundation: native library loading and the ABI gate, the generated
+  ([below](#c-abi-additions-for-v02)), each **Approved by the user,
+  2026-10-19**, and the C# foundation: native library loading and the ABI gate, the generated
   interop layer, ownership records and `SafeHandle` types, callback
   trampolines with exception containment (X-11), the internal cancellation
   bridge (unit-tested against the C ABI; no public v0.2 call uses it), the
@@ -71,7 +71,7 @@ v0.2 ships on the current wire; v2 is a clean break after it. So:
    2026-10-15. Every one is listed under
    [Decisions accepted by the user](#decisions-accepted-by-the-user).
    "Pending (C#)" marks a C# default awaiting review; the ones v0.2 needs,
-   and each pending C ABI addition, are listed under
+   alongside the approved C ABI additions, are listed under
    [C# decisions pending user review](#c-decisions-pending-user-review).
 
 ## Files
@@ -130,8 +130,8 @@ D-17 (C# wrapping C, for game engines) is the user's, amended by the
 default, written into the rules and area tables as "Pending (C#)", revised
 after C# review rounds 1 to 3 (rules' Review notes). The X-12 to X-16 rows
 are additive C ABI changes, detailed in
-[C ABI additions for v0.2](#c-abi-additions-for-v02), each pending user
-approval; D-44's test mechanism is a pending user decision, not a
+[C ABI additions for v0.2](#c-abi-additions-for-v02), each **Approved by the user,
+2026-10-19**; D-44's test mechanism is a pending user decision, not a
 recommendation. Accepting one makes it settled; rejecting one is a spec
 change in the cited rule or area.
 
@@ -185,9 +185,9 @@ exception classes, `Ext.EnvServerOptions`, `Ext.Lifetime`,
 | ENV-40 | How do server twins act, and where do startup failures throw?       | v0.2: `ShutdownAsync` only, its token stopping the wait while the drain finishes on a pool thread; the server binds in its constructor, so a bind failure throws there. Design record: `ServeAsync` is a plain method (already cancelled: no start, server untouched; otherwise `Start()`, so a start failure throws from the call, then an internal `async` wait whose cancel runs `Shutdown()` on the twin's worker); `WaitAsync` waits in 100 ms slices                                                                                                                                                                                                                                                                  | C# form of ENV-32's dropped futures; never starts a cancelled server, never blocks inside `Cancel()`, and an engine polls `Wait(TimeSpan.Zero)` without a twin                                                                                                             |
 | X-12   | C ABI: per-call cancellation?                                       | Seven explicit `rlmesh_ext_` variants taking a `cancel` argument (session reset, predict, step; remote env and remote vector env reset, step), subscribed once at native admission and carried to the call's watcher; C++ `ext::` overloads. No thread-local scope. **Approved by the user, 2026-10-19**                                                                                                                                                                                                                                                                                                                                                                                                                    | Fixed-signature single calls are the only cancellable calls without an explicit input; for C and C++ hosts (a future Unreal host; no in-repo caller yet) and the C# foundation's internal bridge; no ambient state                                                         |
 | X-13   | C ABI: a background factory serve?                                  | `rlmesh_ext_env_factory_start(factory, address, options, &server)`: per-call gate collection moved into the server, factory admission released at return, the caller's `cancel` subscribed once at admission and that subscription carried through preparation into the server's watcher; a firing makes the first of `wait` / `shutdown` report the cancellation class; C++ `ext::start`. **Approved by the user, 2026-10-19**                                                                                                                                                                                                                                                                                             | C and C++ engine hosts (a future Unreal host; the in-repo plugin serves a plain `EnvServer`) keep the factory envelope (ENV-13) without signal handlers                                                                                                                    |
-| X-14   | C ABI: a host runtime for factory serves?                           | `RLMeshEnvFactoryServeOptions.ext` → `RLMeshExtEnvFactoryServeOptions.host_runtime_json`. **Pending user approval**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | A C++ or C# factory serve reports language `"c"` today                                                                                                                                                                                                                     |
+| X-14   | C ABI: a host runtime for factory serves?                           | `RLMeshEnvFactoryServeOptions.ext` → `RLMeshExtEnvFactoryServeOptions.host_runtime_json`. **Approved by the user, 2026-10-19**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | A C++ or C# factory serve reports language `"c"` today                                                                                                                                                                                                                     |
 | X-15   | C ABI: model serve without signal handlers?                         | `RLMeshExtModelServeOptions.no_signal_handlers` (zero = install), not `rlmesh_model_start`. **Approved by the user, 2026-10-19**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | No language has a model server handle; the facade already has the switch; for C and C++ hosts serving a model from their own thread (no in-repo caller yet)                                                                                                                |
-| X-16   | C ABI: unregister a trusted entrypoint?                             | `rlmesh_ext_unregister_entrypoint(name, expected, &removed)`: removes only the registration `expected` made (NULL = any), dropped outside the registry lock; C++ and Rust `ext` counterparts. **Pending user approval**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | A plugin or domain that unloads must not keep a function pointer in the registry, nor remove another owner's                                                                                                                                                               |
+| X-16   | C ABI: unregister a trusted entrypoint?                             | `rlmesh_ext_unregister_entrypoint(name, expected, &removed)`: removes only the registration `expected` made (NULL = any), dropped outside the registry lock; C++ and Rust `ext` counterparts. **Approved by the user, 2026-10-19**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | A plugin or domain that unloads must not keep a function pointer in the registry, nor remove another owner's                                                                                                                                                               |
 
 ### Design record (no v0.2 decision)
 
@@ -238,8 +238,8 @@ and X-16 lets an unloading plugin or C# domain remove only its own
 registrations. ABI 5 is
 unreleased, so each lands in the ABI 5 generation with no bump; struct
 fields are appended under R-19, after the ABI-5 `sizeof`, as
-`RLMeshRemoteEnvOptions.api_key` was. All five are **pending user
-approval** ([table](#c-decisions-pending-user-review)); C++ gains each one
+`RLMeshRemoteEnvOptions.api_key` was. All five are
+**Approved by the user, 2026-10-19** ([table](#c-decisions-pending-user-review)); C++ gains each one
 in the same release, and Rust gains what it lacks (X-16 only). A rejected
 addition drops the feature that needs it from v0.2 (R-16), not its safety.
 
@@ -414,10 +414,9 @@ RLMESH_API RLMeshStatus rlmesh_ext_env_factory_start(
 - **Nothing of the factory survives the return.** The call makes its own
   gate collection for the envs it makes, instead of the factory's one
   `serve_gates` slot that the foreground serve and a session's factory
-  borrow use (`capi/env_factory.rs` `ServeDrain`, whose drop expects to own
-  that slot): the `make` callback routes made envs into the collection of
-  the call that is running (its `Scope` frame), not into the factory's
-  data. On success the collection moves into the returned
+  borrow use (`capi/env_factory.rs` `ServeDrain`): the `make` callback
+  routes made envs into the collection of the call that is running (its
+  `Scope` frame), not into the factory's data. On success the collection moves into the returned
   `RLMeshEnvServer`, as `output()` moves lanes, the vector env and
   `_claims` (`capi/env_server.rs`), and the server stops and closes those
   envs once when it is shut down or freed. Before returning, the call
@@ -433,9 +432,9 @@ RLMESH_API RLMeshStatus rlmesh_ext_env_factory_start(
   no firing. Then, right after the factory's admission succeeds (a call
   refused there subscribes nothing, as in X-12), the call subscribes
   `cancel` once (`CancelToken::subscribe`, `rs/ext.rs`), and that one
-  subscription lives until the serve ends. A firing pending from an idle
-  `cancel()` is taken by the subscription and fails the call before the
-  branch check. The subscription records the token's generation, so any
+  subscription lives through the serve's drain and close. A firing pending
+  from an idle `cancel()` is taken by the subscription and fails the call
+  before the branch check. The subscription records the token's generation, so any
   later firing is seen through it whether or not other calls share the
   token: a token's `cancel()` sets the pending flag only when it has no
   subscriber (`rs/ext.rs` `cancel`), so a check of that flag alone
@@ -449,11 +448,16 @@ RLMESH_API RLMeshStatus rlmesh_ext_env_factory_start(
   that the returned server owns (with its own token reference, a clone, so
   the caller may free its own) for as long as it serves; on every failure
   path, and when the server stops, it is released.
-- **Which call reports it.** A firing seen by the watcher first marks the
-  server's shared serve result as the cancellation class, then triggers
-  the drain (stop, close the made envs). Of `rlmesh_env_server_wait` and
-  `rlmesh_env_server_shutdown`, whichever first observes the stop returns
-  that result, once, as either returns a background serve error today
+- **Which call reports it.** A firing counts only when its watcher wins
+  the shutdown trigger race. That winning trigger selects cancellation
+  for the shared background serve result and starts the drain (stop, close
+  the made envs). Local shutdown and drop sample the same subscription
+  synchronously before competing for the trigger, so a firing just before
+  shutdown is not lost between watcher polls. There is no final sample
+  that changes the selected result after a different stop has won. Of
+  `rlmesh_env_server_wait` and `rlmesh_env_server_shutdown`, whichever first
+  observes the stop returns that result, once, as either returns a
+  background serve error today
   (`h:2750`; `rs/env/server.rs` `shutdown`, `poll_wait`), and the other
   then reports success; this is the foreground serve's cancellation
   (ENV-33) in background form. The caller's own `shutdown` before any
@@ -461,8 +465,8 @@ RLMESH_API RLMeshStatus rlmesh_ext_env_factory_start(
   nothing. Facade change: today a started server stopped by
   `trigger("cancelled")` joins with `Ok(())`, and only the foreground
   `serve_host` maps a fired watcher to `Error::Cancelled`
-  (`rs/env/factory.rs`); X-13's watcher records the cancellation in the
-  server's shared state, which the join maps.
+  (`rs/env/factory.rs`); X-13's watcher records only a winning cancellation,
+  which `EnvServer::spawn_background` maps into the shared join result.
 - **Failure.** On any failure `*out` is NULL, every env made so far is
   closed and freed exactly once, the factory's admission and scope are
   released, and the factory is usable.
@@ -528,9 +532,12 @@ typedef struct RLMeshEnvFactoryServeOptions {
   /* Appended after ABI 5: _reserved (0) starts exactly at the ABI-5 sizeof. */
   uint64_t _reserved;
   const RLMeshExtEnvFactoryServeOptions* ext; /* NULL = none: legacy runtime */
+#if UINTPTR_MAX == UINT32_MAX
+  uint8_t _reserved1[4]; /* Explicit tail for 32-bit ABIs with 8-byte uint64 alignment. */
+#endif
 } RLMeshEnvFactoryServeOptions;
 #define RLMESH_ENV_FACTORY_SERVE_OPTIONS_MIN_SIZE offsetof(RLMeshEnvFactoryServeOptions, _reserved)
-/* _INIT appends 0, NULL. */
+/* _INIT appends 0, NULL, and on 32-bit targets {0} for _reserved1. */
 ```
 
 - **Contract.** `rlmesh_env_factory_serve` and `rlmesh_ext_env_factory_start`
@@ -552,6 +559,9 @@ typedef struct RLMeshEnvFactoryServeOptions {
   appended pointer never overlaps an ABI-5 caller's tail padding, and an
   ABI-5 caller's struct reads as `ext` NULL. `_reserved` must be zero, as in
   the structs that already check theirs (`capi/describe_api.rs`).
+  The new 64-bit size is 56 bytes with no tail padding. On 32-bit targets
+  `_reserved1[4]` makes the tail explicit, including ARM's 8-byte uint64
+  alignment: x86 minimum/size is 24/40 and ARM minimum/size is 32/48.
   `RLMeshExtEnvFactoryServeOptions` is new, so its minimum is its `sizeof`.
 - **Consumers.** C++: `EnvFactoryServeOptions` gains no member; the wrapper
   always passes an `ext` carrying `RLMESH_HOST_RUNTIME_JSON`, as for env

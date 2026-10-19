@@ -112,3 +112,13 @@ pub fn run_model_local(
         Arc::new(rlmesh_runtime::NoopRuntimeHooks),
     ))
 }
+
+/// Serve a binding's model with explicit control over process signal handlers.
+pub fn serve_model(
+    model: &Model,
+    address: &str,
+    options: crate::ModelServeOptions,
+    foreground: bool,
+) -> Result<()> {
+    model.serve_host(address, options, foreground)
+}

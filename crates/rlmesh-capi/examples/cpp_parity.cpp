@@ -7,6 +7,9 @@
 #include <thread>
 #include <type_traits>
 #include <unordered_set>
+#if defined(__unix__) || defined(__APPLE__)
+#include <signal.h>
+#endif
 using namespace rlmesh;
 using namespace rlmesh::spaces;
 namespace {
@@ -329,9 +332,15 @@ void session_target_lifetimes() {
     return reservation.address();
   }();
   ext::CancelToken stop;
+#if defined(__unix__) || defined(__APPLE__)
+  struct sigaction before_int{}, before_term{}, during{};
+  assert(sigaction(SIGINT, nullptr, &before_int) == 0);
+  assert(sigaction(SIGTERM, nullptr, &before_term) == 0);
+#endif
   auto server = std::async(std::launch::async, [&] {
     try {
-      served.serve(address, rlmesh::ModelServeOptions{}.with_cancel(stop));
+      served.serve(address, rlmesh::ModelServeOptions{}.with_cancel(stop).with_ext(
+                                ext::ModelServeOptions{}.with_no_signal_handlers(true)));
     } catch (const ext::CancelledError&) {
     }
   });
@@ -347,6 +356,12 @@ void session_target_lifetimes() {
       (void)info;
       assert(s.predict(obs) == Value(0));
       assert(std::get<1>(s.step(0)) == 1);
+#if defined(__unix__) || defined(__APPLE__)
+      assert(sigaction(SIGINT, nullptr, &during) == 0);
+      assert(during.sa_handler == before_int.sa_handler);
+      assert(sigaction(SIGTERM, nullptr, &during) == 0);
+      assert(during.sa_handler == before_term.sa_handler);
+#endif
     }
     {
       auto s =
@@ -633,6 +648,13 @@ void factories_remote_describe() {
   Factory factory;
   auto made = factory.make_env();
   assert(factory.builds == 1);
+  auto factory_server = ext::start(factory, "tcp://127.0.0.1:0");
+  assert(ext::env_server_describe_json(factory_server).find("c++") != std::string::npos);
+  auto second_server = ext::start(factory, "tcp://127.0.0.1:0");
+  assert(rlmesh::run(RANDOM_SAMPLE, factory_server).total_steps() == 2);
+  factory_server.shutdown();
+  assert(rlmesh::run(RANDOM_SAMPLE, second_server).total_steps() == 2);
+  second_server.shutdown();
   Model model(Greedy{});
   assert(model.run(factory).num_episodes() == 1);
   auto description = describe<Greedy>();

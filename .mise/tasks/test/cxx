@@ -96,6 +96,8 @@ case "$CC" in *zig*)
       -c crates/rlmesh-capi/examples/c_dlpack.c -o "$tmp/dlpack_$triple.o"
     $CC -target "$triple" -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
       -c crates/rlmesh-capi/examples/c_recorder.c -o "$tmp/recorder_$triple.o"
+    $CC -target "$triple" -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
+      -c crates/rlmesh-capi/examples/c_serving.c -o "$tmp/serving_$triple.o"
   done
 ;; esac
 
@@ -134,6 +136,11 @@ echo "==> C ABI 5 factories, discriminants, variants and cancellation"
 $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/c_factory.c "${link[@]}" -o "$tmp/c_factory"
 "$tmp/c_factory"
+echo "==> factory start lifetime/failures, host envelopes and model signal options"
+$CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
+  crates/rlmesh-capi/examples/c_serving.c "${link[@]}" -o "$tmp/c_serving"
+"$tmp/c_serving"
+uv run --with grpcio python crates/rlmesh-capi/examples/c_serving.py "$tmp/c_serving"
 echo "==> C ABI 5 typed adapters, transforms, ownership and model integration"
 $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/c_adapters.c "${link[@]}" -o "$target/c_adapters_smoke"

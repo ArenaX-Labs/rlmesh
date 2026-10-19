@@ -358,6 +358,7 @@ pub fn env_factory_native_serve<F: crate::EnvFactory>(
     factory: &mut F,
     address: &str,
     options: crate::EnvFactoryServeOptions,
+    host_runtime: serde_json::Map<String, serde_json::Value>,
 ) -> Result<()> {
     crate::env::factory::serve_host(
         factory,
@@ -366,9 +367,61 @@ pub fn env_factory_native_serve<F: crate::EnvFactory>(
         &crate::describe::Host {
             component: "rlmesh-capi",
             language: "c",
-            extra: Default::default(),
+            extra: host_runtime,
         },
     )
+}
+
+/// Build and start a binding's factory server without installing signal handlers.
+/// All factory callbacks finish before return; the server owns a cancellation subscription until it stops.
+pub fn env_factory_native_start<F: crate::EnvFactory>(
+    factory: &mut F,
+    address: &str,
+    mut options: crate::EnvFactoryServeOptions,
+    host_runtime: serde_json::Map<String, serde_json::Value>,
+) -> Result<crate::EnvServer> {
+    // Validate inputs before subscribing: a refused call must not consume a
+    // pre-fired token. These reads invoke no C factory hooks.
+    crate::ext::BindAddress::parse(address)?;
+    if let Some(edition) = options
+        .workflow_edition
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
+        crate::editions::validate_workflow_edition(edition)?;
+    }
+    crate::env::factory::bind_discriminants::<F>(&options.make_kwargs)?;
+    // The C binding has already acquired factory admission. Subscribe once
+    // before any hooks, consuming a pre-fired token here rather than polling
+    // its idle flag: other active operations may share the same token.
+    let subscription = options.cancel.take().map(|token| token.subscribe());
+    if subscription
+        .as_ref()
+        .is_some_and(crate::ext::CancelSubscription::fired)
+    {
+        return Err(crate::Error::Cancelled);
+    }
+    let server = crate::env::factory::prepare_serve(
+        factory,
+        address,
+        &options,
+        &crate::describe::Host {
+            component: "rlmesh-capi",
+            language: "c",
+            extra: host_runtime,
+        },
+    )?;
+    if subscription
+        .as_ref()
+        .is_some_and(crate::ext::CancelSubscription::fired)
+    {
+        // Cancellation wins over cleanup errors; the binding's drain still
+        // closes every made env when a close callback fails.
+        let _ = server.shutdown();
+        return Err(crate::Error::Cancelled);
+    }
+    server.start_subscribed(subscription)?;
+    Ok(server)
 }
 
 pub use crate::credentials::ClientAuth;
