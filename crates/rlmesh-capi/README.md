@@ -485,6 +485,20 @@ no firing. Each admitted call watches both this token and its handle token,
 including lazy session factory creation. The caller can free the token after
 the call returns. One token can cancel multiple calls and a started server.
 
+## Entrypoint registration lifetime
+
+`rlmesh_ext_unregister_entrypoint(name, expected, &removed)` removes a trusted
+entrypoint only when its registered transform has `expected`'s construction
+identity. Pass NULL for `expected` to remove any registration. The caller keeps
+owning the expected handle. `removed` is false for an unknown name or identity
+mismatch. NULL or empty names and NULL `out_removed` are invalid arguments.
+
+An existing resolved route retains its transform and completes normally after
+unregistration. New resolves fail with `AdapterResolutionError` until another
+transform is registered. A transform's deleter runs when its final reference is
+released. Both unregistration and replacement release the registry lock before
+running deleters, so deleters may register or unregister entrypoints themselves.
+
 Cancellation is checked synchronously after native result processing and each
 subscription is detached under its token lock. A firing before that completion
 boundary reports cancellation even if the polling watcher has not run. With an

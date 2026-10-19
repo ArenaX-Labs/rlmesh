@@ -7744,6 +7744,13 @@ namespace ext {
 inline std::string env_server_describe_json(const EnvServer& server) {
   return detail::text(rlmesh_ext_env_server_describe_json, server.raw());
 }
+inline bool unregister_entrypoint(std::string_view name,
+                                  const adapters::ObsTransform* expected = nullptr) {
+  bool removed = false;
+  detail::check_status(rlmesh_ext_unregister_entrypoint(
+      std::string(name).c_str(), expected ? expected->raw() : nullptr, &removed));
+  return removed;
+}
 inline void register_entrypoint(std::string_view entrypoint,
                                 const adapters::ObsTransform& transform) {
   detail::check_status(

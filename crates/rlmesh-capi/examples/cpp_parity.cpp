@@ -1,5 +1,7 @@
 // Executable ABI 5 C++17 parity fixtures. Built with GCC and Clang by test:cxx.
 #include <cassert>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <future>
 #include <iostream>
@@ -10,6 +12,13 @@
 #if defined(__unix__) || defined(__APPLE__)
 #include <signal.h>
 #endif
+#define CHECK(condition)                                                   \
+  do {                                                                     \
+    if (!(condition)) {                                                    \
+      std::fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #condition); \
+      std::abort();                                                        \
+    }                                                                      \
+  } while (false)
 using namespace rlmesh;
 using namespace rlmesh::spaces;
 namespace {
@@ -980,6 +989,49 @@ void adapters_readers_recorder() {
     assert(false);
   } catch (const AdapterResolutionError& e) {
     assert(std::string(e.what()).find("unregistered custom input entrypoint") != std::string::npos);
+  }
+  // X-16: owner identity, retained routes, and a live model using that route.
+  {
+    const auto name = "cpp:unregistered:input";
+    auto owner = std::make_shared<int>(42);
+    std::weak_ptr<int> weak = owner;
+    std::optional<ObsTransform> registered;
+    registered.emplace([owner](const Value&) { return vector(static_cast<float>(*owner)); });
+    owner.reset();
+    ObsTransform previous([](const Value&) { return vector(1); });
+    ext::register_entrypoint(name, previous);
+    ext::register_entrypoint(name, *registered);
+    CHECK(!ext::unregister_entrypoint(name, &previous));
+    CHECK(!ext::unregister_entrypoint("cpp:unknown"));
+    {
+      Env live(Tagged{});
+      tag(live, tags);
+      Model model([](const Value&) { return vector(0); },
+                  rlmesh::ModelOptions{}.with_spec(missing));
+      auto session = model.session(live, rlmesh::SessionOptions{}.with_trust_entrypoints(true));
+      auto observation = std::get<0>(session.reset());
+      session.predict(observation);  // Resolve before removing the registry's reference.
+      {
+        auto expected = *registered;
+        CHECK(ext::unregister_entrypoint(name, &expected));
+        CHECK(!ext::unregister_entrypoint(name, &expected));
+      }
+      registered.reset();
+      session.predict(observation);
+      CHECK(!weak.expired());
+      try {
+        resolve(tags, space.spec(), space.spec(), missing,
+                rlmesh::adapters::ResolveOptions{}.with_trust_entrypoints(true));
+        CHECK(false);
+      } catch (const AdapterResolutionError&) {
+      }
+    }
+    CHECK(weak.expired());
+    try {
+      ext::unregister_entrypoint("");
+      CHECK(false);
+    } catch (const ValueError&) {
+    }
   }
   auto adapter = resolve(tags, space.spec(), space.spec(), spec);
   auto wrapped = adapter.wrap_predict([](const Value& v) { return v; });

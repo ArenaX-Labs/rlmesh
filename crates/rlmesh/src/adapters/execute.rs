@@ -15,12 +15,33 @@ pub(crate) fn register(name: &str, transform: ObsTransform) -> Result<()> {
     if name.is_empty() {
         return Err(Error::invalid_argument("entrypoint name must not be empty"));
     }
-    ENTRYPOINTS
+    let replaced = ENTRYPOINTS
         .get_or_init(Default::default)
         .write()
         .unwrap_or_else(|e| e.into_inner())
         .insert(name.into(), transform);
+    // Foreign deleters may re-enter the registry. Release the guard first.
+    drop(replaced);
     Ok(())
+}
+pub(crate) fn unregister(name: &str, expected: Option<&ObsTransform>) -> Result<bool> {
+    if name.is_empty() {
+        return Err(Error::invalid_argument("entrypoint name must not be empty"));
+    }
+    let removed = {
+        let mut registry = ENTRYPOINTS
+            .get_or_init(Default::default)
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
+        if expected.is_none_or(|expected| registry.get(name) == Some(expected)) {
+            registry.remove(name)
+        } else {
+            None
+        }
+    };
+    let found = removed.is_some();
+    drop(removed);
+    Ok(found)
 }
 fn callback_error(error: Error) -> ApplyError {
     ApplyError {

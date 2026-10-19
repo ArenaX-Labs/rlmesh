@@ -2501,6 +2501,13 @@ RLMESH_API RLMeshStatus rlmesh_adapters_tag(RLMeshEnv* env, const RLMeshEnvTags*
                                             const RLMeshTagOptions* options);
 RLMESH_API RLMeshStatus rlmesh_adapters_tag_vector(RLMeshVectorEnv* env, const RLMeshEnvTags* tags,
                                                    const RLMeshTagOptions* options);
+/* Remove only expected's registration (NULL = any). Existing routes keep theirs.
+ * Writes false to out_removed before validation when it is non-NULL.
+ * Empty/NULL names and NULL out_removed are invalid. Foreign deleters run after
+ * releasing the registry lock. */
+RLMESH_API RLMeshStatus rlmesh_ext_unregister_entrypoint(const char* entrypoint,
+                                                         const RLMeshObsTransform* expected,
+                                                         bool* out_removed);
 RLMESH_API RLMeshStatus rlmesh_ext_register_entrypoint(const char* entrypoint,
                                                        const RLMeshObsTransform* transform);
 
