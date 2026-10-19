@@ -100,9 +100,15 @@ pub(crate) fn vector_contract_of(env: &dyn VectorEnv) -> Result<EnvContract> {
 /// the text `"{op} failed: {message}"`, recoverable only for a recoverable
 /// Environment-class error.
 pub(crate) fn authored_failure(op: &str, err: &Error) -> EnvRuntimeError {
-    let (message, recoverable) = match err {
+    // Binding payloads preserve local exception identity, but do not change
+    // the authored error's wire classification or its raw environment text.
+    let mut source = err;
+    while let Error::Attached(attached) = source {
+        source = attached.error();
+    }
+    let (message, recoverable) = match source {
         Error::Environment(env) => (env.message.clone(), env.is_recoverable),
-        other => (other.to_string(), false),
+        _ => (err.to_string(), false),
     };
     let text = format!("{op} failed: {message}");
     if recoverable {
