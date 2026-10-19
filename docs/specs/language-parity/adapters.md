@@ -791,7 +791,8 @@ Shared native engine in every language:
 
 ### C#
 
-- Not implemented: every C# cell is missing (G-29).
+- Design record (D-45): v0.2 builds no C# adapters surface; every C# cell
+  records the mapping for v2's binding, not a backlog.
 - C# builds trees as immutable managed records and lowers them to C's
   frozen node and leaf structs only for the call that consumes them
   (`rlmesh_model_spec_new`, `rlmesh_env_tags_new`, `rlmesh_adapters_previous`,

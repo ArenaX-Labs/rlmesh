@@ -440,7 +440,9 @@ text of an author's env or model failure follows COR-27 (COR-P11).
 
 ### C#
 
-- **Not implemented** (G-29): every C# cell above is the target.
+- **Design record** (D-45): v0.2 ships only R-28's surface (`Value` with
+  COR-29's conversions, `Metadata`, R-21's exception classes); every other
+  C# cell above records the mapping for v2's binding, not a backlog.
 - `Metadata` is managed (a C# map converted to a C DICT `RLMeshValue*` at
   each call), as C++'s `Metadata` is a C++ class; `Value` wraps the C
   handle. Converting a `Metadata` into a `Value` snapshots it (COR-21).

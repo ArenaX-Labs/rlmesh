@@ -751,8 +751,18 @@ C++ (`hpp`):
 
 C# (`cs/`):
 
-- Not implemented (G-29). `RemoteEnv`, `RemoteVectorEnv` and `RemoteModel`
-  wrap the C handles one to one as C++ does, with the C# column above.
+- Design record (D-45): v0.2 builds no C# remote clients (its tests drive
+  the C remote client through the internal raw layer). The column above
+  records how `RemoteEnv`, `RemoteVectorEnv` and `RemoteModel` would wrap
+  the C handles one to one as C++ does; it is not a backlog.
+- Twins' cancellation (R-18): `ResetAsync` and `StepAsync` pass their
+  per-operation token through X-12's `rlmesh_ext_remote_env_reset` /
+  `_step` (and the vector forms). The other twins (`RenderAsync`,
+  `CloseAsync`, `ShutdownAsync`, `ConnectAsync`, `RemoteModel`'s) have no
+  per-call input: their `CancellationToken` is checked before scheduling,
+  and after that the call runs to its client timeout. Firing the handle's
+  shared token instead would reach the handle's next call. v2's
+  per-operation context removes the limit (Lessons 3).
 - TLS, `api_key` and `RLMESH_API_KEY` resolution all happen in the C
   library's dialer (RMT-22): the C# layer passes `Address`, `ApiKey` and
   `TlsCaFile` through and uses no .NET networking (`SslStream`,
