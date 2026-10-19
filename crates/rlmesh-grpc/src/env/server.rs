@@ -172,6 +172,11 @@ impl<E: Environment> GrpcEnvServer<E> {
     /// this endpoint's own [`ServeOptions::peer_info_extra`], which wins.
     fn peer_info(&self) -> rlmesh_proto::core::v1::PeerInfo {
         let mut info = peer_info("rlmesh-env");
+        if let Some(runtime) = &self.serve_options.peer_runtime {
+            info.language.clone_from(&runtime.language);
+            info.language_version.clone_from(&runtime.language_version);
+            info.framework_versions = runtime.framework_versions.clone().into_iter().collect();
+        }
         info.extra.extend(
             self.serve_options
                 .peer_info_extra
@@ -2092,8 +2097,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn each_server_reports_its_own_peer_info_extra() {
-        use crate::lifecycle::{ServeOptions, ShutdownTrigger};
+    async fn each_server_reports_its_own_peer_info_extra_and_runtime() {
+        use crate::lifecycle::{PeerRuntime, ServeOptions, ShutdownTrigger};
 
         let serve = |value: &str| {
             GrpcEnvServer::new_with_options(
@@ -2101,6 +2106,11 @@ mod tests {
                 ShutdownTrigger::new(),
                 ServeOptions {
                     peer_info_extra: [("test.contract".to_string(), value.to_string())].into(),
+                    peer_runtime: Some(PeerRuntime {
+                        language: value.into(),
+                        language_version: format!("{value}.1"),
+                        framework_versions: [("engine".into(), value.into())].into(),
+                    }),
                     ..ServeOptions::default()
                 },
                 None,
@@ -2118,6 +2128,12 @@ mod tests {
             .unwrap()
             .into_inner();
             let peer = response.base.unwrap().peer_info.unwrap();
+            assert_eq!(peer.language, expected);
+            assert_eq!(peer.language_version, format!("{expected}.1"));
+            assert_eq!(
+                peer.framework_versions,
+                [("engine".into(), expected.into())].into()
+            );
             assert_eq!(
                 peer.extra.get("test.contract").map(String::as_str),
                 Some(expected)

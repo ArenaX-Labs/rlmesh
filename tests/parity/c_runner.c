@@ -710,6 +710,40 @@ int main(int argc, char **argv) {
     result = NULL;
     rlmesh_run_hooks_free(capture);
     rlmesh_recorder_free(recorder);
+  } else if (!strcmp(op, "factory_start")) {
+    RLMeshEnvFactoryVtable fv = RLMESH_ENV_FACTORY_VTABLE_INIT;
+    fv.prepare = factory_prepare;
+    fv.make = factory_make;
+    RLMeshEnvFactory *factory = NULL;
+    OK(rlmesh_env_factory_new(&fv, &s, NULL, &factory));
+    RLMeshEnvServer *server = NULL;
+    RLMeshEnvFactoryServeOptions fo = RLMESH_ENV_FACTORY_SERVE_OPTIONS_INIT;
+    RLMeshExtCancelToken *token = NULL;
+    if (!strcmp(variant, "cancel")) {
+      OK(rlmesh_ext_cancel_token_new(&token));
+      fo.cancel = token;
+    }
+    OK(rlmesh_ext_env_factory_start(factory, "tcp://127.0.0.1:0", &fo,
+                                    &server));
+    rlmesh_env_factory_free(factory);
+    OK(rlmesh_run(RLMESH_RANDOM_SAMPLE, rlmesh_env_server_target(server), NULL,
+                  &result));
+    printf("\"episodes\":%llu",
+           (unsigned long long)rlmesh_run_result_num_episodes(result));
+    if (token) {
+      OK(rlmesh_ext_cancel_token_cancel(token));
+      double timeout = 5;
+      bool stopped = false;
+      REQUIRE(rlmesh_env_server_wait(server, &timeout, &stopped) ==
+                  RLMESH_ERR_CANCELLED &&
+              stopped);
+      OK(rlmesh_env_server_wait(server, &timeout, &stopped));
+      printf(",\"cancelled\":true");
+    }
+    OK(rlmesh_env_server_shutdown(server));
+    rlmesh_env_server_free(server);
+    printf(",\"prepares\":%d,\"env_closes\":%d", s.prepares, s.env_closes);
+    rlmesh_ext_cancel_token_free(token);
   } else if (!strcmp(op, "factory_cancel") ||
              (!strcmp(op, "drop_serve") &&
               (!strcmp(variant, "factory_cancel") ||

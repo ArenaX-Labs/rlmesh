@@ -1,0 +1,18 @@
+[[scenario]]
+id = "factory_background_lifetime"
+family = "Serving"
+rules = ["R-25", "ENV-13", "ENV-33"]
+operation = "factory_start"
+languages = ["c", "cpp"]
+why = "Background factory start is a C/C++ extension; Rust exposes the async serve twin."
+expect = { prepares = 1, env_closes = 1, episodes = 1 }
+
+[[scenario]]
+id = "factory_background_cancel"
+family = "Serving"
+rules = ["R-18", "R-25", "ENV-33"]
+operation = "factory_start"
+variant = "cancel"
+languages = ["c", "cpp"]
+why = "The C/C++ factory start extension owns a cancellation subscription for the whole background serve."
+expect = { prepares = 1, env_closes = 1, episodes = 1, cancelled = true }

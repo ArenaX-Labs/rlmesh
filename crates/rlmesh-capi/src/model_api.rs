@@ -245,6 +245,8 @@ pub struct RLMeshExtModelServeOptions {
     pub predict_concurrency: usize,
     pub has_predict_concurrency: bool,
     pub _reserved: [u8; std::mem::size_of::<usize>() - 1],
+    pub no_signal_handlers: bool,
+    pub _reserved1: [u8; std::mem::size_of::<usize>() - 1],
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -774,10 +776,12 @@ pub unsafe extern "C" fn rlmesh_model_serve(
         let address =
             unsafe { ffi::text(address) }?.ok_or_else(|| CapiError::invalid_arg("null address"))?;
         let options = unsafe { sizing::read(options, "RLMeshModelServeOptions") }?;
+        let mut no_signal_handlers = false;
         let opts = if let Some(o) = options {
             let ext = unsafe { sizing::read(o.ext, "RLMeshExtModelServeOptions") }?;
             let ext = ext
                 .map(|e| -> Result<_, CapiError> {
+                    no_signal_handlers = e.no_signal_handlers;
                     Ok(rlmesh::ext::ModelServeOptions {
                         token: unsafe { ffi::text(e.token) }?,
                         predict_concurrency: e
@@ -794,7 +798,7 @@ pub unsafe extern "C" fn rlmesh_model_serve(
         } else {
             rlmesh::ModelServeOptions::default()
         };
-        model.serve(&address, opts)?;
+        rlmesh::binding::model::serve_model(model, &address, opts, !no_signal_handlers)?;
         Ok(())
     })
 }

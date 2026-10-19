@@ -537,6 +537,41 @@ int main(int argc, char **argv) {
       std::cout << ",\"reusable\":true";
     } else if (op == "own_exception") {
       own_exception(variant);
+    } else if (op == "factory_start") {
+      struct Factory : EnvFactory<Factory> {
+        std::shared_ptr<Script> state;
+        int prepares = 0;
+        explicit Factory(std::shared_ptr<Script> s) : state(std::move(s)) {}
+        void prepare() { ++prepares; }
+        MadeEnv make(const Kwargs &) { return Env(Counter{state}); }
+      };
+      int prepares = 0;
+      ext::CancelToken token;
+      EnvFactoryServeOptions options;
+      if (variant == "cancel")
+        options.cancel = token;
+      auto server = [&] {
+        Factory factory(state);
+        auto started = ext::start(factory, "tcp://127.0.0.1:0", options);
+        prepares = factory.prepares;
+        return started;
+      }();
+      auto result = rlmesh::run(RANDOM_SAMPLE, server);
+      if (variant == "cancel") {
+        token.cancel();
+        bool cancelled = false;
+        try {
+          server.wait(Duration(5));
+        } catch (const ext::CancelledError &) {
+          cancelled = true;
+        }
+        REQUIRE(cancelled && server.wait(Duration(0)));
+        std::cout << "\"cancelled\":true,";
+      }
+      server.shutdown();
+      std::cout << "\"episodes\":" << result.num_episodes()
+                << ",\"prepares\":" << prepares
+                << ",\"env_closes\":" << state->env_closes;
     } else if (op == "factory_cancel" ||
                (op == "drop_serve" &&
                 (variant == "factory_cancel" || variant == "factory_idle"))) {

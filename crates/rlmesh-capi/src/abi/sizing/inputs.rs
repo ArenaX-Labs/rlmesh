@@ -108,7 +108,11 @@ input!(crate::env_api::RLMeshEnvVtable);
 input!(crate::env_api::RLMeshVectorEnvAttributes);
 input!(crate::env_api::RLMeshVectorEnvVtable);
 input!(crate::env_factory::RLMeshEnvFactoryAttributes);
-input!(crate::env_factory::RLMeshEnvFactoryServeOptions);
+#[cfg(target_pointer_width = "64")]
+input!(crate::env_factory::RLMeshEnvFactoryServeOptions; first_appended = _reserved; appended = [_reserved, ext]);
+#[cfg(target_pointer_width = "32")]
+input!(crate::env_factory::RLMeshEnvFactoryServeOptions; first_appended = _reserved; appended = [_reserved, ext, _reserved1]);
+input!(crate::env_factory::RLMeshExtEnvFactoryServeOptions);
 input!(crate::env_factory::RLMeshEnvFactoryVtable);
 input!(crate::env_factory::RLMeshTagParam);
 input!(
@@ -130,8 +134,10 @@ input!(
     compress_responses
 );
 input!(
-    crate::model_api::RLMeshExtModelServeOptions,
-    has_predict_concurrency
+    crate::model_api::RLMeshExtModelServeOptions;
+    first_appended = no_signal_handlers;
+    appended = [no_signal_handlers, _reserved1];
+    bools = [has_predict_concurrency, no_signal_handlers]
 );
 input!(crate::model_api::RLMeshModelOptions, trust_entrypoints);
 input!(crate::model_api::RLMeshModelServeOptions);

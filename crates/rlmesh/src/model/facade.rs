@@ -1029,13 +1029,22 @@ impl Model {
     /// SIGINT stops it (drain, close) and fails with the cancellation class;
     /// SIGTERM stops it and returns `Ok`.
     pub fn serve(&self, address: &str, options: ModelServeOptions) -> Result<()> {
+        self.serve_host(address, options, true)
+    }
+
+    pub(crate) fn serve_host(
+        &self,
+        address: &str,
+        options: ModelServeOptions,
+        foreground: bool,
+    ) -> Result<()> {
         if crate::env::server::in_async_context() {
             return Err(Error::Runtime(
                 "Model::serve() blocks; call serve_async() from async code".to_string(),
             ));
         }
         self.shared().check_not_reentrant("serve()")?;
-        serve_blocking(self.shared(), address, options, true, None)
+        serve_blocking(self.shared(), address, options, foreground, None)
     }
 
     /// The async twin of [`serve`](Model::serve): installs no signal

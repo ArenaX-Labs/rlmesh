@@ -78,10 +78,13 @@ void options_setters() {
   static_assert(std::is_aggregate_v<rlmesh::ext::ModelServeOptions>);
   {
     rlmesh::ext::ModelServeOptions options;
-    options.with_token(options.token).with_predict_concurrency(options.predict_concurrency);
+    options.with_token(options.token)
+        .with_predict_concurrency(options.predict_concurrency)
+        .with_no_signal_handlers(options.no_signal_handlers);
     std::move(options)
         .with_token(options.token)
-        .with_predict_concurrency(options.predict_concurrency);
+        .with_predict_concurrency(options.predict_concurrency)
+        .with_no_signal_handlers(options.no_signal_handlers);
   }
   static_assert(std::is_aggregate_v<rlmesh::EnvServerOptions>);
   {

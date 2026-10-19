@@ -598,6 +598,7 @@ also = [
   "RLMESH_ENV_FACTORY_SERVE_OPTIONS_INIT",
   "RLMESH_ENV_FACTORY_SERVE_OPTIONS_MIN_SIZE",
   "RLMeshEnvFactoryServeOptions",
+  "RLMeshEnvFactoryServeOptions::_reserved",
   "RLMeshEnvFactoryServeOptions::make_kwargs",
   "RLMeshEnvFactoryServeOptions::num_envs",
   "RLMeshEnvFactoryServeOptions::struct_size",
@@ -19941,6 +19942,13 @@ rust = [
   { path = "rlmesh::ext::CancelToken::cancel", rule = "R-18" },
 ]
 c = [
+  { path = "rlmesh_ext_env_factory_start", rule = "R-25" },
+  { path = "RLMeshExtEnvFactoryServeOptions", rule = "R-25" },
+  { path = "RLMeshExtEnvFactoryServeOptions::struct_size", rule = "R-25" },
+  { path = "RLMeshExtEnvFactoryServeOptions::host_runtime_json", rule = "R-25" },
+  { path = "RLMeshEnvFactoryServeOptions::ext", rule = "R-25" },
+  { path = "RLMeshExtModelServeOptions::no_signal_handlers", rule = "R-25" },
+  { path = "RLMeshExtModelServeOptions::_reserved1", rule = "R-25" },
   { path = "RLMESH_EXT_ENV_SERVER_OPTIONS_INIT", rule = "R-25" },
   { path = "RLMESH_EXT_ENV_SERVER_OPTIONS_MIN_SIZE", rule = "R-25" },
   { path = "RLMESH_EXT_MODEL_SERVE_OPTIONS_INIT", rule = "R-25" },
@@ -19987,6 +19995,9 @@ c = [
   { path = "RLMESH_ABI_VERSION", rule = "R-25" },
 ]
 cpp = [
+  { path = "rlmesh::ext::start", rule = "R-25" },
+  { path = "rlmesh::ext::ModelServeOptions::no_signal_handlers", rule = "R-25" },
+  { path = "rlmesh::ext::ModelServeOptions::with_no_signal_handlers", rule = "R-25" },
   { path = "rlmesh::ext", rule = "R-25" },
   { path = "rlmesh::ext::CancelToken", rule = "R-25" },
   { path = "rlmesh::ext::CancelToken::CancelToken", rule = "R-25" },

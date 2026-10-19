@@ -550,7 +550,10 @@ def extension_scope(path: str, language: str, item: Item) -> bool:
         }
     if member == "cancel_handle":
         return owner in {"Session", "RemoteEnv", "RemoteVectorEnv"}
-    return member == "ext" and owner in {"EnvServerOptions", "ModelServeOptions"}
+    return member == "ext" and (
+        owner in {"EnvServerOptions", "ModelServeOptions"}
+        or (language == "c" and owner == "EnvFactoryServeOptions")
+    )
 
 
 def also_structural(
