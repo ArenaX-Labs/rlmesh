@@ -1,7 +1,8 @@
 # Language parity: rules
 
 Part of the [language parity spec](../language-parity.md). Status: Draft —
-reviewed round 6.
+reviewed round 6. Draft: C# column pending review (D-17 to D-42, R-28,
+X-11, G-29).
 
 These rules hold in every area file. An area that disagrees with a rule is
 wrong; fix the area, or change the rule here. IDs are stable: `R-n` rules,
@@ -13,7 +14,9 @@ Never renumber; retire an ID by marking it removed.
 Paths: `py/` = `python/rlmesh/src/rlmesh/`, `pyrs/` =
 `python/rlmesh/rust/src/`, `rs/` = `crates/rlmesh/src/`, `capi/` =
 `crates/rlmesh-capi/src/`, `h` = `crates/rlmesh-capi/include/rlmesh.h`, `hpp`
-= `crates/rlmesh-capi/include/rlmesh.hpp`.
+= `crates/rlmesh-capi/include/rlmesh.hpp`, `cs/` = `csharp/src/RLMesh/` (the
+hand-written C# layer), `csi` = `csharp/src/RLMesh/Interop/Native.g.cs` (the
+generated raw P/Invoke layer, D-18).
 
 ## Rules
 
@@ -21,7 +24,7 @@ Paths: `py/` = `python/rlmesh/src/rlmesh/`, `pyrs/` =
 
 Every Stable Python symbol (`python/rlmesh/tests/api_surface/snapshots/api_surface.json`,
 labels in [compatibility](../../compatibility.md)) has a counterpart in Rust,
-C and C++ with the same name (cased by R-4), the same parameters and fields
+C, C++ and C# with the same name (cased by R-4), the same parameters and fields
 under the same names, the same defaults and the same behaviour. A difference
 that no rule explains is a bug.
 
@@ -36,31 +39,31 @@ changes" list); it is never implied by a table cell.
 
 These differences are expected. Each applies the same way to every symbol.
 
-| Concern                        | Python                            | Rust                                                                                                   | C++                                                        | C                                                   |
-| ------------------------------ | --------------------------------- | ------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------- | --------------------------------------------------- |
-| Names                          | `snake_case`, `PascalCase`        | same (R-4)                                                                                             | same (R-4)                                                 | D-6                                                 |
-| Modules                        | `rlmesh.spaces`                   | `rlmesh::spaces`                                                                                       | `rlmesh::spaces`                                           | D-6                                                 |
-| Errors                         | exceptions                        | `Result<T, Error>`                                                                                     | exceptions                                                 | `RLMeshStatus` + thread-local last error            |
-| Error classes                  | exception classes                 | `Error` variant + `ErrorClass` (R-21)                                                                  | classes with Python's inheritance (R-21)                   | status + `RLMeshErrorClass` (R-21)                  |
-| Warnings                       | `warnings.warn(Category)`         | handler (R-23)                                                                                         | handler (R-23)                                             | handler (R-23)                                      |
-| Lifetime                       | context manager, `close()`        | `Drop`, `close()`                                                                                      | RAII, `close()`                                            | `rlmesh_<t>_close`, `rlmesh_<t>_free`               |
-| Keyword arguments              | keywords with defaults            | options struct, `Default` (R-6)                                                                        | aggregate, `with_<field>` setters; C++20 designators (R-6) | options struct, `RLMESH_<NAME>_INIT` (R-6, R-19)    |
-| Optional keywords, short calls | keywords                          | positional `Option` (R-7, closed list)                                                                 | default arguments (R-7)                                    | pointer, NULL = default (R-7)                       |
-| `*args` / `**kwargs`           | variadic                          | slice or `Vec` / `Kwargs` field                                                                        | `std::vector` / `Kwargs` field                             | pointer + count / `RLMeshValue*` dict               |
-| Optional value                 | `None`                            | `Option<T>`                                                                                            | `std::optional<T>`                                         | pointer (NULL = None) or `has_<name>` (R-13)        |
-| Optional list                  | `None` or list                    | `Option<Vec<T>>`                                                                                       | `rlmesh::OptionalList<T>`                                  | pointer + count; NULL = None, count 0 = `[]` (R-13) |
-| Durations                      | `*_seconds: float`                | `Duration`, `_seconds` dropped                                                                         | `std::chrono::duration<double>`, `_seconds` dropped        | `double *_seconds`                                  |
-| Integers                       | `int`                             | `i64`; `u64` where Python refuses negatives (R-5)                                                      | `int64_t` / `uint64_t`                                     | `int64_t` / `uint64_t`                              |
-| Tuples returned                | tuple                             | tuple, or a struct named for the fields                                                                | `std::tuple` (structured bindings)                         | out-parameters in tuple order                       |
-| Closed string vocabularies     | `str` from a fixed set            | enum, `as_str()` / `Display` = Python spelling (R-9)                                                   | `enum class`, PascalCase, `to_string()` (R-9)              | enum, `INVALID = 0`, `rlmesh_<enum>_str()` (R-9)    |
-| Dunder methods                 | `__repr__`, `__eq__`, …           | traits (R-10)                                                                                          | operators (R-10)                                           | named functions (R-10)                              |
-| Handles                        | object reference                  | move-only, or `Clone` shares (R-11)                                                                    | move-only, or copy shares (R-11)                           | `rlmesh_<t>_clone` returns a new reference (R-11)   |
-| Frozen dataclasses             | `@dataclass(frozen=True)`         | value struct, `Clone` copies (R-11)                                                                    | value struct (R-11)                                        | value handle or struct (R-11)                       |
-| Protocols, subclass hooks      | `Protocol`, overridable methods   | trait (R-12)                                                                                           | class detected by a templated adapter (R-12)               | vtable, NULL slot = not defined (R-12)              |
-| Callables                      | callable                          | `impl FnMut(..) + Send + 'static`; `Fn + Send + Sync` where called concurrently or process-wide (R-23) | any callable                                               | function pointer + `user_data` + `free_user_data`   |
-| Blocking and async             | sync                              | sync; `*_async` twins opt in (R-16)                                                                    | sync                                                       | sync                                                |
-| Cancellation                   | `KeyboardInterrupt` (signal poll) | `ext::CancelToken`, future drop (R-18)                                                                 | `ext::CancelToken` (R-18)                                  | `RLMeshExtCancelToken` (R-18)                       |
-| Language-only extras           | —                                 | `rlmesh::ext`, `rlmesh::binding` (R-25)                                                                | `rlmesh::ext` (R-25)                                       | `rlmesh_ext_` / `RLMeshExt` (R-25)                  |
+| Concern                        | Python                            | Rust                                                                                                   | C++                                                        | C                                                   | C#                                                                                                |
+| ------------------------------ | --------------------------------- | ------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| Names                          | `snake_case`, `PascalCase`        | same (R-4)                                                                                             | same (R-4)                                                 | D-6                                                 | .NET casing (R-4, D-20)                                                                           |
+| Modules                        | `rlmesh.spaces`                   | `rlmesh::spaces`                                                                                       | `rlmesh::spaces`                                           | D-6                                                 | `RLMesh.Spaces` namespace; free functions on a static class (D-21)                                |
+| Errors                         | exceptions                        | `Result<T, Error>`                                                                                     | exceptions                                                 | `RLMeshStatus` + thread-local last error            | exceptions                                                                                        |
+| Error classes                  | exception classes                 | `Error` variant + `ErrorClass` (R-21)                                                                  | classes with Python's inheritance (R-21)                   | status + `RLMeshErrorClass` (R-21)                  | classes with Python's inheritance under .NET bases (R-21, D-25)                                   |
+| Warnings                       | `warnings.warn(Category)`         | handler (R-23)                                                                                         | handler (R-23)                                             | handler (R-23)                                      | handler (R-23)                                                                                    |
+| Lifetime                       | context manager, `close()`        | `Drop`, `close()`                                                                                      | RAII, `close()`                                            | `rlmesh_<t>_close`, `rlmesh_<t>_free`               | `IDisposable` (`using`), `Close()`; `SafeHandle` finalizer as a safety net (R-11, R-28)           |
+| Keyword arguments              | keywords with defaults            | options struct, `Default` (R-6)                                                                        | aggregate, `with_<field>` setters; C++20 designators (R-6) | options struct, `RLMESH_<NAME>_INIT` (R-6, R-19)    | options class, settable properties initialized to Python's defaults; `options = null` (R-6, D-22) |
+| Optional keywords, short calls | keywords                          | positional `Option` (R-7, closed list)                                                                 | default arguments (R-7)                                    | pointer, NULL = default (R-7)                       | optional parameters, `null` = Python's default (R-7, D-23)                                        |
+| `*args` / `**kwargs`           | variadic                          | slice or `Vec` / `Kwargs` field                                                                        | `std::vector` / `Kwargs` field                             | pointer + count / `RLMeshValue*` dict               | `params T[]` / `Metadata` property (D-30)                                                         |
+| Optional value                 | `None`                            | `Option<T>`                                                                                            | `std::optional<T>`                                         | pointer (NULL = None) or `has_<name>` (R-13)        | `T?`, nullable reference types enabled (R-13)                                                     |
+| Optional list                  | `None` or list                    | `Option<Vec<T>>`                                                                                       | `rlmesh::OptionalList<T>`                                  | pointer + count; NULL = None, count 0 = `[]` (R-13) | `IReadOnlyList<T>?`; `null` = None, empty = `[]` (R-13)                                           |
+| Durations                      | `*_seconds: float`                | `Duration`, `_seconds` dropped                                                                         | `std::chrono::duration<double>`, `_seconds` dropped        | `double *_seconds`                                  | `TimeSpan`, `_seconds` dropped (R-14, D-35)                                                       |
+| Integers                       | `int`                             | `i64`; `u64` where Python refuses negatives (R-5)                                                      | `int64_t` / `uint64_t`                                     | `int64_t` / `uint64_t`                              | `long`; `ulong` where Python refuses negatives (R-5, D-34)                                        |
+| Tuples returned                | tuple                             | tuple, or a struct named for the fields                                                                | `std::tuple` (structured bindings)                         | out-parameters in tuple order                       | `readonly struct` named for the fields with `Deconstruct`, or a named `ValueTuple` (R-15, D-29)   |
+| Closed string vocabularies     | `str` from a fixed set            | enum, `as_str()` / `Display` = Python spelling (R-9)                                                   | `enum class`, PascalCase, `to_string()` (R-9)              | enum, `INVALID = 0`, `rlmesh_<enum>_str()` (R-9)    | `enum`, PascalCase, C's numbers; `AsString()` = Python spelling (R-9)                             |
+| Dunder methods                 | `__repr__`, `__eq__`, …           | traits (R-10)                                                                                          | operators (R-10)                                           | named functions (R-10)                              | overrides and BCL interfaces (R-10, D-26)                                                         |
+| Handles                        | object reference                  | move-only, or `Clone` shares (R-11)                                                                    | move-only, or copy shares (R-11)                           | `rlmesh_<t>_clone` returns a new reference (R-11)   | sealed class over a `SafeHandle`; a reference shares (R-11)                                       |
+| Frozen dataclasses             | `@dataclass(frozen=True)`         | value struct, `Clone` copies (R-11)                                                                    | value struct (R-11)                                        | value handle or struct (R-11)                       | `sealed record`, init-only properties (R-11, D-28)                                                |
+| Protocols, subclass hooks      | `Protocol`, overridable methods   | trait (R-12)                                                                                           | class detected by a templated adapter (R-12)               | vtable, NULL slot = not defined (R-12)              | interface plus optional one-member interfaces, detected with `is` (R-12, D-32)                    |
+| Callables                      | callable                          | `impl FnMut(..) + Send + 'static`; `Fn + Send + Sync` where called concurrently or process-wide (R-23) | any callable                                               | function pointer + `user_data` + `free_user_data`   | delegate (`Func<..>`, `Action<..>`) or a one-method interface; called from library threads (R-28) |
+| Blocking and async             | sync                              | sync; `*_async` twins opt in (R-16)                                                                    | sync                                                       | sync                                                | sync; `<Name>Async` twins return `Task` (R-16, D-24)                                              |
+| Cancellation                   | `KeyboardInterrupt` (signal poll) | `ext::CancelToken`, future drop (R-18)                                                                 | `ext::CancelToken` (R-18)                                  | `RLMeshExtCancelToken` (R-18)                       | `Ext.CancelToken`; twins take a `CancellationToken` (R-18)                                        |
+| Language-only extras           | —                                 | `rlmesh::ext`, `rlmesh::binding` (R-25)                                                                | `rlmesh::ext` (R-25)                                       | `rlmesh_ext_` / `RLMeshExt` (R-25)                  | `RLMesh.Ext` (R-25, D-33)                                                                         |
 
 ### R-4 Names
 
@@ -76,6 +79,29 @@ These differences are expected. Each applies the same way to every symbol.
   `export_`, `default_`, `type_` in every native language, even where only
   one of them reserves the word. Rust does not use `r#` raw identifiers. One
   spelling keeps the E-2 name check a single mapping per name.
+- **C#** (D-20) applies one fixed transform to Python's name, so E-2 stays a
+  single mapping per name: types, interfaces' members, methods, properties,
+  enum members and constants are `PascalCase` (`max_episode_steps` →
+  `MaxEpisodeSteps`, `NO_ADAPTER` → `NoAdapter`, `DESCRIBE_METADATA_KEY` →
+  `DescribeMetadataKey`); parameters are `camelCase` (`trial_index` →
+  `trialIndex`); a protocol or capability interface is `I` + `PascalCase`
+  (R-12). The `_seconds` suffix is dropped where the type is `TimeSpan`, as in
+  Rust and C++. R-4's trailing `_` is not used: a `PascalCase` member is never
+  a C# keyword (`Default`, `Type`, `Export`, `Params`, `Base`), and a
+  `camelCase` parameter that is one is written as a verbatim identifier
+  (`@params`, `@event`, `@base`, `@default`), whose metadata name is the plain
+  word. A member whose `PascalCase` name equals its declaring type's name
+  (CS0542) or an inherited `object` member (`Equals`, `GetHashCode`,
+  `GetType`, `ToString`) takes the suffix `Value` (`Foo.Foo` → `Foo.FooValue`);
+  the Stable surface has no such case today, and an area that meets one cites
+  this bullet.
+- C# member kinds: a Python attribute or property is a C# property and a
+  Python method a C# method (`.shape` → `Shape`, `.copy()` → `Copy()`),
+  except that a Python property whose read connects or can fail on I/O is a
+  method with an `Async` twin (`Session.Contract()`,
+  `Session.SelectedWorkflowEdition()`; Running RUN-33), because a .NET
+  property is expected to be cheap and cannot have a twin. The transform is
+  mechanical: `tobytes` is `Tobytes()`, not .NET's `ToBytes()`.
 
 ### R-5 Scalars and text
 
@@ -98,6 +124,24 @@ These differences are expected. Each applies the same way to every symbol.
   `rlmesh_last_error_code_str` (thread-local, valid until the next rlmesh
   call on that thread, NULL if none; R-22, Core COR-3).
 - `bytes` → `Vec<u8>` / `&[u8]`, C pointer + length in, `RLMeshBytes` out.
+- **C#** (D-34, D-36): `i64` → `long`, `u64` → `ulong`, `u32` → `uint`,
+  `u16` → `ushort` (C's exact width, so E-2 compares one type); `usize`
+  lengths, counts and positions → `int` (`Count`, indexers, `Span<T>`
+  lengths), converted with a checked cast, because every BCL collection
+  counts in `int`. The assembly is `[CLSCompliant(false)]`. `float` →
+  `double`, `bool` → `bool` (the raw layer passes C `bool` as `byte`, R-28).
+  `str` → `string`, marshalled by the hand layer to UTF-8; a C# string may
+  hold U+0000, so a `string` bound for a NUL-terminated C input that contains
+  one is refused with the ValueError class before the C call (C++ passes
+  `c_str()` and truncates; D-36), while text data that Python lets contain
+  NUL travels as Spaces' length-bearing view. Unpaired UTF-16 surrogates are
+  refused with the ValueError class, as invalid UTF-8 is in C. Constants are
+  `public const string` (compile-time, baked into callers; they are
+  wire-frozen keys, so versioning does not change them) except where a
+  constant is a handle (`RandomSample`, `NoAdapter`), which is `public static
+readonly`. C text outputs (`RLMeshBytes`, `const char*`) are copied into a
+  `string` and freed before the call returns. `bytes` → `ReadOnlySpan<byte>`
+  in (copied by C), `byte[]` out (an owned copy of `RLMeshBytes`).
 
 ### R-6 Keyword arguments become one options struct
 
@@ -119,6 +163,20 @@ These differences are expected. Each applies the same way to every symbol.
 - C: a struct whose first field is `size_t struct_size`, with an
   `RLMESH_<NAME>_INIT` macro holding Python's defaults. A NULL options pointer
   means the `_INIT` value. Sizing rules are R-19.
+- C# (D-22): a `public sealed class <Name>Options` with a public
+  parameterless constructor and one `{ get; set; }` property per keyword,
+  named by R-4, each initialized to Python's default
+  (`public long? Episodes { get; set; } = null;`), built with an object
+  initializer (`new RunOptions { Episodes = 2 }`) or by assignment. The
+  parameter is `<Name>Options? options = null`, last, and `null` means a fresh
+  default instance. Not a `record` (no synthesized equality, which Python's
+  keywords do not have, R-25) and not `init`-only (a caller that assembles
+  options conditionally assigns after construction). The call reads every
+  property once, at entry, into the C struct (R-19), so mutating the object
+  afterwards affects only later calls. Appending a property is a minor change,
+  as R-6 states for Rust. Defaults are not C# optional parameters, which
+  accept only compile-time constants and are copied into every caller at
+  compile time, so a changed default would need every consumer rebuilt.
 - `**kwargs` (`EnvFactory.serve(**make_kwargs)`, `Variant(**metadata)`)
   becomes a `Kwargs` field; `*args` (`Action(*components)`,
   `Session.reader(*items)`) becomes a positional slice.
@@ -129,7 +187,11 @@ These differences are expected. Each applies the same way to every symbol.
   `explicit ModelException(std::string message, bool is_recoverable = false)`,
   Rust `Error::model(message)` / `Error::model_recoverable(message)` and C
   `rlmesh_callback_set_error(message, recoverable)` (R-21, COR-20, COR-22).
-  The other authored constructors take only a message.
+  The other authored constructors take only a message. C#:
+  `public ModelException(string message, bool isRecoverable = false)` (a
+  constant `false` default is safe to bake into callers, R-7's C# bullet).
+- C# `**kwargs` is a `Metadata` property (D-30, R-27); `*args` is a
+  `params T[]` positional parameter (`Session.Reader(params ReadItem[] items)`).
 
 ### R-7 Positional convenience calls (closed list)
 
@@ -158,6 +220,14 @@ bind nothing before then.
   = Python's default); a plain value for a non-optional scalar (`env_index`),
   where the caller passes Python's default.
 - C++: default arguments equal to Python's defaults (`s.reset(0)`).
+- C# (D-23): optional parameters. A parameter whose Python type is optional,
+  and every text parameter, is nullable with default `null`, which means
+  Python's default whatever it is, as Rust's `None`
+  (`Shutdown(string? reason = null)` is `"owner shutdown"`), so no
+  non-constant or changeable default is compiled into callers; a
+  non-optional scalar takes Python's default as its constant
+  (`Render(ulong envIndex = 0)`, a `u64` lane offset, Remote), as in C. Named arguments work as in Python
+  (`s.Reset(trialIndex: 3)`).
 - Authored protocol methods (`Env.reset(seed, options)`,
   `Model.on_episode_end(episode_id)`) are not convenience calls: R-12 gives
   them Python's parameters positionally.
@@ -184,6 +254,9 @@ progress)`; `impl Into<&mut dyn RunHooks>` has no `From` impl to use:
 Fallible `with_<field>` constructors exist only on value structs whose Python
 form validates an `InitVar` (R-11). No other builder shapes.
 
+C# has no builders: options are set with object initializers or assignment
+(R-6), and value records with `with` expressions (R-11).
+
 ### R-9 Closed vocabularies
 
 A Python `str` attribute or parameter drawn from a fixed set (dtype, space
@@ -207,22 +280,41 @@ vocabularies, warning and error categories) becomes an enum:
   `RLMESH_<NAME>_OTHER` value plus a `<name>_other` text field. The
   canonical list of such fields and the type are Adapters' (ADP-4). A field whose text is not drawn from a fixed set
   stays a string (RUN-11).
+- C#: a `public enum` with `PascalCase` members whose values are C's numbers,
+  `int`-backed unless C's enum needs another width; like C++, an input enum
+  has no `Invalid` member, so `default(E)` is 0 and the C call refuses it
+  with the ValueError class. The text form is an extension method
+  `public static string AsString(this E value)` (Python's spelling) in
+  `public static class EExtensions`, plus `public static E Parse(string text)`
+  there only where Python accepts the text as input (refusing unknown text
+  with the ValueError class);
+  `ErrorClass` and `WarningCategory` have `Name()` instead (the exception
+  above). `Enum.ToString()` prints the C# member name, not Python's
+  spelling: .NET does not let a library override it, so it is a translation
+  difference and no API prints an enum through it. A bit set (Model's
+  `Corners`) is a `[Flags]` enum over C's `uint32_t` bits. `Tolerant<E>` is
+  `public readonly struct Tolerant<E> : IEquatable<Tolerant<E>> where E :
+struct, Enum` with `bool IsKnown`, `E? Known`, `string? Other`,
+  `AsString()`, `ToString()` (Python's spelling) and an implicit conversion
+  from `E` (ADP-4). C# cannot seal the constraint to the vocabulary enums as
+  Rust's `Vocabulary` trait does, so a `Tolerant<E>` over any other enum
+  throws the TypeError class on first use (Adapters).
 
 ### R-10 Dunder methods
 
 Map only where Python defines the method:
 
-| Python                   | Rust                                             | C++                         | C                                 |
-| ------------------------ | ------------------------------------------------ | --------------------------- | --------------------------------- |
-| `__repr__`, `__str__`    | `Display` (Python's `str`), `Debug`              | `operator<<`, `to_string()` | `rlmesh_<t>_repr` → `RLMeshBytes` |
-| `__eq__`                 | `PartialEq`                                      | `operator==`                | `rlmesh_<t>_equals`               |
-| `__hash__`               | `Eq + Hash`, only if the type has no float field | `std::hash`, same condition | —                                 |
-| `__len__`, `__getitem__` | `len()`, `get(i)`                                | `size()`, `operator[]`      | `rlmesh_<t>_len`, `_get`          |
-| `__iter__`               | `iter()`                                         | `begin()`/`end()`           | `_len` + `_get`                   |
-| `__contains__`           | `contains()`                                     | `contains()`                | `rlmesh_<t>_contains`             |
-| `__call__`               | `call()`                                         | `operator()`                | `rlmesh_<t>_call`                 |
-| `__dlpack__`             | `to_dlpack()`                                    | `to_dlpack()`               | `rlmesh_<t>_to_dlpack`            |
-| `__enter__` / `__exit__` | R-3 lifetime row                                 | RAII                        | `_close` / `_free`                |
+| Python                   | Rust                                             | C++                         | C                                 | C#                                                     |
+| ------------------------ | ------------------------------------------------ | --------------------------- | --------------------------------- | ------------------------------------------------------ |
+| `__repr__`, `__str__`    | `Display` (Python's `str`), `Debug`              | `operator<<`, `to_string()` | `rlmesh_<t>_repr` → `RLMeshBytes` | `override string ToString()` (Python's `str`)          |
+| `__eq__`                 | `PartialEq`                                      | `operator==`                | `rlmesh_<t>_equals`               | `IEquatable<T>`, `Equals(object?)`, `==` / `!=` (D-26) |
+| `__hash__`               | `Eq + Hash`, only if the type has no float field | `std::hash`, same condition | —                                 | content `GetHashCode()`, float fields included (D-26)  |
+| `__len__`, `__getitem__` | `len()`, `get(i)`                                | `size()`, `operator[]`      | `rlmesh_<t>_len`, `_get`          | `Count`, `this[int]` (`IReadOnlyList<T>`)              |
+| `__iter__`               | `iter()`                                         | `begin()`/`end()`           | `_len` + `_get`                   | `IEnumerable<T>`                                       |
+| `__contains__`           | `contains()`                                     | `contains()`                | `rlmesh_<t>_contains`             | `Contains()`                                           |
+| `__call__`               | `call()`                                         | `operator()`                | `rlmesh_<t>_call`                 | `Invoke()`                                             |
+| `__dlpack__`             | `to_dlpack()`                                    | `to_dlpack()`               | `rlmesh_<t>_to_dlpack`            | `Ext` (Spaces)                                         |
+| `__enter__` / `__exit__` | R-3 lifetime row                                 | RAII                        | `_close` / `_free`                | `IDisposable`, `using`                                 |
 
 C forms: `RLMeshStatus rlmesh_<t>_repr(const T*, RLMeshBytes* out)`.
 `_equals` on a handle is `bool rlmesh_<t>_equals(const T* a, const T* b)`
@@ -245,6 +337,41 @@ Exceptions to the table:
   frozen dataclasses define `__eq__` and `__repr__`; C compares and prints
   them at the handle (`rlmesh_model_spec_equals` / `_repr`,
   `rlmesh_env_tags_equals` / `_repr`; ADP-6). Rust and C++ keep the table.
+
+C# forms (D-26):
+
+- **`str` and `repr`.** `ToString()` returns Python's `str`; where `repr`
+  differs, a `public string Repr()` method returns it, as C++'s `repr()`.
+- **Equality.** Where Python defines `__eq__`, the type implements
+  `IEquatable<T>`, overrides `Equals(object?)` and declares `==` / `!=`
+  with the same meaning (a `sealed record` synthesizes all four). .NET
+  requires `GetHashCode` to agree with `Equals`, so it is always overridden
+  with it. Where Python also defines `__hash__` (the frozen dataclasses,
+  which Python hashes even with float fields) it hashes the contents; R-10's
+  float restriction is Rust's (`f64: !Eq`) and C++'s and does not apply,
+  since `double.Equals` is reflexive for NaN. Where Python's type is
+  unhashable (`Value`, `Metadata`) the hash is a coarse one that still
+  agrees with `Equals` (the kind and the length), and the type documents
+  that it is not meant as a dictionary key. Types with identity equality
+  in Python (`SpaceSpec`, `Tensor`, SPC-18) keep reference equality.
+- **Collections.** `__len__` / `__getitem__` / `__iter__` implement
+  `IReadOnlyList<T>` (`Count`, `this[int]`, `GetEnumerator()`), or
+  `IReadOnlyCollection<T>` where Python has no positional access. Index
+  past the end throws `ArgumentOutOfRangeException`, the BCL contract
+  `IReadOnlyList<T>` callers rely on, as C++'s `std::out_of_range`; an area
+  that reads a missing position as absent (Core's Value API) offers
+  `TryGet(int, out T)` beside it.
+- **Keyed mappings** implement `IReadOnlyDictionary<string, T>`:
+  `ContainsKey`, `this[string]` (missing key: `KeyNotFoundException`, the
+  BCL contract, as C++'s `at`), `TryGetValue`, `Keys`, `Values` in
+  insertion order; positional access is `KeyAt(int)` / `ValueAt(int)`; a
+  value-membership `contains` stays `Contains(value)`.
+- **Input leaves.** C# keeps the table, as Rust and C++ do.
+- **No Python counterpart.** `Value` exposes `Count`, `this[int]` and
+  `TryGet` for its list, tuple and dict kinds without implementing
+  `IReadOnlyList<T>`, since a scalar has no length (Core COR-29). Its
+  `ToString()`, which .NET requires and Python has no class for, is a debug
+  form that E-3 does not compare.
 
 Keyed mappings: on a type whose `__getitem__` takes a key and whose class
 also has a value-membership `contains` (Spaces `Dict`, SPC-26), `__contains__`
@@ -270,6 +397,31 @@ is `rlmesh_<t>_key_at` / `rlmesh_<t>_value_at`.
   `ModelSpec` / `EnvTags`, read through accessors, ADP-21) may share storage
   on copy, because sharing is unobservable. C++ `Value` is passed as
   `const Value&`.
+- **C#.** A handle is a `public sealed class` that owns one private
+  `SafeHandle` subclass whose `ReleaseHandle` calls `rlmesh_<t>_free`
+  (R-28 says on which thread). A C# reference is already a shared
+  reference, so a copy-sharing handle needs no `Clone()`, and a move-only
+  handle cannot be enforced by the compiler; exclusive use stays Python's
+  runtime check (an overlapping call fails with the RuntimeError class).
+  `Dispose()` is `__exit__` (Session Drop semantics for `Session`, R-17):
+  it releases the wrapper's native reference for every holder of the C#
+  reference, as Python's one object is closed for every name bound to it.
+  `Close()` is Python's `close()` and reports errors; `Dispose()` swallows
+  them. A call on a disposed wrapper throws `ObjectDisposedException`
+  (D-41): a C#-only state, like a C++ moved-from object, which Python and
+  Rust cannot reach. A call on a closed but undisposed handle reaches C
+  and fails as Python does. Value structs (D-28) are `public sealed record`
+  classes: Python's required fields are parameters of an explicit
+  constructor (`camelCase`, R-4; not positional-record syntax, whose
+  parameters would be `PascalCase`) in Python's
+  order, defaulted fields are `init` properties initialized to Python's
+  defaults, and `with` gives a modified copy; list fields are
+  `EquatableList<T>` (D-27) so the synthesized equality is Python's `==`.
+  The constructor runs the leaf checks where Python's composite validates;
+  `InitVar` sugar becomes an instance method `public T With<Name>(...)`
+  returning a modified copy and throwing Python's class, as Rust's
+  `with_<name>(self, …)` and C++'s `const` member are. Immutable values (`Value`, `Tensor`, `ModelSpec`,
+  `EnvTags`) are sealed classes over a shared native reference.
 
 ### R-12 Protocols and authored types
 
@@ -280,8 +432,34 @@ is `rlmesh_<t>_key_at` / `rlmesh_<t>_value_at`.
 - The ordinary trait impl is the complete Rust path. A proc macro may only be
   sugar that writes what a hand-written impl can write; no capability needs
   it.
+- C# (D-32): a protocol is a `public interface I<Name>` holding Python's
+  required members. Each optional member or hook is its own one-member
+  interface named by R-4 (`ILoad`, `IOnEpisodeEnd`, `IRender`), which the
+  authored type implements or not; the wrapper detects each with `is` once,
+  at construction, and fills or leaves NULL the matching C vtable slot. This
+  is the counterpart of C's NULL slot and C++'s member detection, so
+  "written" means "implemented", and an invalid declaration is refused at
+  construction as C and C++ refuse it. No default interface methods (they
+  cannot express "not defined", and Unity's IL2CPP support for them is not
+  established) and no reflection over authored members (R-28). Authored
+  types never need a base class, so a Unity `MonoBehaviour` or a Godot
+  `Node` can implement them. A Python base class with no-op members whose
+  presence is unobservable (`RunHooks`) is an `abstract class` with
+  `virtual` no-ops implementing the interface, offered beside the interface,
+  never instead of it. Implementing both the context-free and the context
+  form of one corner, as any other contradictory declaration, is refused
+  with the TypeError class (MDL-23). One `IClose { void Close(); }` serves
+  every authored type with a `close` hook (envs, vector envs, factories,
+  policies); it is not `IDisposable`, which is the owner's protocol, while
+  `Close()` is a hook the library calls (MDL-23, ENV-36). Type-level declarations that Python reads from the
+  class (`spec`, `native_chunk`, `load_keys`, `workflow_edition`,
+  `tag_params`) cannot be static interface members in netstandard2.1, so
+  they travel in a sealed declarations object the type returns from a
+  one-member interface and that describe also accepts on its own (Model
+  MDL-23 and Env ENV-36 give the shapes), the counterpart of C's static vtable
+  fields.
 - Protocol methods take Python's parameters positionally in Python's order,
-  optional ones as `Option` / NULL / `std::optional`.
+  optional ones as `Option` / NULL / `std::optional` / C# `T?`.
 - An authored callback's error propagates unchanged within one process, as
   Python re-raises the author's own exception (`pyrs/model.rs:76-78`,
   `pyrs/hooks.rs:21-24`): Rust returns the author's `Error` as is; C returns
@@ -354,6 +532,27 @@ Send + Sync` owns the pointer and `free_payload` in a
     class of `rlmesh_last_error_class()` (R-21), carrying the message, code
     and recoverable flag, since one status covers two classes (1 and 3). The
     same channel carries a warning handler's exception (R-23).
+  - Tags. A wrapper attaches its payload with
+    `rlmesh_ext_callback_set_tagged_error_payload(payload, free_payload,
+tag)`, `tag` being the address of a wrapper-owned static object, and
+    takes it with `rlmesh_ext_last_error_take_payload_owned(&payload,
+&free_payload, &tag)`. It reads a payload only when `tag` is its own and
+    otherwise calls the returned `free_payload` without reading it, so the
+    C++ and C# wrappers can share one process (a Unity player that also
+    loads a C++ native plugin over RLMesh) without either misreading the
+    other's payload.
+  - C# (X-11): the trampoline catches `Exception`, records class and text
+    with R-12's calls by X-11's mapping, and attaches
+    `GCHandle.ToIntPtr(GCHandle.Alloc(ExceptionDispatchInfo.Capture(e)))`
+    with the C# tag and a static `free_payload` that frees the `GCHandle`
+    (cheap, safe on any thread). After a failing C call the wrapper takes
+    the payload; with its own tag it calls `ExceptionDispatchInfo.Throw()`,
+    which rethrows the author's own exception object with its original stack
+    trace; with none, or a foreign tag, it throws the C# class of
+    `rlmesh_last_error_class()` (R-21) with the message, code and
+    recoverable flag. The same channel carries a warning handler's
+    exception (R-23). The C# tag is one byte from `Marshal.AllocHGlobal`,
+    allocated once and never freed, so its address is unique in the process.
 - A C callback sets its error with one of two calls before returning
   nonzero:
   - `void rlmesh_callback_set_error(const char* message, bool recoverable)`.
@@ -394,6 +593,16 @@ char* message)`, which records any R-21 class, as a Python author may
 - An optional list in C is a pointer plus a `<name>_len` count: NULL = None,
   non-NULL with count 0 = `[]`, NULL with a nonzero count is refused. C++ uses
   `rlmesh::OptionalList<T>`, which accepts braced lists (`.seeds = {0, 1}`).
+- C# compiles with nullable reference types enabled. An optional value is
+  `T?`: `Nullable<T>` for value types (`long?`, `TimeSpan?`, enums) and an
+  annotated reference (`string?`, `Value?`, `Metadata?`) for classes;
+  `null` is None. `Value.None` (Python's `None` as a value) and a `null`
+  `Value?` (absent) stay distinct, as C++'s `Value()` and an empty
+  `std::optional<Value>`. An optional list is `IReadOnlyList<T>?`: `null` =
+  None, an empty list = `[]`; arrays and `List<T>` convert implicitly
+  (`Seeds = new long[] { 0, 1 }`). A non-nullable reference parameter given
+  `null` throws `ArgumentNullException` before the C call; it is a C#-only
+  misuse (the annotation is compile-time only) and not an R-21 row.
 
 ### R-14 Durations and limits
 
@@ -401,6 +610,17 @@ Each parameter keeps Python's own validation: `ServeOptions` timeouts refuse
 `<= 0` (`pyrs/lifecycle.rs:231-239`), `EnvServer.wait(0)` is allowed
 (`pyrs/server/py_env_server.rs:478-485`), client timeouts follow Remote. A native
 language never reads 0 as "unset".
+
+C# (D-35): a duration is `TimeSpan` (`TimeSpan?` when optional), with the
+`_seconds` suffix dropped, and converts to C's `double` seconds as
+`span.Ticks / 1e7` (exact up to 2^53 ticks, about 28 years); a `double` read back from C
+becomes `TimeSpan.FromTicks(checked((long)Math.Round(seconds * 1e7)))`, so
+precision is 100 ns. R-14's checks run in C, unchanged: a negative or zero
+`TimeSpan` is refused where Python refuses it, and
+`Timeout.InfiniteTimeSpan` (−1 ms) is a negative value, never "no
+timeout". A Python value `TimeSpan` cannot hold (infinity, NaN, beyond
+`TimeSpan.MaxValue`) has no C# spelling; an area whose Python call accepts
+infinity as "no limit" states the C# form it uses instead.
 
 ### R-15 Tuples and Gymnasium shapes
 
@@ -410,6 +630,19 @@ language never reads 0 as "unset".
 - `reset` returns `(observation, info)` and `step` returns
   `(observation, reward, terminated, truncated, info)` on `Env`, `Session`,
   `RemoteEnv` and `RemoteVectorEnv` alike.
+- C# (D-29): the Gymnasium results are named `public readonly struct`s with
+  get-only properties in Python's order and a `Deconstruct` method, so
+  `var (obs, info) = s.Reset(0);` and
+  `var (obs, reward, terminated, truncated, info) = s.Step(action);` read
+  like Gymnasium while `result.Reward` stays available: `ResetResult
+{ Value Observation; Metadata Info; }`, `StepResult { Value Observation;
+double Reward; bool Terminated; bool Truncated; Metadata Info; }`, and
+  the vector forms the areas name (C++ uses the same names). An authored
+  env returns them with their public constructors. Any other returned tuple
+  is a `ValueTuple` with Python's element names (`(Value Observation,
+Metadata Info)`), which deconstructs the same way. Hand-written structs
+  rather than `record struct` keep them consumable by Unity's C# 9
+  compiler (D-19).
 
 ### R-16 Sync first, async twins
 
@@ -471,6 +704,40 @@ language never reads 0 as "unset".
   sync rlmesh calls (a policy that queries a `RemoteModel`), as a Python
   `predict` can.
 - C and C++ have no async API.
+- **C# twins** (D-24). C# adds `<Name>Async` for exactly the calls that have
+  a Rust `_async` twin, named by R-4 (`Session.ResetAsync`,
+  `RemoteEnv.StepAsync`, `Model.RunAsync`, `EnvServer.WaitAsync`). The twin
+  takes the sync call's parameters plus
+  `CancellationToken cancellationToken = default` last, and returns `Task`
+  or `Task<T>` of the sync call's result (not `ValueTask`: a twin always
+  completes asynchronously, so `ValueTask` saves nothing and is easier to
+  misuse). C has no async API, so a twin runs the sync C call on a
+  dedicated thread (`TaskCreationOptions.LongRunning`, never a thread-pool
+  worker, since the call blocks) and completes the task with its result or
+  exception; `await` resumes on the caller's `SynchronizationContext` as
+  usual (Unity's main thread under `UnitySynchronizationContext`). The
+  twin's driver is therefore the sync call itself on that thread: hooks,
+  relayed env ops and warnings run there between segments, outside any
+  async context, so a sync rlmesh call made from them runs, where Rust's
+  twin refuses it. The cancellation token is R-18's.
+- **No refusal in C#.** A sync C# call never refuses because it is made
+  from async code. .NET exposes no reliable test: a `SynchronizationContext`
+  is present on every Unity main-thread frame, which must be allowed to
+  block, and `Task.CurrentId` is set only inside some task bodies. A sync
+  call on a thread-pool thread blocks that thread like any blocking .NET
+  call. This, and the sync call allowed under a twin, are the C# translation
+  differences from Rust's R-16; both are tested (E-3).
+- **C# serve twins.** `EnvServer.ServeAsync` follows R-16's `serve_async`
+  exception: it is `Start()` plus `WaitAsync()` (every lane on library
+  threads, no signal handlers installed), not the sync `Serve()` on a thread
+  (ENV-29, ENV-40). `EnvFactory.ServeAsync` and `Model.ServeAsync` cannot
+  follow it yet: C has only a foreground factory serve and a foreground
+  model serve, so these twins run the sync C serve on their thread (with a
+  per-call `cancel` token) and install ENV-11's handlers while they serve
+  (ENV-39, MDL-24). An engine host serves a factory's envs through
+  `EnvServer.Start()` instead (ENV-39). Closing the gap needs a background
+  factory and model serve in C (a candidate C ABI addition, listed in the
+  index); parity with Python does not need it.
 
 ### R-17 Borrowing and `Session<'a>`
 
@@ -530,6 +797,22 @@ language never reads 0 as "unset".
   borrowed env; drop the session on a plain thread or call `close()` first.
 - C and C++ follow the same ownership: a session or run never frees what it
   borrowed; the caller frees handles after the session is freed.
+- **C#.** The compiler cannot check a borrow, so the wrapper makes freeing
+  out of order harmless instead. A `Session` (and a run, for its duration)
+  holds strong references to the managed model and env wrappers it borrows
+  and calls `SafeHandle.DangerousAddRef` on each of their handles, released
+  when the session is disposed or finalized. A model or env disposed while
+  a session uses it therefore stays alive natively until the session ends;
+  its later C# calls throw `ObjectDisposedException` (D-41), and the
+  session keeps working. `Close()` is different: closing a model or env
+  under a session is Python's `close()`, and the session's next call fails
+  as Python's does. Python's runtime checks are unchanged (a second session
+  on a busy env, a remote handle already driven with `reset` / `step`,
+  R-17). `Session.Dispose()` is `rlmesh_session_free`, so R-17's Session
+  Drop outside a runtime applies: errors swallowed, `on_episode_end` for an
+  open episode, the borrowed env closed with `close_env` on the disposing
+  thread. A session reached only by the finalizer is freed on R-28's
+  cleanup thread, never on the finalizer thread.
 
 ### R-18 Cancellation
 
@@ -563,6 +846,31 @@ rlmesh_ext_cancel_token_free(RLMeshExtCancelToken*)` (NULL is a no-op;
   - C++: `rlmesh::ext::CancelToken`, default-constructible (wraps `_new`);
     a copy shares the token (`_clone`), destruction frees one reference;
     `void cancel()`.
+  - C#: `public sealed class RLMesh.Ext.CancelToken : IDisposable` (a
+    `SafeHandle` over one native reference, R-11), `public CancelToken()`
+    (wraps `_new`), `public void Cancel()` (any thread). A C# reference
+    shares the token; `CancelHandle()` returns a new wrapper over the new
+    reference C returns. The `cancel` options property is
+    `Ext.CancelToken? Cancel { get; set; }`.
+- **C# twins and `CancellationToken`.** A twin's `cancellationToken`
+  bridges to the fenced token: the twin registers a callback that calls
+  `Cancel()` on a fresh per-call `CancelToken` passed in the call's
+  `cancel` field when its options have one, and otherwise on the handle's
+  own `CancelHandle()` token (single calls: `ResetAsync`, `StepAsync`,
+  `PredictAsync`, the remote clients' calls). The registration is disposed
+  when the C call returns. A cancelled twin faults with
+  `Ext.CancelledError`, an `OperationCanceledException` whose
+  `CancellationToken` is the caller's, so the task ends `Canceled` as .NET
+  expects; an already-cancelled token fails the twin at its start, as
+  R-18's idle `cancel()` fails the next call. The handle-token path keeps
+  one race R-18 cannot see from C: a `CancellationToken` that fires after
+  the C call has returned but before the registration is disposed fires the
+  handle's token, which then fails the handle's next call at its start.
+  Closing it exactly needs a per-call token for single calls, which C
+  passes only through `cancel` fields (a candidate C ABI addition, listed
+  in the index; parity with Python does not need it, since Python has no
+  twins). A twin disposes its registration before completing its task, so
+  the window is the few instructions between the C return and the dispose.
 - **Firing and re-arming.** One `cancel()` fires once: it fails the call in
   flight on the token or, when none is, the next call made with that token,
   at its start. The token then re-arms, as one Ctrl-C raises one
@@ -597,8 +905,19 @@ rlmesh_ext_cancel_token_free(RLMeshExtCancelToken*)` (NULL is a no-op;
   abort-on-drop guards, since a plain `JoinHandle` drop would detach them.
   The handle is usable afterwards. R-17's detached close of an owned,
   self-dialed connection still runs.
+- C# has no dropped futures: a twin's task cannot be dropped, only
+  cancelled through its `CancellationToken`, which takes the token path
+  above, so the twin's run fires `on_run_end` with the partial result like
+  any cancelled run. Abandoning a task (not awaiting it) does not cancel
+  it; the C call runs to completion on its thread.
 - SIGINT is cancellation; SIGTERM stops a server gracefully and is not an
-  error (Env owns the signal rules).
+  error (Env owns the signal rules). C# keeps C's foreground `Serve()`
+  installation (ENV-11): in a .NET process it temporarily replaces the
+  runtime's own SIGINT / SIGTERM handling (`Console.CancelKeyPress` and
+  `PosixSignalRegistration` handlers do not run while `Serve()` is in
+  progress) and restores it on return. Engine hosts (Unity, Godot) never
+  call the foreground `Serve()`: they use `Start()`, which installs
+  nothing (R-28).
 
 ### R-19 C struct sizing
 
@@ -652,6 +971,24 @@ Applies to every C options struct, out-struct, vtable and lent struct.
 - No API takes an array of sized structs (use an array of handles or
   pointers), and no sized struct is passed by value. By-value structs are
   frozen per ABI generation.
+- **C#.** Sized structs exist only in the internal raw layer (D-18), as
+  generated `[StructLayout(LayoutKind.Sequential)]` structs; no public C#
+  type exposes `struct_size`, `_INIT` or `_MIN_SIZE`. The generator does not
+  translate the `RLMESH_<NAME>_INIT` macros (nor `RLMESH_RANDOM_SAMPLE`'s
+  compound literal), so the hand layer has one managed factory per struct,
+  `internal static T <Name>Init()`, that sets `struct_size =
+(nuint)sizeof(T)` and every field to the macro's value; the E-3 C sizing
+  family compares each factory's bytes with C's `_INIT` (pointers compared
+  for NULL-ness only). A call fills its struct from the options class
+  (R-6), writing every field the library's generation knows, so it always
+  sends the generated `sizeof`, at or above every `_MIN_SIZE`, and never
+  sends a nonzero tail. Out-structs are initialized with the factory and
+  read by R-19's whole-field rule; lent structs are read through
+  `struct_size` the same way, so an older C# assembly reading a newer
+  library's lent struct sees only the fields it knows. A `bool` field is a
+  1-byte `byte` in the raw layer (R-28). The generated layout is checked
+  per architecture: pointer-sized fields and `_reserved[sizeof(size_t) -
+1]` arrays make it 64-bit specific, and only 64-bit targets ship (D-19).
 
 ### R-20 C conventions
 
@@ -675,6 +1012,19 @@ Applies to every C options struct, out-struct, vtable and lent struct.
   and raw bytes; owned variable-length text is `RLMeshBytes`.
 - Every handle has `rlmesh_<t>_free` (NULL is a no-op); `_close` exists where
   Python has `close()`.
+- C# (R-28): every C callback is a `static` method of the hand layer
+  marked `[MonoPInvokeCallback(typeof(D))]`, `D` being the generated
+  `[UnmanagedFunctionPointer(CallingConvention.Cdecl)]` delegate type for a
+  named callback typedef, or a hand-declared one for an anonymous vtable
+  field (which the raw layer types `IntPtr`). Each delegate instance lives
+  in a `static readonly` field, so the pointer from
+  `Marshal.GetFunctionPointerForDelegate` is valid for the process.
+  `user_data` is `GCHandle.ToIntPtr(GCHandle.Alloc(state))`, `state` being
+  the authored object plus its trampoline bookkeeping; `free_user_data` is
+  a static callback that frees the `GCHandle`. On a failed call (R-20's
+  ownership rule) the wrapper frees the `GCHandle` itself before throwing.
+  Every trampoline catches every exception (X-11) and returns a status; no
+  managed exception crosses a native frame.
 
 ### R-21 Errors
 
@@ -689,22 +1039,22 @@ infrastructure failures (Docker missing, pull failed, container exited;
 lands that must move to a non-misuse class (`RLMeshException` or
 `ConnectionError`), with a Python change.
 
-| Python class (Python base)                                 | Raised for                                                                                                                                                                                                                                                                                                                                                                                                                 | Rust                                                            | C status (value)                                                                 | C++ class : base                                                 |
-| ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- | -------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| `RLMeshException` (`RuntimeError`)                         | an internal or server-side failure with no subclass                                                                                                                                                                                                                                                                                                                                                                        | `Error::Internal(String)`                                       | `RLMESH_ERR_INTERNAL` (99); C-only `RLMESH_ERR_PANIC` (7) maps here              | `rlmesh::RLMeshException : rlmesh::RuntimeError`                 |
-| `ProtocolException` (`RLMeshException`)                    | generation mismatch, refused edition, failed handshake, malformed message                                                                                                                                                                                                                                                                                                                                                  | `Error::Protocol(String)`                                       | `RLMESH_ERR_PROTOCOL` (9, new)                                                   | `rlmesh::ProtocolException : RLMeshException`                    |
-| `EnvironmentException` (`RLMeshException`)                 | the env reported a failure; carries `code`                                                                                                                                                                                                                                                                                                                                                                                 | `Error::Environment(EnvironmentError)`, `is_recoverable: false` | `RLMESH_ERR_ENVIRONMENT` (3)                                                     | `rlmesh::EnvironmentException : RLMeshException`                 |
-| `RecoverableEnvironmentException` (`EnvironmentException`) | as above; the request failed, the session stays usable                                                                                                                                                                                                                                                                                                                                                                     | `Error::Environment(e)`, `e.is_recoverable: true`               | 3, `rlmesh_last_error_is_recoverable() != 0`                                     | `rlmesh::RecoverableEnvironmentException : EnvironmentException` |
-| `ModelException` (`RLMeshException`), new (D-10)           | the model reported a failure; carries `code`, `is_recoverable`                                                                                                                                                                                                                                                                                                                                                             | `Error::Model(ModelError)`                                      | `RLMESH_ERR_MODEL` (4)                                                           | `rlmesh::ModelException : RLMeshException`                       |
-| `ValueError`                                               | an invalid argument value, address or options field                                                                                                                                                                                                                                                                                                                                                                        | `Error::InvalidArgument(InvalidArgumentError)`                  | `RLMESH_ERR_INVALID_ARGUMENT` (1)                                                | `rlmesh::ValueError : std::invalid_argument`                     |
-| `AdapterResolutionError` (`ValueError`)                    | adapters cannot bridge env and model                                                                                                                                                                                                                                                                                                                                                                                       | `Error::InvalidArgument(e)`, `e.adapter_resolution.is_some()`   | 1, `RLMESH_ERROR_CLASS_ADAPTER_RESOLUTION_ERROR`                                 | `rlmesh::AdapterResolutionError : ValueError`                    |
-| `TypeError`                                                | the wrong kind of value or object (a value of another kind, a local env for `RemoteModel`, `view` misuse)                                                                                                                                                                                                                                                                                                                  | `Error::Type(String)`                                           | `RLMESH_ERR_TYPE` (10, new)                                                      | `rlmesh::TypeError : std::logic_error`                           |
-| builtin `RuntimeError`                                     | misuse (closed handle, overlapping or cross-thread call, blocking call inside a runtime, a local `EnvServer` whose contract lacks spaces passed to `RemoteModel.session` (RMT-12; a remote peer's is `ProtocolException`)), local refusals (episode capacity), and a call to a `Model` corner that is not defined (Python raises the subclass `NotImplementedError`, `py/_models/base.py:785-851`; folded here, see below) | `Error::Runtime(String)`                                        | `RLMESH_ERR_RUNTIME` (11, new)                                                   | `rlmesh::RuntimeError : std::runtime_error`                      |
-| builtin `OSError`                                          | a filesystem failure: `Recorder.export` refusing its target (Python raises the subclass `FileExistsError`, `py/recorder/export.py:62-74`; folded here, see below) and failed mkdir, write or copy                                                                                                                                                                                                                          | `Error::Os(String)`                                             | `RLMESH_ERR_OS` (12, new)                                                        | `rlmesh::OSError : std::runtime_error`                           |
-| `ConnectionError` (`OSError`)                              | a transport failure                                                                                                                                                                                                                                                                                                                                                                                                        | `Error::Connection(String)`                                     | `RLMESH_ERR_CONNECTION` (5); `RLMESH_ERR_TRANSPORT` deprecated alias, same value | `rlmesh::ConnectionError : rlmesh::OSError`                      |
-| `TimeoutError` (`OSError`)                                 | a connect or request deadline                                                                                                                                                                                                                                                                                                                                                                                              | `Error::Timeout(Duration)`                                      | `RLMESH_ERR_TIMEOUT` (6)                                                         | `rlmesh::TimeoutError : rlmesh::OSError`                         |
-| `KeyboardInterrupt` (`BaseException`)                      | cancellation (R-18)                                                                                                                                                                                                                                                                                                                                                                                                        | `Error::Cancelled`                                              | `RLMESH_ERR_CANCELLED` (8)                                                       | `rlmesh::ext::CancelledError`, no standard base (D-15)           |
-| —                                                          | C only, deprecated                                                                                                                                                                                                                                                                                                                                                                                                         | —                                                               | `RLMESH_ERR_INVALID_VALUE` (2): kept, deprecated, never returned from ABI 5      | —                                                                |
+| Python class (Python base)                                 | Raised for                                                                                                                                                                                                                                                                                                                                                                                                                 | Rust                                                            | C status (value)                                                                 | C++ class : base                                                 | C# class : base                                                        |
+| ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- | -------------------------------------------------------------------------------- | ---------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `RLMeshException` (`RuntimeError`)                         | an internal or server-side failure with no subclass                                                                                                                                                                                                                                                                                                                                                                        | `Error::Internal(String)`                                       | `RLMESH_ERR_INTERNAL` (99); C-only `RLMESH_ERR_PANIC` (7) maps here              | `rlmesh::RLMeshException : rlmesh::RuntimeError`                 | `RLMesh.RLMeshException : RLMesh.RuntimeError`                         |
+| `ProtocolException` (`RLMeshException`)                    | generation mismatch, refused edition, failed handshake, malformed message                                                                                                                                                                                                                                                                                                                                                  | `Error::Protocol(String)`                                       | `RLMESH_ERR_PROTOCOL` (9, new)                                                   | `rlmesh::ProtocolException : RLMeshException`                    | `RLMesh.ProtocolException : RLMeshException`                           |
+| `EnvironmentException` (`RLMeshException`)                 | the env reported a failure; carries `code`                                                                                                                                                                                                                                                                                                                                                                                 | `Error::Environment(EnvironmentError)`, `is_recoverable: false` | `RLMESH_ERR_ENVIRONMENT` (3)                                                     | `rlmesh::EnvironmentException : RLMeshException`                 | `RLMesh.EnvironmentException : RLMeshException`                        |
+| `RecoverableEnvironmentException` (`EnvironmentException`) | as above; the request failed, the session stays usable                                                                                                                                                                                                                                                                                                                                                                     | `Error::Environment(e)`, `e.is_recoverable: true`               | 3, `rlmesh_last_error_is_recoverable() != 0`                                     | `rlmesh::RecoverableEnvironmentException : EnvironmentException` | `RLMesh.RecoverableEnvironmentException : EnvironmentException`        |
+| `ModelException` (`RLMeshException`), new (D-10)           | the model reported a failure; carries `code`, `is_recoverable`                                                                                                                                                                                                                                                                                                                                                             | `Error::Model(ModelError)`                                      | `RLMESH_ERR_MODEL` (4)                                                           | `rlmesh::ModelException : RLMeshException`                       | `RLMesh.ModelException : RLMeshException`                              |
+| `ValueError`                                               | an invalid argument value, address or options field                                                                                                                                                                                                                                                                                                                                                                        | `Error::InvalidArgument(InvalidArgumentError)`                  | `RLMESH_ERR_INVALID_ARGUMENT` (1)                                                | `rlmesh::ValueError : std::invalid_argument`                     | `RLMesh.ValueError : System.ArgumentException`                         |
+| `AdapterResolutionError` (`ValueError`)                    | adapters cannot bridge env and model                                                                                                                                                                                                                                                                                                                                                                                       | `Error::InvalidArgument(e)`, `e.adapter_resolution.is_some()`   | 1, `RLMESH_ERROR_CLASS_ADAPTER_RESOLUTION_ERROR`                                 | `rlmesh::AdapterResolutionError : ValueError`                    | `RLMesh.AdapterResolutionError : ValueError`                           |
+| `TypeError`                                                | the wrong kind of value or object (a value of another kind, a local env for `RemoteModel`, `view` misuse)                                                                                                                                                                                                                                                                                                                  | `Error::Type(String)`                                           | `RLMESH_ERR_TYPE` (10, new)                                                      | `rlmesh::TypeError : std::logic_error`                           | `RLMesh.TypeError : System.InvalidCastException`                       |
+| builtin `RuntimeError`                                     | misuse (closed handle, overlapping or cross-thread call, blocking call inside a runtime, a local `EnvServer` whose contract lacks spaces passed to `RemoteModel.session` (RMT-12; a remote peer's is `ProtocolException`)), local refusals (episode capacity), and a call to a `Model` corner that is not defined (Python raises the subclass `NotImplementedError`, `py/_models/base.py:785-851`; folded here, see below) | `Error::Runtime(String)`                                        | `RLMESH_ERR_RUNTIME` (11, new)                                                   | `rlmesh::RuntimeError : std::runtime_error`                      | `RLMesh.RuntimeError : System.InvalidOperationException`               |
+| builtin `OSError`                                          | a filesystem failure: `Recorder.export` refusing its target (Python raises the subclass `FileExistsError`, `py/recorder/export.py:62-74`; folded here, see below) and failed mkdir, write or copy                                                                                                                                                                                                                          | `Error::Os(String)`                                             | `RLMESH_ERR_OS` (12, new)                                                        | `rlmesh::OSError : std::runtime_error`                           | `RLMesh.OSError : System.IO.IOException`                               |
+| `ConnectionError` (`OSError`)                              | a transport failure                                                                                                                                                                                                                                                                                                                                                                                                        | `Error::Connection(String)`                                     | `RLMESH_ERR_CONNECTION` (5); `RLMESH_ERR_TRANSPORT` deprecated alias, same value | `rlmesh::ConnectionError : rlmesh::OSError`                      | `RLMesh.ConnectionError : RLMesh.OSError`                              |
+| `TimeoutError` (`OSError`)                                 | a connect or request deadline                                                                                                                                                                                                                                                                                                                                                                                              | `Error::Timeout(Duration)`                                      | `RLMESH_ERR_TIMEOUT` (6)                                                         | `rlmesh::TimeoutError : rlmesh::OSError`                         | `RLMesh.TimeoutError : RLMesh.OSError`                                 |
+| `KeyboardInterrupt` (`BaseException`)                      | cancellation (R-18)                                                                                                                                                                                                                                                                                                                                                                                                        | `Error::Cancelled`                                              | `RLMESH_ERR_CANCELLED` (8)                                                       | `rlmesh::ext::CancelledError`, no standard base (D-15)           | `RLMesh.Ext.CancelledError : System.OperationCanceledException` (D-25) |
+| —                                                          | C only, deprecated                                                                                                                                                                                                                                                                                                                                                                                                         | —                                                               | `RLMESH_ERR_INVALID_VALUE` (2): kept, deprecated, never returned from ABI 5      | —                                                                | —                                                                      |
 
 Status values 0-8 and 99 keep today's discriminants
 (`capi/abi/status.rs:13-26`); new statuses take 9-12.
@@ -748,6 +1098,27 @@ or `AttributeError` (P-10).
   does. Catching a `std::` base is wider than any Python clause; that and a
   Python clause naming a folded subclass (above) are the only allowed
   differences.
+- **C# inheritance** (D-25). C# copies Python's tree as C++ does, rooting
+  each builtin at the nearest .NET exception so .NET idioms keep working:
+  `ValueError` under `ArgumentException` (its `ParamName` stays `null`, so
+  `Message` carries no `(Parameter '…')` suffix and equals R-22's text),
+  `TypeError` under `InvalidCastException` (a wrong-kind `Value` read is the
+  common case), `RuntimeError` under `InvalidOperationException` (so
+  `ObjectDisposedException`, D-41, and the misuse class share a base),
+  `OSError` under `IOException`. `TimeoutError` stays under `OSError`, as
+  Python's, and so is not a `System.TimeoutException`. Catching a .NET base
+  is wider than any Python clause, as a `std::` base is in C++. One
+  difference has no C++ counterpart: every .NET exception derives from
+  `System.Exception`, so `catch (Exception)` catches a cancellation, which
+  `except Exception` and C++'s `catch (const std::exception&)` (D-15) do
+  not. `Ext.CancelledError` derives from `OperationCanceledException`
+  instead, so `Task` machinery reports a cancelled twin as `Canceled` and
+  `catch (OperationCanceledException)` reads as it does elsewhere in .NET;
+  D-15's intent is not reachable. Every C# exception class has the public
+  constructors .NET expects (`()`, `(string message)`, `(string message,
+Exception? inner)`) except where Core's authored constructors fix the
+  shape (COR-20); `Message` is R-22's text; `ToString()` is .NET's (type,
+  message, stack) and outside R-22.
 - **Flat languages.** Rust and C cannot nest variants, so a subclass with no
   variant of its own (`RecoverableEnvironmentException`,
   `AdapterResolutionError`) uses its parent's variant or status, and matching
@@ -781,7 +1152,9 @@ or `AttributeError` (P-10).
   `throw rlmesh::EnvironmentException(msg)`,
   `throw rlmesh::RecoverableEnvironmentException(msg)` and
   `throw rlmesh::ModelException(msg, is_recoverable)` (R-6 exception,
-  COR-20).
+  COR-20); C# `throw new EnvironmentException(msg)`,
+  `throw new RecoverableEnvironmentException(msg)` and
+  `throw new ModelException(msg, isRecoverable: true)` (X-11).
 - Rust `Error` stays `#[non_exhaustive]`. `Address` folds into
   `InvalidArgument` and `Server` into `Internal`.
 
@@ -794,7 +1167,8 @@ bare `RuntimeError`; protocol failures arrive as `Internal`
 ### R-22 Error text
 
 One formatter in the Rust facade produces the text. Rust `Display`, C
-`rlmesh_last_error_message`, C++ `what()` and Python `str(exc)` are equal.
+`rlmesh_last_error_message`, C++ `what()`, C# `Exception.Message` and Python
+`str(exc)` are equal.
 The canonical text per row (Core COR-5 holds the same list):
 
 | Row                                                                            | Text                                                                                                                       |
@@ -862,6 +1236,13 @@ WorkflowEditionWarning = 3 }` (values of the C enum), with free
 is_subclass_of(WarningCategory, WarningCategory)`; `struct Warning {
 WarningCategory category; std::string message; }` with `operator==`
     and `operator<<`.
+  - C#: `public enum WarningCategory { UserWarning = 1, RuntimeWarning = 2,
+WorkflowEditionWarning = 3 }` with `public static string Name(this
+WarningCategory)` and `public static bool IsSubclassOf(this
+WarningCategory, WarningCategory other)` in `WarningCategoryExtensions`;
+    `public sealed record Warning` with `public Warning(WarningCategory
+category, string message)` and get-only `Category` / `Message`
+    properties, whose `ToString()` is `<Category>: <message>`.
 - **Handler.**
   - Rust: `pub fn set_warning_handler(handler: Option<Box<dyn Fn(&Warning)
 -> Result<()> + Send + Sync>>)`.
@@ -876,6 +1257,13 @@ void (*free_user_data)(void*));`. It returns `RLMESH_OK`, or
     with R-12's calls (`RLMeshException` kind).
   - C++: `void rlmesh::set_warning_handler(std::function<void(const
 Warning&)> handler)`; an empty `std::function` restores the default.
+  - C#: `public static void SetWarningHandler(Action<Warning>? handler)` on
+    `RLMesh.Api` (D-21); `null` restores the default. One handler, not a
+    .NET `event` (D-37): an event's several subscribers would make "the
+    handler failed" ambiguous, and R-23's install is one atomic replacement.
+    The `Action` is held through a `GCHandle` as `user_data`; a throwing
+    handler aborts the call that warned, and the call rethrows the
+    handler's own exception (R-12, X-11).
   - Process-wide; `None` / NULL `fn` / empty restores the default.
     Installing or resetting is atomic with respect to emission: the library
     holds the handler by reference count, an emission uses the handler
@@ -884,7 +1272,8 @@ Warning&)> handler)`; an empty `std::function` restores the default.
     old handler has returned (R-20's last copy), on whichever thread drops
     that copy.
 - **Thread.** The handler runs synchronously on the thread that made the API
-  call that warned (for an `_async` twin, the thread polling its future). A
+  call that warned (for a Rust `_async` twin, the thread polling its future;
+  for a C# `Async` twin, the twin's own thread, R-16). A
   warning raised on a library thread is queued and delivered on that calling
   thread before the call returns, in emission order, so Python's binding sees
   its caller frames and a failing handler can abort that call. Only a
@@ -912,7 +1301,11 @@ NumPy, Gymnasium conversion, Torch, JAX, the `ValueBridge` parameters and the
 `rlmesh.types` typing protocols have no counterpart and need none. A
 parameter that exists only to select a bridge (`bridge=`, `input_bridge=`) or
 to negotiate a Python protocol (`__dlpack__`'s `max_version`, `stream`;
-SPC-19) is dropped natively.
+SPC-19) is dropped natively. C# has no counterpart either: no
+`System.Numerics.Tensors`, `ML.NET`, Unity `NativeArray<T>` or Godot array
+bridge sits on the shared surface. Interop with them goes through `Tensor`'s
+spans (Spaces SPC-31); an engine-specific bridge belongs to its integration
+(`integrations/unity/`), outside this spec.
 
 ### R-25 Language-only extras are fenced
 
@@ -934,17 +1327,32 @@ SPC-19) is dropped natively.
     `Option<ext::EnvServerOptions>` / `Option<ext::ModelServeOptions>`, C
     `const RLMeshExtEnvServerOptions*` / `const RLMeshExtModelServeOptions*`
     (NULL = none), C++ `std::optional<ext::EnvServerOptions>` /
-    `std::optional<ext::ModelServeOptions>`.
+    `std::optional<ext::ModelServeOptions>`, C# `Ext.EnvServerOptions? Ext`
+    / `Ext.ModelServeOptions? Ext`.
 
   No other shared type carries a user-facing fenced member. Rust `Error`'s
   `#[doc(hidden)]` `Attached` variant (R-12's error payload channel) is
   `binding` plumbing, not an extra: no shared-surface call returns it and
-  C and C++ have no counterpart. The ABI
+  C, C++ and C# have no counterpart. The ABI
   identification items `RLMESH_ABI_VERSION`, `rlmesh_abi_version` and
   `rlmesh_abi_check` keep their names, because a consumer must call them
   against any ABI generation.
 
 - C++: `rlmesh::ext`.
+- C# (D-33): the `RLMesh.Ext` namespace (`Ext.CancelToken`,
+  `Ext.CancelledError`, `Ext.EnvServerOptions`, `Ext.ModelServeOptions`,
+  `Ext.DlpackTensor` and the typed tensor views, `Ext.Entrypoints`,
+  `Ext.Lifetime`; each area lists its own), mirroring C++'s `rlmesh::ext`.
+  `Tensor.ToDlpack` / `Tensor.FromDlpack` are Stable names whose types are
+  the fenced `Ext.DlpackTensor`, as SPC-19 has it for the other languages. R-18's `cancel` and `CancelHandle()` members and the serve
+  options `Ext` property are the same two exceptions on shared types. C#
+  has no `binding` module: the raw P/Invoke layer (`RLMesh.Interop`, D-18)
+  is `internal`, so it is not public surface at all, and the Unity
+  integration uses only the public surface and `RLMesh.Ext` (no
+  `InternalsVisibleTo`). The `Async` twins (R-16) are on shared types, as
+  Rust's are, not fenced. C#-only conveniences that do not change behaviour
+  (implicit conversions into `Value`, `Deconstruct` methods, BCL interface
+  implementations required by R-10) are translation, not extras.
 - Trait impls cannot be crate-private: an impl is public wherever both types
   are nameable. Each public `From` impl from a plumbing type becomes a
   `pub(crate) fn` and call sites use `.map_err(Error::from_grpc)` and the
@@ -992,26 +1400,28 @@ SPC-19) is dropped natively.
 
 ### R-26 Full parity is the target
 
-C, C++ and Rust each cover the whole Stable Python surface except R-24's
-bridges. Until a symbol lands, its area table marks it missing; a missing
+C, C++, C# and Rust each cover the whole Stable Python surface except R-24's
+bridges (C#: D-17, G-29). Until a symbol lands, its area table marks it missing; a missing
 symbol is a gap (G-n), not a design choice.
 
 ### R-27 One home per shared type
 
-- **One value type.** `rlmesh::Value` (Rust, C++) and `RLMeshValue*` (C)
-  carry `rlmesh.types.Value`. No `SpaceValue`, `ModelValue`,
+- **One value type.** `rlmesh::Value` (Rust, C++), `RLMeshValue*` (C) and
+  `RLMesh.Value` (C#) carry `rlmesh.types.Value`. No `SpaceValue`, `ModelValue`,
   `RLMeshModelValue` or C++ `ValueRef` on the shared surface.
 - **One metadata map.** Rust `Metadata` with aliases `InfoDict` and `Kwargs`,
   a C `RLMeshValue*` of kind `DICT`, C++ `Metadata` / `InfoDict` / `Kwargs`;
   insertion-ordered like a Python `dict` (COR-2). No `MetaMap`,
-  `RLMeshMetadata` or `RLMeshMetaMap`.
+  `RLMeshMetadata` or `RLMeshMetaMap`. C# has `RLMesh.Metadata` only: .NET
+  has no exported type alias, so `InfoDict` and `Kwargs` are spelled
+  `Metadata` (D-30).
 - **One contract type.** `rlmesh::specs::EnvContract`, C `RLMeshEnvContract`,
-  owned by Env.
+  C# `RLMesh.Specs.EnvContract`, owned by Env.
 - Owners (the area that defines the symbol; others link to it):
 
   | Area                    | Owns                                                                                                                                                                                                                                                                                  |
   | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-  | rules.md                | error classes and statuses (R-21), C callback errors and the error payload channel (R-12), warnings and `Warning` (R-23), cancellation (R-18), C sizing (R-19)                                                                                                                        |
+  | rules.md                | error classes and statuses (R-21), C callback errors and the error payload channel (R-12), warnings and `Warning` (R-23), cancellation (R-18), C sizing (R-19), C# runtime constraints (R-28), the C# trampoline mapping (X-11)                                                       |
   | [Core](core.md)         | `Value`, `Metadata` / `InfoDict` / `Kwargs`, error detail fields, editions, describe, build info, `ENV_RESET_OPTIONS_KEY`                                                                                                                                                             |
   | [Spaces](spaces.md)     | spaces, `SpaceSpec`, `Tensor`, `DType`, `Device`, C text views                                                                                                                                                                                                                        |
   | [Env](env.md)           | `Env`, `VectorEnv`, `VectorSeed`, `EnvFactory`, `EnvFactoryExt`, C++ `EnvFactoryBase`, `EnvFactoryServeOptions`, `MadeEnv`, `TagParam`, `Variant`, `VariantOptions`, `EnvServer`, `EnvServerOptions`, `ServeOptions`, `Transport`, `EnvContract`, `ServedEnv`, `trial_index`, signals |
@@ -1020,26 +1430,143 @@ symbol is a gap (G-n), not a design choice.
   | [Remote](remote.md)     | `RemoteEnv`, `RemoteVectorEnv`, `RemoteModel`, their options structs, sandbox clients, client timeouts                                                                                                                                                                                |
   | [Adapters](adapters.md) | `EnvTags`, `ModelSpec`, `ObservationRoles`, `tag`, `resolve`, `Adapter`, `Advisory`, `adapters.*` keys, `AdapterResolutionError` detail                                                                                                                                               |
 
+### R-28 C# runtime constraints
+
+C# runs on .NET 8, Mono and Unity's IL2CPP (D-19). Every C# area mapping obeys
+these, and E-2 / E-3 check them.
+
+- **No runtime code generation.** No `System.Reflection.Emit`,
+  `DynamicMethod`, `Expression.Compile`, `dynamic` or runtime-generated
+  marshalling stubs. P/Invoke signatures in the raw layer are blittable
+  (pointers, `nint` / `nuint`, fixed-width integers, `double`, `byte` for C
+  `bool`, generated blittable structs), with no `string`, `bool`,
+  `StringBuilder` or `[MarshalAs]` parameters, so no marshalling stub is
+  needed. C `bool` fields and parameters are `byte` (a .NET `bool` field is
+  not blittable, and default marshalling would make it 4 bytes).
+- **No reflection over authored code.** Authored members are found with
+  interface checks (`is`), never `GetMethod`, attribute scans or
+  `Activator.CreateInstance` (R-12, D-32), so IL2CPP and trimming cannot
+  strip what the library calls. A type-level interface check
+  (`typeof(I).IsAssignableFrom(typeof(T))`) is allowed: it reads only the
+  type's interface list, which IL2CPP and trimming preserve (Model's
+  describe type form, MDL-23). So is `GetType().Name` for advisory text
+  (ADP-32).
+- **Native library.** `[DllImport("rlmesh_capi", CallingConvention =
+CallingConvention.Cdecl)]`, the name a `const string` in the raw layer;
+  platforms that link the C library statically (iOS) are built with
+  `__Internal` instead (D-40). Resolution never depends on
+  `NativeLibrary`, `LibraryImport` or `UnmanagedCallersOnly`, none of which
+  exists in netstandard2.1; the net8.0 build may add a
+  `NativeLibrary.SetDllImportResolver` as an optional extra for custom
+  install layouts. Every assembly load checks `rlmesh_abi_check` against the
+  generation it was generated from (R-25) before any other call, and
+  refuses a mismatch with the RuntimeError class.
+- **Callbacks** follow R-20's C# bullet: static methods with
+  `[MonoPInvokeCallback]` (the library defines its own
+  `MonoPInvokeCallbackAttribute`, which IL2CPP matches by name), delegates
+  rooted for the process, `GCHandle` as `user_data`, every exception caught
+  (X-11). `UnmanagedCallersOnly` and C# function pointers are not used:
+  IL2CPP does not document them for reverse P/Invoke.
+- **Threads.** Callbacks arrive on library threads, several at once (a
+  served env's lanes and a served model's sessions run concurrently, R-16),
+  and from threads .NET did not create; .NET, Mono and IL2CPP attach such a
+  thread on its first reverse call. The library never assumes a main
+  thread, never captures a `SynchronizationContext` and never marshals a
+  callback to another thread. An engine integration that must touch
+  engine objects only on its main thread dispatches there itself (the
+  Unity layer queues the request and blocks the library thread until the
+  main thread answers); it must then never make a blocking rlmesh call on
+  the main thread that waits on that same callback, or it deadlocks. The
+  foreground `Serve()` (which keeps lane 0 on the caller and installs
+  signal handlers, R-18) is for console hosts; engine hosts use `Start()`.
+- **Last error.** The thread-local last-error slot (R-22) is read on the
+  same OS thread right after the failing call. Sync wrappers never `await`
+  between the two, so no thread switch can intervene.
+- **Finalization** (D-39). Every handle's `SafeHandle` has a finalizer as a
+  safety net; `Dispose()` / `using` is the contract. A handle whose free can
+  run authored callbacks or block (`Session`, `Model`, `EnvServer`,
+  `RemoteEnv`, `RemoteVectorEnv`, `RemoteModel`, `Recorder`, `View`)
+  never frees on the finalizer thread: its `ReleaseHandle` queues the
+  pointer to one library-owned background thread that calls
+  `rlmesh_<t>_free`, so the finalizer thread never blocks or reenters
+  managed authored code. Values, tensors, spaces and other inert handles
+  free inline. An authored object held by a native vtable (`GCHandle`
+  `user_data`) stays reachable until the native side frees it, so a served
+  env or model is collected only after its server or `Model` is disposed;
+  an undisposed server is a leak, not a crash.
+- **Domain reload** (Unity Editor, Mono only; IL2CPP players never reload).
+  Function pointers and `GCHandle`s handed to C die with the domain. The
+  library tracks its live callback-bearing handles (servers, models,
+  sessions, clients) through weak references, and
+  `RLMesh.Ext.Lifetime.DisposeAll()` restores the default warning handler
+  and disposes them in reverse creation order, so no library thread calls
+  into the unloaded domain. The library calls it from
+  `AppDomain.CurrentDomain.DomainUnload`; the Unity integration calls it
+  earlier, from `AssemblyReloadEvents.beforeAssemblyReload`.
+  Library threads that have called managed code stay attached to the
+  runtime; whether Mono's reload waits on them is unverified (index,
+  candidate C ABI addition).
+- **Memory.** A `ReadOnlySpan<T>` returned from a handle is a borrowed view
+  valid until that handle is disposed; as a `ref struct` it cannot be
+  stored in a field or captured, but a caller that disposes the handle while
+  still holding the span reads freed memory, as with any native-backed span.
+  A view that must be stored is a
+  `ReadOnlyMemory<T>` from an `IMemoryOwner<T>` that holds a
+  `DangerousAddRef` on the handle until disposed (Spaces SPC-31). Inputs
+  given as spans are copied by C before the call returns.
+- **Language level** (D-19). The public surface is consumable from C# 9
+  (Unity 2021.3 LTS through Unity 6) and uses no member that needs a later
+  compiler or runtime to call: no `required` members, no static abstract
+  interface members, no default interface methods, no generic math, no
+  `ref` fields. The implementation may use newer syntax that compiles to
+  netstandard2.1, with internal polyfills (`IsExternalInit`).
+
 ## Decisions
 
-| ID   | Decision                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Status                  |
-| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------- |
-| D-1  | Sync first. Every primary API blocks; Rust adds opt-in `*_async` twins (R-16).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | User                    |
-| D-2  | Full parity in C. C covers the whole surface through handles and options structs; C++ wraps C one to one.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | User                    |
-| D-3  | C defaults come from `RLMESH_<NAME>_INIT` macros guarded by `struct_size` (R-19).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | User                    |
-| D-4  | `RemoteEnv`, `RemoteVectorEnv`, `RemoteModel` and `Session` exist in Rust, C and C++.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | User                    |
-| D-5  | C++17 minimum with exceptions, tested at C++17 and C++20. One token-identical definition of every RLMesh entity at C++17 and C++20 (ODR); no standard/feature-macro branches inside or around RLMesh definitions. Only the top-level version/exceptions guards and `std::ranges::enable_borrowed_range` / `std::ranges::enable_view` specializations for `rlmesh::Span<T>` under `#if defined(__cpp_lib_ranges)` may depend on the standard; the specializations add no RLMesh members. Mixed-standard translation units may share wrapper types. Detection traits replace concepts, `rlmesh::Span` replaces `std::span` in public signatures, and options remain aggregates with portable `with_<field>` setters. The C++20 part of D-5 is reversed on 2026-10-16 to reduce integration friction with Unreal 5.0–5.2, ROS 2, Omniverse and Godot. `Result<T>`, `RLMESH_TRY`, abort-on-error and `-fno-exceptions` support remain removed. | Settled                 |
-| D-6  | C naming. Types and their functions use the type name without its module: `RLMeshBox` / `rlmesh_box_*`, `RLMeshEnvTags` / `rlmesh_env_tags_*`. Free functions and constants keep their module: `rlmesh_adapters_tag`, `rlmesh_spaces_space_from_spec`, `RLMESH_ADAPTERS_ENV_METADATA_KEY`; root ones take none (`rlmesh_run`). A type name used in two modules keeps the module for both (`RLMeshSpacesText`, `RLMeshAdaptersText`); today the only such pair is `Text`. A free function named after the type it builds is `rlmesh_<t>_new` (`rlmesh.session` builds a `Session` → `rlmesh_session_new`); other builders keep their module (`rlmesh_adapters_resolve` and `rlmesh_adapters_resolve_from_contract` build an `RLMeshAdapter`, whose `rlmesh_adapter_new` is the vtable constructor). Language-only extras use `rlmesh_ext_` / `RLMeshExt` (R-25).                                                                            | Settled                 |
-| D-7  | Project edition lookup. Rust, C and C++ resolve the workflow edition with Python's chain minus its project-file rung (Core COR-6: the call's own value, including the `ServeOptions.workflow_edition` given to `EnvServer` or `Model.serve`; `RLMESH_WORKFLOW_EDITION`; the served peer's option; the type's declaration); they read no project file. Python keeps its `pyproject.toml` `[tool.rlmesh] workflow_edition` rung (`py/_editions.py:162-190`) as a Python-only convenience (R-24).                                                                                                                                                                                                                                                                                                                                                                                                                                             | User                    |
-| D-8  | Deprecated aliases are not ported. `rlmesh.__build__` (deprecated, `py/__init__.py:106-110`) has no counterpart and is not a gap.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Settled                 |
-| D-9  | `sanitize_metadata` (`py/_metadata.py:23`) is a Python bridge: it coerces arbitrary Python objects. Relabel it in compatibility.md and `api_metadata.json`; no native counterpart.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | User (accepted default) |
-| D-10 | Add a Stable `rlmesh.ModelException(RLMeshException)` with `code` and `is_recoverable`, raised for model failures (P-1). Additive; existing `except RuntimeError` keeps matching. Builtin `RuntimeError` is reserved for misuse (D-12).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | User                    |
-| D-11 | Env failures always raise `(Recoverable)EnvironmentException` with the code, including `TIMEOUT`, `INVALID_ACTION` and `CANCELLED` (P-4). Breaking for `except ValueError` / `except TimeoutError` around env calls; needs a changelog entry. The alternative, hybrid classes, has no flat Rust or C form. Follows D-16.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Settled                 |
-| D-12 | Builtin `RuntimeError` and `TypeError` raised by rlmesh get their own categories (`Error::Runtime`, `Error::Type`), not `Model` and not `InvalidArgument` (R-21).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | User                    |
-| D-13 | The native default warning handler writes to stderr. No `tracing` autodetection: a warning must not depend on whether a subscriber happens to be installed (R-23).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | Settled                 |
-| D-14 | A C struct larger than the library's must have zero unknown trailing bytes (R-19), mirroring Python's TypeError for an unknown keyword.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Settled                 |
-| D-16 | Python is the reference for concepts, not for quirks. Where Python's current behaviour is accidental or inconsistent, Python changes to the target in the same minor release, with a changelog entry (listed as `P-n` / `<AREA>-P<n>`), instead of every language copying the quirk. Deliberate Python behaviour is matched exactly.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | User                    |
-| D-15 | C++ `rlmesh::ext::CancelledError` derives from no `std::` exception, as `KeyboardInterrupt` is not an `Exception`: `catch (const std::exception&)` does not swallow a cancel, as `except Exception` does not. It still has `what()`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Settled                 |
+| ID   | Decision                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | Status                  |
+| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- |
+| D-1  | Sync first. Every primary API blocks; Rust adds opt-in `*_async` twins (R-16).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | User                    |
+| D-2  | Full parity in C. C covers the whole surface through handles and options structs; C++ wraps C one to one.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | User                    |
+| D-3  | C defaults come from `RLMESH_<NAME>_INIT` macros guarded by `struct_size` (R-19).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | User                    |
+| D-4  | `RemoteEnv`, `RemoteVectorEnv`, `RemoteModel` and `Session` exist in Rust, C and C++.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | User                    |
+| D-5  | C++17 minimum with exceptions, tested at C++17 and C++20. One token-identical definition of every RLMesh entity at C++17 and C++20 (ODR); no standard/feature-macro branches inside or around RLMesh definitions. Only the top-level version/exceptions guards and `std::ranges::enable_borrowed_range` / `std::ranges::enable_view` specializations for `rlmesh::Span<T>` under `#if defined(__cpp_lib_ranges)` may depend on the standard; the specializations add no RLMesh members. Mixed-standard translation units may share wrapper types. Detection traits replace concepts, `rlmesh::Span` replaces `std::span` in public signatures, and options remain aggregates with portable `with_<field>` setters. The C++20 part of D-5 is reversed on 2026-10-16 to reduce integration friction with Unreal 5.0–5.2, ROS 2, Omniverse and Godot. `Result<T>`, `RLMESH_TRY`, abort-on-error and `-fno-exceptions` support remain removed.                                                                                                                                                                           | Settled                 |
+| D-6  | C naming. Types and their functions use the type name without its module: `RLMeshBox` / `rlmesh_box_*`, `RLMeshEnvTags` / `rlmesh_env_tags_*`. Free functions and constants keep their module: `rlmesh_adapters_tag`, `rlmesh_spaces_space_from_spec`, `RLMESH_ADAPTERS_ENV_METADATA_KEY`; root ones take none (`rlmesh_run`). A type name used in two modules keeps the module for both (`RLMeshSpacesText`, `RLMeshAdaptersText`); today the only such pair is `Text`. A free function named after the type it builds is `rlmesh_<t>_new` (`rlmesh.session` builds a `Session` → `rlmesh_session_new`); other builders keep their module (`rlmesh_adapters_resolve` and `rlmesh_adapters_resolve_from_contract` build an `RLMeshAdapter`, whose `rlmesh_adapter_new` is the vtable constructor). Language-only extras use `rlmesh_ext_` / `RLMeshExt` (R-25).                                                                                                                                                                                                                                                      | Settled                 |
+| D-7  | Project edition lookup. Rust, C and C++ resolve the workflow edition with Python's chain minus its project-file rung (Core COR-6: the call's own value, including the `ServeOptions.workflow_edition` given to `EnvServer` or `Model.serve`; `RLMESH_WORKFLOW_EDITION`; the served peer's option; the type's declaration); they read no project file. Python keeps its `pyproject.toml` `[tool.rlmesh] workflow_edition` rung (`py/_editions.py:162-190`) as a Python-only convenience (R-24).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | User                    |
+| D-8  | Deprecated aliases are not ported. `rlmesh.__build__` (deprecated, `py/__init__.py:106-110`) has no counterpart and is not a gap.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Settled                 |
+| D-9  | `sanitize_metadata` (`py/_metadata.py:23`) is a Python bridge: it coerces arbitrary Python objects. Relabel it in compatibility.md and `api_metadata.json`; no native counterpart.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | User (accepted default) |
+| D-10 | Add a Stable `rlmesh.ModelException(RLMeshException)` with `code` and `is_recoverable`, raised for model failures (P-1). Additive; existing `except RuntimeError` keeps matching. Builtin `RuntimeError` is reserved for misuse (D-12).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | User                    |
+| D-11 | Env failures always raise `(Recoverable)EnvironmentException` with the code, including `TIMEOUT`, `INVALID_ACTION` and `CANCELLED` (P-4). Breaking for `except ValueError` / `except TimeoutError` around env calls; needs a changelog entry. The alternative, hybrid classes, has no flat Rust or C form. Follows D-16.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | Settled                 |
+| D-12 | Builtin `RuntimeError` and `TypeError` raised by rlmesh get their own categories (`Error::Runtime`, `Error::Type`), not `Model` and not `InvalidArgument` (R-21).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | User                    |
+| D-13 | The native default warning handler writes to stderr. No `tracing` autodetection: a warning must not depend on whether a subscriber happens to be installed (R-23).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Settled                 |
+| D-14 | A C struct larger than the library's must have zero unknown trailing bytes (R-19), mirroring Python's TypeError for an unknown keyword.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | Settled                 |
+| D-16 | Python is the reference for concepts, not for quirks. Where Python's current behaviour is accidental or inconsistent, Python changes to the target in the same minor release, with a changelog entry (listed as `P-n` / `<AREA>-P<n>`), instead of every language copying the quirk. Deliberate Python behaviour is matched exactly.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | User                    |
+| D-15 | C++ `rlmesh::ext::CancelledError` derives from no `std::` exception, as `KeyboardInterrupt` is not an `Exception`: `catch (const std::exception&)` does not swallow a cancel, as `except Exception` does not. It still has `what()`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Settled                 |
+| D-17 | C# is a fifth language at full parity (R-26), for game engines and simulators (Unity first, also Godot and Stride). The C# library wraps the C ABI one to one, as C++ does (D-2), and ships with v0.2. Engine integrations (`integrations/unity/`) sit on top and are outside this spec; their constraints shape R-28.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | User                    |
+| D-18 | C# layout and layering. `csharp/` at the repo root (sibling of `python/`): `csharp/src/RLMesh/` is the NuGet package and root namespace `RLMesh`. Two layers: a raw P/Invoke layer generated from `rlmesh.h` by ClangSharpPInvokeGenerator (pinned 21.1.8.4; `-x c -std c11 -n RLMesh.Interop -m Native -l rlmesh_capi -c codegen=compatible --generate fnptr-codegen=false --generate funcs-with-body=false --generate helper-types`, with zig's clang builtin include directory and `--no-resource-directory-detection`, as verified in the spike, plus `--with-access-specifier *=Internal` so nothing generated is public) into `csharp/src/RLMesh/Interop/Native.g.cs`, `internal`, never hand-edited; `mise run csharp:generate` writes it and `mise run csharp:generate -- --check` (in `mise run check`) fails when it is stale. Named callback typedefs become Cdecl delegate types; anonymous callback fields become `IntPtr`; no `delegate*`. The `_INIT` macros and static inline helpers are not generated; the hand layer supplies them (R-19). The hand-written idiomatic layer is everything public. | Pending (C#)            |
+| D-19 | C# targets `netstandard2.1` (Unity, Mono, Godot) and `net8.0`. The public surface is consumable from C# 9 (R-28 language level). Only 64-bit targets ship: the generated layout is per-architecture (R-19). The SDK is pinned by `global.json`, installed by mise (`dotnet = ["10.0.402", "8.0.426"]`, `core:dotnet`); the 10 SDK builds both targets and the 8 runtime runs the net8.0 tests.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Pending (C#)            |
+| D-20 | C# naming is one transform of Python's name (R-4): `PascalCase` types, members and constants, `camelCase` parameters, `I`-prefixed interfaces, verbatim `@` for keyword parameters, no trailing `_`, the `Value` suffix for a member colliding with its type or `object`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | Pending (C#)            |
+| D-21 | C# free functions. A Python module maps to a namespace (`rlmesh.spaces` → `RLMesh.Spaces`, `rlmesh.adapters` → `RLMesh.Adapters`, `rlmesh.specs` → `RLMesh.Specs`); its free functions and constants are static members of one static class per module, `RLMesh.Api`, `RLMesh.Spaces.SpacesApi`, `RLMesh.Adapters.AdaptersApi` (`using static RLMesh.Api;` gives `Run(model, env)`). A static class cannot share its namespace's name (`RLMesh.RLMesh` breaks name lookup in every consumer), and a lowercase `rlmesh` class (TorchSharp's style) breaks .NET convention. A free function named after the type it builds is that type's constructor, as D-6 makes it `_new` (`rlmesh.session(model, env)` → `new Session(model, env)`). A Python classmethod or staticmethod stays a static method on its type (`Model.FromConfig`, `Tensor.FromDlpack`); a module-level builder stays on the module class (`SpacesApi.SpaceFromSpec`). A builder that must be async is a static `<Name>Async` beside the constructor (`RemoteEnv.ConnectAsync`, RMT-24; `Api.SessionAsync`, RUN-32).                                | Pending (C#)            |
+| D-22 | C# keyword arguments are options classes (R-6): sealed, mutable `{ get; set; }` properties initialized to Python's defaults, `options = null` last. Rejected: `record` with `init` properties (synthesized equality is an unreviewed extra, conditional assembly needs `with` chains, and C# 9 has no `required`), and C# optional parameters (compile-time constants only, baked into callers).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Pending (C#)            |
+| D-23 | C# R-7 calls use optional parameters, `null` meaning Python's default, or Python's constant for a non-optional scalar (R-7).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | Pending (C#)            |
+| D-24 | C# `Async` twins (R-16): the Rust twin list, `Task` / `Task<T>`, `CancellationToken` last, the sync C call on a dedicated thread; no refusal of sync calls in async code; hooks under a twin run on the twin's thread and may make sync calls.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Pending (C#)            |
+| D-25 | C# exception bases (R-21): `ValueError : ArgumentException`, `TypeError : InvalidCastException`, `RuntimeError : InvalidOperationException`, `OSError : IOException`, `Ext.CancelledError : OperationCanceledException`; the rest follow Python's tree. `catch (Exception)` catches a cancellation (D-15 not reachable in .NET).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Pending (C#)            |
+| D-26 | C# equality and hashing (R-10): `IEquatable<T>` + `Equals` + `==` where Python has `__eq__`; `GetHashCode` always agrees with `Equals`, content-based where Python hashes (floats included), coarse where Python's type is unhashable; identity types keep reference equality.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Pending (C#)            |
+| D-27 | C# collections. Inputs take `IReadOnlyList<T>` (arrays and `List<T>` convert) or `ReadOnlySpan<T>` for numeric data, and are copied; `*args` is `params T[]`; outputs are `IReadOnlyList<T>`. List fields of value records are `RLMesh.EquatableList<T>` (immutable, `IReadOnlyList<T>`, structural `Equals` / `GetHashCode`, Python's list text), so a record's synthesized equality is Python's dataclass `==`; arrays and `List<T>` convert to it implicitly.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Pending (C#)            |
+| D-28 | C# value structs (R-11) are `sealed record` classes: required fields are parameters of an explicit `camelCase` constructor in Python's order (not positional-record syntax, whose `PascalCase` parameters E-2's name check would refuse), defaulted fields `init` properties with Python's defaults, `ToString()` overridden to Python's `str` (the synthesized record text differs), `With<Name>` instance methods returning a modified copy for `InitVar` sugar.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Pending (C#)            |
+| D-29 | C# returned tuples (R-15): Gymnasium results are hand-written `readonly struct`s (`ResetResult`, `StepResult`, vector forms) with named properties and `Deconstruct`; other tuples are named `ValueTuple`s.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Pending (C#)            |
+| D-30 | C# has no exported type or namespace alias, so every Python alias is spelled as its target: `InfoDict` and `Kwargs` are `Metadata`, Adapters' `StackSpec` is `IReadOnlyList<int>`, and `rlmesh.adapters.AdapterResolutionError` is `RLMesh.AdapterResolutionError`. A subclass of `Metadata` would make a `Metadata` argument fail to bind where `InfoDict` is declared. The manifest maps each alias to its target with this decision cited.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | Pending (C#)            |
+| D-31 | C# tensor memory (R-28, SPC-31): borrowed `ReadOnlySpan<T>` views valid until the tensor is disposed; storable `ReadOnlyMemory<T>` through an `IMemoryOwner<T>` that holds the native reference; inputs copied. DLPack is fenced in `RLMesh.Ext`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Pending (C#)            |
+| D-32 | C# authoring (R-12): a required interface per protocol plus one-member optional interfaces detected with `is` at construction; no base class required (engine components implement them); type-level declarations in a sealed declarations object (MDL-23, ENV-36); an abstract base with virtual no-ops only beside an interface (`RunHooks`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | Pending (C#)            |
+| D-33 | C# fence (R-25) is the `RLMesh.Ext` namespace. No public `binding` module: the raw layer is `internal`, and the Unity integration uses only public and `Ext` members.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | Pending (C#)            |
+| D-34 | C# integers keep C's widths (`long`, `ulong`, `uint`, `ushort`); in-memory counts and indices are `int`; the assembly is `[CLSCompliant(false)]` (R-5).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | Pending (C#)            |
+| D-35 | C# durations are `TimeSpan` (100 ns precision), `_seconds` dropped; R-14's checks unchanged; `Timeout.InfiniteTimeSpan` is negative, not infinite.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Pending (C#)            |
+| D-36 | A C# string bound for a NUL-terminated C input that contains U+0000 is refused with the ValueError class before the call; unpaired surrogates likewise (R-5). C++ truncates at `c_str()` today; aligning C++ is a separate change.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Pending (C#)            |
+| D-37 | The C# warning handler is one `Action<Warning>?` set with `Api.SetWarningHandler`, not a .NET `event` (R-23).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | Pending (C#)            |
+| D-38 | C# callbacks run on library threads, several at once; the library never marshals to a main thread or captures a `SynchronizationContext`; engine dispatch is the integration's job (R-28).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | Pending (C#)            |
+| D-39 | C# finalization (R-28): `SafeHandle` finalizers are a safety net; handles whose free can run callbacks or block are freed on one library-owned cleanup thread, never on the finalizer thread.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | Pending (C#)            |
+| D-40 | C# distribution. NuGet `RLMesh` carries `lib/netstandard2.1`, `lib/net8.0` and `runtimes/<rid>/native/` for each released 64-bit target. Unity consumes the prebuilt netstandard2.1 assembly plus the native plugins, not the sources, so the implementation's language version is ours (D-19); a second netstandard2.1 build with `__Internal` serves statically linked platforms (iOS). A served env reports `{"language":"csharp","toolchain":{"name":"dotnet" / "mono" / "il2cpp",…}}` through `Ext.EnvServerOptions.HostRuntimeJson` (`null` = the wrapper's own detected runtime, ENV-38; ENV-12, COR-25); describe's own runtime stays C's, as for C++.                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Pending (C#)            |
+| D-41 | A call on a disposed C# wrapper throws `ObjectDisposedException` (an `InvalidOperationException`, as `RuntimeError` is, D-25): a C#-only state outside R-21, like a C++ moved-from object.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | Pending (C#)            |
+| D-42 | C# enforcement (E-1 to E-3): a `csharp` manifest column; live surface read from the built assembly's metadata by a System.Reflection.Metadata tool; a C# fixture runner run both JIT and NativeAOT (the CI stand-in for IL2CPP); C# option defaults checked by a generated test.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Pending (C#)            |
 
 ### Review notes
 
@@ -1329,6 +1856,31 @@ Each moves a native language onto the rules. Areas carry the details.
   case attaches the `std::exception_ptr` with
   `rlmesh_ext_callback_set_error_payload`; the wrapper rethrows it from
   `rlmesh_ext_last_error_take_payload` (R-12).
+- **X-11 C# trampolines** (R-12, R-20, R-28). Every C# callback trampoline
+  wraps the authored call in `try` / `catch (Exception e)` and maps the
+  caught class exactly as X-10 does, most derived first:
+  `RecoverableEnvironmentException` / `EnvironmentException` →
+  `rlmesh_callback_set_error_class(RECOVERABLE_ENVIRONMENT_EXCEPTION` or
+  `ENVIRONMENT_EXCEPTION, raw)`; `ModelException` →
+  `rlmesh_callback_set_error(raw, e.IsRecoverable)` in a model callback,
+  else `set_error_class(MODEL_EXCEPTION, raw)`; `ProtocolException`,
+  `RLMeshException`, `AdapterResolutionError`, `ValueError`, `TypeError`,
+  `RuntimeError`, `TimeoutError`, `ConnectionError`, `OSError`,
+  `Ext.CancelledError` → `set_error_class` with their own class and
+  `e.Message`. `raw` is the message without COR-P8's `[CODE] ` prefix.
+  Any other exception, .NET's own included (`ArgumentException`,
+  `InvalidOperationException`, `ObjectDisposedException`, a plain
+  `OperationCanceledException`, `NullReferenceException`), is outside the
+  R-21 tree and records the callback kind's class with
+  `rlmesh_callback_set_error(e.Message, false)`: a non-recoverable
+  `EnvironmentException` in an env callback (Python reads it as
+  `EnvironmentException`, as the spike observed), a non-recoverable
+  `ModelException` in a model callback, `RLMeshException` elsewhere. Every
+  case then attaches the exception with the C# tag (R-12), so in process
+  the caller gets the author's own object back; across the wire the peer
+  sees R-21's Environment or Model class with that text. Exceptions the
+  runtime cannot catch (`StackOverflowException`, a fail-fast) end the
+  process, as they would in any .NET host.
 
 ## Shapes
 
@@ -1411,9 +1963,31 @@ RLMeshValue* info = NULL;
 rlmesh_session_reset(s, &seed, NULL, &obs, &info);
 ```
 
+```csharp
+sealed class Greedy : IPredict
+{
+    public Value Predict(Value observation) => 0;
+}
+
+var model = new Model(new Greedy(), new ModelOptions { Spec = spec });
+var result = model.Run(env, new RunOptions { Episodes = 2, Seeds = new long[] { 0, 1 } });
+using var s = new Session(model, env);
+var (obs, info) = s.Reset(0);
+var (obs2, reward, terminated, truncated, info2) = s.Step(s.Predict(obs));
+```
+
+In the C# block `env` converts implicitly to Running's `EnvTarget` from a
+`RemoteEnv`, `RemoteVectorEnv`, `EnvServer`, address `string` or Env's
+`Env` / `VectorEnv` handles; C# cannot convert implicitly from an interface
+(CS0552), so an authored `IEnv` takes each entry point's `IEnv` overload, and
+`IVectorEnv` / `IEnvFactory` go through `EnvTarget.Vector` /
+`EnvTarget.Factory` (RUN-31). `0` converts to `Value` through
+`long`; `Greedy` could equally be a `MonoBehaviour` (R-12).
+
 - **Model.** Rust has a `Policy` trait and a concrete `Model`; the plain trait
   impl is the full path and any attribute macro is sugar (R-12). C has a
-  vtable plus an `RLMeshModel*`; C++ detects members. All share Python's four
+  vtable plus an `RLMeshModel*`; C++ detects members; C# detects
+  implemented corner interfaces (MDL-23). All share Python's four
   inference corners and fallbacks, `on_episode_end` and `close`
   ([Model](model.md)).
 - **Env.** Gymnasium-shaped everywhere (R-15); `EnvFactory` and `Variant`
@@ -1424,45 +1998,48 @@ rlmesh_session_reset(s, &seed, NULL, &obs, &info);
 
 ## Known gaps
 
-The October 2026 audit found these gaps before implementation. All are
-closed: Python and Rust by the parity waves, C by ABI 5 and C++ by the C++17
-header. `✓` closed (was a gap or partial), `—` matched already or does not
-apply. File references describe the code as audited.
+The October 2026 audit found these gaps before implementation. G-1 to G-28
+are closed: Python and Rust by the parity waves, C by ABI 5 and C++ by the
+C++17 header. They describe pre-existing code, so none applies to C#, which
+starts at the target; G-29 tracks C# itself. `✓` closed (was a gap or
+partial), `—` matched already or does not apply, `open` not yet closed. File references describe the code as audited.
 
-| ID   | Gap                                                                                                                                                                                                                                                                                                                                      | Python      | Rust | C   | C++ |
-| ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | ---- | --- | --- |
-| G-1  | Episode budget is "until the env ends" (`max_episodes` unset), not Python's 1 or `len(seeds)` (`py/_models/_eval.py:178-195`)                                                                                                                                                                                                            | —           | ✓    | ✓   | ✓   |
-| G-2  | A run closes the model (`close_model = true`, `rs/model/worker.rs:72,109`)                                                                                                                                                                                                                                                               | —           | ✓    | ✓   | ✓   |
-| G-3  | Live episodes evicted at 4,096 (`capi/model.rs:73`); Python refuses past 65,536 (`py/_models/_episodes.py:25,110`)                                                                                                                                                                                                                       | —           | —    | ✓   | ✓   |
-| G-4  | `episodes` / `seeds` named `max_episodes` / `episode_seeds` (`rs/model/worker.rs:47,54`; `h:450,457`)                                                                                                                                                                                                                                    | —           | ✓    | ✓   | ✓   |
-| G-5  | Extra `seeded` / `base_seed` (`h:451-452`; `hpp:892-894`)                                                                                                                                                                                                                                                                                | —           | —    | ✓   | ✓   |
-| G-6  | Model authoring is `ModelHandler` / `ModelWorker` / batch callback, not `Policy` + `Model`                                                                                                                                                                                                                                               | —           | ✓    | ✓   | ✓   |
-| G-7  | No `Session`                                                                                                                                                                                                                                                                                                                             | —           | ✓    | ✓   | ✓   |
-| G-8  | No remote clients                                                                                                                                                                                                                                                                                                                        | —           | —    | ✓   | ✓   |
-| G-9  | Remote clients are async-only (`rs/env/client.rs:59-368`); no blocking primary                                                                                                                                                                                                                                                           | —           | ✓    | —   | —   |
-| G-10 | Blocking calls panic inside a runtime (`rs/model/worker.rs:270-277`)                                                                                                                                                                                                                                                                     | —           | ✓    | —   | —   |
-| G-11 | Env authoring uses request/result structs, not Gymnasium shape                                                                                                                                                                                                                                                                           | —           | ✓    | —   | —   |
-| G-12 | Results are `RuntimeReport` or aggregates, not `RunResult` / `EpisodeResult`                                                                                                                                                                                                                                                             | —           | ✓    | ✓   | ✓   |
-| G-13 | No `ModelSpec` or transforms; C has only resolve/describe of a plan (`h:334-359`)                                                                                                                                                                                                                                                        | —           | ✓    | ✓   | ✓   |
-| G-14 | No `EnvFactory` / `Variant`                                                                                                                                                                                                                                                                                                              | —           | ✓    | ✓   | ✓   |
-| G-15 | Spaces lack `sample` / `seed` on the shared surface (the sampler is internal, `crates/rlmesh-spaces/src/sample.rs`)                                                                                                                                                                                                                      | —           | ✓    | ✓   | ✓   |
-| G-16 | Box bounds are `double` only (`h:272,298-302`); Rust carries typed bounds                                                                                                                                                                                                                                                                | —           | —    | ✓   | ✓   |
-| G-17 | Two value types (`SpaceValue` vs the adapter `Value`)                                                                                                                                                                                                                                                                                    | —           | ✓    | ✓   | ✓   |
-| G-18 | Metadata passed as JSON strings (X-3)                                                                                                                                                                                                                                                                                                    | —           | —    | ✓   | ✓   |
-| G-19 | Editions: Rust has `workflow_edition` on serve and run (`rs/model/worker.rs:93`) and `selected_workflow_edition` on `RemoteVectorEnv` and `RemoteModel` (`rs/env/client.rs:139`, `rs/model/remote.rs:279`), but not on `RemoteEnv`, and no `current_workflow_edition()` or resolver chain; C and C++ declare only when serving (`h:492`) | —           | ✓    | ✓   | ✓   |
-| G-20 | Error classes collapsed (R-21): no Protocol, Type, Runtime, Os; Server maps to `TRANSPORT` (`capi/abi/status.rs:59`)                                                                                                                                                                                                                     | ✓ (P-1–P-5) | ✓    | ✓   | ✓   |
-| G-21 | No warning channel (R-23)                                                                                                                                                                                                                                                                                                                | —           | ✓    | ✓   | ✓   |
-| G-22 | Cancellation: Rust re-exports `CancellationToken`; C `rlmesh_model_cancel` is terminal; no client interrupt                                                                                                                                                                                                                              | —           | ✓    | ✓   | ✓   |
-| G-23 | `struct_size` missing on `RLMeshServeOptions` / `RLMeshRunOptions`, no minimum check anywhere (`capi/env.rs:575`, `capi/model.rs:527` refuse only 0)                                                                                                                                                                                     | —           | —    | ✓   | —   |
-| G-24 | 0-as-unset sentinels (X-4)                                                                                                                                                                                                                                                                                                               | —           | —    | ✓   | ✓   |
-| G-25 | C input enums use 0 as a real value (X-5)                                                                                                                                                                                                                                                                                                | —           | —    | ✓   | —   |
-| G-26 | C++17, `Result<T>`, `-fno-exceptions` (`hpp:1-19`)                                                                                                                                                                                                                                                                                       | —           | —    | —   | ✓   |
-| G-27 | Binding plumbing at the crate root and in the prelude (R-25)                                                                                                                                                                                                                                                                             | —           | ✓    | —   | —   |
-| G-28 | `RLMESH_ABI_VERSION_MAJOR/MINOR/PATCH` carry the package semver (`h:44-52`); `RLMeshContract` not `RLMeshEnvContract`                                                                                                                                                                                                                    | —           | —    | ✓   | ✓   |
+| ID   | Gap                                                                                                                                                                                                                                                                                                                                      | Python      | Rust | C   | C++ | C#   |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | ---- | --- | --- | ---- |
+| G-1  | Episode budget is "until the env ends" (`max_episodes` unset), not Python's 1 or `len(seeds)` (`py/_models/_eval.py:178-195`)                                                                                                                                                                                                            | —           | ✓    | ✓   | ✓   | —    |
+| G-2  | A run closes the model (`close_model = true`, `rs/model/worker.rs:72,109`)                                                                                                                                                                                                                                                               | —           | ✓    | ✓   | ✓   | —    |
+| G-3  | Live episodes evicted at 4,096 (`capi/model.rs:73`); Python refuses past 65,536 (`py/_models/_episodes.py:25,110`)                                                                                                                                                                                                                       | —           | —    | ✓   | ✓   | —    |
+| G-4  | `episodes` / `seeds` named `max_episodes` / `episode_seeds` (`rs/model/worker.rs:47,54`; `h:450,457`)                                                                                                                                                                                                                                    | —           | ✓    | ✓   | ✓   | —    |
+| G-5  | Extra `seeded` / `base_seed` (`h:451-452`; `hpp:892-894`)                                                                                                                                                                                                                                                                                | —           | —    | ✓   | ✓   | —    |
+| G-6  | Model authoring is `ModelHandler` / `ModelWorker` / batch callback, not `Policy` + `Model`                                                                                                                                                                                                                                               | —           | ✓    | ✓   | ✓   | —    |
+| G-7  | No `Session`                                                                                                                                                                                                                                                                                                                             | —           | ✓    | ✓   | ✓   | —    |
+| G-8  | No remote clients                                                                                                                                                                                                                                                                                                                        | —           | —    | ✓   | ✓   | —    |
+| G-9  | Remote clients are async-only (`rs/env/client.rs:59-368`); no blocking primary                                                                                                                                                                                                                                                           | —           | ✓    | —   | —   | —    |
+| G-10 | Blocking calls panic inside a runtime (`rs/model/worker.rs:270-277`)                                                                                                                                                                                                                                                                     | —           | ✓    | —   | —   | —    |
+| G-11 | Env authoring uses request/result structs, not Gymnasium shape                                                                                                                                                                                                                                                                           | —           | ✓    | —   | —   | —    |
+| G-12 | Results are `RuntimeReport` or aggregates, not `RunResult` / `EpisodeResult`                                                                                                                                                                                                                                                             | —           | ✓    | ✓   | ✓   | —    |
+| G-13 | No `ModelSpec` or transforms; C has only resolve/describe of a plan (`h:334-359`)                                                                                                                                                                                                                                                        | —           | ✓    | ✓   | ✓   | —    |
+| G-14 | No `EnvFactory` / `Variant`                                                                                                                                                                                                                                                                                                              | —           | ✓    | ✓   | ✓   | —    |
+| G-15 | Spaces lack `sample` / `seed` on the shared surface (the sampler is internal, `crates/rlmesh-spaces/src/sample.rs`)                                                                                                                                                                                                                      | —           | ✓    | ✓   | ✓   | —    |
+| G-16 | Box bounds are `double` only (`h:272,298-302`); Rust carries typed bounds                                                                                                                                                                                                                                                                | —           | —    | ✓   | ✓   | —    |
+| G-17 | Two value types (`SpaceValue` vs the adapter `Value`)                                                                                                                                                                                                                                                                                    | —           | ✓    | ✓   | ✓   | —    |
+| G-18 | Metadata passed as JSON strings (X-3)                                                                                                                                                                                                                                                                                                    | —           | —    | ✓   | ✓   | —    |
+| G-19 | Editions: Rust has `workflow_edition` on serve and run (`rs/model/worker.rs:93`) and `selected_workflow_edition` on `RemoteVectorEnv` and `RemoteModel` (`rs/env/client.rs:139`, `rs/model/remote.rs:279`), but not on `RemoteEnv`, and no `current_workflow_edition()` or resolver chain; C and C++ declare only when serving (`h:492`) | —           | ✓    | ✓   | ✓   | —    |
+| G-20 | Error classes collapsed (R-21): no Protocol, Type, Runtime, Os; Server maps to `TRANSPORT` (`capi/abi/status.rs:59`)                                                                                                                                                                                                                     | ✓ (P-1–P-5) | ✓    | ✓   | ✓   | —    |
+| G-21 | No warning channel (R-23)                                                                                                                                                                                                                                                                                                                | —           | ✓    | ✓   | ✓   | —    |
+| G-22 | Cancellation: Rust re-exports `CancellationToken`; C `rlmesh_model_cancel` is terminal; no client interrupt                                                                                                                                                                                                                              | —           | ✓    | ✓   | ✓   | —    |
+| G-23 | `struct_size` missing on `RLMeshServeOptions` / `RLMeshRunOptions`, no minimum check anywhere (`capi/env.rs:575`, `capi/model.rs:527` refuse only 0)                                                                                                                                                                                     | —           | —    | ✓   | —   | —    |
+| G-24 | 0-as-unset sentinels (X-4)                                                                                                                                                                                                                                                                                                               | —           | —    | ✓   | ✓   | —    |
+| G-25 | C input enums use 0 as a real value (X-5)                                                                                                                                                                                                                                                                                                | —           | —    | ✓   | —   | —    |
+| G-26 | C++17, `Result<T>`, `-fno-exceptions` (`hpp:1-19`)                                                                                                                                                                                                                                                                                       | —           | —    | —   | ✓   | —    |
+| G-27 | Binding plumbing at the crate root and in the prelude (R-25)                                                                                                                                                                                                                                                                             | —           | ✓    | —   | —   | —    |
+| G-28 | `RLMESH_ABI_VERSION_MAJOR/MINOR/PATCH` carry the package semver (`h:44-52`); `RLMeshContract` not `RLMeshEnvContract`                                                                                                                                                                                                                    | —           | —    | ✓   | ✓   | —    |
+| G-29 | No C# library: the whole Stable surface is missing in C# (D-17, R-26); every area table's C# column is the target                                                                                                                                                                                                                        | —           | —    | —   | —   | open |
 
 ## Enforcement
 
-**E-1, E-2 and E-3 are implemented.** The reviewed mapping manifest and
+**E-1, E-2 and E-3 are implemented for Python, Rust, C and C++;** the C#
+additions in [C# enforcement](#c-enforcement) are a draft (D-42). The reviewed mapping manifest and
 `mise run parity:check` compare the committed Stable Python snapshot with live
 Rust, C and C++ extraction. No native surface snapshot is committed. Shared
 behavioural fixtures exercise the four public APIs and check Rust defaults
@@ -1658,3 +2235,156 @@ Required scenario families:
   (a callback's `RLMeshStepEvent`, a borrowed spec leaf) reports the
   library's `sizeof`, and a reader built with a larger header reads the
   uncovered fields as `_INIT` (R-19).
+
+### C# enforcement
+
+Draft (D-42). Nothing below exists yet; `manifest.toml` gains its `csharp`
+tables when the C# library lands, and until then `parity:check` does not
+read a `csharp` column.
+
+**E-1 manifest.** Every symbol table gains a `.csharp` table beside `.rust`,
+`.c` and `.cpp`, with the same `status` / `path` / `also` / `params` /
+`gap` keys and meanings:
+
+```toml
+["rlmesh:Session.reset".csharp]
+status = "present"
+path = "RLMesh.Session.Reset"
+also = ["RLMesh.Session.ResetAsync"]
+params = { seed = "RLMesh.Session.Reset#seed", trial_index = "RLMesh.Session.Reset#trialIndex" }
+
+["rlmesh:RunOptions.episodes".csharp]
+status = "present"
+path = "RLMesh.RunOptions#Episodes"
+```
+
+- Paths are metadata names joined with `.`: namespace, type, member; a
+  nested type joins with `+` (`RLMesh.Spaces.Box+Bounds`); a generic type
+  keeps its arity (``RLMesh.Tolerant`1``); an options or record property is
+  `Type#Property`; a parameter is `Method#parameterName` as metadata spells
+  it (no `@`). Overloads share one path; `params` names the overload's
+  parameters.
+- Until the library lands every Stable entry's `.csharp` table is
+  `status = "missing"`, `gap = "G-29"`; the first C# wave can draft them
+  with `parity_draft` from the area tables' C# column. Its `table_hints`
+  reads only four-cell rows today, so with the C# column it reads no area
+  table at all; it must accept the five-column rows (Python, Rust, C, C++,
+  C#) before it is next used.
+- Translations cite their decision in `translations`: `InfoDict` / `Kwargs`
+  → `Metadata` (D-30), extension-method enum text (R-9), `TimeSpan`
+  (D-35), constructors for type-named builders (D-21).
+- `[ext]` lists `RLMesh.Ext.*` and the fenced members on shared types
+  (R-25). There is no C# `[binding]` list: the raw layer is internal.
+
+**E-2 extraction and check.** A small .NET tool,
+`tools/rlmesh_csharp_surface/` (net8.0 console app; no NuGet dependencies,
+System.Reflection.Metadata is in the BCL), reads the built
+`RLMesh.dll` (the netstandard2.1 build, the one Unity consumes) with
+`PEReader` / `MetadataReader`. It never loads or runs the assembly, so it
+needs no native library and works on any host. It writes JSON in
+`parity.py`'s `Item` shape (`kind`, `signature`, `params`, `fields`,
+`values`, `base`, `protocols`, `default`), keyed by the paths above:
+
+- every public and protected type: kind (`class`, `struct`, `interface`,
+  `enum`, `delegate`; a record is detected by its compiler-generated
+  `<Clone>$` and `EqualityContract`), base type and implemented interfaces
+  (R-12 protocols, R-21 bases, R-10's BCL interfaces);
+- methods with parameter names, types, `params`, `out` / `ref`, and
+  optional-parameter defaults from the `Constant` table, so R-7's defaults
+  are checked from metadata; properties with their accessors (`init` is a
+  `modreq(IsExternalInit)` setter); fields; enum members and values;
+- nullability, decoded from `NullableAttribute` /
+  `NullableContextAttribute` and `Nullable<T>`, so an R-13 optional that is
+  not nullable (or the reverse) fails;
+- `TupleElementNamesAttribute` for R-15's named tuples, `ObsoleteAttribute`,
+  and `ExtensionAttribute` (the R-9 `AsString` / `Name` extensions are
+  inventoried under their enum).
+
+`parity.py` adds `csharp` to `LANGUAGES` and reads the dump through
+`--csharp-surface <surface.json>`, or builds the assembly and runs the tool
+itself under `mise run dev:heavy`. Names map by R-4's C# transform (`native_name`
+gains a C# branch: `PascalCase` members, `camelCase` parameters, `_seconds`
+dropped for `TimeSpan`, no trailing `_`); `fenced()` treats `RLMesh.Ext`
+as the fence. The seven acceptance criteria apply to C# as written, read
+this way:
+
+1. and 2. unchanged; the structural parameter exemptions add the
+   `cancellationToken` of an `Async` twin (R-16).
+2. unchanged.
+3. a public C# type or member outside the manifest and outside
+   `RLMesh.Ext`; compiler-generated record members (`<Clone>$`,
+   `EqualityContract`, `PrintMembers`, `Deconstruct`), BCL interface
+   implementations required by R-10, `Deconstruct` on R-15's result
+   structs, and implicit conversions into `Value` are structural, not
+   per-entry.
+4. an R-7 optional parameter's constant differs from the manifest's
+   Python default (read from metadata). Options-class property
+   initializers are IL, not metadata; E-3 checks them.
+5. a C# enum member's value differs from C's number for the same name, or
+   an input enum declares an `Invalid` member (R-9).
+6. a C# exception class is missing or has another base than R-21's C#
+   column.
+
+Plus three R-28 checks on the assembly's references: no type or member
+reference into `System.Reflection.Emit`, `System.Linq.Expressions`
+(`Compile`) or `Microsoft.CSharp` (`dynamic`); every `DllImport` names
+`rlmesh_capi` (or `__Internal` in the static build) with Cdecl and a
+blittable signature; every method whose pointer is handed to C (the static
+callbacks) carries `MonoPInvokeCallbackAttribute`. The build itself runs
+the trimming and AOT analyzers (`IsAotCompatible`, `IsTrimmable`) with
+warnings as errors for the net8.0 target.
+
+**E-3 fixtures.** `tests/parity/csharp_runner/` is a net8.0 console project
+referencing `csharp/src/RLMesh`, implementing the same two-step counter env
+and action-zero model through the public C# API, and speaking the same
+runner protocol as `cpp_runner.cpp` (scenario in, JSON observation out).
+`run.py` builds it once per `parity:fixtures` (under the heavy lock, with
+the C library in the same build mode as the Python extension, or
+`RLMESH_RELEASE_BUILD=1`, so the protocol cohort fingerprints match), and
+pytest compares its observations with Python, C and C++. The same runner is
+also published with NativeAOT (`PublishAot=true`) and run once per gate:
+NativeAOT has no JIT, no Reflection.Emit and strict reverse-P/Invoke rules,
+which is the closest CI stand-in for Unity's IL2CPP that needs no Unity
+licence. A Unity IL2CPP smoke test belongs to the Unity integration.
+`generate_defaults.py` gains a C# target emitting
+`csharp/tests/RLMesh.Tests/ParityDefaults.g.cs` from the manifest's
+`.csharp` `Type#Property` mappings, as it emits `parity_defaults.rs`, and
+the gate checks it is current. The fixture families apply to C# with these
+readings:
+
+- **Defaults:** as written, through the options classes.
+- **Borrowing:** as written, plus: a `Model` and env disposed while a
+  session uses them keep working until the session is disposed; a session
+  reached only by the finalizer frees on the cleanup thread (R-17, R-28).
+- **Cancellation:** as written with `Ext.CancelToken`; plus: a twin given a
+  `CancellationToken` that fires mid-call fails with `Ext.CancelledError`,
+  the task ends `Canceled`, and the handle stays usable; an already-fired
+  token fails the twin at its start; a cancelled `RunAsync` fires
+  `on_run_end` once.
+- **Sync and async (C#):** a sync call from a hook under a twin succeeds
+  (no refusal, R-16); a sync call from a thread-pool thread and from inside
+  an `async` method succeeds; the twin's hooks run on one thread that is not
+  the caller's.
+- **Errors:** each R-21 row with the C# class and base; an exception a C#
+  callback throws comes back at the failing call as the same object
+  (reference-equal) with its original stack trace; with one `Model`
+  serving two sessions on two threads, each failing call rethrows its own
+  session's exception; a .NET exception outside the tree thrown in an env
+  callback reads as a non-recoverable `EnvironmentException` from Python
+  (X-11).
+- **Warnings:** as written; a throwing C# handler aborts the call and the
+  handler's exception is rethrown.
+- **C sizing (C#):** each generated struct's `sizeof` and field offsets
+  equal C's (a C helper compiled with the fixtures prints them), and each
+  managed `_INIT` factory equals C's `_INIT` byte for byte, pointers by
+  NULL-ness (R-19).
+- **C# runtime:** an env served from C# receives callbacks on several
+  library threads at once; forcing `GC.Collect()` and
+  `GC.WaitForPendingFinalizers()` while serving and while a session runs
+  breaks nothing (delegates rooted, `GCHandle`s live); calling
+  `Ext.Lifetime.DisposeAll()` with a server and a session running stops
+  both and leaves no callback in flight.
+
+CI: the dotnet SDK joins the existing job's mise setup (D-19); no new job,
+runner or trigger is added. Adding it to CI needs the user's approval,
+like any CI change.
