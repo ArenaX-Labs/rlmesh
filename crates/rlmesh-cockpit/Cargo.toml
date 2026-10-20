@@ -19,6 +19,11 @@ publish = false
 name = "rlmesh-cockpit"
 path = "src/main.rs"
 
+[package.metadata.cargo-machete]
+# A dev-dependency for its `png` feature only: the render tests save
+# egui_kittest's frames as PNG.
+ignored = ["image"]
+
 [dependencies]
 clap = { workspace = true, features = ["derive"] }
 eframe = { workspace = true }
