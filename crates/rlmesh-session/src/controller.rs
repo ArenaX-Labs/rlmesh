@@ -19,9 +19,10 @@
 //! - [`Controller::run`] is the policy loop of §8.9: starts on the replan
 //!   grid, one inference in flight, skipped starts with their reasons, warm
 //!   before authority (leases are requested only once a first snapshot of
-//!   the required inputs is complete), and §8.10 reporting through
-//!   [`StartSchedule`]. If `predict` fails, the controller stops sending
-//!   and releases its leases; the edge holds, then goes safe.
+//!   the required inputs is complete), window gaps recovered from the
+//!   host's history store, and §8.10 reporting through [`StartSchedule`].
+//!   If `predict` fails, the controller stops sending and releases its
+//!   leases; the edge holds, then goes safe.
 //!
 //! [`Controller::run`] and [`Controller::send`] block: call them from a
 //! plain thread, not from inside the async runtime.
@@ -50,6 +51,8 @@ use crate::schedule::{RunEvent, RunStats, SkipReason, StartSchedule, sleep_until
 const EVENTS: usize = 256;
 /// How long the run loop sleeps at most between checks of its stop flag.
 const IDLE_SLICE_NS: i64 = 20_000_000;
+/// The least time between two history-store recoveries of a window gap.
+const RECOVER_GAP_NS: i64 = 100_000_000;
 /// The least time between two lease requests.
 const REQUEST_GAP: Duration = Duration::from_millis(50);
 
@@ -570,6 +573,7 @@ impl Controller {
         let end =
             duration.map(|d| now().saturating_add(i64::try_from(d.as_nanos()).unwrap_or(i64::MAX)));
         let commands = !self.binding.channels().is_empty();
+        let mut recovered_at: Option<i64> = None;
         let result = loop {
             if self.stop.load(Ordering::Relaxed) || self.runs.load(Ordering::Relaxed) != run {
                 break Ok(());
@@ -591,7 +595,22 @@ impl Controller {
             let (observation, snapshot_ns) = match self.observe() {
                 Ok(observed) => observed,
                 Err(ObserveError::Skipped(skip)) => {
-                    self.skip(t, skip_reason(&skip));
+                    let reason = skip_reason(&skip);
+                    self.skip(t, reason);
+                    // A gap inside a window: ask the host's store to fill it
+                    // (§8.8 recovery), at most every 100 ms.
+                    if reason == SkipReason::WindowGap
+                        && recovered_at.is_none_or(|at| t - at >= RECOVER_GAP_NS)
+                    {
+                        recovered_at = Some(t);
+                        match self
+                            .runtime
+                            .block_on(self.inputs.recover(&self.participant))
+                        {
+                            Ok(n) => debug!(samples = n, "window gap recovery"),
+                            Err(err) => warn!(%err, "window gap recovery failed"),
+                        }
+                    }
                     continue;
                 }
                 Err(err) => {
