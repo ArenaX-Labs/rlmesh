@@ -779,6 +779,9 @@ impl PhaseAlign {
     pub const WINDOW: usize = 32;
     /// Starts before the first estimate.
     pub const FIRST: usize = 8;
+    /// Consecutive starts reading the previous sample that move the
+    /// starts later before the window ends.
+    pub const LATE: usize = 4;
     /// The target sample age at a start: transit plus the publisher's
     /// loop jitter (`min(1 ms, P / 4)`).
     const MARGIN_NS: i64 = 1_000_000;
@@ -846,6 +849,20 @@ impl PhaseAlign {
 
     /// Moves the grid once a window is full; returns the change.
     pub fn update(&mut self) -> i64 {
+        // Every one of the last few starts read the previous sample: the
+        // publisher's phase moved later (its loop stalled). Follow now
+        // rather than at the end of the window, by the smallest of them.
+        let recent = self.errors.len().checked_sub(Self::LATE);
+        if let Some(from) = recent.filter(|_| self.aligned)
+            && self.errors[from..]
+                .iter()
+                .all(|e| (-self.period_ns / 4..-Self::DEADBAND_NS).contains(e))
+        {
+            let change = self.errors[from..].iter().map(|e| -e).min().unwrap_or(0);
+            self.errors.clear();
+            self.offset_ns += change;
+            return change;
+        }
         let window = if self.aligned {
             Self::WINDOW
         } else {
@@ -861,20 +878,23 @@ impl PhaseAlign {
         self.errors.clear();
         // A phase above the margin: start that much earlier, which is the
         // same as starting `P − error` later on the next sample.
-        let change = if self.aligned {
-            if error < 0 {
-                // Samples landing after the start (the publisher's phase
-                // moved later): follow at once, since each such start reads
-                // a sample almost a period old.
-                -error
-            } else {
-                // Starts later than they need be: close in by halves.
-                (-error / 2).max(-self.period_ns / 4)
-            }
+        let p = self.period_ns;
+        let change = if (-p / 4..0).contains(&error) {
+            // The samples land just after the starts: start later, in full.
+            // Each start reads a sample almost a period old until then, and
+            // the gap this opens in the chunk coverage is under P/4.
+            -error
+        } else if error < 0 {
+            // Far later is the same phase as earlier: start sooner (which
+            // never opens a gap), at most P/2 per window.
+            (-(error + p)).max(-p / 2)
+        } else if self.aligned {
+            // Starts later than they need be: close in by halves.
+            (-error / 2).max(-p / 4)
         } else {
-            self.aligned = true;
-            (-error).rem_euclid(self.period_ns)
+            -error
         };
+        self.aligned = true;
         if change.abs() < Self::DEADBAND_NS {
             return 0;
         }
@@ -952,7 +972,7 @@ mod tests {
             align.record(age);
         }
         let change = align.update();
-        assert_eq!(change, 1_400_000, "later, never earlier, the first time");
+        assert_eq!(change, 1_400_000, "later, the short way");
         for age in ages(align.offset_ns, 400_000, |_| 0, 100).take(PhaseAlign::WINDOW) {
             assert_eq!(age, MS, "one margin old");
             align.record(age);
@@ -994,20 +1014,45 @@ mod tests {
     }
 
     #[test]
-    fn a_publisher_that_jumps_later_is_followed_within_one_window() {
+    fn a_far_phase_is_reached_by_starting_earlier() {
         let mut align = PhaseAlign::new(0, 10 * MS);
-        for age in ages(0, 3 * MS, |_| 0, 1).take(PhaseAlign::FIRST) {
+        // 4 ms old: 3 ms earlier, not 7 ms later.
+        for _ in 0..PhaseAlign::FIRST {
+            align.record(4 * MS);
+        }
+        assert_eq!(align.update(), -3 * MS);
+        // 6.5 ms after the margin is 3.5 ms before the next sample's: still
+        // earlier, by at most half a period per window.
+        let mut align = PhaseAlign::new(0, 10 * MS);
+        for _ in 0..PhaseAlign::FIRST {
+            align.record(7_500_000);
+        }
+        assert_eq!(align.update(), -5 * MS);
+    }
+
+    #[test]
+    fn a_publisher_that_jumps_later_is_followed_within_a_few_starts() {
+        let mut align = PhaseAlign::new(0, 10 * MS);
+        for age in ages(0, 8 * MS, |_| 0, 1).take(PhaseAlign::FIRST) {
             align.record(age);
         }
-        align.update();
+        assert_eq!(align.update(), -MS, "2 ms old: 1 ms earlier");
         // The publisher's loop slips 2 ms: every start now reads the
-        // previous sample, 8 ms old.
-        for age in ages(align.offset_ns, 5 * MS, |_| 0, 100).take(PhaseAlign::WINDOW) {
+        // previous sample, 9 ms old, until the aligner follows.
+        let mut moved = 0;
+        for (n, age) in ages(align.offset_ns, 10 * MS, |_| 0, 100)
+            .take(PhaseAlign::LATE)
+            .enumerate()
+        {
             assert_eq!(age, 9 * MS);
             align.record(age);
+            moved = align.update();
+            if n + 1 < PhaseAlign::LATE {
+                assert_eq!(moved, 0);
+            }
         }
-        assert_eq!(align.update(), 2 * MS, "later, in full");
-        for age in ages(align.offset_ns, 5 * MS, |_| 0, 200).take(PhaseAlign::WINDOW) {
+        assert_eq!(moved, 2 * MS, "later, in full, after a few starts");
+        for age in ages(align.offset_ns, 10 * MS, |_| 0, 200).take(PhaseAlign::WINDOW) {
             assert_eq!(age, MS);
         }
     }
