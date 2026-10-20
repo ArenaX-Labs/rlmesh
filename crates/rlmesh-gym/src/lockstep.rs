@@ -356,7 +356,13 @@ pub async fn serve_zenoh(
                 continue;
             }
         };
-        if concurrent {
+        // Lane-scoped requests of a lane endpoint run side by side (as on
+        // v1's Join stream); everything else is served in order, inline.
+        let lane_scoped = match &request {
+            Request::Reset(reset) => !reset.lanes.is_empty(),
+            Request::Step(step) => !step.lanes.is_empty(),
+        };
+        if concurrent && lane_scoped {
             let (handler, key) = (handler.clone(), key.clone());
             tokio::spawn(async move {
                 let result = handler.handle(request).await;

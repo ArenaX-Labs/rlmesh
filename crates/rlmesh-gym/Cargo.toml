@@ -39,5 +39,9 @@ tokio-util = { workspace = true }
 tracing = { workspace = true }
 zenoh = { workspace = true }
 
+[dev-dependencies]
+libc = { workspace = true }
+rlmesh = { workspace = true, features = ["lockstep"] }
+
 [lints]
 workspace = true
