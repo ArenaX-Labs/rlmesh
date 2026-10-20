@@ -5229,6 +5229,7 @@ dependencies = [
  "rcgen",
  "rlmesh-edge",
  "rlmesh-session",
+ "rlmesh-spec",
  "rlmesh-wasm",
  "rlmesh-wire",
  "rustls",
