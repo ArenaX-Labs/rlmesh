@@ -544,7 +544,11 @@ run = "python scripts/check_python_wheels.py python/rlmesh/dist --platform-set m
 [tasks."release:rust:package"]
 description = "Verify Rust crate packages without publishing"
 env = { RLMESH_RELEASE_BUILD = "1" }
-run = 'rm -rf target/package-cargo-home/registry/*/-*; CARGO_HOME="$PWD/target/package-cargo-home" cargo package --workspace --allow-dirty'
+# The v2 crates are unpublished (publish = false) and depend on each other, so
+# cargo cannot resolve them from crates.io when packaging; skip them, and
+# rlmesh-python (a maturin wheel that now depends on them), until v0.2
+# publishes them.
+run = 'rm -rf target/package-cargo-home/registry/*/-*; CARGO_HOME="$PWD/target/package-cargo-home" cargo package --workspace --allow-dirty --exclude rlmesh-wire --exclude rlmesh-spec --exclude rlmesh-session-core --exclude rlmesh-session --exclude rlmesh-edge --exclude rlmesh-wasm --exclude rlmesh-gateway --exclude rlmesh-record --exclude rlmesh-python'
 
 [tasks."release:artifacts:licenses"]
 description = "Validate release artifact license files before publishing"
