@@ -5640,6 +5640,16 @@ struct RemoteModelOptions {
     return std::move(*this);
   }
 };
+namespace detail {
+// Own every C output before shared_ptr adoption can allocate or throw.
+inline std::pair<Value, Value> adopt_values(RLMeshValue* observation, RLMeshValue* info) {
+  auto observation_owner = own<RLMeshValue, rlmesh_value_free>(observation);
+  auto info_owner = own<RLMeshValue, rlmesh_value_free>(info);
+  auto first = Value::adopt(observation_owner.release());
+  auto second = Value::adopt(info_owner.release());
+  return {std::move(first), std::move(second)};
+}
+}  // namespace detail
 class RemoteEnv {
   detail::Owned<RLMeshRemoteEnv, rlmesh_remote_env_free> handle_{nullptr, rlmesh_remote_env_free};
   std::optional<specs::EnvContract> contract_{};
@@ -5704,8 +5714,7 @@ class RemoteEnv {
     RLMeshValue* info = nullptr;
     detail::check_status(
         rlmesh_remote_env_reset(raw(), detail::ptr(seed), v ? v->raw() : nullptr, &o, &info));
-    auto observation = Value::adopt(o);
-    auto i = Value::adopt(info);
+    auto [observation, i] = detail::adopt_values(o, info);
     return {std::move(observation), i.as_dict()};
   }
   StepResult step(const Value& action) {
@@ -5714,8 +5723,7 @@ class RemoteEnv {
     double r = 0;
     bool t = false, tr = false;
     detail::check_status(rlmesh_remote_env_step(raw(), action.raw(), &o, &r, &t, &tr, &info));
-    auto observation = Value::adopt(o);
-    auto i = Value::adopt(info);
+    auto [observation, i] = detail::adopt_values(o, info);
     return {std::move(observation), r, t, tr, i.as_dict()};
   }
 };
@@ -5797,8 +5805,7 @@ class RemoteVectorEnv {
     detail::check_status(rlmesh_remote_vector_env_reset(
         raw(), seed ? (seeds.empty() ? &empty : seeds.data()) : nullptr, seeds.size(),
         v ? v->raw() : nullptr, &o, &info));
-    auto observation = Value::adopt(o);
-    auto i = Value::adopt(info);
+    auto [observation, i] = detail::adopt_values(o, info);
     return {std::move(observation), i.as_dict()};
   }
   uint64_t num_envs() const { return rlmesh_remote_vector_env_num_envs(raw()); }
@@ -5814,8 +5821,7 @@ class RemoteVectorEnv {
     size_t len = 0;
     detail::check_status(rlmesh_remote_vector_env_step(raw(), actions.raw(), &o, rewards.data(),
                                                        t.get(), tr.get(), n, &len, &info));
-    auto observation = Value::adopt(o);
-    auto i = Value::adopt(info);
+    auto [observation, i] = detail::adopt_values(o, info);
     return {std::move(observation), std::move(rewards), std::vector<bool>(t.get(), t.get() + len),
             std::vector<bool>(tr.get(), tr.get() + len), i.as_dict()};
   }
@@ -6804,8 +6810,7 @@ class Session {
     RLMeshValue* i = nullptr;
     detail::check_status(
         rlmesh_session_reset(raw(), detail::ptr(seed), detail::ptr(trial_index), &o, &i));
-    auto obs = Value::adopt(o);
-    auto info = Value::adopt(i);
+    auto [obs, info] = detail::adopt_values(o, i);
     return {std::move(obs), info.as_dict()};
   }
   Value predict(const Value& observation) {
@@ -6819,8 +6824,7 @@ class Session {
     double r = 0;
     bool t = false, tr = false;
     detail::check_status(rlmesh_session_step(raw(), action.raw(), &o, &r, &t, &tr, &i));
-    auto obs = Value::adopt(o);
-    auto info = Value::adopt(i);
+    auto [obs, info] = detail::adopt_values(o, i);
     return {std::move(obs), r, t, tr, info.as_dict()};
   }
   RunResult run(const SessionRunOptions& options = {}) {
@@ -7655,8 +7659,7 @@ inline ResetResult reset(Session& handle, const CancelToken& cancel,
   RLMeshValue* i = nullptr;
   detail::check_status(rlmesh_ext_session_reset(handle.raw(), detail::ptr(seed),
                                                 detail::ptr(trial_index), cancel.raw(), &o, &i));
-  auto obs = Value::adopt(o);
-  auto info = Value::adopt(i);
+  auto [obs, info] = detail::adopt_values(o, i);
   return {std::move(obs), info.as_dict()};
 }
 inline Value predict(Session& handle, const CancelToken& cancel, const Value& observation) {
@@ -7672,8 +7675,7 @@ inline StepResult step(Session& handle, const CancelToken& cancel, const Value& 
   bool t = false, tr = false;
   detail::check_status(
       rlmesh_ext_session_step(handle.raw(), action.raw(), cancel.raw(), &o, &r, &t, &tr, &i));
-  auto obs = Value::adopt(o);
-  auto info = Value::adopt(i);
+  auto [obs, info] = detail::adopt_values(o, i);
   return {std::move(obs), r, t, tr, info.as_dict()};
 }
 inline ResetResult reset(RemoteEnv& handle, const CancelToken& cancel,
@@ -7685,8 +7687,7 @@ inline ResetResult reset(RemoteEnv& handle, const CancelToken& cancel,
   RLMeshValue* info = nullptr;
   detail::check_status(rlmesh_ext_remote_env_reset(
       handle.raw(), detail::ptr(seed), v ? v->raw() : nullptr, cancel.raw(), &o, &info));
-  auto observation = Value::adopt(o);
-  auto i = Value::adopt(info);
+  auto [observation, i] = detail::adopt_values(o, info);
   return {std::move(observation), i.as_dict()};
 }
 inline StepResult step(RemoteEnv& handle, const CancelToken& cancel, const Value& action) {
@@ -7696,8 +7697,7 @@ inline StepResult step(RemoteEnv& handle, const CancelToken& cancel, const Value
   bool t = false, tr = false;
   detail::check_status(
       rlmesh_ext_remote_env_step(handle.raw(), action.raw(), cancel.raw(), &o, &r, &t, &tr, &info));
-  auto observation = Value::adopt(o);
-  auto i = Value::adopt(info);
+  auto [observation, i] = detail::adopt_values(o, info);
   return {std::move(observation), r, t, tr, i.as_dict()};
 }
 inline ResetResult reset(RemoteVectorEnv& handle, const CancelToken& cancel,
@@ -7718,8 +7718,7 @@ inline ResetResult reset(RemoteVectorEnv& handle, const CancelToken& cancel,
   detail::check_status(rlmesh_ext_remote_vector_env_reset(
       handle.raw(), seed ? (seeds.empty() ? &empty : seeds.data()) : nullptr, seeds.size(),
       v ? v->raw() : nullptr, cancel.raw(), &o, &info));
-  auto observation = Value::adopt(o);
-  auto i = Value::adopt(info);
+  auto [observation, i] = detail::adopt_values(o, info);
   return {std::move(observation), i.as_dict()};
 }
 inline VectorStepResult step(RemoteVectorEnv& handle, const CancelToken& cancel,
@@ -7734,8 +7733,7 @@ inline VectorStepResult step(RemoteVectorEnv& handle, const CancelToken& cancel,
   detail::check_status(rlmesh_ext_remote_vector_env_step(handle.raw(), actions.raw(), cancel.raw(),
                                                          &o, rewards.data(), t.get(), tr.get(), n,
                                                          &len, &info));
-  auto observation = Value::adopt(o);
-  auto i = Value::adopt(info);
+  auto [observation, i] = detail::adopt_values(o, info);
   return {std::move(observation), std::move(rewards), std::vector<bool>(t.get(), t.get() + len),
           std::vector<bool>(tr.get(), tr.get() + len), i.as_dict()};
 }
