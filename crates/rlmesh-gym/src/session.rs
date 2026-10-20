@@ -26,12 +26,12 @@ use std::time::Duration;
 use rlmesh_grpc::env::Environment;
 use rlmesh_session::transport::{Endpoints, TransportTuning, zenoh_config};
 use rlmesh_session::{
-    HostConfig, Participant, ParticipantConfig, SessionHost, SystemMonotonicClock, Transport,
-    TransportConfig,
+    HostConfig, Participant, ParticipantConfig, SessionError, SessionHost, SystemMonotonicClock,
+    Transport, TransportConfig,
 };
 use rlmesh_wire::{
-    AuthoritySnapshot, ChannelId, Fingerprint, PartSpec, ParticipantId, PriorityClass, Role,
-    SessionId, SessionKeys, TenantId,
+    AuthoritySnapshot, ChannelId, CtlStatus, Epoch, Fingerprint, LeaseToken, Mode, PartSpec,
+    ParticipantId, PriorityClass, Role, SessionId, SessionKeys, TenantId,
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -43,6 +43,7 @@ use crate::lockstep::{
 };
 use crate::map::{GymEnvInfo, GymMap};
 use crate::record::Tee;
+use crate::view::{self, GymView};
 
 /// The address scheme.
 pub const SCHEME: &str = "lockstep://";
@@ -238,15 +239,43 @@ impl LockstepBinding {
         self.address.to_string()
     }
 
-    /// Attaches as the robot, declares the env's robot map, arms and
-    /// serves the lockstep exchange until `shutdown` fires.
+    /// Attaches as the robot, declares the env's robot map (§12.5), arms
+    /// and serves the env over the lockstep exchange until `shutdown`
+    /// fires.
     pub async fn serve<E: Environment + 'static>(
         self,
         env: Arc<E>,
         options: ServeOptions,
         shutdown: CancellationToken,
     ) -> Result<(), GymError> {
-        let result = self.serve_inner(env, options, shutdown).await;
+        let info = env_info(env.as_ref(), options.workflow_edition.as_deref());
+        let map = GymMap::new(info, GYM_HZ)?;
+        let robot_json = map.robot_json.clone();
+        self.serve_robot(&robot_json, options, shutdown, move |declared| {
+            let mut map = map;
+            map.bind_channels(&declared.parts)?;
+            let lanes = map.info.contract.num_envs.max(1) as usize;
+            let mut served = GymEnv::new(env, map);
+            if let Some(tee) = declared.tee {
+                served = served.with_tee(Tee::new(tee, declared.parts, lanes, TICK_NS));
+            }
+            Ok(Arc::new(served) as Arc<dyn LockstepHandler>)
+        })
+        .await
+    }
+
+    /// Attaches as the robot, declares `robot_json` (a v2 robot map, §3),
+    /// arms, and serves the handler `build` makes from the declared parts
+    /// over the lockstep exchange until `shutdown` fires. Every step is
+    /// checked against the robot's own authority view first.
+    pub async fn serve_robot(
+        self,
+        robot_json: &str,
+        options: ServeOptions,
+        shutdown: CancellationToken,
+        build: impl FnOnce(Declared) -> Result<Arc<dyn LockstepHandler>, GymError>,
+    ) -> Result<(), GymError> {
+        let result = self.serve_inner(robot_json, options, shutdown, build).await;
         if let Some((host, transport)) = self.hosted {
             host.shutdown().await;
             let _ = transport.close().await;
@@ -254,11 +283,12 @@ impl LockstepBinding {
         result
     }
 
-    async fn serve_inner<E: Environment + 'static>(
+    async fn serve_inner(
         &self,
-        env: Arc<E>,
+        robot_json: &str,
         options: ServeOptions,
         shutdown: CancellationToken,
+        build: impl FnOnce(Declared) -> Result<Arc<dyn LockstepHandler>, GymError>,
     ) -> Result<(), GymError> {
         let address = &self.address;
         let (tenant, session) = address
@@ -277,16 +307,18 @@ impl LockstepBinding {
             )
             .await?,
         );
-        let info = env_info(env.as_ref(), options.workflow_edition.as_deref());
-        let mut map = GymMap::new(info, GYM_HZ)?;
-        let snapshot = participant.declare_parts(&map.robot_json).await?;
-        map.bind_channels(&own_parts(&snapshot, &address.robot))?;
-        let commands: Vec<ChannelId> = map.action.parts.iter().map(|p| p.spec.channel).collect();
+        let snapshot = participant.declare_parts(robot_json).await?;
+        let parts = own_parts(&snapshot, &address.robot);
+        let commands: Vec<ChannelId> = parts
+            .iter()
+            .filter(|p| p.command.is_some())
+            .map(|p| p.channel)
+            .collect();
         let snapshot = match participant.arm().await {
             Ok(snapshot) => snapshot,
             // Already armed (a session another participant armed).
             Err(err) => {
-                warn!(%err, "lockstep env: arm refused; serving the current mode");
+                warn!(%err, "lockstep robot: arm refused; serving the current mode");
                 participant.fetch_authority().await?
             }
         };
@@ -298,17 +330,35 @@ impl LockstepBinding {
             let commands = commands.clone();
             tokio::spawn(async move {
                 let mut watch = participant.watch();
+                let mut rearmed = None;
                 while watch.changed().await.is_ok() {
                     let snapshot = watch.borrow_and_update().clone();
-                    if let Some(snapshot) = snapshot {
-                        gate.observe(&snapshot, &robot, &commands);
+                    let Some(snapshot) = snapshot else { continue };
+                    gate.observe(&snapshot, &robot, &commands);
+                    // A driver that left (its lease lapsed) puts the session
+                    // in SAFE. A lockstep robot then re-arms once, so the next
+                    // driver can attach, as a v1 env server serves one Join
+                    // session after another. An e-stop stays latched.
+                    let held = snapshot
+                        .leases
+                        .iter()
+                        .any(|l| commands.contains(&l.channel));
+                    if snapshot.mode == Mode::Safe
+                        && !snapshot.estop_latched
+                        && !held
+                        && rearmed != Some(snapshot.epoch)
+                    {
+                        rearmed = Some(snapshot.epoch);
+                        if let Err(err) = participant.arm().await {
+                            warn!(%err, "lockstep robot: re-arm after SAFE refused");
+                        }
                     }
                 }
             })
         };
 
         let mut recorder = None;
-        let mut served = GymEnv::new(env, map.clone());
+        let mut tee = None;
         if let Some(path) = &options.record {
             let observer = join(
                 address.base,
@@ -324,13 +374,10 @@ impl LockstepBinding {
             let started = rlmesh_record::Recorder::start(Arc::new(observer), path)
                 .await
                 .map_err(|e| GymError::Config(e.to_string()))?;
-            let parts: Vec<PartSpec> = map.parts().map(|p| p.spec.clone()).collect();
-            let lanes = map.info.contract.num_envs.max(1) as usize;
-            served = served.with_tee(Tee::new(started.tee(), parts, lanes, 1_000_000));
+            tee = Some(started.tee());
             recorder = Some(started);
         }
-
-        let handler: Arc<dyn LockstepHandler> = Gated::new(gate, Arc::new(served));
+        let handler: Arc<dyn LockstepHandler> = Gated::new(gate, build(Declared { parts, tee })?);
         let local_key = address.key().unwrap_or_default();
         local()
             .lock()
@@ -338,7 +385,7 @@ impl LockstepBinding {
             .insert(local_key.clone(), Arc::downgrade(&handler));
         let lockstep = lockstep_session(participant.transport(), address.base).await?;
         let key = participant.keys().lockstep(&address.robot);
-        info!(robot = %address.robot, %key, "lockstep env serving");
+        info!(robot = %address.robot, %key, "lockstep robot serving");
         let served = serve_zenoh(lockstep.clone(), key, handler.clone(), shutdown).await;
 
         local()
@@ -360,6 +407,18 @@ impl LockstepBinding {
         served
     }
 }
+
+/// What a robot's handler is built from: its parts as the host declared
+/// them (channel ids assigned) and, when recording, the recorder's tee.
+pub struct Declared {
+    /// The robot's parts.
+    pub parts: Vec<PartSpec>,
+    /// The in-process recorder (§13), when recording.
+    pub tee: Option<rlmesh_record::SampleTee>,
+}
+
+/// The notional lockstep tick (§11.2: 1 ms unless the env declares one).
+pub const TICK_NS: u64 = 1_000_000;
 
 fn own_parts(snapshot: &AuthoritySnapshot, robot: &ParticipantId) -> Vec<PartSpec> {
     snapshot
@@ -398,16 +457,24 @@ impl Default for ConnectOptions {
     }
 }
 
-/// Connects a driver to the lockstep robot at `address`: attaches as a
-/// controller, rebuilds the env's map from its declaration, takes one
-/// lease on its commandable parts and opens the link (direct when the env
-/// is in this process).
-pub async fn connect(address: &str, options: ConnectOptions) -> Result<LockstepEnv, GymError> {
+/// A driver attached to a lockstep robot's session.
+struct Attached {
+    participant: Participant,
+    address: LockstepAddress,
+    parts: Vec<PartSpec>,
+}
+
+/// Attaches a driver and waits for the robot's parts (`ready` decides).
+async fn attach_driver(
+    address: &str,
+    options: &ConnectOptions,
+    ready: impl FnMut(&AuthoritySnapshot) -> bool,
+) -> Result<Attached, GymError> {
     let address = LockstepAddress::parse(address)?;
     let (tenant, session) = address.session.clone().ok_or_else(|| {
         GymError::Config(format!(
-            "lockstep address {address}: a driver needs the session (the env server prints \
-             its full address)"
+            "lockstep address {address}: a driver needs the session (the robot's server \
+             prints its full address)"
         ))
     })?;
     let id = match &options.id {
@@ -424,49 +491,120 @@ pub async fn connect(address: &str, options: ConnectOptions) -> Result<LockstepE
         options.timeout,
     )
     .await?;
-    let robot = address.robot.clone();
     let snapshot = participant
-        .wait_for("the lockstep robot's parts", options.timeout, |s| {
-            s.parts.iter().any(|p| {
-                p.owner == robot && p.attrs.contains_key(rlmesh_spec::normalise::attrs::GYM_ENV)
-            })
-        })
+        .wait_for("the lockstep robot's parts", options.timeout, ready)
         .await?;
-    let parts = own_parts(&snapshot, &robot);
-    let info = parts
+    let parts = own_parts(&snapshot, &address.robot);
+    Ok(Attached {
+        participant,
+        address,
+        parts,
+    })
+}
+
+impl Attached {
+    /// Declares a binding over `channels` (identity, no delivery contracts:
+    /// lockstep publishes no streams), takes one lease on them and opens
+    /// the link.
+    async fn lease(
+        self,
+        table: String,
+        fingerprint: Option<Fingerprint>,
+        channels: Vec<ChannelId>,
+        direct: bool,
+        timeout: Duration,
+    ) -> Result<(Arc<dyn LockstepLink>, Epoch, LeaseToken, Held), GymError> {
+        let fingerprint = fingerprint.unwrap_or_else(|| {
+            let hash = blake3::hash(table.as_bytes());
+            let mut bytes = [0_u8; 8];
+            bytes.copy_from_slice(&hash.as_bytes()[..8]);
+            Fingerprint(bytes)
+        });
+        let participant = self.participant;
+        // The robot may be re-arming after the previous driver left (SAFE,
+        // then a fresh epoch): wait for an armed session and retry a verb
+        // that raced the new epoch.
+        let deadline = tokio::time::Instant::now() + timeout;
+        let leases = loop {
+            participant
+                .wait_for("an armed lockstep session", timeout, |s| {
+                    matches!(s.mode, Mode::Armed | Mode::Active)
+                })
+                .await?;
+            let granted = async {
+                participant
+                    .declare_binding(fingerprint, &table, channels.clone(), 0.0)
+                    .await?;
+                participant
+                    .grant_leases(channels.clone(), Vec::new(), None)
+                    .await
+            }
+            .await;
+            match granted {
+                Ok(leases) => break leases,
+                Err(SessionError::Rejected(err))
+                    if matches!(
+                        err.status,
+                        CtlStatus::StaleEpoch | CtlStatus::InvalidTransition
+                    ) && tokio::time::Instant::now() < deadline =>
+                {
+                    participant.fetch_authority().await?;
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                Err(err) => return Err(err.into()),
+            }
+        };
+        let token = leases.first().map(|l| l.token).unwrap_or_default();
+        let epoch = participant.authority().map(|s| s.epoch).unwrap_or_default();
+        let local_key = self.address.key().unwrap_or_default();
+        let local = direct.then(|| local_handler(&local_key)).flatten();
+        let (link, lockstep): (Arc<dyn LockstepLink>, _) = match local {
+            Some(handler) => (Arc::new(DirectLink(handler)), None),
+            None => {
+                let session = lockstep_session(participant.transport(), self.address.base).await?;
+                let keys: &SessionKeys = participant.keys();
+                let link = ZenohLink::new(session.clone(), keys.lockstep(&self.address.robot));
+                link.wait_ready(timeout).await?;
+                (Arc::new(link), Some(session))
+            }
+        };
+        Ok((
+            link,
+            epoch,
+            token,
+            Held {
+                _participant: participant,
+                _lockstep: lockstep,
+            },
+        ))
+    }
+}
+
+/// Connects a driver to the lockstep Gym env at `address`: attaches as a
+/// controller, rebuilds the env's map from its declaration, takes one
+/// lease on its commandable parts and opens the link (direct when the env
+/// is in this process).
+pub async fn connect(address: &str, options: ConnectOptions) -> Result<LockstepEnv, GymError> {
+    let robot = LockstepAddress::parse(address)?.robot;
+    let attached = attach_driver(address, &options, |s| {
+        s.parts.iter().any(|p| {
+            p.owner == robot && p.attrs.contains_key(rlmesh_spec::normalise::attrs::GYM_ENV)
+        })
+    })
+    .await?;
+    let info = attached
+        .parts
         .iter()
         .find_map(|p| p.attrs.get(rlmesh_spec::normalise::attrs::GYM_ENV))
         .ok_or_else(|| GymError::Map(format!("robot {robot} is not a Gym env")))
         .and_then(|text| GymEnvInfo::from_attr(text))?;
     let mut map = GymMap::new(info, GYM_HZ)?;
-    map.bind_channels(&parts)?;
+    map.bind_channels(&attached.parts)?;
     let channels: Vec<ChannelId> = map.action.parts.iter().map(|p| p.spec.channel).collect();
     let table = format!("{{\"lockstep\":{:?}}}", robot.to_string());
-    let hash = blake3::hash(table.as_bytes());
-    let mut fingerprint = [0_u8; 8];
-    fingerprint.copy_from_slice(&hash.as_bytes()[..8]);
-    participant
-        .declare_binding(Fingerprint(fingerprint), &table, channels.clone(), 0.0)
+    let (link, epoch, token, held) = attached
+        .lease(table, None, channels, options.direct, options.timeout)
         .await?;
-    let leases = participant.grant_leases(channels, Vec::new(), None).await?;
-    let token = leases.first().map(|l| l.token).unwrap_or_default();
-    let epoch = participant.authority().map(|s| s.epoch).unwrap_or_default();
-
-    let local_key = address.key().unwrap_or_default();
-    let local = options.direct.then(|| local_handler(&local_key)).flatten();
-    let (link, lockstep): (Arc<dyn LockstepLink>, _) = match local {
-        Some(handler) => (Arc::new(DirectLink(handler)), None),
-        None => {
-            let session = lockstep_session(participant.transport(), address.base).await?;
-            let keys: &SessionKeys = participant.keys();
-            let link = ZenohLink::new(session.clone(), keys.lockstep(&robot));
-            (Arc::new(link), Some(session))
-        }
-    };
-    let held = Held {
-        _participant: participant,
-        _lockstep: lockstep,
-    };
     Ok(LockstepEnv::with_keep(
         link,
         map,
@@ -474,6 +612,59 @@ pub async fn connect(address: &str, options: ConnectOptions) -> Result<LockstepE
         token,
         Some(Box::new(held)),
     ))
+}
+
+/// Connects a Gym view (§12.6) to the v2-native lockstep robot at
+/// `address`, through `policy` (a v2 policy map, JSON; `None`: every part
+/// by path).
+pub async fn connect_view(
+    address: &str,
+    policy: Option<(&rlmesh_spec::Policy, &str)>,
+    options: ConnectOptions,
+) -> Result<GymView, GymError> {
+    let robot = LockstepAddress::parse(address)?.robot;
+    let attached = attach_driver(address, &options, |s| {
+        s.parts.iter().any(|p| p.owner == robot)
+    })
+    .await?;
+    let parts = attached.parts.clone();
+    let (table, fingerprint, channels) = match policy {
+        Some((policy, name)) => {
+            let binding = rlmesh_spec::bind(policy, &parts, &view::run_options(name, &robot))
+                .map_err(|e| GymError::Map(e.to_string()))?;
+            (
+                binding.table_text(),
+                Some(binding.fingerprint),
+                binding.channels(),
+            )
+        }
+        None => (
+            format!("{{\"lockstep_view\":{:?}}}", robot.to_string()),
+            None,
+            parts
+                .iter()
+                .filter(|p| p.command.is_some())
+                .map(|p| p.channel)
+                .collect(),
+        ),
+    };
+    let (link, epoch, token, held) = attached
+        .lease(
+            table,
+            fingerprint,
+            channels,
+            options.direct,
+            options.timeout,
+        )
+        .await?;
+    GymView::new(
+        link,
+        &parts,
+        policy.map(|(p, name)| (p, view::run_options(name, &robot))),
+        epoch,
+        token,
+        Some(Box::new(held)),
+    )
 }
 
 fn uuid_suffix() -> String {

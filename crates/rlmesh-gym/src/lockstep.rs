@@ -39,6 +39,9 @@ use crate::error::GymError;
 
 /// The selector parameter of a reset query.
 const RESET: &str = "reset";
+/// The selector parameter of a probe: answered with an empty reply, so a
+/// driver knows the route to the env is up before its first request.
+const PROBE: &str = "probe";
 
 /// One lockstep request.
 #[derive(Clone, Debug, PartialEq)]
@@ -249,6 +252,31 @@ impl ZenohLink {
             key,
         }
     }
+
+    /// Waits until the env's queryable answers (its declaration has
+    /// reached this session), probing every 20 ms for up to `timeout`.
+    pub async fn wait_ready(&self, timeout: Duration) -> Result<(), GymError> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        let selector = format!("{}?{PROBE}", self.key);
+        loop {
+            let replies = self
+                .session
+                .get(&selector)
+                .consolidation(ConsolidationMode::None)
+                .timeout(Duration::from_millis(500))
+                .await
+                .map_err(|e| GymError::Closed(e.to_string()))?;
+            if let Ok(reply) = replies.recv_async().await
+                && reply.result().is_ok()
+            {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(GymError::Timeout(timeout));
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
 }
 
 /// Encodes a request: its selector parameters and its payload.
@@ -349,6 +377,10 @@ pub async fn serve_zenoh(
                 Err(_) => break,
             },
         };
+        if query.parameters().contains_key(PROBE) {
+            answer(&query, &key, Ok(LockstepReply::default())).await;
+            continue;
+        }
         let request = match decode_request(&query) {
             Ok(request) => request,
             Err(err) => {

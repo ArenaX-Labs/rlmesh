@@ -32,6 +32,7 @@ pub mod map;
 pub mod meta_json;
 pub mod record;
 pub mod session;
+pub mod view;
 
 /// The v1 adapter engine the compatibility path resolves `ModelSpec`s
 /// with (§12.4): the `rlmesh-adapters` resolver and its `join` lowering,
@@ -48,6 +49,7 @@ pub use error::GymError;
 pub use lockstep::{DirectLink, Gate, LockstepHandler, LockstepLink, Request, ZenohLink};
 pub use map::{GymEnvInfo, GymMap};
 pub use session::{
-    ConnectOptions, LockstepAddress, LockstepBinding, ServeOptions, bind, connect,
-    is_lockstep_address,
+    ConnectOptions, Declared, LockstepAddress, LockstepBinding, ServeOptions, bind, connect,
+    connect_view, is_lockstep_address,
 };
+pub use view::{Frame, GymView};
