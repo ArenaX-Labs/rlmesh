@@ -215,6 +215,25 @@ struct SafeReport {
     reason: String,
 }
 
+/// A handle that tells the host an edge fell back on its own account, for
+/// code off the async path. Cheap to clone; see
+/// [`Participant::report_safe`].
+#[derive(Clone, Debug)]
+pub struct SafeReporter {
+    tx: mpsc::UnboundedSender<SafeReport>,
+}
+
+impl SafeReporter {
+    /// Queues an `EnterSafe` for `epoch`; never blocks.
+    pub fn report(&self, epoch: Epoch, reason: impl Into<String>) {
+        // The reporter task is gone only after the participant closed.
+        let _ = self.tx.send(SafeReport {
+            epoch,
+            reason: reason.into(),
+        });
+    }
+}
+
 struct Shared {
     transport: Transport,
     keys: SessionKeys,
@@ -749,12 +768,14 @@ impl Participant {
     /// every 100 ms until the host answers, the view leaves ACTIVE, or the
     /// epoch moves on.
     pub fn report_safe(&self, epoch: Epoch, reason: impl Into<String>) {
-        let report = SafeReport {
-            epoch,
-            reason: reason.into(),
-        };
-        // The reporter is gone only after close.
-        let _ = self.shared.reports.send(report);
+        self.safe_reporter().report(epoch, reason);
+    }
+
+    /// A handle for [`Participant::report_safe`] that outlives borrows.
+    pub fn safe_reporter(&self) -> SafeReporter {
+        SafeReporter {
+            tx: self.shared.reports.clone(),
+        }
     }
 
     /// The health this participant reports in its heartbeats.
