@@ -336,11 +336,17 @@ def report(
     # Chunk ages per holder (receipt at the edge minus the capture of the arm
     # sample the chunk was computed from), split at the chunk's t0.
     ages: dict[str, dict[str, list[int]]] = {}
+    # When chunks were computed from a sample older than half a replan
+    # period (seconds into the run): where the phase alignment slipped.
+    stale: dict[str, list[float]] = {}
+    first_ns = sim.ticks[0][0] if sim.ticks else 0
     for (token, _), (capture, receipt, slot, index) in sim.chunks.items():
         if capture == 0:
             continue
         who = by_token.get(token, "?")
         t0 = slot - int(index * dt_ns)
+        if t0 - capture > period.get(who, 0.0) / 2:
+            stale.setdefault(who, []).append(round((t0 - first_ns) / 1e9, 3))
         row = ages.setdefault(who, {"chunk": [], "snapshot": [], "transit": []})
         row["chunk"].append(receipt - capture)
         row["snapshot"].append(t0 - capture)
@@ -431,6 +437,7 @@ def report(
                 "snapshot_age_ms": percentiles(row["snapshot"]),
                 "transit_ms": percentiles(row["transit"]),
                 "replan_period_ms": round(period.get(who, 0.0) / 1e6, 3),
+                "stale_snapshots_at_s": sorted(stale.get(who, []))[:40],
             }
             for who, row in sorted(ages.items())
         },
