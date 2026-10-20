@@ -41,7 +41,9 @@ use bytes::Bytes;
 use rlmesh_session::transport::{TrafficClass, payload_bytes};
 use rlmesh_session::{Participant, SampleSubscriber, SessionError, SubscribeOptions};
 use rlmesh_wire::codec::{self, schema};
-use rlmesh_wire::{AuthoritySnapshot, ChannelId, Fingerprint, ParticipantId, StreamSpec};
+use rlmesh_wire::{
+    AuthoritySnapshot, ChannelId, Fingerprint, PartSpec, ParticipantId, Sample, StreamSpec,
+};
 use tracing::{debug, warn};
 
 /// What can go wrong recording or reading a recording.
@@ -95,6 +97,8 @@ struct Topic {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum TopicKey {
     Stream(ChannelId),
+    /// A teed stream, per lane (the lockstep path).
+    Lane(ChannelId, u32),
     Chunks(ChannelId),
     Authority,
     Bindings,
@@ -290,6 +294,74 @@ impl Recorder {
     /// The observer participant the recorder attached as.
     pub fn participant(&self) -> &Arc<Participant> {
         &self.participant
+    }
+
+    /// A handle that writes samples into this recording from inside the
+    /// process: the lockstep path publishes no streams, so its env tees
+    /// each step's slabs here, per lane (§13).
+    pub fn tee(&self) -> SampleTee {
+        SampleTee {
+            tx: self.tx.clone(),
+            stamp: Stamp {
+                participant: self.participant.clone(),
+            },
+            topics: Arc::default(),
+        }
+    }
+}
+
+/// Writes `Sample` envelopes into a recording directly (see
+/// [`Recorder::tee`]). Cheap to clone.
+#[derive(Clone)]
+pub struct SampleTee {
+    tx: mpsc::Sender<Entry>,
+    stamp: Stamp,
+    topics: Arc<Mutex<LaneTopics>>,
+}
+
+/// The teed topics, by channel and lane.
+type LaneTopics = BTreeMap<(ChannelId, u32), Arc<Topic>>;
+
+impl SampleTee {
+    /// Records `sample` of `part` on lane `lane` of `lanes`: on
+    /// `/{robot}/{path}` (or `{path}/_applied` when `applied`), with a
+    /// `lane{i}` segment after the robot when there are several lanes.
+    pub fn record(&self, part: &PartSpec, lane: u32, lanes: u32, applied: bool, sample: &Sample) {
+        let channel = sample.channel;
+        let topic = {
+            let mut topics = self
+                .topics
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            topics
+                .entry((channel, lane))
+                .or_insert_with(|| {
+                    let lane_segment = if lanes > 1 {
+                        format!("lane{lane}/")
+                    } else {
+                        String::new()
+                    };
+                    let suffix = if applied { "/_applied" } else { "" };
+                    Arc::new(Topic {
+                        key: TopicKey::Lane(channel, lane),
+                        name: format!("/{}/{lane_segment}{}{suffix}", part.owner, part.path),
+                        schema: schema::SAMPLE,
+                        metadata: BTreeMap::from([
+                            ("channel".to_string(), channel.0.to_string()),
+                            ("kind".to_string(), part.kind.clone()),
+                            ("lane".to_string(), lane.to_string()),
+                        ]),
+                    })
+                })
+                .clone()
+        };
+        let _ = self.tx.send(Entry::Message {
+            topic,
+            log_time: self.stamp.now(),
+            publish_time: sample.capture_ns,
+            sequence: sample.seq,
+            data: codec::encode_sample(sample).to_vec(),
+        });
     }
 }
 

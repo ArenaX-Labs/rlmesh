@@ -1,0 +1,43 @@
+[package]
+name = "rlmesh-gym"
+description = "Internal RLMesh crate (unstable Rust API): the lockstep and virtual clock modes of a real-time session (protocol v2) and the Gymnasium compatibility path: v1 envs and model servers run unchanged on v2."
+version = { workspace = true }
+authors = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+documentation = { workspace = true }
+license = { workspace = true }
+categories = { workspace = true }
+keywords = { workspace = true }
+# Not released until the v0.2 wire spec freezes.
+publish = false
+
+[dependencies]
+async-trait = { workspace = true }
+base64 = { workspace = true }
+blake3 = { workspace = true }
+bytes = { workspace = true }
+prost = { workspace = true }
+# The v1 adapter engine (resolver + `join` lowering), reused on the Gym
+# compatibility path (§12.4) and re-exported as `rlmesh_gym::adapters`.
+rlmesh-adapters = { workspace = true }
+rlmesh-grpc = { workspace = true }
+rlmesh-proto = { workspace = true }
+rlmesh-record = { workspace = true }
+rlmesh-runtime = { workspace = true }
+rlmesh-session = { workspace = true }
+rlmesh-spaces = { workspace = true }
+rlmesh-spec = { workspace = true }
+rlmesh-wire = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+zenoh = { workspace = true }
+
+[lints]
+workspace = true

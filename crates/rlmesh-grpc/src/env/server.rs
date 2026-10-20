@@ -574,25 +574,13 @@ async fn handle_env_request<E: Environment>(
                 Ok((ok, op_phases)) => {
                     phases = op_phases;
                     let mut tracker = episode_tracker.lock().await;
-                    let episode_count = if partial {
-                        // Start a fresh episode only for the reset lanes, adopting
-                        // the runtime-pushed ids (aligned to env_indices). Other
-                        // lanes keep their active id.
-                        for (i, &env_idx) in env_indices.iter().enumerate() {
-                            let seed = seeds.get(i).copied();
-                            let id = pushed_ids.get(i).cloned().unwrap_or_default();
-                            // Wire env_index is uint32; the tracker keys on i32.
-                            tracker.start_episode(env_idx as i32, seed, id);
-                        }
-                        env_indices.len()
-                    } else {
-                        for env_idx in 0..num_envs {
-                            let seed = seeds.get(env_idx).copied();
-                            let id = pushed_ids.get(env_idx).cloned().unwrap_or_default();
-                            tracker.start_episode(env_idx as i32, seed, id);
-                        }
-                        num_envs
-                    };
+                    let episode_count = start_reset_episodes(
+                        &mut tracker,
+                        &env_indices,
+                        &seeds,
+                        &pushed_ids,
+                        num_envs,
+                    );
                     let obs_bytes = space_value_len(ok.observation.as_ref());
                     let info_bytes = ok.infos.as_ref().map(MetaMap::encoded_len).unwrap_or(0);
                     tracing::debug!(obs_bytes, info_bytes, episode_count, "env reset completed");
@@ -816,6 +804,128 @@ fn is_lane_scoped(req: &JoinRequest) -> bool {
         Some(join_request::Kind::Step(step)) => !step.env_indices.is_empty(),
         Some(join_request::Kind::Reset(reset)) => !reset.env_indices.is_empty(),
         _ => false,
+    }
+}
+
+/// Start the episodes a successful reset began: only the named lanes of a
+/// partial reset (other lanes keep their active id), or every lane, adopting
+/// the runtime-pushed ids positionally. Returns how many started.
+fn start_reset_episodes(
+    tracker: &mut EpisodeTracker,
+    env_indices: &[u32],
+    seeds: &[i64],
+    pushed_ids: &[String],
+    num_envs: usize,
+) -> usize {
+    if env_indices.is_empty() {
+        for env_idx in 0..num_envs {
+            let seed = seeds.get(env_idx).copied();
+            let id = pushed_ids.get(env_idx).cloned().unwrap_or_default();
+            tracker.start_episode(env_idx as i32, seed, id);
+        }
+        return num_envs;
+    }
+    for (i, &env_idx) in env_indices.iter().enumerate() {
+        let seed = seeds.get(i).copied();
+        let id = pushed_ids.get(i).cloned().unwrap_or_default();
+        // Wire env_index is uint32; the tracker keys on i32.
+        tracker.start_episode(env_idx as i32, seed, id);
+    }
+    env_indices.len()
+}
+
+/// The transport-free core of the env service: one env, its episode tracker
+/// and the Join semantics (validation, deadlines, the NEXT_STEP lane
+/// contract, episode accounting), with no gRPC. Another transport (the v2
+/// lockstep path) serves an env through it, so each of its requests runs
+/// exactly what the same Join request does.
+pub struct EnvCore<E: Environment> {
+    env: Arc<E>,
+    tracker: Arc<Mutex<EpisodeTracker>>,
+}
+
+impl<E: Environment> EnvCore<E> {
+    /// A core over `env`, with a fresh episode tracker.
+    pub fn new(env: Arc<E>) -> Self {
+        Self {
+            env,
+            tracker: Arc::new(Mutex::new(EpisodeTracker::new())),
+        }
+    }
+
+    /// The env.
+    pub fn env(&self) -> &Arc<E> {
+        &self.env
+    }
+
+    /// Handles one Join request as the Join stream would.
+    pub async fn handle(&self, req: JoinRequest) -> JoinResponse {
+        let supports_lanes = self.env.supports_lanes();
+        handle_env_request(req, self.env.clone(), self.tracker.clone(), supports_lanes).await
+    }
+
+    /// Completes every open episode (the end of a session).
+    pub async fn complete_all(&self, reason: &str) -> Vec<rlmesh_proto::env::v1::EpisodeMetadata> {
+        self.tracker.lock().await.complete_all(reason)
+    }
+}
+
+/// The driver's mirror of an env's episode accounting: fed the requests the
+/// driver sent and the replies it got, it fills `completed_episodes` the way
+/// the env server does. A transport whose step reply carries no episode
+/// metadata (the v2 lockstep reply) rebuilds it with this, so the runtime
+/// sees the same completions (only the wall-clock stamps differ).
+pub struct EpisodeMirror {
+    tracker: EpisodeTracker,
+    num_envs: usize,
+    next_step: bool,
+}
+
+impl EpisodeMirror {
+    /// A mirror of an env with `num_envs` lanes under `autoreset`.
+    pub fn new(num_envs: usize, autoreset: AutoresetMode) -> Self {
+        Self {
+            tracker: EpisodeTracker::new(),
+            num_envs,
+            next_step: autoreset == AutoresetMode::NextStep,
+        }
+    }
+
+    /// A reset the env accepted.
+    pub fn on_reset(&mut self, req: &rlmesh_proto::env::v1::ResetRequest) {
+        start_reset_episodes(
+            &mut self.tracker,
+            &req.env_indices,
+            &req.seeds,
+            &req.episode_ids,
+            self.num_envs,
+        );
+    }
+
+    /// A step the env answered: advances the mirror and sets
+    /// `response.completed_episodes`.
+    pub fn on_step(
+        &mut self,
+        req: &rlmesh_proto::env::v1::StepRequest,
+        response: &mut rlmesh_proto::env::v1::StepResponse,
+    ) {
+        let lanes: Vec<u32> = if req.env_indices.is_empty() {
+            (0..self.num_envs).map(|lane| lane as u32).collect()
+        } else {
+            req.env_indices.clone()
+        };
+        apply_step_to_tracker(
+            response,
+            &lanes,
+            self.next_step,
+            &req.episode_ids,
+            &mut self.tracker,
+        );
+    }
+
+    /// Completes every open episode.
+    pub fn complete_all(&mut self, reason: &str) -> Vec<rlmesh_proto::env::v1::EpisodeMetadata> {
+        self.tracker.complete_all(reason)
     }
 }
 

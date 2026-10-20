@@ -9,7 +9,7 @@ use crate::error::{EnvError, EnvErrorCode};
 
 pub(super) use crate::error::status_to_grpc_error;
 
-pub(super) fn proto_error_to_env_error(error: ProtoEnvError) -> EnvError {
+pub fn proto_error_to_env_error(error: ProtoEnvError) -> EnvError {
     let code = ProtoEnvErrorCode::try_from(error.code)
         .map(EnvErrorCode::from)
         .unwrap_or(EnvErrorCode::Unspecified);

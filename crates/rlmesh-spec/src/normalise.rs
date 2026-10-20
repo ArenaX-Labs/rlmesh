@@ -91,6 +91,19 @@ pub mod attrs {
     pub const LAYOUT: &str = "layout";
     /// Free text for the cockpit.
     pub const DOC: &str = "doc";
+    /// Gym compatibility (§12.4): the original Gym space of the part's
+    /// leaves (JSON).
+    pub const GYM_SPACE: &str = "gym_space";
+    /// Gym compatibility: the v1 EnvTags tag of the part's leaves (JSON).
+    pub const ENV_TAGS: &str = "env_tags";
+    /// Gym compatibility: the original Dict/Tuple keys of each leaf (JSON).
+    pub const GYM_KEY: &str = "gym_key";
+    /// Gym compatibility: the whole v1 env contract and handshake (JSON), on
+    /// the robot's first part.
+    pub const GYM_ENV: &str = "gym_env";
+    /// The pass-through keys any part may carry (beyond `x_*`), recorded
+    /// verbatim as canonical JSON.
+    pub const PASS_THROUGH: [&str; 4] = [GYM_SPACE, ENV_TAGS, GYM_KEY, GYM_ENV];
 }
 
 /// A JSON object kept in authored order, refusing duplicate keys.
@@ -814,7 +827,7 @@ fn part(robot: &ParticipantId, path: &str, mut decl: PartDecl) -> Result<PartSpe
     let kind = Kind::parse(&decl.kind).map_err(|err| invalid(path, err))?;
     let mut attrs = BTreeMap::new();
     for (key, value) in &decl.extra {
-        if !key.starts_with("x_") {
+        if !key.starts_with("x_") && !attrs::PASS_THROUGH.contains(&key.as_str()) {
             return Err(invalid(path, format!("unknown key {key:?}")));
         }
         attrs.insert(key.clone(), canonical::to_string(value));

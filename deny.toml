@@ -65,12 +65,14 @@ highlight = "simplest-path"
 # directly. rlmesh-python is protocol-aware: it stamps handshake PeerInfo and
 # serializes the runtime's session telemetry onto the wire TelemetryWindow.
 # rlmesh-cli reads only CURRENT_WORKFLOW_EDITION, to report the build's
-# protocol identity in `rlmesh version`.
+# protocol identity in `rlmesh version`. rlmesh-gym is protocol-aware: the v2
+# lockstep compatibility path converts v1 Join requests and replies.
 deny = [
   { name = "rlmesh-proto", wrappers = [
     "rlmesh",
     "rlmesh-cli",
     "rlmesh-grpc",
+    "rlmesh-gym",
     "rlmesh-runtime",
     "rlmesh-python",
   ] },
