@@ -250,7 +250,8 @@ impl ImagePublisher {
         }
         inner.bump(|s| s.offered += 1);
         let now = inner.now_ns();
-        if !inner.publisher.due(now) {
+        // The rate gate runs on the publisher's clock, not the bucket's.
+        if !inner.publisher.due(inner.publisher.now_ns()) {
             inner.bump(|s| s.coalesced += 1);
             return Ok(Offer::Coalesced);
         }

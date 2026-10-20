@@ -292,14 +292,18 @@ impl SamplePublisher {
         )
         .await?;
         let fixed = spec.event || clock_mode != ClockMode::Wall;
+        let ceiling_hz = ceiling_hz.filter(|_| !fixed);
+        // Before any demand the default plan applies: every sample within
+        // the `send` ceiling (§8.2).
+        let gate = ceiling_hz.map(Gate::new);
         let outlet = Arc::new(Outlet {
             fixed,
-            ceiling_hz: ceiling_hz.filter(|_| !fixed),
-            mode: AtomicU8::new(FREE),
+            ceiling_hz,
+            mode: AtomicU8::new(if gate.is_some() { GATED } else { FREE }),
             state: Mutex::new(PlanState {
                 revision: 0,
                 plan: None,
-                gate: None,
+                gate,
                 pending: Pending::default(),
             }),
             changed: Notify::new(),
@@ -312,7 +316,6 @@ impl SamplePublisher {
             epoch,
             clock,
         });
-        outlet.install(0, None);
         Ok(Self {
             flusher: tokio::spawn(flush_loop(outlet.clone())),
             outlet,
@@ -351,8 +354,15 @@ impl SamplePublisher {
         )
     }
 
-    /// Whether a sample offered now would be published rather than
-    /// coalesced (an image publisher asks before encoding).
+    /// Now on this publisher's clock (the clock [`Self::due`] and the
+    /// rate gate read).
+    pub fn now_ns(&self) -> i64 {
+        self.outlet.clock.now_ns()
+    }
+
+    /// Whether a sample offered at `now_ns` (this publisher's clock,
+    /// [`Self::now_ns`]) would be published rather than coalesced (an image
+    /// publisher asks before encoding).
     pub fn due(&self, now_ns: i64) -> bool {
         if self.outlet.mode.load(Ordering::Acquire) != GATED {
             return true;

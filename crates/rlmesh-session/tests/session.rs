@@ -1076,8 +1076,14 @@ async fn each_class_rides_its_own_session_and_jpeg_frames_decode() {
     let pixels = decode_image(cam_sub.spec(), &sample).expect("decode");
     assert_eq!(pixels.len(), 64 * 48 * 3);
     assert!(sample.payload.len() < pixels.len() / 2, "compressed");
+    // Offered at 50 Hz against a 30 Hz ceiling: the ceiling coalesces some
+    // before they are encoded.
     let stats = images.stats();
-    assert!(stats.sent >= 5 && stats.encoded == 10, "{stats:?}");
+    assert!(stats.sent >= 5, "{stats:?}");
+    assert!(
+        stats.coalesced > 0 && stats.encoded + stats.coalesced == 10,
+        "{stats:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
