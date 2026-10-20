@@ -61,7 +61,7 @@ mise run test:ci
 
 To run the whole CI job on Depot compute instead of locally, including uncommitted changes, use `mise run ci:remote` (see [local development](local-dev.md#worktrees-and-limited-compute)).
 
-CI uses one required job, `Fast Checks`, on pull requests, pushes to `main`, and manual runs. It runs `check` and `test:ci`, reuses the resulting wheels for cross-version compatibility, verifies Rust and C/C++ packages, and repeats the C/C++ smoke under clang and gcc. Package and compatibility failures therefore fail the same required check as the rest of CI; there are no event-specific skipped jobs.
+CI uses one required job, `Fast Checks`, on pull requests, pushes to `main`, and manual runs. It runs `check` and `test:ci`, reuses the resulting wheels for cross-version compatibility, verifies Rust and C/C++ packages, and repeats the C/C++ smoke under gcc (pull requests) or under both gcc and clang (pushes to `main` and manual runs); `test` itself already covers zig's clang with libc++. Package and compatibility failures therefore fail the same required check as the rest of CI; there are no event-specific skipped jobs.
 
 Toolchain setup installs the committed `mise.lock` with `--locked`; CI does not regenerate it against changing upstream dependency metadata. Refresh the lock explicitly when updating tools.
 

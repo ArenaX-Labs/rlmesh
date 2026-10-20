@@ -93,11 +93,15 @@ jobs:
           CXX: clang++
         run: mise run --skip-tools test:cxx:pkg
 
-      # `test` runs the C/C++ bindings under zig (libc++); re-run under clang and gcc.
-      - name: C/C++ bindings under clang and gcc
-        run: |
-          CC=clang CXX=clang++ mise run --skip-tools test:cxx
-          CC=gcc CXX=g++ mise run --skip-tools test:cxx
+      # `test` runs the C/C++ bindings under zig (clang, libc++). Pull requests re-run
+      # them under gcc (libstdc++), the most different toolchain; pushes to main and
+      # manual runs add real clang too.
+      - name: C/C++ bindings under gcc
+        run: CC=gcc CXX=g++ mise run --skip-tools test:cxx
+
+      - name: C/C++ bindings under clang
+        if: github.event_name != 'pull_request'
+        run: CC=clang CXX=clang++ mise run --skip-tools test:cxx
 
       # RUSTC_WRAPPER=sccache comes from mise.toml; Depot runners point it at Depot Cache.
       - name: Compile cache stats
