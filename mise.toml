@@ -567,11 +567,19 @@ run = "mise run dev:heavy -- python csharp/tools/run.py test"
 
 [tasks."csharp:pack"]
 description = "Build NuGet and symbol packages from available release native assets"
-run = 'mise run dev:heavy -- python csharp/tools/run.py pack {{arg(name="args", var=true, required=false)}}'
+usage = 'flag "--require-all" help="Require every released native RID"'
+run = '''
+if [ "${usage_require_all:-false}" = true ]; then set -- --require-all; else set --; fi
+mise run dev:heavy -- python csharp/tools/run.py pack "$@"
+'''
 
 [tasks."csharp:upm"]
 description = "Assemble the prebuilt Unity UPM package"
-run = 'mise run dev:heavy -- python csharp/tools/run.py upm {{arg(name="args", var=true, required=false)}}'
+usage = 'flag "--require-all" help="Require every released native RID"'
+run = '''
+if [ "${usage_require_all:-false}" = true ]; then set -- --require-all; else set --; fi
+mise run dev:heavy -- python csharp/tools/run.py upm "$@"
+'''
 
 [tasks."test:csharp:package"]
 description = "Verify package structure and a fresh NuGet consumer driven by Python"

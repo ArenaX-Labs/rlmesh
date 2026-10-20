@@ -38,12 +38,18 @@ if(NOT TARGET rlmesh::rlmesh)
   # library.
   if(NOT WIN32 AND EXISTS "${_rlmesh_static}")
     add_library(rlmesh::rlmesh_static STATIC IMPORTED)
+    if(APPLE)
+      set(_rlmesh_static_system "Threads::Threads;${CMAKE_DL_LIBS};m;iconv;resolv;-framework Security;-framework CoreFoundation;-framework SystemConfiguration")
+    else()
+      set(_rlmesh_static_system "gcc_s;util;rt;pthread;m;dl;c")
+    endif()
     set_target_properties(rlmesh::rlmesh_static PROPERTIES
       IMPORTED_LOCATION             "${_rlmesh_static}"
       INTERFACE_INCLUDE_DIRECTORIES "${_rlmesh_root}/include"
       # Direct symbols, so the header must not declare them __declspec(dllimport).
       INTERFACE_COMPILE_DEFINITIONS "RLMESH_STATIC"
-      INTERFACE_LINK_LIBRARIES      "gcc_s;util;rt;pthread;m;dl;c")
+      INTERFACE_LINK_LIBRARIES      "${_rlmesh_static_system}")
+    unset(_rlmesh_static_system)
   endif()
 endif()
 

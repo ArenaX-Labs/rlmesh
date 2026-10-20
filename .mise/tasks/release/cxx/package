@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #MISE description="Assemble a C/C++ package (headers + prebuilt libs + CMake/pkg-config metadata) and tar it for the host triple, or for Windows with --target windows"
 #MISE dir="{{ config_root }}"
-#USAGE flag "--target <target>" help="host (default) or windows: cross-build x86_64-pc-windows-msvc with cargo-xwin (needs clang on PATH)" {
-#USAGE   choices "host" "windows"
+#USAGE flag "--target <target>" help="host (default), macos (Darwin universal), or windows: cross-build x86_64-pc-windows-msvc with cargo-xwin (needs clang on PATH)" {
+#USAGE   choices "host" "windows" "macos"
 #USAGE }
 
 # Packaging only, no CI / publish. Assembles prebuilt artifacts (cargo-built
@@ -11,6 +11,10 @@
 set -euo pipefail
 
 target="${usage_target:-host}"
+if [ "$target" = macos ] && [ "$(uname -s)" != Darwin ]; then
+  echo 'release:cxx:package --target macos requires Darwin (lipo and install_name_tool)' >&2
+  exit 1
+fi
 
 crate="crates/rlmesh-capi"
 inc="$PWD/$crate/include"
@@ -24,6 +28,8 @@ abi_gen="$(sed -n 's/^#define RLMESH_ABI_VERSION \([0-9][0-9]*\)$/\1/p' "$inc/rl
 : "${abi_gen:?could not parse RLMESH_ABI_VERSION from $inc/rlmesh.h}"
 if [ "$target" = windows ]; then
   triple=x86_64-pc-windows-msvc
+elif [ "$target" = macos ]; then
+  triple=universal-apple-darwin
 else
   triple="$(rustc -vV | sed -n 's/host: //p')"                          # x86_64-unknown-linux-gnu
 fi
@@ -44,10 +50,18 @@ echo "==> packaging $name (ABI generation $abi_gen)"
 if [ "$target" = windows ]; then
   rustup target add "$triple"
   XWIN_ACCEPT_LICENSE=1 cargo xwin build -p rlmesh-capi --release --lib --target "$triple"
+elif [ "$target" = macos ]; then
+  # Build/lipo/sign happens before packaging so these exact signed bytes also
+  # reach NuGet and Unity. Never mutate a signed dylib here.
+  test -f target/macos-universal/librlmesh_capi.dylib
+  test -f target/macos-universal/librlmesh_capi.a
+  lipo -verify_arch arm64 x86_64 target/macos-universal/librlmesh_capi.dylib
+  lipo -verify_arch arm64 x86_64 target/macos-universal/librlmesh_capi.a
+  otool -D target/macos-universal/librlmesh_capi.dylib | tail -1 | grep -qx '@rpath/librlmesh_capi.dylib'
 else
   cargo build -p rlmesh-capi --release --lib
   cargo rustc -p rlmesh-capi --release --lib --crate-type cdylib -- \
-    -C link-arg=-Wl,-soname,librlmesh_capi.so.${abi_gen}
+    -C "link-arg=-Wl,-soname,librlmesh_capi.so.${abi_gen}"
 fi
 
 # 2. Fresh staging tree.
@@ -65,6 +79,8 @@ if [ "$target" = windows ]; then
   mkdir -p "$stage/bin"
   cp "$built/rlmesh_capi.dll" "$built/rlmesh_capi.pdb" "$stage/bin/"
   cp "$built/rlmesh_capi.dll.lib" "$stage/lib/rlmesh_capi.lib"
+elif [ "$target" = macos ]; then
+  cp target/macos-universal/librlmesh_capi.dylib target/macos-universal/librlmesh_capi.a "$stage/lib/"
 else
   # Stage the cdylib under its real SONAME + a librlmesh_capi.so dev symlink: the
   # linker reads the SONAME (records the versioned DT_NEEDED) while find_package and
@@ -91,6 +107,16 @@ Libs: -L\${libdir} -lrlmesh_capi
 # Native libs the Rust runtime pulls in; a static (.a) link also needs: -lgcc_s -lutil -lrt -lc
 Libs.private: -lpthread -ldl -lm
 EOF
+if [ "$target" = macos ]; then
+  python - "$stage/lib/pkgconfig/rlmesh.pc" <<'PYTHON'
+import pathlib
+import sys
+path = pathlib.Path(sys.argv[1])
+text = path.read_text().replace("# Native libs the Rust runtime pulls in; a static (.a) link also needs: -lgcc_s -lutil -lrt -lc", "# Darwin static runtime and TLS dependencies.")
+text = text.replace("Libs.private: -lpthread -ldl -lm", "Libs.private: -lpthread -lm -liconv -lresolv -framework Security -framework CoreFoundation -framework SystemConfiguration")
+path.write_text(text)
+PYTHON
+fi
 fi
 
 # 5. CMake config-version: PACKAGE_VERSION is the ABI generation, so the canonical
@@ -116,7 +142,12 @@ else()
   endif()
 endif()
 EOF
-sed -i "s/@ABI@/$abi_gen/" "$stage/lib/cmake/rlmesh/rlmesh-config-version.cmake"
+python - "$stage/lib/cmake/rlmesh/rlmesh-config-version.cmake" "$abi_gen" <<'PYTHON'
+import pathlib
+import sys
+path = pathlib.Path(sys.argv[1])
+path.write_text(path.read_text().replace("@ABI@", sys.argv[2]))
+PYTHON
 
 # 6. The CMake config itself is a committed template (static text, nothing to
 #    interpolate) — copied verbatim so it stays reviewable as a normal source file.
@@ -174,6 +205,20 @@ import library), and ship bin/rlmesh_capi.dll beside your .exe. The headers need
   ships with Windows 10 and later.
 - bin/rlmesh_capi.pdb holds the DLL's debug symbols.
 EOF
+elif [ "$target" = macos ]; then
+cat >> "$stage/README.md" <<'EOF'
+
+## pkg-config
+    export PKG_CONFIG_PATH=<this>/lib/pkgconfig
+    pkg-config --cflags --libs rlmesh
+
+## Notes
+- The universal .dylib and .a support arm64 and x86_64 (macOS 11+).
+- Static link: use rlmesh::rlmesh_static (engine targets with no other Rust).
+- The dylib's install name is @rpath/librlmesh_capi.dylib. Add <this>/lib to
+  your executable's rpath (-Wl,-rpath,<this>/lib), or set DYLD_LIBRARY_PATH
+  for local development. Keep the dylib's code signature intact.
+EOF
 else
 cat >> "$stage/README.md" <<'EOF'
 
@@ -191,5 +236,11 @@ fi
 # 9. Tar from \$out so the archive's single root is the versioned dir, plus the
 #    checksum a FetchContent URL_HASH pins.
 tar -C "$out" -czf "$out/$name.tar.gz" "$name"
-(cd "$out" && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+python - "$out/$name.tar.gz" <<'PYTHON'
+import hashlib
+import pathlib
+import sys
+path = pathlib.Path(sys.argv[1])
+path.with_name(path.name + ".sha256").write_text(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n")
+PYTHON
 echo "==> wrote $out/$name.tar.gz"
