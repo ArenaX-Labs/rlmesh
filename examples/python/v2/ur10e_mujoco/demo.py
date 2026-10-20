@@ -439,6 +439,11 @@ def report(
             "ticks": len(window),
             "mode_ticks": modes,
             "hold_ticks": modes.get("hold", 0),
+            # Safe ticks before the policy's last driven tick (the run's end
+            # releases the lease: hold, then the safe behaviour, unlatched).
+            "safe_ticks_before_end": sum(
+                1 for t in ticks[: last + 1] if t[2] == "safe"
+            ),
             "miss_pct": round(
                 100.0 * (len(window) - driving_in_window) / max(len(window), 1), 4
             ),
@@ -496,6 +501,7 @@ def checks(args: argparse.Namespace, out: dict[str, Any]) -> dict[str, bool]:
         "mcap_count": summary["messages"]
         == (out["recording"]["stats"] or {}).get("messages"),
         "policy_drove": "policy" in out["latency"],
+        "never_safe_while_running": out["policy_window"]["safe_ticks_before_end"] == 0,
     }
     independent = out["recording"].get("independent")
     if independent is not None:
