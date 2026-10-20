@@ -404,6 +404,12 @@ run = [
 description = "Remove installed-artifact system venvs, logs, and reports"
 run = "uv run rlmesh-system clean"
 
+# The cockpit (protocol v2): one live session's channels, rates, timeline and
+# arm/e-stop. ADDRESS is what `rlmesh.v2.Host.address` prints.
+[tasks."cockpit"]
+description = "Open the cockpit on a running v2 session: mise run cockpit -- ADDRESS"
+run = 'cargo run --release -p rlmesh-cockpit -- {{arg(name="args", var=true)}}'
+
 # ──────────────────────────────────────────────
 # Build
 # ──────────────────────────────────────────────
