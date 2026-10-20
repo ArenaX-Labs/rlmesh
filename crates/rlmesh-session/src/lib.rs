@@ -28,6 +28,9 @@
 //!   provenance, fed by [`Inputs`].
 //! - [`schedule`]: policy starts (§8.9: one inference in flight, overdue
 //!   starts skipped) and slowdown reporting (§8.10), sans-IO.
+//! - [`controller`]: the [`Controller`] runtime language bindings wrap: a
+//!   bound policy's inputs, its leases (kept and re-requested in the
+//!   background), its chunks and its run loop.
 //! - [`transport`]: one Zenoh session per traffic class, so a camera can
 //!   only starve its own class.
 //!
@@ -42,6 +45,7 @@ pub mod authority;
 pub mod cache;
 pub mod chunk;
 pub mod clock;
+pub mod controller;
 pub mod error;
 pub mod host;
 pub mod media;
@@ -58,6 +62,9 @@ pub use cache::{
 };
 pub use chunk::{ChunkDraft, ChunkPublisher};
 pub use clock::{Clock, MonotonicClock, OffsetEstimate, SystemMonotonicClock};
+pub use controller::{
+    Controller, ControllerConfig, ControllerError, Predictor, RunError, SendError, Sent,
+};
 pub use error::SessionError;
 pub use host::{HistoryConfig, HostConfig, SessionHost};
 pub use media::{ImagePublisher, MediaStats, Offer};
