@@ -43,11 +43,15 @@ struct Envelope {
 
 /// How long [`LaneEnv::drop`] waits, across all lanes, for the lane threads to
 /// finish dropping their envs. Matches the server's teardown grace: a lane that
-/// outlasts it is leaked so that shutdown stays bounded.
+/// outlasts it is detached so Rust shutdown and Drop stay bounded. C free
+/// joins the retained handles through the binding-only hook after finish().
 const LANE_JOIN_GRACE: Duration = Duration::from_secs(5);
 
 /// How often that wait re-checks a lane thread.
 const LANE_JOIN_POLL: Duration = Duration::from_millis(1);
+
+/// Threads retained by a v2 server for its final native join point.
+pub(super) type JoinThreads = std::sync::Arc<std::sync::Mutex<Vec<std::thread::JoinHandle<()>>>>;
 
 /// One lane: its actor thread's mailbox and the thread itself.
 struct LaneActor {
@@ -58,6 +62,7 @@ struct LaneActor {
 /// N scalar environments served as the lanes of one vector endpoint.
 pub struct LaneEnv {
     lanes: Vec<LaneActor>,
+    abandoned: Option<JoinThreads>,
     observation_space: spaces::SpaceSpec,
     action_space: spaces::SpaceSpec,
     env_contract: spaces::EnvContract,
@@ -95,10 +100,15 @@ impl LaneEnv {
             .collect();
         Ok(Self {
             lanes,
+            abandoned: None,
             observation_space,
             action_space,
             env_contract,
         })
+    }
+
+    pub(crate) fn track_abandoned(&mut self, threads: JoinThreads) {
+        self.abandoned = Some(threads);
     }
 
     /// The lane count (the endpoint's vector width).
@@ -181,7 +191,8 @@ impl Drop for LaneEnv {
         // Every mailbox closes first, so the lanes wind down concurrently and
         // share one deadline. The wait is bounded because teardown is bounded:
         // a lane still inside a wedged user `close()` is left to the OS rather
-        // than hanging shutdown (and process exit) on it forever.
+        // than hanging Rust shutdown/Drop on it forever. A C binding retains
+        // that handle for its separate, unbounded free join point.
         let (senders, threads): (Vec<_>, Vec<_>) = self
             .lanes
             .drain(..)
@@ -190,11 +201,19 @@ impl Drop for LaneEnv {
         drop(senders);
         let deadline = Instant::now() + LANE_JOIN_GRACE;
         for thread in threads {
+            if thread.thread().id() == std::thread::current().id() {
+                continue;
+            }
             while !thread.is_finished() && Instant::now() < deadline {
                 std::thread::sleep(LANE_JOIN_POLL);
             }
             if thread.is_finished() {
                 let _ = thread.join();
+            } else if let Some(abandoned) = &self.abandoned {
+                abandoned
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(thread);
             }
         }
     }

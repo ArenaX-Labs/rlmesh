@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -135,7 +135,7 @@ enum State {
     Ready(Box<Resources>),
     Starting,
     Foreground,
-    Background(JoinHandle<Result<()>>),
+    Background(Arc<Drain>),
     Stopped,
 }
 
@@ -148,10 +148,69 @@ struct Shared {
     shutdown: ShutdownTrigger,
     state: Mutex<State>,
     /// A serve thread nobody waits on any more (a dropped `serve_async`,
-    /// `shutdown_async`): the server's Drop joins it.
-    detached: Mutex<Option<JoinHandle<Result<()>>>>,
-    /// Set when a serve thread finishes, for the async twins.
+    /// `shutdown_async`), or a live serve_async's result-owned drain.
+    /// The server's Drop joins it.
+    detached: Mutex<Option<Arc<Drain>>>,
+    abandoned: super::lanes::JoinThreads,
+    /// Serialize only state transitions and handle publication, never a drain
+    /// wait: a suspended future must not block synchronous observers.
+    drain: futures::lock::Mutex<()>,
+    /// Notify after start publication or any joined drain, including ready close.
     done: tokio::sync::watch::Sender<bool>,
+}
+
+/// One join operation, shared by observers without sharing result ownership.
+struct Drain {
+    result: Mutex<Option<Result<()>>>,
+    done: tokio::sync::watch::Sender<bool>,
+    joiner: Mutex<Option<JoinHandle<()>>>,
+    serve_owned: AtomicBool,
+}
+impl Drain {
+    fn new(
+        handle: JoinHandle<Result<()>>,
+        serve_owned: bool,
+        notify: tokio::sync::watch::Sender<bool>,
+    ) -> Arc<Self> {
+        let (done, _) = tokio::sync::watch::channel(false);
+        let drain = Arc::new(Self {
+            result: Mutex::new(None),
+            done,
+            joiner: Mutex::new(None),
+            serve_owned: AtomicBool::new(serve_owned),
+        });
+        let worker = Arc::clone(&drain);
+        let joiner = std::thread::spawn(move || {
+            *lock(&worker.result) = Some(join(handle));
+            worker.done.send_replace(true);
+            notify.send_replace(true);
+        });
+        *lock(&drain.joiner) = Some(joiner);
+        drain
+    }
+    async fn wait(&self) {
+        let mut done = self.done.subscribe();
+        while !*done.borrow_and_update() {
+            if done.changed().await.is_err() {
+                break;
+            }
+        }
+        if let Some(joiner) = lock(&self.joiner).take()
+            && joiner.thread().id() != std::thread::current().id()
+        {
+            let _ = joiner.join();
+        }
+    }
+    fn finished(&self) -> bool {
+        *self.done.borrow()
+    }
+    fn result(&self, owner: bool) -> Result<()> {
+        if owner || !self.serve_owned.load(Ordering::Acquire) {
+            lock(&self.result).take().unwrap_or(Ok(()))
+        } else {
+            Ok(())
+        }
+    }
 }
 
 /// Serves an env, a list of lane envs, or a vector env.
@@ -166,6 +225,10 @@ struct Shared {
 /// Dropping a server runs [`shutdown`](Self::shutdown) and discards its
 /// error; call `shutdown()` to observe it. Inside an async runtime, Drop
 /// triggers the drain and leaves the rest to the server's own threads.
+/// Rust detaches close/actor threads that exceed their timeout or teardown
+/// grace; only the C binding's free is an unbounded join point. A callback must
+/// call shutdown directly rather than joining a helper thread that calls it
+/// (a cross-thread join cycle).
 pub struct EnvServer {
     shared: Arc<Shared>,
 }
@@ -180,10 +243,14 @@ thread_local! {
 /// Run `body` marked as a callback of server `id` (so a `shutdown()` from it
 /// only triggers the drain).
 pub(crate) fn in_callback<R>(id: u64, body: impl FnOnce() -> R) -> R {
-    let previous = IN_CALLBACK.with(|cell| cell.replace(id));
-    let result = body();
-    IN_CALLBACK.with(|cell| cell.set(previous));
-    result
+    struct Restore(u64);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            IN_CALLBACK.with(|cell| cell.set(self.0));
+        }
+    }
+    let _restore = Restore(IN_CALLBACK.with(|cell| cell.replace(id)));
+    body()
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -503,6 +570,8 @@ impl EnvServer {
                     close_env_on_shutdown: options.close_env_on_shutdown,
                 }))),
                 detached: Mutex::new(None),
+                abandoned: Arc::new(Mutex::new(Vec::new())),
+                drain: futures::lock::Mutex::new(()),
                 done,
             }),
         })
@@ -539,14 +608,11 @@ impl EnvServer {
 
     /// Serve from library threads and return at once.
     pub fn start(&self) -> Result<()> {
+        let _drain = crate::run::drive::run_sync(self.shared.drain.lock());
         let handle = self.spawn_background("start", State::Starting)?;
-        let mut state = lock(&self.shared.state);
-        match std::mem::replace(&mut *state, State::Stopped) {
-            State::Starting => *state = State::Background(handle),
-            // A shutdown() raced the start: it already moved to stopped.
-            State::Stopped => *lock(&self.shared.detached) = Some(handle),
-            other => *state = other,
-        }
+        *lock(&self.shared.state) =
+            State::Background(Drain::new(handle, false, self.shared.done.clone()));
+        self.shared.done.send_replace(true);
         Ok(())
     }
 
@@ -594,29 +660,43 @@ impl EnvServer {
     /// `Some` once the started server has stopped (joining it), `None` while
     /// it runs; misuse is the RuntimeError class.
     fn poll_wait(&self) -> Result<Option<Result<()>>> {
-        let handle = {
-            let mut state = lock(&self.shared.state);
+        if IN_CALLBACK.with(std::cell::Cell::get) == self.shared.id {
+            return Ok(if matches!(*lock(&self.shared.state), State::Stopped) {
+                Some(Ok(()))
+            } else {
+                None
+            });
+        }
+        let drain = {
+            let state = lock(&self.shared.state);
             match &*state {
-                State::Background(handle) if handle.is_finished() => {
-                    match std::mem::replace(&mut *state, State::Stopped) {
-                        State::Background(handle) => handle,
-                        _ => unreachable!("state changed while locked"),
-                    }
-                }
-                State::Background(_) | State::Starting => return Ok(None),
-                State::Stopped => return Ok(Some(Ok(()))),
+                State::Background(drain) => Arc::clone(drain),
+                State::Starting => return Ok(None),
+                State::Stopped => match lock(&self.shared.detached).clone() {
+                    Some(drain) => drain,
+                    None => return Ok(Some(Ok(()))),
+                },
                 State::Ready(_) => {
-                    return Err(Error::Runtime("wait() called before start()".to_string()));
+                    return Err(Error::Runtime("wait() called before start()".into()));
                 }
                 State::Foreground => {
                     return Err(Error::Runtime(
-                        "wait() called while serve() is already running in the foreground"
-                            .to_string(),
+                        "wait() called while serve() is already running in the foreground".into(),
                     ));
                 }
             }
         };
-        Ok(Some(join(handle)))
+        if !drain.finished() {
+            return Ok(None);
+        }
+        crate::run::drive::run_sync(drain.wait());
+        // Retain the shared task if another observer already transitioned it.
+        let mut state = lock(&self.shared.state);
+        if matches!(*state, State::Background(_)) {
+            *state = State::Stopped;
+            *lock(&self.shared.detached) = Some(Arc::clone(&drain));
+        }
+        Ok(Some(drain.result(false)))
     }
 
     /// Stop the server: release a never-served listener (closing the envs if
@@ -634,17 +714,38 @@ impl EnvServer {
             }
             return Ok(());
         }
-        let previous = std::mem::replace(&mut *lock(&self.shared.state), State::Stopped);
-        match previous {
-            State::Ready(resources) => cleanup_ready(*resources),
-            State::Background(handle) => join(handle),
-            State::Foreground => {
-                // The drain and close finish inside serve().
-                *lock(&self.shared.state) = State::Stopped;
-                Ok(())
-            }
-            State::Starting | State::Stopped => Ok(()),
+        let drain = self.begin_shutdown();
+        if let Some(drain) = drain {
+            crate::run::drive::run_sync(drain.wait());
+            drain.result(false)
+        } else {
+            Ok(())
         }
+    }
+
+    fn begin_shutdown(&self) -> Option<Arc<Drain>> {
+        let _transition = crate::run::drive::run_sync(self.shared.drain.lock());
+        let mut state = lock(&self.shared.state);
+        let previous = std::mem::replace(&mut *state, State::Stopped);
+        let drain = match previous {
+            State::Ready(resources) => {
+                let shared = Arc::clone(&self.shared);
+                Some(Drain::new(
+                    std::thread::spawn(move || cleanup_ready(*resources, &shared)),
+                    false,
+                    self.shared.done.clone(),
+                ))
+            }
+            State::Background(drain) => Some(drain),
+            State::Stopped => {
+                return lock(&self.shared.detached)
+                    .clone()
+                    .filter(|drain| !drain.serve_owned.load(Ordering::Acquire));
+            }
+            State::Foreground | State::Starting => return None,
+        };
+        *lock(&self.shared.detached) = drain.clone();
+        drain
     }
 
     /// The async twin of [`serve`](Self::serve): every lane, lane 0 included,
@@ -652,48 +753,47 @@ impl EnvServer {
     /// with the serve error when the server stops. Dropping it stops the
     /// server (the drain and close finish detached).
     pub async fn serve_async(&self) -> Result<()> {
-        let mut done = self.shared.done.subscribe();
-        let handle = self.spawn_background("serve", State::Foreground)?;
-        *lock(&self.shared.detached) = Some(handle);
+        let drain = {
+            let _transition = self.shared.drain.lock().await;
+            let handle = self.spawn_background("serve", State::Foreground)?;
+            let drain = Drain::new(handle, true, self.shared.done.clone());
+            *lock(&self.shared.detached) = Some(Arc::clone(&drain));
+            drain
+        };
         let guard = StopOnDrop(&self.shared);
-        while !*done.borrow_and_update() {
-            if done.changed().await.is_err() {
-                break;
-            }
-        }
+        drain.wait().await;
         std::mem::forget(guard);
         self.set_stopped();
-        let handle = lock(&self.shared.detached).take();
-        handle.map_or(Ok(()), join)
+        drain.result(true)
     }
 
     /// The async twin of [`wait`](Self::wait). Dropping it leaves the server
     /// as it was.
     pub async fn wait_async(&self, timeout: Option<Duration>) -> Result<bool> {
         let mut done = self.shared.done.subscribe();
-        let deadline = timeout.map(|timeout| Instant::now() + timeout);
+        // At most one timer for the entire timeout; None creates no timer.
+        let timer = timeout.map(sleep_off_runtime);
+        futures::pin_mut!(timer);
         loop {
+            // Snapshot before inspecting state, so a publication or completion
+            // between the poll and changed().await cannot be missed.
+            done.borrow_and_update();
             if let Some(result) = self.poll_wait()? {
                 return result.map(|()| true);
             }
-            let remaining = match deadline {
-                Some(deadline) => match deadline.checked_duration_since(Instant::now()) {
-                    Some(remaining) if !remaining.is_zero() => Some(remaining),
-                    _ => return Ok(false),
-                },
-                None => None,
-            };
-            let changed = done.changed();
-            match remaining {
-                Some(remaining) => {
-                    let timer = sleep_off_runtime(remaining.min(Duration::from_millis(50)));
-                    futures::pin_mut!(changed, timer);
-                    let _ = futures::future::select(changed, timer).await;
+            match timer.as_mut().as_pin_mut() {
+                Some(timer) => {
+                    let changed = done.changed();
+                    futures::pin_mut!(changed);
+                    if matches!(
+                        futures::future::select(changed, timer).await,
+                        futures::future::Either::Right(_)
+                    ) {
+                        return Ok(false);
+                    }
                 }
                 None => {
-                    let timer = sleep_off_runtime(Duration::from_millis(50));
-                    futures::pin_mut!(changed, timer);
-                    let _ = futures::future::select(changed, timer).await;
+                    let _ = done.changed().await;
                 }
             }
         }
@@ -703,28 +803,16 @@ impl EnvServer {
     /// drain it triggered to finish detached.
     pub async fn shutdown_async(&self) -> Result<()> {
         self.shared.shutdown.trigger("local shutdown");
-        let mut done = self.shared.done.subscribe();
-        let previous = std::mem::replace(&mut *lock(&self.shared.state), State::Stopped);
-        match previous {
-            State::Ready(resources) => {
-                let (tx, rx) = futures::channel::oneshot::channel();
-                std::thread::spawn(move || {
-                    let _ = tx.send(cleanup_ready(*resources));
-                });
-                rx.await
-                    .unwrap_or_else(|_| Err(Error::Internal("server cleanup panicked".into())))
-            }
-            State::Background(handle) => {
-                *lock(&self.shared.detached) = Some(handle);
-                while !*done.borrow_and_update() {
-                    if done.changed().await.is_err() {
-                        break;
-                    }
-                }
-                let handle = lock(&self.shared.detached).take();
-                handle.map_or(Ok(()), join)
-            }
-            State::Foreground | State::Starting | State::Stopped => Ok(()),
+        if IN_CALLBACK.with(std::cell::Cell::get) == self.shared.id {
+            return Ok(());
+        }
+        // No transition lock is retained by a suspended future. A synchronous
+        // observer can therefore join even while this future remains unpolled.
+        if let Some(drain) = self.begin_shutdown() {
+            drain.wait().await;
+            drain.result(false)
+        } else {
+            Ok(())
         }
     }
 
@@ -757,6 +845,19 @@ impl EnvServer {
         self.shared.shutdown.clone()
     }
 
+    /// C free's unbounded join point, after the binding released its borrows.
+    pub(crate) fn join_abandoned(&self) {
+        if IN_CALLBACK.with(std::cell::Cell::get) == self.shared.id {
+            return;
+        }
+        let threads = std::mem::take(&mut *lock(&self.shared.abandoned));
+        for thread in threads {
+            if thread.thread().id() != std::thread::current().id() {
+                let _ = thread.join();
+            }
+        }
+    }
+
     fn set_stopped(&self) {
         *lock(&self.shared.state) = State::Stopped;
     }
@@ -768,6 +869,9 @@ struct StopOnDrop<'a>(&'a Shared);
 
 impl Drop for StopOnDrop<'_> {
     fn drop(&mut self) {
+        if let Some(drain) = lock(&self.0.detached).as_ref() {
+            drain.serve_owned.store(false, Ordering::Release);
+        }
         self.0.shutdown.trigger("dropped serve_async");
         *lock(&self.0.state) = State::Stopped;
     }
@@ -778,22 +882,27 @@ impl Drop for EnvServer {
         self.shared.shutdown.trigger("drop");
         let previous = std::mem::replace(&mut *lock(&self.shared.state), State::Stopped);
         let detached = lock(&self.shared.detached).take();
-        if in_async_context() {
+        if in_async_context() || IN_CALLBACK.with(std::cell::Cell::get) == self.shared.id {
+            // Never join a callback's own drain, directly or via its joiner.
             // ENV-10: never block an executor; the server's own threads finish.
             if let State::Ready(resources) = previous {
+                let shared = Arc::clone(&self.shared);
                 std::thread::spawn(move || {
-                    let _ = cleanup_ready(*resources);
+                    let _ = cleanup_ready(*resources, &shared);
                 });
             }
             return;
         }
         let _ = match previous {
-            State::Ready(resources) => cleanup_ready(*resources),
-            State::Background(handle) => join(handle),
+            State::Ready(resources) => cleanup_ready(*resources, &self.shared),
+            State::Background(drain) => {
+                crate::run::drive::run_sync(drain.wait());
+                Ok(())
+            }
             _ => Ok(()),
         };
-        if let Some(handle) = detached {
-            let _ = join(handle);
+        if let Some(drain) = detached {
+            crate::run::drive::run_sync(drain.wait());
         }
     }
 }
@@ -824,6 +933,9 @@ fn sleep_off_runtime(duration: Duration) -> impl std::future::Future<Output = ()
 }
 
 fn join(handle: JoinHandle<Result<()>>) -> Result<()> {
+    if handle.thread().id() == std::thread::current().id() {
+        return Ok(());
+    }
     handle.join().unwrap_or_else(|_| {
         Err(Error::Internal(
             "serve failed: the server thread panicked".into(),
@@ -977,53 +1089,68 @@ impl Env for Tagged {
 /// An env run marked as server `id`'s callback.
 struct Marked<E> {
     id: u64,
-    env: E,
+    env: Option<E>,
+}
+
+impl<E> Drop for Marked<E> {
+    fn drop(&mut self) {
+        in_callback(self.id, || drop(self.env.take()));
+    }
 }
 
 impl<E: Env + ?Sized> Env for Marked<Box<E>> {
     fn observation_space(&self) -> crate::spaces::Space {
-        self.env.observation_space()
+        self.env.as_ref().expect("marked env").observation_space()
     }
     fn action_space(&self) -> crate::spaces::Space {
-        self.env.action_space()
+        self.env.as_ref().expect("marked env").action_space()
     }
     fn reset(
         &mut self,
         seed: Option<i64>,
         options: Option<&crate::InfoDict>,
     ) -> Result<(crate::Value, crate::InfoDict)> {
-        in_callback(self.id, || self.env.reset(seed, options))
+        in_callback(self.id, || {
+            self.env.as_mut().expect("marked env").reset(seed, options)
+        })
     }
     fn step(
         &mut self,
         action: Option<crate::Value>,
     ) -> Result<(crate::Value, f64, bool, bool, crate::InfoDict)> {
-        in_callback(self.id, || self.env.step(action))
+        in_callback(self.id, || {
+            self.env.as_mut().expect("marked env").step(action)
+        })
     }
     fn render(&mut self) -> Result<Option<crate::Value>> {
-        in_callback(self.id, || self.env.render())
+        in_callback(self.id, || self.env.as_mut().expect("marked env").render())
     }
     fn close(&mut self) -> Result<()> {
-        in_callback(self.id, || self.env.close())
+        in_callback(self.id, || self.env.as_mut().expect("marked env").close())
     }
 }
 
 impl<V: VectorEnv + ?Sized> VectorEnv for Marked<Box<V>> {
     fn num_envs(&self) -> u64 {
-        self.env.num_envs()
+        self.env.as_ref().expect("marked env").num_envs()
     }
     fn single_observation_space(&self) -> crate::spaces::Space {
-        self.env.single_observation_space()
+        self.env
+            .as_ref()
+            .expect("marked env")
+            .single_observation_space()
     }
     fn single_action_space(&self) -> crate::spaces::Space {
-        self.env.single_action_space()
+        self.env.as_ref().expect("marked env").single_action_space()
     }
     fn reset(
         &mut self,
         seed: Option<super::VectorSeed>,
         options: Option<&crate::InfoDict>,
     ) -> Result<(crate::Value, crate::InfoDict)> {
-        in_callback(self.id, || self.env.reset(seed, options))
+        in_callback(self.id, || {
+            self.env.as_mut().expect("marked env").reset(seed, options)
+        })
     }
     fn step(
         &mut self,
@@ -1035,13 +1162,15 @@ impl<V: VectorEnv + ?Sized> VectorEnv for Marked<Box<V>> {
         Vec<bool>,
         crate::InfoDict,
     )> {
-        in_callback(self.id, || self.env.step(actions))
+        in_callback(self.id, || {
+            self.env.as_mut().expect("marked env").step(actions)
+        })
     }
     fn render(&mut self) -> Result<Option<crate::Value>> {
-        in_callback(self.id, || self.env.render())
+        in_callback(self.id, || self.env.as_mut().expect("marked env").render())
     }
     fn close(&mut self) -> Result<()> {
-        in_callback(self.id, || self.env.close())
+        in_callback(self.id, || self.env.as_mut().expect("marked env").close())
     }
 }
 
@@ -1067,9 +1196,7 @@ impl Runner {
 /// foreground the calling thread runs lane 0's (or the vector env's) jobs
 /// while the transport runs on a helper thread.
 fn run(resources: Resources, shared: &Arc<Shared>, foreground: bool) -> Result<()> {
-    let result = run_inner(resources, shared, foreground);
-    let _ = shared.done.send(true);
-    result
+    run_inner(resources, shared, foreground)
 }
 
 fn run_inner(resources: Resources, shared: &Arc<Shared>, foreground: bool) -> Result<()> {
@@ -1100,7 +1227,10 @@ fn run_inner(resources: Resources, shared: &Arc<Shared>, foreground: bool) -> Re
             let mut wire_lanes = Vec::with_capacity(lanes.len());
             let mut runner = Runner::None;
             for (index, lane) in lanes.into_iter().enumerate() {
-                let lane: Box<dyn Env + Send> = Box::new(Marked { id, env: lane });
+                let lane: Box<dyn Env + Send> = Box::new(Marked {
+                    id,
+                    env: Some(lane),
+                });
                 if foreground && index == 0 {
                     let (relayed, lane_runner) = SyncLane::relayed(lane, &contract)?;
                     wire_lanes.push(relayed);
@@ -1109,17 +1239,19 @@ fn run_inner(resources: Resources, shared: &Arc<Shared>, foreground: bool) -> Re
                     wire_lanes.push(SyncLane::new(lane, &contract)?);
                 }
             }
-            let adapter = WireLaneAdapter::new(wire_lanes)
+            let mut adapter = WireLaneAdapter::new(wire_lanes)
                 .map_err(|err| Error::invalid_argument(err.to_string()))?;
+            adapter.track_abandoned(Arc::clone(&shared.abandoned));
             drive(adapter, runner, parts)
         }
         Served::Vector(env) => {
-            let env: Box<dyn VectorEnv + Send> = Box::new(Marked { id, env });
+            let env: Box<dyn VectorEnv + Send> = Box::new(Marked { id, env: Some(env) });
             let (actor, runner) = if foreground {
                 let (actor, runner) = Actor::foreground(env);
                 (actor, Runner::Vector(runner))
             } else {
-                let (actor, _thread) = Actor::spawn("rlmesh-vector-env".to_string(), env)?;
+                let (actor, thread) = Actor::spawn("rlmesh-vector-env".to_string(), env)?;
+                lock(&shared.abandoned).push(thread);
                 (actor, Runner::None)
             };
             drive(
@@ -1231,7 +1363,7 @@ fn serve_failure(serve: Result<()>, close: Result<()>) -> Result<()> {
 
 /// Release a never-served server: drop the listener and close the envs (when
 /// `close_env_on_shutdown`), bounded by `close_timeout`.
-fn cleanup_ready(resources: Resources) -> Result<()> {
+fn cleanup_ready(resources: Resources, shared: &Arc<Shared>) -> Result<()> {
     let Resources {
         served,
         runtime,
@@ -1242,27 +1374,34 @@ fn cleanup_ready(resources: Resources) -> Result<()> {
     } = resources;
     listener.release();
     drop(runtime);
+    let id = shared.id;
     if !close_env_on_shutdown {
+        in_callback(id, || drop(served));
         return Ok(());
     }
     let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::Builder::new()
+    let thread = std::thread::Builder::new()
         .name("rlmesh-env-close".to_string())
         .spawn(move || {
-            let result = match served {
+            let result = in_callback(id, || match served {
                 Served::Lanes(mut lanes) => lanes.iter_mut().try_for_each(|lane| {
-                    lane.close().map_err(|err| {
+                    in_callback(id, || lane.close()).map_err(|err| {
                         super::sync_wire::authored_failure("close", &err).to_string()
                     })
                 }),
-                Served::Vector(mut env) => env
-                    .close()
+                Served::Vector(mut env) => in_callback(id, || env.close())
                     .map_err(|err| super::sync_wire::authored_failure("close", &err).to_string()),
-            };
+            });
             let _ = tx.send(result);
         })
         .map_err(|err| Error::Internal(format!("failed to spawn a close thread: {err}")))?;
-    match rx.recv_timeout(close_timeout) {
+    let result = rx.recv_timeout(close_timeout);
+    if result.is_ok() {
+        let _ = thread.join();
+    } else {
+        lock(&shared.abandoned).push(thread);
+    }
+    match result {
         Ok(Ok(())) => Ok(()),
         Ok(Err(message)) => Err(Error::Internal(format!(
             "serve failed: {}",

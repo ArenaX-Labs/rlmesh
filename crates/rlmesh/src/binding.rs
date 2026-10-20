@@ -307,6 +307,11 @@ pub fn env_server_binding_host(
     server.binding_host(component, language, extra)
 }
 
+/// C free joins threads abandoned by bounded Rust shutdown, after finish().
+pub fn env_server_join_abandoned(server: &crate::EnvServer) {
+    server.join_abandoned();
+}
+
 /// Validate a binding's factory attributes through the shared branch checker.
 pub fn env_factory_check<F: crate::EnvFactory>() -> Result<()> {
     crate::env::factory::check_branch_table::<F>()

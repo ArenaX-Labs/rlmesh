@@ -472,6 +472,10 @@ impl WireLaneAdapter {
         })
     }
 
+    pub(crate) fn track_abandoned(&mut self, threads: super::lanes::JoinThreads) {
+        self.lanes.track_abandoned(threads);
+    }
+
     /// The lanes a request covers: the ones it names, else every lane.
     fn lanes_for(&self, env_indices: &[u32]) -> Vec<usize> {
         if env_indices.is_empty() {

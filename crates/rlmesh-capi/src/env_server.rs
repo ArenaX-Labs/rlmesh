@@ -181,6 +181,7 @@ impl Drop for RLMeshEnvServer {
         if let Some(v) = &self.vector {
             v.finish(self.close_env_on_shutdown);
         }
+        rlmesh::binding::env_server_join_abandoned(&self.server);
     }
 }
 /// # Safety
