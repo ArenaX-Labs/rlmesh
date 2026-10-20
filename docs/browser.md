@@ -137,7 +137,7 @@ mise run test:js:e2e  # Node recovery tests against the example robot and a real
 mise run check:sans-io
 ```
 
-The tools (wasm-bindgen 0.2.122, which must equal the crate pin, and
+The tools (wasm-bindgen 0.2.129, which must equal the crate pin, and
 binaryen's wasm-opt) are scoped in `javascript/mise.toml` with their own
 lock, like the C# tools: `setup:js` installs them, the wasm32 Rust target
 and the npm dev dependencies, and no other check needs them. The CI

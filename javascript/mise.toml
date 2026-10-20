@@ -6,5 +6,5 @@
 # (crates/rlmesh-wasm/Cargo.toml), or the generated glue does not match the
 # module. binaryen is wasm-opt.
 [tools]
-"github:wasm-bindgen/wasm-bindgen" = "0.2.122"
+"github:wasm-bindgen/wasm-bindgen" = "0.2.129"
 "github:WebAssembly/binaryen" = { version = "133", version_prefix = "version_" }

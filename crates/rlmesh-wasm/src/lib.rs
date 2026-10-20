@@ -99,7 +99,7 @@ pub fn build_info() -> JsValue {
     let o = Object::new();
     set(&o, "crate", "rlmesh-wasm");
     set(&o, "version", env!("CARGO_PKG_VERSION"));
-    set(&o, "wasm_bindgen", "0.2.122");
+    set(&o, "wasm_bindgen", "0.2.129");
     set(&o, "protocol", "rlmesh/v2");
     o.into()
 }

@@ -4,7 +4,7 @@
 #MISE depends=["setup:js"]
 
 # Not under nextest: wasm32 tests need the wasm-bindgen runner. No `-q`: cargo
-# forwards --quiet, which wasm-bindgen-test-runner 0.2.122 rejects.
+# forwards --quiet, which wasm-bindgen-test-runner 0.2.129 rejects.
 set -euo pipefail
 PATH="$(mise -C javascript bin-paths | paste -sd: -):$PATH"
 export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner
