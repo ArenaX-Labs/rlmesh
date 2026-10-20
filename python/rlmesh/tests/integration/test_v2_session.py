@@ -235,7 +235,7 @@ def test_a_python_policy_drives_a_python_robot_on_loopback(host: rlmesh.Host) ->
         assert driving and all(d.path == "arm" for d in driving)
         assert any(path == "arm" for path, _, _ in driving[-1].based_on)
         edge = ur.robot.edge_stats("arm")
-        assert edge["accepted"] > 0 and edge["rejected"] == 0
+        assert edge["accepted"] > 0 and edge["rejected"] == 0, edge["rejected_by"]
         assert edge["modes"]["safe"] == (0, 0), "a released lease never latches safe"
 
 
@@ -306,7 +306,12 @@ def test_an_operator_preempts_the_model_and_hands_back_under_a_fresh_token(
 
         def teleop() -> None:
             while not streaming.is_set():
-                obs = operator.observe()
+                try:
+                    obs = operator.observe()
+                except rlmesh.StartSkipped:
+                    # Under load an input may not be fresh yet: try next tick.
+                    time.sleep(0.01)
+                    continue
                 sent = operator.send({"arm": np.full((10, 6), 0.75)}, obs)
                 assert sent["arm"] is not None
                 time.sleep(0.01)
