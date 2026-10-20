@@ -32,12 +32,12 @@ import re
 import subprocess
 import sys
 import tempfile
+import tomllib
+from collections.abc import Callable
 import urllib.error
 import urllib.request
-from collections.abc import Callable
 from pathlib import Path
 
-import tomllib
 from bump_version import pep440
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -152,8 +152,7 @@ def require_workspace_version(version: str) -> None:
 
 def crate_published(crate: str, version: str) -> bool:
     """Ask the crates.io sparse index whether crate@version exists (a local
-    `cargo info` would resolve the workspace member and always say yes).
-    """
+    `cargo info` would resolve the workspace member and always say yes)."""
     # Index path scheme for names of 4+ chars; every CRATE_ORDER name qualifies.
     url = f"https://index.crates.io/{crate[:2]}/{crate[2:4]}/{crate}"
     try:
@@ -241,9 +240,7 @@ def distribution_uploads(
     if has_tarball:
         return [_write_checksum(tarball, _sha256(fetch_published(tarball.name)))]
     if has_checksum:
-        published = (
-            fetch_published(checksum.name).read_text(encoding="utf-8").split()[0]
-        )
+        published = fetch_published(checksum.name).read_text(encoding="utf-8").split()[0]
         if published != _sha256(tarball):
             # Nobody can have fetched a tarball that was never published, so the
             # orphan checksum is safe to delete.
@@ -273,16 +270,7 @@ def github_release(version: str) -> None:
         with tempfile.TemporaryDirectory(dir=release_scratch()) as downloads:
 
             def fetch_published(name: str) -> Path:
-                run(
-                    "gh",
-                    "release",
-                    "download",
-                    tag,
-                    "--pattern",
-                    name,
-                    "--dir",
-                    downloads,
-                )
+                run("gh", "release", "download", tag, "--pattern", name, "--dir", downloads)
                 return Path(downloads) / name
 
             missing = [
@@ -406,9 +394,7 @@ def _selfcheck_distribution_uploads() -> None:
         published = root / "published"
         published.mkdir()
         (published / tarball.name).write_bytes(b"published bytes")
-        (published / f"{tarball.name}.sha256").write_text(
-            f"{'0' * 64}  {tarball.name}\n"
-        )
+        (published / f"{tarball.name}.sha256").write_text(f"{'0' * 64}  {tarball.name}\n")
 
         def fetch(name: str) -> Path:
             return published / name
@@ -417,10 +403,7 @@ def _selfcheck_distribution_uploads() -> None:
         assert distribution_uploads(tarball, {name, checksum}, fetch) == []
         # Tarball published, checksum lost: the checksum describes the published bytes.
         (uploaded,) = distribution_uploads(tarball, {name}, fetch)
-        assert (
-            uploaded.read_text().split()[0]
-            == hashlib.sha256(b"published bytes").hexdigest()
-        )
+        assert uploaded.read_text().split()[0] == hashlib.sha256(b"published bytes").hexdigest()
         # Checksum published for other bytes: refuse rather than pair it with a rebuild.
         try:
             distribution_uploads(tarball, {checksum}, fetch)
@@ -430,10 +413,7 @@ def _selfcheck_distribution_uploads() -> None:
             raise AssertionError("a mismatched published checksum must be refused")
         both = distribution_uploads(tarball, set(), fetch)
         assert both[0] == tarball
-        assert (
-            both[1].read_text().split()[0]
-            == hashlib.sha256(b"rebuilt bytes").hexdigest()
-        )
+        assert both[1].read_text().split()[0] == hashlib.sha256(b"rebuilt bytes").hexdigest()
 
 
 def main() -> None:

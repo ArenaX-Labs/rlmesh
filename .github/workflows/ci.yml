@@ -44,7 +44,7 @@ jobs:
         run: |
           base="${PR_BASE:-${PUSH_BASE:-origin/main}}"
           if [[ "$base" =~ ^0+$ ]]; then base="$(git rev-parse HEAD^)"; fi
-          python scripts/dev/affected.py --base "$base" --dry-run --github-output "$GITHUB_OUTPUT"
+          python scripts/dev/affected.py --base "$base" --ci --dry-run --github-output "$GITHUB_OUTPUT"
 
       # Setup installs the committed tool lock with --locked. Do not refresh
       # remote dependency metadata during verification.
@@ -65,6 +65,7 @@ jobs:
           TMPDIR="$HOME/.cache/rlmesh-csharp/tmp" mise -C csharp install --locked dotnet zig
 
       - name: C# interop, ownership and Python interoperability
+        timeout-minutes: 10
         if: steps.csharp_changes.outputs.csharp == 'true'
         run: mise run --skip-tools test:csharp
 

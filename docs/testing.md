@@ -25,6 +25,23 @@ Run only what a change can affect (changed crates since `origin/main`, their dep
 mise run test:affected
 ```
 
+Locally, C# tests run only for direct changes under `csharp/`,
+`integrations/unity/`, `tools/rlmesh_csharp_surface/` or `crates/rlmesh-capi/`
+(including `rlmesh.h`), changes to `scripts/dev/affected.py`, or changes to the
+`csharp` Python dependency group in `pyproject.toml` / `uv.lock`. The group
+comparison includes resolved transitive dependencies and selected extras;
+unrelated Python dependency edits do not require dotnet. Transitive Rust core
+changes still select the affected Rust and Python tests, without installing
+dotnet locally. Use `mise run test:csharp` to request the managed suite directly.
+
+CI invokes the planner with `--ci` and deliberately selects C# more broadly:
+any crate reaching `rlmesh-capi`, workspace build inputs, either Python manifest
+or lockfile, `python/rlmesh/**` (the interoperability client), the C/C++ package
+task, the planner and `.github/workflows/ci.yml` all select it. The existing
+Linux job installs the scoped C# toolchain only when selected, then runs interop
+staleness, managed tests, NativeAOT and package checks. `test:ci` itself does not
+install dotnet.
+
 Rust tests run under [cargo-nextest](https://nexte.st) (configured in `.config/nextest.toml`); doctests still run through `cargo test --doc`.
 
 Rerun a task whenever a file changes:

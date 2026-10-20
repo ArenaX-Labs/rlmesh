@@ -6,12 +6,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ## [Unreleased]
 
-- Added NuGet and Unity UPM distributions of the Experimental C# foundation, with portable symbols and native Linux x64, Windows x64 and universal macOS libraries. Foundation checks now include a fresh package consumer, NativeAOT serving, and allocation/leak budgets.
-- Added a universal macOS C/C++ release package, with optional Developer ID signing and Apple notarization in the existing tag-only release job.
-- Added the Experimental `com.rlmesh.unity` integration: main-thread environment callbacks, reload preflight, a Reach Target sample and dispatch-only Unity release gates. Unity support is not yet verified on IL2CPP.
-
-- Added the Experimental C# `RLMesh` package for serving authored environments, with Box, Discrete and Dict spaces, tensors and values (`netstandard2.1` and `net10.0`).
-
 This release gives the Rust facade crate (`rlmesh`), the C API (`rlmesh.h`, now C ABI 5) and the C++ wrapper (`rlmesh.hpp`, now C++17) the same nouns, options, defaults and error classes as the Python package, each in its own language's conventions. Python also fixes several inconsistent behaviours along the way. Breaking changes are listed first, by language, each with what to do instead.
 
 ### Breaking
@@ -127,14 +121,15 @@ The experimental C API moves to **ABI generation 5** (`RLMESH_ABI_VERSION` 5, SO
 - `rlmesh::describe(obj, DescribeOptions { kind, generated_at })` returns a describe envelope as `Metadata`, and `rlmesh::describe_json(obj, DescribeJsonOptions { kind, generated_at, served_env, workflow_edition })` its canonical string. `obj` is a `Describable`: `Describable::model::<P>()` reads a policy type's declarations without constructing it (a static `native_chunk` that construction would refuse is refused, `TypeError` or `ValueError` class), `Describable::env_factory::<F>()` default-constructs one factory per build, and `&Model` / `&mut factory` describe an instance. `Model::describe::<P>()` and `EnvFactoryExt::describe()` describe type declarations. A factory envelope carries the default branch's `env_spec` (or a badge whose `error_type` is the failure's error class), `env_tags`, `params` from `tag_params`, `variants.catalog`, and, for a branched factory, `env_contracts` with every branch's tags and spaces; a model envelope carries `model_spec`, `corners`, `native_chunk` and `params` from `LOAD_KEYS`; `target.qualname` is `rust:<type>`, `runtime` is the Rust host plus the edition offer, `DescribeKind` cross-checks the kind, and `rlmesh::ServedEnv` (`env`, `vector`, `lanes`, `From<&MadeEnv>`) replaces the default build. `EnvFactoryExt::serve` publishes this full envelope on its handshake, read off the env it serves.
 - Workflow edition resolution: `rlmesh::current_workflow_edition()` is the bare `YYYY.MM` base to declare, and every native serve takes the call's own value, then `RLMESH_WORKFLOW_EDITION`, then the served peer's option, then the type's declaration (natives read no `pyproject.toml`); a blank value declares nothing, a set-but-blank variable floats deliberately, and an edition this build cannot run is a `ValueError`-class error. `RemoteEnv::selected_workflow_edition()` reports the edition the handshake selected. Warnings carry a category: `rlmesh::WarningCategory` (`UserWarning`, `RuntimeWarning`, `WorkflowEditionWarning`, with `name` and `is_subclass_of`), `rlmesh::Warning`, and `rlmesh::set_warning_handler`, whose failing handler fails the call that warned; by default each distinct warning prints once to stderr as `rlmesh: <Category>: <message>`.
 - `rlmesh::build_info()` returns `rlmesh::BuildInfo` (`version`, `protocol_generation`, `workflow_edition`, `workflow_edition_base`, `supported_workflow_editions`, `build_cohort`, `build_source` as the `BuildSource` enum, and `git` as an `Option`), with a structured `Display` representation; `rlmesh::VERSION`, `DESCRIBE_METADATA_KEY` and `DESCRIBE_SCHEMA_VERSION` (an `i64`) join `ENV_RESET_OPTIONS_KEY` at the root.
+- Remote env calls check closed state before subscribing to cancellation, returning `RuntimeError` without consuming an idle firing. Factory-backed sessions check busy state and cancellation before lazy `make`; pending cancellation skips construction, and reentrant calls during `make` return busy `RuntimeError`.
+- Remote and session calls, including run completion hooks, synchronously check cancellation when completing their result processing. A firing before completion returns `Cancelled`, even when the polling watcher has not run; a retained run hook error still wins. A firing after completion remains pending when the token is idle.
 
 #### C
 
-- `rlmesh_ext_unregister_entrypoint` removes a trusted entrypoint by transform identity, or any registration when `expected` is NULL. Existing routes retain their transforms, and foreign deleters can re-enter the registry safely.
-- `rlmesh_ext_session_reset`, `_predict`, `_step`, `rlmesh_ext_remote_env_reset`, `_step` and `rlmesh_ext_remote_vector_env_reset`, `_step` take an explicit borrowed per-call cancellation token; NULL preserves the original call behavior.
-
 The C API (`rlmesh.h`, ABI 5) exposes values, spaces, envs, models, runs and sessions through opaque handles and typed callbacks. Every new struct follows the ABI-5 sizing rules above; constructors transfer callback state only on success, and `free_user_data` runs once after the last library reference.
 
+- `rlmesh_ext_unregister_entrypoint` removes a trusted entrypoint by transform identity, or any registration when `expected` is NULL. Existing routes retain their transforms, and foreign deleters can re-enter the registry safely.
+- `rlmesh_ext_session_reset`, `_predict`, `_step`, `rlmesh_ext_remote_env_reset`, `_step` and `rlmesh_ext_remote_vector_env_reset`, `_step` take an explicit borrowed per-call cancellation token; NULL preserves the original call behavior.
 - Factory serves can start in the background with `rlmesh_ext_env_factory_start` (C++ `rlmesh::ext::start`), returning an independently owned env server. Model serve options can disable signal handlers for embedding hosts. ABI-5 struct minima stay unchanged.
 - Values and tensors: immutable, shareable `RLMeshValue` handles with all ten kinds, strict typed reads (`RLMESH_ERR_TYPE` for another kind), insertion-ordered dicts with length-bearing `RLMeshStr` keys (empty and embedded-NUL keys allowed) and composite constructors that retain their children. `RLMeshTensor` copies on construction, shares storage on clone, Value conversion and contiguous reshape, reports byte strides and read-only buffers, and makes an independent copy with `rlmesh_tensor_copy`.
 - Versioned CPU DLPack exchange: `rlmesh_tensor_from_dlpack`, `rlmesh_tensor_to_dlpack` with `RLMeshToDlpackOptions` and `rlmesh_tensor_dlpack_device`. Imports copy and consume the producer only on success; read-only shared or writable copied exports retain their data and metadata after the source is freed. `rlmesh.h` vendors the complete upstream DLPack v1.0 header (Apache-2.0, license in `include/dlpack.LICENSE`), works in either include order with DLPack 1.x headers, and still compiles warning-free as C++98 under GCC and Clang.
@@ -150,6 +145,8 @@ The C API (`rlmesh.h`, ABI 5) exposes values, spaces, envs, models, runs and ses
 - Remote clients: `RLMeshRemoteEnv`, `RLMeshRemoteVectorEnv` and a shared `RLMeshRemoteModel` with sized constructor options (an endpoint token goes in `api_key`). Accessors stay usable while a call or session borrows the client, `selected_workflow_edition` reads the session's pin, and reset, step, render, shutdown and close return typed values; vector buffers are capacity-checked before any I/O. Remote envs and models serve as run and session targets.
 - Describe: `rlmesh_model_vtable_describe` / `_describe_json` read a policy's declarations without constructing it or calling any slot, `rlmesh_model_describe` describes an instance, and `rlmesh_env_factory_describe` / `_describe_json` describe a factory's branches and catalog, as a typed dict or canonical JSON with `RLMeshDescribeOptions`. Factory serving publishes the same native identity.
 - View and Recorder: `RLMeshView` with default display settings, `rlmesh_view_parse`, `_validate`, `_equals` and `_repr` (a hold accepts any finite nonnegative number of seconds), copied into run and session options; `RLMeshRecorder` with completed-run recording, live capture hooks (`rlmesh_recorder_capture`) that also work with manual hook dispatch, folder and ZIP export, and immutable `RLMeshWorkloadRecord`, `RLMeshEpisodeRecord` and `RLMeshMediaRef` snapshots.
+- Remote env calls check closed state before subscribing to cancellation, returning `RLMESH_ERR_RUNTIME` without consuming an idle firing. Factory-backed sessions check busy state and cancellation before lazy `make`; pending cancellation skips construction, and reentrant calls during `make` return `RLMESH_ERR_RUNTIME`.
+- Session and remote calls synchronously check cancellation through result processing, including the original calls using handle tokens and the explicit per-call variants. A firing before completion returns `RLMESH_ERR_CANCELLED`, subject to run hook error precedence; an idle firing after completion remains pending.
 
 #### C++
 
@@ -162,9 +159,18 @@ The C API (`rlmesh.h`, ABI 5) exposes values, spaces, envs, models, runs and ses
 - Running: `Model::run`, `Session` (which keeps its model and server owners alive), `RunHooks`, `RunResult`, `EpisodeResult`, `RemoteEnv`, `RemoteVectorEnv`, `RemoteModel`, `describe`, `View` and `Recorder`, with options as aggregates supporting portable `with_<field>` setters and C++20 designated initializers, `std::optional` scalars, `OptionalList<T>` for None versus an empty list, `std::chrono::duration<double>` durations, and reset and step returning tuples for structured bindings. `ext::CancelToken` copies share one reusable cancellation source.
 - `rlmesh::build_info()`, `BuildInfo` (printable with `<<` and `to_string`), `BuildSource`, `VERSION`, `current_workflow_edition()`, `DESCRIBE_METADATA_KEY`, `DESCRIBE_SCHEMA_VERSION`, `ENV_RESET_OPTIONS_KEY`, and `Warning`, `WarningCategory` and `set_warning_handler(std::function)`.
 - `spaces::Dict::spaces()` returns the child spaces in order, sharing their sampler handles.
+- Remote env calls check closed state before subscribing to cancellation, throwing `RuntimeError` without consuming an idle firing. Factory-backed sessions check busy state and cancellation before lazy `make`; pending cancellation skips construction, and reentrant calls during `make` throw `RuntimeError`.
+- Session and remote calls synchronously check cancellation through result processing, including the original calls using handle tokens and the `rlmesh::ext` per-call overloads. A firing before completion throws `ext::CancelledError`, subject to run hook error precedence; an idle firing after completion remains pending.
+
+#### C#
+
+- The Experimental C# `RLMesh` package for serving authored environments, with Box, Discrete and Dict spaces, tensors and values (`netstandard2.1` and `net10.0`).
+- NuGet and Unity UPM distributions of the Experimental C# foundation, with portable symbols and native Linux x64, Windows x64 and universal macOS libraries. Foundation checks now include a fresh package consumer, NativeAOT serving, and allocation/leak budgets.
+- The Experimental `com.rlmesh.unity` integration: main-thread environment callbacks, reload preflight, a Reach Target sample and dispatch-only Unity release gates. Unity support is not yet verified on IL2CPP.
 
 #### Packaging and examples
 
+- A universal macOS C/C++ release package, with Developer ID signing and Apple notarization in the existing tag-only release job, or an explicit unsigned-release opt-in.
 - Each GitHub Release carries the experimental C/C++ package for Linux x86_64 (glibc 2.34 or newer): `rlmesh-X.Y.Z-x86_64-unknown-linux-gnu.tar.gz` with both headers, the shared and static libraries, and CMake and pkg-config metadata, plus its `.sha256`. A CMake project uses it through `FetchContent_Declare(rlmesh URL … URL_HASH SHA256=…)` and `FetchContent_MakeAvailable(rlmesh)`, or `find_package(rlmesh)` on the unpacked tree, then links `rlmesh::rlmesh`; no Rust toolchain is needed. The CMake package version is the ABI generation, so `find_package(rlmesh 5)` refuses another one.
 - Each GitHub Release also carries the C/C++ package for Windows x86_64 (MSVC, Windows 10 or later): `rlmesh-X.Y.Z-x86_64-pc-windows-msvc.tar.gz` with both headers, `bin/rlmesh_capi.dll` and its `.pdb`, the import library `lib/rlmesh_capi.lib` and CMake metadata, plus its `.sha256`. The same `FetchContent` and `find_package(rlmesh 5)` setup links `rlmesh::rlmesh`; copy the DLL beside your executable.
 - `integrations/unreal/RLMesh` is an Unreal Engine 5 plugin (Win64 and Linux) that serves game state as an RLMesh env: subclass `URLMeshEnvComponent` and its `ResetEnv` and `StepEnv` run on the game thread, from the component's tick, while any RLMesh model drives the env. `URLMeshReachTargetComponent` is a ready example. The plugin links the prebuilt C/C++ package.
@@ -195,21 +201,6 @@ The C API (`rlmesh.h`, ABI 5) exposes values, spaces, envs, models, runs and ses
 - The live viewer shows the env's first declared image role by default instead of its `render()` frame. The role rides the step response, while `render()` costs one more env round trip per drawn frame; `render` stays selectable, and `View(source="render")` asks for it.
 - Adapter resolution errors for a missing role now suggest near matches among the roles the other side offers (`did you mean "x/goal_body"?`), and, when an `x/` role is involved, say that `x/` roles bind only to the identical string. The suggestion is only a hint: binding still matches roles exactly, and one registered role is never suggested for another. The zero-fill caution for an optional state input names the absent role and part (`zero-filled because the env offers no match for "proprio/eef_pos" (part "right_arm")`) instead of only counting components.
 - `sanitize_metadata` is labelled Bridge (Python-only), and the `params` module with `Model.params` / `EnvFactory.params` is labelled Experimental.
-
-#### Rust
-
-- Remote env calls check closed state before subscribing to cancellation, returning `RuntimeError` without consuming an idle firing. Factory-backed sessions check busy state and cancellation before lazy `make`; pending cancellation skips construction, and reentrant calls during `make` return busy `RuntimeError`.
-- Remote and session calls, including run completion hooks, synchronously check cancellation when completing their result processing. A firing before completion returns `Cancelled`, even when the polling watcher has not run; a retained run hook error still wins. A firing after completion remains pending when the token is idle.
-
-#### C
-
-- Remote env calls check closed state before subscribing to cancellation, returning `RLMESH_ERR_RUNTIME` without consuming an idle firing. Factory-backed sessions check busy state and cancellation before lazy `make`; pending cancellation skips construction, and reentrant calls during `make` return `RLMESH_ERR_RUNTIME`.
-- Session and remote calls synchronously check cancellation through result processing, including the original calls using handle tokens and the explicit per-call variants. A firing before completion returns `RLMESH_ERR_CANCELLED`, subject to run hook error precedence; an idle firing after completion remains pending.
-
-#### C++
-
-- Remote env calls check closed state before subscribing to cancellation, throwing `RuntimeError` without consuming an idle firing. Factory-backed sessions check busy state and cancellation before lazy `make`; pending cancellation skips construction, and reentrant calls during `make` throw `RuntimeError`.
-- Session and remote calls synchronously check cancellation through result processing, including the original calls using handle tokens and the `rlmesh::ext` per-call overloads. A firing before completion throws `ext::CancelledError`, subject to run hook error precedence; an idle firing after completion remains pending.
 
 #### All languages
 
