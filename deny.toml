@@ -15,7 +15,12 @@ features = ["abi3-py311"]
 yanked = "deny"
 unmaintained = "workspace"
 unused-ignored-advisory = "deny"
-ignore = []
+ignore = [
+  # lz4_flex is pulled unconditionally by zenoh-transport 1.10.1 (the protocol
+  # v2 session transport), even with `transport_compression` off, and the
+  # session never enables Zenoh compression. Drop this when zenoh updates.
+  { id = "RUSTSEC-2026-0041", reason = "lz4_flex via zenoh-transport 1.10.1; Zenoh compression is never enabled" },
+]
 
 [licenses]
 confidence-threshold = 0.93
