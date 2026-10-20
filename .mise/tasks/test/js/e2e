@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+#MISE description="Run javascript/rlmesh's Node recovery tests (wasm traps, a gateway kill) against the example robot and a real gateway (local only, not CI)"
+#MISE dir="{{ config_root }}"
+#MISE depends=["build:js"]
+
+# The tests start target/release/examples/web_robot and target/release/rlmesh-gateway
+# themselves, on random ports, and kill them afterwards.
+set -euo pipefail
+cargo build --release -p rlmesh-gateway --bin rlmesh-gateway --example web_robot
+RLMESH_E2E_TARGET="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')/release" \
+  node javascript/rlmesh/test/run.mjs --e2e

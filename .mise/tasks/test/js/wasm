@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+#MISE description="Run crates/rlmesh-wasm's tests on wasm32-unknown-unknown under Node (wasm-bindgen-test, no browser)"
+#MISE dir="{{ config_root }}"
+#MISE depends=["setup:js"]
+
+# Not under nextest: wasm32 tests need the wasm-bindgen runner. No `-q`: cargo
+# forwards --quiet, which wasm-bindgen-test-runner 0.2.122 rejects.
+set -euo pipefail
+PATH="$(mise -C javascript bin-paths | paste -sd: -):$PATH"
+export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner
+cargo test -p rlmesh-wasm --target wasm32-unknown-unknown

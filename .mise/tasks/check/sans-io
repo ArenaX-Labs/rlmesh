@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+#MISE description="Sans-IO guard: rlmesh-wire and rlmesh-session-core build for wasm32-unknown-unknown with no clock reads, threads, sleeps or IO dependencies"
+#MISE dir="{{ config_root }}"
+#MISE depends=["setup:js"]
+
+# Each guarded crate carries its own clippy.toml with `disallowed-methods`
+# (Instant::now, SystemTime::now, thread::spawn, thread::sleep); clippy does
+# not merge config files, so it repeats the workspace's settings too. Time is
+# always an injected `now_ns`.
+set -euo pipefail
+
+crates=(rlmesh-wire rlmesh-session-core)
+deny='^(tokio|mio|socket2|zenoh.*|tonic|hyper|async-std|getrandom|wasm-bindgen|js-sys|web-sys|libc)$'
+
+for crate in "${crates[@]}"; do
+  echo "==> $crate builds for wasm32-unknown-unknown"
+  cargo build -q -p "$crate" --target wasm32-unknown-unknown
+  echo "==> $crate: no clock reads, threads or sleeps"
+  cargo clippy -q -p "$crate" --all-targets -- -D warnings -D clippy::disallowed_methods
+  cargo clippy -q -p "$crate" --target wasm32-unknown-unknown -- -D warnings -D clippy::disallowed_methods
+  echo "==> $crate: dependency deny-list (normal deps, wasm target)"
+  found=$(cargo tree -q -p "$crate" -e normal --target wasm32-unknown-unknown --prefix none |
+    awk '{print $1}' | sort -u | grep -E "$deny" || true)
+  if [ -n "$found" ]; then
+    echo "forbidden dependencies in $crate: $(echo "$found" | tr '\n' ' ')" >&2
+    exit 1
+  fi
+done
+echo "OK: ${crates[*]} are sans-IO"

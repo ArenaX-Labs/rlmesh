@@ -357,6 +357,47 @@ run = "uv run pytest python/rlmesh/tests/api_surface -q"
 description = "Run the headless example programs end to end"
 run = "uv run pytest python/rlmesh/tests/examples -q"
 
+# ──────────────────────────────────────────────
+# Browser binding: crates/rlmesh-wasm + javascript/rlmesh
+# ──────────────────────────────────────────────
+# Not in check, typecheck or test: those run in the `fast` CI job, which would
+# then install the wasm toolchain and node_modules on every PR. The `browser`
+# CI job runs these gates when their inputs change; `mise run test:js` is the
+# local one-shot. File tasks: setup:js, build:js, check:sans-io, test:js:wasm,
+# test:js:e2e.
+[tasks."test:js"]
+description = "Build the wasm and the JS package, then run every browser gate: wasm tests under Node, the .wasm import/size check, strict tsc, JS unit tests"
+depends = ["build:js"]
+run = [
+  "mise run test:js:wasm",
+  "mise run check:js:wasm",
+  "mise run typecheck:js",
+  "mise run test:js:unit",
+]
+
+# The real v2 codec (authority snapshots with parts, bindings, contracts and
+# demands) measures ~96 KiB gzip; the budget keeps headroom and catches a
+# dependency that drags in a runtime.
+[tasks."check:js:wasm"]
+description = "Check the built .wasm imports only wasm-bindgen glue (no env/WASI) and stays under 112 KiB gzip"
+run = "node scripts/check-wasm.mjs javascript/rlmesh/pkg/rlmesh_bg.wasm --max-gzip 114688"
+
+[tasks."typecheck:js"]
+description = "Typecheck javascript/rlmesh (and the browser example) with strict tsc --noEmit"
+depends = ["setup:js"]
+dir = "{{ config_root }}/javascript/rlmesh"
+run = "npx tsc --noEmit -p ."
+
+[tasks."test:js:unit"]
+description = "Run javascript/rlmesh's unit tests under Node (fake Workers and sockets)"
+depends = ["setup:js"]
+dir = "{{ config_root }}/javascript/rlmesh"
+run = "node test/run.mjs"
+
+[tasks."demo:web"]
+description = "Run the browser example: the example robot and the gateway, serving examples/web on http://127.0.0.1:18080/"
+run = ["mise run build:js --demo", "bash examples/web/run.sh"]
+
 [tasks."test:system:harness"]
 description = "Run system test runner and fixture tests"
 run = "uv run pytest tools/rlmesh_system/tests tools/rlmesh_system_fixtures/tests -q"
