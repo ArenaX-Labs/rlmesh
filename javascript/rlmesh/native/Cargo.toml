@@ -1,0 +1,39 @@
+[package]
+name = "rlmesh-node"
+description = "Internal RLMesh crate (unstable Rust API): the Node and Electron binding's native addon: an embedded session host, robots and bound policies over rlmesh-session and rlmesh-edge, loaded by the rlmesh npm package."
+version = { workspace = true }
+authors = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+documentation = { workspace = true }
+license = { workspace = true }
+categories = { workspace = true }
+keywords = { workspace = true }
+# Shipped inside the npm package, not on crates.io.
+publish = false
+
+[package.metadata.cargo-machete]
+# Used by build.rs only.
+ignored = ["napi-build"]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+bytes = { workspace = true }
+napi = { version = "3", default-features = false, features = ["napi8", "tokio_rt"] }
+napi-derive = "3"
+rlmesh-edge = { workspace = true }
+rlmesh-record = { workspace = true }
+rlmesh-session = { workspace = true }
+rlmesh-spec = { workspace = true }
+rlmesh-wire = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
+
+[build-dependencies]
+napi-build = "2"
+
+[lints]
+workspace = true

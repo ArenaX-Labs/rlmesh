@@ -20,7 +20,7 @@ default-members = [
   "crates/rlmesh-wire",
   "python/rlmesh/rust",
 ]
-members = ["crates/*", "javascript/rlmesh/wasm", "python/rlmesh/rust"]
+members = ["crates/*", "javascript/rlmesh/native", "javascript/rlmesh/wasm", "python/rlmesh/rust"]
 resolver = "3"
 
 [workspace.package]
@@ -191,6 +191,15 @@ opt-level = "z"
 lto = true
 codegen-units = 1
 panic = "abort"
+strip = true
+
+# The Node/Electron addon (javascript/rlmesh/native, `mise run build:js:native`):
+# one download per platform, so size counts; panics unwind (napi-rs turns one
+# into a JS error rather than killing the process).
+[profile.node]
+inherits = "release"
+lto = true
+codegen-units = 1
 strip = true
 
 # Keep unwinding well-defined across the rlmesh-capi `extern "C"` boundary: every
