@@ -160,3 +160,63 @@ async fn a_driver_over_the_lockstep_session_steps_and_a_stale_token_is_refused()
     cancel.cancel();
     served.await.unwrap().unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_recorded_lockstep_env_tees_every_step_per_lane() {
+    let path = std::env::temp_dir().join(format!("rlmesh-lockstep-{}.mcap", std::process::id()));
+    let binding = rlmesh_gym::bind("lockstep://127.0.0.1:0/catalog")
+        .await
+        .unwrap();
+    let address = binding.address();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let served = tokio::spawn(binding.serve(
+        Arc::new(CatalogEnv::new(2, AutoresetMode::NextStep, false)),
+        rlmesh_gym::ServeOptions {
+            record: Some(path.clone()),
+            ..Default::default()
+        },
+        cancel.clone(),
+    ));
+    let env = rlmesh_gym::connect(&address, ConnectOptions::default())
+        .await
+        .unwrap();
+    env.reset_v1(ResetRequest {
+        episode_ids: vec!["a".into(), "b".into()],
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    for i in 0..3_u8 {
+        let mut two = step(i);
+        two.action = Some(SpaceValue {
+            leaves: vec![bytes::Bytes::from(vec![i; 56])],
+        });
+        two.episode_ids = vec!["a".into(), "b".into()];
+        env.step_v1(two).await.unwrap();
+    }
+    drop(env);
+    cancel.cancel();
+    served.await.unwrap().unwrap();
+    let summary = rlmesh_record::summarize(&path).unwrap();
+    let count = |topic: &str| {
+        summary
+            .topics
+            .iter()
+            .find(|t| t.topic == topic)
+            .map_or(0, |t| t.messages)
+    };
+    for lane in 0..2 {
+        assert_eq!(
+            count(&format!("/catalog/lane{lane}/scene/cam")),
+            4,
+            "reset + 3 steps"
+        );
+        assert_eq!(
+            count(&format!("/catalog/lane{lane}/action/_applied")),
+            3,
+            "3 commands"
+        );
+    }
+    assert!(summary.topics.iter().all(|t| t.undecodable == 0));
+    let _ = std::fs::remove_file(&path);
+}
