@@ -1,0 +1,17 @@
+{
+  "name": "com.rlmesh.unity",
+  "displayName": "RLMesh for Unity (Experimental)",
+  "version": "0.1.0",
+  "description": "Serve Unity scenes as RLMesh environments. Unity support is not yet verified on IL2CPP.",
+  "dependencies": {
+    "com.rlmesh.rlmesh": "0.1.0"
+  },
+  "samples": [
+    {
+      "displayName": "Reach Target",
+      "description": "Move along X toward a target.",
+      "path": "Samples~/ReachTarget"
+    }
+  ],
+  "unity": "6000.0"
+}

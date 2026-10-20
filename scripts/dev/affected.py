@@ -117,7 +117,9 @@ def plan(changed: list[str], workspace: Workspace) -> Plan:
         path.startswith(PYTHON_PREFIXES) for path in changed
     )
     csharp = "rlmesh-capi" in selected or any(
-        path.startswith(("csharp/", "tools/rlmesh_csharp_surface/"))
+        path.startswith(
+            ("csharp/", "tools/rlmesh_csharp_surface/", "integrations/unity/")
+        )
         or path == "crates/rlmesh-capi/include/rlmesh.h"
         for path in changed
     )

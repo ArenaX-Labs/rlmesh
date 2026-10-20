@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AssemblyName>RLMesh.Unity</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../../Runtime/Core/*.cs" />
+    <!-- The parent test:csharp task builds this exact assembly first. -->
+    <Reference Include="RLMesh">
+      <HintPath>../../../../../csharp/src/RLMesh/bin/Debug/netstandard2.1/RLMesh.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+</Project>

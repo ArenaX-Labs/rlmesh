@@ -76,6 +76,15 @@ def test_capi_implementation_selects_csharp() -> None:
     )
 
 
+def test_unity_changes_select_standalone_csharp_tests() -> None:
+    for path in (
+        "integrations/unity/Runtime/Core/MainThreadDispatcher.cs",
+        "integrations/unity/Editor/ReloadPreflight.cs",
+        "integrations/unity/Tests~/client.py",
+    ):
+        assert plan([path], WORKSPACE) == Plan(rust=[], python=False, csharp=True)
+
+
 def test_core_change_reaches_csharp_through_capi() -> None:
     assert plan(["crates/rlmesh/src/env/sync_wire.rs"], WORKSPACE) == Plan(
         rust=["rlmesh", "rlmesh-capi"], python=False, csharp=True

@@ -40,6 +40,12 @@ than wrapping, so an old owner token can never become current again.
 
 ## Maintainer checks
 
+`test:csharp` also compiles the Unity integration's engine-free core as C# 9 /
+netstandard2.1 and runs its dispatcher/preflight tests and Python-driven fake
+main loop. `integrations/unity/**` changes select this suite in `test:affected`
+and the conditional C# CI path. Actual Editor/IL2CPP verification is the separate
+[Unity release gate](unity-release-checklist.md), requiring a Unity licence.
+
 ```sh
 mise run csharp:interop:generate
 mise run check:csharp

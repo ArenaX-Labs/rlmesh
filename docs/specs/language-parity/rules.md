@@ -2069,11 +2069,17 @@ CallingConvention.Cdecl)]`, the name a `const string` in the raw layer;
   - **Unity Editor.** The integration holds
     `EditorApplication.LockReloadAssemblies()` while RLMesh is in use. When
     a reload is wanted (scripts recompiled, Play Mode entered with domain
-    reload enabled, its menu command) it calls `Shutdown(5 s)` on the main
-    thread, outside any callback, and calls `UnlockReloadAssemblies()` only
+    reload enabled, its menu command) it calls `Shutdown(5 s)` on a worker
+    outside any callback, while the main thread keeps pumping, and calls
+    `UnlockReloadAssemblies()` only
     on `true`; on `false` it keeps the lock, so the reload stays deferred,
     logs `Pending()` and offers a retry. Whether the lock defers every
-    reload path is what D-44's failed-barrier test checks.
+    reload path is what D-44's failed-barrier test checks. Exiting Play Mode
+    and entering with domain reload disabled do not run this terminal barrier;
+    component teardown stops its server without closing lifetime admission.
+    An explicitly confirmed unsafe force-unlock menu is an escape hatch, never
+    evidence of safe unload. SessionState records the lock count so an orphaned
+    count surviving an unsafe unload can be released once in the new domain.
   - **.NET collectible contexts.** The host calls `Shutdown` and calls
     `AssemblyLoadContext.Unload()` only on `true`.
   - **Fallback diagnostics.** `AppDomain.DomainUnload` (Mono raises it at a
@@ -2088,6 +2094,11 @@ CallingConvention.Cdecl)]`, the name a `const string` in the raw layer;
     would cross a native frame.
   - **Process exit.** `AppDomain.ProcessExit` calls `Shutdown(5 s)` for an
     orderly stop (servers drained); a process exit needs no unload safety.
+    Unity also attempts the barrier on a worker with a bounded wait during normal
+    quitting, logs `Pending()` on failure and accepts the original quit request
+    regardless (the Editor offers "Quit anyway" or cancel). It never replaces
+    the quit request with `EditorApplication.Exit`, bypasses save prompts, or
+    drops a player's requested exit code.
 
   Library threads that have called managed code stay attached to the
   runtime after the barrier; whether Mono's reload waits on them is what

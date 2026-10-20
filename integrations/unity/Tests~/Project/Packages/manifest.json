@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "com.unity.test-framework": "1.4.6",
+    "com.unity.modules.jsonserialize": "1.0.0"
+  }
+}

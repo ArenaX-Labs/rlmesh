@@ -2,6 +2,7 @@
 
 import os
 import pathlib
+import re
 import subprocess
 
 import tomllib
@@ -18,10 +19,10 @@ DOTNET_BUILD = [
 CC = ["zig", "cc"]
 
 
-def run(args, *, env=None, expected=0):
+def run(args, *, env=None, expected=0, cwd=ROOT):
     """Run one checked command from the repository root."""
     print("$ " + " ".join(map(str, args)), flush=True)
-    result = subprocess.run(args, cwd=ROOT, env=env)
+    result = subprocess.run(args, cwd=cwd, env=env)
     if result.returncode != expected:
         raise SystemExit(result.returncode or 1)
 
@@ -225,6 +226,63 @@ def main():
     run(["python", str(CSHARP / "tools/benchmark.py")], env=env)
     print(
         "C# foundation: both assembly suites, ABI/layout, gate and C# 9 fixtures passed"
+    )
+    unity = ROOT / "integrations/unity/Tests~/DotNet/Tests/Tests.csproj"
+    run([*DOTNET_BUILD, str(unity)], env=env)
+    run(
+        [
+            "dotnet",
+            "vstest",
+            str(unity.parent / "bin/Debug/net10.0/RLMesh.Unity.Tests.dll"),
+        ],
+        env=env,
+    )
+    unity_scratch = pathlib.Path.home() / ".cache/rlmesh-unity"
+    unity_scratch.mkdir(parents=True, exist_ok=True)
+    run(
+        [
+            "zig",
+            "c++",
+            "-target",
+            "x86_64-linux-gnu.2.17",
+            "-std=c++17",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-I",
+            str(ROOT / "crates/rlmesh-capi/include"),
+            str(ROOT / "integrations/unity/Tests~/step_client.cpp"),
+            "librlmesh_capi.so",
+            "-o",
+            str(unity_scratch / "step-client"),
+        ],
+        env=env,
+        cwd=ROOT / "target/csharp-native/release",
+    )
+    dynamic = subprocess.run(
+        ["readelf", "-d", str(unity_scratch / "step-client")],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    needed = re.findall(r"\(NEEDED\).*?\[(.*?)\]", dynamic)
+    if "librlmesh_capi.so" not in needed or any(
+        "/" in name or "libstdc++" in name or "libc++" in name for name in needed
+    ):
+        raise SystemExit(f"Unity step client has non-portable dependencies: {needed}")
+    versions = subprocess.run(
+        ["readelf", "--version-info", str(unity_scratch / "step-client")],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    if any(
+        tuple(map(int, version.split("."))) > (2, 17)
+        for version in re.findall(r"Name: GLIBC_([\d.]+)", versions)
+    ):
+        raise SystemExit("Unity step client exceeds the glibc 2.17 baseline")
+    print(
+        "Unity step client: glibc <= 2.17; basename native dependency; static C++ runtime"
     )
 
 

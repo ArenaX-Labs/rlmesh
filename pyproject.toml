@@ -70,6 +70,7 @@ include = [
   "tests/**/*.py",
   "tools/**/*.py",
   "csharp/**/*.py",
+  "integrations/unity/**/*.py",
 ]
 extend-exclude = ["python/rlmesh/src/rlmesh/_rlmesh.pyi"]
 target-version = "py310"

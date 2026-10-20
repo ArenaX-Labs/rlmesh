@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 - Added NuGet and Unity UPM distributions of the Experimental C# foundation, with portable symbols and native Linux x64, Windows x64 and universal macOS libraries. Foundation checks now include a fresh package consumer, NativeAOT serving, and allocation/leak budgets.
 - Added a universal macOS C/C++ release package, with optional Developer ID signing and Apple notarization in the existing tag-only release job.
+- Added the Experimental `com.rlmesh.unity` integration: main-thread environment callbacks, reload preflight, a Reach Target sample and dispatch-only Unity release gates. Unity support is not yet verified on IL2CPP.
 
 - Added the Experimental C# `RLMesh` package for serving authored environments, with Box, Discrete and Dict spaces, tensors and values (`netstandard2.1` and `net10.0`).
 

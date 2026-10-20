@@ -19,6 +19,8 @@ The tag push triggers the release workflow: Linux/Windows wheels build on a Linu
 
 ## Prerequisites
 
+- **v0.2 Unity release gate:** complete the [Unity release checklist](unity-release-checklist.md): Linux IL2CPP player smoke, Mono Editor reload, and failed-barrier reload. Unity support must not be claimed until all three pass; .NET tests and NativeAOT do not substitute for Unity verification.
+
 - Nothing local: no publish tokens. crates.io and PyPI both authenticate via OIDC trusted publishing scoped to `release.yml` and the `release` GitHub environment; the GitHub Release uses the workflow's own token.
 - One-time registry setup: a trusted publisher configured on the PyPI `rlmesh` project and on each of the nine `rlmesh*` crates (repository `ArenaX-Labs/rlmesh`, workflow `release.yml`, environment `release`), plus the `release` environment created in the repository settings (add required reviewers there if you want a manual approval gate before publish).
 - Break-glass local publish, from the tagged commit: no single host builds the full wheel matrix anymore, so first assemble `python/rlmesh/dist` from the release run's artifacts (`gh run download <run-id> -p 'wheels-*'`, then move the `.whl` files in) or build each half on its own host without re-running `release:python:prepare` in between (it wipes dist). Then `python scripts/release.py X.Y.Z --publish-crates` (needs `CARGO_REGISTRY_TOKEN`) and `--github-release` (needs `gh` auth); wheels would need a manual `twine upload`.

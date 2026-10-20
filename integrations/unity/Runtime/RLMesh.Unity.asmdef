@@ -1,0 +1,7 @@
+{
+  "name": "RLMesh.Unity",
+  "rootNamespace": "RLMesh.Unity",
+  "overrideReferences": true,
+  "precompiledReferences": ["RLMesh.dll"],
+  "autoReferenced": true
+}

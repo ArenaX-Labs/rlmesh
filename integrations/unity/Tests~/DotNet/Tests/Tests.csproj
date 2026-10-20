@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <IsPackable>false</IsPackable>
+    <AssemblyName>RLMesh.Unity.Tests</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../../../../csharp/tests/RLMesh.Tests/NativeClient.cs" Link="NativeClient.cs" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5" PrivateAssets="all" />
+    <ProjectReference Include="../Core/Core.csproj" />
+    <Reference Include="RLMesh">
+      <HintPath>../../../../../csharp/src/RLMesh/bin/Debug/netstandard2.1/RLMesh.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+</Project>

@@ -1,0 +1,8 @@
+{
+  "name": "RLMesh.Unity.Verification.EditMode",
+  "references": ["RLMesh.Unity", "RLMesh.Unity.Editor", "UnityEngine.TestRunner", "UnityEditor.TestRunner"],
+  "includePlatforms": ["Editor"],
+  "overrideReferences": true,
+  "precompiledReferences": ["RLMesh.dll", "nunit.framework.dll"],
+  "defineConstraints": ["UNITY_INCLUDE_TESTS"]
+}

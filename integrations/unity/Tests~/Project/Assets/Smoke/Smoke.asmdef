@@ -1,0 +1,6 @@
+{
+  "name": "RLMesh.Unity.Smoke",
+  "references": ["RLMesh.Unity", "RLMesh.Unity.ReachTarget"],
+  "overrideReferences": true,
+  "precompiledReferences": ["RLMesh.dll"]
+}

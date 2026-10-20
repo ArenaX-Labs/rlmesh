@@ -88,6 +88,11 @@ auto result = model.run("tcp://127.0.0.1:5555", {.episodes = 2, .seeds = {0, 1}}
 
 RLMesh aims to feel familiar in every language: the same nouns and constructs (`Env`, `Space`, `Model`, `run`, `Session`, `RemoteEnv`), each in that language's own conventions and with its own helpers.
 
+## Integrations
+
+- [Unreal Engine](integrations/unreal/RLMesh): serve actors as RLMesh environments.
+- [Unity](integrations/unity): Experimental `com.rlmesh.unity` package with main-thread callbacks and reload preflight. Unity support is not yet verified on IL2CPP.
+
 ## Status
 
 Pre-1.0. The Python package is the stable-ish surface; pin a minor version if you depend on it. See [compatibility](https://rlmesh.dev/docs/releases/compatibility/) for the details.
