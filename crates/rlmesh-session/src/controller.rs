@@ -40,7 +40,7 @@ use rlmesh_spec::apply::{ApplyError, Value};
 use rlmesh_spec::policy::ChunkStart;
 use rlmesh_spec::{BindError, Binding, Policy, RunOptions};
 use rlmesh_wire::{
-    ChannelId, ClockMode, ContractMode, Epoch, InputRange, Lease, Mode, ParticipantId,
+    ChannelId, ClockMode, ContractMode, Epoch, InputRange, Lease, Mode, ParticipantId, RunCounters,
 };
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -50,6 +50,7 @@ use crate::cache::{Inputs, Observation, ObserveError, Skip};
 use crate::chunk::{ChunkDraft, ChunkPublisher};
 use crate::error::SessionError;
 use crate::participant::Participant;
+use crate::report::run_counters;
 use crate::schedule::{RunEvent, RunStats, SkipReason, StartSchedule};
 
 /// Events kept for [`Controller::drain_events`].
@@ -391,6 +392,15 @@ impl Controller {
             ttl: config.lease_ttl,
         });
         let schedule = Arc::new(Mutex::new(StartSchedule::new(binding.replan_hz)));
+        participant.set_run_source(Some({
+            let schedule = schedule.clone();
+            Arc::new(move |now_ns| {
+                schedule.lock().map_or_else(
+                    |_| RunCounters::default(),
+                    |s| run_counters(&s.stats(), s.pending(now_ns)),
+                )
+            })
+        }));
         let events = Arc::new(Mutex::new(VecDeque::new()));
         let cancel = CancellationToken::new();
         let tasks = vec![
@@ -742,6 +752,7 @@ impl Controller {
 
 impl Drop for Controller {
     fn drop(&mut self) {
+        self.participant.set_run_source(None);
         self.cancel.cancel();
     }
 }

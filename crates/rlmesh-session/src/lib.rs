@@ -5,6 +5,8 @@
 //! and its network ends; the wire format lives in [`rlmesh_wire`] and the
 //! embodiment-side action queue in `rlmesh-edge`.
 //!
+//! - [`address`]: a session's `{ip}:{port}/{tenant}/{session}` address,
+//!   and joining it from another process.
 //! - [`authority`]: epoch, roster, the DISARMED/ARMED/ACTIVE/SAFE/ESTOP mode
 //!   machine with a latched e-stop, the part table with host-assigned,
 //!   never-reused ids (normalised by `rlmesh-spec`), bindings, and the
@@ -31,6 +33,8 @@
 //! - [`controller`]: the [`Controller`] runtime language bindings wrap: a
 //!   bound policy's inputs, its leases (kept and re-requested in the
 //!   background), its chunks and its run loop.
+//! - [`report`]: observer telemetry (§8.10), the publisher and controller
+//!   counters an observer cannot measure itself.
 //! - [`transport`]: one Zenoh session per traffic class, so a camera can
 //!   only starve its own class.
 //!
@@ -41,6 +45,7 @@
 
 #![warn(missing_docs)]
 
+pub mod address;
 pub mod authority;
 pub mod cache;
 pub mod chunk;
@@ -51,11 +56,13 @@ pub mod host;
 pub mod media;
 pub mod metrics;
 pub mod participant;
+pub mod report;
 pub mod sample;
 pub mod schedule;
 pub mod transport;
 pub mod virtual_clock;
 
+pub use address::SessionAddress;
 pub use authority::{Authority, AuthorityConfig, AuthorityEvent, DetachReason, LeaseEnd};
 pub use cache::{
     Cached, InputCache, InputSnapshot, Inputs, Observation, ObserveError, Skip, Snapshot,

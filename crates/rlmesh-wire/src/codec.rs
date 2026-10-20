@@ -8,7 +8,8 @@
 //! `proto/rlmesh/session/v2/session.proto`) per payload; the key says which.
 //!
 //! - Control messages ([`Request`], [`CtlReply`], [`AuthoritySnapshot`],
-//!   [`Heartbeat`], [`HeartbeatEcho`], [`VirtualTick`], [`HistoryQuery`])
+//!   [`Heartbeat`], [`HeartbeatEcho`], [`ParticipantReport`], [`VirtualTick`],
+//!   [`HistoryQuery`])
 //!   encode to one buffer and decode from any byte slice.
 //! - [`Sample`]s, [`SampleBatch`]es and [`ActionChunk`]s carry their values
 //!   as one packed `bytes` payload. [`encode_sample`], [`encode_batch`] and
@@ -49,6 +50,7 @@ use crate::part::{
     MAX_CHUNK_ACTIONS, MAX_CHUNK_BYTES, MergePolicy, PartSpec,
 };
 use crate::path::PartPath;
+use crate::report::{ParticipantReport, PublisherCounters, RunCounters};
 use crate::sample::{Applied, EdgeMode, HistoryQuery, Sample, SampleBatch, SampleMeta, SeqRange};
 use crate::tick::{Step, TickState, VirtualTick};
 
@@ -216,6 +218,74 @@ pub fn decode_echo(buf: &[u8]) -> Result<HeartbeatEcho, WireError> {
         t2_ns: echo.t2_ns,
         t3_ns: echo.t3_ns,
         epoch: Epoch(echo.epoch),
+    })
+}
+
+/// Encodes a participant report.
+pub fn encode_report(report: &ParticipantReport) -> Vec<u8> {
+    pb::ParticipantReport {
+        participant: report.participant.to_string(),
+        epoch: report.epoch.0,
+        sent_ns: report.sent_ns,
+        streams: report
+            .streams
+            .iter()
+            .map(|s| pb::PublisherCounters {
+                channel: s.channel.0,
+                published: s.published,
+                coalesced: s.coalesced,
+            })
+            .collect(),
+        run: report.run.map(|r| pb::RunCounters {
+            starts: r.starts,
+            completions: r.completions,
+            busy_skips: r.busy_skips,
+            waiting_for: r.waiting_for,
+            stale_input: r.stale_input,
+            window_gap: r.window_gap,
+            decode: r.decode,
+            no_lease: r.no_lease,
+            chunks_sent: r.chunks_sent,
+            pending_ns: r.pending_ns,
+            latency_p50_ns: r.latency_p50_ns,
+            latency_p99_ns: r.latency_p99_ns,
+            drifting: r.drifting,
+        }),
+    }
+    .encode_to_vec()
+}
+
+/// Decodes a participant report.
+pub fn decode_report(buf: &[u8]) -> Result<ParticipantReport, WireError> {
+    let report = pb::ParticipantReport::decode(buf)?;
+    Ok(ParticipantReport {
+        participant: ParticipantId::new(report.participant)?,
+        epoch: Epoch(report.epoch),
+        sent_ns: report.sent_ns,
+        streams: report
+            .streams
+            .into_iter()
+            .map(|s| PublisherCounters {
+                channel: ChannelId(s.channel),
+                published: s.published,
+                coalesced: s.coalesced,
+            })
+            .collect(),
+        run: report.run.map(|r| RunCounters {
+            starts: r.starts,
+            completions: r.completions,
+            busy_skips: r.busy_skips,
+            waiting_for: r.waiting_for,
+            stale_input: r.stale_input,
+            window_gap: r.window_gap,
+            decode: r.decode,
+            no_lease: r.no_lease,
+            chunks_sent: r.chunks_sent,
+            pending_ns: r.pending_ns,
+            latency_p50_ns: r.latency_p50_ns,
+            latency_p99_ns: r.latency_p99_ns,
+            drifting: r.drifting,
+        }),
     })
 }
 
@@ -1704,6 +1774,44 @@ mod tests {
             epoch: Epoch(3),
         };
         assert_eq!(decode_echo(&encode_echo(&echo)).expect("decode"), echo);
+        for run in [
+            None,
+            Some(RunCounters {
+                starts: 120,
+                completions: 118,
+                busy_skips: 4,
+                waiting_for: 2,
+                stale_input: 1,
+                window_gap: 1,
+                decode: 0,
+                no_lease: 9,
+                chunks_sent: 118,
+                pending_ns: 2_000_000_000,
+                latency_p50_ns: 8_000_000,
+                latency_p99_ns: 31_000_000,
+                drifting: true,
+            }),
+        ] {
+            let report = ParticipantReport {
+                participant: pid("policy"),
+                epoch: Epoch(3),
+                sent_ns: -9,
+                streams: vec![PublisherCounters {
+                    channel: ChannelId(4),
+                    published: 600,
+                    coalesced: 300,
+                }],
+                run,
+            };
+            assert_eq!(
+                decode_report(&encode_report(&report)).expect("decode"),
+                report
+            );
+        }
+        assert!(
+            decode_report(b"\x0a\x01!").is_err(),
+            "an invalid participant id"
+        );
         assert!(decode_state(b"\xff\xff\xff").is_err());
 
         for tick in [

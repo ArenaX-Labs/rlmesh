@@ -1199,3 +1199,63 @@ async fn a_virtual_session_steps_through_the_tick_barrier() {
     }
     assert!(steps[0].1.is_empty() && steps[2].1.is_empty());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn publishers_and_controllers_report_their_counters_to_observers() {
+    let world = World::start().await;
+    let robot = world.robot().await;
+    let ft = robot.publisher("ft").await.expect("ft publisher");
+    let policy = world.policy().await;
+    let observer = world
+        .join("cockpit", vec![Role::Observer], PriorityClass::Scripted, 0)
+        .await;
+    let reports = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let _sub = observer
+        .transport()
+        .session(TrafficClass::Data)
+        .declare_subscriber(observer.keys().reports())
+        .callback({
+            let reports = reports.clone();
+            move |sample| {
+                let report = codec::decode_report(&sample.payload().to_bytes()).expect("decode");
+                reports.lock().expect("reports").push(report);
+            }
+        })
+        .await
+        .expect("subscribe");
+    for i in 0..5 {
+        ft.publish(robot.clock().now_ns(), ft_payload(i as f32))
+            .expect("publish");
+    }
+    policy.set_run_source(Some(Arc::new(|_| rlmesh_wire::RunCounters {
+        starts: 7,
+        busy_skips: 2,
+        ..Default::default()
+    })));
+    let ft_channel = channel(&robot, "ft");
+    wait_until("both reports", || {
+        let reports = reports.lock().expect("reports");
+        let from_robot = reports.iter().any(|r| {
+            r.participant == robot_id()
+                && r.run.is_none()
+                && r.streams
+                    .iter()
+                    .any(|s| s.channel == ft_channel && s.produced() == 5)
+        });
+        let from_policy = reports.iter().any(|r| {
+            r.participant.as_str() == "policy"
+                && r.run
+                    .is_some_and(|run| (run.starts, run.busy_skips) == (7, 2))
+        });
+        from_robot && from_policy
+    })
+    .await;
+    // A pure observer has nothing to report.
+    assert!(
+        !reports
+            .lock()
+            .expect("reports")
+            .iter()
+            .any(|r| r.participant.as_str() == "cockpit")
+    );
+}

@@ -8,6 +8,7 @@
 //! rlmesh/v2/{tenant}/s/{session}/p/{participant}               participant liveliness
 //! rlmesh/v2/{tenant}/s/{session}/p/{participant}/hb            heartbeats (participant -> host)
 //! rlmesh/v2/{tenant}/s/{session}/p/{participant}/hb/echo       heartbeat echoes (host -> participant)
+//! rlmesh/v2/{tenant}/s/{session}/p/{participant}/report        observer telemetry (§8.10)
 //! rlmesh/v2/{tenant}/s/{session}/d/{robot}/{path...}           samples
 //! rlmesh/v2/{tenant}/s/{session}/d/{robot}/{path...}/_applied  applied samples
 //! rlmesh/v2/{tenant}/s/{session}/c/{robot}/{path...}           action chunks
@@ -88,6 +89,16 @@ impl SessionKeys {
         format!("{}/p/{id}/hb/echo", self.prefix)
     }
 
+    /// A participant's observer telemetry ([`crate::ParticipantReport`]).
+    pub fn report(&self, id: &ParticipantId) -> String {
+        format!("{}/p/{id}/report", self.prefix)
+    }
+
+    /// Every participant's observer telemetry.
+    pub fn reports(&self) -> String {
+        format!("{}/p/*/report", self.prefix)
+    }
+
     /// Samples of one stream: `path` is a part path, or a part path with
     /// `/_applied` for its applied stream.
     pub fn data(&self, robot: &ParticipantId, path: &str) -> String {
@@ -148,6 +159,7 @@ mod tests {
             keys.participant_of(&keys.heartbeat_echo(&me)),
             Some(me.clone())
         );
+        assert_eq!(keys.participant_of(&keys.report(&me)), Some(me.clone()));
         assert_eq!(
             keys.participant_of(&keys.participant(&me)),
             Some(me.clone())

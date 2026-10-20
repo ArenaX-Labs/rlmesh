@@ -40,6 +40,7 @@ use crate::chunk::ChunkPublisher;
 use crate::clock::{Clock, MonotonicClock};
 use crate::error::SessionError;
 use crate::media::ImagePublisher;
+use crate::report::{ReportInputs, RunSource, report_loop};
 use crate::sample::{
     Outlet, SamplePublisher, SampleSubscriber, SubscribeContext, SubscribeOptions, fetch_history,
 };
@@ -277,6 +278,8 @@ struct Shared {
     outlets: Mutex<BTreeMap<ChannelId, Vec<Weak<Outlet>>>>,
     /// Wakes the demand installer: a publisher was declared.
     demand_wake: Notify,
+    /// A bound controller's run counters, for its reports.
+    run: Arc<Mutex<Option<RunSource>>>,
 }
 
 impl Shared {
@@ -426,6 +429,7 @@ impl Participant {
             binding_revision: AtomicU32::new(0),
             outlets: Mutex::new(BTreeMap::new()),
             demand_wake: Notify::new(),
+            run: Arc::default(),
         });
 
         let state = control
@@ -489,6 +493,7 @@ impl Participant {
             tasks: vec![
                 tokio::spawn(report_safe(shared.clone(), report_rx, cancel.clone())),
                 tokio::spawn(install_demands(shared.clone(), cancel.clone())),
+                tokio::spawn(report_streams(shared.clone(), cancel.clone())),
             ],
             cancel,
             _liveliness: liveliness,
@@ -1023,6 +1028,15 @@ impl Participant {
         }
     }
 
+    /// Reports a bound controller's run counters to observers (§8.10,
+    /// [`crate::report`]); the [`Controller`](crate::Controller) installs
+    /// its own. `None` stops them.
+    pub fn set_run_source(&self, source: Option<RunSource>) {
+        if let Ok(mut run) = self.shared.run.lock() {
+            *run = source;
+        }
+    }
+
     /// The health this participant reports in its heartbeats.
     pub fn set_health(&self, health: Health) {
         self.shared
@@ -1198,6 +1212,30 @@ async fn sync_demands(shared: &Shared) {
             Err(err) => warn!(participant = %shared.id, %channel, %err, "demand ack failed"),
         }
     }
+}
+
+/// Publishes this participant's observer report (§8.10): its publishers'
+/// counters and a bound controller's run counters.
+async fn report_streams(shared: Arc<Shared>, cancel: CancellationToken) {
+    let inputs = ReportInputs {
+        transport: shared.transport.clone(),
+        key: shared.keys.report(&shared.id),
+        id: shared.id.clone(),
+        clock: shared.clock.clone(),
+        epoch: shared.epoch.clone(),
+        run: shared.run.clone(),
+    };
+    let streams = move || {
+        let Ok(outlets) = shared.outlets.lock() else {
+            return Vec::new();
+        };
+        outlets
+            .values()
+            .filter_map(|list| list.iter().find_map(Weak::upgrade))
+            .map(|outlet| outlet.counters())
+            .collect()
+    };
+    report_loop(inputs, streams, cancel).await;
 }
 
 /// How often an unanswered `EnterSafe` is resent.

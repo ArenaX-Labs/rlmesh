@@ -254,6 +254,50 @@ message HeartbeatEcho {
   uint64 epoch = 5;
 }
 
+// Observer telemetry (§8.10): what only the measuring side knows, published
+// on p/{participant}/report, data class, a few times per second. Counters
+// are cumulative since the participant attached; observers derive rates
+// from their deltas on the sender's clock (sent_ns). Nothing acts on them.
+message ParticipantReport {
+  string participant = 1;
+  uint64 epoch = 2;
+  // Sender clock at send.
+  int64 sent_ns = 3;
+  // One per stream this participant publishes.
+  repeated PublisherCounters streams = 4;
+  // A controller runtime's counters; absent for anything else.
+  RunCounters run = 5;
+}
+
+// Publisher side of one stream: produced = published + coalesced.
+message PublisherCounters {
+  uint32 channel = 1;
+  // Samples sent (the stream's last seq).
+  uint64 published = 2;
+  // Samples the publication plan or the send ceiling coalesced.
+  uint64 coalesced = 3;
+}
+
+// A controller runtime's start and completion counters (§8.9, §8.10).
+message RunCounters {
+  uint64 starts = 1;
+  uint64 completions = 2;
+  // Skipped start slots, by reason.
+  uint64 busy_skips = 3;
+  uint64 waiting_for = 4;
+  uint64 stale_input = 5;
+  uint64 window_gap = 6;
+  uint64 decode = 7;
+  uint64 no_lease = 8;
+  uint64 chunks_sent = 9;
+  // Age of the inference in flight; 0 when none is.
+  uint64 pending_ns = 10;
+  uint64 latency_p50_ns = 11;
+  uint64 latency_p99_ns = 12;
+  // The completion rate is outside [0.8, 1.25] x the replan rate.
+  bool drifting = 13;
+}
+
 // Parts (§3, §10.5).
 
 enum ChannelPriority {

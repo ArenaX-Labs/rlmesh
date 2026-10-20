@@ -160,6 +160,15 @@ impl Outlet {
     pub(crate) fn revision(&self) -> u64 {
         self.state.lock().map_or(0, |s| s.revision)
     }
+
+    /// Its publisher counters, for the participant's report.
+    pub(crate) fn counters(&self) -> rlmesh_wire::PublisherCounters {
+        rlmesh_wire::PublisherCounters {
+            channel: self.spec.channel,
+            published: self.seq.load(Ordering::Relaxed),
+            coalesced: self.coalesced.load(Ordering::Relaxed),
+        }
+    }
 }
 
 /// Publishes one stream. Cheap to share: `publish` takes `&self`.

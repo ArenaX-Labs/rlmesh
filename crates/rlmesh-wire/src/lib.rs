@@ -11,7 +11,8 @@
 //! - [`version`]: the protocol generation, minor, kind table version and
 //!   the compatibility rule (§10.7);
 //! - the message types: authority state and control verbs ([`authority`]),
-//!   heartbeats and clock pings ([`heartbeat`]), parts, streams and payload
+//!   heartbeats and clock pings ([`heartbeat`]), observer telemetry
+//!   ([`report`]), parts, streams and payload
 //!   packing ([`part`]), delivery contracts, action grids and publication
 //!   plans ([`contract`]), samples, batches and history queries ([`sample`]),
 //!   timed action chunks ([`action`]), the virtual-mode tick protocol
@@ -58,6 +59,7 @@ pub mod keys;
 pub mod lockstep;
 pub mod part;
 pub mod path;
+pub mod report;
 pub mod sample;
 pub mod tick;
 pub mod version;
@@ -81,5 +83,6 @@ pub use part::{
     PartSpec, SendPolicy, StreamSpec,
 };
 pub use path::PartPath;
+pub use report::{ParticipantReport, PublisherCounters, RunCounters};
 pub use sample::{Applied, EdgeMode, HistoryQuery, Sample, SampleBatch, SampleMeta, SeqRange};
 pub use tick::{Step, TickState, VirtualTick};
