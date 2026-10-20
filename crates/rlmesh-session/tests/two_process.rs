@@ -6,11 +6,19 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+use rlmesh_session::media::synthetic_frame;
 use rlmesh_session::transport::free_local_base;
 use rlmesh_session::{
-    Participant, ParticipantConfig, SessionError, SubscribeOptions, Transport, TransportConfig,
+    Inputs, ObserveError, Participant, ParticipantConfig, SessionError, SubscribeOptions,
+    Transport, TransportConfig,
 };
-use rlmesh_wire::{Fingerprint, Mode, ParticipantId, PriorityClass, Role, SessionId, TenantId};
+use rlmesh_spec::apply::Value;
+use rlmesh_spec::{Policy, RunOptions};
+use rlmesh_wire::version::SPEC_VERSION;
+use rlmesh_wire::{
+    ContractMode, CtlStatus, Fingerprint, Mode, ParticipantId, PriorityClass, Role, SessionId,
+    TenantId,
+};
 
 /// Participants listen too (the OS picks the ports): in peer mode, data
 /// flows peer to peer once gossip tells peers where to connect.
@@ -255,4 +263,170 @@ async fn a_terminated_host_shuts_down_cleanly() {
         .await
         .expect("withdrawn presence seen in time")
         .expect("watch");
+}
+
+/// The conformance fixtures of `rlmesh-spec` (§14, §15).
+fn fixture(kind: &str, name: &str) -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../rlmesh-spec/tests/fixtures")
+        .join(kind)
+        .join(format!("{name}.json"));
+    std::fs::read_to_string(&path).unwrap_or_else(|err| panic!("{}: {err}", path.display()))
+}
+
+/// A packed value of `len` bytes.
+fn value(len: usize, fill: u8) -> Bytes {
+    Bytes::from(vec![fill; len])
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_declared_ur10e_and_a_bound_policy_meet_through_a_host_process() {
+    let host = HostProcess::spawn();
+    let robot = join(
+        &host,
+        "ur10e",
+        vec![Role::Embodiment],
+        PriorityClass::Scripted,
+    )
+    .await;
+    let map = fixture("robots", "ur10e");
+    let view = robot
+        .declare_parts(&map)
+        .await
+        .expect("declare the §14.1 map");
+    let robot_id = robot.id().clone();
+    // The other process normalised the authored map with the kind table, and
+    // fingerprints the declaration as this one would.
+    let normalised = rlmesh_spec::normalise(&robot_id, SPEC_VERSION, &map).expect("normalise");
+    assert_eq!(
+        view.contract.get(&robot_id),
+        Some(&rlmesh_spec::normalise::fingerprint(&normalised))
+    );
+    let wrist = view.part_at(&robot_id, "wrist/ft").expect("wrist/ft");
+    assert_eq!(
+        wrist
+            .fields
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect::<Vec<_>>(),
+        ["force", "torque"]
+    );
+
+    // A policy binds against the host's parts and declares the binding.
+    let policy = join(&host, "pi0", vec![Role::Controller], PriorityClass::Model).await;
+    policy
+        .wait_for("the robot's parts", WAIT, |s| {
+            s.part_at(&robot_id, "task").is_some()
+        })
+        .await
+        .expect("parts");
+    let binding = policy
+        .bind(
+            &Policy::parse(&fixture("policies", "pi0_single")).expect("policy"),
+            &RunOptions::named("pi0_single"),
+        )
+        .expect("binds as §15.1 says");
+    let bound = policy.declare_bound(&binding).await.expect("declare");
+    let record = bound.binding(policy.id()).expect("recorded");
+    assert_eq!(record.fingerprint, binding.fingerprint);
+    assert_eq!(record.table_json, binding.table_text());
+    assert_eq!(record.contracts, binding.contracts);
+    assert_eq!(record.grids.len(), 2, "arm and gripper");
+    let modes: Vec<ContractMode> = binding.contracts.iter().map(|c| c.mode).collect();
+    assert_eq!(
+        modes,
+        [
+            ContractMode::Every,
+            ContractMode::Latest,
+            ContractMode::Latest,
+            ContractMode::Latest,
+            ContractMode::Every
+        ]
+    );
+    let armed = policy.arm().await.expect("arm");
+    robot
+        .wait_for("armed", WAIT, |s| s.epoch == armed.epoch)
+        .await
+        .expect("view");
+
+    // Install before authority: the robot has no publishers yet.
+    let channels = binding.channels();
+    let err = policy
+        .grant_leases(channels.clone(), Vec::new(), None)
+        .await
+        .expect_err("no plan installed");
+    assert_eq!(err.refusal().map(|e| e.status), Some(CtlStatus::NotReady));
+    let scene = robot.image_publisher("scene/cam").await.expect("scene/cam");
+    let wrist_cam = robot.image_publisher("wrist/cam").await.expect("wrist/cam");
+    let arm = robot.publisher("arm").await.expect("arm");
+    let gripper = robot.publisher("gripper").await.expect("gripper");
+    let task = robot.publisher("task").await.expect("task");
+    policy
+        .wait_for("every bound stream's plan installed", WAIT, |s| {
+            binding
+                .contracts
+                .iter()
+                .all(|c| s.demand(c.channel).is_some_and(|d| d.acked >= d.revision))
+        })
+        .await
+        .expect("acknowledged");
+    let leases = policy
+        .grant_leases(channels, Vec::new(), None)
+        .await
+        .expect("ready: granted");
+    assert!(leases.iter().all(|l| l.binding == binding.fingerprint));
+
+    // The controller's cache snapshots the published inputs.
+    let inputs = Inputs::open(&policy, &binding).await.expect("inputs");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let mut frame = Vec::new();
+    synthetic_frame(1280, 720, 0, &mut frame);
+    scene
+        .offer(robot.clock().now_ns(), &frame)
+        .expect("scene frame");
+    synthetic_frame(640, 480, 0, &mut frame);
+    wrist_cam
+        .offer(robot.clock().now_ns(), &frame)
+        .expect("wrist frame");
+    let arm_sample = value(arm.spec().layout.stride().expect("packed"), 1);
+    arm.publish(robot.clock().now_ns(), arm_sample.clone())
+        .expect("arm")
+        .expect("sent");
+    gripper
+        .publish(robot.clock().now_ns(), value(8, 0))
+        .expect("gripper");
+    task.publish(
+        robot.clock().now_ns(),
+        Bytes::from_static(b"put the cup on the plate"),
+    )
+    .expect("task");
+    let started = Instant::now();
+    let observation = loop {
+        match inputs.observe(policy.session_now_ns()) {
+            Ok(observation) => break observation,
+            Err(ObserveError::Skipped(skip)) => {
+                assert!(started.elapsed() < WAIT, "still skipped: {skip:?}");
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Err(err) => panic!("{err}"),
+        }
+    };
+    assert_eq!(observation.meta.based_on.len(), 5);
+    assert!(observation.meta.inputs.iter().all(|i| !i.stale));
+    // What predict receives: decoded, padded and resized images, the
+    // joint positions alone, the text.
+    let tensor = |entry: &str| match observation.value(entry) {
+        Some(Value::Tensor(t)) => t.clone(),
+        other => panic!("{entry}: {other:?}"),
+    };
+    for camera in ["image", "wrist_image"] {
+        assert_eq!(tensor(camera).shape, [224, 224, 3]);
+    }
+    let state = tensor("state");
+    assert_eq!(state.shape, [6]);
+    assert_eq!(state.data, arm_sample[..24]);
+    assert_eq!(
+        observation.value("prompt"),
+        Some(&Value::Text("put the cup on the plate".into()))
+    );
 }
