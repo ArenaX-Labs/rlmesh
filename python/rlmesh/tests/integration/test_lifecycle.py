@@ -1355,3 +1355,33 @@ def test_a_closed_client_is_misuse_and_lanes_are_checked_before_any_request() ->
         assert remote.selected_workflow_edition
     finally:
         server.shutdown()
+
+
+class EndlessEnv(TinyEnv):
+    def step(self, action: object):
+        super().step(action)
+        return 1, 1.0, False, False, {}
+
+
+def test_remote_env_step_is_not_delayed_by_the_signal_poll() -> None:
+    # Blocked calls poll for Ctrl-C on a timer. Its first tick used to be
+    # awaited before the request was sent, and it waited for the timer's next
+    # millisecond, so every step took over 1 ms even on loopback.
+    import statistics
+
+    import rlmesh
+
+    server = rlmesh.EnvServer(EndlessEnv(), host="127.0.0.1", port=0)
+    server.start()
+    try:
+        client = rlmesh.RemoteEnv(server.address)
+        client.reset(seed=0)
+        latencies = []
+        for _ in range(300):
+            started = time.perf_counter()
+            client.step(1)
+            latencies.append(time.perf_counter() - started)
+        client.close()
+    finally:
+        server.shutdown()
+    assert statistics.median(latencies) < 0.0005

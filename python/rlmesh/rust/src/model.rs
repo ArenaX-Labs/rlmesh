@@ -673,8 +673,7 @@ fn run_local_blocking(
             let run =
                 ModelWorker::new(handler).run_local_hooked_async(options, run_token, runtime_hooks);
             let mut run = std::pin::pin!(run);
-            let mut poll = tokio::time::interval(crate::client::SIGNAL_POLL_INTERVAL);
-            poll.tick().await;
+            let mut poll = crate::client::signal_poll();
             loop {
                 tokio::select! {
                     result = &mut run => return RunOutcome::Done(result),
@@ -1022,8 +1021,7 @@ impl PyModel {
                 // A signal Python's own handler caught (before the tokio
                 // listeners were armed, or on a platform without them) is only
                 // visible through check_signals: poll it like the run loop does.
-                let mut poll = tokio::time::interval(crate::client::SIGNAL_POLL_INTERVAL);
-                poll.tick().await;
+                let mut poll = crate::client::signal_poll();
                 loop {
                     tokio::select! {
                         result = &mut serve => return result.map_err(to_py_err),
@@ -1279,8 +1277,7 @@ fn block_on_polling_signals<T>(
 ) -> PyResult<T> {
     runtime.block_on(async move {
         let mut rpc = std::pin::pin!(rpc);
-        let mut poll = tokio::time::interval(crate::client::SIGNAL_POLL_INTERVAL);
-        poll.tick().await;
+        let mut poll = crate::client::signal_poll();
         loop {
             tokio::select! {
                 result = &mut rpc => return result.map_err(to_py_err),
