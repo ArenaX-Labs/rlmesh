@@ -1,0 +1,43 @@
+[package]
+name = "rlmesh-wasm"
+description = "Internal RLMesh crate (unstable Rust API): the browser binding's wasm core: rlmesh-wire and rlmesh-session-core behind wasm-bindgen, loaded once per class Worker by the rlmesh npm package."
+version = { workspace = true }
+authors = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+documentation = { workspace = true }
+license = { workspace = true }
+categories = { workspace = true }
+keywords = { workspace = true }
+# Shipped inside the npm package, not on crates.io.
+publish = false
+
+[lib]
+# cdylib for wasm-bindgen; rlib so the gateway's tests can check the frame
+# tags against this crate's.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+bytes = { workspace = true }
+# A panic surfaces in JS as `RuntimeError: unreachable`; the hook logs its
+# message first (the class Worker reports it when it restarts).
+console_error_panic_hook = "0.1"
+js-sys = "0.3"
+rlmesh-session-core = { workspace = true }
+rlmesh-wire = { workspace = true }
+# Must equal the wasm-bindgen CLI exactly (mise.toml), or the generated
+# glue does not match the module.
+wasm-bindgen = "=0.2.129"
+# `Instant::now` compiles for wasm32-unknown-unknown and panics at run time;
+# web-time reads `performance.now()` there (and std elsewhere).
+web-time = "1"
+
+[dev-dependencies]
+# Test fixtures: robot maps normalised as the host would.
+rlmesh-spec = { workspace = true }
+wasm-bindgen-test = "0.3"
+
+[lints]
+workspace = true

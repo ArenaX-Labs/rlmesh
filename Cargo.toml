@@ -171,6 +171,17 @@ print_stderr = "warn"
 # Fires on every `#[tonic::async_trait]` service stub and impl (generated code).
 double_must_use = "allow"
 
+# The browser binding's .wasm (crates/rlmesh-wasm, `mise run build:js`): size
+# matters more than speed, and a panic aborts the instance (the class Worker
+# that loaded it is respawned).
+[profile.wasm]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
 # Keep unwinding well-defined across the rlmesh-capi `extern "C"` boundary: every
 # FFI body relies on `catch_unwind`, which is a no-op under `panic = "abort"`.
 [profile.release]
