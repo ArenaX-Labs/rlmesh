@@ -59,6 +59,24 @@ mod pb {
     include!(concat!(env!("OUT_DIR"), "/rlmesh.session.v2.rs"));
 }
 
+/// The `rlmesh.session.v2` protobuf descriptors (a serialized
+/// `google.protobuf.FileDescriptorSet`): the schema a recording names for
+/// each envelope it stores (§13).
+pub const FILE_DESCRIPTOR_SET: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/session_descriptor.bin"));
+
+/// The full protobuf names of the envelopes a session carries, by role.
+pub mod schema {
+    /// A data sample (`d/...` keys, one per MCAP message).
+    pub const SAMPLE: &str = "rlmesh.session.v2.Sample";
+    /// An action chunk (`c/...` keys).
+    pub const ACTION_CHUNK: &str = "rlmesh.session.v2.ActionChunk";
+    /// The authority snapshot (`host/state`).
+    pub const AUTHORITY_STATE: &str = "rlmesh.session.v2.AuthorityState";
+    /// One controller's binding.
+    pub const BINDING_RECORD: &str = "rlmesh.session.v2.BindingRecord";
+}
+
 // --- control messages --------------------------------------------------------
 
 /// Encodes a control verb.
@@ -107,6 +125,16 @@ pub fn encode_state(state: &AuthoritySnapshot) -> Vec<u8> {
 /// Decodes an authority snapshot.
 pub fn decode_state(buf: &[u8]) -> Result<AuthoritySnapshot, WireError> {
     state_from_pb(pb::AuthorityState::decode(buf)?)
+}
+
+/// Encodes one controller's binding record.
+pub fn encode_binding(binding: &BindingRecord) -> Vec<u8> {
+    binding_to_pb(binding).encode_to_vec()
+}
+
+/// Decodes one controller's binding record.
+pub fn decode_binding(buf: &[u8]) -> Result<BindingRecord, WireError> {
+    binding_from_pb(pb::BindingRecord::decode(buf)?)
 }
 
 /// Encodes a heartbeat.
@@ -1526,6 +1554,29 @@ mod tests {
                     acked: 1,
                 },
             ],
+        }
+    }
+
+    #[test]
+    fn binding_records_round_trip() {
+        let state = snapshot();
+        let binding = &state.bindings[0];
+        let decoded = decode_binding(&encode_binding(binding)).expect("decodes");
+        assert_eq!(&decoded, binding);
+    }
+
+    #[test]
+    fn descriptors_name_every_recorded_envelope() {
+        let names = String::from_utf8_lossy(FILE_DESCRIPTOR_SET);
+        assert!(names.contains("rlmesh/session/v2/session.proto"));
+        for full in [
+            schema::SAMPLE,
+            schema::ACTION_CHUNK,
+            schema::AUTHORITY_STATE,
+            schema::BINDING_RECORD,
+        ] {
+            let message = full.rsplit('.').next().expect("a message name");
+            assert!(names.contains(message), "{message} is not described");
         }
     }
 
