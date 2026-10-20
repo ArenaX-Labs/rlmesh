@@ -810,7 +810,8 @@ class V2Controller:
         """
     def stats(self) -> builtins.dict[builtins.str, typing.Any]:
         r"""
-        The start, skip and completion counters (§8.10).
+        The start, skip and completion counters (§8.10), and the input the
+        starts are phased after (`aligned_to`, `phase_offset_ms`).
         """
     def events(self) -> builtins.list[builtins.dict[builtins.str, typing.Any]]:
         r"""

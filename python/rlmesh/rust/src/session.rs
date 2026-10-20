@@ -1256,11 +1256,18 @@ impl PyController {
         Ok(())
     }
 
-    /// The start, skip and completion counters (§8.10).
+    /// The start, skip and completion counters (§8.10), and the input the
+    /// starts are phased after (`aligned_to`, `phase_offset_ms`).
     #[gen_stub(override_return_type(type_repr = "builtins.dict[builtins.str, typing.Any]", imports = ("builtins", "typing")))]
     fn stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let stats = self.controller()?.stats();
+        let controller = self.controller()?;
+        let stats = controller.stats();
         let d = PyDict::new(py);
+        d.set_item("aligned_to", controller.aligned_input())?;
+        d.set_item(
+            "phase_offset_ms",
+            controller.phase_offset().as_secs_f64() * 1e3,
+        )?;
         d.set_item("starts", stats.starts)?;
         d.set_item("completions", stats.completions)?;
         let skipped = PyDict::new(py);

@@ -658,7 +658,11 @@ class Policy:
         self._bound().stop()
 
     def stats(self) -> dict[str, Any]:
-        """Starts, completions, skips by reason, chunks sent and latency (§8.10)."""
+        """Starts, completions, skips by reason, chunks sent and latency (§8.10).
+
+        ``aligned_to`` names the input whose publication the starts are
+        phased just after (wall clock), ``phase_offset_ms`` how far.
+        """
         return self._bound().stats()
 
     def events(self) -> list[dict[str, Any]]:
