@@ -164,11 +164,18 @@ pub enum MergePolicy {
 pub struct Actuation {
     /// How chunks merge.
     pub merge: MergePolicy,
-    /// How long the edge holds the last action once its queue runs dry,
-    /// before it runs `safe_behavior` and takes the session SAFE.
+    /// How long the edge waits for a valid action once its queue runs dry
+    /// (or its holder is preempted) before it latches `safe_behavior` and
+    /// takes the session SAFE.
     pub hold_max: Duration,
     /// The embodiment's own safe behaviour, by id ("brake", "gravity_comp").
     pub safe_behavior: String,
+    /// Whether the edge may repeat the last action while it waits. Only for
+    /// targets that are safe to hold (positions); off, it runs the safe
+    /// behaviour while it waits. A repeated action must still be valid and
+    /// under the current lease: an expired or preempted command is never
+    /// continued.
+    pub hold_last: bool,
 }
 
 impl Default for Actuation {
@@ -177,6 +184,7 @@ impl Default for Actuation {
             merge: MergePolicy::Replace,
             hold_max: Duration::from_millis(100),
             safe_behavior: "stop".into(),
+            hold_last: false,
         }
     }
 }
@@ -516,6 +524,7 @@ pub(crate) mod tests {
             merge,
             hold_max: Duration::from_millis(40),
             safe_behavior: "brake".into(),
+            hold_last: true,
         });
         spec
     }

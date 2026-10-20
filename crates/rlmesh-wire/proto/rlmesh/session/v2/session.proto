@@ -325,6 +325,10 @@ message Actuation {
   // Zero: the default.
   uint64 hold_max_ns = 2;
   string safe_behavior = 3;
+  // May the edge repeat the last action while it waits for a valid one?
+  // Only for targets safe to hold (positions); off, it runs the safe
+  // behaviour while it waits.
+  bool hold_last = 4;
 }
 
 message ChannelSpec {

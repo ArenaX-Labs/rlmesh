@@ -818,6 +818,7 @@ fn channel_to_pb(c: &ChannelSpec) -> pb::ChannelSpec {
             } as i32,
             hold_max_ns: duration_ns(Some(a.hold_max)),
             safe_behavior: a.safe_behavior.clone(),
+            hold_last: a.hold_last,
         }),
     }
 }
@@ -917,6 +918,7 @@ fn channel_from_pb(c: pb::ChannelSpec) -> Result<ChannelSpec, WireError> {
                     hold_max: ns_duration(a.hold_max_ns)
                         .unwrap_or_else(|| Actuation::default().hold_max),
                     safe_behavior: a.safe_behavior,
+                    hold_last: a.hold_last,
                 })
             })
             .transpose()?,
