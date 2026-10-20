@@ -37,6 +37,7 @@ const field = (name: string, len: number, offset = 0) => ({ name, dtype: 'f32', 
 
 export const STREAMS: StreamDecl[] = [
   { path: 'arm7/arm', robot: 'arm7', part: 'arm', applied: false, channel: 1, class: 'state', kind: 'f64', rate_hz: 1000, max_age_ms: 20, fields: [field('pos', 7), field('vel', 7, 7)], width: 0, height: 0 },
+  { path: 'arm7/skin', robot: 'arm7', part: 'skin', applied: false, channel: 4, class: 'state', kind: 'f64', rate_hz: 100, max_age_ms: 50, fields: [field('pressure', 32)], width: 0, height: 0 },
   { path: 'arm7/arm/_applied', robot: 'arm7', part: 'arm', applied: true, channel: 2, class: 'state', kind: 'f64', rate_hz: 1000, max_age_ms: Number.NaN, fields: [field('pos', 7)], width: 0, height: 0 },
   { path: 'arm7/scene/cam', robot: 'arm7', part: 'scene/cam', applied: false, channel: 5, class: 'bulk', kind: 'jpeg', rate_hz: 20, max_age_ms: 200, fields: [], width: 640, height: 480 },
 ];

@@ -290,7 +290,9 @@ export class Session {
     const cls = d.class;
     const hasSubs = (this.subs.get(path)?.size ?? 0) > 0;
     let slot: number | undefined;
-    if (cls === 'state' && d.kind === 'f64' && this.sab) {
+    // A slot holds SLOT_VALUES numbers; a larger stream is delivered per sample instead.
+    const values = d.fields.reduce((n, f) => n + f.len, 0);
+    if (cls === 'state' && d.kind === 'f64' && this.sab && values <= SLOT_VALUES) {
       slot = this.sabSlots.get(path);
       if (slot == null && this.sabSlots.size < SLOTS) this.sabSlots.set(path, (slot = this.sabSlots.size));
     }

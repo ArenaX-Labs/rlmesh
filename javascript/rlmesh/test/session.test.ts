@@ -26,7 +26,7 @@ test('connect: one Worker per class, module compiled once, declarations, partici
     assert.equal(w.init.priority, 'operator');
   }
   assert.deepEqual(s.controls.map((c) => c.path), ['arm7/arm', 'arm7/gripper']);
-  assert.deepEqual(s.streams.map((c) => c.path), ['arm7/arm', 'arm7/arm/_applied', 'arm7/scene/cam']);
+  assert.deepEqual(s.streams.map((c) => c.path), ['arm7/arm', 'arm7/skin', 'arm7/arm/_applied', 'arm7/scene/cam']);
   assert.equal(s.mode, 'active');
   assert.equal(s.clock.offset_ms, 1.5);
   assert.equal(s.id, 'web-0000abcd');
@@ -77,6 +77,23 @@ test('subscribe: bounded queue with a dropped counter; samples are owned per sub
   assert.throws(() => s.latest('arm7/arm', new Float64Array(1)), RangeError);
   a.close();
   b.close();
+});
+
+test('latest(): a shared-memory slot only for streams that fit it; larger ones are delivered whole', async (t) => {
+  const { s, f } = await open({ canShareMemory: true });
+  t.after(() => s.close());
+  s.latest('arm7/arm'); // 14 values: a slot, no per-sample messages
+  const arm = f.latest('state').ops('subscribe').at(-1);
+  assert.equal(arm.deliver, false);
+  assert.equal(typeof arm.sab_slot, 'number');
+  assert.equal(s.latest('arm7/skin'), null); // 32 values: no slot, every sample delivered
+  const skin = f.latest('state').ops('subscribe').at(-1);
+  assert.equal(skin.path, 'arm7/skin');
+  assert.equal(skin.deliver, true);
+  assert.equal(skin.sab_slot, undefined);
+  const pressure = Float64Array.from({ length: 32 }, (_, i) => i);
+  f.latest('state').emit(sample('arm7/skin', 1, pressure));
+  assert.deepEqual([...s.latest('arm7/skin')!.data], [...pressure]);
 });
 
 test('peek(): a borrowed frame is not recycled while held, and is unusable after release', async (t) => {
