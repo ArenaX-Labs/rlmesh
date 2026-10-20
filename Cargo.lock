@@ -3784,6 +3784,7 @@ name = "rlmesh-python"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "bytes",
  "image",
  "libc",
  "pyo3",
@@ -3794,11 +3795,15 @@ dependencies = [
  "rlmesh",
  "rlmesh-adapters",
  "rlmesh-cli",
+ "rlmesh-edge",
  "rlmesh-grpc",
  "rlmesh-proto",
  "rlmesh-sandbox",
+ "rlmesh-session",
  "rlmesh-spaces",
+ "rlmesh-spec",
  "rlmesh-viewer",
+ "rlmesh-wire",
  "serde",
  "serde_json",
  "serde_path_to_error",

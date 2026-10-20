@@ -11,6 +11,10 @@ __all__ = [
     "EnvironmentException",
     "RecoverableEnvironmentException",
     "ModelException",
+    "SessionException",
+    "SessionRefused",
+    "BindingRefused",
+    "StartSkipped",
     "ACTION_DELTA_POS",
     "ACTION_DELTA_ROT",
     "ACTION_EEF_POS",
@@ -68,6 +72,12 @@ __all__ = [
     "SpaceSpec",
     "TORSO",
     "Tensor",
+    "V2Controller",
+    "V2Due",
+    "V2Host",
+    "V2Observation",
+    "V2Rate",
+    "V2Robot",
     "Value",
     "adapters_join_check",
     "adapters_resolve",
@@ -154,6 +164,20 @@ class ModelException(RLMeshException):
     code: builtins.str
     is_recoverable: builtins.bool
     def __init__(self, message: builtins.str, *, is_recoverable: builtins.bool = False) -> None: ...
+
+class SessionException(RLMeshException): ...
+
+class SessionRefused(SessionException):
+    status: builtins.str
+
+class BindingRefused(SessionException):
+    problems: builtins.list[tuple[builtins.str, builtins.str, builtins.str]]
+
+class StartSkipped(SessionException):
+    reason: builtins.str
+    waiting: builtins.list[builtins.str]
+    stale: builtins.list[builtins.str]
+    gaps: builtins.list[builtins.str]
 
 ResetInfo: TypeAlias = dict[str, object]
 
@@ -698,6 +722,328 @@ class Tensor:
         """
     def tobytes(self) -> bytes: ...
     def __repr__(self) -> builtins.str: ...
+
+@typing.final
+class V2Controller:
+    r"""
+    A policy bound to a robot: inputs, leases, chunks and the run loop.
+    """
+    @property
+    def name(self) -> builtins.str:
+        r"""
+        The policy's participant id.
+        """
+    @property
+    def table(self) -> builtins.str:
+        r"""
+        The binding table, as the cockpit shows it (§6.8).
+        """
+    @property
+    def table_json(self) -> builtins.str:
+        r"""
+        The binding table as canonical JSON (what the fingerprint is over).
+        """
+    @property
+    def fingerprint(self) -> builtins.str:
+        r"""
+        The binding fingerprint, 16 hex digits.
+        """
+    @property
+    def warnings(self) -> builtins.list[builtins.str]:
+        r"""
+        Warnings the binder accepted the binding with.
+        """
+    @property
+    def replan_hz(self) -> builtins.float:
+        r"""
+        The replan rate R.
+        """
+    def __new__(cls, address: builtins.str, name: builtins.str, policy_json: builtins.str, robot: builtins.str, *, priority: builtins.str = ..., under: typing.Optional[builtins.str] = None, at: typing.Mapping[builtins.str, builtins.str] = ..., positional: typing.Sequence[builtins.str] = ..., allow: typing.Sequence[builtins.str] = ..., captures: typing.Mapping[builtins.str, builtins.str] = ..., timeout_s: builtins.float = ...) -> V2Controller:
+        r"""
+        Attaches as `name` at `priority`, waits for `robot`'s parts, binds
+        `policy_json` (the policy map, §6) with the run-time options, and
+        declares the binding. Raises `BindingRefused` with the binder's
+        refuse-and-explain text.
+        """
+    def actions(self) -> builtins.list[tuple[builtins.str, typing.Optional[builtins.str], builtins.int]]:
+        r"""
+        Each bound action: `(entry, part path or None, horizon)`.
+        """
+    def observe(self) -> V2Observation:
+        r"""
+        A policy start now. Raises `StartSkipped` when an input is missing,
+        stale (without `allow: hold`) or has a window gap.
+        """
+    def send(self, values: dict[builtins.str, typing.Any], observation: V2Observation) -> builtins.dict[builtins.str, typing.Optional[builtins.int]]:
+        r"""
+        Sends one chunk per action entry, computed from `observation`:
+        `values` maps each action to `(dtype, shape, bytes)` or a dict of
+        them, `[horizon, ...]`. Returns each entry's chunk seq, or `None`
+        without the lease (or for a dropped entry).
+        """
+    def acquire(self) -> builtins.list[tuple[builtins.str, builtins.int]]:
+        r"""
+        Takes the binding's leases now, preempting a lower class; from then
+        on they are kept. Raises `SessionRefused` (`LEASE_BUSY`,
+        `GROUP_BUSY`, `NOT_READY`, ...) when they cannot be granted.
+        """
+    def release(self) -> None:
+        r"""
+        Gives the leases back; they are not re-requested until `acquire` or
+        `run`.
+        """
+    def holds(self) -> builtins.bool:
+        r"""
+        Whether this policy holds every lease its binding commands.
+        """
+    def run(self, predict: collections.abc.Callable[[V2Observation], dict[builtins.str, typing.Any]], duration_s: typing.Optional[builtins.float] = None) -> None:
+        r"""
+        Runs the policy loop (§8.9) on this thread until `stop()`,
+        `duration_s`, or a failure, calling `predict(observation)` at the
+        replan rate with one inference in flight. If `predict` raises, the
+        leases are released and the exception propagates.
+        """
+    def stop(self) -> None:
+        r"""
+        Asks a `run` in progress to return.
+        """
+    def stats(self) -> builtins.dict[builtins.str, typing.Any]:
+        r"""
+        The start, skip and completion counters (§8.10).
+        """
+    def events(self) -> builtins.list[builtins.dict[builtins.str, typing.Any]]:
+        r"""
+        Takes the events reported so far (`rate_drift`, inference pending),
+        oldest first, as dicts with a `kind` and a `message`.
+        """
+    def close(self) -> None:
+        r"""
+        Gives the leases back and detaches.
+        """
+
+@typing.final
+class V2Due:
+    r"""
+    What the robot does this control tick.
+    """
+    @property
+    def path(self) -> builtins.str:
+        r"""
+        The part the tick concerns.
+        """
+    @property
+    def mode(self) -> builtins.str:
+        r"""
+        `driving`, `hold`, `safe`, `estop` or `idle`.
+        """
+    @property
+    def safe(self) -> typing.Optional[builtins.str]:
+        r"""
+        The declared safe behaviour to run now, or `None`.
+        """
+    @property
+    def handover(self) -> typing.Optional[tuple[builtins.str, builtins.str, builtins.str]]:
+        r"""
+        `(group, from_path, to_path)` on the tick a handover starts.
+        """
+    @property
+    def lease_token(self) -> typing.Optional[builtins.int]:
+        r"""
+        The lease token of the chunk the command came from.
+        """
+    @property
+    def chunk_seq(self) -> typing.Optional[builtins.int]:
+        r"""
+        That chunk's seq under its token.
+        """
+    @property
+    def index(self) -> typing.Optional[builtins.int]:
+        r"""
+        The command's index in that chunk.
+        """
+    @property
+    def received_ns(self) -> typing.Optional[builtins.int]:
+        r"""
+        When the edge received the chunk (this robot's clock).
+        """
+    @property
+    def slot_ns(self) -> typing.Optional[builtins.int]:
+        r"""
+        When this command's slot starts (this robot's clock).
+        """
+    @property
+    def based_on(self) -> builtins.list[tuple[builtins.str, builtins.int, builtins.int]]:
+        r"""
+        The inputs the chunk was computed from: `(path, seq_first,
+        seq_last)`, with this robot's paths.
+        """
+    @property
+    def fields(self) -> builtins.dict[builtins.str, Tensor] | None:
+        r"""
+        The command fields by name (validated and clamped), or `None`.
+        """
+
+@typing.final
+class V2Host:
+    r"""
+    A session host in this process, on local per-class TCP ports.
+    """
+    @property
+    def address(self) -> builtins.str:
+        r"""
+        `{ip}:{base_port}/{tenant}/{session}`: what participants connect to.
+        """
+    def __new__(cls, ip: builtins.str = ..., tenant: builtins.str = ..., lease_grace_ms: builtins.int = ...) -> V2Host: ...
+    def close(self) -> None:
+        r"""
+        Stops the host (participants see it leave).
+        """
+
+@typing.final
+class V2Observation:
+    r"""
+    A policy start: each input as `predict` receives it, and its snapshot.
+    """
+    @property
+    def time_ns(self) -> builtins.int:
+        r"""
+        The session time the snapshot was taken at.
+        """
+    @property
+    def values(self) -> builtins.dict[builtins.str, typing.Any]:
+        r"""
+        Inputs by entry: a `Tensor`, a dict of them, or a `str`.
+        """
+    @property
+    def ages(self) -> builtins.dict[builtins.str, typing.Optional[builtins.int]]:
+        r"""
+        Each input's conservative age in ns (`None`: blank, or no clock
+        mapping).
+        """
+    @property
+    def stale(self) -> builtins.list[builtins.str]:
+        r"""
+        Inputs delivered stale under `allow: hold`.
+        """
+    @property
+    def padded(self) -> builtins.dict[builtins.str, builtins.int]:
+        r"""
+        Window slots padded by `allow: warmup`, by entry.
+        """
+    @property
+    def blank(self) -> builtins.list[builtins.str]:
+        r"""
+        Inputs bound to a constant (`allow: blank`).
+        """
+    @property
+    def skew_ns(self) -> builtins.int:
+        r"""
+        The newest capture minus the oldest, across inputs.
+        """
+    @property
+    def based_on(self) -> builtins.list[tuple[builtins.int, builtins.int, builtins.int]]:
+        r"""
+        Per stream, the seq range used: `(stream id, seq_first, seq_last)`.
+        """
+
+@typing.final
+class V2Rate:
+    r"""
+    A fixed-rate loop timer on `time.monotonic_ns()`: `sleep()` waits for
+    the next period (coarse sleep, then a short spin) with the GIL
+    released. A tick more than a period late skips the missed ones rather
+    than bursting.
+    """
+    @property
+    def missed(self) -> builtins.int:
+        r"""
+        Periods skipped because a call came more than a period late.
+        """
+    def __new__(cls, hz: builtins.float) -> V2Rate: ...
+    def sleep(self) -> builtins.int:
+        r"""
+        Waits until the next period starts; returns how late this call was
+        for it, in ns.
+        """
+
+@typing.final
+class V2Robot:
+    r"""
+    A robot: its map declared, a publisher per part and an edge per command
+    group.
+    """
+    @property
+    def name(self) -> builtins.str:
+        r"""
+        The robot's participant id.
+        """
+    @property
+    def mode(self) -> builtins.str:
+        r"""
+        The session mode this robot sees (`disarmed`, `armed`, `active`,
+        `safe`, `estop`).
+        """
+    def __new__(cls, address: builtins.str, name: builtins.str, robot_json: builtins.str, timeout_s: builtins.float = ...) -> V2Robot:
+        r"""
+        Attaches as `name` (the robot's participant id), declares
+        `robot_json` (the authored map, §3) and starts its publishers and
+        edges.
+        """
+    def parts(self) -> builtins.list[builtins.dict[builtins.str, typing.Any]]:
+        r"""
+        The parts as the host normalised them, in authored order.
+        """
+    def publish(self, path: builtins.str, fields: collections.abc.Sequence[builtins.str | builtins.bytes | memoryview], capture_ns: typing.Optional[builtins.int] = None) -> typing.Optional[builtins.int]:
+        r"""
+        Publishes one sample of `path` from its fields in declaration order
+        (C-contiguous bytes-likes; a `str` for text), captured at
+        `capture_ns` (`time.monotonic_ns()`; now by default). The values
+        are copied before this returns. Returns the sample's seq, or `None`
+        when coalesced (or handed to an image encoder).
+        """
+    def due(self, path: builtins.str) -> typing.Optional[V2Due]:
+        r"""
+        One control tick of the edge serving `path` and its command group:
+        what to dispatch now, or `None`. Call it once per tick per group.
+        """
+    def handover_done(self, path: builtins.str) -> None:
+        r"""
+        The robot switched control modes after a handover of `path`'s
+        group: the group may dispatch again.
+        """
+    def arm(self) -> None:
+        r"""
+        DISARMED or SAFE to ARMED, in a fresh epoch.
+        """
+    def disarm(self) -> None:
+        r"""
+        Back to DISARMED.
+        """
+    def estop(self, reason: builtins.str) -> None:
+        r"""
+        Emergency stop: latched until a local `clear`, then disarm and arm.
+        """
+    def clear(self) -> None:
+        r"""
+        Releases a latched e-stop (the embodiment's local clear).
+        """
+    def report_safe(self, reason: builtins.str) -> None:
+        r"""
+        Tells the host the robot fell back on its own account (a device
+        watchdog fired): the session goes SAFE. Never blocks.
+        """
+    def now_ns(self) -> builtins.int:
+        r"""
+        Now on this robot's clock (`time.monotonic_ns()`).
+        """
+    def edge_stats(self, path: builtins.str) -> builtins.dict[builtins.str, typing.Any]:
+        r"""
+        The counters of the edge serving `path`.
+        """
+    def close(self) -> None:
+        r"""
+        Detaches: the edges and publishers go, the host drops the parts.
+        """
 
 def _set_python_peer_info(*, language: str | None = None, language_version: str | None = None, package_version: str | None = None, os: str | None = None, os_version: str | None = None, arch: str | None = None, framework_versions: dict[str, str] | None = None, extra: dict[str, str] | None = None) -> None: ...
 

@@ -36,14 +36,19 @@ stub-gen = ["dep:pyo3-stub-gen"]
 [dependencies]
 rlmesh = { workspace = true }
 rlmesh-adapters = { workspace = true }
+rlmesh-edge = { workspace = true }
 rlmesh-cli = { workspace = true, optional = true }
 rlmesh-grpc = { workspace = true }
 rlmesh-proto = { workspace = true }
 rlmesh-sandbox = { workspace = true }
+rlmesh-session = { workspace = true }
 rlmesh-spaces = { workspace = true }
+rlmesh-spec = { workspace = true }
 rlmesh-viewer = { workspace = true }
+rlmesh-wire = { workspace = true }
 
 async-trait = { workspace = true }
+bytes = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_path_to_error = { workspace = true }

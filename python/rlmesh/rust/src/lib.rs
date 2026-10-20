@@ -6,6 +6,7 @@ mod model;
 mod peer_info;
 mod sandbox;
 mod server;
+mod session;
 mod spaces;
 mod telemetry;
 mod types;
@@ -180,6 +181,8 @@ pub fn rlmesh(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(sandbox::sandbox_start_env, m)?)?;
     m.add_function(wrap_pyfunction!(sandbox::sandbox_stop_env, m)?)?;
     m.add_function(wrap_pyfunction!(sandbox::sandbox_reap_orphans, m)?)?;
+
+    session::register(m)?;
 
     adapters::register_constants(m)?;
     m.add_class::<adapters::PyAdvisory>()?;
