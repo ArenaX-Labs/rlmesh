@@ -105,6 +105,8 @@ after(() => {
 
 test('connects under Node: declarations, a participant of its own, the clock, and samples', async () => {
   assert.deepEqual(session.controls.map((c) => c.path).sort(), ['arm7/arm', 'arm7/gripper']);
+  // connect resolves on the declarations; the gateway's binding can land a snapshot later.
+  if (!session.controls.every((c) => c.bound)) await waitFor(session, 'state', () => session.controls.every((c) => c.bound));
   assert.ok(session.controls.every((c) => c.bound), 'the gateway bound every commandable part');
   assert.match(session.id, /^web-/);
   const sub = session.subscribe('arm7/gripper');
