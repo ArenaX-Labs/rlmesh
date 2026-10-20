@@ -22,7 +22,18 @@ use crate::telemetry::{ProfileCollector, init_tracing, profiling_enabled};
 use crate::types::{space_value_size, to_py_err};
 
 /// Interval for polling Python signals during blocked RPCs.
-pub(crate) const SIGNAL_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const SIGNAL_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// The signal poll for a blocked call, first due one interval from now. A plain
+/// `interval` ticks at once, and that tick waits for the timer wheel's next
+/// millisecond: awaited before the call is first polled, it delayed every
+/// request by about 1 ms.
+pub(crate) fn signal_poll() -> tokio::time::Interval {
+    tokio::time::interval_at(
+        tokio::time::Instant::now() + SIGNAL_POLL_INTERVAL,
+        SIGNAL_POLL_INTERVAL,
+    )
+}
 
 /// Poll for a pending Python signal from a thread blocked in native code.
 /// A daemon thread can outlive the interpreter; once it has finalized there is
@@ -188,8 +199,7 @@ impl ClientCore {
             runtime.block_on(async move {
                 let mut rpc = make(client);
 
-                let mut poll = tokio::time::interval(SIGNAL_POLL_INTERVAL);
-                poll.tick().await; // first tick fires immediately; consume it.
+                let mut poll = signal_poll();
 
                 loop {
                     tokio::select! {
