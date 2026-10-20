@@ -32,7 +32,8 @@ rlmesh-spaces = { workspace = true }
 rlmesh-spec = { workspace = true }
 rlmesh-wire = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
+# Exact float round trips: info and options cross the wire as JSON (§12.2).
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 tokio-util = { workspace = true }

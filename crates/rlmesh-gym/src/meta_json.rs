@@ -170,6 +170,8 @@ mod tests {
             ("float", v(Kind::Number(2.0))),
             ("neg_zero", v(Kind::Number(-0.0))),
             ("tiny", v(Kind::Number(5e-324))),
+            // A shortest-repr float the default (fast) parser misrounds.
+            ("third", v(Kind::Number(1.333_513_733_333_333_3))),
             ("nan", v(Kind::Number(f64::NAN))),
             ("inf", v(Kind::Number(f64::NEG_INFINITY))),
             ("text", v(Kind::Text("hé".into()))),
@@ -195,6 +197,14 @@ mod tests {
         };
         assert!(z.is_sign_negative());
         assert!(matches!(back.entries["float"].kind, Some(Kind::Number(_))));
+        for key in ["third", "tiny", "float"] {
+            let (Some(Kind::Number(a)), Some(Kind::Number(b))) =
+                (&map.entries[key].kind, &back.entries[key].kind)
+            else {
+                panic!("{key}");
+            };
+            assert_eq!(a.to_bits(), b.to_bits(), "{key} round-trips bit-exact");
+        }
         assert!(matches!(
             back.entries["int"].kind,
             Some(Kind::Integer(i64::MIN))
