@@ -620,7 +620,8 @@ message ActionChunk {
   bytes binding = 5;
   repeated InputRange based_on = 6;
   int64 t0_ns = 7;
-  // Zero takes the part's control period.
+  // Zero takes the action grid of the lease's binding (else the part's
+  // control period).
   uint64 dt_ns = 8;
   int64 replace_from_ns = 9;
   // The whole chunk is void at and after this.

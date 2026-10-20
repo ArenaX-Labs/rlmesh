@@ -65,7 +65,8 @@ pub struct ActionChunk {
     pub based_on: Vec<InputRange>,
     /// Session time of the first action's slot.
     pub t0_ns: i64,
-    /// The action period; zero takes the part's control period.
+    /// The action period; zero takes the action grid of the lease's
+    /// binding (else the part's control period).
     pub dt_ns: u64,
     /// Keep committed actions before this; replace from here.
     pub replace_from_ns: i64,

@@ -294,7 +294,8 @@ struct Member {
     part: PartSpec,
     applied: ChannelId,
     check: CommandCheck,
-    /// The control period, for chunks that carry `dt_ns = 0`.
+    /// The control period, for chunks that carry `dt_ns = 0` under a
+    /// binding that declared no action grid for the part.
     period_ns: i64,
     max_action_age_ns: i64,
     /// (epoch, token, seq) of the newest accepted chunk.
@@ -589,8 +590,14 @@ impl EdgeCore {
         if valid_until_ns <= receive_ns {
             return Err(Rejection::Expired);
         }
+        // dt = 0 takes the action grid the lease's binding declared (§9.2),
+        // else the part's control period.
         let dt_ns = match i64::try_from(chunk.dt_ns) {
-            Ok(0) => member.period_ns,
+            Ok(0) => view
+                .binding(&lease.holder)
+                .filter(|b| b.fingerprint == lease.binding)
+                .and_then(|b| b.grid(chunk.channel))
+                .map_or(member.period_ns, |dt| duration_i64(dt).max(1)),
             Ok(dt) => dt,
             Err(_) => return Err(Rejection::Malformed),
         };
@@ -1082,6 +1089,57 @@ mod tests {
                 (EdgeMode::Driving, Some("operator".into()), false),
             ]
         );
+    }
+
+    #[test]
+    fn a_chunk_without_dt_takes_the_bindings_action_grid() {
+        let mut f = Fixture::new();
+        let cmd = f.ch("cmd");
+        Fixture::run(
+            &mut f.auth,
+            "policy",
+            Command::DeclareBinding {
+                fingerprint: Fingerprint::from(7),
+                revision: 2,
+                table_json: "{}".into(),
+                channels: vec![cmd],
+                replan_hz: 0.0,
+                contracts: Vec::new(),
+                grids: vec![rlmesh_wire::ActionGrid {
+                    channel: cmd,
+                    dt: Duration::from_millis(10),
+                }],
+            },
+        );
+        let lease = f.grant("policy", 0);
+        f.publish(0);
+        let mut chunk = f.chunk("policy", &lease, 1, 0, 5);
+        chunk.dt_ns = 0;
+        f.accept(chunk, 0).expect("accept");
+        let first = f.tick(9 * MS).action.expect("due");
+        assert_eq!((first.index, first.dt_ns), (0, 10 * MS));
+        assert_eq!(f.tick(10 * MS).action.expect("due").index, 1);
+
+        // Without a grid for the part, dt = 0 is the control period (1 ms).
+        Fixture::run(
+            &mut f.auth,
+            "policy",
+            Command::DeclareBinding {
+                fingerprint: Fingerprint::from(8),
+                revision: 3,
+                table_json: "{}".into(),
+                channels: vec![cmd],
+                replan_hz: 0.0,
+                contracts: Vec::new(),
+                grids: Vec::new(),
+            },
+        );
+        let lease = f.grant("policy", 11 * MS);
+        f.publish(11 * MS);
+        let mut chunk = f.chunk("policy", &lease, 1, 11 * MS, 5);
+        chunk.dt_ns = 0;
+        f.accept(chunk, 11 * MS).expect("accept");
+        assert_eq!(f.tick(12 * MS).action.expect("due").dt_ns, MS);
     }
 
     #[test]
