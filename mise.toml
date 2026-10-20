@@ -547,8 +547,11 @@ env = { RLMESH_RELEASE_BUILD = "1" }
 # The v2 crates are unpublished (publish = false) and depend on each other, so
 # cargo cannot resolve them from crates.io when packaging; skip them, and
 # rlmesh-python (a maturin wheel that now depends on them), until v0.2
-# publishes them.
-run = 'rm -rf target/package-cargo-home/registry/*/-*; CARGO_HOME="$PWD/target/package-cargo-home" cargo package --workspace --allow-dirty --exclude rlmesh-wire --exclude rlmesh-spec --exclude rlmesh-session-core --exclude rlmesh-session --exclude rlmesh-edge --exclude rlmesh-wasm --exclude rlmesh-gateway --exclude rlmesh-record --exclude rlmesh-python'
+# publishes them. rlmesh too, for now: its `lockstep` feature depends on
+# rlmesh-gym, which is unpublished, so it cannot be packaged until that
+# changes (a v0.2 release blocker), and rlmesh-capi, which would then mix
+# the published rlmesh with this tree's crates.
+run = 'rm -rf target/package-cargo-home/registry/*/-*; CARGO_HOME="$PWD/target/package-cargo-home" cargo package --workspace --allow-dirty --exclude rlmesh-wire --exclude rlmesh-spec --exclude rlmesh-session-core --exclude rlmesh-session --exclude rlmesh-edge --exclude rlmesh-wasm --exclude rlmesh-gateway --exclude rlmesh-record --exclude rlmesh-gym --exclude rlmesh-cockpit --exclude rlmesh-python --exclude rlmesh --exclude rlmesh-capi'
 
 [tasks."release:artifacts:licenses"]
 description = "Validate release artifact license files before publishing"
