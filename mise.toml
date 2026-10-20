@@ -394,6 +394,43 @@ depends = ["setup:js"]
 dir = "{{ config_root }}/javascript/rlmesh"
 run = "node test/run.mjs"
 
+# Node and Electron binding: javascript/rlmesh/native (napi-rs), wrapped by
+# javascript/rlmesh/src/native.ts. Needs no wasm toolchain.
+[tasks."build:js:native"]
+description = "Build the Node/Electron native addon (javascript/rlmesh/native, profile node) into javascript/rlmesh/dist/rlmesh.{platform}-{arch}.node"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+cargo build --profile node -p rlmesh-node
+target_dir="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')"
+for lib in "$target_dir"/node/{librlmesh_node.so,librlmesh_node.dylib,rlmesh_node.dll}; do
+  [ -f "$lib" ] && break
+done
+out="javascript/rlmesh/dist/rlmesh.$(node -p 'process.platform + "-" + process.arch').node"
+mkdir -p javascript/rlmesh/dist
+cp "$lib" "$out"
+echo "$out $(wc -c <"$out" | tr -d ' ') bytes"
+'''
+
+[tasks."test:js:native"]
+description = "Run javascript/rlmesh's native tests: a Node host, robots and policies in one session over the addon (the twin of test_v2_session.py)"
+depends = ["setup:js"]
+run = [
+  "mise run build:js:native",
+  "cd javascript/rlmesh && node build.mjs --node-only",
+  "node javascript/rlmesh/test/run.mjs --native",
+]
+
+[tasks."bench:js:native"]
+description = "Benchmark the Node binding against Python's rlmesh.v2: a 1 kHz robot loop and a 50 Hz policy with a camera, in one process each (BENCH_SECONDS, default 10)"
+depends = ["setup:js"]
+run = [
+  "mise run build:js:native",
+  "cd javascript/rlmesh && node build.mjs --node-only",
+  "node javascript/rlmesh/bench/session.mjs",
+  "uv run python javascript/rlmesh/bench/session.py",
+]
+
 [tasks."demo:web"]
 description = "Run the browser example: the example robot and the gateway, serving examples/web on http://127.0.0.1:18080/"
 run = ["mise run build:js --demo", "bash examples/web/run.sh"]
@@ -551,7 +588,7 @@ env = { RLMESH_RELEASE_BUILD = "1" }
 # rlmesh-gym, which is unpublished, so it cannot be packaged until that
 # changes (a v0.2 release blocker), and rlmesh-capi, which would then mix
 # the published rlmesh with this tree's crates.
-run = 'rm -rf target/package-cargo-home/registry/*/-*; CARGO_HOME="$PWD/target/package-cargo-home" cargo package --workspace --allow-dirty --exclude rlmesh-wire --exclude rlmesh-spec --exclude rlmesh-session-core --exclude rlmesh-session --exclude rlmesh-edge --exclude rlmesh-wasm --exclude rlmesh-gateway --exclude rlmesh-record --exclude rlmesh-gym --exclude rlmesh-cockpit --exclude rlmesh-python --exclude rlmesh --exclude rlmesh-capi'
+run = 'rm -rf target/package-cargo-home/registry/*/-*; CARGO_HOME="$PWD/target/package-cargo-home" cargo package --workspace --allow-dirty --exclude rlmesh-wire --exclude rlmesh-spec --exclude rlmesh-session-core --exclude rlmesh-session --exclude rlmesh-edge --exclude rlmesh-wasm --exclude rlmesh-gateway --exclude rlmesh-node --exclude rlmesh-record --exclude rlmesh-gym --exclude rlmesh-cockpit --exclude rlmesh-python --exclude rlmesh --exclude rlmesh-capi'
 
 [tasks."release:artifacts:licenses"]
 description = "Validate release artifact license files before publishing"
