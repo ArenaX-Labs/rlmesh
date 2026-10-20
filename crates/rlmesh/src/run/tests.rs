@@ -2212,6 +2212,76 @@ async fn async_view_run_and_dropping_a_pacing_future_leave_session_usable() {
 }
 
 #[test]
+fn immediate_predict_completion_observes_handle_cancellation() {
+    let token_slot = Arc::new(Mutex::new(None::<crate::ext::CancelToken>));
+    let callback_token = token_slot.clone();
+    let model = Model::new(
+        move |_: Value| {
+            if let Some(token) = callback_token.lock().unwrap().take() {
+                token.cancel();
+            }
+            Ok(Value::Int(1))
+        },
+        ModelOptions::default(),
+    )
+    .unwrap();
+    let mut env = Steps::new();
+    let mut session = model.session(&mut env, SessionOptions::default()).unwrap();
+    session.reset(None, None).unwrap();
+    *token_slot.lock().unwrap() = Some(session.cancel_handle());
+    assert_eq!(
+        session.predict(Value::Int(0)).unwrap_err(),
+        crate::Error::Cancelled
+    );
+    session.predict(Value::Int(0)).unwrap();
+}
+
+#[test]
+fn run_completion_observes_a_token_fired_by_the_final_hook() {
+    struct Fire(crate::ext::CancelToken);
+    impl RunHooks for Fire {
+        fn on_run_end(&mut self, _: &RunResult) -> Result<()> {
+            self.0.cancel();
+            Ok(())
+        }
+    }
+    let model = ones();
+    let token = crate::ext::CancelToken::new();
+    let mut hook = Fire(token.clone());
+    let mut env = Steps::new();
+    assert_eq!(
+        model
+            .run(
+                &mut env,
+                RunOptions {
+                    cancel: Some(token.clone()),
+                    hooks: Some(&mut hook),
+                    ..Default::default()
+                }
+            )
+            .unwrap_err(),
+        crate::Error::Cancelled
+    );
+    let mut session = model.session(&mut env, SessionOptions::default()).unwrap();
+    assert_eq!(
+        session
+            .run(SessionRunOptions {
+                cancel: Some(token.clone()),
+                hooks: Some(&mut hook),
+                ..Default::default()
+            })
+            .unwrap_err(),
+        crate::Error::Cancelled
+    );
+    session
+        .run(SessionRunOptions {
+            cancel: Some(token),
+            ..Default::default()
+        })
+        .unwrap();
+}
+
+#[test]
 fn pending_cancellation_skips_lazy_factory_creation() {
     let model = ones();
     let mut factory = Factory {
@@ -2229,4 +2299,91 @@ fn pending_cancellation_skips_lazy_factory_creation() {
     );
     drop(session);
     assert_eq!(factory.made, 0);
+}
+
+#[test]
+fn remote_session_factory_failure_observes_cancellation_before_return() {
+    struct FailingFactory {
+        token: crate::ext::CancelToken,
+        calls: usize,
+    }
+    impl EnvFactory for FailingFactory {
+        fn make(&mut self, _: &Kwargs) -> Result<MadeEnv> {
+            self.calls += 1;
+            if self.calls == 1 {
+                self.token.cancel();
+            }
+            Err(crate::Error::invalid_argument("factory failed immediately"))
+        }
+    }
+    let token = crate::ext::CancelToken::new();
+    let mut factory = FailingFactory {
+        token: token.clone(),
+        calls: 0,
+    };
+    let model =
+        crate::RemoteModel::new(crate::RemoteModelOptions::default().address("127.0.0.1:1"))
+            .unwrap();
+    let options = || SessionOptions {
+        cancel: Some(token.clone()),
+        ..Default::default()
+    };
+    assert_eq!(
+        model
+            .session(EnvTarget::factory(&mut factory), options())
+            .unwrap_err(),
+        crate::Error::Cancelled
+    );
+    assert_eq!(
+        model
+            .session(EnvTarget::factory(&mut factory), options())
+            .unwrap_err()
+            .class(),
+        ErrorClass::ValueError
+    );
+    assert_eq!(factory.calls, 2);
+}
+
+#[test]
+fn run_hook_error_wins_over_cancellation_from_on_run_end() {
+    struct FailThenFire(crate::ext::CancelToken);
+    impl RunHooks for FailThenFire {
+        fn on_episode_end(&mut self, _: &EpisodeResult) -> Result<()> {
+            Err(Error::invalid_argument("first hook error"))
+        }
+        fn on_run_end(&mut self, _: &RunResult) -> Result<()> {
+            self.0.cancel();
+            Ok(())
+        }
+    }
+    let model = ones();
+    for session_loop in [false, true] {
+        let mut env = Steps::new();
+        let token = crate::ext::CancelToken::new();
+        let mut hooks = FailThenFire(token.clone());
+        let result = if session_loop {
+            model
+                .session(&mut env, SessionOptions::default())
+                .unwrap()
+                .run(SessionRunOptions {
+                    cancel: Some(token),
+                    hooks: Some(&mut hooks),
+                    ..Default::default()
+                })
+        } else {
+            model.run(
+                &mut env,
+                RunOptions {
+                    cancel: Some(token),
+                    hooks: Some(&mut hooks),
+                    ..Default::default()
+                },
+            )
+        };
+        assert_eq!(
+            result.unwrap_err(),
+            Error::invalid_argument("first hook error"),
+            "session_loop={session_loop}"
+        );
+    }
 }

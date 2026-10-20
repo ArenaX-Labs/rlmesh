@@ -97,78 +97,89 @@ pub(crate) async fn run_model(
     let _slot = shared.claim_run()?;
     let driver = CancellationToken::new();
     let watch = CancelWatch::start(cancel.into_iter().collect(), driver.clone())?;
-    // COR-6: the call, RLMESH_WORKFLOW_EDITION, then the model's type.
-    let edition = crate::editions::resolve_native(
-        EditionSources {
-            call: workflow_edition.as_deref(),
-            option: None,
-            declared: shared.decl.workflow_edition.as_deref(),
-        },
-        shared.decl.authored,
-    )?;
-    if execution_horizon > 1 && !shared.decl.has_chunk() {
-        crate::warnings::warn(
-            crate::WarningCategory::UserWarning,
-            format!(
-                "execution_horizon={execution_horizon} was requested but the model defines no \
-                 predict_chunk(); running un-chunked."
-            ),
-        )?;
-    }
     let context = LibraryContext::new();
     let relay = hooks
         .is_some()
         .then(|| Arc::new(HookRelay::new(driver.clone(), context.clone())));
-    let ended = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let plan = Plan {
-        ended: ended.clone(),
-        shared: Arc::clone(shared),
-        trust: trust_entrypoints.unwrap_or(shared.decl.trust_entrypoints),
-        instruction,
-        budget,
-        seeds: seeds.unwrap_or_default(),
-        caps,
-        close_env,
-        execution_horizon,
-        prefetch_lead,
-        edition,
-        trial_index_base,
-    };
-    let outcome = run_body(
-        plan,
-        env,
-        hooks.as_deref_mut(),
-        Arc::clone(&context),
-        relay.clone(),
-        driver,
-        mode,
-    )
+    let outcome = async {
+        // COR-6: the call, RLMESH_WORKFLOW_EDITION, then the model's type.
+        let edition = crate::editions::resolve_native(
+            EditionSources {
+                call: workflow_edition.as_deref(),
+                option: None,
+                declared: shared.decl.workflow_edition.as_deref(),
+            },
+            shared.decl.authored,
+        )?;
+        if execution_horizon > 1 && !shared.decl.has_chunk() {
+            crate::warnings::warn(
+                crate::WarningCategory::UserWarning,
+                format!(
+                    "execution_horizon={execution_horizon} was requested but the model defines no \
+                 predict_chunk(); running un-chunked."
+                ),
+            )?;
+        }
+        let ended = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let plan = Plan {
+            ended: ended.clone(),
+            shared: Arc::clone(shared),
+            trust: trust_entrypoints.unwrap_or(shared.decl.trust_entrypoints),
+            instruction,
+            budget,
+            seeds: seeds.unwrap_or_default(),
+            caps,
+            close_env,
+            execution_horizon,
+            prefetch_lead,
+            edition,
+            trial_index_base,
+        };
+        let outcome = run_body(
+            plan,
+            env,
+            hooks.as_deref_mut(),
+            Arc::clone(&context),
+            relay.clone(),
+            driver,
+            mode,
+        )
+        .await;
+        match (outcome, hooks) {
+            (Ok(result), Some(hooks)) if !ended.load(std::sync::atomic::Ordering::SeqCst) => mode
+                .call(|| hooks.on_run_end(&result))
+                .inspect_err(|error| {
+                    if let Some(relay) = &relay {
+                        relay.fail(error.clone());
+                    }
+                })
+                .map(|()| result),
+            (Ok(result), _) => Ok(result),
+            (Err(err), Some(hooks)) if !ended.load(std::sync::atomic::Ordering::SeqCst) => {
+                let partial = RunResult {
+                    advisories: Vec::new(),
+                    episodes: relay
+                        .as_ref()
+                        .map(|relay| relay.results())
+                        .unwrap_or_default(),
+                    telemetry: Vec::new(),
+                };
+                let _ = mode.call(|| hooks.on_run_end(&partial));
+                Err(err)
+            }
+            (Err(err), _) => Err(err),
+        }
+    }
     .await;
-    // The first error wins: a hook's (kept by the relay), a token cancel,
-    // then the run's own.
-    let outcome = match outcome {
-        Ok(result) => Ok(result),
-        Err(err) => Err(relay
-            .as_ref()
-            .and_then(|relay| relay.take_error())
-            .unwrap_or(if watch.fired() { Error::Cancelled } else { err })),
-    };
-    match (outcome, hooks) {
-        (Ok(result), Some(hooks)) if !ended.load(std::sync::atomic::Ordering::SeqCst) => {
-            mode.call(|| hooks.on_run_end(&result))?;
-            Ok(result)
-        }
-        (Ok(result), _) => Ok(result),
-        (Err(err), Some(hooks)) if !ended.load(std::sync::atomic::Ordering::SeqCst) => {
-            let partial = RunResult {
-                advisories: Vec::new(),
-                episodes: relay.map(|relay| relay.results()).unwrap_or_default(),
-                telemetry: Vec::new(),
-            };
-            let _ = mode.call(|| hooks.on_run_end(&partial));
-            Err(err)
-        }
-        (Err(err), _) => Err(err),
+    // Detach atomically before selecting the error. A late firing must not
+    // replace the first hook error retained by the relay.
+    let fired = watch.finish(Ok(())).is_err();
+    if let Some(error) = relay.as_ref().and_then(|relay| relay.take_error()) {
+        Err(error)
+    } else if fired {
+        Err(Error::Cancelled)
+    } else {
+        outcome
     }
 }
 
@@ -436,7 +447,11 @@ async fn run_body(
         let callback = mode.call(|| side.hook(context.id, |hooks| hooks.on_run_end(&partial)));
         match outcome {
             Ok(result) => {
-                callback?;
+                callback.inspect_err(|error| {
+                    if let Some(relay) = &relay {
+                        relay.fail(error.clone());
+                    }
+                })?;
                 Ok(result)
             }
             Err(error) => Err(error),
