@@ -1,0 +1,40 @@
+{
+  "name": "rlmesh",
+  "version": "0.1.0",
+  "private": true,
+  "description": "RLMesh real-time sessions (protocol v2) from the browser and Node: rlmesh-wire and rlmesh-session-core in wasm, one Worker and one WebSocket per traffic class, through rlmesh-gateway",
+  "license": "MIT OR Apache-2.0",
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "browser": {
+        "types": "./dist/browser.d.ts",
+        "default": "./dist/browser.js"
+      },
+      "default": {
+        "types": "./dist/node.d.ts",
+        "default": "./dist/node.js"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "build:demo": "node build.mjs --demo",
+    "typecheck": "tsc --noEmit",
+    "test": "node test/run.mjs",
+    "test:e2e": "node test/run.mjs --e2e"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
