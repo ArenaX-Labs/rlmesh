@@ -405,6 +405,14 @@ impl LockstepEnv {
         })
     }
 
+    /// The epoch and lease token its steps carry.
+    pub fn authority(&self) -> (Epoch, LeaseToken) {
+        (
+            Epoch(self.inner.epoch.load(Ordering::Acquire)),
+            LeaseToken(self.inner.token.load(Ordering::Acquire)),
+        )
+    }
+
     /// Moves to a new epoch and lease (after a re-arm and a fresh grant).
     pub fn set_authority(&self, epoch: Epoch, token: LeaseToken) {
         self.inner.token.store(token.0, Ordering::Release);

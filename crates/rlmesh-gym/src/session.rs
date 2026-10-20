@@ -383,6 +383,9 @@ pub struct ConnectOptions {
     pub id: Option<String>,
     /// How long to wait for the host and the robot.
     pub timeout: Duration,
+    /// Call an env served in this process directly (no serialisation, §12.3);
+    /// `false` takes the lockstep session even then.
+    pub direct: bool,
 }
 
 impl Default for ConnectOptions {
@@ -390,6 +393,7 @@ impl Default for ConnectOptions {
         Self {
             id: None,
             timeout: Duration::from_secs(10),
+            direct: true,
         }
     }
 }
@@ -449,7 +453,8 @@ pub async fn connect(address: &str, options: ConnectOptions) -> Result<LockstepE
     let epoch = participant.authority().map(|s| s.epoch).unwrap_or_default();
 
     let local_key = address.key().unwrap_or_default();
-    let (link, lockstep): (Arc<dyn LockstepLink>, _) = match local_handler(&local_key) {
+    let local = options.direct.then(|| local_handler(&local_key)).flatten();
+    let (link, lockstep): (Arc<dyn LockstepLink>, _) = match local {
         Some(handler) => (Arc::new(DirectLink(handler)), None),
         None => {
             let session = lockstep_session(participant.transport(), address.base).await?;
