@@ -342,6 +342,51 @@ def test_an_operator_preempts_the_model_and_hands_back_under_a_fresh_token(
         assert isinstance(result[0], dict)
 
 
+def test_a_recorder_writes_the_session_to_mcap_and_reads_it_back(
+    host: rlmesh.Host, tmp_path: Path
+) -> None:
+    path = tmp_path / "session.mcap"
+    with rlmesh.Recorder(path, session=host) as recorder:
+        with (
+            FakeUR10e(host) as ur,
+            rlmesh.Policy(HOLD, session=host, name="model") as model,
+        ):
+            model.bind("ur10e")
+            thread, result = in_thread(
+                lambda: model.run(
+                    lambda obs: {"arm": np.full((10, 6), 0.25, dtype=np.float32)},
+                    duration=30.0,
+                )
+            )
+            wait_until("the model driving", lambda: ur.driven(lambda d: True, n=50))
+            model.stop()
+            thread.join(WAIT)
+            assert isinstance(result[0], dict)
+    stats = recorder.stats
+    assert stats is not None and stats["messages"] > 0
+    assert recorder.close() == stats, "closing twice keeps the stats"
+
+    summary = rlmesh.read_recording(path)
+    assert summary["messages"] == stats["messages"]
+    topics = summary["topics"]
+    for topic in (
+        "/ur10e/arm",
+        "/ur10e/arm/_applied",
+        "/ur10e/arm/_chunks",
+        "/ur10e/wrist/cam",
+        "/_session/authority",
+        "/_session/bindings",
+    ):
+        row = topics[topic]
+        assert row["messages"] > 0, topic
+        assert row["undecodable"] == 0, topic
+        assert row["log_time_monotonic"] and row["publish_time_monotonic"], topic
+    assert topics["/ur10e/arm/_chunks"]["schema"] == "rlmesh.session.v2.ActionChunk"
+    assert "rlmesh.robot.ur10e" in summary["metadata"]
+    arm = [lease for lease in summary["leases"] if lease["part"] == "ur10e/arm"]
+    assert arm[0]["holder"] == "model" and arm[0]["priority"] == "model"
+
+
 def test_a_raising_predict_releases_the_leases_and_propagates(
     host: rlmesh.Host,
 ) -> None:

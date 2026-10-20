@@ -3907,6 +3907,7 @@ dependencies = [
  "rlmesh-edge",
  "rlmesh-grpc",
  "rlmesh-proto",
+ "rlmesh-record",
  "rlmesh-sandbox",
  "rlmesh-session",
  "rlmesh-spaces",

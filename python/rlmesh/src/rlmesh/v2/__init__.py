@@ -27,6 +27,7 @@ reused at once.
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
@@ -47,6 +48,7 @@ from .._rlmesh import (
     V2Host,
     V2Observation,
     V2Rate,
+    V2Recorder,
     V2Robot,
 )
 
@@ -68,10 +70,12 @@ __all__ = [
     "Observation",
     "Policy",
     "Rate",
+    "Recorder",
     "Robot",
     "SessionException",
     "SessionRefused",
     "StartSkipped",
+    "read_recording",
     "run",
 ]
 
@@ -676,6 +680,64 @@ class Policy:
         tb: TracebackType | None,
     ) -> None:
         self.close()
+
+
+class Recorder:
+    """An MCAP recording of the session (§13), attached as an observer.
+
+    Records every robot's streams (``/{robot}/{path}``, with the edge's
+    ``/{robot}/{path}/_applied``), every action chunk sent to an edge
+    (``/{robot}/{path}/_chunks``), and the authority and binding changes
+    (``/_session/authority``, ``/_session/bindings``), each envelope as it
+    travelled. It declares no delivery contract: a stream a policy reads at
+    ``latest@R`` is recorded at the rate it is published. Use it as a
+    context manager, or :meth:`close` to finish the file.
+    """
+
+    def __init__(
+        self,
+        path: str | os.PathLike[str],
+        *,
+        session: Host | str,
+        name: str = "recorder",
+        timeout: float = 10.0,
+    ) -> None:
+        self._native = V2Recorder(_address(session), os.fspath(path), name, timeout)
+        self.stats: dict[str, Any] | None = None
+
+    @property
+    def path(self) -> str:
+        """The MCAP file."""
+        return self._native.path
+
+    def close(self) -> dict[str, Any] | None:
+        """Finish the file; returns ``messages``, ``channels``, ``bytes`` (also kept in ``stats``)."""
+        stats = self._native.close()
+        if stats is not None:
+            self.stats = stats
+        return self.stats
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        self.close()
+
+
+def read_recording(path: str | os.PathLike[str]) -> dict[str, Any]:
+    """Read a recording back: messages per topic, time ordering, the lease timeline.
+
+    ``topics`` maps each topic to its ``schema``, ``messages``,
+    ``log_time_monotonic``, ``publish_time_monotonic`` and ``undecodable``
+    count; ``leases`` lists every lease change (``part``, ``holder``,
+    ``priority``, ``token``) in order.
+    """
+    return V2Recorder.read(os.fspath(path))
 
 
 class Rate:

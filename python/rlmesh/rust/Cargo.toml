@@ -40,6 +40,7 @@ rlmesh-edge = { workspace = true }
 rlmesh-cli = { workspace = true, optional = true }
 rlmesh-grpc = { workspace = true }
 rlmesh-proto = { workspace = true }
+rlmesh-record = { workspace = true }
 rlmesh-sandbox = { workspace = true }
 rlmesh-session = { workspace = true }
 rlmesh-spaces = { workspace = true }

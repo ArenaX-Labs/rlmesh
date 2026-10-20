@@ -1,6 +1,7 @@
 //! PyO3 bindings for real-time sessions (protocol v2, the v0.2 spec): an
-//! embedded session host, a robot ([`rlmesh_edge::Robot`]) and a bound
-//! policy ([`rlmesh_session::Controller`]). The `rlmesh.v2` package wraps
+//! embedded session host, a robot ([`rlmesh_edge::Robot`]), a bound
+//! policy ([`rlmesh_session::Controller`]) and an MCAP recorder
+//! ([`rlmesh_record::Recorder`]). The `rlmesh.v2` package wraps
 //! them; every rule (packing, binding, the edge, leases, the run loop)
 //! stays in the Rust crates.
 //!
@@ -24,6 +25,7 @@ use pyo3::types::{PyDict, PyList};
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pymethods};
 use rlmesh_edge::{Due, EdgeConfig, EdgeMode, Robot};
+use rlmesh_record::{RecordError, Recorder};
 use rlmesh_session::controller::sleep_until;
 use rlmesh_session::{
     Clock, Controller, ControllerConfig, ControllerError, HostConfig, Observation, ObserveError,
@@ -84,6 +86,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyController>()?;
     m.add_class::<PyObservation>()?;
     m.add_class::<PyRate>()?;
+    m.add_class::<PyRecorder>()?;
     Ok(())
 }
 
@@ -1394,5 +1397,129 @@ impl PyRate {
     #[getter]
     fn missed(&self) -> u64 {
         self.missed.load(Ordering::Relaxed)
+    }
+}
+
+fn record_err(err: RecordError) -> PyErr {
+    match err {
+        RecordError::Session(err) => session_err(err),
+        other => SessionException::new_err(other.to_string()),
+    }
+}
+
+/// An MCAP recording of a session (§13), as an observer participant.
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
+#[pyclass(module = "rlmesh._rlmesh", name = "V2Recorder", frozen)]
+pub struct PyRecorder {
+    path: String,
+    recorder: Mutex<Option<Recorder>>,
+}
+
+#[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
+#[cfg_attr(not(feature = "stub-gen"), pyo3_stub_gen_derive::remove_gen_stub)]
+#[pymethods]
+impl PyRecorder {
+    /// Attaches as observer `name` and starts recording every stream,
+    /// chunk and authority change of the session into a new MCAP file at
+    /// `path`.
+    #[new]
+    #[pyo3(signature = (address, path, name="recorder", timeout_s=10.0))]
+    fn new(
+        py: Python<'_>,
+        address: &str,
+        path: String,
+        name: &str,
+        timeout_s: f64,
+    ) -> PyResult<Self> {
+        let address = Address::parse(address)?;
+        let wait = timeout(timeout_s)?;
+        let id = name.to_string();
+        let file = path.clone();
+        let recorder = block_on(py, async move {
+            let participant = address
+                .join(&id, vec![Role::Observer], PriorityClass::Scripted, wait)
+                .await
+                .map_err(session_err)?;
+            Recorder::start(Arc::new(participant), file)
+                .await
+                .map_err(record_err)
+        })?;
+        Ok(Self {
+            path,
+            recorder: Mutex::new(Some(recorder)),
+        })
+    }
+
+    /// The MCAP file.
+    #[getter]
+    fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// Stops recording and finishes the file: `messages`, `channels`,
+    /// `bytes`, `log_time_clamped`. `None` when already closed.
+    #[gen_stub(override_return_type(type_repr = "builtins.dict[builtins.str, typing.Any] | None", imports = ("builtins", "typing")))]
+    fn close<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let taken = self.recorder.lock().map(|mut r| r.take()).unwrap_or(None);
+        let Some(recorder) = taken else {
+            return Ok(None);
+        };
+        let stats = block_on(py, async move {
+            let participant = recorder.participant().clone();
+            let stats = recorder.finish().await.map_err(record_err)?;
+            if let Ok(participant) = Arc::try_unwrap(participant) {
+                participant.detach().await.map_err(session_err)?;
+            }
+            Ok(stats)
+        })?;
+        let d = PyDict::new(py);
+        d.set_item("path", stats.path.to_string_lossy())?;
+        d.set_item("messages", stats.messages)?;
+        d.set_item("channels", stats.channels)?;
+        d.set_item("bytes", stats.bytes)?;
+        d.set_item("log_time_clamped", stats.log_time_clamped)?;
+        Ok(Some(d))
+    }
+
+    /// Reads a recording back: `messages`, `metadata` (record names),
+    /// `topics` (per topic: `schema`, `channels`, `messages`,
+    /// `first_log_ns`, `last_log_ns`, `log_time_monotonic`,
+    /// `publish_time_monotonic`, `undecodable`) and `leases` (the lease
+    /// timeline: `log_ns`, `part`, `holder`, `priority`, `token`).
+    #[staticmethod]
+    #[gen_stub(override_return_type(type_repr = "builtins.dict[builtins.str, typing.Any]", imports = ("builtins", "typing")))]
+    fn read<'py>(py: Python<'py>, path: String) -> PyResult<Bound<'py, PyDict>> {
+        let summary = py
+            .detach(|| rlmesh_record::summarize(&path))
+            .map_err(record_err)?;
+        let d = PyDict::new(py);
+        d.set_item("messages", summary.messages)?;
+        d.set_item("metadata", summary.metadata)?;
+        let topics = PyDict::new(py);
+        for t in summary.topics {
+            let row = PyDict::new(py);
+            row.set_item("schema", t.schema)?;
+            row.set_item("channels", t.channels)?;
+            row.set_item("messages", t.messages)?;
+            row.set_item("first_log_ns", t.first_log_ns)?;
+            row.set_item("last_log_ns", t.last_log_ns)?;
+            row.set_item("log_time_monotonic", t.log_time_monotonic)?;
+            row.set_item("publish_time_monotonic", t.publish_time_monotonic)?;
+            row.set_item("undecodable", t.undecodable)?;
+            topics.set_item(t.topic, row)?;
+        }
+        d.set_item("topics", topics)?;
+        let leases = PyList::empty(py);
+        for l in summary.leases {
+            let row = PyDict::new(py);
+            row.set_item("log_ns", l.log_ns)?;
+            row.set_item("part", l.part)?;
+            row.set_item("holder", l.holder)?;
+            row.set_item("priority", l.priority)?;
+            row.set_item("token", l.token)?;
+            leases.append(row)?;
+        }
+        d.set_item("leases", leases)?;
+        Ok(d)
     }
 }

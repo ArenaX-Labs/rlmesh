@@ -77,6 +77,7 @@ __all__ = [
     "V2Host",
     "V2Observation",
     "V2Rate",
+    "V2Recorder",
     "V2Robot",
     "Value",
     "adapters_join_check",
@@ -964,6 +965,37 @@ class V2Rate:
         r"""
         Waits until the next period starts; returns how late this call was
         for it, in ns.
+        """
+
+@typing.final
+class V2Recorder:
+    r"""
+    An MCAP recording of a session (§13), as an observer participant.
+    """
+    @property
+    def path(self) -> builtins.str:
+        r"""
+        The MCAP file.
+        """
+    def __new__(cls, address: builtins.str, path: builtins.str, name: builtins.str = ..., timeout_s: builtins.float = ...) -> V2Recorder:
+        r"""
+        Attaches as observer `name` and starts recording every stream,
+        chunk and authority change of the session into a new MCAP file at
+        `path`.
+        """
+    def close(self) -> builtins.dict[builtins.str, typing.Any] | None:
+        r"""
+        Stops recording and finishes the file: `messages`, `channels`,
+        `bytes`, `log_time_clamped`. `None` when already closed.
+        """
+    @staticmethod
+    def read(path: builtins.str) -> builtins.dict[builtins.str, typing.Any]:
+        r"""
+        Reads a recording back: `messages`, `metadata` (record names),
+        `topics` (per topic: `schema`, `channels`, `messages`,
+        `first_log_ns`, `last_log_ns`, `log_time_monotonic`,
+        `publish_time_monotonic`, `undecodable`) and `leases` (the lease
+        timeline: `log_ns`, `part`, `holder`, `priority`, `token`).
         """
 
 @typing.final
