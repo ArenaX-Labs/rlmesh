@@ -26,6 +26,8 @@
 //! - [`cache`]: the controller's input cache and history windows (§8.8):
 //!   the snapshot at each policy start, freshness, hold, warmup, gaps and
 //!   provenance, fed by [`Inputs`].
+//! - [`schedule`]: policy starts (§8.9: one inference in flight, overdue
+//!   starts skipped) and slowdown reporting (§8.10), sans-IO.
 //! - [`transport`]: one Zenoh session per traffic class, so a camera can
 //!   only starve its own class.
 //!
@@ -46,6 +48,7 @@ pub mod media;
 pub mod metrics;
 pub mod participant;
 pub mod sample;
+pub mod schedule;
 pub mod transport;
 pub mod virtual_clock;
 
@@ -65,6 +68,7 @@ pub use participant::{
 pub use sample::{
     Fresh, Received, SamplePublisher, SampleStats, SampleSubscriber, SubscribeOptions,
 };
+pub use schedule::{RunEvent, RunStats, SkipReason, StartSchedule};
 pub use transport::{ClassQos, TrafficClass, Transport, TransportConfig, TransportTuning};
 pub use virtual_clock::VirtualConfig;
 
