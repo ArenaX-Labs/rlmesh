@@ -379,27 +379,34 @@ async fn a_declared_ur10e_and_a_bound_policy_meet_through_a_host_process() {
     // The controller's cache snapshots the published inputs.
     let inputs = Inputs::open(&policy, &binding).await.expect("inputs");
     tokio::time::sleep(Duration::from_millis(300)).await;
-    let mut frame = Vec::new();
-    synthetic_frame(1280, 720, 0, &mut frame);
-    scene
-        .offer(robot.clock().now_ns(), &frame)
-        .expect("scene frame");
-    synthetic_frame(640, 480, 0, &mut frame);
-    wrist_cam
-        .offer(robot.clock().now_ns(), &frame)
-        .expect("wrist frame");
+    // Publish like a live robot, until the controller observes: a single
+    // sample can age past its staleness bound on a loaded host before the
+    // cache snapshots it.
+    let mut scene_frame = Vec::new();
+    synthetic_frame(1280, 720, 0, &mut scene_frame);
+    let mut wrist_frame = Vec::new();
+    synthetic_frame(640, 480, 0, &mut wrist_frame);
     let arm_sample = value(arm.spec().layout.stride().expect("packed"), 1);
-    arm.publish(robot.clock().now_ns(), arm_sample.clone())
-        .expect("arm")
-        .expect("sent");
-    gripper
-        .publish(robot.clock().now_ns(), value(8, 0))
-        .expect("gripper");
-    task.publish(
-        robot.clock().now_ns(),
-        Bytes::from_static(b"put the cup on the plate"),
-    )
-    .expect("task");
+    let publish_inputs = || {
+        scene
+            .offer(robot.clock().now_ns(), &scene_frame)
+            .expect("scene frame");
+        wrist_cam
+            .offer(robot.clock().now_ns(), &wrist_frame)
+            .expect("wrist frame");
+        arm.publish(robot.clock().now_ns(), arm_sample.clone())
+            .expect("arm")
+            .expect("sent");
+        gripper
+            .publish(robot.clock().now_ns(), value(8, 0))
+            .expect("gripper");
+        task.publish(
+            robot.clock().now_ns(),
+            Bytes::from_static(b"put the cup on the plate"),
+        )
+        .expect("task");
+    };
+    publish_inputs();
     let started = Instant::now();
     let observation = loop {
         match inputs.observe(policy.session_now_ns()) {
@@ -407,6 +414,7 @@ async fn a_declared_ur10e_and_a_bound_policy_meet_through_a_host_process() {
             Err(ObserveError::Skipped(skip)) => {
                 assert!(started.elapsed() < WAIT, "still skipped: {skip:?}");
                 tokio::time::sleep(Duration::from_millis(10)).await;
+                publish_inputs();
             }
             Err(err) => panic!("{err}"),
         }
