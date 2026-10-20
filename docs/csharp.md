@@ -175,3 +175,38 @@ the blocking contract for unrelated observers; it remains unsupported.
 
 ShutdownAsync uses ConfigureAwait(false) for all internal waits. Completion and
 cancellation do not depend on the caller pumping a SynchronizationContext.
+
+## Packaging, NativeAOT and allocation gates
+
+`mise run csharp:pack` builds both Release assemblies, the nupkg and portable
+symbol snupkg into `target/csharp-pkg`; `mise run csharp:upm` also assembles the
+Unity package from that nupkg's netstandard2.1 DLL. Native inputs come from C
+release tarballs in `target/capi-pkg`, with a local Linux build fallback for
+iteration. Local partial packages are supported; `--require-all` refuses a
+missing RID for final release assembly. Version comes from Cargo's workspace.
+
+`mise run test:csharp:package` checks importer settings, the complete four-RID
+input contract with synthetic libraries, actual NuGet/UPM file sets and symbols,
+then restores the nupkg into a new net10 console app with a fresh local-only feed
+and package cache. Python drives the served env with no inherited native loader
+path. There is no Unity requirement. `mise run test:csharp:aot` publishes the
+same serving harness with NativeAOT and exercises it from Python; the existing
+path-gated Linux CI job runs both after `test:csharp` prepares native/Python inputs.
+
+`test:csharp` also runs E-3's Release allocation gate: 1,000 warm-up steps,
+10,000 measured steps between GC/finalizer checkpoints, at most two cumulative
+finalizable SafeHandle constructions and 512 process-wide allocated bytes per
+step, then a 100,000-step live-handle equality check. The local env caches its
+Box(4,) float32 observation Value and empty Metadata; the test uses raw session
+calls and adopts observations into public Value wrappers without expanding the
+public foundation API. Handle counters are internal and cumulative/live counts
+are distinct. The manual `mise run bench:csharp` adds five 10,000-step batches
+per language, interleaved in long-lived C# JIT and C++ processes under one heavy
+lock. It prints median timings and their ratio against 1.25x, never fails on time.
+
+The native gate's package version is generated into `obj/` from the Cargo workspace
+by `csharp/tools/version.py` before compilation, including direct dotnet builds.
+It is never copied from an independent hand-written version constant. The package
+suite bumps a copied workspace to a prerelease, builds a new nupkg, restores it in
+a fresh consumer and accepts its matching native ABI fixture. The ordinary serving
+smoke exercises the actual native library as well.

@@ -4,17 +4,45 @@ RLMesh for C# supports serving an authored environment to a client. It targets
 `netstandard2.1` and `net10.0` on 64-bit hosts. Its public API is consumable
 from C# 9. Experimental APIs may change or disappear.
 
-The SDK is pinned in `global.json`. The C# tasks install it on demand.
-From the repository root:
+## Install
+
+Download `RLMesh.<version>.nupkg` from the matching
+[GitHub Release](https://github.com/ArenaX-Labs/rlmesh/releases) into a local feed,
+then install it in a .NET application:
 
 ```sh
-mise run check:csharp
+dotnet add package RLMesh --version <version> --source /path/to/feed
 ```
 
-Make the matching native library available to the platform loader as
-`rlmesh_capi` (`librlmesh_capi.so` on Linux, `rlmesh_capi.dll` on Windows,
-`librlmesh_capi.dylib` on macOS). The source package does not distribute
-native binaries. The first native call checks ABI generation 5 and the
+The package includes `netstandard2.1` and `net10.0` assemblies plus Linux x64,
+Windows x64 and universal macOS arm64/x64 native libraries. NuGet selects the
+native asset automatically. The `.snupkg` is available for portable symbols.
+nuget.org publication activates once the maintainer configures trusted publishing;
+GitHub Release packages remain available as a local feed. When the version is
+available on nuget.org, omit `--source /path/to/feed`.
+
+For Unity 2021.3 or later using .NET Standard 2.1, download
+`com.rlmesh.rlmesh-<version>.tgz` and select **Add package from tarball** in Package
+Manager. The prebuilt DLL is auto-referenced, and native importers select desktop
+Editor/Standalone by OS and CPU. 32-bit, WebGL, iOS and Android are unsupported.
+No asmdef is needed: an asmdef defines compilation of sources; this package
+supplies a prebuilt assembly with its PluginImporter enabled and auto-referenced.
+
+For a git URL installation, unpack the generated `package/` directory into a
+versioned distribution repository and use Package Manager's **Add package from
+git URL**, for example `https://your-host/your-team/rlmesh-upm.git#v<version>`.
+A subdirectory distribution uses `?path=/path/to/package#v<version>`. Pin the
+revision and retain all `.meta` files. The framework source repository does not
+commit generated binaries, so its source URL alone is not an installable UPM
+package. You can also unpack a release tarball and use **Add package from disk**
+with its `package.json`.
+
+Source development uses the SDK pinned in `global.json`; `mise run check:csharp`
+installs it on demand. Build the native library and make `rlmesh_capi`
+(`librlmesh_capi.so`, `rlmesh_capi.dll` or `librlmesh_capi.dylib`) available to the
+platform loader when consuming a source build.
+
+The first native call checks ABI generation 5 and the
 header's package version, currently `0.1.0`. Loader and version failures
 throw `RLMesh.RuntimeError` with the cause.
 

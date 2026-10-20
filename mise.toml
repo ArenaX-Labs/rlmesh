@@ -564,3 +564,23 @@ depends = ["check:csharp"]
 [tasks."test:csharp"]
 description = "Check C# interop and run ABI, ownership and Python interoperability tests"
 run = "mise run dev:heavy -- python csharp/tools/run.py test"
+
+[tasks."csharp:pack"]
+description = "Build NuGet and symbol packages from available release native assets"
+run = 'mise run dev:heavy -- python csharp/tools/run.py pack {{arg(name="args", var=true, required=false)}}'
+
+[tasks."csharp:upm"]
+description = "Assemble the prebuilt Unity UPM package"
+run = 'mise run dev:heavy -- python csharp/tools/run.py upm {{arg(name="args", var=true, required=false)}}'
+
+[tasks."test:csharp:package"]
+description = "Verify package structure and a fresh NuGet consumer driven by Python"
+run = "mise run dev:heavy -- python csharp/tools/run.py package-test"
+
+[tasks."test:csharp:aot"]
+description = "Publish the serving harness with NativeAOT and drive it from Python"
+run = "mise run dev:heavy -- python csharp/tools/run.py aot"
+
+[tasks."bench:csharp"]
+description = "Measure C# allocation gates and five interleaved advisory C++ timing batches"
+run = "mise run dev:heavy -- python csharp/tools/run.py bench --timing"

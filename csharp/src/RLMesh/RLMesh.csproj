@@ -8,6 +8,27 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <IsAotCompatible Condition="'$(TargetFramework)' == 'net10.0'">true</IsAotCompatible>
     <IsTrimmable Condition="'$(TargetFramework)' == 'net10.0'">true</IsTrimmable>
+    <PackageId>RLMesh</PackageId>
+    <Authors>ArenaX Labs</Authors>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageLicenseExpression>MIT OR Apache-2.0</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/ArenaX-Labs/rlmesh</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageProjectUrl>https://rlmesh.dev</PackageProjectUrl>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <DebugType>portable</DebugType>
     <Description>Experimental RLMesh environment serving foundation.</Description>
   </PropertyGroup>
+  <ItemGroup>
+    <None Include="../../README.md" Pack="true" PackagePath="/README.md" />
+    <None Include="../../../LICENSE-MIT;../../../LICENSE-APACHE" Pack="true" PackagePath="/" />
+    <None Include="$(NativePackageRoot)/**/*" Pack="true" PackagePath="runtimes/%(RecursiveDir)%(Filename)%(Extension)" Condition="'$(NativePackageRoot)' != ''" />
+  </ItemGroup>
+  <Target Name="GenerateWorkspaceVersion" BeforeTargets="CoreCompile">
+    <Exec Command="python &quot;$(MSBuildProjectDirectory)/../../tools/version.py&quot; &quot;$(IntermediateOutputPath)PackageVersion.g.cs&quot;" />
+    <ItemGroup>
+      <Compile Include="$(IntermediateOutputPath)PackageVersion.g.cs" />
+    </ItemGroup>
+  </Target>
 </Project>

@@ -68,6 +68,16 @@ jobs:
         if: steps.csharp_changes.outputs.csharp == 'true'
         run: mise run --skip-tools test:csharp
 
+      - name: C# NativeAOT serving supplement
+        if: steps.csharp_changes.outputs.csharp == 'true'
+        timeout-minutes: 5
+        run: mise run --skip-tools test:csharp:aot
+
+      - name: C# NuGet restore and Unity package structure
+        if: steps.csharp_changes.outputs.csharp == 'true'
+        timeout-minutes: 5
+        run: mise run --skip-tools test:csharp:package
+
       - name: Cross-version matrix against the already-built wheels
         run: mise run --skip-tools test:crossver:installed
 

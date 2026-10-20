@@ -7,6 +7,12 @@ using RLMesh.Interop;
 
 namespace RLMesh.Internal;
 
+internal static class HandleMetrics
+{
+    internal static long FinalizableConstructions;
+    internal static long LiveHandles;
+}
+
 internal enum HandleKind { Value, Tensor, Space, Env, EnvServer }
 internal enum OwnershipState { Idle, InUse, Transferring, Transferred, Closing, Freeing, Freed }
 
@@ -49,6 +55,9 @@ internal sealed unsafe class NativeHandle : SafeHandle
 
     internal NativeHandle(IntPtr pointer, HandleKind kind, Action? afterFree = null, bool finalizable = true) : base(IntPtr.Zero, finalizable && kind is not (HandleKind.Env or HandleKind.EnvServer))
     {
+        if (finalizable && kind is not (HandleKind.Env or HandleKind.EnvServer))
+            Interlocked.Increment(ref HandleMetrics.FinalizableConstructions);
+        Interlocked.Increment(ref HandleMetrics.LiveHandles);
         SetHandle(pointer);
         Kind = kind;
         strong = kind is HandleKind.Env or HandleKind.EnvServer;
@@ -138,7 +147,7 @@ internal sealed unsafe class NativeHandle : SafeHandle
         long value = Word;
         if (State(value) != OwnershipState.Transferring || !Change(value, committed ? OwnershipState.Transferred : OwnershipState.Idle, 0, Generation(value)))
             throw new InvalidOperationException("invalid transfer transition");
-        if (committed) SetHandleAsInvalid();
+        if (committed) { Interlocked.Decrement(ref HandleMetrics.LiveHandles); SetHandleAsInvalid(); }
     }
     internal void CloseOwner(uint generation, bool explicitDispose, bool anyGeneration = false)
     {
@@ -183,6 +192,7 @@ internal sealed unsafe class NativeHandle : SafeHandle
             try { Interlocked.Exchange(ref afterFree, null)?.Invoke(); }
             finally
             {
+                Interlocked.Decrement(ref HandleMetrics.LiveHandles);
                 SetHandleAsInvalid();
                 long value = Word;
                 if (!Change(value, OwnershipState.Freed, 0, Generation(value)))
@@ -240,6 +250,7 @@ internal sealed class OwnerToken : SafeHandle
     internal static Action<NativeHandle>? BeforeCreate;
     internal OwnerToken(NativeHandle record, uint generation) : base(IntPtr.Zero, true)
     {
+        Interlocked.Increment(ref HandleMetrics.FinalizableConstructions);
         Record = record;
         Generation = generation;
         BeforeCreate?.Invoke(record);

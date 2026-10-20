@@ -1415,6 +1415,7 @@ dependencies = [
 [package.dev-dependencies]
 csharp = [
     { name = "grpcio" },
+    { name = "pyyaml" },
     { name = "rlmesh", extra = ["numpy"] },
 ]
 dev = [
@@ -1437,6 +1438,7 @@ requires-dist = [{ name = "rlmesh", editable = "python/rlmesh" }]
 [package.metadata.requires-dev]
 csharp = [
     { name = "grpcio", specifier = "==1.75.1" },
+    { name = "pyyaml", specifier = "==6.0.3" },
     { name = "rlmesh", extras = ["numpy"], editable = "python/rlmesh" },
 ]
 dev = [

@@ -30,6 +30,19 @@ def main():
         commands.append(["test.py"])
     if mode == "generate":
         commands.append(["interop.py", *extra])
+    if mode in ("pack", "upm"):
+        commands.append(["package.py", mode, *extra])
+    if mode in ("package-test", "aot", "bench"):
+        commands.append(
+            [
+                {
+                    "package-test": "package_test.py",
+                    "aot": "harness.py",
+                    "bench": "benchmark.py",
+                }[mode],
+                *extra,
+            ]
+        )
     if not commands:
         raise SystemExit(f"unknown C# task: {mode}")
     for script, *args in commands:

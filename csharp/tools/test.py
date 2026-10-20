@@ -4,6 +4,8 @@ import os
 import pathlib
 import subprocess
 
+import tomllib
+
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 CSHARP = ROOT / "csharp"
 DOTNET_BUILD = [
@@ -43,7 +45,12 @@ def gate_tests(env):
         ),
         "version": (
             '#include "rlmesh.h"\nuint32_t rlmesh_abi_version(void){return 5;}\nRLMeshStatus rlmesh_build_info(RLMeshBuildInfo* out){out->version="wrong-version"; return RLMESH_OK;}\n',
-            ("wrong-version", "0.1.0"),
+            (
+                "wrong-version",
+                tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"][
+                    "package"
+                ]["version"],
+            ),
         ),
         "later_symbol": (
             '#include "rlmesh.h"\nuint32_t rlmesh_abi_version(void){return 5;}\nRLMeshStatus rlmesh_build_info(RLMeshBuildInfo* out){out->version=RLMESH_VERSION; return RLMESH_OK;}\n',
@@ -215,6 +222,7 @@ def main():
             ],
             env=env,
         )
+    run(["python", str(CSHARP / "tools/benchmark.py")], env=env)
     print(
         "C# foundation: both assembly suites, ABI/layout, gate and C# 9 fixtures passed"
     )
