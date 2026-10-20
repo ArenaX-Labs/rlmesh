@@ -28,7 +28,18 @@ struct HostProcess {
 }
 
 impl HostProcess {
+    /// Spawns the host on free local ports, again on others when one was
+    /// taken in between (the host then exits before printing its session).
     fn spawn() -> Self {
+        for _ in 0..16 {
+            if let Some(host) = Self::try_spawn() {
+                return host;
+            }
+        }
+        panic!("the host process never found free ports");
+    }
+
+    fn try_spawn() -> Option<Self> {
         let base = free_local_base("127.0.0.1".parse().expect("ip")).expect("ports");
         let mut child = Command::new(env!("CARGO_BIN_EXE_rlmesh-session-host"))
             .args([
@@ -49,11 +60,17 @@ impl HostProcess {
         BufReader::new(stdout)
             .read_line(&mut line)
             .expect("session id line");
-        let session = line.trim().parse().expect("a session id");
-        Self {
-            child,
-            session,
-            base,
+        match line.trim().parse() {
+            Ok(session) => Some(Self {
+                child,
+                session,
+                base,
+            }),
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                None
+            }
         }
     }
 

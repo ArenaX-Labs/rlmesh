@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use rlmesh_edge::{Edge, EdgeConfig, EdgeMode, EdgeTick, Rejection};
-use rlmesh_session::transport::free_local_base;
+use rlmesh_session::transport::open_local_listeners;
 use rlmesh_session::{
     ChunkDraft, HostConfig, Participant, ParticipantConfig, SessionHost, SubscribeOptions,
     SystemMonotonicClock, Transport, TransportConfig,
@@ -65,11 +65,9 @@ impl World {
             )
             .with_test_writer()
             .try_init();
-        let base = free_local_base("127.0.0.1".parse().expect("ip")).expect("ports");
-        let transport =
-            Transport::open(&TransportConfig::per_class_tcp(Some(base), None).expect("config"))
-                .await
-                .expect("transport");
+        let (transport, base) = open_local_listeners("127.0.0.1".parse().expect("ip"))
+            .await
+            .expect("transport");
         let tenant = TenantId::new("edge").expect("tenant");
         let session = SessionId::new();
         let mut config = HostConfig::new(tenant.clone(), session);

@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use rlmesh_session::media::{decode_image, synthetic_frame};
 use rlmesh_session::participant::{query_authority, wait_for_host};
-use rlmesh_session::transport::free_local_base;
+use rlmesh_session::transport::open_local_listeners;
 use rlmesh_session::{
     ChunkDraft, HostConfig, MonotonicClock, Participant, ParticipantConfig, SessionError,
     SessionHost, SubscribeOptions, TrafficClass, Transport, TransportConfig, VirtualConfig,
@@ -96,11 +96,9 @@ impl World {
             .with_test_writer()
             .try_init();
         let anchor = Instant::now();
-        let base = free_local_base("127.0.0.1".parse().expect("ip")).expect("ports");
-        let transport =
-            Transport::open(&TransportConfig::per_class_tcp(Some(base), None).expect("config"))
-                .await
-                .expect("host transport");
+        let (transport, base) = open_local_listeners("127.0.0.1".parse().expect("ip"))
+            .await
+            .expect("host transport");
         let tenant = TenantId::new("test").expect("tenant");
         let session = SessionId::new();
         let mut config = HostConfig::new(tenant.clone(), session);

@@ -499,6 +499,21 @@ pub fn free_local_base(ip: IpAddr) -> Result<SocketAddr, SessionError> {
     ))
 }
 
+/// Opens per-class TCP listeners on free local ports (for tests and demos):
+/// a base from [`free_local_base`], and another one when a port was taken
+/// in between. The base is what peers dial.
+pub async fn open_local_listeners(ip: IpAddr) -> Result<(Transport, SocketAddr), SessionError> {
+    let mut last = SessionError::Config("no free local ports".into());
+    for _ in 0..16 {
+        let base = free_local_base(ip)?;
+        match Transport::open(&TransportConfig::per_class_tcp(Some(base), None)?).await {
+            Ok(transport) => return Ok((transport, base)),
+            Err(err) => last = err,
+        }
+    }
+    Err(last)
+}
+
 /// An encoded message as one `ZBytes`, gathering its segments without
 /// copying them.
 pub fn frame_zbytes(encoded: Encoded) -> ZBytes {
