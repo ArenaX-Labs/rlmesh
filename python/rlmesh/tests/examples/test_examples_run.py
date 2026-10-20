@@ -7,6 +7,7 @@ fails CI. The rest of the set is typechecked but not executed:
 - ``byo_container/``: Docker image entrypoints; the env/model servers block forever.
 - ``sandbox/``: starts owned Docker containers.
 - ``vla_adapters/``: model x simulator study; real runs need weights and simulators.
+- ``v2/session_bench.py``: a latency benchmark (30 s per run by default).
 """
 
 from __future__ import annotations
@@ -142,3 +143,10 @@ def test_adapters_serve_and_run() -> None:
     assert "Resolved adapter:" in result.stdout
     assert "Running one episode:" in result.stdout
     assert "Done." in result.stdout
+
+
+def test_v2_loopback_robot_and_policy() -> None:
+    result = _run_example("v2/loopback.py", "--seconds", "1.5")
+    _assert_ok(result)
+    assert "binding sine on ur10e" in result.stdout
+    assert "commands applied" in result.stdout
