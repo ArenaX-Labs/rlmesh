@@ -7,6 +7,9 @@
 //! - [`authority`]: epoch, roster, the mode machine, parts, bindings and the
 //!   lease table (preemption, command groups, TTLs, fencing tokens); the
 //!   session host is its single writer.
+//! - [`lease`]: the holder's side of a lease: the local deadline (a
+//!   conservative lower bound of the host's expiry that never outlives
+//!   it), renewal and loss from authority snapshots, and fenced chunks.
 //! - [`virtual_clock`]: the virtual-mode tick barrier (§11.3).
 //! - [`clock`]: NTP-style offset estimation with an error bound.
 //! - [`cache`]: a controller's input cache and history windows (§8.8).
@@ -22,6 +25,7 @@
 pub mod authority;
 pub mod cache;
 pub mod clock;
+pub mod lease;
 pub mod schedule;
 pub mod stream;
 pub mod virtual_clock;
@@ -29,6 +33,7 @@ pub mod virtual_clock;
 pub use authority::{Authority, AuthorityConfig, AuthorityEvent, DetachReason, LeaseEnd};
 pub use cache::{Cached, InputCache, InputSnapshot, Skip, Snapshot};
 pub use clock::{OffsetEstimate, OffsetEstimator, OffsetEstimatorConfig};
+pub use lease::{LeaseChange, LeaseClient, LeaseError, LeaseState};
 pub use schedule::{RunEvent, RunStats, SkipReason, StartSchedule};
 pub use stream::SampleStats;
 pub use virtual_clock::VirtualConfig;
